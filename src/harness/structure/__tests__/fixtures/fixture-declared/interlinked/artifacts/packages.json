@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"packages": [
+		{
+			"id": "root",
+			"root": ".",
+			"entrypoints": ["src/client.ts"]
+		}
+	]
+}

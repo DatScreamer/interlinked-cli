@@ -1,0 +1,220 @@
+// ===========================================
+// Tool-Based Check Instructions
+// ===========================================
+// Per-check fix instructions appended to warnings so agents know how to fix
+// properly. Tool-based / non-registry check instructions (subprocess checks,
+// language-specific, suggestion pipeline).
+//
+// Registry-derived instructions are merged in via buildCheckInstructions().
+// This file stays focused on instructions for checks not in the declarative
+// CHECK_REGISTRY (everything that happens via external tool or inline regex
+// not wired through check-registry/).
+
+/** Public API — consumed by quality-checks.formatQualityWarnings. */
+export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
+	typescript:
+		"Fix the type errors above. Use proper types (interfaces, generics, branded types). " +
+		"Do NOT use `as any`, `@ts-ignore`, or `@ts-expect-error` to suppress — fix the actual types.",
+	biome_lint:
+		"Fix the lint issues above by changing the code, not by adding suppression comments. " +
+		"Do NOT add `biome-ignore` comments — rewrite the code so it passes the check cleanly.",
+	eslint:
+		"Fix the lint issues above by changing the code, not by adding suppression comments. " +
+		"Do NOT add `eslint-disable` comments — rewrite the code so it passes the check cleanly.",
+	strong_typing:
+		"Replace `any` types with proper interfaces, generics, or branded types. " +
+		"Do NOT leave `any` in place — use `unknown` with type guards if the shape is genuinely dynamic. " +
+		"`unknown` is acceptable when paired with narrowing (type guards, instanceof, assertion functions).",
+	secrets_in_source:
+		"Remove the detected secrets immediately. Use environment variables or a secrets manager instead. " +
+		"Do NOT commit secrets to source files under any circumstances.",
+	semgrep:
+		"Fix the security or correctness issue identified by Semgrep. " +
+		"Do NOT add nosemgrep comments to suppress findings — fix the underlying code.",
+	dependency_audit:
+		"Dependency vulnerabilities were found. Run `npm audit fix` to auto-fix compatible updates, " +
+		"or `npm audit` to review. For critical/high vulnerabilities, update the affected package immediately.",
+	gitleaks:
+		"Secrets or credentials were detected by gitleaks. Remove them immediately and rotate the exposed credential. " +
+		"Use environment variables or a secrets manager (e.g., Vault, AWS Secrets Manager) instead. " +
+		"If this was committed to git, the credential is already exposed — rotation is mandatory.",
+	affected_tests:
+		"The test file for this source file is failing. Fix the source code so the tests pass. " +
+		"Do NOT modify the tests to make them pass — fix the implementation.",
+	binary_content:
+		"This file contains binary data. Do NOT write binary files through text editing tools. " +
+		"Use appropriate binary-safe methods or download the file directly.",
+	empty_file:
+		"This file is empty. If content was intended, write it now. " +
+		"If the file is intentionally empty, add a comment explaining why.",
+	large_file: "This file is too large. Consider splitting it into smaller, focused modules.",
+	lockfile_drift:
+		"The lockfile is out of sync with the manifest. Run the package manager's install/lock command " +
+		"(`npm install`, `yarn install`, `cargo generate-lockfile`, `poetry lock`) to regenerate it. " +
+		"Do NOT commit a stale lockfile — it causes version resolution to diverge between environments.",
+	package_json_consistency:
+		"Fix the package.json issues: remove duplicates (keep in the correct section — dependencies vs devDependencies), " +
+		"and fix invalid version specifiers to valid semver ranges (e.g., ^1.2.3, ~2.0.0, >=3.0.0).",
+	missing_return_types:
+		"Add explicit return type annotations to all exported functions. " +
+		"This improves API documentation, enables better type inference for consumers, and catches accidental return type changes.",
+	no_test_file:
+		"This source file has no corresponding test file. Create a test file with at least basic coverage. " +
+		"Name it {filename}.test.ts or {filename}.spec.ts in the same directory.",
+	complexity:
+		"This function has high measured complexity. If your edit increased it, consider extracting helpers " +
+		"or using early returns. Pre-existing complexity can be ignored.",
+	export_ripple:
+		"Other files import symbols from this file that no longer exist in its exports. " +
+		"Update the importing files to use the correct symbol names, or restore the removed exports.",
+	generic_inline:
+		"Fix the code quality issue indicated. Clean up trailing whitespace, resolve TODOs, " +
+		"and remove debug statements before committing.",
+	python_bare_except:
+		"Catch specific exceptions instead of bare `except:`. " +
+		"Use `except ValueError:` or `except Exception:` at minimum.",
+	python_mutable_default:
+		"Use `None` as the default and assign the mutable value inside the function body. " +
+		"Example: `def foo(x=None): x = x or []`",
+	rust_unsafe:
+		"Document safety invariants with a `// SAFETY:` comment above each unsafe block. " +
+		"Minimize the scope of unsafe code.",
+	rust_unwrap:
+		'Use `.expect("reason")` with a descriptive message, or propagate the error with `?`. ' +
+		"Do NOT use `.unwrap()` in non-test code.",
+	rust_todo_macro:
+		"Replace `todo!()` and `unimplemented!()` with actual implementation or proper error handling. " +
+		"These macros panic at runtime.",
+	go_error_ignored:
+		"Handle errors explicitly. Do NOT discard errors with `_`. " +
+		"At minimum, log the error or return it to the caller.",
+	c_header_guard:
+		"Add `#pragma once` at the top of the header file, or use a traditional `#ifndef`/`#define` include guard.",
+	java_wildcard_import:
+		"Replace wildcard imports (`import java.util.*`) with explicit imports for each class used.",
+	java_system_exit:
+		"Throw an exception instead of calling `System.exit()`. " +
+		"Let the caller or main method decide when to terminate.",
+	unreachable_code:
+		"Remove or restructure the unreachable code. Code after return/throw/break/continue will never execute.",
+	silent_catch:
+		"Add error handling in the catch block. At minimum log the error: `catch (e) { console.error(e); }`",
+	assertion_free_test:
+		"Add assertions (expect/assert) to the test block. Tests without assertions don't verify behavior.",
+	hardcoded_credentials:
+		"Move credentials to environment variables or a secrets manager. Never hardcode passwords or API keys.",
+	parseint_radix:
+		"Add the radix parameter: `parseInt(value, 10)`. Without it, strings starting with '0' may be parsed as octal.",
+	float_equality:
+		"Use an epsilon comparison: `Math.abs(a - b) < Number.EPSILON` instead of direct equality.",
+	infinite_recursion:
+		"Add a base case guard (if/return) before the recursive call to prevent stack overflow.",
+	sync_io_in_async:
+		"Replace synchronous I/O with async equivalents (readFile instead of readFileSync) to avoid blocking the event loop.",
+	perf_strlen_loop:
+		"Cache strlen() result before the loop: `size_t len = strlen(s);` — strlen is O(n) and the compiler cannot hoist it.",
+	perf_collect_iterate:
+		"Remove the .collect() call and continue chaining iterators. Collecting breaks Rust's zero-cost iterator fusion.",
+	perf_spread_reduce:
+		"Replace `[...acc, item]` with `acc.push(item); return acc;` — spread copies the entire array on each iteration.",
+	perf_await_loop:
+		"Collect promises in an array and use `await Promise.all(promises)` instead of awaiting sequentially in the loop.",
+	perf_query_loop:
+		"Batch the IDs/keys and do a single `WHERE id IN (...)` query, then map results. Each loop iteration is a database round-trip.",
+	perf_string_concat_loop:
+		"Python: collect parts in a list, use `''.join(parts)`. Go: use `strings.Builder` with `WriteString()`. String += creates a new object each iteration.",
+	perf_json_clone:
+		"Use `structuredClone(obj)` — single traversal, handles Date/RegExp/Map/Set/ArrayBuffer. JSON round-trip is two full traversals and loses non-serializable types.",
+	perf_filter_length:
+		"Use `arr.reduce((n, x) => pred(x) ? n + 1 : n, 0)` or a simple loop counter. `.filter().length` allocates an intermediate array just to read its length.",
+	perf_regex_loop:
+		"Hoist regex construction above the loop. Regex compilation is expensive — V8/Python re-compiles on every call inside the loop.",
+	perf_clone_loop:
+		"Borrow (`&`) instead of cloning. If shared ownership is needed, use `Rc<T>` or `Arc<T>`. Each `.clone()` is a heap allocation.",
+	perf_math_spread:
+		"Use `arr.reduce((a, b) => Math.max(a, b))` or a loop. `Math.max(...arr)` pushes every element as a function argument and crashes at ~65K elements.",
+	perf_sort_loop:
+		"Sort the data once before the loop. Sorting inside a loop is O(n² log n) when O(n log n) suffices.",
+	perf_json_loop:
+		"Move JSON serialization/deserialization outside the loop. Each call traverses the entire object tree.",
+	perf_array_from_map:
+		"Use `Array.from(iterable, mapFn)` — the second argument applies the map during construction (single pass instead of two).",
+	perf_malloc_loop:
+		"Either move allocation outside the loop, call `free()` before the next iteration, or store pointers for later cleanup. This leaks memory proportional to iteration count.",
+	perf_sprintf_loop:
+		"Use `strings.Builder` with `b.WriteString()` and `fmt.Fprintf(&b, ...)` instead. `Sprintf` allocates a new string on each call.",
+	perf_double_cast:
+		"Fix the underlying type definitions so a direct cast is valid. `as unknown as T` bypasses TypeScript's type checker entirely — it cannot verify or optimize the conversion.",
+	perf_len_list:
+		"Use `sum(1 for x in gen)` to count without materializing the entire sequence into memory.",
+	// Taste enforcement: error handling quality
+	"bare-catch-block":
+		"Empty catch blocks silently swallow errors. At minimum log the error, or use a Result type to make failure handling explicit. " +
+		"If the error genuinely cannot occur, add a comment explaining why.",
+	"catch-return-null":
+		"Returning null/undefined from catch loses the error context. Return a Result type or a typed error object instead. " +
+		"Callers cannot distinguish 'no value' from 'operation failed' when both return null.",
+	"throw-as-control-flow":
+		"Throwing for expected conditions (not found, validation failure) forces callers to use try/catch. " +
+		"Return a Result or error value instead — expected failures are values, not exceptions.",
+	"untyped-catch":
+		"catch(e) without narrowing is unsafe — e is unknown. Use instanceof, a type guard, or a tagged error's .is() method " +
+		"to narrow before accessing properties. Consider using Result types to avoid catch blocks entirely.",
+	"error-string-comparison":
+		"Comparing error.message strings is fragile — messages change between versions and locales. " +
+		"Use error codes, instanceof checks, or tagged errors (._tag) for reliable error discrimination.",
+	"inconsistent-error-strategy":
+		"This file mixes throw, return null, and return {error}. Pick one strategy. " +
+		"Prefer Result types or typed error returns — they compose cleanly and make every failure path visible in the type system.",
+	// --- Swift checks (Apple API Design Guidelines + Memory Safety + Concurrency) ---
+	swift_force_cast:
+		"Use conditional cast (`as?`) with optional binding instead of force cast (`as!`). " +
+		"Force casts crash at runtime if the type doesn't match.",
+	swift_force_try:
+		"Use `do/catch` or `try?` instead of `try!`. " +
+		"Force try crashes at runtime if the call throws.",
+	swift_force_unwrap:
+		"Use optional binding (`if let`/`guard let`) or nil-coalescing (`??`) instead of force unwrap (`!`). " +
+		"Force unwrap crashes at runtime if the value is nil.",
+	swift_implicitly_unwrapped:
+		"Use regular optionals (`Type?`) with proper unwrapping instead of implicitly unwrapped optionals (`Type!`). " +
+		"Only acceptable for `@IBOutlet` properties and two-phase initialization.",
+	swift_delegate_not_weak:
+		"Declare delegate properties as `weak var delegate: SomeDelegate?` to avoid retain cycles. " +
+		"Delegates typically have shorter lifetimes than the delegating object.",
+	swift_legacy_random:
+		"Use `Int.random(in:)`, `Bool.random()`, or `Collection.randomElement()` instead of `arc4random`. " +
+		"Modern Swift random APIs are type-safe and cross-platform.",
+	swift_legacy_hashvalue:
+		"Implement `hash(into hasher: inout Hasher)` instead of `var hashValue: Int`. " +
+		"The legacy `hashValue` property is deprecated since Swift 4.2.",
+	swift_fileid:
+		"Use `#fileID` instead of `#file` or `#filePath`. " +
+		"It produces smaller strings and avoids leaking the developer's file system path.",
+	swift_abbreviation:
+		"Avoid non-standard abbreviations in identifiers (Apple API Design Guidelines). " +
+		"Use the full word: `button` not `btn`, `manager` not `mgr`, `label` not `lbl`.",
+	swift_task_detached:
+		"`Task.detached` breaks structured concurrency. Use `Task {}` or `TaskGroup` instead. " +
+		"Detached tasks don't inherit the parent's priority, task-local values, or cancellation.",
+	swift_unhandled_task_error:
+		"Errors in `Task { try ... }` are silently swallowed. Wrap in `do/catch` or use `try?`. " +
+		"Unhandled task errors make debugging extremely difficult.",
+	swift_global_var:
+		"Global mutable `var` without actor isolation is a data race in Swift 6. " +
+		"Use `let`, annotate with `@MainActor`, or wrap in an actor.",
+	swift_self_escaping:
+		"Referencing `self` in an `@escaping` closure without `[weak self]` risks a retain cycle. " +
+		"Use a capture list: `{ [weak self] in guard let self else { return } ... }`.",
+	swift_filter_count:
+		"Use `.count(where:)` instead of `.filter { ... }.count`. " +
+		"`.filter` allocates a throwaway array just to read its length.",
+	perf_sort_loop_swift:
+		"Sort the data once before the loop. `.sorted()` inside a loop is O(n² log n).",
+	perf_json_loop_swift:
+		"Move `JSONDecoder`/`JSONEncoder` construction outside the loop. Creating a new instance per iteration is wasteful.",
+	perf_regex_loop_swift:
+		"Hoist `NSRegularExpression` or `Regex` construction above the loop. Regex compilation is expensive.",
+	perf_query_loop_swift:
+		"Batch Core Data/database fetches outside the loop. Each `fetch()` inside the loop is an N+1 query.",
+};

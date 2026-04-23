@@ -1,0 +1,240 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	addSuppressions,
+	countSuppressions,
+	SUPPRESSION_REASON_MIN_LENGTH,
+	SuppressionPolicyError,
+	validateSuppressionFile,
+} from "./suppressions.js";
+
+describe("addSuppressions — policy gate", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "supp-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("rejects a reason shorter than the minimum", () => {
+		expect(() =>
+			addSuppressions(tmp, [
+				{
+					file: "src/a.ts",
+					check: "magic_number",
+					reason: "short",
+					expires_at: "2099-01-01",
+				},
+			]),
+		).toThrow(SuppressionPolicyError);
+	});
+
+	it("rejects an entry with no ticket AND no expires_at", () => {
+		expect(() =>
+			addSuppressions(tmp, [
+				{
+					file: "src/a.ts",
+					check: "magic_number",
+					reason: "This is a long enough justification for testing.",
+				},
+			]),
+		).toThrow(/ticket|expires_at/);
+	});
+
+	it("rejects an invalid expires_at date", () => {
+		expect(() =>
+			addSuppressions(tmp, [
+				{
+					file: "src/a.ts",
+					check: "magic_number",
+					reason: "This is a long enough justification for testing.",
+					expires_at: "not-a-date",
+				},
+			]),
+		).toThrow(/ISO-8601/);
+	});
+
+	it("accepts a valid entry with a ticket", () => {
+		const added = addSuppressions(tmp, [
+			{
+				file: "src/a.ts",
+				check: "magic_number",
+				reason: "Legacy constant, removal tracked in ticket below.",
+				ticket: "INTER-42",
+			},
+		]);
+		expect(added).toHaveLength(1);
+		const saved = JSON.parse(readFileSync(join(tmp, "verify-suppressions.json"), "utf-8"));
+		expect(saved["src/a.ts"].magic_number.ticket).toBe("INTER-42");
+	});
+
+	it("accepts a valid entry with an expires_at", () => {
+		const added = addSuppressions(tmp, [
+			{
+				file: "src/a.ts",
+				check: "magic_number",
+				reason: "Temporary, rewriting parser next sprint.",
+				expires_at: "2099-01-01",
+			},
+		]);
+		expect(added).toHaveLength(1);
+	});
+
+	it("does not duplicate an existing suppression", () => {
+		const entry = {
+			file: "src/a.ts",
+			check: "magic_number",
+			reason: "Legacy constant — removal tracked below.",
+			ticket: "INTER-42",
+		};
+		addSuppressions(tmp, [entry]);
+		const second = addSuppressions(tmp, [entry]);
+		expect(second).toHaveLength(0);
+	});
+
+	it("min-length constant is documented", () => {
+		expect(SUPPRESSION_REASON_MIN_LENGTH).toBeGreaterThanOrEqual(20);
+	});
+});
+
+describe("countSuppressions", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "supp-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns zero totals for an empty repo", () => {
+		const c = countSuppressions(tmp);
+		expect(c.total).toBe(0);
+	});
+
+	it("groups counts by file and by check", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: { reason: "x".repeat(30), by: "cli", at: "2026", ticket: "T" },
+				dead_exports: { reason: "x".repeat(30), by: "cli", at: "2026", ticket: "T" },
+			},
+			"src/b.ts": {
+				magic_number: { reason: "x".repeat(30), by: "cli", at: "2026", ticket: "T" },
+			},
+		});
+		const c = countSuppressions(tmp);
+		expect(c.total).toBe(3);
+		expect(c.by_file).toEqual({ "src/a.ts": 2, "src/b.ts": 1 });
+		expect(c.by_check).toEqual({ magic_number: 2, dead_exports: 1 });
+	});
+});
+
+describe("validateSuppressionFile", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "supp-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("flags a short reason", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: { reason: "short", by: "cli", at: "2026", ticket: "T" },
+			},
+		});
+		const findings = validateSuppressionFile(tmp);
+		expect(findings.some((f) => f.name === "suppression_reason_too_short")).toBe(true);
+	});
+
+	it("flags missing ticket AND expires_at", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: { reason: "x".repeat(30), by: "cli", at: "2026" },
+			},
+		});
+		const findings = validateSuppressionFile(tmp);
+		expect(findings.some((f) => f.name === "suppression_missing_ticket_and_expiry")).toBe(true);
+	});
+
+	it("flags expired suppressions as error", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: {
+					reason: "x".repeat(30),
+					by: "cli",
+					at: "2026",
+					expires_at: "2025-01-01",
+				},
+			},
+		});
+		const now = new Date("2026-01-01");
+		const findings = validateSuppressionFile(tmp, { now });
+		const expired = findings.find((f) => f.name === "suppression_expired");
+		expect(expired).toBeDefined();
+		expect(expired?.severity).toBe("error");
+	});
+
+	it("does NOT flag future expires_at dates", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: {
+					reason: "x".repeat(30),
+					by: "cli",
+					at: "2026",
+					expires_at: "2099-01-01",
+				},
+			},
+		});
+		const findings = validateSuppressionFile(tmp);
+		expect(findings.some((f) => f.name === "suppression_expired")).toBe(false);
+	});
+
+	it("flags total count over threshold", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				check1: { reason: "x".repeat(30), by: "cli", at: "2026", ticket: "T" },
+				check2: { reason: "x".repeat(30), by: "cli", at: "2026", ticket: "T" },
+			},
+		});
+		const findings = validateSuppressionFile(tmp, { max_suppressions: 1 });
+		expect(findings.some((f) => f.name === "suppression_count_over_threshold")).toBe(true);
+	});
+
+	it("returns no findings for a well-formed file", () => {
+		writeSuppressions(tmp, {
+			"src/a.ts": {
+				magic_number: {
+					reason: "Legacy constant, remove when parser rewrite lands.",
+					by: "cli",
+					at: "2026",
+					ticket: "INTER-42",
+				},
+			},
+		});
+		expect(validateSuppressionFile(tmp)).toEqual([]);
+	});
+});
+
+function writeSuppressions(
+	dir: string,
+	data: Record<
+		string,
+		Record<
+			string,
+			{ reason: string; by: string; at: string; ticket?: string; expires_at?: string }
+		>
+	>,
+): void {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "verify-suppressions.json"), JSON.stringify(data, null, 2), "utf-8");
+}

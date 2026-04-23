@@ -1,0 +1,16 @@
+{
+	"version": 1,
+	"docs": [
+		{
+			"id": "client-api",
+			"file": "docs/client.md",
+			"kind": "reference",
+			"covers": [
+				{
+					"artifact_kind": "public_symbol",
+					"artifact_id": "client#createClient"
+				}
+			]
+		}
+	]
+}

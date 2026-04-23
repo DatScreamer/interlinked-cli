@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["22"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck:stable
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint package with publint
+        run: npx publint
+
+      - name: Check types with arethetypeswrong
+        run: npx --package=@arethetypeswrong/cli attw --pack .
+
+      - name: Pack dry-run
+        run: npm pack --dry-run
+
+      - name: Tarball install smoke test
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination /tmp
+          TARBALL=$(ls /tmp/interlinked-cli-*.tgz | head -n 1)
+          echo "Installing: $TARBALL"
+          SMOKE_DIR=$(mktemp -d)
+          cd "$SMOKE_DIR"
+          npm init -y >/dev/null
+          npm install --no-save "$TARBALL"
+          INTERLINKED=./node_modules/.bin/interlinked
+          HOOK=./node_modules/.bin/interlinked-hook
+          "$INTERLINKED" --version
+          "$INTERLINKED" --help | head -5
+          "$INTERLINKED" install-hooks --runner claude-code --mode balanced --json
+          test -f .claude/settings.json
+          grep -q -- "--runner 'claude-code'" .claude/settings.json
+          printf '{"session_id":"smoke","cwd":"%s","tool_name":"Read","tool_input":{"file_path":"README.md"}}' "$PWD" \
+            | "$HOOK" --runner claude-code --event PreToolUse
+          mkdir -p src
+          "$INTERLINKED" write src/smoke.ts --stdin --json <<< 'export const smoke: number = 1;'

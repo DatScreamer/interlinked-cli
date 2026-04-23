@@ -1,0 +1,503 @@
+import type { JsonObject } from "../lib/json-types.js";
+// ===========================================
+// Result<T, E> — Rust-style error handling for TypeScript
+// ===========================================
+// Inlined from better-result patterns (zero dependencies).
+// Discriminated union making errors explicit, composable,
+// and impossible to silently ignore.
+
+// ===========================================
+// Error Types
+// ===========================================
+
+/** Programming defect — should never be caught. Indicates a bug in the caller. */
+export class Panic extends Error {
+	readonly _tag = "Panic" as const;
+	constructor(message: string, cause?: unknown) {
+		super(message, cause !== undefined ? { cause } : undefined);
+		this.name = "Panic";
+	}
+}
+
+/** Unknown error wrapped from a catch block */
+export class UnhandledException extends Error {
+	readonly _tag = "UnhandledException" as const;
+	constructor(cause: unknown) {
+		const message =
+			cause instanceof Error
+				? `Unhandled exception: ${cause.message}`
+				: `Unhandled exception: ${String(cause)}`;
+		super(message, { cause });
+		this.name = "UnhandledException";
+	}
+}
+
+/** Deserialization failure */
+export class ResultDeserializationError extends Error {
+	readonly _tag = "ResultDeserializationError" as const;
+	readonly value: unknown;
+	constructor(value: unknown) {
+		super(
+			'Failed to deserialize value as Result: expected { status: "ok", value } or { status: "error", error }',
+		);
+		this.name = "ResultDeserializationError";
+		this.value = value;
+	}
+}
+
+// ===========================================
+// TaggedError Factory
+// ===========================================
+
+/** Type for any tagged error instance */
+export type AnyTaggedError = Error & { readonly _tag: string };
+
+/** Instance type produced by TaggedError factory */
+export type TaggedErrorInstance<Tag extends string, Props> = Error & {
+	readonly _tag: Tag;
+	toJSON(): JsonObject;
+} & Readonly<Props>;
+
+/** Class type produced by TaggedError factory */
+export interface TaggedErrorClass<Tag extends string, Props> {
+	new (args: Props): TaggedErrorInstance<Tag, Props>;
+	is(value: unknown): value is TaggedErrorInstance<Tag, Props>;
+}
+
+/** Build the inner class for a tagged error — extracted to reduce nesting */
+function buildTaggedErrorClass<Tag extends string, Props extends JsonObject>(
+	tag: Tag,
+): TaggedErrorClass<Tag, Props> {
+	class TaggedBase extends Error {
+		readonly _tag: Tag = tag;
+
+		static is(value: unknown): value is TaggedBase {
+			return value instanceof TaggedBase;
+		}
+
+		constructor(args: Props) {
+			const message =
+				args && "message" in args && typeof args.message === "string" ? args.message : tag;
+			const cause = args && "cause" in args ? args.cause : undefined;
+			super(message, cause !== undefined ? { cause } : undefined);
+			Object.assign(this, args);
+			Object.setPrototypeOf(this, new.target.prototype);
+			this.name = tag;
+			if (cause instanceof Error && cause.stack) {
+				this.stack = `${this.stack}\nCaused by: ${cause.stack.replace(/\n/g, "\n  ")}`;
+			}
+		}
+
+		toJSON(): JsonObject {
+			const json: JsonObject = {
+				_tag: this._tag,
+				name: this.name,
+				message: this.message,
+				stack: this.stack,
+			};
+			for (const key of Object.keys(this)) {
+				json[key] = (this as unknown as JsonObject)[key];
+			}
+			return json;
+		}
+	}
+	return TaggedBase as unknown as TaggedErrorClass<Tag, Props>;
+}
+
+/**
+ * Factory for creating typed, discriminated error classes.
+ *
+ * @example
+ * ```ts
+ * class NotFoundError extends TaggedError("NotFoundError")<{ path: string }>() {}
+ * const e = new NotFoundError({ path: "/foo" });
+ * e._tag  // "NotFoundError"
+ * e.path  // "/foo"
+ * ```
+ */
+export function TaggedError<Tag extends string>(
+	tag: Tag,
+): <Props extends JsonObject = Record<string, never>>() => TaggedErrorClass<Tag, Props> {
+	return <Props extends JsonObject = Record<string, never>>() =>
+		buildTaggedErrorClass<Tag, Props>(tag);
+}
+
+/** Check if a value is any tagged error */
+TaggedError.is = (value: unknown): value is AnyTaggedError =>
+	value instanceof Error && "_tag" in value && typeof (value as AnyTaggedError)._tag === "string";
+
+// ===========================================
+// Ok Class
+// ===========================================
+
+export class Ok<T, E = never> {
+	readonly status = "ok" as const;
+	constructor(readonly value: T) {}
+
+	isOk(): this is Ok<T, E> {
+		return true;
+	}
+	isErr(): this is Err<T, E> {
+		return false;
+	}
+
+	map<U>(fn: (value: T) => U): Ok<U, E> {
+		return new Ok(tryOrPanic(fn, this.value, "Result.map callback threw"));
+	}
+
+	mapError<E2>(_fn: (error: E) => E2): Ok<T, E2> {
+		return this as unknown as Ok<T, E2>;
+	}
+
+	andThen<U, E2>(fn: (value: T) => Result<U, E2>): Result<U, E | E2> {
+		return tryOrPanic(fn, this.value, "Result.andThen callback threw");
+	}
+
+	match<R>(handlers: { ok: (value: T) => R; err: (error: E) => R }): R {
+		return tryOrPanic(handlers.ok, this.value, "Result.match ok handler threw");
+	}
+
+	unwrap(_message?: string): T {
+		return this.value;
+	}
+
+	unwrapOr<U>(_fallback: U): T {
+		return this.value;
+	}
+
+	tap(fn: (value: T) => void): Ok<T, E> {
+		tryOrPanic(fn, this.value, "Result.tap callback threw");
+		return this;
+	}
+
+	// Generator protocol: Ok yields nothing, returns value directly.
+	// Implemented as a manual iterator (not a generator) to avoid
+	// biome's useYield lint — Ok genuinely has nothing to yield.
+	[Symbol.iterator](): Generator<Err<never, E>, T, undefined> {
+		let done = false;
+		const value = this.value;
+		return {
+			next(): IteratorResult<Err<never, E>, T> {
+				if (!done) {
+					done = true;
+					return { done: true, value };
+				}
+				return { done: true, value };
+			},
+			return(v: T): IteratorResult<Err<never, E>, T> {
+				return { done: true, value: v };
+			},
+			throw(e: unknown): IteratorResult<Err<never, E>, T> {
+				throw e;
+			},
+			[Symbol.iterator]() {
+				return this;
+			},
+		} as Generator<Err<never, E>, T, undefined>;
+	}
+}
+
+// ===========================================
+// Err Class
+// ===========================================
+
+export class Err<T = never, E = unknown> {
+	readonly status = "error" as const;
+	constructor(readonly error: E) {}
+
+	isOk(): this is Ok<T, E> {
+		return false;
+	}
+	isErr(): this is Err<T, E> {
+		return true;
+	}
+
+	map<U>(_fn: (value: T) => U): Err<U, E> {
+		return this as unknown as Err<U, E>;
+	}
+
+	mapError<E2>(fn: (error: E) => E2): Err<T, E2> {
+		return new Err(tryOrPanic(fn, this.error, "Result.mapError callback threw"));
+	}
+
+	andThen<U, E2>(_fn: (value: T) => Result<U, E2>): Err<U, E | E2> {
+		return this as unknown as Err<U, E | E2>;
+	}
+
+	match<R>(handlers: { ok: (value: T) => R; err: (error: E) => R }): R {
+		return tryOrPanic(handlers.err, this.error, "Result.match err handler threw");
+	}
+
+	unwrap(message?: string): never {
+		throw new Panic(
+			message ??
+				`Called unwrap on Err: ${this.error instanceof Error ? this.error.message : String(this.error)}`,
+			this.error,
+		);
+	}
+
+	unwrapOr<U>(fallback: U): T | U {
+		return fallback;
+	}
+
+	tap(_fn: (value: T) => void): Err<T, E> {
+		return this;
+	}
+
+	// Generator protocol: Err yields itself, then panics if continued
+	[Symbol.iterator](): Generator<Err<never, E>, never, undefined> {
+		const self = this as unknown as Err<never, E>;
+		return (function* (): Generator<Err<never, E>, never, undefined> {
+			yield self;
+			throw new Panic(
+				"Generator continued after yielding Err — this is a defect in Result.gen",
+			);
+		})();
+	}
+}
+
+// ===========================================
+// Result Union Type
+// ===========================================
+
+export type Result<T, E> = Ok<T, E> | Err<T, E>;
+
+// ===========================================
+// Type Inference Helpers
+// ===========================================
+
+export type InferOk<R> = R extends Ok<infer T, unknown> ? T : never;
+export type InferErr<R> = R extends Err<unknown, infer E> ? E : never;
+type InferYieldErr<Y> = Y extends Err<never, infer E> ? E : never;
+type AnyResult = Ok<unknown, unknown> | Err<unknown, unknown>;
+
+// ===========================================
+// Factory Functions
+// ===========================================
+
+export function ok(): Ok<void, never>;
+export function ok<T, E = never>(value: T): Ok<T, E>;
+export function ok<T>(value?: T): Ok<T | void, never> {
+	return new Ok(value as T);
+}
+
+export function err<T = never, E = unknown>(error: E): Err<T, E> {
+	return new Err<T, E>(error);
+}
+
+export function isOk<T, E>(result: Result<T, E>): result is Ok<T, E> {
+	return result.status === "ok";
+}
+
+export function isErr<T, E>(result: Result<T, E>): result is Err<T, E> {
+	return result.status === "error";
+}
+
+// ===========================================
+// Serialization
+// ===========================================
+
+interface SerializedOk<T> {
+	status: "ok";
+	value: T;
+}
+interface SerializedErr<E> {
+	status: "error";
+	error: E;
+}
+export type SerializedResult<T, E> = SerializedOk<T> | SerializedErr<E>;
+
+function isSerializedResult(obj: unknown): obj is SerializedResult<unknown, unknown> {
+	return (
+		typeof obj === "object" &&
+		obj !== null &&
+		"status" in obj &&
+		(obj.status === "ok" || obj.status === "error")
+	);
+}
+
+export function serialize<T, E>(result: Result<T, E>): SerializedResult<T, E> {
+	return result.status === "ok"
+		? { status: "ok", value: result.value }
+		: { status: "error", error: result.error };
+}
+
+export function deserialize<T, E>(value: unknown): Result<T, E | ResultDeserializationError> {
+	if (isSerializedResult(value)) {
+		return value.status === "ok"
+			? (new Ok(value.value) as Result<T, E>)
+			: (new Err(value.error) as Result<T, E>);
+	}
+	return err(new ResultDeserializationError(value));
+}
+
+// ===========================================
+// Try / TryPromise
+// ===========================================
+
+/** Wrap a synchronous function call in a Result */
+export function tryFn<T>(thunk: () => T): Result<T, UnhandledException>;
+export function tryFn<T, E>(opts: { try: () => T; catch: (cause: unknown) => E }): Result<T, E>;
+export function tryFn<T, E>(
+	thunkOrOpts: (() => T) | { try: () => T; catch: (cause: unknown) => E },
+): Result<T, E | UnhandledException> {
+	if (typeof thunkOrOpts === "function") {
+		try {
+			return ok(thunkOrOpts());
+		} catch (cause) {
+			return err(new UnhandledException(cause));
+		}
+	}
+	try {
+		return ok(thunkOrOpts.try());
+	} catch (cause) {
+		return err(thunkOrOpts.catch(cause));
+	}
+}
+
+/** Wrap an async function call in a Result */
+export async function tryPromise<T>(
+	thunk: () => Promise<T>,
+): Promise<Result<T, UnhandledException>>;
+export async function tryPromise<T, E>(opts: {
+	try: () => Promise<T>;
+	catch: (cause: unknown) => E;
+}): Promise<Result<T, E>>;
+export async function tryPromise<T, E>(
+	thunkOrOpts: (() => Promise<T>) | { try: () => Promise<T>; catch: (cause: unknown) => E },
+): Promise<Result<T, E | UnhandledException>> {
+	if (typeof thunkOrOpts === "function") {
+		try {
+			return ok(await thunkOrOpts());
+		} catch (cause) {
+			return err(new UnhandledException(cause));
+		}
+	}
+	try {
+		return ok(await thunkOrOpts.try());
+	} catch (cause) {
+		return err(thunkOrOpts.catch(cause));
+	}
+}
+
+// ===========================================
+// Generator Composition
+// ===========================================
+
+/**
+ * Compose multiple Result-returning operations using generators.
+ * Yield* a Result to unwrap it — if it's Err, short-circuits the generator.
+ *
+ * @example
+ * ```ts
+ * const result = gen(function*() {
+ *   const a = yield* parseJson(input);
+ *   const b = yield* validateSchema(a);
+ *   return ok(b.data);
+ * });
+ * ```
+ */
+export function gen<Yield extends Err<never, unknown>, R extends AnyResult>(
+	body: () => Generator<Yield, R, unknown>,
+): Result<InferOk<R>, InferYieldErr<Yield> | InferErr<R>> {
+	const iterator = body();
+	const state = iterator.next();
+
+	if (state.done) {
+		return state.value as Result<InferOk<R>, InferErr<R>>;
+	}
+
+	// Generator yielded — must be an Err (short-circuit)
+	const yielded = state.value;
+	if (yielded.status === "error") {
+		iterator.return?.(undefined as unknown as R);
+		return yielded as Err<never, InferYieldErr<Yield>>;
+	}
+
+	throw new Panic(
+		"Generator yielded a non-Err value — this is a defect in the Result implementation",
+	);
+}
+
+// ===========================================
+// Collection Utilities
+// ===========================================
+
+/** Split an array of Results into [successes, failures] */
+export function partition<T, E>(results: readonly Result<T, E>[]): [T[], E[]] {
+	const oks: T[] = [];
+	const errs: E[] = [];
+	for (const r of results) {
+		if (r.status === "ok") oks.push(r.value);
+		else errs.push(r.error);
+	}
+	return [oks, errs];
+}
+
+/** Unwrap a nested Result */
+export function flatten<T, E, E2>(result: Result<Result<T, E>, E2>): Result<T, E | E2> {
+	if (result.status === "ok") return result.value;
+	return result as unknown as Err<T, E | E2>;
+}
+
+// ===========================================
+// Panic Helpers
+// ===========================================
+
+export function isPanic(value: unknown): value is Panic {
+	return value instanceof Panic;
+}
+
+export function panic(message: string, cause?: unknown): never {
+	throw new Panic(message, cause);
+}
+
+// ===========================================
+// Error Matching
+// ===========================================
+
+type MatchHandlers<E extends AnyTaggedError, R> = {
+	[K in E["_tag"]]: (err: Extract<E, { _tag: K }>) => R;
+};
+
+/** Exhaustive pattern matching on tagged errors */
+export function matchError<E extends AnyTaggedError, R>(
+	error: E,
+	handlers: MatchHandlers<E, R>,
+): R {
+	const handler = handlers[error._tag as E["_tag"]];
+	return handler(error as Extract<E, { _tag: (typeof error)["_tag"] }>);
+}
+
+// ===========================================
+// Internal Helpers
+// ===========================================
+
+function tryOrPanic<A, R>(fn: (a: A) => R, arg: A, message: string): R {
+	try {
+		return fn(arg);
+	} catch (cause) {
+		throw new Panic(message, cause);
+	}
+}
+
+// ===========================================
+// Namespace Export (mirrors better-result API)
+// ===========================================
+
+export const Result = {
+	ok,
+	err,
+	isOk,
+	isErr,
+	try: tryFn,
+	tryPromise,
+	gen,
+	partition,
+	flatten,
+	serialize,
+	deserialize,
+	matchError,
+	isPanic,
+	panic,
+} as const;

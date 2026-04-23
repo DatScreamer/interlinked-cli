@@ -1,0 +1,256 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type DispatcherState, dispatchRpc } from "./daemon-dispatcher.js";
+import type { RpcError, RpcRequest, RpcResponse } from "./daemon-protocol.js";
+import type { TsgoRunner } from "./tsgo-runner.js";
+import type { UnifiedHookEvent } from "./unified-event.js";
+
+// Freeze time so `Date.now()` in makeState is deterministic — the check
+// `non_deterministic_test` flags raw Date.now() in tests.
+beforeEach(() => {
+	vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+});
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+function makeTsgoStub(overrides: Partial<TsgoRunner> = {}): TsgoRunner {
+	return {
+		available: () => true,
+		checkFile: vi.fn().mockResolvedValue({ diagnostics: [], cached: false, elapsed_ms: 1 }),
+		simulateEdit: vi.fn().mockResolvedValue({ new_diagnostics: [], elapsed_ms: 1 }),
+		invalidate: vi.fn(),
+		stats: () => ({ cache_size: 0, available: true }),
+		...overrides,
+	};
+}
+
+function makeState(overrides: Partial<DispatcherState> = {}): DispatcherState {
+	return {
+		started_at: Date.now() - 100,
+		rpc_inflight: 0,
+		tsgo: makeTsgoStub(),
+		getEvaluatorContext: () => {
+			throw new Error("evaluator context not needed for this test");
+		},
+		shutdown: vi.fn(),
+		...overrides,
+	};
+}
+
+function isError(m: RpcResponse | RpcError): m is RpcError {
+	return (m as RpcError).error !== undefined;
+}
+
+describe("dispatchRpc — schema check", () => {
+	it("rejects requests with a wrong schema_version", async () => {
+		const result = await dispatchRpc(
+			{
+				schema_version: "2" as unknown as "1",
+				id: "r",
+				method: "daemon.health",
+				params: {},
+			},
+			makeState(),
+		);
+		expect(isError(result)).toBe(true);
+		if (isError(result)) expect(result.error.code).toBe("schema_mismatch");
+	});
+});
+
+describe("dispatchRpc — daemon.health", () => {
+	it("reports ready when tsgo is available", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: "r1", method: "daemon.health", params: {} },
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		const health = result.result as {
+			status: string;
+			tsgo_status: string;
+			protocol_version: string;
+		};
+		expect(health.status).toBe("ready");
+		expect(health.tsgo_status).toBe("ready");
+		expect(health.protocol_version).toBe("1");
+	});
+
+	it("reports degraded when tsgo is unavailable", async () => {
+		const state = makeState({
+			tsgo: makeTsgoStub({
+				available: () => false,
+				stats: () => ({ cache_size: 0, available: false }),
+			}),
+		});
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: "r2", method: "daemon.health", params: {} },
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		const health = result.result as { status: string; tsgo_status: string };
+		expect(health.status).toBe("degraded");
+		expect(health.tsgo_status).toBe("unavailable");
+	});
+});
+
+describe("dispatchRpc — daemon.shutdown + invalidate", () => {
+	it("shutdown calls state.shutdown and acks", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r3",
+				method: "daemon.shutdown",
+				params: { reason: "test" },
+			},
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((state.shutdown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+		expect((result.result as { ack: true }).ack).toBe(true);
+	});
+
+	it("invalidate forwards to tsgo.invalidate and acks", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r4",
+				method: "daemon.invalidate",
+				params: { path: "/a.ts" },
+			},
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((state.tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/a.ts");
+	});
+});
+
+describe("dispatchRpc — tsgo methods", () => {
+	it("tsgo.check_file routes to the runner", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r5",
+				method: "tsgo.check_file",
+				params: { path: "/repo/a.ts" },
+			},
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((state.tsgo.checkFile as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(
+			"/repo/a.ts",
+		);
+	});
+
+	it("tsgo.check_file rejects empty path", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r6",
+				method: "tsgo.check_file",
+				params: { path: "" },
+			},
+			state,
+		);
+		expect(isError(result)).toBe(true);
+	});
+
+	it("tsgo returns tsgo_unavailable when the runner is offline", async () => {
+		const state = makeState({
+			tsgo: makeTsgoStub({
+				available: () => false,
+				stats: () => ({ cache_size: 0, available: false }),
+			}),
+		});
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r7",
+				method: "tsgo.check_file",
+				params: { path: "/a.ts" },
+			},
+			state,
+		);
+		expect(isError(result)).toBe(true);
+		if (isError(result)) expect(result.error.code).toBe("tsgo_unavailable");
+	});
+
+	it("tsgo.simulate_edit requires all three fields", async () => {
+		const state = makeState();
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "r8",
+				method: "tsgo.simulate_edit",
+				params: { path: "/a.ts", old_string: "x", new_string: "y" },
+			},
+			state,
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((state.tsgo.simulateEdit as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+	});
+});
+
+describe("dispatchRpc — lifecycle acks", () => {
+	const event: UnifiedHookEvent = {
+		schema_version: "1",
+		event_id: "evt-l",
+		session_id: "s",
+		ts: "2026-04-23T00:00:00.000Z",
+		runner: "claude-code",
+		runner_native_event: "SessionStart",
+		phase: "session-start",
+		action: { kind: "session_lifecycle", event: "start" },
+		context: { cwd: "/r" },
+		raw: {},
+	};
+
+	it("session_start acks", async () => {
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: "r9", method: "hook.session_start", params: event },
+			makeState(),
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((result.result as { ack: true }).ack).toBe(true);
+	});
+
+	it("pre_compact acks", async () => {
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: "r10", method: "hook.pre_compact", params: event },
+			makeState(),
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((result.result as { ack: true }).ack).toBe(true);
+	});
+});
+
+describe("dispatchRpc — bad event payload", () => {
+	it("hook.pre_tool_use rejects an invalid envelope", async () => {
+		const req: RpcRequest = {
+			schema_version: "1",
+			id: "r11",
+			method: "hook.pre_tool_use",
+			params: {} as UnifiedHookEvent,
+		};
+		const result = await dispatchRpc(req, makeState());
+		expect(isError(result)).toBe(true);
+		if (isError(result)) expect(result.error.code).toBe("bad_request");
+	});
+});
+
+describe("dispatchRpc — unknown method", () => {
+	it("returns unknown_method", async () => {
+		const req = {
+			schema_version: "1",
+			id: "r12",
+			method: "not.a.method",
+			params: {},
+		} as unknown as RpcRequest;
+		const result = await dispatchRpc(req, makeState());
+		expect(isError(result)).toBe(true);
+		if (isError(result)) expect(result.error.code).toBe("unknown_method");
+	});
+});

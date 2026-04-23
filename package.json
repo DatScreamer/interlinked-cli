@@ -1,0 +1,86 @@
+{
+    "name": "interlinked-cli",
+    "version": "0.1.0",
+    "description": "Interlinked CLI — local hooks, taste enforcement, and developer observability for AI coding agents",
+    "keywords": [
+        "interlinked",
+        "mcp",
+        "cli",
+        "hooks",
+        "multi-agent",
+        "claude-code",
+        "copilot",
+        "gemini",
+        "codex"
+    ],
+    "license": "MIT",
+    "author": "Quentin Cody <quentincody@gmail.com>",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/QuentinCody/interlinked-cli.git"
+    },
+    "homepage": "https://github.com/QuentinCody/interlinked-cli#readme",
+    "bugs": {
+        "url": "https://github.com/QuentinCody/interlinked-cli/issues"
+    },
+    "engines": {
+        "node": ">=22.0.0"
+    },
+    "os": [
+        "darwin",
+        "linux"
+    ],
+    "publishConfig": {
+        "access": "public"
+    },
+    "files": [
+        "dist/",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        ".env.example"
+    ],
+    "type": "module",
+    "sideEffects": false,
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./package.json": "./package.json"
+    },
+    "bin": {
+        "interlinked": "./dist/index.js",
+        "interlinked-hook": "./dist/hook-entry.js"
+    },
+    "scripts": {
+        "build": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts --format esm --dts --clean && node scripts/fix-dist-dts.mjs",
+        "build:watch": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts --format esm --watch",
+        "dev": "tsx src/index.ts",
+        "typecheck": "tsgo --noEmit",
+        "typecheck:stable": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "docs": "tsx scripts/generate-docs.ts",
+        "prepack": "npm run build",
+        "prepublishOnly": "npm run typecheck:stable && npm test"
+    },
+    "packageManager": "npm@10.0.0",
+    "dependencies": {
+        "commander": "^12.0.0"
+    },
+    "optionalDependencies": {
+        "@typescript/native-preview": "7.0.0-dev.20260421.2"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "tsup": "^8.0.0",
+        "tsx": "^4.0.0",
+        "typescript": "^5.5.0",
+        "vitest": "^3.0.0"
+    }
+}

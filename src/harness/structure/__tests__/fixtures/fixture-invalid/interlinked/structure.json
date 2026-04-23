@@ -1,0 +1,8 @@
+{
+	"version": 1,
+	"mode": "standard",
+	"artifacts": {
+		"public_api": "artifacts/public-api.json"
+	},
+	"unknown_key": true
+}

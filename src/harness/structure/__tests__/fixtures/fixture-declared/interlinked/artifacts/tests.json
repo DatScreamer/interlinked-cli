@@ -1,0 +1,16 @@
+{
+	"version": 1,
+	"tests": [
+		{
+			"id": "client-test",
+			"file": "test/client.test.ts",
+			"kind": "unit",
+			"covers": [
+				{
+					"artifact_kind": "public_symbol",
+					"artifact_id": "client#createClient"
+				}
+			]
+		}
+	]
+}

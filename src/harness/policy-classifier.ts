@@ -1,0 +1,577 @@
+// ===========================================
+// Policy Classifier — LLM-based escalation for ambiguous PreToolUse cases
+// ===========================================
+// Shadow mode (v1): logs classifications but never changes the deterministic decision.
+// The classifier is always awaited — verdicts are logged before tool execution proceeds.
+// Failures fail-open (allow). No circuit breaker.
+
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { JsonObject } from "../lib/json-types.js";
+
+/**
+ * Resolve an API key by name. Checks:
+ * 1. process.env[envVarName]
+ * 2. .interlinked/config.local.json (gitignored, same pattern as access_token)
+ */
+export function resolveApiKey(envVarName: string): string | undefined {
+	if (!envVarName) return undefined;
+	const fromEnv = process.env[envVarName];
+	if (fromEnv) return fromEnv;
+	try {
+		const localConfig = JSON.parse(
+			readFileSync(join(process.cwd(), ".interlinked", "config.local.json"), "utf-8"),
+		);
+		return localConfig[envVarName] || localConfig[envVarName.toLowerCase()] || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+import type {
+	ClassifierConfig,
+	EscalationRequest,
+	HarnessEvent,
+	PolicyClassification,
+	PolicyEvidence,
+	PolicyRule,
+	SessionTrajectory,
+} from "./types.js";
+
+// ===========================================
+// Session State (per classifier instance)
+// ===========================================
+
+export interface ClassifierSessionState {
+	/** Incremented on each classifier call (metrics only, NOT enforced as hard limit) */
+	calls_this_session: number;
+	/** Tracked for observability — no circuit breaker */
+	consecutive_failures: number;
+}
+
+export function createClassifierSessionState(): ClassifierSessionState {
+	return {
+		calls_this_session: 0,
+		consecutive_failures: 0,
+	};
+}
+
+// ===========================================
+// System Prompt (fixed, ships with harness)
+// ===========================================
+
+export const CLASSIFIER_SYSTEM_PROMPT = `You are a security policy classifier for an AI coding agent orchestration system.
+You evaluate whether an agent's current action complies with workspace policies.
+
+Respond with JSON only:
+{"compliant": true|false, "confidence": 0.0-1.0, "reasoning": "one sentence", "policy_id": "which_policy_violated_or_null"}
+
+Evaluate ONLY the policies provided. Do not invent additional policies.
+If the evidence is insufficient to determine compliance, respond with {"compliant": true, "confidence": 0.5, "reasoning": "insufficient evidence"}.`;
+
+// ===========================================
+// Action Classification
+// ===========================================
+
+/** Classify a bash command into a safe action label (no raw commands leak) */
+function classifyAction(toolName: string, toolInput: JsonObject): string {
+	if (
+		toolName === "Write" ||
+		toolName === "WriteFile" ||
+		toolName === "write_file" ||
+		toolName === "create"
+	) {
+		return "file_write";
+	}
+	if (
+		toolName === "Edit" ||
+		toolName === "EditFile" ||
+		toolName === "edit_file" ||
+		toolName === "str_replace"
+	) {
+		return "file_edit";
+	}
+	if (
+		toolName === "Read" ||
+		toolName === "ReadFile" ||
+		toolName === "read_file" ||
+		toolName === "view"
+	) {
+		return "file_read";
+	}
+	if (toolName === "Glob" || toolName === "Grep") {
+		return "file_search";
+	}
+
+	const cmd = String(toolInput.command || "");
+	if (!cmd) return "unknown";
+
+	// Network commands
+	if (/\b(curl|wget)\b/i.test(cmd)) {
+		if (/localhost|127\.0\.0\.1/i.test(cmd)) return "curl_localhost";
+		return "curl_external";
+	}
+	if (/\b(ssh|scp|sftp|rsync)\b/i.test(cmd)) return "network_ssh";
+	if (/\b(nc|ncat|netcat|socat|telnet)\b/i.test(cmd)) return "network_raw";
+	if (/\bnpm\s+publish\b/i.test(cmd)) return "npm_publish";
+
+	// Git commands
+	if (/\bgit\s+(push|pull|fetch|clone)\b/i.test(cmd)) return "git_network";
+	if (/\bgit\s+(commit|add|stash|reset|checkout|rebase|merge)\b/i.test(cmd)) return "git_local";
+
+	// Test/build commands
+	if (/\b(npm\s+(test|run)|npx\s+(vitest|jest|mocha))\b/i.test(cmd)) return "npm_test";
+	if (/\b(npm\s+(install|ci)|yarn|pnpm)\b/i.test(cmd)) return "npm_install";
+	if (/\b(tsc|biome|eslint|prettier)\b/i.test(cmd)) return "lint_typecheck";
+	if (/\b(make|cargo|go\s+build|gcc|g\+\+)\b/i.test(cmd)) return "build";
+
+	// File operations
+	if (/\brm\s/i.test(cmd)) return "file_delete";
+	if (/\b(chmod|chown)\b/i.test(cmd)) return "file_permissions";
+	if (/\b(cat|head|tail|less|more|wc)\b/i.test(cmd)) return "file_read_cmd";
+	if (/\b(mkdir|touch|cp|mv)\b/i.test(cmd)) return "file_manage";
+	if (/\b(ls|find|fd)\b/i.test(cmd)) return "file_list";
+
+	return "bash_other";
+}
+
+/** Build a redacted target summary (no raw URLs, commands, or content) */
+function buildTargetSummary(toolName: string, toolInput: JsonObject): string {
+	const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+	if (filePath) return `file: ${filePath}`;
+
+	const cmd = String(toolInput.command || "");
+	if (!cmd) return toolName;
+
+	// For curl/wget: classify the target without revealing the URL
+	if (/\b(curl|wget)\b/i.test(cmd)) {
+		if (/localhost|127\.0\.0\.1/i.test(cmd)) return "curl to localhost";
+		return "curl to external URL (non-localhost)";
+	}
+
+	const actionClass = classifyAction(toolName, toolInput);
+	return actionClass;
+}
+
+// ===========================================
+// Evidence Envelope Builder
+// ===========================================
+
+/**
+ * Build a redacted, structured evidence envelope for the classifier.
+ * This is the SINGLE serialization point — all data leaving the process
+ * passes through here. Security review should focus on this function.
+ *
+ * Explicitly excluded: raw commands, file contents, credentials, message bodies,
+ * auth tokens, user identity beyond agent name/role.
+ */
+export function buildEvidenceEnvelope(
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	escalation: EscalationRequest,
+	intentState?: { goal?: string; file_patterns?: string[] },
+): PolicyEvidence {
+	const toolInput = event.tool_input || {};
+	const toolName = event.tool_name || "";
+
+	// Classify recent actions (last 10 from tool_sequence)
+	const recentActions = session.tool_sequence.slice(-10);
+
+	// Count taint sources by level
+	const taintSourceLevels = session.taint_sources.map((s) => s.level);
+
+	// Injection detection context
+	const injectionDetected =
+		(session as SessionTrajectory & { injection_detected_steps?: number[] })
+			.injection_detected_steps || [];
+	const injectionInSession = injectionDetected.length > 0;
+	const stepsSinceInjection = injectionInSession
+		? session.tool_call_count - injectionDetected[injectionDetected.length - 1]
+		: undefined;
+
+	// Load policies from .interlinked/policies.json if available
+	const policies = loadPolicies(escalation.trigger);
+
+	return {
+		tool: toolName,
+		action_class: classifyAction(toolName, toolInput),
+		target_summary: buildTargetSummary(toolName, toolInput),
+
+		trigger: escalation.trigger,
+		trigger_reason: escalation.summary,
+
+		session_sensitivity: session.sensitivity_level,
+		step_number: session.tool_call_count,
+		taint_source_count: session.taint_sources.length,
+		taint_source_levels: taintSourceLevels,
+		recent_actions: recentActions,
+		agent_role: (event.agent_role as "lead" | "worker" | "subagent" | "unknown") || "unknown",
+		files_written_count: session.files_written.size,
+		errors_this_session: session.error_count,
+
+		intent_goal: intentState?.goal,
+		intent_file_patterns: intentState?.file_patterns,
+
+		injection_detected_in_session: injectionInSession,
+		steps_since_injection: stepsSinceInjection,
+
+		policies,
+	};
+}
+
+/** Load applicable policies from .interlinked/policies.json */
+function loadPolicies(trigger: string): PolicyRule[] {
+	try {
+		const policiesPath = join(process.cwd(), ".interlinked", "policies.json");
+		if (!existsSync(policiesPath)) return getDefaultPolicies(trigger);
+		const data = JSON.parse(readFileSync(policiesPath, "utf-8"));
+		if (!Array.isArray(data.policies)) return getDefaultPolicies(trigger);
+		// Filter to policies that apply to this trigger
+		return (data.policies as PolicyRule[]).filter(
+			(p) => p.applies_to_triggers.includes(trigger) || p.applies_to_triggers.includes("*"),
+		);
+	} catch {
+		return getDefaultPolicies(trigger);
+	}
+}
+
+/** Default policies when no policies.json exists */
+function getDefaultPolicies(trigger: string): PolicyRule[] {
+	const ALL_DEFAULTS: PolicyRule[] = [
+		{
+			id: "no_exfil_after_taint",
+			name: "No outbound network after reading sensitive files",
+			description:
+				"Agents must not make network calls to external URLs after reading files classified at Internal sensitivity or above.",
+			applies_to_triggers: ["tainted_network_internal", "external_url"],
+		},
+		{
+			id: "post_injection_compliance",
+			name: "No destructive operations after injection detection",
+			description:
+				"After prompt injection content was detected in a file read during this session, the agent must not perform destructive operations (file deletion, force push, dropping data).",
+			applies_to_triggers: ["post_injection_action"],
+		},
+		{
+			id: "step_budget_justification",
+			name: "Essential operations only near step budget",
+			description:
+				"Agents approaching their step budget (>80%) should only perform essential operations, not exploratory reads or refactoring.",
+			applies_to_triggers: ["high_step_budget"],
+		},
+	];
+	return ALL_DEFAULTS.filter(
+		(p) => p.applies_to_triggers.includes(trigger) || p.applies_to_triggers.includes("*"),
+	);
+}
+
+// ===========================================
+// Classifier Client
+// ===========================================
+
+/**
+ * Call the LLM classifier with structured evidence.
+ * Fails open on any error (returns allow with confidence 0).
+ * Increments sessionState.calls_this_session on every call.
+ */
+export async function callClassifier(
+	evidence: PolicyEvidence,
+	config: ClassifierConfig,
+	sessionState: ClassifierSessionState,
+): Promise<PolicyClassification> {
+	sessionState.calls_this_session++;
+
+	// Truncate evidence if it exceeds max_input_tokens (rough estimate: 4 chars per token)
+	const evidenceStr = JSON.stringify(evidence);
+	const maxChars = (config.max_input_tokens || 800) * 4;
+	const truncatedEvidence =
+		evidenceStr.length > maxChars ? evidenceStr.slice(0, maxChars) : evidenceStr;
+
+	if (config.provider === "claude_code") {
+		return callViaClaudeCode(truncatedEvidence, config, sessionState);
+	}
+
+	const apiKey = resolveApiKey(config.api_key_env);
+	if (!apiKey) {
+		return { label: "allow", confidence: 0, reasoning: "No API key configured" };
+	}
+
+	return callViaHttp(truncatedEvidence, apiKey, config, sessionState);
+}
+
+/** JSON schema for structured classifier output */
+const CLASSIFIER_JSON_SCHEMA = JSON.stringify({
+	type: "object",
+	properties: {
+		compliant: { type: "boolean" },
+		confidence: { type: "number", minimum: 0, maximum: 1 },
+		reasoning: { type: "string" },
+		policy_id: { type: ["string", "null"] },
+	},
+	required: ["compliant", "confidence", "reasoning"],
+});
+
+/**
+ * Call the classifier via the `claude` CLI subprocess.
+ * Uses the user's existing Claude Code subscription (Max/Pro) — no API key needed.
+ * Uses --bare to skip hooks/LSP (avoids recursive harness, faster startup).
+ */
+async function callViaClaudeCode(
+	evidence: string,
+	config: ClassifierConfig,
+	sessionState: ClassifierSessionState,
+): Promise<PolicyClassification> {
+	const model = config.model || "haiku";
+	const timeoutMs = config.timeout_ms || 15000;
+
+	return new Promise((resolve) => {
+		const child = spawn(
+			"claude",
+			[
+				"-p",
+				"--model",
+				model,
+				"--no-session-persistence",
+				"--disallowed-tools",
+				"Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
+				"--effort",
+				"low",
+				"--output-format",
+				"json",
+				"--system-prompt",
+				CLASSIFIER_SYSTEM_PROMPT,
+				"--json-schema",
+				CLASSIFIER_JSON_SCHEMA,
+				evidence,
+			],
+			{ stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs },
+		);
+
+		let stdout = "";
+		child.stdout.on("data", (d: Buffer) => {
+			stdout += d.toString();
+		});
+		child.on("close", (code) => {
+			if (code !== 0) {
+				sessionState.consecutive_failures++;
+				resolve({
+					label: "allow",
+					confidence: 0,
+					reasoning: `Claude Code exit code ${code}`,
+				});
+				return;
+			}
+			const classification = parseClaudeCodeOutput(stdout.trim());
+			sessionState.consecutive_failures = 0;
+			resolve(classification);
+		});
+		child.on("error", (err: Error) => {
+			sessionState.consecutive_failures++;
+			resolve({
+				label: "allow",
+				confidence: 0,
+				reasoning: `Claude Code spawn failed: ${err.message}`,
+			});
+		});
+	});
+}
+
+/**
+ * Parse claude -p --output-format json output.
+ * With --json-schema, classification is in structured_output.
+ * Without, it's in result (markdown-fenced JSON).
+ */
+function parseClaudeCodeOutput(output: string): PolicyClassification {
+	try {
+		const wrapper = JSON.parse(output) as JsonObject;
+		// --json-schema puts parsed result directly in structured_output
+		if (wrapper.structured_output && typeof wrapper.structured_output === "object") {
+			const so = wrapper.structured_output as JsonObject;
+			return {
+				label: so.compliant === false ? "deny" : "allow",
+				confidence: Math.max(0, Math.min(1, Number(so.confidence) || 0)),
+				reasoning: String(so.reasoning || "No reasoning provided"),
+				policy_id: (so.policy_id as string) || undefined,
+			};
+		}
+		// Fallback: result field contains text (possibly markdown-fenced)
+		return parseClassificationJson(String(wrapper.result || ""));
+	} catch {
+		return parseClassificationJson(output);
+	}
+}
+
+/**
+ * Call the classifier via HTTP to an inference provider (Groq, HuggingFace, Anthropic, etc.).
+ * Requires an API key in the environment.
+ */
+async function callViaHttp(
+	evidence: string,
+	apiKey: string,
+	config: ClassifierConfig,
+	sessionState: ClassifierSessionState,
+): Promise<PolicyClassification> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), config.timeout_ms || 3000);
+
+	try {
+		const isAnthropic = config.provider === "anthropic";
+		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		let body: string;
+
+		if (isAnthropic) {
+			headers["x-api-key"] = apiKey;
+			headers["anthropic-version"] = "2023-06-01";
+			body = JSON.stringify({
+				model: config.model,
+				system: CLASSIFIER_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: evidence }],
+				max_tokens: 150,
+				temperature: 0,
+			});
+		} else {
+			headers.Authorization = `Bearer ${apiKey}`;
+			const isReasoning =
+				config.model.includes("gpt-oss") || config.model.includes("reasoning");
+			body = JSON.stringify({
+				model: config.model,
+				messages: [
+					{ role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+					{ role: "user", content: evidence },
+				],
+				...(isReasoning
+					? { max_completion_tokens: 1024, reasoning_effort: "low" }
+					: { max_tokens: 150 }),
+				temperature: 0,
+			});
+		}
+
+		const response = await fetch(
+			isAnthropic ? "https://api.anthropic.com/v1/messages" : config.endpoint,
+			{ method: "POST", headers, body, signal: controller.signal },
+		);
+
+		if (!response.ok) {
+			sessionState.consecutive_failures++;
+			return {
+				label: "allow",
+				confidence: 0,
+				reasoning: `Classifier HTTP error: ${response.status}`,
+			};
+		}
+
+		const data = (await response.json()) as JsonObject;
+		const classification = isAnthropic
+			? parseAnthropicResponse(data)
+			: parseOpenAIResponse(data);
+		sessionState.consecutive_failures = 0;
+		return classification;
+	} catch {
+		sessionState.consecutive_failures++;
+		return { label: "allow", confidence: 0, reasoning: "Classifier call failed" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * Parse an OpenAI-compatible chat completions response.
+ */
+function parseOpenAIResponse(data: JsonObject): PolicyClassification {
+	try {
+		const choices = data.choices as Array<JsonObject> | undefined;
+		if (!choices || choices.length === 0) {
+			return { label: "allow", confidence: 0, reasoning: "No choices in response" };
+		}
+		const message = choices[0].message as JsonObject | undefined;
+		return parseClassificationJson(String(message?.content || ""));
+	} catch {
+		return { label: "allow", confidence: 0, reasoning: "Failed to parse OpenAI response" };
+	}
+}
+
+/**
+ * Parse an Anthropic Messages API response.
+ */
+function parseAnthropicResponse(data: JsonObject): PolicyClassification {
+	try {
+		const content = data.content as Array<JsonObject> | undefined;
+		if (!content || content.length === 0) {
+			return { label: "allow", confidence: 0, reasoning: "No content in response" };
+		}
+		return parseClassificationJson(String(content[0].text || ""));
+	} catch {
+		return { label: "allow", confidence: 0, reasoning: "Failed to parse Anthropic response" };
+	}
+}
+
+/**
+ * Parse the JSON classification payload from model output text.
+ */
+function parseClassificationJson(text: string): PolicyClassification {
+	try {
+		// Strip markdown code fences (claude -p wraps output in ```json ... ```)
+		let cleaned = text.trim();
+		const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+		if (fenceMatch) cleaned = fenceMatch[1].trim();
+		const parsed = JSON.parse(cleaned) as JsonObject;
+		const compliant = parsed.compliant as boolean | undefined;
+		const confidence = Number(parsed.confidence) || 0;
+		const reasoning = String(parsed.reasoning || "No reasoning provided");
+		const policyId = parsed.policy_id as string | undefined;
+
+		return {
+			label: compliant === false ? "deny" : "allow",
+			confidence: Math.max(0, Math.min(1, confidence)),
+			reasoning,
+			policy_id: policyId || undefined,
+		};
+	} catch {
+		return { label: "allow", confidence: 0, reasoning: "Failed to parse classifier JSON" };
+	}
+}
+
+// ===========================================
+// Shadow Log
+// ===========================================
+
+export interface ShadowLogEntry {
+	ts: string;
+	session_id: string;
+	agent_name: string;
+	trigger: string;
+	tool_name: string;
+	action_class: string;
+	local_decision: "allow" | "block";
+	classification: PolicyClassification;
+	would_have_changed: boolean;
+	latency_ms: number;
+	evidence_hash?: string;
+}
+
+/**
+ * Append a shadow log entry to .interlinked/policy-shadow.jsonl.
+ * This file is gitignored and used for tuning confidence thresholds.
+ */
+export function appendShadowLog(entry: ShadowLogEntry, cwd?: string): void {
+	try {
+		const dir = join(cwd || process.cwd(), ".interlinked");
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+		const logPath = join(dir, "policy-shadow.jsonl");
+		appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+	} catch (e) {
+		void e;
+	}
+}
+
+/**
+ * Compute a SHA-256 hash of the evidence for deduplication/audit.
+ */
+export function hashEvidence(evidence: PolicyEvidence): string {
+	const hash = createHash("sha256").update(JSON.stringify(evidence)).digest("hex");
+	return `sha256:${hash.slice(0, 16)}`;
+}

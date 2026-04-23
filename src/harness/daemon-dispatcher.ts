@@ -1,0 +1,169 @@
+// ===========================================
+// Daemon dispatcher — routes RPC requests to handlers
+// ===========================================
+// Pure dispatcher: given an `RpcRequest` returns an `RpcResponse` or `RpcError`.
+// Socket I/O lives in the caller (see hook-entry.ts for the client side and
+// the forthcoming session-daemon.ts for the server side). Splitting the
+// dispatcher from the transport makes it trivial to unit-test every method.
+
+import {
+	makeError,
+	PROTOCOL_VERSION,
+	type RpcError,
+	type RpcParams,
+	type RpcRequest,
+	type RpcResponse,
+	type RpcResult,
+} from "./daemon-protocol.js";
+import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
+import { evaluateUnified } from "./evaluator-unified.js";
+import type { TsgoRunner } from "./tsgo-runner.js";
+import type { UnifiedHookEvent } from "./unified-event.js";
+import { validateUnifiedEvent } from "./unified-event.js";
+
+export interface DispatcherState {
+	/** Wall-clock ms at daemon start. */
+	started_at: number;
+	/** In-flight request count (updated by the caller). */
+	rpc_inflight: number;
+	/** tsgo child-process wrapper. */
+	tsgo: TsgoRunner;
+	/** Evaluator context factory — returns fresh context per RPC so sessions,
+	 *  rules, and caches are always current. */
+	getEvaluatorContext(): EvaluateUnifiedContext;
+	/** Called from the `daemon.shutdown` RPC. */
+	shutdown(reason?: string): void;
+}
+
+/** Dispatch a single RPC request. Never throws — errors come back as
+ *  RpcError frames. */
+export async function dispatchRpc(
+	request: RpcRequest,
+	state: DispatcherState,
+): Promise<RpcResponse | RpcError> {
+	if (request.schema_version !== PROTOCOL_VERSION) {
+		return makeError(
+			request.id,
+			"schema_mismatch",
+			`unsupported schema_version ${JSON.stringify(request.schema_version)}`,
+			false,
+		);
+	}
+	switch (request.method) {
+		case "hook.pre_tool_use":
+		case "hook.post_tool_use":
+		case "hook.user_prompt":
+			return dispatchHookEvaluation(request as RpcRequest<"hook.pre_tool_use">, state);
+		case "hook.session_start":
+		case "hook.session_end":
+		case "hook.pre_compact":
+			return dispatchHookLifecycle(request as RpcRequest<"hook.session_start">);
+		case "daemon.health":
+			return {
+				id: request.id,
+				result: buildHealthResponse(state),
+			} satisfies RpcResponse<"daemon.health">;
+		case "daemon.shutdown":
+			state.shutdown((request.params as RpcParams["daemon.shutdown"]).reason);
+			return {
+				id: request.id,
+				result: { ack: true },
+			} satisfies RpcResponse<"daemon.shutdown">;
+		case "daemon.invalidate":
+			state.tsgo.invalidate((request.params as RpcParams["daemon.invalidate"]).path);
+			return {
+				id: request.id,
+				result: { ack: true },
+			} satisfies RpcResponse<"daemon.invalidate">;
+		case "tsgo.check_file":
+			return dispatchTsgoCheck(request as RpcRequest<"tsgo.check_file">, state);
+		case "tsgo.simulate_edit":
+			return dispatchTsgoSimulate(request as RpcRequest<"tsgo.simulate_edit">, state);
+		default:
+			return makeError(
+				request.id,
+				"unknown_method",
+				`unknown method: ${String((request as RpcRequest).method)}`,
+				true,
+			);
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Handlers
+// -----------------------------------------------------------------------------
+
+async function dispatchHookEvaluation<
+	M extends "hook.pre_tool_use" | "hook.post_tool_use" | "hook.user_prompt",
+>(request: RpcRequest<M>, state: DispatcherState): Promise<RpcResponse<M> | RpcError> {
+	const event = request.params as UnifiedHookEvent;
+	const violations = validateUnifiedEvent(event);
+	if (violations.length > 0) {
+		return makeError(request.id, "bad_request", `invalid event: ${violations.join("; ")}`);
+	}
+	const ctx = state.getEvaluatorContext();
+	const decision = await evaluateUnified(event, ctx);
+	return {
+		id: request.id,
+		result: decision as unknown as RpcResult[M],
+	};
+}
+
+function dispatchHookLifecycle<
+	M extends "hook.session_start" | "hook.session_end" | "hook.pre_compact",
+>(request: RpcRequest<M>): RpcResponse<M> {
+	return { id: request.id, result: { ack: true } as RpcResult[M] };
+}
+
+async function dispatchTsgoCheck(
+	request: RpcRequest<"tsgo.check_file">,
+	state: DispatcherState,
+): Promise<RpcResponse<"tsgo.check_file"> | RpcError> {
+	const params = request.params;
+	if (!params || typeof params.path !== "string" || params.path.length === 0) {
+		return makeError(request.id, "bad_request", "tsgo.check_file requires a path");
+	}
+	if (!state.tsgo.available()) {
+		return makeError(request.id, "tsgo_unavailable", "tsgo is not installed", true);
+	}
+	const result = await state.tsgo.checkFile(params.path);
+	return { id: request.id, result };
+}
+
+async function dispatchTsgoSimulate(
+	request: RpcRequest<"tsgo.simulate_edit">,
+	state: DispatcherState,
+): Promise<RpcResponse<"tsgo.simulate_edit"> | RpcError> {
+	const params = request.params;
+	if (
+		!params ||
+		typeof params.path !== "string" ||
+		typeof params.old_string !== "string" ||
+		typeof params.new_string !== "string"
+	) {
+		return makeError(
+			request.id,
+			"bad_request",
+			"tsgo.simulate_edit requires path, old_string, new_string",
+		);
+	}
+	if (!state.tsgo.available()) {
+		return makeError(request.id, "tsgo_unavailable", "tsgo is not installed", true);
+	}
+	const result = await state.tsgo.simulateEdit(params.path, params.old_string, params.new_string);
+	return { id: request.id, result };
+}
+
+function buildHealthResponse(state: DispatcherState): RpcResult["daemon.health"] {
+	const warm_caches: string[] = [];
+	if (state.tsgo.available()) warm_caches.push("tsgo");
+	if (state.tsgo.stats().cache_size > 0) warm_caches.push("mtime");
+	return {
+		status: state.tsgo.available() ? "ready" : "degraded",
+		uptime_ms: Date.now() - state.started_at,
+		warm_caches,
+		tsgo_status: state.tsgo.available() ? "ready" : "unavailable",
+		rpc_inflight: state.rpc_inflight,
+		protocol_version: PROTOCOL_VERSION,
+	};
+}

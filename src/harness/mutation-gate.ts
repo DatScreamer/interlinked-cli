@@ -1,0 +1,319 @@
+// ===========================================
+// Mutation Gate — per-file mutation score ratchet
+// ===========================================
+// Consumes a Stryker/Mutmut/Cosmic-Ray JSON report and compares current
+// mutation scores against a persisted baseline in `.interlinked/mutation-baseline.json`.
+// Weekly-gate shape: run via `interlinked mutation:check` out of a scheduled
+// job (cron, CI, pre-push in strict mode). The ratchet is parallel in
+// structure to coverage-ratchet so both can share verify-output plumbing.
+//
+// Why: mutation testing is the only operational measure of "your tests
+// actually fail when the code is wrong." Coverage + placeholder + companion
+// checks catch the surface cases; mutation is the adversarial one. Costly
+// to run, so we pin it to a periodic schedule rather than every edit.
+//
+// Supported report shapes (auto-detected on load):
+//   - Stryker v6+ JSON:   { files: { path: { mutants: [{ status }] } } }
+//   - Generic flat:       { files: { path: { killed, survived, ... } } }
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import type { MutationGateConfig } from "./check-policy.js";
+
+// ===========================================
+// Types
+// ===========================================
+
+export interface FileMutationStats {
+	/** Number of mutants killed by the test suite (tests failed as expected). */
+	killed: number;
+	/** Mutants that escaped — tests passed against the mutated code. Bad. */
+	survived: number;
+	/** Mutants the framework couldn't evaluate (runtime error, timeout). */
+	timeout?: number;
+	no_coverage?: number;
+	compile_error?: number;
+	runtime_error?: number;
+}
+
+export interface MutationReport {
+	/** Keyed by absolute or repo-relative file path. */
+	files: Record<string, FileMutationStats | undefined>;
+}
+
+export interface MutationBaseline {
+	version: 1;
+	updated_at: string;
+	/** Per-file baseline score (0.0–1.0) and kill-count high-water mark. */
+	files: Record<string, { score: number; killed: number }>;
+}
+
+export interface MutationFinding {
+	name: "mutation_score_decrease" | "mutation_score_below_floor";
+	severity: "warning" | "error";
+	file: string;
+	baseline_score: number;
+	current_score: number;
+	message: string;
+}
+
+export interface MutationGateResult {
+	findings: MutationFinding[];
+	stats: {
+		files_checked: number;
+		files_new: number;
+		files_below_floor: number;
+		files_decreased: number;
+		files_improved: number;
+	};
+	nextBaseline: MutationBaseline;
+}
+
+// ===========================================
+// Paths and defaults
+// ===========================================
+
+export function mutationBaselinePath(interlinkedDir: string): string {
+	return join(interlinkedDir, "mutation-baseline.json");
+}
+
+export function emptyMutationBaseline(): MutationBaseline {
+	return { version: 1, updated_at: new Date(0).toISOString(), files: {} };
+}
+
+// ===========================================
+// I/O
+// ===========================================
+
+export function loadMutationBaseline(interlinkedDir: string): MutationBaseline {
+	const path = mutationBaselinePath(interlinkedDir);
+	if (!existsSync(path)) return emptyMutationBaseline();
+	try {
+		const raw = JSON.parse(readFileSync(path, "utf-8"));
+		if (!raw || typeof raw !== "object" || raw.version !== 1 || !raw.files) {
+			return emptyMutationBaseline();
+		}
+		return raw as MutationBaseline;
+	} catch {
+		return emptyMutationBaseline();
+	}
+}
+
+export function saveMutationBaseline(interlinkedDir: string, baseline: MutationBaseline): void {
+	const path = mutationBaselinePath(interlinkedDir);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(baseline, null, 2)}\n`, "utf-8");
+}
+
+export function loadMutationReport(reportPath: string): MutationReport | null {
+	if (!existsSync(reportPath)) return null;
+	try {
+		const raw = JSON.parse(readFileSync(reportPath, "utf-8"));
+		if (!raw || typeof raw !== "object") return null;
+		return normalizeMutationReport(raw);
+	} catch {
+		return null;
+	}
+}
+
+// ===========================================
+// Normalization — convert various Stryker-style shapes to our shape
+// ===========================================
+
+interface StrykerMutant {
+	status?: string;
+}
+
+interface StrykerFileEntry {
+	mutants?: StrykerMutant[];
+	killed?: number;
+	survived?: number;
+	timeout?: number;
+	noCoverage?: number;
+	no_coverage?: number;
+	compileError?: number;
+	compile_error?: number;
+	runtimeError?: number;
+	runtime_error?: number;
+}
+
+function normalizeMutationReport(raw: unknown): MutationReport {
+	const report: MutationReport = { files: {} };
+	if (!raw || typeof raw !== "object" || !("files" in raw)) return report;
+	const files = (raw as { files?: Record<string, StrykerFileEntry | undefined> }).files;
+	if (!files) return report;
+
+	for (const [path, entry] of Object.entries(files)) {
+		if (!entry) continue;
+		if (Array.isArray(entry.mutants)) {
+			report.files[path] = aggregateMutants(entry.mutants);
+		} else {
+			report.files[path] = {
+				killed: entry.killed ?? 0,
+				survived: entry.survived ?? 0,
+				timeout: entry.timeout,
+				no_coverage: entry.no_coverage ?? entry.noCoverage,
+				compile_error: entry.compile_error ?? entry.compileError,
+				runtime_error: entry.runtime_error ?? entry.runtimeError,
+			};
+		}
+	}
+	return report;
+}
+
+function aggregateMutants(mutants: StrykerMutant[]): FileMutationStats {
+	const stats: FileMutationStats = {
+		killed: 0,
+		survived: 0,
+		timeout: 0,
+		no_coverage: 0,
+		compile_error: 0,
+		runtime_error: 0,
+	};
+	for (const m of mutants) {
+		switch ((m.status || "").toLowerCase()) {
+			case "killed":
+				stats.killed++;
+				break;
+			case "survived":
+				stats.survived++;
+				break;
+			case "timeout":
+				stats.timeout = (stats.timeout ?? 0) + 1;
+				break;
+			case "nocoverage":
+			case "no_coverage":
+				stats.no_coverage = (stats.no_coverage ?? 0) + 1;
+				break;
+			case "compileerror":
+			case "compile_error":
+				stats.compile_error = (stats.compile_error ?? 0) + 1;
+				break;
+			case "runtimeerror":
+			case "runtime_error":
+				stats.runtime_error = (stats.runtime_error ?? 0) + 1;
+				break;
+		}
+	}
+	return stats;
+}
+
+// ===========================================
+// Score computation
+// ===========================================
+
+/**
+ * Mutation score = killed / (killed + survived). Timeouts, compile errors,
+ * and no-coverage mutants are excluded from the denominator per Stryker's
+ * canonical definition (they aren't signal about test effectiveness).
+ */
+export function mutationScore(stats: FileMutationStats): number {
+	const denom = stats.killed + stats.survived;
+	if (denom === 0) return 0;
+	return stats.killed / denom;
+}
+
+// ===========================================
+// Compare
+// ===========================================
+
+export interface MutationCompareOptions {
+	config: MutationGateConfig;
+	repoRoot: string;
+	changedFiles?: string[];
+}
+
+export function compareMutation(
+	report: MutationReport,
+	baseline: MutationBaseline,
+	options: MutationCompareOptions,
+): MutationGateResult {
+	const { config, repoRoot, changedFiles } = options;
+	const findings: MutationFinding[] = [];
+	const nextFiles: Record<string, { score: number; killed: number }> = { ...baseline.files };
+	const changedSet = changedFiles ? new Set(changedFiles) : null;
+
+	let filesChecked = 0;
+	let filesNew = 0;
+	let filesBelowFloor = 0;
+	let filesDecreased = 0;
+	let filesImproved = 0;
+
+	for (const [rawPath, entry] of Object.entries(report.files)) {
+		if (!entry) continue;
+		const relPath = normalizePath(rawPath, repoRoot);
+		if (!relPath) continue;
+		if (changedSet && !changedSet.has(relPath)) continue;
+
+		filesChecked++;
+		const score = mutationScore(entry);
+		const prior = baseline.files[relPath];
+
+		// Floor check: below configured minimum score is always a warning,
+		// regardless of ratchet state. Files without any test mutants
+		// (denom=0) are treated as "no signal" and excluded from floor.
+		const hasSignal = entry.killed + entry.survived > 0;
+		if (hasSignal && score < config.min_score) {
+			findings.push({
+				name: "mutation_score_below_floor",
+				severity: "warning",
+				file: relPath,
+				baseline_score: round(prior?.score ?? 0),
+				current_score: round(score),
+				message: `Mutation score for ${relPath} is ${(score * 100).toFixed(1)}% (floor: ${(config.min_score * 100).toFixed(0)}%). Add tests that kill the surviving mutants.`,
+			});
+			filesBelowFloor++;
+		}
+
+		if (!prior) {
+			filesNew++;
+			nextFiles[relPath] = { score, killed: entry.killed };
+			continue;
+		}
+
+		if (score + 1e-9 < prior.score) {
+			findings.push({
+				name: "mutation_score_decrease",
+				severity: "error",
+				file: relPath,
+				baseline_score: round(prior.score),
+				current_score: round(score),
+				message: `Mutation score for ${relPath} dropped from ${(prior.score * 100).toFixed(1)}% to ${(score * 100).toFixed(1)}%. Investigate new survived mutants before merging.`,
+			});
+			filesDecreased++;
+			// Preserve high-water mark.
+			nextFiles[relPath] = prior;
+		} else {
+			if (score > prior.score) filesImproved++;
+			nextFiles[relPath] = { score, killed: Math.max(entry.killed, prior.killed) };
+		}
+	}
+
+	return {
+		findings,
+		stats: {
+			files_checked: filesChecked,
+			files_new: filesNew,
+			files_below_floor: filesBelowFloor,
+			files_decreased: filesDecreased,
+			files_improved: filesImproved,
+		},
+		nextBaseline: {
+			version: 1,
+			updated_at: new Date().toISOString(),
+			files: nextFiles,
+		},
+	};
+}
+
+function round(score: number): number {
+	return Math.round(score * 1000) / 1000;
+}
+
+function normalizePath(rawPath: string, repoRoot: string): string | null {
+	if (!rawPath) return null;
+	const absolute = resolve(repoRoot, rawPath);
+	const rel = relative(repoRoot, absolute).replace(/\\/g, "/");
+	if (rel.startsWith("..") || rel === "") return null;
+	return rel;
+}

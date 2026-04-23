@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"modules": [
+		{
+			"id": "client",
+			"file": "src/client.ts",
+			"symbols": [
+				{
+					"name": "createClient",
+					"kind": "function",
+					"stability": "public",
+					"docs": ["client-api"],
+					"tests": ["client-test"],
+					"examples": []
+				}
+			]
+		}
+	]
+}

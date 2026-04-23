@@ -1,0 +1,270 @@
+// JS/TS general checks (nested ternaries, catch-and-log, JSON parsing, etc).
+// Extracted from generic-checks.ts.
+
+import {
+	getExtension,
+	type InlineMatch,
+	isTestFile,
+	JS_TS_ALL_EXTS,
+	scanLinesStripped,
+	stripComments,
+	stripCommentsAndStrings,
+} from "./shared.js";
+
+// ===========================================
+// JS/TS General Checks
+// ===========================================
+
+/** Detect nested ternary operators — unreadable conditional logic. */
+export function checkNestedTernaries(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const ternaryPattern = /(?<!\?)\?(?!\?)(?!\.)/g;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = strippedLines[i];
+		// Skip TypeScript type annotation patterns that use ? but aren't ternaries
+		if (/\bextends\s+.*\?/.test(line)) continue; // conditional types
+		if (/\btype\s+\w+.*=.*\?/.test(line)) continue; // type aliases with conditionals
+		// Skip lines that are purely property/parameter declarations with ?:
+		// e.g. "name?: string" or "{ id?: number, label?: string }"
+		if (/^\s*[\w$]+\?:\s/.test(line)) continue; // standalone optional property
+		// Strip patterns that use ? but aren't ternary operators:
+		// - Optional properties: name?: type
+		// - Regex non-capturing groups: (?:...), lookaheads: (?=...), (?!...), (?<...)
+		// - Regex lazy quantifiers: *?, +?, ??
+		const cleaned = line
+			.replace(/\w+\?\s*:/g, "X:") // optional properties
+			.replace(/\(\?[!:=<]/g, "(X") // regex groups/lookaheads
+			.replace(/[*+]\?/g, "X") // lazy quantifiers
+			.replace(/\/[^/\n]+\//g, "X"); // regex literals (simplified)
+		const ternaryMatches = cleaned.match(ternaryPattern);
+		if (ternaryMatches && ternaryMatches.length >= 2) {
+			matches.push({
+				line: i + 1,
+				text: originalLines[i].trim().slice(0, 150),
+			});
+		}
+	}
+
+	return matches;
+}
+
+/** Detect catch blocks that only log — error is silently swallowed. */
+export function checkCatchAndLog(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	// Route handlers / API endpoints: catch-log is the correct pattern since
+	// the framework handles the error response. Skip these files entirely.
+	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+	if (
+		/\/(routes?|api|handlers?|endpoints?|middleware|webhooks?|actions?|pages?\/api)\//i.test(
+			normalized,
+		) ||
+		/\.(route|handler|controller|action|middleware)\.[jt]sx?$/i.test(normalized)
+	) {
+		return [];
+	}
+
+	const stripped = stripComments(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (!/\}\s*catch\s*/.test(strippedLines[i])) continue;
+
+		let braceStart = -1;
+		for (let k = i; k < Math.min(i + 3, strippedLines.length); k++) {
+			if (strippedLines[k].includes("{")) {
+				braceStart = k;
+				break;
+			}
+		}
+		if (braceStart === -1) continue;
+
+		let onlyConsole = true;
+		let hasConsole = false;
+		let depth = 0;
+		let foundClose = false;
+		let closeIdx = -1;
+
+		for (let j = braceStart; j < Math.min(braceStart + 8, strippedLines.length); j++) {
+			for (const ch of strippedLines[j]) {
+				if (ch === "{") depth++;
+				if (ch === "}") depth--;
+			}
+			if (j > braceStart) {
+				const trimmed = strippedLines[j].trim();
+				if (trimmed === "}" || trimmed === "") {
+					// empty line or closing brace — fine
+				} else if (/^\s*console\.(log|error|warn|info|debug)\s*\(/.test(strippedLines[j])) {
+					hasConsole = true;
+				} else {
+					onlyConsole = false;
+					break;
+				}
+			}
+			if (depth <= 0 && j > braceStart) {
+				foundClose = true;
+				closeIdx = j;
+				break;
+			}
+		}
+
+		if (hasConsole && onlyConsole && foundClose) {
+			// Check lines after the catch block: if execution continues with
+			// any meaningful code (state updates, cleanup, return, etc.),
+			// the error isn't being silently swallowed — don't flag it.
+			let hasCodeAfter = false;
+			for (let j = closeIdx + 1; j < Math.min(closeIdx + 5, strippedLines.length); j++) {
+				const afterTrimmed = strippedLines[j].trim();
+				if (afterTrimmed && afterTrimmed !== "}" && afterTrimmed !== ");") {
+					hasCodeAfter = true;
+					break;
+				}
+			}
+			if (hasCodeAfter) continue;
+
+			matches.push({
+				line: i + 1,
+				text: originalLines[i].trim().slice(0, 150),
+			});
+		}
+	}
+
+	return matches;
+}
+
+/** Detect JSON.parse without try-catch — throws on malformed input. */
+export function checkJsonParseUnsafe(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	let tryDepth = 0;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = strippedLines[i];
+
+		if (/\btry\s*\{/.test(line)) {
+			tryDepth++;
+		}
+
+		if (/\bJSON\.parse\s*\(/.test(line)) {
+			if (/\btry\s*\{.*\bJSON\.parse\b.*\}\s*catch\b/.test(line)) continue;
+			if (tryDepth <= 0) {
+				matches.push({
+					line: i + 1,
+					text: originalLines[i].trim().slice(0, 150),
+				});
+			}
+		}
+
+		if (/\}\s*catch\b/.test(line)) {
+			if (tryDepth > 0) tryDepth--;
+		}
+	}
+
+	return matches;
+}
+
+/** Detect hardcoded timeout/interval values — extract to named constants. */
+export function checkHardcodedTimeout(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const pattern = /\b(?:setTimeout|setInterval)\s*\([^,]+,\s*(\d+)\s*\)/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const m = strippedLines[i].match(pattern);
+		if (m) {
+			const ms = Number.parseInt(m[1], 10);
+			if (ms >= 100) {
+				matches.push({
+					line: i + 1,
+					text: originalLines[i].trim().slice(0, 150),
+				});
+			}
+		}
+	}
+
+	return matches;
+}
+
+/** Detect disabled/skipped tests — remove .skip or re-enable. */
+export function checkDisabledTests(content: string, filePath: string): InlineMatch[] {
+	if (!isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	return scanLinesStripped(
+		originalLines,
+		strippedLines,
+		/\b(?:it\.skip|describe\.skip|test\.skip|xit|xdescribe|xtest)\s*\(/,
+		15,
+	);
+}
+
+/** Detect target="_blank" without rel="noopener noreferrer" — tabnabbing risk. */
+export function checkTargetBlankNoRel(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (ext !== ".tsx" && ext !== ".jsx" && ext !== ".html") return [];
+
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	for (let i = 0; i < originalLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = originalLines[i];
+		if (!/target=["']_blank["']/.test(line)) continue;
+
+		// Check surrounding JSX element context (±5 lines) for rel attribute.
+		// In JSX, target and rel are often on different lines of the same element.
+		let hasRel = false;
+		for (let j = Math.max(0, i - 5); j < Math.min(originalLines.length, i + 6); j++) {
+			const nearby = originalLines[j];
+			if (/rel=["'][^"']*(noopener|noreferrer)/.test(nearby)) {
+				hasRel = true;
+				break;
+			}
+			// Stop scanning if we hit the element's closing > or a new element
+			if (j > i && /^\s*[<>]/.test(nearby)) break;
+		}
+
+		if (!hasRel) {
+			matches.push({
+				line: i + 1,
+				text: originalLines[i].trim().slice(0, 150),
+			});
+		}
+	}
+
+	return matches;
+}

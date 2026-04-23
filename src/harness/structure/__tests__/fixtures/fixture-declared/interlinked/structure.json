@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"mode": "standard",
+	"artifacts": {
+		"public_api": "artifacts/public-api.json",
+		"docs": "artifacts/docs.json",
+		"tests": "artifacts/tests.json",
+		"env": "artifacts/env.json",
+		"glossary": "artifacts/glossary.json",
+		"layers": "artifacts/layers.json",
+		"packages": "artifacts/packages.json"
+	}
+}

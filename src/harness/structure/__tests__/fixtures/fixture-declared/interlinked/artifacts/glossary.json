@@ -1,0 +1,12 @@
+{
+	"version": 1,
+	"terms": [
+		{
+			"id": "client",
+			"canonical": "client",
+			"aliases": [],
+			"deprecated": ["agent"],
+			"docs": []
+		}
+	]
+}

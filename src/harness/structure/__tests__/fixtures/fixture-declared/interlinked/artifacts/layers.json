@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"layers": [
+		{
+			"id": "domain",
+			"globs": ["src/client.ts"]
+		},
+		{
+			"id": "app",
+			"globs": ["src/app.ts"]
+		}
+	],
+	"rules": [
+		{
+			"from": "domain",
+			"cannot_import": ["app"],
+			"reason": "Domain layer must not depend on application layer"
+		}
+	]
+}

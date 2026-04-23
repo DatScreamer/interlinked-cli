@@ -1,0 +1,24 @@
+# Gitleaks configuration — suppress known false positives
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "interlinked-cli gitleaks config"
+
+[allowlist]
+  description = "Known false positive paths and patterns"
+  paths = [
+    # Local activity logs and agent-generated state (not shipped, but may be
+    # scanned in place during local runs).
+    '''\.interlinked/activity\.jsonl''',
+    '''\.interlinked/config\.local\.json''',
+    '''\.interlinked/hooks/''',
+    '''\.claude/settings\.local\.json''',
+    # Tests intentionally contain fake secrets for validation.
+    '''\.test\.ts$''',
+    '''\.test\.js$''',
+    '''\.spec\.ts$''',
+    '''__tests__/''',
+    # Signature/pattern files contain detection regexes that match themselves.
+    '''signatures\.ts$''',
+    # Redaction utility tests.
+    '''redact\.test\.ts$''',
+  ]

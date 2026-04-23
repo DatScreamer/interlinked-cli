@@ -1,0 +1,21 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	"entry": [
+		"src/index.ts",
+		"src/harness/server.ts",
+		"src/commands/*.ts",
+		"src/lib/api-client.ts",
+		"scripts/*.ts",
+		"src/**/__tests__/*.test.ts",
+		"test/**/*.ts"
+	],
+	"project": [
+		"src/**/*.ts",
+		"scripts/**/*.ts",
+		"test/**/*.ts"
+	],
+	"ignore": [
+		"src/harness/structure/__tests__/fixtures/**"
+	],
+	"ignoreExportsUsedInFile": true
+}

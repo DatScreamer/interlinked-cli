@@ -1,0 +1,250 @@
+// Error History — Cross-session error memory
+// Persists error records across sessions in .interlinked/error-history.jsonl.
+// Provides deterministic lookups by file and check name.
+
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { ErrorMemoryConfig, ErrorRecord, ModuleRole, StructuralCheckResult } from "./types.js";
+
+/** Cap the diff snippet stored alongside each error record. */
+const MAX_DIFF_CONTEXT_CHARS = 2000;
+/** Cap the fix snippet stored alongside each error record. */
+const MAX_FIX_CONTEXT_CHARS = 1000;
+/** Milliseconds per second (for age-cutoff calculations). */
+const MS_PER_SECOND = 1000;
+
+export class ErrorHistory {
+	private records: ErrorRecord[] = [];
+	private filePath: string;
+	private config: ErrorMemoryConfig;
+
+	private byFile: Map<string, ErrorRecord[]> = new Map();
+	private checkFrequency: Map<string, number> = new Map();
+
+	constructor(dataDir: string, config: ErrorMemoryConfig) {
+		this.filePath = join(dataDir, "error-history.jsonl");
+		this.config = config;
+		this.load();
+	}
+
+	get size(): number {
+		return this.records.length;
+	}
+
+	getRecords(): ErrorRecord[] {
+		return this.records;
+	}
+
+	async recordError(
+		sessionId: string,
+		agentName: string,
+		file: string,
+		fileRole: ModuleRole,
+		result: StructuralCheckResult,
+		diffContext: string,
+		extra?: {
+			line_start?: number;
+			line_end?: number;
+			co_edited_files?: string[];
+			pre_error_sequence?: string[];
+		},
+	): Promise<void> {
+		const record: ErrorRecord = {
+			timestamp: new Date().toISOString(),
+			session_id: sessionId,
+			agent_name: agentName,
+			file,
+			file_role: fileRole,
+			check_name: result.check,
+			severity: result.severity === "info" ? "warning" : result.severity,
+			message: result.message,
+			diff_context: diffContext.slice(0, MAX_DIFF_CONTEXT_CHARS),
+			affected_files: result.affectedFiles?.map((f) => f),
+			line_start: extra?.line_start,
+			line_end: extra?.line_end,
+			co_edited_files: extra?.co_edited_files,
+			pre_error_sequence: extra?.pre_error_sequence,
+		};
+
+		this.records.push(record);
+		this.indexRecord(record);
+		this.appendToDisk(record);
+		this.enforceMaxRecords();
+	}
+
+	recordFix(file: string, fixContext: string): void {
+		const fileRecords = this.byFile.get(file);
+		if (!fileRecords) return;
+
+		for (let i = fileRecords.length - 1; i >= 0; i--) {
+			if (!fileRecords[i].fix_context) {
+				fileRecords[i].fix_context = fixContext.slice(0, MAX_FIX_CONTEXT_CHARS);
+				this.writeToDisk();
+				break;
+			}
+		}
+	}
+
+	lookupByFile(file: string): ErrorRecord[] {
+		const records = this.byFile.get(file) || [];
+		const cutoff = Date.now() - this.config.max_age_s * MS_PER_SECOND;
+		return records.filter((r) => new Date(r.timestamp).getTime() > cutoff).reverse();
+	}
+
+	getFileCheckFrequency(file: string): Map<string, number> {
+		const freq = new Map<string, number>();
+		const records = this.lookupByFile(file);
+		for (const r of records) {
+			freq.set(r.check_name, (freq.get(r.check_name) || 0) + 1);
+		}
+		return freq;
+	}
+
+	getFileHistoryWarning(file: string): string | null {
+		const records = this.lookupByFile(file);
+		if (records.length === 0) return null;
+
+		const checkFreq = this.getFileCheckFrequency(file);
+		const topChecks = [...checkFreq.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 3)
+			.map(([check, count]) => `${check} (${count}x)`)
+			.join(", ");
+
+		const unfixed = records.filter((r) => !r.fix_context).length;
+		const total = records.length;
+
+		if (unfixed > 0) {
+			return `[interlinked:error-memory] This file has had ${total} check failure(s) across sessions: ${topChecks}. ${unfixed} may still be unresolved.`;
+		}
+
+		return `[interlinked:error-memory] This file has had ${total} check failure(s) across sessions (all resolved): ${topChecks}. Take extra care with changes here.`;
+	}
+
+	static buildErrorContext(opts: {
+		file: string;
+		fileRole: string;
+		dependentCount: number;
+		dependencyCount: number;
+		exports: string[];
+		result: StructuralCheckResult;
+		oldString?: string;
+		newString?: string;
+		content?: string;
+	}): string {
+		const parts: string[] = [];
+		parts.push(`File: ${opts.file} (${opts.fileRole})`);
+		if (opts.dependentCount > 0) parts.push(`Depended on by: ${opts.dependentCount} files`);
+		if (opts.dependencyCount > 0) parts.push(`Imports from: ${opts.dependencyCount} modules`);
+		if (opts.exports.length > 0) {
+			parts.push(
+				`Exports: ${opts.exports.slice(0, 15).join(", ")}${opts.exports.length > 15 ? ` +${opts.exports.length - 15} more` : ""}`,
+			);
+		}
+		parts.push(`Check: ${opts.result.check}`);
+		parts.push(`Error: ${opts.result.message}`);
+		if (opts.result.affectedFiles && opts.result.affectedFiles.length > 0) {
+			parts.push(`Affected: ${opts.result.affectedFiles.slice(0, 8).join(", ")}`);
+		}
+		if (opts.oldString && opts.newString) {
+			parts.push(`Diff:\n-${opts.oldString.slice(0, 400)}\n+${opts.newString.slice(0, 400)}`);
+		} else if (opts.content) {
+			parts.push(`Content: ${opts.content.slice(0, 600)}`);
+		}
+		return parts.join("\n");
+	}
+
+	static buildQueryContext(opts: {
+		file: string;
+		fileRole: string;
+		dependentCount: number;
+		dependencyCount: number;
+		exports: string[];
+		oldString?: string;
+		newString?: string;
+		content?: string;
+	}): string {
+		const parts: string[] = [];
+		parts.push(`File: ${opts.file} (${opts.fileRole})`);
+		if (opts.dependentCount > 0) parts.push(`Depended on by: ${opts.dependentCount} files`);
+		if (opts.dependencyCount > 0) parts.push(`Imports from: ${opts.dependencyCount} modules`);
+		if (opts.exports.length > 0) {
+			parts.push(
+				`Exports: ${opts.exports.slice(0, 15).join(", ")}${opts.exports.length > 15 ? ` +${opts.exports.length - 15} more` : ""}`,
+			);
+		}
+		if (opts.oldString && opts.newString) {
+			parts.push(
+				`Change:\n-${opts.oldString.slice(0, 400)}\n+${opts.newString.slice(0, 400)}`,
+			);
+		} else if (opts.content) {
+			parts.push(`Content: ${opts.content.slice(0, 600)}`);
+		}
+		return parts.join("\n");
+	}
+
+	private load(): void {
+		if (!existsSync(this.filePath)) return;
+		try {
+			const raw = readFileSync(this.filePath, "utf-8");
+			const cutoff = Date.now() - this.config.max_age_s * MS_PER_SECOND;
+			for (const line of raw.split("\n")) {
+				if (!line.trim()) continue;
+				try {
+					const record = JSON.parse(line) as ErrorRecord;
+					if (new Date(record.timestamp).getTime() < cutoff) continue;
+					this.records.push(record);
+					this.indexRecord(record);
+				} catch (e) {
+					void e;
+				}
+			}
+		} catch (e) {
+			void e;
+		}
+	}
+
+	private indexRecord(record: ErrorRecord): void {
+		let fileRecords = this.byFile.get(record.file);
+		if (!fileRecords) {
+			fileRecords = [];
+			this.byFile.set(record.file, fileRecords);
+		}
+		fileRecords.push(record);
+		this.checkFrequency.set(
+			record.check_name,
+			(this.checkFrequency.get(record.check_name) || 0) + 1,
+		);
+	}
+
+	private appendToDisk(record: ErrorRecord): void {
+		try {
+			const dir = dirname(this.filePath);
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			appendFileSync(this.filePath, `${JSON.stringify(record)}\n`);
+		} catch (e) {
+			void e;
+		}
+	}
+
+	private writeToDisk(): void {
+		try {
+			const dir = dirname(this.filePath);
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			const content = `${this.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
+			writeFileSync(this.filePath, content);
+		} catch (e) {
+			void e;
+		}
+	}
+
+	private enforceMaxRecords(): void {
+		if (this.records.length <= this.config.max_records) return;
+		const excess = this.records.length - this.config.max_records;
+		this.records.splice(0, excess);
+		this.byFile.clear();
+		this.checkFrequency.clear();
+		for (const record of this.records) this.indexRecord(record);
+		this.writeToDisk();
+	}
+}

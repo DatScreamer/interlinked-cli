@@ -1,0 +1,442 @@
+// ===========================================
+// Import Checks
+// ===========================================
+// Tier 1 validations on import relationships: resolution, duplicates,
+// dead imports, hallucinated packages, and cross-package boundary violations.
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
+import type { ProjectGraph } from "../project-graph.js";
+import type { ExportedSymbol, StructuralCheckResult } from "../types.js";
+import { escapeRegex } from "./helpers.js";
+
+/**
+ * Public API — consumed by structural-checks.runStructuralChecks.
+ *
+ * Tier 1: Verify all imports in the edited file resolve to existing files and exports.
+ */
+export function checkImportResolution(
+	filePath: string,
+	relPath: string,
+	graph: ProjectGraph,
+): StructuralCheckResult[] {
+	const results: StructuralCheckResult[] = [];
+	const edges = graph.getDependencies(filePath);
+
+	for (const edge of edges) {
+		// Skip node_modules imports (no toFile means unresolved bare specifier)
+		if (!edge.toFile) continue;
+
+		// Skip JSON imports — they always provide a default export, not in our TS/JS graph
+		if (edge.specifier.endsWith(".json")) continue;
+
+		// Skip deep node_modules paths (e.g., ../node_modules/@scope/pkg/dist/file.js)
+		if (edge.toFile.includes("/node_modules/")) continue;
+
+		// Check file exists
+		if (!existsSync(edge.toFile)) {
+			results.push({
+				check: "import_resolution",
+				severity: "error",
+				message: `Broken import in ${relPath}: \`${edge.specifier}\` resolves to ${graph.toRelative(edge.toFile)} which does not exist.`,
+				file: filePath,
+				affectedFiles: [edge.toFile],
+			});
+			continue;
+		}
+
+		// Check imported symbols exist in the target's exports
+		if (edge.symbols.length > 0) {
+			const targetExports = graph.getExports(edge.toFile);
+			const targetNames = new Set(targetExports.map((e) => e.name));
+			// Also allow "default" for default imports
+			targetNames.add("default");
+
+			for (const sym of edge.symbols) {
+				if (!targetNames.has(sym)) {
+					results.push({
+						check: "import_resolution",
+						severity: "warning",
+						message: `${relPath} imports \`${sym}\` from \`${edge.specifier}\`, but ${graph.toRelative(edge.toFile)} does not export it.`,
+						file: filePath,
+						affectedFiles: [edge.toFile],
+					});
+				}
+			}
+		}
+	}
+
+	return results;
+}
+
+/**
+ * Public API — consumed by structural-checks.runStructuralChecks.
+ *
+ * Tier 1: Warn when a new export collides with an existing symbol name (boundary-aware).
+ */
+export function checkDuplicateSymbols(
+	filePath: string,
+	relPath: string,
+	oldExports: ExportedSymbol[],
+	graph: ProjectGraph,
+	boundary?: string,
+): StructuralCheckResult[] {
+	const results: StructuralCheckResult[] = [];
+	const newExports = graph.getExports(filePath);
+	const oldNames = new Set(oldExports.map((e) => e.name));
+
+	// Only check newly added exports
+	const addedExports = newExports.filter(
+		(e) => !oldNames.has(e.name) && e.name !== "default" && e.name !== "*" && !e.isTypeOnly,
+	);
+
+	for (const added of addedExports) {
+		const duplicates = graph.findDuplicateExports(added.name, filePath, boundary);
+		if (duplicates.length > 0) {
+			const dupList = duplicates
+				.slice(0, 3)
+				.map((d) => graph.toRelative(d))
+				.join(", ");
+			results.push({
+				check: "duplicate_symbols",
+				severity: "warning",
+				message: `New export \`${added.name}\` in ${relPath} collides with existing export in: ${dupList}. Consider using the existing one or choosing a distinct name.`,
+				file: filePath,
+				affectedFiles: duplicates,
+			});
+		}
+	}
+
+	return results;
+}
+
+/**
+ * Public API — consumed by structural-checks.runStructuralChecks.
+ *
+ * Tier 1: Detect unused imports after editing a file.
+ */
+export function checkDeadImports(filePath: string, relPath: string): StructuralCheckResult[] {
+	let content: string;
+	try {
+		content = readFileSync(filePath, "utf-8");
+	} catch {
+		return [];
+	}
+
+	const lines = content.split("\n");
+
+	// Extract import bindings and find where imports end
+	const importBindings: Array<{ name: string }> = [];
+	let lastImportLine = 0;
+	let buffer = "";
+
+	let importSectionEnded = false;
+	for (let i = 0; i < lines.length; i++) {
+		const trimmed = lines[i].trim();
+
+		// Handle multiline imports
+		if (buffer) {
+			buffer += ` ${trimmed}`;
+			if (/from\s+['"]/.test(buffer) || /['"]/.test(buffer)) {
+				processImportLine(buffer, importBindings);
+				buffer = "";
+			}
+			lastImportLine = i;
+			continue;
+		}
+		// Stop scanning once we hit non-import code (prevents matching imports
+		// inside string literals, template HTML, generated scripts, etc.)
+		if (importSectionEnded) continue;
+		if (
+			trimmed === "" ||
+			trimmed.startsWith("//") ||
+			trimmed.startsWith("*") ||
+			trimmed.startsWith("/*") ||
+			trimmed.startsWith("*/")
+		)
+			continue;
+		if (/^import\s/.test(trimmed) && trimmed.includes("{") && !trimmed.includes("}")) {
+			buffer = trimmed;
+			lastImportLine = i;
+			continue;
+		}
+		if (/^import\s/.test(trimmed)) {
+			processImportLine(trimmed, importBindings);
+			lastImportLine = i;
+			continue;
+		}
+		// Non-import, non-blank line — import section is over
+		importSectionEnded = true;
+	}
+	if (buffer) processImportLine(buffer, importBindings);
+
+	if (importBindings.length === 0) return [];
+
+	// Get file body after imports
+	const body = lines.slice(lastImportLine + 1).join("\n");
+	const deadBindings: string[] = [];
+
+	for (const { name } of importBindings) {
+		if (!name || name.length < 2) continue;
+		const regex = new RegExp(`\\b${escapeRegex(name)}\\b`);
+		if (!regex.test(body)) {
+			deadBindings.push(name);
+		}
+	}
+
+	if (deadBindings.length === 0) return [];
+
+	return [
+		{
+			check: "dead_imports",
+			severity: "warning",
+			message: `Unused imports in ${relPath}: \`${deadBindings.join("`, `")}\`. Remove them to reduce dependencies.`,
+			file: filePath,
+		},
+	];
+}
+
+/** Extract local binding names from an import statement line. */
+function processImportLine(line: string, bindings: Array<{ name: string }>): void {
+	const trimmed = line.trim();
+	if (trimmed.startsWith("//")) return;
+
+	// Side-effect: import 'module'
+	if (/^import\s+['"]/.test(trimmed)) return;
+
+	// Namespace: import * as name — skip (used as name.X, hard to check reliably)
+	if (/^import\s+\*\s+as\s/.test(trimmed)) return;
+
+	// Named: import { a, b as c } from '...'  or  import type { ... }
+	const namedMatch = trimmed.match(/^import\s+(?:type\s+)?\{([^}]+)\}/);
+	if (namedMatch) {
+		const names = namedMatch[1]
+			.split(",")
+			.map((s) => {
+				const parts = s
+					.trim()
+					.replace(/^type\s+/, "")
+					.split(/\s+as\s+/);
+				return parts[parts.length - 1].trim();
+			})
+			.filter(Boolean);
+		for (const name of names) {
+			if (name !== "type") {
+				bindings.push({ name });
+			}
+		}
+		return;
+	}
+
+	// Default: import Name from '...'
+	const defaultMatch = trimmed.match(/^import\s+(?:type\s+)?(\w+)\s+from/);
+	if (defaultMatch && defaultMatch[1] !== "type") {
+		bindings.push({ name: defaultMatch[1] });
+	}
+}
+
+// Built-in Node modules (used by checkHallucinatedImports)
+const BUILTIN_MODULES = new Set([
+	"assert",
+	"buffer",
+	"child_process",
+	"cluster",
+	"console",
+	"constants",
+	"crypto",
+	"dgram",
+	"dns",
+	"domain",
+	"events",
+	"fs",
+	"http",
+	"https",
+	"module",
+	"net",
+	"os",
+	"path",
+	"perf_hooks",
+	"process",
+	"punycode",
+	"querystring",
+	"readline",
+	"repl",
+	"stream",
+	"string_decoder",
+	"sys",
+	"timers",
+	"tls",
+	"tty",
+	"url",
+	"util",
+	"v8",
+	"vm",
+	"wasi",
+	"worker_threads",
+	"zlib",
+	"node:fs",
+	"node:path",
+	"node:child_process",
+	"node:crypto",
+	"node:os",
+	"node:url",
+	"node:util",
+	"node:stream",
+	"node:events",
+	"node:buffer",
+	"node:http",
+	"node:https",
+	"node:net",
+	"node:readline",
+	"node:tls",
+	"node:zlib",
+	"node:worker_threads",
+	"node:assert",
+	"node:dns",
+	"node:perf_hooks",
+	"node:process",
+	"node:querystring",
+	"node:timers",
+	"node:vm",
+	"node:test",
+]);
+
+/**
+ * Public API — consumed by structural-checks.runStructuralChecks.
+ *
+ * Tier 1: Detect bare-specifier imports not found in package.json dependencies.
+ */
+export function checkHallucinatedImports(
+	filePath: string,
+	relPath: string,
+	graph: ProjectGraph,
+): StructuralCheckResult[] {
+	const results: StructuralCheckResult[] = [];
+	const edges = graph.getDependencies(filePath);
+
+	// Find closest package.json
+	let pkgJson: JsonObject | null = null;
+	let dir = dirname(filePath);
+	for (let i = 0; i < 10; i++) {
+		const pkgPath = join(dir, "package.json");
+		if (existsSync(pkgPath)) {
+			try {
+				pkgJson = JSON.parse(readFileSync(pkgPath, "utf-8"));
+			} catch {
+				/* intentional: best-effort parse — unreadable/malformed
+				 * package.json is treated as absent. */
+			}
+			break;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+
+	if (!pkgJson) return [];
+
+	const allDeps = new Set<string>();
+	for (const field of [
+		"dependencies",
+		"devDependencies",
+		"peerDependencies",
+		"optionalDependencies",
+	]) {
+		const deps = pkgJson[field];
+		if (deps && typeof deps === "object") {
+			for (const name of Object.keys(deps as JsonObject)) {
+				allDeps.add(name);
+			}
+		}
+	}
+
+	for (const edge of edges) {
+		const spec = edge.specifier;
+		// Skip relative, absolute, already-resolved paths, and path aliases (@/, #, ~/)
+		if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) continue;
+		if (spec.startsWith("@/") || spec.startsWith("#") || spec.startsWith("~/")) continue;
+		// Skip if it resolves to a node_modules path (already found)
+		if (edge.toFile?.includes("/node_modules/")) continue;
+
+		// Extract package name (handle scoped packages)
+		const pkgName = spec.startsWith("@")
+			? spec.split("/").slice(0, 2).join("/")
+			: spec.split("/")[0];
+
+		if (BUILTIN_MODULES.has(spec) || BUILTIN_MODULES.has(pkgName)) continue;
+		if (allDeps.has(pkgName)) continue;
+
+		results.push({
+			check: "hallucinated_imports",
+			severity: "warning",
+			message: `${relPath} imports "${spec}" but "${pkgName}" is not in package.json dependencies. Is this a typo or missing dependency?`,
+			file: filePath,
+		});
+	}
+
+	return results;
+}
+
+/**
+ * Public API — consumed by structural-checks.runStructuralChecks.
+ *
+ * Tier 1: Detect relative imports that cross a package.json boundary.
+ */
+export function checkCrossPackageImports(
+	filePath: string,
+	relPath: string,
+	graph: ProjectGraph,
+): StructuralCheckResult[] {
+	const results: StructuralCheckResult[] = [];
+	const edges = graph.getDependencies(filePath);
+	const fileDir = dirname(filePath);
+
+	for (const edge of edges) {
+		if (!edge.specifier.startsWith(".") || !edge.toFile) continue;
+		// Check if there's a package.json between the importing file and the imported file
+		const targetDir = dirname(edge.toFile);
+		if (targetDir === fileDir) continue;
+
+		// Walk from fileDir toward targetDir looking for package.json boundaries
+		const steps = edge.specifier.split("/").filter((s) => s === "..").length;
+		let foundBoundary = false;
+		let boundaryDir = "";
+
+		let dir = fileDir;
+		for (let i = 0; i < steps && i < 10; i++) {
+			dir = dirname(dir);
+			const pkgPath = join(dir, "package.json");
+			if (existsSync(pkgPath) && dir !== dirname(filePath)) {
+				// This is a different package
+				// Only flag if this package.json is between the two files, not the project root
+				let isProjectRoot = false;
+				try {
+					const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+					// Project roots typically have "private: true" or workspaces
+					if (pkg.private || pkg.workspaces) isProjectRoot = true;
+				} catch {
+					/* intentional: best-effort parse — a malformed
+					 * package.json leaves isProjectRoot=false and the
+					 * boundary walk continues. */
+				}
+				if (!isProjectRoot) {
+					foundBoundary = true;
+					boundaryDir = dir;
+					break;
+				}
+			}
+		}
+
+		if (foundBoundary) {
+			results.push({
+				check: "cross_package_imports",
+				severity: "warning",
+				message: `${relPath} uses relative import "${edge.specifier}" which crosses a package.json boundary at ${graph.toRelative(boundaryDir)}. Use the package name instead.`,
+				file: filePath,
+			});
+		}
+	}
+
+	return results;
+}
