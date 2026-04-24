@@ -28,12 +28,15 @@ export interface DiffOverlayResult {
 }
 
 /**
- * Budget per tool. Biome's temp-file approach is quick (~200ms typical).
- * Tsc LS is slow on first call (warmup 1-3s) but very fast after
- * (~20-100ms). We set a generous budget — the agent latency cost of
- * catching a type regression is worth it.
+ * Budget per tool. Biome's temp-file approach is quick (~200ms typical)
+ * on warm caches, but cold `npx biome` on fresh CI runners can take 1-2s
+ * including the shim overhead. Tsc LS is slow on first call (warmup 1-3s)
+ * but very fast after (~20-100ms). We set a generous budget — the agent
+ * latency cost of catching a type regression is worth it, and the gate
+ * only fires on NEW findings, so a slow-but-correct result is strictly
+ * better than a fast-but-empty one from a premature timeout.
  */
-const BIOME_BUDGET_MS = 500;
+const BIOME_BUDGET_MS = 2_000;
 const TSC_BUDGET_MS = 5_000;
 
 /**

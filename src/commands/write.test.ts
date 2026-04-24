@@ -81,9 +81,11 @@ describe("interlinked write — single-file mode", () => {
 		expect(readFileSync(target, "utf-8")).toBe(content);
 	});
 
-	it("leaves file untouched when gate blocks", { retry: 2 }, () => {
+	it("leaves file untouched when gate blocks", { retry: 2, timeout: 60_000 }, () => {
 		// Existing file with clean content. Propose an update that introduces
-		// a biome noDoubleEquals violation — gate should reject.
+		// a biome noDoubleEquals violation — gate should reject. The 60s
+		// timeout covers tsx + CLI + biome + tsc cold-start on fresh CI
+		// runners where no npm/npx cache is warm yet.
 		const target = resolve(fixtureDir, "blocks.ts");
 		const before = "export function two(): number {\n\treturn 2;\n}\n";
 		writeFileSync(target, before);
