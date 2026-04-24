@@ -91,13 +91,18 @@ function getHarnessServerPath(): string {
 		join(dir, "harness", "server.js"),
 		// 2. Pre-compiled JS — one level up (when this file is in dist/commands/)
 		join(dir, "..", "harness", "server.js"),
-		// 3. Pre-compiled JS in node_modules
+		// 3. tsx-from-src: src/commands/harness.ts running under tsx —
+		//    walk to project root and down into dist/.
+		join(dir, "..", "..", "dist", "harness", "server.js"),
+		// 4. Flat-layout source checkout (no `cli/` prefix).
+		join(process.cwd(), "dist", "harness", "server.js"),
+		// 5. Pre-compiled JS in node_modules
 		join(process.cwd(), "node_modules", "interlinked-cli", "dist", "harness", "server.js"),
-		// 4. Source checkout dist/ (monorepo dev)
+		// 6. Monorepo source checkout with `cli/` prefix.
 		join(process.cwd(), "cli", "dist", "harness", "server.js"),
-		// 5. Pre-compiled binary
+		// 7. Pre-compiled binary
 		join(process.cwd(), ".interlinked", "harness-server"),
-		// 6. Source TypeScript fallbacks (slower — Node can't run .ts directly)
+		// 8. Source TypeScript fallbacks (slower — Node can't run .ts directly)
 		join(dir, "..", "harness", "server.ts"),
 		join(dir, "..", "src", "harness", "server.ts"),
 		join(process.cwd(), "cli", "src", "harness", "server.ts"),
