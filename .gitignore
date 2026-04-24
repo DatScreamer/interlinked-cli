@@ -32,6 +32,11 @@ reports/
 # Generated npm pack tarballs
 *.tgz
 
+# Local archive: git bundles of branches we've deleted from the remote
+# but want to keep locally "just in case" (e.g., checkpoint histories).
+# See: `git bundle verify .archive/<name>.bundle`.
+.archive/
+
 # Interlinked (local agent config)
 .interlinked/config.json
 .interlinked/config.local.json
