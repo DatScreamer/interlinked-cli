@@ -11,9 +11,17 @@
 // Idle timeout disabled by default (event-driven, no CPU cost when idle). Configurable via --idle-timeout.
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "../lib/json-types.js";
 import {
@@ -26,6 +34,8 @@ import {
 import { getOrCreateEngine } from "./check-engine/index.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "./check-metadata.js";
 import { CohortManager } from "./cohort.js";
+import { snapshotCrap } from "./checks/crap-baseline.js";
+import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
 import { ErrorHistory } from "./error-history.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
@@ -726,9 +736,30 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					const preContent = readFileSync(filePath, "utf-8");
 					const missingRT = checkMissingReturnTypes(preContent, filePath);
 					const complexFns = checkFunctionComplexity(preContent, filePath);
+					// CRAP baseline — fail-open when coverage data is absent.
+					let crapScores: Map<string, Map<string, number>> | undefined;
+					try {
+						const coveragePath = resolve(CWD, "coverage", "coverage-final.json");
+						const covCache = loadCoverageFinal(coveragePath, CWD);
+						if (covCache) {
+							const relPath = relative(CWD, filePath).replace(/\\/g, "/");
+							const perFile = coverageForFile(covCache, relPath);
+							const mtimeMs = statSync(filePath).mtimeMs;
+							crapScores = snapshotCrap({
+								preContent,
+								filePath: relPath,
+								coverage: perFile,
+								fileMtime: mtimeMs,
+								threshold: 30,
+							});
+						}
+					} catch (crapErr) {
+						void crapErr; /* CRAP snapshot must never break the baseline capture */
+					}
 					preEditBaselines.set(filePath, {
 						missingReturnTypes: new Set(missingRT.map((m) => m.text)),
 						complexFunctions: new Set(complexFns.map((m) => m.text)),
+						crapScores,
 						capturedAt: Date.now(),
 						suppressionCount: countSuppressionDirectives(preContent),
 						asAnyCastCount: countAsAnyCasts(preContent),

@@ -343,6 +343,13 @@ export interface PreEditBaseline {
 	missingReturnTypes: Set<string>;
 	/** Complex function signatures (Set of trimmed signature text) */
 	complexFunctions: Set<string>;
+	/**
+	 * Per-file, per-function CRAP scores captured before the edit.
+	 * Keyed by repo-relative file path, inner map keyed by "name@line".
+	 * Consumed by filterToRisers() in the PostToolUse CRAP block.
+	 * Optional — absent when coverage data is unavailable (fail-open).
+	 */
+	crapScores?: Map<string, Map<string, number>>;
 	/** When this baseline was captured */
 	capturedAt: number;
 	/** Count of suppression directives (@ts-expect-error, @ts-expect-error, eslint-disable, biome-ignore) */
