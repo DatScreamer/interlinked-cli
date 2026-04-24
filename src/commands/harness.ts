@@ -3,9 +3,17 @@
 // ===========================================
 
 import { execSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+} from "node:fs";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
@@ -29,6 +37,47 @@ function getSocketPath(cwd: string = process.cwd()): string {
 
 function getPidPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "harness.pid");
+}
+
+function getDaemonLogPath(cwd: string = process.cwd()): string {
+	return join(getConfigDir(cwd), "logs", "daemon.log");
+}
+
+interface DaemonStderrLog {
+	fd: number;
+	path: string;
+	startOffset: number;
+}
+
+function openDaemonStderrLog(cwd: string): DaemonStderrLog | null {
+	const path = getDaemonLogPath(cwd);
+	try {
+		const dir = dirname(path);
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		const startOffset = existsSync(path) ? statSync(path).size : 0;
+		const fd = openSync(path, "a");
+		return { fd, path, startOffset };
+	} catch (_) {
+		return null;
+	}
+}
+
+function closeDaemonStderrLog(log: DaemonStderrLog | null): void {
+	if (!log) return;
+	try {
+		closeSync(log.fd);
+	} catch (_) {
+		/* intentional: child inherited its own stderr fd; parent close is best-effort */
+	}
+}
+
+function readDaemonStderrLog(log: DaemonStderrLog | null): string {
+	if (!log) return "";
+	try {
+		return readFileSync(log.path).subarray(log.startOffset).toString("utf-8");
+	} catch (_) {
+		return "";
+	}
 }
 
 /**
@@ -191,16 +240,26 @@ export async function harnessStartCommand(opts: {
 				}
 			}
 
-			// Daemonize: spawn detached, pipe stderr so we can report errors
-			const child = spawn(nodePath, args, {
-				stdio: ["ignore", "ignore", "pipe"],
-				detached: true,
-				cwd,
-			});
+			// Daemonize with stderr inherited by a log file. A pipe would need to be
+			// closed when this CLI exits, which can make later daemon stderr writes fail.
+			const stderrLog = openDaemonStderrLog(cwd);
+			const daemonStdio: ["ignore", "ignore", "ignore" | number] = [
+				"ignore",
+				"ignore",
+				stderrLog?.fd ?? "ignore",
+			];
+			const child = (() => {
+				try {
+					return spawn(nodePath, args, {
+						stdio: daemonStdio,
+						detached: true,
+						cwd,
+					});
+				} finally {
+					closeDaemonStderrLog(stderrLog);
+				}
+			})();
 			let stderrOutput = "";
-			child.stderr?.on("data", (chunk: Buffer) => {
-				stderrOutput += chunk.toString();
-			});
 			let childExited = false;
 			child.on("exit", () => {
 				childExited = true;
@@ -225,9 +284,8 @@ export async function harnessStartCommand(opts: {
 			const newStatus = isHarnessRunning(cwd);
 			const resolvedPid = newStatus.pid ?? child.pid;
 			const elapsed = Math.round((Date.now() - startTime) / 1000);
-			if (ready) {
-				child.stderr?.removeAllListeners("data");
-				child.stderr?.destroy();
+			if (!ready) {
+				stderrOutput = readDaemonStderrLog(stderrLog);
 			}
 			output(mode, newStatus, {
 				json: () => ({
