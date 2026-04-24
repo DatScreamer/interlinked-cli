@@ -41,7 +41,7 @@ export function buildHookScript(version: string): string {
 import { readFileSync, existsSync, appendFileSync, writeFileSync, mkdirSync, openSync, readSync, closeSync, statSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createConnection } from "node:net";
-import { execSync, spawn as nodeSpawn } from "node:child_process";
+import { execSync, execFileSync, spawn as nodeSpawn } from "node:child_process";
 
 const CWD = process.cwd();
 
@@ -442,7 +442,40 @@ ${PROVIDER_RESPONSES_CHUNK}
 
     const isPreTool = hookEvent === "PreToolUse" || hookEvent === "BeforeTool";
     const isPostTool = hookEvent === "PostToolUse" || hookEvent === "AfterTool" || hookEvent === "PostToolUseFailure";
+    const isUserPrompt = hookEvent === "UserPromptSubmit" || hookEvent === "BeforeAgent";
     let guardDecision = null;
+
+    // ===========================================
+    // UserPromptSubmit: forward to harness for PII scan
+    // ===========================================
+    // If the content scanner is enabled and finds PII in the prompt, the
+    // harness returns a redacted copy which we substitute into event.prompt
+    // before the local JSONL write below. Never blocks — users can always
+    // submit their prompt; we only mask the stored record.
+    if (isUserPrompt && event.prompt) {
+        const promptHarnessEvent = {
+            hook_event: hookEvent,
+            session_id: sessionId,
+            agent_source: detectedClient,
+            agent_name: agentName,
+            tool_name: null,
+            tool_input: null,
+            prompt: event.prompt,
+            cwd: rawInput.cwd || event.cwd || null,
+            model: event.model || null,
+            timestamp: new Date().toISOString(),
+        };
+        try {
+            const promptDecision = await evaluateViaHarness(promptHarnessEvent);
+            if (promptDecision && typeof promptDecision.redacted_prompt === "string") {
+                event.prompt = promptDecision.redacted_prompt;
+                if (event.tool_input_summary) {
+                    // Keep the 200-char summary in sync with the masked prompt.
+                    event.tool_input_summary = promptDecision.redacted_prompt.slice(0, 200);
+                }
+            }
+        } catch (_err) { void 0; /* fail-open: raw prompt still gets inline secrets scrub via scrubPayload below */ }
+    }
 
     // On PreToolUse: flush any pending quality warnings from the previous PostToolUse.
     // For Claude: writes to stderr (agents see it inline before their next action).
@@ -529,7 +562,10 @@ ${PROVIDER_RESPONSES_CHUNK}
             appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
             appendGuardDecision("ask", guardDecision, event, hookEvent, sessionId, agentName, workspaceKey, projectKey, preElapsedMs);
             updateSessionState(sessionId, agentName, event);
-            console.log(JSON.stringify(formatProviderResponse("pre_ask", { reason: guardDecision.reason || "Interlinked pre-block rule matched — please confirm." })));
+            console.log(JSON.stringify(formatProviderResponse("pre_ask", {
+                reason: guardDecision.reason || "Interlinked pre-block rule matched — please confirm.",
+                systemMessage: guardDecision.system_message,
+            })));
             process.exit(0);
         }
 

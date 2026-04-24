@@ -265,3 +265,100 @@ describe("SidecarManager — shutdown", () => {
 		await shutdownPromise;
 	});
 });
+
+describe("SidecarManager — idle recovery", () => {
+	// Regression for the bug where idle-timer close permanently bricked the
+	// scanner (shuttingDown latched true). Next send() must respawn.
+	it("goes dormant on idle, respawns on next send", async () => {
+		const child1 = makeFakeChild();
+		const child2 = makeFakeChild();
+		const children = [child1, child2];
+		const spawn = vi.fn(() => {
+			const c = children.shift();
+			if (!c) throw new Error("no more fake children");
+			return c as unknown as import("node:child_process").ChildProcess;
+		});
+		const mgr = new SidecarManager({ ...makeOpts(), spawn, idle_shutdown_ms: 5000 });
+
+		// First send boots the sidecar.
+		const p1 = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		child1.respond({ id: JSON.parse(child1.stdinLines[0]).id, ok: true });
+		expect((await p1).ok).toBe(true);
+		expect(mgr.getStatus().state).toBe("ready");
+
+		// Fire idle timer — child closes but instance stays recoverable.
+		await vi.advanceTimersByTimeAsync(5000);
+		// closeChildForIdle writes a shutdown frame + SIGKILL grace.
+		await vi.advanceTimersByTimeAsync(1100);
+		child1.exit(0);
+		await Promise.resolve();
+		expect(mgr.getStatus().state).toBe("dormant");
+
+		// Next send triggers a fresh spawn.
+		const p2 = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		expect(spawn).toHaveBeenCalledTimes(2);
+		child2.respond({ id: JSON.parse(child2.stdinLines[0]).id, ok: true });
+		expect((await p2).ok).toBe(true);
+		expect(mgr.getStatus().state).toBe("ready");
+	});
+
+	it("resets restartCount on first successful response so long sessions never exhaust the budget", async () => {
+		const child1 = makeFakeChild();
+		const child2 = makeFakeChild();
+		const child3 = makeFakeChild();
+		const children = [child1, child2, child3];
+		const spawn = vi.fn(() => {
+			const c = children.shift();
+			if (!c) throw new Error("no more fake children");
+			return c as unknown as import("node:child_process").ChildProcess;
+		});
+		const mgr = new SidecarManager({ ...makeOpts(), spawn, max_restarts: 2, idle_shutdown_ms: 5000 });
+
+		// Cycle boot → idle → respawn → idle → respawn → each "ready" must clear
+		// the restart counter, so three cycles in a row don't trip max_restarts=2.
+		for (const child of [child1, child2, child3]) {
+			const p = mgr.send({ op: "ping" });
+			await Promise.resolve();
+			child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+			expect((await p).ok).toBe(true);
+			expect(mgr.getStatus().restartCount).toBe(0);
+			// Fire idle close.
+			await vi.advanceTimersByTimeAsync(5000);
+			await vi.advanceTimersByTimeAsync(1100);
+			child.exit(0);
+			await Promise.resolve();
+		}
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("fires onStatusChange on every lifecycle transition", async () => {
+		const statuses: string[] = [];
+		const child = makeFakeChild();
+		const spawn = vi.fn(() => child as unknown as import("node:child_process").ChildProcess);
+		const mgr = new SidecarManager({
+			...makeOpts(),
+			spawn,
+			onStatusChange: (s) => statuses.push(s.state),
+		});
+
+		// Constructor fires "idle".
+		expect(statuses[0]).toBe("idle");
+
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		expect(statuses).toContain("spawning");
+
+		child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+		await p;
+		expect(statuses).toContain("ready");
+
+		// shutdown() awaits a 1s force-kill race; under fake timers we must
+		// advance past the grace window (or exit the child) for it to resolve.
+		const done = mgr.shutdown();
+		await vi.advanceTimersByTimeAsync(1100);
+		await done;
+		expect(statuses).toContain("disabled");
+	});
+});

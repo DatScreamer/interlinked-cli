@@ -12,7 +12,10 @@ export class CohortManager {
 
 	/** Register a new agent joining the cohort — handles reconnections gracefully */
 	agentJoined(event: HarnessEvent): CohortAgent {
-		const name = event.agent_name || `${event.agent_source}-${event.session_id.slice(0, 8)}`;
+		// Defensive: SessionStart variants occasionally arrive without session_id.
+		// Fall back to a synthetic id so we don't crash the harness on lifecycle events.
+		const sid = event.session_id || `unknown-${Date.now().toString(36)}`;
+		const name = event.agent_name || `${event.agent_source}-${sid.slice(0, 8)}`;
 
 		const existing = this.agents.get(name);
 		if (existing) {

@@ -70,4 +70,8 @@ test/agent-driven/reports/*.json
 .interlinked/suggestion-telemetry.jsonl
 .interlinked/thinking-cursor.json
 .interlinked/classifier.status
+.interlinked/content-scanner.status
+.interlinked/content-scanner.audit.jsonl
+.interlinked/logs/
 .interlinked/scanner/
+tmp/

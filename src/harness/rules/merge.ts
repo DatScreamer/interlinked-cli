@@ -122,15 +122,35 @@ export function mergeLocalOverrides(
 	if (local.project_wide_checks && config.project_wide_checks) {
 		Object.assign(config.project_wide_checks, local.project_wide_checks);
 	}
-	// Local can toggle the ML content scanner on/off and tweak its top-level
-	// knobs. Nested objects (`local`, `huggingface`, etc.) are replaced whole if
-	// present in the override; callers that only want `enabled: true` get the
-	// default nested values preserved.
+	// Local can toggle the ML content scanner on/off and tweak individual
+	// knobs. Nested blocks (`local`, `huggingface`, `custom_http`, `scan_points`)
+	// are deep-merged so a partial override like `{local: {pool_size: 1}}`
+	// keeps the default python_bin / sidecar_script / timeouts intact.
+	// (A previous shallow `Object.assign` replaced whole nested objects and
+	// silently dropped required defaults.)
 	if (local.content_scanner) {
 		if (config.content_scanner) {
-			Object.assign(config.content_scanner, local.content_scanner);
+			mergeContentScanner(config.content_scanner, local.content_scanner);
 		} else {
 			config.content_scanner = local.content_scanner;
 		}
 	}
+}
+
+/** Deep-merge overrides for the content scanner config. Nested blocks
+ *  (local/huggingface/custom_http/scan_points) are field-merged so a
+ *  partial override like `{local: {pool_size: 1}}` preserves the default
+ *  python_bin / sidecar_script / timeouts. Scalar top-level knobs overwrite. */
+function mergeContentScanner(
+	target: NonNullable<GuardRulesConfig["content_scanner"]>,
+	override: Partial<NonNullable<GuardRulesConfig["content_scanner"]>>,
+): void {
+	if (override.enabled !== undefined) target.enabled = override.enabled;
+	if (override.runtime !== undefined) target.runtime = override.runtime;
+	if (override.min_score !== undefined) target.min_score = override.min_score;
+	if (override.max_scan_bytes !== undefined) target.max_scan_bytes = override.max_scan_bytes;
+	if (override.local) Object.assign(target.local, override.local);
+	if (override.huggingface) Object.assign(target.huggingface, override.huggingface);
+	if (override.custom_http) Object.assign(target.custom_http, override.custom_http);
+	if (override.scan_points) Object.assign(target.scan_points, override.scan_points);
 }

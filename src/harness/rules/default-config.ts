@@ -546,6 +546,7 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			bash_command: true,
 			external_egress: true,
 			read_grep_taint: true,
+			user_prompt: true,
 		},
 		local: {
 			python_bin: "python3",
@@ -559,6 +560,11 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			// Free the model after 30 min idle to reclaim RAM; next scan re-spawns.
 			idle_shutdown_ms: 30 * 60 * 1000,
 			max_restarts: 3,
+			// Three sidecars behind a round-robin pool — each Python instance is
+			// single-threaded, so N children give N× concurrency for parallel
+			// scans from multiple Claude sessions. ~800 MB per instance.
+			// Children spawn lazily, so an idle workstation pays zero.
+			pool_size: 3,
 		},
 		huggingface: {
 			// NOT `openai/privacy-filter` — that model requires `trust_remote_code=True`

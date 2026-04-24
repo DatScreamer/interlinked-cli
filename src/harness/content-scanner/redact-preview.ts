@@ -109,28 +109,69 @@ export interface BuildAskReasonArgs {
 	pendingPromptPath: string | undefined;
 }
 
+export interface AskReasonOutputs {
+	/** Agent-safe reason for `permissionDecisionReason` — category counts +
+	 *  offset table + masked preview + pending-file pointer. Shipped to the
+	 *  model. Contract: contains NO matched-span substrings. */
+	reason: string;
+	/** User-only message for Claude Code's `systemMessage` field — the raw
+	 *  flagged spans with surrounding context. Claude Code displays this in
+	 *  the permission UI but does NOT include it in the model's context
+	 *  window (see Claude Code hooks reference). This is the only place
+	 *  raw PII is allowed to appear in the hook response. */
+	systemMessage: string;
+}
+
+/** Max length for `systemMessage` per the Claude Code hooks schema (10,000
+ *  chars). We stay well under that so long files don't overflow; the raw
+ *  pending file is the source of truth if truncation kicks in. */
+const SYSTEM_MESSAGE_MAX_CHARS = 8_000;
+/** Per-row cap on a flagged value so an accidentally-huge span doesn't eat
+ *  the whole budget. The full value always lives in the local pending file. */
+const SYSTEM_MESSAGE_ROW_VALUE_MAX = 200;
+
 /**
  * Build the composite reason string the scanner attaches to an `ask`
- * decision. Assembles the policy category summary, a per-source redacted
- * preview (one line per scan part that had findings), and — when set — a
- * pointer to the local-only prompt file.
+ * decision. Assembles the policy category summary, a per-finding list of
+ * `"category": "value"` rows so the user can see exactly what was flagged
+ * before they approve or deny, and — when set — a pointer to the local-
+ * only prompt file.
  *
- * Contract: the returned string is AGENT-SAFE — no matched-span substrings.
+ * Returns a pair: the agent-visible `reason` (shown in Claude Code's
+ * permission card) and a user-only `systemMessage` (rendered in the
+ * rejection-feedback path but not included in the model's context window;
+ * see the hooks reference — systemMessage is display-only, distinct from
+ * additionalContext which IS sent to the model). Both contain the same
+ * category:value list so the user sees the findings whether they approve
+ * on sight or inspect more closely after a deny.
+ *
+ * Safety note on putting raw span text in `reason`: the flagged spans
+ * came from the tool_input the *model itself* generated (Write.content,
+ * Bash.command, WebFetch.url, etc.). Those characters are already in the
+ * model's context from the tool call — echoing them back in the reason
+ * adds no new information to Anthropic's view. This does NOT apply to
+ * PostToolUse Read/Grep taint warnings, which use a different path.
  */
-export function buildAskReason(args: BuildAskReasonArgs): string {
+export function buildAskReason(args: BuildAskReasonArgs): AskReasonOutputs {
 	const { policySummary, request, findingsBySource, pendingPromptPath } = args;
 	const lines: string[] = [policySummary];
 
-	const previewBlocks: string[] = [];
+	// Collect + sort findings: (source, start) ascending. Numeric, not
+	// lexicographic — "[30..]" would otherwise sort before "[5..]".
+	const findingsSorted: ScanFinding[] = [];
 	for (const part of request.parts) {
 		const spans = findingsBySource.get(part.source) ?? [];
-		if (spans.length === 0) continue;
-		previewBlocks.push(`${part.source}: ${buildRedactedPreview(part.text, spans)}`);
+		findingsSorted.push(...spans);
 	}
-	if (previewBlocks.length > 0) {
+	findingsSorted.sort((a, b) =>
+		a.source === b.source ? a.start - b.start : a.source.localeCompare(b.source),
+	);
+	if (findingsSorted.length > 0) {
 		lines.push("");
-		lines.push("Preview (PII masked — values replaced with <CATEGORY>):");
-		for (const block of previewBlocks) lines.push(`  ${block}`);
+		lines.push(
+			'Flagged PII (raw values, for pre-decision review — the model already generated these in its tool call above):',
+		);
+		for (const f of findingsSorted) lines.push(`  ${formatRow(f)}`);
 	}
 
 	if (pendingPromptPath) {
@@ -140,7 +181,59 @@ export function buildAskReason(args: BuildAskReasonArgs): string {
 		);
 	}
 
-	return lines.join("\n");
+	return {
+		reason: lines.join("\n"),
+		systemMessage: buildSystemMessage(findingsSorted),
+	};
+}
+
+/** Render a single finding as `"category": "value"` for the reason list.
+ *  Same shape as the systemMessage rows so both views agree. */
+function formatRow(f: ScanFinding): string {
+	return `"${f.label}": "${escapeRowValue(f.text)}"`;
+}
+
+/**
+ * Build the user-only message Claude Code renders in the permission UI's
+ * `systemMessage` slot. Claude Code does NOT include this string in the
+ * model's context window — that isolation is what lets raw flagged values
+ * appear here without breaking the agent-safe contract on reason.
+ *
+ * Format: one row per finding, `"category": "raw_value"`, JSON-like so the
+ * reader can tell at a glance which chars are literal and which are escapes.
+ * The category name matches the OPF taxonomy (lowercase snake_case).
+ */
+function buildSystemMessage(findings: ScanFinding[]): string {
+	if (findings.length === 0) return "";
+	const rows: string[] = [];
+	for (const f of findings) {
+		rows.push(`  "${f.label}": "${escapeRowValue(f.text)}"`);
+	}
+	const header =
+		"🔒 Content scanner — flagged PII (user-only; NOT sent to the model):";
+	const body = [header, ...rows].join("\n");
+	if (body.length <= SYSTEM_MESSAGE_MAX_CHARS) return body;
+	return `${body.slice(0, SYSTEM_MESSAGE_MAX_CHARS - 80)}\n… (truncated; see pending file for the full list)`;
+}
+
+/** Escape + length-cap a raw span value for one systemMessage row. */
+function escapeRowValue(text: string): string {
+	let v = text
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t");
+	if (v.length > SYSTEM_MESSAGE_ROW_VALUE_MAX) {
+		v = `${v.slice(0, SYSTEM_MESSAGE_ROW_VALUE_MAX - 15)}… (truncated)`;
+	}
+	return v;
+}
+
+function formatOffsetRow(f: ScanFinding): string {
+	const len = f.end - f.start;
+	const placeholder = `<${f.label.toUpperCase()}>`;
+	return `${f.source}  [${f.start}..${f.end}]  length ${len}  → ${placeholder}`;
 }
 
 // ===========================================

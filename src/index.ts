@@ -438,6 +438,54 @@ harnessCmd
 		await harnessTestCommand(command, opts);
 	});
 
+const scannerCmd = program
+	.command("scanner")
+	.description("PII filter (content scanner) — toggle, inspect, audit");
+
+scannerCmd
+	.command("on")
+	.description("Enable the PII filter (content scanner)")
+	.option("--reason <text>", "Why — recorded in content-scanner.audit.jsonl")
+	.option("--json", "Machine-readable output")
+	.option("--short", "One-line summary")
+	.action(async (opts: OptionValues) => {
+		const { scannerOnCommand } = await import("./commands/scanner.js");
+		await scannerOnCommand(opts);
+	});
+
+scannerCmd
+	.command("off")
+	.description("Disable the PII filter. The exact timestamp is recorded in the audit log.")
+	.option("--reason <text>", "Why — recorded in content-scanner.audit.jsonl")
+	.option("--json", "Machine-readable output")
+	.option("--short", "One-line summary")
+	.action(async (opts: OptionValues) => {
+		const { scannerOffCommand } = await import("./commands/scanner.js");
+		await scannerOffCommand(opts);
+	});
+
+scannerCmd
+	.command("toggle")
+	.description("Flip the PII filter on/off and record the transition")
+	.option("--reason <text>", "Why — recorded in content-scanner.audit.jsonl")
+	.option("--json", "Machine-readable output")
+	.option("--short", "One-line summary")
+	.action(async (opts: OptionValues) => {
+		const { scannerToggleCommand } = await import("./commands/scanner.js");
+		await scannerToggleCommand(opts);
+	});
+
+scannerCmd
+	.command("status")
+	.description("Show PII filter config + runtime state + recent toggle audit")
+	.option("--json", "Machine-readable output")
+	.option("--short", "One-line summary")
+	.option("--full", "Detailed output")
+	.action(async (opts: OptionValues) => {
+		const { scannerStatusCommand } = await import("./commands/scanner.js");
+		await scannerStatusCommand(opts);
+	});
+
 program
 	.command("inbox")
 	.description("Show recent messages from the server")

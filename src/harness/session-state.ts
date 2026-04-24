@@ -13,12 +13,17 @@ export class SessionTracker {
 	}
 
 	recordEvent(event: HarnessEvent): SessionTrajectory {
-		let session = this.sessions.get(event.session_id);
+		// Defensive: some event shapes arrive without a session_id (e.g., certain
+		// SessionStart variants, malformed probes). Synthesize a fallback id
+		// instead of crashing — a dropped session trajectory is better than a
+		// dead harness that fails open on the next PreToolUse scan.
+		const sessionId = event.session_id || `unknown-${Date.now().toString(36)}`;
+		let session = this.sessions.get(sessionId);
 
 		if (!session) {
 			session = {
-				session_id: event.session_id,
-				agent_name: event.agent_name || `session-${event.session_id.slice(0, 8)}`,
+				session_id: sessionId,
+				agent_name: event.agent_name || `session-${sessionId.slice(0, 8)}`,
 				started_at: event.timestamp,
 				tool_call_count: 0,
 				error_count: 0,

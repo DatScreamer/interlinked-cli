@@ -52,14 +52,24 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
                         }};
                     case "pre_block":
                         return { decision: "block", reason: data.reason };
-                    case "pre_ask":
+                    case "pre_ask": {
                         // Surface Claude Code's permission prompt so the user
                         // confirms per-call. Matches pre_block registry phase.
-                        return { hookSpecificOutput: {
+                        //
+                        // \`systemMessage\` (top-level, universal) is the
+                        // user-only channel per the Claude Code hooks reference
+                        // — shown in the permission UI but NOT included in the
+                        // model's context window. The content scanner uses it
+                        // to surface raw flagged PII values while keeping
+                        // permissionDecisionReason agent-safe.
+                        const askResp = { hookSpecificOutput: {
                             hookEventName: preEventEcho,
                             permissionDecision: "ask",
                             permissionDecisionReason: data.reason,
                         }};
+                        if (data.systemMessage) askResp.systemMessage = data.systemMessage;
+                        return askResp;
+                    }
                     case "post_block":
                         return { decision: "block", reason: data.reason };
                     case "post_success":

@@ -45,6 +45,7 @@ Commands:
   reset [options]                            Nuclear: clear all local state
   resume [options] [checkpoint-id]           Resume from latest or specified checkpoint with context
   rewind [options] [checkpoint-id]           Restore working tree to a checkpoint state
+  scanner                                    PII filter (content scanner) — toggle, inspect, audit
   search [options] <query>                   Search the local codebase (ripgrep with native fallback)
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate

@@ -42,6 +42,7 @@ describe("type shapes (compile-time sanity)", () => {
 				bash_command: true,
 				external_egress: true,
 				read_grep_taint: true,
+				user_prompt: true,
 			},
 			local: {
 				python_bin: "python3",
@@ -81,14 +82,15 @@ describe("type shapes (compile-time sanity)", () => {
 		expect(req.signal?.aborted).toBe(false);
 	});
 
-	it("ContentScanRequest accepts all four hook phases", () => {
+	it("ContentScanRequest accepts all five hook phases", () => {
 		const hooks: ContentScanRequest["hook"][] = [
 			"pre_write_edit",
 			"pre_bash_command",
 			"pre_external_egress",
 			"post_read_grep",
+			"user_prompt",
 		];
-		expect(hooks).toHaveLength(4);
+		expect(hooks).toHaveLength(5);
 	});
 
 	it("ContentScanner can be structurally implemented by a stub", () => {

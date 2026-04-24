@@ -11,6 +11,7 @@ function makeConfig(): ContentScannerConfig {
 			bash_command: true,
 			external_egress: true,
 			read_grep_taint: true,
+			user_prompt: true,
 		},
 		local: {
 			python_bin: "python3",

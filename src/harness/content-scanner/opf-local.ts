@@ -7,11 +7,13 @@
 // stamps each finding with the originating source field so the policy layer
 // can group findings across multiple scan parts from the same event.
 
-import { SidecarManager } from "./sidecar-manager.js";
+import { SidecarManager, type SidecarStatus } from "./sidecar-manager.js";
+import { SidecarPool } from "./sidecar-pool.js";
 import type {
 	ContentScanner,
 	ContentScannerConfig,
 	ScanFinding,
+	ScannerStatus,
 	ScanRequest,
 } from "./types.js";
 
@@ -30,24 +32,73 @@ export interface SidecarLike {
 		redacted_text?: string;
 	}>;
 	shutdown(): Promise<void>;
+	/** Optional — only real `SidecarManager` exposes lifecycle; test fakes don't have to. */
+	getStatus?(): SidecarStatus;
+}
+
+/** Map the sidecar's internal state enum to the public scanner state. */
+function projectStatus(s: SidecarStatus): ScannerStatus {
+	const state: ScannerStatus["state"] = s.state === "spawning" ? "starting" : s.state;
+	return { state, pid: s.pid, detail: s.detail, sinceIso: s.sinceIso };
 }
 
 export class OpfLocalScanner implements ContentScanner {
 	readonly name = "opf-local";
 	readonly runtime = "local" as const;
 	private readonly sidecar: SidecarLike;
+	private statusListeners: Array<(status: ScannerStatus) => void> = [];
+	private lastStatus: ScannerStatus = {
+		state: "idle",
+		sinceIso: new Date().toISOString(),
+	};
 
 	constructor(private readonly config: ContentScannerConfig, sidecar?: SidecarLike) {
+		// Pool size defaults to 3: we've tested 1/2/3 and 3 handles ~8 concurrent
+		// Claude sessions without the 1.5 s scan budget aborting. Configurable
+		// via guard-rules.local.json → content_scanner.local.pool_size.
+		const poolSize = config.local.pool_size ?? 3;
+		const poolOpts = {
+			python_bin: config.local.python_bin,
+			script_path: config.local.sidecar_script,
+			startup_timeout_ms: config.local.startup_timeout_ms,
+			scan_timeout_ms: config.local.scan_timeout_ms,
+			idle_shutdown_ms: config.local.idle_shutdown_ms,
+			max_restarts: config.local.max_restarts,
+			onStatusChange: (s: SidecarStatus) => {
+				this.lastStatus = projectStatus(s);
+				for (const cb of this.statusListeners) {
+					try {
+						cb(this.lastStatus);
+					} catch {
+						// best-effort — never let a listener take down the scanner
+					}
+				}
+			},
+		};
+		// Degenerate pool_size=1 uses the bare SidecarManager so we don't pay
+		// the wrapper's indirection when nobody wants concurrency.
 		this.sidecar =
 			sidecar ??
-			new SidecarManager({
-				python_bin: config.local.python_bin,
-				script_path: config.local.sidecar_script,
-				startup_timeout_ms: config.local.startup_timeout_ms,
-				scan_timeout_ms: config.local.scan_timeout_ms,
-				idle_shutdown_ms: config.local.idle_shutdown_ms,
-				max_restarts: config.local.max_restarts,
-			});
+			(poolSize > 1
+				? new SidecarPool({ ...poolOpts, pool_size: poolSize })
+				: new SidecarManager(poolOpts));
+		// If an external sidecar was injected (test fake), seed status from it if possible.
+		if (sidecar?.getStatus) this.lastStatus = projectStatus(sidecar.getStatus());
+	}
+
+	onStatusChange(cb: (status: ScannerStatus) => void): void {
+		this.statusListeners.push(cb);
+		// Fire immediately so the subscriber sees the current state without
+		// having to wait for the next transition.
+		try {
+			cb(this.lastStatus);
+		} catch {
+			// best-effort
+		}
+	}
+
+	getStatus(): ScannerStatus {
+		return this.lastStatus;
 	}
 
 	async ready(): Promise<boolean> {

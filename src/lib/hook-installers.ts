@@ -164,7 +164,26 @@ if [ -n "$PID" ] && ps -p "$PID" > /dev/null 2>&1; then
             *:ready)  CLS=" · \${DIM}cls ●\${RESET}" ;;
         esac
     fi
-    printf "%b" "\${GREEN}interlinked \${BOLD}▲\${RESET}\${DIM} pid \${PID} ·\${RESET} \${TS_FMT}\${CLS}"
+
+    # Content scanner (privacy filter) status — parallels CLS.
+    # Written by the harness to .interlinked/content-scanner.status.
+    # States: disabled / starting / ready:<pid> / dormant / down:<reason>
+    SCAN=""
+    SCAN_FILE=""
+    for candidate in ".interlinked/content-scanner.status" "cli/.interlinked/content-scanner.status"; do
+        [ -f "$candidate" ] && SCAN_FILE="$candidate" && break
+    done
+    if [ -n "$SCAN_FILE" ]; then
+        SCAN_RAW=$(cat "$SCAN_FILE" 2>/dev/null)
+        case "$SCAN_RAW" in
+            disabled) SCAN=" · \${DIM}PII filter off\${RESET}" ;;
+            ready:*)  SCAN=" · \${GREEN}PII filter ✓\${RESET}" ;;
+            starting) SCAN=" · \${YELLOW}PII filter …\${RESET}" ;;
+            dormant)  SCAN=" · \${DIM}PII filter ●\${RESET}" ;;
+            down:*)   SCAN=" · \${YELLOW}PII filter ✗\${RESET}" ;;
+        esac
+    fi
+    printf "%b" "\${GREEN}interlinked \${BOLD}▲\${RESET}\${DIM} pid \${PID} ·\${RESET} \${TS_FMT}\${CLS}\${SCAN}"
 else
     printf "%b" "\${YELLOW}interlinked \${BOLD}▼\${RESET}\${DIM} stale\${RESET}"
 fi

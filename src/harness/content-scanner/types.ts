@@ -55,6 +55,9 @@ export interface ContentScannerConfig {
 		external_egress: boolean;
 		/** PostToolUse — Read/Grep results → taint ratchet (no block). */
 		read_grep_taint: boolean;
+		/** UserPromptSubmit — mask PII in the user's prompt before it's persisted
+		 *  to activity.jsonl. Never blocks the prompt; redacts the recorded copy. */
+		user_prompt: boolean;
 	};
 
 	/** Local Python sidecar knobs. */
@@ -71,6 +74,13 @@ export interface ContentScannerConfig {
 		idle_shutdown_ms: number;
 		/** Cap on crash respawns per session. Default: 3. */
 		max_restarts: number;
+		/** Number of sidecar processes to run behind a round-robin pool.
+		 *  Default: 3. Each sidecar is single-threaded (Python), so N children
+		 *  give N× concurrency for parallel scan requests from multiple
+		 *  sessions. Children spawn lazily — pool_size is a MAX, not a MIN.
+		 *  Optional for backward compatibility — callers that omit it fall
+		 *  back to the default inside OpfLocalScanner. */
+		pool_size?: number;
 	};
 
 	/** HuggingFace Inference API knobs (for gpt-oss-safeguard and future models). */
@@ -127,6 +137,29 @@ export interface ScanRequest {
 }
 
 /**
+ * Backend-agnostic lifecycle snapshot surfaced to the harness so the statusline
+ * and `harness status` can show whether the scanner is actually running.
+ *
+ * State machine:
+ *   - idle        never attempted a scan yet (initial)
+ *   - starting    spawn kicked off / first request in flight
+ *   - ready       backend served at least one successful response
+ *   - dormant     transient close (idle-timer, recoverable crash) — will re-spawn
+ *   - disabled    permanent (explicit shutdown or restart-budget exhausted)
+ */
+export type ScannerState = "idle" | "starting" | "ready" | "dormant" | "disabled";
+
+export interface ScannerStatus {
+	state: ScannerState;
+	/** Populated for backends that run an OS process (local sidecar). */
+	pid?: number;
+	/** Short human-readable context ("exceeded max_restarts", "child exited (code=1)"). */
+	detail?: string;
+	/** ISO timestamp of the last transition into `state`. */
+	sinceIso: string;
+}
+
+/**
  * Uniform interface all backends implement. `ready()` is a cheap probe
  * (ping the sidecar, HEAD the endpoint) — it MAY cause a lazy spawn for
  * the local backend but must return within the configured timeout.
@@ -138,6 +171,14 @@ export interface ContentScanner {
 	ready(): Promise<boolean>;
 	scan(req: ScanRequest): Promise<ScanFinding[]>;
 	shutdown(): Promise<void>;
+	/**
+	 * Register a callback fired on every lifecycle transition. Optional —
+	 * backends that don't model lifecycle (e.g., stateless HTTP) may omit this.
+	 * The harness uses it to write `.interlinked/content-scanner.status`.
+	 */
+	onStatusChange?(cb: (status: ScannerStatus) => void): void;
+	/** Read the current lifecycle snapshot. Optional for the same reason. */
+	getStatus?(): ScannerStatus;
 }
 
 /**
@@ -150,7 +191,8 @@ export interface ContentScanRequest {
 		| "pre_write_edit"
 		| "pre_bash_command"
 		| "pre_external_egress"
-		| "post_read_grep";
+		| "post_read_grep"
+		| "user_prompt";
 	/** One entry per distinct string field worth scanning. */
 	parts: Array<{ source: string; text: string }>;
 }

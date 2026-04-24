@@ -52,6 +52,27 @@ export type SpawnFn = (
 	options: SpawnOptions,
 ) => ChildProcess;
 
+/**
+ * Lifecycle state surfaced for external observability (statusline, harness status).
+ *   - idle      never spawned yet this session
+ *   - spawning  child forked, awaiting first successful response
+ *   - ready     child has served at least one response; restart budget reset
+ *   - dormant   child was closed (idle timer OR transient crash) — will re-spawn on next send
+ *   - disabled  permanent: explicit shutdown() OR spawn budget exhausted
+ */
+export type SidecarLifecycleState = "idle" | "spawning" | "ready" | "dormant" | "disabled";
+
+export interface SidecarStatus {
+	state: SidecarLifecycleState;
+	pid?: number;
+	/** Number of spawn attempts during the current crash/error sequence. Resets to 0 on success. */
+	restartCount: number;
+	/** One-line detail suitable for logs / statusline (never contains scanned text). */
+	detail?: string;
+	/** ISO timestamp of the last transition into `state`. */
+	sinceIso: string;
+}
+
 export interface SidecarManagerOptions {
 	python_bin: string;
 	script_path: string;
@@ -63,6 +84,8 @@ export interface SidecarManagerOptions {
 	spawn?: SpawnFn;
 	/** Test hook — defaults to writing to `process.stderr`. */
 	stderrSink?: (chunk: string) => void;
+	/** Fired on every status transition. Best-effort; callback errors are swallowed. */
+	onStatusChange?: (status: SidecarStatus) => void;
 }
 
 type PendingEntry = {
@@ -92,9 +115,16 @@ function isStringId(x: unknown): x is string {
 // ===========================================
 
 /**
- * Minimal long-running subprocess wrapper. Public API is `send()` and
- * `shutdown()`; everything else is lifecycle plumbing. Spawns lazily on the
- * first `send()` so the feature imposes zero cost when disabled.
+ * Minimal long-running subprocess wrapper. Public API is `send()`,
+ * `shutdown()`, `getStatus()`; everything else is lifecycle plumbing.
+ * Spawns lazily on the first `send()` so the feature imposes zero cost
+ * when disabled.
+ *
+ * Lifecycle: explicit `shutdown()` marks the manager `disposed` (permanent,
+ * no re-spawn). Idle-timer close marks it `dormant` (transient — the next
+ * `send()` re-spawns). This split is load-bearing: conflating them caused
+ * a regression where the scanner died silently after 30 min idle and stayed
+ * dead for the rest of the session.
  */
 export class SidecarManager {
 	private child: ChildProcess | null = null;
@@ -105,16 +135,33 @@ export class SidecarManager {
 	private lineBuffer = "";
 	/** Flips true once the child has emitted its first response. Gates per-call timeouts. */
 	private booted = false;
-	private shuttingDown = false;
+	/** Set by the public `shutdown()` only. Once true, this instance is permanently dead. */
+	private disposed = false;
+	/** Transient — set by idle-close or unexpected exit. Next `send()` will re-spawn. */
+	private dormant = false;
+	private status: SidecarStatus = {
+		state: "idle",
+		restartCount: 0,
+		sinceIso: new Date().toISOString(),
+	};
 
-	constructor(private readonly opts: SidecarManagerOptions) {}
+	constructor(private readonly opts: SidecarManagerOptions) {
+		// Fire the initial state so callers (e.g., statusline writer) see "idle"
+		// before the first scan request lands. Safe in the ctor — we own the field.
+		this.fireStatus();
+	}
+
+	/** Read the current lifecycle status (for statusline / harness status command). */
+	getStatus(): SidecarStatus {
+		return this.status;
+	}
 
 	/**
 	 * Send a request to the sidecar, returning the response or a fail-open
 	 * `{ok:false, error}`. Never throws.
 	 */
 	async send(req: SidecarRequest): Promise<SidecarResponse> {
-		if (this.shuttingDown) {
+		if (this.disposed) {
 			return failResponse("sidecar is shutting down");
 		}
 
@@ -174,11 +221,12 @@ export class SidecarManager {
 
 	/** Graceful shutdown — sends `{op:"shutdown"}`, then SIGKILL if the child doesn't exit. */
 	async shutdown(): Promise<void> {
-		this.shuttingDown = true;
+		this.disposed = true;
 		if (this.idleTimer) {
 			clearTimeout(this.idleTimer);
 			this.idleTimer = null;
 		}
+		this.setStatus({ state: "disabled", detail: "explicit shutdown", pid: undefined });
 		if (!this.child) return;
 
 		const child = this.child;
@@ -214,20 +262,51 @@ export class SidecarManager {
 	private ensureSpawned(): void {
 		if (this.child && !this.child.killed) return;
 		if (this.restartCount >= this.opts.max_restarts) {
+			this.setStatus({
+				state: "disabled",
+				detail: `exceeded max_restarts (${this.opts.max_restarts})`,
+				pid: undefined,
+			});
 			throw new Error(
 				`sidecar exceeded max_restarts (${this.opts.max_restarts}); disabled for this session`,
 			);
 		}
 
+		const wasDormant = this.dormant;
+		this.dormant = false;
+
 		const spawnFn: SpawnFn = this.opts.spawn ?? nodeSpawn;
-		const child = spawnFn(this.opts.python_bin, [this.opts.script_path], {
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		let child: ChildProcess;
+		try {
+			child = spawnFn(this.opts.python_bin, [this.opts.script_path], {
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch (err) {
+			this.restartCount++;
+			this.setStatus({
+				state: "disabled",
+				detail: `spawn failed: ${formatErr(err)}`,
+				pid: undefined,
+				restartCount: this.restartCount,
+			});
+			throw err;
+		}
 
 		this.child = child;
+		// Always charge the restart counter. The counter resets to 0 on the first
+		// successful response (see deliverLine), so long-running sessions can
+		// cycle idle→respawn→idle indefinitely: each healthy respawn clears the
+		// budget. max_restarts only fires on N *consecutive* crashes with no
+		// successful response in between.
 		this.restartCount++;
 		this.booted = false;
 		this.lineBuffer = "";
+		this.setStatus({
+			state: "spawning",
+			pid: child.pid,
+			restartCount: this.restartCount,
+			detail: wasDormant ? "re-spawning after dormant" : "starting",
+		});
 
 		child.stdout?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
@@ -239,10 +318,29 @@ export class SidecarManager {
 		child.on("error", (err: Error) => {
 			this.rejectAllPending(`sidecar error: ${err.message}`);
 			this.child = null;
+			if (!this.disposed) {
+				this.dormant = true;
+				this.setStatus({
+					state: "dormant",
+					pid: undefined,
+					detail: `child error: ${err.message}`,
+				});
+			}
 		});
 		child.on("exit", (code: number | null) => {
 			this.rejectAllPending(`sidecar exited with code ${code ?? "null"}`);
 			this.child = null;
+			if (!this.disposed) {
+				// Transient close (idle timer, crash, SIGTERM) — leave the instance
+				// recoverable. Next send() will respawn unless restartCount is
+				// exhausted, in which case ensureSpawned flips state to disabled.
+				this.dormant = true;
+				this.setStatus({
+					state: "dormant",
+					pid: undefined,
+					detail: `child exited (code=${code ?? "null"})`,
+				});
+			}
 		});
 
 		this.resetIdleTimer();
@@ -273,7 +371,20 @@ export class SidecarManager {
 		if (!entry) return;
 		this.pending.delete(id);
 		entry.detach();
-		this.booted = true;
+		if (!this.booted) {
+			this.booted = true;
+			// First successful response = healthy — reset the crash counter so
+			// later blips can still respawn. Bug: without this, a single cold-load
+			// failure followed by 2 good restarts would leave the counter at 3
+			// and permanently disable the next time anything hiccupped.
+			this.restartCount = 0;
+			this.setStatus({
+				state: "ready",
+				pid: this.child?.pid,
+				restartCount: 0,
+				detail: undefined,
+			});
+		}
 		// Defensive projection — the sidecar is trusted but we validate shape
 		// before exposing the response to callers.
 		entry.resolve({
@@ -297,12 +408,65 @@ export class SidecarManager {
 	private resetIdleTimer(): void {
 		if (this.idleTimer) clearTimeout(this.idleTimer);
 		this.idleTimer = setTimeout(() => {
-			// Let the main event loop exit naturally — don't block on idle-shutdown.
-			this.shutdown().catch(() => {
+			// Idle close — NOT a full shutdown. Marks the instance dormant so the
+			// next send() can respawn. Previously this called shutdown(), which
+			// latched shuttingDown=true and silently bricked the scanner.
+			this.closeChildForIdle().catch(() => {
 				// best-effort
 			});
 		}, this.opts.idle_shutdown_ms);
 		this.idleTimer.unref?.();
+	}
+
+	/**
+	 * Close the running child to reclaim RAM (model takes ~800 MB), but leave
+	 * the manager recoverable. The exit handler installed in `ensureSpawned`
+	 * will flip state to "dormant"; next `send()` triggers a fresh spawn.
+	 */
+	private async closeChildForIdle(): Promise<void> {
+		if (!this.child || this.disposed) return;
+		const child = this.child;
+		this.dormant = true;
+		try {
+			child.stdin?.write(`${JSON.stringify({ id: "idle-shutdown", op: "shutdown" })}\n`);
+			child.stdin?.end();
+		} catch {
+			// best-effort — child may already be gone
+		}
+		// SIGKILL fallback so we don't leave orphaned processes. The exit
+		// handler will emit the dormant status transition.
+		const forceKillAfterMs = 1000;
+		const killTimer = setTimeout(() => {
+			try {
+				child.kill("SIGKILL");
+			} catch {
+				// best-effort
+			}
+		}, forceKillAfterMs);
+		killTimer.unref?.();
+	}
+
+	// ---- status tracking ----------------------------------------------------
+
+	private setStatus(patch: Partial<SidecarStatus>): void {
+		const prevState = this.status.state;
+		const nextState = patch.state ?? prevState;
+		this.status = {
+			...this.status,
+			...patch,
+			sinceIso: nextState !== prevState ? new Date().toISOString() : this.status.sinceIso,
+		};
+		this.fireStatus();
+	}
+
+	private fireStatus(): void {
+		const cb = this.opts.onStatusChange;
+		if (!cb) return;
+		try {
+			cb(this.status);
+		} catch {
+			// best-effort — never let a statusline error take down the sidecar
+		}
 	}
 }
 

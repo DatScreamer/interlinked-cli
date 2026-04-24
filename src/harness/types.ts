@@ -76,6 +76,11 @@ export interface HarnessEvent {
 	subagent_id?: string;
 	agent_type?: string;
 
+	/** UserPromptSubmit payload — the raw user prompt text. The hook copies it
+	 *  verbatim so the harness can scan for PII before the hook persists the
+	 *  record to activity.jsonl. Absent for non-prompt events. */
+	prompt?: string;
+
 	/** Agent role for capability scoping (inferred from context if not set) */
 	agent_role?: AgentRole;
 }
@@ -135,6 +140,15 @@ export interface HarnessDecision {
 	 */
 	additional_context?: string;
 	/**
+	 * User-only message surfaced via Claude Code's top-level `systemMessage`
+	 * field. Claude Code renders it in the permission UI but does NOT include
+	 * it in the model's subsequent context window (hooks reference, 2026-04).
+	 * This is the only place the content scanner is allowed to put raw PII
+	 * span values — the agent-safe `reason` is still redacted. Capped at
+	 * 10,000 chars by Claude Code; callers should stay well under.
+	 */
+	system_message?: string;
+	/**
 	 * Correlation id returned by the cloud escalation endpoint (when an
 	 * escalation actually fired). Lets downstream tooling join harness
 	 * telemetry with server-side records. Optional — local-only decisions
@@ -148,6 +162,14 @@ export interface HarnessDecision {
 	 * Optional; most decisions use `check_results` instead.
 	 */
 	findings?: CheckResultEntry[];
+	/**
+	 * Redacted copy of the user's prompt with PII/secrets masked as <LABEL>
+	 * placeholders. Set by the UserPromptSubmit branch when the content scanner
+	 * detected spans, so the hook persists the masked version to activity.jsonl
+	 * instead of the raw prompt. Never sent back to the agent's context — purely
+	 * for local storage.
+	 */
+	redacted_prompt?: string;
 }
 
 /** Structured result from a single check (quality, structural, suggestion, impact, or structure) */

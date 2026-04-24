@@ -164,7 +164,7 @@ describe("buildAskReason", () => {
 				],
 			],
 		]);
-		const reason = buildAskReason({
+		const { reason } = buildAskReason({
 			policySummary:
 				"privacy-filter detected sensitive content [private_email(1), private_person(1)].",
 			request,
@@ -172,14 +172,198 @@ describe("buildAskReason", () => {
 			pendingPromptPath: ".interlinked/scanner/pending/xyz.json",
 		});
 		expect(reason).toContain("[private_email(1), private_person(1)]");
-		expect(reason).toContain("Preview (PII masked");
-		expect(reason).toContain("WebFetch.url: https://x.com/u?email=<PRIVATE_EMAIL>");
-		expect(reason).toContain("WebFetch.prompt: fetch <PRIVATE_PERSON>'s profile");
+		expect(reason).toContain('"private_email": "alice@example.com"');
+		expect(reason).toContain('"private_person": "Alice"');
 		expect(reason).toContain(
 			"Full unmasked content: .interlinked/scanner/pending/xyz.json  (local-only — not sent to Anthropic)",
 		);
-		expect(reason).not.toContain("alice@example.com");
-		expect(reason).not.toContain("Alice");
+	});
+
+	it("renders one `\"category\": \"value\"` row per finding so users can spot false positives", () => {
+		// Regression: the original design hid spans behind <CATEGORY> placeholders,
+		// which made true positives and false positives indistinguishable. The
+		// raw values echoed here come from the tool_input the model itself
+		// generated (Bash.command, Write.content, etc.), so repeating them in
+		// the reason adds no new information to Anthropic's context.
+		const request: ContentScanRequest = {
+			hook: "pre_bash_command",
+			parts: [
+				{
+					source: "Bash.command",
+					text: "echo 'scanner status file:'\ncat .interlinked/content-scanner.status",
+				},
+			],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"Bash.command",
+				[
+					finding({
+						label: "private_person",
+						start: 28,
+						text: "cat .interlinked/content-scanner",
+						source: "Bash.command",
+					}),
+				],
+			],
+		]);
+		const { reason } = buildAskReason({
+			policySummary: "privacy-filter detected sensitive content [private_person(1)].",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(reason).toContain("Flagged PII");
+		expect(reason).toContain('"private_person": "cat .interlinked/content-scanner"');
+	});
+
+	it("sorts rows per-source by start offset (numeric, not lexicographic)", () => {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: "A".repeat(50) }],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[
+					finding({ label: "secret", start: 30, text: "LATE", source: "Write.content" }),
+					finding({
+						label: "private_person",
+						start: 5,
+						text: "EARLY",
+						source: "Write.content",
+					}),
+				],
+			],
+		]);
+		const { reason } = buildAskReason({
+			policySummary:
+				"privacy-filter detected sensitive content [secret(1), private_person(1)].",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(reason.indexOf("EARLY")).toBeGreaterThanOrEqual(0);
+		expect(reason.indexOf("LATE")).toBeGreaterThan(reason.indexOf("EARLY"));
+	});
+
+	it("omits the Flagged PII block entirely when there are zero findings", () => {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: "no pii here" }],
+		};
+		const { reason } = buildAskReason({
+			policySummary: "(no findings)",
+			request,
+			findingsBySource: new Map(),
+			pendingPromptPath: undefined,
+		});
+		expect(reason).not.toContain("Flagged PII");
+	});
+
+	// systemMessage is the user-only channel: Claude Code renders it in the
+	// permission UI but does NOT include it in the model's context window.
+	// These tests share a fixture because they exercise the same call — one
+	// assertion per test so a failure points straight at the broken invariant.
+	function buildAliceFixture() {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [
+				{ source: "Write.content", text: "Email Alice at alice@example.com by Friday" },
+			],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[
+					finding({ label: "private_person", start: 6, text: "Alice", source: "Write.content" }),
+					finding({
+						label: "private_email",
+						start: 15,
+						text: "alice@example.com",
+						source: "Write.content",
+					}),
+				],
+			],
+		]);
+		return buildAskReason({
+			policySummary:
+				"privacy-filter detected sensitive content [private_email(1), private_person(1)].",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+	}
+
+	it("includes the same raw spans in `reason` so the user sees them before deciding", () => {
+		// Per the post-2026-04 design change: the model already saw these
+		// exact characters in the tool_input it generated, so echoing them
+		// in the reason adds no new info to Anthropic's context — and the
+		// user needs them visible in the ask card to judge FPs/TPs pre-click.
+		const { reason } = buildAliceFixture();
+		expect(reason).toMatch(/Alice.*alice@example\.com/s);
+	});
+
+	it("includes raw span values in systemMessage (the user-only rejection-feedback channel)", () => {
+		const { systemMessage } = buildAliceFixture();
+		expect(systemMessage).toMatch(/Alice.*alice@example\.com/s);
+	});
+
+	it("formats each systemMessage row as `\"category\": \"value\"` (lowercase OPF label)", () => {
+		const { systemMessage } = buildAliceFixture();
+		expect(systemMessage).toContain('"private_person": "Alice"');
+	});
+
+	it("emits one systemMessage row per finding, in scan order", () => {
+		const { systemMessage } = buildAliceFixture();
+		expect(systemMessage).toMatch(
+			/"private_person": "Alice"[\s\S]*"private_email": "alice@example\.com"/,
+		);
+	});
+
+	it("returns an empty systemMessage when there are zero findings", () => {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: "no pii here" }],
+		};
+		const { systemMessage } = buildAskReason({
+			policySummary: "(no findings)",
+			request,
+			findingsBySource: new Map(),
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage).toBe("");
+	});
+
+	it("truncates systemMessage at the Claude Code 10K-char cap with a breadcrumb", () => {
+		// A massive finding payload must not blow past the hook-reference cap.
+		// We aim for ~8K to stay safely under the 10K limit that Claude Code
+		// enforces on systemMessage / additionalContext / stdout.
+		const spans: ScanFinding[] = [];
+		const partText = "X".repeat(20_000);
+		for (let i = 0; i < 500; i++) {
+			spans.push(
+				finding({
+					label: "secret",
+					start: i * 20,
+					text: "X".repeat(10),
+					source: "Write.content",
+				}),
+			);
+		}
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: partText }],
+		};
+		const findings = new Map<string, ScanFinding[]>([["Write.content", spans]]);
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: ".interlinked/scanner/pending/huge.json",
+		});
+		expect(systemMessage.length).toBeLessThanOrEqual(8_000);
+		expect(systemMessage).toContain("truncated");
 	});
 
 	it("omits the file pointer when no pending-prompt path was written", () => {
@@ -200,7 +384,7 @@ describe("buildAskReason", () => {
 				],
 			],
 		]);
-		const reason = buildAskReason({
+		const { reason } = buildAskReason({
 			policySummary: "privacy-filter detected sensitive content [private_email(1)].",
 			request,
 			findingsBySource: findings,

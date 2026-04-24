@@ -21,7 +21,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "../lib/json-types.js";
 import {
@@ -36,6 +36,7 @@ import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from ".
 import { CohortManager } from "./cohort.js";
 import { decideFromFindings } from "./content-scanner/policy.js";
 import { runPostToolScan } from "./content-scanner/post-scan.js";
+import { scanUserPrompt } from "./content-scanner/prompt-scan.js";
 import { buildAskReason, writePendingPrompt } from "./content-scanner/redact-preview.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
@@ -81,6 +82,7 @@ import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
+import { sanitizeSessionId } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
@@ -183,6 +185,18 @@ const contentScanner: ContentScanner | undefined = rules.content_scanner
 if (contentScanner) {
 	// Visible at startup so agents know the scanner is in-line.
 	logAlways(`Content scanner: enabled (${contentScanner.name} / ${contentScanner.runtime})`);
+	if (contentScanner.onStatusChange) {
+		// Statusline writer — every lifecycle transition (spawn, ready, dormant,
+		// disabled) lands a single-line marker at .interlinked/content-scanner.status.
+		contentScanner.onStatusChange((s) => {
+			writeScannerStatus(formatScannerStatusLine(s));
+		});
+	} else {
+		// HTTP backends don't currently surface state — treat them as running.
+		writeScannerStatus(`ready:${contentScanner.runtime}`);
+	}
+} else {
+	writeScannerStatus("disabled");
 }
 
 // --- Auto-coordination state ---
@@ -325,6 +339,43 @@ function writeClassifierStatus(status: string): void {
 }
 
 // ===========================================
+// Content Scanner Status (read by statusline script)
+// ===========================================
+// Parallels CLASSIFIER_STATUS_PATH. One-line states consumed by the bash
+// statusline: disabled / starting / ready:<pid> / dormant / down:<reason>.
+
+const SCANNER_STATUS_PATH = join(INTERLINKED_DIR, "content-scanner.status");
+
+function writeScannerStatus(status: string): void {
+	try {
+		writeFileSync(SCANNER_STATUS_PATH, status);
+	} catch (e) {
+		void e;
+	}
+}
+
+/** Collapse a `ScannerStatus` into the one-line shell-grepable format. */
+function formatScannerStatusLine(s: {
+	state: string;
+	pid?: number;
+	detail?: string;
+}): string {
+	switch (s.state) {
+		case "ready":
+			return `ready:${s.pid ?? "?"}`;
+		case "dormant":
+			return "dormant";
+		case "starting":
+		case "idle":
+			return "starting";
+		case "disabled":
+			return `down:${s.detail ?? "unknown"}`;
+		default:
+			return s.state;
+	}
+}
+
+// ===========================================
 // Idle Timer
 // ===========================================
 
@@ -397,8 +448,29 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				const saveResult = tryFn(() => {
 					const sessDir = join(CWD, ".interlinked", "sessions");
 					if (!existsSync(sessDir)) mkdirSync(sessDir, { recursive: true });
+					// SECURITY: event.session_id arrives over the Unix socket as
+					// arbitrary JSON-parsed data. Without sanitization, a payload
+					// like "../../../.config/target" would escape sessDir via
+					// path.join (which does not contain traversal). We both
+					// sanitize (whitelist charset + length cap) and containment-
+					// check the resolved path before writing.
+					const safeId = sanitizeSessionId(event.session_id);
+					if (!safeId) {
+						throw new Error("invalid session_id: no safe characters");
+					}
+					const targetPath = join(sessDir, `${safeId}.trajectory.json`);
+					const resolvedDir = resolve(sessDir);
+					const resolvedTarget = resolve(targetPath);
+					if (
+						resolvedTarget !== resolvedDir &&
+						!resolvedTarget.startsWith(resolvedDir + sep)
+					) {
+						throw new Error(
+							`refusing to write trajectory outside sessions dir: ${resolvedTarget}`,
+						);
+					}
 					writeFileSync(
-						join(sessDir, `${event.session_id}.trajectory.json`),
+						targetPath,
 						JSON.stringify(
 							{
 								...trajectory,
@@ -431,9 +503,24 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				warnings: turnWarnings.length > 0 ? turnWarnings : undefined,
 			};
 		}
-		case "UserPromptSubmit":
+		case "UserPromptSubmit": {
 			cohort.recordActivity(event);
-			break;
+			// Scan the prompt for PII. On findings, return a redacted copy so the
+			// hook stores the masked version in activity.jsonl instead of the raw.
+			// Never blocks — users are always allowed to submit their own prompts;
+			// this is storage hygiene, not a policy gate.
+			if (rules.content_scanner?.enabled && contentScanner) {
+				const promptText = event.prompt ?? "";
+				const scanResult = await scanUserPrompt(promptText, rules, contentScanner);
+				if (scanResult) {
+					log(
+						`Content scanner: UserPromptSubmit — ${scanResult.findings.length} finding(s), redacted for local log`,
+					);
+					return { decision: "allow", redacted_prompt: scanResult.redacted };
+				}
+			}
+			return { decision: "allow" };
+		}
 		case "SubagentStart":
 			cohort.subagentJoined(event);
 			log(`Subagent joined: ${event.agent_name || "unnamed"}`);
@@ -594,12 +681,18 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					toolName: event.tool_name ?? "unknown",
 				});
 				preDecision.decision = "ask";
-				preDecision.reason = buildAskReason({
+				const askOutputs = buildAskReason({
 					policySummary: verdict.reason ?? "privacy-filter detected sensitive content.",
 					request: scanReq,
 					findingsBySource,
 					pendingPromptPath,
 				});
+				preDecision.reason = askOutputs.reason;
+				// Raw flagged values are surfaced here only — Claude Code's
+				// `systemMessage` is shown to the user but NOT included in the
+				// model's context window (hooks reference). This is the sole
+				// agent-safe channel for raw PII.
+				if (askOutputs.systemMessage) preDecision.system_message = askOutputs.systemMessage;
 			}
 		}
 
@@ -2018,6 +2111,22 @@ const unwatchRules = watchRulesFiles(CWD, (newRules) => {
 		);
 	} else {
 		writeClassifierStatus("disabled");
+	}
+	// Update scanner status on config reload. If the user toggled off via
+	// `interlinked scanner off`, the flag flips here; scan paths already
+	// short-circuit on rules.content_scanner?.enabled so no further scans run.
+	// The existing sidecar stays alive until its idle timer fires, which is
+	// fine — it just sits dormant. On toggle-back-on we reuse the live scanner.
+	if (!rules.content_scanner?.enabled) {
+		writeScannerStatus("disabled");
+	} else if (contentScanner?.getStatus) {
+		writeScannerStatus(formatScannerStatusLine(contentScanner.getStatus()));
+	} else if (contentScanner) {
+		writeScannerStatus(`ready:${contentScanner.runtime}`);
+	} else {
+		// Config flipped from disabled→enabled at runtime, but the scanner
+		// was not constructed at startup. Requires a harness restart to pick up.
+		writeScannerStatus("down:needs_restart");
 	}
 	// Update auto-coordination config
 	Object.assign(autoCoordConfig, DEFAULT_AUTO_COORDINATION_CONFIG, rules.auto_coordination || {});
