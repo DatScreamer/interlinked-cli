@@ -6,7 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, resolve, sep } from "node:path";
+import { extname, isAbsolute, resolve, sep } from "node:path";
 import { configNameToToolId, getOrCreateEngine } from "./check-engine/index.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/index.js";
 import {
@@ -32,11 +32,8 @@ import {
 } from "./quality-checks/ratchet-metrics.js";
 import { containsSecrets } from "./quality-checks/secret-detection.js";
 import { findAnyTypes } from "./quality-checks/strong-typing.js";
-import {
-	buildTestCandidates,
-	classifyTestFailure,
-	isLikelyTestFile,
-} from "./quality-checks/test-classifier.js";
+import { isLikelyTestFile } from "./quality-checks/test-classifier.js";
+import { TEST_DISPATCHERS } from "./quality-checks/test-dispatchers.js";
 import type {
 	DiffAwareConfig,
 	HarnessEvent,
@@ -260,131 +257,40 @@ export function runQualityChecks(
 					});
 				}
 			} else if (name === "affected_tests") {
-				// Run tests related to the edited source file.
-				// First tries vitest --related for module-graph-aware discovery,
-				// then falls back to filename-convention test lookup.
-				//
-				// IMPORTANT: Pre-existing failures (module resolution, config errors)
-				// are detected and downgraded to info severity. Without this, agents
-				// misattribute broken tests to their edit and silently revert files.
+				// Dispatch per-language test invocation. Dispatchers own their own
+				// runner shape and scoping (file-level, package-level, or
+				// project-wide).
 				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				const ext = extname(absPath);
-				const base = absPath.slice(0, -ext.length);
-				const dir = dirname(absPath);
-				const baseName = absPath.slice(dir.length + 1, -ext.length);
+				const extForTests = extname(absPath);
+				const baseForTests = absPath.slice(
+					absPath.lastIndexOf(sep) + 1,
+					-extForTests.length || undefined,
+				);
 				const profile = getProfileForFile(filePath);
+				if (!profile) continue;
+				if (isLikelyTestFile(baseForTests, absPath)) continue;
 
-				// Skip if the file IS a test file
-				if (isLikelyTestFile(baseName, absPath)) continue;
+				const dispatcher = TEST_DISPATCHERS[profile.id];
+				if (!dispatcher) continue;
 
 				const checkCwd = findProjectRoot(filePath, cwd) || cwd;
-
-				// Try vitest --related first (module-graph-aware test discovery)
-				const runnerCmd = profile?.test_runner?.command || "npx vitest run";
-				const isVitest = runnerCmd.includes("vitest");
-				let ranViaRelated = false;
-
-				if (isVitest) {
-					const relatedResult = spawnSync(
-						"npx",
-						["vitest", "run", "--related", absPath, "--reporter=verbose"],
-						{
-							shell: false,
-							timeout: check.timeout_ms,
-							cwd: checkCwd,
-							encoding: "utf-8",
-							stdio: ["pipe", "pipe", "pipe"],
-						},
-					);
-
-					// Check if --related is supported (vitest <3.x doesn't have it)
-					const relatedOutput =
-						(relatedResult.stderr || "").trim() + (relatedResult.stdout || "").trim();
-					const isUnknownOption =
-						relatedOutput.includes("Unknown option") ||
-						relatedOutput.includes("unknown option");
-
-					if (!relatedResult.error && relatedResult.status !== null && !isUnknownOption) {
-						ranViaRelated = true;
-						if (relatedResult.status !== 0) {
-							const lines = relatedOutput.split("\n");
-							const truncated = lines.slice(-8).join("\n");
-							const classification = classifyTestFailure(
-								`related:${absPath}`,
-								relatedOutput,
-							);
-
-							if (classification !== "pre-existing") {
-								results.push({
-									name,
-									severity: check.severity,
-									message: `Tests failed for ${filePath} (vitest --related)`,
-									file: filePath,
-									detail: truncated,
-								});
-							}
-							// Pre-existing failures (module resolution, config errors) are
-							// silently skipped — reporting them causes agents to revert files
-							// they didn't break.
-						}
-					}
-				}
-
-				// Fallback: filename-convention test lookup
-				if (!ranViaRelated) {
-					const testCandidates = buildTestCandidates(
-						absPath,
-						ext,
-						base,
-						dir,
-						baseName,
-						profile,
-					);
-					const testFile = testCandidates.find((t) => existsSync(t));
-
-					if (testFile) {
-						const relTest = testFile.startsWith(checkCwd)
-							? testFile.slice(checkCwd.length + 1)
-							: testFile;
-
-						const runnerParts = runnerCmd.split(/\s+/).filter(Boolean);
-
-						const result = spawnSync(
-							runnerParts[0],
-							[...runnerParts.slice(1), relTest, "--reporter=verbose"],
-							{
-								shell: false,
-								timeout: check.timeout_ms,
-								cwd: checkCwd,
-								encoding: "utf-8",
-								stdio: ["pipe", "pipe", "pipe"],
-							},
-						);
-
-						if (
-							result.error &&
-							(result.error as NodeJS.ErrnoException).code === "ENOENT"
-						) {
-							// Test runner not installed — skip silently
-						} else if (result.status !== 0 && result.status !== null) {
-							const output =
-								(result.stdout || "").trim() || (result.stderr || "").trim();
-							const lines = output.split("\n");
-							const truncated = lines.slice(-8).join("\n");
-							const classification = classifyTestFailure(`conv:${relTest}`, output);
-
-							if (classification !== "pre-existing") {
-								results.push({
-									name,
-									severity: check.severity,
-									message: `Tests failed for ${filePath} (${relTest})`,
-									file: filePath,
-									detail: truncated,
-								});
-							}
-							// Pre-existing failures silently skipped — see comment above.
-						}
-					}
+				const dispatched = dispatcher({
+					filePath,
+					absPath,
+					profile,
+					checkCwd,
+					timeoutMs: check.timeout_ms,
+					severity: check.severity,
+					checkName: name,
+				});
+				for (const r of dispatched) {
+					results.push({
+						name: r.name,
+						severity: r.severity,
+						message: r.message,
+						file: r.file,
+						detail: r.detail,
+					});
 				}
 			} else if (name === "lockfile_drift") {
 				// Inline check — detect stale or missing lockfile after manifest edit

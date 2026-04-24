@@ -7,7 +7,7 @@
 // agents silently revert files they didn't actually break.
 
 import { dirname, resolve, sep } from "node:path";
-import type { LanguageProfile } from "../types.js";
+import type { LanguageId, LanguageProfile } from "../types.js";
 
 const MODULE_RESOLUTION_PATTERNS = [
 	/Cannot find (?:package|module)/i,
@@ -20,18 +20,58 @@ const MODULE_RESOLUTION_PATTERNS = [
 	/Cannot find name '[^']+'\. Do you need to install/,
 ];
 
+/** Per-language pre-existing-failure signatures. Matched in ADDITION to the
+ *  generic MODULE_RESOLUTION_PATTERNS above — anything that looks like a
+ *  config / environment / missing-dep problem, not an edit-introduced
+ *  regression. Conservative on purpose: false-positives here silently hide
+ *  real test failures, so patterns should be unambiguous. */
+const LANG_PREEXISTING_PATTERNS: Partial<Record<LanguageId, RegExp[]>> = {
+	python: [
+		/\bImportError\b/,
+		/\bModuleNotFoundError\b/,
+		/collected 0 items/,
+		/INTERNALERROR/,
+		/in conftest\.py/,
+		/no tests ran/i,
+		/\bE\s+fixture '[^']+' not found/,
+	],
+	rust: [
+		/error\[E0432\]/, // unresolved import
+		/error: could not find `Cargo\.toml`/,
+		/error: no matching package named/,
+		/error: failed to get .* as a dependency/,
+	],
+	go: [
+		/cannot find package/,
+		/is not in (?:GOROOT|std|GOPATH)/,
+		/no Go files in/,
+		/build failed.*(?:undefined|undeclared)/,
+		/\bbuild constraints exclude all Go files\b/,
+	],
+	c_cpp: [/fatal error: .* file not found/, /undefined reference to/],
+	java: [/package .* does not exist/, /cannot find symbol/],
+};
+
 /**
  * Check if test failure output indicates a pre-existing configuration issue
  * (module resolution, missing deps) rather than an edit-caused regression.
+ *
+ * When `language` is provided, the per-language LANG_PREEXISTING_PATTERNS set
+ * is layered on top of the generic MODULE_RESOLUTION_PATTERNS — lets
+ * e.g. `ImportError` in pytest output be recognized as pre-existing even
+ * though it doesn't match a TS/JS-flavored pattern.
  */
-function isPreExistingTestFailure(output: string): boolean {
+function isPreExistingTestFailure(output: string, language?: LanguageId): boolean {
 	const errorLines = output
 		.split("\n")
-		.filter((l) => /error|fail|cannot|ERR_/i.test(l) && l.trim().length > 0);
+		.filter((l) => /error|fail|cannot|ERR_|ImportError|ModuleNotFoundError/i.test(l) && l.trim().length > 0);
 	if (errorLines.length === 0) return false;
 
-	// If every error line matches a module resolution pattern, it's pre-existing
-	return errorLines.every((line) => MODULE_RESOLUTION_PATTERNS.some((p) => p.test(line)));
+	const langPatterns = language ? (LANG_PREEXISTING_PATTERNS[language] ?? []) : [];
+	const all = [...MODULE_RESOLUTION_PATTERNS, ...langPatterns];
+
+	// If every error line matches some config/env pattern, it's pre-existing.
+	return errorLines.every((line) => all.some((p) => p.test(line)));
 }
 
 /**
@@ -52,10 +92,16 @@ function hashTestError(output: string): string {
  * Public API — consumed by quality-checks.runQualityChecks.
  *
  * Returns "pre-existing" if failure is not caused by the edit, null otherwise.
+ * When `language` is provided, per-language pre-existing signatures apply
+ * (pytest ImportError, cargo unresolved import, go cannot find package).
  */
-export function classifyTestFailure(testId: string, output: string): "pre-existing" | null {
-	// Check 1: module resolution errors → definitely pre-existing
-	if (isPreExistingTestFailure(output)) return "pre-existing";
+export function classifyTestFailure(
+	testId: string,
+	output: string,
+	language?: LanguageId,
+): "pre-existing" | null {
+	// Check 1: module resolution / per-language env errors → pre-existing
+	if (isPreExistingTestFailure(output, language)) return "pre-existing";
 
 	// Check 2: baseline cache — same test failed with same error before
 	const errorHash = hashTestError(output);
@@ -110,9 +156,14 @@ const LANG_TEST_CANDIDATE_EMITTERS: Record<
 		// Go convention: foo_test.go in same directory
 		candidates.push(`${base}_test${ext}`);
 	},
-	rust: () => {
-		// Rust: tests in same file (#[test]) or tests/ directory — no separate
-		// file to run. cargo test runs all tests project-wide.
+	rust: (candidates, { dir, baseName }) => {
+		// Rust: tests often live as #[test] blocks in the same file (no separate
+		// file), OR in a sibling `tests/` directory with matching name. Emit
+		// the sibling candidate so the dispatcher can choose to run it; the
+		// cargo dispatcher itself falls back to running the whole test build
+		// when no candidate exists.
+		candidates.push(resolve(dir, "tests", `${baseName}.rs`));
+		candidates.push(resolve(dirname(dir), "tests", `${baseName}.rs`));
 	},
 	java: (candidates, { absPath, ext, dir, baseName }) => {
 		// Java: FooTest.java in src/test/java mirroring src/main/java
