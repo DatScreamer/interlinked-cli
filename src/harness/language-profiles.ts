@@ -131,6 +131,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".py"],
 				severity: "warning",
 				fix_instruction: "Catch specific exceptions instead of bare except",
+				pattern: "^\\s*except\\s*:",
 			},
 			{
 				name: "python_mutable_default",
@@ -138,6 +139,8 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".py"],
 				severity: "warning",
 				fix_instruction: "Use None as default and assign mutable in function body",
+				// Match =[] or ={} appearing inside a def signature's parens.
+				pattern: "def\\s+\\w+\\s*\\([^)]*=\\s*(?:\\[\\s*\\]|\\{\\s*\\})",
 			},
 		],
 	},
@@ -180,6 +183,12 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				skip_test_files: true,
 				fix_instruction: "Document safety invariants with // SAFETY: comment",
+				// `unsafe {` or `unsafe fn`. Word boundary prevents matching `unsafety`
+				// and similar identifiers.
+				pattern: "\\bunsafe\\s+(?:\\{|fn\\b)",
+				// Allow documented unsafe blocks — previous line contains `SAFETY:`
+				// comment or current line is preceded by one.
+				exempt_if_line_matches: "//\\s*SAFETY:",
 			},
 			{
 				name: "rust_unwrap_usage",
@@ -188,6 +197,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				skip_test_files: true,
 				fix_instruction: "Use .expect() with a message or handle the error with ?",
+				pattern: "\\.unwrap\\s*\\(\\s*\\)",
 			},
 			{
 				name: "rust_todo_macro",
@@ -195,6 +205,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".rs"],
 				severity: "warning",
 				fix_instruction: "Replace with actual implementation or proper error handling",
+				pattern: "\\b(?:todo|unimplemented)!\\s*\\(",
 			},
 		],
 	},
@@ -236,6 +247,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".go"],
 				severity: "warning",
 				fix_instruction: "Handle errors explicitly \u2014 don't discard with _",
+				pattern: "^\\s*(?:_\\s*,\\s*_|[a-zA-Z_][a-zA-Z_0-9]*\\s*,\\s*_|_)\\s*(?::?=)",
 			},
 		],
 	},
@@ -278,6 +290,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"],
 				severity: "warning",
 				fix_instruction: "Use safer alternatives: strncpy, strncat, fgets, snprintf",
+				pattern: "\\b(?:strcpy|strcat|gets|sprintf)\\s*\\(",
 			},
 			{
 				name: "c_include_guard",
@@ -285,6 +298,8 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".h", ".hpp", ".hxx"],
 				severity: "warning",
 				fix_instruction: "Add #pragma once or include guard",
+				// Header-guard check is absence-of-pattern; runner handles specially.
+				pattern: "__C_INCLUDE_GUARD_NEVER_MATCH__",
 			},
 		],
 	},
@@ -307,6 +322,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".java"],
 				severity: "warning",
 				fix_instruction: "Use explicit imports instead of wildcards",
+				pattern: "^\\s*import\\s+(?:static\\s+)?[\\w.]+\\.\\*;",
 			},
 			{
 				name: "java_system_exit",
@@ -314,6 +330,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				file_types: [".java"],
 				severity: "warning",
 				fix_instruction: "Throw an exception instead of calling System.exit()",
+				pattern: "\\bSystem\\.exit\\s*\\(",
 			},
 		],
 	},
@@ -357,6 +374,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				skip_test_files: true,
 				fix_instruction:
 					"Use conditional cast (as?) with optional binding instead of force cast (as!)",
+				pattern: "\\bas\\s*!",
 			},
 			{
 				name: "swift_force_try",
@@ -365,6 +383,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				skip_test_files: true,
 				fix_instruction: "Use do/catch or try? instead of try!",
+				pattern: "\\btry\\s*!",
 			},
 			{
 				name: "swift_force_unwrap",
@@ -374,6 +393,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				skip_test_files: true,
 				fix_instruction:
 					"Use optional binding (if let/guard let) or nil-coalescing (??) instead of force unwrap",
+				pattern: "[A-Za-z_][A-Za-z0-9_\\])\\]]*!(?![=!])",
 			},
 			{
 				name: "swift_implicitly_unwrapped_optional",
@@ -383,6 +403,8 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				skip_test_files: true,
 				fix_instruction:
 					"Use regular optionals (Type?) with proper unwrapping instead of implicitly unwrapped optionals",
+				pattern: ":\\s*[A-Z][A-Za-z0-9_<>?]*!",
+				exempt_if_line_matches: "@IBOutlet",
 			},
 			// --- Memory Safety (Apple Swift Book) ---
 			{
@@ -392,6 +414,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				fix_instruction:
 					"Declare delegate properties as weak: `weak var delegate: SomeDelegate?`",
+				pattern: "^(?!\\s*weak\\s)\\s*var\\s+\\w*[dD]elegate\\b",
 			},
 			{
 				name: "swift_legacy_random",
@@ -400,6 +423,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				fix_instruction:
 					"Use Int.random(in:), Bool.random(), or Collection.randomElement() instead of arc4random",
+				pattern: "\\barc4random(?:_uniform)?\\s*\\(",
 			},
 			{
 				name: "swift_legacy_hashvalue",
@@ -408,6 +432,7 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				fix_instruction:
 					"Implement hash(into hasher: inout Hasher) instead of var hashValue: Int",
+				pattern: "\\bvar\\s+hashValue\\s*:\\s*Int",
 			},
 		],
 	},

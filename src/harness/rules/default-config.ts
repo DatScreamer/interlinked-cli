@@ -197,6 +197,18 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			description:
 				"Run the test file corresponding to the edited source file (foo.ts → foo.test.ts)",
 		},
+		inline_language_checks: {
+			enabled: true,
+			file_types: [
+				".py", ".pyi", ".rs", ".go",
+				".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx",
+				".java", ".swift",
+			],
+			timeout_ms: 2_000,
+			severity: "warning",
+			description:
+				"Per-language inline pattern checks (bare except, .unwrap(), unsafe blocks, force casts, ignored err, etc.) driven by LanguageProfile.inline_checks",
+		},
 		python_typecheck: {
 			enabled: true,
 			command: "python -m mypy --no-error-summary",

@@ -20,6 +20,7 @@ const CHECK_LANGUAGE_MAP: Record<string, LanguageId[]> = {
 	eslint: ["typescript"],
 	strong_typing: ["typescript"],
 	affected_tests: ["typescript", "python", "rust", "go", "c_cpp", "java"],
+	inline_language_checks: ["python", "rust", "go", "c_cpp", "java", "swift"],
 	python_typecheck: ["python"],
 	ruff_lint: ["python"],
 	cargo_check: ["rust"],

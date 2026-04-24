@@ -20,6 +20,7 @@ import {
 } from "./generic-checks.js";
 import { getProfileForFile } from "./language-profiles.js";
 import { resolveDependencyAuditCommand } from "./quality-checks/dependency-audit.js";
+import { runInlineLanguageChecks } from "./quality-checks/inline-language-checks.js";
 import { TOOL_CHECK_INSTRUCTIONS } from "./quality-checks/instructions.js";
 import { checkLockfileDrift, LOCKFILE_MAP } from "./quality-checks/lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./quality-checks/package-json.js";
@@ -231,6 +232,31 @@ export function runQualityChecks(
 						message: `Dependency vulnerabilities found after editing ${filePath}`,
 						file: filePath,
 						detail: detail || "Run `npm audit` for details",
+					});
+				}
+			} else if (name === "inline_language_checks") {
+				// Data-driven per-language inline pattern checks. Reads the
+				// inline_checks array declared in the file's LanguageProfile
+				// and runs each regex after a language-aware comment + string
+				// stripping pass. Replaces what was previously dead config.
+				const profile = getProfileForFile(filePath);
+				if (!profile || profile.inline_checks.length === 0) continue;
+				const absPath2 = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+				if (!existsSync(absPath2)) continue;
+				let content: string;
+				try {
+					content = readFileSync(absPath2, "utf-8");
+				} catch {
+					continue;
+				}
+				const findings = runInlineLanguageChecks(filePath, content, profile);
+				for (const f of findings) {
+					results.push({
+						name: f.name,
+						severity: f.severity,
+						message: f.message,
+						file: f.file,
+						detail: f.detail,
 					});
 				}
 			} else if (name === "affected_tests") {

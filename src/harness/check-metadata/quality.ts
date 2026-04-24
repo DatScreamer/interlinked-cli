@@ -41,6 +41,13 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "fully_deterministic",
 	},
+	inline_language_checks: {
+		name: "Inline Language Checks",
+		description:
+			"Per-language inline pattern checks (Python bare except, Rust .unwrap()/unsafe, Go ignored err, Swift force unwrap/cast/try, Java wildcard import, C/C++ unsafe functions)",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	python_typecheck: {
 		name: "Python Typecheck",
 		description: "Python type checking with mypy",

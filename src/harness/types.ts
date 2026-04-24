@@ -936,6 +936,15 @@ export interface InlineCheckDef {
 	severity: "error" | "warning";
 	skip_test_files?: boolean;
 	fix_instruction: string;
+	/** Regex source matched (after comment/string stripping) against each line.
+	 *  Runner uses `new RegExp(pattern, pattern_flags ?? "gm")`. */
+	pattern: string;
+	/** Optional regex flags; default "gm". */
+	pattern_flags?: string;
+	/** Optional per-line exemption regex. If set and the raw (un-stripped) line
+	 *  matches, the finding on that line is dropped. Useful for // SAFETY:
+	 *  comments above an unsafe block, or @IBOutlet on implicitly-unwrapped. */
+	exempt_if_line_matches?: string;
 }
 
 // ===========================================

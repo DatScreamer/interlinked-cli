@@ -41,6 +41,10 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 	affected_tests:
 		"The test file for this source file is failing. Fix the source code so the tests pass. " +
 		"Do NOT modify the tests to make them pass — fix the implementation.",
+	inline_language_checks:
+		"Each finding below lists the line and a fix_instruction from the language profile. " +
+		"Address the specific pattern (bare except, .unwrap() in non-test code, force cast, etc.). " +
+		"Do NOT suppress with comments — change the code.",
 	binary_content:
 		"This file contains binary data. Do NOT write binary files through text editing tools. " +
 		"Use appropriate binary-safe methods or download the file directly.",
