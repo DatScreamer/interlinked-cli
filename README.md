@@ -7,20 +7,11 @@ Runs local-first. The harness, activity log, and checks run on your machine;
 server-backed collaboration commands are optional and require an Interlinked
 MCP Server URL.
 
-## Install
+## Install From Source
 
-```bash
-npm install -g interlinked-cli
-```
-
-Requires Node.js 22+. Supported on macOS and Linux (including WSL on
-Windows — native Windows is not supported).
-
-### From source
-
-If you want to run from a local clone instead — to try an unreleased branch,
-patch the harness, or use the CLI before the npm package publishes — the
-full system works without the published package:
+The CLI is currently intended to run from the GitHub repo rather than a
+formal npm package. Requires Node.js 22+. Supported on macOS and Linux
+(including WSL on Windows — native Windows is not supported).
 
 ```bash
 git clone https://github.com/QuentinCody/interlinked-cli.git
@@ -29,6 +20,9 @@ npm ci
 npm run build          # produces dist/index.js + dist/hook-entry.js
 npm link               # exposes `interlinked` and `interlinked-hook` on PATH
 ```
+
+After that, `interlinked update` pulls the latest repo changes, rebuilds,
+and refreshes the linked binaries.
 
 `interlinked install-hooks` from a cloned checkout records an absolute path
 to `dist/hook-entry.js` in your agent's settings, so hooks will keep firing

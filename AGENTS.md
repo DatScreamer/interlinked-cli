@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 This package is the TypeScript source for **Interlinked CLI**.
-- **Interlinked MCP Server** refers to the remote Cloudflare Worker system that the CLI optionally talks to; it lives in a separate repo (`QuentinCody/mcp-agent-chat`).
+- **Interlinked MCP Server** refers to the remote Cloudflare Worker system that the CLI optionally talks to.
 - **Interlinked CLI** refers to this package.
 - `src/index.ts`: CLI entry point and command registration.
 - `src/commands/*.ts`: command handlers (`enable`, `status`, `doctor`, `workspace`, etc.).
@@ -26,10 +26,9 @@ Example:
 npm run dev -- status --short
 ```
 
-## Ported Agent Notes
-These are the portable learnings from the historical `mcp-agent-chat/cli` copy and the main `mcp-agent-chat` repo.
-- `QuentinCody/interlinked-cli` is the source of truth for the CLI. Treat `../mcp-agent-chat/cli` as historical context when diffs disagree.
-- Keep the exact product terms distinct: **Interlinked CLI** is this package; **Interlinked MCP Server** is the remote Worker/Durable Objects system in `QuentinCody/mcp-agent-chat`.
+## Agent Notes
+- `QuentinCody/interlinked-cli` is the source of truth for the CLI.
+- Keep the exact product terms distinct: **Interlinked CLI** is this package; **Interlinked MCP Server** is the remote Worker/Durable Objects system used by server-backed commands.
 - Harness phase split: PreToolUse handles deterministic pre-execution blocks and warnings (destructive commands, file reservations, secrets-in-content, grep acceleration). PostToolUse handles checks that need files on disk or project context (type/lint/security/structure), and should report only new findings through diff-aware filtering.
 - Zero-FP contract: `pre_block` error checks must be fully deterministic. Heuristic smell/taste/coverage checks belong as warnings or in `verify --all-checks`. When changing advisory policy, update `DEFAULT_ADVISORY_SKIPS` and its regression tests together.
 - Adding an agent-quality check usually touches `src/harness/generic-checks.ts`, the check registry entries, `src/harness/check-metadata.ts`, `src/harness/check-registry.ts`, `src/commands/verify*`, and parity/advisory tests. Land those coupled changes together.

@@ -1,13 +1,20 @@
 // ===========================================
-// Update Command — Update guidance for the Interlinked CLI
+// Update Command — Self-update the Interlinked CLI
 // ===========================================
-// Resolves the CLI's install location. npm-installed copies update through
-// npm; source checkouts can still pull/build in place for local development.
+// Source checkouts pull/build in place. If the running binary is not already
+// tied to a source checkout, bootstrap a managed GitHub checkout and link it.
 
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { c } from "../lib/formatter.js";
+
+export const INTERLINKED_CLI_REPO_URL = "https://github.com/QuentinCody/interlinked-cli.git";
+
+export function getManagedSourceRoot(home = homedir()): string {
+	return join(home, ".interlinked", "interlinked-cli");
+}
 
 /** Resolve the monorepo root from the running binary's symlink */
 function resolveCliRoot(): string | null {
@@ -33,48 +40,50 @@ function run(cmd: string, cwd: string): string {
 	return execSync(cmd, { cwd, encoding: "utf-8", timeout: 60_000 }).trim();
 }
 
-export async function updateCommand(opts: { json?: boolean; force?: boolean }): Promise<void> {
-	const cliRoot = resolveCliRoot();
+function runFile(file: string, args: string[], cwd: string, timeout = 120_000): string {
+	return execFileSync(file, args, { cwd, encoding: "utf-8", timeout }).trim();
+}
 
-	if (!cliRoot) {
-		if (opts.json) {
-			console.log(
-				JSON.stringify({ success: false, error: "Cannot resolve CLI install location" }),
-			);
-		} else {
-			console.error(`${c.red("Error:")} Cannot resolve CLI install location.`);
-			console.error(
-				"Install Interlinked CLI with npm, or run this command from a source checkout.",
-			);
-		}
-		process.exit(1);
+function fail(opts: { json?: boolean }, message: string): never {
+	if (opts.json) {
+		console.log(JSON.stringify({ success: false, error: message }));
+	} else {
+		console.error(`${c.red("Error:")} ${message}`);
+	}
+	process.exit(1);
+}
+
+export async function updateCommand(opts: { json?: boolean; force?: boolean }): Promise<void> {
+	let cliRoot = resolveCliRoot();
+
+	let repoRoot = cliRoot ? resolveSourceRepoRoot(cliRoot) : null;
+	let managedCheckout = false;
+	if (!repoRoot) {
+		repoRoot = ensureManagedSourceCheckout(opts);
+		cliRoot = repoRoot;
+		managedCheckout = true;
 	}
 
-	const repoRoot = resolveSourceRepoRoot(cliRoot);
-	if (!repoRoot) {
-		const command = "npm install -g interlinked-cli@latest";
-		if (opts.json) {
-			console.log(
-				JSON.stringify({
-					success: true,
-					managed_by: "npm",
-					command,
-				}),
-			);
-		} else {
-			console.log("This Interlinked CLI install is managed by npm.");
-			console.log(`Run: ${command}`);
-		}
-		return;
+	if (!cliRoot) {
+		fail(opts, "Cannot resolve CLI install location");
 	}
 
 	if (opts.json) {
-		console.log(JSON.stringify({ cli_root: cliRoot, repo_root: repoRoot, updating: true }));
+		console.log(
+			JSON.stringify({
+				cli_root: cliRoot,
+				repo_root: repoRoot,
+				repo_url: INTERLINKED_CLI_REPO_URL,
+				managed_checkout: managedCheckout,
+				updating: true,
+			}),
+		);
 	} else {
 		console.log(`${c.bold("Interlinked CLI — Self-Update")}`);
 		console.log(c.dim("────────────────────────────────────────"));
 		console.log(`${c.dim("CLI root:")}  ${cliRoot}`);
 		console.log(`${c.dim("Repo root:")} ${repoRoot}`);
+		if (managedCheckout) console.log(`${c.dim("Repo URL:")}  ${INTERLINKED_CLI_REPO_URL}`);
 		console.log();
 	}
 
@@ -131,7 +140,10 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 	if (pulled || !existsSync(nodeModules)) {
 		if (!opts.json) process.stdout.write("Installing dependencies... ");
 		try {
-			run("npm install --no-audit --no-fund", cliRoot);
+			const installCmd = existsSync(join(cliRoot, "package-lock.json"))
+				? "npm ci --no-audit --no-fund"
+				: "npm install --no-audit --no-fund";
+			run(installCmd, cliRoot);
 			if (!opts.json) console.log(c.green("done"));
 		} catch {
 			if (!opts.json) console.log(c.yellow("skipped (install failed)"));
@@ -153,7 +165,27 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 		process.exit(1);
 	}
 
-	// Step 4: Regenerate hook script in current directory (if .interlinked/ exists)
+	// Step 4: Link managed source checkouts so future `interlinked` invocations
+	// use the freshly-built GitHub checkout.
+	let linked = false;
+	if (managedCheckout) {
+		if (!opts.json) process.stdout.write("Linking CLI binaries... ");
+		try {
+			run("npm link", cliRoot);
+			linked = true;
+			if (!opts.json) console.log(c.green("done"));
+		} catch (err) {
+			if (opts.json) {
+				console.log(JSON.stringify({ success: false, error: "npm link failed" }));
+			} else {
+				console.log(c.red("failed"));
+				console.error(String(err));
+			}
+			process.exit(1);
+		}
+	}
+
+	// Step 5: Regenerate hook script in current directory (if .interlinked/ exists)
 	const cwd = process.cwd();
 	const interlinkedDir = join(cwd, ".interlinked");
 	if (existsSync(interlinkedDir)) {
@@ -167,10 +199,19 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 		}
 	}
 
-	// Step 5: Show new version
+	// Step 6: Show new version
 	const newVersion = getInstalledVersion(cliRoot);
 	if (opts.json) {
-		console.log(JSON.stringify({ success: true, version: newVersion, pulled }));
+		console.log(
+			JSON.stringify({
+				success: true,
+				version: newVersion,
+				pulled,
+				linked,
+				managed_checkout: managedCheckout,
+				repo_root: repoRoot,
+			}),
+		);
 	} else {
 		console.log();
 		console.log(`${c.green("Updated")} to Interlinked CLI v${newVersion}`);
@@ -186,7 +227,46 @@ function getInstalledVersion(cliRoot: string): string {
 	}
 }
 
-function resolveSourceRepoRoot(cliRoot: string): string | null {
+function ensureManagedSourceCheckout(opts: { json?: boolean; force?: boolean }): string {
+	const repoRoot = getManagedSourceRoot();
+	const parent = dirname(repoRoot);
+	mkdirSync(parent, { recursive: true });
+
+	if (!existsSync(repoRoot)) {
+		if (!opts.json) {
+			console.log(`${c.bold("Interlinked CLI — GitHub Checkout")}`);
+			console.log(c.dim("────────────────────────────────────────"));
+			console.log(`${c.dim("Repo URL:")}  ${INTERLINKED_CLI_REPO_URL}`);
+			console.log(`${c.dim("Target:")}    ${repoRoot}`);
+			process.stdout.write("Cloning source... ");
+		}
+		try {
+			runFile("git", ["clone", INTERLINKED_CLI_REPO_URL, repoRoot], parent);
+			if (!opts.json) console.log(c.green("done"));
+		} catch (err) {
+			if (!opts.json) console.log(c.red("failed"));
+			fail(opts, `Failed to clone ${INTERLINKED_CLI_REPO_URL}: ${String(err)}`);
+		}
+		return repoRoot;
+	}
+
+	if (!resolveSourceRepoRoot(repoRoot)) {
+		fail(
+			opts,
+			`Managed checkout path exists but is not an interlinked-cli source checkout: ${repoRoot}`,
+		);
+	}
+
+	try {
+		runFile("git", ["remote", "set-url", "origin", INTERLINKED_CLI_REPO_URL], repoRoot);
+	} catch {
+		/* non-fatal: pull below will surface any real git problem */
+	}
+
+	return repoRoot;
+}
+
+export function resolveSourceRepoRoot(cliRoot: string): string | null {
 	const candidates = [cliRoot, dirname(cliRoot)];
 	for (const candidate of candidates) {
 		if (existsSync(join(candidate, ".git")) && existsSync(join(cliRoot, "src", "index.ts"))) {

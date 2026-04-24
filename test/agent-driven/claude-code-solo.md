@@ -2,7 +2,7 @@
 
 **Agent:** Claude Code with Interlinked MCP Server connection
 **Prerequisites:**
-- Interlinked CLI installed (`npm install -g interlinked-cli` or dev mode with `npx tsx`)
+- Interlinked CLI installed from the GitHub repo with `npm link`, or dev mode with `npx tsx`
 - Interlinked MCP Server running (local or production)
 - Claude Code connected to the MCP server
 - A test git repository (create a throwaway one)
@@ -15,7 +15,7 @@ mkdir /tmp/interlinked-guard-test && cd /tmp/interlinked-guard-test
 git init && git commit --allow-empty -m "init"
 
 # Configure interlinked
-npx interlinked-cli attach --server http://localhost:8787 --agent test-claude-agent
+interlinked attach --server http://localhost:8787 --agent test-claude-agent
 ```
 
 ## Test 1: Guard Install and Hook Verification

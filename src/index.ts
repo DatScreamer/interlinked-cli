@@ -720,8 +720,8 @@ traceCmd
 program
 	.command("update")
 	.alias("upgrade")
-	.description("Update guidance for npm installs; pull/rebuild source checkouts")
-	.option("--force", "Pull even with uncommitted changes")
+	.description("Clone or pull from GitHub, rebuild, and link the CLI")
+	.option("--force", "Pull even with uncommitted changes in the source checkout")
 	.option("--json", "Machine-readable output")
 	.action(async (opts: OptionValues) => {
 		const { updateCommand } = await import("./commands/update.js");

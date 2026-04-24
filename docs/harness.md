@@ -12,7 +12,7 @@ It is the **third component** of the Interlinked platform:
 | Interlinked CLI | Hook installation, activity capture, local storage, developer observability | Each developer's machine |
 | **Interlinked Harness** | Guard evaluation, auto-reservations, agent lifecycle, quality checks | Each developer's machine (Node.js) |
 
-The CLI and harness are shipped together as the `interlinked-cli` npm package.
+The CLI and harness are shipped together from the `QuentinCody/interlinked-cli` source checkout.
 
 ## Why A Local Harness Server?
 
@@ -66,7 +66,7 @@ The harness runs on Node.js using `node:net` for Unix socket IPC. The server is 
 2. **Pre-compiled startup** — tsup-compiled JS starts in ~100ms, eliminating the need for a separate runtime
 3. **Same language** as the rest of the CLI codebase (TypeScript)
 4. **Standard Unix socket support** via `node:net` `createServer({ path: ... })`
-5. **npm distribution** — ships as a standard npm package, no binary compilation needed
+5. **Source distribution** — built and linked from a GitHub checkout with no binary compilation needed
 
 > **Historical note:** The harness originally used Bun for its fast startup and native TypeScript support. It was migrated to Node.js to eliminate the Bun dependency and simplify distribution. Pre-compiling to JS via tsup achieves comparable startup performance.
 

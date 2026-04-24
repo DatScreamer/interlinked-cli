@@ -47,7 +47,7 @@ A minimal FastAPI wrapper around `opf.OPF` is ~30 lines; see "Reference server" 
 
 ### Shape B — Interlinked-hosted endpoint (recommended v2)
 
-The Interlinked MCP server (`QuentinCody/mcp-agent-chat`) adds an inference endpoint, CLI points at it automatically when the workspace is registered. This gives:
+The Interlinked MCP Server adds an inference endpoint, and the CLI points at it automatically when the workspace is registered. This gives:
 
 - Zero per-developer setup (no `pip install`, no model download).
 - Shared model instance → lower cost, warm cache across developers.
@@ -67,7 +67,7 @@ server_hosted: {
 ```
 
 When `runtime === "server_hosted"`, the scanner:
-- Reads `server_url` from `.interlinked/config.local.json` (same field `mcp-agent-chat` registration writes).
+- Reads `server_url` from `.interlinked/config.local.json`.
 - Reads the existing access token via `resolveAuthToken()` from `src/lib/auth.ts`.
 - POSTs to `{server_url}{endpoint_path}` with `Authorization: Bearer <token>` + `{"text": "<content>"}`.
 - Expects the same HF-compatible span-array response shape as Shape A.

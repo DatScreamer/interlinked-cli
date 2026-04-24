@@ -55,7 +55,7 @@ Commands:
   telemetry [options]                        View or tail the local telemetry spool (.interlinked/offline-spool.jsonl)
   trace                                      Agent trace export/import
   uninstall-hooks [options]                  Remove hooks previously installed via install-hooks (manifest-driven)
-  update|upgrade [options]                   Update guidance for npm installs; pull/rebuild source checkouts
+  update|upgrade [options]                   Clone or pull from GitHub, rebuild, and link the CLI
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
   version                                    Show Interlinked CLI + server version
   watch [options]                            Monitor server for pending work (messages, tasks, agents)

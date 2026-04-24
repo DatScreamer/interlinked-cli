@@ -207,11 +207,15 @@ import { execFileSync } from "node:child_process";
 function getHelpOutput(args: string[]): string {
 	let raw: string;
 	try {
-		raw = execFileSync("npx", ["tsx", join(import.meta.dirname, "..", "src", "index.ts"), ...args, "--help"], {
-			encoding: "utf-8",
-			timeout: 10_000,
-			env: { ...process.env, INTERLINKED_SKIP_IMPLICIT_ENTRY: "1" },
-		}).trim();
+		raw = execFileSync(
+			process.execPath,
+			["--import", "tsx", join(import.meta.dirname, "..", "src", "index.ts"), ...args, "--help"],
+			{
+				encoding: "utf-8",
+				timeout: 10_000,
+				env: { ...process.env, INTERLINKED_SKIP_IMPLICIT_ENTRY: "1" },
+			},
+		).trim();
 	} catch (err) {
 		// Commander writes help to stdout and exits with code 0, but execFileSync
 		// may throw if the process exits before consuming all stdin. Try stderr fallback.

@@ -20,13 +20,15 @@ const SECONDS_PER_WEEK = 7 * 24 * 60 * 60;
 /** Resolve the OPF Python sidecar path across three deployment layouts:
  *    (1) dev (tsx):          src/harness/rules/default-config.ts  →  ../content-scanner/sidecars/opf-sidecar.py
  *    (2) prod-from-source:   dist/chunk-XYZ.js                     →  ../src/harness/content-scanner/sidecars/opf-sidecar.py
- *    (3) published (future): dist/chunk-XYZ.js                     →  ./sidecars/opf-sidecar.py
+ *    (3) bundled server:     dist/harness/server.js                →  ../sidecars/opf-sidecar.py
+ *    (4) bundled chunk:      dist/chunk-XYZ.js                     →  ./sidecars/opf-sidecar.py
  *  First existing candidate wins; if none exist we return the source-tree
  *  default so the error message points at the expected dev location. */
 function resolveDefaultOpfSidecarScript(): string {
 	const candidates = [
 		new URL("../content-scanner/sidecars/opf-sidecar.py", import.meta.url),
 		new URL("../src/harness/content-scanner/sidecars/opf-sidecar.py", import.meta.url),
+		new URL("../sidecars/opf-sidecar.py", import.meta.url),
 		new URL("./sidecars/opf-sidecar.py", import.meta.url),
 		new URL("./opf-sidecar.py", import.meta.url),
 	];

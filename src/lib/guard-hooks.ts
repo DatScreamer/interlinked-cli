@@ -59,8 +59,6 @@ ${GUARD_MARKER}
 INTERLINKED_BIN=""
 if command -v interlinked >/dev/null 2>&1; then
     INTERLINKED_BIN="interlinked"
-elif command -v npx >/dev/null 2>&1; then
-    INTERLINKED_BIN="npx interlinked-cli"
 else
     echo "[interlinked guard] CLI not found. Skipping reservation check." >&2
     exit 0

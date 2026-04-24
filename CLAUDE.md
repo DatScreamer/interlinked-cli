@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Interlinked CLI** (`interlinked-cli`) is the local companion tool for **Interlinked MCP Server**. It captures AI agent activity via hooks, stores events locally (offline-first JSONL), and optionally syncs to the server. The server is the system of record — the CLI covers what it cannot: local process hooks, offline storage, and developer observability.
 
 Terminology:
-- **Interlinked MCP Server** = remote Worker/DO system (separate repo: `QuentinCody/mcp-agent-chat`).
+- **Interlinked MCP Server** = remote Worker/DO system used by server-backed commands.
 - **Interlinked CLI** = this package.
 
-Source of truth for the CLI is `QuentinCody/interlinked-cli`; npm publishes from tag pushes here. It has a single runtime dependency (`commander`) and zero external dependencies for formatting/output.
+Source of truth for the CLI is `QuentinCody/interlinked-cli`; current installs run from a linked source checkout. It has a single runtime dependency (`commander`) and zero external dependencies for formatting/output.
 
 ## Commands
 
@@ -189,7 +189,7 @@ Shared patterns when adding another agent-quality check:
 
 ### Relationship to the MCP Server
 
-The server (`Interlinked MCP Server`) lives in a separate repo (`QuentinCody/mcp-agent-chat`). Communication is strictly one-directional: CLI → server via HTTP. Key server endpoints consumed:
+The server (`Interlinked MCP Server`) is the remote Worker/DO system. Communication is strictly one-directional: CLI → server via HTTP. Key server endpoints consumed:
 
 | Endpoint | Purpose |
 |----------|---------|
