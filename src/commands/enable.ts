@@ -85,7 +85,7 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 		if (config.server_url !== options.server) {
 			initConfig({ serverUrl: options.server }, cwd);
 			console.log(
-				`\n${c.green("Updated")} Interlinked MCP Server URL to ${c.cyan(options.server)}`,
+				`\n${c.green("Updated")} Server URL to ${c.cyan(options.server)}`,
 			);
 		}
 	}
@@ -225,7 +225,7 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	// Summary
 	const config = resolveConfig(cwd);
 	console.log(`\n${c.bold("Configuration:")}`);
-	console.log(`  ${c.dim("Interlinked MCP Server:")} ${config.server_url}`);
+	console.log(`  ${c.dim("Server:")}    ${config.server_url}`);
 	console.log(`  ${c.dim("Config:")}    ${getConfigDir(cwd)}/`);
 	console.log(`  ${c.dim("Hook:")}      ${relativeHookPath}`);
 	if (config.agent_name) {
@@ -244,7 +244,7 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 
 	if (installedCount > 0) {
 		console.log(
-			`\n${c.green("Hooks are active.")} Agent activity will be reported to the Interlinked MCP Server.`,
+			`\n${c.green("Hooks are active.")} Agent activity is logged to ${c.cyan(".interlinked/activity.jsonl")}.`,
 		);
 	} else {
 		console.log(
@@ -317,7 +317,7 @@ function printDryRun(
 	// Server. Default to localhost — the public distribution doesn't know
 	// about any production server; users configure their own via `--server`.
 	const serverUrl = options.server || "http://localhost:8787";
-	console.log(`\n${c.dim("Interlinked MCP Server:")} ${serverUrl}`);
+	console.log(`\n${c.dim("Server:")} ${serverUrl}`);
 	if (options.agent) {
 		console.log(`${c.dim("Agent:")}  ${options.agent}`);
 	}

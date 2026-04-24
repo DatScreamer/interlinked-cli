@@ -24,7 +24,7 @@ function getEnvVars(): EnvVarDoc[] {
 	return [
 		{
 			name: "INTERLINKED_SERVER_URL",
-			description: "Interlinked MCP Server URL (overrides config.json)",
+			description: "Server URL (overrides config.json)",
 			example: "http://localhost:8787",
 			currentValue: process.env.INTERLINKED_SERVER_URL,
 		},

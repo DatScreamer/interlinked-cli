@@ -1,7 +1,7 @@
 // ===========================================
 // interlinked status — Local-first dashboard
 // ===========================================
-// Displays sessions, recent activity, sync status, and optional Interlinked MCP Server health.
+// Displays sessions, recent activity, sync status, and optional server health.
 // Works fully offline — MCP Server checks are optional with graceful degradation.
 
 import { formatActivitySummary } from "../lib/activity-utils.js";
@@ -183,18 +183,18 @@ function renderGuidance(data: StatusData): string[] {
 
 	if (data.isLocalServer && data.serverStatus.reachable && !data.serverStatus.authenticated) {
 		lines.push(
-			c.dim("  Local Interlinked MCP Server detected: auth is optional on localhost."),
+			c.dim("  Local server detected: auth is optional on localhost."),
 		);
 		lines.push(c.dim("  If you still see auth issues, run: interlinked doctor --fix"));
 	}
 
 	if (!data.serverStatus.reachable && data.isLocalServer) {
-		lines.push(c.yellow("  Local Interlinked MCP Server is not reachable."));
+		lines.push(c.yellow("  Local server is not reachable."));
 		lines.push(c.dim("  Start it with: npm run dev"));
 	}
 
 	if (!data.isLocalServer && data.serverStatus.reachable && !data.serverStatus.authenticated) {
-		lines.push(c.yellow("  Interlinked MCP Server reachable but not authenticated."));
+		lines.push(c.yellow("  Server reachable but not authenticated."));
 		lines.push(c.dim("  Run: interlinked login"));
 		lines.push(
 			c.dim(
@@ -290,7 +290,7 @@ function renderNormal(data: StatusData): string {
 	}
 
 	// Server section
-	lines.push(header("Interlinked MCP Server"));
+	lines.push(header("Server"));
 	lines.push(kvLine("URL", data.config.server_url));
 	if (data.serverStatus.reachable) {
 		lines.push(kvLine("Status", c.green("reachable")));
@@ -480,7 +480,7 @@ function renderFull(data: StatusData): string {
 	}
 
 	// Server section
-	lines.push(header("Interlinked MCP Server"));
+	lines.push(header("Server"));
 	lines.push(kvLine("URL", data.config.server_url));
 	if (data.serverStatus.reachable) {
 		lines.push(kvLine("Status", c.green("reachable")));

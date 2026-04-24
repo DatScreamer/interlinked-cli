@@ -1,5 +1,5 @@
 // ===========================================
-// interlinked inbox — Read messages from the Interlinked MCP Server
+// interlinked inbox — Read messages from the server
 // ===========================================
 // Thin wrapper around fetch_inbox MCP tool. All logic is server-side.
 
@@ -111,9 +111,9 @@ export async function inboxCommand(opts: {
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 			{
-				hint: "Is the Interlinked MCP Server reachable?",
+				hint: "Is the Server reachable?",
 			},
 		);
 	}

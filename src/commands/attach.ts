@@ -195,7 +195,7 @@ export async function attachCommand(opts: AttachOptions): Promise<void> {
 			normal: () => {
 				const lines: string[] = [];
 				lines.push(header("Attach"));
-				lines.push(kvLine("Interlinked MCP Server", result.server_url));
+				lines.push(kvLine("Server", result.server_url));
 				lines.push(kvLine("Workspace", result.workspace_id || c.dim("not set")));
 				lines.push(
 					kvLine(

@@ -60,7 +60,7 @@ program.addHelpText(
 	`
 Interface boundaries:
   Interlinked CLI        local hooks, harness checks, activity capture, diagnostics
-  Interlinked MCP Server optional remote tasks/messages/reservations/agent state
+  Server                 optional remote tasks/messages/reservations/agent state
   Web UI (/chat, /map)   optional human oversight and coordination
 
 Zero-arg behavior:
@@ -90,7 +90,7 @@ program
 program
 	.command("attach")
 	.description("Attach local CLI settings to workspace/agent and link remote identity")
-	.option("--server <url>", "Interlinked MCP Server URL")
+	.option("--server <url>", "Server URL")
 	.option("--workspace <id>", "Active workspace ID (ws_...)")
 	.option("--workspace-key <key>", "Default internal workspace_key for MCP tool calls")
 	.option("--project <key>", "Default internal project_key for MCP tool calls")
@@ -230,7 +230,7 @@ program
 
 program
 	.command("doctor")
-	.description("Diagnose issues (local + Interlinked MCP Server checks)")
+	.description("Diagnose issues (local + server checks)")
 	.option("--fix", "Auto-fix what's possible")
 	.option("--json", "Machine-readable output")
 	.action(doctorCommand);
@@ -238,7 +238,7 @@ program
 program
 	.command("enable")
 	.description("Install hooks + create .interlinked/ config")
-	.option("--server <url>", "Interlinked MCP Server URL")
+	.option("--server <url>", "Server URL")
 	.option("--agent <name>", "Default agent name")
 	.option("--clients <list>", "Comma-separated client list (claude,gemini,codex)")
 	.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
@@ -440,7 +440,7 @@ harnessCmd
 
 program
 	.command("inbox")
-	.description("Show recent messages from the Interlinked MCP Server")
+	.description("Show recent messages from the server")
 	.option("--all", "Show all messages (default: unread only)")
 	.option("--agent <name>", "Filter by recipient agent")
 	.option("--limit <n>", "Max entries")
@@ -458,7 +458,7 @@ registerIndexCommand(program);
 program
 	.command("init")
 	.description("One-command onboarding: detect clients, configure, login, verify")
-	.option("--server <url>", "Interlinked MCP Server URL")
+	.option("--server <url>", "Server URL")
 	.option("--agent <name>", "Agent name")
 	.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
 	.option("--dry-run", "Show what would change without modifying files")
@@ -471,8 +471,8 @@ program
 
 program
 	.command("login")
-	.description("Authenticate with the Interlinked MCP Server (opens browser)")
-	.option("--server <url>", "Interlinked MCP Server URL")
+	.description("Authenticate with the server (opens browser)")
+	.option("--server <url>", "Server URL")
 	.option("--token <token>", "Manual token for CI/headless use")
 	.action(loginCommand);
 
@@ -577,8 +577,8 @@ program
 
 program
 	.command("setup")
-	.description("One-command setup: install hooks, configure Interlinked MCP Server, authenticate")
-	.option("--server <url>", "Interlinked MCP Server URL")
+	.description("One-command setup: install hooks, configure server, authenticate")
+	.option("--server <url>", "Server URL")
 	.option("--agent <name>", "Default agent name")
 	.option("--clients <list>", "Comma-separated client list (claude,gemini,codex)")
 	.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
@@ -629,7 +629,7 @@ program
 
 program
 	.command("sync")
-	.description("Push locally-buffered events to the Interlinked MCP Server")
+	.description("Push locally-buffered events to the server")
 	.option("--dry-run", "Show what would be synced without sending")
 	.option("--limit <n>", "Max events to sync")
 	.option("--json", "Machine-readable output")
@@ -637,7 +637,7 @@ program
 
 const tasksCmd = program
 	.command("tasks")
-	.description("Task management via the Interlinked MCP Server");
+	.description("Task management via the server");
 
 tasksCmd
 	.command("list", { isDefault: true })
@@ -760,7 +760,7 @@ program
 
 program
 	.command("version")
-	.description("Show Interlinked CLI + Interlinked MCP Server version")
+	.description("Show Interlinked CLI + server version")
 	.action(async () => {
 		const { getClient } = await import("./lib/api-client.js");
 		console.log(`Interlinked CLI v${CLI_VERSION}`);
@@ -768,11 +768,11 @@ program
 			const client = getClient();
 			const result = await client.callTool<{ status?: string }>("health_check");
 			console.log(
-				`Interlinked MCP Server: ${client.getConfig().server_url} (${result.status || "ok"})`,
+				`Server: ${client.getConfig().server_url} (${result.status || "ok"})`,
 			);
 		} catch {
 			console.log(
-				`Interlinked MCP Server: ${getClient().getConfig().server_url} (unreachable or not authenticated)`,
+				`Server: ${getClient().getConfig().server_url} (unreachable or not authenticated)`,
 			);
 		}
 	});

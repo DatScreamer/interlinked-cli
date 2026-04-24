@@ -1,7 +1,7 @@
 // ===========================================
 // API Client — HTTP client for /api/ui/call
 // ===========================================
-// Uses Bearer token auth with the Interlinked MCP Server UI proxy endpoint.
+// Uses Bearer token auth with the server UI proxy endpoint.
 // Returns parsed tool results (already unwrapped from JSON-RPC).
 
 import { resolveAuthToken, resolveAuthTokenWithRefresh } from "./auth.js";
@@ -64,7 +64,7 @@ export class InterlinkedClient {
 
 		if (!this.token && !isLocalDev) {
 			throw new Error(
-				"Not authenticated. Run 'interlinked login' to authenticate, or ensure Claude Code has a valid Interlinked MCP Server connection.",
+				"Not authenticated. Run 'interlinked login' to authenticate, or ensure Claude Code has a valid server connection.",
 			);
 		}
 
@@ -212,7 +212,7 @@ export class InterlinkedClient {
 	}
 
 	/**
-	 * Health check: verify Interlinked MCP Server reachability and auth validity.
+	 * Health check: verify server reachability and auth validity.
 	 */
 	async healthCheck(): Promise<{
 		serverReachable: boolean;
@@ -233,7 +233,7 @@ export class InterlinkedClient {
 				return {
 					serverReachable: false,
 					authenticated: false,
-					error: "Interlinked MCP Server unreachable",
+					error: "server unreachable",
 				};
 			}
 

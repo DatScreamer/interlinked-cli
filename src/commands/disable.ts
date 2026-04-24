@@ -72,7 +72,7 @@ export async function disableCommand(options: DisableOptions): Promise<void> {
 		console.log(`\n${c.dim("Done.")} No hooks were found to remove.`);
 	}
 
-	console.log(c.dim("Agent activity will no longer be reported to the Interlinked MCP Server."));
+	console.log(c.dim("Agent activity will no longer be captured."));
 
 	if (!options.keepConfig) {
 		console.log(c.dim("Run 'interlinked enable' to re-enable."));

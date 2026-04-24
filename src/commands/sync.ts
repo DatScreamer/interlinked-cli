@@ -1,5 +1,5 @@
 // ===========================================
-// interlinked sync — Push unsynced local events to the Interlinked MCP Server
+// interlinked sync — Push unsynced local events to the server
 // ===========================================
 
 import { resolveAuthToken } from "../lib/auth.js";
@@ -83,7 +83,7 @@ export async function syncCommand(opts: {
 			return;
 		}
 
-		// Resolve Interlinked MCP Server URL and auth for the batch POST.
+		// Resolve server URL and auth for the batch POST.
 		// resolveConfig() uses active_server to pair server_url with workspace_id,
 		// so there's no risk of sending a local workspace_id to production or vice versa.
 		const config = resolveConfig();

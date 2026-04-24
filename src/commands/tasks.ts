@@ -1,5 +1,5 @@
 // ===========================================
-// interlinked tasks — Task management via the Interlinked MCP Server
+// interlinked tasks — Task management via the server
 // ===========================================
 // Thin wrappers around MCP task tools. All business logic is server-side.
 
@@ -126,7 +126,7 @@ export async function tasksListCommand(opts: {
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }
@@ -166,7 +166,7 @@ export async function tasksCreateCommand(
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }
@@ -210,7 +210,7 @@ export async function tasksShowCommand(id: string, opts: { json?: boolean }): Pr
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }
@@ -239,7 +239,7 @@ export async function tasksClaimCommand(id: string, opts: { json?: boolean }): P
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }
@@ -269,7 +269,7 @@ export async function tasksCompleteCommand(id: string, opts: { json?: boolean })
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }

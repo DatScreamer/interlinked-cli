@@ -1,5 +1,5 @@
 // ===========================================
-// Server Bridge — Sync harness state with Interlinked MCP Server
+// Server Bridge — Sync harness state with server
 // ===========================================
 // Manages:
 // - Reservation cache refresh from server

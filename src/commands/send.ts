@@ -1,5 +1,5 @@
 // ===========================================
-// interlinked send — Send a message via the Interlinked MCP Server
+// interlinked send — Send a message via the server
 // ===========================================
 // Thin wrapper around send_message MCP tool.
 
@@ -65,9 +65,9 @@ export async function sendCommand(
 	} catch (err) {
 		outputError(
 			mode,
-			`Interlinked MCP Server error: ${err instanceof Error ? err.message : String(err)}`,
+			`Server error: ${err instanceof Error ? err.message : String(err)}`,
 			{
-				hint: "Is the Interlinked MCP Server reachable?",
+				hint: "Is the Server reachable?",
 			},
 		);
 	}

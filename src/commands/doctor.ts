@@ -372,7 +372,7 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	}
 
 	// ===========================================
-	// Interlinked MCP Server Checks (need auth)
+	// Server Checks (need auth)
 	// ===========================================
 
 	const serverResults: CheckResult[] = [];
@@ -384,15 +384,15 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 
 			if (health.serverReachable) {
 				serverResults.push({
-					name: "Interlinked MCP Server reachable",
+					name: "Server reachable",
 					status: "pass",
 					message: `Connected to ${resolvedConfig.server_url}`,
 				});
 			} else {
 				serverResults.push({
-					name: "Interlinked MCP Server reachable",
+					name: "Server reachable",
 					status: "fail",
-					message: health.error || "Interlinked MCP Server unreachable",
+					message: health.error || "Server unreachable",
 				});
 			}
 
@@ -463,14 +463,14 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 			}
 		} catch (e) {
 			serverResults.push({
-				name: "Interlinked MCP Server reachable",
+				name: "Server reachable",
 				status: "fail",
 				message: e instanceof Error ? e.message : "Connection failed",
 			});
 		}
 	} else {
 		serverResults.push({
-			name: "Interlinked MCP Server checks",
+			name: "Server checks",
 			status: "warn",
 			message: "Skipped -- no auth token available",
 		});
@@ -501,7 +501,7 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 			}
 
 			lines.push("");
-			lines.push(header("Interlinked MCP Server Checks"));
+			lines.push(header("Server Checks"));
 			for (const r of serverResults) {
 				lines.push(`  ${statusIcon(r.status)} ${r.name} -- ${r.message}`);
 			}

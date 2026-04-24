@@ -1,7 +1,7 @@
 // ===========================================
 // Remote Onboarding Helper
 // ===========================================
-// Bridges Interlinked CLI local setup with Interlinked MCP Server agent bootstrap.
+// Bridges Interlinked CLI local setup with server agent bootstrap.
 // Best-effort only: never throws, never blocks local-only workflows.
 
 import { getClient } from "./api-client.js";

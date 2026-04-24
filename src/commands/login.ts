@@ -1,5 +1,5 @@
 // ===========================================
-// interlinked login — Authenticate with the Interlinked MCP Server
+// interlinked login — Authenticate with the server
 // ===========================================
 // Runs the OAuth PKCE flow (opens browser) or accepts a manual token.
 // Saves credentials to .interlinked/config.local.json.
@@ -68,7 +68,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 		const serverUrl = options.server || "http://localhost:8787";
 		initConfig({ serverUrl }, cwd);
 		console.log(`${c.green("Created")} .interlinked/config.json`);
-		console.log(`  ${c.dim("Interlinked MCP Server:")} ${serverUrl}\n`);
+		console.log(`  ${c.dim("Server:")} ${serverUrl}\n`);
 	}
 
 	// Resolve the server URL
@@ -79,7 +79,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 	if (options.server && options.server !== config.server_url) {
 		initConfig({ serverUrl: options.server }, cwd);
 		console.log(
-			`${c.green("Updated")} Interlinked MCP Server URL to ${c.cyan(options.server)}\n`,
+			`${c.green("Updated")} Server URL to ${c.cyan(options.server)}\n`,
 		);
 	}
 
@@ -125,7 +125,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 	}
 
 	// Path 2: OAuth PKCE flow (interactive)
-	console.log(`${c.dim("Interlinked MCP Server:")} ${serverUrl}`);
+	console.log(`${c.dim("Server:")} ${serverUrl}`);
 	console.log(c.dim("Starting OAuth PKCE flow...\n"));
 
 	try {
@@ -229,10 +229,10 @@ const LOGIN_ERROR_REPORTERS: ReadonlyArray<{
 		match: "Client registration failed",
 		report: (_message, serverUrl) => {
 			console.error(`\n${c.red("Server error:")} Could not register OAuth client.`);
-			console.error(c.dim(`Interlinked MCP Server: ${serverUrl}`));
+			console.error(c.dim(`Server: ${serverUrl}`));
 			console.error(
 				c.dim(
-					"Check that the Interlinked MCP Server URL is correct and the server is running.",
+					"Check that the Server URL is correct and the server is running.",
 				),
 			);
 		},

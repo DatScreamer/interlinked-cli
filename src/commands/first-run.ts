@@ -134,7 +134,7 @@ async function runInteractiveWizard(): Promise<void> {
 	let doLogin = true;
 	let didRunLogin = false;
 	try {
-		const serverRaw = await rl.question(`Interlinked MCP Server URL [${defaultServer}]: `);
+		const serverRaw = await rl.question(`Server URL [${defaultServer}]: `);
 		server = serverRaw.trim() || defaultServer;
 
 		const agentRaw = await rl.question(`Agent name [${defaultAgent}]: `);
