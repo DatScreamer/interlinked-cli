@@ -3,12 +3,9 @@
 // ===========================================
 // Runs toolchain linters (biome + tsc) against the *proposed* file content
 // before the write lands, compared against the cached diagnostics for the
-// on-disk file. If the edit introduces NEW findings the overlay returns
-// them so the evaluator can block the write with a targeted reason.
-//
-// Pre-existing findings are never blocked — that would trap agents on files
-// that were already broken before they touched them. The gate only fires on
-// net-new findings, which is the correct "you made it worse" signal.
+// on-disk file. The overlay returns the set of findings that are net-new in
+// the proposed content so the evaluator can block the write with a targeted
+// reason.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";

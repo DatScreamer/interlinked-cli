@@ -211,9 +211,9 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 				decision: {
 					decision: "block",
 					reason:
-						`BLOCKED by biome diff-overlay: this edit introduces ${overlay.newFindings.length} new biome finding(s) in ${filePath} that did not exist before. ` +
+						`BLOCKED by biome diff-overlay: this edit introduces ${overlay.newFindings.length} new biome finding(s) in ${filePath}. ` +
 						`First: [${first.ruleId ?? "biome"}] L${first.line} — ${first.message}${restSummary}. ` +
-						"Fix the new issue(s) in your edit, or retry without introducing them. Pre-existing findings elsewhere in the file are not blocking.",
+						"Fix the new issue(s) in your edit, or retry without introducing them.",
 					warnings,
 					rule_id: "biome-diff-overlay",
 					severity: "high",
@@ -246,9 +246,9 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 				decision: {
 					decision: "block",
 					reason:
-						`BLOCKED by tsc diff-overlay: this edit introduces ${blocking.length} new type error(s) in ${filePath} that did not exist before. ` +
+						`BLOCKED by tsc diff-overlay: this edit introduces ${blocking.length} new type error(s) in ${filePath}. ` +
 						`First: [${first.ruleId}] L${first.line}:${first.column ?? 1} — ${first.message}${restSummary}. ` +
-						"Fix the type error(s) in your edit, or retry without introducing them. Pre-existing type errors elsewhere in the file are not blocking.",
+						"Fix the type error(s) in your edit, or retry without introducing them.",
 					warnings,
 					rule_id: "tsc-diff-overlay",
 					severity: "high",

@@ -66,8 +66,7 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 		"This source file has no corresponding test file. Create a test file with at least basic coverage. " +
 		"Name it {filename}.test.ts or {filename}.spec.ts in the same directory.",
 	complexity:
-		"This function has high measured complexity. If your edit increased it, consider extracting helpers " +
-		"or using early returns. Pre-existing complexity can be ignored.",
+		"This function has high measured complexity. Extract helpers or use early returns to reduce nesting and parameter count.",
 	export_ripple:
 		"Other files import symbols from this file that no longer exist in its exports. " +
 		"Update the importing files to use the correct symbol names, or restore the removed exports.",
