@@ -73,6 +73,13 @@ describe("evaluatePreToolUse", () => {
 		// Add built-in rules
 		const loaded = loadRules(process.cwd());
 		rules.rules = loaded.rules;
+		// This suite exercises non-TDD guards (destructive commands, content
+		// checks, reservations, ...). The default config ships
+		// `test_first_mode: "enforce"` (which blocks new non-test .ts/.tsx
+		// without a companion test); relax it here so these non-TDD tests
+		// still assert their intended behaviors. TDD-specific cases live in
+		// `evaluator/tdd-new-file-gate.test.ts`.
+		if (rules.structural_checks) rules.structural_checks.test_first_mode = "warn";
 		cohort = new CohortManager();
 		reservations = new ReservationManager();
 		session = makeSession();

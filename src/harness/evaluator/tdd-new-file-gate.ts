@@ -1,0 +1,184 @@
+// ===========================================
+// TDD Gate: new-file creation
+// ===========================================
+// Blocks creation of a new non-test `.ts`/`.tsx` source file unless a companion
+// test file already exists on disk OR was written earlier in the same session.
+//
+// Runs only when `structural_checks.test_first_mode === "enforce"` (the
+// current default). Scope is intentionally narrow — existing files can still
+// be Edit'd without a gate; we start with the gentler "new-files-only"
+// rollout and will widen to all edits in a follow-up.
+//
+// Bypasses:
+//   - Per-file directive `// interlinked-tdd: exempt` in the first ~400 bytes
+//     of the Write content (meant for genuinely untestable surfaces — entry
+//     points that only wire DI, generated bridges, etc.).
+//   - Path is on the exemption list (tests, fixtures, generated artifacts,
+//     type declarations, config files, standalone scripts).
+
+import { existsSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import type {
+	GuardRulesConfig,
+	HarnessDecision,
+	HarnessEvent,
+	SessionTrajectory,
+} from "../types.js";
+
+/** The only mode in which this gate fires. Extracted so the conditional reads
+ *  as intent; see `types.ts#GuardRulesConfig.structural_checks.test_first_mode`. */
+const ENFORCE_MODE: "enforce" = "enforce";
+
+const SOURCE_EXT_RE = /\.(ts|tsx)$/;
+
+// Paths where a companion test isn't meaningful — skip the gate.
+const EXEMPT_PATH_RES: readonly RegExp[] = [
+	/\.d\.ts$/, // type-only declarations
+	/\.test\.tsx?$/, // the tests themselves
+	/\.spec\.tsx?$/,
+	/(^|\/)__tests__\//,
+	/(^|\/)__fixtures__\//,
+	/(^|\/)__mocks__\//,
+	/(^|\/)dist\//,
+	/(^|\/)\.claude\//,
+	/(^|\/)\.interlinked\//,
+	/(^|\/)node_modules\//,
+	/(^|\/)scripts\//, // one-off build/release scripts
+	/\.config\.tsx?$/, // vite.config.ts / vitest.config.ts / tsup.config.ts / ...
+];
+
+const TDD_EXEMPT_DIRECTIVE_RE = /\/\/\s*interlinked-tdd:\s*exempt\b/;
+const EXEMPT_DIRECTIVE_SCAN_BYTES = 400;
+
+export interface TddNewFileGateArgs {
+	filePath: string;
+	cwd?: string;
+	session: SessionTrajectory | undefined;
+	content?: string;
+	testFirstMode: "nudge" | "warn" | "enforce" | undefined;
+}
+
+/** Public API — consumed by `evaluator/pre-tool.ts` on every file-write event.
+ *
+ *  Returns `null` when the gate is not applicable (wrong mode, wrong ext, in
+ *  an exempt path, existing file, or companion found). Returns a `block`
+ *  decision when a new `.ts`/`.tsx` file is being created without a
+ *  companion test. */
+export function evaluateTddNewFileGate(args: TddNewFileGateArgs): HarnessDecision | null {
+	if (args.testFirstMode !== ENFORCE_MODE) return null;
+	if (!args.filePath) return null;
+	if (!SOURCE_EXT_RE.test(args.filePath)) return null;
+	if (isExemptPath(args.filePath)) return null;
+	if (hasExemptDirective(args.content)) return null;
+
+	const abs = toAbsolute(args.filePath, args.cwd);
+
+	// Only fire on NEW files. Existing-file Edits are part of the later
+	// "enforce_all" rollout.
+	if (existsSync(abs)) return null;
+
+	const candidates = companionTestCandidates(abs);
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return null;
+	}
+	if (args.session) {
+		const writtenAbs = normalizedWrittenSet(args.session, args.cwd);
+		for (const candidate of candidates) {
+			if (writtenAbs.has(candidate)) return null;
+		}
+	}
+
+	const hint = companionHintPath(args.filePath);
+	return {
+		decision: "block",
+		reason:
+			`BLOCKED: new source file "${args.filePath}" has no companion test. ` +
+			`Red/green TDD is enforced for new .ts/.tsx files. ` +
+			`Create ${hint} first with a failing test, then write the implementation. ` +
+			`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.) ` +
+			`If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`,
+		rule_id: "tdd_new_file_gate",
+		severity: "high",
+		category: "tdd",
+	};
+}
+
+/** Public API — consumed by `evaluator/pre-tool.ts` as a thin event-level
+ *  wrapper around `evaluateTddNewFileGate`. Extracts `file_path`/`content`
+ *  from the raw tool input so the call site stays a one-liner. */
+export function evaluateTddNewFileGateForEvent(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	session: SessionTrajectory | undefined,
+): HarnessDecision | null {
+	const toolInput = event.tool_input || {};
+	return evaluateTddNewFileGate({
+		filePath: (toolInput.file_path as string) || (toolInput.path as string) || "",
+		cwd: event.cwd,
+		session,
+		content:
+			(toolInput.content as string | undefined) ??
+			(toolInput.new_string as string | undefined),
+		testFirstMode: rules.structural_checks?.test_first_mode,
+	});
+}
+
+function isExemptPath(p: string): boolean {
+	for (const re of EXEMPT_PATH_RES) {
+		if (re.test(p)) return true;
+	}
+	return false;
+}
+
+function hasExemptDirective(content: string | undefined): boolean {
+	if (!content) return false;
+	return TDD_EXEMPT_DIRECTIVE_RE.test(content.slice(0, EXEMPT_DIRECTIVE_SCAN_BYTES));
+}
+
+function toAbsolute(filePath: string, cwd: string | undefined): string {
+	if (isAbsolute(filePath)) return filePath;
+	return resolve(cwd || process.cwd(), filePath);
+}
+
+/** The ordered list of companion test paths we look for. First hit wins. */
+function companionTestCandidates(srcAbs: string): string[] {
+	const dir = dirname(srcAbs);
+	const ext = extname(srcAbs);
+	const base = basename(srcAbs, ext);
+	return [
+		join(dir, `${base}.test${ext}`),
+		join(dir, "__tests__", `${base}.test${ext}`),
+		join(dir, `${base}.spec${ext}`),
+		join(dir, "__tests__", `${base}.spec${ext}`),
+	];
+}
+
+/** Agents see a friendly relative path, not the resolved absolute one. */
+function companionHintPath(srcRaw: string): string {
+	const ext = extname(srcRaw);
+	const base = basename(srcRaw, ext);
+	const dir = dirname(srcRaw);
+	return dir && dir !== "."
+		? `${dir}/${base}.test${ext}`
+		: `${base}.test${ext}`;
+}
+
+function shortest(abs: string, cwd: string | undefined): string {
+	if (!cwd) return abs;
+	const cwdAbs = resolve(cwd);
+	if (abs.startsWith(cwdAbs + "/")) return abs.slice(cwdAbs.length + 1);
+	return abs;
+}
+
+/** `session.files_written` stores whatever path shape the tool sent. Normalize
+ *  to absolute so the comparison with our absolute candidates is reliable. */
+function normalizedWrittenSet(
+	session: SessionTrajectory,
+	cwd: string | undefined,
+): Set<string> {
+	const out = new Set<string>();
+	for (const p of session.files_written) {
+		out.add(toAbsolute(p, cwd));
+	}
+	return out;
+}

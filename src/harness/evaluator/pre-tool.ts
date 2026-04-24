@@ -52,6 +52,7 @@ import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-gu
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
+import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import {
 	estimateEditLine,
 	isBash,
@@ -142,9 +143,7 @@ export function evaluatePreToolUse(
 	let pendingEscalation: EscalationRequest | undefined;
 	void _blameInjectedFiles; // reserved for future blame-injection dedup
 
-	// ═══════════════════════════════════════════
 	// GUARD: Destructive patterns — Bash, Write, Edit, all tools
-	// ═══════════════════════════════════════════
 	{
 		const cmd = (toolInput.command as string) || "";
 		const agentRole = inferAgentRole(event);
@@ -203,10 +202,8 @@ export function evaluatePreToolUse(
 			warnings.push(`[interlinked] Warning: ${rule.reason}`);
 		}
 
-		// ═══════════════════════════════════════════
-		// GUARD: Bash-routed code-file writes (bypass content gate)
-		// ═══════════════════════════════════════════
-		if (isBash(toolName) && cmd) {
+			// GUARD: Bash-routed code-file writes (bypass content gate)
+			if (isBash(toolName) && cmd) {
 			const redirectHit = detectBashCodeFileWrite(cmd);
 			if (redirectHit) {
 				return {
@@ -265,9 +262,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Protected files
-	// ═══════════════════════════════════════════
 	if (isFileOperation(toolName)) {
 		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (filePath) {
@@ -283,9 +278,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Repo confinement — block writes outside CWD
-	// ═══════════════════════════════════════════
 	if (isFileWrite(toolName) && event.cwd) {
 		const rawPath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (rawPath) {
@@ -298,9 +291,13 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
+	// TDD gate — block new non-test .ts/.tsx without a companion test (enforce mode only).
+	if (isFileWrite(toolName)) {
+		const d = evaluateTddNewFileGateForEvent(event, rules, session);
+		if (d) return { ...d, warnings };
+	}
+
 	// RESERVATION: Auto file reservation
-	// ═══════════════════════════════════════════
 	if (isFileWrite(toolName)) {
 		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (filePath) {
@@ -327,9 +324,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// LIFECYCLE: curl-to-MCP detection
-	// ═══════════════════════════════════════════
 	if (isBash(toolName) && rules.curl_mcp_detection?.enabled && session) {
 		const cmd = (toolInput.command as string) || "";
 		for (const port of rules.curl_mcp_detection.localhost_ports) {
@@ -354,9 +349,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: curl to /mcp routes — agent should use MCP directly
-	// ═══════════════════════════════════════════
 	if (isBash(toolName)) {
 		const cmd = (toolInput.command as string) || "";
 		if (/\b(curl|wget|fetch)\b/.test(cmd) && /\/mcp\b/i.test(cmd)) {
@@ -368,9 +361,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Pipe-to-bash / remote code execution
-	// ═══════════════════════════════════════════
 	if (isBash(toolName)) {
 		const cmd = (toolInput.command as string) || "";
 
@@ -432,9 +423,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Edit tool — verify old_string exists
-	// ═══════════════════════════════════════════
 	if (toolName === "Edit" && toolInput.file_path && toolInput.old_string) {
 		const filePath = toolInput.file_path as string;
 		const oldString = toolInput.old_string as string;
@@ -458,9 +447,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Write/Edit content validation (delegated)
-	// ═══════════════════════════════════════════
 	if (isFileWrite(toolName) && (toolInput.content || toolInput.new_string)) {
 		const result = evaluateWriteContentGuards({
 			toolName,
@@ -480,9 +467,7 @@ export function evaluatePreToolUse(
 		pendingEscalation = result.escalation;
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: WebFetch — exfiltration and safety
-	// ═══════════════════════════════════════════
 	if (toolName === "WebFetch" || toolName === "web_fetch" || toolName === "WebSearch") {
 		const url = (toolInput.url as string) || "";
 		if (url.startsWith("file://")) {
@@ -494,9 +479,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUIDE: Markdown-first web fetching nudges
-	// ═══════════════════════════════════════════
 	if (isBrowserNavigate(toolName)) {
 		const url = (toolInput.url as string) || "";
 		if (url && /^https?:\/\//i.test(url)) {
@@ -527,9 +510,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// GUARD: Read — block sensitive files, warn on oversized files
-	// ═══════════════════════════════════════════
 	if (isReadOperation(toolName) && toolInput.file_path) {
 		const filePath = toolInput.file_path as string;
 		const readFileName = filePath.split("/").pop() || "";
@@ -569,9 +550,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// CONTEXT: Structural context injection
-	// ═══════════════════════════════════════════
 	if (graph && sessions && rules.structural_checks?.enabled) {
 		const contextWarnings = getPreToolUseContext(
 			event,
@@ -584,15 +563,11 @@ export function evaluatePreToolUse(
 		warnings.push(...contextWarnings);
 	}
 
-	// ═══════════════════════════════════════════
 	// PROJECT SETUP: One-time validation (first tool call only)
-	// ═══════════════════════════════════════════
 	const setupWarnings = getProjectSetupWarnings(event.cwd || process.cwd());
 	if (setupWarnings.length > 0) warnings.push(...setupWarnings);
 
-	// ═══════════════════════════════════════════
 	// DIAGNOSTICS: PreToolUse file diagnostics (tsc + biome)
-	// ═══════════════════════════════════════════
 	if (isFileWrite(toolName) && rules.quality_checks) {
 		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (filePath && DIAGNOSTIC_EXTENSIONS.test(filePath)) {
@@ -605,9 +580,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// PRE-CHECKS: Additional safety checks (delegated)
-	// ═══════════════════════════════════════════
 	const eventCwd = event.cwd || process.cwd();
 	if (isBash(toolName)) {
 		const command = (toolInput.command as string) || "";
@@ -681,9 +654,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// TAINT: Sensitivity tracking, network blocking, step budget (delegated)
-	// ═══════════════════════════════════════════
 	if (rules.taint_tracking?.enabled && session) {
 		const taintResult = evaluateTaintGuards({
 			toolName,
@@ -708,9 +679,7 @@ export function evaluatePreToolUse(
 		pendingEscalation = taintResult.escalation;
 	}
 
-	// ═══════════════════════════════════════════
 	// ESCALATION: post_injection_action
-	// ═══════════════════════════════════════════
 	if (
 		session &&
 		session.injection_detected_steps.length > 0 &&
@@ -732,9 +701,7 @@ export function evaluatePreToolUse(
 		};
 	}
 
-	// ═══════════════════════════════════════════
 	// PERMISSION PATTERN DETECTION
-	// ═══════════════════════════════════════════
 	if (session) {
 		const pattern = extractPermissionPattern(toolName, toolInput);
 		if (pattern && !session.suggested_permissions.has(pattern)) {
@@ -758,9 +725,7 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// ═══════════════════════════════════════════
 	// CONTEXT: Error memory — cross-session history
-	// ═══════════════════════════════════════════
 	if (
 		errorHistory &&
 		rules.error_memory?.enabled &&

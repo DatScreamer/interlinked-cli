@@ -14,9 +14,10 @@ describe("evaluatePreToolUse — file & network guards", () => {
 
 	beforeEach(() => {
 		rules = getDefaultConfig();
-		// Add built-in rules
 		const loaded = loadRules(process.cwd());
 		rules.rules = loaded.rules;
+		// Relax TDD enforce-mode for this non-TDD suite (see evaluator.test.ts).
+		if (rules.structural_checks) rules.structural_checks.test_first_mode = "warn";
 		cohort = new CohortManager();
 		reservations = new ReservationManager();
 		session = makeSession();
