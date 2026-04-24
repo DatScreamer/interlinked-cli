@@ -48,11 +48,14 @@ exercises the same end-to-end path.
   findings, never on pre-existing issues. Works for `Edit`/`Write`
   tools and — via `interlinked write` — for Bash-mediated writes like
   `sed -i` or `cat > file`.
-- **Auto file reservation.** Lease-based locks with TTL auto-expiry
-  prevent an agent from clobbering its own earlier edits or stepping
-  on a peer.
-- **Post-edit checks.** 18 quality checks across 8+ languages (tsc,
-  biome, cargo, mypy, …) and 22 structural checks (export surface,
+- **Auto file reservation.** Every file write takes a lease-based
+  reservation with a 5-minute TTL and a 30-second idle auto-release.
+  When an Interlinked MCP Server is configured, a write that targets
+  a file already reserved by another developer's agent is blocked with
+  a pointer to coordinate via MCP messages; otherwise the reservation
+  is local-only.
+- **Post-edit checks.** 27 quality checks across 8+ languages (tsc,
+  biome, cargo, mypy, …) and 25 structural checks (export surface,
   import resolution, cycles, blast radius) run after each edit.
 - **Offline activity log.** Every hook event appends to
   `.interlinked/activity.jsonl` synchronously (~0.1 ms).
@@ -118,10 +121,13 @@ uninstall the CLI, previously installed hook entries fail open until you run
 
 Guard evaluation has two layers:
 
-1. **Block-level rules** (can't be overridden): destructive shell
-   commands, secrets in writes, recursive deletes, force-pushes to
-   protected branches.
-2. **Taste rules** (configurable): style, complexity, coverage, etc.
+1. **Guard rules** — destructive shell commands, secrets in writes,
+   recursive deletes, force-pushes to protected branches. These block
+   by default and are not downgraded by mode selection. Individual
+   rules can still be disabled via `disabled_rules` in
+   `.interlinked/guard-rules.local.json` if you have a specific reason.
+2. **Taste rules** — style, complexity, coverage, test quality. Mode
+   selection governs these.
 
 Switch modes with `interlinked mode <name>`:
 
