@@ -42,6 +42,7 @@ export class SessionTracker {
 				fired_reminders: new Set(),
 				soft_blocks: new Set(),
 				injection_detected_steps: [],
+				pii_detected_steps: [],
 				last_coordination_at: 0,
 				last_coordination_ts: Date.now(),
 				test_runs: new Map(),

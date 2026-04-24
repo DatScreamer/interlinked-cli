@@ -567,9 +567,140 @@ See `docs/generated/configuration.md` for the full default configuration referen
 - `diff_aware` — control which checks suppress pre-existing findings
 - `error_memory` — error pattern history with optional embeddings support
 
+## ML Content Scanner — Bidirectional PII/Secret Exfil Guard
+
+A detector-style layer that scans tool-call content with a learned token classifier (default: OpenAI's [privacy-filter](https://huggingface.co/openai/privacy-filter)) and routes detections through Claude Code's `ask` confirmation UI so a human approves or denies each potentially-sensitive call. This is distinct from the generative policy classifier (`src/harness/policy-classifier.ts`) — that one emits free-form verdicts; this one emits structured spans.
+
+**Off by default.** Requires a one-time `pip install opf`. Enable with:
+
+```jsonc
+// .interlinked/guard-rules.local.json
+{ "content_scanner": { "enabled": true } }
+```
+
+### Bidirectional model
+
+The scanner guards exfiltration in both directions:
+
+| Direction | Trigger | What happens | Exfil risk mitigated |
+|---|---|---|---|
+| **Outbound** (PreToolUse) | Write / Edit / MultiEdit / NotebookEdit content; Bash command body; WebFetch URL + prompt; external MCP tool string args | Scanner runs on each text part; if any span is detected the server converts the decision to `ask` so the human sees `[category(count), …]` and approves or denies | PII being committed to disk, piped to curl, or sent to external services |
+| **Inbound** (PostToolUse) | `Read` / `Grep` / `Glob` return payloads | Scanner runs on `tool_response`; detections ratchet `session.sensitivity_level` to `Confidential` (or `HighlyConfidential` for `secret` / `account_number` labels) and push the step index into `pii_detected_steps` | Sensitive data read into agent context → subsequent outbound actions blocked by the existing taint-tracking rules (`network_block_at: Confidential`) without needing the scanner to re-detect anything |
+
+The inbound→outbound chain is the load-bearing integration: once a session reads PII, *every* subsequent network command is blocked by taint tracking even if the outbound command itself has been stripped of PII before send.
+
+### Taxonomy
+
+OPF emits one of eight category labels per detected span (pinned in `OPF_LABELS` in `src/harness/content-scanner/types.ts`):
+
+```
+account_number, private_address, private_date, private_email,
+private_person, private_phone, private_url, secret
+```
+
+Block-reason summaries enumerate every detected category with a count, alphabetical by label — e.g. `[account_number(1), private_email(2), secret(1)]`. Matched substrings are **never** echoed in the reason, to avoid leaking the very content the scanner flagged.
+
+### Runtime backends
+
+| Runtime | Config value | What it does | Ready today |
+|---|---|---|---|
+| **Local Python sidecar** | `"local"` (default) | Spawns `python -m opf` once, keeps it alive, JSONL protocol on stdin/stdout. Multi-second cold load, ~100 ms – few-seconds warm scans on CPU. | ✅ |
+| **HuggingFace Inference API** | `"huggingface"` | HTTP POST to `api-inference.huggingface.co/models/<model>`. Usable today for `gpt-oss-safeguard-20b` and other standard-architecture models. **Not** usable for `openai/privacy-filter` — that model ships a custom architecture requiring `trust_remote_code`. | ✅ for gpt-oss-safeguard; ❌ for privacy-filter on the free tier |
+| **Custom HTTP endpoint** | `"custom_http"` | HTTP POST to any endpoint returning HF's token-classification response shape. Use for self-hosted TGI/vLLM, a paid HF Inference Endpoint, or the Interlinked MCP server (when server-proxied inference lands). | ✅ |
+
+See `docs/design/content-scanner-remote-hosting.md` for the deployment playbook and the upcoming server-proxied path.
+
+### Policy: `ask`, not `block`
+
+The scanner emits `decision: "ask"` (not `"block"`) for any finding above `min_score` — Claude Code's native per-call confirmation UI then surfaces the reason and the human decides. This is deliberate: OPF is probabilistic and false-positives on:
+
+- `example.com` and RFC 5322 test addresses in test fixtures
+- Code variable names that happen to look like personal names (`alice`, `bob`, `jane_doe`)
+- Regex patterns that match phone / email / URL shapes
+- Dates in docs (`1990-01-02` eval examples, timestamps)
+- Path-like strings (`.scratch/events/foo.json` → `private_url`)
+
+A hard block would trap the agent on legitimate content. `ask` keeps the human in the loop while still attaching the categorized summary as evidence. Operators who want stricter `block`-by-default can fork the policy layer (`src/harness/content-scanner/policy.ts`).
+
+### Two-channel disclosure: agent-safe reason + local-only unmasked file
+
+The `reason` string that surfaces in the confirmation UI is shipped to Anthropic on the agent's next turn (it becomes part of the model's context). That means **anything** the scanner puts in the reason leaks the flagged content back out through the model API — the exact exfil vector the scanner is built to prevent.
+
+The CLI solves this with two channels:
+
+1. **`reason` field (agent-safe)** — sent through the hook protocol, visible to both the user and the model. Contains:
+   - The category summary `[private_email(2), private_person(1)]`.
+   - A per-source preview with every matched span replaced by `<CATEGORY>` (e.g. `WebFetch.url: https://api.example.com/?email=<PRIVATE_EMAIL>`).
+   - A pointer to the local-only pending-prompt file.
+   - **Never** contains any matched-span substring.
+
+2. **Pending-prompt file (local-only)** at `.interlinked/scanner/pending/<timestamp>-<hash>.json` — written by the harness, mode `0600`, never transmitted anywhere. Contains the full unmasked content + every detected span with its text. The user opens it from another terminal (`cat`, their editor, etc.) while the approval prompt waits. Pruned after 1 hour.
+
+```
+privacy-filter detected sensitive content [private_email(2), private_person(1)].
+
+Preview (PII masked — values replaced with <CATEGORY>):
+  WebFetch.url: https://api.example.com/?email=<PRIVATE_EMAIL>
+  WebFetch.prompt: fetch <PRIVATE_PERSON>'s profile
+
+Full unmasked content: .interlinked/scanner/pending/2026-04-24T15-42-00-a1b2c3.json
+  (local-only — not sent to Anthropic)
+```
+
+Self-defending: if the agent tries to `Read` the pending file to recover the values, the PostToolUse Read scan picks up the same PII and ratchets session sensitivity — the file contents flagged the scanner in the first place, so they flag it again on read-back.
+
+The directory is gitignored (`.interlinked/scanner/`); nothing lands in commits.
+
+### Hook points
+
+Per-hook toggles live under `content_scanner.scan_points`; each is `true` by default when the scanner is enabled.
+
+| Toggle | Fires on | Built by |
+|---|---|---|
+| `write_edit` | Write, Edit, MultiEdit, NotebookEdit, str_replace, apply_patch, create | `extractor.ts` → `resolveProposedContent(…)` from `overlay-content.ts` |
+| `bash_command` | Bash, Shell, shell, bash, run_command | `extractor.ts` reads `tool_input.command` |
+| `external_egress` | WebFetch, web_fetch, WebSearch, any `mcp__*` tool | `extractor.ts` walks URL + prompt + query + top-level string fields |
+| `read_grep_taint` | PostToolUse Read / Grep / Glob | `post-scan.ts` reads `tool_response`, calls `ratchetSensitivity(…)` |
+
+### Performance knobs
+
+All under `content_scanner.local`:
+
+- `startup_timeout_ms` (default 90 000) — first scan includes OPF cold load
+- `scan_timeout_ms` (default 30 000) — warm scans on CPU, serialized queue
+- `idle_shutdown_ms` (default 30 min) — free the ~1.3 GB resident model after inactivity; next scan re-spawns
+- `max_restarts` (default 3) — bounded auto-restart on sidecar crash; after this limit the scanner disables itself fail-open for the session
+
+On Apple Silicon (no MPS in OPF) every scan is CPU-bound. Latency scales with input length and the queue depth; a 15 KB Edit behind other pending scans can take ~10–20 s. For sustained agent workloads, the remote-hosting path (see design doc) is the recommended production configuration.
+
+### Fail-open posture
+
+Every scanner error path — spawn failure, timeout, network error, malformed response, `opf not installed` — returns `allow` (never blocks). Errors are logged to stderr via `[interlinked:opf-local]` so operators can spot timing problems. This matches the rest of the harness's safety-continuity policy: a broken scanner must never wedge an otherwise-working agent.
+
+### Known limitations
+
+- **FP on test fixtures**: `alice@example.com`, Faker-style names, and similar canonical test data will trip the filter. That's a feature (it forces a human review) but creates friction when deliberately writing scanner tests — see `reference-repos/privacy-filter/README.md` "Static Label Policy" note.
+- **Secret coverage is narrow**: OPF catches obvious key shapes but may miss project-specific token formats. Pair with a regex-based secret scanner (gitleaks etc.) for defense in depth.
+- **Routing numbers, SSNs, credit-card-shaped digits** are inconsistently flagged — OPF's `account_number` class isn't exhaustive. Custom patterns feeding the same policy layer close this gap.
+- **CPU-only on macOS.** Upstream OPF ships `device: "cpu" | "cuda"`. Apple Silicon MPS isn't a supported device, so Mac hosts pay the CPU tax.
+
+### Related source files
+
+| File | Purpose |
+|---|---|
+| `src/harness/content-scanner/types.ts` | `ContentScanner`, `ContentScannerConfig`, `ScanFinding`, `OPF_LABELS` |
+| `src/harness/content-scanner/extractor.ts` | Per-tool content extraction (PreToolUse) |
+| `src/harness/content-scanner/policy.ts` | Findings → `ask`/`allow` verdict, alphabetical summary |
+| `src/harness/content-scanner/sidecar-manager.ts` | Long-running Python subprocess + JSONL protocol |
+| `src/harness/content-scanner/sidecars/opf-sidecar.py` | Python daemon wrapping `opf.OPF` |
+| `src/harness/content-scanner/opf-local.ts` | `ContentScanner` backed by the sidecar |
+| `src/harness/content-scanner/opf-http.ts` | HTTP backend for HF / self-hosted / server-proxied |
+| `src/harness/content-scanner/registry.ts` | Factory: config → scanner |
+| `src/harness/content-scanner/post-scan.ts` | PostToolUse Read/Grep scan + taint ratchet |
+
 ## Future Work (Not Yet Implemented)
 
-- **Layer 3: LLM classifier** — Ollama or Claude API for semantic evaluation of complex cases (deferred to Phase 2)
+- **Server-proxied inference** — MCP server hosts an OPF deployment and the CLI's `custom_http` runtime points at it. See `docs/design/content-scanner-remote-hosting.md`.
 - **Auto-checkpointing** — harness triggers git checkpoints before destructive operations or after N tool calls
 - **Server-pushed team rules** — workspace owners configure rules via dashboard, harness pulls them
 - **Agent loop enforcement** — detect when agent hasn't called `wait_for_work` in 5+ minutes, alert human

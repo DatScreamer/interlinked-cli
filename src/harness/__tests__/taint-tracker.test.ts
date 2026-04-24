@@ -41,6 +41,7 @@ function makeSession(): SessionTrajectory {
 		fired_reminders: new Set(),
 		soft_blocks: new Set(),
 		injection_detected_steps: [],
+		pii_detected_steps: [],
 		last_coordination_at: 0,
 		last_coordination_ts: FIXED_NOW,
 		test_runs: new Map(),

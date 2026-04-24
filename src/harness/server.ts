@@ -34,6 +34,11 @@ import {
 import { getOrCreateEngine } from "./check-engine/index.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "./check-metadata.js";
 import { CohortManager } from "./cohort.js";
+import { decideFromFindings } from "./content-scanner/policy.js";
+import { runPostToolScan } from "./content-scanner/post-scan.js";
+import { buildAskReason, writePendingPrompt } from "./content-scanner/redact-preview.js";
+import { createScanner } from "./content-scanner/registry.js";
+import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
 import { snapshotCrap } from "./checks/crap-baseline.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
@@ -168,6 +173,17 @@ import { buildTurnEndSummary, formatTurnEndWarnings } from "./turn-end.js";
 // --- LLM policy classifier session state ---
 // Per-session classifier state (call count, consecutive failures).
 const classifierSessions = new Map<string, ClassifierSessionState>();
+
+// ML content scanner (OpenAI privacy-filter / gpt-oss-safeguard). Off by default;
+// opt in via `.interlinked/guard-rules.local.json` → `"content_scanner": {"enabled": true}`.
+// Undefined when disabled or misconfigured — both read paths below null-check.
+const contentScanner: ContentScanner | undefined = rules.content_scanner
+	? createScanner(rules.content_scanner)
+	: undefined;
+if (contentScanner) {
+	// Visible at startup so agents know the scanner is in-line.
+	logAlways(`Content scanner: enabled (${contentScanner.name} / ${contentScanner.runtime})`);
+}
 
 // --- Auto-coordination state ---
 import {
@@ -525,9 +541,72 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			}
 		}
 
-		// Clean up _escalation from the decision before returning to hook script
-		// (internal field, not part of the hook protocol)
+		// --- Content Scanner: run ML PII detection on the scan request (if present) ---
+		// Runs when the evaluator attached a _contentScan bundle AND the scanner is
+		// enabled. Iterates per-part (Write.content, Bash.command, etc.), aggregates
+		// findings, and blocks the tool call if any survive the min_score floor.
+		// Fail-open on any error (network, spawn, timeout).
+		if (
+			preDecision.decision === "allow" &&
+			preDecision._contentScan &&
+			contentScanner &&
+			rules.content_scanner?.enabled
+		) {
+			const scanReq = preDecision._contentScan;
+			const maxBytes = rules.content_scanner.max_scan_bytes || 100_000;
+			const timeoutMs = rules.content_scanner.local?.scan_timeout_ms || 1500;
+			const findings: ScanFinding[] = [];
+			for (const part of scanReq.parts) {
+				try {
+					const partFindings = await contentScanner.scan({
+						text: part.text.slice(0, maxBytes),
+						source: part.source,
+						signal: AbortSignal.timeout(timeoutMs),
+					});
+					findings.push(...partFindings);
+				} catch (scanErr) {
+					log(
+						`Content scanner scan failed (fail-open): ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
+					);
+				}
+			}
+			const verdict = decideFromFindings(findings, rules.content_scanner);
+			log(
+				`Content scanner: ${event.tool_name} (${scanReq.hook}) — ${scanReq.parts.length} part(s), ${findings.length} finding(s), decision=${verdict.decision}`,
+			);
+			if (verdict.decision === "ask") {
+				// Hand off to Claude Code's built-in confirmation UI via the "ask"
+				// decision. Reason has three parts:
+				//   (1) category summary from decideFromFindings  — agent-safe
+				//   (2) per-source preview with PII → <CATEGORY>   — agent-safe
+				//   (3) pointer to a LOCAL-ONLY file with the full unmasked content
+				//       — user opens from another terminal; never sent to Anthropic.
+				const findingsBySource = new Map<string, ScanFinding[]>();
+				for (const f of findings) {
+					const bucket = findingsBySource.get(f.source) ?? [];
+					bucket.push(f);
+					findingsBySource.set(f.source, bucket);
+				}
+				const pendingPromptPath = writePendingPrompt({
+					cwd: CWD,
+					request: scanReq,
+					findingsBySource,
+					toolName: event.tool_name ?? "unknown",
+				});
+				preDecision.decision = "ask";
+				preDecision.reason = buildAskReason({
+					policySummary: verdict.reason ?? "privacy-filter detected sensitive content.",
+					request: scanReq,
+					findingsBySource,
+					pendingPromptPath,
+				});
+			}
+		}
+
+		// Clean up _escalation and _contentScan from the decision before returning to hook script
+		// (internal fields, not part of the hook protocol)
 		delete preDecision._escalation;
+		delete preDecision._contentScan;
 
 		// --- Auto-coordination: periodic read-only check-in with MCP server ---
 		const eventToolName = event.tool_name || "";
@@ -865,6 +944,18 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		}
 
 		const postDecision = evaluatePostToolUse(event, rules, session, reservations, cohort);
+
+		// --- Content Scanner: scan Read/Grep results, ratchet session sensitivity on PII ---
+		// Never blocks (we're already past the read), but raises `session.sensitivity_level`
+		// so downstream PreToolUse taint rules (no network after taint, etc.) fire.
+		if (contentScanner && rules.content_scanner?.enabled) {
+			const postScanResult = await runPostToolScan(event, session, rules, contentScanner);
+			if (postScanResult.warnings.length > 0) {
+				if (!postDecision.warnings) postDecision.warnings = [];
+				postDecision.warnings.push(...postScanResult.warnings);
+			}
+		}
+
 		const postStartMs = Date.now();
 		const checksRan: string[] = [];
 		const allCheckResults: import("./types.js").CheckResultEntry[] = [];
@@ -1894,6 +1985,11 @@ function shutdown(): void {
 	logAlways("Shutting down...");
 	serverBridge?.shutdown();
 	reservations.shutdown();
+	// Fire-and-forget: the Python sidecar will be SIGKILLed by the SidecarManager
+	// after its own 1 s grace window; we don't block the exit on it here.
+	contentScanner?.shutdown().catch(() => {
+		// best-effort
+	});
 	socketServer?.close();
 	cleanupSocket();
 	removePidFile();

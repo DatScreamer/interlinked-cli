@@ -1,0 +1,156 @@
+// ===========================================
+// Content Scanner — Types
+// ===========================================
+//
+// ML-based PII/secret detection that runs against tool-call content at
+// PreToolUse (Write/Edit bodies, Bash commands, external-egress args) and
+// PostToolUse (Read/Grep results → taint ratchet).
+//
+// The shape is deliberately *detector-oriented*: a scanner emits structured
+// findings (label + span + score) and the policy module maps findings to a
+// block/allow decision. This is distinct from the existing generative
+// policy-classifier, which emits free-form verdicts.
+
+/**
+ * Canonical OPF label taxonomy. Pinned here so tests and docs agree; the
+ * freshness test (content-scanner/__tests__/policy.test.ts) asserts this
+ * matches the labels defined in `reference-repos/privacy-filter/opf/_common/
+ * label_space.py` if that reference tree is present.
+ */
+export const OPF_LABELS = [
+	"account_number",
+	"private_address",
+	"private_date",
+	"private_email",
+	"private_person",
+	"private_phone",
+	"private_url",
+	"secret",
+] as const;
+
+export type OpfLabel = (typeof OPF_LABELS)[number];
+
+/** Which backend actually answers scan requests. */
+export type ContentScannerRuntime = "local" | "huggingface" | "custom_http";
+
+/**
+ * Configuration for the ML content scanner. Opt-in via `enabled: true` in
+ * `.interlinked/guard-rules.local.json`. Disabled by default because the
+ * local runtime needs a Python prereq (`pip install opf`).
+ */
+export interface ContentScannerConfig {
+	/** Master switch. Default: false. */
+	enabled: boolean;
+
+	/** Which backend to use. Default: "local". */
+	runtime: ContentScannerRuntime;
+
+	/** Per-hook toggles so operators can enable a subset without losing the others. */
+	scan_points: {
+		/** PreToolUse — Write/Edit/MultiEdit/NotebookEdit/str_replace. */
+		write_edit: boolean;
+		/** PreToolUse — Bash command body. */
+		bash_command: boolean;
+		/** PreToolUse — WebFetch URL/prompt, curl/wget external, MCP external args. */
+		external_egress: boolean;
+		/** PostToolUse — Read/Grep results → taint ratchet (no block). */
+		read_grep_taint: boolean;
+	};
+
+	/** Local Python sidecar knobs. */
+	local: {
+		/** `python3` by default. Override with a venv python if needed. */
+		python_bin: string;
+		/** Absolute path to the shipped sidecar script. Resolved at runtime. */
+		sidecar_script: string;
+		/** First scan may include multi-second model load. Default: 45000. */
+		startup_timeout_ms: number;
+		/** Warm scan timeout. Default: 1500 — under the 1 s decision budget with margin. */
+		scan_timeout_ms: number;
+		/** Shut sidecar down after this idle period to reclaim RAM. Default: 1_800_000 (30 min). */
+		idle_shutdown_ms: number;
+		/** Cap on crash respawns per session. Default: 3. */
+		max_restarts: number;
+	};
+
+	/** HuggingFace Inference API knobs (for gpt-oss-safeguard and future models). */
+	huggingface: {
+		/** Default: "openai/gpt-oss-safeguard-20b". NOT `openai/privacy-filter` — that model requires trust_remote_code. */
+		model: string;
+		/** Env var name holding the HF token. Default: "HF_TOKEN". */
+		api_key_env: string;
+		/** Default: 4000. */
+		timeout_ms: number;
+	};
+
+	/** Generic HTTP backend — any OpenAI/HF-compatible token-classification endpoint. */
+	custom_http: {
+		endpoint: string;
+		api_key_env?: string;
+		timeout_ms: number;
+	};
+
+	/** Minimum score to count a finding. Default: 0 (every span blocks). */
+	min_score: number;
+
+	/** Per-scan byte cap. Default: reuse `rules.output_scanning.max_scan_bytes` (100_000). */
+	max_scan_bytes: number;
+}
+
+/**
+ * A single detected span emitted by a scanner. `text` is kept for internal
+ * logging and taint attribution but is NEVER echoed in a block reason — doing
+ * so would leak the redacted content back to the agent.
+ */
+export interface ScanFinding {
+	/** Category label. For OPF, one of `OPF_LABELS`. Other scanners may emit custom labels. */
+	label: string;
+	/** Character offset of the span start within the scanned text. */
+	start: number;
+	/** Character offset of the span end (exclusive). */
+	end: number;
+	/** The matched substring. Internal use only — NOT surfaced to the agent. */
+	text: string;
+	/** Confidence 0..1 when the provider supplies it. OPF local omits this. */
+	score?: number;
+	/** Echoes the originating ScanRequest.source so findings can be grouped by tool field. */
+	source: string;
+}
+
+/** Input to a single scanner call. */
+export interface ScanRequest {
+	text: string;
+	/** Logical origin of the text (e.g., "Write.content", "Bash.command"). */
+	source: string;
+	/** Honors caller-side deadlines so hook response stays within budget. */
+	signal?: AbortSignal;
+}
+
+/**
+ * Uniform interface all backends implement. `ready()` is a cheap probe
+ * (ping the sidecar, HEAD the endpoint) — it MAY cause a lazy spawn for
+ * the local backend but must return within the configured timeout.
+ */
+export interface ContentScanner {
+	/** Human-readable identifier, e.g. "opf-local", "hf:gpt-oss-safeguard-20b". */
+	name: string;
+	runtime: "local" | "http";
+	ready(): Promise<boolean>;
+	scan(req: ScanRequest): Promise<ScanFinding[]>;
+	shutdown(): Promise<void>;
+}
+
+/**
+ * Bundle of scannable-text fragments derived from a single HarnessEvent.
+ * Built synchronously in the evaluator; the async scan happens in server.ts.
+ */
+export interface ContentScanRequest {
+	/** Which hook fired this — powers telemetry and logs, not policy. */
+	hook:
+		| "pre_write_edit"
+		| "pre_bash_command"
+		| "pre_external_egress"
+		| "post_read_grep";
+	/** One entry per distinct string field worth scanning. */
+	parts: Array<{ source: string; text: string }>;
+}

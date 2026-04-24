@@ -124,6 +124,8 @@ export interface HarnessDecision {
 	summary?: string;
 	/** Internal: escalation request for the LLM policy classifier (set by evaluator, consumed by server.ts) */
 	_escalation?: EscalationRequest;
+	/** Internal: content-scan request for the ML content scanner (set by evaluator, consumed by server.ts) */
+	_contentScan?: import("./content-scanner/types.js").ContentScanRequest;
 	/**
 	 * Provider-specific additional context the hook script should surface to the
 	 * agent via `hookSpecificOutput.additionalContext`. Populated by the adapters
@@ -409,6 +411,8 @@ export interface GuardRulesConfig {
 	diff_aware?: DiffAwareConfig;
 	/** LLM policy classifier for ambiguous PreToolUse cases */
 	policy_classifier?: ClassifierConfig;
+	/** ML content scanner (OpenAI privacy-filter etc.) for PreToolUse diff/command/egress content + PostToolUse Read/Grep taint */
+	content_scanner?: import("./content-scanner/types.js").ContentScannerConfig;
 	/** Auto-coordination: periodic read-only check-in with MCP server */
 	auto_coordination?: import("./auto-coordinate.js").AutoCoordinationConfig;
 	/** Project-wide checks: periodic cross-file tsc/biome sweep */
@@ -579,6 +583,8 @@ export interface SessionTrajectory {
 	soft_blocks: Set<string>;
 	/** Tool call counts where prompt injection was detected in PostToolUse file reads */
 	injection_detected_steps: number[];
+	/** Tool call counts where the ML content-scanner flagged PII/secrets in PostToolUse Read/Grep results */
+	pii_detected_steps: number[];
 	/** tool_call_count at last auto-coordination check-in (init: 0) */
 	last_coordination_at: number;
 	/** Date.now() at last auto-coordination check-in (init: Date.now()) */

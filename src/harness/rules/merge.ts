@@ -122,4 +122,15 @@ export function mergeLocalOverrides(
 	if (local.project_wide_checks && config.project_wide_checks) {
 		Object.assign(config.project_wide_checks, local.project_wide_checks);
 	}
+	// Local can toggle the ML content scanner on/off and tweak its top-level
+	// knobs. Nested objects (`local`, `huggingface`, etc.) are replaced whole if
+	// present in the override; callers that only want `enabled: true` get the
+	// default nested values preserved.
+	if (local.content_scanner) {
+		if (config.content_scanner) {
+			Object.assign(config.content_scanner, local.content_scanner);
+		} else {
+			config.content_scanner = local.content_scanner;
+		}
+	}
 }

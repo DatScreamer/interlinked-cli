@@ -9,11 +9,35 @@
 // User rules in `.interlinked/guard-rules.json` and `...local.json` are
 // merged on top of this default (see `rules/merge.ts`).
 
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_TAINT_CONFIG } from "../taint-tracker.js";
 import type { GuardRulesConfig } from "../types.js";
 
 /** Seconds in a week — used for the default error-memory expiry. */
 const SECONDS_PER_WEEK = 7 * 24 * 60 * 60;
+
+/** Resolve the OPF Python sidecar path across three deployment layouts:
+ *    (1) dev (tsx):          src/harness/rules/default-config.ts  →  ../content-scanner/sidecars/opf-sidecar.py
+ *    (2) prod-from-source:   dist/chunk-XYZ.js                     →  ../src/harness/content-scanner/sidecars/opf-sidecar.py
+ *    (3) published (future): dist/chunk-XYZ.js                     →  ./sidecars/opf-sidecar.py
+ *  First existing candidate wins; if none exist we return the source-tree
+ *  default so the error message points at the expected dev location. */
+function resolveDefaultOpfSidecarScript(): string {
+	const candidates = [
+		new URL("../content-scanner/sidecars/opf-sidecar.py", import.meta.url),
+		new URL("../src/harness/content-scanner/sidecars/opf-sidecar.py", import.meta.url),
+		new URL("./sidecars/opf-sidecar.py", import.meta.url),
+		new URL("./opf-sidecar.py", import.meta.url),
+	];
+	for (const url of candidates) {
+		const candidatePath = fileURLToPath(url);
+		if (existsSync(candidatePath)) return candidatePath;
+	}
+	return fileURLToPath(candidates[0]);
+}
+
+const DEFAULT_OPF_SIDECAR_SCRIPT = resolveDefaultOpfSidecarScript();
 
 /**
  * Public API — consumed by `rules/loader.ts` via `getDefaultConfig()`
@@ -189,14 +213,6 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			description:
 				"Detect explicit `any` and `unknown` types — encourage stronger typing (interfaces, generics, branded types)",
 		},
-		affected_tests: {
-			enabled: true,
-			file_types: [".ts", ".tsx", ".js", ".jsx"],
-			timeout_ms: 15_000,
-			severity: "error",
-			description:
-				"Run the test file corresponding to the edited source file (foo.ts → foo.test.ts)",
-		},
 		inline_language_checks: {
 			enabled: true,
 			file_types: [
@@ -208,6 +224,14 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			severity: "warning",
 			description:
 				"Per-language inline pattern checks (bare except, .unwrap(), unsafe blocks, force casts, ignored err, etc.) driven by LanguageProfile.inline_checks",
+		},
+		affected_tests: {
+			enabled: true,
+			file_types: [".ts", ".tsx", ".js", ".jsx"],
+			timeout_ms: 15_000,
+			severity: "error",
+			description:
+				"Run the test file corresponding to the edited source file (foo.ts → foo.test.ts)",
 		},
 		python_typecheck: {
 			enabled: true,
@@ -509,5 +533,47 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		timeout_ms: 30_000,
 		severity: "warning",
 		max_findings: 20,
+	},
+	content_scanner: {
+		// Off by default — local runtime needs `pip install opf`; users opt in via
+		// `.interlinked/guard-rules.local.json` → `"content_scanner": {"enabled": true}`.
+		enabled: false,
+		runtime: "local",
+		scan_points: {
+			write_edit: true,
+			bash_command: true,
+			external_egress: true,
+			read_grep_taint: true,
+		},
+		local: {
+			python_bin: "python3",
+			sidecar_script: DEFAULT_OPF_SIDECAR_SCRIPT,
+			// Cold load (first scan includes multi-second model load + JIT warmup).
+			startup_timeout_ms: 90_000,
+			// Warm scans on CPU: ~200 ms for small inputs, but larger files (10-20
+			// KB diffs) plus serialization behind other queued scans can exceed
+			// 10s. 30s gives realistic headroom on CPU; GPUs can lower it.
+			scan_timeout_ms: 30_000,
+			// Free the model after 30 min idle to reclaim RAM; next scan re-spawns.
+			idle_shutdown_ms: 30 * 60 * 1000,
+			max_restarts: 3,
+		},
+		huggingface: {
+			// NOT `openai/privacy-filter` — that model requires `trust_remote_code=True`
+			// and is not served by the free HF Inference API. This slot is prepared for
+			// `openai/gpt-oss-safeguard-20b` and similar standard-architecture models.
+			model: "openai/gpt-oss-safeguard-20b",
+			api_key_env: "HF_TOKEN",
+			timeout_ms: 4000,
+		},
+		custom_http: {
+			endpoint: "",
+			timeout_ms: 4000,
+		},
+		// 0 = every detected span blocks; OPF local omits score so min_score is
+		// mostly meaningful for HF / custom-HTTP backends that do emit scores.
+		min_score: 0,
+		// Reuses the existing output_scanning cap so operators tune one knob, not two.
+		max_scan_bytes: 100_000,
 	},
 };

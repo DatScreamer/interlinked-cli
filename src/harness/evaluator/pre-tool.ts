@@ -15,6 +15,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { relative } from "node:path";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import type { CohortManager } from "../cohort.js";
+import { extractScannableContent } from "../content-scanner/extractor.js";
+import type { ContentScanRequest } from "../content-scanner/types.js";
 import {
 	applyRewrite,
 	evaluateCompoundCommand,
@@ -141,6 +143,7 @@ export function evaluatePreToolUse(
 	const toolName = event.tool_name || "";
 	const toolInput = event.tool_input || {};
 	let pendingEscalation: EscalationRequest | undefined;
+	let pendingContentScan: ContentScanRequest | undefined;
 	void _blameInjectedFiles; // reserved for future blame-injection dedup
 
 	// GUARD: Destructive patterns — Bash, Write, Edit, all tools
@@ -752,9 +755,17 @@ export function evaluatePreToolUse(
 		}
 	}
 
+	// CONTENT SCAN: collect scannable fragments for PII/secret detection.
+	// The scan itself is async and happens in server.ts next to the existing
+	// classifier flow; here we only build the request bundle synchronously.
+	if (rules.content_scanner?.enabled) {
+		pendingContentScan = extractScannableContent(event, rules.content_scanner);
+	}
+
 	return {
 		decision: "allow",
 		warnings: warnings.length > 0 ? warnings : undefined,
 		_escalation: pendingEscalation,
+		_contentScan: pendingContentScan,
 	};
 }
