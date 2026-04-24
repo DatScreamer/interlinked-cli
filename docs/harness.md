@@ -250,7 +250,7 @@ The harness enforces this by:
 
 **Why:** Teams need shared safety policies (everyone should be blocked from `rm -rf /`), but individual developers may need exceptions (e.g., a DevOps engineer who legitimately uses `terraform destroy`).
 
-The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (67 rules across 13 categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
+The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (77 rules across 16 categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
 
 ### 7. Server Bridge — Coordination Without Dependency
 
@@ -274,7 +274,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 | `cli/src/harness/types.ts` | All type definitions: events, decisions, rules, cohort, reservations, config |
 | `cli/src/harness/server.ts` | Node.js Unix socket server — the main entry point (`node:net`) |
 | `cli/src/harness/evaluator.ts` | Guard evaluation — PreToolUse blocking + PostToolUse feedback |
-| `cli/src/harness/rules-loader.ts` | Rule loading: 67 built-in + team JSON + personal overrides + hot-reload |
+| `cli/src/harness/rules-loader.ts` | Rule loading: 77 built-in + team JSON + personal overrides + hot-reload |
 | `cli/src/harness/session-state.ts` | Per-session trajectory tracking (files, commands, tool counts) |
 | `cli/src/harness/cohort.ts` | Agent cohort manager (join/leave/lost detection, file tracking) |
 | `cli/src/harness/reservations.ts` | Auto file reservation (optimistic lock, 30s release, server sync) |
@@ -314,7 +314,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `cli/docs/generated/guard-rules.md` | All 67 built-in guard rules by category |
+| `cli/docs/generated/guard-rules.md` | All 77 built-in guard rules by category |
 | `cli/docs/generated/quality-checks.md` | All 18 PostToolUse quality checks |
 | `cli/docs/generated/structural-checks.md` | All 22 structural checks by tier |
 | `cli/docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
@@ -409,7 +409,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 
 ## Guard Rules — Overview
 
-> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, 67 rules across 13 categories).
+> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, 77 rules across 16 categories).
 
 ### Lifecycle Enforcement
 
@@ -419,24 +419,30 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 | AskUserQuestion redirect | Yes | Warn | Tool name is `AskUserQuestion` |
 | Curl-to-MCP detection | Yes | Warn → Block | `curl localhost:PORT` (escalates after 5 calls) |
 
-### Built-in Rule Categories (67 rules)
+### Built-in Rule Categories (77 rules across 16 categories)
+
+Category counts below are derived from `docs/generated/guard-rules.md` (the
+auto-generated source of truth — regenerate with `npm run docs` after adding
+or removing a rule).
 
 | Category | Rules | Examples |
 |----------|-------|---------|
-| Process Killing | 8 | `pkill -f`, `killall`, `kill -9`, multi-PID kill |
+| Process Killing | 9 | `pkill -f`, `killall`, `kill -9`, multi-PID kill |
+| Process Safety | 5 | `sleep` in agent commands, infinite-retry loops |
 | File Deletion | 3 | `rm -rf /`, `rm .wrangler`, `rm node_modules` |
 | Git Operations | 9 | `--force` push, `reset --hard`, `clean -f`, `filter-branch`, `stash drop` |
 | Database | 5 | `DROP DATABASE/TABLE`, `TRUNCATE`, `DELETE` without WHERE, MongoDB drop, Redis flush |
 | Cloud Providers | 5 | AWS destructive ops, S3 recursive, GCP/Azure destructive |
 | Containers | 8 | Docker prune/rm -f/volume rm, kubectl mass delete/drain, helm uninstall |
 | Infrastructure | 3 | Terraform destroy/auto-approve, Pulumi destroy |
-| Supply Chain | 3 | Lock file deletion/tampering, build script injection |
+| Supply Chain | 6 | Lock file deletion/tampering, build script injection, registry override |
 | Filesystem | 4 | `dd` to block device, `shred`, disk format, `wipefs` |
 | System Operations | 4 | `sudo rm`, `chmod 777`, shutdown/reboot, LVM removal |
 | Wrangler | 5 | State deletion, worker deletion, KV bulk delete, D1 destructive SQL |
-| Vercel | 3 | Deployment/project removal, env var deletion |
+| Vercel | 2 | Deployment/project removal, env var deletion |
 | Inline Scripts | 2 | Destructive ops in inline scripts, `bash -c` destructive |
 | Language Destructive | 6 | Python/Rust/Go/C/Java destructive filesystem operations |
+| Information Flow | 1 | Env exfiltration via shell redirection |
 
 ### Security Checks (evaluator-level)
 

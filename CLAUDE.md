@@ -69,7 +69,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/types.ts` | All type definitions |
 | `src/harness/server.ts` | Node.js Unix socket server (main entry, `node:net`) |
 | `src/harness/evaluator.ts` | Guard evaluation: PreToolUse blocking + PostToolUse feedback |
-| `src/harness/rules-loader.ts` | 67 built-in rules + JSON config + hot-reload |
+| `src/harness/rules-loader.ts` | 77 built-in rules + JSON config + hot-reload |
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
@@ -153,7 +153,7 @@ Shared patterns when adding another agent-quality check:
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `docs/generated/guard-rules.md` | All 67 built-in guard rules by category |
+| `docs/generated/guard-rules.md` | All 77 built-in guard rules by category |
 | `docs/generated/quality-checks.md` | All 18 PostToolUse quality checks |
 | `docs/generated/structural-checks.md` | All 22 structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |

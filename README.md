@@ -16,6 +16,27 @@ npm install -g interlinked-cli
 Requires Node.js 22+. Supported on macOS and Linux (including WSL on
 Windows — native Windows is not supported).
 
+### From source
+
+If you want to run from a local clone instead — to try an unreleased branch,
+patch the harness, or use the CLI before the npm package publishes — the
+full system works without the published package:
+
+```bash
+git clone https://github.com/QuentinCody/interlinked-cli.git
+cd interlinked-cli
+npm ci
+npm run build          # produces dist/index.js + dist/hook-entry.js
+npm link               # exposes `interlinked` and `interlinked-hook` on PATH
+```
+
+`interlinked install-hooks` from a cloned checkout records an absolute path
+to `dist/hook-entry.js` in your agent's settings, so hooks will keep firing
+as long as the clone stays put. If you move or delete the clone, rerun
+`interlinked install-hooks` from the new location (or `interlinked
+uninstall-hooks` first). The tarball-install smoke test in `.github/workflows/ci.yml`
+exercises the same end-to-end path.
+
 ## What you get
 
 - **Guard harness.** A local Unix-socket server evaluates every agent
