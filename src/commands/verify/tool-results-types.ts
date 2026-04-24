@@ -126,6 +126,8 @@ export interface CodeQualityResults {
 	singleImplementationInterface: CodeQualityIssue[];
 	filesWithoutTest: CodeQualityIssue[];
 	projectLocRatio: CodeQualityIssue[];
+	/** CRAP (Change Risk Anti-Patterns) — comp² · (1 − cov)³ + comp. Advisory. */
+	crap: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -219,6 +221,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"singleImplementationInterface",
 	"filesWithoutTest",
 	"projectLocRatio",
+	"crap",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

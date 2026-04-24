@@ -231,6 +231,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"complexity",
 				"conditional_in_test",
 				"console_statements",
+				"crap",
 				"data_clump",
 				"dead_exports",
 				"default_export",

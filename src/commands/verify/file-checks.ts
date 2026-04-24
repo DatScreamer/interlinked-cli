@@ -6,7 +6,8 @@
 // `runCodeQualityChecks` — extracted into its own module so `tool-results.ts`
 // stays under the 800-line file-size threshold.
 
-import { basename, extname, relative } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { basename, extname, relative, resolve } from "node:path";
 
 import {
 	checkAccumulatingSpread,
@@ -93,6 +94,12 @@ import {
 	checkTautologicalAssertion,
 	checkTestWithoutDescription,
 } from "../../harness/taste-checks.js";
+import { computeCrap } from "../../harness/checks/crap.js";
+import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
+import {
+	coverageForFile,
+	loadCoverageFinal,
+} from "../../harness/coverage-final-reader.js";
 import { JS_TS_EXTS, LARGE_FILE_THRESHOLD } from "./advisory.js";
 import { collectSuppressionFindings } from "./suppressions.js";
 import type { CodeQualityIssue, CodeQualityResults } from "./tool-results-types.js";
@@ -273,6 +280,36 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	);
 	r.noTestFile.push(...toIssues("no_test_file", relPath, checkTestFileExists(file)));
 	r.complexity.push(...toIssues("complexity", relPath, checkFunctionComplexity(content, file)));
+
+	// CRAP (Change Risk Anti-Patterns) — complexity × coverage composite.
+	// Fail-open when coverage-final.json is absent: emits no findings.
+	{
+		const coveragePath = resolve(cwd, "coverage", "coverage-final.json");
+		const covCache = loadCoverageFinal(coveragePath, cwd);
+		const perFile = covCache ? coverageForFile(covCache, relPath) : undefined;
+		if (perFile !== undefined) {
+			const complexities = computeCyclomaticComplexity(content, file);
+			const fileMtime = existsSync(file) ? statSync(file).mtimeMs : 0;
+			const findings = computeCrap({
+				complexities,
+				coverage: perFile.functions,
+				filePath: relPath,
+				fileMtime,
+				coverageMtime: perFile.mtime,
+				threshold: 30,
+				staleTolerance: "tag",
+			});
+			r.crap.push(
+				...findings.map((f) => ({
+					check: "crap",
+					file: relPath,
+					line: f.line,
+					message: `${f.function}: CRAP=${f.crap_score.toFixed(0)} (cyc=${f.complexity}, cov=${f.coverage_pct.toFixed(0)}%)${f.stale ? " [stale coverage]" : ""}`,
+				})),
+			);
+		}
+	}
+
 	r.exportRipple.push(
 		...toIssues("export_ripple", relPath, checkExportRipple(content, file, cwd)),
 	);

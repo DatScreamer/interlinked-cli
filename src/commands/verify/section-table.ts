@@ -151,6 +151,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "no overly complex functions",
 		color: "33",
 	},
+	{
+		label: "CRAP risk",
+		key: "crap",
+		noun: "high-CRAP functions (complexity × coverage)",
+		passLabel: "no CRAP hotspots",
+		color: "31",
+	},
 	// --- Agent safety checks ---
 	{
 		label: "misused promises",

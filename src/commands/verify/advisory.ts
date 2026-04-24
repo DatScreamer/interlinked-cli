@@ -121,6 +121,13 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	"conditional_in_test",
 	"assertion_roulette",
 	"test_regressions",
+	// CRAP (Change Risk Anti-Patterns) — composite metric of cyclomatic
+	// complexity × statement coverage. Requires `coverage/coverage-final.json`
+	// (fails open and emits nothing when absent). Line-matching has ±3 slack
+	// for edit drift, so post-significant-refactor runs show stale findings
+	// until coverage is regenerated. Advisory until threshold+match tolerance
+	// are calibrated against real data.
+	"crap",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */
