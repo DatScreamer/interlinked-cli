@@ -470,7 +470,11 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		impact_analysis: true,
 		impact_high_threshold: 4,
 		test_first: true,
-		test_first_mode: "warn",
+		// Default hardened 2026-04-24: the TDD commit gate blocks `git commit`
+		// when a source edit has no matching test-file change or the cycle is
+		// stuck in red/regression. Flip to "warn" in `.interlinked/guard-rules.local.json`
+		// for one-off escapes; use "nudge" to downgrade to info-only.
+		test_first_mode: "enforce",
 		cross_file_switch_discriminant: true,
 		single_implementation_interface: true,
 	},
