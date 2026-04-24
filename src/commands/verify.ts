@@ -27,7 +27,7 @@
 //   - structure.ts         — structure verification (graph, rules, adoption)
 
 import { existsSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { CheckEngine, type CheckResult, formatToolReport } from "../harness/check-engine/index.js";
 import type { Finding } from "../harness/suggestion-scorer.js";
@@ -179,6 +179,61 @@ const CHECK_ENGINE_TIMEOUT_MS = 30_000;
 const SUGGESTIONS_LIMIT = 3;
 const SUGGESTIONS_THRESHOLD = 0.5;
 const MAX_ENV_FILES = 10;
+
+// Some checks report project-wide findings that aren't tied to any real file.
+// They go into `allFlaggedFiles` under a synthetic token so the per-check
+// section still renders, but they must not inflate the "X / Y files flagged"
+// ratio (numerator > denominator was the visible symptom). Extend this set if
+// another check introduces a new sentinel.
+const SYNTHETIC_FILE_TOKENS = new Set<string>(["<project>"]);
+
+/** Normalize a flagged-file entry to a path relative to `cwd`. Leaves synthetic
+ *  tokens unchanged so callers can filter them out by identity. */
+function normalizeFlaggedPath(cwd: string, p: string): string {
+	if (SYNTHETIC_FILE_TOKENS.has(p)) return p;
+	return isAbsolute(p) ? relative(cwd, p) : p;
+}
+
+/** Pure helper for the tail summary line. Exported for unit tests.
+ *
+ *  Inputs:
+ *    - `cwd`           — the project root the scan ran against.
+ *    - `files`         — paths from `discoverFiles()` (absolute; `.ts`/`.py`/… only).
+ *    - `flagged`       — raw entries that accumulated in `allFlaggedFiles`;
+ *                        a mix of absolute/relative/sentinel strings produced
+ *                        by various checks.
+ *
+ *  Output:
+ *    - `flaggedFiles`    — count of real files with at least one finding.
+ *    - `totalFiles`      — size of the universe the numerator is taken against.
+ *                          Equals |discovered ∪ real-flagged| so config files
+ *                          that only external tools care about (e.g.
+ *                          `tsconfig.json`) count on both sides.
+ *    - `projectFindings` — count of non-file, project-wide findings (e.g. the
+ *                          prod/test LOC ratio). Reported separately.
+ */
+export function summarizeFlaggedFiles(
+	cwd: string,
+	files: readonly string[],
+	flagged: Iterable<string>,
+): { flaggedFiles: number; totalFiles: number; projectFindings: number } {
+	const discovered = new Set(files.map((f) => normalizeFlaggedPath(cwd, f)));
+	const flaggedReal = new Set<string>();
+	let projectFindings = 0;
+	for (const p of flagged) {
+		if (SYNTHETIC_FILE_TOKENS.has(p)) {
+			projectFindings++;
+			continue;
+		}
+		flaggedReal.add(normalizeFlaggedPath(cwd, p));
+	}
+	const universe = new Set<string>([...discovered, ...flaggedReal]);
+	return {
+		flaggedFiles: flaggedReal.size,
+		totalFiles: universe.size,
+		projectFindings,
+	};
+}
 
 interface VerifyOpts {
 	target?: string;
@@ -397,7 +452,13 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 		await runStructureVerify(cwd, opts);
 	}
 
-	process.stderr.write(`\n  ${allFlaggedFiles.size} / ${files.length} files flagged`);
+	const tally = summarizeFlaggedFiles(cwd, files, allFlaggedFiles);
+	process.stderr.write(`\n  ${tally.flaggedFiles} / ${tally.totalFiles} files flagged`);
+	if (tally.projectFindings > 0) {
+		const noun =
+			tally.projectFindings === 1 ? "project-level finding" : "project-level findings";
+		process.stderr.write(` · \x1b[33m${tally.projectFindings} ${noun}\x1b[0m`);
+	}
 	if (summary.length > 0) {
 		process.stderr.write(
 			` · ${summary.map((s) => `\x1b[${s.color}m${s.label}\x1b[0m`).join(" · ")}`,
