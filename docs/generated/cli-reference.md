@@ -20,8 +20,10 @@ Commands:
   clean [options]                            Remove stale data
   completions <shell>                        Output shell completion script (bash, zsh, fish)
   context [options]                          Show effective configuration (merged from all sources)
+  coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
+  daemons [options]                          List active harness daemons, PID liveness, socket paths, and health
   disable [options]                          Remove hooks and optionally clean config
-  doctor [options]                           Diagnose issues (local + Interlinked MCP Server checks)
+  doctor [options]                           Diagnose issues (local + server checks)
   enable [options]                           Install hooks + create .interlinked/ config
   env [options]                              Show supported environment variables and their current values
   explain [options]                          Reconstruct what happened (narrative view)
@@ -29,29 +31,36 @@ Commands:
   guard                                      File reservation enforcement via git hooks
   handoff [options] <from-agent> <to-agent>  Explicit agent-to-agent handoff with context transfer
   harness                                    Local harness server: guard evaluation, auto-reservations, agent lifecycle
-  inbox [options]                            Show recent messages from the Interlinked MCP Server
+  inbox [options]                            Show recent messages from the server
   index                                      Manage the trigram search index for grep acceleration
   init [options]                             One-command onboarding: detect clients, configure, login, verify
-  login [options]                            Authenticate with the Interlinked MCP Server (opens browser)
+  install-hooks [options]                    Install agent hooks for detected runners (adapter-based, manifest-driven)
+  login [options]                            Authenticate with the server (opens browser)
   logout [options]                           Clear authentication credentials (preserves other config)
   logs [options]                             View local activity log (offline, no server needed)
+  mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
+  multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
+  mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
   reminder                                   File reminder management (warnings when files are touched)
   reset [options]                            Nuclear: clear all local state
   resume [options] [checkpoint-id]           Resume from latest or specified checkpoint with context
   rewind [options] [checkpoint-id]           Restore working tree to a checkpoint state
   search [options] <query>                   Search the local codebase (ripgrep with native fallback)
   send [options] <to> [message]              Send a message to an agent
-  setup [options]                            One-command setup: install hooks, configure Interlinked MCP Server, authenticate
+  setup [options]                            One-command setup: install hooks, configure server, authenticate
   status [options]                           Dashboard: local sessions, recent activity, sync status
   structure                                  Generic artifact structure management (manifests, catalogs, adoption)
-  sync [options]                             Push locally-buffered events to the Interlinked MCP Server
-  tasks                                      Task management via the Interlinked MCP Server
+  sync [options]                             Push locally-buffered events to the server
+  tasks                                      Task management via the server
+  telemetry [options]                        View or tail the local telemetry spool (.interlinked/offline-spool.jsonl)
   trace                                      Agent trace export/import
-  update|upgrade [options]                   Self-update: pull latest, rebuild, and regenerate hooks
+  uninstall-hooks [options]                  Remove hooks previously installed via install-hooks (manifest-driven)
+  update|upgrade [options]                   Update guidance for npm installs; pull/rebuild source checkouts
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
-  version                                    Show Interlinked CLI + Interlinked MCP Server version
+  version                                    Show Interlinked CLI + server version
   watch [options]                            Monitor server for pending work (messages, tasks, agents)
   workspace                                  Registry workspace management (ws_ IDs)
+  write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.
   help [command]                             display help for command
 ```
 
@@ -368,7 +377,7 @@ Options:
 ```
 Usage: interlinked tasks [options] [command]
 
-Task management via the Interlinked MCP Server
+Task management via the server
 
 Options:
   -h, --help                display help for command
@@ -627,40 +636,55 @@ Commands:
   help [command]       display help for command
 ```
 
-### guard list
+### guard install
 
 ```
-Usage: interlinked guard [options] [command]
+Usage: interlinked guard install [options]
 
-File reservation enforcement via git hooks
+Install pre-commit hook for reservation checks
 
 Options:
-  -h, --help           display help for command
-
-Commands:
-  install [options]    Install pre-commit hook for reservation checks
-  check [options]      Check files against active reservations
-  status [options]     Show guard configuration and hook status
-  uninstall [options]  Remove guard hooks
-  help [command]       display help for command
+  --mode <mode>  warn (default) or block (default: "warn")
+  --pre-push     Also install pre-push hook
+  --json         Machine-readable output
+  -h, --help     display help for command
 ```
 
-### guard test
+### guard check
 
 ```
-Usage: interlinked guard [options] [command]
+Usage: interlinked guard check [options]
 
-File reservation enforcement via git hooks
+Check files against active reservations
 
 Options:
-  -h, --help           display help for command
+  --files <paths...>  File paths to check (default: staged files)
+  --json              Machine-readable output
+  -h, --help          display help for command
+```
 
-Commands:
-  install [options]    Install pre-commit hook for reservation checks
-  check [options]      Check files against active reservations
-  status [options]     Show guard configuration and hook status
-  uninstall [options]  Remove guard hooks
-  help [command]       display help for command
+### guard status
+
+```
+Usage: interlinked guard status [options]
+
+Show guard configuration and hook status
+
+Options:
+  --json      Machine-readable output
+  -h, --help  display help for command
+```
+
+### guard uninstall
+
+```
+Usage: interlinked guard uninstall [options]
+
+Remove guard hooks
+
+Options:
+  --json      Machine-readable output
+  -h, --help  display help for command
 ```
 
 ## Git
@@ -679,20 +703,32 @@ Commands:
   help [command]             display help for command
 ```
 
-### git notes
+### git context
 
 ```
-Usage: interlinked git [options] [command]
+Usage: interlinked git context [options]
 
-Git bridge: metadata, trailers, and notes
+Show Interlinked metadata for HEAD or a commit
 
 Options:
-  -h, --help                 display help for command
+  --commit <sha>  Specific commit (default: HEAD)
+  --json          Machine-readable output
+  -h, --help      display help for command
+```
 
-Commands:
-  context [options]          Show Interlinked metadata for HEAD or a commit
-  link-checkpoint [options]  Link a server checkpoint to a git commit
-  help [command]             display help for command
+### git link-checkpoint
+
+```
+Usage: interlinked git link-checkpoint [options]
+
+Link a server checkpoint to a git commit
+
+Options:
+  --checkpoint <id>  Checkpoint ID (default: latest)
+  --commit <sha>     Commit SHA (default: HEAD)
+  --apply            Apply trailers and notes to HEAD (amends commit)
+  --json             Machine-readable output
+  -h, --help         display help for command
 ```
 
 ## Other Commands
@@ -705,7 +741,7 @@ Usage: interlinked enable [options]
 Install hooks + create .interlinked/ config
 
 Options:
-  --server <url>      Interlinked MCP Server URL
+  --server <url>      Server URL
   --agent <name>      Default agent name
   --clients <list>    Comma-separated client list (claude,gemini,codex)
   --sync-mode <mode>  Sync mode: realtime (default), local, manual
@@ -762,7 +798,7 @@ Options:
 ```
 Usage: interlinked doctor [options]
 
-Diagnose issues (local + Interlinked MCP Server checks)
+Diagnose issues (local + server checks)
 
 Options:
   --fix       Auto-fix what's possible
@@ -789,10 +825,10 @@ Options:
 ```
 Usage: interlinked login [options]
 
-Authenticate with the Interlinked MCP Server (opens browser)
+Authenticate with the server (opens browser)
 
 Options:
-  --server <url>   Interlinked MCP Server URL
+  --server <url>   Server URL
   --token <token>  Manual token for CI/headless use
   -h, --help       display help for command
 ```
@@ -802,7 +838,7 @@ Options:
 ```
 Usage: interlinked sync [options]
 
-Push locally-buffered events to the Interlinked MCP Server
+Push locally-buffered events to the server
 
 Options:
   --dry-run    Show what would be synced without sending
@@ -830,7 +866,7 @@ Options:
 ```
 Usage: interlinked inbox [options]
 
-Show recent messages from the Interlinked MCP Server
+Show recent messages from the server
 
 Options:
   --all               Show all messages (default: unread only)
