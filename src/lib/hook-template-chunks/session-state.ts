@@ -115,6 +115,11 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         if (event.stop_hook_active !== undefined) record.stop_hook_active = event.stop_hook_active;
         if (event.permission_suggestions) record.permission_suggestions = event.permission_suggestions;
         if (event.thinking) record.thinking = event.thinking;
+        // Mask credentials/high-entropy strings in any of the 10 SCRUB_FIELDS
+        // (prompt, tool_input_summary, thinking, etc.) before persisting to
+        // activity.jsonl. Defense-in-depth alongside the harness content scanner:
+        // this regex pass is always on, catches credentials, runs offline.
+        scrubPayload(record);
         appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
@@ -288,6 +293,17 @@ function captureCodeEdit(sessionId, agentName, event) {
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
 
+// --- Git SHA validation (prevents argument injection into git invocations) ---
+// Session state is loaded from an on-disk JSON file under .interlinked/sessions/;
+// a prompt-injected agent with a Write primitive can attempt to stage a crafted
+// state file, so any string that flows into a git subprocess must be validated
+// as a real object name before use. Git SHAs are 7–40 lowercase hex chars
+// (short and long forms); we also reject leading "-" so the value can never be
+// misparsed as an option even if argv semantics change.
+function isGitSha(v) {
+    return typeof v === "string" && /^[0-9a-fA-F]{7,40}$/.test(v) && v[0] !== "-";
+}
+
 // --- Session-end commit reconciliation ---
 function reconcileCommits(sessionId) {
     if (!sessionId) return;
@@ -297,17 +313,20 @@ function reconcileCommits(sessionId) {
         let state = null;
         try { state = JSON.parse(readFileSync(sessionPath, "utf-8")); } catch (_err) { void 0; /* intentional: no-op */ }
         if (!state || !state.session_start_head) return;
+        if (!isGitSha(state.session_start_head)) return;
         if (!state.edits || state.edits.length === 0) return;
 
         // Collect files we edited in this session
         const editedFiles = new Set(state.edits.map(e => e.file));
 
-        // Find commits since session start
+        // Find commits since session start. execFileSync (argv, not shell) plus
+        // isGitSha() validation eliminates shell-metachar injection via state.
         let commitLog = "";
         try {
-            commitLog = execSync(
-                "git log " + state.session_start_head + "..HEAD --format=\\"%H %s\\" --no-merges 2>/dev/null",
-                { encoding: "utf-8", timeout: 5000 },
+            commitLog = execFileSync(
+                "git",
+                ["log", state.session_start_head + "..HEAD", "--format=%H %s", "--no-merges"],
+                { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] },
             ).trim();
         } catch { return; }
         if (!commitLog) return;
@@ -319,13 +338,17 @@ function reconcileCommits(sessionId) {
             if (spaceIdx < 0) continue;
             const hash = line.slice(0, spaceIdx);
             const message = line.slice(spaceIdx + 1);
+            // Defense in depth: git should only emit a 40-char hex hash here,
+            // but belt-and-suspenders guards against corrupted state files.
+            if (!isGitSha(hash)) continue;
 
             // Get files in this commit
             let nameOnly = "";
             try {
-                nameOnly = execSync(
-                    "git diff " + hash + "~1 " + hash + " --name-only 2>/dev/null",
-                    { encoding: "utf-8", timeout: 5000 },
+                nameOnly = execFileSync(
+                    "git",
+                    ["diff", hash + "~1", hash, "--name-only"],
+                    { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] },
                 ).trim();
             } catch { continue; }
 
@@ -342,9 +365,10 @@ function reconcileCommits(sessionId) {
             // Get numstat for attribution
             let numstat = "";
             try {
-                numstat = execSync(
-                    "git diff " + hash + "~1 " + hash + " --numstat 2>/dev/null",
-                    { encoding: "utf-8", timeout: 5000 },
+                numstat = execFileSync(
+                    "git",
+                    ["diff", hash + "~1", hash, "--numstat"],
+                    { encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] },
                 ).trim();
             } catch { continue; }
 
