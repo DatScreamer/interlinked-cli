@@ -209,6 +209,32 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		expect(r.warnings[0]).toContain("private_email(1)");
 	});
 
+	it("does not ratchet or warn when all findings are below min_score", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([
+			{
+				label: "private_email",
+				start: 0,
+				end: 7,
+				text: "a@b.com",
+				score: 0.4,
+				source: "",
+			},
+		]);
+		const r = await runPostToolScan(
+			makeEvent({ tool_response: "email: a@b.com" }),
+			session,
+			makeRules(makeScannerConfig({ min_score: 0.9 })),
+			scanner,
+		);
+
+		expect(r.findings).toEqual([]);
+		expect(r.warnings).toEqual([]);
+		expect(r.ratcheted_to).toBeUndefined();
+		expect(session.sensitivity_level).toBe("Public");
+		expect(session.pii_detected_steps).toEqual([]);
+	});
+
 	it("ratchets to HighlyConfidential when a secret is present", async () => {
 		const session = makeSession();
 		const scanner = makeScanner([

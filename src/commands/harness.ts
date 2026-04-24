@@ -225,6 +225,10 @@ export async function harnessStartCommand(opts: {
 			const newStatus = isHarnessRunning(cwd);
 			const resolvedPid = newStatus.pid ?? child.pid;
 			const elapsed = Math.round((Date.now() - startTime) / 1000);
+			if (ready) {
+				child.stderr?.removeAllListeners("data");
+				child.stderr?.destroy();
+			}
 			output(mode, newStatus, {
 				json: () => ({
 					status: ready ? "started" : "failed",

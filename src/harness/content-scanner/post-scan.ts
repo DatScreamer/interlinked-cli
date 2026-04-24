@@ -22,7 +22,7 @@ import type {
 	SensitivityLevel,
 	SessionTrajectory,
 } from "../types.js";
-import { decideFromFindings } from "./policy.js";
+import { decideFromFindings, filterFindingsByScore } from "./policy.js";
 import type { ContentScanner, ScanFinding } from "./types.js";
 
 // ===========================================
@@ -104,16 +104,18 @@ export async function runPostToolScan(
 	}
 
 	if (findings.length === 0) return empty;
+	const keptFindings = filterFindingsByScore(findings, cfg);
+	if (keptFindings.length === 0) return empty;
 
 	// Policy reuses the PreToolUse decision to compute the human-readable
 	// summary — same label taxonomy and ordering guarantees.
-	const verdict = decideFromFindings(findings, cfg);
+	const verdict = decideFromFindings(keptFindings, cfg);
 	const summary =
 		verdict.reason ??
-		`BLOCKED: privacy-filter detected sensitive content [${findings.length} span(s)].`;
+		`BLOCKED: privacy-filter detected sensitive content [${keptFindings.length} span(s)].`;
 
 	// Pick sensitivity level — `secret`/`account_number` → HighlyConfidential.
-	const ratchetLevel: SensitivityLevel = findings.some((f) =>
+	const ratchetLevel: SensitivityLevel = keptFindings.some((f) =>
 		HIGHLY_CONFIDENTIAL_LABELS.has(f.label),
 	)
 		? "HighlyConfidential"
@@ -134,5 +136,5 @@ export async function runPostToolScan(
 		`[interlinked:content-scanner] ${toolName} returned sensitive content ` +
 		`(session sensitivity → ${ratchetLevel}). ${summary.replace(/^BLOCKED: /, "")}`;
 
-	return { warnings: [warning], findings, ratcheted_to: ratcheted };
+	return { warnings: [warning], findings: keptFindings, ratcheted_to: ratcheted };
 }

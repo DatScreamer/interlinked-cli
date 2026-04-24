@@ -15,6 +15,16 @@ export interface ContentScanVerdict {
 	warnings?: string[];
 }
 
+/** Apply the configured confidence floor. Undefined score counts as 1.0
+ * because the local OPF backend emits deterministic spans without scores. */
+export function filterFindingsByScore(
+	findings: ScanFinding[],
+	config: ContentScannerConfig,
+): ScanFinding[] {
+	const minScore = config.min_score ?? 0;
+	return findings.filter((f) => (f.score ?? 1) >= minScore);
+}
+
 /**
  * Decide allow vs ask-for-confirmation from scanner findings.
  *
@@ -36,8 +46,7 @@ export function decideFromFindings(
 ): ContentScanVerdict {
 	if (findings.length === 0) return { decision: "allow" };
 
-	const minScore = config.min_score ?? 0;
-	const kept = findings.filter((f) => (f.score ?? 1) >= minScore);
+	const kept = filterFindingsByScore(findings, config);
 	if (kept.length === 0) return { decision: "allow" };
 
 	const counts = new Map<string, number>();
