@@ -37,6 +37,12 @@ reports/
 # See: `git bundle verify .archive/<name>.bundle`.
 .archive/
 
+# Third-party reference repos cloned for design/research only — never committed.
+reference-repos/
+
+# Local manual-test scratch space and harness logs.
+.scratch/
+
 # Interlinked (local agent config)
 .interlinked/config.json
 .interlinked/config.local.json
@@ -59,7 +65,9 @@ test/agent-driven/reports/*.json
 .interlinked/index/
 .interlinked/error-history.jsonl
 .interlinked/last-check.txt
+.interlinked/quality-check-in-progress
 .interlinked/learned-rules.json
 .interlinked/suggestion-telemetry.jsonl
 .interlinked/thinking-cursor.json
 .interlinked/classifier.status
+.interlinked/scanner/
