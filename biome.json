@@ -1,0 +1,19 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"files": {
+		"includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.mjs", "!dist/**", "!node_modules/**"]
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": false,
+			"suspicious": {
+				"noDoubleEquals": "error",
+				"noSelfCompare": "error"
+			}
+		}
+	},
+	"formatter": {
+		"enabled": false
+	}
+}

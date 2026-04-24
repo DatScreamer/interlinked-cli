@@ -61,7 +61,7 @@ jobs:
         run: npx publint
 
       - name: Check types with arethetypeswrong
-        run: npx --package=@arethetypeswrong/cli attw --pack .
+        run: npx --package=@arethetypeswrong/cli attw --pack . --profile esm-only
 
       - name: Publish to npm (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true'

@@ -46,7 +46,7 @@ jobs:
         run: npx publint
 
       - name: Check types with arethetypeswrong
-        run: npx --package=@arethetypeswrong/cli attw --pack .
+        run: npx --package=@arethetypeswrong/cli attw --pack . --profile esm-only
 
       - name: Pack dry-run
         run: npm pack --dry-run
