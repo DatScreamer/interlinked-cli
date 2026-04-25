@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, resolve, sep } from "node:path";
 import { configNameToToolId, getOrCreateEngine } from "./check-engine/index.js";
+import { parseNpmAuditJson, parseOsvScannerJson } from "./check-engine/output-parsers.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/index.js";
 import {
 	checkBinaryContent,
@@ -182,10 +183,13 @@ export function runQualityChecks(
 				// Detects known CVEs in project dependencies.
 				const checkCwd = findProjectRoot(filePath, cwd) || cwd;
 				const fileName = filePath.split("/").pop() || "";
-				const auditCmd = resolveDependencyAuditCommand(fileName);
-				if (!auditCmd) continue;
+				const resolved = resolveDependencyAuditCommand(fileName, {
+					useOsvScanner: check.use_osv_scanner,
+					offline: check.offline,
+				});
+				if (!resolved) continue;
 
-				const auditResult = spawnSync(auditCmd[0], auditCmd.slice(1), {
+				const auditResult = spawnSync(resolved.cmd[0], resolved.cmd.slice(1), {
 					shell: false,
 					timeout: check.timeout_ms,
 					cwd: checkCwd,
@@ -200,37 +204,38 @@ export function runQualityChecks(
 					continue; // Audit tool not installed — skip silently
 				}
 
-				// npm audit exits 1 when vulnerabilities found
-				if (auditResult.status !== 0 && auditResult.status !== null) {
-					const output = (auditResult.stdout || "").trim();
-					let detail = "";
-					try {
-						const parsed = JSON.parse(output);
-						// npm audit JSON format
-						if (parsed.metadata?.vulnerabilities) {
-							const v = parsed.metadata.vulnerabilities;
-							const counts = [];
-							if (v.critical) counts.push(`${v.critical} critical`);
-							if (v.high) counts.push(`${v.high} high`);
-							if (v.moderate) counts.push(`${v.moderate} moderate`);
-							if (v.low) counts.push(`${v.low} low`);
-							detail = counts.join(", ");
-						}
-					} catch {
-						// Non-JSON output — use raw stderr
-						detail =
-							(auditResult.stderr || "").split("\n").slice(0, 5).join("\n") ||
-							"vulnerabilities found";
-					}
+				// Every supported tool exits non-zero when vulnerabilities are found.
+				// status=0 means clean; status=null means timeout (treat as skip).
+				if (auditResult.status === 0 || auditResult.status === null) continue;
 
-					results.push({
-						name,
-						severity: check.severity,
-						message: `Dependency vulnerabilities found after editing ${filePath}`,
-						file: filePath,
-						detail: detail || "Run `npm audit` for details",
-					});
+				const stdout = (auditResult.stdout || "").trim();
+				let detail = "";
+				if (resolved.parser === "osv-scanner") {
+					const summary = parseOsvScannerJson(stdout);
+					if (!summary) continue; // non-zero exit but no parsable vulns — skip
+					detail = summary.detail;
+				} else if (resolved.parser === "npm-audit") {
+					const summary = parseNpmAuditJson(stdout);
+					detail = summary?.detail ?? "";
+				} else {
+					// pip-audit / cargo-audit / govulncheck: surface raw stderr tail.
+					// Structured parsing for these lives behind osv-scanner — if a
+					// user opts out of it, we degrade gracefully rather than parse
+					// four more bespoke JSON shapes here.
+					detail =
+						(auditResult.stderr || "").split("\n").slice(0, 5).join("\n") ||
+						"vulnerabilities found";
 				}
+
+				results.push({
+					name,
+					severity: check.severity,
+					message: `Dependency vulnerabilities found after editing ${filePath}`,
+					file: filePath,
+					detail:
+						detail ||
+						`Run \`${resolved.cmd[0]}\` for details (parser: ${resolved.parser})`,
+				});
 			} else if (name === "inline_language_checks") {
 				// Data-driven per-language inline pattern checks. Reads the
 				// inline_checks array declared in the file's LanguageProfile

@@ -5,12 +5,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { hasOsvScanner } from "../../quality-checks/dependency-audit.js";
 import {
 	filterResultsToFile,
 	parseEslintOutput,
 	parseGitleaksJson,
 	parseKnipJson,
 	parseNpmAuditJson,
+	parseOsvScannerJson,
 	parseOxlintJson,
 	parseSemgrepJson,
 } from "../output-parsers.js";
@@ -233,13 +235,57 @@ export function runGitleaks(input: ToolRunnerInput): CheckResult[] {
 export function runDepAudit(input: ToolRunnerInput): AuditResult | null {
 	const { scope, timeoutMs } = input;
 
-	// npm ecosystem
+	// Prefer osv-scanner — single tool covers Go, npm, pip, cargo, Maven, etc.
+	// with one JSON shape. Scans the whole project directory, recurses to find
+	// all lockfiles, and exits non-zero when any vuln is found.
+	if (hasOsvScanner()) {
+		const osv = runOsvScanner(scope.projectRoot, timeoutMs);
+		if (osv) return osv;
+		// Fall through when osv-scanner is installed but returned null — e.g.
+		// unsupported project (no recognised lockfile). Try the per-ecosystem
+		// fallbacks so we don't silently drop a scan users would otherwise get.
+	}
+
+	// Fallback: per-ecosystem tools (current behavior pre-osv-scanner).
 	if (existsSync(resolve(scope.projectRoot, "package.json"))) {
 		return runNpmAudit(scope.projectRoot, timeoutMs);
 	}
 
-	// TODO: pip-audit, cargo-audit, govulncheck
+	// Go / Python / Rust when osv-scanner isn't installed: not wired through
+	// the engine path today. The PostToolUse inline path (see quality-checks.ts
+	// `dependency_audit` branch) covers those via govulncheck / pip-audit /
+	// cargo audit on lockfile edits. `interlinked verify --all-checks` users
+	// who want Go/Python/Rust SCA should install osv-scanner.
 	return null;
+}
+
+function runOsvScanner(cwd: string, timeoutMs: number): AuditResult | null {
+	try {
+		const result = spawnSync(
+			"osv-scanner",
+			["scan", "source", "--format=json", "--recursive", "."],
+			{
+				cwd,
+				timeout: timeoutMs,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
+
+		if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
+			return null;
+		}
+		// Exit 0 = clean. Exit 1 = vulns found (parse stdout). Other codes
+		// (128 = scan error) → treat as unavailable rather than erroring.
+		if (result.status === 0 || result.status === null) return null;
+		if (result.status !== 1) return null;
+
+		const output = (result.stdout || "").trim();
+		if (!output) return null;
+		return parseOsvScannerJson(output);
+	} catch {
+		return null;
+	}
 }
 
 function runNpmAudit(cwd: string, timeoutMs: number): AuditResult | null {

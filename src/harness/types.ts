@@ -341,6 +341,18 @@ export interface QualityCheckConfig {
 	description?: string;
 	/** Skip this check for test files (e.g., semgrep/gitleaks on test fixtures) */
 	skip_test_files?: boolean;
+	/**
+	 * `dependency_audit` only: prefer osv-scanner over per-ecosystem tools
+	 * (npm audit / pip-audit / cargo audit / govulncheck) when it's on PATH.
+	 * Default: true. Set false to force the legacy per-ecosystem commands.
+	 */
+	use_osv_scanner?: boolean;
+	/**
+	 * `dependency_audit` only: when osv-scanner is used, pass `--offline`
+	 * (requires `osv-scanner scan --download-offline-databases` to have run
+	 * at least once). Avoids osv.dev network round-trips on every edit.
+	 */
+	offline?: boolean;
 }
 
 // ===========================================

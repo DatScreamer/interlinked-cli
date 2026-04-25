@@ -7,6 +7,7 @@ import {
 	parseHadolintJson,
 	parseMypyOutput,
 	parseNpmAuditJson,
+	parseOsvScannerJson,
 	parseRuffJson,
 	parseSemgrepJson,
 	parseShellcheckJson,
@@ -154,6 +155,107 @@ describe("parseNpmAuditJson", () => {
 
 	it("returns null on malformed JSON", () => {
 		expect(parseNpmAuditJson("garbage")).toBeNull();
+	});
+});
+
+describe("parseOsvScannerJson", () => {
+	it("returns null on malformed JSON", () => {
+		expect(parseOsvScannerJson("garbage")).toBeNull();
+	});
+
+	it("returns null when there are no vulnerabilities", () => {
+		expect(parseOsvScannerJson(JSON.stringify({ results: [] }))).toBeNull();
+	});
+
+	it("buckets groups[].max_severity into CVSS v3 severity tiers", () => {
+		const payload = JSON.stringify({
+			results: [
+				{
+					source: { path: "/p/go.mod", type: "lockfile" },
+					packages: [
+						{
+							package: { name: "a", version: "1", ecosystem: "Go" },
+							vulnerabilities: [{ id: "GO-1" }],
+							groups: [{ ids: ["GO-1"], max_severity: "9.8" }],
+						},
+						{
+							package: { name: "b", version: "1", ecosystem: "Go" },
+							vulnerabilities: [{ id: "GO-2" }],
+							groups: [{ ids: ["GO-2"], max_severity: "7.5" }],
+						},
+						{
+							package: { name: "c", version: "1", ecosystem: "Go" },
+							vulnerabilities: [{ id: "GO-3" }],
+							groups: [{ ids: ["GO-3"], max_severity: "5.0" }],
+						},
+						{
+							package: { name: "d", version: "1", ecosystem: "Go" },
+							vulnerabilities: [{ id: "GO-4" }],
+							groups: [{ ids: ["GO-4"], max_severity: "2.0" }],
+						},
+					],
+				},
+			],
+		});
+		const r = parseOsvScannerJson(payload);
+		expect(r?.tool).toBe("osv-scanner");
+		expect(r?.critical).toBe(1);
+		expect(r?.high).toBe(1);
+		expect(r?.moderate).toBe(1);
+		expect(r?.low).toBe(1);
+		expect(r?.total).toBe(4);
+		expect(r?.detail).toContain("GO-1");
+	});
+
+	it("falls back to vulnerabilities[].severity numeric score when max_severity absent", () => {
+		const payload = JSON.stringify({
+			results: [
+				{
+					packages: [
+						{
+							vulnerabilities: [{ id: "X", severity: [{ type: "CVSS_V3", score: "8.1" }] }],
+							groups: [{ ids: ["X"] }],
+						},
+					],
+				},
+			],
+		});
+		const r = parseOsvScannerJson(payload);
+		expect(r?.high).toBe(1);
+		expect(r?.total).toBe(1);
+	});
+
+	it("CVSS vector strings without max_severity bucket as low (no inline calc)", () => {
+		const payload = JSON.stringify({
+			results: [
+				{
+					packages: [
+						{
+							vulnerabilities: [
+								{
+									id: "Y",
+									severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N" }],
+								},
+							],
+							groups: [{ ids: ["Y"] }],
+						},
+					],
+				},
+			],
+		});
+		const r = parseOsvScannerJson(payload);
+		expect(r?.low).toBe(1);
+	});
+
+	it("caps topIds at 5", () => {
+		const packages = Array.from({ length: 10 }, (_, i) => ({
+			vulnerabilities: [{ id: `V-${i}` }],
+			groups: [{ ids: [`V-${i}`], max_severity: "5.0" }],
+		}));
+		const r = parseOsvScannerJson(JSON.stringify({ results: [{ packages }] }));
+		expect(r?.total).toBe(10);
+		const idsInDetail = (r?.detail ?? "").split(" — ")[1]?.split(", ") ?? [];
+		expect(idsInDetail).toHaveLength(5);
 	});
 });
 

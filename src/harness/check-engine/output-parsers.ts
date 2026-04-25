@@ -182,6 +182,112 @@ export function parseNpmAuditJson(output: string): AuditResult | null {
 }
 
 // -------------------------------------------
+// osv-scanner (osv-scanner --format=json)
+// -------------------------------------------
+// JSON format (simplified):
+//   { results: [{ source: {...}, packages: [{
+//       package: { name, version, ecosystem },
+//       vulnerabilities: [{ id, severity?: [{ type, score }] }],
+//       groups: [{ ids: [...], max_severity?: "7.2" }]
+//     }] }] }
+//
+// Severity resolution order:
+//   1. groups[].max_severity (numeric CVSS base score) — present in osv-scanner v2
+//   2. vulnerabilities[].severity[].score if it's a bare numeric string
+//   3. fall back to "low" bucket when no numeric score is available
+
+export function parseOsvScannerJson(output: string): AuditResult | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(output);
+	} catch {
+		return null;
+	}
+	const root = parsed as {
+		results?: Array<{
+			packages?: Array<{
+				vulnerabilities?: Array<{ id?: string; severity?: Array<{ score?: string }> }>;
+				groups?: Array<{ ids?: string[]; max_severity?: string }>;
+			}>;
+		}>;
+	};
+	if (!root || !Array.isArray(root.results)) return null;
+
+	let critical = 0;
+	let high = 0;
+	let moderate = 0;
+	let low = 0;
+	const topIds: string[] = [];
+
+	for (const result of root.results) {
+		for (const pkg of result.packages ?? []) {
+			// Build a map of vuln-id → best numeric score we can extract.
+			const vulnScore = new Map<string, number>();
+			for (const v of pkg.vulnerabilities ?? []) {
+				if (!v.id) continue;
+				const score = extractNumericScore(v.severity);
+				if (score !== null) vulnScore.set(v.id, score);
+			}
+			// Prefer group-level max_severity when present (covers aliases).
+			for (const g of pkg.groups ?? []) {
+				const ids = g.ids ?? [];
+				let score: number | null = null;
+				if (g.max_severity) {
+					const n = Number.parseFloat(g.max_severity);
+					if (!Number.isNaN(n)) score = n;
+				}
+				if (score === null) {
+					for (const id of ids) {
+						const s = vulnScore.get(id);
+						if (s !== undefined && (score === null || s > score)) score = s;
+					}
+				}
+				const bucket = cvssToBucket(score);
+				if (bucket === "critical") critical++;
+				else if (bucket === "high") high++;
+				else if (bucket === "moderate") moderate++;
+				else low++;
+				if (topIds.length < 5 && ids[0]) topIds.push(ids[0]);
+			}
+		}
+	}
+
+	const total = critical + high + moderate + low;
+	if (total === 0) return null;
+
+	const counts: string[] = [];
+	if (critical) counts.push(`${critical} critical`);
+	if (high) counts.push(`${high} high`);
+	if (moderate) counts.push(`${moderate} moderate`);
+	if (low) counts.push(`${low} low`);
+	const detail = topIds.length > 0 ? `${counts.join(", ")} — ${topIds.join(", ")}` : counts.join(", ");
+
+	return { tool: "osv-scanner", total, critical, high, moderate, low, detail };
+}
+
+function extractNumericScore(severity?: Array<{ score?: string }>): number | null {
+	if (!severity || severity.length === 0) return null;
+	for (const s of severity) {
+		if (!s.score) continue;
+		// Bare numeric ("7.2"): use directly.
+		const n = Number.parseFloat(s.score);
+		if (!Number.isNaN(n) && !s.score.startsWith("CVSS")) return n;
+		// CVSS vector ("CVSS:3.1/AV:N/..."): we don't compute base score inline —
+		// osv-scanner v2 emits groups[].max_severity for that. Skip here.
+	}
+	return null;
+}
+
+// CVSS v3 severity bucketing (matches osv-scanner's severity.CalculateRating).
+function cvssToBucket(score: number | null): "critical" | "high" | "moderate" | "low" {
+	if (score === null) return "low";
+	if (score >= 9.0) return "critical";
+	if (score >= 7.0) return "high";
+	if (score >= 4.0) return "moderate";
+	return "low";
+}
+
+// -------------------------------------------
 // mypy (mypy --no-error-summary --no-color-output)
 // -------------------------------------------
 // Format: "file.py:line: error: message  [error-code]"

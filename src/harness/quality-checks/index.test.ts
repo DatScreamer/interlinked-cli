@@ -43,10 +43,17 @@ describe("quality-checks submodules (smoke)", () => {
 		expect(stripStringLiterals(`const s = "hello"`)).toContain('""');
 	});
 
-	it("dependency-audit maps manifest names to commands", () => {
-		expect(resolveDependencyAuditCommand("package.json")?.[0]).toBe("npm");
-		expect(resolveDependencyAuditCommand("Cargo.toml")?.[0]).toBe("cargo");
-		expect(resolveDependencyAuditCommand("unknown")).toBeNull();
+	it("dependency-audit maps manifest names to commands (osv opt-out)", () => {
+		// Force the legacy per-ecosystem fallback so this test doesn't depend on
+		// whether osv-scanner happens to be installed on the runner.
+		const opts = { useOsvScanner: false };
+		expect(resolveDependencyAuditCommand("package.json", opts)?.cmd[0]).toBe("npm");
+		expect(resolveDependencyAuditCommand("package.json", opts)?.parser).toBe("npm-audit");
+		expect(resolveDependencyAuditCommand("Cargo.toml", opts)?.cmd[0]).toBe("cargo");
+		expect(resolveDependencyAuditCommand("Cargo.toml", opts)?.parser).toBe("cargo-audit");
+		expect(resolveDependencyAuditCommand("go.mod", opts)?.cmd[0]).toBe("govulncheck");
+		expect(resolveDependencyAuditCommand("requirements.txt", opts)?.cmd[0]).toBe("pip-audit");
+		expect(resolveDependencyAuditCommand("unknown", opts)).toBeNull();
 	});
 
 	it("lockfile-drift exports LOCKFILE_MAP keyed by manifest name", () => {
