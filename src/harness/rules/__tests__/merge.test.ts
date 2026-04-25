@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { GuardRulesConfig } from "../../types.js";
 import { DEFAULT_CONFIG } from "../default-config.js";
 import { mergeLocalOverrides, mergeTeamRules } from "../merge.js";
 
@@ -107,5 +108,37 @@ describe("mergeLocalOverrides", () => {
 			},
 		});
 		expect(config.quality_checks.typescript.command).toBe("my-custom-tsc");
+	});
+
+	it("appends content_scanner.allowlist entries instead of replacing them", () => {
+		// Locals must add to the curated default allowlist, not wipe it.
+		// Otherwise a single user adding `noreply@my-company.com` would lose
+		// every team-shipped FP suppression.
+		const config = mkBaseConfig();
+		const defaultLen = config.content_scanner?.allowlist?.length ?? 0;
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				allowlist: [
+					{ kind: "exact", pattern: "noreply@my-company.com", label: "private_email" },
+				],
+			} as unknown as GuardRulesConfig["content_scanner"],
+		});
+		expect(config.content_scanner?.allowlist?.length).toBe(defaultLen + 1);
+		const last = config.content_scanner?.allowlist?.[defaultLen];
+		expect(last?.kind).toBe("exact");
+	});
+
+	it("preserves nested local config when allowlist is the only override", () => {
+		// Regression for the deep-merge fix: a partial override like
+		// {content_scanner: {allowlist: [...]}} must NOT wipe local.python_bin
+		// or other defaults inside the local block.
+		const config = mkBaseConfig();
+		const defaultPythonBin = config.content_scanner?.local.python_bin;
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				allowlist: [{ kind: "exact", pattern: "x", label: "private_email" }],
+			} as unknown as GuardRulesConfig["content_scanner"],
+		});
+		expect(config.content_scanner?.local.python_bin).toBe(defaultPythonBin);
 	});
 });

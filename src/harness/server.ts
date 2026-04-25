@@ -34,6 +34,7 @@ import {
 import { getOrCreateEngine } from "./check-engine/index.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "./check-metadata.js";
 import { CohortManager } from "./cohort.js";
+import { applyAllowlist, compileAllowlist } from "./content-scanner/allowlist.js";
 import { decideFromFindings } from "./content-scanner/policy.js";
 import { runPostToolScan } from "./content-scanner/post-scan.js";
 import { scanUserPrompt } from "./content-scanner/prompt-scan.js";
@@ -182,6 +183,9 @@ const classifierSessions = new Map<string, ClassifierSessionState>();
 const contentScanner: ContentScanner | undefined = rules.content_scanner
 	? createScanner(rules.content_scanner)
 	: undefined;
+// Compile the allowlist once at startup so we don't pay regex/string-building
+// cost on every scan. Recompiled on hot-reload (see watchRulesFiles below).
+let compiledAllowlist = compileAllowlist(rules.content_scanner?.allowlist);
 if (contentScanner) {
 	// Visible at startup so agents know the scanner is in-line.
 	logAlways(`Content scanner: enabled (${contentScanner.name} / ${contentScanner.runtime})`);
@@ -657,9 +661,20 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					);
 				}
 			}
-			const verdict = decideFromFindings(findings, rules.content_scanner);
+			// Allowlist pass — drop known false positives (noreply@*, snake_case
+			// identifiers misread as private_person, RFC test domains, etc.)
+			// before the policy decides. Suppressed entries don't reach the
+			// permission UI, the systemMessage, or the pending-prompt file.
+			const allowlistResult = applyAllowlist(findings, compiledAllowlist);
+			const keptFindings = allowlistResult.kept;
+			if (allowlistResult.suppressed.length > 0) {
+				log(
+					`Content scanner: allowlist suppressed ${allowlistResult.suppressed.length} finding(s)`,
+				);
+			}
+			const verdict = decideFromFindings(keptFindings, rules.content_scanner);
 			log(
-				`Content scanner: ${event.tool_name} (${scanReq.hook}) — ${scanReq.parts.length} part(s), ${findings.length} finding(s), decision=${verdict.decision}`,
+				`Content scanner: ${event.tool_name} (${scanReq.hook}) — ${scanReq.parts.length} part(s), ${findings.length} finding(s) (${keptFindings.length} after allowlist), decision=${verdict.decision}`,
 			);
 			if (verdict.decision === "ask") {
 				// Hand off to Claude Code's built-in confirmation UI via the "ask"
@@ -668,8 +683,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				//   (2) per-source preview with PII → <CATEGORY>   — agent-safe
 				//   (3) pointer to a LOCAL-ONLY file with the full unmasked content
 				//       — user opens from another terminal; never sent to Anthropic.
+				// Group only the SURVIVORS for the pending-prompt + ask-reason —
+				// allowlist-suppressed findings are FPs the operator already
+				// declared safe, so we mustn't echo them back through the UI.
 				const findingsBySource = new Map<string, ScanFinding[]>();
-				for (const f of findings) {
+				for (const f of keptFindings) {
 					const bucket = findingsBySource.get(f.source) ?? [];
 					bucket.push(f);
 					findingsBySource.set(f.source, bucket);
@@ -2128,6 +2146,10 @@ const unwatchRules = watchRulesFiles(CWD, (newRules) => {
 		// was not constructed at startup. Requires a harness restart to pick up.
 		writeScannerStatus("down:needs_restart");
 	}
+	// Recompile the allowlist whenever rules reload — users adding entries
+	// to .interlinked/guard-rules.local.json shouldn't have to restart the
+	// harness for them to take effect on the next scan.
+	compiledAllowlist = compileAllowlist(rules.content_scanner?.allowlist);
 	// Update auto-coordination config
 	Object.assign(autoCoordConfig, DEFAULT_AUTO_COORDINATION_CONFIG, rules.auto_coordination || {});
 	log(`Rules reloaded: ${rules.rules.length} rules active`);

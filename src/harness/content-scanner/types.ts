@@ -105,7 +105,53 @@ export interface ContentScannerConfig {
 
 	/** Per-scan byte cap. Default: reuse `rules.output_scanning.max_scan_bytes` (100_000). */
 	max_scan_bytes: number;
+
+	/**
+	 * Allowlist applied AFTER the model emits findings, BEFORE the policy decides.
+	 * Matching findings are dropped silently. Use it to suppress known false
+	 * positives — `noreply@*`, `*@example.com`, snake_case identifiers misread
+	 * as private_person, etc.
+	 *
+	 * Each entry is checked against the finding's `text` (the raw matched
+	 * substring). If `label` is set, the entry only applies to findings of
+	 * that category — so `noreply@anthropic.com` allowlisted as
+	 * `private_email` won't accidentally allowlist a string that happens to
+	 * match if the model later labels it as `secret`.
+	 *
+	 * Two-tier: defaults ship in DEFAULT_CONFIG; user additions go in
+	 * `.interlinked/guard-rules.json` (team) and `.interlinked/guard-rules.local.json`
+	 * (personal, gitignored). Merged additively — locals append, never replace.
+	 */
+	allowlist?: AllowlistEntry[];
 }
+
+/**
+ * A pattern that drops a finding when matched. The supported kinds form a
+ * fixed catalog — user-supplied regex would create a ReDoS surface, and the
+ * cases we actually need (exact match, prefix/suffix/contains, email domain,
+ * common identifier shapes) all map to constant-cost string operations or
+ * hardcoded regex literals.
+ *
+ *   - exact:                  text === pattern  (case-sensitive)
+ *   - prefix:                 text.toLowerCase().startsWith(pattern.toLowerCase())
+ *   - suffix:                 text.toLowerCase().endsWith(pattern.toLowerCase())
+ *   - contains:               text.toLowerCase().includes(pattern.toLowerCase())
+ *   - email_domain:           text matches *@<pattern> case-insensitively
+ *   - snake_case_identifier:  text is a snake_case identifier (no pattern arg)
+ *   - uuid:                   text is a UUID v1–v5 (no pattern arg)
+ *
+ * For requests that none of the above cover, file an issue rather than
+ * extending this with arbitrary regex — keeping the surface narrow makes
+ * audit and ReDoS-safety trivial.
+ */
+export type AllowlistEntry =
+	| { kind: "exact"; pattern: string; label?: string; reason?: string }
+	| { kind: "prefix"; pattern: string; label?: string; reason?: string }
+	| { kind: "suffix"; pattern: string; label?: string; reason?: string }
+	| { kind: "contains"; pattern: string; label?: string; reason?: string }
+	| { kind: "email_domain"; pattern: string; label?: string; reason?: string }
+	| { kind: "snake_case_identifier"; label?: string; reason?: string }
+	| { kind: "uuid"; label?: string; reason?: string };
 
 /**
  * A single detected span emitted by a scanner. `text` is kept for internal

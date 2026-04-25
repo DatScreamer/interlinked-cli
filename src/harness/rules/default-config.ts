@@ -601,5 +601,60 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		min_score: 0,
 		// Reuses the existing output_scanning cap so operators tune one knob, not two.
 		max_scan_bytes: 100_000,
+		// Curated FP-suppression list. Each entry kills a known false-positive
+		// class observed against the OPF model in practice. Locals can append
+		// in `.interlinked/guard-rules.local.json` — appended, never replaced.
+		allowlist: [
+			// noreply / no-reply addresses are transactional, not contactable PII.
+			// `noreply@anthropic.com`, `no-reply@github.com`, etc.
+			{
+				kind: "prefix",
+				pattern: "noreply@",
+				label: "private_email",
+				reason: "Transactional no-reply addresses are not personal contact info",
+			},
+			{
+				kind: "prefix",
+				pattern: "no-reply@",
+				label: "private_email",
+				reason: "Transactional no-reply addresses are not personal contact info",
+			},
+			// RFC 2606 reserved test domains.
+			{
+				kind: "email_domain",
+				pattern: "example.com",
+				label: "private_email",
+				reason: "RFC 2606 reserved test domain",
+			},
+			{
+				kind: "email_domain",
+				pattern: "example.net",
+				label: "private_email",
+				reason: "RFC 2606 reserved test domain",
+			},
+			{
+				kind: "email_domain",
+				pattern: "example.org",
+				label: "private_email",
+				reason: "RFC 2606 reserved test domain",
+			},
+			// snake_case identifiers misread as person names — `content_scanner`,
+			// `user_id`, `private_email` (yes, the model sometimes flags label
+			// names from its own training set), etc. Real human names contain
+			// spaces or capitals; this catches the FP cleanly.
+			{
+				kind: "snake_case_identifier",
+				label: "private_person",
+				reason: "snake_case identifier (config key, function name, etc.) — not a person",
+			},
+			// UUIDs in `secret` slot — canonical IDs are routinely flagged as
+			// secrets by entropy-based detectors. UUIDs are designed to be
+			// non-secret stable identifiers; treat as benign.
+			{
+				kind: "uuid",
+				label: "secret",
+				reason: "UUIDs are public stable identifiers, not secrets",
+			},
+		],
 	},
 };

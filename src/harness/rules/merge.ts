@@ -152,5 +152,12 @@ function mergeContentScanner(
 	if (override.local) Object.assign(target.local, override.local);
 	if (override.huggingface) Object.assign(target.huggingface, override.huggingface);
 	if (override.custom_http) Object.assign(target.custom_http, override.custom_http);
+	// Allowlist is APPENDED — locals add to defaults, never replace. This keeps
+	// the curated team/default list in force while letting individuals add
+	// machine-specific entries (their personal noreply addresses, project-
+	// specific identifiers, etc.) in guard-rules.local.json.
+	if (override.allowlist && override.allowlist.length > 0) {
+		target.allowlist = [...(target.allowlist ?? []), ...override.allowlist];
+	}
 	if (override.scan_points) Object.assign(target.scan_points, override.scan_points);
 }
