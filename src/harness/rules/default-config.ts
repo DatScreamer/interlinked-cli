@@ -165,6 +165,24 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			operations: ["Delete"],
 			reason: "Docker Compose deletion breaks container orchestration",
 		},
+		// Content scanner LOCAL-ONLY artifacts. The whole point of
+		// .interlinked/scanner/pending/ is that the raw flagged content
+		// stays out of the agent's context window — if the agent can Read
+		// or Edit those JSON files, the systemMessage / redacted-reason
+		// design collapses. Mode 0600 only blocks OTHER users on the
+		// system; the agent runs as the file owner, so the rule layer
+		// has to enforce the boundary. Same logic for the audit log,
+		// which records who toggled the filter off and when.
+		{
+			glob: ".interlinked/scanner/pending/**",
+			operations: ["Read", "Write", "Edit", "Delete"],
+			reason: "Pending content-scanner files contain raw flagged PII that must NOT enter the agent's context window. Mode 0600 only blocks other users; this rule blocks the agent itself. Open the file in a separate terminal/editor if you need to review.",
+		},
+		{
+			glob: ".interlinked/content-scanner.audit.jsonl",
+			operations: ["Read", "Write", "Edit", "Delete"],
+			reason: "Content-scanner audit log records every toggle with actor + reason. Treat as audit data, not as program input — agents reading this could rationalize toggling the filter off in subsequent turns.",
+		},
 	],
 	file_reminders: [],
 	curl_mcp_detection: {

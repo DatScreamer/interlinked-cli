@@ -76,6 +76,60 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 	},
 
 	// ===========================================
+	// Information flow: scanner LOCAL-ONLY artifacts
+	// ===========================================
+	// Defense-in-depth on top of protected_files. `.interlinked/scanner/pending/`
+	// holds raw flagged PII captured by the content scanner; the systemMessage /
+	// redacted-reason design only works if the agent can't pull the content
+	// back via a Bash/Grep/Glob side-channel. protected_files catches direct
+	// Read/Write/Edit; this rule catches the long-tail tools that traffic in
+	// arbitrary paths or commands.
+	{
+		id: "builtin-scanner-pending-access",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: [
+			"Bash",
+			"Shell",
+			"run_command",
+			"Grep",
+			"grep",
+			"Search",
+			"Glob",
+			"glob",
+			"FileSearch",
+		],
+		action: "block",
+		patterns: [
+			// Bash command body — catches `cat .interlinked/scanner/pending/...`,
+			// `head/tail/less/grep/jq/find/ls/rg .interlinked/scanner/pending/...`,
+			// `xxd .interlinked/content-scanner.audit.jsonl`, etc. The regex
+			// matches the path itself, so any tool that mentions it gets blocked
+			// regardless of the program in front.
+			{
+				field: "command",
+				regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)",
+			},
+			// Grep tool — `path` field tells the tool where to search.
+			{
+				field: "path",
+				regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)",
+			},
+			// Glob tool — `pattern` field is the glob expression.
+			{
+				field: "pattern",
+				regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)",
+			},
+		],
+		reason:
+			"BLOCKED: .interlinked/scanner/pending/ contains raw PII the privacy filter quarantined for the user only. Reading it through any tool would re-introduce the values into the model's context — that defeats the entire systemMessage design. Open the file in a separate terminal if you need to review.",
+		suggestion:
+			"If you genuinely need to inspect a pending file, open it in a non-agent terminal: `cat .interlinked/scanner/pending/<id>.json` from your shell directly.",
+		severity: "critical",
+		category: "Security",
+	},
+
+	// ===========================================
 	// Process safety: fork bombs, persistence, background network
 	// ===========================================
 	{
