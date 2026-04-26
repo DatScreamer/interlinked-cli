@@ -6,8 +6,9 @@ import { EVENT_NORMALIZERS_CHUNK } from "./event-normalizers.js";
 // usefully import its functions directly (they reference globals like
 // `truncate`, `summarize`, `extractFilePath` defined elsewhere in the
 // generated script). Instead we verify shape: every event we claim to
-// normalize is referenced, every per-event envelope field we promised is
-// emitted, and the expected canonical event_type names show up.
+// normalize emits a canonical record carrying the right `hook_event`,
+// every per-event envelope field we promised is present, and the expected
+// canonical event_type names show up.
 
 describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 	it("is a non-empty string", () => {
@@ -15,10 +16,16 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 		expect(EVENT_NORMALIZERS_CHUNK.length).toBeGreaterThan(100);
 	});
 
-	it("defines the three provider normalizer entry points", () => {
+	it("defines the four provider normalizer entry points", () => {
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("function normalizeClaudeEvent(");
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("function normalizeGeminiEvent(");
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("function normalizeCopilotEvent(");
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("function normalizeCodexEvent(");
+	});
+
+	it("dispatches Claude/Codex events through a lookup table", () => {
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("CLAUDE_DISPATCH");
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("GEMINI_DISPATCH");
 	});
 
 	it("handles every Claude Code hook event we subscribe to", () => {
@@ -38,7 +45,10 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 			"TeammateIdle",
 			"PermissionRequest",
 		]) {
-			expect(EVENT_NORMALIZERS_CHUNK).toContain(`case "${ev}":`);
+			// Each event is a key in CLAUDE_DISPATCH (e.g. `SessionStart: (`)
+			// AND its handler emits hook_event: "<EventName>" in the record.
+			expect(EVENT_NORMALIZERS_CHUNK).toContain(`${ev}: (`);
+			expect(EVENT_NORMALIZERS_CHUNK).toContain(`hook_event: "${ev}"`);
 		}
 	});
 
@@ -54,8 +64,18 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 			"PreCompress",
 			"Notification",
 		]) {
-			expect(EVENT_NORMALIZERS_CHUNK).toContain(`case "${ev}":`);
+			expect(EVENT_NORMALIZERS_CHUNK).toContain(`${ev}: (`);
+			expect(EVENT_NORMALIZERS_CHUNK).toContain(`hook_event: "${ev}"`);
 		}
+	});
+
+	it("Codex normalizer delegates to Claude and tags the runner", () => {
+		// The Codex CLI's hook payload mirrors Claude's contract; the
+		// normalizer reuses Claude's logic and only adds two Codex-specific
+		// touches (client_runner tag + turn_id propagation).
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("normalizeClaudeEvent(input)");
+		expect(EVENT_NORMALIZERS_CHUNK).toContain('client_runner = "codex"');
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("input.turn_id");
 	});
 
 	it("Step 1: keeps envelope fields (cwd, transcript_path, session_id_hint)", () => {
@@ -112,7 +132,7 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 	});
 
 	it("Gemini AfterModel handler present (was falling through to default)", () => {
-		expect(EVENT_NORMALIZERS_CHUNK).toContain('case "AfterModel":');
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("AfterModel: (");
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("model_response");
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("usageMetadata");
 	});

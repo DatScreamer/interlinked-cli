@@ -209,13 +209,14 @@ The server (`Interlinked MCP Server`) is the remote Worker/DO system. Communicat
 |------|---------|
 | `src/lib/config.ts` | Two-tier config system: `config.json` (shared/committed) + `config.local.json` (personal/gitignored). `resolveConfig()` merges both and resolves multi-server entries. |
 | `src/lib/auth.ts` | Token resolution (CLI token → Claude Code credentials fallback) + OAuth PKCE flow |
-| `src/lib/hooks.ts` | Hook script generation + install/uninstall for Claude Code, Gemini CLI, and Codex. The generated `.mjs` script is self-contained with zero imports. |
+| `src/lib/hooks.ts` | Orchestrator: hook script generation + per-client install/uninstall delegation through `CLIENT_INSTALL_REGISTRY`. Generates `.interlinked/hooks/interlinked-activity.mjs` (self-contained, zero imports). |
+| `src/lib/hook-installers.ts` | Per-client install/uninstall implementations (Claude Code, GitHub Copilot CLI, Gemini CLI, OpenAI Codex CLI). Each `installXxxHooks` writes a settings file and tags commands with `INTERLINKED_CLIENT="<id>"` so the .mjs runtime can disambiguate clients with overlapping payload shapes. Codex additionally writes `.codex/config.toml` to set `[features] codex_hooks = true`. |
 | `src/lib/api-client.ts` | HTTP client wrapping `POST /api/ui/call` for MCP tool proxying |
 | `src/lib/local-activity.ts` | JSONL append-only log, session state, sync cursor (byte-offset), merge/dedup |
 | `src/lib/activity-utils.ts` | Shared `ActivityEvent` type, `parseDuration()`, `formatActivitySummary()` |
 | `src/lib/formatter.ts` | ANSI colors, tables, timestamps — hand-coded, no external deps. Respects `NO_COLOR`/`CI`. |
 | `src/lib/output.ts` | Output mode abstraction: `json`, `short`, `normal`, `full` |
-| `src/lib/settings.ts` | Client detection and settings file paths for claude/gemini/codex |
+| `src/lib/settings.ts` | Client detection and settings file paths for claude/copilot/gemini/codex (registry consumed by `interlinked enable`/`disable`) |
 
 ### Activity Event Pipeline
 

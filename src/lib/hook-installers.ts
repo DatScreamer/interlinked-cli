@@ -10,8 +10,10 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
+import { ensureCodexFeatureFlag as ensureCodexFlag } from "./codex-feature-flag.js";
 import {
 	CLIENT_CLAUDE,
+	CLIENT_CODEX,
 	CLIENT_COPILOT,
 	CLIENT_GEMINI,
 	findProjectRoot,
@@ -50,8 +52,12 @@ export const CLAUDE_HOOK_EVENTS = [
 // With matcher: "" (match-all), Claude Code counts a PostToolUse hook invocation
 // for every tool in the turn (e.g. Read + Edit = "2 hooks ran"). Scoping to
 // Edit|Write|MultiEdit ensures the count reflects actual mutations only.
-// The hook script still receives all PostToolUse events that match this pattern.
-const POST_TOOL_USE_MATCHER = "Edit|Write|MultiEdit";
+// `apply_patch` is Codex CLI's primary file-edit tool — added explicitly
+// so PostToolUse fires on Codex without relying on Codex's Edit/Write
+// alias engine. Claude has no `apply_patch` tool, so the alternation is
+// safe across both clients. The hook script still receives all
+// PostToolUse events that match this pattern.
+const POST_TOOL_USE_MATCHER = "Edit|Write|MultiEdit|apply_patch";
 
 // Event names that require scoped matching (only mutating tools). Extracted
 // as a named set so conditionals don't use bare string literals.
@@ -81,6 +87,23 @@ export const GEMINI_HOOK_EVENTS = [
 	"AfterTool",
 	"PreCompress",
 	"Notification",
+] as const;
+
+// OpenAI Codex CLI hook events. Codex shipped its hook contract using
+// PascalCase event names that mirror Claude Code's vocabulary, with one
+// addition (PermissionRequest is its own event type, separate from
+// PreToolUse). Stop is included so the harness can record turn-end and so
+// future Stop-driven continuations have a hook to fire on. SessionEnd is
+// not part of the documented Codex hook surface as of 2026-04 — only
+// SessionStart is.
+/** Public API — consumed by `src/lib/hooks.ts`. */
+export const CODEX_HOOK_EVENTS = [
+	"SessionStart",
+	"UserPromptSubmit",
+	"PreToolUse",
+	"PostToolUse",
+	"PermissionRequest",
+	"Stop",
 ] as const;
 
 // Helpers for conditionals — avoid bare `typeof x === "string"` / `"object"`
@@ -431,17 +454,28 @@ interface CopilotConfig {
 	hooks: Record<string, unknown[]>;
 }
 
+/**
+ * Schema parser for Copilot hooks.json — kept separate from the file read
+ * so cold readers can see exactly which fields we trust at the JSON
+ * boundary. Returns null for any shape that isn't a plain object; coerces
+ * a missing/non-object `hooks` to an empty record.
+ */
+function parseCopilotConfigShape(raw: unknown): CopilotConfig | null {
+	if (!isPlainObject(raw)) return null;
+	const hooks = isPlainObject(raw.hooks) ? raw.hooks : {};
+	return { version: 1, hooks: hooks as Record<string, unknown[]> };
+}
+
 function safeReadCopilotConfig(path: string): CopilotConfig | null {
 	if (!existsSync(path)) return null;
+	let raw: unknown;
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-		if (!isPlainObject(parsed)) return null;
-		const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
-		return { version: 1, hooks: hooks as Record<string, unknown[]> };
+		raw = JSON.parse(readFileSync(path, "utf-8"));
 	} catch {
 		/* intentional: malformed hooks.json — caller starts over */
 		return null;
 	}
+	return parseCopilotConfigShape(raw);
 }
 
 /**
@@ -560,6 +594,53 @@ export function uninstallGeminiHooks(cwd: string): boolean {
 }
 
 // ===========================================
+// OpenAI Codex CLI — Install/Uninstall
+// ===========================================
+// Codex's `.codex/hooks.json` shape is identical to Claude Code's
+// `.claude/settings.json` `hooks` field: `{ matcher, hooks: [{ type, command }] }`
+// per event. Hooks are gated behind a feature flag in `.codex/config.toml`
+// (`[features] codex_hooks = true`); we add it idempotently when missing so
+// `interlinked enable` is a one-step setup.
+
+function getCodexHooksPath(cwd: string): string {
+	return join(cwd, ".codex", "hooks.json");
+}
+
+/**
+ * Public API — consumed by `src/lib/hooks.ts` (registered in CLIENT_INSTALL_REGISTRY).
+ * Install Interlinked hooks into Codex CLI's `.codex/hooks.json` and ensure
+ * `codex_hooks = true` is set in `.codex/config.toml` (gating feature flag —
+ * without it Codex silently ignores hooks.json). Feature-flag logic lives
+ * in `./codex-feature-flag.ts` and is also called from the modern adapter's
+ * `postInstall` so both install paths are equivalent.
+ */
+export function installCodexHooks(cwd: string, hookScriptPath: string): void {
+	const settingsPath = getCodexHooksPath(cwd);
+	const settings = readJsonFile(settingsPath) || {};
+
+	if (!settings.hooks) settings.hooks = {};
+	const hooks = settings.hooks as JsonObject;
+	const hookCommand = buildHookCommand(hookScriptPath, CLIENT_CODEX);
+
+	for (const eventName of CODEX_HOOK_EVENTS) {
+		installHookEntry(hooks, eventName, hookCommand);
+	}
+
+	writeJsonFile(settingsPath, settings);
+	ensureCodexFlag(cwd);
+}
+
+/**
+ * Public API — consumed by `src/lib/hooks.ts` (registered in CLIENT_INSTALL_REGISTRY).
+ * Remove Interlinked hooks from Codex CLI settings. Leaves `.codex/config.toml`
+ * untouched — disabling hooks is reversible by removing the flag manually,
+ * and we don't want to clobber user-managed Codex configuration.
+ */
+export function uninstallCodexHooks(cwd: string): boolean {
+	return cleanJsonHookFile(getCodexHooksPath(cwd), CODEX_HOOK_EVENTS);
+}
+
+// ===========================================
 // Shared Hook Entry Helper
 // ===========================================
 
@@ -611,12 +692,25 @@ function readJsonFile(path: string): JsonObject | null {
 	}
 }
 
+function serializeJsonFile(data: JsonObject): string {
+	return `${JSON.stringify(data, null, 2)}\n`;
+}
+
 function writeJsonFile(path: string, data: JsonObject): void {
 	const dir = dirname(path);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
-	writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+	const next = serializeJsonFile(data);
+	if (existsSync(path)) {
+		try {
+			const current = readFileSync(path, "utf-8");
+			if (current === next) return;
+		} catch (_err) {
+			/* intentional: unreadable file — fall through and attempt rewrite */
+		}
+	}
+	writeFileSync(path, next);
 }
 
 function buildHookCommand(hookScriptPath: string, client?: ClientName): string {
@@ -628,11 +722,42 @@ function buildHookCommand(hookScriptPath: string, client?: ClientName): string {
 				? "copilot-cli"
 				: client === CLIENT_GEMINI
 					? "gemini-cli"
-					: "";
+					: client === CLIENT_CODEX
+						? "codex"
+						: "";
 	const envPrefix =
 		client && runner ? `INTERLINKED_CLIENT="${client}" INTERLINKED_RUNNER="${runner}" ` : "";
-	// Guard: exit silently if the script doesn't exist (e.g., agent running from a subdirectory)
-	return `test -f "${escapedPath}" && ${envPrefix}node "${escapedPath}" || true`;
+
+	if (hookScriptPath.startsWith("/")) {
+		// Absolute paths are already stable — keep the shell snippet short.
+		return `test -f "${escapedPath}" && ${envPrefix}node "${escapedPath}" || true`;
+	}
+
+	// Project-local installs write a relative path like
+	// `.interlinked/hooks/interlinked-activity.mjs`. The hook may fire from
+	// a nested cwd inside the repo, so walk upward until the script is found.
+	//
+	// CRITICAL: this single-line shell snippet must parse under POSIX sh,
+	// bash AND zsh — Codex CLI invokes hooks via the user's configured
+	// shell. `do; if` and `then; ACTION` (semicolon between a keyword and
+	// its body) are syntax errors in bash/sh/dash; only zsh tolerates
+	// them. So we glue `do`/`then` directly to the next statement with a
+	// space rather than building the body via `.join("; ")`. See
+	// `hook-installers-shell.test.ts` for a regression test that actually
+	// invokes bash on the generated string.
+	return (
+		`HOOK_SCRIPT_REL="${escapedPath}"; ` +
+		`HOOK_DIR="$PWD"; ` +
+		`while :; do ` +
+		`if test -f "$HOOK_DIR/$HOOK_SCRIPT_REL"; then ` +
+		`${envPrefix}node "$HOOK_DIR/$HOOK_SCRIPT_REL" || true; ` +
+		`break; ` +
+		`fi; ` +
+		`NEXT_HOOK_DIR=$(dirname "$HOOK_DIR"); ` +
+		`test "$NEXT_HOOK_DIR" = "$HOOK_DIR" && break; ` +
+		`HOOK_DIR="$NEXT_HOOK_DIR"; ` +
+		`done`
+	);
 }
 
 function cleanJsonHookFile(cwdOrPath: string, events: readonly string[]): boolean {

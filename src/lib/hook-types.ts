@@ -69,6 +69,8 @@ export const CLIENT_CLAUDE = "claude" as const;
 export const CLIENT_COPILOT = "copilot" as const;
 /** Public API — consumed by `src/lib/hook-installers.ts`. */
 export const CLIENT_GEMINI = "gemini" as const;
+/** Public API — consumed by `src/lib/hook-installers.ts`. */
+export const CLIENT_CODEX = "codex" as const;
 
 /**
  * Public API — consumed by `src/lib/hook-installers.ts`.

@@ -272,6 +272,68 @@ function evaluateViaHarness(harnessEvent) {
     });
 }
 
+const INLINE_STRONG_TYPING_PATTERNS = [
+    /:\\s*any\\s*[;,)>=[\\]|&\\n\\r]/,
+    /<\\s*any\\s*[>,]/,
+    /\\bas\\s+any\\b/,
+    /\\)\\s*:\\s*any\\b/,
+    /\\bas\\s+unknown\\b/,
+];
+
+function stripInlineStringLiterals(line) {
+    let result = line.replace(/"(?:[^"\\\\]|\\\\.)*"/g, '""');
+    result = result.replace(/'(?:[^'\\\\]|\\\\.)*'/g, "''");
+    result = result.replace(/\`(?:[^\`\\\\]|\\\\.)*\`/g, "\`\`");
+    return result;
+}
+
+function findInlineStrongTypingMatches(content) {
+    const lines = content.split("\\n");
+    const matches = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+        if (/^\\s*['"\`]/.test(line) && /['"\`]\\s*[;,]?\\s*$/.test(line)) continue;
+        const stripped = stripInlineStringLiterals(line);
+        for (const pattern of INLINE_STRONG_TYPING_PATTERNS) {
+            if (pattern.test(stripped)) {
+                matches.push({ line: i + 1, text: trimmed.slice(0, 120) });
+                break;
+            }
+        }
+    }
+    return matches;
+}
+
+function inlinePostToolFallback(rawInput, event) {
+    const toolName = event.tool_name || rawInput.tool_name || null;
+    const toolInput = rawInput.tool_input || event.tool_input || null;
+    const filePath = extractFilePath(toolName, toolInput);
+    if (!filePath || !existsSync(filePath)) return null;
+    if (!/\.(?:tsx?|jsx?|mjs|cjs)$/.test(filePath)) return null;
+    let content = "";
+    try {
+        content = readFileSync(filePath, "utf-8");
+    } catch {
+        return null;
+    }
+    const matches = findInlineStrongTypingMatches(content);
+    if (matches.length === 0) {
+        return { summary: "inline strong_typing clean" };
+    }
+    const first = matches[0];
+    const plural = matches.length === 1 ? "" : "s";
+    return {
+        warnings: [
+            "[interlinked:strong_typing] " + filePath + " contains " + matches.length
+                + " explicit any/unknown escape hatch occurrence" + plural
+                + ". First: L" + first.line + " " + first.text,
+        ],
+        summary: "inline strong_typing warning",
+    };
+}
+
 ${GUARDS_INLINE_CHUNK}
 
 /**
@@ -367,11 +429,16 @@ async function main() {
     // --- Client Handler Registry ---
     // Each entry: { name, detect(input, source), normalize(input) }
     // First match wins. Claude is the catch-all for stdin — keep it last.
-    // To add a new client (Cursor, Copilot, Opencode, Amp, etc.):
+    // Codex's payload shape mirrors Claude's, so it must be detected via
+    // the INTERLINKED_CLIENT environment variable (set by the hook command
+    // installed into .codex/hooks.json) before falling through to Claude.
+    // To add a new client (Cursor, Opencode, Amp, etc.):
     //   1. Add a normalizer function (normalizeXxxEvent)
     //   2. Add a detector entry below
+    const RUNNER_ENV = process.env.INTERLINKED_CLIENT || "";
     const CLIENT_HANDLERS = [
         { name: "copilot", detect: (input, src) => src === "stdin" && !input.hook_event_name && typeof input.timestamp === "number", normalize: normalizeCopilotEvent },
+        { name: "codex", detect: (_input, src) => src === "stdin" && RUNNER_ENV === "codex", normalize: normalizeCodexEvent },
         // Future clients — add detectors here, before the Claude catch-all.
         // Example shape (NOT active code — documentation for adding a new handler):
         //   Example: { name: "cursor",   detect: (input, src) => src === "stdin" && !!input.cursor_session_id, normalize: normalizeCursorEvent }
@@ -620,6 +687,10 @@ ${PROVIDER_RESPONSES_CHUNK}
             }
         }
 
+        if (!postResult) {
+            postResult = inlinePostToolFallback(rawInput, event);
+        }
+
         const postElapsedMs = Date.now() - postStartMs;
 
         if (postResult) {
@@ -629,12 +700,30 @@ ${PROVIDER_RESPONSES_CHUNK}
                 const issueList = warnings.join("\\n\\n");
                 const toolLabel = event.tool_name || "unknown";
                 const statusLine = "✗ " + warnings.length + " issue(s) on " + toolLabel + " (" + postElapsedMs + "ms)";
+                const isBlockingPostDecision = postResult.decision === "block";
+                const responseType = isBlockingPostDecision ? "post_block" : "post_warn";
+                const responsePayload = isBlockingPostDecision
+                    ? {
+                        reason: issueList + "\\n\\nFix the issues above by changing the actual code.",
+                    }
+                    : {
+                        reason: issueList,
+                        summary: "[interlinked:" + toolLabel + "] Advisory findings:\\n" + issueList,
+                    };
                 writeLastCheck(statusLine);
-                console.log(JSON.stringify(formatProviderResponse("post_block", {
-                    reason: issueList + "\\n\\nFix the issues above by changing the actual code.",
-                })));
+                console.log(JSON.stringify(formatProviderResponse(responseType, responsePayload)));
                 appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
-                appendGuardDecision("warn", postResult, event, hookEvent, sessionId, agentName, workspaceKey, projectKey, postElapsedMs);
+                appendGuardDecision(
+                    isBlockingPostDecision ? "block" : "warn",
+                    postResult,
+                    event,
+                    hookEvent,
+                    sessionId,
+                    agentName,
+                    workspaceKey,
+                    projectKey,
+                    postElapsedMs,
+                );
                 updateSessionState(sessionId, agentName, event);
                 captureCodeEdit(sessionId, agentName, event);
                 process.exit(0);
@@ -852,8 +941,15 @@ ${EVENT_NORMALIZERS_CHUNK}
 function extractFilePath(toolName, toolInput) {
     if (!toolName || !toolInput) return null;
     const fileTools = ["Read", "Write", "Edit", "Update", "ReadFile", "WriteFile", "EditFile",
-        "read_file", "write_file", "edit_file", "CreateFile", "create_file",
+        "read_file", "write_file", "edit_file", "CreateFile", "create_file", "apply_patch",
         "view", "str_replace", "create"];
+    if (toolName === "apply_patch") {
+        const rawPatch = String(toolInput.command || toolInput.patch || toolInput.content || toolInput._raw_patch || "");
+        const moveMatch = rawPatch.match(/^\\*\\*\\* Move to:\\s+(.+)$/m);
+        if (moveMatch && moveMatch[1]) return moveMatch[1].trim();
+        const fileMatch = rawPatch.match(/^\\*\\*\\* (?:Update|Add|Delete) File:\\s+(.+)$/m);
+        return fileMatch && fileMatch[1] ? fileMatch[1].trim() : null;
+    }
     if (!fileTools.includes(toolName)) return null;
     const path = toolInput.file_path || toolInput.filePath || toolInput.path || null;
     return typeof path === "string" ? path : null;
@@ -873,6 +969,10 @@ function summarize(toolName, input) {
             return truncate(String(input.file_path || input.filePath || input.path || ""), 200);
         case "Bash": case "Shell": case "shell": case "run_command":
             return truncate(String(input.command || input.cmd || ""), 200);
+        case "apply_patch": {
+            const patchPath = extractFilePath(toolName, input);
+            return truncate(String(patchPath || toolName), 200);
+        }
         case "Glob": case "glob": case "ListFiles": case "list_files":
             return truncate(String(input.pattern || input.glob || ""), 200);
         case "Grep": case "grep": case "SearchFiles": case "search_files":

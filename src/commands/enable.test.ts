@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enableCommand } from "./enable.js";
+import { buildPostEnableNotes, enableCommand } from "./enable.js";
 
 // Thin import-level tests: assert every exported command function is
 // callable. Deep behavioral coverage requires mocking fs / network /
@@ -9,5 +9,15 @@ import { enableCommand } from "./enable.js";
 describe("enable command module", () => {
 	it("exports enableCommand as a function", () => {
 		expect(typeof enableCommand).toBe("function");
+	});
+
+	it("notes that Codex needs a fresh session after enable", () => {
+		expect(buildPostEnableNotes(["codex"])).toContain(
+			"Restart Codex or open a new Codex session to load updated hooks.",
+		);
+	});
+
+	it("omits the Codex restart note for other clients", () => {
+		expect(buildPostEnableNotes(["claude", "gemini"])).toEqual([]);
 	});
 });

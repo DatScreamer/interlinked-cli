@@ -39,15 +39,34 @@ interface EnableOptions {
 const VALID_SYNC_MODES = ["realtime", "local", "manual"] as const;
 type SyncMode = (typeof VALID_SYNC_MODES)[number];
 
+// Clients that ship a `statusLine.command` hook. Codex CLI does not document
+// a statusLine equivalent (as of 2026-04); revisit when one lands.
+const STATUS_LINE_CLIENTS: readonly ClientName[] = ["claude", "copilot"] as const;
+
+// All known clients in canonical detection order. Driver for "not detected"
+// hints + the dry-run printer; keep in sync with the registry in
+// `src/lib/hooks.ts` and `CLIENT_CONFIGS` in `src/lib/settings.ts`.
+const ALL_CLIENTS: readonly ClientName[] = ["claude", "copilot", "gemini", "codex"] as const;
+
+interface ClientSummary {
+	label: string;
+	eventCountText: string;
+}
+
+const CLIENT_SUMMARIES: Record<ClientName, ClientSummary> = {
+	claude: { label: "claude", eventCountText: "13 events (all Claude Code hooks)" },
+	copilot: { label: "copilot", eventCountText: "6 events (Copilot CLI hooks)" },
+	gemini: { label: "gemini", eventCountText: "8 events (Gemini CLI hooks)" },
+	codex: {
+		label: "codex",
+		eventCountText: "6 events (.codex/hooks.json + codex_hooks=true flag)",
+	},
+};
+
 export async function enableCommand(options: EnableOptions): Promise<void> {
 	const cwd = process.cwd();
+	const requestedClients = parseRequestedClients(options.clients);
 
-	// Parse client list
-	const requestedClients = options.clients
-		? options.clients.split(",").map((s) => s.trim().toLowerCase() as ClientName)
-		: null;
-
-	// --dry-run: show what would happen without modifying anything
 	if (options.dryRun) {
 		printDryRun(cwd, options, requestedClients);
 		return;
@@ -56,46 +75,76 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	console.log(c.bold("Interlinked CLI — Enable Hook Management"));
 	console.log(c.dim("─".repeat(40)));
 
-	// Step 1: Check if already configured
-	if (isConfigured(cwd)) {
-		console.log(
-			`\n${c.yellow("Already enabled.")} Config exists at ${c.dim(getConfigDir(cwd))}`,
-		);
-		console.log(c.dim("Updating hooks and config..."));
+	announceConfigState(cwd);
+	maybeMigrateLegacyConfig(cwd);
+	ensureConfigPresent(cwd, options.server);
+	applyOptionFlags(cwd, options);
+	announceHookManagers(cwd);
+
+	const hookScriptPath = writeHookScript(cwd);
+	const relativeHookPath = hookScriptPath.replace(`${cwd}/`, "");
+	console.log(`\n${c.green("Wrote")} hook script: ${c.dim(relativeHookPath)}`);
+
+	const detectedNames = detectClients(cwd)
+		.filter((d) => d.exists)
+		.map((d) => d.name);
+	const targetClients = resolveTargetClients(requestedClients, detectedNames);
+
+	console.log(`\n${c.bold("Installing hooks:")}`);
+	const results = installAllHooks(cwd, relativeHookPath, targetClients);
+	const installedCount = printInstallResults(results, detectedNames);
+
+	if (ensureGitignore(cwd)) {
+		console.log(`\n${c.green("Updated")} .gitignore with Interlinked CLI local paths`);
 	}
 
-	// Step 2: Handle legacy config migration
-	if (hasLegacyConfig(cwd)) {
-		console.log(`\n${c.yellow("Legacy config detected:")} .claude/interlinked-session.json`);
-		const migrated = migrateLegacyConfig(cwd);
-		if (migrated) {
-			console.log(`  ${c.green("Migrated")} to .interlinked/config.json + config.local.json`);
-		} else {
-			console.log(`  ${c.dim("Migration skipped (could not read legacy config)")}`);
-		}
-	}
+	configureStatusLine(targetClients);
+	await startHarnessIfNeeded(cwd);
+	noteUndetectedClients(detectedNames, targetClients, requestedClients);
+	await maybeScaffoldStructure(options.structure);
+	printSummary(cwd, relativeHookPath, installedCount, targetClients);
+}
 
-	// Step 3: Initialize config if not present
+function parseRequestedClients(raw: string | undefined): ClientName[] | null {
+	if (!raw) return null;
+	return raw.split(",").map((s) => s.trim().toLowerCase() as ClientName);
+}
+
+function announceConfigState(cwd: string): void {
+	if (!isConfigured(cwd)) return;
+	console.log(`\n${c.yellow("Already enabled.")} Config exists at ${c.dim(getConfigDir(cwd))}`);
+	console.log(c.dim("Updating hooks and config..."));
+}
+
+function maybeMigrateLegacyConfig(cwd: string): void {
+	if (!hasLegacyConfig(cwd)) return;
+	console.log(`\n${c.yellow("Legacy config detected:")} .claude/interlinked-session.json`);
+	const migrated = migrateLegacyConfig(cwd);
+	if (migrated) {
+		console.log(`  ${c.green("Migrated")} to .interlinked/config.json + config.local.json`);
+	} else {
+		console.log(`  ${c.dim("Migration skipped (could not read legacy config)")}`);
+	}
+}
+
+function ensureConfigPresent(cwd: string, serverFlag: string | undefined): void {
 	if (!isConfigured(cwd)) {
-		initConfig({ serverUrl: options.server }, cwd);
+		initConfig({ serverUrl: serverFlag }, cwd);
 		console.log(`\n${c.green("Created")} .interlinked/config.json`);
-	} else if (options.server) {
-		// Update server URL if provided
-		const config = resolveConfig(cwd);
-		if (config.server_url !== options.server) {
-			initConfig({ serverUrl: options.server }, cwd);
-			console.log(
-				`\n${c.green("Updated")} Server URL to ${c.cyan(options.server)}`,
-			);
-		}
+		return;
 	}
+	if (!serverFlag) return;
+	const config = resolveConfig(cwd);
+	if (config.server_url === serverFlag) return;
+	initConfig({ serverUrl: serverFlag }, cwd);
+	console.log(`\n${c.green("Updated")} Server URL to ${c.cyan(serverFlag)}`);
+}
 
-	// Step 4: Update local config with agent name and sync mode if provided
+function applyOptionFlags(cwd: string, options: EnableOptions): void {
 	if (options.agent) {
 		updateLocalConfig({ agent_name: options.agent }, cwd);
 		console.log(`  ${c.green("Set")} agent name: ${c.cyan(options.agent)}`);
 	}
-
 	if (options.syncMode) {
 		if (!VALID_SYNC_MODES.includes(options.syncMode as SyncMode)) {
 			console.log(
@@ -106,48 +155,38 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 		updateLocalConfig({ sync_mode: options.syncMode as SyncMode }, cwd);
 		console.log(`  ${c.green("Set")} sync mode: ${c.cyan(options.syncMode)}`);
 	}
-
 	if (options.dataDir) {
 		updateLocalConfig({ data_dir: options.dataDir }, cwd);
 		console.log(`  ${c.green("Set")} data dir: ${c.cyan(options.dataDir)}`);
 	}
+}
 
-	// Step 5: Detect hook managers
-	const hookManagers = detectHookManagers(cwd);
-	if (hookManagers.length > 0) {
-		for (const mgr of hookManagers) {
-			console.log(
-				`\n${c.yellow("Detected")} ${c.bold(mgr.name)} at ${c.dim(mgr.detected_at)}. Interlinked CLI hooks will coexist but check for conflicts.`,
-			);
-		}
+function announceHookManagers(cwd: string): void {
+	const managers = detectHookManagers(cwd);
+	for (const mgr of managers) {
+		console.log(
+			`\n${c.yellow("Detected")} ${c.bold(mgr.name)} at ${c.dim(mgr.detected_at)}. Interlinked CLI hooks will coexist but check for conflicts.`,
+		);
 	}
+}
 
-	// Step 6: Write the hook script (renumbered)
-	const hookScriptPath = writeHookScript(cwd);
-	const relativeHookPath = hookScriptPath.replace(`${cwd}/`, "");
-	console.log(`\n${c.green("Wrote")} hook script: ${c.dim(relativeHookPath)}`);
+function resolveTargetClients(
+	requested: ClientName[] | null,
+	detected: ClientName[],
+): ClientName[] {
+	if (requested) return requested;
+	if (detected.length > 0) return detected;
+	return ["claude"];
+}
 
-	// Step 6: Detect clients and install hooks
-	const detected = detectClients(cwd);
-	const detectedNames = detected.filter((d) => d.exists).map((d) => d.name);
+interface InstallResultLike {
+	client: ClientName;
+	installed: boolean;
+	events: string[];
+	error?: string;
+}
 
-	// Use requested clients if specified, otherwise use detected + always include claude
-	let targetClients: ClientName[];
-	if (requestedClients) {
-		targetClients = requestedClients;
-	} else if (detectedNames.length > 0) {
-		targetClients = detectedNames;
-	} else {
-		// Default to claude if nothing detected
-		targetClients = ["claude"];
-	}
-
-	console.log(`\n${c.bold("Installing hooks:")}`);
-
-	// Use relative path since client settings files (.claude/settings.json) may be committed.
-	// The hook script resolves its own paths relative to CWD at runtime.
-	const results = installAllHooks(cwd, relativeHookPath, targetClients);
-
+function printInstallResults(results: InstallResultLike[], detected: ClientName[]): number {
 	for (const result of results) {
 		if (result.installed) {
 			console.log(
@@ -159,70 +198,76 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 			console.log(`  ${c.dim("-")} ${c.bold(result.client)} — no changes needed`);
 		}
 	}
-
 	const installedCount = results.filter((r) => r.installed).length;
 	if (installedCount === 0) {
 		console.log(`\n${c.yellow("Warning:")} No hooks were installed.`);
-		if (detectedNames.length === 0) {
-			console.log(c.dim("  No client directories (.claude/, .github/hooks/) found."));
-			console.log(c.dim("  Use --clients claude,copilot to force installation."));
+		if (detected.length === 0) {
+			console.log(c.dim("  No client directories (.claude/, .github/hooks/, .codex/, .gemini/) found."));
+			console.log(c.dim("  Use --clients claude,codex,gemini,copilot to force installation."));
 		}
 	}
+	return installedCount;
+}
 
-	// Step 7: Update .gitignore
-	const gitignoreUpdated = ensureGitignore(cwd);
-	if (gitignoreUpdated) {
-		console.log(`\n${c.green("Updated")} .gitignore with Interlinked CLI local paths`);
-	}
-
-	// Step 8: Install status line for clients that support it
-	const statusLineClients = targetClients.filter((c) => c === "claude" || c === "copilot");
-	if (statusLineClients.length > 0) {
-		const statusLinePath = installStatusLine(statusLineClients);
-		if (statusLinePath) {
-			console.log(
-				`\n${c.green("Configured")} status line for ${statusLineClients.join(", ")}: ${c.dim(statusLinePath)}`,
-			);
-		}
-	}
-
-	// Step 9: Start harness daemon
-	const harnessStatus = isHarnessRunning(cwd);
-	if (!harnessStatus.running) {
-		try {
-			const harnessOpts = { daemon: true };
-			await harnessStartCommand(harnessOpts);
-		} catch {
-			console.log(
-				`\n${c.yellow("!")} Failed to start harness. Run: ${c.cyan("interlinked harness start --verbose")}`,
-			);
-		}
-	}
-
-	// Step 10: Show not-yet-detected clients
-	const undetected = ["claude", "copilot"].filter(
-		(n) => !detectedNames.includes(n as ClientName) && !targetClients.includes(n as ClientName),
+function configureStatusLine(targetClients: ClientName[]): void {
+	const statusLineClients = targetClients.filter((client) =>
+		STATUS_LINE_CLIENTS.includes(client),
 	);
-	if (undetected.length > 0 && !requestedClients) {
+	if (statusLineClients.length === 0) return;
+	const statusLinePath = installStatusLine(statusLineClients);
+	if (statusLinePath) {
 		console.log(
-			`\n${c.dim("Not detected:")} ${undetected.join(", ")} ${c.dim("(add with --clients)")}`,
+			`\n${c.green("Configured")} status line for ${statusLineClients.join(", ")}: ${c.dim(statusLinePath)}`,
 		);
 	}
+}
 
-	// Step 11: Scaffold structure manifests if requested
-	if (options.structure) {
-		try {
-			const { structureInitCommand } = await import("./structure.js");
-			const structureOpts = { mode: options.structure, write: true };
-			await structureInitCommand(structureOpts);
-		} catch (err) {
-			console.log(
-				`\n${c.yellow("!")} Structure scaffolding failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
+async function startHarnessIfNeeded(cwd: string): Promise<void> {
+	if (isHarnessRunning(cwd).running) return;
+	const harnessOpts = { daemon: true };
+	try {
+		await harnessStartCommand(harnessOpts);
+	} catch {
+		console.log(
+			`\n${c.yellow("!")} Failed to start harness. Run: ${c.cyan("interlinked harness start --verbose")}`,
+		);
 	}
+}
 
-	// Summary
+function noteUndetectedClients(
+	detected: ClientName[],
+	target: ClientName[],
+	requested: ClientName[] | null,
+): void {
+	if (requested) return;
+	const undetected = ALL_CLIENTS.filter(
+		(name) => !detected.includes(name) && !target.includes(name),
+	);
+	if (undetected.length === 0) return;
+	console.log(
+		`\n${c.dim("Not detected:")} ${undetected.join(", ")} ${c.dim("(add with --clients)")}`,
+	);
+}
+
+async function maybeScaffoldStructure(mode: string | undefined): Promise<void> {
+	if (!mode) return;
+	const structureOpts = { mode, write: true };
+	try {
+		const { structureInitCommand } = await import("./structure.js");
+		await structureInitCommand(structureOpts);
+	} catch (err) {
+		console.log(
+			`\n${c.yellow("!")} Structure scaffolding failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+}
+
+function printSummary(
+	cwd: string,
+	relativeHookPath: string,
+	installedCount: number,
+	targetClients: ClientName[],
+): void {
 	const config = resolveConfig(cwd);
 	console.log(`\n${c.bold("Configuration:")}`);
 	console.log(`  ${c.dim("Server:")}    ${config.server_url}`);
@@ -233,7 +278,6 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	}
 	console.log(`  ${c.dim("Sync:")}      ${config.sync_mode}`);
 
-	// Auth status
 	if (config.access_token) {
 		console.log(`  ${c.dim("Auth:")}      ${c.green("Authenticated")}`);
 	} else {
@@ -246,11 +290,22 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 		console.log(
 			`\n${c.green("Hooks are active.")} Agent activity is logged to ${c.cyan(".interlinked/activity.jsonl")}.`,
 		);
+		for (const note of buildPostEnableNotes(targetClients)) {
+			console.log(`  ${c.dim(note)}`);
+		}
 	} else {
 		console.log(
 			`\n${c.yellow("Hooks are not active.")} No hook entries were installed. Re-run with ${c.cyan("--clients claude,gemini,codex")} or check client settings paths.`,
 		);
 	}
+}
+
+export function buildPostEnableNotes(targetClients: readonly ClientName[]): string[] {
+	const notes: string[] = [];
+	if (targetClients.includes("codex")) {
+		notes.push("Restart Codex or open a new Codex session to load updated hooks.");
+	}
+	return notes;
 }
 
 // ===========================================
@@ -266,56 +321,37 @@ function printDryRun(
 	console.log(c.dim("─".repeat(40)));
 	console.log(c.dim("No files will be modified.\n"));
 
-	// Config status
 	if (isConfigured(cwd)) {
 		console.log(`${c.dim("Config:")}     Already exists at ${getConfigDir(cwd)}/`);
 	} else {
 		console.log(`${c.green("Create:")}     ${getConfigDir(cwd)}/config.json`);
 	}
 
-	// Legacy migration
 	if (hasLegacyConfig(cwd)) {
 		console.log(`${c.yellow("Migrate:")}    .claude/interlinked-session.json -> .interlinked/`);
 	}
 
-	// Hook script
 	const hookPath = getHookScriptPath(cwd).replace(`${cwd}/`, "");
 	console.log(`${c.green("Write:")}      ${hookPath}`);
 
-	// Client detection
 	const detected = detectClients(cwd);
 	const detectedNames = detected.filter((d) => d.exists).map((d) => d.name);
-
-	let targetClients: ClientName[];
-	if (requestedClients) {
-		targetClients = requestedClients;
-	} else if (detectedNames.length > 0) {
-		targetClients = detectedNames;
-	} else {
-		targetClients = ["claude"];
-	}
+	const targetClients = resolveTargetClients(requestedClients, detectedNames);
 
 	console.log(`\n${c.bold("Would install hooks for:")}`);
 	for (const client of targetClients) {
 		const isDetected = detectedNames.includes(client);
 		const suffix = isDetected ? c.dim(" (detected)") : c.dim(" (forced)");
-		switch (client) {
-			case "claude":
-				console.log(`  ${c.bold("claude")} — 13 events (all Claude Code hooks)${suffix}`);
-				break;
-			case "copilot":
-				console.log(`  ${c.bold("copilot")} — 6 events (Copilot CLI hooks)${suffix}`);
-				break;
+		const summary = CLIENT_SUMMARIES[client];
+		if (summary) {
+			console.log(`  ${c.bold(summary.label)} — ${summary.eventCountText}${suffix}`);
 		}
 	}
 
-	// gitignore
 	console.log(`\n${c.bold("Would update .gitignore with:")}`);
 	console.log("  .interlinked/config.local.json");
 	console.log("  .interlinked/sessions/");
 
-	// Server. Default to localhost — the public distribution doesn't know
-	// about any production server; users configure their own via `--server`.
 	const serverUrl = options.server || "http://localhost:8787";
 	console.log(`\n${c.dim("Server:")} ${serverUrl}`);
 	if (options.agent) {

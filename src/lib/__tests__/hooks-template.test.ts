@@ -57,6 +57,28 @@ describe("buildHookScript", () => {
 		expect(out).toContain("// --- Client Normalizers ---");
 	});
 
+	it("extracts file paths from apply_patch payloads for Codex/Copilot edits", () => {
+		const out = buildHookScript("v");
+		expect(out).toContain('"apply_patch"');
+		expect(out).toContain("Move to:");
+		expect(out).toContain("(?:Update|Add|Delete) File:");
+	});
+
+	it("ships a shared inline PostToolUse strong-typing fallback for Claude and Codex", () => {
+		const out = buildHookScript("v");
+		expect(out).toContain("inlinePostToolFallback");
+		expect(out).toContain("INLINE_STRONG_TYPING_PATTERNS");
+		expect(out).toContain("inline strong_typing clean");
+		expect(out).toContain("[interlinked:strong_typing]");
+	});
+
+	it("separates advisory PostToolUse warnings from blocking ones in the generated hook", () => {
+		const out = buildHookScript("v");
+		expect(out).toContain('const responseType = isBlockingPostDecision ? "post_block" : "post_warn";');
+		expect(out).toContain('isBlockingPostDecision ? "block" : "warn"');
+		expect(out).toContain('Advisory findings:');
+	});
+
 	it("scrubs credentials in appendLocal before writing to activity.jsonl", () => {
 		const out = buildHookScript("v");
 		// Regression guard: scrubPayload must run inside appendLocal so local

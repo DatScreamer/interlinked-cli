@@ -40,12 +40,11 @@ describe("hook script generation", () => {
 		const writeCalls = mockWriteFileSync.mock.calls;
 		const generatedScript = String(writeCalls[0][1]);
 
-		// PermissionRequest normalizer should produce a real event, not null
-		expect(generatedScript).toContain('case "PermissionRequest"');
+		// PermissionRequest dispatch handler emits a real event, not null
+		expect(generatedScript).toContain("PermissionRequest: (");
+		expect(generatedScript).toContain('hook_event: "PermissionRequest"');
 		expect(generatedScript).toContain('event_type: "permission_request"');
 		expect(generatedScript).toContain("permission_suggestions");
-		// Should NOT return null for PermissionRequest
-		expect(generatedScript).not.toMatch(/case "PermissionRequest":\s*\n\s*return null/);
 	});
 
 	it("includes all 14 Claude Code events in script", () => {
@@ -68,9 +67,30 @@ describe("hook script generation", () => {
 			"TaskCompleted",
 			"TeammateIdle",
 		];
+		// Each event is registered in the CLAUDE_DISPATCH lookup table AND
+		// its handler emits the matching `hook_event:` field on the canonical
+		// record. Either-or wouldn't catch an accidental copy-paste — both
+		// pin the contract.
 		for (const event of expectedEvents) {
-			expect(generatedScript).toContain(`case "${event}"`);
+			expect(generatedScript).toContain(`${event}: (`);
+			expect(generatedScript).toContain(`hook_event: "${event}"`);
 		}
+	});
+
+	it("includes Codex CLI handler in CLIENT_HANDLERS", () => {
+		writeHookScript("/repo");
+
+		const generatedScript = String(mockWriteFileSync.mock.calls[0][1]);
+		// Codex normalizer present
+		expect(generatedScript).toContain("function normalizeCodexEvent(");
+		// Codex client handler is detected before the Claude catch-all
+		expect(generatedScript).toContain('name: "codex"');
+		expect(generatedScript).toContain("normalize: normalizeCodexEvent");
+		// Codex events tag the canonical record with client_runner so the
+		// downstream pipeline (provider-responses, server payload) can
+		// branch on the agent source even though the payload shape mirrors
+		// Claude Code's contract.
+		expect(generatedScript).toContain('client_runner = "codex"');
 	});
 
 	it("formatProviderResponse echoes incoming hookEvent in hookSpecificOutput", () => {

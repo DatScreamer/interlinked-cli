@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-export type ClientName = "claude" | "copilot" | "gemini";
+export type ClientName = "claude" | "copilot" | "gemini" | "codex";
 
 interface ClientConfig {
 	name: ClientName;
@@ -37,6 +37,20 @@ const CLIENT_CONFIGS: ClientConfig[] = [
 		name: "copilot",
 		label: "GitHub Copilot CLI",
 		configDir: ".github/hooks",
+		settingsFile: "hooks.json",
+		inputMethod: "stdin",
+	},
+	{
+		name: "gemini",
+		label: "Google Gemini CLI",
+		configDir: ".gemini",
+		settingsFile: "settings.json",
+		inputMethod: "stdin",
+	},
+	{
+		name: "codex",
+		label: "OpenAI Codex CLI",
+		configDir: ".codex",
 		settingsFile: "hooks.json",
 		inputMethod: "stdin",
 	},

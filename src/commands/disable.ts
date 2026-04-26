@@ -24,9 +24,11 @@ export async function disableCommand(options: DisableOptions): Promise<void> {
 		console.log(c.dim("Checking for hooks to remove anyway...\n"));
 	}
 
-	// Step 1: Detect all clients that might have hooks
+	// Step 1: Detect all clients that might have hooks. We try every known
+	// client (not just detected directories) since users may have removed
+	// the client config dir but left our hooks in a parent settings file.
 	const _detected = detectClients(cwd);
-	const allClients: ClientName[] = ["claude", "copilot"];
+	const allClients: ClientName[] = ["claude", "copilot", "gemini", "codex"];
 
 	// Try to uninstall from all known clients (not just detected ones)
 	// because hooks might exist even if the client dir was removed
