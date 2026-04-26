@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { OpfLocalScanner, type SidecarLike } from "../opf-local.js";
+import { deriveSidecarScriptArgs, OpfLocalScanner, type SidecarLike } from "../opf-local.js";
 import type { ContentScannerConfig } from "../types.js";
 
 function makeConfig(): ContentScannerConfig {
@@ -113,5 +113,41 @@ describe("OpfLocalScanner", () => {
 		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
 		await scanner.shutdown();
 		expect(shutdown).toHaveBeenCalledOnce();
+	});
+});
+
+describe("deriveSidecarScriptArgs", () => {
+	function makeLocal(
+		overrides: Partial<ContentScannerConfig["local"]> = {},
+	): ContentScannerConfig["local"] {
+		return {
+			python_bin: "python3",
+			sidecar_script: "/tmp/opf.py",
+			startup_timeout_ms: 45_000,
+			scan_timeout_ms: 1500,
+			idle_shutdown_ms: 1_800_000,
+			max_restarts: 3,
+			...overrides,
+		};
+	}
+
+	it("returns undefined when viterbi_calibration_path is unset", () => {
+		expect(deriveSidecarScriptArgs(makeLocal())).toBeUndefined();
+	});
+
+	it("returns the --viterbi-calibration-path flag pair when path is set", () => {
+		const args = deriveSidecarScriptArgs(
+			makeLocal({ viterbi_calibration_path: "/abs/preset.json" }),
+		);
+		expect(args).toEqual(["--viterbi-calibration-path", "/abs/preset.json"]);
+	});
+
+	it("returns undefined for an empty-string calibration path (no flag, not an empty arg)", () => {
+		// Defensive: an empty string is falsy in TS but would be a valid argv
+		// value to OPF and would parse as "load calibration from ''", which
+		// would crash the sidecar with a confusing error. The helper must
+		// treat empty as 'unset', matching how YAML/JSON merging produces
+		// blank fields when a user partially configures the block.
+		expect(deriveSidecarScriptArgs(makeLocal({ viterbi_calibration_path: "" }))).toBeUndefined();
 	});
 });

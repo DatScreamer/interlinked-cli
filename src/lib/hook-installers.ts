@@ -183,7 +183,23 @@ if [ -n "$PID" ] && ps -p "$PID" > /dev/null 2>&1; then
             down:*)   SCAN=" · \${YELLOW}PII filter ✗\${RESET}" ;;
         esac
     fi
-    printf "%b" "\${GREEN}interlinked \${BOLD}▲\${RESET}\${DIM} pid \${PID} ·\${RESET} \${TS_FMT}\${CLS}\${SCAN}"
+
+    # Content scanner — pending WebFetch reviews (3-way human-in-the-loop).
+    # Written by the harness to .interlinked/scanner/review-pending — a single
+    # integer count, or absent/zero when nothing is pending. Surfaces a nag
+    # so the user sees that an agent is waiting for their decision.
+    REVIEW=""
+    REVIEW_FILE=""
+    for candidate in ".interlinked/scanner/review-pending" "cli/.interlinked/scanner/review-pending"; do
+        [ -f "$candidate" ] && REVIEW_FILE="$candidate" && break
+    done
+    if [ -n "$REVIEW_FILE" ]; then
+        REVIEW_COUNT=$(cat "$REVIEW_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$REVIEW_COUNT" ] && [ "$REVIEW_COUNT" != "0" ]; then
+            REVIEW=" · \${YELLOW}review:\${REVIEW_COUNT}\${RESET}"
+        fi
+    fi
+    printf "%b" "\${GREEN}interlinked \${BOLD}▲\${RESET}\${DIM} pid \${PID} ·\${RESET} \${TS_FMT}\${CLS}\${SCAN}\${REVIEW}"
 else
     printf "%b" "\${YELLOW}interlinked \${BOLD}▼\${RESET}\${DIM} stale\${RESET}"
 fi

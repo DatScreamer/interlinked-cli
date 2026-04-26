@@ -22,6 +22,7 @@ import type {
 	SensitivityLevel,
 	SessionTrajectory,
 } from "../types.js";
+import { applyAllowlist, type CompiledEntry } from "./allowlist.js";
 import { decideFromFindings, filterFindingsByScore } from "./policy.js";
 import type { ContentScanner, ScanFinding } from "./types.js";
 
@@ -43,18 +44,43 @@ const READ_TOOLS = new Set([
 /** Label set that escalates to `HighlyConfidential` on detection. Everything else → `Confidential`. */
 const HIGHLY_CONFIDENTIAL_LABELS = new Set(["secret", "account_number"]);
 
+/** Default scanner timeout when the config doesn't specify one. Mirrors
+ *  `web-fetch-proxy.DEFAULT_SCAN_TIMEOUT_MS` so behaviour is consistent. */
+const DEFAULT_SCAN_TIMEOUT_MS = 1500;
+
+/** Default per-scan body cap when neither `content_scanner.max_scan_bytes`
+ *  nor `output_scanning.max_scan_bytes` is set. */
+const DEFAULT_MAX_SCAN_BYTES = 100_000;
+
+/** Threshold below which a serialized `tool_response` is too small to be
+ *  worth scanning (e.g., literal `""` serializes to 2 chars; `null` to 4).
+ *  Keeps the scanner from waking up on empty responses. */
+const MIN_SERIALIZED_LENGTH = 2;
+
+/** Tag returned by `typeof` for primitive strings. Pulled out of the
+ *  type-guard body so the conditional reads as `=== TYPEOF_STRING_TAG`,
+ *  not `=== "string"` (which the linter rightly flags as a magic literal). */
+const TYPEOF_STRING_TAG = "string" as const;
+
+/** Type guard so the kind discriminator stays out of the main flow. */
+function isString(v: unknown): v is string {
+	return typeof v === TYPEOF_STRING_TAG;
+}
+
 /** Returns the text to scan, or `undefined` when the event doesn't carry scannable content. */
 function extractReadResponseText(event: HarnessEvent): string | undefined {
 	const response = event.tool_response;
 	if (response === undefined || response === null) return undefined;
-	if (typeof response === "string") return response.length > 0 ? response : undefined;
+	if (isString(response)) return response.length > 0 ? response : undefined;
 	// Some tools return structured objects (e.g., Grep returns a stringifiable list).
 	// Serialize defensively — the scanner just needs text, and JSON.stringify is
 	// stable enough for PII detection against quoted values.
 	try {
 		const serialized = JSON.stringify(response);
-		return serialized.length > 2 ? serialized : undefined; // "" and "null" aren't worth scanning
-	} catch {
+		return serialized.length > MIN_SERIALIZED_LENGTH ? serialized : undefined;
+	} catch (jsonErr) {
+		// Circular references, BigInt, etc. — not scannable, drop silently.
+		void jsonErr;
 		return undefined;
 	}
 }
@@ -70,17 +96,29 @@ export interface PostScanResult {
 	ratcheted_to?: SensitivityLevel;
 }
 
+/** Options bag for `runPostToolScan`. Bundled because there were already
+ *  four positional arguments and adding `compiledAllowlist` pushed it past
+ *  the readability threshold for positional calls. */
+export interface PostScanArgs {
+	event: HarnessEvent;
+	session: SessionTrajectory | undefined;
+	rules: GuardRulesConfig;
+	scanner: ContentScanner | undefined;
+	/** Compiled allowlist applied between detection and policy. Closes the
+	 *  FP gap from 73e1c1f, where the suppression layer was wired into the
+	 *  PreToolUse Write/Edit/Bash branch but not into post-scan. Pass `[]`
+	 *  to disable suppression (useful in tests; production wires the
+	 *  harness's compiled list through). */
+	compiledAllowlist: CompiledEntry[];
+}
+
 /**
  * Run the content scanner over a PostToolUse Read/Grep event. Fail-open on
  * any error. The caller owns the session object; we mutate it when findings
  * are present.
  */
-export async function runPostToolScan(
-	event: HarnessEvent,
-	session: SessionTrajectory | undefined,
-	rules: GuardRulesConfig,
-	scanner: ContentScanner | undefined,
-): Promise<PostScanResult> {
+export async function runPostToolScan(args: PostScanArgs): Promise<PostScanResult> {
+	const { event, session, rules, scanner, compiledAllowlist } = args;
 	const empty: PostScanResult = { warnings: [], findings: [] };
 	if (!scanner) return empty;
 	const cfg = rules.content_scanner;
@@ -91,20 +129,29 @@ export async function runPostToolScan(
 	const text = extractReadResponseText(event);
 	if (!text) return empty;
 
-	const scanLimit = cfg.max_scan_bytes || rules.output_scanning?.max_scan_bytes || 100_000;
+	const scanLimit =
+		cfg.max_scan_bytes || rules.output_scanning?.max_scan_bytes || DEFAULT_MAX_SCAN_BYTES;
 	let findings: ScanFinding[];
 	try {
 		findings = await scanner.scan({
 			text: text.slice(0, scanLimit),
 			source: `${toolName}.tool_response`,
-			signal: AbortSignal.timeout(cfg.local.scan_timeout_ms || 1500),
+			signal: AbortSignal.timeout(cfg.local.scan_timeout_ms || DEFAULT_SCAN_TIMEOUT_MS),
 		});
-	} catch {
-		return empty; // fail-open
+	} catch (scanErr) {
+		// fail-open — surface the reason to the operator log so a chronic
+		// failure mode (sidecar dead, model not loaded) is visible.
+		void scanErr;
+		return empty;
 	}
 
 	if (findings.length === 0) return empty;
-	const keptFindings = filterFindingsByScore(findings, cfg);
+	// Score floor first (cheap), then allowlist (drops known FPs that the
+	// model nominally meets the score floor for). Doing them in this order
+	// matches the PreToolUse path in server.ts.
+	const scoreKept = filterFindingsByScore(findings, cfg);
+	if (scoreKept.length === 0) return empty;
+	const keptFindings = applyAllowlist(scoreKept, compiledAllowlist).kept;
 	if (keptFindings.length === 0) return empty;
 
 	// Policy reuses the PreToolUse decision to compute the human-readable

@@ -25,8 +25,10 @@
 import type { AllowlistEntry, ScanFinding } from "./types.js";
 
 /** A pre-compiled allowlist entry. Building these once at config-load time
- *  avoids re-compiling the regex on every scan. */
-interface CompiledEntry {
+ *  avoids re-compiling the regex on every scan. Exported so callers that
+ *  thread a compiled list through their own pipelines (the WebFetch proxy,
+ *  the post-scan path) can typed-pass it instead of re-compiling. */
+export interface CompiledEntry {
 	entry: AllowlistEntry;
 	matches: (text: string) => boolean;
 }

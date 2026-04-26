@@ -486,6 +486,23 @@ scannerCmd
 		await scannerStatusCommand(opts);
 	});
 
+scannerCmd
+	.command("review")
+	.description(
+		"Review a WebFetch response flagged by the PII filter — pick allow / redact / block",
+	)
+	.option("--key <hex>", "Review a specific cache key (default: newest pending)")
+	.option("--allow", "Approve the full body (skips interactive prompt)")
+	.option("--redact", "Replace flagged spans with <CATEGORY> placeholders")
+	.option("--block", "Withhold the body entirely")
+	.option("--reason <text>", "Why — recorded in content-scanner.audit.jsonl")
+	.option("--json", "Machine-readable output")
+	.option("--short", "One-line summary")
+	.action(async (opts: OptionValues) => {
+		const { scannerReviewCommand } = await import("./commands/scanner.js");
+		await scannerReviewCommand(opts);
+	});
+
 program
 	.command("inbox")
 	.description("Show recent messages from the server")

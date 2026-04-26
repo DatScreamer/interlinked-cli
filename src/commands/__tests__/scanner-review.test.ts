@@ -1,0 +1,181 @@
+// Tests for `interlinked scanner review`. The command is the second half
+// of the WebFetch 3-way review loop: it reads a pending `*.review.json`,
+// surfaces it to the user (rendered locally — never to the model), and
+// writes a `*.decision.json` the harness consumes on the next call.
+
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	cacheKey,
+	readDecision,
+	writeReview,
+} from "../../harness/content-scanner/review-files.js";
+import type { ScanFinding } from "../../harness/content-scanner/types.js";
+import { scannerReviewCommand } from "../scanner.js";
+
+let cwd: string;
+let originalCwd: string;
+let logSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+	originalCwd = process.cwd();
+	cwd = mkdtempSync(join(tmpdir(), "scanner-review-"));
+	process.chdir(cwd);
+	logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+	process.chdir(originalCwd);
+	rmSync(cwd, { recursive: true, force: true });
+	logSpy.mockRestore();
+	vi.restoreAllMocks();
+});
+
+function finding(label: string, text: string, start: number): ScanFinding {
+	return { label, start, end: start + text.length, text, source: "WebFetch.response" };
+}
+
+function seedReview(url: string, body: string, findings: ScanFinding[]): string {
+	const key = cacheKey(url, "");
+	writeReview({
+		cwd,
+		key,
+		url,
+		prompt: "",
+		toolName: "WebFetch",
+		body,
+		redactedBody: body.replace(/[a-z]+@[a-z.]+/g, "<PRIVATE_EMAIL>"),
+		findings,
+	});
+	return key;
+}
+
+describe("scannerReviewCommand — no pending", () => {
+	it("reports zero pending reviews and exits cleanly in normal mode", async () => {
+		await scannerReviewCommand({});
+		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(allOutput).toMatch(/no pending reviews/i);
+	});
+
+	it("returns zero-pending payload in JSON mode", async () => {
+		await scannerReviewCommand({ json: true });
+		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const parsed = JSON.parse(allOutput);
+		expect(parsed).toMatchObject({ pending: 0, action: "none" });
+	});
+});
+
+describe("scannerReviewCommand — non-interactive flags", () => {
+	it("--allow writes a decision=allow file", async () => {
+		const key = seedReview(
+			"https://example.com/a",
+			"Email: alice@example.com",
+			[finding("private_email", "alice@example.com", 7)],
+		);
+		await scannerReviewCommand({ allow: true });
+		const decision = readDecision(cwd, key);
+		expect(decision?.decision).toBe("allow");
+	});
+
+	it("--redact writes a decision=redact file", async () => {
+		const key = seedReview(
+			"https://example.com/r",
+			"Email: bob@example.com",
+			[finding("private_email", "bob@example.com", 7)],
+		);
+		await scannerReviewCommand({ redact: true });
+		const decision = readDecision(cwd, key);
+		expect(decision?.decision).toBe("redact");
+	});
+
+	it("--block writes a decision=block file", async () => {
+		const key = seedReview(
+			"https://example.com/b",
+			"Email: carol@example.com",
+			[finding("private_email", "carol@example.com", 7)],
+		);
+		await scannerReviewCommand({ block: true });
+		const decision = readDecision(cwd, key);
+		expect(decision?.decision).toBe("block");
+	});
+
+	it("appends an audit-log entry with the chosen action", async () => {
+		seedReview(
+			"https://example.com/a",
+			"Email: alice@example.com",
+			[finding("private_email", "alice@example.com", 7)],
+		);
+		await scannerReviewCommand({ allow: true });
+		const auditPath = join(cwd, ".interlinked", "content-scanner.audit.jsonl");
+		expect(existsSync(auditPath)).toBe(true);
+		const entries = readFileSync(auditPath, "utf-8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		expect(entries.at(-1)).toMatchObject({ action: "review_allow" });
+	});
+
+	it("rejects two conflicting decision flags", async () => {
+		seedReview(
+			"https://example.com/a",
+			"Email: alice@example.com",
+			[finding("private_email", "alice@example.com", 7)],
+		);
+		process.exitCode = 0;
+		await scannerReviewCommand({ allow: true, block: true });
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+	});
+});
+
+describe("scannerReviewCommand — --key targets a specific review", () => {
+	it("picks the review for the supplied cache key", async () => {
+		const keyA = seedReview(
+			"https://example.com/a",
+			"alice@example.com",
+			[finding("private_email", "alice@example.com", 0)],
+		);
+		const keyB = seedReview(
+			"https://example.com/b",
+			"bob@example.com",
+			[finding("private_email", "bob@example.com", 0)],
+		);
+		await scannerReviewCommand({ key: keyB, allow: true });
+		expect(readDecision(cwd, keyB)?.decision).toBe("allow");
+		expect(readDecision(cwd, keyA)).toBeUndefined();
+	});
+
+	it("errors when the supplied key has no review", async () => {
+		// Seed at least one pending review so the no-pending early return
+		// doesn't fire — we want the --key mismatch path specifically.
+		seedReview(
+			"https://example.com/seed",
+			"alice@example.com",
+			[finding("private_email", "alice@example.com", 0)],
+		);
+		process.exitCode = 0;
+		await scannerReviewCommand({ key: "deadbeefdeadbeef", allow: true });
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+	});
+});
+
+describe("scannerReviewCommand — JSON output", () => {
+	it("emits a structured payload with the recorded decision", async () => {
+		const key = seedReview(
+			"https://example.com/json",
+			"Email: alice@example.com",
+			[finding("private_email", "alice@example.com", 7)],
+		);
+		await scannerReviewCommand({ allow: true, json: true });
+		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const parsed = JSON.parse(allOutput);
+		expect(parsed).toMatchObject({
+			action: "review_allow",
+			cache_key: key,
+			decision: "allow",
+		});
+	});
+});

@@ -39,7 +39,37 @@ function resolveDefaultOpfSidecarScript(): string {
 	return fileURLToPath(candidates[0]);
 }
 
+/** Resolve a shipped Viterbi calibration preset by filename across the same
+ *  four deployment layouts as the sidecar script. Internal — only consumed by
+ *  HIGH_PRECISION_OPF_CALIBRATION_PATH below. Promote to an export if/when
+ *  external code (custom-preset bundles, programmatic config builders) needs
+ *  to resolve installed presets without hard-coding deployment paths. */
+function resolveDefaultOpfCalibrationPath(presetFileName: string): string {
+	const candidates = [
+		new URL(`../content-scanner/sidecars/calibrations/${presetFileName}`, import.meta.url),
+		new URL(
+			`../src/harness/content-scanner/sidecars/calibrations/${presetFileName}`,
+			import.meta.url,
+		),
+		new URL(`../sidecars/calibrations/${presetFileName}`, import.meta.url),
+		new URL(`./sidecars/calibrations/${presetFileName}`, import.meta.url),
+		new URL(`./calibrations/${presetFileName}`, import.meta.url),
+	];
+	for (const url of candidates) {
+		const candidatePath = fileURLToPath(url);
+		if (existsSync(candidatePath)) return candidatePath;
+	}
+	return fileURLToPath(candidates[0]);
+}
+
 const DEFAULT_OPF_SIDECAR_SCRIPT = resolveDefaultOpfSidecarScript();
+
+/** Absolute path to the shipped precision-leaning calibration preset. Used
+ *  by DEFAULT_CONFIG.content_scanner.local below as the out-of-the-box
+ *  `viterbi_calibration_path`. Will be re-exported once the calibration
+ *  shape test (content-scanner/__tests__/calibration.test.ts) imports it. */
+const HIGH_PRECISION_OPF_CALIBRATION_PATH =
+	resolveDefaultOpfCalibrationPath("high_precision.json");
 
 /**
  * Public API — consumed by `rules/loader.ts` via `getDefaultConfig()`
@@ -583,6 +613,13 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			// scans from multiple Claude sessions. ~800 MB per instance.
 			// Children spawn lazily, so an idle workstation pays zero.
 			pool_size: 3,
+			// Precision-leaning Viterbi biases shipped under
+			// sidecars/calibrations/high_precision.json. Trades recall for
+			// fewer false positives on file paths, identifier-shaped strings,
+			// and other low-confidence span entries the model loves to flag.
+			// To restore stock OPF behavior, override to undefined or to the
+			// adjacent default.json (zero biases) in guard-rules.local.json.
+			viterbi_calibration_path: HIGH_PRECISION_OPF_CALIBRATION_PATH,
 		},
 		huggingface: {
 			// NOT `openai/privacy-filter` — that model requires `trust_remote_code=True`

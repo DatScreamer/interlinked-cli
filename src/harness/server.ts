@@ -40,7 +40,9 @@ import { runPostToolScan } from "./content-scanner/post-scan.js";
 import { scanUserPrompt } from "./content-scanner/prompt-scan.js";
 import { buildAskReason, writePendingPrompt } from "./content-scanner/redact-preview.js";
 import { createScanner } from "./content-scanner/registry.js";
+import { countPendingReviews } from "./content-scanner/review-files.js";
 import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
+import { fetchAndScan } from "./content-scanner/web-fetch-proxy.js";
 import { snapshotCrap } from "./checks/crap-baseline.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
@@ -349,10 +351,25 @@ function writeClassifierStatus(status: string): void {
 // statusline: disabled / starting / ready:<pid> / dormant / down:<reason>.
 
 const SCANNER_STATUS_PATH = join(INTERLINKED_DIR, "content-scanner.status");
+/** Mirror file written next to the status. Holds the count of unresolved
+ *  review files so the bash statusline can render `🔒 review:N` without
+ *  scanning the pending dir on every render. Empty/absent means zero. */
+const SCANNER_REVIEW_PENDING_PATH = join(INTERLINKED_DIR, "scanner", "review-pending");
 
 function writeScannerStatus(status: string): void {
 	try {
 		writeFileSync(SCANNER_STATUS_PATH, status);
+	} catch (e) {
+		void e;
+	}
+}
+
+/** Persist the count of pending reviews as a single line for the
+ *  statusline. Best-effort: failure to write only loses the indicator,
+ *  which is recoverable on the next call. */
+function writeReviewPendingMarker(count: number): void {
+	try {
+		writeFileSync(SCANNER_REVIEW_PENDING_PATH, `${count}\n`);
 	} catch (e) {
 		void e;
 	}
@@ -629,6 +646,75 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				log(
 					`Policy classifier error (fail-open): ${classifierErr instanceof Error ? classifierErr.message : String(classifierErr)}`,
 				);
+			}
+		}
+
+		// --- Content Scanner: WebFetch proxy (3-way human review) ---
+		// PostToolUse `block` cannot substitute the agent's view of `tool_response`,
+		// so for WebFetch we intercept at PreToolUse: harness performs the fetch
+		// itself, scans the body, and either passes it through (no findings),
+		// stashes a review file (findings present), or honours a prior user
+		// decision (allow / redact / block) via block-and-answer. See
+		// `web-fetch-proxy.ts` for the flow.
+		const isWebFetchTool =
+			event.tool_name === "WebFetch" || event.tool_name === "web_fetch";
+		if (
+			preDecision.decision === "allow" &&
+			isWebFetchTool &&
+			contentScanner &&
+			rules.content_scanner?.enabled &&
+			rules.content_scanner.scan_points.external_egress
+		) {
+			const url = (event.tool_input?.url as string) || "";
+			const promptField = (event.tool_input?.prompt as string) || "";
+			if (url) {
+				const proxyResult = await fetchAndScan({
+					cwd: CWD,
+					url,
+					prompt: promptField,
+					scanner: contentScanner,
+					compiledAllowlist,
+					config: rules.content_scanner,
+					toolName: event.tool_name ?? "WebFetch",
+				});
+				log(
+					`Content scanner: WebFetch proxy → ${proxyResult.kind}` +
+						(proxyResult.kind === "review_pending"
+							? ` (${proxyResult.findingCount} finding(s))`
+							: ""),
+				);
+				if (proxyResult.kind === "passthrough") {
+					return {
+						decision: "block",
+						reason: proxyResult.body,
+						warnings: preDecision.warnings,
+					};
+				}
+				if (proxyResult.kind === "review_pending") {
+					writeReviewPendingMarker(countPendingReviews(CWD));
+					return {
+						decision: "block",
+						reason:
+							"Privacy filter flagged this WebFetch response. The body is " +
+							`stashed locally for review (${proxyResult.findingCount} finding(s)).\n` +
+							"Run `interlinked scanner review` in another terminal to choose " +
+							"Allow / Redact / Block, then re-invoke the same WebFetch.",
+						warnings: preDecision.warnings,
+					};
+				}
+				if (proxyResult.kind === "decision_resolved") {
+					writeReviewPendingMarker(countPendingReviews(CWD));
+					return {
+						decision: "block",
+						reason: proxyResult.body,
+						warnings: preDecision.warnings,
+					};
+				}
+				// proxyResult.kind === "fail_open" — fall through to the regular
+				// flow so existing rules still apply. The agent's WebFetch will
+				// run normally; PII in the response is then handled by the
+				// post-scan path's taint ratchet.
+				log(`Content scanner: WebFetch proxy fail_open — ${proxyResult.detail}`);
 			}
 		}
 
@@ -1060,7 +1146,13 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		// Never blocks (we're already past the read), but raises `session.sensitivity_level`
 		// so downstream PreToolUse taint rules (no network after taint, etc.) fire.
 		if (contentScanner && rules.content_scanner?.enabled) {
-			const postScanResult = await runPostToolScan(event, session, rules, contentScanner);
+			const postScanResult = await runPostToolScan({
+				event,
+				session,
+				rules,
+				scanner: contentScanner,
+				compiledAllowlist,
+			});
 			if (postScanResult.warnings.length > 0) {
 				if (!postDecision.warnings) postDecision.warnings = [];
 				postDecision.warnings.push(...postScanResult.warnings);

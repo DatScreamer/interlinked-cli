@@ -159,5 +159,12 @@ function mergeContentScanner(
 	if (override.allowlist && override.allowlist.length > 0) {
 		target.allowlist = [...(target.allowlist ?? []), ...override.allowlist];
 	}
+	// disabled_labels follows the same additive convention as allowlist: locals
+	// append, never replace. De-duplicated on merge so a user re-naming the
+	// same label in both layers doesn't double-count it in any audit output.
+	if (override.disabled_labels && override.disabled_labels.length > 0) {
+		const merged = new Set([...(target.disabled_labels ?? []), ...override.disabled_labels]);
+		target.disabled_labels = [...merged];
+	}
 	if (override.scan_points) Object.assign(target.scan_points, override.scan_points);
 }

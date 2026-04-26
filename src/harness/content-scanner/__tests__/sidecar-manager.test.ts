@@ -101,6 +101,34 @@ afterEach(() => {
 // Tests
 // ===========================================
 
+describe("SidecarManager — spawn args", () => {
+	it("spawns with [script_path] only when script_args is omitted", async () => {
+		const { mgr, child, spawn } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		expect(spawn).toHaveBeenCalledOnce();
+		const callArgs = spawn.mock.calls[0];
+		expect(callArgs[0]).toBe("python3");
+		expect(callArgs[1]).toEqual(["/tmp/fake-sidecar.py"]);
+		const sent = JSON.parse(child.stdinLines[0]);
+		child.respond({ id: sent.id, ok: true });
+		await p;
+	});
+
+	it("appends script_args after script_path on spawn", async () => {
+		const args = ["--viterbi-calibration-path", "/abs/path/to/high_precision.json"];
+		const { mgr, child, spawn } = makeManager({ script_args: args });
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		expect(spawn).toHaveBeenCalledOnce();
+		const callArgs = spawn.mock.calls[0];
+		expect(callArgs[1]).toEqual(["/tmp/fake-sidecar.py", ...args]);
+		const sent = JSON.parse(child.stdinLines[0]);
+		child.respond({ id: sent.id, ok: true });
+		await p;
+	});
+});
+
 describe("SidecarManager — happy path", () => {
 	it("spawns lazily on first send, forwards request, correlates response by id", async () => {
 		const { mgr, child, spawn } = makeManager();

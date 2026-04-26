@@ -68,22 +68,43 @@ describe("interlinked scanner — enable/disable flow", () => {
 		expect(audit[0].reason).toBe("testing");
 	});
 
-	it("scanner on after off records a state transition with reason", async () => {
+	it("scanner on after off persists enabled=true to local rules", async () => {
 		await scannerOffCommand({ json: true });
 		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
-
 		const rules = readLocalRules();
 		expect((rules.content_scanner as Record<string, unknown>).enabled).toBe(true);
+	});
 
+	it("scanner on after off records both transitions in the audit log", async () => {
+		await scannerOffCommand({ json: true });
+		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
 		const audit = readAuditLines();
 		expect(audit).toHaveLength(2);
 		expect(audit[1].action).toBe("enable");
+	});
+
+	it("scanner on after off records the from/to transition", async () => {
+		await scannerOffCommand({ json: true });
+		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
+		const audit = readAuditLines();
 		expect(audit[1].from).toBe(false);
 		expect(audit[1].to).toBe(true);
+	});
+
+	it("scanner on after off carries the reason through to the audit entry", async () => {
+		await scannerOffCommand({ json: true });
+		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
+		const audit = readAuditLines();
 		expect(audit[1].reason).toBe("re-enable for sensitive session");
-		expect((audit[1].actor as Record<string, unknown>).via).toBe("cli");
-		expect(typeof (audit[1].actor as Record<string, unknown>).user).toBe("string");
-		// ISO timestamp sanity — Zulu time with millisecond precision.
+	});
+
+	it("scanner on after off stamps the actor and an ISO timestamp", async () => {
+		await scannerOffCommand({ json: true });
+		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
+		const audit = readAuditLines();
+		const actor = audit[1].actor as Record<string, unknown>;
+		expect(actor.via).toBe("cli");
+		expect(typeof actor.user).toBe("string");
 		expect(audit[1].ts).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
 	});
 
@@ -128,26 +149,52 @@ describe("interlinked scanner — enable/disable flow", () => {
 	});
 
 	it("status prints the current enabled flag and last audit entries", async () => {
+		const { vi } = await import("vitest");
 		await scannerOffCommand({ reason: "demo-1", json: true });
 		await scannerOnCommand({ reason: "demo-2", json: true });
 
-		const logs: unknown[] = [];
-		const origLog = console.log;
-		console.log = (...args: unknown[]) => {
-			logs.push(args.join(" "));
-		};
-		try {
-			await scannerStatusCommand({ json: true });
-		} finally {
-			console.log = origLog;
-		}
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		await scannerStatusCommand({ json: true });
+		const logs = logSpy.mock.calls.map((call) => call.map(String).join(" "));
+		logSpy.mockRestore();
 
 		// json mode output goes through output() which console.logs a JSON string.
-		const jsonPayload = logs.find((l): l is string => typeof l === "string" && l.includes("enabled"));
+		const jsonPayload = logs.find((l) => l.includes("enabled"));
 		expect(jsonPayload).toBeDefined();
 		const parsed = JSON.parse(jsonPayload as string) as Record<string, unknown>;
 		expect(parsed.enabled).toBe(true);
 		expect(Array.isArray(parsed.last_audit)).toBe(true);
 		expect((parsed.last_audit as unknown[]).length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("status renders review_* audit entries as 'review: <decision>', not 'off → off'", async () => {
+		const { appendFileSync } = await import("node:fs");
+		const { vi } = await import("vitest");
+		const auditPath = join(workDir, "content-scanner.audit.jsonl");
+		const ts = "2026-04-25T22:00:00.000Z";
+		const actor = { user: "u", host: "h", tty: null, via: "cli" as const };
+		appendFileSync(
+			auditPath,
+			`${JSON.stringify({ ts, action: "enable", from: false, to: true, actor, reason: "on" })}\n`,
+		);
+		appendFileSync(
+			auditPath,
+			`${JSON.stringify({ ts, action: "review_redact", actor, reason: "demo redact" })}\n`,
+		);
+		appendFileSync(
+			auditPath,
+			`${JSON.stringify({ ts, action: "review_block", actor, reason: null })}\n`,
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		await scannerStatusCommand({});
+		const rendered = logSpy.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+		logSpy.mockRestore();
+		// Toggle entry still shows the on/off transition.
+		expect(rendered).toMatch(/off → on/);
+		// Review entries must NOT render as a fake on/off transition.
+		expect(rendered).not.toMatch(/review_redact[^]*off → off/);
+		// Reviews should surface their decision in the rendered line.
+		expect(rendered).toMatch(/review:\s*redact/i);
+		expect(rendered).toMatch(/review:\s*block/i);
 	});
 });

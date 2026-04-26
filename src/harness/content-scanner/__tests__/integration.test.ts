@@ -28,7 +28,10 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { extractScannableContent } from "../extractor.js";
 import { decideFromFindings } from "../policy.js";
+import { compileAllowlist } from "../allowlist.js";
 import { runPostToolScan } from "../post-scan.js";
+
+const NO_ALLOWLIST = compileAllowlist(undefined);
 import type {
 	ContentScanner,
 	ContentScannerConfig,
@@ -361,7 +364,13 @@ describe("content-scanner end-to-end — INBOUND (PostToolUse taint ratchet)", (
 		});
 
 		expect(session.sensitivity_level).toBe("Public");
-		const r = await runPostToolScan(event, session, rules, scanner);
+		const r = await runPostToolScan({
+			event,
+			session,
+			rules,
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 
 		expect(r.findings).toHaveLength(1);
 		expect(r.ratcheted_to).toBe("Confidential");
@@ -384,7 +393,13 @@ describe("content-scanner end-to-end — INBOUND (PostToolUse taint ratchet)", (
 			tool_input: { file_path: "/tmp/dump.txt" },
 			tool_response: "key=sk_live_abc owner=alice@example.com",
 		});
-		await runPostToolScan(event, session, rules, scanner);
+		await runPostToolScan({
+			event,
+			session,
+			rules,
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(session.sensitivity_level).toBe("HighlyConfidential");
 	});
 
@@ -401,7 +416,13 @@ describe("content-scanner end-to-end — INBOUND (PostToolUse taint ratchet)", (
 			tool_input: { pattern: "@example.com" },
 			tool_response: "src/config.ts:12:owner = 'alice@example.com'",
 		});
-		const r = await runPostToolScan(event, session, rules, scanner);
+		const r = await runPostToolScan({
+			event,
+			session,
+			rules,
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toHaveLength(1);
 		expect(session.sensitivity_level).toBe("Confidential");
 	});
@@ -429,8 +450,8 @@ describe("content-scanner end-to-end — bidirectional chain (INBOUND → OUTBOU
 		]);
 
 		// Step 1: agent reads a file containing PII (inbound).
-		await runPostToolScan(
-			makeEvent({
+		await runPostToolScan({
+			event: makeEvent({
 				hook_event: "PostToolUse",
 				session_id: "round-trip",
 				tool_name: "Read",
@@ -440,7 +461,8 @@ describe("content-scanner end-to-end — bidirectional chain (INBOUND → OUTBOU
 			session,
 			rules,
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(session.sensitivity_level).toBe("Confidential");
 
 		// Step 2: agent then attempts to curl an external endpoint (outbound).

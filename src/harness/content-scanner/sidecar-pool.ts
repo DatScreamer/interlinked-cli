@@ -23,6 +23,10 @@ import { SidecarManager, type SidecarLifecycleState, type SidecarRequest, type S
 export interface SidecarPoolOptions {
 	python_bin: string;
 	script_path: string;
+	/** Extra CLI args appended to `[script_path]` for every child. Forwarded
+	 *  unchanged to each SidecarManager — every pool child runs with identical
+	 *  startup config. */
+	script_args?: readonly string[];
 	startup_timeout_ms: number;
 	scan_timeout_ms: number;
 	idle_shutdown_ms: number;
@@ -72,6 +76,7 @@ export class SidecarPool {
 			new SidecarManager({
 				python_bin: opts.python_bin,
 				script_path: opts.script_path,
+				script_args: opts.script_args,
 				startup_timeout_ms: opts.startup_timeout_ms,
 				scan_timeout_ms: opts.scan_timeout_ms,
 				idle_shutdown_ms: opts.idle_shutdown_ms,

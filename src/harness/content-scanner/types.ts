@@ -81,6 +81,16 @@ export interface ContentScannerConfig {
 		 *  Optional for backward compatibility — callers that omit it fall
 		 *  back to the default inside OpfLocalScanner. */
 		pool_size?: number;
+		/** Optional path to an OPF Viterbi calibration JSON file. Loaded by the
+		 *  Python sidecar at startup via OPF.set_viterbi_decoder() to shift the
+		 *  precision/recall operating point without re-training. The file shape
+		 *  is fixed by opf/_core/decoding.py: must contain exactly
+		 *  `operating_points.default.biases` with the six VITERBI_BIAS_KEYS.
+		 *  Two presets ship under sidecars/calibrations/: `default.json`
+		 *  (zero biases) and `high_precision.json` (precision-leaning).
+		 *  When undefined, OPF runs with no calibration — equivalent to
+		 *  default.json but skips the file load entirely. */
+		viterbi_calibration_path?: string;
 	};
 
 	/** HuggingFace Inference API knobs (for gpt-oss-safeguard and future models). */
@@ -123,6 +133,24 @@ export interface ContentScannerConfig {
 	 * (personal, gitignored). Merged additively — locals append, never replace.
 	 */
 	allowlist?: AllowlistEntry[];
+
+	/**
+	 * Categories whose findings are dropped before reaching the policy layer.
+	 * Bluntest precision lever: when `viterbi_calibration_path` and `allowlist`
+	 * still leave too many false positives in a category the use case doesn't
+	 * care about, name the category here and every finding of that label
+	 * disappears (no allowlist match required).
+	 *
+	 * Typical use: `["private_url"]` for projects where file paths and config
+	 * URLs are routinely flagged but never represent actual leakage. For PII-
+	 * sensitive workflows leave this empty and rely on the calibration +
+	 * allowlist for nuance.
+	 *
+	 * Two-tier merging matches `allowlist`: locals append additively, never
+	 * replace. Removing a default-disabled label requires editing the default
+	 * config, not the local override.
+	 */
+	disabled_labels?: string[];
 }
 
 /**

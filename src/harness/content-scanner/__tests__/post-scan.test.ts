@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../types.js";
+import { compileAllowlist } from "../allowlist.js";
 import { runPostToolScan } from "../post-scan.js";
 import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types.js";
+
+const NO_ALLOWLIST = compileAllowlist(undefined);
 
 // ===========================================
 // Fixtures
@@ -142,19 +145,26 @@ function makeScanner(findings: ScanFinding[]): ContentScanner {
 
 describe("runPostToolScan — applicability", () => {
 	it("returns empty when scanner is undefined", async () => {
-		const r = await runPostToolScan(makeEvent(), makeSession(), makeRules(makeScannerConfig()), undefined);
+		const r = await runPostToolScan({
+			event: makeEvent(),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner: undefined,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.warnings).toEqual([]);
 		expect(r.findings).toEqual([]);
 	});
 
 	it("returns empty when content_scanner is disabled", async () => {
 		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "x" }),
-			makeSession(),
-			makeRules(makeScannerConfig({ enabled: false })),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "x" }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig({ enabled: false })),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toEqual([]);
 	});
 
@@ -162,29 +172,37 @@ describe("runPostToolScan — applicability", () => {
 		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
 		const cfg = makeScannerConfig();
 		cfg.scan_points.read_grep_taint = false;
-		const r = await runPostToolScan(makeEvent({ tool_response: "x" }), makeSession(), makeRules(cfg), scanner);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "x" }),
+			session: makeSession(),
+			rules: makeRules(cfg),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toEqual([]);
 	});
 
 	it("returns empty for non-Read tool names", async () => {
 		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_name: "Write", tool_response: "secret" }),
-			makeSession(),
-			makeRules(makeScannerConfig()),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_name: "Write", tool_response: "secret" }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toEqual([]);
 	});
 
 	it("returns empty when tool_response is empty", async () => {
 		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "" }),
-			makeSession(),
-			makeRules(makeScannerConfig()),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "" }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toEqual([]);
 	});
 });
@@ -195,12 +213,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		const scanner = makeScanner([
 			{ label: "private_email", start: 0, end: 7, text: "a@b.com", source: "" },
 		]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "email: a@b.com" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "email: a@b.com" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 
 		expect(session.sensitivity_level).toBe("Confidential");
 		expect(session.pii_detected_steps).toContain(5);
@@ -222,12 +241,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 				source: "",
 			},
 		]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "email: a@b.com" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "email: a@b.com" }),
 			session,
-			makeRules(makeScannerConfig({ min_score: 0.9 })),
+			rules: makeRules(makeScannerConfig({ min_score: 0.9 })),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 
 		expect(r.findings).toEqual([]);
 		expect(r.warnings).toEqual([]);
@@ -242,12 +262,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 			{ label: "private_email", start: 0, end: 7, text: "a@b.com", source: "" },
 			{ label: "secret", start: 10, end: 22, text: "sk_live_abc", source: "" },
 		]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "a@b.com sk_live_abc" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "a@b.com sk_live_abc" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 
 		expect(session.sensitivity_level).toBe("HighlyConfidential");
 		expect(r.ratcheted_to).toBe("HighlyConfidential");
@@ -260,12 +281,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		const scanner = makeScanner([
 			{ label: "account_number", start: 0, end: 9, text: "021000021", source: "" },
 		]);
-		await runPostToolScan(
-			makeEvent({ tool_response: "routing 021000021" }),
+		await runPostToolScan({
+			event: makeEvent({ tool_response: "routing 021000021" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(session.sensitivity_level).toBe("HighlyConfidential");
 	});
 
@@ -275,12 +297,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		const scanner = makeScanner([
 			{ label: "private_email", start: 0, end: 7, text: "a@b.com", source: "" },
 		]);
-		await runPostToolScan(
-			makeEvent({ tool_response: "a@b.com" }),
+		await runPostToolScan({
+			event: makeEvent({ tool_response: "a@b.com" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		// Sensitivity stays at the existing top level...
 		expect(session.sensitivity_level).toBe("HighlyConfidential");
 		// ...but we still record detection so PreToolUse gating can fire.
@@ -298,12 +321,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 			},
 			shutdown: async () => {},
 		};
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "secret" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "secret" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.warnings).toEqual([]);
 		expect(session.sensitivity_level).toBe("Public");
 		expect(session.pii_detected_steps).toEqual([]);
@@ -312,12 +336,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 	it("no warning when the scanner returns no findings", async () => {
 		const session = makeSession();
 		const scanner = makeScanner([]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_response: "hello world" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "hello world" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.warnings).toEqual([]);
 		expect(session.sensitivity_level).toBe("Public");
 	});
@@ -328,7 +353,13 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		const scanner = makeScanner([]);
 		const cfg = makeScannerConfig();
 		cfg.max_scan_bytes = 50_000;
-		await runPostToolScan(makeEvent({ tool_response: big }), session, makeRules(cfg), scanner);
+		await runPostToolScan({
+			event: makeEvent({ tool_response: big }),
+			session,
+			rules: makeRules(cfg),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
 		expect(scanSpy.mock.calls[0][0].text.length).toBe(50_000);
 	});
@@ -338,12 +369,63 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		const scanner = makeScanner([
 			{ label: "secret", start: 0, end: 3, text: "sk_", source: "" },
 		]);
-		const r = await runPostToolScan(
-			makeEvent({ tool_name: "Grep", tool_response: "line 1: sk_live_abc" }),
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_name: "Grep", tool_response: "line 1: sk_live_abc" }),
 			session,
-			makeRules(makeScannerConfig()),
+			rules: makeRules(makeScannerConfig()),
 			scanner,
-		);
+			compiledAllowlist: NO_ALLOWLIST,
+		});
 		expect(r.findings).toHaveLength(1);
+	});
+});
+
+// Regression for the FP-suppression gap left by 73e1c1f. The allowlist
+// was wired into the PreToolUse Write/Edit/Bash branch but not into
+// post-scan, so a Read of a file containing `noreply@anthropic.com`
+// would still ratchet sensitivity. With the allowlist threaded through,
+// the same finding gets dropped before the policy decides.
+describe("runPostToolScan — allowlist suppression (gap fix)", () => {
+	it("suppresses findings the allowlist matches before warning or ratcheting", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([
+			{ label: "private_email", start: 0, end: 21, text: "noreply@anthropic.com", source: "" },
+		]);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "Contact: noreply@anthropic.com" }),
+			session,
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: compileAllowlist([
+				{ kind: "prefix", pattern: "noreply@", label: "private_email" },
+			]),
+		});
+		expect(r.findings).toEqual([]);
+		expect(r.warnings).toEqual([]);
+		expect(r.ratcheted_to).toBeUndefined();
+		expect(session.sensitivity_level).toBe("Public");
+		expect(session.pii_detected_steps).toEqual([]);
+	});
+
+	it("keeps findings the allowlist does not cover", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([
+			{ label: "private_email", start: 0, end: 21, text: "noreply@anthropic.com", source: "" },
+			{ label: "private_email", start: 30, end: 47, text: "real-user@x.example", source: "" },
+		]);
+		const r = await runPostToolScan({
+			event: makeEvent({
+				tool_response: "noreply@anthropic.com and also real-user@x.example",
+			}),
+			session,
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: compileAllowlist([
+				{ kind: "prefix", pattern: "noreply@", label: "private_email" },
+			]),
+		});
+		expect(r.findings).toHaveLength(1);
+		expect(r.findings[0]?.text).toBe("real-user@x.example");
+		expect(session.sensitivity_level).toBe("Confidential");
 	});
 });

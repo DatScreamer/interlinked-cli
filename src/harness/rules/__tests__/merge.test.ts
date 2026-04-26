@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import type { GuardRulesConfig } from "../../types.js";
 import { DEFAULT_CONFIG } from "../default-config.js";
@@ -140,5 +141,43 @@ describe("mergeLocalOverrides", () => {
 			} as unknown as GuardRulesConfig["content_scanner"],
 		});
 		expect(config.content_scanner?.local.python_bin).toBe(defaultPythonBin);
+	});
+
+	it("appends content_scanner.disabled_labels entries instead of replacing them", () => {
+		// Mirror the allowlist convention: locals add to (or seed) the disabled-
+		// labels list, never replace. Stops a single user-side kill switch from
+		// silently undoing a team-wide suppression.
+		const config = mkBaseConfig();
+		const defaults = config.content_scanner?.disabled_labels ?? [];
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				disabled_labels: ["private_url"],
+			} as unknown as GuardRulesConfig["content_scanner"],
+		});
+		const merged = config.content_scanner?.disabled_labels ?? [];
+		expect(merged).toContain("private_url");
+		for (const def of defaults) expect(merged).toContain(def);
+	});
+
+	it("dedupes disabled_labels across default and local layers", () => {
+		// If a default already disables `private_url` and a local config also
+		// names it, the merged list must contain `private_url` once — not
+		// duplicated. Duplicates would break Set-based audits and inflate any
+		// `harness status`-style readout of disabled categories.
+		const config = mkBaseConfig();
+		const cs = config.content_scanner;
+		// node:assert narrows `cs` to non-null without needing a control-flow
+		// branch (which the harness flags as hidden control flow inside a
+		// test body) or a `!` non-null assertion (which would need a
+		// suppression). Throws AssertionError on a missing fixture.
+		assert(cs, "test fixture must include content_scanner");
+		cs.disabled_labels = ["private_url"];
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				disabled_labels: ["private_url", "private_address"],
+			} as unknown as GuardRulesConfig["content_scanner"],
+		});
+		const merged = config.content_scanner?.disabled_labels ?? [];
+		expect(merged.sort()).toEqual(["private_address", "private_url"]);
 	});
 });

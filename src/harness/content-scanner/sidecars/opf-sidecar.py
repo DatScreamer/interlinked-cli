@@ -12,6 +12,14 @@ Protocol mirrors `src/harness/content-scanner/sidecar-manager.ts`:
               "spans"?: [{"label": str, "start": int, "end": int, "text": str}],
               "redacted_text"?: str, "error"?: str}
 
+Optional CLI args (parsed at startup, applied once):
+  --viterbi-calibration-path <path>
+      Absolute path to a JSON calibration artifact in the schema OPF expects
+      (operating_points.default.biases with the six VITERBI_BIAS_KEYS).
+      When supplied, the sidecar calls OPF.set_viterbi_decoder() so every
+      subsequent scan uses the configured precision/recall operating point.
+      Omitted = OPF native default (zero biases).
+
 Prereq: `pip install opf`. If the import fails (package missing, wrong venv),
 the sidecar emits one init-failure line and exits — the TS-side manager
 treats that as fail-open and disables the scanner for the session.
@@ -19,6 +27,7 @@ treats that as fail-open and disables the scanner for the session.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import traceback
@@ -38,7 +47,7 @@ def _fail(req_id: str | None, msg: str) -> None:
     _write({"id": req_id, "ok": False, "error": msg})
 
 
-def _build_opf() -> Any:
+def _build_opf(viterbi_calibration_path: str | None) -> Any:
     try:
         from opf import OPF  # type: ignore[import-not-found]
     except ImportError as e:
@@ -47,10 +56,28 @@ def _build_opf() -> Any:
 
     try:
         # CPU-only; macOS lacks MPS support in the shipped OPF runtime.
-        return OPF(device="cpu")
+        opf = OPF(device="cpu")
     except Exception as e:
         _fail(None, f"OPF init failed: {e}\n{traceback.format_exc()}")
         sys.exit(3)
+
+    if viterbi_calibration_path is not None:
+        try:
+            # Applies the precision/recall biases shipped under
+            # sidecars/calibrations/. Failure here is loud: a misconfigured
+            # calibration path means the user explicitly asked for a non-
+            # default operating point and silently falling back to the
+            # built-in defaults would mask the misconfiguration.
+            opf.set_viterbi_decoder(calibration_path=viterbi_calibration_path)
+        except Exception as e:
+            _fail(
+                None,
+                f"OPF calibration load failed for {viterbi_calibration_path!r}: "
+                f"{e}\n{traceback.format_exc()}",
+            )
+            sys.exit(4)
+
+    return opf
 
 
 def _handle_scan(opf: Any, req_id: str | None, text: Any) -> None:
@@ -75,8 +102,23 @@ def _handle_scan(opf: Any, req_id: str | None, text: Any) -> None:
     _ok(req_id, {"spans": spans, "redacted_text": result.redacted_text})
 
 
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, add_help=False)
+    parser.add_argument(
+        "--viterbi-calibration-path",
+        dest="viterbi_calibration_path",
+        default=None,
+        help="Optional OPF Viterbi calibration JSON path.",
+    )
+    # Tolerate unknown args so future TS-side flag additions don't crash
+    # older sidecar binaries during a rolling upgrade.
+    namespace, _unknown = parser.parse_known_args(argv)
+    return namespace
+
+
 def main() -> None:
-    opf = _build_opf()
+    args = _parse_args(sys.argv[1:])
+    opf = _build_opf(args.viterbi_calibration_path)
 
     for raw in sys.stdin:
         line = raw.strip()

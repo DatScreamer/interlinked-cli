@@ -76,6 +76,11 @@ export interface SidecarStatus {
 export interface SidecarManagerOptions {
 	python_bin: string;
 	script_path: string;
+	/** Extra CLI args appended to `[script_path]` when spawning. Used to pass
+	 *  configuration that the sidecar needs at startup (e.g.,
+	 *  `--viterbi-calibration-path /path/to/calibration.json`) without changing
+	 *  the JSONL request protocol. Empty / omitted = no extra args. */
+	script_args?: readonly string[];
 	startup_timeout_ms: number;
 	scan_timeout_ms: number;
 	idle_shutdown_ms: number;
@@ -278,7 +283,8 @@ export class SidecarManager {
 		const spawnFn: SpawnFn = this.opts.spawn ?? nodeSpawn;
 		let child: ChildProcess;
 		try {
-			child = spawnFn(this.opts.python_bin, [this.opts.script_path], {
+			const args = [this.opts.script_path, ...(this.opts.script_args ?? [])];
+			child = spawnFn(this.opts.python_bin, args, {
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (err) {

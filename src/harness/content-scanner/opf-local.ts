@@ -42,6 +42,22 @@ function projectStatus(s: SidecarStatus): ScannerStatus {
 	return { state, pid: s.pid, detail: s.detail, sinceIso: s.sinceIso };
 }
 
+/**
+ * Translate the local-runtime config block into the CLI arg list the OPF
+ * Python sidecar expects at startup. Returns `undefined` when no flags are
+ * needed so the spawn line stays bit-identical to the pre-calibration
+ * behavior (avoids spurious snapshot churn in spawn-tracing tests).
+ *
+ * Exported for unit testing and to give callers a stable seam for stubbing
+ * the calibration plumbing without standing up a real `OpfLocalScanner`.
+ */
+export function deriveSidecarScriptArgs(
+	local: ContentScannerConfig["local"],
+): readonly string[] | undefined {
+	if (!local.viterbi_calibration_path) return undefined;
+	return ["--viterbi-calibration-path", local.viterbi_calibration_path];
+}
+
 export class OpfLocalScanner implements ContentScanner {
 	readonly name = "opf-local";
 	readonly runtime = "local" as const;
@@ -57,9 +73,11 @@ export class OpfLocalScanner implements ContentScanner {
 		// Claude sessions without the 1.5 s scan budget aborting. Configurable
 		// via guard-rules.local.json → content_scanner.local.pool_size.
 		const poolSize = config.local.pool_size ?? 3;
+		const scriptArgs = deriveSidecarScriptArgs(config.local);
 		const poolOpts = {
 			python_bin: config.local.python_bin,
 			script_path: config.local.sidecar_script,
+			script_args: scriptArgs,
 			startup_timeout_ms: config.local.startup_timeout_ms,
 			scan_timeout_ms: config.local.scan_timeout_ms,
 			idle_shutdown_ms: config.local.idle_shutdown_ms,
