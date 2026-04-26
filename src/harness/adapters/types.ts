@@ -87,4 +87,23 @@ export interface RunnerAdapter {
 	 *  mapping the internal "block" value to the runner's native keyword
 	 *  (Claude: "deny"; Copilot: exit code 2; etc.). */
 	encodeDecision(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput;
+
+	/** Optional side-effects to run after the JSON settings fragment has been
+	 *  merged into the target file. Used by runners that need additional
+	 *  out-of-band configuration the JSON merger can't express — e.g. Codex
+	 *  CLI requires `[features] codex_hooks = true` in `.codex/config.toml`
+	 *  before any hooks.json is honored. The installer calls this after
+	 *  writing the JSON fragment, with the resolved scope and the dryRun
+	 *  flag so adapters can no-op or trace under `--dry-run`. */
+	postInstall?(opts: PostInstallOptions): void;
+}
+
+export interface PostInstallOptions {
+	/** Repo root for project/local scope; user home for user scope. */
+	cwd: string;
+	/** Scope the install ran under. Adapters typically only care about this
+	 *  to decide which directory layer to write to (project vs user). */
+	scope: "user" | "project" | "local";
+	/** When true, adapters must not write files — only log what they would do. */
+	dryRun: boolean;
 }

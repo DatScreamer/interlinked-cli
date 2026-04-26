@@ -44,7 +44,7 @@ export type HookEventName =
 	// Generic
 	| string;
 
-export type AgentSource = "claude" | "copilot";
+export type AgentSource = "claude" | "copilot" | "codex" | "gemini";
 
 /** Role classification for agent capability scoping */
 export type AgentRole = "lead" | "worker" | "subagent" | "unknown";
@@ -65,6 +65,7 @@ export interface HarnessEvent {
 	tool_input?: JsonObject;
 	tool_response?: unknown;
 	tool_use_id?: string;
+	files_modified?: string[];
 
 	// Session context
 	cwd?: string;

@@ -88,6 +88,39 @@ describe("installHooks — multi-runner", () => {
 		const runners = result.entries.map((e) => e.runner).sort();
 		expect(runners).toEqual(["claude-code", "copilot-cli"]);
 	});
+
+	it("codex install runs the postInstall feature-flag writer", () => {
+		// Codex hooks are gated by `[features] codex_hooks = true` in
+		// `.codex/config.toml`. The Codex adapter's `postInstall` writes
+		// that flag after the JSON merger lands the hooks fragment;
+		// without it, Codex would silently ignore the hooks.json we
+		// just wrote.
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/hook",
+			runners: ["codex"],
+		});
+		expect(result.entries.length).toBe(1);
+		expect(result.entries[0].runner).toBe("codex");
+
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		const { existsSync } = require("node:fs") as { existsSync(p: string): boolean };
+		expect(existsSync(tomlPath)).toBe(true);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toMatch(/codex_hooks\s*=\s*true/);
+	});
+
+	it("codex dry-run does not write the feature flag", () => {
+		installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/hook",
+			runners: ["codex"],
+			dryRun: true,
+		});
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		const { existsSync } = require("node:fs") as { existsSync(p: string): boolean };
+		expect(existsSync(tomlPath)).toBe(false);
+	});
 });
 
 describe("uninstallHooks — round-trip", () => {

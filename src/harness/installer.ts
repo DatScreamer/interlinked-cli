@@ -27,6 +27,8 @@ import type { RunnerId } from "./unified-event.js";
 
 export type InstallScope = "user" | "project" | "local";
 
+const SCOPE_USER: InstallScope = "user";
+
 export interface InstallOptions {
 	/** Repo root (used for project/local scope paths). */
 	cwd: string;
@@ -123,6 +125,23 @@ function installSingle(
 	if (!dryRun) {
 		ensureDir(dirname(target));
 		writeAtomic(target, merged);
+	}
+
+	// Adapter-specific post-install side-effects — e.g. Codex's
+	// `codex_hooks = true` feature flag in `.codex/config.toml`. Adapters
+	// that don't implement postInstall are no-ops here. Errors are caught
+	// so a failed flag-write doesn't bubble up as a full install failure;
+	// the caller still gets a manifest entry for the JSON fragment that
+	// did land.
+	if (adapter.postInstall) {
+		const postInstallBase = scope === SCOPE_USER ? homedir() : cwd;
+		try {
+			adapter.postInstall({ cwd: postInstallBase, scope, dryRun });
+		} catch (err) {
+			process.stderr.write(
+				`[interlinked] ${adapter.id} postInstall failed: ${err instanceof Error ? err.message : String(err)}\n`,
+			);
+		}
 	}
 
 	return {

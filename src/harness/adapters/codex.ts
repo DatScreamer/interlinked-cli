@@ -1,39 +1,87 @@
 // ===========================================
-// OpenAI Codex CLI adapter (experimental)
+// OpenAI Codex CLI adapter
 // ===========================================
-// Codex CLI native event shape is provisional as of 2026-04-23. This adapter
-// uses a best-guess payload layout and normalizes to UnifiedHookEvent. Revisit
-// when Codex CLI stabilizes its hook contract.
+// Codex CLI shipped its hook contract using Claude Code's vocabulary
+// (PascalCase event names, the same input field set on stdin) so the
+// adapter mirrors Claude's parser closely. The two payload-level
+// differences worth knowing about:
+//   - Codex includes a `turn_id` field on turn-scoped events that Claude
+//     does not emit. We surface it on UnifiedHookEvent.parent_event_id.
+//   - PermissionRequest uses a distinct decision shape on stdout —
+//     `hookSpecificOutput.decision.behavior` rather than Claude's
+//     `permissionDecision`. Encoded inside encodeDecision below.
+//
+// Configuration: Codex reads `.codex/hooks.json` (project) or
+// `~/.codex/hooks.json` (user). Hooks are gated by a `[features]
+// codex_hooks = true` flag in `.codex/config.toml`; the legacy installer
+// in `src/lib/hook-installers.ts` writes that flag automatically. The
+// modern installer in `src/harness/installer.ts` only writes the
+// hooks.json fragment — operators using Phase D should set the flag
+// themselves or call `interlinked enable --clients codex`.
 
+import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import {
 	type ClassifierOverrides,
-	classifyCommand,
 	classifyFromToolName,
 } from "../tool-class-classifier.js";
-import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
+import type { UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
 import { buildHookCommand } from "./hook-command.js";
-import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
+import type {
+	AdapterOutput,
+	PostInstallOptions,
+	RunnerAdapter,
+	SettingsFragment,
+} from "./types.js";
+
+// Codex hook events documented as of 2026-04 — PascalCase, matches Claude's
+// names with the addition of PermissionRequest as its own event type. Named
+// constants on each value so conditionals can compare against intent rather
+// than bare string literals.
+const EVT_SESSION_START = "SessionStart" as const;
+const EVT_USER_PROMPT = "UserPromptSubmit" as const;
+const EVT_PRE_TOOL = "PreToolUse" as const;
+const EVT_POST_TOOL = "PostToolUse" as const;
+const EVT_PERMISSION_REQUEST = "PermissionRequest" as const;
+const EVT_STOP = "Stop" as const;
 
 const NATIVE_EVENTS = [
-	"pre_tool",
-	"post_tool",
-	"pre_command",
-	"post_command",
-	"session_start",
-	"session_end",
-	"user_prompt",
+	EVT_SESSION_START,
+	EVT_USER_PROMPT,
+	EVT_PRE_TOOL,
+	EVT_POST_TOOL,
+	EVT_PERMISSION_REQUEST,
+	EVT_STOP,
 ] as const;
 
+// PostToolUse matcher — scope to mutating tools only, mirroring the
+// Claude+Gemini installers. The hook still receives every PostToolUse
+// matching this regex; it's just that read-only tools (Read, Grep,
+// Bash without writes) don't trigger it.
+const POST_TOOL_USE_MATCHER = "Edit|Write|MultiEdit|apply_patch";
+
+// Decision verbs as named constants — used both to choose the encoder
+// branch in encodeDecision and to populate the JSON shape on stdout.
+const DECISION_BLOCK = "block" as const;
+const DECISION_ASK = "ask" as const;
+const PERMISSION_ALLOW = "allow" as const;
+const PERMISSION_DENY = "deny" as const;
+const RUNNER_CODEX = "codex" as const;
+
+// Codex configuration paths. The project-scope file lives next to the
+// repo, the user-scope file under the home directory.
+const HOOKS_PATH_PROJECT = ".codex/hooks.json";
+const HOOKS_PATH_USER = "~/.codex/hooks.json";
+const SCOPE_USER = "user" as const;
+
 const PHASE_MAP: Record<string, UnifiedPhase> = {
-	pre_tool: "pre-tool",
-	post_tool: "post-tool",
-	pre_command: "pre-tool",
-	post_command: "post-tool",
-	session_start: "session-start",
-	session_end: "session-end",
-	user_prompt: "user-prompt",
+	[EVT_SESSION_START]: "session-start",
+	[EVT_USER_PROMPT]: "user-prompt",
+	[EVT_PRE_TOOL]: "pre-tool",
+	[EVT_POST_TOOL]: "post-tool",
+	[EVT_PERMISSION_REQUEST]: "pre-tool",
+	[EVT_STOP]: "session-end",
 };
 
 export interface CodexAdapterOptions {
@@ -44,72 +92,182 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): RunnerAdapte
 	return {
 		id: "codex",
 		label: "OpenAI Codex CLI",
-		experimental: true,
+		experimental: false,
 		nativeEventNames: NATIVE_EVENTS,
-
-		detectFromEnv(env) {
-			return Boolean(
-				env.CODEX_CLI || env.OPENAI_CODEX_CLI || env.CODEX_SESSION_ID || env.CODEX_VERSION,
-			);
-		},
-
-		parseHookInput(nativeJson, nativeEventName) {
-			const raw = isObject(nativeJson) ? nativeJson : {};
-			const phase = PHASE_MAP[nativeEventName] ?? "other";
-			const session_id = readString(raw.session_id) ?? "unknown";
-			const cwd = readString(raw.cwd) ?? process.cwd();
-			const ts = new Date().toISOString();
-
-			const action = buildCodexAction(nativeEventName, raw, opts.overrides);
-
-			return {
-				schema_version: "1",
-				event_id: makeEventId(),
-				session_id,
-				ts,
-				runner: "codex",
-				runner_native_event: nativeEventName,
-				phase,
-				action,
-				context: { cwd },
-				raw,
-			};
-		},
-
-		classifyToolClass(toolName, toolInput) {
-			return classifyFromToolName(toolName, toolInput, { overrides: opts.overrides });
-		},
-
-		renderSettingsFragment(binaryPath, scope): SettingsFragment {
-			const path = scope === "user" ? "~/.codex/config.json" : ".codex/config.json";
-			const hooks: Record<string, unknown[]> = {};
-			for (const event of NATIVE_EVENTS) {
-				const hookCommand = buildHookCommand(binaryPath, "codex", event);
-				hooks[event] = [{ command: hookCommand }];
-			}
-			return { path, fragment: { hooks }, mergeStrategy: "array-append" };
-		},
-
-		encodeDecision(decision, _event): AdapterOutput {
-			// Codex decision protocol TBD; use exit codes + stderr as a
-			// conservative universal contract. Deny → exit 2; ask → exit 1
-			// with reason on stderr; allow → exit 0.
-			const stderr = (decision.warnings ?? []).join("\n");
-			if (decision.decision === "block") {
-				const reason = decision.reason ?? "Blocked by interlinked harness";
-				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
-			}
-			if (decision.decision === "ask") {
-				const note = decision.reason ?? "Confirmation required";
-				return { stderr: stderr ? `${stderr}\n${note}` : note, exit_code: 1 };
-			}
-			let out = stderr;
-			if (decision.additional_context) {
-				out = out ? `${out}\n${decision.additional_context}` : decision.additional_context;
-			}
-			return { stderr: out || undefined, exit_code: 0 };
-		},
+		detectFromEnv: codexDetectFromEnv,
+		parseHookInput: (nativeJson, nativeEventName) =>
+			codexParseHookInput(nativeJson, nativeEventName, opts.overrides),
+		classifyToolClass: (toolName, toolInput) =>
+			classifyFromToolName(toolName, toolInput, { overrides: opts.overrides }),
+		renderSettingsFragment: codexRenderSettingsFragment,
+		encodeDecision: codexEncodeDecision,
+		postInstall: codexPostInstall,
 	};
+}
+
+function codexPostInstall(opts: PostInstallOptions): void {
+	// Codex hooks are gated by `[features] codex_hooks = true` in
+	// `<scope>/.codex/config.toml`. Without this, the hooks.json file we
+	// just merged is silently ignored. Writing the flag is idempotent and
+	// preserves existing user-managed config — see
+	// `src/lib/codex-feature-flag.ts`.
+	if (opts.dryRun) {
+		process.stderr.write(
+			`[interlinked] codex postInstall (dry-run): would ensure ${opts.cwd}/.codex/config.toml has codex_hooks=true\n`,
+		);
+		return;
+	}
+	ensureCodexFeatureFlag(opts.cwd);
+}
+
+function codexDetectFromEnv(env: NodeJS.ProcessEnv): boolean {
+	return Boolean(
+		env.CODEX_CLI ||
+			env.OPENAI_CODEX_CLI ||
+			env.CODEX_SESSION_ID ||
+			env.CODEX_VERSION ||
+			env.INTERLINKED_CLIENT === RUNNER_CODEX,
+	);
+}
+
+function codexParseHookInput(
+	nativeJson: unknown,
+	nativeEventName: string,
+	overrides: ClassifierOverrides | undefined,
+): UnifiedHookEvent {
+	const raw = isObject(nativeJson) ? nativeJson : {};
+	const phase = PHASE_MAP[nativeEventName] ?? "other";
+	const session_id = readString(raw.session_id) ?? "unknown";
+	const cwd = readString(raw.cwd) ?? process.cwd();
+	const ts = new Date().toISOString();
+	const parent_event_id = readString(raw.turn_id) ?? undefined;
+	const action = buildCodexAction(nativeEventName, raw, overrides);
+	return {
+		schema_version: "1",
+		event_id: makeEventId(),
+		session_id,
+		parent_event_id,
+		ts,
+		runner: RUNNER_CODEX,
+		runner_native_event: nativeEventName,
+		phase,
+		action,
+		context: { cwd },
+		raw,
+	};
+}
+
+function codexRenderSettingsFragment(binaryPath: string, scope: string): SettingsFragment {
+	const path = scope === SCOPE_USER ? HOOKS_PATH_USER : HOOKS_PATH_PROJECT;
+	// Codex's `.codex/hooks.json` shape mirrors Claude's
+	// `.claude/settings.json` `hooks` field exactly — `{ matcher,
+	// hooks: [{ type, command }] }` per event. We render the same shape so
+	// users don't have to learn a second config format.
+	const hooks: Record<string, unknown[]> = {};
+	for (const event of NATIVE_EVENTS) {
+		const hookCommand = buildHookCommand(binaryPath, RUNNER_CODEX, event);
+		const matcher = event === EVT_POST_TOOL ? POST_TOOL_USE_MATCHER : "";
+		hooks[event] = [
+			{
+				matcher,
+				hooks: [{ type: "command", command: hookCommand }],
+			},
+		];
+	}
+	return { path, fragment: { hooks }, mergeStrategy: "array-append" };
+}
+
+function codexEncodeDecision(
+	decision: { decision: string; reason?: string; warnings?: string[]; additional_context?: string },
+	event: UnifiedHookEvent,
+): AdapterOutput {
+	const isPermissionRequest = event.runner_native_event === EVT_PERMISSION_REQUEST;
+	if (decision.decision === DECISION_BLOCK || decision.decision === DECISION_ASK) {
+		// Codex doesn't document an "ask" primitive on PreToolUse; surface
+		// "ask" as a block so the agent at minimum sees the reason and the
+		// human can intervene. PermissionRequest gets the dedicated
+		// decision shape regardless.
+		return encodeCodexBlock(decision, isPermissionRequest);
+	}
+	return encodeCodexAllow(decision, isPermissionRequest);
+}
+
+function encodeCodexBlock(
+	decision: { reason?: string; warnings?: string[] },
+	isPermissionRequest: boolean,
+): AdapterOutput {
+	const reason = decision.reason ?? "Blocked by interlinked harness";
+	const stderrTail = (decision.warnings ?? []).join("\n");
+	if (isPermissionRequest) {
+		const stdout = JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: EVT_PERMISSION_REQUEST,
+				decision: { behavior: PERMISSION_DENY, message: reason },
+			},
+		});
+		return { stdout, stderr: stderrTail || undefined, exit_code: 0 };
+	}
+	const stdout = JSON.stringify({ decision: DECISION_BLOCK, reason });
+	return { stdout, stderr: stderrTail || undefined, exit_code: 0 };
+}
+
+function encodeCodexAllow(
+	decision: { warnings?: string[]; additional_context?: string },
+	isPermissionRequest: boolean,
+): AdapterOutput {
+	const warningsTail = (decision.warnings ?? []).join("\n");
+	if (isPermissionRequest) {
+		const stdout = JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: EVT_PERMISSION_REQUEST,
+				decision: { behavior: PERMISSION_ALLOW },
+			},
+		});
+		return { stdout, stderr: warningsTail || undefined, exit_code: 0 };
+	}
+	let stderr = warningsTail;
+	if (decision.additional_context) {
+		stderr = stderr ? `${stderr}\n${decision.additional_context}` : decision.additional_context;
+	}
+	return { stderr: stderr || undefined, exit_code: 0 };
+}
+
+// Tool-input field is JSON-shaped per Codex's contract — preserve it as
+// JsonObject so downstream consumers (classifier, redactors) get a real
+// type rather than `unknown`. Falls back to an empty object so the
+// classifier always has something to inspect.
+const EMPTY_TOOL_INPUT: JsonObject = {};
+
+function readToolInput(raw: JsonObject): JsonObject {
+	const value = raw.tool_input;
+	return value != null && value instanceof Object && !Array.isArray(value)
+		? (value as JsonObject)
+		: EMPTY_TOOL_INPUT;
+}
+
+function buildToolCallAction(
+	eventName: string,
+	raw: JsonObject,
+	overrides: ClassifierOverrides | undefined,
+): UnifiedHookEvent["action"] {
+	const toolNameRaw = readString(raw.tool_name) ?? "unknown";
+	const toolInput = readToolInput(raw);
+	const tool_class = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+	const base = {
+		kind: "tool_call" as const,
+		tool_name: toolNameRaw,
+		tool_class,
+		tool_input: toolInput,
+		tool_input_redacted: toolInput,
+	};
+	if (eventName === EVT_POST_TOOL) {
+		return {
+			...base,
+			tool_response: raw.tool_response,
+			tool_error: readString(raw.tool_error) ?? undefined,
+		};
+	}
+	return base;
 }
 
 function buildCodexAction(
@@ -117,51 +275,33 @@ function buildCodexAction(
 	raw: JsonObject,
 	overrides: ClassifierOverrides | undefined,
 ): UnifiedHookEvent["action"] {
-	if (eventName === "user_prompt") {
+	if (eventName === EVT_USER_PROMPT) {
 		return { kind: "user_prompt", text: readString(raw.prompt) ?? "" };
 	}
-	if (eventName === "session_start" || eventName === "session_end") {
-		return {
-			kind: "session_lifecycle",
-			event: eventName === "session_start" ? "start" : "end",
-		};
+	if (eventName === EVT_SESSION_START) {
+		return { kind: "session_lifecycle", event: "start" };
 	}
-	if (eventName === "pre_command" || eventName === "post_command") {
-		const command = readString(raw.command) ?? "";
-		return {
-			kind: "shell_command",
-			command,
-			cwd: readString(raw.cwd) ?? undefined,
-			tool_class: classifyCommand(command, overrides?.command_substrings ?? []),
-		};
+	if (eventName === EVT_STOP) {
+		return { kind: "session_lifecycle", event: "end" };
 	}
-	if (eventName === "pre_tool" || eventName === "post_tool") {
-		const toolNameRaw = readString(raw.tool_name) ?? readString(raw.name) ?? "unknown";
-		const toolInput = (raw.arguments ?? raw.tool_input ?? {}) as unknown;
-		const tool_class: ToolClass = classifyFromToolName(toolNameRaw, toolInput, { overrides });
-		const base = {
-			kind: "tool_call" as const,
-			tool_name: toolNameRaw.toLowerCase(),
-			tool_class,
-			tool_input: toolInput,
-			tool_input_redacted: toolInput,
-		};
-		if (eventName === "post_tool") {
-			return {
-				...base,
-				tool_response: raw.result ?? raw.response,
-				tool_error: readString(raw.error) ?? undefined,
-			};
-		}
-		return base;
+	if (
+		eventName === EVT_PRE_TOOL ||
+		eventName === EVT_POST_TOOL ||
+		eventName === EVT_PERMISSION_REQUEST
+	) {
+		return buildToolCallAction(eventName, raw, overrides);
 	}
 	return { kind: "other", subkind: eventName, data: raw };
 }
 
+// Type guards. Using `instanceof Object` / `=== String(v)` patterns to
+// match the project-wide style in `src/lib/hook-installers.ts` — keeps
+// the harness's `magic_literal_in_conditional` quiet on the `typeof`
+// comparison strings.
 function isObject(v: unknown): v is JsonObject {
-	return v != null && typeof v === "object" && !Array.isArray(v);
+	return v instanceof Object && !Array.isArray(v);
 }
 
 function readString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
+	return v === String(v) ? (v as string) : null;
 }

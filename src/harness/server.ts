@@ -89,6 +89,7 @@ import { sanitizeSessionId } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
+import { extractEditedFilePath } from "./server-tool-helpers.js";
 import { acknowledgeChecks, isAcknowledged, SessionTracker } from "./session-state.js";
 import {
 	formatStructuralWarnings,
@@ -1222,7 +1223,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 		// Also detect Bash commands that edit files (sed, awk, tee, etc.)
 		// For these, try to extract the target file path from the command.
-		let bashEditFilePath: string | null = null;
+		let editedFilePath = "";
 		if (
 			!isDirectFileEdit &&
 			event.tool_name &&
@@ -1236,11 +1237,13 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				/\b([\w./-]+\.(?:tsx?|jsx?|mjs|cjs|py|pyi|rs|go|java|c|cpp|cc|cxx|h|hpp|hxx|rb|php|swift|kt|kts|scala|lua|zig|nim|ex|exs|clj|cljs|ml|mli|hs|lhs|erl|hrl|dart|r|R|jl|v|sv|vhd|vhdl|pro|pl|pm|sh|bash|zsh|fish))\b/,
 			);
 			if (editedFileMatch) {
-				bashEditFilePath = editedFileMatch[1];
+				editedFilePath = editedFileMatch[1];
 			}
+		} else if (isDirectFileEdit) {
+			editedFilePath = extractEditedFilePath(event) || "";
 		}
 
-		const shouldRunChecks = isDirectFileEdit || bashEditFilePath;
+		const shouldRunChecks = isDirectFileEdit || editedFilePath.length > 0;
 		if (shouldRunChecks) {
 			const dataDir = join(CWD, ".interlinked");
 			const markerPath = join(dataDir, "quality-check-in-progress");
@@ -1258,8 +1261,8 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			}
 
 			// For Bash edits, inject the detected file path into a synthetic event
-			const checkEvent = bashEditFilePath
-				? { ...event, tool_input: { ...event.tool_input, file_path: bashEditFilePath } }
+			const checkEvent = editedFilePath
+				? { ...event, tool_input: { ...event.tool_input, file_path: editedFilePath } }
 				: event;
 
 			// --- Structural checks (fast, sub-100ms, dependency-aware) ---
@@ -1267,7 +1270,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			let oldInterfaceBodies = new Map<string, string>();
 			let exportSurfaceChanged = false;
 			const structuralConfig = rules.structural_checks;
-			const editedFilePath = (checkEvent.tool_input?.file_path as string) || "";
+			editedFilePath = (checkEvent.tool_input?.file_path as string) || "";
 
 			// --- TDD cycle tracking: record impl edits and test writes ---
 			if (session && editedFilePath) {
