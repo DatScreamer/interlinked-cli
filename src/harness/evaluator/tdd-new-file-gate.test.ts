@@ -202,6 +202,57 @@ describe("evaluateTddNewFileGate — blocking", () => {
 		expect(decision?.reason).toContain("__tests__/foo.test.ts");
 		expect(decision?.reason).toContain(".spec.ts");
 	});
+
+	it("block message lists the public surface extracted from the impl content", () => {
+		// Saves the agent a re-Read of the impl when authoring the test —
+		// the gate already saw the content, so it can summarize what the
+		// test should at minimum exercise.
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			content: [
+				"export function ensureFlag(base: string): 'created' | 'preserved' {",
+				"    return 'created';",
+				"}",
+				"export const NAMESPACE = 'features';",
+				"export class FeatureRegistry {",
+				"    register(name: string) {}",
+				"}",
+				"export interface Options {}",
+				"export type Action = 'on' | 'off';",
+			].join("\n"),
+			testFirstMode: "enforce",
+		});
+		expect(decision?.reason).toContain("Public surface to test");
+		expect(decision?.reason).toContain("ensureFlag");
+		expect(decision?.reason).toContain("NAMESPACE");
+		expect(decision?.reason).toContain("FeatureRegistry");
+		// Type-only exports aren't testable at runtime — skip them.
+		expect(decision?.reason).not.toContain("Options");
+		expect(decision?.reason).not.toContain("Action");
+	});
+
+	it("block message omits the surface line when no content is provided", () => {
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		expect(decision?.reason).not.toContain("Public surface to test");
+	});
+
+	it("block message omits the surface line when the file has no exports", () => {
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			content: "// just a side-effect module\nconsole.log('hi');\n",
+			testFirstMode: "enforce",
+		});
+		expect(decision?.reason).not.toContain("Public surface to test");
+	});
 });
 
 describe("evaluateTddNewFileGate — non-source extensions", () => {

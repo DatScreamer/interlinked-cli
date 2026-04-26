@@ -10,6 +10,7 @@ import { extname, isAbsolute, resolve, sep } from "node:path";
 import { configNameToToolId, getOrCreateEngine } from "./check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "./check-engine/output-parsers.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/index.js";
+import { findEnclosingScope } from "./checks/shared.js";
 import {
 	checkBinaryContent,
 	checkEmptyFile,
@@ -69,6 +70,32 @@ interface QualityCheckResult {
 	message: string;
 	file?: string;
 	detail?: string;
+}
+
+interface InlineFinding {
+	line: number;
+	text: string;
+}
+
+/**
+ * Format a list of inline findings as the `detail` block surfaced to the
+ * agent. Each line is annotated with its enclosing function/class/method
+ * name when one can be detected — that single annotation routinely saves
+ * the agent a 20-line `Read` to triage *which scope* the finding belongs
+ * to. Trims at 5 findings with a "+N more" overflow line so noisy checks
+ * stay scannable.
+ */
+function formatFindingDetail(
+	shown: readonly InlineFinding[],
+	total: number,
+	fileContent: string,
+): string {
+	const lines = shown.map((m) => {
+		const scope = findEnclosingScope(fileContent, m.line);
+		return scope ? `  L${m.line} (in ${scope}): ${m.text}` : `  L${m.line}: ${m.text}`;
+	});
+	const overflow = total > shown.length ? `\n  ... and ${total - shown.length} more` : "";
+	return lines.join("\n") + overflow;
 }
 
 /** Options for filtering quality check output. */

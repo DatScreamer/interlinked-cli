@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+	findEnclosingScope,
 	getExtension,
 	isCliFile,
 	isTestFile,
@@ -12,6 +13,69 @@ import {
 	stripCommentsAndStrings,
 	stripStrings,
 } from "./shared.js";
+
+describe("findEnclosingScope", () => {
+	test("names the enclosing function declaration", () => {
+		const src = [
+			"// comment",
+			"function safeReadCopilotConfig(path: string): CopilotConfig | null {",
+			"    if (!existsSync(path)) return null;",
+			"    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));", // line 4
+			"    return parsed;",
+			"}",
+		].join("\n");
+		expect(findEnclosingScope(src, 4)).toBe("safeReadCopilotConfig");
+	});
+
+	test("names the enclosing arrow function bound to a const", () => {
+		const src = [
+			"export const buildClaudeContext = (input) => {",
+			"    return { input, env: envelopeFieldsClaude(input) };", // line 2
+			"};",
+		].join("\n");
+		expect(findEnclosingScope(src, 2)).toBe("buildClaudeContext");
+	});
+
+	test("names the enclosing class", () => {
+		const src = [
+			"class HarnessServer {",
+			"    constructor() {",
+			"        this.port = 0;", // line 3
+			"    }",
+			"}",
+		].join("\n");
+		// constructor is closer than the class, but methods take precedence.
+		// "constructor" is in the keyword blacklist so it falls back.
+		const scope = findEnclosingScope(src, 3);
+		expect(scope === "HarnessServer" || scope === "constructor").toBe(true);
+	});
+
+	test("names the enclosing method inside a class", () => {
+		const src = [
+			"class HarnessServer {",
+			"    handleConnection(socket) {",
+			"        socket.write('hello');", // line 3
+			"    }",
+			"}",
+		].join("\n");
+		expect(findEnclosingScope(src, 3)).toBe("handleConnection");
+	});
+
+	test("returns null at the top level outside any function/class", () => {
+		const src = ["const x = 1;", "const y = x + 1;"].join("\n");
+		expect(findEnclosingScope(src, 1)).toBeNull();
+	});
+
+	test("does not match function-like content inside string literals", () => {
+		const src = [
+			"const real = 'class FakeClass {';",
+			"function actualScope() {",
+			"    return real;", // line 3
+			"}",
+		].join("\n");
+		expect(findEnclosingScope(src, 3)).toBe("actualScope");
+	});
+});
 
 describe("shared helpers", () => {
 	test("isTestFile detects common conventions", () => {

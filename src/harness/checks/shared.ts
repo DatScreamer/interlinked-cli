@@ -138,6 +138,82 @@ export function getExtension(filePath: string): string {
 }
 
 // ===========================================
+// Enclosing-scope detection — used to give findings context
+// ===========================================
+// When a finding fires at a specific line, we want to tell the caller
+// *which function/class/method* the line belongs to. This saves the
+// agent from re-reading the file just to triage the warning. We avoid
+// AST parsing — strip comments/strings, then scan backwards looking
+// for the nearest declaration whose body opens before our target line.
+// Heuristic only; meant for log annotations, not refactoring.
+
+const SCOPE_DECLARATION_RES: readonly RegExp[] = [
+	// `function name(` or `function* name(` or `async function name(`
+	/^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/,
+	// `class Name` (with optional extends/implements)
+	/^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)\b/,
+	// `const|let|var name = (...) => {` or `... = function (...) {`
+	/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+	/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b/,
+	// Class method: `methodName(args) {` or `async methodName(args) {`
+	// Indented (inside a class body). Excludes control keywords.
+	/^\s+(?:async\s+|static\s+|public\s+|private\s+|protected\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/,
+];
+
+const SCOPE_KEYWORD_BLACKLIST = new Set([
+	"if",
+	"for",
+	"while",
+	"switch",
+	"catch",
+	"return",
+	"do",
+	"with",
+	"throw",
+	"typeof",
+	"new",
+	"in",
+	"of",
+	"as",
+]);
+
+/**
+ * Find the name of the nearest enclosing function / arrow / class / method
+ * for a 1-based line number. Returns null if the line is at top-level (no
+ * enclosing scope) or detection fails.
+ *
+ * Public API — consumed by `quality-checks.ts` to annotate findings with
+ * the enclosing scope so cold readers don't have to open the file just to
+ * see "what function is this line in?". Heuristic; tolerant of comments
+ * and string literals via `stripCommentsAndStrings` upstream.
+ */
+export function findEnclosingScope(content: string, line: number): string | null {
+	const stripped = stripCommentsAndStrings(content);
+	const lines = stripped.split("\n");
+	const targetIdx = Math.max(0, Math.min(line - 1, lines.length - 1));
+
+	// Walk backwards looking for the nearest declaration whose `{` opens
+	// at or before the target line. We don't try to verify scope-end —
+	// reporting the closest enclosing name is good enough for triage.
+	for (let i = targetIdx; i >= 0; i--) {
+		const candidate = lines[i];
+		const name = matchScopeDeclaration(candidate);
+		if (name && !SCOPE_KEYWORD_BLACKLIST.has(name)) {
+			return name;
+		}
+	}
+	return null;
+}
+
+function matchScopeDeclaration(line: string): string | null {
+	for (const re of SCOPE_DECLARATION_RES) {
+		const m = re.exec(line);
+		if (m) return m[1];
+	}
+	return null;
+}
+
+// ===========================================
 // Comment & String Stripping Helpers
 // ===========================================
 

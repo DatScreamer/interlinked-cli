@@ -89,18 +89,63 @@ export function evaluateTddNewFileGate(args: TddNewFileGateArgs): HarnessDecisio
 	}
 
 	const hint = companionHintPath(args.filePath);
+	const surface = extractPublicSurface(args.content);
+	const surfaceLine = surface.length > 0
+		? ` Public surface to test (extracted from your content): ${surface.join(", ")}.`
+		: "";
 	return {
 		decision: "block",
 		reason:
 			`BLOCKED: new source file "${args.filePath}" has no companion test. ` +
 			`Red/green TDD is enforced for new .ts/.tsx files. ` +
 			`Create ${hint} first with a failing test, then write the implementation. ` +
-			`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.) ` +
-			`If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`,
+			`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.)` +
+			surfaceLine +
+			` If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`,
 		rule_id: "tdd_new_file_gate",
 		severity: "high",
 		category: "tdd",
 	};
+}
+
+// ===========================================
+// Public surface extraction
+// ===========================================
+// When the gate fires we already have the impl content the agent was
+// trying to write. Listing its top-level testable exports in the block
+// message saves a Read round-trip when the agent then writes the test —
+// they don't have to re-open the impl to remember what to assert against.
+//
+// We deliberately skip type-only exports (`type`, `interface`) because
+// they don't survive to runtime and so can't be asserted on directly.
+// Heuristic — regex-based, no AST. Good enough for triage; not a contract.
+
+const EXPORT_FUNCTION_RE = /^\s*export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/gm;
+const EXPORT_CLASS_RE = /^\s*export\s+(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)\b/gm;
+const EXPORT_VAR_RE = /^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/gm;
+const EXPORT_ENUM_RE = /^\s*export\s+(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)\b/gm;
+const SURFACE_LIMIT = 10;
+
+function extractPublicSurface(content: string | undefined): string[] {
+	if (!content) return [];
+	const names = new Set<string>();
+	const patterns: readonly RegExp[] = [
+		EXPORT_FUNCTION_RE,
+		EXPORT_CLASS_RE,
+		EXPORT_VAR_RE,
+		EXPORT_ENUM_RE,
+	];
+	for (const re of patterns) {
+		// Reset lastIndex because the same regex instance is reused.
+		re.lastIndex = 0;
+		let m: RegExpExecArray | null = re.exec(content);
+		while (m !== null) {
+			names.add(m[1]);
+			if (names.size >= SURFACE_LIMIT) return [...names];
+			m = re.exec(content);
+		}
+	}
+	return [...names];
 }
 
 /** Public API — consumed by `evaluator/pre-tool.ts` as a thin event-level
