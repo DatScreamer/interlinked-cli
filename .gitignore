@@ -65,3 +65,17 @@ reference-repos/
 test/agent-driven/reports/*.json
 
 tmp/
+.interlinked/config.local.json
+.interlinked/activity.jsonl
+.interlinked/realtime-retry.jsonl
+.interlinked/sync-errors.jsonl
+.interlinked/sync-state.json
+.interlinked/sessions/
+.interlinked/checkpoints.json
+.interlinked/guard-cache.json
+.interlinked/guard-rules.local.json
+.interlinked/harness.sock
+.interlinked/harness.pid
+.interlinked/pending-quality-warnings.json
+.interlinked/index/
+.interlinked/error-history.jsonl

@@ -1,0 +1,70 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_SCRIPT_REL=\".interlinked/hooks/interlinked-activity.mjs\"; HOOK_DIR=\"$PWD\"; while :; do if test -f \"$HOOK_DIR/$HOOK_SCRIPT_REL\"; then INTERLINKED_CLIENT=\"codex\" INTERLINKED_RUNNER=\"codex\" node \"$HOOK_DIR/$HOOK_SCRIPT_REL\" || true; break; fi; NEXT_HOOK_DIR=$(dirname \"$HOOK_DIR\"); test \"$NEXT_HOOK_DIR\" = \"$HOOK_DIR\" && break; HOOK_DIR=\"$NEXT_HOOK_DIR\"; done"
+          }
+        ]
+      }
+    ]
+  }
+}
