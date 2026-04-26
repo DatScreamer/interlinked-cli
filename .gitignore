@@ -21,13 +21,21 @@ reports/
 .env
 .env.*
 !.env.example
-.claude/settings.json
-.claude/settings.local.json
-.claude/hooks/
 .gemini/settings.local.json
 .codex/config.local.json
 .cursor/settings.local.json
 .playwright-mcp/
+
+# Claude Code: blanket-ignore per-machine state (settings.json, hooks/,
+# scheduled_tasks.lock, transcripts, etc.). Carve out the project-shared
+# dirs that should be committed when present (slash commands, subagents,
+# skills, output styles). New Claude Code state files are gitignored
+# automatically — no .gitignore update needed when Claude adds features.
+.claude/*
+!.claude/commands/
+!.claude/agents/
+!.claude/skills/
+!.claude/output-styles/
 
 # Generated npm pack tarballs
 *.tgz
@@ -43,35 +51,17 @@ reference-repos/
 # Local manual-test scratch space and harness logs.
 .scratch/
 
-# Interlinked (local agent config)
-.interlinked/config.json
-.interlinked/config.local.json
-.interlinked/hooks/
-.interlinked/structure-cache/
-.interlinked/activity.jsonl
-.interlinked/sync-state.json
-.interlinked/sessions/
-.interlinked/checkpoints.json
-.interlinked/guard-cache.json
+# Interlinked: blanket-ignore harness runtime state (sessions, sockets,
+# pids, audit/activity logs, caches, status files, learned rules, the
+# pending review dir, etc.). Carve out the small set of files designed
+# to be team-shared and committed (guard rules, project structure
+# declaration). New harness state files added by future features are
+# gitignored automatically — no .gitignore update required.
+.interlinked/*
+!.interlinked/guard-rules.json
+!.interlinked/structure.json
 
 # Agent-driven test reports (generated, not committed)
 test/agent-driven/reports/*.json
-.interlinked/realtime-retry.jsonl
-.interlinked/sync-errors.jsonl
-.interlinked/guard-rules.local.json
-.interlinked/harness.sock
-.interlinked/harness.pid
-.interlinked/pending-quality-warnings.json
-.interlinked/index/
-.interlinked/error-history.jsonl
-.interlinked/last-check.txt
-.interlinked/quality-check-in-progress
-.interlinked/learned-rules.json
-.interlinked/suggestion-telemetry.jsonl
-.interlinked/thinking-cursor.json
-.interlinked/classifier.status
-.interlinked/content-scanner.status
-.interlinked/content-scanner.audit.jsonl
-.interlinked/logs/
-.interlinked/scanner/
+
 tmp/
