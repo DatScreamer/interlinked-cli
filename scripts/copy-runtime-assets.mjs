@@ -1,10 +1,25 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+// Runtime assets that must accompany the bundled JS in `dist/`. The OPF
+// content-scanner's default config (`harness/rules/default-config.ts`)
+// passes `viterbi_calibration_path: HIGH_PRECISION_OPF_CALIBRATION_PATH`
+// into the sidecar by default — so the calibration JSON has to ship in
+// installed packages too, not just the Python script. Resolver layouts
+// covered: `dist/sidecars/<file>` and `dist/sidecars/calibrations/<file>`
+// (see `resolveDefaultOpfSidecarScript` / `resolveDefaultOpfCalibrationPath`).
 const ASSETS = [
 	{
 		from: "src/harness/content-scanner/sidecars/opf-sidecar.py",
 		to: "dist/sidecars/opf-sidecar.py",
+	},
+	{
+		from: "src/harness/content-scanner/sidecars/calibrations/default.json",
+		to: "dist/sidecars/calibrations/default.json",
+	},
+	{
+		from: "src/harness/content-scanner/sidecars/calibrations/high_precision.json",
+		to: "dist/sidecars/calibrations/high_precision.json",
 	},
 ];
 
