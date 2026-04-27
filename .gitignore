@@ -37,6 +37,12 @@ reports/
 !.claude/skills/
 !.claude/output-styles/
 
+# Codex CLI: blanket-ignore per-developer hook + config (same model as
+# .claude/settings.json above). Contributors opt in via `interlinked enable`
+# rather than inheriting a tracked config. Nothing in `.codex/` is currently
+# designed to be team-shared, so no carve-outs.
+.codex/*
+
 # Generated npm pack tarballs
 *.tgz
 
