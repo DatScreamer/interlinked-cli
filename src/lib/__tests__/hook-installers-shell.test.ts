@@ -25,6 +25,14 @@ interface HookFile {
 	hooks: Record<string, HookGroup[]>;
 }
 
+// zsh isn't installed on GitHub Actions ubuntu-latest runners. The bash/sh
+// cases already cover the original regression (the old `[...].join("; ")`
+// form produced `do;` / `then;` which only zsh tolerates and bash/sh reject),
+// so the zsh case is a sanity check that good code still works on zsh — fine
+// to skip when zsh is missing rather than fail with a confusing
+// `.toMatch(undefined)` error.
+const HAS_ZSH = spawnSync("zsh", ["-c", "true"], { stdio: "ignore" }).status === 0;
+
 let tmp: string;
 
 beforeEach(() => {
@@ -71,7 +79,7 @@ describe("Codex hook command — shell portability", () => {
 		expect(result.code).toBe(0);
 	});
 
-	it("parses without error under zsh", () => {
+	it.skipIf(!HAS_ZSH)("parses without error under zsh", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const command = readPreToolCommand();
 		const safeCommand = command.replace(/INTERLINKED_CLIENT[^|]*\|\| true/, 'echo "RAN"');
