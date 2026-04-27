@@ -89,7 +89,10 @@ import { sanitizeSessionId } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
-import { extractEditedFilePath } from "./server-tool-helpers.js";
+import {
+	extractAllEditedFilePaths,
+	extractEditedFilePath,
+} from "./server-tool-helpers.js";
 import { acknowledgeChecks, isAcknowledged, SessionTracker } from "./session-state.js";
 import {
 	formatStructuralWarnings,
@@ -1224,6 +1227,12 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		// Also detect Bash commands that edit files (sed, awk, tee, etc.)
 		// For these, try to extract the target file path from the command.
 		let editedFilePath = "";
+		// `editedFilePaths` is the full set of files this PostToolUse should
+		// fan out across. Codex `apply_patch` payloads can carry multiple
+		// `*** Update File:` / `Add File:` / `Delete File:` sections in one
+		// call; without iterating, only the first file gets TDD/quality/
+		// structural checks and the rest of the patch silently bypasses them.
+		let editedFilePaths: string[] = [];
 		if (
 			!isDirectFileEdit &&
 			event.tool_name &&
@@ -1238,12 +1247,15 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			);
 			if (editedFileMatch) {
 				editedFilePath = editedFileMatch[1];
+				editedFilePaths = [editedFilePath];
 			}
 		} else if (isDirectFileEdit) {
-			editedFilePath = extractEditedFilePath(event) || "";
+			editedFilePaths = extractAllEditedFilePaths(event);
+			editedFilePath = editedFilePaths[0] || "";
 		}
 
-		const shouldRunChecks = isDirectFileEdit || editedFilePath.length > 0;
+		const shouldRunChecks =
+			isDirectFileEdit || editedFilePath.length > 0 || editedFilePaths.length > 0;
 		if (shouldRunChecks) {
 			const dataDir = join(CWD, ".interlinked");
 			const markerPath = join(dataDir, "quality-check-in-progress");
@@ -1260,600 +1272,670 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				);
 			}
 
-			// For Bash edits, inject the detected file path into a synthetic event
-			const checkEvent = editedFilePath
-				? { ...event, tool_input: { ...event.tool_input, file_path: editedFilePath } }
-				: event;
+			// Per-file fan-out: Codex `apply_patch` payloads can carry multiple
+			// `*** Update File:` / `Add File:` / `Delete File:` sections in one call.
+			// Iterate so quality / structural / TDD / suggestion checks run for every
+			// file in the patch, not just the first one. For non-multi events,
+			// `editedFilePaths` collapses to a single-element list.
+			const pathsToCheck =
+				editedFilePaths.length > 0
+					? editedFilePaths
+					: editedFilePath.length > 0
+						? [editedFilePath]
+						: [""];
+			// Project-wide sweep is once-per-evaluation: a multi-file patch is one
+			// edit event semantically, and `runProjectWideChecks` spawns subprocesses
+			// we don't want to multiply by file count.
+			let projectWideSweepFiredThisEvent = false;
+			for (const currentEditedPath of pathsToCheck) {
+				editedFilePath = currentEditedPath;
+				// For Bash edits, inject the detected file path into a synthetic event
+				const checkEvent = editedFilePath
+					? { ...event, tool_input: { ...event.tool_input, file_path: editedFilePath } }
+					: event;
 
-			// --- Structural checks (fast, sub-100ms, dependency-aware) ---
-			let oldExports: ExportedSymbol[] = [];
-			let oldInterfaceBodies = new Map<string, string>();
-			let exportSurfaceChanged = false;
-			const structuralConfig = rules.structural_checks;
-			editedFilePath = (checkEvent.tool_input?.file_path as string) || "";
+				// --- Structural checks (fast, sub-100ms, dependency-aware) ---
+				let oldExports: ExportedSymbol[] = [];
+				let oldInterfaceBodies = new Map<string, string>();
+				let exportSurfaceChanged = false;
+				const structuralConfig = rules.structural_checks;
+				editedFilePath = (checkEvent.tool_input?.file_path as string) || "";
 
-			// --- TDD cycle tracking: record impl edits and test writes ---
-			if (session && editedFilePath) {
-				if (TEST_FILE_RE.test(editedFilePath)) {
-					recordTestWrite(session, editedFilePath);
-				} else {
-					recordImplEdit(session, editedFilePath);
-				}
-			}
-
-			// Resolve graph for the edited file's project (supports cross-repo edits)
-			const fileGraph = getGraphForFile(editedFilePath || CWD);
-
-			if (structuralConfig?.enabled && fileGraph.isInitialized && editedFilePath) {
-				// Capture old state, then update graph with new file content
-				oldExports = fileGraph.getExports(editedFilePath);
-				oldInterfaceBodies = fileGraph.getInterfaceBodies(editedFilePath);
-				fileGraph.updateFile(editedFilePath);
-
-				const rawStructuralResults = runStructuralChecks(
-					checkEvent,
-					structuralConfig,
-					fileGraph,
-					sessions,
-					oldExports,
-					oldInterfaceBodies,
-				);
-				checksRan.push("structural");
-
-				// --- File-level suppression for structural checks ---
-				// Only JSON suppressions apply (inline comments don't make sense
-				// for cross-file structural checks).
-				const structRelPath = relative(CWD, editedFilePath);
-				const structFileSup = loadFileSuppressions(
-					join(CWD, ".interlinked"),
-					structRelPath,
-				);
-				const afterSuppression = rawStructuralResults.filter(
-					(r) => !structFileSup.has(r.check),
-				);
-
-				// --- Session-ack suppression for structural checks ---
-				// If the user already saw a warning for this file+check and let
-				// the agent continue, skip re-firing warnings (errors always re-fire).
-				const structuralResults = afterSuppression.filter(
-					(r) =>
-						r.severity === "error" || !isAcknowledged(session, editedFilePath, r.check),
-				);
-
-				// Collect structured results for local persistence
-				for (const r of structuralResults) {
-					allCheckResults.push({
-						source: "structural",
-						name: r.check,
-						severity: r.severity,
-						message: r.message,
-						file: r.file,
-						detail: r.detail,
-						affected_files: r.affectedFiles,
-						determinism: STRUCTURAL_CHECK_META[r.check]?.determinism ?? "heuristic",
-					});
-				}
-
-				if (structuralResults.length > 0) {
-					const structWarnings = formatStructuralWarnings(structuralResults);
-					postDecision.warnings = [...(postDecision.warnings || []), ...structWarnings];
-
-					// Block only on fully_deterministic findings with error/warning severity.
-					// Heuristic/partial findings (blast_radius, test_proximity, etc.) are advisory only.
-					const hasDeterministicActionable = structuralResults.some(
-						(r) =>
-							(r.severity === "error" || r.severity === "warning") &&
-							STRUCTURAL_CHECK_META[r.check]?.determinism === "fully_deterministic",
-					);
-					if (hasDeterministicActionable) {
-						postDecision.decision = "block";
+				// --- TDD cycle tracking: record impl edits and test writes ---
+				if (session && editedFilePath) {
+					if (TEST_FILE_RE.test(editedFilePath)) {
+						recordTestWrite(session, editedFilePath);
+					} else {
+						recordImplEdit(session, editedFilePath);
 					}
+				}
 
-					log(`Structural issues: ${structuralResults.map((r) => r.check).join(", ")}`);
+				// Resolve graph for the edited file's project (supports cross-repo edits)
+				const fileGraph = getGraphForFile(editedFilePath || CWD);
 
-					// Record failed files for recently-failed-here tracking
-					const failedChecks = structuralResults
-						.filter((r) => r.severity === "error" || r.severity === "warning")
-						.map((r) => r.check);
-					if (failedChecks.length > 0) {
-						session.failed_files.set(editedFilePath, {
-							failure_count: failedChecks.length,
-							checks: [...new Set(failedChecks)],
-							recorded_at: event.timestamp,
-							tool_call_count: session.tool_call_count,
+				if (structuralConfig?.enabled && fileGraph.isInitialized && editedFilePath) {
+					// Capture old state, then update graph with new file content
+					oldExports = fileGraph.getExports(editedFilePath);
+					oldInterfaceBodies = fileGraph.getInterfaceBodies(editedFilePath);
+					fileGraph.updateFile(editedFilePath);
+
+					const rawStructuralResults = runStructuralChecks(
+						checkEvent,
+						structuralConfig,
+						fileGraph,
+						sessions,
+						oldExports,
+						oldInterfaceBodies,
+					);
+					checksRan.push("structural");
+
+					// --- File-level suppression for structural checks ---
+					// Only JSON suppressions apply (inline comments don't make sense
+					// for cross-file structural checks).
+					const structRelPath = relative(CWD, editedFilePath);
+					const structFileSup = loadFileSuppressions(
+						join(CWD, ".interlinked"),
+						structRelPath,
+					);
+					const afterSuppression = rawStructuralResults.filter(
+						(r) => !structFileSup.has(r.check),
+					);
+
+					// --- Session-ack suppression for structural checks ---
+					// If the user already saw a warning for this file+check and let
+					// the agent continue, skip re-firing warnings (errors always re-fire).
+					const structuralResults = afterSuppression.filter(
+						(r) =>
+							r.severity === "error" || !isAcknowledged(session, editedFilePath, r.check),
+					);
+
+					// Collect structured results for local persistence
+					for (const r of structuralResults) {
+						allCheckResults.push({
+							source: "structural",
+							name: r.check,
+							severity: r.severity,
+							message: r.message,
+							file: r.file,
+							detail: r.detail,
+							affected_files: r.affectedFiles,
+							determinism: STRUCTURAL_CHECK_META[r.check]?.determinism ?? "heuristic",
 						});
 					}
 
-					// --- Impact analysis (fast, graph-only, no subprocesses) ---
-					if (structuralConfig?.impact_analysis && editedFilePath) {
-						const newExportsForImpact = fileGraph.getExports(editedFilePath);
-						const impactResult = runImpactAnalysis(
-							editedFilePath,
-							fileGraph,
-							oldExports,
-							newExportsForImpact,
-							structuralResults,
-							{ highThreshold: structuralConfig.impact_high_threshold ?? 4 },
+					if (structuralResults.length > 0) {
+						const structWarnings = formatStructuralWarnings(structuralResults);
+						postDecision.warnings = [...(postDecision.warnings || []), ...structWarnings];
+
+						// Block only on fully_deterministic findings with error/warning severity.
+						// Heuristic/partial findings (blast_radius, test_proximity, etc.) are advisory only.
+						const hasDeterministicActionable = structuralResults.some(
+							(r) =>
+								(r.severity === "error" || r.severity === "warning") &&
+								STRUCTURAL_CHECK_META[r.check]?.determinism === "fully_deterministic",
 						);
-
-						// Record follow-ups in session state (replaces inline pending_completions)
-						recordImpactFollowUps(impactResult, session);
-
-						// Format warnings
-						const impactWarnings = formatImpactWarning(impactResult, fileGraph);
-						if (impactWarnings.length > 0) {
-							postDecision.warnings = [
-								...(postDecision.warnings || []),
-								...impactWarnings,
-							];
-						}
-
-						// Critical impact blocks so the agent reads the warning
-						if (impactResult.severity === "critical") {
+						if (hasDeterministicActionable) {
 							postDecision.decision = "block";
 						}
 
-						log(
-							`Impact analysis: ${impactResult.severity} (${impactResult.dependentCount} dependents, ${impactResult.breakingFiles.length} breaking)`,
-						);
-					} else {
-						// Fallback: record pending completions without full impact analysis
-						const exportResults = structuralResults.filter(
-							(r) =>
-								r.check === "export_surface" &&
-								r.affectedFiles &&
-								r.affectedFiles.length > 0,
-						);
-						for (const result of exportResults) {
-							session.pending_completions.set(editedFilePath, {
-								source_file: editedFilePath,
-								affected_files: result.affectedFiles!,
-								resolved_files: new Set(),
-								recorded_at_tool_call: session.tool_call_count,
-								description: result.message,
+						log(`Structural issues: ${structuralResults.map((r) => r.check).join(", ")}`);
+
+						// Record failed files for recently-failed-here tracking
+						const failedChecks = structuralResults
+							.filter((r) => r.severity === "error" || r.severity === "warning")
+							.map((r) => r.check);
+						if (failedChecks.length > 0) {
+							session.failed_files.set(editedFilePath, {
+								failure_count: failedChecks.length,
+								checks: [...new Set(failedChecks)],
+								recorded_at: event.timestamp,
+								tool_call_count: session.tool_call_count,
 							});
 						}
-					}
-					// Record errors in cross-session error history
-					if (rules.error_memory?.enabled) {
-						const relPath = fileGraph.toRelative(editedFilePath);
-						const fileRole = fileGraph.classifyModule(editedFilePath);
-						const currentExports = fileGraph
-							.getExports(editedFilePath)
-							.map((e) => e.name);
-						const dependentCount = fileGraph.getDependents(editedFilePath).length;
-						const dependencyCount = fileGraph.getDependencies(editedFilePath).length;
 
-						for (const result of structuralResults) {
-							if (result.severity === "error" || result.severity === "warning") {
-								const diffContext = ErrorHistory.buildErrorContext({
-									file: relPath,
-									fileRole,
-									dependentCount,
-									dependencyCount,
-									exports: currentExports,
-									result,
-									oldString: checkEvent.tool_input?.old_string as
-										| string
-										| undefined,
-									newString: checkEvent.tool_input?.new_string as
-										| string
-										| undefined,
-									content: checkEvent.tool_input?.content as string | undefined,
+						// --- Impact analysis (fast, graph-only, no subprocesses) ---
+						if (structuralConfig?.impact_analysis && editedFilePath) {
+							const newExportsForImpact = fileGraph.getExports(editedFilePath);
+							const impactResult = runImpactAnalysis(
+								editedFilePath,
+								fileGraph,
+								oldExports,
+								newExportsForImpact,
+								structuralResults,
+								{ highThreshold: structuralConfig.impact_high_threshold ?? 4 },
+							);
+
+							// Record follow-ups in session state (replaces inline pending_completions)
+							recordImpactFollowUps(impactResult, session);
+
+							// Format warnings
+							const impactWarnings = formatImpactWarning(impactResult, fileGraph);
+							if (impactWarnings.length > 0) {
+								postDecision.warnings = [
+									...(postDecision.warnings || []),
+									...impactWarnings,
+								];
+							}
+
+							// Critical impact blocks so the agent reads the warning
+							if (impactResult.severity === "critical") {
+								postDecision.decision = "block";
+							}
+
+							log(
+								`Impact analysis: ${impactResult.severity} (${impactResult.dependentCount} dependents, ${impactResult.breakingFiles.length} breaking)`,
+							);
+						} else {
+							// Fallback: record pending completions without full impact analysis
+							const exportResults = structuralResults.filter(
+								(r) =>
+									r.check === "export_surface" &&
+									r.affectedFiles &&
+									r.affectedFiles.length > 0,
+							);
+							for (const result of exportResults) {
+								session.pending_completions.set(editedFilePath, {
+									source_file: editedFilePath,
+									affected_files: result.affectedFiles!,
+									resolved_files: new Set(),
+									recorded_at_tool_call: session.tool_call_count,
+									description: result.message,
 								});
-								// Estimate line number from old_string position
-								let lineStart: number | undefined;
-								const oldStr = checkEvent.tool_input?.old_string as
-									| string
-									| undefined;
-								if (oldStr) {
+							}
+						}
+						// Record errors in cross-session error history
+						if (rules.error_memory?.enabled) {
+							const relPath = fileGraph.toRelative(editedFilePath);
+							const fileRole = fileGraph.classifyModule(editedFilePath);
+							const currentExports = fileGraph
+								.getExports(editedFilePath)
+								.map((e) => e.name);
+							const dependentCount = fileGraph.getDependents(editedFilePath).length;
+							const dependencyCount = fileGraph.getDependencies(editedFilePath).length;
+
+							for (const result of structuralResults) {
+								if (result.severity === "error" || result.severity === "warning") {
+									const diffContext = ErrorHistory.buildErrorContext({
+										file: relPath,
+										fileRole,
+										dependentCount,
+										dependencyCount,
+										exports: currentExports,
+										result,
+										oldString: checkEvent.tool_input?.old_string as
+											| string
+											| undefined,
+										newString: checkEvent.tool_input?.new_string as
+											| string
+											| undefined,
+										content: checkEvent.tool_input?.content as string | undefined,
+									});
+									// Estimate line number from old_string position
+									let lineStart: number | undefined;
+									const oldStr = checkEvent.tool_input?.old_string as
+										| string
+										| undefined;
+									if (oldStr) {
+										try {
+											const content = readFileSync(editedFilePath, "utf-8");
+											const idx = content.indexOf(oldStr);
+											if (idx >= 0)
+												lineStart = content.slice(0, idx).split("\n").length;
+										} catch (e) {
+											void e;
+										}
+									}
+
+									await errorHistory.recordError(
+										event.session_id,
+										session.agent_name,
+										relPath,
+										fileRole,
+										result,
+										diffContext,
+										{
+											line_start: lineStart,
+											co_edited_files: [...session.files_written]
+												.map((f) => fileGraph.toRelative(f))
+												.filter((f) => f !== relPath),
+											pre_error_sequence: [...session.tool_sequence],
+										},
+									);
+								}
+							}
+						}
+					} else {
+						// No failures — clear any previous failed_files entry for this file
+						session.failed_files.delete(editedFilePath);
+
+						// Record fix in error history
+						if (rules.error_memory?.enabled) {
+							const relPath = fileGraph.toRelative(editedFilePath);
+							const fixContext = ErrorHistory.buildQueryContext({
+								file: relPath,
+								fileRole: fileGraph.classifyModule(editedFilePath),
+								dependentCount: fileGraph.getDependents(editedFilePath).length,
+								dependencyCount: fileGraph.getDependencies(editedFilePath).length,
+								exports: fileGraph.getExports(editedFilePath).map((e) => e.name),
+								oldString: checkEvent.tool_input?.old_string as string | undefined,
+								newString: checkEvent.tool_input?.new_string as string | undefined,
+								content: checkEvent.tool_input?.content as string | undefined,
+							});
+							errorHistory.recordFix(relPath, fixContext);
+						}
+					}
+
+					// Check if export surface changed (for smart tsc)
+					const newExports = fileGraph.getExports(editedFilePath);
+					exportSurfaceChanged = !shouldSkipTsc(structuralConfig, oldExports, newExports);
+
+					// --- Deletion hygiene (Layer 3): orphaned test references ---
+					// When exports are removed, check if co-located test files still reference them
+					if (session && oldExports.length > 0) {
+						const newExportNames = new Set(newExports.map((e) => e.name));
+						const removedSymbols = oldExports
+							.filter((e) => !newExportNames.has(e.name))
+							.map((e) => e.name);
+
+						if (removedSymbols.length > 0) {
+							// Resolve co-located test files (same pattern as checkTestFileExists)
+							const extMatch = editedFilePath.match(/\.(ts|tsx|js|jsx|mjs|cjs)$/);
+							if (extMatch) {
+								const base = editedFilePath.slice(0, -extMatch[0].length);
+								const testCandidates = [
+									`${base}.test${extMatch[0]}`,
+									`${base}.spec${extMatch[0]}`,
+									join(
+										dirname(editedFilePath),
+										"__tests__",
+										`${basename(base)}.test${extMatch[0]}`,
+									),
+									join(
+										dirname(editedFilePath),
+										"__tests__",
+										`${basename(base)}.spec${extMatch[0]}`,
+									),
+								];
+								for (const testFile of testCandidates) {
+									if (!existsSync(testFile)) continue;
 									try {
-										const content = readFileSync(editedFilePath, "utf-8");
-										const idx = content.indexOf(oldStr);
-										if (idx >= 0)
-											lineStart = content.slice(0, idx).split("\n").length;
+										const testContent = readFileSync(testFile, "utf-8");
+										const wasEdited = session.files_written.has(testFile);
+										const orphanFindings = checkOrphanedTests(
+											removedSymbols,
+											relative(CWD, testFile),
+											testContent,
+											wasEdited,
+										);
+										for (const f of orphanFindings) {
+											allCheckResults.push({
+												source: "suggestion",
+												name: f.check,
+												severity: "warning",
+												message: f.message,
+												file: testFile,
+												determinism: "heuristic",
+											});
+										}
+										if (orphanFindings.length > 0) {
+											postDecision.warnings = [
+												...(postDecision.warnings || []),
+												...orphanFindings.map(
+													(f) => `[deletion-hygiene:${f.check}] ${f.message}`,
+												),
+											];
+										}
 									} catch (e) {
 										void e;
 									}
 								}
+							}
+						}
+					}
+				} else if (fileGraph.isInitialized && editedFilePath) {
+					// Even if structural checks are disabled, keep graph up to date
+					fileGraph.updateFile(editedFilePath);
+				}
 
-								await errorHistory.recordError(
-									event.session_id,
-									session.agent_name,
-									relPath,
-									fileRole,
-									result,
-									diffContext,
-									{
-										line_start: lineStart,
-										co_edited_files: [...session.files_written]
-											.map((f) => fileGraph.toRelative(f))
-											.filter((f) => f !== relPath),
-										pre_error_sequence: [...session.tool_sequence],
-									},
+				// Update route map when a file is edited
+				if (editedFilePath) {
+					routeMap.updateFile(editedFilePath);
+				}
+
+				// --- Quality checks (tsc, lint, secrets — slower, subprocess-based) ---
+				// Capture baseline suppression count before quality checks consume it
+				let previousSuppressionCount = 0;
+				if (rules.quality_checks) {
+					// Smart tsc: when only internal logic changed (no export surface change),
+					// still run tsc but filter output to only the edited file. This catches
+					// internal type errors (e.g. TS18046 'unknown' access) without reporting
+					// unrelated project-wide errors.
+					let qualityOpts: QualityCheckOptions | undefined;
+					if (
+						structuralConfig?.smart_tsc &&
+						!exportSurfaceChanged &&
+						editedFilePath &&
+						rules.quality_checks.typescript?.enabled
+					) {
+						const filterFile = relative(
+							findProjectRoot(editedFilePath, CWD) || CWD,
+							editedFilePath,
+						);
+						qualityOpts = { tscFilterFile: filterFile };
+						log(`Smart tsc: filtering to ${filterFile} (internal-only edit)`);
+					}
+
+					const currentBaseline = preEditBaselines.get(editedFilePath);
+					previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
+					const rawQualityResults = runQualityChecks(checkEvent, rules.quality_checks, CWD, {
+						...qualityOpts,
+						baseline: currentBaseline,
+						diffAware: rules.diff_aware,
+					});
+					// Clear consumed baseline
+					preEditBaselines.delete(editedFilePath);
+					// Track which quality checks actually applied to this file type
+					for (const [name, check] of Object.entries(rules.quality_checks)) {
+						if (
+							check.enabled &&
+							check.file_types.some((t: string) => editedFilePath.endsWith(t))
+						) {
+							checksRan.push(name);
+						}
+					}
+
+					// --- Session-ack suppression for quality checks ---
+					// Skip re-firing warnings the user already acknowledged for this file+check.
+					// Errors always re-fire regardless of acknowledgment.
+					const qualityResults = rawQualityResults.filter(
+						(r) =>
+							r.severity === "error" || !isAcknowledged(session, editedFilePath, r.name),
+					);
+
+					// Collect quality check results for local persistence
+					for (const r of qualityResults) {
+						allCheckResults.push({
+							source: "quality",
+							name: r.name,
+							severity: r.severity,
+							message: r.message,
+							file: r.file,
+							detail: r.detail,
+							determinism:
+								QUALITY_CHECK_META[r.name]?.determinism ??
+								GENERIC_CHECK_META[r.name]?.determinism ??
+								"fully_deterministic",
+						});
+					}
+
+					if (qualityResults.length > 0) {
+						const warnings = formatQualityWarnings(qualityResults);
+						postDecision.warnings = [...(postDecision.warnings || []), ...warnings];
+
+						// Block only on fully_deterministic quality checks with error severity.
+						// Heuristic checks (strong_typing, prompt_injection) are advisory only.
+						const hasDeterministicErrors = qualityResults.some(
+							(r) =>
+								r.severity === "error" &&
+								QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic",
+						);
+						if (hasDeterministicErrors) {
+							postDecision.decision = "block";
+						}
+
+						log(
+							`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")}${hasDeterministicErrors ? " (blocking)" : " (advisory)"}`,
+						);
+					}
+				}
+
+				// ── Project-wide sweep (cross-file tsc/biome) ──
+				// Catches cross-file type errors and lint issues that per-file checks miss.
+				// Triggers: every N edits or immediately when export surface changed.
+				const pwConfig = rules.project_wide_checks;
+				if (pwConfig?.enabled && editedFilePath) {
+					projectWideSweepState.recordFileChecked(editedFilePath);
+					if (!projectWideSweepFiredThisEvent) {
+						const intervalReached = projectWideSweepState.recordEdit(pwConfig);
+						const shouldSweep =
+							intervalReached || (pwConfig.on_export_change && exportSurfaceChanged);
+	
+						if (shouldSweep) {
+							projectWideSweepFiredThisEvent = true;
+							const sweepResult = runProjectWideChecks(pwConfig, projectWideSweepState, CWD);
+		
+							if (sweepResult.findings.length > 0) {
+								const sweepWarnings = formatQualityWarnings(sweepResult.findings);
+								postDecision.warnings = [
+									...(postDecision.warnings || []),
+									...sweepWarnings,
+								];
+								log(
+									`Project-wide sweep: ${sweepResult.findings.length} cross-file issue(s) from ${sweepResult.toolsRun.join(", ")} (${sweepResult.elapsedMs}ms)`,
+								);
+							} else {
+								log(
+									`Project-wide sweep: clean (${sweepResult.toolsRun.join(", ")}, ${sweepResult.elapsedMs}ms)`,
 								);
 							}
 						}
 					}
-				} else {
-					// No failures — clear any previous failed_files entry for this file
-					session.failed_files.delete(editedFilePath);
-
-					// Record fix in error history
-					if (rules.error_memory?.enabled) {
-						const relPath = fileGraph.toRelative(editedFilePath);
-						const fixContext = ErrorHistory.buildQueryContext({
-							file: relPath,
-							fileRole: fileGraph.classifyModule(editedFilePath),
-							dependentCount: fileGraph.getDependents(editedFilePath).length,
-							dependencyCount: fileGraph.getDependencies(editedFilePath).length,
-							exports: fileGraph.getExports(editedFilePath).map((e) => e.name),
-							oldString: checkEvent.tool_input?.old_string as string | undefined,
-							newString: checkEvent.tool_input?.new_string as string | undefined,
-							content: checkEvent.tool_input?.content as string | undefined,
-						});
-						errorHistory.recordFix(relPath, fixContext);
-					}
 				}
 
-				// Check if export surface changed (for smart tsc)
-				const newExports = fileGraph.getExports(editedFilePath);
-				exportSurfaceChanged = !shouldSkipTsc(structuralConfig, oldExports, newExports);
+				// ── Scored suggestions (non-deterministic heuristics, top 1-3) ──
+				if (editedFilePath && existsSync(editedFilePath)) {
+					try {
+						const suggContent = readFileSync(editedFilePath, "utf-8");
+						const inlineSup = scanInlineSuppressions(suggContent);
+						const relPath = relative(CWD, editedFilePath);
+						const fileSup = loadFileSuppressions(join(CWD, ".interlinked"), relPath);
 
-				// --- Deletion hygiene (Layer 3): orphaned test references ---
-				// When exports are removed, check if co-located test files still reference them
-				if (session && oldExports.length > 0) {
-					const newExportNames = new Set(newExports.map((e) => e.name));
-					const removedSymbols = oldExports
-						.filter((e) => !newExportNames.has(e.name))
-						.map((e) => e.name);
+						// Collect findings from regex heuristics (30+ checks).
+						// Registry lives in ./server/suggestion-checks.ts for auditing.
+						const allFindings: Finding[] = collectSuggestionFindings(
+							suggContent,
+							editedFilePath!,
+						);
 
-					if (removedSymbols.length > 0) {
-						// Resolve co-located test files (same pattern as checkTestFileExists)
-						const extMatch = editedFilePath.match(/\.(ts|tsx|js|jsx|mjs|cjs)$/);
-						if (extMatch) {
-							const base = editedFilePath.slice(0, -extMatch[0].length);
-							const testCandidates = [
-								`${base}.test${extMatch[0]}`,
-								`${base}.spec${extMatch[0]}`,
-								join(
-									dirname(editedFilePath),
-									"__tests__",
-									`${basename(base)}.test${extMatch[0]}`,
-								),
-								join(
-									dirname(editedFilePath),
-									"__tests__",
-									`${basename(base)}.spec${extMatch[0]}`,
-								),
-							];
-							for (const testFile of testCandidates) {
-								if (!existsSync(testFile)) continue;
-								try {
-									const testContent = readFileSync(testFile, "utf-8");
-									const wasEdited = session.files_written.has(testFile);
-									const orphanFindings = checkOrphanedTests(
-										removedSymbols,
-										relative(CWD, testFile),
-										testContent,
-										wasEdited,
-									);
-									for (const f of orphanFindings) {
-										allCheckResults.push({
-											source: "suggestion",
-											name: f.check,
-											severity: "warning",
-											message: f.message,
-											file: testFile,
-											determinism: "heuristic",
-										});
-									}
-									if (orphanFindings.length > 0) {
-										postDecision.warnings = [
-											...(postDecision.warnings || []),
-											...orphanFindings.map(
-												(f) => `[deletion-hygiene:${f.check}] ${f.message}`,
-											),
-										];
-									}
-								} catch (e) {
-									void e;
+						// --- Deletion hygiene (Layer 2): diff-aware zombie detectors ---
+						// These compare old_string vs new_string to catch the agent hedging.
+						allFindings.push(
+							...collectDeletionHygieneDiffFindings({
+								oldString: checkEvent.tool_input?.old_string as string | undefined,
+								newString: checkEvent.tool_input?.new_string as string | undefined,
+								filePath: editedFilePath!,
+							}),
+						);
+
+						if (allFindings.length > 0) {
+							// Compute edit region for proximity scoring
+							let editStartLine: number | undefined;
+							let editEndLine: number | undefined;
+							const oldStr = checkEvent.tool_input?.old_string as string | undefined;
+							if (oldStr && suggContent) {
+								const idx = suggContent.indexOf(oldStr);
+								if (idx >= 0) {
+									editStartLine = suggContent.slice(0, idx).split("\n").length;
+									editEndLine = editStartLine + oldStr.split("\n").length;
 								}
 							}
-						}
-					}
-				}
-			} else if (fileGraph.isInitialized && editedFilePath) {
-				// Even if structural checks are disabled, keep graph up to date
-				fileGraph.updateFile(editedFilePath);
-			}
 
-			// Update route map when a file is edited
-			if (editedFilePath) {
-				routeMap.updateFile(editedFilePath);
-			}
+							const rawScored = scoreFindings(allFindings, {
+								filePath: editedFilePath!,
+								session,
+								editStartLine,
+								editEndLine,
+								inlineSuppressions: inlineSup,
+								fileSuppressions: fileSup,
+								limit: rules.suggestion_limit ?? 3,
+								threshold: rules.suggestion_threshold ?? 0.5,
+							});
 
-			// --- Quality checks (tsc, lint, secrets — slower, subprocess-based) ---
-			// Capture baseline suppression count before quality checks consume it
-			let previousSuppressionCount = 0;
-			if (rules.quality_checks) {
-				// Smart tsc: when only internal logic changed (no export surface change),
-				// still run tsc but filter output to only the edited file. This catches
-				// internal type errors (e.g. TS18046 'unknown' access) without reporting
-				// unrelated project-wide errors.
-				let qualityOpts: QualityCheckOptions | undefined;
-				if (
-					structuralConfig?.smart_tsc &&
-					!exportSurfaceChanged &&
-					editedFilePath &&
-					rules.quality_checks.typescript?.enabled
-				) {
-					const filterFile = relative(
-						findProjectRoot(editedFilePath, CWD) || CWD,
-						editedFilePath,
-					);
-					qualityOpts = { tscFilterFile: filterFile };
-					log(`Smart tsc: filtering to ${filterFile} (internal-only edit)`);
-				}
-
-				const currentBaseline = preEditBaselines.get(editedFilePath);
-				previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
-				const rawQualityResults = runQualityChecks(checkEvent, rules.quality_checks, CWD, {
-					...qualityOpts,
-					baseline: currentBaseline,
-					diffAware: rules.diff_aware,
-				});
-				// Clear consumed baseline
-				preEditBaselines.delete(editedFilePath);
-				// Track which quality checks actually applied to this file type
-				for (const [name, check] of Object.entries(rules.quality_checks)) {
-					if (
-						check.enabled &&
-						check.file_types.some((t: string) => editedFilePath.endsWith(t))
-					) {
-						checksRan.push(name);
-					}
-				}
-
-				// --- Session-ack suppression for quality checks ---
-				// Skip re-firing warnings the user already acknowledged for this file+check.
-				// Errors always re-fire regardless of acknowledgment.
-				const qualityResults = rawQualityResults.filter(
-					(r) =>
-						r.severity === "error" || !isAcknowledged(session, editedFilePath, r.name),
-				);
-
-				// Collect quality check results for local persistence
-				for (const r of qualityResults) {
-					allCheckResults.push({
-						source: "quality",
-						name: r.name,
-						severity: r.severity,
-						message: r.message,
-						file: r.file,
-						detail: r.detail,
-						determinism:
-							QUALITY_CHECK_META[r.name]?.determinism ??
-							GENERIC_CHECK_META[r.name]?.determinism ??
-							"fully_deterministic",
-					});
-				}
-
-				if (qualityResults.length > 0) {
-					const warnings = formatQualityWarnings(qualityResults);
-					postDecision.warnings = [...(postDecision.warnings || []), ...warnings];
-
-					// Block only on fully_deterministic quality checks with error severity.
-					// Heuristic checks (strong_typing, prompt_injection) are advisory only.
-					const hasDeterministicErrors = qualityResults.some(
-						(r) =>
-							r.severity === "error" &&
-							QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic",
-					);
-					if (hasDeterministicErrors) {
-						postDecision.decision = "block";
-					}
-
-					log(
-						`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")}${hasDeterministicErrors ? " (blocking)" : " (advisory)"}`,
-					);
-				}
-			}
-
-			// ── Project-wide sweep (cross-file tsc/biome) ──
-			// Catches cross-file type errors and lint issues that per-file checks miss.
-			// Triggers: every N edits or immediately when export surface changed.
-			const pwConfig = rules.project_wide_checks;
-			if (pwConfig?.enabled && editedFilePath) {
-				projectWideSweepState.recordFileChecked(editedFilePath);
-				const intervalReached = projectWideSweepState.recordEdit(pwConfig);
-				const shouldSweep =
-					intervalReached || (pwConfig.on_export_change && exportSurfaceChanged);
-
-				if (shouldSweep) {
-					const sweepResult = runProjectWideChecks(pwConfig, projectWideSweepState, CWD);
-
-					if (sweepResult.findings.length > 0) {
-						const sweepWarnings = formatQualityWarnings(sweepResult.findings);
-						postDecision.warnings = [
-							...(postDecision.warnings || []),
-							...sweepWarnings,
-						];
-						log(
-							`Project-wide sweep: ${sweepResult.findings.length} cross-file issue(s) from ${sweepResult.toolsRun.join(", ")} (${sweepResult.elapsedMs}ms)`,
-						);
-					} else {
-						log(
-							`Project-wide sweep: clean (${sweepResult.toolsRun.join(", ")}, ${sweepResult.elapsedMs}ms)`,
-						);
-					}
-				}
-			}
-
-			// ── Scored suggestions (non-deterministic heuristics, top 1-3) ──
-			if (editedFilePath && existsSync(editedFilePath)) {
-				try {
-					const suggContent = readFileSync(editedFilePath, "utf-8");
-					const inlineSup = scanInlineSuppressions(suggContent);
-					const relPath = relative(CWD, editedFilePath);
-					const fileSup = loadFileSuppressions(join(CWD, ".interlinked"), relPath);
-
-					// Collect findings from regex heuristics (30+ checks).
-					// Registry lives in ./server/suggestion-checks.ts for auditing.
-					const allFindings: Finding[] = collectSuggestionFindings(
-						suggContent,
-						editedFilePath!,
-					);
-
-					// --- Deletion hygiene (Layer 2): diff-aware zombie detectors ---
-					// These compare old_string vs new_string to catch the agent hedging.
-					allFindings.push(
-						...collectDeletionHygieneDiffFindings({
-							oldString: checkEvent.tool_input?.old_string as string | undefined,
-							newString: checkEvent.tool_input?.new_string as string | undefined,
-							filePath: editedFilePath!,
-						}),
-					);
-
-					if (allFindings.length > 0) {
-						// Compute edit region for proximity scoring
-						let editStartLine: number | undefined;
-						let editEndLine: number | undefined;
-						const oldStr = checkEvent.tool_input?.old_string as string | undefined;
-						if (oldStr && suggContent) {
-							const idx = suggContent.indexOf(oldStr);
-							if (idx >= 0) {
-								editStartLine = suggContent.slice(0, idx).split("\n").length;
-								editEndLine = editStartLine + oldStr.split("\n").length;
-							}
-						}
-
-						const rawScored = scoreFindings(allFindings, {
-							filePath: editedFilePath!,
-							session,
-							editStartLine,
-							editEndLine,
-							inlineSuppressions: inlineSup,
-							fileSuppressions: fileSup,
-							limit: rules.suggestion_limit ?? 3,
-							threshold: rules.suggestion_threshold ?? 0.5,
-						});
-
-						// Session-ack suppression for suggestions (always warning severity)
-						const scored = rawScored.filter(
-							(s) => !isAcknowledged(session, editedFilePath!, s.check),
-						);
-
-						if (scored.length > 0) {
-							for (const s of scored) {
-								allCheckResults.push({
-									source: "suggestion",
-									name: s.check,
-									severity: "warning",
-									message: s.message,
-									file: editedFilePath || undefined,
-									score: s.score,
-									line: s.line,
-									determinism: "heuristic",
-								});
-							}
-							const suggWarnings = formatScoredFindings(scored);
-							postDecision.warnings = [
-								...(postDecision.warnings || []),
-								...suggWarnings,
-							];
-							log(
-								`Suggestions: ${scored.map((s) => `${s.check}(${s.score.toFixed(2)})`).join(", ")}`,
+							// Session-ack suppression for suggestions (always warning severity)
+							const scored = rawScored.filter(
+								(s) => !isAcknowledged(session, editedFilePath!, s.check),
 							);
-						}
 
-						// Telemetry (non-blocking)
-						writeTelemetry(allFindings, scored, {
-							interlinkedDir: join(CWD, ".interlinked"),
-							sessionId: checkEvent.session_id,
-							agentName: session?.agent_name || "unknown",
-							filePath: relPath,
-							threshold: rules.suggestion_threshold ?? 0.5,
-						});
-					}
-				} catch (e) {
-					void e;
-				}
-			}
+							if (scored.length > 0) {
+								for (const s of scored) {
+									allCheckResults.push({
+										source: "suggestion",
+										name: s.check,
+										severity: "warning",
+										message: s.message,
+										file: editedFilePath || undefined,
+										score: s.score,
+										line: s.line,
+										determinism: "heuristic",
+									});
+								}
+								const suggWarnings = formatScoredFindings(scored);
+								postDecision.warnings = [
+									...(postDecision.warnings || []),
+									...suggWarnings,
+								];
+								log(
+									`Suggestions: ${scored.map((s) => `${s.check}(${s.score.toFixed(2)})`).join(", ")}`,
+								);
+							}
 
-			// --- Session-level taste check: shotgun surgery ---
-			// Threshold starts at 40 (not 25): adding a field to a shared interface
-			// naturally touches types + implementation + every test mock, easily 10-15 files.
-			if (session && session.files_written.size >= 40) {
-				const shotgunKey = `shotgun-surgery-${session.files_written.size >= 60 ? "60" : "40"}`;
-				if (!isAcknowledged(session, "__session__", shotgunKey)) {
-					allCheckResults.push({
-						source: "suggestion",
-						name: "shotgun-surgery",
-						severity: "warning",
-						message: `This session has edited ${session.files_written.size} files. Consider whether abstraction boundaries could reduce the blast radius, or if this change should be broken into smaller steps.`,
-						determinism: "heuristic",
-					});
-					if (!postDecision.warnings) postDecision.warnings = [];
-					postDecision.warnings.push(
-						`[taste:shotgun-surgery] ${session.files_written.size} files edited in this session — consider if the change scope is too broad`,
-					);
-					checksRan.push("shotgun-surgery");
-					// Mark as acknowledged so we don't re-fire on every subsequent edit
-					// at the same threshold. The 60-file threshold uses a different key,
-					// so it will still fire once when crossed.
-					acknowledgeChecks(session, "__session__", [shotgunKey]);
-				}
-			}
-
-			// --- Structure checks phase (non-blocking guidance) ---
-			// Skip cold graph build if existing checks already consumed most of the time budget.
-			// The 15s PostToolUse timeout is shared with tsc/biome/etc. On large repos, a cold
-			// graph build (~5-10s for 20K+ nodes) can push past the limit. The cached graph
-			// (from a previous call) makes subsequent edits fast (<100ms).
-			const structTimeBudgetMs = 12000;
-			const structElapsed = Date.now() - postStartMs;
-			const hasCachedGraph = structureGraph !== null;
-			if (editedFilePath && (hasCachedGraph || structElapsed < structTimeBudgetMs)) {
-				try {
-					const structRepoRoot = findProjectRoot(editedFilePath, CWD) || CWD;
-					const structResult = runStructureChecks(
-						editedFilePath,
-						structRepoRoot,
-						structureGraph,
-						structureConfigCache,
-						session?.files_written,
-					);
-					structureGraph = structResult.graph;
-					if (!structureConfigCache) {
-						structureConfigCache = loadStructureConfig(structRepoRoot).config;
-					}
-					for (const r of structResult.results) {
-						allCheckResults.push(r);
-					}
-					if (structResult.findings.length > 0) {
-						checksRan.push("structure");
-						if (!postDecision.warnings) postDecision.warnings = [];
-						postDecision.warnings.push(
-							...formatStructureWarnings(structResult.findings),
-						);
-					}
-					// Record structure pending completions into session state
-					if (session) {
-						for (const pc of structResult.pendingCompletions) {
-							session.pending_completions.set(`struct:${pc.source_artifact_ref}`, {
-								source_file: pc.source_file,
-								affected_files: pc.required_companion_files,
-								resolved_files: new Set(pc.resolved_companion_files),
-								recorded_at_tool_call: session.tool_call_count,
-								description: `[structure] ${pc.finding_class}: ${pc.source_artifact_ref}`,
+							// Telemetry (non-blocking)
+							writeTelemetry(allFindings, scored, {
+								interlinkedDir: join(CWD, ".interlinked"),
+								sessionId: checkEvent.session_id,
+								agentName: session?.agent_name || "unknown",
+								filePath: relPath,
+								threshold: rules.suggestion_threshold ?? 0.5,
 							});
 						}
+					} catch (e) {
+						void e;
 					}
-				} catch (structErr) {
-					log(
-						`Structure check error: ${structErr instanceof Error ? structErr.message : String(structErr)}`,
+				}
+
+				// --- Session-level taste check: shotgun surgery ---
+				// Threshold starts at 40 (not 25): adding a field to a shared interface
+				// naturally touches types + implementation + every test mock, easily 10-15 files.
+				if (session && session.files_written.size >= 40) {
+					const shotgunKey = `shotgun-surgery-${session.files_written.size >= 60 ? "60" : "40"}`;
+					if (!isAcknowledged(session, "__session__", shotgunKey)) {
+						allCheckResults.push({
+							source: "suggestion",
+							name: "shotgun-surgery",
+							severity: "warning",
+							message: `This session has edited ${session.files_written.size} files. Consider whether abstraction boundaries could reduce the blast radius, or if this change should be broken into smaller steps.`,
+							determinism: "heuristic",
+						});
+						if (!postDecision.warnings) postDecision.warnings = [];
+						postDecision.warnings.push(
+							`[taste:shotgun-surgery] ${session.files_written.size} files edited in this session — consider if the change scope is too broad`,
+						);
+						checksRan.push("shotgun-surgery");
+						// Mark as acknowledged so we don't re-fire on every subsequent edit
+						// at the same threshold. The 60-file threshold uses a different key,
+						// so it will still fire once when crossed.
+						acknowledgeChecks(session, "__session__", [shotgunKey]);
+					}
+				}
+
+				// --- Structure checks phase (non-blocking guidance) ---
+				// Skip cold graph build if existing checks already consumed most of the time budget.
+				// The 15s PostToolUse timeout is shared with tsc/biome/etc. On large repos, a cold
+				// graph build (~5-10s for 20K+ nodes) can push past the limit. The cached graph
+				// (from a previous call) makes subsequent edits fast (<100ms).
+				const structTimeBudgetMs = 12000;
+				const structElapsed = Date.now() - postStartMs;
+				const hasCachedGraph = structureGraph !== null;
+				if (editedFilePath && (hasCachedGraph || structElapsed < structTimeBudgetMs)) {
+					try {
+						const structRepoRoot = findProjectRoot(editedFilePath, CWD) || CWD;
+						const structResult = runStructureChecks(
+							editedFilePath,
+							structRepoRoot,
+							structureGraph,
+							structureConfigCache,
+							session?.files_written,
+						);
+						structureGraph = structResult.graph;
+						if (!structureConfigCache) {
+							structureConfigCache = loadStructureConfig(structRepoRoot).config;
+						}
+						for (const r of structResult.results) {
+							allCheckResults.push(r);
+						}
+						if (structResult.findings.length > 0) {
+							checksRan.push("structure");
+							if (!postDecision.warnings) postDecision.warnings = [];
+							postDecision.warnings.push(
+								...formatStructureWarnings(structResult.findings),
+							);
+						}
+						// Record structure pending completions into session state
+						if (session) {
+							for (const pc of structResult.pendingCompletions) {
+								session.pending_completions.set(`struct:${pc.source_artifact_ref}`, {
+									source_file: pc.source_file,
+									affected_files: pc.required_companion_files,
+									resolved_files: new Set(pc.resolved_companion_files),
+									recorded_at_tool_call: session.tool_call_count,
+									description: `[structure] ${pc.finding_class}: ${pc.source_artifact_ref}`,
+								});
+							}
+						}
+					} catch (structErr) {
+						log(
+							`Structure check error: ${structErr instanceof Error ? structErr.message : String(structErr)}`,
+						);
+					}
+				}
+
+
+				// --- Session-level behavioral checks ---
+				if (session && editedFilePath) {
+					let currentSuppressionCount = 0;
+					try {
+						if (existsSync(editedFilePath)) {
+							currentSuppressionCount = countSuppressionDirectives(
+								readFileSync(editedFilePath, "utf-8"),
+							);
+						}
+					} catch (e) {
+						void e;
+					}
+					const behavioralResults = runBehavioralChecks(
+						session,
+						editedFilePath,
+						allCheckResults,
+						previousSuppressionCount,
+						currentSuppressionCount,
 					);
+					allCheckResults.push(...behavioralResults);
+				}
+
+				// --- Feedback effectiveness tracking ---
+				if (session && editedFilePath && allCheckResults.length > 0) {
+					const warningNames = allCheckResults
+						.filter((r) => r.severity === "warning" || r.severity === "error")
+						.map((r) => r.name);
+					if (warningNames.length > 0) {
+						recordWarningsIssued(session, editedFilePath, warningNames);
+					}
+					recordWarningResolutions(
+						session,
+						editedFilePath,
+						new Set(allCheckResults.map((r) => r.name)),
+					);
+				}
+
+				// --- Session-ack: record shown warnings so they don't re-fire ---
+				// Only acknowledge warning-level findings (errors must always re-fire).
+				if (editedFilePath && allCheckResults.length > 0) {
+					const warningCheckNames = allCheckResults
+						.filter((r) => r.severity === "warning")
+						.map((r) => r.name);
+					if (warningCheckNames.length > 0) {
+						acknowledgeChecks(session, editedFilePath, warningCheckNames);
+					}
 				}
 			}
 
@@ -1872,54 +1954,6 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					void e;
 				}
 				log(`Quality check file error: ${err}`);
-			}
-
-			// --- Session-level behavioral checks ---
-			if (session && editedFilePath) {
-				let currentSuppressionCount = 0;
-				try {
-					if (existsSync(editedFilePath)) {
-						currentSuppressionCount = countSuppressionDirectives(
-							readFileSync(editedFilePath, "utf-8"),
-						);
-					}
-				} catch (e) {
-					void e;
-				}
-				const behavioralResults = runBehavioralChecks(
-					session,
-					editedFilePath,
-					allCheckResults,
-					previousSuppressionCount,
-					currentSuppressionCount,
-				);
-				allCheckResults.push(...behavioralResults);
-			}
-
-			// --- Feedback effectiveness tracking ---
-			if (session && editedFilePath && allCheckResults.length > 0) {
-				const warningNames = allCheckResults
-					.filter((r) => r.severity === "warning" || r.severity === "error")
-					.map((r) => r.name);
-				if (warningNames.length > 0) {
-					recordWarningsIssued(session, editedFilePath, warningNames);
-				}
-				recordWarningResolutions(
-					session,
-					editedFilePath,
-					new Set(allCheckResults.map((r) => r.name)),
-				);
-			}
-
-			// --- Session-ack: record shown warnings so they don't re-fire ---
-			// Only acknowledge warning-level findings (errors must always re-fire).
-			if (editedFilePath && allCheckResults.length > 0) {
-				const warningCheckNames = allCheckResults
-					.filter((r) => r.severity === "warning")
-					.map((r) => r.name);
-				if (warningCheckNames.length > 0) {
-					acknowledgeChecks(session, editedFilePath, warningCheckNames);
-				}
 			}
 		}
 

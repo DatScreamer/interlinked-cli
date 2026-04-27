@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	extractAllApplyPatchFilePaths,
+	extractAllEditedFilePaths,
 	extractApplyPatchFilePath,
 	extractEditedFilePath,
 	isPostToolUse,
@@ -90,6 +92,42 @@ describe("extractApplyPatchFilePath", () => {
 	});
 });
 
+describe("extractAllApplyPatchFilePaths", () => {
+	it("returns every section's path in order, applying Move-to retargets", () => {
+		const patch =
+			"*** Begin Patch\n" +
+			"*** Update File: src/a.ts\n" +
+			"@@\n-x\n+y\n" +
+			"*** Add File: src/b.ts\n" +
+			"+x\n" +
+			"*** Update File: src/c-old.ts\n" +
+			"*** Move to: src/c-new.ts\n" +
+			"@@\n-z\n+w\n" +
+			"*** Delete File: src/d.ts\n" +
+			"*** End Patch\n";
+		expect(extractAllApplyPatchFilePaths(patch)).toEqual([
+			"src/a.ts",
+			"src/b.ts",
+			"src/c-new.ts",
+			"src/d.ts",
+		]);
+	});
+
+	it("dedups paths that appear twice (e.g. update + move-to-self)", () => {
+		const patch =
+			"*** Begin Patch\n" +
+			"*** Update File: src/a.ts\n" +
+			"*** Move to: src/a.ts\n" +
+			"@@\n-x\n+y\n" +
+			"*** End Patch\n";
+		expect(extractAllApplyPatchFilePaths(patch)).toEqual(["src/a.ts"]);
+	});
+
+	it("returns an empty array when no sections are present", () => {
+		expect(extractAllApplyPatchFilePaths("not a patch")).toEqual([]);
+	});
+});
+
 describe("extractEditedFilePath", () => {
 	it("uses explicit file metadata when present", () => {
 		expect(
@@ -115,6 +153,41 @@ describe("extractEditedFilePath", () => {
 				}),
 			),
 		).toBe("src/harness/server.ts");
+	});
+});
+
+describe("extractAllEditedFilePaths", () => {
+	it("returns every path from a multi-file apply_patch", () => {
+		const patch =
+			"*** Begin Patch\n" +
+			"*** Update File: src/a.ts\n@@\n-x\n+y\n" +
+			"*** Add File: src/b.ts\n+x\n" +
+			"*** End Patch\n";
+		expect(
+			extractAllEditedFilePaths(
+				makeEvent({ tool_name: "apply_patch", tool_input: { command: patch } }),
+			),
+		).toEqual(["src/a.ts", "src/b.ts"]);
+	});
+
+	it("returns the explicit single path when present (Edit tool, etc.)", () => {
+		expect(
+			extractAllEditedFilePaths(
+				makeEvent({ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } }),
+			),
+		).toEqual(["src/a.ts"]);
+	});
+
+	it("falls back to files_modified for non-apply_patch events without explicit path", () => {
+		expect(
+			extractAllEditedFilePaths(
+				makeEvent({ files_modified: ["a.ts", "b.ts"], tool_input: {} }),
+			),
+		).toEqual(["a.ts", "b.ts"]);
+	});
+
+	it("returns an empty array when no paths can be resolved", () => {
+		expect(extractAllEditedFilePaths(makeEvent({ tool_input: {} }))).toEqual([]);
 	});
 });
 

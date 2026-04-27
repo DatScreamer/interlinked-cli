@@ -6,36 +6,107 @@
 import type { HarnessEvent } from "./types.js";
 
 const APPLY_PATCH_FILE_LINE = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/m;
+const APPLY_PATCH_FILE_LINE_GLOBAL = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/gm;
 const APPLY_PATCH_MOVE_LINE = /^\*\*\* Move to:\s+(.+)$/m;
+/** Global form of the "Move to:" header. Used to walk the patch in the same
+ *  order Codex applies sections so we can pair each move with the immediately
+ *  preceding file header. */
+const APPLY_PATCH_SECTION_LINE =
+	/^\*\*\* (?:(?:Update|Add|Delete) File|Move to):\s+(.+)$/gm;
 
 function nonEmptyString(value: unknown): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-/** Extract the destination file path from a raw apply_patch payload. */
+/** Extract the destination file path from a raw apply_patch payload.
+ *  Returns the first file referenced (or its move destination if present in
+ *  the same section). For multi-file payloads, prefer
+ *  {@link extractAllApplyPatchFilePaths}. */
 export function extractApplyPatchFilePath(command: string): string | null {
 	const movePath = nonEmptyString(command.match(APPLY_PATCH_MOVE_LINE)?.[1]);
 	if (movePath) return movePath;
 	return nonEmptyString(command.match(APPLY_PATCH_FILE_LINE)?.[1]);
 }
 
-/** Resolve the edited file path from a hook event when one exists. */
+/** Extract every destination file path from a raw apply_patch payload, in
+ *  source order. Codex `apply_patch` payloads can carry multiple
+ *  `*** Update File:` / `Add File:` / `Delete File:` sections in one call,
+ *  optionally with a `*** Move to:` line that retargets the most recent
+ *  section. We resolve each section to its final path so callers (e.g.
+ *  PostToolUse quality / structural / TDD checks) can fan out across all
+ *  files in the patch instead of only the first one. */
+export function extractAllApplyPatchFilePaths(command: string): string[] {
+	const paths: string[] = [];
+	APPLY_PATCH_SECTION_LINE.lastIndex = 0;
+	let match = APPLY_PATCH_SECTION_LINE.exec(command);
+	while (match !== null) {
+		const path = nonEmptyString(match[1]);
+		const isMove = match[0].startsWith("*** Move to:");
+		if (path) {
+			if (isMove && paths.length > 0) {
+				paths[paths.length - 1] = path;
+			} else if (!isMove) {
+				paths.push(path);
+			}
+		}
+		match = APPLY_PATCH_SECTION_LINE.exec(command);
+	}
+	// Dedup while preserving order — a patch that updates and immediately
+	// moves to the same path shouldn't run checks twice.
+	const seen = new Set<string>();
+	const deduped: string[] = [];
+	for (const p of paths) {
+		if (!seen.has(p)) {
+			seen.add(p);
+			deduped.push(p);
+		}
+	}
+	return deduped;
+}
+
+/** Resolve the edited file path from a hook event when one exists. Returns
+ *  the first path; for multi-file events prefer
+ *  {@link extractAllEditedFilePaths}. */
 export function extractEditedFilePath(event: HarnessEvent): string | null {
+	const all = extractAllEditedFilePaths(event);
+	return all.length > 0 ? all[0] : null;
+}
+
+/** Resolve every edited file path from a hook event, in order, with
+ *  duplicates removed. Multi-file results currently come from Codex
+ *  `apply_patch` payloads and from `files_modified` arrays the runner
+ *  itself supplies. */
+export function extractAllEditedFilePaths(event: HarnessEvent): string[] {
 	const explicitPath =
 		nonEmptyString(event.tool_input?.file_path) ??
 		nonEmptyString(event.tool_input?.filePath) ??
 		nonEmptyString(event.tool_input?.path) ??
 		nonEmptyString(event.tool_input?.target_file);
-	if (explicitPath) return explicitPath;
+	const seen = new Set<string>();
+	const paths: string[] = [];
+	const push = (p: string | null) => {
+		if (!p || seen.has(p)) return;
+		seen.add(p);
+		paths.push(p);
+	};
 
-	const modifiedPath = nonEmptyString(event.files_modified?.[0]);
-	if (modifiedPath) return modifiedPath;
-
-	if (event.tool_name === "apply_patch") {
-		return extractApplyPatchFilePath(String(event.tool_input?.command || ""));
+	if (explicitPath) {
+		push(explicitPath);
+		return paths;
 	}
 
-	return null;
+	if (event.tool_name === "apply_patch") {
+		const patchPaths = extractAllApplyPatchFilePaths(
+			String(event.tool_input?.command || ""),
+		);
+		for (const p of patchPaths) push(p);
+		if (paths.length > 0) return paths;
+	}
+
+	for (const modified of event.files_modified ?? []) {
+		push(nonEmptyString(modified));
+	}
+	return paths;
 }
 
 /** Build a one-line summary of the tool being invoked. Used in log lines
