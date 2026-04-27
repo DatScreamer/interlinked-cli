@@ -557,6 +557,21 @@ export async function scannerReviewCommand(opts: ScannerReviewOptions): Promise<
 		let decision: ReviewDecision | "skip";
 		if (flagPick) {
 			decision = flagPick;
+		} else if (mode === "json" || !process.stdin.isTTY) {
+			// Machine-readable / non-interactive callers must supply an explicit
+			// decision flag. Falling through to renderReview()+promptForDecision()
+			// here would (a) print the ANSI review UI to stdout and contaminate
+			// the JSON document, and (b) block forever on stdin.
+			outputError(
+				mode,
+				"non-interactive scanner review requires an explicit --allow, --redact, or --block flag",
+				{
+					pending_key: picked.key,
+					url: review.url,
+					finding_count: review.findings.length,
+				},
+			);
+			return;
 		} else {
 			console.log(renderReview(review));
 			decision = await promptForDecision();

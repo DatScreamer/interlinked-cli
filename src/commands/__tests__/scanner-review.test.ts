@@ -178,4 +178,32 @@ describe("scannerReviewCommand — JSON output", () => {
 			decision: "allow",
 		});
 	});
+
+	it("rejects --json without a decision flag instead of prompting on stdin", async () => {
+		seedReview(
+			"https://example.com/json-no-flag",
+			"Email: alice@example.com",
+			[finding("private_email", "alice@example.com", 7)],
+		);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		process.exitCode = 0;
+		// No --allow/--redact/--block — must NOT render the ANSI UI
+		// (would contaminate the JSON document) and must NOT block on stdin.
+		await scannerReviewCommand({ json: true });
+		expect(process.exitCode).toBe(1);
+
+		// All error output should be valid JSON, not a prompt.
+		const errBody = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		const parsed = JSON.parse(errBody);
+		expect(parsed.error).toMatch(/non-interactive/i);
+		expect(parsed.details).toMatchObject({ url: "https://example.com/json-no-flag" });
+
+		// Importantly: stdout (where the JSON document would land) was not
+		// polluted by the ANSI review UI.
+		const stdoutBody = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(stdoutBody).not.toMatch(/Privacy Filter — Review/);
+
+		errSpy.mockRestore();
+		process.exitCode = 0;
+	});
 });
