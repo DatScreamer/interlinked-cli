@@ -565,6 +565,46 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		single_implementation_interface: true,
 	},
 	repo_confinement_allowlist: ["~/.claude"],
+	// Path globs that short-circuit the PostToolUse check pipeline entirely.
+	// See `SharedConfig.skip_paths` JSDoc in `src/lib/config.ts` and the
+	// matcher in `src/lib/path-glob.ts`. Opinionated defaults below cover
+	// build artifacts, vendored deps, generated code, lockfiles, and IDE
+	// metadata. Per Phase B.2 of `docs/plans/free-cli-adoption/`.
+	skip_paths: [
+		"dist/**",
+		"build/**",
+		"out/**",
+		"node_modules/**",
+		"vendor/**",
+		".next/**",
+		".nuxt/**",
+		".astro/**",
+		"target/**",
+		".svelte-kit/**",
+		"**/generated/**",
+		// Brace-alternation `{a,b,c}` is NOT supported by the hook-side
+		// inline matcher in `lib/hook-template-chunks/skip-paths.ts` (Phase B.3
+		// cuts daemon round-trip). Listing each extension explicitly so the
+		// hook-side and daemon-side matchers agree and the path actually
+		// short-circuits before opening the harness socket.
+		"**/*.generated.ts",
+		"**/*.generated.js",
+		"**/*.generated.py",
+		"**/*.generated.rs",
+		"**/*.generated.go",
+		"**/*.min.js",
+		"**/*.min.css",
+		"**/*.bundle.js",
+		"**/*.bundle.css",
+		"*.lock",
+		"**/package-lock.json",
+		"**/yarn.lock",
+		"**/Cargo.lock",
+		"**/uv.lock",
+		".git/**",
+		".idea/**",
+		".vscode/**",
+	],
 	required_tools: [],
 	strict_skips: false,
 	skip_allowlist: ["config_disabled", "file_type_mismatch"],

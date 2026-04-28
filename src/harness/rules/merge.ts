@@ -135,6 +135,16 @@ export function mergeLocalOverrides(
 			config.content_scanner = local.content_scanner;
 		}
 	}
+	// Local can disable / tune the structural-checks suite. Without this branch
+	// `{structural_checks: {enabled: false}}` in guard-rules.local.json was
+	// silently dropped, leaving the post-event budget at 17–38 s on Writes that
+	// triggered the prompt-injection scanner alongside the structural pipeline.
+	// Shallow Object.assign matches the content_scanner / project_wide_checks
+	// pattern in this file — nested fields are leaf booleans / numbers with no
+	// internal structure that needs deep-merge.
+	if (local.structural_checks) {
+		Object.assign(config.structural_checks, local.structural_checks);
+	}
 }
 
 /** Deep-merge overrides for the content scanner config. Nested blocks
