@@ -353,6 +353,40 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			non_null_assertion: "nonNullAssertions",
 			extraneous_deps: "extraneousDeps",
 			no_test_file: "noTestFile",
+			// UBS Plan 04 ids carry the `ubs_` prefix in registry/toIssues, but
+			// per Plan 04 §"Phase matrix" the resultsPropName is the bare camel
+			// form (e.g. `floatEquality` not `ubsFloatEquality`).
+			ubs_js_loose_equality: "jsLooseEquality",
+			ubs_float_equality: "floatEquality",
+			ubs_java_optional_get: "javaOptionalGet",
+			ubs_division_by_variable: "divisionByVariable",
+			ubs_mutex_lock_unwrap: "mutexLockUnwrap",
+			ubs_subprocess_shell_true: "subprocessShellTrue",
+			ubs_tls_verify_disabled: "tlsVerifyDisabled",
+			ubs_py_none_equality: "pyNoneEquality",
+			ubs_weak_hash: "weakHash",
+			// Plan 04 D.1 partial
+			ubs_eval_input_tainted: "evalInputTainted",
+			ubs_sql_string_concat: "sqlStringConcat",
+			ubs_python_mutable_default_arg: "pyMutableDefaultArg",
+			// Plan 04 D.1 backlog (17 of 20)
+			ubs_tempfile_mktemp_race: "tempfileMktempRace",
+			ubs_pickle_untrusted_load: "pickleUntrustedLoad",
+			ubs_xml_external_entity: "xmlExternalEntity",
+			ubs_os_system_tainted: "osSystemTainted",
+			ubs_unsafe_format_string: "unsafeFormatString",
+			ubs_unchecked_redirect: "uncheckedRedirect",
+			ubs_goroutine_no_waitgroup: "goroutineNoWaitgroup",
+			ubs_defer_in_loop: "deferInLoop",
+			ubs_string_concat_in_loop: "ubsStringConcatInLoop",
+			ubs_numeric_comparison_chain: "numericComparisonChain",
+			ubs_print_debug_leak: "printDebugLeak",
+			ubs_hardcoded_localhost: "ubsHardcodedLocalhost",
+			ubs_magic_number_no_const: "magicNumberNoConst",
+			ubs_large_function: "largeFunction",
+			ubs_deeply_nested_callback: "deeplyNestedCallback",
+			ubs_time_format_locale_dep: "timeFormatLocaleDep",
+			ubs_regex_in_loop_no_compile: "regexInLoopNoCompile",
 		};
 
 		for (const name of toIssuesNames) {
@@ -427,6 +461,41 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"cUnsafeFunctions",
 			"cIncludeGuard",
 			"cSprintfUsage",
+			// UBS Plan 04 — rows 22–30. Each is destructured into its own
+			// summary key in outputJson (`ubs_*`), so the parity test does
+			// not strictly require them in this set, but listing them keeps
+			// the bookkeeping explicit when downstream tooling adds them as
+			// individual JSON-output fields.
+			"jsLooseEquality",
+			"floatEquality",
+			"javaOptionalGet",
+			"divisionByVariable",
+			"mutexLockUnwrap",
+			"subprocessShellTrue",
+			"tlsVerifyDisabled",
+			"pyNoneEquality",
+			"weakHash",
+			"evalInputTainted",
+			"sqlStringConcat",
+			"pyMutableDefaultArg",
+			// D.1 backlog
+			"tempfileMktempRace",
+			"pickleUntrustedLoad",
+			"xmlExternalEntity",
+			"osSystemTainted",
+			"unsafeFormatString",
+			"uncheckedRedirect",
+			"goroutineNoWaitgroup",
+			"deferInLoop",
+			"ubsStringConcatInLoop",
+			"numericComparisonChain",
+			"printDebugLeak",
+			"ubsHardcodedLocalhost",
+			"magicNumberNoConst",
+			"largeFunction",
+			"deeplyNestedCallback",
+			"timeFormatLocaleDep",
+			"regexInLoopNoCompile",
 		]);
 
 		const missing: string[] = [];

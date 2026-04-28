@@ -161,6 +161,50 @@ describe("evaluatePreToolUse — content checks", () => {
 	});
 
 	// ===========================================
+	// Phase B.4 — diff-class skip end-to-end
+	// ===========================================
+	// A comment-only Edit (quoted-string body change under spans.ts) must
+	// still surface error-severity detectors (eval_usage stays a hard block)
+	// while warning-severity detectors are skipped. This verifies the
+	// classifier is wired through evaluateWriteContentGuards →
+	// buildAgentSafetyChecks correctly.
+
+	describe("Phase B.4 diff-class skip", () => {
+		it("preserves the pre_block error-severity gate on a quoted-string Edit", () => {
+			// Same eval(input) on both sides, only the surrounding string
+			// literal changes. The diff is comment_only under spans.ts but
+			// eval_usage (severity=error, phase=pre_block) MUST still block.
+			const event = makeEvent({
+				tool_name: "Edit",
+				tool_input: {
+					file_path: "/tmp/diff-class-skip-eval.ts",
+					old_string: "const a = 'foo'; const x = eval(input);",
+					new_string: "const a = 'bar'; const x = eval(input);",
+				},
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+			expect(result.rule_id).toBe("eval_usage");
+		});
+
+		it("does not block on a pure quoted-string change with no error-severity violations", () => {
+			// Comment_only diff that does not touch any error-severity check.
+			// The dispatch should allow the write — the entire pre_warn
+			// warning bucket is skipped under the diff-class gate.
+			const event = makeEvent({
+				tool_name: "Edit",
+				tool_input: {
+					file_path: "/tmp/diff-class-skip-quoted.ts",
+					old_string: "echo 'hello'",
+					new_string: "echo 'world'",
+				},
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+	});
+
+	// ===========================================
 	// Markdown-first web fetching
 	// ===========================================
 

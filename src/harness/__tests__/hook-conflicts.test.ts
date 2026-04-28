@@ -6,7 +6,7 @@
 // Duplicate PostToolUse hooks cause output to be swallowed silently.
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..", "..");
@@ -119,9 +119,20 @@ describe("hook conflict detection", () => {
 
 						for (const match of fileMatches) {
 							const filePath = match.replace(/^node\s+/, "").replace(/["']/g, "");
-							const absPath = join(PROJECT_ROOT, filePath);
-							// Skip if command uses test -f (already handles missing files gracefully)
-							if (cmd.includes("test -f") && cmd.includes("|| true")) continue;
+							const absPath = isAbsolute(filePath)
+								? filePath
+								: join(PROJECT_ROOT, filePath);
+							// Skip when the command guards the existence check itself.
+							// Two equivalent shell idioms appear in installed hooks:
+							//   • `test -f X && node X || true`  (short-circuit form)
+							//   • `if test -f X ; then node X ; fi` (block form)
+							// Both fail-open if the dist binary is missing, so the test
+							// shouldn't flag them.
+							if (
+								cmd.includes("test -f") &&
+								(cmd.includes("|| true") || cmd.includes("if test -f"))
+							)
+								continue;
 
 							expect(
 								existsSync(absPath),

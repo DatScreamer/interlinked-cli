@@ -94,15 +94,15 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		"export function newFunc(y: string) { return y; }",
 	].join("\n");
 
-	it("reports all findings when no baseline is provided", () => {
+	it("reports all findings when no baseline is provided", async () => {
 		MOCK_FILE_CONTENT = fileWithTwoMissing;
-		const results = runQualityChecks(makeEvent(), BASIC_CHECKS, "/project");
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project");
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
 		expect(mrt[0].message).toContain("2 exported function(s)");
 	});
 
-	it("filters out pre-existing findings when baseline is provided", () => {
+	it("filters out pre-existing findings when baseline is provided", async () => {
 		MOCK_FILE_CONTENT = fileWithTwoMissing;
 		const options: QualityCheckOptions = {
 			baseline: {
@@ -118,13 +118,13 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 				missing_return_types: "baseline",
 			},
 		};
-		const results = runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
 		expect(mrt[0].message).toContain("1 exported function(s)");
 	});
 
-	it("reports all findings when diff_aware is disabled", () => {
+	it("reports all findings when diff_aware is disabled", async () => {
 		MOCK_FILE_CONTENT = fileWithTwoMissing;
 		const options: QualityCheckOptions = {
 			baseline: {
@@ -139,13 +139,13 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 				enabled: false,
 			},
 		};
-		const results = runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
 		expect(mrt[0].message).toContain("2 exported function(s)");
 	});
 
-	it("reports all findings when missing_return_types strategy is 'off'", () => {
+	it("reports all findings when missing_return_types strategy is 'off'", async () => {
 		MOCK_FILE_CONTENT = fileWithTwoMissing;
 		const options: QualityCheckOptions = {
 			baseline: {
@@ -161,13 +161,13 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 				missing_return_types: "off",
 			},
 		};
-		const results = runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
 		expect(mrt[0].message).toContain("2 exported function(s)");
 	});
 
-	it("suppresses all findings when baseline matches everything", () => {
+	it("suppresses all findings when baseline matches everything", async () => {
 		MOCK_FILE_CONTENT = fileWithTwoMissing;
 		const options: QualityCheckOptions = {
 			baseline: {
@@ -186,7 +186,7 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 				missing_return_types: "baseline",
 			},
 		};
-		const results = runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(0);
 	});
@@ -196,9 +196,9 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 // no_test_file: new-file-only gate
 // ===========================================
 describe("diff-aware: no_test_file new-file-only gate", () => {
-	it("suppresses no_test_file for Edit tool (existing file)", () => {
+	it("suppresses no_test_file for Edit tool (existing file)", async () => {
 		MOCK_FILE_CONTENT = "export function foo() { return 1; }";
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({ tool_name: "Edit" }),
 			BASIC_CHECKS,
 			"/project",
@@ -208,9 +208,9 @@ describe("diff-aware: no_test_file new-file-only gate", () => {
 		expect(ntf).toHaveLength(0);
 	});
 
-	it("fires no_test_file for Write tool (new file)", () => {
+	it("fires no_test_file for Write tool (new file)", async () => {
 		MOCK_FILE_CONTENT = "export function foo() { return 1; }";
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({ tool_name: "Write" }),
 			BASIC_CHECKS,
 			"/project",
@@ -220,9 +220,9 @@ describe("diff-aware: no_test_file new-file-only gate", () => {
 		expect(ntf).toHaveLength(1);
 	});
 
-	it("fires no_test_file for Edit when diff_aware is off", () => {
+	it("fires no_test_file for Edit when diff_aware is off", async () => {
 		MOCK_FILE_CONTENT = "export function foo() { return 1; }";
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({ tool_name: "Edit" }),
 			BASIC_CHECKS,
 			"/project",
@@ -248,11 +248,11 @@ describe("diff-aware: complexity edit-region intersection", () => {
 	const simpleFnLines = ["", "// simple stuff below", "const x = 1;", "const y = 2;"];
 	const fileContent = [...complexFnLines, ...paddingLines, ...simpleFnLines].join("\n");
 
-	it("suppresses complexity finding when edit is outside the complex function", () => {
+	it("suppresses complexity finding when edit is outside the complex function", async () => {
 		// Use post-edit content: old_string has been replaced by new_string on disk
 		MOCK_FILE_CONTENT = fileContent.replace("const x = 1;", "const x = 42;");
 		// Edit is at "const x = 1;" which is line 6 — well outside the complex function at line 1
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
 					file_path: "/project/src/example.ts",
@@ -268,14 +268,14 @@ describe("diff-aware: complexity edit-region intersection", () => {
 		expect(cplx).toHaveLength(0);
 	});
 
-	it("reports complexity finding when edit is inside the complex function", () => {
+	it("reports complexity finding when edit is inside the complex function", async () => {
 		// Use post-edit content: old_string has been replaced by new_string on disk
 		MOCK_FILE_CONTENT = fileContent.replace(
 			"return a + b + c + d + e + f + g;",
 			"return a + b + c + d + e + f + g + 1;",
 		);
 		// Edit is inside the complex function body
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
 					file_path: "/project/src/example.ts",
@@ -291,9 +291,9 @@ describe("diff-aware: complexity edit-region intersection", () => {
 		expect(cplx).toHaveLength(1);
 	});
 
-	it("reports all complexity findings for Write tool (entire file is new)", () => {
+	it("reports all complexity findings for Write tool (entire file is new)", async () => {
 		MOCK_FILE_CONTENT = fileContent;
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({
 				tool_name: "Write",
 				tool_input: {
@@ -320,7 +320,7 @@ describe("diff-aware: complexity edit-region intersection", () => {
 const FAKE_SECRET_LINE = `const key = "${"AKIA"}IOSFODNN7EXAMPLE";`;
 
 describe("skip_test_files", () => {
-	it("skips checks with skip_test_files on test files", () => {
+	it("skips checks with skip_test_files on test files", async () => {
 		MOCK_FILE_CONTENT = FAKE_SECRET_LINE;
 		const checksWithSkip = {
 			secrets_in_source: {
@@ -331,7 +331,7 @@ describe("skip_test_files", () => {
 				skip_test_files: true,
 			},
 		};
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
 					file_path: "/project/src/__tests__/auth.test.ts",
@@ -346,7 +346,7 @@ describe("skip_test_files", () => {
 		expect(secrets).toHaveLength(0);
 	});
 
-	it("runs checks without skip_test_files on test files", () => {
+	it("runs checks without skip_test_files on test files", async () => {
 		MOCK_FILE_CONTENT = FAKE_SECRET_LINE;
 		const checksWithoutSkip = {
 			secrets_in_source: {
@@ -357,7 +357,7 @@ describe("skip_test_files", () => {
 				// skip_test_files not set
 			},
 		};
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
 					file_path: "/project/src/__tests__/auth.test.ts",

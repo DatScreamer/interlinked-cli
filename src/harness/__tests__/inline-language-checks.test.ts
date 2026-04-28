@@ -15,7 +15,7 @@ function run(filePath: string, content: string) {
 }
 
 describe("runInlineLanguageChecks — Python", () => {
-	it("flags bare except", () => {
+	it("flags bare except", async () => {
 		const src = `def f():\n    try:\n        pass\n    except:\n        pass\n`;
 		const results = run("/repo/src/m.py", src);
 		const bareExcepts = results.filter((r) => r.name === "python_bare_except");
@@ -23,32 +23,32 @@ describe("runInlineLanguageChecks — Python", () => {
 		expect(bareExcepts[0].message).toContain("m.py:4");
 	});
 
-	it("does not flag `except Exception:`", () => {
+	it("does not flag `except Exception:`", async () => {
 		const src = `try:\n    pass\nexcept Exception:\n    pass\n`;
 		const results = run("/repo/src/m.py", src);
 		expect(results.filter((r) => r.name === "python_bare_except")).toHaveLength(0);
 	});
 
-	it("flags mutable default arguments", () => {
+	it("flags mutable default arguments", async () => {
 		const src = `def foo(x=[]):\n    pass\ndef bar(y={}):\n    pass\n`;
 		const results = run("/repo/src/m.py", src);
 		const mutable = results.filter((r) => r.name === "python_mutable_default");
 		expect(mutable).toHaveLength(2);
 	});
 
-	it("does not flag `=None` default", () => {
+	it("does not flag `=None` default", async () => {
 		const src = `def foo(x=None):\n    pass\n`;
 		const results = run("/repo/src/m.py", src);
 		expect(results.filter((r) => r.name === "python_mutable_default")).toHaveLength(0);
 	});
 
-	it("does not fire on bare except inside a string literal", () => {
+	it("does not fire on bare except inside a string literal", async () => {
 		const src = `msg = "    except:\\n"\nprint(msg)\n`;
 		const results = run("/repo/src/m.py", src);
 		expect(results.filter((r) => r.name === "python_bare_except")).toHaveLength(0);
 	});
 
-	it("does not fire on commented-out bare except", () => {
+	it("does not fire on commented-out bare except", async () => {
 		const src = `# except:\nprint(1)\n`;
 		const results = run("/repo/src/m.py", src);
 		expect(results.filter((r) => r.name === "python_bare_except")).toHaveLength(0);
@@ -56,38 +56,38 @@ describe("runInlineLanguageChecks — Python", () => {
 });
 
 describe("runInlineLanguageChecks — Rust", () => {
-	it("flags `.unwrap()` in non-test code", () => {
+	it("flags `.unwrap()` in non-test code", async () => {
 		const src = `fn f() { let x = opt.unwrap(); }\n`;
 		const results = run("/repo/src/lib.rs", src);
 		const unwraps = results.filter((r) => r.name === "rust_unwrap_usage");
 		expect(unwraps).toHaveLength(1);
 	});
 
-	it("skips `.unwrap()` in a *_test.rs file", () => {
+	it("skips `.unwrap()` in a *_test.rs file", async () => {
 		const src = `fn t() { foo.unwrap(); }\n`;
 		const results = run("/repo/tests/lib_test.rs", src);
 		expect(results.filter((r) => r.name === "rust_unwrap_usage")).toHaveLength(0);
 	});
 
-	it("flags unsafe blocks", () => {
+	it("flags unsafe blocks", async () => {
 		const src = `unsafe {\n  *ptr = 42;\n}\n`;
 		const results = run("/repo/src/lib.rs", src);
 		expect(results.filter((r) => r.name === "rust_unsafe_blocks")).toHaveLength(1);
 	});
 
-	it("exempts unsafe block documented with // SAFETY:", () => {
+	it("exempts unsafe block documented with // SAFETY:", async () => {
 		const src = `// SAFETY: ptr is guaranteed non-null by caller\nunsafe {\n  *ptr = 42;\n}\n`;
 		const results = run("/repo/src/lib.rs", src);
 		expect(results.filter((r) => r.name === "rust_unsafe_blocks")).toHaveLength(0);
 	});
 
-	it("flags todo!() and unimplemented!()", () => {
+	it("flags todo!() and unimplemented!()", async () => {
 		const src = `fn f() { todo!(); }\nfn g() { unimplemented!(); }\n`;
 		const results = run("/repo/src/lib.rs", src);
 		expect(results.filter((r) => r.name === "rust_todo_macro")).toHaveLength(2);
 	});
 
-	it("does not fire on .unwrap() inside a line comment", () => {
+	it("does not fire on .unwrap() inside a line comment", async () => {
 		const src = `// old: foo.unwrap()\nfn f() {}\n`;
 		const results = run("/repo/src/lib.rs", src);
 		expect(results.filter((r) => r.name === "rust_unwrap_usage")).toHaveLength(0);
@@ -95,14 +95,14 @@ describe("runInlineLanguageChecks — Rust", () => {
 });
 
 describe("runInlineLanguageChecks — Go", () => {
-	it("flags `_, _ := foo()` and `_ = foo()`", () => {
+	it("flags `_, _ := foo()` and `_ = foo()`", async () => {
 		const src = `package m\n\nfunc f() {\n  _, _ := doSomething()\n  _ = another()\n}\n`;
 		const results = run("/repo/src/m.go", src);
 		const ignored = results.filter((r) => r.name === "go_error_ignored");
 		expect(ignored.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("does not flag normal tuple assignment with a non-underscore error", () => {
+	it("does not flag normal tuple assignment with a non-underscore error", async () => {
 		const src = `package m\nfunc f() {\n  v, err := doSomething()\n  _ = v\n  _ = err\n}\n`;
 		const results = run("/repo/src/m.go", src);
 		// `_ = v` and `_ = err` do match the pattern; `v, err :=` does not.
@@ -115,19 +115,19 @@ describe("runInlineLanguageChecks — Go", () => {
 });
 
 describe("runInlineLanguageChecks — Swift", () => {
-	it("flags force cast (as!)", () => {
+	it("flags force cast (as!)", async () => {
 		const src = `let x = y as! Int\n`;
 		const results = run("/repo/src/m.swift", src);
 		expect(results.filter((r) => r.name === "swift_force_cast")).toHaveLength(1);
 	});
 
-	it("flags force try (try!)", () => {
+	it("flags force try (try!)", async () => {
 		const src = `let x = try! foo()\n`;
 		const results = run("/repo/src/m.swift", src);
 		expect(results.filter((r) => r.name === "swift_force_try")).toHaveLength(1);
 	});
 
-	it("flags legacy arc4random()", () => {
+	it("flags legacy arc4random()", async () => {
 		const src = `let n = arc4random()\n`;
 		const results = run("/repo/src/m.swift", src);
 		expect(results.filter((r) => r.name === "swift_legacy_random")).toHaveLength(1);
@@ -135,19 +135,19 @@ describe("runInlineLanguageChecks — Swift", () => {
 });
 
 describe("runInlineLanguageChecks — Java", () => {
-	it("flags wildcard imports", () => {
+	it("flags wildcard imports", async () => {
 		const src = `import java.util.*;\n\nclass X {}\n`;
 		const results = run("/repo/src/X.java", src);
 		expect(results.filter((r) => r.name === "java_wildcard_import")).toHaveLength(1);
 	});
 
-	it("flags System.exit()", () => {
+	it("flags System.exit()", async () => {
 		const src = `class X { void f() { System.exit(1); } }\n`;
 		const results = run("/repo/src/X.java", src);
 		expect(results.filter((r) => r.name === "java_system_exit")).toHaveLength(1);
 	});
 
-	it("does not flag explicit imports", () => {
+	it("does not flag explicit imports", async () => {
 		const src = `import java.util.List;\nimport java.util.Map;\n`;
 		const results = run("/repo/src/X.java", src);
 		expect(results.filter((r) => r.name === "java_wildcard_import")).toHaveLength(0);
@@ -155,31 +155,31 @@ describe("runInlineLanguageChecks — Java", () => {
 });
 
 describe("runInlineLanguageChecks — C/C++", () => {
-	it("flags strcpy, sprintf, gets", () => {
+	it("flags strcpy, sprintf, gets", async () => {
 		const src = `void f(char* d, const char* s) {\n  strcpy(d, s);\n  sprintf(d, "%s", s);\n  gets(d);\n}\n`;
 		const results = run("/repo/src/m.c", src);
 		expect(results.filter((r) => r.name === "c_unsafe_functions")).toHaveLength(3);
 	});
 
-	it("fires c_include_guard on a header without guard", () => {
+	it("fires c_include_guard on a header without guard", async () => {
 		const src = `int add(int a, int b);\n`;
 		const results = run("/repo/src/math.h", src);
 		expect(results.filter((r) => r.name === "c_include_guard")).toHaveLength(1);
 	});
 
-	it("does not fire c_include_guard when #pragma once present", () => {
+	it("does not fire c_include_guard when #pragma once present", async () => {
 		const src = `#pragma once\nint add(int a, int b);\n`;
 		const results = run("/repo/src/math.h", src);
 		expect(results.filter((r) => r.name === "c_include_guard")).toHaveLength(0);
 	});
 
-	it("does not fire c_include_guard when #ifndef present", () => {
+	it("does not fire c_include_guard when #ifndef present", async () => {
 		const src = `#ifndef MATH_H\n#define MATH_H\nint add(int a, int b);\n#endif\n`;
 		const results = run("/repo/src/math.h", src);
 		expect(results.filter((r) => r.name === "c_include_guard")).toHaveLength(0);
 	});
 
-	it("does not fire c_include_guard on .c files (file_types gate)", () => {
+	it("does not fire c_include_guard on .c files (file_types gate)", async () => {
 		const src = `void f() {}\n`;
 		const results = run("/repo/src/m.c", src);
 		expect(results.filter((r) => r.name === "c_include_guard")).toHaveLength(0);
@@ -189,39 +189,39 @@ describe("runInlineLanguageChecks — C/C++", () => {
 describe("per-language comment/string stripping", () => {
 	const { stripPython, stripCStyle } = __test__;
 
-	it("stripPython blanks interiors of single-quote, double-quote, and triple-quoted strings", () => {
+	it("stripPython blanks interiors of single-quote, double-quote, and triple-quoted strings", async () => {
 		const src = `s = "unwrap()"\ndoc = """unwrap()"""\nx = 'bad()'\n`;
 		const stripped = stripPython(src);
 		expect(stripped).not.toContain("unwrap()");
 		expect(stripped).not.toContain("bad()");
 	});
 
-	it("stripPython blanks # line comments", () => {
+	it("stripPython blanks # line comments", async () => {
 		const src = `# except:\nprint(1)\n`;
 		const stripped = stripPython(src);
 		expect(stripped).not.toContain("except:");
 	});
 
-	it("stripCStyle blanks // line and /* block */ comments", () => {
+	it("stripCStyle blanks // line and /* block */ comments", async () => {
 		const src = `// unwrap()\n/* unwrap() */\nlet x = 1;\n`;
 		const stripped = stripCStyle(src);
 		expect(stripped).not.toContain("unwrap()");
 	});
 
-	it("stripCStyle blanks string contents", () => {
+	it("stripCStyle blanks string contents", async () => {
 		const src = `let x = "unwrap()";\n`;
 		const stripped = stripCStyle(src);
 		expect(stripped).not.toContain("unwrap()");
 	});
 
-	it("offset preservation: stripped line count equals original", () => {
+	it("offset preservation: stripped line count equals original", async () => {
 		const src = `# comment\nprint(1)\n# another\n`;
 		expect(stripPython(src).split("\n").length).toBe(src.split("\n").length);
 	});
 });
 
 describe("InlineCheckDef file_types gating", () => {
-	it("Python inline checks do not run against .rs files", () => {
+	it("Python inline checks do not run against .rs files", async () => {
 		const src = `except:\n  pass\n`;
 		// Deliberately pass a .rs path — the .py patterns should not match
 		// because their file_types is [".py"].
@@ -271,7 +271,7 @@ describe("runQualityChecks: inline_language_checks branch", () => {
 
 		const { runQualityChecks } = await import("../quality-checks.js");
 
-		const results = runQualityChecks(
+		const results = await runQualityChecks(
 			{
 				hook_event: "PostToolUse",
 				session_id: "t",
