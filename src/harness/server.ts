@@ -47,7 +47,9 @@ import { snapshotCrap } from "./checks/crap-baseline.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
 import { ErrorHistory } from "./error-history.js";
+import { readSharedConfig } from "../lib/config.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
+import { appendLatencyLog } from "./latency-log.js";
 import {
 	computeEffectivenessSummary,
 	recordWarningResolutions,
@@ -150,7 +152,16 @@ const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
-const IDLE_TIMEOUT_MS = Number(stringArg(args["idle-timeout"])) || 0; // 0 = no idle timeout (event-driven, no CPU cost when idle)
+// Default 30 min idle shutdown so daemons don't accumulate as orphans across
+// sessions. The event-driven server has near-zero idle CPU cost, but each
+// living daemon holds ~30 MB resident + an open Unix socket. After 28 stale
+// daemons accumulated on one dev machine across days of sessions, we made
+// idle-shutdown the default. Set `--idle-timeout 0` to opt back into the
+// always-on legacy behavior.
+const IDLE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000;
+const _rawIdleArg = stringArg(args["idle-timeout"]);
+const IDLE_TIMEOUT_MS =
+	_rawIdleArg !== undefined ? Number(_rawIdleArg) : IDLE_TIMEOUT_DEFAULT_MS;
 const VERBOSE = args.verbose;
 
 /** Milliseconds in one minute — for converting IDLE_TIMEOUT_MS into a human-readable log line. */
@@ -566,6 +577,13 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
 		const activeGraph = getGraphForFile(filePath || CWD);
 
+		// `sharedConfig` carries Phase D.2 trajectory feature flags
+		// (`harness.trajectory.tool_loop`, etc.). Without passing it through,
+		// `isFeatureEnabled` falls back to the defaults map (every flag false)
+		// and the trajectory detector silently no-ops even after the user
+		// explicitly enables it in `.interlinked/config.json`. Reading per
+		// event is cheap (small JSON, fs cache) and matches what the hook
+		// script does for mode resolution.
 		const preDecision = evaluatePreToolUse(
 			event,
 			rules,
@@ -576,6 +594,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			sessions,
 			routeMap,
 			errorHistory,
+			readSharedConfig(CWD),
 		);
 
 		// --- LLM Policy Classifier: escalation check (shadow mode) ---
@@ -1166,6 +1185,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		const postStartMs = Date.now();
 		const checksRan: string[] = [];
 		const allCheckResults: import("./types.js").CheckResultEntry[] = [];
+		// Phase A.7: per-subprocess-tool breakdown — quality-checks pushes one
+		// entry per `engine.runChecksAsync` invocation (one per tool). The
+		// daemon forwards this into latency.jsonl so the latency CLI can show
+		// per-tool p50/p99.
+		const postToolMetrics: import("./quality-checks.js").ToolBreakdownEntry[] = [];
 
 		// --- Tool-response checks (run for ALL PostToolUse events, not just file edits) ---
 		// These inspect tool_response payloads, so they apply equally to MCP tools,
@@ -1627,11 +1651,17 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 					const currentBaseline = preEditBaselines.get(editedFilePath);
 					previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
-					const rawQualityResults = runQualityChecks(checkEvent, rules.quality_checks, CWD, {
-						...qualityOpts,
-						baseline: currentBaseline,
-						diffAware: rules.diff_aware,
-					});
+					const rawQualityResults = await runQualityChecks(
+						checkEvent,
+						rules.quality_checks,
+						CWD,
+						{
+							...qualityOpts,
+							baseline: currentBaseline,
+							diffAware: rules.diff_aware,
+							outToolMetrics: postToolMetrics,
+						},
+					);
 					// Clear consumed baseline
 					preEditBaselines.delete(editedFilePath);
 					// Track which quality checks actually applied to this file type
@@ -1965,6 +1995,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		if (checksRan.length > 0) {
 			postDecision.checks_ran = [...new Set(checksRan)];
 			postDecision.checks_timing_ms = elapsedMs;
+		}
+		if (postToolMetrics.length > 0) {
+			postDecision.tool_breakdown = postToolMetrics;
 		}
 
 		// Required-tool coverage: warn once per session if required tools are missing
@@ -2324,6 +2357,25 @@ socketServer = createServer((sock: Socket) => {
 			buffer = buffer.slice(newlineIdx + 1);
 			if (!line.trim()) continue;
 			const decision = await processEvent(line);
+			// Record per-event latency before responding so the writer's
+			// own latency doesn't bleed into the next event's measurement.
+			// `appendLatencyLog` swallows fs errors internally — telemetry
+			// must never crash the daemon.
+			try {
+				const evt: JsonObject = JSON.parse(line);
+				appendLatencyLog(INTERLINKED_DIR, {
+					hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
+					tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
+					session_id: typeof evt.session_id === "string" ? evt.session_id : null,
+					agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
+					decision: decision.decision,
+					checks_ran: decision.checks_ran ?? null,
+					checks_timing_ms: decision.checks_timing_ms ?? null,
+					tool_breakdown: decision.tool_breakdown ?? null,
+				});
+			} catch (e) {
+				void e;
+			}
 			try {
 				sock.write(`${JSON.stringify(decision)}\n`);
 			} catch (e) {
