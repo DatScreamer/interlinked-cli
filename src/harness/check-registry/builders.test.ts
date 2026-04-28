@@ -78,18 +78,19 @@ describe("buildAgentSafetyChecks", () => {
 		expect(a.map((c) => c.name).sort()).toEqual(b.map((c) => c.name).sort());
 	});
 
-	it("skips warning-severity checks when the diff is comment_only", () => {
-		// Quoted-string body change → comment_only under spans.ts. The legacy
-		// build (no oldContent) returns warning-severity checks; the new
-		// build (with oldContent) drops them.
+	it("does NOT skip warnings on comment_only diffs (quoted-string changes can be security-relevant)", () => {
+		// `comment_only` per `diff-classifier.ts` covers diffs landing in any
+		// masked region — comments AND quoted strings. Several warning
+		// detectors specifically inspect quoted values (target_blank_no_rel
+		// on JSX `target="_blank"`, hardcoded-localhost strings, weak-hash
+		// literals like `"md5"`). Skipping warnings on `comment_only` would
+		// silently drop those — the bug the reviewer flagged. Pin the fix:
+		// a quoted-string-only diff still surfaces warning detectors.
 		const oldText = "echo 'hello'";
 		const newText = "echo 'world'";
-		const allRun = buildAgentSafetyChecks(newText, "x.sh");
 		const skipped = buildAgentSafetyChecks(newText, "x.sh", undefined, oldText);
-		const legacyWarnings = allRun.filter((c) => c.severity === "warning");
 		const skippedWarnings = skipped.filter((c) => c.severity === "warning");
-		expect(legacyWarnings.length).toBeGreaterThan(0);
-		expect(skippedWarnings.length).toBe(0);
+		expect(skippedWarnings.length).toBeGreaterThan(0);
 	});
 
 	it("preserves error-severity checks even on comment_only diffs", () => {

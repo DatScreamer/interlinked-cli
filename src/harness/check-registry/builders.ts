@@ -38,13 +38,24 @@ export function buildAgentSafetyChecks(
 	// this is purely the gate.
 	const lcContent = content.toLowerCase();
 	// Phase B.4 — diff-class skip. When the caller passes `oldContent`, we
-	// classify the diff and skip warning-severity detectors on non-semantic
-	// edits. `oldContent === undefined` preserves the legacy run-everything
-	// behavior for callers that haven't been wired (e.g. `interlinked verify`
-	// in full-audit mode where there is no "before" state).
+	// classify the diff and skip warning-severity detectors on edits that
+	// genuinely cannot fire any check. `oldContent === undefined` preserves
+	// the legacy run-everything behavior for callers that haven't been
+	// wired (e.g. `interlinked verify` in full-audit mode where there is
+	// no "before" state).
+	//
+	// Only `whitespace_only` is safe to skip wholesale. `comment_only` per
+	// `diff-classifier.ts` covers diffs landing inside *any* masked region
+	// — comments AND quoted strings. Several warning detectors specifically
+	// inspect quoted values (JSX `target="_blank"` audits, hardcoded-
+	// localhost strings, weak-hash literals like `"md5"`, prompt-injection
+	// scanners on quoted content, …). Skipping on `comment_only` would
+	// silently drop those — the very pattern the reviewer flagged. Pure
+	// whitespace edits cannot affect string contents OR semantic spans, so
+	// dropping warnings there is safe.
 	const diffClass =
 		oldContent !== undefined ? classifyDiff(oldContent, content).diff_class : "semantic";
-	const skipWarnings = diffClass !== "semantic";
+	const skipWarnings = diffClass === "whitespace_only";
 	return CHECK_REGISTRY.filter((c) => c.pipeline === "agent_safety")
 		.filter((c) => !phase || c.phase === phase)
 		.filter((c) => !(skipWarnings && c.severity === "warning"))
