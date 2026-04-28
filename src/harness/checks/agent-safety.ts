@@ -693,6 +693,55 @@ export function checkNanComparison(content: string, filePath: string): InlineMat
 }
 
 /**
+ * Row 27 (Phase-1 plan 04): JS/TS loose-equality `==` / `!=`.
+ *
+ * Triple-equality (`===` / `!==`) is the project standard; the loose form
+ * triggers JavaScript type coercion and is a documented bug source. We
+ * deliberately allow the `x == null` / `x != null` idiom — it's the only loose
+ * comparison Plan 04 §4.2 lists as an FP guard (matches both null AND
+ * undefined in one expression, which is otherwise verbose).
+ */
+export function checkJsLooseEquality(content: string, filePath: string): InlineMatch[] {
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+
+	// Match `==` or `!=` that is NOT part of `===` / `!==`. Word-style
+	// boundaries avoid matching `<=` / `>=` (those are comparison operators,
+	// not equality). We capture surrounding chars so the alternation rule
+	// "left side is not `=`/`!`/`<`/`>` AND right side is not `=`" is enforced
+	// by the lookarounds.
+	const looseEqRe = /(^|[^=!<>])([!=]=)(?!=)/;
+
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = strippedLines[i];
+		if (!looseEqRe.test(line)) continue;
+
+		// Plan 04 documented FP guard: `x == null` / `x != null`. Skip when
+		// the loose comparison is against the literal `null` keyword.
+		// `x == null` covers null AND undefined; nothing equivalent in `===`.
+		if (/[!=]=\s*null\b/.test(line) || /\bnull\s*[!=]=/.test(line)) {
+			// If the only loose comparisons on the line are vs null, skip.
+			// Strip out null comparisons and re-check.
+			const withoutNullCmp = line
+				.replace(/[!=]=\s*null\b/g, "")
+				.replace(/\bnull\s*[!=]=/g, "");
+			if (!looseEqRe.test(withoutNullCmp)) continue;
+		}
+
+		matches.push({
+			line: i + 1,
+			text: originalLines[i].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
  * Detect constant conditions: if (true), if (false), while (true) without break,
  * if (0), if (""), if (1).
  */
@@ -768,6 +817,92 @@ export function checkNumberPrecisionLoss(content: string, filePath: string): Inl
 				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 				break;
 			}
+		}
+	}
+	return matches;
+}
+
+// ===========================================
+// Row 24 — `ubs_tls_verify_disabled` (cross-language)
+// ===========================================
+
+/**
+ * Detect TLS verification disabled across languages.
+ *
+ * Plan 04 §4.1 regex:
+ *   `\bverify\s*=\s*False\b|InsecureSkipVerify:\s*true|rejectUnauthorized\s*:\s*false`
+ *
+ * Catches the common Python (`requests` / `httpx`), Go (`tls.Config{}`), and
+ * Node (`https.request` / `tls.connect`) idioms for turning off the TLS
+ * peer-cert check. Each is a man-in-the-middle vector unless the call sits
+ * behind a controlled proxy with a documented justification.
+ */
+export function checkTlsVerifyDisabled(content: string, filePath: string): InlineMatch[] {
+	void filePath; // cross-language; no extension gate.
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+
+	const re = /\bverify\s*=\s*False\b|\bInsecureSkipVerify\s*:\s*true\b|\brejectUnauthorized\s*:\s*false\b/;
+
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (re.test(strippedLines[i])) {
+			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		}
+	}
+	return matches;
+}
+
+// ===========================================
+// Row 26 — `ubs_weak_hash` (cross-language)
+// ===========================================
+
+/**
+ * Detect weak cryptographic hash usage (MD5, SHA-1) across languages.
+ *
+ * Plan 04 §4.1 regex: `\b(?:md5|sha1)\s*\(` (case-insensitive).
+ *
+ * Both MD5 and SHA-1 are broken for collision resistance. Acceptable for
+ * non-security checksums (cache keys, file hashing) but fired anywhere a
+ * literal call appears so the agent considers the choice. Test files are
+ * exempt because checksum fixtures and golden hashes routinely embed MD5
+ * outputs.
+ */
+export function checkWeakHash(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	// Comment-only strip preserves string contents so we can match Node's
+	// `crypto.createHash("md5")` form, where the algorithm name lives inside
+	// a string literal that `stripCommentsAndStrings` would have blanked.
+	// Comments still get blanked so `// createHash("md5") example` doesn't
+	// fire a false positive.
+	const commentStrippedLines = stripComments(content).split("\n");
+
+	// Form 1: `\b(?:md5|sha1)\s*\(` case-insensitive — catches `md5(buf)`,
+	// `MD5(buf)`, `hashlib.md5(...)`, and the Go `md5.New()` / `sha1.New()`
+	// forms where the algorithm name is a code identifier.
+	const directRe = /\b(?:md5|sha1)\s*\(/i;
+	// Form 2: Node `crypto.createHash("md5")` / `createHash('sha1')` /
+	// `createHash(\`md5\`)`. The algorithm lives inside a string literal,
+	// so this form has to scan a comment-stripped (but string-preserving)
+	// view rather than `strippedLines` (which blanks the string contents).
+	const createHashRe = /\bcreateHash\s*\(\s*["'`](?:md5|sha1)["'`]/i;
+
+	const matches: InlineMatch[] = [];
+	const flagged = new Set<number>();
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const fired =
+			directRe.test(strippedLines[i] ?? "") ||
+			createHashRe.test(commentStrippedLines[i] ?? "");
+		if (fired && !flagged.has(i)) {
+			flagged.add(i);
+			matches.push({ line: i + 1, text: (originalLines[i] ?? "").trim().slice(0, 150) });
 		}
 	}
 	return matches;

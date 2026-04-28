@@ -19,6 +19,7 @@ export {
 	checkExtraneousDependencies,
 	checkFloatingPromises,
 	checkInnerHtmlUsage,
+	checkJsLooseEquality,
 	checkMagicLiteralInConditional,
 	checkMisusedPromises,
 	checkNanComparison,
@@ -26,7 +27,9 @@ export {
 	checkNumberPrecisionLoss,
 	checkPhantomDependencies,
 	checkSelfImport,
+	checkTlsVerifyDisabled,
 	checkUnsafeOptionalChaining,
+	checkWeakHash,
 } from "./checks/agent-safety.js";
 // ---- agent-safety-advanced ----
 export {
@@ -235,3 +238,31 @@ export {
 	checkSnapshotOveruse,
 	checkTestImportingTest,
 } from "./checks/testing.js";
+// ---- ubs-language-specific (Plan 04 rows 22, 23, 25, 29, 30 + D.1 backlog) ----
+export {
+	checkDeeplyNestedCallback,
+	checkDeferInLoop,
+	checkDivisionByVariable,
+	checkEvalInputTainted,
+	checkGoroutineNoWaitgroup,
+	checkJavaOptionalGet,
+	checkLargeFunction,
+	checkMagicNumberNoConst,
+	checkMutexLockUnwrap,
+	checkNumericComparisonChain,
+	checkOsSystemTainted,
+	checkPickleUntrustedLoad,
+	checkPrintDebugLeak,
+	checkPyMutableDefaultArg,
+	checkPyNoneEquality,
+	checkRegexInLoopNoCompile,
+	checkSqlStringConcat,
+	checkSubprocessShellTrue,
+	checkTempfileMktempRace,
+	checkTimeFormatLocaleDep,
+	checkUbsHardcodedLocalhost,
+	checkUbsStringConcatInLoop,
+	checkUncheckedRedirect,
+	checkUnsafeFormatString,
+	checkXmlExternalEntity,
+} from "./checks/ubs-language-specific.js";
