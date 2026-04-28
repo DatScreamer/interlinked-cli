@@ -10,15 +10,19 @@ into the runner's stdout/stderr/exit-code contract.
 - `docs/design/free-cli-architecture.md` — directory layout, installer manifest
 - `docs/design/three-product-architecture.md` — latency budgets
 
-## Runner matrix (as of 2026-04-23)
+## Runner matrix (as of 2026-04-27)
 
-| Runner         | `id`           | Status       | Native events                                                                    | Decision contract                                  |
-| -------------- | -------------- | ------------ | -------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Claude Code    | `claude-code`  | Stable       | `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, 10 more               | stdout JSON `{decision: "deny"\|"ask"}` or exit 0  |
-| Copilot CLI    | `copilot-cli`  | Stable       | `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `userPromptSubmitted` | stderr + exit 2 = deny; exit 0 = allow             |
-| Cursor         | `cursor`       | Stable       | `beforeShellExecution`, `beforeMcpToolExecution`, 4 more                         | stdout JSON `{allow: bool, ask?, reason?}`         |
-| Gemini CLI     | `gemini-cli`   | Experimental | `BeforeTool`, `AfterTool`, `AfterModel`, `PreCompress`                           | stdout JSON (provisional)                          |
-| Codex CLI      | `codex`        | Experimental | `pre_tool`, `post_tool`, `pre_command`, `post_command`, lifecycle                | stderr + exit codes (provisional)                  |
+| Runner         | `id`           | Status       | Native events                                                                    | Decision contract                                  | Native ask | Post→model |
+| -------------- | -------------- | ------------ | -------------------------------------------------------------------------------- | -------------------------------------------------- | ---------- | ---------- |
+| Claude Code    | `claude-code`  | Stable       | `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, 10 more               | stdout JSON `{decision: "deny"\|"ask"}` or exit 0  | ✅          | ✅ `additionalContext` |
+| Copilot CLI    | `copilot-cli`  | Stable       | `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `userPromptSubmitted` | stderr + exit 2 = deny; exit 0 = allow             | ❌ → deny  | ❌ stderr only |
+| Cursor         | `cursor`       | Stable       | `beforeShellExecution`, `beforeMcpToolExecution`, 4 more                         | stdout JSON `{permission: "allow"\|"deny"\|"ask"}` | ✅          | ❌ stderr only |
+| Codex CLI      | `codex`        | Stable       | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest` | stdout JSON `{decision: "block"}` or `additionalContext` | ❌ → block | ✅ `additionalContext` |
+| Gemini CLI     | `gemini-cli`   | Experimental | `BeforeTool`, `AfterTool`, `AfterModel`, `PreCompress`                           | stdout JSON (provisional)                          | 🚧 prov    | 🚧 prov    |
+
+**Native ask** = runner has a user-confirm primitive (Claude `permissionDecision: "ask"`, Cursor `permission: "ask"`). When absent, the harness collapses our canonical `decision: "ask"` to a hard deny so the user still sees the reason and can refine.
+
+**Post→model** = `additionalContext` from PostToolUse is echoed back into the model's next-turn context. When absent, post-event warnings only land in the user's terminal stderr — `pre_warn` and `post` checks deliver no model-visible signal on those runners. Prefer `pre_block` for anything that must drive agent behavior across all four stable runners.
 
 When a runner ships a 1.0 hook contract that differs from what is in this table,
 update the adapter, stamp the file header with today's date, and re-run the

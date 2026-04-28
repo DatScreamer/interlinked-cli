@@ -97,9 +97,15 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
 			}
 			if (decision.decision === "ask") {
-				// Copilot has limited ask semantics — surface as allow + note on stderr.
-				const note = decision.reason ?? "Confirmation recommended";
-				return { stderr: stderr ? `${stderr}\n${note}` : note, exit_code: 0 };
+				// Copilot has no "ask" primitive — collapse to deny so destructive
+				// rules (curl DELETE, GraphQL mutations, etc.) actually require
+				// user intervention rather than silently proceeding. This mirrors
+				// the .mjs `formatCopilotResponse` path in
+				// hook-template-chunks/provider-responses.ts. Surfacing as exit 0
+				// + stderr note (the previous behaviour) let an ask rule's match
+				// proceed unchecked, defeating the purpose of the gate.
+				const reason = decision.reason ?? "Confirmation required";
+				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
 			}
 			// allow
 			let out = stderr;

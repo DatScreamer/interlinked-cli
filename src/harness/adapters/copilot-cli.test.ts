@@ -89,9 +89,15 @@ describe("Copilot CLI encodeDecision", () => {
 		expect(out.exit_code).toBe(2);
 		expect(out.stderr).toContain("nope");
 	});
-	it("ask degrades to allow with stderr note", () => {
+	it("ask collapses to deny since Copilot has no ask primitive", () => {
+		// Regression guard: previously this returned exit 0 with a stderr note,
+		// which let destructive ask rules (curl DELETE, GraphQL mutations)
+		// proceed unchecked on Copilot. The Copilot CLI ignores stderr from
+		// non-deny hooks, so the user never saw the prompt and the call ran.
+		// Mirrors the .mjs formatCopilotResponse path that downgrades pre_ask
+		// to permissionDecision:"deny".
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
-		expect(out.exit_code).toBe(0);
+		expect(out.exit_code).toBe(2);
 		expect(out.stderr).toContain("confirm?");
 	});
 });
