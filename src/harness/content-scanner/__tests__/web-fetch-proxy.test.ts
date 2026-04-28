@@ -69,16 +69,25 @@ function makeScanner(findings: ScanFinding[]): ContentScanner {
 	};
 }
 
+// Body + status the next pinned-fetcher call should resolve to. Set via
+// `stubFetch(body, ok?)` per test. The production code path now uses
+// `node:http(s).request` with a DNS-pinned `lookup` (the SSRF-rebinding
+// fix) instead of the global `fetch`, so `vi.stubGlobal("fetch", ...)` no
+// longer intercepts. We pass a deterministic `fetcher` through
+// `FetchAndScanArgs` to short-circuit the network entirely.
+let stubbedBody: string | null = null;
+let stubbedOk = true;
+
 function stubFetch(body: string, ok = true): void {
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(async () => ({
-			ok,
-			status: ok ? 200 : 500,
-			text: async () => body,
-		})),
-	);
+	stubbedBody = body;
+	stubbedOk = ok;
 }
+
+const stubFetcher: NonNullable<Parameters<typeof fetchAndScan>[0]["fetcher"]> = async () => {
+	if (stubbedBody === null) throw new Error("stubFetch was not called for this test");
+	if (!stubbedOk) throw new Error("HTTP 500");
+	return stubbedBody;
+};
 
 function finding(label: string, text: string, start: number): ScanFinding {
 	return { label, start, end: start + text.length, text, source: "WebFetch.response" };
@@ -98,6 +107,7 @@ describe("fetchAndScan — clean body (no findings)", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "passthrough", body: "hello world, no PII here" });
 		// No review file written when nothing was flagged.
@@ -117,6 +127,7 @@ describe("fetchAndScan — findings present", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "review_pending" });
 	});
@@ -133,6 +144,7 @@ describe("fetchAndScan — findings present", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		const list = listPendingReviews(cwd);
 		expect(list).toHaveLength(1);
@@ -162,6 +174,7 @@ describe("fetchAndScan — allowlist closes the FP gap from 73e1c1f", () => {
 			]),
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "passthrough" });
 		expect(listPendingReviews(cwd)).toEqual([]);
@@ -194,6 +207,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({
 			kind: "decision_resolved",
@@ -226,6 +240,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
@@ -252,6 +267,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({
 			kind: "decision_resolved",
@@ -282,6 +298,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "decision_resolved", decision: "block" });
 		expect((result as { body: string }).body).toMatch(/withheld/i);
@@ -310,6 +327,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		stubFetch("fresh body without PII");
 		const result = await fetchAndScan({
@@ -320,6 +338,7 @@ describe("fetchAndScan — decision file already on disk", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "passthrough" });
 	});
@@ -368,8 +387,12 @@ describe("assertSafeFetchTarget — SSRF guard", () => {
 
 	it("allows IPv4 literals in public ranges", async () => {
 		// 8.8.8.8 is unambiguously public — no DNS lookup needed because
-		// the URL hostname is a literal IP.
-		await expect(assertSafeFetchTarget("http://8.8.8.8/")).resolves.toBeInstanceOf(URL);
+		// the URL hostname is a literal IP. Returns the vetted target so
+		// the fetcher can pin its connect to the same address.
+		const result = await assertSafeFetchTarget("http://8.8.8.8/");
+		expect(result.url).toBeInstanceOf(URL);
+		expect(result.vettedAddress).toBe("8.8.8.8");
+		expect(result.vettedFamily).toBe(4);
 	});
 
 	it("rejects IPv6 loopback / unique-local / link-local literals", async () => {
@@ -406,12 +429,15 @@ describe("assertSafeFetchTarget — SSRF guard", () => {
 	});
 
 	it("allows a hostname whose DNS resolution is fully public", async () => {
-		await expect(
-			assertSafeFetchTarget(
-				"https://safe.example/path",
-				stubResolver(["8.8.8.8", "1.1.1.1"]),
-			),
-		).resolves.toBeInstanceOf(URL);
+		const result = await assertSafeFetchTarget(
+			"https://safe.example/path",
+			stubResolver(["8.8.8.8", "1.1.1.1"]),
+		);
+		expect(result.url).toBeInstanceOf(URL);
+		// The fetcher pins to the FIRST resolved address — fixes the
+		// DNS-rebinding TOCTOU between resolution and connect.
+		expect(result.vettedAddress).toBe("8.8.8.8");
+		expect(result.vettedFamily).toBe(4);
 	});
 
 	it("rejects when DNS resolution itself fails", async () => {
@@ -453,10 +479,35 @@ describe("isBlockedAddress — range coverage", () => {
 
 describe("fetchAndScan — SSRF integration", () => {
 	it("returns fail_open without calling fetch when the URL targets a private host", async () => {
-		// Stub fetch so we can assert it was NOT called — the SSRF guard
-		// must short-circuit before any network I/O.
-		const fetchSpy = vi.fn();
-		vi.stubGlobal("fetch", fetchSpy);
+		// No `fetcher` injected here — we want the real fetchBody path so
+		// the SSRF guard actually runs. The fetcherSpy proves the network
+		// hop never executes (the guard short-circuits before it).
+		const fetcherSpy = vi.fn();
+		const result = await fetchAndScan({
+			cwd,
+			url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+			prompt: "",
+			scanner: makeScanner([]),
+			compiledAllowlist: allowlistEmpty,
+			config: baseConfig,
+			toolName: "WebFetch",
+			fetcher: async (...a) => {
+				fetcherSpy(...a);
+				throw new Error("should never reach the fetcher");
+			},
+		});
+		expect(result.kind).toBe("fail_open");
+		// Real fetchBody path NOT used here (we injected a fetcher), but
+		// the SSRF guard runs before the fetcher anyway because the
+		// production code calls assertSafeFetchTarget inside a wrapper.
+		// Test the wrapper integration via the no-fetcher path below.
+		expect(fetcherSpy).not.toHaveBeenCalled();
+	});
+
+	it("real fetchBody path: SSRF guard rejects with 'SSRF guard' detail", async () => {
+		// This case exercises the actual fetchBody integration so the
+		// SsrfBlockedError -> fail_open detail propagation is covered. No
+		// `fetcher` injection — production fetchBody handles the URL.
 		const result = await fetchAndScan({
 			cwd,
 			url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
@@ -468,12 +519,9 @@ describe("fetchAndScan — SSRF integration", () => {
 		});
 		expect(result.kind).toBe("fail_open");
 		expect((result as { detail: string }).detail).toMatch(/SSRF guard/);
-		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it("returns fail_open without calling fetch when the URL uses file://", async () => {
-		const fetchSpy = vi.fn();
-		vi.stubGlobal("fetch", fetchSpy);
+	it("returns fail_open when the URL uses file://", async () => {
 		const result = await fetchAndScan({
 			cwd,
 			url: "file:///etc/passwd",
@@ -484,18 +532,11 @@ describe("fetchAndScan — SSRF integration", () => {
 			toolName: "WebFetch",
 		});
 		expect(result.kind).toBe("fail_open");
-		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });
 
 describe("fetchAndScan — fetch failure", () => {
 	it("returns fail_open so the caller falls back to normal flow", async () => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => {
-				throw new Error("network down");
-			}),
-		);
 		const result = await fetchAndScan({
 			cwd,
 			url: "https://example.com/down",
@@ -504,6 +545,9 @@ describe("fetchAndScan — fetch failure", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+			fetcher: async () => {
+				throw new Error("network down");
+			},
 		});
 		expect(result).toMatchObject({ kind: "fail_open" });
 	});
@@ -518,6 +562,7 @@ describe("fetchAndScan — fetch failure", () => {
 			compiledAllowlist: allowlistEmpty,
 			config: baseConfig,
 			toolName: "WebFetch",
+		fetcher: stubFetcher,
 		});
 		expect(result).toMatchObject({ kind: "fail_open" });
 	});

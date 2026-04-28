@@ -35,6 +35,8 @@
 // blowing up the agent's context window with megabyte-sized fetches.
 
 import { lookup as dnsLookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { applyAllowlist, type CompiledEntry } from "./allowlist.js";
 import {
@@ -87,6 +89,10 @@ export interface FetchAndScanArgs {
 	compiledAllowlist: CompiledEntry[];
 	config: ContentScannerConfig;
 	toolName: string;
+	/** Override the default DNS-pinned fetcher. Tests inject a deterministic
+	 *  stub here to avoid the network. Production callers omit it; the
+	 *  default uses `pinnedFetch` with `assertSafeFetchTarget` per hop. */
+	fetcher?: (url: string) => Promise<string>;
 }
 
 // ===========================================
@@ -109,8 +115,14 @@ export async function fetchAndScan(args: FetchAndScanArgs): Promise<ProxyResult>
 
 	// Path 2: do the fetch ourselves, scan the body.
 	let body: string;
+	const fetchImpl = args.fetcher ?? fetchBody;
 	try {
-		body = await fetchBody(args.url);
+		// Pre-flight SSRF guard so the rejection runs even when a test (or
+		// any other caller) injects a custom `fetcher`. The real fetchBody
+		// also validates per hop so redirects can't wriggle past — this
+		// up-front check covers the initial URL deterministically.
+		await assertSafeFetchTarget(args.url);
+		body = await fetchImpl(args.url);
 	} catch (fetchErr) {
 		return {
 			kind: "fail_open",
@@ -321,14 +333,30 @@ function isBlockedV6(addrRaw: string): boolean {
 	return false;
 }
 
+/** Tuple returned by `assertSafeFetchTarget`. The vetted address is the
+ *  one — and only one — IP literal the caller is allowed to actually
+ *  connect to. The fetcher must pin its `lookup` to this value so the
+ *  later connect cannot land on a different IP that didn't pass the
+ *  guard (DNS-rebinding TOCTOU). For literal-IP URLs `vettedAddress`
+ *  equals the parsed hostname; for hostnames it's the address the
+ *  resolver returned and the guard cleared. `vettedFamily` is 4 or 6
+ *  to feed `lookup`'s callback signature. */
+export interface VettedTarget {
+	url: URL;
+	vettedAddress: string;
+	vettedFamily: 4 | 6;
+}
+
 /** Validates a URL is safe for the harness to fetch. Throws
  *  `SsrfBlockedError` if not. Resolves hostnames via `dnsLookup` (or the
  *  injected resolver) and rejects if **any** resolved address is blocked
- *  (defends against DNS records that include a public + a private IP). */
+ *  (defends against DNS records that include a public + a private IP).
+ *  Returns the parsed URL together with the single vetted address the
+ *  fetcher must pin to. */
 export async function assertSafeFetchTarget(
 	rawUrl: string,
 	resolver: HostResolver = defaultResolver,
-): Promise<URL> {
+): Promise<VettedTarget> {
 	let parsed: URL;
 	try {
 		parsed = new URL(rawUrl);
@@ -360,7 +388,8 @@ export async function assertSafeFetchTarget(
 				`literal address ${bareHost} is private/loopback/link-local`,
 			);
 		}
-		return parsed;
+		const family = isIP(bareHost) === 4 ? 4 : 6;
+		return { url: parsed, vettedAddress: bareHost, vettedFamily: family };
 	}
 	// Hostname — resolve and reject if any A/AAAA is blocked.
 	let addresses: { address: string; family: number }[];
@@ -389,7 +418,82 @@ export async function assertSafeFetchTarget(
 			);
 		}
 	}
-	return parsed;
+	// Every record passed; pin the first one. Fetcher's `lookup` callback
+	// returns this exact address regardless of what a second DNS round
+	// might say a few ms later — that's the SSRF-rebinding fix.
+	const first = addresses[0];
+	if (!first) {
+		throw new SsrfBlockedError(
+			"hostname_resolution_failed",
+			rawUrl,
+			`DNS lookup of ${bareHost} returned no usable address`,
+		);
+	}
+	const family = first.family === 6 ? 6 : 4;
+	return { url: parsed, vettedAddress: first.address, vettedFamily: family };
+}
+
+interface PinnedFetchResponse {
+	status: number;
+	location?: string;
+	body: string;
+}
+
+/** Issues a single HTTP/HTTPS request whose underlying TCP `connect` is
+ *  pinned to `target.vettedAddress`. Implemented via `node:http(s).request`
+ *  with the `lookup` option overridden — the lookup callback synchronously
+ *  returns the address the SSRF guard already approved, so undici / the
+ *  global `fetch`'s second DNS resolution can't slip a different IP past
+ *  the gate (the DNS-rebinding TOCTOU). TLS SNI + cert verification still
+ *  use the original hostname so HTTPS works against a normal DNS-routed
+ *  server.
+ *
+ *  Manual redirect handling (no automatic follow): the caller drives the
+ *  hop loop in `fetchBody` so each hop's URL is re-vetted by
+ *  `assertSafeFetchTarget` before its connect is pinned. */
+function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
+	return new Promise((resolve, reject) => {
+		const isHttps = target.url.protocol === "https:";
+		const requestFn = isHttps ? httpsRequest : httpRequest;
+		const port =
+			target.url.port !== ""
+				? Number(target.url.port)
+				: isHttps
+					? 443
+					: 80;
+		// `lookup` runs once per connect; we synchronously hand back the
+		// vetted IP so the underlying socket connects exactly there.
+		const req = requestFn({
+			protocol: target.url.protocol,
+			hostname: target.url.hostname,
+			port,
+			path: `${target.url.pathname}${target.url.search}`,
+			method: "GET",
+			headers: { ...FETCH_HEADERS, Host: target.url.host },
+			timeout: FETCH_TIMEOUT_MS,
+			lookup: (
+				_hostname: string,
+				_options: unknown,
+				cb: (err: Error | null, address: string, family: number) => void,
+			) => cb(null, target.vettedAddress, target.vettedFamily),
+			servername: target.url.hostname,
+		});
+		req.on("response", (res) => {
+			const status = res.statusCode ?? 0;
+			const location =
+				typeof res.headers.location === "string" ? res.headers.location : undefined;
+			let body = "";
+			res.setEncoding("utf-8");
+			res.on("data", (chunk) => {
+				body += chunk;
+			});
+			res.on("end", () => resolve({ status, location, body }));
+			res.on("error", reject);
+		});
+		req.on("error", reject);
+		req.on("timeout", () => req.destroy(new Error(`fetch timeout after ${FETCH_TIMEOUT_MS}ms`)));
+		req.end();
+	});
 }
 
 /** Throws on any non-success outcome (network error, abort, non-2xx
@@ -397,29 +501,26 @@ export async function assertSafeFetchTarget(
  *  the call in try/catch and surfaces `fail_open` — keeping the success
  *  path linear here. Redirects are followed manually with the same SSRF
  *  validation applied to every hop, which closes the public-URL-302-to-
- *  private-host bypass. */
+ *  private-host bypass. The connect for each hop is pinned to the vetted
+ *  IP returned by `assertSafeFetchTarget`, closing the DNS-rebinding
+ *  TOCTOU between resolution and connect. */
 async function fetchBody(url: string): Promise<string> {
 	let currentUrl = url;
 	for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
-		await assertSafeFetchTarget(currentUrl);
-		const response = await fetch(currentUrl, {
-			headers: FETCH_HEADERS,
-			redirect: "manual",
-			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-		});
+		const target = await assertSafeFetchTarget(currentUrl);
+		const response = await pinnedFetch(target);
 		if (response.status >= 300 && response.status < 400) {
-			const location = response.headers?.get?.("Location");
-			if (!location) {
+			if (!response.location) {
 				throw new Error(`HTTP ${response.status} redirect without Location header`);
 			}
 			// Resolve relative redirects against the current URL.
-			currentUrl = new URL(location, currentUrl).toString();
+			currentUrl = new URL(response.location, currentUrl).toString();
 			continue;
 		}
-		if (!response.ok) {
+		if (response.status < 200 || response.status >= 300) {
 			throw new Error(`HTTP ${response.status}`);
 		}
-		return await response.text();
+		return response.body;
 	}
 	throw new Error(`exceeded ${MAX_REDIRECT_HOPS} redirect hops`);
 }
