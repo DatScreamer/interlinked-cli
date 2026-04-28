@@ -795,7 +795,13 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"Open-redirect bugs let attackers craft links that go through your domain before bouncing to a phishing site. Validate the redirect target against an allowlist or ensure it's a relative path (`url.startsWith('/')`) before redirecting.",
 		fn: checkUncheckedRedirect,
 		resultsPropName: "uncheckedRedirect",
-		content_keywords: ["redirect(", "location.href"],
+		// Mirror EVERY trigger surface in the regex: `redirect(`,
+		// `location.href`, AND `window.location`. Omitting any one form
+		// turns the gate into a silent false-negative — a JS/TS edit that
+		// only adds `window.location = nextUrl` would bypass the
+		// pre_warn check. Audit pass: keep this list 1:1 with `callRe` in
+		// `checkUncheckedRedirect` (`src/harness/checks/ubs-language-specific.ts`).
+		content_keywords: ["redirect(", "location.href", "window.location"],
 	},
 	{
 		id: "ubs_goroutine_no_waitgroup",
