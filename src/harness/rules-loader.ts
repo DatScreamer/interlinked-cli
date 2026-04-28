@@ -20,6 +20,10 @@
 import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
+import {
+	getCompiledRulesWatchPaths,
+	loadCompiledRules,
+} from "./rules/compiled-rules.js";
 import { DEFAULT_CONFIG } from "./rules/default-config.js";
 import {
 	readLocalGuardRules,
@@ -29,6 +33,12 @@ import {
 } from "./rules/file-io.js";
 import { autoTuneQualityChecks, detectProjectLanguages } from "./rules/language-detection.js";
 import { mergeLocalOverrides, mergeTeamRules } from "./rules/merge.js";
+import {
+	type HarnessModePreset,
+	getModePreset,
+	isKnownMode,
+	migrateLegacyMode,
+} from "./rules/modes.js";
 import type { GuardRule, GuardRulesConfig } from "./types.js";
 
 // Re-export file-io helpers as part of the public API.
@@ -60,6 +70,54 @@ export function getDefaultConfig(): GuardRulesConfig {
 }
 
 /**
+ * Read the active harness mode from `.interlinked/config.json` and resolve
+ * it to a preset. Returns null when the file is missing/unparseable so the
+ * loader can keep using defaults — every consumer treats `null` as "no
+ * mode-driven enablement override".
+ *
+ * Phase C: the hook script also reads this same field for
+ * HARNESS_POST_TIMEOUT_MS, so the daemon and hook stay in sync via the
+ * shared config file rather than a side channel.
+ */
+function readActiveModePreset(cwd: string): HarnessModePreset | null {
+	const sharedConfigPath = join(cwd, ".interlinked", "config.json");
+	if (!existsSync(sharedConfigPath)) return null;
+	try {
+		const parsed = JSON.parse(readFileSync(sharedConfigPath, "utf-8")) as { mode?: unknown };
+		const rawMode = typeof parsed.mode === "string" ? parsed.mode : undefined;
+		if (!rawMode) return null;
+		const resolved = isKnownMode(rawMode) ? rawMode : migrateLegacyMode(rawMode, undefined);
+		return getModePreset(resolved);
+	} catch (_err) {
+		/* intentional: malformed config.json — fall back to no mode override */
+		return null;
+	}
+}
+
+/**
+ * Apply a mode preset's `quality_checks_enabled` map onto a fresh config.
+ * Toggles `config.structural_checks.enabled` for the structural-checks key
+ * and `config.quality_checks[name].enabled` for the rest. Keys not present
+ * in `quality_checks` are skipped (legacy presets that named a check we no
+ * longer ship). Mutates `config` in place.
+ */
+function applyModePresetEnablement(
+	config: GuardRulesConfig,
+	preset: HarnessModePreset,
+): void {
+	for (const [checkName, enabled] of Object.entries(preset.quality_checks_enabled)) {
+		if (checkName === "structural_checks") {
+			if (config.structural_checks) {
+				config.structural_checks.enabled = enabled;
+			}
+			continue;
+		}
+		const entry = config.quality_checks[checkName];
+		if (entry) entry.enabled = enabled;
+	}
+}
+
+/**
  * Public API — the main entry point the harness server uses on startup
  * and on SIGHUP. Loads the default config, auto-tunes by detected
  * project language, and merges team + local overrides.
@@ -76,6 +134,16 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 	// Auto-detect project languages and disable inapplicable checks
 	const languages = detectProjectLanguages(cwd);
 	autoTuneQualityChecks(config.quality_checks, languages);
+
+	// Phase C — apply the operational tier preset BEFORE team/local merges
+	// so user overrides remain authoritative. Without this branch
+	// `interlinked harness mode budget` only lowered the hook timeout while
+	// the daemon still ran structural / semgrep at their defaults; and
+	// `ci` mode failed to enable the extra checks it advertises.
+	const presetForMode = readActiveModePreset(cwd);
+	if (presetForMode) {
+		applyModePresetEnablement(config, presetForMode);
+	}
 
 	// Merge team rules
 	if (existsSync(teamPath)) {
@@ -97,11 +165,17 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 		}
 	}
 
-	// Combine built-in rules with custom rules
+	// Combine built-in rules with custom rules + rules compiled from .md
+	// guidance by the `enforce` skill. Compiled rules are layered AFTER
+	// custom rules so a hand-curated `guard-rules.json` entry with the same
+	// id wins on conflict — committed team config remains authoritative
+	// over per-developer compile output.
 	const disabledSet = new Set(config.disabled_rules || []);
+	const compiledRules = loadCompiledRules(cwd);
 	const allRules = [
 		...BUILTIN_RULES.filter((r) => !disabledSet.has(r.id)),
 		...config.rules.filter((r) => r.enabled !== false),
+		...compiledRules.filter((r) => r.enabled !== false && !disabledSet.has(r.id)),
 	];
 	config.rules = allRules;
 
@@ -119,6 +193,7 @@ export function watchRulesFiles(
 ): () => void {
 	const teamPath = join(cwd, ".interlinked", "guard-rules.json");
 	const localPath = join(cwd, ".interlinked", "guard-rules.local.json");
+	const compiledPaths = getCompiledRulesWatchPaths(cwd);
 
 	const reload = () => {
 		try {
@@ -131,12 +206,18 @@ export function watchRulesFiles(
 	/** Filesystem poll interval — 2s is a tradeoff between responsiveness
 	 *  to rule edits and IO overhead. */
 	const WATCH_POLL_INTERVAL_MS = 2_000;
-	// Watch both files (if they exist, watchFile still works if they don't)
-	watchFile(teamPath, { interval: WATCH_POLL_INTERVAL_MS }, reload);
-	watchFile(localPath, { interval: WATCH_POLL_INTERVAL_MS }, reload);
+	// Watch all rules files (watchFile is safe even when files don't exist —
+	// it fires once they're created, which is the right behavior for the
+	// compiled-rules pair: an `/enforce` run creates them mid-session and
+	// we want the running daemon to pick them up without a restart).
+	const watchedPaths = [teamPath, localPath, ...compiledPaths];
+	for (const path of watchedPaths) {
+		watchFile(path, { interval: WATCH_POLL_INTERVAL_MS }, reload);
+	}
 
 	return () => {
-		unwatchFile(teamPath, reload);
-		unwatchFile(localPath, reload);
+		for (const path of watchedPaths) {
+			unwatchFile(path, reload);
+		}
 	};
 }
