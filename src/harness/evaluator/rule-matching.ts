@@ -8,7 +8,7 @@
 // formatter that fronts every block decision.
 
 import type { JsonObject } from "../../lib/json-types.js";
-import type { GuardRule } from "../types.js";
+import type { GuardRule, HarnessEvent } from "../types.js";
 
 /** Nested indexable object type for dot-path field traversal in rule pattern matching */
 interface Indexable {
@@ -154,4 +154,38 @@ export function formatReason(rule: GuardRule): string {
 		msg += `\n\nSuggestion: ${rule.suggestion}`;
 	}
 	return msg;
+}
+
+/** Public API — agent-facing reason for `decision: "ask"`. Distinct from the
+ *  block reason because the agent isn't being refused — it's being asked to
+ *  pause for human approval. The leading marker tells the agent this is a
+ *  *potentially* destructive operation, not a rule violation per se. */
+export function formatAskReason(rule: GuardRule): string {
+	let msg = `POTENTIALLY DESTRUCTIVE: ${rule.reason}\n\n`;
+	msg += "This action requires user confirmation before proceeding. ";
+	msg += "If the user approves, the operation will run; if not, choose a non-destructive alternative.";
+	if (rule.suggestion) {
+		msg += `\n\nSuggestion: ${rule.suggestion}`;
+	}
+	return msg;
+}
+
+/** Public API — user-only message attached to ask decisions on clients that
+ *  surface a separate user channel (Claude Code's `systemMessage`, Cursor's
+ *  `userMessage`). Includes the tool name, rule id, and a one-line "what's
+ *  about to happen" so the human can decide without re-reading the agent's
+ *  context. */
+export function formatAskSystemMessage(rule: GuardRule, event: HarnessEvent): string {
+	const lines = [
+		`⚠️  Interlinked detected a potentially destructive operation.`,
+		`   Tool:     ${event.tool_name || "unknown"}`,
+		`   Rule:     ${rule.id} (${rule.severity})`,
+		`   Why:      ${rule.reason}`,
+	];
+	if (rule.suggestion) {
+		lines.push(`   Safer:    ${rule.suggestion}`);
+	}
+	lines.push("");
+	lines.push("Approve only if you intended this action. Deny to make the agent pick a non-destructive path.");
+	return lines.join("\n");
 }

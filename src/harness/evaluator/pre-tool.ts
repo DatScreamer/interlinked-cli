@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { relative } from "node:path";
+import { isFeatureEnabled, type SharedConfig } from "../../lib/config.js";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import type { CohortManager } from "../cohort.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
@@ -27,6 +28,7 @@ import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import type { ErrorHistory } from "../error-history.js";
 import { checkProjectSetup } from "../generic-checks.js";
 import { getPatternWarnings } from "../pattern-detector.js";
+import { createTrajectoryDetector, type TrajectoryEvent } from "../trajectory.js";
 import {
 	checkConcurrentEdit,
 	checkDirtyWorkingTree,
@@ -51,8 +53,9 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
+import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
-import { formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
+import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import {
@@ -92,6 +95,57 @@ function getProjectSetupWarnings(cwd: string): string[] {
 function containsSecrets(content: string): boolean {
 	if (!content || content.length < SECRETS_MIN_CHARS) return false;
 	return containsSecretsDetailed(content).length > 0;
+}
+
+/** Phase D.2 trajectory detector entry point. Per session: lazy-instantiates
+ *  the detector when any trajectory feature flag is on, then calls observe()
+ *  for the current event and filters findings to only the enabled patterns.
+ *
+ *  Returns the warning strings to push onto the PreToolUse decision's
+ *  warnings array. Empty array when the detector is disabled, the event
+ *  isn't a recognized hook, or no findings fired. */
+function runTrajectoryDetector(
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	sharedConfig: SharedConfig | null,
+): string[] {
+	const enabledPatterns = new Set<import("../trajectory.js").TrajectoryFinding["pattern"]>();
+	if (isFeatureEnabled("harness.trajectory.tool_loop", sharedConfig)) {
+		enabledPatterns.add("tool_loop");
+	}
+	if (isFeatureEnabled("harness.trajectory.destructive_sequence", sharedConfig)) {
+		enabledPatterns.add("destructive_sequence");
+	}
+	if (isFeatureEnabled("harness.trajectory.unbackedoff_retry", sharedConfig)) {
+		enabledPatterns.add("unbackedoff_retry");
+	}
+	if (isFeatureEnabled("harness.trajectory.silent_stall", sharedConfig)) {
+		enabledPatterns.add("silent_stall");
+	}
+	if (enabledPatterns.size === 0) return [];
+
+	if (!session.trajectoryDetector) {
+		session.trajectoryDetector = createTrajectoryDetector();
+	}
+
+	const tsString = event.timestamp;
+	const tsMs = tsString ? Date.parse(tsString) : Number.NaN;
+	const trajectoryEvent: TrajectoryEvent = {
+		ts_ms: Number.isFinite(tsMs) ? tsMs : Date.now(),
+		hook_event:
+			event.hook_event === "PostToolUse" || event.hook_event === "PostToolUseFailure"
+				? event.hook_event
+				: "PreToolUse",
+		tool_name: event.tool_name || "",
+		tool_input: event.tool_input,
+	};
+
+	const findings = session.trajectoryDetector.observe(trajectoryEvent);
+	if (findings.length === 0) return [];
+
+	return findings
+		.filter((f) => enabledPatterns.has(f.pattern))
+		.map((f) => f.message);
 }
 
 /** Run tsc and biome against a target file BEFORE an edit, returning existing
@@ -136,6 +190,7 @@ export function evaluatePreToolUse(
 	sessions?: SessionTracker,
 	routeMap?: RouteMap,
 	errorHistory?: ErrorHistory,
+	sharedConfig?: SharedConfig | null,
 ): HarnessDecision {
 	if (!rules.enabled) return { decision: "allow" }; // early exit when harness disabled
 
@@ -146,18 +201,60 @@ export function evaluatePreToolUse(
 	let pendingContentScan: ContentScanRequest | undefined;
 	void _blameInjectedFiles; // reserved for future blame-injection dedup
 
+	// Phase D.2 trajectory detector — feeds the per-session ring buffer and
+	// surfaces any anti-pattern findings as warnings. Lazy: only instantiated
+	// when at least one `harness.trajectory.*` flag is enabled (default off,
+	// so this is a no-op until the flags flip via SharedConfig override).
+	if (session) {
+		const trajectoryWarnings = runTrajectoryDetector(event, session, sharedConfig ?? null);
+		if (trajectoryWarnings.length > 0) warnings.push(...trajectoryWarnings);
+	}
+
 	// GUARD: Destructive patterns — Bash, Write, Edit, all tools
 	{
 		const cmd = (toolInput.command as string) || "";
+		// Plan 01 §1.3 keyword-quick-reject — pre-filter rules against the
+		// command's tokenized words so platform-specific rules (`kubectl`,
+		// `terraform`, etc.) don't run their regex on every Bash call. Rules
+		// with no `keywords` field are always evaluated (preserves legacy
+		// behavior for existing rules until they're backfilled).
+		//
+		// Wrapper-normalization (Plan 01 §1.1) and span-classification
+		// (§1.2) are intentionally NOT globally applied in this matching
+		// path. The existing rule corpus contains:
+		//   • sudo-specific patterns (`\bsudo\s+rm\b`) that depend on
+		//     seeing the raw `sudo` prefix.
+		//   • SQL/argument-payload rules (`\bDROP\s+TABLE\b`) that need to
+		//     match the quoted argument of `psql -c "DROP TABLE x"`.
+		//   • Process-kill rules that NEGATE on quoted argument shape
+		//     (`pkill -f 'wrangler dev'` should allow but `pkill node`
+		//     should block).
+		// Globally projecting wrapper-stripped + scannable text breaks all
+		// three. The two modules remain available for explicit opt-in by
+		// new rules / Plan 02-03 entries that prefer the cleaner semantics.
+		const cmdTokens = cmd ? commandKeywordTokens(cmd) : new Set<string>();
 		const agentRole = inferAgentRole(event);
+		// Synthesize a richer match-input that exposes tool_name and
+		// agent_source as top-level fields so guard-rule patterns can
+		// match against them via `field: "tool_name"` / "agent_source"
+		// without callers having to mutate the agent's actual tool_input.
+		// Required by MCP destructive guards (mcp__*__delete*) and the
+		// Railway MCP family that pattern-match on tool name rather than
+		// command text.
+		const matchInput = {
+			...toolInput,
+			tool_name: toolName,
+			agent_source: event.agent_source,
+		};
 
 		for (const rule of rules.rules) {
 			if (!shouldEvaluateRule(rule, "PreToolUse", toolName)) continue;
 			if (!ruleAppliesToRole(rule, agentRole)) continue;
+			if (cmd && !shouldEvaluateByKeywords(rule, cmdTokens)) continue;
 			if (
 				!matchesRule({
 					command: cmd,
-					toolInput,
+					toolInput: matchInput,
 					rule,
 					extraExceptions: rules.extra_exceptions,
 				})
@@ -168,6 +265,28 @@ export function evaluatePreToolUse(
 				return {
 					decision: "block",
 					reason: formatReason(rule),
+					warnings,
+					rule_id: rule.id,
+					severity: rule.severity,
+					category: (rule as { category?: string }).category,
+				};
+			}
+			if (rule.action === "ask") {
+				// "ask" surfaces a per-call user prompt on agents that support
+				// it (Claude Code, Cursor). On agents that lack an ask primitive
+				// (Copilot, Codex, Gemini) the per-client encoders downgrade
+				// ask → deny so the user still sees the reason: the .mjs path
+				// goes through formatCopilotResponse / formatCodexResponse in
+				// hook-template-chunks/provider-responses.ts, and the adapter
+				// path goes through copilot-cli.encodeDecision /
+				// codex.encodeDecision / gemini-cli.encodeDecision. Both must
+				// stay in sync — if you add a new runner without an ask
+				// primitive, mirror the deny mapping in BOTH places or
+				// destructive rules will silently proceed on that runner.
+				return {
+					decision: "ask",
+					reason: formatAskReason(rule),
+					system_message: formatAskSystemMessage(rule, event),
 					warnings,
 					rule_id: rule.id,
 					severity: rule.severity,

@@ -102,23 +102,35 @@ export function checkSelfKill(command: string): PreCheckResult | null {
 		};
 	}
 
-	// Check 2: Resolve the target PID's command and check if it looks like
-	// a Claude Code / agent session process (node running claude, etc.)
+	// Check 2: Resolve the target PID's command. If it looks like a Claude
+	// Code session OR a *non-orphan* interlinked harness, warn — these kills
+	// might disrupt an active session in another shell. Orphan harness daemons
+	// (no living parent except init=1) are explicitly allowed because Check 1
+	// already protects the ones that matter (this session's harness + the
+	// process tree's ancestors), and orphan reaping is a legitimate
+	// maintenance operation we WANT to support without friction. The over-
+	// broad earlier rule (`block` on any node+interlinked process) made
+	// orphan cleanup impossible — see `commands/harness.ts:reapOrphanHarnesses`
+	// which depends on this check NOT firing on stale daemons.
 	try {
-		const info = execSync(`ps -o comm=,args= -p ${targetPid} 2>/dev/null`, {
+		const info = execSync(`ps -o ppid=,comm=,args= -p ${targetPid} 2>/dev/null`, {
 			encoding: "utf-8",
 			timeout: 1000,
 		}).trim();
+		const ppidMatch = info.match(/^\s*(\d+)\s/);
+		const targetPpid = ppidMatch ? Number.parseInt(ppidMatch[1] as string, 10) : 0;
 		const lower = info.toLowerCase();
-		// Block if the target is a node process running claude or interlinked harness
-		if (
+		const isClaudeOrInterlinked =
 			(lower.includes("node") || lower.includes("bun") || lower.includes("deno")) &&
 			(lower.includes("claude") ||
 				lower.includes("interlinked") ||
-				lower.includes("harness/server"))
-		) {
+				lower.includes("harness/server"));
+		// Treat ppid==1 (or 0) as orphan — its parent shell exited; this is
+		// a stale daemon, not a live session. Allow the kill silently.
+		const isOrphan = targetPpid <= 1;
+		if (isClaudeOrInterlinked && !isOrphan) {
 			return {
-				block: `PID ${targetPid} appears to be a Claude Code or Interlinked session process (${info.slice(0, 80).trim()}) — killing it would terminate a session.`,
+				warning: `PID ${targetPid} appears to be a live Claude Code or Interlinked process in another session (${info.slice(0, 80).trim()}). Killing it will terminate that session — proceed only if intended.`,
 			};
 		}
 	} catch (e) {

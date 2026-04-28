@@ -13,6 +13,7 @@
 // accumulator, or mutates the pending escalation slot on the caller's
 // session.
 
+import { existsSync, readFileSync } from "node:fs";
 import type { JsonObject } from "../../lib/json-types.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "../check-registry/index.js";
 import {
@@ -60,6 +61,30 @@ export interface WriteContentGuardsArgs {
 	pendingEscalation: EscalationRequest | undefined;
 }
 
+/** Resolve the PRE-edit content for a Write/Edit/MultiEdit call so the
+ *  Phase B.4 diff-classifier can decide whether to skip warning-severity
+ *  detectors. Returns `undefined` when the pre-edit text is unavailable —
+ *  the dispatcher then falls through to its legacy run-everything path. */
+function resolvePreEditContent(filePath: string, toolInput: JsonObject): string | undefined {
+	// Edit / MultiEdit — `old_string` carries the snippet being replaced.
+	// We could splice it back into the disk content for full-file accuracy,
+	// but the diff-classifier only cares about the delta itself, and the
+	// delta == (old_string → new_string). Comparing the snippets directly
+	// is exactly the diff the agent is asking us to apply.
+	const oldString = typeof toolInput.old_string === "string" ? toolInput.old_string : undefined;
+	if (oldString !== undefined) return oldString;
+
+	// Write — there is no `old_string`. Read the on-disk file as the base.
+	if (filePath) {
+		try {
+			if (existsSync(filePath)) return readFileSync(filePath, "utf-8");
+		} catch (e) {
+			void e; // intentional: stat/read failure → fall through to undefined
+		}
+	}
+	return undefined;
+}
+
 /** Public API — consumed by evaluator/pre-tool.ts. Runs every content guard
  *  that applies to a file-write tool call (Write / Edit / NotebookEdit /
  *  apply_patch / etc.) and returns a decision envelope. */
@@ -72,6 +97,17 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// Resolve PROPOSED FULL FILE CONTENT (post-patch) so diff-overlay
 	// checks see imports/types/etc., not just the replacement snippet.
 	const content = resolveProposedContent(filePath, toolInput);
+	// Resolve the pre-edit content so the registry dispatch can apply the
+	// Phase B.4 diff-class skip. For an Edit, this is the old_string snippet;
+	// for a Write, it is the on-disk file before the overwrite.
+	const preEditContent = resolvePreEditContent(filePath, toolInput);
+	// The new-content side of the diff has to match the granularity of the
+	// pre-edit side. For Edit (where preEdit is the old_string snippet), we
+	// pair with new_string; for Write (where preEdit is the on-disk file),
+	// we pair with the full proposed content. Falling back to `content`
+	// when no `new_string` is present preserves the legacy granularity.
+	const postEditContent =
+		typeof toolInput.new_string === "string" ? toolInput.new_string : content;
 
 	// PreToolUse injection scanning: catch injection content before it hits disk
 	if (content.length > INJECTION_SCAN_MIN_CHARS) {
@@ -163,8 +199,20 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// Fully-deterministic, zero-FP errors. Blocks the write and forces
 	// the agent to fix ALL instances of the rule in the target file
 	// before retrying — not just the line it was editing.
+	//
+	// Phase B.4 — pass `preEditContent` so the diff-classifier can skip
+	// warning-severity detectors on non-semantic edits. pre_block detectors
+	// are all severity=error (e.g. eval_usage, promise_reject_non_error)
+	// and STILL run regardless of diff_class, so a credential leaked into
+	// a comment / quoted string is still caught.
 	{
-		const preBlockChecks = buildAgentSafetyChecks(content, filePath, "pre_block");
+		const preBlockChecks = buildAgentSafetyChecks(
+			content,
+			filePath,
+			"pre_block",
+			preEditContent,
+		);
+		void postEditContent; // reserved for future hunk-granular pre_block
 		const instructions = buildCheckInstructions();
 		for (const check of preBlockChecks) {
 			const matches = check.fn();
@@ -261,8 +309,17 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// ─────────────────────────────────────────────
 	// PreToolUse registry gate — phase: "pre_warn"
 	// ─────────────────────────────────────────────
+	//
+	// Phase B.4 — pass `preEditContent` so the diff-classifier can skip
+	// warning-severity detectors on non-semantic edits (whitespace_only,
+	// comment_only). Saves a regex pass on every doc tweak / re-format.
 	{
-		const preWarnChecks = buildAgentSafetyChecks(content, filePath, "pre_warn");
+		const preWarnChecks = buildAgentSafetyChecks(
+			content,
+			filePath,
+			"pre_warn",
+			preEditContent,
+		);
 		const instructions = buildCheckInstructions();
 		for (const check of preWarnChecks) {
 			const matches = check.fn();
