@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-export type ClientName = "claude" | "copilot" | "gemini" | "codex";
+export type ClientName = "claude" | "copilot" | "gemini" | "codex" | "cursor";
 
 interface ClientConfig {
 	name: ClientName;
@@ -54,9 +54,19 @@ const CLIENT_CONFIGS: ClientConfig[] = [
 		settingsFile: "hooks.json",
 		inputMethod: "stdin",
 	},
+	{
+		name: "cursor",
+		label: "Cursor IDE",
+		// Cursor's hook config lives at `<project>/.cursor/hooks.json` (project
+		// scope) and `~/.cursor/hooks.json` (user scope). We install at project
+		// scope to match how the other clients work — global install is a
+		// future enhancement gated on the user-config-tier wiring.
+		configDir: ".cursor",
+		settingsFile: "hooks.json",
+		inputMethod: "stdin",
+	},
 	// Future client shapes (documented for extension; NOT commented-out code —
 	// each line below is an example of a ClientConfig entry you might add):
-	//   Example: cursor   → configDir: ".cursor",   settingsFile: "settings.json", inputMethod: "stdin"
 	//   Example: opencode → configDir: ".opencode", settingsFile: "config.json",   inputMethod: "stdin"
 	//   Example: amp      → configDir: ".amp",      settingsFile: "settings.json", inputMethod: "stdin"
 ];

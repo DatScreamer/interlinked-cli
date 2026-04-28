@@ -7,21 +7,59 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { HarnessMode } from "../harness/rules/modes.js";
 
 // ===========================================
 // Types
 // ===========================================
 
-interface SharedConfig {
+export interface SharedConfig {
 	version: 1;
 	server_url: string;
 	default_workspace_key?: string;
 	default_project?: string;
+	/**
+	 * Tiered harness mode (Phase C). One of `budget` / `quality` / `ci`.
+	 * Drives the generated `.mjs` hook's `HARNESS_POST_TIMEOUT_MS` literal
+	 * and the daemon's heavy-check enablement. Persisted via
+	 * `interlinked harness mode <name>`. Legacy `balanced` strings are
+	 * auto-migrated by `migrateLegacyMode()` in `harness/rules/modes.ts`
+	 * (per master plan Q&A: balanced → budget on Copilot CLI, → quality
+	 * elsewhere) so existing installs keep working without a manual edit.
+	 */
+	mode?: HarnessMode | string;
 	/** Custom PII patterns for verify detection. */
 	pii_patterns?: Array<{ name: string; pattern: string; severity?: string }>;
 	/** Opt-in built-in PII patterns (e.g., "email", "phone_us", "ip_address"). */
 	pii_opt_in?: string[];
+	/**
+	 * Path globs to skip for the entire PostToolUse check pipeline. Matched
+	 * against the file_path of every Edit/Write event; if the path matches any
+	 * entry, both inline detectors and external tool runners short-circuit
+	 * with an empty CheckReport (skip category: `config_disabled`).
+	 *
+	 * Lives on `SharedConfig` (committed) so the team agrees on what is
+	 * out-of-scope for harness checks — generated code, vendored deps, build
+	 * artifacts, lockfiles, IDE metadata. Personal additions belong in
+	 * `.interlinked/guard-rules.local.json` or per-rule disables.
+	 *
+	 * Glob syntax matches `src/lib/path-glob.ts`: `*` (within segment), `**`
+	 * (across segments), `?`, `[abc]` (no ranges), `{a,b}` (alternation).
+	 * Defaults are seeded from `getDefaultConfig().skip_paths` in
+	 * `src/harness/rules/default-config.ts`.
+	 */
+	skip_paths?: string[];
+	/**
+	 * Feature flags. Nested structure addressed by dotted path via
+	 * `isFeatureEnabled("harness.evaluator.wrapper_normalization")`. Unknown keys
+	 * fall through to `FEATURE_DEFAULTS`; unknown defaults fall through to false
+	 * (dark-ship safety).
+	 */
+	harness?: FeatureNode;
 }
+
+/** Recursive feature-flag node — any nested object whose leaves are booleans. */
+export type FeatureNode = { [key: string]: boolean | FeatureNode };
 
 export interface ServerEntry {
 	server_url: string;
@@ -191,6 +229,85 @@ export function readLocalConfig(cwd?: string): LocalConfig | null {
 
 export function writeSharedConfig(config: SharedConfig, cwd?: string): void {
 	writeJson(getSharedConfigPath(cwd), config);
+}
+
+// ===========================================
+// Feature flags
+// ===========================================
+
+/**
+ * Source-of-truth defaults for every feature flag in the codebase. New features
+ * MUST add an entry here with their default value. Phase-1 plan flags default
+ * to `true`; dark-shipped Phase-2/3 features default to `false` and flip after
+ * one release of telemetry confirms low FP rate.
+ *
+ * Dotted path → default boolean. Lookups via `isFeatureEnabled` consult an
+ * override in `SharedConfig.harness` (nested by path segment) first, then this
+ * map, then return `false` for unknown keys.
+ */
+export const FEATURE_DEFAULTS: Readonly<Record<string, boolean>> = Object.freeze({
+	// Plan 01 — evaluator architectural upgrades
+	"harness.evaluator.wrapper_normalization": true,
+	"harness.evaluator.span_classification": true,
+	"harness.evaluator.keyword_quick_reject": true,
+	"harness.evaluator.dual_engine_regex": true,
+	"harness.evaluator.allowlist_expiry": true,
+	// Plan 02 — destructive command rules
+	"harness.rules.destructive_v1_extras": true,
+	// Plan 03 — resource-bomb rules
+	"harness.rules.resource_bomb": true,
+	// Plan 04 — UBS quality checks (top 10 in Phase 1)
+	"harness.checks.ubs_critical_tier": true,
+	"harness.checks.ubs_warning_tier": true,
+	"harness.checks.ubs_advisory_tier": false,
+	// Plan 05 — trajectory state machine (Phase 2; dark for Phase 1)
+	"harness.trajectory.tool_loop": false,
+	"harness.trajectory.destructive_sequence": false,
+	"harness.trajectory.unbackedoff_retry": false,
+	"harness.trajectory.silent_stall": false,
+	// Plan 06/07 — impact analysis (Phase 2; dark for Phase 1)
+	"harness.impact_analysis.pagerank": false,
+	"harness.impact_analysis.cycle_detection": false,
+	// Plan 09 — PreCompact reminder
+	"harness.compact_reminder.enabled": true,
+	// Plan 10 — exit code envelope
+	"harness.exit_codes.envelope": true,
+	// Plan 11 — bench instrumentation
+	"harness.bench.section_timing": true,
+});
+
+/**
+ * Look up a feature flag by dotted path. Resolution order:
+ *
+ * 1. Override in `config.harness` (nested by path segment).
+ * 2. Default in `FEATURE_DEFAULTS`.
+ * 3. `false` (unknown keys are off — dark-ship safety).
+ *
+ * Pass `config` explicitly on the hot path; the default `readSharedConfig()`
+ * call hits disk every invocation.
+ */
+export function isFeatureEnabled(
+	path: string,
+	config: SharedConfig | null = readSharedConfig(),
+): boolean {
+	if (config?.harness) {
+		const segments = path.split(".");
+		// Path always starts with "harness."; skip the first segment.
+		if (segments[0] === "harness") {
+			let cursor: boolean | FeatureNode | undefined = config.harness;
+			for (let i = 1; i < segments.length; i++) {
+				if (typeof cursor !== "object" || cursor === null) {
+					cursor = undefined;
+					break;
+				}
+				cursor = (cursor as FeatureNode)[segments[i] as string];
+				if (cursor === undefined) break;
+			}
+			if (typeof cursor === "boolean") return cursor;
+		}
+	}
+	const fallback = FEATURE_DEFAULTS[path];
+	return fallback ?? false;
 }
 
 function writeLocalConfig(config: LocalConfig, cwd?: string): void {
