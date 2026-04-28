@@ -8,6 +8,7 @@ import { getConfigDir, isConfigured } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
 import { deleteConfigDir, deleteHookScript, uninstallAllHooks } from "../lib/hooks.js";
 import { type ClientName, detectClients } from "../lib/settings.js";
+import { uninstallEnforceSkill } from "../lib/skill-installers.js";
 
 interface DisableOptions {
 	keepConfig?: boolean;
@@ -28,7 +29,7 @@ export async function disableCommand(options: DisableOptions): Promise<void> {
 	// client (not just detected directories) since users may have removed
 	// the client config dir but left our hooks in a parent settings file.
 	const _detected = detectClients(cwd);
-	const allClients: ClientName[] = ["claude", "copilot", "gemini", "codex"];
+	const allClients: ClientName[] = ["claude", "copilot", "gemini", "codex", "cursor"];
 
 	// Try to uninstall from all known clients (not just detected ones)
 	// because hooks might exist even if the client dir was removed
@@ -54,6 +55,14 @@ export async function disableCommand(options: DisableOptions): Promise<void> {
 	const scriptDeleted = deleteHookScript(cwd);
 	if (scriptDeleted) {
 		console.log(`\n${c.red("Deleted")} hook script`);
+	}
+
+	// Step 2b: Remove the per-runner /enforce skill aliases. Leaves the
+	// canonical .interlinked/skills/enforce/SKILL.md alone — it goes away with
+	// the .interlinked/ dir if the user opts to delete the config.
+	const skillRemoved = uninstallEnforceSkill(cwd, allClients);
+	if (skillRemoved) {
+		console.log(`${c.red("Removed")} /enforce skill from ${allClients.join(", ")}`);
 	}
 
 	// Step 3: Handle .interlinked/ directory

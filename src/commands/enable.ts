@@ -24,6 +24,7 @@ import {
 	writeHookScript,
 } from "../lib/hooks.js";
 import { type ClientName, detectClients } from "../lib/settings.js";
+import { installEnforceSkill } from "../lib/skill-installers.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 
 interface EnableOptions {
@@ -46,7 +47,13 @@ const STATUS_LINE_CLIENTS: readonly ClientName[] = ["claude", "copilot"] as cons
 // All known clients in canonical detection order. Driver for "not detected"
 // hints + the dry-run printer; keep in sync with the registry in
 // `src/lib/hooks.ts` and `CLIENT_CONFIGS` in `src/lib/settings.ts`.
-const ALL_CLIENTS: readonly ClientName[] = ["claude", "copilot", "gemini", "codex"] as const;
+const ALL_CLIENTS: readonly ClientName[] = [
+	"claude",
+	"copilot",
+	"gemini",
+	"codex",
+	"cursor",
+] as const;
 
 interface ClientSummary {
 	label: string;
@@ -60,6 +67,10 @@ const CLIENT_SUMMARIES: Record<ClientName, ClientSummary> = {
 	codex: {
 		label: "codex",
 		eventCountText: "6 events (.codex/hooks.json + codex_hooks=true flag)",
+	},
+	cursor: {
+		label: "cursor",
+		eventCountText: "10 events (.cursor/hooks.json — incl. beforeShellExecution + beforeMCPExecution)",
 	},
 };
 
@@ -99,10 +110,32 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	}
 
 	configureStatusLine(targetClients);
+	installEnforceSkillForClients(cwd, targetClients);
 	await startHarnessIfNeeded(cwd);
 	noteUndetectedClients(detectedNames, targetClients, requestedClients);
 	await maybeScaffoldStructure(options.structure);
 	printSummary(cwd, relativeHookPath, installedCount, targetClients);
+}
+
+function installEnforceSkillForClients(cwd: string, targetClients: ClientName[]): void {
+	if (targetClients.length === 0) return;
+	const results = installEnforceSkill(cwd, targetClients);
+	const installed = results.filter((r) => r.installed);
+	if (installed.length === 0) {
+		const firstErr = results.find((r) => r.error)?.error;
+		if (firstErr) {
+			console.log(`\n${c.dim("/enforce skill: not installed —")} ${c.yellow(firstErr)}`);
+		}
+		return;
+	}
+	console.log(
+		`\n${c.green("Installed")} /enforce skill for ${installed.map((r) => r.client).join(", ")}`,
+	);
+	console.log(
+		c.dim(
+			"  Invoke as `/enforce <target>` from your agent — e.g. /enforce AGENTS.md",
+		),
+	);
 }
 
 function parseRequestedClients(raw: string | undefined): ClientName[] | null {

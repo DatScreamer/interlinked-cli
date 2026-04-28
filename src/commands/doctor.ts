@@ -17,6 +17,7 @@ import {
 import { c, divider, header } from "../lib/formatter.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { getOutputMode, output } from "../lib/output.js";
+import { runSystemChecks } from "./doctor-system.js";
 import { isHarnessRunning } from "./harness.js";
 
 type CheckStatus = "pass" | "fail" | "warn";
@@ -48,6 +49,17 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	const isLocalDevServer =
 		resolvedConfig.server_url.includes("localhost") ||
 		resolvedConfig.server_url.includes("127.0.0.1");
+
+	// ===========================================
+	// System checks (CPU / memory / orphan daemons)
+	// ===========================================
+	// Phase E.1 — `interlinked doctor` surfaces system signals before
+	// configuration ones. CPU/RAM/orphan-count problems matter even when
+	// the rest of the install is fine, and they're the most common cause
+	// of latency-budget overruns and runaway memory growth in the wild.
+	for (const r of runSystemChecks()) {
+		results.push({ name: r.name, status: r.status, message: r.message });
+	}
 
 	// ===========================================
 	// Local Checks (no server needed)

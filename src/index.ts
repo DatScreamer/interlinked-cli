@@ -438,6 +438,49 @@ harnessCmd
 		await harnessTestCommand(command, opts);
 	});
 
+harnessCmd
+	.command("reap")
+	.description(
+		"List (default) or kill orphan harness daemons. --force to SIGTERM. --all also targets the active daemon.",
+	)
+	.option("--force", "Actually SIGTERM the candidates (default is dry-run)")
+	.option("--all", "Also target the active daemon (equivalent of pkill -f)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { harnessReapCommand } = await import("./commands/harness-reap.js");
+		await harnessReapCommand(opts);
+	});
+
+harnessCmd
+	.command("clean")
+	.description("Remove stale harness.sock + harness.pid (refuses if a daemon is running)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { harnessCleanCommand } = await import("./commands/harness-clean.js");
+		await harnessCleanCommand(opts);
+	});
+
+harnessCmd
+	.command("mode [name]")
+	.description(
+		"Show or switch the operational tier (budget|quality|ci) — drives HARNESS_POST_TIMEOUT_MS",
+	)
+	.option("--json", "Machine-readable output")
+	.action(async (name: string | undefined, opts: OptionValues) => {
+		const { harnessModeCommand } = await import("./commands/harness-mode.js");
+		await harnessModeCommand(name, opts);
+	});
+
+harnessCmd
+	.command("latency")
+	.description("Show per-event latency report from .interlinked/logs/latency.jsonl")
+	.option("--json", "Machine-readable output")
+	.option("--by-tool", "Include per-tool stats (events count + when-present p50/p99/max)")
+	.action(async (opts: OptionValues) => {
+		const { harnessLatencyCommand } = await import("./commands/harness-latency.js");
+		await harnessLatencyCommand(opts);
+	});
+
 const scannerCmd = program
 	.command("scanner")
 	.description("PII filter (content scanner) — toggle, inspect, audit");
