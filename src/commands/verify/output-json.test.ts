@@ -98,6 +98,39 @@ function emptyCq(): CodeQualityResults {
 		"filesWithoutTest",
 		"projectLocRatio",
 		"crap",
+		// Plan 04 Phase-1 UBS critical-tier (rows 22–26)
+		"mutexLockUnwrap",
+		"subprocessShellTrue",
+		"tlsVerifyDisabled",
+		"pyNoneEquality",
+		"weakHash",
+		// Plan 04 Phase-1 UBS warning/post tier (rows 27–30)
+		"jsLooseEquality",
+		"floatEquality",
+		"javaOptionalGet",
+		"divisionByVariable",
+		// Plan 04 D.1 partial — high-leverage backlog
+		"evalInputTainted",
+		"sqlStringConcat",
+		"pyMutableDefaultArg",
+		// Plan 04 D.1 backlog (17 of 20)
+		"tempfileMktempRace",
+		"pickleUntrustedLoad",
+		"xmlExternalEntity",
+		"osSystemTainted",
+		"unsafeFormatString",
+		"uncheckedRedirect",
+		"goroutineNoWaitgroup",
+		"deferInLoop",
+		"ubsStringConcatInLoop",
+		"numericComparisonChain",
+		"printDebugLeak",
+		"ubsHardcodedLocalhost",
+		"magicNumberNoConst",
+		"largeFunction",
+		"deeplyNestedCallback",
+		"timeFormatLocaleDep",
+		"regexInLoopNoCompile",
 	] as const;
 	const out = {} as Record<string, []>;
 	for (const k of keys) out[k] = [];

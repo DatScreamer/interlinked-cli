@@ -21,51 +21,80 @@ import {
 	checkConstantCondition,
 	checkDangerouslySetInnerHTML,
 	checkDeadExports,
+	checkDeeplyNestedCallback,
 	checkDefaultExport,
+	checkDeferInLoop,
 	checkDirectDomAccess,
 	checkDisabledTests,
+	checkDivisionByVariable,
 	checkEvalUsage,
 	checkExcessiveUseEffect,
 	checkExcessiveUseState,
 	checkExportRipple,
 	checkExtraneousDependencies,
+	checkFloatEquality,
 	checkFloatingPromises,
 	checkFocusedTests,
 	checkFunctionComplexity,
+	checkGoroutineNoWaitgroup,
 	checkHardcodedTimeout,
 	checkIndexAsKey,
 	checkInlineObjectProps,
 	checkInnerHtmlUsage,
+	checkJavaOptionalGet,
+	checkJsLooseEquality,
 	checkJsonParseUnsafe,
 	checkLargeFile,
+	checkLargeFunction,
 	checkLifecycleCleanup,
 	checkMagicLiteralInConditional,
+	checkMagicNumberNoConst,
 	checkMigrationOrdering,
 	checkMissingEffectCleanup,
 	checkMissingReturnTypes,
 	checkMisusedPromises,
+	checkMutexLockUnwrap,
 	checkNanComparison,
 	checkNestedTernaries,
 	checkNonNullAssertions,
 	checkNumberPrecisionLoss,
+	checkNumericComparisonChain,
+	checkOsSystemTainted,
 	checkOverMocking,
+	checkPickleUntrustedLoad,
 	checkPiiInSource,
 	checkPlaceholderTests,
+	checkPrintDebugLeak,
 	checkPromiseRejectNonError,
+	checkEvalInputTainted,
+	checkPyMutableDefaultArg,
+	checkPyNoneEquality,
+	checkRegexInLoopNoCompile,
 	checkRequireAwait,
 	checkSelfImport,
 	checkSequentialAwaits,
 	checkSilentCatch,
 	checkSnapshotOveruse,
 	checkSqlSchemaConsistency,
+	checkSqlStringConcat,
+	checkSubprocessShellTrue,
 	checkTargetBlankNoRel,
+	checkTempfileMktempRace,
 	checkTestFileExists,
 	checkTestImportingTest,
 	checkTestRegressions,
 	checkThrowLiteral,
+	checkTimeFormatLocaleDep,
+	checkTlsVerifyDisabled,
+	checkUbsHardcodedLocalhost,
+	checkUbsStringConcatInLoop,
+	checkUncheckedRedirect,
+	checkUnsafeFormatString,
 	checkUnsafeOptionalChaining,
 	checkUnvalidatedJsonBoundary,
 	checkVisibilityFilterMissing,
+	checkWeakHash,
+	checkXmlExternalEntity,
 	extractEnvReferences,
 	extractMockDefinitions,
 } from "../../harness/generic-checks.js";
@@ -525,5 +554,164 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.dataClump.push(...toIssues("data_clump", relPath, checkDataClump(content, file)));
 	r.duplicateDescribe.push(
 		...toIssues("duplicate_describe", relPath, checkDuplicateDescribe(content, file)),
+	);
+
+	// === UBS Plan 04 — rows 27–30 ===
+	r.jsLooseEquality.push(
+		...toIssues("ubs_js_loose_equality", relPath, checkJsLooseEquality(content, file)),
+	);
+	r.floatEquality.push(
+		...toIssues("ubs_float_equality", relPath, checkFloatEquality(content, file)),
+	);
+	r.javaOptionalGet.push(
+		...toIssues("ubs_java_optional_get", relPath, checkJavaOptionalGet(content, file)),
+	);
+	r.divisionByVariable.push(
+		...toIssues(
+			"ubs_division_by_variable",
+			relPath,
+			checkDivisionByVariable(content, file),
+		),
+	);
+
+	// === UBS Plan 04 — rows 22–26 (critical-tier) ===
+	r.mutexLockUnwrap.push(
+		...toIssues("ubs_mutex_lock_unwrap", relPath, checkMutexLockUnwrap(content, file)),
+	);
+	r.subprocessShellTrue.push(
+		...toIssues(
+			"ubs_subprocess_shell_true",
+			relPath,
+			checkSubprocessShellTrue(content, file),
+		),
+	);
+	r.tlsVerifyDisabled.push(
+		...toIssues("ubs_tls_verify_disabled", relPath, checkTlsVerifyDisabled(content, file)),
+	);
+	r.pyNoneEquality.push(
+		...toIssues("ubs_py_none_equality", relPath, checkPyNoneEquality(content, file)),
+	);
+	r.weakHash.push(...toIssues("ubs_weak_hash", relPath, checkWeakHash(content, file)));
+	// Plan 04 D.1 partial — high-leverage backlog
+	r.evalInputTainted.push(
+		...toIssues(
+			"ubs_eval_input_tainted",
+			relPath,
+			checkEvalInputTainted(content, file),
+		),
+	);
+	r.sqlStringConcat.push(
+		...toIssues("ubs_sql_string_concat", relPath, checkSqlStringConcat(content, file)),
+	);
+	r.pyMutableDefaultArg.push(
+		...toIssues(
+			"ubs_python_mutable_default_arg",
+			relPath,
+			checkPyMutableDefaultArg(content, file),
+		),
+	);
+	// Plan 04 D.1 backlog (17 of 20)
+	r.tempfileMktempRace.push(
+		...toIssues(
+			"ubs_tempfile_mktemp_race",
+			relPath,
+			checkTempfileMktempRace(content, file),
+		),
+	);
+	r.pickleUntrustedLoad.push(
+		...toIssues(
+			"ubs_pickle_untrusted_load",
+			relPath,
+			checkPickleUntrustedLoad(content, file),
+		),
+	);
+	r.xmlExternalEntity.push(
+		...toIssues(
+			"ubs_xml_external_entity",
+			relPath,
+			checkXmlExternalEntity(content, file),
+		),
+	);
+	r.osSystemTainted.push(
+		...toIssues("ubs_os_system_tainted", relPath, checkOsSystemTainted(content, file)),
+	);
+	r.unsafeFormatString.push(
+		...toIssues(
+			"ubs_unsafe_format_string",
+			relPath,
+			checkUnsafeFormatString(content, file),
+		),
+	);
+	r.uncheckedRedirect.push(
+		...toIssues(
+			"ubs_unchecked_redirect",
+			relPath,
+			checkUncheckedRedirect(content, file),
+		),
+	);
+	r.goroutineNoWaitgroup.push(
+		...toIssues(
+			"ubs_goroutine_no_waitgroup",
+			relPath,
+			checkGoroutineNoWaitgroup(content, file),
+		),
+	);
+	r.deferInLoop.push(
+		...toIssues("ubs_defer_in_loop", relPath, checkDeferInLoop(content, file)),
+	);
+	r.ubsStringConcatInLoop.push(
+		...toIssues(
+			"ubs_string_concat_in_loop",
+			relPath,
+			checkUbsStringConcatInLoop(content, file),
+		),
+	);
+	r.numericComparisonChain.push(
+		...toIssues(
+			"ubs_numeric_comparison_chain",
+			relPath,
+			checkNumericComparisonChain(content, file),
+		),
+	);
+	r.printDebugLeak.push(
+		...toIssues("ubs_print_debug_leak", relPath, checkPrintDebugLeak(content, file)),
+	);
+	r.ubsHardcodedLocalhost.push(
+		...toIssues(
+			"ubs_hardcoded_localhost",
+			relPath,
+			checkUbsHardcodedLocalhost(content, file),
+		),
+	);
+	r.magicNumberNoConst.push(
+		...toIssues(
+			"ubs_magic_number_no_const",
+			relPath,
+			checkMagicNumberNoConst(content, file),
+		),
+	);
+	r.largeFunction.push(
+		...toIssues("ubs_large_function", relPath, checkLargeFunction(content, file)),
+	);
+	r.deeplyNestedCallback.push(
+		...toIssues(
+			"ubs_deeply_nested_callback",
+			relPath,
+			checkDeeplyNestedCallback(content, file),
+		),
+	);
+	r.timeFormatLocaleDep.push(
+		...toIssues(
+			"ubs_time_format_locale_dep",
+			relPath,
+			checkTimeFormatLocaleDep(content, file),
+		),
+	);
+	r.regexInLoopNoCompile.push(
+		...toIssues(
+			"ubs_regex_in_loop_no_compile",
+			relPath,
+			checkRegexInLoopNoCompile(content, file),
+		),
 	);
 }

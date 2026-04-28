@@ -98,6 +98,17 @@ function makeEmptyResults(): CodeQualityResults {
 		"singleImplementationInterface",
 		"filesWithoutTest",
 		"projectLocRatio",
+		// Plan 04 Phase-1 UBS critical-tier (rows 22–26)
+		"mutexLockUnwrap",
+		"subprocessShellTrue",
+		"tlsVerifyDisabled",
+		"pyNoneEquality",
+		"weakHash",
+		// Plan 04 Phase-1 UBS warning/post tier (rows 27–30)
+		"jsLooseEquality",
+		"floatEquality",
+		"javaOptionalGet",
+		"divisionByVariable",
 	];
 	for (const k of keys) r[k] = [];
 	return r;

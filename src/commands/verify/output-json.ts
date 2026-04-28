@@ -166,6 +166,39 @@ export function outputJson(args: OutputJsonArgs): void {
 			files: [],
 			details: cq.projectLocRatio,
 		},
+		// === UBS Plan 04 — rows 27–30 ===
+		ubs_js_loose_equality: summarizeWithDetails(cq.jsLooseEquality),
+		ubs_float_equality: summarizeWithDetails(cq.floatEquality),
+		ubs_java_optional_get: summarizeWithDetails(cq.javaOptionalGet),
+		ubs_division_by_variable: summarizeWithDetails(cq.divisionByVariable),
+		// === UBS Plan 04 — rows 22–26 (critical-tier) ===
+		ubs_mutex_lock_unwrap: summarizeWithDetails(cq.mutexLockUnwrap),
+		ubs_subprocess_shell_true: summarizeWithDetails(cq.subprocessShellTrue),
+		ubs_tls_verify_disabled: summarizeWithDetails(cq.tlsVerifyDisabled),
+		ubs_py_none_equality: summarizeWithDetails(cq.pyNoneEquality),
+		ubs_weak_hash: summarizeWithDetails(cq.weakHash),
+		// === Plan 04 D.1 partial ===
+		ubs_eval_input_tainted: summarizeWithDetails(cq.evalInputTainted),
+		ubs_sql_string_concat: summarizeWithDetails(cq.sqlStringConcat),
+		ubs_python_mutable_default_arg: summarizeWithDetails(cq.pyMutableDefaultArg),
+		// === Plan 04 D.1 backlog (17 of 20) ===
+		ubs_tempfile_mktemp_race: summarizeWithDetails(cq.tempfileMktempRace),
+		ubs_pickle_untrusted_load: summarizeWithDetails(cq.pickleUntrustedLoad),
+		ubs_xml_external_entity: summarizeWithDetails(cq.xmlExternalEntity),
+		ubs_os_system_tainted: summarizeWithDetails(cq.osSystemTainted),
+		ubs_unsafe_format_string: summarizeWithDetails(cq.unsafeFormatString),
+		ubs_unchecked_redirect: summarizeWithDetails(cq.uncheckedRedirect),
+		ubs_goroutine_no_waitgroup: summarizeWithDetails(cq.goroutineNoWaitgroup),
+		ubs_defer_in_loop: summarizeWithDetails(cq.deferInLoop),
+		ubs_string_concat_in_loop: summarizeWithDetails(cq.ubsStringConcatInLoop),
+		ubs_numeric_comparison_chain: summarizeWithDetails(cq.numericComparisonChain),
+		ubs_print_debug_leak: summarizeWithDetails(cq.printDebugLeak),
+		ubs_hardcoded_localhost: summarizeWithDetails(cq.ubsHardcodedLocalhost),
+		ubs_magic_number_no_const: summarizeWithDetails(cq.magicNumberNoConst),
+		ubs_large_function: summarizeWithDetails(cq.largeFunction),
+		ubs_deeply_nested_callback: summarizeWithDetails(cq.deeplyNestedCallback),
+		ubs_time_format_locale_dep: summarizeWithDetails(cq.timeFormatLocaleDep),
+		ubs_regex_in_loop_no_compile: summarizeWithDetails(cq.regexInLoopNoCompile),
 	};
 
 	if (suggestions) {

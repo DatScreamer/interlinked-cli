@@ -128,6 +128,52 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// until coverage is regenerated. Advisory until threshold+match tolerance
 	// are calibrated against real data.
 	"crap",
+	// UBS division-by-variable (row 30 of Plan 04 phase matrix) — v1 detector
+	// "finds division-by-identifier, surfaces, accepts some FPs" per §4.3.
+	// Regex literals (`/pattern/i`), URL paths embedded in template literals
+	// before stripping, and many legitimate divisions where the agent has
+	// already proven the divisor non-zero. Promote out of advisory after one
+	// release of telemetry shows FP rate <5%.
+	"ubs_division_by_variable",
+	// Plan 04 D.1 heuristic-tier (rows 31-41) — every detector below ships
+	// `determinism: "heuristic"` and matches on regex shapes that recur in
+	// real-world code outside the bug pattern they target. Surfaced under
+	// `--all-checks` for taste reviews; not gate-quality. Re-evaluate after
+	// a release of telemetry shows per-detector FP rate <10%.
+	//   ubs_magic_number_no_const: matches three-digit literals — HTTP status
+	//     codes, ports, year literals, retry counts all fire.
+	//   ubs_print_debug_leak: `console.log` / `print()` is legitimate for
+	//     CLIs and one-shot scripts.
+	//   ubs_hardcoded_localhost: dev configs, test fixtures, and example
+	//     URLs in docs all contain localhost: ports.
+	//   ubs_string_concat_in_loop: heuristic loop-tracking that miscounts
+	//     when `} else if {` re-opens, leaving stale `loopDepth`. Often
+	//     duplicates the existing `string_concat_in_loop` finding.
+	//   ubs_large_function: line-count heuristic; long-but-linear builders
+	//     and switch tables routinely exceed it.
+	//   ubs_deeply_nested_callback: arrow-function chains in hooks and
+	//     promise pipelines look nested but read linearly.
+	//   ubs_time_format_locale_dep: most date utilities are intentionally
+	//     locale-dependent for display.
+	//   ubs_regex_in_loop_no_compile: Python re module caches compiled
+	//     patterns transparently; the literal-pattern alarm is misleading.
+	//   ubs_numeric_comparison_chain: chained comparisons are idiomatic
+	//     in range checks and bounds validation.
+	//   ubs_goroutine_no_waitgroup: not every goroutine needs a WaitGroup
+	//     (fire-and-forget timers, supervisor patterns).
+	//   ubs_defer_in_loop: defer-in-loop is only an issue at high cardinality;
+	//     bounded loops with cleanup are fine.
+	"ubs_magic_number_no_const",
+	"ubs_print_debug_leak",
+	"ubs_hardcoded_localhost",
+	"ubs_string_concat_in_loop",
+	"ubs_large_function",
+	"ubs_deeply_nested_callback",
+	"ubs_time_format_locale_dep",
+	"ubs_regex_in_loop_no_compile",
+	"ubs_numeric_comparison_chain",
+	"ubs_goroutine_no_waitgroup",
+	"ubs_defer_in_loop",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */
