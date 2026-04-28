@@ -1,7 +1,6 @@
 ---
 name: enforce
-description: |
-  Compile imperative markdown guidance (AGENTS.md, CLAUDE.md, AGENTS.override.md, GEMINI.md, .clinerules/, .windsurf/rules/, .continue/rules/, .augment/rules/, .cursor/rules/, .github/copilot-instructions.md, .github/instructions/, SKILL.md bodies that contain hard imperatives, etc.) into deterministic Interlinked harness hook rules with full source provenance, then perform lifecycle operations on those rules. The user's coding agent invokes this skill as `/enforce <target>` (or by description match — "make my AGENTS.md enforced", "compile rules from this file", "remove the rules from skill X"). With no argument the skill walks the project tree. With one or more arguments — local paths, directories, GitHub shorthand (owner/repo/path), or URLs — it targets only those. Lexical strength is binding: `never`, `MUST NOT`, `forbidden`, `shall not`, `prohibited` compile to action=block; `should not`, `avoid`, `don't` compile to ask; `should`, `prefer` compile to advisory; hedged language is skipped. Output is a single artifact at .interlinked/compiled-rules.json (pristine, regeneratable) plus an overrides file at .interlinked/compiled-rules.overrides.json (user mods that survive recompiles). Same skill also handles `/enforce list`, `/enforce show <id>`, `/enforce remove <source-or-id>`, `/enforce disable <id>`, `/enforce enable <id>`, `/enforce modify <id> --action ask`, `/enforce add <source>`, `/enforce reset <id>`. The harness fans the resulting rules across every configured agent (Claude Code, Codex, Copilot CLI, Cursor, Gemini CLI). Every compiled rule carries a verbatim source quote — no quote, no rule. Manual invocation only — never auto-fires on SessionStart, file watchers, or hook events.
+description: "Distill imperative markdown guidance (AGENTS.md, CLAUDE.md, .clinerules/, GEMINI.md, SKILL.md with hard imperatives) into deterministic Interlinked harness hook rules with verbatim source provenance. Invoke as /enforce <target> — local path, directory, GitHub shorthand (owner/repo/path), or URL — or no args to walk the project. Lexical strength is binding: never/MUST NOT/forbidden distill to block; should not/avoid to ask; should/prefer to advisory; hedged language is skipped. Output goes to .interlinked/distilled-rules.json plus .interlinked/distilled-rules.overrides.json. Lifecycle ops: /enforce list, show, remove, disable, enable, modify, add, reset, --review, --accept. Description-match invocation: make my AGENTS.md enforced, distill rules from this file. Manual invocation only — never auto-fires."
 ---
 
 # /enforce — Make markdown guidance into enforced harness rules
@@ -9,26 +8,26 @@ description: |
 ## Quick start
 
 ```
-/enforce                              # compile every imperative .md in the project
-/enforce AGENTS.md                    # compile just one file
-/enforce .claude/skills/tdd/          # compile every .md under a directory
+/enforce                              # distill every imperative .md in the project
+/enforce AGENTS.md                    # distill just one file
+/enforce .claude/skills/tdd/          # distill every .md under a directory
 /enforce mattpocock/skills/tdd        # fetch from GitHub (review-mode by default)
-/enforce list                         # show what's compiled, grouped by source
+/enforce list                         # show what's distilled, grouped by source
 /enforce show <id>                    # full detail for one rule
 /enforce remove --source <group_id>   # bulk-remove rules from a source
 /enforce disable <id>                 # keep on disk but don't enforce
 /enforce modify <id> --action ask     # change a single rule's action/severity
-/enforce --review                     # compile to a review file; nothing activates yet
+/enforce --review                     # distill to a review file; nothing activates yet
 /enforce --accept                     # promote a review file to live rules
 ```
 
 **Manual invocation only.** This skill never auto-fires — not on SessionStart, not on a file-watcher event, not from any hook. The user (or an agent acting on the user's explicit request) types `/enforce ...`. If you are wiring this skill into automation, stop — that violates the design.
 
-**Where output goes.** Live rules: `.interlinked/compiled-rules.json` (pristine, regenerated each run). User mods: `.interlinked/compiled-rules.overrides.json` (removals, disables, modifications — survives recompiles). After any compile, suggest `interlinked harness reload` to apply.
+**Where output goes.** Live rules: `.interlinked/distilled-rules.json` (pristine, regenerated each run). User mods: `.interlinked/distilled-rules.overrides.json` (removals, disables, modifications — survives re-distillation). The harness watches both files via `watchFile` and reloads automatically within ~2s — there is no `interlinked harness reload` command. If a daemon is in a degraded state and not picking up changes, `interlinked harness restart` is the only recourse.
 
-**Execution order** (compile path; lifecycle verbs jump straight to §14):
+**Execution order** (distill path; lifecycle verbs jump straight to §14):
 
-1. Pre-flight (§11) → 2. Parse args (§1) → 3. Read overrides (§9) → 4. Read prior `compiled-rules.json` (§3) → 5. Discover / resolve targets (§2) → 6. Read each file once (§3) → 7. Classify paragraphs (§4) → 8. Lexical ladder (§5) → 9. Triggers (§6) → 10. Build rule object (§7) → 11. Apply user modifications (§9) → 12. Resolve conflicts (§10) → 13. Self-checks (§12) → 14. Write output (§8) → 15. Print summary (§13).
+1. Pre-flight (§11) → 2. Parse args (§1) → 3. Read overrides (§9) → 4. Read prior `distilled-rules.json` (§3) → 5. Discover / resolve targets (§2) → 6. Read each file once (§3) → 7. Classify paragraphs (§4) → 8. Lexical ladder (§5) → 9. Triggers (§6) → 10. Build rule object (§7) → 11. Apply user modifications (§9) → 12. Resolve conflicts (§10) → 13. Self-checks (§12) → 14. Write output (§8) → 15. Print summary (§13).
 
 ---
 
@@ -37,15 +36,15 @@ description: |
 ### First-time setup on a project
 
 ```
-/enforce                       # walk the tree, compile what's there, print a report
+/enforce                       # walk the tree, distill what's there, print a report
 /enforce list                  # confirm the rule set looks right
-interlinked harness reload     # apply
+                               # harness reloads automatically within ~2s (watchFile)
 ```
 
 ### Adopt a remote skill (review-first)
 
 ```
-/enforce gh:mattpocock/skills/tdd   # fetched, compiled to review-mode by default
+/enforce gh:mattpocock/skills/tdd   # fetched, distilled to review-mode by default
 /enforce list                       # inspect what would activate
 /enforce --accept                   # promote review → live
 ```
@@ -65,19 +64,19 @@ interlinked harness reload     # apply
 /enforce remove --source gh:someone/skills/qa
 ```
 
-Adds the group to `removed_groups[]`; stays gone across recompiles. Undo with `/enforce add --source <group_id>`.
+Adds the group to `removed_groups[]`; stays gone across re-distillation. Undo with `/enforce add --source <group_id>`.
 
-### A .md file changed; recompile
+### A .md file changed; re-distill
 
 ```
 /enforce                       # unchanged files skipped via hash; user mods preserved
-interlinked harness reload
+                               # harness reloads automatically within ~2s
 ```
 
 ### Throw it all away and start fresh
 
 ```
-rm .interlinked/compiled-rules.json .interlinked/compiled-rules.overrides.json
+rm .interlinked/distilled-rules.json .interlinked/distilled-rules.overrides.json
 /enforce
 ```
 
@@ -85,20 +84,24 @@ rm .interlinked/compiled-rules.json .interlinked/compiled-rules.overrides.json
 
 ## What this skill does
 
-Agent-instruction markdown files (AGENTS.md, CLAUDE.md, .clinerules/, .windsurf/rules/, GEMINI.md, etc.) are loaded into the model's context window as hopeful prose. Today the model may or may not follow them. This skill walks the source tree (or just the targets the user named), extracts every concrete imperative from those files, and compiles them into typed `GuardRule` entries that the Interlinked harness enforces deterministically — meaning the agent literally cannot bypass them, regardless of which underlying coding agent is running.
+Agent-instruction markdown files (AGENTS.md, CLAUDE.md, .clinerules/, .windsurf/rules/, GEMINI.md, etc.) are loaded into the model's context window as hopeful prose. Today the model may or may not follow them. This skill walks the source tree (or just the targets the user named), extracts every concrete imperative from those files, and distills them into typed `GuardRule` entries that the Interlinked harness enforces deterministically at runtime — meaning the agent literally cannot bypass them, regardless of which underlying coding agent is running.
 
-The harness fans rules out across every configured runner via `src/harness/adapters/`. Your job is to produce one canonical artifact at `.interlinked/compiled-rules.json` plus an overrides file at `.interlinked/compiled-rules.overrides.json`. The harness handles distribution.
+**Distillation, not strict compilation.** The §5 lexical ladder + §6 trigger inference + §12 validation are deterministic — typed inputs, typed outputs, no LLM calls. But §4 paragraph classification (is this prose a hard imperative, soft preference, hedged statement, descriptive context?) requires LLM judgment because there's no formal grammar for "is this an imperative." So the operation is honest extraction-and-codification with provenance, not parser-style mechanical translation. The earlier name "compile" was a generous shorthand; "distill" reflects what's actually happening. The lexical ladder is the deterministic gate: if a paragraph contains no §5 marker, the classifier MUST drop it. The distiller never invents a rule from unmarked prose, and every rule carries a verbatim `source.quote` so the entire pipeline is auditable.
+
+The harness fans rules out across every configured runner via `src/harness/adapters/`. Your job is to produce one canonical artifact at `.interlinked/distilled-rules.json` plus an overrides file at `.interlinked/distilled-rules.overrides.json`. The harness handles distribution.
+
+**Coupling and scope.** This skill produces an artifact whose schema (`GuardRule`, defined at `src/harness/types.ts` in `interlinked-cli`) is Interlinked's. Enforcement at runtime requires a hook engine that understands that schema — Interlinked is the canonical one, and currently the only one expressive enough to encode regex on `tool_input` fields, the six action types, severity, keyword quick-reject, role scoping, and exception patterns. The skill does NOT ship multi-backend adapters (Claude Code permissions, Cursor `.mdc`, Codex deny configs) because every alternative is strictly less expressive — lossy translation creates user confusion ("why doesn't my rule work in X?"). However, distillation itself does not require Interlinked installed: the artifact is a standalone JSON file you can audit, version-control, share, or wire into any compatible engine. See §11 for fallback-mode behavior when `.interlinked/` is missing.
 
 ## Invocation patterns (what `/enforce <args>` means)
 
 | Form | Behavior |
 |---|---|
 | `/enforce` | Walk the whole project — discover all .md files per Step 1, extract from imperative-bearing ones |
-| `/enforce AGENTS.md` | Compile only that file |
-| `/enforce AGENTS.md CLAUDE.md` | Compile that exact set |
-| `/enforce .claude/skills/tdd/` | Compile every .md under the directory |
-| `/enforce mattpocock/skills/tdd` | Treat as `gh:mattpocock/skills/tdd` — fetch + compile (review-mode) |
-| `/enforce https://raw.githubusercontent.com/.../SKILL.md` | Fetch + compile (review-mode) |
+| `/enforce AGENTS.md` | Distill only that file |
+| `/enforce AGENTS.md CLAUDE.md` | Distill that exact set |
+| `/enforce .claude/skills/tdd/` | Distill every .md under the directory |
+| `/enforce mattpocock/skills/tdd` | Treat as `gh:mattpocock/skills/tdd` — fetch + distill (review-mode) |
+| `/enforce https://raw.githubusercontent.com/.../SKILL.md` | Fetch + distill (review-mode) |
 | `/enforce list` | Lifecycle: print rules grouped by source — see §13 |
 | `/enforce show <id>` | Lifecycle: full detail for one rule |
 | `/enforce remove --source <group_id>` | Lifecycle: bulk-remove from one source |
@@ -106,21 +109,21 @@ The harness fans rules out across every configured runner via `src/harness/adapt
 | `/enforce disable <id>` | Lifecycle: keep but don't enforce |
 | `/enforce enable <id>` | Lifecycle: re-enable |
 | `/enforce modify <id> --action ask --severity medium` | Lifecycle: change action/severity |
-| `/enforce add --source <group_id>` | Lifecycle: undo a removed group; recompile to add back |
+| `/enforce add --source <group_id>` | Lifecycle: undo a removed group; re-distill to add back |
 | `/enforce reset <id>` | Lifecycle: clear all overrides for this rule |
-| `/enforce --review` | Compile-then-pause: write to `.interlinked/compiled-rules.review.json`, no activation until accepted |
+| `/enforce --review` | Distill-then-pause: write to `.interlinked/distilled-rules.review.json`, no activation until accepted |
 | `/enforce --accept` | Activate review-mode output |
 
-If the first argument is one of `list`, `show`, `remove`, `disable`, `enable`, `modify`, `add`, `reset`, treat it as a lifecycle verb (jump to §14). Otherwise treat arguments as compile targets.
+If the first argument is one of `list`, `show`, `remove`, `disable`, `enable`, `modify`, `add`, `reset`, treat it as a lifecycle verb (jump to §14). Otherwise treat arguments as distill targets.
 
 ## Operating principles (NON-NEGOTIABLE)
 
 1. **Manual invocation only.** This skill runs only when the user (or an agent acting on the user's explicit request) types `/enforce ...`. Do not wire it into SessionStart, PreCompact, file watchers, hook events, scheduled jobs, or any other auto-trigger. Surprise enforcement — the model suddenly being unable to do something it could yesterday because a doc changed — is the failure mode this rule prevents.
-2. **Verbatim source provenance is required.** Every compiled rule must carry the source file path, line range, and exact verbatim quote. A rule whose `source.quote` does not appear in `source.file` at `source.lines` is hallucination — drop it.
+2. **Verbatim source provenance is required.** Every distilled rule must carry the source file path, line range, and exact verbatim quote. A rule whose `source.quote` does not appear in `source.file` at `source.lines` is hallucination — drop it.
 3. **Lexical strength is binding** (see §5 ladder). Don't soften, don't escalate.
-4. **Compile-time only.** This skill runs as a one-shot offline build. The harness must remain deterministic at runtime. Don't generate rules that require LLM evaluation to check.
-5. **Default-skip when uncertain.** Far better to skip a borderline imperative than to compile a wrong one.
-6. **Never overwrite hand-curated rules.** Output goes only to `.interlinked/compiled-rules.json` and `.interlinked/compiled-rules.overrides.json`. The user's hand-curated rules live in `guard-rules.json` and `guard-rules.local.json`. Never touch those.
+4. **Deterministic at evaluation time; semi-deterministic at distill time.** The harness must remain deterministic at runtime — never generate rules that require LLM evaluation to check. The distill step itself is partly LLM-driven (paragraph classification in §4 needs a model to decide "is this prose a hard imperative, soft preference, hedged, or descriptive"), but the lexical ladder (§5) is the deterministic gate: if a paragraph contains no §5 marker, the classifier must drop it. The distiller never invents a rule from unmarked prose. Provenance (§7 `source.quote` verbatim) is what makes the distill-time step auditable rather than opaque.
+5. **Default-skip when uncertain.** Far better to skip a borderline imperative than to emit a wrong one.
+6. **Never overwrite hand-curated rules.** Output goes only to `.interlinked/distilled-rules.json` and `.interlinked/distilled-rules.overrides.json`. The user's hand-curated rules live in `guard-rules.json` and `guard-rules.local.json`. Never touch those.
 7. **Idempotent across runs.** Hash inputs; skip unchanged files; preserve user overrides.
 8. **No invention.** If a rule isn't in the source verbatim, it does not exist.
 
@@ -146,10 +149,10 @@ Resolution rules:
 
 - For GitHub shorthand: try `<subpath>/SKILL.md`, then `<subpath>` directly, then `<subpath>/AGENTS.md`, in that order.
 - For URL or shorthand: only allow hosts in the default allowlist — `github.com`, `raw.githubusercontent.com`, `gitlab.com`. Refuse any other host with a clear error.
-- For URL or shorthand: default to `--review` mode (write to `compiled-rules.review.json` instead of `compiled-rules.json`); local paths can compile straight through unless `--review` was passed.
+- For URL or shorthand: default to `--review` mode (write to `distilled-rules.review.json` instead of `distilled-rules.json`); local paths can distill straight through unless `--review` was passed.
 - If no targets resolve, fall back to project walk per Step 2.
 
-Print the resolved target list before doing any work. Form: `Compiling: AGENTS.md, CLAUDE.md, gh:mattpocock/skills/tdd (fetched sha256:abc…)`
+Print the resolved target list before doing any work. Form: `Distilling: AGENTS.md, CLAUDE.md, gh:mattpocock/skills/tdd (fetched sha256:abc…)`
 
 ---
 
@@ -199,7 +202,7 @@ Look in `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.config/copilot/`, `~/.conti
 
 ### 2c — Skills as scan-only sources
 
-SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Rules compiled from skills are **scoped to skill invocation** — the trigger fires only when the skill is the active context. See §6 for the `active_skill` predicate. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`.
+SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Rules distilled from skills are **scoped to skill invocation** — the trigger fires only when the skill is the active context. See §6 for the `active_skill` predicate. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`.
 
 ### 2d — Skip list (DO NOT extract from these — confirm kind, then skip)
 
@@ -213,6 +216,7 @@ SKILL.md files are mostly procedural (capability bundles). They are scan-only: e
 | `README.md` | Human-facing overview. |
 | `TOOLS.md` | Tool inventory. |
 | `.agent.md`, `.prompt.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md` | Capability bundles — same treatment as SKILL.md per §2c. |
+| Any `SKILL.md` whose frontmatter `name` is `enforce` | Self-reference. The distiller must not distill its own imperatives — they describe how to distill, not what the agent should do. Drop the file silently regardless of which install path it lives at (`skills/`, `.claude/skills/`, `.codex/skills/`, `.interlinked/skills/`, `.gemini/extensions/`, `.github/skills/`, etc.). |
 
 After discovery, **print the file inventory** before any extraction so the user can see the surface.
 
@@ -222,7 +226,9 @@ After discovery, **print the file inventory** before any extraction so the user 
 
 Use the Read tool with the full path. Cache contents. SHA-256 each file.
 
-If `.interlinked/compiled-rules.json` already exists, compare each file's hash to the previous run's `source_hashes` map. **Unchanged files: skip extraction; copy their previous compiled rules verbatim into the new output.** Only re-extract files whose hash changed or which are new.
+If `.interlinked/distilled-rules.json` already exists, compare each file's hash to the previous run's `source_hashes` map. **Unchanged files: skip extraction; copy their previous distilled rules verbatim into the new output.** Only re-extract files whose hash changed or which are new.
+
+**Subset distillation preserves other sources.** When the user runs `/enforce <single-target>` (a path, a directory, a remote URL), the distiller MUST merge with the prior `distilled-rules.json`: rules from sources NOT in the current invocation are copied through unchanged, with their original `source_hashes` entries preserved. This is the natural extension of the unchanged-files rule: out-of-scope sources are unchanged by definition. Only `/enforce` (no arg, project walk) is allowed to fully regenerate. If you need a hard rebuild from a subset invocation, the user must `rm .interlinked/distilled-rules.json` first — the §"Throw it all away and start fresh" workflow.
 
 For files with frontmatter, parse it and use machine-readable fields directly:
 
@@ -274,7 +280,7 @@ Positive imperatives with concrete trigger:
 
 For these, the trigger fires when the **missing precondition** is detected. Severity: `high`.
 
-If you cannot model the precondition (no observable session state), downgrade to `ask` and note the gap in `compiled_action_reason`.
+If you cannot model the precondition (no observable session state), downgrade to `ask` and note the gap in `distilled_action_reason`.
 
 ### 5c — `ask` (severity: medium)
 
@@ -286,9 +292,9 @@ The `ask` primitive prompts the user before allowing. It collapses to `deny` on 
 
 - `should`, `prefer`, `usually`, `consider`, `recommend`, `ideally`, `try to`, `encourage`, `we like to`, `aim to`
 
-Compiled as `action: "warn"` with `enabled: true`. The verify pipeline gates these per its own advisory list.
+Distilled as `action: "warn"` with `enabled: true`. The verify pipeline gates these per its own advisory list.
 
-### 5e — SKIP (do not compile)
+### 5e — SKIP (do not extract)
 
 - `we may`, `we might`, `we sometimes`, `possibly`, `feel free to`, `if you want`, `optionally`, `maybe`
 - Any imperative with no concrete trigger (no tool, no file glob, no command regex, no session-state predicate)
@@ -299,7 +305,7 @@ Compiled as `action: "warn"` with `enabled: true`. The verify pipeline gates the
 
 ## Step 6 — Trigger extraction (real GuardRule schema)
 
-For each imperative, produce the trigger fields. **If you cannot, downgrade to `advisory`** — never compile a `block` or `ask` rule with no observable trigger.
+For each imperative, produce the trigger fields. **If you cannot, downgrade to `advisory`** — never emit a `block` or `ask` rule with no observable trigger.
 
 The harness's `GuardRule` shape (from `src/harness/types.ts`):
 
@@ -327,11 +333,11 @@ interface RulePattern {
 }
 ```
 
-Compiled rules ALSO carry a `source` sidecar field — see §7. The harness ignores unknown fields; the CLI lifecycle ops use them.
+Distilled rules ALSO carry a `source` sidecar field — see §7. The harness ignores unknown fields; the CLI lifecycle ops use them.
 
 ### Trigger inference cookbook
 
-| Imperative shape | Compiled fields |
+| Imperative shape | Distilled fields |
 |---|---|
 | "Never run X" / "Don't use X" | `trigger: "PreToolUse"`, `tool_match: ["Bash"]`, `patterns: [{ field: "command", regex: "<X>" }]`, `keywords: ["<token>"]` |
 | "Don't edit files in path/" | `trigger: "PreToolUse"`, `tool_match: ["Edit","Write","MultiEdit","apply_patch"]`, `patterns: [{ field: "file_path", regex: "<glob-as-regex>" }]` |
@@ -341,7 +347,7 @@ Compiled rules ALSO carry a `source` sidecar field — see §7. The harness igno
 | MCP tool prohibition | `trigger: "PreToolUse"`, `tool_match: ["<exact-mcp-tool-name>"]`, `patterns: [{ field: "*", regex: ".*" }]` |
 | Tool-class prohibition | `tool_match: ["Bash"]`, `keywords: [<token>]`, `patterns: [{ field: "command", regex: "<pattern>" }]` |
 
-‡ Sequential preconditions ("Always X before Y") are not directly representable in `GuardRule`. Compile to a single PreToolUse rule on Y with `severity: "medium"` and `action: "ask"`, and put the precondition into the `reason`. The harness's trajectory layer is a future expansion; for now the user gets a confirmation prompt with the source-quoted reason.
+‡ Sequential preconditions ("Always X before Y") are not directly representable in `GuardRule`. Distill to a single PreToolUse rule on Y with `severity: "medium"` and `action: "ask"`, and put the precondition into the `reason`. The harness's trajectory layer is a future expansion; for now the user gets a confirmation prompt with the source-quoted reason.
 
 ### Pattern hygiene (mandatory)
 
@@ -355,9 +361,38 @@ Compiled rules ALSO carry a `source` sidecar field — see §7. The harness igno
 
 ---
 
-## Step 7 — Build the compiled rule (one entry per imperative)
+## Step 6.5 — Session predicates the distiller can consume
 
-The compiled rule object is a real `GuardRule` with a `source` sidecar field added. The harness ignores `source`; the CLI uses it for lifecycle operations.
+Most real AGENTS.md content is sequential ("always run tests before commit," "always read before edit," "never commit while RED"). Without observable session state, those imperatives degrade to `ask` — and `ask` rules at scale train users to reflex-yes through prompts, which is worse than no enforcement. The harness already tracks rich per-session state in `SessionTrajectory` (see `src/harness/types.ts`). Distilled rules can reference these predicates by name in a `session_predicate` field; the harness evaluates them deterministically at PreToolUse time. **A rule that uses any session predicate must still set `severity` no higher than `medium` and `action: "ask"`** — the predicates are reliable but the imperative's intent is rarely fully captured.
+
+| Prose phrase | Predicate | Reads from | Notes |
+|---|---|---|---|
+| "always run tests before <X>" | `tests_passed_recently(window_steps: N)` | `test_runs.last_pass.at_step` vs `tool_call_count` | N defaults to 5; trigger fires on X if the window has elapsed without a recent pass. |
+| "after running tests" | `tests_run_in_session()` | `test_runs.size > 0` | Boolean. |
+| "while RED, don't <X>" | `tdd_state(file) == "red"` | `tdd_cycles[file].state` | Per-file. Use the source-of-edit's basename glob to scope. |
+| "before pushing" | `last_command_was(/^git\s+push\b/)` | `commands_run` (last entry) | Negate-form: trigger when X happens AND last_command was NOT a push. |
+| "before editing, read the file" | `file_read_in_session(file)` | `files_read` set | Trigger Edit when target file isn't in the set. |
+| "after seeing N consecutive failures" | `consecutive_failures(tool) >= N` | `consecutive_tool_failures` | Self-throttling rules. |
+| "during cleanup" / "after compaction" | `last_event(name) == "PreCompact"` | `tool_sequence` | Phase-scoped. |
+
+**If a predicate isn't in this table, the imperative's "always X before Y" form must downgrade to `ask` per §6 ‡** — and the imperative's "no observable session-state primitive" gap should be recorded in the rule's `distilled_action_reason` so future-you can spot which predicates need adding.
+
+**Schema addition (§7) when a predicate is used:**
+
+```json
+"session_predicate": {
+  "name": "tests_passed_recently",
+  "args": { "window_steps": 5 }
+}
+```
+
+The harness evaluator must short-circuit `allow` when the predicate is satisfied (the precondition holds) and fall through to the rule's `action` when it's not. Until the harness side wires this up — track via the implementation tracker — distilled rules carrying `session_predicate` MUST also carry `action: "ask"` and the predicate description in `reason`, so they degrade gracefully on harness builds that don't understand the field.
+
+---
+
+## Step 7 — Build the distilled rule (one entry per imperative)
+
+The distilled rule object is a real `GuardRule` with a `source` sidecar field added. The harness ignores `source`; the CLI uses it for lifecycle operations.
 
 ```json
 {
@@ -372,7 +407,7 @@ The compiled rule object is a real `GuardRule` with a `source` sidecar field add
   "reason": "BLOCKED by AGENTS.md:42 — \"Never push to main without code review.\"",
   "suggestion": "Open a PR and request review, then merge through the standard flow.",
   "severity": "critical",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "keywords": ["git"],
   "source": {
     "group_id":     "local:AGENTS.md",
@@ -383,7 +418,7 @@ The compiled rule object is a real `GuardRule` with a `source` sidecar field add
     "lexical_marker": "Never",
     "marker_class": "block-direct"
   },
-  "compiled_action_reason": "lexical 'Never' → action=block per §5a",
+  "distilled_action_reason": "lexical 'Never' → action=block per §5a",
   "confidence": 0.95
 }
 ```
@@ -404,23 +439,25 @@ Skill-sourced rules ALWAYS use the `skill:` scheme; they carry their physical in
 
 **`confidence`:** 0.95 for clean direct-prohibition. 0.85 for positive-form. 0.7 for cases where the trigger required interpretation. Below 0.7 → downgrade to advisory.
 
+**Schema attribution.** The shape above is the Interlinked harness's `GuardRule`, defined at `src/harness/types.ts` in the `interlinked-cli` package. The four sidecar fields (`source`, `distilled_action_reason`, `confidence`, `user_modified`) are the only additions this skill makes; the harness ignores them at evaluation. Other hook engines that want to consume the same artifact must implement matching evaluation semantics — regex on `tool_input` fields, the six action types (`block` / `warn` / `rewrite` / `soft_block` / `ask` / advisory), severity, keyword quick-reject, role scoping, and exception patterns. The skill targets `GuardRule` because it's the most expressive open enforcement primitive today; downgrading to a less-expressive runtime (Claude Code's `permissions.deny[]`, Cursor `.mdc` globs, Codex deny configs) would lose the regex/PostToolUse/severity dimensions, so this skill does not ship multi-backend adapters. If you want to use the artifact outside Interlinked, write your own evaluator against this schema.
+
 ---
 
 ## Step 8 — Output schema
 
-Write `.interlinked/compiled-rules.json`:
+Write `.interlinked/distilled-rules.json`:
 
 ```json
 {
   "version": 1,
-  "compiled_at": "2026-04-27T18:30:00Z",
-  "compiler": "skill:enforce@1",
+  "distilled_at": "2026-04-27T18:30:00Z",
+  "distiller": "skill:enforce@1",
   "source_hashes": {
     "AGENTS.md": "sha256:abc123…",
     "CLAUDE.md": "sha256:def456…",
     ".clinerules/style.md": "sha256:789abc…"
   },
-  "rules": [ /* compiled rule objects per §7 */ ],
+  "rules": [ /* distilled rule objects per §7 */ ],
   "skipped": [
     {
       "file": "CLAUDE.md",
@@ -447,9 +484,9 @@ Write `.interlinked/compiled-rules.json`:
   "stats": {
     "files_scanned": 9,
     "imperatives_found": 28,
-    "compiled_block": 12,
-    "compiled_ask": 4,
-    "compiled_advisory": 7,
+    "distilled_block": 12,
+    "distilled_ask": 4,
+    "distilled_advisory": 7,
     "skipped_hedged": 5,
     "conflicts": 1,
     "removed": 0
@@ -457,15 +494,15 @@ Write `.interlinked/compiled-rules.json`:
 }
 ```
 
-The harness's `rules-loader.ts` reads this file alongside `guard-rules.json` and `guard-rules.local.json` and applies the overrides file (next section). After writing, suggest the user run `interlinked harness reload` to apply.
+The harness's `rules-loader.ts` reads this file alongside `guard-rules.json` and `guard-rules.local.json` and applies the overrides file (next section). The harness's `watchRulesFiles()` polls both distilled paths every ~2s, so changes are picked up automatically — no manual reload command exists. If the daemon appears stuck (e.g., crash log in `.interlinked/logs/daemon.log`), use `interlinked harness restart`.
 
-For `--review` mode: write to `.interlinked/compiled-rules.review.json` instead. The harness does not load `.review.json`; the user must run `/enforce --accept` to promote it.
+For `--review` mode: write to `.interlinked/distilled-rules.review.json` instead. The harness does not load `.review.json`; the user must run `/enforce --accept` to promote it.
 
 ---
 
 ## Step 9 — Overrides file (the user's mods)
 
-`.interlinked/compiled-rules.overrides.json` survives recompiles:
+`.interlinked/distilled-rules.overrides.json` survives re-distillation:
 
 ```json
 {
@@ -483,12 +520,12 @@ For `--review` mode: write to `.interlinked/compiled-rules.review.json` instead.
 }
 ```
 
-The harness applies these on every load. Removed groups stay removed across recompiles (so deleted things don't whack-a-mole back). Modifications layer on top of the pristine compiled rule.
+The harness applies these on every load. Removed groups stay removed across re-distillation (so deleted things don't whack-a-mole back). Modifications layer on top of the pristine distilled rule.
 
-**On compile, the skill MUST read this file before extracting** and:
+**On distill, the skill MUST read this file before extracting** and:
 - Skip any source whose `group_id` is in `removed_groups[]`. Never even fetch a removed group.
 - Skip any rule whose `id` is in `removed_rule_ids[]`. The pristine rule still appears in the output but with `enabled: false` and a note.
-- Apply `modifications{}` after compile and mark those rules with `user_modified: true` for the report.
+- Apply `modifications{}` after distillation and mark those rules with `user_modified: true` for the report.
 
 ---
 
@@ -505,7 +542,7 @@ Precedence stack (highest to lowest):
 7. `CONTRIBUTING.md` / `SECURITY.md` / `STYLEGUIDE.md` / `CONVENTIONS.md`
 8. `~/` global counterparts of any of the above
 
-When two compiled rules collide on `(trigger, tool_match, patterns[].regex)`:
+When two distilled rules collide on `(trigger, tool_match, patterns[].regex)`:
 
 - If actions differ: take the strictest (`block` > `ask` > `soft_block` > `warn`).
 - Always merge: keep the higher-precedence source as `winning_source`; record the lower-precedence ones in `overridden_sources[]`.
@@ -515,12 +552,18 @@ When two compiled rules collide on `(trigger, tool_match, patterns[].regex)`:
 
 ## Step 11 — Pre-flight checks (run BEFORE writing anything)
 
-- `.interlinked/` directory exists. If not, abort: "Run `interlinked enable` first."
+- `.interlinked/` directory check.
+  - **Preferred path** (Interlinked installed): `.interlinked/` exists. Output goes to `.interlinked/distilled-rules.json`; the harness watches the file and picks up changes within ~2s automatically.
+  - **Fallback path** (Interlinked not installed): `.interlinked/` is missing. **Warn — do not abort.** Write the artifact to `./distilled-rules.json` next to the user's CWD (the same location for the overrides file: `./distilled-rules.overrides.json`). Print a clear message:
+
+    > No `.interlinked/` directory found. Distilled rules written to `./distilled-rules.json`. To enforce them, install Interlinked (`npm i -g interlinked-cli && interlinked enable`) — Interlinked's harness reads exactly this file from `.interlinked/`. Or wire the JSON into your own hook engine using the `GuardRule` schema documented in §7. Distillation does NOT require Interlinked; enforcement does.
+
+    This separates **producing the artifact** (this skill's scope, no runtime dependency) from **enforcing it** (Interlinked's scope, runtime dependency). Users without the harness still get a tangible, version-controllable, auditable file they can share or migrate later.
 - The directory is a git repo. If not, warn but continue.
-- Read `.interlinked/config.json`; warn if `version < 2` (compiled rules may not load on older harness builds).
+- Read `.interlinked/config.json` if present; warn if `version < 2` (distilled rules may not load on older harness builds).
 - **Never** write to `.interlinked/guard-rules.json` or `.interlinked/guard-rules.local.json`.
 - **Never** modify any source `.md` file. Read-only.
-- Output exclusively to `.interlinked/compiled-rules.json` (or `.review.json` in review mode) and `.interlinked/compiled-rules.overrides.json`.
+- Output exclusively to `.interlinked/distilled-rules.json` (or `.review.json` in review mode) and `.interlinked/distilled-rules.overrides.json`. In fallback mode, the same names land at `./distilled-rules.json` and `./distilled-rules.overrides.json` at the user's CWD.
 
 ---
 
@@ -548,7 +591,7 @@ If any check fails, abort and report the specific failure with the offending rul
 End every run with this tabular summary:
 
 ```
-Compiled-rules report
+Distilled-rules report
 
 Sources scanned     9 files
   imperative-bearing  6
@@ -557,7 +600,7 @@ Sources scanned     9 files
 
 Imperatives found  28
 
-Compiled to:
+Distilled to:
   block        12 (criticals from MUST NOT / never / forbidden / shall not)
   ask           4 (should not / avoid)
   advisory      7 (should / prefer / consider)
@@ -572,10 +615,10 @@ Removed          0
 User-disabled    0
 User-modified    1
 
-Output: .interlinked/compiled-rules.json
-Run `/enforce list` to inspect, `interlinked harness reload` to apply.
+Output: .interlinked/distilled-rules.json
+Run `/enforce list` to inspect. The harness picks up the new rules within ~2s automatically.
 
-Top compiled rules:
+Top distilled rules:
   ✗ enforce-agents-override-no-push-this-week  AGENTS.override.md:12  block
   ✗ enforce-claude-no-prod-deletes              CLAUDE.md:88           block
   ✗ enforce-clinerules-no-cypress               .clinerules/style.md:5 block
@@ -583,17 +626,17 @@ Top compiled rules:
   …
 ```
 
-For `--review` mode: replace "Output:" with "Review-mode output:" and add: "Run `/enforce --accept` to activate, or edit `.interlinked/compiled-rules.review.json` first."
+For `--review` mode: replace "Output:" with "Review-mode output:" and add: "Run `/enforce --accept` to activate, or edit `.interlinked/distilled-rules.review.json` first."
 
 ---
 
 ## Step 14 — Lifecycle operations (`/enforce <verb>`)
 
-When the first argument is a lifecycle verb, run that operation instead of compiling.
+When the first argument is a lifecycle verb, run that operation instead of distilling.
 
 ### `/enforce list`
 
-Read `.interlinked/compiled-rules.json` + `.interlinked/compiled-rules.overrides.json`. Print:
+Read `.interlinked/distilled-rules.json` + `.interlinked/distilled-rules.overrides.json`. Print:
 
 ```
 Source                                              Rules  Block  Ask  Advisory  Disabled
@@ -645,7 +688,7 @@ Read overrides; add `<id>` to `removed_rule_ids[]`. Save. Print confirmation.
 
 ### `/enforce disable <id>`
 
-Read overrides; add `<id>` to `disabled_rule_ids[]`. Save. Rule stays in compiled-rules.json but loads with `enabled: false`.
+Read overrides; add `<id>` to `disabled_rule_ids[]`. Save. Rule stays in distilled-rules.json but loads with `enabled: false`.
 
 ### `/enforce enable <id>`
 
@@ -659,7 +702,7 @@ Allowed flags: `--action <block|warn|ask|soft_block|rewrite>`, `--severity <crit
 
 ### `/enforce add --source <group_id>`
 
-Read overrides; remove `<group_id>` from `removed_groups[]`. Save. Print: `Group restored. Run /enforce <group_id> to recompile and pull rules from it.`
+Read overrides; remove `<group_id>` from `removed_groups[]`. Save. Print: `Group restored. Run /enforce <group_id> to re-distill and pull rules from it.`
 
 ### `/enforce reset <id>`
 
@@ -667,11 +710,11 @@ Read overrides; clear all entries for `<id>`: remove from `removed_rule_ids`, `d
 
 ### `/enforce --review`
 
-Compile-with-pause: write to `.interlinked/compiled-rules.review.json` instead of `compiled-rules.json`. The harness does not load `.review.json`. Default mode for remote sources.
+Distill-with-pause: write to `.interlinked/distilled-rules.review.json` instead of `distilled-rules.json`. The harness does not load `.review.json`. Default mode for remote sources.
 
 ### `/enforce --accept`
 
-Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; abort if validation fails.
+Promote `distilled-rules.review.json` → `distilled-rules.json`. Validate first; abort if validation fails.
 
 ---
 
@@ -691,7 +734,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   "patterns": [{ "field": "command", "regex": "^git\\s+push\\b.*\\bmain\\b" }],
   "reason": "BLOCKED by AGENTS.md:42 — \"Never push to main without code review.\"",
   "severity": "critical",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "keywords": ["git"],
   "source": {
     "group_id": "local:AGENTS.md",
@@ -719,10 +762,10 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   "patterns": [{ "field": "command", "regex": "^git\\s+commit\\b" }],
   "reason": "CLAUDE.md:88 — \"Always run `npm test` before committing.\" The harness can't verify a recent test run; please confirm.",
   "severity": "medium",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "keywords": ["git"],
   "source": { ... "lexical_marker": "Always", "marker_class": "block-positive" },
-  "compiled_action_reason": "positive imperative, no session-state primitive → downgraded block→ask"
+  "distilled_action_reason": "positive imperative, no session-state primitive → downgraded block→ask"
 }
 ```
 
@@ -741,7 +784,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   "reason": "BLOCKED by .clinerules/style.md:5 — \"MUST NOT edit files under db/migrations/ directly.\"",
   "suggestion": "Use `npm run migrate:create` instead.",
   "severity": "critical",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "source": { ... "lexical_marker": "MUST NOT", "marker_class": "block-direct" }
 }
 ```
@@ -763,7 +806,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   ],
   "reason": "CLAUDE.md:152 prefers named exports over default exports.",
   "severity": "low",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "source": { ... "lexical_marker": "Prefer", "marker_class": "advisory" }
 }
 ```
@@ -791,7 +834,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   "patterns": [{ "field": "*", "regex": ".*" }],
   "reason": "BLOCKED by AGENTS.md:71 — \"Never use railway-mcp__volumeDelete from agent sessions.\"",
   "severity": "critical",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "source": { ... "marker_class": "block-direct" }
 }
 ```
@@ -813,7 +856,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
   ],
   "reason": "tdd skill bans horizontal anti-pattern (writing all tests, then all code). Confirm this is the right next step.",
   "severity": "medium",
-  "category": "compiled-from-md",
+  "category": "distilled-from-md",
   "source": {
     "group_id": "skill:tdd",
     "group_label": "skill:tdd",
@@ -823,7 +866,7 @@ Promote `compiled-rules.review.json` → `compiled-rules.json`. Validate first; 
     "lexical_marker": "bans",
     "marker_class": "block-direct"
   },
-  "compiled_action_reason": "skill-scoped rule; downgraded to ask because trajectory state is approximate"
+  "distilled_action_reason": "skill-scoped rule; downgraded to ask because trajectory state is approximate"
 }
 ```
 
@@ -844,12 +887,12 @@ The override is strictly broader. Output:
 | Failure | Detection | Fix |
 |---|---|---|
 | Hallucinated rule | `source.quote` does not appear verbatim in `source.file` | Drop the rule; log to `extraction_errors[]`. |
-| Hedged compiled to block | marker is `usually`/`prefer`/`try` but `action=block` | Re-classify per §5. |
+| Hedged distilled to block | marker is `usually`/`prefer`/`try` but `action=block` | Re-classify per §5. |
 | Trigger too broad | regex is `.*` with no anchors | Reject; downgrade to advisory. |
 | Trigger too narrow | matches only literal command without escaping | Add `\b` boundaries. |
-| Persona file got compiled | source path matches §2d skip list | Drop everything from that file. |
-| Same imperative in two files | both compiled with same trigger | Merge per §10. |
-| Out-of-date previous compilation | source hash mismatch | Re-extract that file; preserve unchanged. |
+| Persona file got distilled | source path matches §2d skip list | Drop everything from that file. |
+| Same imperative in two files | both distilled with same trigger | Merge per §10. |
+| Out-of-date previous distillation | source hash mismatch | Re-extract that file; preserve unchanged. |
 | User-removed group reappeared | overrides not applied | Always read overrides BEFORE extracting. |
 | Catastrophic-backtracking regex | nested unbounded quantifiers | Reject; rewrite. |
 | Empty-matching regex | `new RegExp(p).test("")` is true | Reject; rewrite. |
@@ -859,7 +902,7 @@ The override is strictly broader. Output:
 
 ## What this skill does NOT do
 
-- Does not compile from `IDENTITY.md`, `SOUL.md`, `STYLE.md`, `MEMORY.md`, `HEARTBEAT.md`, or any other persona/memory/architecture file.
+- Does not distill from `IDENTITY.md`, `SOUL.md`, `STYLE.md`, `MEMORY.md`, `HEARTBEAT.md`, or any other persona/memory/architecture file.
 - Does not write to `.interlinked/guard-rules.json` or `.interlinked/guard-rules.local.json`.
 - Does not modify any source `.md` file. Reading only.
 - Does not call out to a network LLM at runtime — extraction happens in this skill invocation only.
@@ -871,9 +914,9 @@ The override is strictly broader. Output:
 
 ## Cross-runner applicability
 
-The harness fans rules out across every configured coding agent (Claude Code, Codex, Copilot CLI, Cursor, Gemini CLI) through `src/harness/adapters/`. One `compiled-rules.json` produces enforcement across all of them. Do not write per-runner variants. The runner-specific decision primitives (`ask` vs `deny` vs `block` vs `ctx` vs `stderr`) are translated by the adapter layer.
+The harness fans rules out across every configured coding agent (Claude Code, Codex, Copilot CLI, Cursor, Gemini CLI) through `src/harness/adapters/`. One `distilled-rules.json` produces enforcement across all of them. Do not write per-runner variants. The runner-specific decision primitives (`ask` vs `deny` vs `block` vs `ctx` vs `stderr`) are translated by the adapter layer.
 
-If the user wants per-runner overrides ("only enforce this in Codex, not Claude"), use the optional `applies_to_runners` field on the compiled rule. Otherwise, omit it (applies to all).
+If the user wants per-runner overrides ("only enforce this in Codex, not Claude"), use the optional `applies_to_runners` field on the distilled rule. Otherwise, omit it (applies to all).
 
 ---
 
@@ -882,8 +925,8 @@ If the user wants per-runner overrides ("only enforce this in Codex, not Claude"
 - Verbatim source quotes are non-negotiable.
 - Lexical strength is binding (§5 ladder).
 - `never` / `MUST NOT` / `forbidden` / `shall not` → **block**, no exceptions.
-- Skip is always safer than mis-compile.
-- Output goes only to `.interlinked/compiled-rules.json` (or `.review.json`) and `.interlinked/compiled-rules.overrides.json`.
+- Skip is always safer than mis-distill.
+- Output goes only to `.interlinked/distilled-rules.json` (or `.review.json`) and `.interlinked/distilled-rules.overrides.json`.
 - Read the overrides file BEFORE extracting; honor `removed_groups`, `removed_rule_ids`, `disabled_rule_ids`, and `modifications`.
 - End every run with the §13 summary table.
 - Every rule has provenance, or it doesn't exist.

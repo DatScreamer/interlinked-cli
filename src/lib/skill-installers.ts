@@ -8,10 +8,10 @@
 // Distribution model:
 //   - **Canonical copy** at <cwd>/.interlinked/skills/enforce/SKILL.md is the
 //     stable target every alias points at; written on every install run.
-//   - **Spec-compliant runners** (Claude Code, Codex, Gemini) get the full
-//     SKILL.md in their respective skills directory.
-//   - **Non-spec runners** (Copilot CLI, Cursor) get a thin alias file in
-//     their prompt/rules format that delegates to the canonical copy.
+//   - **Spec-compliant runners** (Claude Code, Codex, Gemini, Copilot CLI)
+//     get the full SKILL.md in their respective skills directory.
+//   - **Compatibility extras** (Copilot prompt files, Cursor rules) get a
+//     thin alias/rule file that delegates to the canonical copy.
 //
 // Source resolution: dev (repo skills/), dist (bundled), or npm install
 // location. See `findEnforceSkillSource()`.
@@ -27,50 +27,61 @@ const SKILL_NAME = "enforce";
 const CANONICAL_REL_PATH = join(".interlinked", "skills", SKILL_NAME, "SKILL.md");
 
 interface RunnerSkillTarget {
-	/** "spec" = full SKILL.md copy; "alias" = thin pointer file */
-	kind: "spec" | "alias";
+	/** How this target should be rendered for the runner. */
+	kind: "spec" | "copilot-prompt-alias" | "cursor-rule-alias";
 	/** Path relative to cwd */
 	relPath: string;
 }
 
 /** Where each runner expects to find a skill named `enforce`. */
-const RUNNER_TARGETS: Record<ClientName, RunnerSkillTarget> = {
-	claude: { kind: "spec", relPath: join(".claude", "skills", SKILL_NAME, "SKILL.md") },
-	codex: { kind: "spec", relPath: join(".codex", "skills", SKILL_NAME, "SKILL.md") },
-	gemini: {
-		kind: "spec",
-		relPath: join(".gemini", "extensions", SKILL_NAME, "SKILL.md"),
-	},
-	copilot: {
-		kind: "alias",
-		relPath: join(".github", "prompts", `${SKILL_NAME}.prompt.md`),
-	},
-	cursor: { kind: "alias", relPath: join(".cursor", "rules", `${SKILL_NAME}.mdc`) },
+const RUNNER_TARGETS: Record<ClientName, readonly RunnerSkillTarget[]> = {
+	claude: [{ kind: "spec", relPath: join(".claude", "skills", SKILL_NAME, "SKILL.md") }],
+	codex: [{ kind: "spec", relPath: join(".codex", "skills", SKILL_NAME, "SKILL.md") }],
+	gemini: [
+		{
+			kind: "spec",
+			relPath: join(".gemini", "extensions", SKILL_NAME, "SKILL.md"),
+		},
+	],
+	copilot: [
+		{
+			kind: "spec",
+			relPath: join(".github", "skills", SKILL_NAME, "SKILL.md"),
+		},
+		{
+			kind: "copilot-prompt-alias",
+			relPath: join(".github", "prompts", `${SKILL_NAME}.prompt.md`),
+		},
+	],
+	cursor: [
+		{
+			kind: "cursor-rule-alias",
+			relPath: join(".cursor", "rules", `${SKILL_NAME}.mdc`),
+		},
+	],
 };
 
 /**
- * Some runners enforce a max description length on SKILL.md frontmatter.
- * Codex documented 1024 chars (verified empirically as of 2026-04 — Codex
- * skips the skill entirely with `invalid description: exceeds maximum length
- * of 1024 characters`). The canonical SKILL.md keeps the long description
- * because Claude Code has no documented limit and the long form gives the
- * agent richer description-match coverage; for runners on the strict list
- * below, we transform the frontmatter at install time and substitute this
- * shorter variant. The skill BODY (instructions) is unchanged across runners
- * — only the discovery-surface description swaps.
+ * Several skill loaders reject descriptions over 1024 characters. Keep a
+ * parser-safe description available for every runner-facing SKILL.md copy.
+ * The skill BODY (instructions) is unchanged across runners — only the
+ * discovery-surface description swaps.
  */
 const SHORT_DESCRIPTION =
-	"Compile imperative markdown guidance (AGENTS.md, CLAUDE.md, .clinerules/, GEMINI.md, SKILL.md with hard imperatives) into deterministic Interlinked harness hook rules with verbatim source provenance. Invoke as /enforce <target> — local path, directory, GitHub shorthand (owner/repo/path), or URL — or no args to walk the project. Lexical strength is binding: never/MUST NOT/forbidden compile to block; should not/avoid to ask; should/prefer to advisory; hedged language is skipped. Output goes to .interlinked/compiled-rules.json plus .interlinked/compiled-rules.overrides.json. Lifecycle ops: /enforce list, show, remove, disable, enable, modify, add, reset, --review, --accept. Description-match invocation: make my AGENTS.md enforced, compile rules from this file. Manual invocation only — never auto-fires.";
+	"Distill imperative markdown guidance (AGENTS.md, CLAUDE.md, .clinerules/, GEMINI.md, SKILL.md with hard imperatives) into Interlinked harness hook rules with verbatim source provenance. Invoke as /enforce <target> — local path, directory, GitHub shorthand (owner/repo/path), or URL — or no args to walk the project. Lexical strength is binding: never/MUST NOT/forbidden distill to block; should not/avoid to ask; should/prefer to advisory; hedged language is skipped. Output goes to .interlinked/distilled-rules.json plus .interlinked/distilled-rules.overrides.json. Lifecycle ops: /enforce list, show, remove, disable, enable, modify, add, reset, --review, --accept. Description-match invocation: make my AGENTS.md enforced, distill rules from this file. Manual invocation only — never auto-fires.";
 
-/** Runners with a documented description-length limit. */
+/** Runners whose SKILL.md copies must keep a parser-safe description length. */
 const RUNNERS_REQUIRING_SHORT_DESCRIPTION: ReadonlySet<ClientName> = new Set([
+	"claude",
 	"codex",
+	"gemini",
+	"copilot",
 ]);
 
-/** Thin alias content for runners that don't read the SKILL.md spec natively. */
-const ALIAS_TEMPLATE = `---
+/** Thin prompt-file alias for Copilot surfaces that still read .prompt.md files. */
+const COPILOT_PROMPT_ALIAS_TEMPLATE = `---
 name: enforce
-description: Compile imperative .md guidance into harness-enforced rules with full source provenance. Aliases to the full skill body. Invoke as /enforce <target> where <target> is a path, directory, GitHub shorthand (owner/repo/path), or URL. With no argument, walks the project. Lifecycle ops: /enforce list, /enforce remove, /enforce disable, /enforce modify.
+description: Distill imperative .md guidance into harness-enforced rules with full source provenance. Aliases to the full skill body. Invoke as /enforce <target> where <target> is a path, directory, GitHub shorthand (owner/repo/path), or URL. With no argument, walks the project. Lifecycle ops: /enforce list, /enforce remove, /enforce disable, /enforce modify.
 ---
 
 # /enforce — alias
@@ -80,9 +91,31 @@ This is a thin alias. The full skill body lives at:
 \`.interlinked/skills/enforce/SKILL.md\`
 
 Read that file and follow its instructions exactly. Parse the user's
-argument(s) as compile targets. Output goes to
-\`.interlinked/compiled-rules.json\`. Lifecycle ops (list, remove, disable,
+argument(s) as distill targets. Output goes to
+\`.interlinked/distilled-rules.json\`. Lifecycle ops (list, remove, disable,
 enable, modify, add, reset) are documented in the same skill body.
+`;
+
+/**
+ * Cursor does not consume SKILL.md directories natively, so install an
+ * agent-requested `.mdc` rule whose description gives the model a retrieval
+ * hook when the user asks to compile or manage enforced rules.
+ */
+const CURSOR_RULE_ALIAS_TEMPLATE = `---
+description: Use this rule when the user asks to distill AGENTS.md, CLAUDE.md, or similar markdown guidance into enforced Interlinked harness rules; asks to use /enforce; or asks to list, remove, disable, enable, modify, add, or reset distilled rules.
+---
+
+# /enforce — Cursor rule alias
+
+This rule is a thin alias. The full skill body lives at:
+
+\`.interlinked/skills/enforce/SKILL.md\`
+
+When the task matches the description above, read that file and follow its
+instructions exactly. Parse the user's arguments as distill targets or
+lifecycle operations. Write live output to
+\`.interlinked/distilled-rules.json\` and persistent user modifications to
+\`.interlinked/distilled-rules.overrides.json\`.
 `;
 
 export interface SkillInstallResult {
@@ -197,6 +230,21 @@ function transformForRunner(client: ClientName, content: string): string {
 	return swapFrontmatterDescription(content, SHORT_DESCRIPTION);
 }
 
+function renderTargetContent(
+	client: ClientName,
+	target: RunnerSkillTarget,
+	skillContent: string,
+): string {
+	switch (target.kind) {
+		case "spec":
+			return transformForRunner(client, skillContent);
+		case "copilot-prompt-alias":
+			return COPILOT_PROMPT_ALIAS_TEMPLATE;
+		case "cursor-rule-alias":
+			return CURSOR_RULE_ALIAS_TEMPLATE;
+	}
+}
+
 function writeFileIdempotent(path: string, content: string): void {
 	const dir = dirname(path);
 	if (!existsSync(dir)) {
@@ -243,8 +291,8 @@ export function installEnforceSkill(
 
 	const results: SkillInstallResult[] = [];
 	for (const client of clients) {
-		const target = RUNNER_TARGETS[client];
-		if (!target) {
+		const targets = RUNNER_TARGETS[client];
+		if (!targets || targets.length === 0) {
 			results.push({
 				client,
 				path: "",
@@ -253,16 +301,21 @@ export function installEnforceSkill(
 			});
 			continue;
 		}
-		const targetPath = join(cwd, target.relPath);
 		try {
-			const baseContent = target.kind === "spec" ? skillContent : ALIAS_TEMPLATE;
-			const content = transformForRunner(client, baseContent);
-			writeFileIdempotent(targetPath, content);
-			results.push({ client, path: targetPath, installed: true });
+			for (const target of targets) {
+				const targetPath = join(cwd, target.relPath);
+				const content = renderTargetContent(client, target, skillContent);
+				writeFileIdempotent(targetPath, content);
+			}
+			results.push({
+				client,
+				path: join(cwd, targets[0].relPath),
+				installed: true,
+			});
 		} catch (err) {
 			results.push({
 				client,
-				path: targetPath,
+				path: join(cwd, targets[0].relPath),
 				installed: false,
 				error: err instanceof Error ? err.message : String(err),
 			});
@@ -297,8 +350,8 @@ function rmdirEmptyAncestors(startDir: string, stopAt: string, maxDepth: number)
  * Public API — consumed by `src/commands/disable.ts`. Removes the per-runner
  * skill files for the requested clients but leaves the canonical
  * `.interlinked/skills/enforce/` copy in place (the harness still loads
- * compiled-rules.json after disable; keeping the source skill lets users
- * recompile without reinstalling).
+ * distilled-rules.json after disable; keeping the source skill lets users
+ * re-distill without reinstalling).
  *
  * Returns true if any file was removed.
  */
@@ -308,18 +361,20 @@ export function uninstallEnforceSkill(
 ): boolean {
 	let changed = false;
 	for (const client of clients) {
-		const target = RUNNER_TARGETS[client];
-		if (!target) continue;
-		const targetPath = join(cwd, target.relPath);
-		if (!existsSync(targetPath)) continue;
-		try {
-			unlinkSync(targetPath);
-			changed = true;
-			// Walk up at most 2 levels (e.g. .claude/skills/enforce/ →
-			// .claude/skills/ → .claude/) removing only EMPTY dirs.
-			rmdirEmptyAncestors(dirname(targetPath), cwd, 2);
-		} catch (_err) {
-			/* intentional: best-effort uninstall — skip files we can't remove */
+		const targets = RUNNER_TARGETS[client];
+		if (!targets) continue;
+		for (const target of targets) {
+			const targetPath = join(cwd, target.relPath);
+			if (!existsSync(targetPath)) continue;
+			try {
+				unlinkSync(targetPath);
+				changed = true;
+				// Walk up at most 2 levels (e.g. .claude/skills/enforce/ →
+				// .claude/skills/ → .claude/) removing only EMPTY dirs.
+				rmdirEmptyAncestors(dirname(targetPath), cwd, 2);
+			} catch (_err) {
+				/* intentional: best-effort uninstall — skip files we can't remove */
+			}
 		}
 	}
 	return changed;

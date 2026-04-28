@@ -3,8 +3,8 @@
 //   1. `findEnforceSkillSource()` resolves to the bundled SKILL.md.
 //   2. `installEnforceSkill()` writes the canonical .interlinked/skills/enforce/
 //      copy plus per-runner skill files.
-//   3. Spec-compliant runners (claude/codex/gemini) get the full SKILL.md.
-//   4. Non-spec runners (copilot/cursor) get a thin alias file.
+//   3. Spec-compliant runners (claude/codex/gemini/copilot) get the full SKILL.md.
+//   4. Compatibility surfaces (Copilot prompt files, Cursor rules) get thin aliases.
 //   5. Re-running install is idempotent (no duplicate writes, no errors).
 //   6. `uninstallEnforceSkill()` removes installed files but leaves
 //      unrelated files in the same dirs alone.
@@ -37,6 +37,31 @@ afterEach(() => {
 });
 
 describe("findEnforceSkillSource", () => {
+	function extractFrontmatter(content: string): string {
+		const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+		return match ? match[1] : "";
+	}
+
+	function extractDescription(frontmatter: string): string {
+		const blockMatch = frontmatter.match(
+			/^description\s*:\s*\|\s*\n([\s\S]*?)(?=\n\S|$)/m,
+		);
+		if (blockMatch) {
+			return blockMatch[1]
+				.split("\n")
+				.map((l) => l.replace(/^\s+/, ""))
+				.join(" ")
+				.trim();
+		}
+		const quotedMatch = frontmatter.match(
+			/^description\s*:\s*"((?:[^"\\]|\\.)*)"/m,
+		);
+		if (quotedMatch) {
+			return quotedMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+		}
+		return "";
+	}
+
 	it("returns a non-null path", () => {
 		expect(findEnforceSkillSource()).not.toBeNull();
 	});
@@ -45,6 +70,22 @@ describe("findEnforceSkillSource", () => {
 		const path = findEnforceSkillSource() as string;
 		expect(existsSync(path)).toBe(true);
 		expect(readFileSync(path, "utf-8")).toContain("name: enforce");
+	});
+
+	it("ships a parser-safe source description under 1024 chars", () => {
+		const path = findEnforceSkillSource() as string;
+		const content = readFileSync(path, "utf-8");
+		const description = extractDescription(extractFrontmatter(content));
+		expect(description.length).toBeGreaterThan(0);
+		expect(description.length).toBeLessThanOrEqual(1024);
+	});
+
+	it("keeps the repository .claude skill copy under 1024 chars too", () => {
+		const path = join(process.cwd(), ".claude", "skills", "enforce", "SKILL.md");
+		const content = readFileSync(path, "utf-8");
+		const description = extractDescription(extractFrontmatter(content));
+		expect(description.length).toBeGreaterThan(0);
+		expect(description.length).toBeLessThanOrEqual(1024);
 	});
 });
 
@@ -77,7 +118,16 @@ describe("installEnforceSkill", () => {
 		).toBe(true);
 	});
 
-	it("installs a thin alias for copilot at .github/prompts/enforce.prompt.md", () => {
+	it("installs full SKILL.md for Copilot at .github/skills/enforce/SKILL.md", () => {
+		installEnforceSkill(tmpRoot, ["copilot"]);
+		const skillPath = join(tmpRoot, ".github", "skills", "enforce", "SKILL.md");
+		expect(existsSync(skillPath)).toBe(true);
+		const content = readFileSync(skillPath, "utf-8");
+		expect(content).toContain("name: enforce");
+		expect(content.length).toBeGreaterThan(2000);
+	});
+
+	it("installs a Copilot prompt alias alongside the native skill copy", () => {
 		installEnforceSkill(tmpRoot, ["copilot"]);
 		const aliasPath = join(tmpRoot, ".github", "prompts", "enforce.prompt.md");
 		expect(existsSync(aliasPath)).toBe(true);
@@ -86,12 +136,14 @@ describe("installEnforceSkill", () => {
 		expect(content.length).toBeLessThan(2000); // alias, not full body
 	});
 
-	it("installs a thin alias for cursor at .cursor/rules/enforce.mdc", () => {
+	it("installs a Cursor rule alias at .cursor/rules/enforce.mdc", () => {
 		installEnforceSkill(tmpRoot, ["cursor"]);
 		const aliasPath = join(tmpRoot, ".cursor", "rules", "enforce.mdc");
 		expect(existsSync(aliasPath)).toBe(true);
 		const content = readFileSync(aliasPath, "utf-8");
+		expect(content).toContain("description:");
 		expect(content).toContain(".interlinked/skills/enforce/SKILL.md");
+		expect(content).not.toContain("name: enforce");
 	});
 
 	it("is idempotent across runs", () => {
@@ -146,13 +198,17 @@ describe("description transform for runners with strict limits", () => {
 		return "";
 	}
 
-	it("codex install gets a description under 1024 chars", () => {
-		installEnforceSkill(tmpRoot, ["codex"]);
-		const codexPath = join(tmpRoot, ".codex", "skills", "enforce", "SKILL.md");
-		const content = readFileSync(codexPath, "utf-8");
+	it.each([
+		["claude", ".claude/skills/enforce/SKILL.md"],
+		["codex", ".codex/skills/enforce/SKILL.md"],
+		["gemini", ".gemini/extensions/enforce/SKILL.md"],
+		["copilot", ".github/skills/enforce/SKILL.md"],
+	] as const)("%s install keeps description under 1024 chars", (client, relPath) => {
+		installEnforceSkill(tmpRoot, [client]);
+		const content = readFileSync(join(tmpRoot, relPath), "utf-8");
 		const description = extractDescription(extractFrontmatter(content));
 		expect(description.length).toBeGreaterThan(0);
-		expect(description.length).toBeLessThan(1024);
+		expect(description.length).toBeLessThanOrEqual(1024);
 	});
 
 	it("codex install description still mentions /enforce invocation", () => {
@@ -177,15 +233,15 @@ describe("description transform for runners with strict limits", () => {
 		expect(codexBody).toBe(claudeBody);
 	});
 
-	it("claude install keeps the canonical (long) description", () => {
+	it("claude install body still matches the source SKILL.md body", () => {
 		installEnforceSkill(tmpRoot, ["claude"]);
 		const claudePath = join(tmpRoot, ".claude", "skills", "enforce", "SKILL.md");
-		const content = readFileSync(claudePath, "utf-8");
-		const description = extractDescription(extractFrontmatter(content));
-		// Long description references all the .md sources by name; the short
-		// variant trims that list. If this is < 1024, we may have accidentally
-		// short-circuited and applied the transform to claude too.
-		expect(description.length).toBeGreaterThan(1024);
+		const sourcePath = findEnforceSkillSource() as string;
+		const claudeContent = readFileSync(claudePath, "utf-8");
+		const sourceContent = readFileSync(sourcePath, "utf-8");
+		const claudeBody = claudeContent.replace(/^---\n[\s\S]*?\n---\n/, "");
+		const sourceBody = sourceContent.replace(/^---\n[\s\S]*?\n---\n/, "");
+		expect(claudeBody).toBe(sourceBody);
 	});
 });
 
@@ -196,6 +252,9 @@ describe("uninstallEnforceSkill", () => {
 			true,
 		);
 		expect(
+			existsSync(join(tmpRoot, ".github", "skills", "enforce", "SKILL.md")),
+		).toBe(true);
+		expect(
 			existsSync(join(tmpRoot, ".github", "prompts", "enforce.prompt.md")),
 		).toBe(true);
 
@@ -203,6 +262,9 @@ describe("uninstallEnforceSkill", () => {
 		expect(existsSync(join(tmpRoot, ".claude", "skills", "enforce", "SKILL.md"))).toBe(
 			false,
 		);
+		expect(
+			existsSync(join(tmpRoot, ".github", "skills", "enforce", "SKILL.md")),
+		).toBe(false);
 		expect(
 			existsSync(join(tmpRoot, ".github", "prompts", "enforce.prompt.md")),
 		).toBe(false);

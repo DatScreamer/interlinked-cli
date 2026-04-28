@@ -235,8 +235,16 @@ function printInstallResults(results: InstallResultLike[], detected: ClientName[
 	if (installedCount === 0) {
 		console.log(`\n${c.yellow("Warning:")} No hooks were installed.`);
 		if (detected.length === 0) {
-			console.log(c.dim("  No client directories (.claude/, .github/hooks/, .codex/, .gemini/) found."));
-			console.log(c.dim("  Use --clients claude,codex,gemini,copilot to force installation."));
+			console.log(
+				c.dim(
+					"  No client directories (.claude/, .github/hooks/, .gemini/, .codex/, .cursor/) found.",
+				),
+			);
+			console.log(
+				c.dim(
+					"  Use --clients claude,copilot,gemini,codex,cursor to force installation.",
+				),
+			);
 		}
 	}
 	return installedCount;
@@ -328,13 +336,16 @@ function printSummary(
 		}
 	} else {
 		console.log(
-			`\n${c.yellow("Hooks are not active.")} No hook entries were installed. Re-run with ${c.cyan("--clients claude,gemini,codex")} or check client settings paths.`,
+			`\n${c.yellow("Hooks are not active.")} No hook entries were installed. Re-run with ${c.cyan("--clients claude,copilot,gemini,codex,cursor")} or check client settings paths.`,
 		);
 	}
 }
 
 export function buildPostEnableNotes(targetClients: readonly ClientName[]): string[] {
 	const notes: string[] = [];
+	if (targetClients.includes("copilot")) {
+		notes.push("Run `/skills reload` or restart Copilot CLI to load the newly installed repository skill.");
+	}
 	if (targetClients.includes("codex")) {
 		notes.push("Restart Codex or open a new Codex session to load updated hooks.");
 	}
