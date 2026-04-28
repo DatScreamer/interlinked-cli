@@ -98,6 +98,16 @@ function formatFindingDetail(
 	return lines.join("\n") + overflow;
 }
 
+/** Per-tool execution metrics surfaced from the engine into latency telemetry.
+ *  Mirror of `ToolMetrics` in `check-engine/types.ts` but flattened into the
+ *  shape `latency-log.ts` consumes (snake_case keys) and stripped to the three
+ *  fields the latency CLI actually aggregates. */
+export interface ToolBreakdownEntry {
+	tool: string;
+	ms: number;
+	finding_count: number;
+}
+
 /** Options for filtering quality check output. */
 export interface QualityCheckOptions {
 	/** When set, filter tsc output to only errors mentioning this file path */
@@ -106,18 +116,30 @@ export interface QualityCheckOptions {
 	baseline?: PreEditBaseline;
 	/** Diff-aware config from guard rules */
 	diffAware?: DiffAwareConfig;
+	/** Phase A.7: out-parameter — when present, runQualityChecks pushes one
+	 *  entry per subprocess tool invocation so the daemon can write a
+	 *  per-tool breakdown into latency.jsonl. The caller owns the array
+	 *  (passes it pre-allocated, reads it after the await). */
+	outToolMetrics?: ToolBreakdownEntry[];
 }
 
 /**
  * Run quality checks for a PostToolUse event on a file.
  * Returns an array of warnings/errors found.
+ *
+ * Async since Phase A.2 of the Free CLI Phase-2 roadmap. The async signature
+ * is what lets the daemon's PostToolUse path call `engine.runChecksAsync(...)`
+ * and benefit from the 14 async runner conversions that landed in Phase A.1.
+ * The function still returns *the same shape* — no behavioral change for
+ * callers other than the await. `interlinked verify` and `diff-aware-checks`
+ * tests cascade through one extra await each.
  */
-export function runQualityChecks(
+export async function runQualityChecks(
 	event: HarnessEvent,
 	checks: Record<string, QualityCheckConfig>,
 	cwd: string = process.cwd(),
 	options?: QualityCheckOptions,
-): QualityCheckResult[] {
+): Promise<QualityCheckResult[]> {
 	const filePath = (event.tool_input?.file_path as string) || (event.tool_input?.path as string);
 	if (!filePath) return [];
 
@@ -390,7 +412,7 @@ export function runQualityChecks(
 						? resolve(checkCwd, options.tscFilterFile)
 						: filePath;
 
-				const engineReport = engine.runChecks(
+				const engineReport = await engine.runChecksAsync(
 					{
 						projectRoot: checkCwd,
 						mode: "file",
@@ -399,6 +421,16 @@ export function runQualityChecks(
 					},
 					{ tools: [toolId], timeoutMs: check.timeout_ms },
 				);
+
+				if (options?.outToolMetrics) {
+					for (const m of engineReport.metrics) {
+						options.outToolMetrics.push({
+							tool: m.tool,
+							ms: m.elapsedMs,
+							finding_count: m.findingCount,
+						});
+					}
+				}
 
 				if (engineReport.results.length > 0) {
 					const output = engineReport.results
