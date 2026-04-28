@@ -65,6 +65,7 @@
         "typecheck:stable": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
+        "bench": "vitest bench --run bench/",
         "docs": "node --import tsx scripts/generate-docs.ts",
         "prepack": "npm run build",
         "prepublishOnly": "npm run typecheck:stable && npm test"

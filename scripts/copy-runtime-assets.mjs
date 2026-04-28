@@ -21,6 +21,13 @@ const ASSETS = [
 		from: "src/harness/content-scanner/sidecars/calibrations/high_precision.json",
 		to: "dist/sidecars/calibrations/high_precision.json",
 	},
+	// The /enforce skill body — copied so `findEnforceSkillSource()` in
+	// `src/lib/skill-installers.ts` can resolve it at runtime in the
+	// published package (the dev path lives at `<repo>/skills/...`).
+	{
+		from: "skills/enforce/SKILL.md",
+		to: "dist/skills/enforce/SKILL.md",
+	},
 ];
 
 for (const asset of ASSETS) {
