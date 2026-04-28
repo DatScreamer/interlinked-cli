@@ -71,6 +71,29 @@ That's it for local use. Run your agent of choice and tool-use events flow
 through the harness. Server commands such as `login`, `sync`, `tasks`, and
 `inbox` are available when you point the CLI at an Interlinked MCP Server.
 
+### Optional: `/enforce` — turn AGENTS.md prose into deterministic rules
+
+`install-hooks` wires the harness; `interlinked enable` does that *plus* installs
+the `/enforce` skill across every detected agent runner (Claude Code, Codex,
+Gemini, Copilot, Cursor). Use it when you want the imperatives in your
+`AGENTS.md` / `CLAUDE.md` / `.clinerules/` to become rules the harness actually
+enforces, instead of prose the model may or may not follow.
+
+```bash
+# In the repo you want to instrument:
+interlinked enable                                    # installs hooks + /enforce
+# Restart or reload your agent so it picks up the new skill, then in-agent:
+/enforce                                              # walk the project, distill imperatives
+/enforce AGENTS.md                                    # or target a single file
+/enforce list                                         # see what got distilled, grouped by source
+```
+
+Some runners surface skills via description match instead of `/`-prefix
+(`$enforce`, `@enforce`, etc.). The slash form is canonical; description match
+is a fallback for surfaces that don't expose slash-skills. Output lands at
+`.interlinked/distilled-rules.json`; the harness reloads automatically within
+~2s. Full reference: `skills/enforce/SKILL.md` in this repo.
+
 ## Day-to-day commands
 
 | Command | What it does |
