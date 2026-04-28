@@ -99,12 +99,30 @@ export interface ToolRunnerInput {
 	timeoutMs: number;
 }
 
-/** A tool runner function: spawn tool, parse output, return results. */
+/** A tool runner function: spawn tool, parse output, return results.
+ *  Synchronous variant — kept for back-compat with `runChecks` (the
+ *  existing sync entry point). New runners should also expose a
+ *  `ToolRunnerAsync` if they want to run truly in parallel under
+ *  `runChecksAsync`. */
 export type ToolRunner = (input: ToolRunnerInput) => CheckResult[];
+
+/** Async variant of a tool runner. Used by `runChecksAsync` for true
+ *  concurrent execution under the limiter — `runProcessAsync` does the
+ *  non-blocking subprocess spawn under the hood. When a tool only exposes
+ *  the sync `runner`, `runChecksAsync` wraps it in `Promise.resolve` for
+ *  backward compatibility (cost: still blocks the event loop, but stays
+ *  ordered with other parallel-safe tools' awaits). */
+export type ToolRunnerAsync = (input: ToolRunnerInput) => Promise<CheckResult[]>;
 
 /** Metadata about a tool runner for scheduling decisions. */
 export interface ToolRunnerMeta {
 	runner: ToolRunner;
+	/** Optional async variant — when present, `runChecksAsync` calls this
+	 *  instead of `runner` so the subprocess spawn doesn't block the event
+	 *  loop. Phase A.1 of the Free CLI Phase-2 roadmap migrates the 14
+	 *  concurrency-safe tools incrementally; tools without an async variant
+	 *  fall back to the sync `runner` wrapped in `Promise.resolve`. */
+	runnerAsync?: ToolRunnerAsync;
 	/** True if this tool can safely run in parallel with other tools. */
 	concurrencySafe: boolean;
 }

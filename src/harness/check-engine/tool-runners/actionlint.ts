@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { relative } from "node:path";
 import { parseActionlintOutput } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 export function runActionlint(input: ToolRunnerInput): CheckResult[] {
@@ -36,4 +37,20 @@ export function runActionlint(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/** Async variant — Phase A.1. */
+export async function runActionlintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const args = scope.mode === "file" && scope.targetFile ? [scope.targetFile] : ["-oneline"];
+	const result = await runProcessAsync("actionlint", args, {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null || result.code === 0) return [];
+	const results = parseActionlintOutput(`${result.stdout}${result.stderr}`);
+	return results.map((r) => ({
+		...r,
+		file: r.file.startsWith("/") ? relative(scope.projectRoot, r.file) : r.file,
+	}));
 }

@@ -5,10 +5,12 @@
 // Two modes: "project" (batch scan) and "file" (incremental).
 
 import { statSync } from "node:fs";
+import { cpus } from "node:os";
 import { extname } from "node:path";
 import { discoverSingleTool, discoverTools, formatToolReport } from "./discovery.js";
-import { runActionlint } from "./tool-runners/actionlint.js";
-import { runBiome, runBiomeOverlay } from "./tool-runners/biome.js";
+import { createLimiter } from "./pool.js";
+import { runActionlint, runActionlintAsync } from "./tool-runners/actionlint.js";
+import { runBiome, runBiomeAsync, runBiomeOverlay } from "./tool-runners/biome.js";
 import { runCCompile, runClangTidy } from "./tool-runners/c-cpp.js";
 import {
 	runDepAudit,
@@ -17,15 +19,20 @@ import {
 	runKnip,
 	runOxlint,
 	runSemgrep,
+	runEslintAsync,
+	runGitleaksAsync,
+	runKnipAsync,
+	runOxlintAsync,
+	runSemgrepAsync,
 } from "./tool-runners/generic.js";
 import { runGoBuild, runGolangciLint } from "./tool-runners/go.js";
-import { runHadolint } from "./tool-runners/hadolint.js";
-import { runMypy, runRuff } from "./tool-runners/python.js";
+import { runHadolint, runHadolintAsync } from "./tool-runners/hadolint.js";
+import { runMypy, runMypyAsync, runRuff, runRuffAsync } from "./tool-runners/python.js";
 import { runCargoCheck, runCargoClippy } from "./tool-runners/rust.js";
-import { runShellcheck } from "./tool-runners/shellcheck.js";
-import { runSwiftBuild, runSwiftLint } from "./tool-runners/swift.js";
-import { runTaplo } from "./tool-runners/taplo.js";
-import { runTsc } from "./tool-runners/tsc.js";
+import { runShellcheck, runShellcheckAsync } from "./tool-runners/shellcheck.js";
+import { runSwiftBuild, runSwiftLint, runSwiftLintAsync } from "./tool-runners/swift.js";
+import { runTaplo, runTaploAsync } from "./tool-runners/taplo.js";
+import { runTsc, runTscAsync } from "./tool-runners/tsc.js";
 import { clearTscOverlayCache, runTscOverlay } from "./tool-runners/tsc-overlay.js";
 import type {
 	AuditResult,
@@ -93,16 +100,16 @@ export function configNameToToolId(name: string): ToolId | undefined {
 // (e.g. cargo-check and cargo-clippy share the target/ dir) are unsafe.
 
 const TOOL_REGISTRY: Record<string, ToolRunnerMeta> = {
-	tsc: { runner: runTsc, concurrencySafe: true },
-	biome: { runner: runBiome, concurrencySafe: true },
-	eslint: { runner: runEslint, concurrencySafe: true },
-	semgrep: { runner: runSemgrep, concurrencySafe: true },
-	gitleaks: { runner: runGitleaks, concurrencySafe: true },
-	oxlint: { runner: runOxlint, concurrencySafe: true },
-	knip: { runner: runKnip, concurrencySafe: true },
+	tsc: { runner: runTsc, runnerAsync: runTscAsync, concurrencySafe: true },
+	biome: { runner: runBiome, runnerAsync: runBiomeAsync, concurrencySafe: true },
+	eslint: { runner: runEslint, runnerAsync: runEslintAsync, concurrencySafe: true },
+	semgrep: { runner: runSemgrep, runnerAsync: runSemgrepAsync, concurrencySafe: true },
+	gitleaks: { runner: runGitleaks, runnerAsync: runGitleaksAsync, concurrencySafe: true },
+	oxlint: { runner: runOxlint, runnerAsync: runOxlintAsync, concurrencySafe: true },
+	knip: { runner: runKnip, runnerAsync: runKnipAsync, concurrencySafe: true },
 	// Python
-	mypy: { runner: runMypy, concurrencySafe: true },
-	ruff: { runner: runRuff, concurrencySafe: true },
+	mypy: { runner: runMypy, runnerAsync: runMypyAsync, concurrencySafe: true },
+	ruff: { runner: runRuff, runnerAsync: runRuffAsync, concurrencySafe: true },
 	// Rust — share target/ directory, must run sequentially
 	"cargo-check": { runner: runCargoCheck, concurrencySafe: false },
 	"cargo-clippy": { runner: runCargoClippy, concurrencySafe: false },
@@ -113,15 +120,19 @@ const TOOL_REGISTRY: Record<string, ToolRunnerMeta> = {
 	"c-compile": { runner: runCCompile, concurrencySafe: false },
 	"clang-tidy": { runner: runClangTidy, concurrencySafe: false },
 	// Shell
-	shellcheck: { runner: runShellcheck, concurrencySafe: true },
+	shellcheck: { runner: runShellcheck, runnerAsync: runShellcheckAsync, concurrencySafe: true },
 	// GitHub Actions
-	actionlint: { runner: runActionlint, concurrencySafe: true },
+	actionlint: { runner: runActionlint, runnerAsync: runActionlintAsync, concurrencySafe: true },
 	// Dockerfile
-	hadolint: { runner: runHadolint, concurrencySafe: true },
+	hadolint: { runner: runHadolint, runnerAsync: runHadolintAsync, concurrencySafe: true },
 	// TOML
-	taplo: { runner: runTaplo, concurrencySafe: true },
+	taplo: { runner: runTaplo, runnerAsync: runTaploAsync, concurrencySafe: true },
 	// Swift — swift build shares build dir, must run sequentially
-	swiftlint: { runner: runSwiftLint, concurrencySafe: true },
+	swiftlint: {
+		runner: runSwiftLint,
+		runnerAsync: runSwiftLintAsync,
+		concurrencySafe: true,
+	},
 	"swift-build": { runner: runSwiftBuild, concurrencySafe: false },
 };
 
@@ -368,9 +379,13 @@ export class CheckEngine {
 	 * Sequential-only tools (e.g. cargo-check/clippy that share target/) run
 	 * after the parallel batch completes.
 	 *
-	 * Uses Promise.all with setImmediate to yield between tool spawns, giving
-	 * the OS scheduler a chance to run subprocesses concurrently.  For true
-	 * thread-level parallelism, convert runners to async spawn (future work).
+	 * Phase A.1 (Free CLI Phase-2): if a tool's meta has a `runnerAsync`
+	 * field, this path uses it for true non-blocking parallelism via
+	 * `child_process.spawn`. Tools that only expose the legacy sync `runner`
+	 * still work — they're wrapped in `Promise.resolve` so the call signature
+	 * is uniform — but they remain event-loop-blocking until they're
+	 * migrated. Concurrency is capped via `createLimiter(cpus - 1)` so a
+	 * 4-core machine doesn't spawn 8 subprocesses at once.
 	 */
 	async runChecksAsync(scope: CheckScope, options?: CheckOptions): Promise<CheckReport> {
 		const start = Date.now();
@@ -400,41 +415,61 @@ export class CheckEngine {
 			}
 		}
 
-		const runOne = (
+		const runOne = async (
 			tool: ToolAvailability,
-		): Promise<{ results: CheckResult[]; metric: ToolMetrics }> =>
-			new Promise((resolve) => {
-				// setImmediate yields to the event loop between spawns
-				setImmediate(() => {
-					const meta = TOOL_REGISTRY[tool.id];
-					if (!meta) {
-						resolve({
-							results: [],
-							metric: {
-								tool: tool.id,
-								elapsedMs: 0,
-								findingCount: 0,
-								cacheHit: false,
-							},
-						});
-						return;
-					}
-					const toolStart = Date.now();
-					const results = meta.runner({ scope, timeoutMs: timeout });
-					resolve({
-						results,
-						metric: {
-							tool: tool.id,
-							elapsedMs: Date.now() - toolStart,
-							findingCount: results.length,
-							cacheHit: false,
-						},
-					});
-				});
-			});
+		): Promise<{ results: CheckResult[]; metric: ToolMetrics }> => {
+			const meta = TOOL_REGISTRY[tool.id];
+			if (!meta) {
+				return {
+					results: [],
+					metric: {
+						tool: tool.id,
+						elapsedMs: 0,
+						findingCount: 0,
+						cacheHit: false,
+					},
+				};
+			}
+			const toolStart = Date.now();
+			let results: CheckResult[] = [];
+			try {
+				// Prefer the async runner when present (Phase A.1 migration);
+				// otherwise wrap the sync runner in Promise.resolve so the call
+				// shape is uniform. When async runners are present, the limiter
+				// caps actual concurrent subprocess count.
+				results = meta.runnerAsync
+					? await meta.runnerAsync({ scope, timeoutMs: timeout })
+					: await Promise.resolve(meta.runner({ scope, timeoutMs: timeout }));
+			} catch (e) {
+				// One runner crash must not abort the batch (Plan A.4 — error
+				// isolation). Metric records 0 findings; caller decides whether
+				// to surface the failure.
+				void e;
+				results = [];
+			}
+			return {
+				results,
+				metric: {
+					tool: tool.id,
+					elapsedMs: Date.now() - toolStart,
+					findingCount: results.length,
+					cacheHit: false,
+				},
+			};
+		};
 
-		// Run concurrency-safe tools in parallel
-		const parallelResults = await Promise.all(parallel.map(runOne));
+		// Run concurrency-safe tools in parallel under the limiter. Cap at
+		// `cpus - 1` so the daemon's own work + OS scheduler get one core.
+		// `Promise.allSettled` keeps a single runner crash from aborting
+		// the batch.
+		const parallelLimit = createLimiter(Math.max(1, cpus().length - 1));
+		const parallelSettled = await Promise.allSettled(
+			parallel.map((tool) => parallelLimit(() => runOne(tool))),
+		);
+		const parallelResults: Awaited<ReturnType<typeof runOne>>[] = [];
+		for (const r of parallelSettled) {
+			if (r.status === "fulfilled") parallelResults.push(r.value);
+		}
 
 		// Run sequential tools one at a time
 		const sequentialResults: Awaited<ReturnType<typeof runOne>>[] = [];

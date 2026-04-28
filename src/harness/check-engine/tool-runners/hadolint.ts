@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { relative } from "node:path";
 import { parseHadolintJson } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 export function runHadolint(input: ToolRunnerInput): CheckResult[] {
@@ -38,4 +39,21 @@ export function runHadolint(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/** Async variant — Phase A.1. */
+export async function runHadolintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	if (scope.mode !== "file" || !scope.targetFile) return [];
+	const result = await runProcessAsync(
+		"hadolint",
+		["--format", "json", scope.targetFile],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === null || result.code === 0) return [];
+	const results = parseHadolintJson(result.stdout);
+	return results.map((r) => ({
+		...r,
+		file: r.file.startsWith("/") ? relative(scope.projectRoot, r.file) : r.file,
+	}));
 }

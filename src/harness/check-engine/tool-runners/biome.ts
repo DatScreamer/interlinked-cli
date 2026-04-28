@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { parseBiomeOutput } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 /** Walk up to 5 levels to find biome.json or biome.jsonc. */
@@ -41,6 +42,25 @@ export function runBiome(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * Async variant of `runBiome`. Phase A.1 — non-blocking subprocess spawn so
+ * `runChecksAsync` can run biome concurrently with tsc/eslint/etc. without
+ * any of them blocking the event loop. Behaviorally identical to `runBiome`
+ * (same output parser, same exit-code handling).
+ */
+export async function runBiomeAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	if (!findBiomeConfig(scope.projectRoot)) return [];
+	const target = scope.mode === "file" && scope.targetFile ? scope.targetFile : ".";
+	const result = await runProcessAsync(
+		"npx",
+		["biome", "check", "--no-errors-on-unmatched", target],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === 0) return [];
+	return parseBiomeOutput(`${result.stdout}${result.stderr}`);
 }
 
 /**

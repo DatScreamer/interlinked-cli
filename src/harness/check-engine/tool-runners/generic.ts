@@ -16,6 +16,7 @@ import {
 	parseOxlintJson,
 	parseSemgrepJson,
 } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { AuditResult, CheckResult, ToolRunnerInput } from "../types.js";
 
 // -------------------------------------------
@@ -226,6 +227,111 @@ export function runGitleaks(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+// -------------------------------------------
+// Async runner variants — Phase A.1
+// -------------------------------------------
+// `runChecksAsync` calls these in preference to the sync runners above
+// when the meta entry has `runnerAsync` set. Behavior is identical (same
+// output parsers, same exit-code handling); only the spawn primitive
+// differs — `runProcessAsync` doesn't block the event loop, letting the
+// limiter actually run subprocesses concurrently.
+
+export async function runEslintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	if (!findEslintConfig(scope.projectRoot)) return [];
+	const target = scope.mode === "file" && scope.targetFile ? scope.targetFile : ".";
+	const result = await runProcessAsync(
+		"npx",
+		["eslint", "--no-error-on-unmatched-pattern", "--format", "unix", target],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === 0) return [];
+	return parseEslintOutput(`${result.stdout}${result.stderr}`);
+}
+
+export async function runOxlintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const target = scope.mode === "file" && scope.targetFile ? scope.targetFile : ".";
+	const result = await runProcessAsync("npx", ["oxlint", "--format=json", target], {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null) return []; // ENOENT etc.
+	if (result.code === 0) return []; // clean
+	const output = result.stdout.trim();
+	if (!output) return [];
+	return parseOxlintJson(output);
+}
+
+export async function runKnipAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const result = await runProcessAsync(
+		"npx",
+		["knip", "--no-progress", "--reporter", "json"],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === null) return [];
+	if (result.code === 0 || result.code === 2) return [];
+	const output = result.stdout.trim();
+	if (!output) return [];
+	const results = parseKnipJson(output);
+	if (scope.mode === "file" && scope.targetFile && scope.filterToFile) {
+		return filterResultsToFile(results, scope.targetFile);
+	}
+	return results;
+}
+
+export async function runSemgrepAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const target = scope.mode === "file" && scope.targetFile ? scope.targetFile : ".";
+	const result = await runProcessAsync(
+		"semgrep",
+		[
+			"scan",
+			"--quiet",
+			"--no-git-ignore",
+			"--metrics",
+			"off",
+			"--config",
+			"p/default",
+			"--json",
+			target,
+		],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === null) return [];
+	if (result.code === 2) return [];
+	const output = result.stdout.trim();
+	if (!output) return [];
+	return parseSemgrepJson(output, scope.projectRoot);
+}
+
+export async function runGitleaksAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const args = [
+		"detect",
+		"--no-git",
+		"--no-banner",
+		"--report-format",
+		"json",
+		"--report-path",
+		"/dev/stdout",
+		"--source",
+		scope.mode === "file" && scope.targetFile ? scope.targetFile : ".",
+	];
+	const result = await runProcessAsync("gitleaks", args, {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null) return [];
+	if (result.code !== 1) return [];
+	const combined = result.stderr + result.stdout;
+	if (combined.includes("FTL") || combined.includes("no such file")) return [];
+	const output = result.stdout.trim();
+	if (!output) return [];
+	return parseGitleaksJson(output);
 }
 
 // -------------------------------------------

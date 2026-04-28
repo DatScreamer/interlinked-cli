@@ -4,6 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { filterResultsToFile } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 // -------------------------------------------
@@ -84,6 +85,27 @@ export function runSwiftLint(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/** Async variant — Phase A.1. */
+export async function runSwiftLintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const args = ["lint", "--quiet", "--reporter", "json"];
+	if (scope.mode === "file" && scope.targetFile) {
+		args.push("--path", scope.targetFile);
+	}
+	const result = await runProcessAsync("swiftlint", args, {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null) return [];
+	const output = result.stdout;
+	if (!output.trim()) return [];
+	const results = parseSwiftLintJson(output);
+	if (scope.mode === "file" && scope.targetFile && scope.filterToFile) {
+		return filterResultsToFile(results, scope.targetFile);
+	}
+	return results;
 }
 
 // -------------------------------------------

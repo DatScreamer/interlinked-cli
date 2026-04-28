@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { filterResultsToFile, parseTscOutput } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 /** Walk up from startDir to find tsconfig.json (max 5 levels). */
@@ -175,6 +176,72 @@ function runTscStandalone(filePath: string, cwd: string, timeoutMs: number): Che
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * Async variant of `runTsc`. Used by `runChecksAsync` for true concurrent
+ * execution under the limiter. Behaviorally identical to the sync runner —
+ * same output parser, same standalone-fallback path — but uses
+ * `child_process.spawn` instead of `spawnSync` so multiple language tools
+ * can actually run concurrently rather than serially blocking the event
+ * loop. Phase A.1 of the Free CLI Phase-2 roadmap.
+ */
+export async function runTscAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const tscRoot = findTsconfig(scope.projectRoot);
+	const { cmd, args: cmdArgs } = tscCommand();
+
+	if (!tscRoot) {
+		if (scope.mode === "file" && scope.targetFile?.match(/\.tsx?$/)) {
+			return runTscStandaloneAsync(scope.targetFile, scope.projectRoot, timeoutMs);
+		}
+		return [];
+	}
+
+	const result = await runProcessAsync(
+		cmd,
+		[...cmdArgs, "--noEmit", "--pretty", "false"],
+		{ cwd: tscRoot, timeout: timeoutMs },
+	);
+	const output = `${result.stdout}${result.stderr}`;
+	const parsed = parseTscOutput(output);
+
+	if (scope.mode === "file" && scope.targetFile && scope.filterToFile) {
+		const rel = relative(tscRoot, scope.targetFile);
+		const filtered = filterResultsToFile(parsed, rel);
+		if (filtered.length === 0 && !isFileInTscScope(scope.targetFile, tscRoot)) {
+			return runTscStandaloneAsync(scope.targetFile, tscRoot, timeoutMs);
+		}
+		return filtered;
+	}
+	return parsed;
+}
+
+async function runTscStandaloneAsync(
+	filePath: string,
+	cwd: string,
+	timeoutMs: number,
+): Promise<CheckResult[]> {
+	const { cmd, args: cmdArgs, useTsgo } = tscCommand();
+	const args = [
+		...cmdArgs,
+		"--noEmit",
+		"--pretty",
+		"false",
+		...(useTsgo ? ["--ignoreConfig"] : []),
+		"--esModuleInterop",
+		"--module",
+		"nodenext",
+		"--moduleResolution",
+		"nodenext",
+		"--target",
+		"es2022",
+		"--skipLibCheck",
+		filePath,
+	];
+	const result = await runProcessAsync(cmd, args, { cwd, timeout: timeoutMs });
+	const output = `${result.stdout}${result.stderr}`;
+	return parseTscOutput(output);
 }
 
 /** Check if a file is included in the tsconfig's compilation scope. */

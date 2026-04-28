@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { relative } from "node:path";
 import { parseShellcheckJson } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 export function runShellcheck(input: ToolRunnerInput): CheckResult[] {
@@ -43,4 +44,22 @@ export function runShellcheck(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/** Async variant — Phase A.1. */
+export async function runShellcheckAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	if (scope.mode !== "file" || !scope.targetFile) return [];
+	const result = await runProcessAsync(
+		"shellcheck",
+		["--format=json1", "--severity=warning", scope.targetFile],
+		{ cwd: scope.projectRoot, timeout: timeoutMs },
+	);
+	if (result.code === 0) return [];
+	if (result.code === null || (result.code !== null && result.code > 1)) return [];
+	const results = parseShellcheckJson(result.stdout);
+	return results.map((r) => ({
+		...r,
+		file: r.file.startsWith("/") ? relative(scope.projectRoot, r.file) : r.file,
+	}));
 }

@@ -4,6 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { parseMypyOutput, parseRuffJson } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 // -------------------------------------------
@@ -75,4 +76,34 @@ export function runRuff(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+// -------------------------------------------
+// Async variants — Phase A.1
+// -------------------------------------------
+
+export async function runMypyAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const args = ["--no-error-summary", "--no-color-output"];
+	args.push(scope.mode === "file" && scope.targetFile ? scope.targetFile : ".");
+	const result = await runProcessAsync("mypy", args, {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null || result.code === 0) return [];
+	return parseMypyOutput(`${result.stdout}${result.stderr}`);
+}
+
+export async function runRuffAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	const args = ["check", "--output-format=json"];
+	args.push(scope.mode === "file" && scope.targetFile ? scope.targetFile : ".");
+	const result = await runProcessAsync("ruff", args, {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null || result.code === 0) return [];
+	const output = result.stdout.trim();
+	if (!output) return [];
+	return parseRuffJson(output);
 }

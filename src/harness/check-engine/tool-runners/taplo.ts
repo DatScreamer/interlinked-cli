@@ -7,6 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { relative } from "node:path";
 import { parseTaploOutput } from "../output-parsers.js";
+import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
 export function runTaplo(input: ToolRunnerInput): CheckResult[] {
@@ -36,4 +37,21 @@ export function runTaplo(input: ToolRunnerInput): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+/** Async variant — Phase A.1. */
+export async function runTaploAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
+	const { scope, timeoutMs } = input;
+	if (scope.mode !== "file" || !scope.targetFile) return [];
+	const result = await runProcessAsync("taplo", ["check", scope.targetFile], {
+		cwd: scope.projectRoot,
+		timeout: timeoutMs,
+	});
+	if (result.code === null || result.code === 0) return [];
+	const output = `${result.stdout}${result.stderr}`;
+	const results = parseTaploOutput(output, scope.targetFile);
+	return results.map((r) => ({
+		...r,
+		file: r.file.startsWith("/") ? relative(scope.projectRoot, r.file) : r.file,
+	}));
 }
