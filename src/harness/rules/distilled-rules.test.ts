@@ -1,18 +1,19 @@
-// Tests for the compiled-from-markdown rules loader (companion to
-// `compiled-rules.ts`). Verifies:
+// Tests for the distilled-from-markdown rules loader (companion to
+// `distilled-rules.ts`). Verifies:
 //   1. Pristine load returns rules unchanged when no overrides exist.
 //   2. `removed_groups[]` filters out matching rules entirely.
 //   3. `removed_rule_ids[]` filters out matching rules entirely.
 //   4. `disabled_rule_ids[]` flips `enabled: false` (rule still present).
 //   5. `modifications{}` overrides action/severity and stamps `user_modified`.
-//   6. Malformed compiled-rules.json returns [] (fail-open).
+//   6. Malformed distilled-rules.json returns [] (fail-open).
 //   7. Watch-paths returns the canonical pair.
+//   8. Legacy `compiled-rules.*` files auto-migrate to the new names on load.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getCompiledRulesWatchPaths, loadCompiledRules } from "./compiled-rules.js";
+import { getDistilledRulesWatchPaths, loadDistilledRules } from "./distilled-rules.js";
 
 interface SamplePayload {
 	rules?: unknown[];
@@ -21,10 +22,10 @@ interface SamplePayload {
 
 let tmpRoot: string;
 
-function writeCompiled(payload: SamplePayload): void {
+function writeDistilled(payload: SamplePayload): void {
 	mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
 	writeFileSync(
-		join(tmpRoot, ".interlinked", "compiled-rules.json"),
+		join(tmpRoot, ".interlinked", "distilled-rules.json"),
 		JSON.stringify(payload),
 	);
 }
@@ -32,7 +33,7 @@ function writeCompiled(payload: SamplePayload): void {
 function writeOverrides(payload: Record<string, unknown>): void {
 	mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
 	writeFileSync(
-		join(tmpRoot, ".interlinked", "compiled-rules.overrides.json"),
+		join(tmpRoot, ".interlinked", "distilled-rules.overrides.json"),
 		JSON.stringify(payload),
 	);
 }
@@ -46,7 +47,7 @@ const SAMPLE_RULE = {
 	patterns: [{ field: "command", regex: "^git\\s+push\\b.*\\bmain\\b" }],
 	reason: "BLOCKED by AGENTS.md:42",
 	severity: "critical",
-	category: "compiled-from-md",
+	category: "distilled-from-md",
 	source: {
 		group_id: "local:AGENTS.md",
 		file: "AGENTS.md",
@@ -65,7 +66,7 @@ const SECOND_RULE = {
 	patterns: [{ field: "file_path", regex: "src/" }],
 	reason: "tdd skill",
 	severity: "medium",
-	category: "compiled-from-md",
+	category: "distilled-from-md",
 	source: {
 		group_id: "skill:tdd",
 		file: ".claude/skills/tdd/SKILL.md",
@@ -75,21 +76,21 @@ const SECOND_RULE = {
 };
 
 beforeEach(() => {
-	tmpRoot = mkdtempSync(join(tmpdir(), "compiled-rules-test-"));
+	tmpRoot = mkdtempSync(join(tmpdir(), "distilled-rules-test-"));
 });
 
 afterEach(() => {
 	rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-describe("loadCompiledRules", () => {
-	it("returns [] when compiled-rules.json is absent", () => {
-		expect(loadCompiledRules(tmpRoot)).toEqual([]);
+describe("loadDistilledRules", () => {
+	it("returns [] when distilled-rules.json is absent", () => {
+		expect(loadDistilledRules(tmpRoot)).toEqual([]);
 	});
 
 	it("returns rules unchanged when no overrides file exists", () => {
-		writeCompiled({ rules: [SAMPLE_RULE, SECOND_RULE] });
-		const rules = loadCompiledRules(tmpRoot);
+		writeDistilled({ rules: [SAMPLE_RULE, SECOND_RULE] });
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(2);
 		expect(rules[0].id).toBe(SAMPLE_RULE.id);
 		expect(rules[0].action).toBe("block");
@@ -97,25 +98,25 @@ describe("loadCompiledRules", () => {
 	});
 
 	it("filters out rules whose source.group_id is in removed_groups[]", () => {
-		writeCompiled({ rules: [SAMPLE_RULE, SECOND_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE, SECOND_RULE] });
 		writeOverrides({ removed_groups: ["skill:tdd"] });
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(rules[0].id).toBe(SAMPLE_RULE.id);
 	});
 
 	it("filters out rules whose id is in removed_rule_ids[]", () => {
-		writeCompiled({ rules: [SAMPLE_RULE, SECOND_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE, SECOND_RULE] });
 		writeOverrides({ removed_rule_ids: [SAMPLE_RULE.id] });
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(rules[0].id).toBe(SECOND_RULE.id);
 	});
 
 	it("flips enabled:false on rules in disabled_rule_ids[] but keeps them", () => {
-		writeCompiled({ rules: [SAMPLE_RULE, SECOND_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE, SECOND_RULE] });
 		writeOverrides({ disabled_rule_ids: [SAMPLE_RULE.id] });
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(2);
 		const disabled = rules.find((r) => r.id === SAMPLE_RULE.id);
 		expect(disabled?.enabled).toBe(false);
@@ -124,13 +125,13 @@ describe("loadCompiledRules", () => {
 	});
 
 	it("applies modifications.action and stamps user_modified", () => {
-		writeCompiled({ rules: [SAMPLE_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE] });
 		writeOverrides({
 			modifications: {
 				[SAMPLE_RULE.id]: { action: "ask", severity: "medium" },
 			},
 		});
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(rules[0].action).toBe("ask");
 		expect(rules[0].severity).toBe("medium");
@@ -139,54 +140,106 @@ describe("loadCompiledRules", () => {
 		expect((rules[0] as unknown as { user_modified?: boolean }).user_modified).toBe(true);
 	});
 
-	it("returns [] when compiled-rules.json is malformed (fail-open)", () => {
+	it("returns [] when distilled-rules.json is malformed (fail-open)", () => {
 		mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
 		writeFileSync(
-			join(tmpRoot, ".interlinked", "compiled-rules.json"),
+			join(tmpRoot, ".interlinked", "distilled-rules.json"),
 			"{ not valid json",
 		);
-		expect(loadCompiledRules(tmpRoot)).toEqual([]);
+		expect(loadDistilledRules(tmpRoot)).toEqual([]);
 	});
 
 	it("ignores malformed overrides and still loads pristine rules", () => {
-		writeCompiled({ rules: [SAMPLE_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE] });
 		mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
 		writeFileSync(
-			join(tmpRoot, ".interlinked", "compiled-rules.overrides.json"),
+			join(tmpRoot, ".interlinked", "distilled-rules.overrides.json"),
 			"not json at all",
 		);
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(rules[0].action).toBe("block");
 	});
 
 	it("skips entries with missing id rather than throwing", () => {
-		writeCompiled({ rules: [{ ...SAMPLE_RULE, id: undefined }, SECOND_RULE] });
-		const rules = loadCompiledRules(tmpRoot);
+		writeDistilled({ rules: [{ ...SAMPLE_RULE, id: undefined }, SECOND_RULE] });
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(rules[0].id).toBe(SECOND_RULE.id);
 	});
 
 	it("removed_rule_ids takes precedence over modifications", () => {
-		writeCompiled({ rules: [SAMPLE_RULE] });
+		writeDistilled({ rules: [SAMPLE_RULE] });
 		writeOverrides({
 			removed_rule_ids: [SAMPLE_RULE.id],
 			modifications: {
 				[SAMPLE_RULE.id]: { action: "ask" },
 			},
 		});
-		const rules = loadCompiledRules(tmpRoot);
+		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(0);
+	});
+
+	describe("legacy migration", () => {
+		it("renames compiled-rules.json to distilled-rules.json on load", () => {
+			mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+			writeFileSync(
+				join(tmpRoot, ".interlinked", "compiled-rules.json"),
+				JSON.stringify({ rules: [SAMPLE_RULE] }),
+			);
+			const rules = loadDistilledRules(tmpRoot);
+			expect(rules).toHaveLength(1);
+			expect(rules[0].id).toBe(SAMPLE_RULE.id);
+			expect(existsSync(join(tmpRoot, ".interlinked", "distilled-rules.json"))).toBe(true);
+			expect(existsSync(join(tmpRoot, ".interlinked", "compiled-rules.json"))).toBe(false);
+		});
+
+		it("renames compiled-rules.overrides.json on load", () => {
+			mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+			writeFileSync(
+				join(tmpRoot, ".interlinked", "distilled-rules.json"),
+				JSON.stringify({ rules: [SAMPLE_RULE] }),
+			);
+			writeFileSync(
+				join(tmpRoot, ".interlinked", "compiled-rules.overrides.json"),
+				JSON.stringify({ disabled_rule_ids: [SAMPLE_RULE.id] }),
+			);
+			const rules = loadDistilledRules(tmpRoot);
+			expect(rules[0].enabled).toBe(false);
+			expect(
+				existsSync(join(tmpRoot, ".interlinked", "distilled-rules.overrides.json")),
+			).toBe(true);
+			expect(
+				existsSync(join(tmpRoot, ".interlinked", "compiled-rules.overrides.json")),
+			).toBe(false);
+		});
+
+		it("does not clobber an existing distilled-rules.json", () => {
+			mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+			writeFileSync(
+				join(tmpRoot, ".interlinked", "distilled-rules.json"),
+				JSON.stringify({ rules: [SAMPLE_RULE] }),
+			);
+			writeFileSync(
+				join(tmpRoot, ".interlinked", "compiled-rules.json"),
+				JSON.stringify({ rules: [SECOND_RULE] }),
+			);
+			const rules = loadDistilledRules(tmpRoot);
+			expect(rules).toHaveLength(1);
+			expect(rules[0].id).toBe(SAMPLE_RULE.id);
+			// Legacy file is left in place when migration would clobber.
+			expect(existsSync(join(tmpRoot, ".interlinked", "compiled-rules.json"))).toBe(true);
+		});
 	});
 });
 
-describe("getCompiledRulesWatchPaths", () => {
+describe("getDistilledRulesWatchPaths", () => {
 	it("returns the two canonical paths under .interlinked/", () => {
-		const paths = getCompiledRulesWatchPaths(tmpRoot);
+		const paths = getDistilledRulesWatchPaths(tmpRoot);
 		expect(paths).toHaveLength(2);
-		expect(paths[0]).toBe(join(tmpRoot, ".interlinked", "compiled-rules.json"));
+		expect(paths[0]).toBe(join(tmpRoot, ".interlinked", "distilled-rules.json"));
 		expect(paths[1]).toBe(
-			join(tmpRoot, ".interlinked", "compiled-rules.overrides.json"),
+			join(tmpRoot, ".interlinked", "distilled-rules.overrides.json"),
 		);
 	});
 });

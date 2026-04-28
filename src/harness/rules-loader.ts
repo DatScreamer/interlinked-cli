@@ -14,17 +14,18 @@
 //   rules/language-detection.ts        — project language detection + auto-tune
 //   rules/merge.ts                     — team/local config merging
 //   rules/file-io.ts                   — read/write guard-rules files
+//   rules/distilled-rules.ts           — rules distilled from .md guidance by the `enforce` skill
 //
 // All existing exports from `rules-loader.ts` are preserved here.
 
 import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
-import {
-	getCompiledRulesWatchPaths,
-	loadCompiledRules,
-} from "./rules/compiled-rules.js";
 import { DEFAULT_CONFIG } from "./rules/default-config.js";
+import {
+	getDistilledRulesWatchPaths,
+	loadDistilledRules,
+} from "./rules/distilled-rules.js";
 import {
 	readLocalGuardRules,
 	readTeamGuardRules,
@@ -165,25 +166,31 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 		}
 	}
 
-	// Combine built-in rules with custom rules + rules compiled from .md
-	// guidance by the `enforce` skill. Compiled rules are layered AFTER
+	// Combine built-in rules with custom rules + rules distilled from .md
+	// guidance by the `enforce` skill. Distilled rules are layered AFTER
 	// custom rules so a hand-curated `guard-rules.json` entry with the same
 	// id wins on conflict — committed team config remains authoritative
-	// over per-developer compile output.
+	// over per-developer distillation output.
 	//
-	// Test isolation: `INTERLINKED_SKIP_COMPILED_RULES=1` skips the compiled
+	// Test isolation: `INTERLINKED_SKIP_DISTILLED_RULES=1` skips the distilled
 	// layer entirely. The vitest config sets this so the per-developer
-	// `.interlinked/compiled-rules.json` (which varies by who has run
+	// `.interlinked/distilled-rules.json` (which varies by who has run
 	// `/enforce` and against what) doesn't leak into test fixtures and cause
-	// "passes on my machine" failures. Direct callers of `loadCompiledRules`
-	// (e.g. `compiled-rules.test.ts`) are not affected.
+	// "passes on my machine" failures. Direct callers of `loadDistilledRules`
+	// (e.g. `distilled-rules.test.ts`) are not affected.
+	//
+	// Backwards-compat: `INTERLINKED_SKIP_COMPILED_RULES` is honored as a
+	// legacy alias so older test configs and CI setups keep working through
+	// the rename. Remove on the next major.
 	const disabledSet = new Set(config.disabled_rules || []);
-	const skipCompiled = process.env.INTERLINKED_SKIP_COMPILED_RULES === "1";
-	const compiledRules = skipCompiled ? [] : loadCompiledRules(cwd);
+	const skipDistilled =
+		process.env.INTERLINKED_SKIP_DISTILLED_RULES === "1" ||
+		process.env.INTERLINKED_SKIP_COMPILED_RULES === "1";
+	const distilledRules = skipDistilled ? [] : loadDistilledRules(cwd);
 	const allRules = [
 		...BUILTIN_RULES.filter((r) => !disabledSet.has(r.id)),
 		...config.rules.filter((r) => r.enabled !== false),
-		...compiledRules.filter((r) => r.enabled !== false && !disabledSet.has(r.id)),
+		...distilledRules.filter((r) => r.enabled !== false && !disabledSet.has(r.id)),
 	];
 	config.rules = allRules;
 
@@ -201,7 +208,7 @@ export function watchRulesFiles(
 ): () => void {
 	const teamPath = join(cwd, ".interlinked", "guard-rules.json");
 	const localPath = join(cwd, ".interlinked", "guard-rules.local.json");
-	const compiledPaths = getCompiledRulesWatchPaths(cwd);
+	const distilledPaths = getDistilledRulesWatchPaths(cwd);
 
 	const reload = () => {
 		try {
@@ -216,9 +223,9 @@ export function watchRulesFiles(
 	const WATCH_POLL_INTERVAL_MS = 2_000;
 	// Watch all rules files (watchFile is safe even when files don't exist —
 	// it fires once they're created, which is the right behavior for the
-	// compiled-rules pair: an `/enforce` run creates them mid-session and
+	// distilled-rules pair: an `/enforce` run creates them mid-session and
 	// we want the running daemon to pick them up without a restart).
-	const watchedPaths = [teamPath, localPath, ...compiledPaths];
+	const watchedPaths = [teamPath, localPath, ...distilledPaths];
 	for (const path of watchedPaths) {
 		watchFile(path, { interval: WATCH_POLL_INTERVAL_MS }, reload);
 	}
