@@ -562,4 +562,186 @@ function normalizeCopilotEvent(input) {
         event_type: "unknown", tool_name: null, tool_input_summary: null,
         hook_event: "Unknown",
     };
+}
+
+// --- Cursor IDE ---
+//
+// Cursor exposes per-tool gates (beforeShellExecution, beforeMCPExecution,
+// beforeReadFile), file-edit observation (afterFileEdit), prompt + lifecycle
+// hooks (beforeSubmitPrompt, sessionStart, sessionEnd, stop), plus generic
+// preToolUse/postToolUse aliases. Each event has its own native shape; we
+// translate to the canonical record so the rest of the harness pipeline
+// (rule matching on tool_name + tool_input.command) stays agent-agnostic.
+//
+// Mapping rationale:
+//   - beforeShellExecution → tool_name: "Bash", tool_input.command   (matches Bash rules)
+//   - beforeMCPExecution   → tool_name: input.tool_name (MCP-prefixed) (matches MCP rules)
+//   - beforeReadFile       → tool_name: "Read", tool_input.file_path (matches Read rules)
+//   - afterFileEdit        → tool_name: "Edit", tool_input.{file_path, edits} (matches PostToolUse Edit)
+//   - beforeSubmitPrompt   → UserPromptSubmit (PII scan path)
+//   - preToolUse/postToolUse → identity passthrough (Cursor's generic aliases)
+//   - sessionStart/sessionEnd/stop → lifecycle records
+
+function envelopeFieldsCursor(input) {
+    // Cursor sends workspace_roots (array). The harness expects cwd as a
+    // single string — pick the first root; absent if neither side has one.
+    const cwd = input.cwd || (Array.isArray(input.workspace_roots) && input.workspace_roots[0]) || null;
+    return {
+        cwd,
+        session_id_hint: input.conversation_id || input.generation_id || null,
+        cursor_version: input.cursor_version || null,
+        conversation_id: input.conversation_id || null,
+        generation_id: input.generation_id || null,
+    };
+}
+
+const CURSOR_DISPATCH = {
+    sessionStart: (input, env) => ({
+        event_type: "session_start", tool_name: null, tool_input_summary: null,
+        hook_event: "SessionStart",
+        source: input.source || null, model: input.model || null,
+        ...env,
+    }),
+    sessionEnd: (input, env) => ({
+        event_type: "session_end", tool_name: null, tool_input_summary: null,
+        hook_event: "SessionEnd",
+        reason: input.reason || null,
+        ...env,
+    }),
+    stop: (input, env) => ({
+        event_type: "agent_stop", tool_name: null, tool_input_summary: null,
+        hook_event: "Stop",
+        stop_reason: input.status || null,
+        loop_count: input.loop_count || 0,
+        ...env,
+    }),
+    beforeSubmitPrompt: (input, env) => {
+        const prompt = input.prompt || "";
+        return {
+            event_type: "user_prompt", tool_name: null,
+            tool_input_summary: truncate(prompt, 200),
+            hook_event: "UserPromptSubmit",
+            prompt: prompt || null,
+            prompt_chars: prompt.length,
+            ...env,
+        };
+    },
+    beforeShellExecution: (input, env) => {
+        // Cursor's shell hook fires on terminal commands. Map to Bash so
+        // existing destructive-command rules apply directly.
+        const toolInput = { command: input.command || "" };
+        return {
+            event_type: "tool_use_start", tool_name: "Bash",
+            tool_input_summary: summarize("Bash", toolInput),
+            hook_event: "PreToolUse",
+            tool_input: toolInput,
+            tool_input_bytes: Buffer.byteLength(JSON.stringify(toolInput)),
+            ...env,
+        };
+    },
+    beforeMCPExecution: (input, env) => {
+        // Cursor sends tool_input as an escaped JSON string per its docs;
+        // parse so harness rules can pattern-match against fields directly.
+        let parsedInput = {};
+        if (typeof input.tool_input === "string") {
+            try { parsedInput = JSON.parse(input.tool_input); } catch { parsedInput = { _raw: input.tool_input }; }
+        } else if (input.tool_input && typeof input.tool_input === "object") {
+            parsedInput = input.tool_input;
+        }
+        const toolName = input.tool_name || null;
+        return {
+            event_type: "tool_use_start", tool_name: toolName,
+            tool_input_summary: summarize(toolName, parsedInput),
+            hook_event: "PreToolUse",
+            tool_input: parsedInput,
+            tool_input_bytes: Buffer.byteLength(JSON.stringify(parsedInput)),
+            ...env,
+        };
+    },
+    beforeReadFile: (input, env) => {
+        const toolInput = { file_path: input.file_path || "" };
+        return {
+            event_type: "tool_use_start", tool_name: "Read",
+            tool_input_summary: summarize("Read", toolInput),
+            hook_event: "PreToolUse",
+            tool_input: toolInput,
+            ...env,
+        };
+    },
+    afterFileEdit: (input, env) => {
+        const filePath = input.file_path || "";
+        const edits = Array.isArray(input.edits) ? input.edits : [];
+        // Cursor only sends afterFileEdit (no before-counterpart in our
+        // event set) — surface as PostToolUse Edit so quality + structural
+        // checks fire on the modified file.
+        const firstEdit = edits[0] || {};
+        const toolInput = {
+            file_path: filePath,
+            old_string: firstEdit.old_string || "",
+            new_string: firstEdit.new_string || "",
+            edits,
+        };
+        const result = {
+            event_type: "tool_use", tool_name: "Edit",
+            tool_input_summary: summarize("Edit", toolInput),
+            hook_event: "PostToolUse",
+            tool_input: toolInput,
+            tool_response: null,
+            duration_ms: null,
+            tool_output_bytes: 0,
+            status: "success",
+            files_modified: filePath ? [filePath] : [],
+            ...env,
+        };
+        return attachEditMetrics(result, "Edit", toolInput, null);
+    },
+    preToolUse: (input, env) => {
+        // Cursor's generic preToolUse alias — payload shape mirrors
+        // PreToolUse on Claude. Pass through.
+        const toolInput = input.tool_input || {};
+        return {
+            event_type: "tool_use_start", tool_name: input.tool_name || null,
+            tool_input_summary: summarize(input.tool_name, toolInput),
+            hook_event: "PreToolUse",
+            tool_input: toolInput,
+            tool_input_bytes: Buffer.byteLength(JSON.stringify(toolInput)),
+            ...env,
+        };
+    },
+    postToolUse: (input, env) => {
+        const toolName = input.tool_name || null;
+        const toolInput = input.tool_input || {};
+        const toolResponse = input.tool_response || null;
+        const result = {
+            event_type: "tool_use", tool_name: toolName,
+            tool_input_summary: summarize(toolName, toolInput),
+            hook_event: "PostToolUse",
+            tool_input: toolInput, tool_response: toolResponse,
+            duration_ms: input.duration_ms || null,
+            tool_output_bytes: toolResponse === null ? 0 : Buffer.byteLength(typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse)),
+            status: input.error ? "error" : "success",
+            ...env,
+        };
+        const filePath = extractFilePath(toolName, toolInput);
+        if (filePath) result.files_modified = [filePath];
+        return attachEditMetrics(result, toolName, toolInput, toolResponse);
+    },
+};
+
+function normalizeCursorUnknown(hookEvent, input, env) {
+    return {
+        event_type: hookEvent ? hookEvent.toLowerCase() : "unknown",
+        tool_name: input.tool_name || null,
+        tool_input_summary: summarize(input.tool_name, input.tool_input || {}),
+        hook_event: hookEvent,
+        tool_input: input.tool_input || null,
+        ...env,
+    };
+}
+
+function normalizeCursorEvent(input) {
+    const hookEvent = input.hook_event_name || "unknown";
+    const env = envelopeFieldsCursor(input);
+    const handler = CURSOR_DISPATCH[hookEvent];
+    return handler ? handler(input, env) : normalizeCursorUnknown(hookEvent, input, env);
 }`;

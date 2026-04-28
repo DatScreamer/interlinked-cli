@@ -83,6 +83,56 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
         return {};
     }
 
+    function formatCursorResponse(responseType, data, incomingEvent) {
+        // Cursor's hook response shape is shared by beforeShellExecution,
+        // beforeMCPExecution, beforeReadFile, preToolUse:
+        //   { permission: "allow"|"deny"|"ask", userMessage, agentMessage, continue?, updated_input? }
+        // Cursor SUPPORTS "ask" natively — we map our pre_ask decision to
+        // permission:"ask" so the user sees an interactive prompt rather
+        // than the action being silently denied. This parity with Claude
+        // Code is the whole point of plumbing Cursor through the harness.
+        //
+        // After normalization, incomingEvent carries the canonical "PreToolUse"
+        // name for every gated Cursor event (beforeShellExecution,
+        // beforeMCPExecution, beforeReadFile, preToolUse all map to it). We
+        // also keep the native names below as a defence-in-depth guard so a
+        // future caller that bypasses normalization doesn't silently skip the
+        // gate — the only askable post-style event is the canonical PreToolUse.
+        const askable = incomingEvent === "PreToolUse"
+            || incomingEvent === "beforeShellExecution"
+            || incomingEvent === "beforeMCPExecution"
+            || incomingEvent === "beforeReadFile"
+            || incomingEvent === "preToolUse";
+        if (responseType === "pre_block" || responseType === "pre_block_grep") {
+            if (!askable) return {};
+            return {
+                permission: "deny",
+                agentMessage: data.reason,
+                userMessage: data.reason,
+            };
+        }
+        if (responseType === "pre_ask") {
+            if (!askable) return {};
+            return {
+                permission: "ask",
+                agentMessage: data.reason,
+                userMessage: data.systemMessage || data.reason,
+            };
+        }
+        if (responseType === "post_block") {
+            // Cursor's afterFileEdit / postToolUse / stop hooks don't gate
+            // execution — surface the reason to stderr so the user sees it
+            // but don't pretend we can roll the edit back.
+            if (data.reason) process.stderr.write(data.reason + "\\n");
+            return {};
+        }
+        if (responseType === "post_warn" || responseType === "post_success") {
+            if (data.summary) process.stderr.write(data.summary + "\\n");
+            return {};
+        }
+        return {};
+    }
+
     function codexPermissionDeny(reason) {
         return { hookSpecificOutput: {
             hookEventName: "PermissionRequest",
@@ -129,5 +179,6 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
 
         if (detectedClient === "copilot") return formatCopilotResponse(responseType, data);
         if (detectedClient === "codex") return formatCodexResponse(responseType, data, postEventEcho, incomingEvent);
+        if (detectedClient === "cursor") return formatCursorResponse(responseType, data, incomingEvent);
         return formatClaudeResponse(responseType, data, preEventEcho, postEventEcho);
     }`;

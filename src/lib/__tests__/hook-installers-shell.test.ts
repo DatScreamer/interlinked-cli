@@ -11,7 +11,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { installCodexHooks } from "../hook-installers.js";
+import {
+	CURSOR_FAIL_CLOSED_EVENTS,
+	installCodexHooks,
+	installCursorHooks,
+} from "../hook-installers.js";
 
 interface HookEntry {
 	type: string;
@@ -124,3 +128,126 @@ describe("Codex hook command — shell portability", () => {
 		expect(existsSync(join(tmp, ".codex", "hooks.json"))).toBe(true);
 	});
 });
+
+interface CursorHookEntry {
+	type: string;
+	command: string;
+	failClosed?: boolean;
+}
+interface CursorHookFile {
+	version: number;
+	hooks: Record<string, CursorHookEntry[]>;
+}
+
+function readCursorBeforeShellCommand(): string {
+	return readCursorEventCommand("beforeShellExecution");
+}
+
+function readCursorEventCommand(eventName: string): string {
+	const path = join(tmp, ".cursor", "hooks.json");
+	const parsed = JSON.parse(readFileSync(path, "utf-8")) as CursorHookFile;
+	const entry = parsed.hooks[eventName]?.[0];
+	if (!entry) throw new Error(`no ${eventName} hook entry`);
+	return entry.command;
+}
+
+describe("Cursor hook command — fail-closed propagation", () => {
+	it("does NOT terminate in `|| true` for fail-closed events", () => {
+		// `failClosed: true` Cursor events (`beforeShellExecution`,
+		// `beforeMCPExecution`, `beforeReadFile`, `preToolUse`) require the
+		// shell to exit non-zero when the hook startup or runtime fails.
+		// Earlier versions used the shared command builder that ended in
+		// `|| true`, swallowing every failure and silently letting destructive
+		// shell commands run unguarded.
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const command = readCursorBeforeShellCommand();
+		expect(command).not.toMatch(/\|\|\s*true/);
+	});
+
+	it("exits NON-ZERO when the hook script is missing", () => {
+		// Don't create the script. The walk-up should hit the filesystem
+		// root and `exit 1` so Cursor's failClosed actually fails closed.
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const command = readCursorBeforeShellCommand();
+		const result = shellExits("bash", command);
+		expect(result.code).not.toBe(0);
+	});
+
+	it("propagates the hook script's exit code (allow → 0, deny → non-zero)", () => {
+		// Create a hook script that always exits 1 (mimics a deny decision).
+		// Cursor expects the wrapper's exit code to mirror node's.
+		mkdirSync(join(tmp, ".interlinked", "hooks"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "hooks", "interlinked-activity.mjs"),
+			"#!/usr/bin/env node\nprocess.exit(1);\n",
+		);
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const command = readCursorBeforeShellCommand();
+		const res = spawnSync("bash", ["-c", command], { encoding: "utf-8", cwd: tmp });
+		expect(res.status).toBe(1);
+	});
+
+	it("absolute-path form also fails closed when the script is missing", () => {
+		// Use a fully-qualified path that doesn't exist on disk. Cursor's
+		// absolute-path branch is a different code path from the walk-up
+		// branch and needs its own coverage.
+		const missingAbs = join(tmp, "definitely-not-here", "interlinked-activity.mjs");
+		installCursorHooks(tmp, missingAbs);
+		const command = readCursorBeforeShellCommand();
+		const result = shellExits("bash", command);
+		expect(result.code).not.toBe(0);
+	});
+
+	it("parses without error under sh and bash", () => {
+		// Cursor's command builder uses different control flow (`exec` instead
+		// of `node ... || true; break`) so re-run the shell-portability
+		// regression that already covers the Codex form.
+		mkdirSync(join(tmp, ".interlinked", "hooks"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "hooks", "interlinked-activity.mjs"),
+			"#!/usr/bin/env node\nprocess.exit(0);\n",
+		);
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const command = readCursorBeforeShellCommand();
+		expect(shellExits("bash", command).stderr).not.toMatch(/syntax error/i);
+		expect(shellExits("sh", command).stderr).not.toMatch(/syntax error/i);
+	});
+});
+
+// ===========================================
+// Parametric contract: every fail-closed event must actually fail closed
+// ===========================================
+// `CURSOR_FAIL_CLOSED_EVENTS` declares the events that need their hook to
+// exit non-zero on missing/crashed script. Adding a new event there must
+// come with a command-shape that propagates the failure — otherwise a
+// destructive command runs unguarded. This `it.each(...)` walks the actual
+// constant so any future addition is automatically pinned.
+describe.each(Array.from(CURSOR_FAIL_CLOSED_EVENTS))(
+	"Cursor fail-closed contract: %s",
+	(eventName) => {
+		it("exits non-zero when the hook script is missing", () => {
+			// No `.interlinked/hooks/...` exists; walk-up should hit
+			// filesystem root and `exit 1`.
+			installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+			const command = readCursorEventCommand(eventName);
+			expect(command).not.toMatch(/\|\|\s*true/);
+			const result = shellExits("bash", command);
+			expect(result.code).not.toBe(0);
+		});
+
+		it("propagates the hook script's deny exit code (1) to Cursor", () => {
+			mkdirSync(join(tmp, ".interlinked", "hooks"), { recursive: true });
+			writeFileSync(
+				join(tmp, ".interlinked", "hooks", "interlinked-activity.mjs"),
+				"#!/usr/bin/env node\nprocess.exit(1);\n",
+			);
+			installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+			const command = readCursorEventCommand(eventName);
+			const res = spawnSync("bash", ["-c", command], {
+				encoding: "utf-8",
+				cwd: tmp,
+			});
+			expect(res.status).toBe(1);
+		});
+	},
+);
