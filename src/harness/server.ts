@@ -50,6 +50,7 @@ import { ErrorHistory } from "./error-history.js";
 import { readSharedConfig } from "../lib/config.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
 import { appendLatencyLog } from "./latency-log.js";
+import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
 	recordWarningResolutions,
@@ -1117,6 +1118,26 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 	}
 
 	if (isPostToolUse(event)) {
+		// --- Phase B.2: skip_paths short-circuit ---
+		// Daemon-side mirror of the hook-side `skip-paths` chunk. The hook
+		// reads `.interlinked/config.json#skip_paths` and exits early on
+		// excluded paths, but on installs that rely on DEFAULT_CONFIG (no
+		// shared file written) the hook's list is empty and the event still
+		// reaches the daemon. Without this check the daemon then runs the
+		// full structural / quality pipeline on `dist/**`, `node_modules/**`,
+		// generated files, etc. Consult the merged `rules.skip_paths` here so
+		// the configured globs short-circuit regardless of install path.
+		const editedFilePathRaw =
+			(event.tool_input?.file_path as string) ||
+			(event.tool_input?.path as string) ||
+			"";
+		if (editedFilePathRaw && shouldSkipPath(editedFilePathRaw, rules)) {
+			return {
+				decision: "allow",
+				summary: `skip_paths matched (${editedFilePathRaw}) — post-event pipeline skipped`,
+			};
+		}
+
 		// --- Dirty layer: track file edits for trigram index freshness ---
 		if (trigramIndex) {
 			const editedPath = (event.tool_input?.file_path as string) || "";
