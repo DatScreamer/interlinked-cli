@@ -53,4 +53,23 @@ export interface CheckRegistration {
 	fn: (content: string, filePath: string) => InlineMatch[];
 	/** camelCase property name for CodeQualityResults (e.g., "misusedPromises") */
 	resultsPropName: string;
+	/**
+	 * Substrings that gate detector evaluation. If non-empty, the detector
+	 * runs ONLY when at least one substring appears (case-insensitively) in
+	 * the file content. Empty/missing = always-eval (legacy behavior).
+	 *
+	 * Architectural twin of `evaluator/keyword-quick-reject.ts` for guard
+	 * rules — same trick, applied to file content instead of command tokens.
+	 * Sub-millisecond `String.prototype.includes` per substring; saves a
+	 * regex pass when the pattern's anchor word is absent.
+	 *
+	 * Examples:
+	 *   - `subprocess_shell_true` → `["subprocess"]`
+	 *   - `mutex_lock_unwrap`     → `["Mutex", "lock"]`
+	 *   - `weak_hash`             → `["md5", "sha1"]`
+	 *
+	 * The pre-filter is consumed by the file-checks dispatch in
+	 * `commands/verify/file-checks.ts` and the daemon's PostToolUse path.
+	 */
+	content_keywords?: string[];
 }
