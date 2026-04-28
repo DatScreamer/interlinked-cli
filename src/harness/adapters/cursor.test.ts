@@ -9,7 +9,10 @@ describe("Cursor adapter identity", () => {
 	});
 	it("lists native event names", () => {
 		expect(adapter.nativeEventNames).toContain("beforeShellExecution");
-		expect(adapter.nativeEventNames).toContain("beforeMcpToolExecution");
+		expect(adapter.nativeEventNames).toContain("beforeMCPExecution");
+		expect(adapter.nativeEventNames).toContain("afterFileEdit");
+		expect(adapter.nativeEventNames).toContain("beforeReadFile");
+		expect(adapter.nativeEventNames).toContain("sessionStart");
 	});
 });
 
@@ -51,25 +54,94 @@ describe("Cursor parseHookInput — beforeReadFile", () => {
 describe("Cursor parseHookInput — MCP tool", () => {
 	const event = adapter.parseHookInput(
 		{ session_id: "cur-3", tool_name: "search", arguments: { query: "x" } },
-		"beforeMcpToolExecution",
+		"beforeMCPExecution",
 	);
 	it("produces a tool_call", () => {
 		expect(event.action.kind).toBe("tool_call");
 	});
+	it("parses string-form tool_input (Cursor's MCP convention)", () => {
+		const e = adapter.parseHookInput(
+			{
+				session_id: "cur-4",
+				tool_name: "delete_volume",
+				tool_input: '{"volumeId":"abc-123"}',
+			},
+			"beforeMCPExecution",
+		);
+		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(e.action.tool_input).toEqual({ volumeId: "abc-123" });
+	});
+});
+
+describe("Cursor parseHookInput — afterFileEdit", () => {
+	const event = adapter.parseHookInput(
+		{ session_id: "cur-5", file_path: "/repo/src/foo.ts", edits: [] },
+		"afterFileEdit",
+	);
+	it("produces a file_operation edit", () => {
+		if (event.action.kind !== "file_operation") throw new Error("expected file_operation");
+		expect(event.action.operation).toBe("edit");
+		expect(event.action.path).toBe("/repo/src/foo.ts");
+	});
 });
 
 describe("Cursor encodeDecision", () => {
-	const event = adapter.parseHookInput({ session_id: "c", path: "/a" }, "beforeReadFile");
-	it("allow emits stdout with allow:true", () => {
+	const event = adapter.parseHookInput(
+		{ session_id: "c", command: "ls" },
+		"beforeShellExecution",
+	);
+	it("allow emits stdout with permission:allow", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, event);
-		expect(JSON.parse(out.stdout as string)).toEqual({ allow: true });
+		expect(JSON.parse(out.stdout as string)).toEqual({ permission: "allow" });
 	});
-	it("block emits allow:false with reason", () => {
+	it("block emits permission:deny with agent + user messages", () => {
 		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, event);
-		expect(JSON.parse(out.stdout as string)).toEqual({ allow: false, reason: "no" });
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			permission: "deny",
+			agentMessage: "no",
+			userMessage: "no",
+		});
 	});
-	it("ask emits ask:true with reason", () => {
-		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
-		expect(JSON.parse(out.stdout as string)).toEqual({ ask: true, reason: "confirm?" });
+	it("ask emits permission:ask with both messages", () => {
+		const out = adapter.encodeDecision(
+			{ decision: "ask", reason: "confirm?", system_message: "potentially destructive" },
+			event,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			permission: "ask",
+			agentMessage: "confirm?",
+			userMessage: "potentially destructive",
+		});
+	});
+	it("non-gated event (afterFileEdit) blocks via stderr instead of stdout JSON", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "c", file_path: "/a", edits: [] },
+			"afterFileEdit",
+		);
+		const out = adapter.encodeDecision({ decision: "block", reason: "lint failed" }, postEvent);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toContain("lint failed");
+	});
+});
+
+describe("Cursor renderSettingsFragment", () => {
+	const fragment = adapter.renderSettingsFragment("/usr/local/bin/interlinked-hook", "project");
+	it("writes to .cursor/hooks.json (project scope)", () => {
+		expect(fragment.path).toBe(".cursor/hooks.json");
+	});
+	it("includes version: 1 in the fragment", () => {
+		const f = fragment.fragment as { version: number };
+		expect(f.version).toBe(1);
+	});
+	it("sets failClosed: true on gated events", () => {
+		const f = fragment.fragment as { hooks: Record<string, Array<{ failClosed?: boolean }>> };
+		expect(f.hooks.beforeShellExecution?.[0]?.failClosed).toBe(true);
+		expect(f.hooks.beforeMCPExecution?.[0]?.failClosed).toBe(true);
+		expect(f.hooks.beforeReadFile?.[0]?.failClosed).toBe(true);
+	});
+	it("leaves failClosed unset on observation hooks", () => {
+		const f = fragment.fragment as { hooks: Record<string, Array<{ failClosed?: boolean }>> };
+		expect(f.hooks.afterFileEdit?.[0]?.failClosed).toBeUndefined();
+		expect(f.hooks.sessionStart?.[0]?.failClosed).toBeUndefined();
 	});
 });
