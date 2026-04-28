@@ -44,7 +44,23 @@ export type HookEventName =
 	// Generic
 	| string;
 
-export type AgentSource = "claude" | "copilot" | "codex" | "gemini";
+export type AgentSource = "claude" | "copilot" | "codex" | "gemini" | "cursor";
+
+/**
+ * Whether a given agent runtime can surface an interactive permission prompt
+ * to the user when the harness returns `decision: "ask"`. Clients that lack
+ * an ask primitive get the rule's intent translated to "block" by the
+ * provider-response formatter so the user still sees the reason and can
+ * retry deliberately. Kept here in `types.ts` (rather than only in the
+ * generated `.mjs`) so the harness evaluator and tests can reason about it.
+ */
+export const ASK_CAPABLE_AGENTS = new Set<AgentSource>(["claude", "cursor"]);
+
+/** True when the agent runtime supports a per-call user confirmation flow. */
+export function agentSupportsAsk(source: AgentSource | string | undefined): boolean {
+	if (!source) return false;
+	return ASK_CAPABLE_AGENTS.has(source as AgentSource);
+}
 
 /** Role classification for agent capability scoping */
 export type AgentRole = "lead" | "worker" | "subagent" | "unknown";
@@ -124,6 +140,10 @@ export interface HarnessDecision {
 	checks_timing_ms?: number;
 	/** Which checks were applicable to this file/event */
 	checks_ran?: string[];
+	/** Phase A.7: per-subprocess-tool elapsed/finding count, surfaced into
+	 *  latency.jsonl so `interlinked harness latency --by-tool` can compute
+	 *  per-tool p50/p99. */
+	tool_breakdown?: Array<{ tool: string; ms: number; finding_count: number }>;
 	/** Grep acceleration statistics (when index intercepts a search) */
 	grep_stats?: GrepStats;
 	/** Summary line for display (e.g., "all clean (300ms)") */
@@ -257,8 +277,21 @@ export interface GuardRule {
 	trigger: "PreToolUse" | "PostToolUse" | "both";
 	/** Tool names this rule applies to. Use "*" for all tools. */
 	tool_match: string[];
-	/** What to do when the rule fires. "soft_block" blocks the first attempt but allows retry. */
-	action: "block" | "warn" | "rewrite" | "soft_block";
+	/**
+	 * What to do when the rule fires.
+	 * - `block`: refuse the call. Reason returned to the agent.
+	 * - `warn`: allow but emit a stderr warning (visible to the agent on Claude/Codex/Gemini; logged-only on Copilot).
+	 * - `rewrite`: transform the tool input via `rule.rewrite` before execution.
+	 * - `soft_block`: block first attempt but allow retry — used for "are you sure?" patterns.
+	 * - `ask`: surface a per-call user confirmation prompt on agents that support
+	 *   it (Claude Code, Cursor). On agents that lack an ask primitive (Copilot,
+	 *   Codex, Gemini) the provider-response formatter collapses this to a hard
+	 *   deny so the user still sees the reason and can retry deliberately.
+	 *   Used for *potentially* destructive operations where human review beats
+	 *   blanket denial: REST DELETE calls, GraphQL mutations carrying delete
+	 *   verbs, MCP tools whose name suggests deletion.
+	 */
+	action: "block" | "warn" | "rewrite" | "soft_block" | "ask";
 	/** Patterns to match against tool input fields */
 	patterns: RulePattern[];
 	/** Human-readable reason shown to the agent */
@@ -273,6 +306,28 @@ export interface GuardRule {
 	applies_to_roles?: AgentRole[];
 	/** Input rewrite function key — used when action is "rewrite" */
 	rewrite?: InputRewrite;
+	/**
+	 * Keyword tokens that, when ANY of them appear in the wrapper-normalized
+	 * command, gate evaluation of this rule. Empty/missing list = "always
+	 * evaluate" (used for rules whose canonical pattern has no word tokens,
+	 * like the fork bomb `:(){:|:&};:`). Quick-reject filter — see
+	 * `evaluator/keyword-quick-reject.ts`. Tokens are matched
+	 * case-insensitively against shell-tokenized command text.
+	 */
+	keywords?: string[];
+	/**
+	 * Optional ISO 8601 expiry timestamp. If set and in the past at rule-load
+	 * time, the rule is silently dropped from the loaded set. Used for
+	 * temporary rules ("block X until 2026-06-01") so they don't linger as
+	 * forgotten allowlist entries.
+	 */
+	expires_at?: string;
+	/**
+	 * Optional duration after which the rule expires, expressed as e.g.
+	 * "30d", "12h", "1w". Loader resolves to a concrete `expires_at` at the
+	 * moment the rule is first loaded. Convenience for human-authored configs.
+	 */
+	expires_after?: string;
 }
 
 export interface RulePattern {
@@ -424,6 +479,14 @@ export interface GuardRulesConfig {
 		protected_paths: string[];
 		protected_reason: string;
 	};
+	/**
+	 * Path globs to skip the entire PostToolUse check pipeline (mirrors
+	 * `SharedConfig.skip_paths`). When the touched file matches any entry,
+	 * `runChecksAsync` returns an empty report with `skipped: [{check: "*",
+	 * reason: "skip_paths matched", category: "config_disabled"}]`. Matched
+	 * via `matchesAnyGlob` from `src/lib/path-glob.ts`.
+	 */
+	skip_paths?: string[];
 
 	// Personal overrides (from guard-rules.local.json)
 	/** Rule IDs to disable */
@@ -638,6 +701,15 @@ export interface SessionTrajectory {
 	silent_failure_warned: Set<string>;
 	/** Tool names that have already received a context-bloat warning this session (dedup). */
 	bloat_warned: Set<string>;
+	/**
+	 * Phase D.2 trajectory state machine. Lazy-instantiated on first
+	 * PreToolUse event for the session when any `harness.trajectory.*`
+	 * feature flag is enabled. Detects tool_loop / destructive_sequence /
+	 * unbackedoff_retry / silent_stall anti-patterns. Findings surface as
+	 * PreToolUse warnings, never as block decisions. Optional so tests
+	 * with bare-bones session fixtures don't have to wire it in.
+	 */
+	trajectoryDetector?: import("./trajectory.js").TrajectoryDetector;
 }
 
 // ===========================================
