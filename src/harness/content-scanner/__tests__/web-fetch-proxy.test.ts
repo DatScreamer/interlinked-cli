@@ -17,7 +17,12 @@ import {
 	writeReview,
 } from "../review-files.js";
 import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types.js";
-import { fetchAndScan } from "../web-fetch-proxy.js";
+import {
+	assertSafeFetchTarget,
+	fetchAndScan,
+	isBlockedAddress,
+	SsrfBlockedError,
+} from "../web-fetch-proxy.js";
 
 let cwd: string;
 
@@ -317,6 +322,169 @@ describe("fetchAndScan — decision file already on disk", () => {
 			toolName: "WebFetch",
 		});
 		expect(result).toMatchObject({ kind: "passthrough" });
+	});
+});
+
+describe("assertSafeFetchTarget — SSRF guard", () => {
+	const stubResolver = (addresses: string[]) => async () =>
+		addresses.map((address) => ({ address, family: address.includes(":") ? 6 : 4 }));
+
+	it("rejects non-http(s) schemes", async () => {
+		await expect(assertSafeFetchTarget("file:///etc/passwd")).rejects.toBeInstanceOf(
+			SsrfBlockedError,
+		);
+		await expect(assertSafeFetchTarget("javascript:alert(1)")).rejects.toMatchObject({
+			reason: "scheme_not_allowed",
+		});
+		await expect(assertSafeFetchTarget("gopher://x.example/foo")).rejects.toMatchObject({
+			reason: "scheme_not_allowed",
+		});
+	});
+
+	it("rejects malformed URLs", async () => {
+		await expect(assertSafeFetchTarget("not a url")).rejects.toMatchObject({
+			reason: "invalid_url",
+		});
+	});
+
+	it("rejects IPv4 literals in loopback / RFC1918 / link-local ranges", async () => {
+		const blockedV4 = [
+			"http://127.0.0.1/",
+			"http://127.0.0.1:6379/",
+			"http://10.0.0.1/",
+			"http://172.16.0.5/",
+			"http://172.31.255.255/",
+			"http://192.168.1.1/",
+			"http://169.254.169.254/latest/meta-data/", // EC2/GCP/Azure metadata
+			"http://0.0.0.0/",
+			"http://224.0.0.1/", // multicast
+		];
+		for (const url of blockedV4) {
+			await expect(assertSafeFetchTarget(url)).rejects.toMatchObject({
+				reason: "ip_literal_blocked",
+			});
+		}
+	});
+
+	it("allows IPv4 literals in public ranges", async () => {
+		// 8.8.8.8 is unambiguously public — no DNS lookup needed because
+		// the URL hostname is a literal IP.
+		await expect(assertSafeFetchTarget("http://8.8.8.8/")).resolves.toBeInstanceOf(URL);
+	});
+
+	it("rejects IPv6 loopback / unique-local / link-local literals", async () => {
+		const blockedV6 = [
+			"http://[::1]/",
+			"http://[fc00::1]/", // unique-local
+			"http://[fd12:3456:789a::1]/", // unique-local (fd00::/8)
+			"http://[fe80::1]/", // link-local
+			"http://[ff02::1]/", // multicast
+		];
+		for (const url of blockedV6) {
+			await expect(assertSafeFetchTarget(url)).rejects.toMatchObject({
+				reason: "ip_literal_blocked",
+			});
+		}
+	});
+
+	it("rejects IPv4-mapped IPv6 addresses pointing at private V4", async () => {
+		await expect(
+			assertSafeFetchTarget("http://[::ffff:127.0.0.1]/"),
+		).rejects.toMatchObject({ reason: "ip_literal_blocked" });
+	});
+
+	it("blocks a hostname whose DNS resolution returns ANY private address", async () => {
+		// Defends against split-resolve / DNS-rebinding shapes where the
+		// record is a public IP plus a loopback IP — we must reject if any
+		// resolved address is private.
+		await expect(
+			assertSafeFetchTarget(
+				"http://attacker-controlled.example/",
+				stubResolver(["8.8.8.8", "127.0.0.1"]),
+			),
+		).rejects.toMatchObject({ reason: "resolved_ip_blocked" });
+	});
+
+	it("allows a hostname whose DNS resolution is fully public", async () => {
+		await expect(
+			assertSafeFetchTarget(
+				"https://safe.example/path",
+				stubResolver(["8.8.8.8", "1.1.1.1"]),
+			),
+		).resolves.toBeInstanceOf(URL);
+	});
+
+	it("rejects when DNS resolution itself fails", async () => {
+		const failingResolver = async () => {
+			throw new Error("ENOTFOUND");
+		};
+		await expect(
+			assertSafeFetchTarget("https://nonexistent.example/", failingResolver),
+		).rejects.toMatchObject({ reason: "hostname_resolution_failed" });
+	});
+});
+
+describe("isBlockedAddress — range coverage", () => {
+	it("flags every documented private/reserved V4 leading octet", () => {
+		expect(isBlockedAddress("0.0.0.0")).toBe(true);
+		expect(isBlockedAddress("10.255.255.255")).toBe(true);
+		expect(isBlockedAddress("127.5.5.5")).toBe(true);
+		expect(isBlockedAddress("169.254.169.254")).toBe(true);
+		expect(isBlockedAddress("172.16.0.0")).toBe(true);
+		expect(isBlockedAddress("172.31.255.255")).toBe(true);
+		expect(isBlockedAddress("192.168.0.1")).toBe(true);
+		expect(isBlockedAddress("198.18.0.1")).toBe(true);
+		expect(isBlockedAddress("224.0.0.1")).toBe(true);
+		expect(isBlockedAddress("255.255.255.255")).toBe(true);
+	});
+
+	it("does not flag public V4 addresses", () => {
+		expect(isBlockedAddress("8.8.8.8")).toBe(false);
+		expect(isBlockedAddress("1.1.1.1")).toBe(false);
+		expect(isBlockedAddress("172.15.255.255")).toBe(false); // 172.16/12 starts at .16
+		expect(isBlockedAddress("172.32.0.0")).toBe(false); // ...and ends at .31
+	});
+
+	it("rejects garbage strings", () => {
+		expect(isBlockedAddress("not-an-ip")).toBe(true);
+		expect(isBlockedAddress("")).toBe(true);
+	});
+});
+
+describe("fetchAndScan — SSRF integration", () => {
+	it("returns fail_open without calling fetch when the URL targets a private host", async () => {
+		// Stub fetch so we can assert it was NOT called — the SSRF guard
+		// must short-circuit before any network I/O.
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const result = await fetchAndScan({
+			cwd,
+			url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+			prompt: "",
+			scanner: makeScanner([]),
+			compiledAllowlist: allowlistEmpty,
+			config: baseConfig,
+			toolName: "WebFetch",
+		});
+		expect(result.kind).toBe("fail_open");
+		expect((result as { detail: string }).detail).toMatch(/SSRF guard/);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("returns fail_open without calling fetch when the URL uses file://", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const result = await fetchAndScan({
+			cwd,
+			url: "file:///etc/passwd",
+			prompt: "",
+			scanner: makeScanner([]),
+			compiledAllowlist: allowlistEmpty,
+			config: baseConfig,
+			toolName: "WebFetch",
+		});
+		expect(result.kind).toBe("fail_open");
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });
 
