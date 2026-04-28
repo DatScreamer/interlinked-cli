@@ -21,19 +21,30 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { manifestPath, readManifest } from "../harness/installer.js";
+import {
+	getModePreset,
+	type HarnessModePreset,
+	migrateLegacyMode,
+	QUALITY_MODE,
+} from "../harness/rules/modes.js";
+import { readSharedConfig } from "./config.js";
 import {
 	CLAUDE_HOOK_EVENTS,
 	CODEX_HOOK_EVENTS,
 	COPILOT_HOOK_EVENTS,
+	CURSOR_HOOK_EVENTS,
 	GEMINI_HOOK_EVENTS,
 	installAllClaudeHooks,
 	installCodexHooks,
 	installCopilotHooks,
+	installCursorHooks,
 	installGeminiHooks,
 	installStatusLine as installStatusLineImpl,
 	uninstallAllClaudeHooks,
 	uninstallCodexHooks,
 	uninstallCopilotHooks,
+	uninstallCursorHooks,
 	uninstallGeminiHooks,
 } from "./hook-installers.js";
 import { buildHookScript } from "./hooks-template.js";
@@ -85,9 +96,35 @@ export function getHookScriptPath(cwd: string): string {
 // ===========================================
 
 /**
+ * Resolve the operational tier preset (budget / quality / ci) for the
+ * generated hook. Reads `.interlinked/config.json`'s `mode` field, applies
+ * legacy migration (`balanced` → `budget` on Copilot CLI / `quality`
+ * elsewhere) using the active runner from installer-manifest.json, and
+ * defaults to QUALITY_MODE when nothing is configured. Phase C; see
+ * src/harness/rules/modes.ts for the preset definitions.
+ */
+function resolveHarnessModePreset(cwd: string): HarnessModePreset {
+	const shared = readSharedConfig(cwd);
+	const rawMode = typeof shared?.mode === "string" ? shared.mode : undefined;
+	let activeRunner: string | undefined;
+	const mfPath = manifestPath(cwd);
+	if (existsSync(mfPath)) {
+		const entries = readManifest(mfPath);
+		activeRunner = entries.length > 0 ? entries[0].runner : undefined;
+	}
+	const resolved = migrateLegacyMode(rawMode, activeRunner);
+	return getModePreset(resolved);
+}
+
+/**
  * Write the universal hook script to .interlinked/hooks/interlinked-activity.mjs.
  * This script reads config from .interlinked/config.local.json and
  * normalizes events from any supported AI coding client.
+ *
+ * Bakes the active harness mode's `HARNESS_POST_TIMEOUT_MS` literal into
+ * the generated .mjs so subsequent edits to `.interlinked/config.json`'s
+ * `mode` field require re-rendering this file (typically via
+ * `interlinked harness mode <name>`).
  */
 export function writeHookScript(cwd: string): string {
 	const scriptPath = getHookScriptPath(cwd);
@@ -96,7 +133,22 @@ export function writeHookScript(cwd: string): string {
 		mkdirSync(hookDir, { recursive: true });
 	}
 
-	const script = buildHookScript(HOOK_SCRIPT_VERSION);
+	const preset = resolveHarnessModePreset(cwd);
+	// Default to QUALITY_MODE if resolveHarnessModePreset somehow returned
+	// undefined (it shouldn't — getModePreset throws on unknown). The
+	// fallback keeps the generated script renderable on a brand-new install
+	// before any config file has been written.
+	const activePreset = preset ?? QUALITY_MODE;
+	// Bake the mode name into the version string so the
+	// `interlinked-hook-version: <v>` sentinel embedded in the .mjs visibly
+	// changes when the user toggles `interlinked harness mode budget|quality|ci`.
+	// Without this, out-of-band staleness checks (e.g., `interlinked doctor`,
+	// re-runs of `interlinked enable`) read the unchanged version literal and
+	// skip the rewrite — leaving the .mjs's `HARNESS_POST_TIMEOUT_MS` baked
+	// at the previous mode's value. (`harnessModeCommand` writes directly so
+	// the mode-toggle path is unaffected; this guards every other rewrite path.)
+	const versioned = `${HOOK_SCRIPT_VERSION}+mode-${activePreset.name}`;
+	const script = buildHookScript(versioned, activePreset);
 
 	writeFileSync(scriptPath, script);
 	chmodSync(scriptPath, 0o755);
@@ -170,6 +222,11 @@ const CLIENT_INSTALL_REGISTRY: Record<ClientName, ClientInstallEntry> = {
 		events: CODEX_HOOK_EVENTS,
 		install: installCodexHooks,
 		uninstall: uninstallCodexHooks,
+	},
+	cursor: {
+		events: CURSOR_HOOK_EVENTS,
+		install: installCursorHooks,
+		uninstall: uninstallCursorHooks,
 	},
 };
 

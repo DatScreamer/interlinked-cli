@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildHookScript } from "../hooks-template.js";
 
@@ -55,6 +58,35 @@ describe("buildHookScript", () => {
 		expect(out).toContain("function normalizeCopilotEvent");
 		// --- Client Normalizers --- header is emitted verbatim from the chunk.
 		expect(out).toContain("// --- Client Normalizers ---");
+	});
+
+	it("embeds skip-paths chunk markers (Phase B.3 hook-side early skip)", () => {
+		const out = buildHookScript("v");
+		// Public surface from the chunk.
+		expect(out).toContain("function loadSkipPaths(");
+		expect(out).toContain("function globToRegex(");
+		expect(out).toContain("function matchesSkipPath(");
+		expect(out).toContain("SKIP_PATHS_CACHE");
+		expect(out).toContain("if (skipPath && matchesSkipPath(skipPath))");
+		expect(out).toContain("[interlinked:skip] path matched skip_paths");
+	});
+
+	it("PreToolUse is NOT short-circuited by skip_paths — guard rules must still run", () => {
+		// Regression: an earlier wiring used `if (isPreTool || isPostTool)`
+		// here, which let any path matching skip_paths bypass repo-confinement,
+		// protected-file checks, lockfile-tamper, and other pre_block guards.
+		// The hook-side early skip is meant to mute the noisy quality
+		// pipeline, NOT to disable safety enforcement on those same paths.
+		// Pin the gate so PostToolUse-only is never silently widened back.
+		const out = buildHookScript("v");
+		// The gate must be PostToolUse-only.
+		expect(out).toContain("if (isPostTool) {");
+		// And must NOT include PreToolUse in that gate.
+		expect(out).not.toMatch(/if \(isPreTool\s*\|\|\s*isPostTool\)\s*\{[\s\S]{0,400}matchesSkipPath/);
+		// The PreToolUse "decision:allow" stdout shortcut from the old
+		// wiring must be gone (PostToolUse uses formatProviderResponse, so
+		// the raw allow shape inside the skip block is unique to the bug).
+		expect(out).not.toMatch(/if \(isPreTool\)[\s\S]{0,200}JSON\.stringify\(\{\s*decision:\s*"allow"\s*\}\)/);
 	});
 
 	it("extracts file paths from apply_patch payloads for Codex/Copilot edits", () => {
@@ -117,5 +149,100 @@ describe("buildHookScript", () => {
 		// The old shell form is gone.
 		expect(out).not.toContain('execSync("git log " +');
 		expect(out).not.toContain('execSync(\n                "git log " +');
+	});
+
+	it("always overwrites hookEvent with the normalized canonical name (Cursor regression)", () => {
+		// Regression: previously the resolution was
+		//   if (!hookEvent && event.hook_event) { hookEvent = event.hook_event; }
+		// which kept Cursor's raw `beforeShellExecution` in `hookEvent`. The
+		// downstream `isPreTool/isPostTool/isUserPrompt` matchers and the
+		// harness server only recognise canonical names ("PreToolUse" etc.),
+		// so destructive Cursor shell/MCP calls bypassed every guard.
+		const out = buildHookScript("v");
+		expect(out).toMatch(/if \(event\.hook_event\) \{\s*hookEvent = event\.hook_event;\s*\}/);
+		expect(out).not.toMatch(/if \(!hookEvent && event\.hook_event\)/);
+	});
+
+	it("formatCursorResponse treats canonical PreToolUse as askable (Cursor regression)", () => {
+		// After hookEvent normalization, `incomingEvent` carries the canonical
+		// "PreToolUse" name for every gated Cursor event (beforeShellExecution,
+		// beforeMCPExecution, beforeReadFile, preToolUse all map to it).
+		// Without this case, all gated Cursor events would silently skip the
+		// deny/ask response shape and the agent would proceed unblocked.
+		const out = buildHookScript("v");
+		expect(out).toContain('incomingEvent === "PreToolUse"');
+	});
+
+	it("inline guard receives the normalized tool_input (Cursor / Copilot regression)", () => {
+		// Regression: the inline fallback used to read `rawInput.tool_input`
+		// directly. Cursor's beforeShellExecution carries the command at the
+		// top level (rawInput.command), and Copilot wraps args under toolArgs;
+		// neither client sets rawInput.tool_input, so the inline guard saw
+		// undefined and let destructive commands through whenever the harness
+		// was unavailable. The fix passes harnessEvent.tool_input (the
+		// post-normalization shape).
+		const out = buildHookScript("v");
+		expect(out).toContain(
+			"inlineGuardCheck(hookEvent, harnessEvent.tool_name, harnessEvent.tool_input)",
+		);
+		expect(out).not.toContain(
+			"inlineGuardCheck(hookEvent, harnessEvent.tool_name, rawInput.tool_input)",
+		);
+	});
+
+	it("blocks Cursor beforeShellExecution rm -rf via the inline fallback (end-to-end)", () => {
+		// Wires the full .mjs runtime against a Cursor-shaped stdin payload to
+		// confirm: (1) the Cursor normalizer fires (cursor_version field
+		// detection), (2) hookEvent gets resolved to canonical "PreToolUse",
+		// (3) isPreTool === true, (4) the inline guard receives a usable
+		// tool_input via harnessEvent, (5) the block decision flows through
+		// formatCursorResponse and emits Cursor's permission:"deny" stdout.
+		// If any of those four bug-paths regress, this test fails.
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-cursor-e2e-"));
+		const interlinkedDir = join(tempDir, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+		writeFileSync(
+			join(interlinkedDir, "config.local.json"),
+			JSON.stringify({ sync_mode: "local", agent_name: "cursor-test-agent" }),
+		);
+		// Pretend a harness is "alive" so tryHealHarness returns false (skips
+		// the 1.5s retry spin) — we want the inline fallback to fire fast.
+		writeFileSync(join(interlinkedDir, "harness.pid"), String(process.pid));
+		writeFileSync(join(interlinkedDir, "harness.sock"), "");
+
+		const scriptPath = join(tempDir, "hook.mjs");
+		writeFileSync(scriptPath, buildHookScript("test"));
+
+		const cursorPayload = {
+			hook_event_name: "beforeShellExecution",
+			session_id: "cursor-e2e-session",
+			cwd: tempDir,
+			command: "rm -rf /",
+			cursor_version: "1.0.0",
+			conversation_id: "conv-1",
+			generation_id: "gen-1",
+		};
+
+		const res = spawnSync(process.execPath, [scriptPath], {
+			input: JSON.stringify(cursorPayload),
+			encoding: "utf-8",
+			cwd: tempDir,
+			env: {
+				...process.env,
+				INTERLINKED_HOME: interlinkedDir,
+				INTERLINKED_DATA_DIR: interlinkedDir,
+				INTERLINKED_CLIENT: "cursor",
+			},
+			timeout: 10_000,
+		});
+
+		expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+		const stdout = (res.stdout || "").trim();
+		expect(stdout, `expected non-empty stdout; stderr=${res.stderr}`).not.toBe("");
+		const parsed = JSON.parse(stdout);
+		expect(parsed.permission).toBe("deny");
+		expect(String(parsed.agentMessage || parsed.userMessage || "")).toMatch(
+			/BLOCKED|recursive|rm -rf/i,
+		);
 	});
 });

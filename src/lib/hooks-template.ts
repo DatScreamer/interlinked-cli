@@ -16,17 +16,26 @@
 // `buildHookScript` stitches them back together; the byte output is identical to the
 // pre-split template. See `hooks-template.test.ts` for the byte-level invariants.
 
+import { type HarnessModePreset, QUALITY_MODE } from "../harness/rules/modes.js";
 import { EVENT_NORMALIZERS_CHUNK } from "./hook-template-chunks/event-normalizers.js";
 import { GUARDS_INLINE_CHUNK } from "./hook-template-chunks/guards-inline.js";
 import { PROVIDER_RESPONSES_CHUNK } from "./hook-template-chunks/provider-responses.js";
 import { REDACTION_CHUNK } from "./hook-template-chunks/redaction.js";
 import { SESSION_STATE_CHUNK } from "./hook-template-chunks/session-state.js";
+import { SKIP_PATHS_CHUNK } from "./hook-template-chunks/skip-paths.js";
 
 /**
  * Build the Interlinked activity hook script (`.mjs`) for the given version.
- * The version is embedded in the first comment for staleness detection.
+ * The version is embedded in the first comment for staleness detection. The
+ * optional `modePreset` argument bakes the per-tier `HARNESS_POST_TIMEOUT_MS`
+ * literal into the generated runtime — re-render the script (via
+ * `writeHookScript`) every time the mode changes. Defaults to QUALITY_MODE
+ * (50 s) so existing call-sites that pass only the version keep working.
  */
-export function buildHookScript(version: string): string {
+export function buildHookScript(version: string, modePreset?: HarnessModePreset): string {
+	const preset = modePreset ?? QUALITY_MODE;
+	const postTimeoutMs = preset.post_timeout_ms;
+	const modeName = preset.name;
 	return `#!/usr/bin/env node
 // interlinked-hook-version: ${version}
 // ===========================================
@@ -93,6 +102,8 @@ const SYNC_ERRORS_PATH = join(DATA_DIR, "sync-errors.jsonl");
 // Track active subagent for attribution
 let activeSubagent = null;
 
+${SKIP_PATHS_CHUNK}
+
 ${REDACTION_CHUNK}
 
 // ===========================================
@@ -104,7 +115,7 @@ ${REDACTION_CHUNK}
 const HARNESS_SOCK_PATH = resolveHarnessSocket();
 const PENDING_WARNINGS_PATH = join(DATA_DIR, "pending-quality-warnings.json");
 const HARNESS_PRE_TIMEOUT_MS = 5000;  // PreToolUse: allows grep acceleration (ripgrep on candidates)
-const HARNESS_POST_TIMEOUT_MS = 15000; // PostToolUse: slow, quality checks run tsc/lint
+const HARNESS_POST_TIMEOUT_MS = ${postTimeoutMs}; // PostToolUse: from harness mode "${modeName}" — see src/harness/rules/modes.ts. Re-rendered on every \`interlinked harness mode <name>\` change.
 
 /**
  * Flush any pending quality warnings from a previous PostToolUse to stderr.
@@ -439,9 +450,15 @@ async function main() {
     const CLIENT_HANDLERS = [
         { name: "copilot", detect: (input, src) => src === "stdin" && !input.hook_event_name && typeof input.timestamp === "number", normalize: normalizeCopilotEvent },
         { name: "codex", detect: (_input, src) => src === "stdin" && RUNNER_ENV === "codex", normalize: normalizeCodexEvent },
+        // Cursor: detect via INTERLINKED_CLIENT env var (set by the hook
+        // command we install into .cursor/hooks.json) OR via Cursor-specific
+        // payload fields (cursor_version, conversation_id+generation_id) so
+        // we still recognise the client if the env var got dropped by the
+        // shell. Must come BEFORE the Claude catch-all because Cursor sends
+        // hook_event_name like Claude does for some events.
+        { name: "cursor", detect: (input, src) => src === "stdin" && (RUNNER_ENV === "cursor" || !!input.cursor_version || (!!input.conversation_id && !!input.generation_id)), normalize: normalizeCursorEvent },
         // Future clients — add detectors here, before the Claude catch-all.
         // Example shape (NOT active code — documentation for adding a new handler):
-        //   Example: { name: "cursor",   detect: (input, src) => src === "stdin" && !!input.cursor_session_id, normalize: normalizeCursorEvent }
         //   Example: { name: "opencode", detect: (input, src) => src === "stdin" && input.client === "opencode", normalize: normalizeOpencodeEvent }
         //   Example: { name: "amp",      detect: (input, src) => src === "stdin" && !!input.amp_session,       normalize: normalizeAmpEvent }
         { name: "claude", detect: (input, src) => src === "stdin", normalize: normalizeClaudeEvent },
@@ -473,9 +490,17 @@ async function main() {
 
     if (!event) process.exit(0);
 
-    // Resolve hookEvent from normalized event for clients that don't send hook_event_name
-    // (Copilot infers the event type from payload shape in its normalizer)
-    if (!hookEvent && event.hook_event) {
+    // Always resolve hookEvent from the normalized event so it carries the
+    // canonical name (PreToolUse / PostToolUse / UserPromptSubmit / ...).
+    // The downstream isPreTool / isPostTool / isUserPrompt checks AND the
+    // harness server (server.ts isPreToolUse / isPostToolUse) speak canonical
+    // names only. Copilot doesn't send hook_event_name (the normalizer sets
+    // event.hook_event from payload shape); Cursor sends camelCase native
+    // names like "beforeShellExecution" that the normalizer maps to the
+    // canonical "PreToolUse" — keeping the raw native name here would skip
+    // guard evaluation entirely on Cursor (destructive shell/MCP calls would
+    // be allowed without the guard ever running).
+    if (event.hook_event) {
         hookEvent = event.hook_event;
     }
 
@@ -511,6 +536,43 @@ ${PROVIDER_RESPONSES_CHUNK}
     const isPostTool = hookEvent === "PostToolUse" || hookEvent === "AfterTool" || hookEvent === "PostToolUseFailure";
     const isUserPrompt = hookEvent === "UserPromptSubmit" || hookEvent === "BeforeAgent";
     let guardDecision = null;
+
+    // ===========================================
+    // Phase B.3 — Hook-side skip for excluded paths
+    // ===========================================
+    // For PostToolUse on file-edit tools: if the touched path matches the
+    // user's \`skip_paths\` config (e.g. dist/**, node_modules/**),
+    // short-circuit with the success shape BEFORE opening the daemon
+    // socket — saves ~5 ms per excluded edit and eliminates daemon CPU
+    // work entirely on the post-pipeline.
+    //
+    // PreToolUse is NOT skipped here, even if the path matches. The
+    // PreToolUse path runs deterministic guards (repo confinement,
+    // protected files, lockfile-tamper, destructive-pattern rules) that
+    // MUST fire regardless of skip_paths — \`skip_paths\` is meant to
+    // mute the noisy quality pipeline on generated/build output, not
+    // to disable safety enforcement on those same paths. Earlier
+    // versions short-circuited PreToolUse here, which let an Edit
+    // targeted at \`dist/foo.js\` (or any other matched path) bypass
+    // every pre_block rule unguarded.
+    //
+    // Lifecycle events (SessionStart, etc.) are NEVER skipped — the daemon
+    // needs them for state tracking.
+    if (isPostTool) {
+        const skipToolName = event.tool_name || rawInput.tool_name || null;
+        const skipToolInput = rawInput.tool_input || event.tool_input || null;
+        const skipPath = extractFilePath(skipToolName, skipToolInput);
+        if (skipPath && matchesSkipPath(skipPath)) {
+            emitSkipDebug(skipPath, hookEvent);
+            // For PostToolUse, route through formatProviderResponse so
+            // Claude / Copilot / Codex / Cursor each see their expected
+            // shape. The summary documents that the path was skipped.
+            console.log(JSON.stringify(formatProviderResponse("post_success", {
+                summary: "[interlinked:skip] path matched skip_paths",
+            })));
+            process.exit(0);
+        }
+    }
 
     // ===========================================
     // UserPromptSubmit: forward to harness for PII scan
@@ -593,7 +655,14 @@ ${PROVIDER_RESPONSES_CHUNK}
         }
 
         if (!guardDecision) {
-            guardDecision = inlineGuardCheck(hookEvent, harnessEvent.tool_name, rawInput.tool_input);
+            // Pass harnessEvent.tool_input (post-normalization), NOT rawInput.tool_input.
+            // Clients like Cursor (beforeShellExecution: command at top level) and
+            // Copilot (toolArgs as JSON string) don't carry the canonical
+            // tool_input shape on rawInput; the normalizers project it onto
+            // event.tool_input. Without this, the inline fallback silently
+            // returned null on Cursor/Copilot and let destructive shell calls
+            // through whenever the harness was unavailable.
+            guardDecision = inlineGuardCheck(hookEvent, harnessEvent.tool_name, harnessEvent.tool_input);
         }
 
         const preElapsedMs = Date.now() - preStartMs;
