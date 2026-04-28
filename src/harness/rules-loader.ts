@@ -170,8 +170,16 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 	// custom rules so a hand-curated `guard-rules.json` entry with the same
 	// id wins on conflict — committed team config remains authoritative
 	// over per-developer compile output.
+	//
+	// Test isolation: `INTERLINKED_SKIP_COMPILED_RULES=1` skips the compiled
+	// layer entirely. The vitest config sets this so the per-developer
+	// `.interlinked/compiled-rules.json` (which varies by who has run
+	// `/enforce` and against what) doesn't leak into test fixtures and cause
+	// "passes on my machine" failures. Direct callers of `loadCompiledRules`
+	// (e.g. `compiled-rules.test.ts`) are not affected.
 	const disabledSet = new Set(config.disabled_rules || []);
-	const compiledRules = loadCompiledRules(cwd);
+	const skipCompiled = process.env.INTERLINKED_SKIP_COMPILED_RULES === "1";
+	const compiledRules = skipCompiled ? [] : loadCompiledRules(cwd);
 	const allRules = [
 		...BUILTIN_RULES.filter((r) => !disabledSet.has(r.id)),
 		...config.rules.filter((r) => r.enabled !== false),

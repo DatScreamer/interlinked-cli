@@ -13,5 +13,16 @@ export default defineConfig({
         // real regressions — a genuinely broken test will still fail on every
         // retry. Keep the value conservative so retry isn't a crutch.
         retry: 2,
+        // Test isolation for the compiled-rules layer: the per-developer
+        // `.interlinked/compiled-rules.json` (output of `/enforce`) varies
+        // by whoever ran the skill against what — leaving it on means
+        // evaluator tests pick up rules generated from the running dev's
+        // AGENTS.md and assert against the wrong baseline. The opt-out
+        // affects only `loadRules()`; tests that exercise
+        // `loadCompiledRules` directly (e.g. `compiled-rules.test.ts`)
+        // bypass this gate.
+        env: {
+            INTERLINKED_SKIP_COMPILED_RULES: "1",
+        },
     },
 });
