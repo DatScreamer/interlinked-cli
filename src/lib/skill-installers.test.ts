@@ -80,9 +80,14 @@ describe("findEnforceSkillSource", () => {
 		expect(description.length).toBeLessThanOrEqual(1024);
 	});
 
-	it("keeps the repository .claude skill copy under 1024 chars too", () => {
-		const path = join(process.cwd(), ".claude", "skills", "enforce", "SKILL.md");
-		const content = readFileSync(path, "utf-8");
+	it("rewrites the per-claude SKILL.md description under 1024 chars on install", () => {
+		// The repository no longer tracks `.claude/skills/enforce/SKILL.md`
+		// (gitignored — `interlinked enable` materializes it from skills/ on
+		// install). Verify the contract by installing into a tmpdir and
+		// reading the produced file.
+		installEnforceSkill(tmpRoot, ["claude"]);
+		const claudePath = join(tmpRoot, ".claude", "skills", "enforce", "SKILL.md");
+		const content = readFileSync(claudePath, "utf-8");
 		const description = extractDescription(extractFrontmatter(content));
 		expect(description.length).toBeGreaterThan(0);
 		expect(description.length).toBeLessThanOrEqual(1024);
