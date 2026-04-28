@@ -181,18 +181,15 @@ export const DATABASE_AND_CLOUD_RULES: GuardRule[] = [
 		severity: "high",
 		category: "containers",
 	},
-	{
-		id: "builtin-kubectl-delete-all",
-		enabled: true,
-		trigger: "PreToolUse",
-		tool_match: ["Bash", "Shell", "run_command"],
-		action: "block",
-		patterns: [{ field: "command", regex: "\\bkubectl\\s+delete\\b.*--all\\b", flags: "i" }],
-		reason: "kubectl delete --all mass-deletes Kubernetes resources",
-		suggestion: "Delete specific resources instead",
-		severity: "critical",
-		category: "containers",
-	},
+	// Note: `builtin-kubectl-delete-all` was moved to
+	// `builtin-rules-extras.ts` per Plan 02 §2.2 — the new entry uses a
+	// negative-lookahead regex that intentionally permits
+	// `kubectl delete pods --all` for scratch namespaces while still
+	// blocking `kubectl delete deployments --all`,
+	// `kubectl delete pvcs --all`, etc. The old broader-but-uncalibrated
+	// rule was removed because the BUILTIN_RULES uniqueness invariant
+	// (asserted in `__tests__/docs-freshness.test.ts`) forbids two rules
+	// with the same id.
 
 	// --- Infrastructure-as-Code ---
 	{

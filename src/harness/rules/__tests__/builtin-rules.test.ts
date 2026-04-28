@@ -1,15 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_RULES } from "../builtin-rules.js";
 import { DATABASE_AND_CLOUD_RULES } from "../builtin-rules-database.js";
+import { DESTRUCTIVE_HTTP_RULES } from "../builtin-rules-destructive-http.js";
+import { DESTRUCTIVE_V1_EXTRA_RULES } from "../builtin-rules-extras.js";
 import { LANGUAGE_DESTRUCTIVE_RULES } from "../builtin-rules-language.js";
+import { MCP_DESTRUCTIVE_RULES } from "../builtin-rules-mcp.js";
 import { PROCESS_AND_FILESYSTEM_RULES } from "../builtin-rules-processes.js";
+import { RAILWAY_RULES } from "../builtin-rules-railway.js";
+import { RESOURCE_BOMB_RULES } from "../builtin-rules-resource-bombs.js";
 import { SECURITY_AND_SAFETY_RULES } from "../builtin-rules-security.js";
 
 describe("builtin-rules", () => {
 	it("aggregates all category rules", () => {
 		const expectedCount =
 			PROCESS_AND_FILESYSTEM_RULES.length +
+			RESOURCE_BOMB_RULES.length +
 			DATABASE_AND_CLOUD_RULES.length +
+			RAILWAY_RULES.length +
+			DESTRUCTIVE_V1_EXTRA_RULES.length +
+			MCP_DESTRUCTIVE_RULES.length +
+			DESTRUCTIVE_HTTP_RULES.length +
 			LANGUAGE_DESTRUCTIVE_RULES.length +
 			SECURITY_AND_SAFETY_RULES.length;
 		expect(BUILTIN_RULES.length).toBe(expectedCount);
@@ -68,5 +78,23 @@ describe("builtin-rules", () => {
 		expect(categories).toContain("supply-chain");
 		expect(categories).toContain("process-safety");
 		expect(categories).toContain("information-flow");
+	});
+
+	it("destructive-http rule family is registered (PocketOS regression family)", () => {
+		const ids = BUILTIN_RULES.map((r) => r.id);
+		expect(ids).toContain("builtin-curl-rest-delete");
+		expect(ids).toContain("builtin-graphql-destructive-mutation");
+	});
+
+	it("railway rule family is registered (PocketOS regression family)", () => {
+		const ids = BUILTIN_RULES.map((r) => r.id);
+		expect(ids).toContain("builtin-railway-cli-destructive");
+		expect(ids).toContain("builtin-railway-graphql-destructive");
+		expect(ids).toContain("builtin-railway-mcp-destructive");
+	});
+
+	it("mcp-destructive rule family is registered", () => {
+		const ids = BUILTIN_RULES.map((r) => r.id);
+		expect(ids).toContain("builtin-mcp-destructive-verb");
 	});
 });

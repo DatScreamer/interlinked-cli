@@ -130,25 +130,13 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 	},
 
 	// ===========================================
-	// Process safety: fork bombs, persistence, background network
+	// Process safety: persistence, background network, etc.
 	// ===========================================
-	{
-		id: "builtin-fork-bomb",
-		enabled: true,
-		trigger: "PreToolUse",
-		tool_match: ["Bash", "Shell", "run_command"],
-		action: "block",
-		patterns: [
-			{ field: "command", regex: ":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;\\s*:" },
-			{ field: "command", regex: "\\bwhile\\s+(true|1|:)\\s*;?\\s*do.*&\\s*done" },
-			{ field: "command", regex: "\\bfor\\b.*\\bdo\\b.*\\bfork\\b.*&\\s*done", flags: "i" },
-		],
-		reason: "Fork bomb detected — this will exhaust system resources and freeze the machine",
-		suggestion:
-			"Do not run fork bombs. If you need parallel processes, use controlled concurrency",
-		severity: "critical",
-		category: "process-safety",
-	},
+	// Note: the canonical fork-bomb rule (`builtin-fork-bomb`) lives in
+	// `builtin-rules-resource-bombs.ts` (Plan 03 row 11). It used to live
+	// here with a wider pattern set; the canonical-shape regex moved to the
+	// resource-bomb family so the keyword-quick-reject layer can route it
+	// into the always-evaluate set with `keywords: []`.
 	{
 		id: "builtin-nohup-network",
 		enabled: true,
