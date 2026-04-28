@@ -458,6 +458,21 @@ export function migrateLegacyConfig(cwd?: string): boolean {
 
 /**
  * Initialize a fresh config with sensible defaults.
+ *
+ * Re-runnable on already-configured projects (`interlinked enable
+ * --server ...` calls this whether the project is fresh or already set
+ * up). Preserve every shared field set by sibling commands so a re-init
+ * does not silently erase a deliberate setting:
+ *  - `mode`: persisted by `interlinked harness mode <budget|quality|ci>`.
+ *    A re-init that lost it would regenerate the hook with the default
+ *    quality timeout and the daemon would re-enable heavy checks.
+ *  - `skip_paths`: team-shared globs the user opted into.
+ *  - `pii_patterns` / `pii_opt_in`: extra detector tuning.
+ *  - `harness` (feature-flag tree): release-pinned flags.
+ *
+ * Anything written outside this allow-list is a NEW shared field that
+ * must be added here when introduced — there's no general "merge any
+ * key" rule because some fields are deliberately scoped to local-only.
  */
 export function initConfig(
 	options: { serverUrl?: string; agentName?: string; mcpPrefix?: string },
@@ -475,6 +490,11 @@ export function initConfig(
 		...(existingShared?.default_project
 			? { default_project: existingShared.default_project }
 			: {}),
+		...(existingShared?.mode ? { mode: existingShared.mode } : {}),
+		...(existingShared?.skip_paths ? { skip_paths: existingShared.skip_paths } : {}),
+		...(existingShared?.pii_patterns ? { pii_patterns: existingShared.pii_patterns } : {}),
+		...(existingShared?.pii_opt_in ? { pii_opt_in: existingShared.pii_opt_in } : {}),
+		...(existingShared?.harness ? { harness: existingShared.harness } : {}),
 	};
 	writeSharedConfig(shared, cwd);
 
