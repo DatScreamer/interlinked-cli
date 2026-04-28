@@ -150,6 +150,7 @@ Resolution rules:
 - For GitHub shorthand: try `<subpath>/SKILL.md`, then `<subpath>` directly, then `<subpath>/AGENTS.md`, in that order.
 - For URL or shorthand: only allow hosts in the default allowlist — `github.com`, `raw.githubusercontent.com`, `gitlab.com`. Refuse any other host with a clear error.
 - For URL or shorthand: default to `--review` mode (write to `distilled-rules.review.json` instead of `distilled-rules.json`); local paths can distill straight through unless `--review` was passed.
+- **For local paths (file or directory): refuse if the resolved absolute path is outside the current repo / project root.** Find the project root by walking CWD upward to the nearest `.git/` (or treat CWD itself as the root if there is no git repo). If the target's resolved absolute path doesn't have that root as a prefix, abort with a clear message: `"<target> is outside the current project (<root>). cd into that project and re-run /enforce."` Reasoning: the artifact + overrides files live under the *target's* `.interlinked/`, the harness running in this session only watches the current project's `.interlinked/`, and writing into a sibling project from this session is the kind of cross-project surprise the skill exists to prevent.
 - If no targets resolve, fall back to project walk per Step 2.
 
 Print the resolved target list before doing any work. Form: `Distilling: AGENTS.md, CLAUDE.md, gh:mattpocock/skills/tdd (fetched sha256:abc…)`
@@ -202,7 +203,7 @@ Look in `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.config/copilot/`, `~/.conti
 
 ### 2c — Skills as scan-only sources
 
-SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Rules distilled from skills are **scoped to skill invocation** — the trigger fires only when the skill is the active context. See §6 for the `active_skill` predicate. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`.
+SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`. **Skill rules have no runtime "active skill" scope** — the harness does not surface skill-invocation context to the evaluator, so once distilled a skill rule fires whenever its `tool_match` + `patterns` match, like any other rule. The `skill:` group_id is for *lifecycle ops* (`/enforce remove --source skill:tdd`), not for runtime gating. If a skill rule is too broad to enforce unconditionally, distill it to `action: "ask"` (per §5c) or downgrade further with `/enforce modify`.
 
 ### 2d — Skip list (DO NOT extract from these — confirm kind, then skip)
 
@@ -301,6 +302,17 @@ Distilled as `action: "warn"` with `enabled: true`. The verify pipeline gates th
 - Aspirational language without an observable signal
 - Anything where you cannot construct a verbatim source quote
 
+### 5f — Action × trigger compatibility (binding)
+
+`block` and `ask` are decisions made *before* the tool call runs — they require `trigger: "PreToolUse"`. The harness has no post-rule evaluation: a PostToolUse rule cannot block, undo, or ask permission for a write that already happened. So:
+
+| Action | Allowed triggers |
+|---|---|
+| `block`, `ask`, `soft_block`, `rewrite` | `PreToolUse` only |
+| `warn` | `PreToolUse` or `PostToolUse` |
+
+When the imperative's signal is only observable post-write (e.g., scanning produced file content for a pattern), the rule MUST distill as `warn`, not `ask`. Use `PostToolUse` + `warn` for advisories about content that just landed; reserve `ask` for `PreToolUse` checks where the agent can still back out. The trigger cookbook below routes `Don't commit secret Z to source` through PostToolUse + content regex precisely because that's the one place ask-vs-warn doesn't matter — content scanning IS warning, not blocking.
+
 ---
 
 ## Step 6 — Trigger extraction (real GuardRule schema)
@@ -316,7 +328,7 @@ interface GuardRule {
   trigger: "PreToolUse" | "PostToolUse" | "both";
   tool_match: string[];                      // tool names; "*" for all
   action: "block" | "warn" | "rewrite" | "soft_block" | "ask";
-  patterns: RulePattern[];                   // OR-combined; any match fires
+  patterns: RulePattern[];                   // see semantics below
   reason: string;                            // shown to the agent
   suggestion?: string;
   severity: "critical" | "high" | "medium" | "low";
@@ -335,6 +347,17 @@ interface RulePattern {
 
 Distilled rules ALSO carry a `source` sidecar field — see §7. The harness ignores unknown fields; the CLI lifecycle ops use them.
 
+### Pattern semantics (binding)
+
+The runtime evaluator splits `patterns[]` by `negate`:
+
+- **Positive patterns (`negate` absent or `false`) — OR.** ANY one positive pattern matching makes the rule fire. With zero positive patterns, the OR is vacuously true: the rule fires whenever its `tool_match` matches.
+- **Negated patterns (`negate: true`) — exceptions.** If ANY negated pattern matches, the rule is suppressed for that call.
+
+The combined contract: a rule fires when (at least one positive matches OR there are no positive patterns) AND no negated pattern matches.
+
+Practical consequence: **you cannot AND two positive patterns together.** If your imperative needs both "this file path" AND "this content", encode it as one positive pattern (a regex that captures both signals on one field) plus optional negated exceptions. Don't write the rule as two positive patterns and assume they intersect — that gives you a strict OR. The trigger cookbook below picks the smallest field that captures intent; when in doubt, single-pattern rules are easier to reason about than multi-pattern ones.
+
 ### Trigger inference cookbook
 
 | Imperative shape | Distilled fields |
@@ -344,7 +367,7 @@ Distilled rules ALSO carry a `source` sidecar field — see §7. The harness ign
 | "Always do X before Y" | trigger fires on Y; harness session state required (see ‡) |
 | "Use X instead of Y" | `tool_match: ["Bash"]`, `patterns: [{ field: "command", regex: "<Y>" }]`, `suggestion: "use X"` |
 | "Don't commit secret Z to source" | `trigger: "PostToolUse"`, `tool_match: ["Edit","Write","MultiEdit","apply_patch"]`, `patterns: [{ field: "content", regex: "<Z>" }]` |
-| MCP tool prohibition | `trigger: "PreToolUse"`, `tool_match: ["<exact-mcp-tool-name>"]`, `patterns: [{ field: "*", regex: ".*" }]` |
+| MCP tool prohibition | `trigger: "PreToolUse"`, `tool_match: ["<exact-mcp-tool-name>"]`, `patterns: []` (exact `tool_match` alone fires the rule via the vacuous-OR; `field: "*"` + `.*` would fail self-check #3) |
 | Tool-class prohibition | `tool_match: ["Bash"]`, `keywords: [<token>]`, `patterns: [{ field: "command", regex: "<pattern>" }]` |
 
 ‡ Sequential preconditions ("Always X before Y") are not directly representable in `GuardRule`. Distill to a single PreToolUse rule on Y with `severity: "medium"` and `action: "ask"`, and put the precondition into the `reason`. The harness's trajectory layer is a future expansion; for now the user gets a confirmation prompt with the source-quoted reason.
@@ -429,7 +452,7 @@ The distilled rule object is a real `GuardRule` with a `source` sidecar field ad
 
 | Scheme | Format | Example |
 |---|---|---|
-| `local:` | `local:<repo-relative-path>` | `local:AGENTS.md`, `local:.clinerules/style.md` |
+| `local:` | `local:<path>` — repo-relative when a git root exists, otherwise CWD-relative | `local:AGENTS.md`, `local:.clinerules/style.md` |
 | `home:` | `home:<home-relative-path>` | `home:.claude/CLAUDE.md` |
 | `gh:` | `gh:<owner>/<repo>/<subpath>` | `gh:mattpocock/skills/tdd` |
 | `url:` | `url:<host><path>` | `url:example.com/foo.md` |
@@ -538,7 +561,7 @@ Precedence stack (highest to lowest):
 3. Project rule-folder files (`.claude/rules/`, `.continue/rules/`, `.windsurf/rules/`, `.augment/rules/`, `.clinerules/`, `.cursor/rules/`)
 4. `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` / `WARP.md`
 5. Path-scoped frontmatter files (`.github/instructions/*.instructions.md`)
-6. SKILL.md bodies (skill-scoped — only fire under `active_skill`, so collide rarely)
+6. SKILL.md bodies (group_id `skill:<name>`; no runtime scope — collisions are real but resolved by precedence here)
 7. `CONTRIBUTING.md` / `SECURITY.md` / `STYLEGUIDE.md` / `CONVENTIONS.md`
 8. `~/` global counterparts of any of the above
 
@@ -559,7 +582,7 @@ When two distilled rules collide on `(trigger, tool_match, patterns[].regex)`:
     > No `.interlinked/` directory found. Distilled rules written to `./distilled-rules.json`. To enforce them, install Interlinked (`npm i -g interlinked-cli && interlinked enable`) — Interlinked's harness reads exactly this file from `.interlinked/`. Or wire the JSON into your own hook engine using the `GuardRule` schema documented in §7. Distillation does NOT require Interlinked; enforcement does.
 
     This separates **producing the artifact** (this skill's scope, no runtime dependency) from **enforcing it** (Interlinked's scope, runtime dependency). Users without the harness still get a tangible, version-controllable, auditable file they can share or migrate later.
-- The directory is a git repo. If not, warn but continue.
+- The directory is a git repo. If not, warn but continue — treat CWD itself as the project root for both the §1 outside-CWD check and the §7 `local:<path>` relative-path computation.
 - Read `.interlinked/config.json` if present; warn if `version < 2` (distilled rules may not load on older harness builds).
 - **Never** write to `.interlinked/guard-rules.json` or `.interlinked/guard-rules.local.json`.
 - **Never** modify any source `.md` file. Read-only.
@@ -801,7 +824,6 @@ Promote `distilled-rules.review.json` → `distilled-rules.json`. Validate first
   "tool_match": ["Edit", "Write", "MultiEdit", "apply_patch"],
   "action": "warn",
   "patterns": [
-    { "field": "file_path", "regex": "\\.tsx?$" },
     { "field": "content", "regex": "^export\\s+default\\b", "flags": "m" }
   ],
   "reason": "CLAUDE.md:152 prefers named exports over default exports.",
@@ -810,6 +832,8 @@ Promote `distilled-rules.review.json` → `distilled-rules.json`. Validate first
   "source": { ... "lexical_marker": "Prefer", "marker_class": "advisory" }
 }
 ```
+
+Note: an earlier draft of this example carried a second positive pattern on `file_path` (`\.tsx?$`) intended as an AND-style scope filter. Per §6 "Pattern semantics", positive patterns OR — that filter would have made the rule fire on every `.tsx` edit regardless of content. Single-pattern advisory rules are usually right; the verify pipeline gates noisy advisories at the report layer, not the rule layer.
 
 ### Example 5 — Hedged → SKIP
 
@@ -831,7 +855,7 @@ Promote `distilled-rules.review.json` → `distilled-rules.json`. Validate first
   "trigger": "PreToolUse",
   "tool_match": ["railway-mcp__volumeDelete"],
   "action": "block",
-  "patterns": [{ "field": "*", "regex": ".*" }],
+  "patterns": [],
   "reason": "BLOCKED by AGENTS.md:71 — \"Never use railway-mcp__volumeDelete from agent sessions.\"",
   "severity": "critical",
   "category": "distilled-from-md",
@@ -866,7 +890,7 @@ Promote `distilled-rules.review.json` → `distilled-rules.json`. Validate first
     "lexical_marker": "bans",
     "marker_class": "block-direct"
   },
-  "distilled_action_reason": "skill-scoped rule; downgraded to ask because trajectory state is approximate"
+  "distilled_action_reason": "downgraded block→ask: skill rules carry no runtime 'active skill' scope (see §2c), so a hard block on every src/ edit would be too broad outside a TDD session"
 }
 ```
 
