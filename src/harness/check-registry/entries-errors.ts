@@ -7,12 +7,17 @@ import {
 	checkEvalUsage,
 	checkInnerHtmlUsage,
 	checkMisusedPromises,
+	checkMutexLockUnwrap,
 	checkNanComparison,
 	checkPackageJsonPublishInvariants,
 	checkPromiseRejectNonError,
+	checkPyNoneEquality,
 	checkSelfImport,
+	checkSubprocessShellTrue,
 	checkThrowLiteral,
+	checkTlsVerifyDisabled,
 	checkUnsafeOptionalChaining,
+	checkWeakHash,
 } from "../generic-checks.js";
 import type { CheckRegistration } from "./types.js";
 
@@ -171,5 +176,90 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 			"A field that was present in the pre-edit package.json is missing from this edit. Restore it or publish will ship a broken tarball. Common causes: a rewrite that forgot to include publish metadata, or a subagent stripping fields it didn't recognise. Re-read the file on disk, keep the listed field(s), then retry.",
 		fn: checkPackageJsonPublishInvariants,
 		resultsPropName: "packageJsonPublishInvariants",
+	},
+	// ---- Plan 04 Phase-1 UBS critical-tier (rows 22–26) ----
+	{
+		id: "ubs_mutex_lock_unwrap",
+		phase: "pre_block",
+		name: "Mutex Lock Unwrap",
+		description:
+			"Detects Mutex<T>...lock().unwrap() in Rust source — panics on poisoned mutex.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Mutex::lock().unwrap() panics on a poisoned mutex (one that was held by a thread that panicked). Use .expect(\"reason\") to document why panic is acceptable, or recover with `match guard.lock() { Ok(g) => …, Err(poisoned) => poisoned.into_inner() }`.",
+		fn: checkMutexLockUnwrap,
+		resultsPropName: "mutexLockUnwrap",
+		content_keywords: ["Mutex", "lock"],
+	},
+	{
+		id: "ubs_subprocess_shell_true",
+		phase: "pre_block",
+		name: "Subprocess shell=True",
+		description:
+			"Detects subprocess.<fn>(..., shell=True) in Python — command-injection vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"subprocess.<run/Popen/check_output/...>(cmd, shell=True) is a command-injection vector when any part of `cmd` originates from user input. Pass a list of arguments instead — `subprocess.run([\"ls\", \"-la\"])` — so the shell is bypassed entirely.",
+		fn: checkSubprocessShellTrue,
+		resultsPropName: "subprocessShellTrue",
+		content_keywords: ["subprocess"],
+	},
+	{
+		id: "ubs_tls_verify_disabled",
+		phase: "pre_block",
+		name: "TLS Verify Disabled",
+		description:
+			"Detects TLS peer-cert verification turned off (verify=False / InsecureSkipVerify: true / rejectUnauthorized: false) — MitM vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Disabling TLS peer verification opens a man-in-the-middle hole on every request. Restore the default verification or, if a self-signed cert is genuinely needed, install the cert into the trust store and document why in a comment immediately above the call.",
+		fn: checkTlsVerifyDisabled,
+		resultsPropName: "tlsVerifyDisabled",
+		// `verify` (no `=`) so the gate matches the spaced Python form
+		// `verify = False` as well as `verify=False`. The detector regex
+		// itself allows whitespace around the `=`, so the previous narrower
+		// `verify=` gate was a strict subset of what the detector accepts —
+		// the gate, not the detector, was the false-negative source.
+		content_keywords: ["verify", "InsecureSkipVerify", "rejectUnauthorized"],
+	},
+	{
+		id: "ubs_py_none_equality",
+		phase: "pre_block",
+		name: "Python None Equality",
+		description:
+			"Detects `x == None` / `x != None` in Python — should be `is None` / `is not None` per PEP 8.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"PEP 8: comparisons to singletons (None, True, False) must use `is`/`is not`. `x == None` triggers `__eq__`, which proxy/mock objects can override to return surprising results — the comparison silently lies.",
+		fn: checkPyNoneEquality,
+		resultsPropName: "pyNoneEquality",
+		content_keywords: ["None"],
+	},
+	{
+		id: "ubs_weak_hash",
+		phase: "pre_block",
+		name: "Weak Hash",
+		description: "Detects MD5 / SHA-1 calls — broken hashes for security-bearing use.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"MD5 and SHA-1 are broken for collision resistance and must not back signatures, password hashing, or anything else the security model relies on. Use SHA-256 / SHA-3 / BLAKE3, or a password-grade KDF (bcrypt / scrypt / argon2) for credentials. If the hash is a non-security cache key, leave a comment to that effect so the next reader knows why MD5 stayed.",
+		fn: checkWeakHash,
+		resultsPropName: "weakHash",
+		content_keywords: ["md5", "sha1"],
 	},
 ];

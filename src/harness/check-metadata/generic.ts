@@ -317,4 +317,210 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	// === UBS Plan 04 — rows 27–30 (warning/post tier) ===
+	ubs_js_loose_equality: {
+		name: "UBS JS Loose Equality",
+		description:
+			"Detects `==` / `!=` in JS/TS files (allows the documented `x == null` idiom).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_float_equality: {
+		name: "UBS Float Equality",
+		description:
+			"Detects `===` / `!==` against a non-IEEE-safe float literal — comparison is unreliable.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_java_optional_get: {
+		name: "UBS Java Optional.get()",
+		description:
+			"Detects Java `Optional<T>....get()` without an `isPresent()` / `orElse(...)` guard.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_division_by_variable: {
+		name: "UBS Division by Variable",
+		description:
+			"Detects `expr / identifier` — divisor might be zero (advisory; ships in DEFAULT_ADVISORY_SKIPS).",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	// === UBS Plan 04 — rows 22–26 (critical-tier) ===
+	ubs_mutex_lock_unwrap: {
+		name: "UBS Mutex Lock Unwrap",
+		description:
+			"Detects Mutex<T>...lock().unwrap() in Rust source — panics on poisoned mutex.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_subprocess_shell_true: {
+		name: "UBS Subprocess shell=True",
+		description:
+			"Detects subprocess.<fn>(..., shell=True) in Python — command-injection vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_tls_verify_disabled: {
+		name: "UBS TLS Verify Disabled",
+		description:
+			"Detects TLS peer-cert verification turned off (verify=False / InsecureSkipVerify: true / rejectUnauthorized: false).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_py_none_equality: {
+		name: "UBS Python None Equality",
+		description:
+			"Detects `x == None` / `x != None` in Python — should be `is None` / `is not None` per PEP 8.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_weak_hash: {
+		name: "UBS Weak Hash",
+		description: "Detects MD5 / SHA-1 calls — broken hashes for security-bearing use.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	// === Plan 04 D.1 partial — high-leverage backlog (security + Py) ===
+	ubs_eval_input_tainted: {
+		name: "UBS Eval Input Tainted",
+		description:
+			"Detects eval / Function / exec / compile invoked with a non-literal first argument.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_sql_string_concat: {
+		name: "UBS SQL String Concat",
+		description:
+			"Detects SQL keyword inside a quoted string with `+` / template-literal interpolation — canonical SQL-injection shape.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_python_mutable_default_arg: {
+		name: "UBS Python Mutable Default Arg",
+		description:
+			"Detects `def f(x=[])` / `def f(x={})` — Python evaluates default values once at def time, sharing them across calls.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	// === Plan 04 D.1 backlog (17 of 20) ===
+	ubs_tempfile_mktemp_race: {
+		name: "UBS Tempfile mktemp Race",
+		description:
+			"Detects Python tempfile.mktemp(...) — TOCTOU race; an attacker can swap a symlink between name return and open.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_pickle_untrusted_load: {
+		name: "UBS Pickle Untrusted Load",
+		description:
+			"Detects pickle.load / pickle.loads / cPickle — unpickling executes arbitrary __reduce__ code.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_xml_external_entity: {
+		name: "UBS XML External Entity",
+		description:
+			"Detects xml.etree / xml.dom / xml.sax / lxml without defusedxml — XXE attacks read files / DoS.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_os_system_tainted: {
+		name: "UBS os.system / os.popen tainted input",
+		description:
+			"Detects Python os.system(name) / os.popen(name) with non-literal arg — command-injection vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_unsafe_format_string: {
+		name: "UBS Unsafe Format String",
+		description:
+			"Detects C/C++ printf / sprintf / fprintf with non-literal format — %n writes memory; %x leaks stack.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_unchecked_redirect: {
+		name: "UBS Unchecked Redirect",
+		description:
+			"Detects JS/TS redirect(url) / location.href = url with non-literal URL — open-redirect vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_goroutine_no_waitgroup: {
+		name: "UBS Goroutine No WaitGroup",
+		description:
+			"Detects Go `go func()` without accompanying wg.Add / wg.Done / errgroup — fire-and-forget leak.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_defer_in_loop: {
+		name: "UBS Defer in Loop",
+		description:
+			"Detects Go `defer` inside a `for` loop — defers run at function return, not loop iteration.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_string_concat_in_loop: {
+		name: "UBS String Concat in Loop",
+		description:
+			"Detects `result += chunk` inside a loop in immutable-string languages (Py/Java/JS/Go) — O(n²).",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_numeric_comparison_chain: {
+		name: "UBS Numeric Comparison Chain",
+		description:
+			"Detects 3+ consecutive instanceof / compareTo lines in Java — typically missing polymorphism.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_print_debug_leak: {
+		name: "UBS Print Debug Leak",
+		description:
+			"Detects console.log / Python print / Go fmt.Println left in non-test, non-CLI code.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_hardcoded_localhost: {
+		name: "UBS Hardcoded Localhost",
+		description:
+			"Detects localhost / 127.0.0.1 baked into source outside test/config/example files.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_magic_number_no_const: {
+		name: "UBS Magic Number No Const",
+		description:
+			"Detects 3+ digit numeric literals in expression context without being assigned to a named constant.",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	ubs_large_function: {
+		name: "UBS Large Function",
+		description:
+			"Detects a single function spanning 80+ body lines — review/refactor candidate.",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	ubs_deeply_nested_callback: {
+		name: "UBS Deeply Nested Callback",
+		description:
+			"Detects 4+ levels of nested function / arrow callbacks — callback-hell smell.",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	ubs_time_format_locale_dep: {
+		name: "UBS Time Format Locale Dependent",
+		description:
+			"Detects JS toLocaleString / Java DateTimeFormatter.ofLocalized* without an explicit locale.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_regex_in_loop_no_compile: {
+		name: "UBS Regex in Loop No Compile",
+		description:
+			"Detects Python re.match / re.search / re.sub inside a loop without re.compile.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 };
