@@ -217,6 +217,16 @@ Commands:
                             agents
   test [options] <command>  Test a command against guard rules without
                             executing
+  reap [options]            List (default) or kill orphan harness daemons.
+                            --force to SIGTERM. --all also targets the active
+                            daemon.
+  clean [options]           Remove stale harness.sock + harness.pid (refuses if
+                            a daemon is running)
+  mode [options] [name]     Show or switch the operational tier
+                            (budget|quality|ci) — drives
+                            HARNESS_POST_TIMEOUT_MS
+  latency [options]         Show per-event latency report from
+                            .interlinked/logs/latency.jsonl
   help [command]            display help for command
 ```
 
