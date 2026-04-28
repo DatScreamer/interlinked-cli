@@ -17,8 +17,40 @@ import {
 import { c, divider, header } from "../lib/formatter.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { getOutputMode, output } from "../lib/output.js";
+import {
+	type HarnessMode,
+	DEFAULT_HARNESS_MODE,
+	migrateLegacyMode,
+} from "../harness/rules/modes.js";
 import { runSystemChecks } from "./doctor-system.js";
 import { isHarnessRunning } from "./harness.js";
+
+/**
+ * Build the full version sentinel the hook script SHOULD carry, given the
+ * configured mode. Mirror of `writeHookScript`'s `${version}+mode-${name}`
+ * shape in `src/lib/hooks.ts`. Used to detect drift when the user changes
+ * `mode` outside the `interlinked harness mode` path (e.g. by editing
+ * `.interlinked/config.json` directly) — without the mode suffix in the
+ * compare, doctor would read `0.1.0+mode-budget` as `0.1.0` and skip the
+ * regenerate even though the baked timeout is for the wrong mode.
+ */
+function expectedHookVersion(cwd: string): string {
+	const sharedConfigPath = getSharedConfigPath(cwd);
+	let modeName: HarnessMode = DEFAULT_HARNESS_MODE;
+	if (existsSync(sharedConfigPath)) {
+		try {
+			const parsed = JSON.parse(readFileSync(sharedConfigPath, "utf-8")) as { mode?: unknown };
+			const raw = typeof parsed.mode === "string" ? parsed.mode : undefined;
+			modeName = migrateLegacyMode(raw, undefined);
+		} catch (err) {
+			// Malformed config.json — fall back to the default mode and let
+			// the broader doctor flow surface a separate "config invalid"
+			// finding. Better than crashing the version-check entirely.
+			void err;
+		}
+	}
+	return `${HOOK_SCRIPT_VERSION}+mode-${modeName}`;
+}
 
 type CheckStatus = "pass" | "fail" | "warn";
 
@@ -140,13 +172,20 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	if (existsSync(hookScriptPath)) {
 		try {
 			const hookContent = readFileSync(hookScriptPath, "utf-8");
-			const versionMatch = hookContent.match(/interlinked-hook-version:\s*([\d.]+)/);
+			// Capture the FULL version sentinel including any `+mode-<name>`
+			// suffix baked in by `writeHookScript` (see `src/lib/hooks.ts`).
+			// The previous `[\d.]+` form stopped at the first `+`, reading
+			// `0.1.0+mode-budget` as just `0.1.0` so a `mode budget → ci`
+			// switch outside `harness mode` (manual config edit) appeared
+			// "current" and `doctor --fix` skipped the regenerate.
+			const versionMatch = hookContent.match(/interlinked-hook-version:\s*(\S+)/);
 			const installedVersion = versionMatch?.[1];
+			const expectedVersion = expectedHookVersion(cwd);
 			if (!installedVersion) {
 				results.push({
 					name: "Hook version",
 					status: "warn",
-					message: `No version stamp found (expected ${HOOK_SCRIPT_VERSION}) -- run 'interlinked enable' to update`,
+					message: `No version stamp found (expected ${expectedVersion}) -- run 'interlinked enable' to update`,
 					fixable: true,
 					fixAction: "regenerate",
 				});
@@ -155,14 +194,14 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 					results[results.length - 1] = {
 						name: "Hook version",
 						status: "pass",
-						message: `Regenerated hook script (v${HOOK_SCRIPT_VERSION})`,
+						message: `Regenerated hook script (v${expectedVersion})`,
 					};
 				}
-			} else if (installedVersion !== HOOK_SCRIPT_VERSION) {
+			} else if (installedVersion !== expectedVersion) {
 				results.push({
 					name: "Hook version",
 					status: "warn",
-					message: `Installed v${installedVersion}, expected v${HOOK_SCRIPT_VERSION} -- run 'interlinked enable' to update`,
+					message: `Installed v${installedVersion}, expected v${expectedVersion} -- run 'interlinked enable' to update`,
 					fixable: true,
 					fixAction: "regenerate",
 				});
@@ -171,7 +210,7 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 					results[results.length - 1] = {
 						name: "Hook version",
 						status: "pass",
-						message: `Updated hook script from v${installedVersion} to v${HOOK_SCRIPT_VERSION}`,
+						message: `Updated hook script from v${installedVersion} to v${expectedVersion}`,
 					};
 				}
 			} else {

@@ -31,7 +31,11 @@ function detectInstalledHookVersion(cwd: string): string | null {
 	if (!existsSync(hookPath)) return null;
 	try {
 		const content = readFileSync(hookPath, "utf-8");
-		const match = content.match(/interlinked-hook-version:\s*([\d.]+)/);
+		// Capture the FULL sentinel including any `+mode-<name>` suffix
+		// baked by `writeHookScript`. The previous `[\d.]+` form silently
+		// dropped the mode qualifier, making `0.1.0+mode-budget` look the
+		// same as `0.1.0+mode-ci`.
+		const match = content.match(/interlinked-hook-version:\s*(\S+)/);
 		return match ? match[1] : "unknown";
 	} catch {
 		return null;
