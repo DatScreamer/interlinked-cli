@@ -39,6 +39,202 @@ function getPidPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "harness.pid");
 }
 
+/**
+ * Candidate harness daemon row pulled from `ps` and filtered by the
+ * orphan-selection rules. Returned by `reapOrphanHarnesses` so the operational
+ * `harness reap` command can format and report on them — and so tests can
+ * assert which PIDs would have been touched without actually signalling them.
+ */
+export interface OrphanCandidate {
+	pid: number;
+	ppid: number;
+	command: string;
+}
+
+/** Result returned by `reapOrphanHarnesses`. `candidates` is the full set the
+ * sweep considered. `killed` is the subset that received a successful
+ * `process.kill(SIGTERM)` (empty when `dryRun: true`). */
+export interface ReapResult {
+	candidates: OrphanCandidate[];
+	killed: number[];
+	dryRun: boolean;
+}
+
+export interface ReapOptions {
+	/** When true, do NOT issue `process.kill`; just return candidates. Default
+	 *  for the `reap` CLI surface so users see the impact before opting in. */
+	dryRun?: boolean;
+	/** When true, *also* terminate the active daemon (skip the active-pid
+	 *  protection and the ancestor protection — this is the equivalent of
+	 *  `pkill -f interlinked-cli/dist/harness/server`). */
+	killAll?: boolean;
+}
+
+/**
+ * SIGTERM any orphan interlinked harness daemons before we start a fresh one.
+ *
+ * Orphans accumulate when a previous session ended without a clean shutdown
+ * (Ctrl-C on the parent shell, OS reboot, daemon crash leaving the pid file
+ * stale). On one developer machine we observed 28 daemons accumulated across
+ * 4 days of sessions, ~1.8 GB stale RSS. Without this sweep, every
+ * `interlinked harness start` adds another long-lived process to the pile.
+ *
+ * Selection criteria: the process command line contains both `node` (or
+ * `bun`) and `interlinked-cli/dist/harness/server`. We then exclude:
+ *   1. The CLI process running this code (`process.pid`).
+ *   2. The current shell / Claude Code ancestor chain (would terminate the
+ *      session that just typed `interlinked harness start`).
+ *   3. Any PID matching the active `.interlinked/harness.pid` for THIS cwd
+ *      (already shutdown by `isHarnessRunning` above, but defensive).
+ *
+ * `opts.dryRun` returns the candidate list without signalling. `opts.killAll`
+ * disables the active-pid + ancestor protections so the user gets a clean
+ * slate (the equivalent of a manual `pkill -f`).
+ *
+ * Best-effort: if `ps` fails, return an empty result — callers fall through.
+ */
+export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapResult {
+	const dryRun = opts.dryRun === true;
+	const killAll = opts.killAll === true;
+	const empty: ReapResult = { candidates: [], killed: [], dryRun };
+	let ps: string;
+	try {
+		const raw = execSync("ps -ax -o pid=,ppid=,command= 2>/dev/null", {
+			encoding: "utf-8",
+			timeout: 2000,
+		});
+		if (typeof raw !== "string") return empty;
+		ps = raw;
+	} catch (e) {
+		void e;
+		return empty;
+	}
+	const ancestorPids = collectAncestorPids();
+	const activePid = readActiveHarnessPid(cwd);
+	const candidates: OrphanCandidate[] = [];
+
+	// Extract the `--cwd <path>` argument the daemon was spawned with. Each
+	// harness binds to one workspace (see `harnessStartCommand`'s
+	// `args = [..., serverPath, "--cwd", cwd]` construction); reading that
+	// field tells us which repo the daemon serves. Returns null on a
+	// legacy/malformed cmdline so the caller can skip the candidate rather
+	// than risk reaping a daemon from another workspace.
+	const extractCwdArg = (cmdline: string): string | null => {
+		const tokens = cmdline.split(/\s+/);
+		for (let i = 0; i < tokens.length - 1; i++) {
+			if (tokens[i] === "--cwd") return tokens[i + 1] ?? null;
+			if (tokens[i]?.startsWith("--cwd=")) {
+				return tokens[i]?.slice("--cwd=".length) ?? null;
+			}
+		}
+		return null;
+	};
+
+	for (const line of ps.split("\n")) {
+		const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+		if (!m) continue;
+		const pid = Number.parseInt(m[1] as string, 10);
+		const ppid = Number.parseInt(m[2] as string, 10);
+		const cmd = m[3] as string;
+		if (Number.isNaN(pid) || pid === process.pid) continue;
+		if (!cmd.includes("node") && !cmd.includes("bun")) continue;
+		if (!cmd.includes("interlinked-cli/dist/harness/server")) continue;
+		// Scope by `--cwd`: a daemon spawned from a sibling repo has a
+		// different `--cwd` and must NOT be reaped from this workspace —
+		// doing so would silently disable hooks in the user's other open
+		// project. If `--cwd` is absent (legacy daemon, malformed cmdline)
+		// skip the candidate rather than risk a cross-workspace SIGTERM.
+		const candidateCwd = extractCwdArg(cmd);
+		if (candidateCwd === null || candidateCwd !== cwd) continue;
+		if (!killAll) {
+			// Default reap path: protect the active daemon + the shell/agent
+			// ancestor chain. `--all` (killAll) deliberately skips both so the
+			// user gets a clean slate.
+			if (ancestorPids.has(pid)) continue;
+			if (activePid !== null && pid === activePid) continue;
+		} else {
+			// Even in killAll mode, never SIGTERM our own ancestor process —
+			// that would kill the shell that just invoked us. The active
+			// daemon, however, is fair game.
+			if (ancestorPids.has(pid)) continue;
+		}
+		candidates.push({ pid, ppid, command: cmd });
+	}
+	if (dryRun) {
+		return { candidates, killed: [], dryRun: true };
+	}
+	const killed: number[] = [];
+	for (const candidate of candidates) {
+		try {
+			process.kill(candidate.pid, "SIGTERM");
+			killed.push(candidate.pid);
+		} catch (e) {
+			void e; // Already gone or insufficient permissions; nothing to do.
+		}
+	}
+	if (killed.length > 0) {
+		process.stderr.write(
+			`[interlinked] Reaped ${killed.length} orphan harness daemon${killed.length === 1 ? "" : "s"}: ${killed.join(", ")}\n`,
+		);
+	}
+	return { candidates, killed, dryRun: false };
+}
+
+/**
+ * Walk up the parent chain so we never SIGTERM a daemon that's actually our
+ * own ancestor (the shell or Claude Code that invoked this CLI). Mirrors the
+ * `getProtectedPids` logic in `harness/pre-checks.ts`.
+ *
+ * Public API: exported so the new operational commands (`harness reap`,
+ * `harness clean`, future `doctor` enhancements) and downstream tests can
+ * reproduce the same ancestor-protection set without duplicating the walk.
+ */
+export function collectAncestorPids(): Set<number> {
+	const pids = new Set<number>([process.pid]);
+	if (process.ppid) pids.add(process.ppid);
+	try {
+		const psOut = execSync("ps -o pid=,ppid= -ax 2>/dev/null", {
+			encoding: "utf-8",
+			timeout: 2000,
+		});
+		const childToParent = new Map<number, number>();
+		for (const line of psOut.split("\n")) {
+			const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+			if (m) childToParent.set(Number.parseInt(m[1] as string, 10), Number.parseInt(m[2] as string, 10));
+		}
+		let current = process.ppid;
+		for (let i = 0; i < 10 && current > 1; i++) {
+			pids.add(current);
+			const parent = childToParent.get(current);
+			if (!parent || parent <= 1) break;
+			current = parent;
+		}
+	} catch (e) {
+		void e;
+	}
+	return pids;
+}
+
+/**
+ * Read the active daemon PID from `.interlinked/harness.pid`. Returns null
+ * when the file is missing or contains a non-numeric value.
+ *
+ * Public API: exported so operational commands (`harness reap`, `harness
+ * clean`) can identify the active daemon without coupling to `isHarnessRunning`,
+ * which has additional liveness side effects (it auto-cleans stale pid files).
+ */
+export function readActiveHarnessPid(cwd: string): number | null {
+	try {
+		const pidPath = getPidPath(cwd);
+		if (!existsSync(pidPath)) return null;
+		const pid = Number.parseInt(readFileSync(pidPath, "utf-8").trim(), 10);
+		return Number.isNaN(pid) ? null : pid;
+	} catch (e) {
+		void e;
+		return null;
+	}
+}
+
 function getDaemonLogPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "logs", "daemon.log");
 }
@@ -83,33 +279,45 @@ function readDaemonStderrLog(log: DaemonStderrLog | null): string {
 /**
  * Check if the compiled dist/ harness is stale (source newer than dist).
  * If stale, rebuild automatically so `harness restart` always runs current code.
+ *
+ * Resolves the dist path against `getHarnessServerPath()` so the staleness
+ * probe targets the same file the daemon will actually load. The legacy
+ * `cli/dist/...` layout is one of several candidates checked there; using
+ * the resolved path means the probe works in flat-layout source checkouts
+ * and node_modules installs alike.
  */
 function ensureDistFresh(): void {
 	const cwd = process.cwd();
-	const distServer = join(cwd, "cli", "dist", "harness", "server.js");
-	const srcServer = join(cwd, "cli", "src", "harness", "server.ts");
+	const distServer = getHarnessServerPath();
+	if (!distServer || !existsSync(distServer)) return;
 
-	if (!existsSync(distServer) || !existsSync(srcServer)) return;
+	// Find the matching `src/harness/server.ts` alongside the resolved dist.
+	// Two repo shapes ship: flat-layout (`<root>/src/...`) and `cli/`-prefixed
+	// (`<root>/cli/src/...`). The dist sits at either `<root>/dist/harness/`
+	// or `<root>/cli/dist/harness/`; the matching src is two dirs up plus
+	// `src/harness/`.
+	const distHarnessDir = dirname(distServer);
+	const distRoot = dirname(distHarnessDir);
+	const srcRoot = join(dirname(distRoot), "src");
+	const srcServer = join(srcRoot, "harness", "server.ts");
+	if (!existsSync(srcServer)) return;
 
 	try {
 		const distMtime = statSync(distServer).mtimeMs;
 
-		// Check if ANY source file in cli/src/ is newer than dist
 		const srcDirs = [
-			join(cwd, "cli", "src", "harness"),
-			join(cwd, "cli", "src", "lib"),
-			join(cwd, "cli", "src", "commands"),
+			join(srcRoot, "harness"),
+			join(srcRoot, "lib"),
+			join(srcRoot, "commands"),
 		];
 		let stale = false;
 		for (const dir of srcDirs) {
 			if (!existsSync(dir)) continue;
-			// Check the directory's own mtime as a fast proxy
 			if (statSync(dir).mtimeMs > distMtime) {
 				stale = true;
 				break;
 			}
 		}
-		// Also check the specific server.ts file
 		if (!stale && statSync(srcServer).mtimeMs > distMtime) {
 			stale = true;
 		}
@@ -118,7 +326,7 @@ function ensureDistFresh(): void {
 			console.log(c.yellow("Source newer than dist — rebuilding..."));
 			try {
 				execSync("npm run build", {
-					cwd: join(cwd, "cli"),
+					cwd: dirname(srcRoot),
 					stdio: ["ignore", "pipe", "pipe"],
 					timeout: 30000,
 				});
@@ -226,8 +434,20 @@ export async function harnessStartCommand(opts: {
 
 		const nodePath = process.execPath; // Use the same Node binary running the CLI
 
-		const args = [serverPath, "--cwd", cwd];
+		// Hard cap heap at 1 GB. Daemon working set on a typical project is
+		// ~200–500 MB (rules + project graph + trigram index + caches);
+		// 1 GB gives 2× headroom and prevents runaway-leak failure modes
+		// where one bad accumulation pulls the host into swap. Override via
+		// env: `INTERLINKED_HARNESS_HEAP_MB`.
+		const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || 1024;
+		const args = [`--max-old-space-size=${heapMb}`, serverPath, "--cwd", cwd];
 		if (opts.verbose) args.push("--verbose");
+
+		// Reap orphan daemons before binding our own socket. Without this,
+		// each `interlinked harness start` over a session lifetime accumulates
+		// a stale daemon (oldest seen in production: 28 daemons across 4 days,
+		// ~1.8 GB stale RSS). See `reapOrphanHarnesses` for selection rules.
+		reapOrphanHarnesses(cwd);
 
 		if (opts.daemon !== false) {
 			// Clean up stale socket from any previous run
@@ -417,13 +637,26 @@ export async function harnessRestartCommand(opts: {
 			}
 		}
 
-		// Clean up stale socket if process is gone
+		// Resilience pass: sweep orphan daemons and remove stale state files
+		// before respawning. Without this, a previous crash that left a stale
+		// pid+sock pair can make the new daemon double-bind on the socket or
+		// confuse `isHarnessRunning` callers downstream. We do this on the
+		// happy path too — a fresh restart should never inherit dirt.
+		reapOrphanHarnesses(cwd);
 		const socketPath = getSocketPath(cwd);
 		if (existsSync(socketPath) && !isHarnessRunning(cwd).running) {
 			try {
 				unlinkSync(socketPath);
 			} catch (_) {
 				/* intentional: best-effort stale socket cleanup */
+			}
+		}
+		const stalePidPath = getPidPath(cwd);
+		if (existsSync(stalePidPath) && !isHarnessRunning(cwd).running) {
+			try {
+				unlinkSync(stalePidPath);
+			} catch (_) {
+				/* intentional: best-effort stale pid-file cleanup */
 			}
 		}
 
@@ -499,11 +732,26 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 			});
 		}
 
+		// Operational signals: orphan count, RSS of active daemon, configured
+		// mode, last-event timestamp. Each is best-effort — a missing data
+		// point shouldn't fail the whole status call.
+		const orphanInfo = reapOrphanHarnesses(cwd, { dryRun: true });
+		const rssMb =
+			processStatus.running && processStatus.pid !== undefined
+				? readRssMb(processStatus.pid)
+				: null;
+		const activeMode = readActiveMode(cwd);
+		const lastEventAt = readLastLatencyTimestamp(cwd);
+
 		const result = {
 			running: processStatus.running,
 			pid: processStatus.pid,
 			socket: socketExists,
 			socket_path: getSocketPath(cwd),
+			orphan_count: orphanInfo.candidates.length,
+			rss_mb: rssMb,
+			mode: activeMode,
+			last_event_at: lastEventAt,
 		};
 
 		output(mode, result, {
@@ -525,6 +773,22 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 						socketExists ? c.green(getSocketPath(cwd)) : c.dim("not found"),
 					),
 				);
+				if (rssMb !== null) {
+					lines.push(kvLine("RSS", `${rssMb} MB`));
+				}
+				if (activeMode !== null) {
+					lines.push(kvLine("Mode", activeMode));
+				}
+				if (lastEventAt !== null) {
+					lines.push(kvLine("Last event", lastEventAt));
+				}
+				const orphanLine =
+					orphanInfo.candidates.length === 0
+						? c.dim("0")
+						: c.yellow(
+								`${orphanInfo.candidates.length} (run 'interlinked harness reap' to inspect)`,
+							);
+				lines.push(kvLine("Orphans", orphanLine));
 				if (!processStatus.running) {
 					lines.push("");
 					lines.push(c.dim("  Start with: interlinked harness start"));
@@ -534,6 +798,77 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 		});
 	} catch (err) {
 		outputError(mode, err instanceof Error ? err.message : String(err));
+	}
+}
+
+/** `ps` reports RSS in kilobytes; we surface it in megabytes. */
+const KB_PER_MB = 1024;
+/** Tail size for the latency-log scan in `readLastLatencyTimestamp`.
+ *  ~50 records at current schema sizes, more than enough to find the most
+ *  recent valid `ts` even when several trailing lines are partial / corrupt. */
+const LATENCY_TAIL_BYTES = 8 * 1024;
+
+/** Read RSS (resident set size) of a live PID via `ps -o rss= -p <pid>`,
+ *  in MB. Returns null on any failure — RSS is operational telemetry, not
+ *  a hard requirement, so we never fail the status call on it. */
+function readRssMb(pid: number): number | null {
+	try {
+		const out = execSync(`ps -o rss= -p ${pid} 2>/dev/null`, {
+			encoding: "utf-8",
+			timeout: 1000,
+		}).trim();
+		const kb = Number.parseInt(out, 10);
+		if (Number.isNaN(kb)) return null;
+		return Math.round(kb / KB_PER_MB);
+	} catch (e) {
+		void e;
+		return null;
+	}
+}
+
+/** Read the configured operational mode from `.interlinked/config.json`.
+ *  Returns null if the file is missing or malformed — the user might just
+ *  not have run `interlinked enable` yet. */
+function readActiveMode(cwd: string): string | null {
+	try {
+		const configPath = join(getConfigDir(cwd), "config.json");
+		if (!existsSync(configPath)) return null;
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as { mode?: unknown };
+		return typeof parsed.mode === "string" ? parsed.mode : null;
+	} catch (e) {
+		void e;
+		return null;
+	}
+}
+
+/** Tail the latency log for the most recent record's `ts`. Best-effort: we
+ *  read the trailing 8 KiB of the file (enough to span ~50 records at
+ *  current sizes), parse JSON lines back-to-front, and return the first ts
+ *  we recognise. Returns null on any read/parse failure. */
+function readLastLatencyTimestamp(cwd: string): string | null {
+	try {
+		const path = join(getConfigDir(cwd), "logs", "latency.jsonl");
+		if (!existsSync(path)) return null;
+		const size = statSync(path).size;
+		const tailBytes = Math.min(size, 8 * 1024);
+		const startOffset = size - tailBytes;
+		const buf = readFileSync(path);
+		const text = buf.subarray(startOffset).toString("utf-8");
+		const lines = text.split("\n").filter((l) => l.trim().length > 0);
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const line = lines[i];
+			if (line === undefined) continue;
+			try {
+				const parsed = JSON.parse(line) as { ts?: unknown };
+				if (typeof parsed.ts === "string") return parsed.ts;
+			} catch (e) {
+				void e;
+			}
+		}
+		return null;
+	} catch (e) {
+		void e;
+		return null;
 	}
 }
 
