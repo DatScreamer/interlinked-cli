@@ -54,6 +54,13 @@ reports/
 # Third-party reference repos cloned for design/research only — never committed.
 reference-repos/
 
+# Session-internal phase plans + work-in-progress design notes. The older
+# top-level docs/plans/*.md files (security-scanning-pillars, sondera-
+# integration, etc.) predate this rule and stay tracked by listing them
+# explicitly above any nested-folder ignore. Anything written into a
+# subfolder under docs/plans/ is treated as personal/local-only.
+docs/plans/*/
+
 # Local manual-test scratch space and harness logs.
 .scratch/
 
