@@ -192,27 +192,50 @@ export function checkJavaOptionalGet(content: string, filePath: string): InlineM
  * Cross-language, advisory by default (high FP rate; ships in
  * DEFAULT_ADVISORY_SKIPS so it only runs under `verify --all-checks`).
  *
- * Per Plan 04 §4.3 regex sketch: `/\s*(?![\d\s/*])([a-zA-Z_$]\w*)`.
+ * Both LHS and RHS of the slash must be identifier-shaped, AND the slash
+ * must be surrounded by whitespace — i.e. an identifier, one-or-more
+ * whitespace chars, slash, one-or-more whitespace chars, identifier.
+ * Tightened from a one-sided rule (only the right-hand operand had to be
+ * an identifier) after markdown like `value / etc.` and compact prose
+ * like `TS/JS-centric` and `if/when` produced false positives. Requiring
+ * whitespace blocks the compact-slash cases; requiring an LHS identifier
+ * blocks the empty-LHS-after-string-strip case.
+ *
+ * Bilateral matching loses a few real-code patterns — `arr[i] / b`,
+ * `func() / b`, multi-line continuations where the slash starts the
+ * line, and compact `a/b` divisions without spaces — which is acceptable
+ * since the check is advisory by default and modern style guides format
+ * spaces around binary operators.
+ *
+ * Pure-prose alternation like `regex / AST query / taint pattern` is
+ * bilateral-id-shaped and would otherwise fire, so the detector also
+ * gates on a source-file extension allow-list (mirroring
+ * `checkLargeFunction`'s coverage). Markdown, plain-text, config, and
+ * unknown extensions short-circuit before the matcher runs. Extending
+ * the allow-list to `.kt` / `.swift` / `.rb` / `.cs` is a one-line edit
+ * if a TP is reported there.
  *
  * The detector strips comments and strings first, so `*\/` block-comment
  * terminators, end-of-line comments, and division-looking content inside
  * string literals do not contribute matches.
  */
 export function checkDivisionByVariable(content: string, filePath: string): InlineMatch[] {
-	// Touch filePath to surface intent — the detector is cross-language but
-	// declares the parameter for parity with the InlineCheck signature.
-	void filePath;
+	const ext = getExtension(filePath);
+	const supported =
+		isJsTsFile(ext) ||
+		isPyFile(ext) ||
+		ext === ".go" ||
+		ext === ".java" ||
+		ext === ".rs" ||
+		ext === ".c" ||
+		ext === ".cpp";
+	if (!supported) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 
-	// Plan 04 sketch: division (`/`) followed by an identifier, NOT followed by
-	// another `/` or `*` (those start comments) or by a digit (numeric literal).
-	// Anchored on a non-identifier byte before the `/` to avoid matching inside
-	// regex flags or paths inside strings (already stripped, but defence in
-	// depth).
-	const divisionRegex = /(^|[^\w$/*])\/\s*(?![\d\s/*])([a-zA-Z_$]\w*)/g;
+	const divisionRegex = /(?:^|[^\w$])([a-zA-Z_$]\w*)\s+\/\s+([a-zA-Z_$]\w*)/g;
 
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
