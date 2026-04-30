@@ -251,6 +251,17 @@ Environment variable overrides: `INTERLINKED_SERVER_URL`, `INTERLINKED_ACCESS_TO
 
 Dev mode bypass: when `server_url` is localhost/127.0.0.1, auth is skipped entirely.
 
+## External-pulse intake
+
+Before "what can we do with X?" on a tool, paper, or repo found on the
+internet, fill in the rubric at `docs/external-pulse/INTAKE.md` (six lanes
++ determinism filter + smallest-spike + which surface ships it). Output
+goes to `docs/external-pulse/<slug>.md`, one page per project, committed.
+Skip the rubric for drive-by curiosity — it's specifically for the things
+that would otherwise become a paste-and-ask. See `docs/external-pulse/codewiki.md`
+for a worked example, including the "marketing-vs-reality" failure mode
+(read the load-bearing function in source, not the README).
+
 ## Conventions
 
 - **Output mode pattern**: All commands support `--json`, `--short`, `--full` via `getOutputMode(opts)` and `output(mode, data, { json, short, normal, full })`.
