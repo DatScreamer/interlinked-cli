@@ -161,14 +161,14 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 			expect(["block", "ask"]).toContain(r.decision);
 		});
 
-		it("quoted: legacy non-keyword rules still match `kubectl delete ... --all` inside quotes (Phase 2: span gate)", () => {
+		it("quoted (Phase 2 wired): `executed_only` masks single-quoted content, so the rule does not fire on `echo 'kubectl delete deployments --all'`", () => {
 			const r = decide("echo 'kubectl delete deployments --all'");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 
-		it("commented: fires after `#` because `kubectl` is a clean token (Phase 2 span gate would suppress)", () => {
+		it("commented (Phase 2 wired): `executed_only` masks `# ...` comments, so the rule does not fire on `ls # kubectl delete deployments --all`", () => {
 			const r = decide("ls # kubectl delete deployments --all");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 	});
 
@@ -191,14 +191,14 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 			expect(["block", "ask"]).toContain(r.decision);
 		});
 
-		it("quoted: legacy non-keyword rules still match even though our rule is filtered (Phase 2: span gate)", () => {
+		it("quoted (Phase 2 wired): `executed_only` masks single-quoted content, so the rule does not fire on `echo 'kubectl delete pvc my-claim'`", () => {
 			const r = decide("echo 'kubectl delete pvc my-claim'");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 
-		it("commented: fires after `#` because `kubectl` is a clean token (Phase 2 span gate would suppress)", () => {
+		it("commented (Phase 2 wired): `executed_only` masks `# ...` comments, so the rule does not fire on `ls # kubectl delete pvc my-claim`", () => {
 			const r = decide("ls # kubectl delete pvc my-claim");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 	});
 
@@ -355,14 +355,14 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 			expect(["block", "ask"]).toContain(r.decision);
 		});
 
-		it("quoted: legacy non-keyword rules still match `terraform state rm` inside quotes (Phase 2: span gate)", () => {
+		it("quoted (Phase 2 wired): `executed_only` masks single-quoted content, so the rule does not fire on `echo 'terraform state rm ...'`", () => {
 			const r = decide("echo 'terraform state rm aws_instance.foo'");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 
-		it("commented: fires after `#` because `terraform` is a clean token (Phase 2 span gate would suppress)", () => {
+		it("commented (Phase 2 wired): `executed_only` masks `# ...` comments, so the rule does not fire on `ls # terraform state rm ...`", () => {
 			const r = decide("ls # terraform state rm aws_instance.foo");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 	});
 
@@ -385,14 +385,14 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 			expect(["block", "ask"]).toContain(r.decision);
 		});
 
-		it("quoted: rule fires today as `ask` because legacy or compound-decomposition path bypasses keyword filter (Phase 2: span gate)", () => {
+		it("quoted (Phase 2 wired): `executed_only` masks single-quoted content, so the rule does not fire on `echo 'terraform taint ...'`", () => {
 			const r = decide("echo 'terraform taint aws_instance.foo'");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 
-		it("commented: fires after `#` because `terraform` is a clean token (Phase 2 span gate would suppress)", () => {
+		it("commented (Phase 2 wired): `executed_only` masks `# ...` comments, so the rule does not fire on `ls # terraform taint ...`", () => {
 			const r = decide("ls # terraform taint aws_instance.foo");
-			expect(["block", "ask"]).toContain(r.decision);
+			expect(r.decision).toBe("allow");
 		});
 	});
 
@@ -422,6 +422,77 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 
 		it("commented: fires after `#` (matches today; will require span gate to suppress in Phase 2)", () => {
 			const r = decide("ls # helm uninstall my-release --namespace prod");
+			expect(["block", "ask"]).toContain(r.decision);
+		});
+	});
+
+	// ===========================================
+	// Phase 2 projection wiring — cross-cutting
+	// ===========================================
+	// Plan 01 §1.2 `executed_only` opt-in is enabled on every Plan 02 rule.
+	// These cases exercise the projection directly: each rule's match
+	// should still fire on a raw or wrapper-prefixed command, and should
+	// suppress on quoted/commented forms regardless of whether some other
+	// rule happens to catch the same input.
+	describe("Plan 02 — Phase 2 projection (executed_only) cross-cutting", () => {
+		const cases: Array<{ name: string; positive: string; quoted: string; commented: string; expectedRuleId: string }> = [
+			{
+				name: "kubectl-delete-namespace",
+				positive: "kubectl delete namespace customer-data",
+				quoted: "echo 'kubectl delete namespace customer-data'",
+				commented: "ls # kubectl delete namespace customer-data",
+				expectedRuleId: "builtin-kubectl-delete-namespace",
+			},
+			{
+				name: "kubectl-delete-pvc",
+				positive: "kubectl delete pvc data-claim",
+				quoted: "echo 'kubectl delete pvc data-claim'",
+				commented: "ls # kubectl delete pvc data-claim",
+				expectedRuleId: "builtin-kubectl-delete-pvc",
+			},
+			{
+				name: "git-stash-drop",
+				positive: "git stash drop stash@{2}",
+				quoted: "echo 'git stash drop stash@{2}'",
+				commented: "ls # git stash drop stash@{2}",
+				expectedRuleId: "builtin-git-stash-drop-or-clear",
+			},
+			{
+				name: "terraform-state-rm",
+				positive: "terraform state rm aws_instance.live_db",
+				quoted: "echo 'terraform state rm aws_instance.live_db'",
+				commented: "ls # terraform state rm aws_instance.live_db",
+				expectedRuleId: "builtin-terraform-state-rm",
+			},
+		];
+
+		for (const c of cases) {
+			// Positive: pre-existing catch-all rules
+			// (`builtin-kubectl-mass-delete`, `builtin-git-stash-destroy`)
+			// often win rule iteration before the Plan-02 entry; either
+			// way the agent is stopped, which is the real safety
+			// guarantee. We assert decision-shape only, not rule-id.
+			it(`${c.name}: positive command yields block/ask (some rule fires)`, () => {
+				const r = decide(c.positive);
+				expect(["block", "ask"]).toContain(r.decision);
+			});
+
+			it(`${c.name}: Plan-02 rule itself does NOT fire on single-quoted content`, () => {
+				const r = decide(c.quoted);
+				expect(r.rule_id).not.toBe(c.expectedRuleId);
+			});
+
+			it(`${c.name}: Plan-02 rule itself does NOT fire on commented content`, () => {
+				const r = decide(c.commented);
+				expect(r.rule_id).not.toBe(c.expectedRuleId);
+			});
+		}
+
+		it("wrapper-normalize is a no-op for these rules: `sudo kubectl delete namespace x` still yields block/ask", () => {
+			// Plan-02 regexes are anchor-free, so `\bkubectl\b` matches
+			// regardless of a leading `sudo`. `strip_wrappers` is reserved
+			// for future rules that anchor at start.
+			const r = decide("sudo kubectl delete namespace customer-data");
 			expect(["block", "ask"]).toContain(r.decision);
 		});
 	});

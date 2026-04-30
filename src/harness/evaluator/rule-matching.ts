@@ -8,7 +8,9 @@
 // formatter that fronts every block decision.
 
 import type { JsonObject } from "../../lib/json-types.js";
-import type { GuardRule, HarnessEvent } from "../types.js";
+import type { GuardRule, HarnessEvent, RulePattern } from "../types.js";
+import { extractScannableText } from "./spans.js";
+import { normalizeCommandWrappers } from "./wrapper-normalization.js";
 
 /** Nested indexable object type for dot-path field traversal in rule pattern matching */
 interface Indexable {
@@ -79,6 +81,17 @@ type PatternResult =
 	| typeof PATTERN_RESULT_NO_POSITIVE
 	| typeof PATTERN_RESULT_NEGATED;
 
+/** Apply opt-in projections (`strip_wrappers`, `executed_only`) to the
+ *  raw field value before regex matching. Order: mask non-executed spans
+ *  first (preserves indices via space-fill), then strip wrapper prefixes
+ *  from the resulting executed-only string. Both off → identity. */
+function projectForPattern(value: string, pattern: RulePattern): string {
+	let v = value;
+	if (pattern.executed_only) v = extractScannableText(v);
+	if (pattern.strip_wrappers) v = normalizeCommandWrappers(v);
+	return v;
+}
+
 /** Evaluate the positive + negated pattern pair against a resolved input value. */
 function evaluatePatterns(rule: GuardRule, toolInput: JsonObject, fallback: string): PatternResult {
 	const positivePatterns = rule.patterns.filter((p) => !p.negate);
@@ -90,7 +103,7 @@ function evaluatePatterns(rule: GuardRule, toolInput: JsonObject, fallback: stri
 		const value = getField(toolInput, pattern.field) || fallback;
 		if (!value) continue;
 		const regex = getCachedRegex(pattern.regex, pattern.flags || "i");
-		if (regex.test(String(value))) {
+		if (regex.test(projectForPattern(String(value), pattern))) {
 			anyPositiveMatched = true;
 			break;
 		}
@@ -102,7 +115,7 @@ function evaluatePatterns(rule: GuardRule, toolInput: JsonObject, fallback: stri
 		const value = getField(toolInput, pattern.field) || fallback;
 		if (!value) continue;
 		const regex = getCachedRegex(pattern.regex, pattern.flags || "i");
-		if (regex.test(String(value))) return PATTERN_RESULT_NEGATED;
+		if (regex.test(projectForPattern(String(value), pattern))) return PATTERN_RESULT_NEGATED;
 	}
 	return PATTERN_RESULT_MATCH;
 }

@@ -339,6 +339,23 @@ export interface RulePattern {
 	flags?: string;
 	/** If true, pattern must NOT match (exception pattern) */
 	negate?: boolean;
+	/**
+	 * Strip wrapper prefixes (`sudo`, `doas`, `env VAR=val`, `command -p`,
+	 * `\cmd`) from the matched value before testing the regex. Use on
+	 * patterns that anchor to the start of the command line; harmless
+	 * elsewhere. Off by default to preserve raw-text rules
+	 * (`\bsudo\s+rm\b`, etc.) that depend on the prefix being visible.
+	 * Plan 01 §1.1.
+	 */
+	strip_wrappers?: boolean;
+	/**
+	 * Mask non-executed spans (single/double-quoted strings, comments,
+	 * heredocs) with whitespace before testing the regex. Suppresses the
+	 * `git commit -m 'rm -rf /'` class of FP. Off by default to preserve
+	 * rules that *want* to inspect quoted argument shape (SQL payloads,
+	 * `pkill -f 'wrangler dev'` exceptions). Plan 01 §1.2.
+	 */
+	executed_only?: boolean;
 }
 
 // ===========================================

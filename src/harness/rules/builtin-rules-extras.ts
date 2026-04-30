@@ -51,6 +51,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bkubectl\\b.*\\bdelete\\s+(namespace|ns)\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -76,6 +77,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				regex:
 					"\\bkubectl\\b.*\\bdelete\\s+(?!secret|configmap|pod\\b)[^\\s]+\\s+--all\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -98,6 +100,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bkubectl\\b.*\\bdelete\\s+pvc(?:\\b|s\\b)",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -121,6 +124,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bdocker\\s+system\\s+prune\\b(?!.*--dry-run)",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -143,6 +147,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bdocker\\s+volume\\s+(?:prune|rm\\s+\\$\\(.*\\))",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason: "docker volume prune deletes unused volumes; data loss if not backed up",
@@ -165,6 +170,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bgit\\s+(?:\\S+\\s+)*stash\\s+(?:drop|clear)\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -187,6 +193,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bgit\\s+rebase\\b.*\\b(-i|--interactive)\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -210,6 +217,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bterraform\\s+state\\s+rm\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason:
@@ -233,6 +241,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bterraform\\s+taint\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason: "terraform taint marks a resource for destruction and recreation on next apply",
@@ -255,6 +264,7 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bhelm\\s+(?:uninstall|delete)\\b.*\\b(?:--namespace|-n)\\s+(?:prod|production)\\b",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason: "helm uninstall in a production namespace removes a release entirely",
