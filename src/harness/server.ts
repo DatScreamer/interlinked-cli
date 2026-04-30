@@ -88,6 +88,7 @@ import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
+import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { sanitizeSessionId } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
@@ -312,6 +313,7 @@ setTimeout(() => {
 	} catch (err) {
 		log(`Trigram index load failed (non-fatal): ${err}`);
 	}
+	refreshStatuslineSnapshot();
 }, 0);
 
 // --- Structure graph cache (persists across PostToolUse calls) ---
@@ -389,6 +391,26 @@ function writeReviewPendingMarker(count: number): void {
 	} catch (e) {
 		void e;
 	}
+}
+
+/**
+ * Refresh `.interlinked/statusline.snapshot` and `.interlinked/loaded-rules.md`.
+ * Called from the rules hot-reload callback, the trigram-index load timer,
+ * and a low-frequency tick that keeps reservation/index counters fresh.
+ * Cheap (a few in-memory reads + ~500-byte file write) — safe to call often.
+ */
+function refreshStatuslineSnapshot(): void {
+	const indexStatus = trigramIndex ? "ready" : "missing";
+	const indexFiles = trigramIndex?.files.length ?? 0;
+	writeStatuslineArtifacts({
+		cwd: CWD,
+		interlinkedDir: INTERLINKED_DIR,
+		rules,
+		reservationsCount: reservations.getAll().length,
+		indexStatus,
+		indexFiles,
+		serverBridgeConnected: serverBridge !== null,
+	});
 }
 
 /** Collapse a `ScannerStatus` into the one-line shell-grepable format. */
@@ -2336,7 +2358,16 @@ const unwatchRules = watchRulesFiles(CWD, (newRules) => {
 	// Update auto-coordination config
 	Object.assign(autoCoordConfig, DEFAULT_AUTO_COORDINATION_CONFIG, rules.auto_coordination || {});
 	log(`Rules reloaded: ${rules.rules.length} rules active`);
+	refreshStatuslineSnapshot();
 });
+
+// Periodically refresh the statusline snapshot so live counters
+// (reservations, index status, server-bridge connectivity) reflect
+// current state without depending on a triggering event.
+const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
+setInterval(() => {
+	refreshStatuslineSnapshot();
+}, STATUSLINE_REFRESH_INTERVAL_MS);
 
 // Start idle timer
 resetIdleTimer();

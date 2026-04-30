@@ -396,9 +396,43 @@ function tryAutoStartHarness() {
 }
 
 // --- Last-check file for status line visibility ---
+// Structured pipe-delimited format so the bash statusline can render
+// outcome language (\"caught 3 new issues before they landed\") without
+// fragile string parsing. One line, key=value fields separated by ' | '.
+//
+// Schema (additive — bash falls back gracefully on missing keys):
+//   result=clean|warn|block|no_harness
+//   file=<repo-relative path or empty>
+//   tool=<tool name>
+//   count=<number, warn only>
+//   ms=<elapsed milliseconds, optional>
+//   rule=<rule id, block only>
+//   summary=<short reason, block only>
 const LAST_CHECK_PATH = join(DATA_DIR, "last-check.txt");
-function writeLastCheck(summary) {
-    try { writeFileSync(LAST_CHECK_PATH, summary + "\\n"); } catch (_err) { void 0; /* intentional: no-op */ }
+function writeLastCheck(fields) {
+    try {
+        const parts = [];
+        for (const [k, v] of Object.entries(fields)) {
+            if (v === undefined || v === null || v === "") continue;
+            // Strip pipes/newlines from values so the delimiter is unambiguous.
+            const safe = String(v).replace(/[|\\r\\n]+/g, " ").trim();
+            parts.push(k + "=" + safe);
+        }
+        writeFileSync(LAST_CHECK_PATH, parts.join(" | ") + "\\n");
+    } catch (_err) { void 0; /* intentional: no-op */ }
+}
+
+// Extract the edited file path from a hook event so the statusline can
+// say "src/foo.ts" instead of just "Edit". Returns "" for tools without
+// a file (Bash, Grep, etc.) — caller falls back to tool name.
+function lastCheckFile(event, rawInput) {
+    const ti = (event && event.tool_input) || (rawInput && rawInput.tool_input) || null;
+    if (!ti || typeof ti !== "object") return "";
+    const path = ti.file_path || ti.filePath || ti.path || ti.notebook_path || "";
+    if (typeof path !== "string" || !path) return "";
+    const cwd = (rawInput && rawInput.cwd) || (event && event.cwd) || process.cwd();
+    if (path.startsWith(cwd + "/")) return path.slice(cwd.length + 1);
+    return path;
 }
 
 ${SESSION_STATE_CHUNK}
@@ -679,6 +713,14 @@ ${PROVIDER_RESPONSES_CHUNK}
             appendGuardDecision("block", guardDecision, event, hookEvent, sessionId, agentName, workspaceKey, projectKey, preElapsedMs);
             updateSessionState(sessionId, agentName, event);
 
+            // Feed the statusline kinetic segment so a freshly-blocked action
+            // shows up as "✗ blocked rm -rf · 2s ago · rule: block_rm_rf".
+            const blockToolLabel = event.tool_name || rawInput.tool_name || "tool";
+            const blockFile = lastCheckFile(event, rawInput);
+            const blockSummary = (guardDecision.reason || "Blocked by Interlinked guard").split(/\\r?\\n/)[0].slice(0, 80);
+            const blockRule = guardDecision.rule_id || guardDecision.rule || "";
+            writeLastCheck({ result: "block", tool: blockToolLabel, file: blockFile, summary: blockSummary, rule: blockRule });
+
             if (guardDecision.grep_stats) {
                 const stats = guardDecision.grep_stats;
                 const selectivity = stats.selectivity_pct != null ? stats.selectivity_pct.toFixed(1) : "?";
@@ -768,7 +810,8 @@ ${PROVIDER_RESPONSES_CHUNK}
             if (warnings.length > 0) {
                 const issueList = warnings.join("\\n\\n");
                 const toolLabel = event.tool_name || "unknown";
-                const statusLine = "✗ " + warnings.length + " issue(s) on " + toolLabel + " (" + postElapsedMs + "ms)";
+                const editedFile = lastCheckFile(event, rawInput);
+                writeLastCheck({ result: "warn", tool: toolLabel, file: editedFile, count: warnings.length, ms: postElapsedMs });
                 const isBlockingPostDecision = postResult.decision === "block";
                 const responseType = isBlockingPostDecision ? "post_block" : "post_warn";
                 const responsePayload = isBlockingPostDecision
@@ -779,7 +822,6 @@ ${PROVIDER_RESPONSES_CHUNK}
                         reason: issueList,
                         summary: "[interlinked:" + toolLabel + "] Advisory findings:\\n" + issueList,
                     };
-                writeLastCheck(statusLine);
                 console.log(JSON.stringify(formatProviderResponse(responseType, responsePayload)));
                 appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
                 appendGuardDecision(
@@ -803,7 +845,8 @@ ${PROVIDER_RESPONSES_CHUNK}
 
             const toolLabel = event.tool_name || "unknown";
             const summary = postResult.summary || ("all clean (" + postElapsedMs + "ms)");
-            writeLastCheck("[interlinked:" + toolLabel + "] " + summary);
+            const cleanFile = lastCheckFile(event, rawInput);
+            writeLastCheck({ result: "clean", tool: toolLabel, file: cleanFile, ms: postElapsedMs });
             console.log(JSON.stringify(formatProviderResponse("post_success", {
                 summary: "[interlinked:" + toolLabel + "] " + summary,
             })));
@@ -815,7 +858,8 @@ ${PROVIDER_RESPONSES_CHUNK}
             // Harness unavailable — still report that the hook ran
             const toolLabel = event.tool_name || "unknown";
             const elapsed = Date.now() - postStartMs;
-            writeLastCheck("[interlinked:" + toolLabel + "] no harness (" + elapsed + "ms)");
+            const naFile = lastCheckFile(event, rawInput);
+            writeLastCheck({ result: "no_harness", tool: toolLabel, file: naFile, ms: elapsed });
             console.log(JSON.stringify(formatProviderResponse("post_success", {
                 summary: "[interlinked:" + toolLabel + "] no harness (" + elapsed + "ms)",
             })));
