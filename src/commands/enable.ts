@@ -70,7 +70,8 @@ const CLIENT_SUMMARIES: Record<ClientName, ClientSummary> = {
 	},
 	cursor: {
 		label: "cursor",
-		eventCountText: "10 events (.cursor/hooks.json — incl. beforeShellExecution + beforeMCPExecution)",
+		eventCountText:
+			"15 events (.cursor/hooks.json — gates + subagent + postToolUseFailure + preCompact)",
 	},
 };
 

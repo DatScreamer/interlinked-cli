@@ -10,6 +10,7 @@ describe("Cursor adapter identity", () => {
 	it("lists native event names", () => {
 		expect(adapter.nativeEventNames).toContain("beforeShellExecution");
 		expect(adapter.nativeEventNames).toContain("beforeMCPExecution");
+		expect(adapter.nativeEventNames).toContain("beforeMcpToolExecution");
 		expect(adapter.nativeEventNames).toContain("afterFileEdit");
 		expect(adapter.nativeEventNames).toContain("beforeReadFile");
 		expect(adapter.nativeEventNames).toContain("sessionStart");
@@ -71,6 +72,14 @@ describe("Cursor parseHookInput — MCP tool", () => {
 		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
 		expect(e.action.tool_input).toEqual({ volumeId: "abc-123" });
 	});
+	it("accepts legacy beforeMcpToolExecution naming variant", () => {
+		const e = adapter.parseHookInput(
+			{ session_id: "cur-4b", tool_name: "search", tool_input: '{"q":"abc"}' },
+			"beforeMcpToolExecution",
+		);
+		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(e.action.tool_input).toEqual({ q: "abc" });
+	});
 });
 
 describe("Cursor parseHookInput — afterFileEdit", () => {
@@ -85,6 +94,62 @@ describe("Cursor parseHookInput — afterFileEdit", () => {
 	});
 });
 
+describe("Cursor parseHookInput — new event surface (2026-04-30)", () => {
+	it("postToolUseFailure produces a tool_call action with the failing tool", () => {
+		const e = adapter.parseHookInput(
+			{
+				session_id: "f1",
+				tool_name: "Bash",
+				tool_input: { command: "npm test" },
+				error_message: "timed out",
+				failure_type: "timeout",
+			},
+			"postToolUseFailure",
+		);
+		expect(e.phase).toBe("post-tool");
+		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(e.action.tool_name).toBe("bash");
+	});
+
+	it("subagentStart carries subagent_type + task in the action data", () => {
+		const e = adapter.parseHookInput(
+			{
+				session_id: "s1",
+				subagent_id: "abc",
+				subagent_type: "shell",
+				task: "run something",
+			},
+			"subagentStart",
+		);
+		expect(e.phase).toBe("pre-tool");
+		if (e.action.kind !== "other") throw new Error("expected other");
+		expect(e.action.subkind).toBe("subagentStart");
+		expect((e.action.data as { subagent_type: string }).subagent_type).toBe("shell");
+		expect((e.action.data as { task: string }).task).toBe("run something");
+	});
+
+	it("subagentStop carries status + summary", () => {
+		const e = adapter.parseHookInput(
+			{ session_id: "s2", subagent_type: "explore", status: "completed", summary: "done" },
+			"subagentStop",
+		);
+		expect(e.phase).toBe("other");
+		if (e.action.kind !== "other") throw new Error("expected other");
+		expect(e.action.subkind).toBe("subagentStop");
+	});
+
+	it("preCompact captures trigger + context_usage_percent", () => {
+		const e = adapter.parseHookInput(
+			{ session_id: "c1", trigger: "auto", context_usage_percent: 87 },
+			"preCompact",
+		);
+		expect(e.phase).toBe("other");
+		if (e.action.kind !== "other") throw new Error("expected other");
+		expect((e.action.data as { trigger: string }).trigger).toBe("auto");
+		expect((e.action.data as { context_usage_percent: number }).context_usage_percent).toBe(87);
+	});
+});
+
 describe("Cursor encodeDecision", () => {
 	const event = adapter.parseHookInput(
 		{ session_id: "c", command: "ls" },
@@ -94,23 +159,68 @@ describe("Cursor encodeDecision", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, event);
 		expect(JSON.parse(out.stdout as string)).toEqual({ permission: "allow" });
 	});
-	it("block emits permission:deny with agent + user messages", () => {
+	it("block emits permission:deny with snake_case agent + user messages (per Cursor docs)", () => {
 		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, event);
 		expect(JSON.parse(out.stdout as string)).toEqual({
 			permission: "deny",
-			agentMessage: "no",
-			userMessage: "no",
+			agent_message: "no",
+			user_message: "no",
 		});
 	});
-	it("ask emits permission:ask with both messages", () => {
+	it("ask emits permission:ask with snake_case messages on shell/MCP gates", () => {
 		const out = adapter.encodeDecision(
 			{ decision: "ask", reason: "confirm?", system_message: "potentially destructive" },
 			event,
 		);
 		expect(JSON.parse(out.stdout as string)).toEqual({
 			permission: "ask",
-			agentMessage: "confirm?",
-			userMessage: "potentially destructive",
+			agent_message: "confirm?",
+			user_message: "potentially destructive",
+		});
+	});
+	it("ask collapses to deny on preToolUse (Cursor doesn't enforce ask there)", () => {
+		const preToolEvent = adapter.parseHookInput(
+			{ session_id: "c", tool_name: "Edit", tool_input: { file_path: "/a" } },
+			"preToolUse",
+		);
+		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, preToolEvent);
+		const parsed = JSON.parse(out.stdout as string) as { permission: string; agent_message?: string };
+		expect(parsed.permission).toBe("deny");
+		expect(parsed.agent_message).toBe("confirm?");
+	});
+	it("ask collapses to deny on subagentStart (docs: ask treated as deny)", () => {
+		const subEvent = adapter.parseHookInput(
+			{ session_id: "c", subagent_id: "x", subagent_type: "shell", task: "go" },
+			"subagentStart",
+		);
+		const out = adapter.encodeDecision({ decision: "ask", reason: "untrusted" }, subEvent);
+		const parsed = JSON.parse(out.stdout as string) as { permission: string };
+		expect(parsed.permission).toBe("deny");
+	});
+	it("post_warn / advisory on postToolUse routes through additional_context (model-visible)", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "c", tool_name: "Edit", tool_input: {}, tool_output: "ok" },
+			"postToolUse",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "allow", additional_context: "Fix this lint." },
+			postEvent,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			additional_context: "Fix this lint.",
+		});
+	});
+	it("post_block on postToolUse uses additional_context (closest Cursor analogue)", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "c", tool_name: "Edit", tool_input: {}, tool_output: "ok" },
+			"postToolUse",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "block", reason: "tsc failed: missing return type" },
+			postEvent,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			additional_context: "tsc failed: missing return type",
 		});
 	});
 	it("non-gated event (afterFileEdit) blocks via stderr instead of stdout JSON", () => {
@@ -137,7 +247,15 @@ describe("Cursor renderSettingsFragment", () => {
 		const f = fragment.fragment as { hooks: Record<string, Array<{ failClosed?: boolean }>> };
 		expect(f.hooks.beforeShellExecution?.[0]?.failClosed).toBe(true);
 		expect(f.hooks.beforeMCPExecution?.[0]?.failClosed).toBe(true);
+		expect(f.hooks.beforeMcpToolExecution?.[0]?.failClosed).toBe(true);
 		expect(f.hooks.beforeReadFile?.[0]?.failClosed).toBe(true);
+		expect(f.hooks.subagentStart?.[0]?.failClosed).toBe(true);
+	});
+	it("registers postToolUseFailure / subagentStop / preCompact as observation hooks", () => {
+		const f = fragment.fragment as { hooks: Record<string, Array<{ failClosed?: boolean }>> };
+		expect(f.hooks.postToolUseFailure?.[0]?.failClosed).toBeUndefined();
+		expect(f.hooks.subagentStop?.[0]?.failClosed).toBeUndefined();
+		expect(f.hooks.preCompact?.[0]?.failClosed).toBeUndefined();
 	});
 	it("leaves failClosed unset on observation hooks", () => {
 		const f = fragment.fragment as { hooks: Record<string, Array<{ failClosed?: boolean }>> };

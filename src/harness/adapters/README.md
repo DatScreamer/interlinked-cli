@@ -10,19 +10,21 @@ into the runner's stdout/stderr/exit-code contract.
 - `docs/design/free-cli-architecture.md` — directory layout, installer manifest
 - `docs/design/three-product-architecture.md` — latency budgets
 
-## Runner matrix (as of 2026-04-27)
+## Runner matrix (as of 2026-04-30)
 
 | Runner         | `id`           | Status       | Native events                                                                    | Decision contract                                  | Native ask | Post→model |
 | -------------- | -------------- | ------------ | -------------------------------------------------------------------------------- | -------------------------------------------------- | ---------- | ---------- |
 | Claude Code    | `claude-code`  | Stable       | `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, 10 more               | stdout JSON `{decision: "deny"\|"ask"}` or exit 0  | ✅          | ✅ `additionalContext` |
 | Copilot CLI    | `copilot-cli`  | Stable       | `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `userPromptSubmitted` | stderr + exit 2 = deny; exit 0 = allow             | ❌ → deny  | ❌ stderr only |
-| Cursor         | `cursor`       | Stable       | `beforeShellExecution`, `beforeMcpToolExecution`, 4 more                         | stdout JSON `{permission: "allow"\|"deny"\|"ask"}` | ✅          | ❌ stderr only |
+| Cursor         | `cursor`       | Stable       | 15 events incl. `beforeShellExecution`, `beforeMCPExecution`, `postToolUse`, `postToolUseFailure`, `subagentStart/Stop`, `preCompact` | stdout JSON `{permission: "allow"\|"deny"\|"ask", user_message, agent_message}` (snake_case); `{additional_context}` on `postToolUse` | ✅ on shell/MCP gates; preToolUse / beforeReadFile / subagentStart collapse ask → deny | ✅ `additional_context` on `postToolUse` |
 | Codex CLI      | `codex`        | Stable       | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest` | stdout JSON `{decision: "block"}` or `additionalContext` | ❌ → block | ✅ `additionalContext` |
 | Gemini CLI     | `gemini-cli`   | Experimental | `BeforeTool`, `AfterTool`, `AfterModel`, `PreCompress`                           | stdout JSON (provisional)                          | 🚧 prov    | 🚧 prov    |
 
-**Native ask** = runner has a user-confirm primitive (Claude `permissionDecision: "ask"`, Cursor `permission: "ask"`). When absent, the harness collapses our canonical `decision: "ask"` to a hard deny so the user still sees the reason and can refine.
+**Native ask** = runner has a user-confirm primitive (Claude `permissionDecision: "ask"`, Cursor `permission: "ask"` on `beforeShellExecution` / `beforeMCPExecution`). When absent, the harness collapses our canonical `decision: "ask"` to a hard deny so the user still sees the reason and can refine.
 
-**Post→model** = `additionalContext` from PostToolUse is echoed back into the model's next-turn context. When absent, post-event warnings only land in the user's terminal stderr — `pre_warn` and `post` checks deliver no model-visible signal on those runners. Prefer `pre_block` for anything that must drive agent behavior across all four stable runners.
+**Post→model** = a model-visible PostToolUse advisory channel exists. Claude uses `hookSpecificOutput.additionalContext`, Codex echoes `additionalContext`, **Cursor uses snake_case `additional_context` on `postToolUse`** (the generic post-tool hook — specific `afterFileEdit` / `afterShellExecution` / `afterMCPExecution` / `postToolUseFailure` are observation-only stderr). Copilot has no model-visible post channel.
+
+**Cursor field naming**: response keys are snake_case per the public docs (`user_message`, `agent_message`, `additional_context`, `updated_input`, `updated_mcp_tool_output`, `followup_message`). Earlier camelCase emissions were silently dropped by Cursor — denial messages reached the runner empty.
 
 When a runner ships a 1.0 hook contract that differs from what is in this table,
 update the adapter, stamp the file header with today's date, and re-run the
