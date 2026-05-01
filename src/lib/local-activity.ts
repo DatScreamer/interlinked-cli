@@ -13,7 +13,9 @@ import {
 	readdirSync,
 	readFileSync,
 	readSync,
+	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -357,6 +359,36 @@ export function updateSyncState(
 	writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
+/** Cap for sync-errors.jsonl before rotation. 10 MB is enough to keep
+ *  a few thousand recent failures while preventing the multi-GB bloat
+ *  observed in production (a single workspace grew this file to 3 GB
+ *  with one identical "fetch failed" message per realtime POST). */
+const SYNC_ERRORS_MAX_BYTES = 10 * 1024 * 1024;
+
+function rotateSyncErrorsIfNeeded(path: string): void {
+	try {
+		if (!existsSync(path)) return;
+		const size = statSync(path).size;
+		if (size < SYNC_ERRORS_MAX_BYTES) return;
+		// Single-generation retention: rename to .1 (overwriting any
+		// existing .1) and start fresh. A real-world flapping network
+		// can fill 10 MB in seconds; deeper retention is wasted bytes.
+		const archived = `${path}.1`;
+		if (existsSync(archived)) {
+			try {
+				unlinkSync(archived);
+			} catch (_err) {
+				/* intentional: stale archive — rename will overwrite on POSIX */
+			}
+		}
+		renameSync(path, archived);
+	} catch (_err) {
+		/* intentional: rotation is best-effort. If it fails, the next
+		   appendSyncError call will continue past the cap until rotation
+		   eventually succeeds — no data loss, just delayed cleanup. */
+	}
+}
+
 /**
  * Persist sync diagnostics for failed pushes and retry outcomes.
  */
@@ -376,6 +408,7 @@ export function appendSyncError(
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
+	rotateSyncErrorsIfNeeded(path);
 	appendFileSync(
 		path,
 		`${JSON.stringify({
