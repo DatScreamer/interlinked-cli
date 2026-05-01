@@ -41,6 +41,10 @@ export type HookEventName =
 	| "AfterTool"
 	| "AfterModel"
 	| "PreCompress"
+	// Interlinked-internal skill marker events (CLI-posted, not agent-fired)
+	| "SkillEnter"
+	| "SkillLeave"
+	| "SkillList"
 	// Generic
 	| string;
 
@@ -328,6 +332,13 @@ export interface GuardRule {
 	 * moment the rule is first loaded. Convenience for human-authored configs.
 	 */
 	expires_after?: string;
+	/**
+	 * Optional runtime scope condition. When present, the rule is dormant
+	 * unless every listed axis holds (skill active, TDD phase matches,
+	 * recent command in window, etc.). See `ActiveWhen` and
+	 * docs/design/harness-active-when-scoping.md.
+	 */
+	active_when?: ActiveWhen;
 }
 
 export interface RulePattern {
@@ -356,6 +367,72 @@ export interface RulePattern {
 	 * `pkill -f 'wrangler dev'` exceptions). Plan 01 §1.2.
 	 */
 	executed_only?: boolean;
+}
+
+// ===========================================
+// Active-When Scoping
+// ===========================================
+//
+// `active_when` lets a distilled rule stay dormant until a runtime context
+// signal fires. See docs/design/harness-active-when-scoping.md for the full
+// rationale. Axes are AND-ed; an omitted axis is always-on. Rules without
+// `active_when` keep current always-on behavior.
+
+export interface ActiveWhen {
+	/** One or more skill names; rule is active if ANY listed skill is in the session's `active_skills` map. */
+	skill?: string | string[];
+	/** Phase predicate (TDD red/green, ship phase, review phase, …). */
+	phase?: PhaseSpec;
+	/** Rule active only if the trajectory's recent commands match `pattern` within last `window_steps`. */
+	after_command?: AfterCommandSpec;
+	/**
+	 * Additional file_path regex AND-ed with rule.patterns. Useful when the
+	 * scope axis is "only when editing files matching X" but you don't want
+	 * to merge into every positive pattern. Empty/missing = no extra filter.
+	 */
+	file_scope?: string;
+	/** One or more model-overlay names (e.g., "claude", "gpt"). */
+	overlay?: string | string[];
+	/**
+	 * One or more agent_source names. Distinct from `applies_to_roles`:
+	 * roles gate evaluation entirely; agent_source here is a scope axis
+	 * (rule loads but is dormant unless source matches).
+	 */
+	agent_source?: AgentSource | AgentSource[];
+	/** Generic escape hatch for §6.5 predicates not yet promoted to a typed axis. */
+	predicate?: SessionPredicateSpec;
+}
+
+export interface PhaseSpec {
+	/** Predicate name — open string keeps the vocabulary extensible. Built-in: "tdd_state", "ship_phase", "review_phase". */
+	name: string;
+	/** Required value (e.g., "red", "green"). */
+	value: string;
+	/** "file" = per-file phase (tdd_state); "session" = whole-session phase. Default "session". */
+	scope?: "file" | "session";
+}
+
+export interface AfterCommandSpec {
+	/** Regex matched against entries in `SessionTrajectory.commands_run`. */
+	pattern: string;
+	/** How many recent entries to scan; default 10. */
+	window_steps?: number;
+}
+
+export interface SessionPredicateSpec {
+	name: string;
+	args?: Record<string, unknown>;
+}
+
+/** Per-session record of an active skill marker. Garbage-collected on every session event. */
+export interface ActiveSkillRecord {
+	name: string;
+	/** ms-since-epoch. */
+	entered_at: number;
+	/** ms-since-epoch; rule lookups treat the marker as expired once `Date.now() > expires_at`. */
+	expires_at: number;
+	/** "cli" = explicit `interlinked skill enter`; "hook" = agent-native skill lifecycle event; "manual" = enable-side toggle. */
+	source: "cli" | "hook" | "manual";
 }
 
 // ===========================================
@@ -714,6 +791,14 @@ export interface SessionTrajectory {
 	tdd_cycles: Map<string, TddCycle>;
 	/** Consecutive PostToolUseFailure count per tool_name (reset on any success for the same tool). */
 	consecutive_tool_failures: Map<string, number>;
+	/**
+	 * Skills currently active for this session, keyed by skill name. Populated
+	 * by `skill_enter` events; cleared by `skill_leave` or TTL expiry. Read by
+	 * the active-when predicate evaluator. Optional so test fixtures and older
+	 * call sites that don't care about scope can omit it; the evaluator treats
+	 * undefined identically to an empty map. See harness-active-when-scoping.md.
+	 */
+	active_skills?: Map<string, ActiveSkillRecord>;
 	/** Tool names that have already received a silent-failure warning this session (dedup). */
 	silent_failure_warned: Set<string>;
 	/** Tool names that have already received a context-bloat warning this session (dedup). */
