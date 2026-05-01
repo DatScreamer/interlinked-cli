@@ -374,6 +374,42 @@ reminderCmd
 		reminderRemoveCommand(idOrGlob, opts);
 	});
 
+const skillCmd = program
+	.command("skill")
+	.description("Skill marker management (scopes distilled rules via active_when)");
+
+skillCmd
+	.command("enter <name>")
+	.description("Mark a skill as active for the current session(s)")
+	.option("--ttl <duration>", "TTL like 30m, 1h, 90s (default 30m, capped at 4h)")
+	.option("--session <id>", "Target a specific session (default: broadcast)")
+	.option("--source <kind>", "cli | hook | manual (default cli)")
+	.option("--json", "Machine-readable output")
+	.action(async (name: string, opts: OptionValues) => {
+		const { skillEnterCommand } = await import("./commands/skill.js");
+		await skillEnterCommand(name, opts);
+	});
+
+skillCmd
+	.command("leave <name>")
+	.description("Clear a skill marker")
+	.option("--session <id>", "Target a specific session (default: broadcast)")
+	.option("--json", "Machine-readable output")
+	.action(async (name: string, opts: OptionValues) => {
+		const { skillLeaveCommand } = await import("./commands/skill.js");
+		await skillLeaveCommand(name, opts);
+	});
+
+skillCmd
+	.command("list", { isDefault: true })
+	.description("Show currently-active skills across all sessions")
+	.option("--session <id>", "Show only one session")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { skillListCommand } = await import("./commands/skill.js");
+		await skillListCommand(opts);
+	});
+
 program
 	.command("handoff <from-agent> <to-agent>")
 	.description("Explicit agent-to-agent handoff with context transfer")

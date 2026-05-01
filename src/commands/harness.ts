@@ -31,7 +31,7 @@ interface HarnessStatus {
 	pid?: number;
 }
 
-function getSocketPath(cwd: string = process.cwd()): string {
+export function getSocketPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "harness.sock");
 }
 
