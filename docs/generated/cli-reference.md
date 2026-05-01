@@ -754,7 +754,8 @@ Install hooks + create .interlinked/ config
 Options:
   --server <url>      Server URL
   --agent <name>      Default agent name
-  --clients <list>    Comma-separated client list (claude,gemini,codex)
+  --clients <list>    Comma-separated client list
+                      (claude,copilot,gemini,codex,cursor)
   --sync-mode <mode>  Sync mode: realtime (default), local, manual
   --data-dir <path>   Override data directory for activity logs and sessions
   --dry-run           Show what would change without modifying files
