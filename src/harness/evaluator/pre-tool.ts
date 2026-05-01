@@ -55,6 +55,7 @@ import type {
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
+import { evaluateActiveWhen } from "./active-when.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
@@ -250,6 +251,7 @@ export function evaluatePreToolUse(
 		for (const rule of rules.rules) {
 			if (!shouldEvaluateRule(rule, "PreToolUse", toolName)) continue;
 			if (!ruleAppliesToRole(rule, agentRole)) continue;
+			if (!evaluateActiveWhen(rule, session, event)) continue;
 			if (cmd && !shouldEvaluateByKeywords(rule, cmdTokens)) continue;
 			if (
 				!matchesRule({
