@@ -203,7 +203,17 @@ Look in `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.config/copilot/`, `~/.conti
 
 ### 2c — Skills as scan-only sources
 
-SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`. **Skill rules have no runtime "active skill" scope** — the harness does not surface skill-invocation context to the evaluator, so once distilled a skill rule fires whenever its `tool_match` + `patterns` match, like any other rule. The `skill:` group_id is for *lifecycle ops* (`/enforce remove --source skill:tdd`), not for runtime gating. If a skill rule is too broad to enforce unconditionally, distill it to `action: "ask"` (per §5c) or downgrade further with `/enforce modify`.
+SKILL.md files are mostly procedural (capability bundles). They are scan-only: extract paragraphs that hit the §4a/§4b lexical markers (`MUST NOT`, `bans`, `forbids`, `never`, `MUST`, `always`); ignore the rest. Every rule from a skill body has its `group_id` formed as `skill:<skill-name>` (extracted from the SKILL.md frontmatter `name` field) instead of `local:` or `gh:`.
+
+**Skill rules ARE scope-gated at runtime** via `active_when.skill`. The harness's `SessionTrajectory.active_skills` map is populated by `interlinked skill enter <name>` (called from a slash-command preamble) and read by the active-when evaluator. A distilled skill rule with `active_when.skill = "<skill-name>"` is **dormant** unless that skill is currently active in the session. This means:
+
+- **Distill at full strength** — a skill imperative phrased `Never X` distills to `action: "block"` per §5a, not the previous safety-downgrade to `ask`. The runtime scope makes the strength safe.
+- **Composes with §10 conflict resolution** — scope-disjoint rules don't conflict; importing N skill rules without scope used to yield O(N²) collisions, with `active_when.skill` populated they only collide within the same skill or with always-on rules.
+- **Skill-author opt-in cost is one line** — the slash-command preamble adds `interlinked skill enter <skill-name>` (and a matching `leave` on completion). Skills that don't opt in still distill correctly but their rules are always-on (`active_when` omitted), which is the pre-active_when behavior.
+
+See `docs/design/harness-active-when-scoping.md` for the full design and §7 below for distiller population rules.
+
+The `skill:` group_id is also used for lifecycle ops (`/enforce remove --source skill:migrate-to-shoehorn`).
 
 ### 2d — Skip list (DO NOT extract from these — confirm kind, then skip)
 
@@ -218,6 +228,7 @@ SKILL.md files are mostly procedural (capability bundles). They are scan-only: e
 | `TOOLS.md` | Tool inventory. |
 | `.agent.md`, `.prompt.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md` | Capability bundles — same treatment as SKILL.md per §2c. |
 | Any `SKILL.md` whose frontmatter `name` is `enforce` | Self-reference. The distiller must not distill its own imperatives — they describe how to distill, not what the agent should do. Drop the file silently regardless of which install path it lives at (`skills/`, `.claude/skills/`, `.codex/skills/`, `.interlinked/skills/`, `.gemini/extensions/`, `.github/skills/`, etc.). |
+| Any `SKILL.md` whose frontmatter `name` is `tdd`, starts with `tdd-`, or ends with `-tdd`; any path matching `**/tdd/SKILL.md` or `**/*-tdd/SKILL.md` | TDD enforcement is owned by the harness's native primitives — `tdd_new_file_gate`, `tdd_cycle_violation`, `tdd_regression`, `tdd_commit_gate`, `tdd_green_confirmation` — driven by the deterministic `tdd_cycles` state machine in `SessionTrajectory`. Distilling a competing TDD skill (Matt Pocock's, gstack's, anyone else's) would either over-fire (always-on rules duplicating our gates) or shadow (action downgraded to `ask`). Drop these files silently. If a project legitimately needs a different TDD policy, edit `structural_checks.test_first_mode` in `guard-rules.local.json`, not via /enforce. |
 
 After discovery, **print the file inventory** before any extraction so the user can see the surface.
 
@@ -384,19 +395,27 @@ Practical consequence: **you cannot AND two positive patterns together.** If you
 
 ---
 
-## Step 6.5 — Session predicates the distiller can consume
+## Step 6.5 — Session predicates and active-when axes the distiller can consume
 
-Most real AGENTS.md content is sequential ("always run tests before commit," "always read before edit," "never commit while RED"). Without observable session state, those imperatives degrade to `ask` — and `ask` rules at scale train users to reflex-yes through prompts, which is worse than no enforcement. The harness already tracks rich per-session state in `SessionTrajectory` (see `src/harness/types.ts`). Distilled rules can reference these predicates by name in a `session_predicate` field; the harness evaluates them deterministically at PreToolUse time. **A rule that uses any session predicate must still set `severity` no higher than `medium` and `action: "ask"`** — the predicates are reliable but the imperative's intent is rarely fully captured.
+Most real AGENTS.md content is sequential ("always run tests before commit," "always read before edit") or scoped ("during /ship, never X," "while migrate-to-shoehorn is active, …"). The distiller has two mechanisms for these:
 
-| Prose phrase | Predicate | Reads from | Notes |
+**(A) Typed `active_when` axes (preferred when applicable).** Recognized prose patterns map directly to a typed scope axis on the distilled rule. Wired into the harness; deterministic at runtime; composable.
+
+**(B) `session_predicate` escape hatch.** For prose patterns that don't match a typed axis, emit a `predicate` entry inside `active_when` with the predicate name and args. **Predicate-using rules must still set `action: "ask"`** so they degrade to a no-op on harness builds that don't recognize the predicate name (the harness fails-safe — unknown predicates keep the rule dormant, never fire).
+
+| Prose phrase | Distilled as | Reads from | Notes |
 |---|---|---|---|
-| "always run tests before <X>" | `tests_passed_recently(window_steps: N)` | `test_runs.last_pass.at_step` vs `tool_call_count` | N defaults to 5; trigger fires on X if the window has elapsed without a recent pass. |
-| "after running tests" | `tests_run_in_session()` | `test_runs.size > 0` | Boolean. |
-| "while RED, don't <X>" | `tdd_state(file) == "red"` | `tdd_cycles[file].state` | Per-file. Use the source-of-edit's basename glob to scope. |
-| "before pushing" | `last_command_was(/^git\s+push\b/)` | `commands_run` (last entry) | Negate-form: trigger when X happens AND last_command was NOT a push. |
-| "before editing, read the file" | `file_read_in_session(file)` | `files_read` set | Trigger Edit when target file isn't in the set. |
-| "after seeing N consecutive failures" | `consecutive_failures(tool) >= N` | `consecutive_tool_failures` | Self-throttling rules. |
-| "during cleanup" / "after compaction" | `last_event(name) == "PreCompact"` | `tool_sequence` | Phase-scoped. |
+| "during /<skill>", "while <skill> is active", source is a SKILL.md body | **`active_when.skill = "<skill-name>"`** (typed axis) | `SessionTrajectory.active_skills` | Default for every rule extracted from a `<name>/SKILL.md` body. Skill-author opt-in via `interlinked skill enter` preamble. |
+| "after running /ship", "after the user invoked X" | **`active_when.after_command = { pattern, window_steps }`** (typed axis) | `SessionTrajectory.commands_run` (last N) | Default window 10. Pattern is a regex matched against recent command entries. |
+| "only when editing files matching X" | **`active_when.file_scope = "<regex>"`** (typed axis) | `event.tool_input.file_path` | AND-ed with `rule.patterns`; an extra path filter beyond `tool_match`. |
+| "only on Codex" / "only on Claude" / model-overlay file home | **`active_when.agent_source = "<runner>"`** or `active_when.overlay = "<runner>"` (typed axes) | `event.agent_source` | Use `overlay` when the source is a `model-overlays/<runner>.md` file; use `agent_source` when prose explicitly names the runner. Both resolve identically in v1. |
+| "always run tests before <X>" | `predicate: { name: "tests_passed_recently", args: { window_steps: N } }` | `test_runs.last_pass.at_step` vs `tool_call_count` | N defaults to 5. Action MUST be `"ask"`. |
+| "after running tests" | `predicate: { name: "tests_run_in_session" }` | `test_runs.size > 0` | Action MUST be `"ask"`. |
+| ~~"while RED, don't <X>"~~ | ~~`predicate: { name: "tdd_state", args: { value: "red" } }`~~ | ~~`tdd_cycles[file].state`~~ | **Harness-internal only — not emitted by the distiller.** TDD enforcement is owned by the harness's native primitives (see §2d skip-list entry for TDD skills). The `tdd_cycles` state machine exists in the runtime, but distilled rules MUST NOT reference it — drop any imperative that would. If you need a TDD policy change, edit `structural_checks.test_first_mode`, not /enforce. |
+| "before pushing" | `predicate: { name: "last_command_was", args: { pattern: "^git\\s+push\\b" } }` | `commands_run` (last entry) | Negate-form: trigger when X happens AND last_command was NOT a push. Action MUST be `"ask"`. |
+| "before editing, read the file" | `predicate: { name: "file_read_in_session" }` | `files_read` set | Trigger Edit when target file isn't in the set. Action MUST be `"ask"`. |
+| "after seeing N consecutive failures" | `predicate: { name: "consecutive_failures", args: { tool, n } }` | `consecutive_tool_failures` | Self-throttling rules. Action MUST be `"ask"`. |
+| "during cleanup" / "after compaction" | `predicate: { name: "last_event", args: { name: "PreCompact" } }` | `tool_sequence` | Phase-scoped. Action MUST be `"ask"`. |
 
 **If a predicate isn't in this table, the imperative's "always X before Y" form must downgrade to `ask` per §6 ‡** — and the imperative's "no observable session-state primitive" gap should be recorded in the rule's `distilled_action_reason` so future-you can spot which predicates need adding.
 
@@ -462,7 +481,22 @@ Skill-sourced rules ALWAYS use the `skill:` scheme; they carry their physical in
 
 **`confidence`:** 0.95 for clean direct-prohibition. 0.85 for positive-form. 0.7 for cases where the trigger required interpretation. Below 0.7 → downgrade to advisory.
 
-**Schema attribution.** The shape above is the Interlinked harness's `GuardRule`, defined at `src/harness/types.ts` in the `interlinked-cli` package. The four sidecar fields (`source`, `distilled_action_reason`, `confidence`, `user_modified`) are the only additions this skill makes; the harness ignores them at evaluation. Other hook engines that want to consume the same artifact must implement matching evaluation semantics — regex on `tool_input` fields, the six action types (`block` / `warn` / `rewrite` / `soft_block` / `ask` / advisory), severity, keyword quick-reject, role scoping, and exception patterns. The skill targets `GuardRule` because it's the most expressive open enforcement primitive today; downgrading to a less-expressive runtime (Claude Code's `permissions.deny[]`, Cursor `.mdc` globs, Codex deny configs) would lose the regex/PostToolUse/severity dimensions, so this skill does not ship multi-backend adapters. If you want to use the artifact outside Interlinked, write your own evaluator against this schema.
+**`active_when` population (binding):** every distilled rule with a known scope MUST carry an `active_when` field per the table below. Rules from project-wide imperative sources (root CLAUDE.md, AGENTS.md, etc.) omit `active_when` (always-on). Rules from skill bodies, model-overlay files, or path-scoped sources populate it deterministically. Population is purely structural — no LLM judgment.
+
+| Source location | `active_when` populated as |
+|---|---|
+| `<path>/AGENTS.md`, `<path>/CLAUDE.md`, `<path>/AGENTS.override.md`, `*.local.md`, `.clinerules/`, `.cursor/rules/`, `.continue/rules/`, `.windsurf/rules/`, `.augment/rules/`, `.tabnine/`, `.kilocoderules` | omitted (always-on) — these are the project-wide gates |
+| `<skill-name>/SKILL.md` body (any install path) | `{ skill: "<skill-name>" }` — skill-name from frontmatter |
+| `model-overlays/<runner>.md` (or any sibling persona-by-runner directory) | `{ overlay: "<runner>" }` |
+| `.github/instructions/<file>.instructions.md` with frontmatter `applyTo: "<glob>"` | `{ file_scope: "<glob-as-regex>" }` |
+| `.cursor/rules/*.mdc` with frontmatter `globs: [...]` | `{ file_scope: "<joined-globs-as-regex>" }` |
+| `.continue/rules/*.md` with frontmatter `alwaysApply: false` + `globs: [...]` | `{ file_scope: "<joined-globs-as-regex>" }` |
+| Skill body imperative referencing "after running /<X>" or "after the user invoked X" | merge `{ after_command: { pattern: "^/<X>\\b", window_steps: 20 } }` into the existing scope |
+| Skill body imperative referencing TDD state | **not emitted** — TDD is owned by harness primitives; rule is dropped per §2d skip list |
+
+When multiple axes are inferred from one source (e.g., a skill body that also mentions "after /ship"), all axes are AND-ed in `active_when`. The distiller emits the union; `confidence` drops by 0.05 per inferred axis beyond the first.
+
+**Schema attribution.** The shape above is the Interlinked harness's `GuardRule`, defined at `src/harness/types.ts` in the `interlinked-cli` package. The four sidecar fields (`source`, `distilled_action_reason`, `confidence`, `user_modified`) are the only additions this skill makes; the harness ignores them at evaluation. The `active_when` field is a real `GuardRule` field (added 2026-04 alongside the active-when scoping work) — the harness reads and evaluates it at runtime via `evaluator/active-when.ts`. Other hook engines that want to consume the same artifact must implement matching evaluation semantics — regex on `tool_input` fields, the six action types (`block` / `warn` / `rewrite` / `soft_block` / `ask` / advisory), severity, keyword quick-reject, role scoping, exception patterns, AND active_when scope evaluation. The skill targets `GuardRule` because it's the most expressive open enforcement primitive today; downgrading to a less-expressive runtime (Claude Code's `permissions.deny[]`, Cursor `.mdc` globs, Codex deny configs) would lose the regex/PostToolUse/severity/active_when dimensions, so this skill does not ship multi-backend adapters. If you want to use the artifact outside Interlinked, write your own evaluator against this schema.
 
 ---
 
@@ -863,36 +897,47 @@ Note: an earlier draft of this example carried a second positive pattern on `fil
 }
 ```
 
-### Example 7 — Skill-sourced rule (TDD pattern from a SKILL.md)
+### Example 7 — Skill-sourced rule with active_when scope
 
-**Source (`.claude/skills/tdd/SKILL.md:23-25`):** "explicitly bans the horizontal anti-pattern (write all tests, then all code)"
+**Source (`.claude/skills/migrate-to-shoehorn/SKILL.md:12`):** "**Test code only.** Never use shoehorn in production code."
 
 ```json
 {
-  "id": "enforce-skill-tdd-no-bulk-tests",
+  "id": "enforce-skill-migrate-to-shoehorn-no-prod-shoehorn",
   "enabled": true,
   "trigger": "PreToolUse",
   "tool_match": ["Edit", "Write", "MultiEdit", "apply_patch"],
-  "action": "ask",
+  "action": "block",
   "patterns": [
-    { "field": "file_path", "regex": "(^|/)src/", "negate": false },
-    { "field": "file_path", "regex": "\\.test\\.|/__tests__/", "negate": true }
+    { "field": "content", "regex": "from\\s+[\"']@total-typescript/shoehorn[\"']" },
+    { "field": "file_path", "regex": "\\.test\\.|\\.spec\\.|/__tests__/|/__fixtures__/", "negate": true }
   ],
-  "reason": "tdd skill bans horizontal anti-pattern (writing all tests, then all code). Confirm this is the right next step.",
-  "severity": "medium",
+  "reason": "BLOCKED by migrate-to-shoehorn skill: shoehorn is a test-only library — never import it from production code paths.",
+  "severity": "high",
   "category": "distilled-from-md",
+  "active_when": {
+    "skill": "migrate-to-shoehorn"
+  },
   "source": {
-    "group_id": "skill:tdd",
-    "group_label": "skill:tdd",
-    "file": ".claude/skills/tdd/SKILL.md",
-    "lines": [23, 25],
-    "quote": "explicitly bans the horizontal anti-pattern (write all tests, then all code)",
-    "lexical_marker": "bans",
+    "group_id": "skill:migrate-to-shoehorn",
+    "group_label": "skill:migrate-to-shoehorn",
+    "file": ".claude/skills/migrate-to-shoehorn/SKILL.md",
+    "lines": [12, 12],
+    "quote": "Never use shoehorn in production code.",
+    "lexical_marker": "Never",
     "marker_class": "block-direct"
   },
-  "distilled_action_reason": "downgraded block→ask: skill rules carry no runtime 'active skill' scope (see §2c), so a hard block on every src/ edit would be too broad outside a TDD session"
+  "distilled_action_reason": "lexical 'Never' + concrete content+file_path triggers (positive on import line, negate on test paths) → action=block per §5a; scope-gated to skill:migrate-to-shoehorn per §7 active_when population — rule is dormant until `interlinked skill enter migrate-to-shoehorn` fires"
 }
 ```
+
+Three things to notice about this example:
+
+1. **`active_when.skill` is populated automatically** because the source is `<skill-name>/SKILL.md`. The distiller doesn't ask; per §7's source-location table, every skill body rule gets `active_when.skill = "<skill-name>"`.
+2. **Action stays `block`, not downgraded to `ask`**. With pre-active-when distillation, skill rules had to soften because they were always-on and would over-fire outside their domain. With scope, full-strength enforcement is safe — the rule simply doesn't fire when the skill isn't active.
+3. **The skill author still has to opt in.** A user running this skill must include `interlinked skill enter migrate-to-shoehorn` in the slash-command preamble (and `leave` on completion). Skills that don't opt in distill correctly but their `active_when.skill` marker is never set, so the rule stays dormant. This is intentional — it makes activation explicit.
+
+Note: TDD-themed skills (Matt Pocock's `tdd/SKILL.md`, gstack's TDD prose, etc.) are **not** distilled by /enforce — see §2d skip list. TDD enforcement is owned by the harness's native primitives. This example uses a non-TDD skill so the worked example doesn't conflict with that policy.
 
 ### Example 8 — Conflict between AGENTS.override.md and AGENTS.md
 
@@ -949,6 +994,8 @@ If the user wants per-runner overrides ("only enforce this in Codex, not Claude"
 - Verbatim source quotes are non-negotiable.
 - Lexical strength is binding (§5 ladder).
 - `never` / `MUST NOT` / `forbidden` / `shall not` → **block**, no exceptions.
+- `active_when` population is binding (§7 source-location table). Skill-body rules ALWAYS carry `active_when.skill = "<skill-name>"`. Project-wide rules (CLAUDE.md, AGENTS.md, etc.) ALWAYS omit `active_when` (always-on). Skip is always safer than mis-scoping.
+- TDD-themed skills are skipped (§2d). Don't distill them — TDD enforcement is owned by harness primitives.
 - Skip is always safer than mis-distill.
 - Output goes only to `.interlinked/distilled-rules.json` (or `.review.json`) and `.interlinked/distilled-rules.overrides.json`.
 - Read the overrides file BEFORE extracting; honor `removed_groups`, `removed_rule_ids`, `disabled_rule_ids`, and `modifications`.
