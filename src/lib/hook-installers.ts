@@ -259,6 +259,7 @@ if [ -n "$PID" ] && ps -p "$PID" > /dev/null 2>&1; then
 fi
 
 if [ "$ALIVE" = "0" ]; then
+    BRAND="\${RED}\${BOLD}◆ interlinked\${RESET}"
     LINE1="\${BRAND}\${SEP}\${YELLOW}▼ harness offline\${RESET}\${SEP}\${RED}Claude is bypassing guardrails\${RESET}"
     LINE2="\${CYAN}↻ interlinked harness start\${RESET}"
     printf '%s\\n%s' "$LINE1" "$LINE2"
@@ -273,6 +274,68 @@ CLSF=$(read_snap classifier_enabled disabled)
 SCNF=$(read_snap scanner_enabled disabled)
 IDXS=$(read_snap index_status missing)
 IDXF=$(read_snap index_files 0)
+
+# --- Last-check + pending review state ---
+# Read here (not down with LINE2) so the BRAND can health-color from the
+# same data before LINE1 is built. The row-2 priority chain below reuses
+# every variable populated in this block.
+LAST_CHECK="$ID/last-check.txt"
+LAST_TXT=""
+LAST_AGE=999999
+if [ -f "$LAST_CHECK" ]; then
+    LAST_TXT=$(head -1 "$LAST_CHECK" 2>/dev/null)
+    NOW=$(date +%s)
+    MT=$(stat -f %m "$LAST_CHECK" 2>/dev/null || stat -c %Y "$LAST_CHECK" 2>/dev/null || echo "$NOW")
+    LAST_AGE=$((NOW - MT))
+fi
+
+# Format relative time as "Xs / Xm / Xh ago".
+fmt_age() {
+    local s="$1"
+    if [ "$s" -lt 60 ]; then printf '%ss ago' "$s"
+    elif [ "$s" -lt 3600 ]; then printf '%sm ago' "$((s / 60))"
+    elif [ "$s" -lt 86400 ]; then printf '%sh ago' "$((s / 3600))"
+    else printf '%sd ago' "$((s / 86400))"
+    fi
+}
+
+# Extract one named field from the structured last-check line.
+last_field() {
+    echo "$LAST_TXT" | grep -oE "$1=[^|]*" | head -1 | sed -E "s/^$1=//; s/[[:space:]]+$//"
+}
+
+# Pending review count — promotes to row 2 if non-zero, and yellows BRAND.
+REVIEW_FILE="$ID/scanner/review-pending"
+REVIEW_COUNT=0
+if [ -f "$REVIEW_FILE" ]; then
+    REVIEW_COUNT=$(cat "$REVIEW_FILE" 2>/dev/null | tr -d '[:space:]')
+    [ -z "$REVIEW_COUNT" ] && REVIEW_COUNT=0
+fi
+
+LAST_RESULT=$(last_field result)
+LAST_FILE=$(last_field file)
+LAST_TOOL=$(last_field tool)
+LAST_COUNT=$(last_field count)
+LAST_MS=$(last_field ms)
+LAST_RULE=$(last_field rule)
+LAST_SUMMARY=$(last_field summary)
+LAST_TARGET="$LAST_FILE"
+[ -z "$LAST_TARGET" ] && LAST_TARGET="$LAST_TOOL"
+
+# --- Brand color reflects harness health ---
+# Daemon-dead is colored RED earlier in the ALIVE=0 branch.
+# Here (alive): RED on a recent block, YELLOW on recent warnings or
+# pending PII review, GREEN otherwise. Time windows match LINE2's
+# priority cutoffs so the color and the row-2 message stay coherent.
+BRAND_COLOR="$GREEN"
+if [ "$REVIEW_COUNT" != "0" ]; then
+    BRAND_COLOR="$YELLOW"
+elif [ "$LAST_RESULT" = "block" ] && [ "$LAST_AGE" -lt 300 ]; then
+    BRAND_COLOR="$RED"
+elif [ "$LAST_RESULT" = "warn" ] && [ "$LAST_AGE" -lt 120 ]; then
+    BRAND_COLOR="$YELLOW"
+fi
+BRAND="\${BRAND_COLOR}\${BOLD}◆ interlinked\${RESET}"
 
 # --- Row 1: tight, every segment earns its slot ---
 # "◆ interlinked · 106 rules · 18 checks · classifier off · PII filter off · index off"
@@ -330,52 +393,9 @@ esac
 LINE1="\${BRAND}\${SEP}\${RULES_SEG}\${SEP}\${CHECKS_SEG}\${SEP}\${CLS_SEG}\${SEP}\${SCN_SEG}\${SEP}\${IDX_SEG}\${SYNC_SEG}"
 
 # --- Row 2: outcome language from structured last-check.txt ---
-# The hook writes pipe-delimited fields like:
-#   result=warn | tool=Edit | file=src/foo.ts | count=3 | ms=240
-# Bash extracts each field via grep + cut.
-
-LAST_CHECK="$ID/last-check.txt"
-LAST_TXT=""
-LAST_AGE=999999
-if [ -f "$LAST_CHECK" ]; then
-    LAST_TXT=$(head -1 "$LAST_CHECK" 2>/dev/null)
-    NOW=$(date +%s)
-    MT=$(stat -f %m "$LAST_CHECK" 2>/dev/null || stat -c %Y "$LAST_CHECK" 2>/dev/null || echo "$NOW")
-    LAST_AGE=$((NOW - MT))
-fi
-
-# Format relative time as "Xs / Xm / Xh ago".
-fmt_age() {
-    local s="$1"
-    if [ "$s" -lt 60 ]; then printf '%ss ago' "$s"
-    elif [ "$s" -lt 3600 ]; then printf '%sm ago' "$((s / 60))"
-    elif [ "$s" -lt 86400 ]; then printf '%sh ago' "$((s / 3600))"
-    else printf '%sd ago' "$((s / 86400))"
-    fi
-}
-
-# Extract one named field from the structured last-check line.
-last_field() {
-    echo "$LAST_TXT" | grep -oE "$1=[^|]*" | head -1 | sed -E "s/^$1=//; s/[[:space:]]+$//"
-}
-
-# Pending review count — promotes to row 2 if non-zero.
-REVIEW_FILE="$ID/scanner/review-pending"
-REVIEW_COUNT=0
-if [ -f "$REVIEW_FILE" ]; then
-    REVIEW_COUNT=$(cat "$REVIEW_FILE" 2>/dev/null | tr -d '[:space:]')
-    [ -z "$REVIEW_COUNT" ] && REVIEW_COUNT=0
-fi
-
-LAST_RESULT=$(last_field result)
-LAST_FILE=$(last_field file)
-LAST_TOOL=$(last_field tool)
-LAST_COUNT=$(last_field count)
-LAST_MS=$(last_field ms)
-LAST_RULE=$(last_field rule)
-LAST_SUMMARY=$(last_field summary)
-LAST_TARGET="$LAST_FILE"
-[ -z "$LAST_TARGET" ] && LAST_TARGET="$LAST_TOOL"
+# LAST_*/REVIEW_COUNT and the fmt_age/last_field helpers were populated
+# above (alongside the BRAND coloring). The priority chain below just
+# consumes them.
 
 LINE2=""
 
