@@ -4,7 +4,392 @@
 // for the runtime script. `\\n` in this file becomes `\n` in the emitted .mjs.
 
 /** Public API — consumed by buildHookScript in hooks-template.ts. */
-export const SESSION_STATE_CHUNK = `// --- Thinking Extraction — real-time capture from transcript ---
+export const SESSION_STATE_CHUNK = `// --- Side-stream JSONL paths ---
+// All written from the hook process so consumers can grep the streams
+// without round-tripping through the harness daemon. Each file caps its
+// own size via rotation when needed; activity.jsonl remains the single
+// authoritative event stream and these are derivative views.
+const FILES_TOUCHED_PATH = join(DATA_DIR, "files-touched.jsonl");
+const TESTS_PATH = join(DATA_DIR, "tests.jsonl");
+const COSTS_PATH = join(DATA_DIR, "costs.jsonl");
+const COSTS_CURSOR_PATH = join(DATA_DIR, "costs-cursor.json");
+const VERIFY_RUNS_PATH = join(DATA_DIR, "verify-runs.jsonl");
+const RESERVATION_EVENTS_PATH = join(DATA_DIR, "reservation-events.jsonl");
+const GRAPH_HISTORY_PATH = join(DATA_DIR, "graph-history.jsonl");
+const SUGGESTION_OUTCOMES_PATH = join(DATA_DIR, "suggestion-outcomes.jsonl");
+const RULES_STATS_PATH = join(DATA_DIR, "rules-stats.json");
+
+function appendJsonl(path, record) {
+    try {
+        const dir = dirname(path);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        appendFileSync(path, JSON.stringify(record) + "\\n");
+    } catch (_err) { void 0; /* intentional: best-effort side-stream write */ }
+}
+
+// --- files-touched.jsonl — flat per-file activity index ---
+// Append on every Edit/Write/MultiEdit PostToolUse so "what's the recent
+// history on file X?" is O(grep) instead of full activity.jsonl scan.
+function emitFilesTouched(sessionId, agentName, event) {
+    const tn = event.tool_name || "";
+    if (tn !== "Edit" && tn !== "Write" && tn !== "MultiEdit" && tn !== "NotebookEdit" && tn !== "apply_patch") return;
+    const ti = event.tool_input || {};
+    const file = ti.file_path || ti.path || ti.target_file || (Array.isArray(event.files_modified) ? event.files_modified[0] : null);
+    if (!file) return;
+    appendJsonl(FILES_TOUCHED_PATH, {
+        ts: new Date().toISOString(),
+        file,
+        session_id: sessionId || null,
+        agent: agentName || null,
+        tool: tn,
+        lines_added: event.lines_added || 0,
+        lines_removed: event.lines_removed || 0,
+        hunks_count: event.hunks_count || 0,
+        content_sha256: event.content_sha256 || null,
+        turn_id: event.turn_id || null,
+        tool_outcome: event.tool_outcome || null,
+    });
+}
+
+// --- tests.jsonl — structured test/typecheck/lint command outcomes ---
+// Detected from Bash PostToolUse by matching the command shape against a
+// known set of test-runners. Without explicit exit_code from Claude Code's
+// tool_response, success/failure is inferred from stderr length + duration
+// + the tool's own success status field.
+const TEST_COMMAND_PATTERNS = [
+    { kind: "vitest",  match: /\\bvitest\\b/ },
+    { kind: "jest",    match: /\\bjest\\b/ },
+    { kind: "pytest",  match: /\\bpytest\\b/ },
+    { kind: "go-test", match: /\\bgo\\s+test\\b/ },
+    { kind: "cargo-test", match: /\\bcargo\\s+test\\b/ },
+    { kind: "npm-test",   match: /\\bnpm\\s+(?:run\\s+)?test\\b/ },
+    { kind: "yarn-test",  match: /\\byarn\\s+(?:run\\s+)?test\\b/ },
+    { kind: "pnpm-test",  match: /\\bpnpm\\s+(?:run\\s+)?test\\b/ },
+    { kind: "tsc",        match: /\\b(?:npx\\s+)?tsc\\b/ },
+    { kind: "biome",      match: /\\bbiome\\b/ },
+    { kind: "oxlint",     match: /\\boxlint\\b/ },
+    { kind: "eslint",     match: /\\beslint\\b/ },
+    { kind: "ruff",       match: /\\bruff\\b/ },
+    { kind: "mypy",       match: /\\bmypy\\b/ },
+    { kind: "interlinked-verify", match: /\\binterlinked\\s+verify\\b/ },
+];
+
+function classifyTestCommand(command) {
+    if (!command || typeof command !== "string") return null;
+    for (const p of TEST_COMMAND_PATTERNS) {
+        if (p.match.test(command)) return p.kind;
+    }
+    return null;
+}
+
+function emitTestRunIfApplicable(sessionId, agentName, event) {
+    if (event.tool_name !== "Bash" && event.tool_name !== "Shell" && event.tool_name !== "shell" && event.tool_name !== "run_command") return;
+    const ti = event.tool_input || {};
+    const cmd = typeof ti.command === "string" ? ti.command : null;
+    const kind = classifyTestCommand(cmd);
+    if (!kind) return;
+    const tr = event.tool_response;
+    let stdout = "";
+    let stderr = "";
+    let interrupted = false;
+    if (tr && typeof tr === "object") {
+        stdout = typeof tr.stdout === "string" ? tr.stdout : "";
+        stderr = typeof tr.stderr === "string" ? tr.stderr : "";
+        interrupted = tr.interrupted === true;
+    }
+    // Heuristic outcome: explicit interrupt → interrupted; non-empty stderr
+    // OR known-failure marker in stdout → fail; otherwise pass. Imperfect
+    // (npm prints to stderr on success sometimes), but better than nothing
+    // and consumers can re-derive from the source command if they want.
+    const failureMarkers = /(?:^|\\n)\\s*(?:FAIL|FAILED|✘|error TS\\d+|error:|Test (?:Suites|Files): \\d+ failed)/m;
+    const passMarkers = /(?:^|\\n)\\s*(?:PASS|✓|passed|OK\\b|0 errors|all clean|Tests: \\d+ passed)/m;
+    let outcome = "unknown";
+    if (interrupted) outcome = "interrupted";
+    else if (failureMarkers.test(stdout) || failureMarkers.test(stderr)) outcome = "fail";
+    else if (passMarkers.test(stdout) || passMarkers.test(stderr)) outcome = "pass";
+    else if (event.tool_outcome === "error") outcome = "fail";
+    else if (event.tool_outcome === "success") outcome = "pass";
+
+    appendJsonl(TESTS_PATH, {
+        ts: new Date().toISOString(),
+        kind,
+        command: cmd ? (cmd.length > 400 ? cmd.slice(0, 400) + "..." : cmd) : null,
+        outcome,
+        duration_ms: event.duration_ms || null,
+        session_id: sessionId || null,
+        agent: agentName || null,
+        turn_id: event.turn_id || null,
+        // Bounded tail of stderr/stdout for diagnostic context. The full
+        // text is still in activity.jsonl's tool_response for the same
+        // turn, joinable via turn_id.
+        stderr_tail: stderr ? stderr.slice(-1024) : null,
+        stdout_tail: stdout ? stdout.slice(-512) : null,
+    });
+}
+
+// --- costs.jsonl — token usage per turn from transcript_path ---
+// Reads the Claude Code transcript JSONL incrementally (cursor file) and
+// emits one row per assistant message with usage data attached. Triggered
+// on Stop and SessionEnd so the read happens at most once per turn.
+function emitCostsFromTranscript(sessionId, transcriptPath) {
+    if (!sessionId || !transcriptPath || !existsSync(transcriptPath)) return;
+    let cursor = {};
+    try { cursor = JSON.parse(readFileSync(COSTS_CURSOR_PATH, "utf-8")) || {}; }
+    catch (_err) { cursor = {}; }
+    const previousOffset = (cursor[sessionId] && typeof cursor[sessionId].offset === "number") ? cursor[sessionId].offset : 0;
+    let stat;
+    try { stat = statSync(transcriptPath); } catch { return; }
+    if (stat.size <= previousOffset) return;
+    const fd = openSync(transcriptPath, "r");
+    let chunk = "";
+    try {
+        const buf = Buffer.alloc(stat.size - previousOffset);
+        readSync(fd, buf, 0, buf.length, previousOffset);
+        chunk = buf.toString("utf-8");
+    } finally { closeSync(fd); }
+    let emitted = 0;
+    for (const line of chunk.split("\\n")) {
+        if (!line.trim()) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.type !== "assistant") continue;
+        const usage = (obj.message && obj.message.usage) || obj.usage;
+        if (!usage) continue;
+        const model = (obj.message && obj.message.model) || obj.model || null;
+        appendJsonl(COSTS_PATH, {
+            ts: obj.timestamp || new Date().toISOString(),
+            session_id: sessionId,
+            message_id: (obj.message && obj.message.id) || obj.uuid || null,
+            model,
+            input_tokens: usage.input_tokens || 0,
+            output_tokens: usage.output_tokens || 0,
+            cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+            stop_reason: (obj.message && obj.message.stop_reason) || null,
+        });
+        emitted++;
+    }
+    cursor[sessionId] = { offset: stat.size, last_emit_at: new Date().toISOString() };
+    // Bound the cursor file at 100 sessions
+    const keys = Object.keys(cursor);
+    if (keys.length > 100) {
+        for (const k of keys.slice(0, keys.length - 100)) delete cursor[k];
+    }
+    try { writeFileSync(COSTS_CURSOR_PATH, JSON.stringify(cursor)); } catch (_err) { void 0; /* intentional: cursor write best-effort */ }
+    return emitted;
+}
+
+// --- graph-history.jsonl — once-per-day project graph snapshot ---
+// Triggered on SessionStart. Cheap O(1) check on file mtime first; the
+// expensive walk only runs when stale. Counts files, lines, exported
+// symbol candidates (regex), and dependency edges (regex). Trades a bit
+// of accuracy for hook latency vs. running tsc/dependency-cruiser.
+const GRAPH_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
+function maybeSnapshotGraph(cwd) {
+    try {
+        if (!existsSync(GRAPH_HISTORY_PATH)) {
+            // First run — proceed.
+        } else {
+            const last = statSync(GRAPH_HISTORY_PATH).mtimeMs;
+            if (Date.now() - last < GRAPH_SNAPSHOT_TTL_MS) return;
+        }
+        const snap = computeGraphSnapshot(cwd);
+        if (!snap) return;
+        appendJsonl(GRAPH_HISTORY_PATH, snap);
+    } catch (_err) { void 0; /* intentional: snapshot best-effort */ }
+}
+
+function computeGraphSnapshot(cwd) {
+    const SRC_EXTS = /\\.(?:tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp)$/;
+    const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage", "target", ".venv", "venv", "__pycache__"]);
+    let files = 0, lines = 0, exports = 0, imports = 0, cycleHints = 0, hubs = 0;
+    const importers = new Map();
+    const dirsToVisit = [cwd || process.cwd()];
+    while (dirsToVisit.length > 0 && files < 20000) {
+        const d = dirsToVisit.pop();
+        let entries = [];
+        try { entries = readdirSync(d, { withFileTypes: true }); }
+        catch (_err) { continue; }
+        for (const e of entries) {
+            if (SKIP_DIRS.has(e.name)) continue;
+            const full = join(d, e.name);
+            if (e.isDirectory()) { dirsToVisit.push(full); continue; }
+            if (!e.isFile() || !SRC_EXTS.test(e.name)) continue;
+            files++;
+            let content;
+            try { content = readFileSync(full, "utf-8"); } catch { continue; }
+            lines += (content.match(/\\n/g) || []).length + 1;
+            const ex = content.match(/\\bexport\\s+(?:default\\s+|const\\s+|function\\s+|class\\s+|interface\\s+|type\\s+|enum\\s+)/g);
+            if (ex) exports += ex.length;
+            const im = content.match(/^\\s*import\\s.*?from\\s+["']([^"']+)["']|^\\s*from\\s+(\\S+)\\s+import/gm);
+            if (im) {
+                imports += im.length;
+                for (const m of im) {
+                    const targetMatch = m.match(/from\\s+["']([^"']+)["']/);
+                    const target = targetMatch ? targetMatch[1] : null;
+                    if (target && target.startsWith(".")) {
+                        importers.set(target, (importers.get(target) || 0) + 1);
+                    }
+                }
+            }
+        }
+    }
+    for (const [, count] of importers) if (count >= 8) hubs++;
+    // Cycle hint: relative imports that look like ../<self> patterns.
+    // Replaced by the harness's full graph if available, but this gives
+    // a coarse trend signal without that dependency.
+    cycleHints = 0;
+    return {
+        ts: new Date().toISOString(),
+        files,
+        lines,
+        export_decls: exports,
+        import_decls: imports,
+        hub_files: hubs,
+        cycle_hints: cycleHints,
+    };
+}
+
+// --- suggestion-outcomes.jsonl — close the loop on advisory warnings ---
+// suggestion-telemetry.jsonl rows have outcome=null because the harness
+// emits them at warn-time with no knowledge of what happens next. This
+// reconciler walks the telemetry stream, groups by (file, check, line),
+// and resolves each shown warning by checking the current file state:
+//   - line gone → outcome="fixed" (agent or human edited the line)
+//   - line still present → outcome="ignored"
+//   - file gone → outcome="file_removed"
+// Cap on the number of rows examined per call (most recent 5000) so a
+// long-running session doesn't pay quadratic time on every reconcile.
+function reconcileSuggestionOutcomes(cwd) {
+    try {
+        const telemetryPath = join(DATA_DIR, "suggestion-telemetry.jsonl");
+        const cursorPath = join(DATA_DIR, "suggestion-outcomes-cursor.json");
+        if (!existsSync(telemetryPath)) return;
+        let cursor = { offset: 0 };
+        try { cursor = JSON.parse(readFileSync(cursorPath, "utf-8")) || cursor; }
+        catch (_err) { /* intentional: stale cursor → start over */ }
+        const stat = statSync(telemetryPath);
+        if (stat.size <= cursor.offset) return;
+        const fd = openSync(telemetryPath, "r");
+        const buf = Buffer.alloc(stat.size - cursor.offset);
+        try { readSync(fd, buf, 0, buf.length, cursor.offset); }
+        finally { closeSync(fd); }
+        const lines = buf.toString("utf-8").split("\\n").filter(Boolean);
+        const fileCache = new Map();
+        let emitted = 0;
+        for (const line of lines) {
+            let r;
+            try { r = JSON.parse(line); } catch { continue; }
+            if (!r.shown) continue;
+            const file = r.file;
+            if (!file || typeof file !== "string") continue;
+            let content = fileCache.get(file);
+            if (content === undefined) {
+                try {
+                    const abs = file.startsWith("/") ? file : join(cwd, file);
+                    content = existsSync(abs) ? readFileSync(abs, "utf-8") : null;
+                } catch { content = null; }
+                fileCache.set(file, content);
+            }
+            let outcome;
+            if (content === null) outcome = "file_removed";
+            else if (typeof r.line === "number" && r.message) {
+                // Did the warned-about source text survive? Use the message
+                // as a proxy — it usually contains the offending snippet.
+                const snippet = String(r.message).split("\\n")[0].slice(0, 120);
+                if (snippet && content.includes(snippet)) outcome = "ignored";
+                else outcome = "fixed";
+            } else {
+                outcome = "unresolved";
+            }
+            appendJsonl(SUGGESTION_OUTCOMES_PATH, {
+                ts: new Date().toISOString(),
+                file,
+                check: r.check,
+                line: r.line,
+                session_id: r.session_id,
+                agent: r.agent_name,
+                outcome,
+                threshold: r.threshold,
+                score: r.score,
+            });
+            emitted++;
+        }
+        cursor.offset = stat.size;
+        try { writeFileSync(cursorPath, JSON.stringify(cursor)); } catch (_err) { void 0; /* intentional: cursor write best-effort */ }
+        return emitted;
+    } catch (_err) { void 0; /* intentional: reconciler best-effort */ }
+}
+
+// --- rules-stats.json — periodic rollup of guard rule activity ---
+// Aggregates guard_allow/guard_warn/guard_block rows from activity.jsonl
+// over the last N days. Emitted once per ROLLUP_TTL window so SessionEnd
+// hooks don't pay O(activity.jsonl) on every session close.
+const RULES_STATS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function maybeRollupRulesStats() {
+    try {
+        let mtime = 0;
+        if (existsSync(RULES_STATS_PATH)) {
+            mtime = statSync(RULES_STATS_PATH).mtimeMs;
+        }
+        if (Date.now() - mtime < RULES_STATS_TTL_MS) return;
+        if (!existsSync(ACTIVITY_PATH)) return;
+        const stat = statSync(ACTIVITY_PATH);
+        // Only scan up to last 50 MB of activity.jsonl (~1M events) — older
+        // rule activity is captured in prior rollup files anyway.
+        const SCAN_BYTES = 50 * 1024 * 1024;
+        const start = Math.max(0, stat.size - SCAN_BYTES);
+        const fd = openSync(ACTIVITY_PATH, "r");
+        const buf = Buffer.alloc(stat.size - start);
+        try { readSync(fd, buf, 0, buf.length, start); }
+        finally { closeSync(fd); }
+        const text = buf.toString("utf-8");
+        // First newline boundary so we don't try to parse a partial line.
+        const firstNl = text.indexOf("\\n");
+        const lines = firstNl >= 0 ? text.slice(firstNl + 1).split("\\n") : text.split("\\n");
+        const counts = {}; // rule_id → {allow, warn, block, ask}
+        let total = 0;
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            let r;
+            try { r = JSON.parse(line); } catch { continue; }
+            const t = r.type;
+            if (t !== "guard_allow" && t !== "guard_warn" && t !== "guard_block") continue;
+            const id = r.guard_rule_id || "<no_rule_id>";
+            if (!counts[id]) counts[id] = { allow: 0, warn: 0, block: 0, ask: 0 };
+            if (t === "guard_allow") counts[id].allow++;
+            else if (t === "guard_warn") counts[id].warn++;
+            else if (t === "guard_block") {
+                if (r.guard_decision === "ask") counts[id].ask++;
+                else counts[id].block++;
+            }
+            total++;
+        }
+        const top = Object.entries(counts)
+            .map(([id, c]) => ({
+                rule_id: id,
+                allow: c.allow,
+                warn: c.warn,
+                block: c.block,
+                ask: c.ask,
+                total: c.allow + c.warn + c.block + c.ask,
+                noise_ratio: c.warn + c.block === 0 ? 0 : Number((c.allow / (c.allow + c.warn + c.block + c.ask)).toFixed(3)),
+            }))
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 100);
+        const rollup = {
+            generated_at: new Date().toISOString(),
+            scanned_events: total,
+            scanned_bytes: buf.length,
+            window: "last 50 MB of activity.jsonl",
+            rules: top,
+        };
+        try { writeFileSync(RULES_STATS_PATH, JSON.stringify(rollup, null, 2)); }
+        catch (_err) { void 0; /* intentional: rollup write best-effort */ }
+    } catch (_err) { void 0; /* intentional: rollup best-effort */ }
+}
+
+// --- Thinking Extraction — real-time capture from transcript ---
 // Reads new thinking blocks from the Claude Code transcript JSONL on each
 // hook invocation. Uses a byte-offset cursor persisted to disk so the
 // short-lived hook process only reads incremental content.
@@ -69,7 +454,7 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         const dir = dirname(ACTIVITY_PATH);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         const record = {
-            schema_version: 3,
+            schema_version: 4,
             ts: new Date().toISOString(),
             agent: agentName || "unknown",
             workspace_key: workspaceKey || null,
@@ -92,6 +477,28 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         if (event.tool_use_id) record.tool_use_id = event.tool_use_id;
         if (event.error !== undefined) record.error = event.error;
         if (event.is_interrupt !== undefined) record.is_interrupt = event.is_interrupt;
+        // v4 derived outcome fields (canonical across all clients — set
+        // by attachOutcome in the per-client PostToolUse normalizers)
+        if (event.tool_outcome) record.tool_outcome = event.tool_outcome;
+        if (event.exit_code !== undefined && event.exit_code !== null) record.exit_code = event.exit_code;
+        if (event.stderr) record.stderr = event.stderr;
+        if (event.stdout) record.stdout = event.stdout;
+        if (event.tool_response_sha256) record.tool_response_sha256 = event.tool_response_sha256;
+        // v4 diff fingerprints (set by attachEditMetrics for Edit/Write/MultiEdit/NotebookEdit)
+        if (event.lines_added !== undefined) record.lines_added = event.lines_added;
+        if (event.lines_removed !== undefined) record.lines_removed = event.lines_removed;
+        if (event.net_loc_delta !== undefined) record.net_loc_delta = event.net_loc_delta;
+        if (event.hunks_count !== undefined) record.hunks_count = event.hunks_count;
+        if (event.content_sha256) record.content_sha256 = event.content_sha256;
+        // v4 turn linkage
+        if (event.turn_id) record.turn_id = event.turn_id;
+        if (event.parent_tool_use_id) record.parent_tool_use_id = event.parent_tool_use_id;
+        if (event.parent_session_id) record.parent_session_id = event.parent_session_id;
+        // Side-streams: derivative views written alongside activity.jsonl.
+        // Each is a no-op for irrelevant events, so the cost on the hot
+        // path (PreToolUse for non-edit tools) is one early-return apiece.
+        try { emitFilesTouched(sessionId, agentName, event); } catch (_err) { void 0; /* intentional: best-effort side-stream */ }
+        try { emitTestRunIfApplicable(sessionId, agentName, event); } catch (_err) { void 0; /* intentional: best-effort side-stream */ }
         if (event.cwd) record.cwd = event.cwd;
         if (event.permission_mode) record.permission_mode = event.permission_mode;
         if (event.transcript_path) record.transcript_path = event.transcript_path;
@@ -159,10 +566,31 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
 
+// Sync-errors log rotation: keep file under SYNC_ERRORS_MAX_BYTES
+// (default 10 MB). On rollover, rename current → .1 (overwriting any
+// existing .1 — single-generation retention) and start fresh. Without
+// this cap, a long-running agent with a flaky network can grow this
+// file by ~100 bytes/event for every realtime POST that fails — the
+// real production observation was 3 GB on a single workspace.
+const SYNC_ERRORS_MAX_BYTES = 10 * 1024 * 1024;
+function rotateSyncErrorsIfNeeded() {
+    try {
+        if (!existsSync(SYNC_ERRORS_PATH)) return;
+        const size = statSync(SYNC_ERRORS_PATH).size;
+        if (size < SYNC_ERRORS_MAX_BYTES) return;
+        const archived = SYNC_ERRORS_PATH + ".1";
+        if (existsSync(archived)) {
+            try { unlinkSync(archived); } catch (_err) { void 0; /* intentional: no-op */ }
+        }
+        renameSync(SYNC_ERRORS_PATH, archived);
+    } catch (_err) { void 0; /* intentional: rotation is best-effort */ }
+}
+
 function appendSyncError(stage, message) {
     try {
         const dir = dirname(SYNC_ERRORS_PATH);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        rotateSyncErrorsIfNeeded();
         appendFileSync(
             SYNC_ERRORS_PATH,
             JSON.stringify({
@@ -224,6 +652,34 @@ async function flushRealtimeRetry(serverUrl, authHeader) {
             remaining.length > 0 ? (remaining.join("\\n") + "\\n") : "",
         );
     } catch (_err) { void 0; /* intentional: no-op */ }
+}
+
+// Compact target for tool_sequence entries. file_path → basename for file
+// tools, first command word for Bash, first 30 chars of pattern for Grep,
+// host for WebFetch. Empty string means "no target" (caller drops the
+// suffix).
+function sessionTarget(event) {
+    const ti = event.tool_input || {};
+    const tn = event.tool_name || "";
+    if (typeof ti.file_path === "string" && ti.file_path) {
+        const parts = ti.file_path.split("/");
+        return parts[parts.length - 1] || ti.file_path;
+    }
+    if (typeof ti.path === "string" && ti.path) {
+        const parts = ti.path.split("/");
+        return parts[parts.length - 1] || ti.path;
+    }
+    if (typeof ti.command === "string" && ti.command) {
+        const first = ti.command.trim().split(/\\s+/)[0] || "";
+        return first.slice(0, 30);
+    }
+    if (typeof ti.pattern === "string" && ti.pattern) return ti.pattern.slice(0, 30);
+    if (typeof ti.url === "string" && ti.url) {
+        const m = ti.url.match(/^https?:\\/\\/([^/]+)/);
+        return m ? m[1] : ti.url.slice(0, 30);
+    }
+    if (typeof ti.query === "string" && ti.query) return ti.query.slice(0, 30);
+    return tn === "Bash" ? "?" : "";
 }
 
 // --- Capture code edit from PostToolUse Edit/Write ---
@@ -423,6 +879,43 @@ function reconcileCommits(sessionId) {
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
 
+// --- Turn ID stamping ---
+// A "turn" is the unit of work between two user_prompt events. We persist a
+// {session_id → turn_id} cursor so every tool/guard/post event between two
+// prompts shares an identifier. Without this, "how many tools did the agent
+// use to answer prompt X?" is unanswerable from activity.jsonl alone.
+const TURN_CURSOR_PATH = join(DATA_DIR, "turn-cursor.json");
+function readTurnCursor() {
+    if (!existsSync(TURN_CURSOR_PATH)) return {};
+    try { return JSON.parse(readFileSync(TURN_CURSOR_PATH, "utf-8")) || {}; }
+    catch (_err) { return {}; }
+}
+function writeTurnCursor(cursor) {
+    try {
+        writeFileSync(TURN_CURSOR_PATH, JSON.stringify(cursor));
+    } catch (_err) { void 0; /* intentional: no-op */ }
+}
+function stampTurnId(sessionId, event) {
+    if (!sessionId) return;
+    if (event.event_type === "user_prompt") {
+        // Mint a new turn id keyed on this session.
+        const cursor = readTurnCursor();
+        const turnId = sessionId.slice(0, 8) + "-" + Date.now().toString(36);
+        cursor[sessionId] = turnId;
+        // Bound the cursor file: keep only the last 50 sessions.
+        const keys = Object.keys(cursor);
+        if (keys.length > 50) {
+            for (const k of keys.slice(0, keys.length - 50)) delete cursor[k];
+        }
+        writeTurnCursor(cursor);
+        event.turn_id = turnId;
+        return;
+    }
+    // For all other events, attach the current turn id (if any).
+    const cursor = readTurnCursor();
+    if (cursor[sessionId]) event.turn_id = cursor[sessionId];
+}
+
 // --- Session state update (v2: tokens, subagents) ---
 function updateSessionState(sessionId, agentName, event) {
     if (!sessionId) return;
@@ -442,6 +935,18 @@ function updateSessionState(sessionId, agentName, event) {
 
         const toolsUsed = existing?.tools_used || {};
         if (isTool && event.tool_name) toolsUsed[event.tool_name] = (toolsUsed[event.tool_name] || 0) + 1;
+
+        // Tool sequence — ordered list of tool invocations. Distinct from the
+        // count map above: order is what reveals retry-loops and thrashing.
+        // Capped at 500 entries (sliding window) so long sessions don't
+        // unbound the JSON file.
+        const toolSequence = existing?.tool_sequence || [];
+        if (isTool && event.tool_name && event.event_type === "tool_use") {
+            const target = sessionTarget(event);
+            const entry = target ? (event.tool_name + ":" + target) : event.tool_name;
+            toolSequence.push(entry);
+            if (toolSequence.length > 500) toolSequence.splice(0, toolSequence.length - 500);
+        }
 
         const filesTouched = new Set(existing?.files_touched || []);
         if (isTool && event.tool_name && ["Read","Write","Edit","Update","ReadFile","WriteFile","EditFile","read_file","write_file","edit_file"].includes(event.tool_name) && event.tool_input_summary) {
@@ -505,7 +1010,9 @@ function updateSessionState(sessionId, agentName, event) {
             error_count: (existing?.error_count || 0) + (isError ? 1 : 0),
             files_touched: [...filesTouched],
             tools_used: toolsUsed,
+            tool_sequence: toolSequence,
         };
+        if (event.parent_session_id) state.parent_session_id = event.parent_session_id;
         // Only include v2 fields if they have data
         const hasTokens = tokensTotal.input > 0 || tokensTotal.output > 0;
         if (hasTokens) state.tokens_total = tokensTotal;

@@ -65,16 +65,17 @@ function categorizeToolError(input) {
 // Step 1b — lines-of-code delta per edit. Computed from the tool_input alone
 // (no filesystem I/O), so it's essentially free on every PostToolUse.
 // Returns null for tools that aren't file edits — callers skip attaching
-// the fields in that case.
+// the fields in that case. \`hunks\` is the count of independent edit pairs
+// (1 for Edit/Write/NotebookEdit, edits.length for MultiEdit).
 function computeLocDelta(toolName, toolInput) {
     if (!toolInput) return null;
     const nl = (s) => (typeof s === "string" ? (s.match(/\\n/g) || []).length : 0);
     if (toolName === "Edit" || toolName === "str_replace" || toolName === "apply_patch") {
-        return { added: nl(toolInput.new_string), removed: nl(toolInput.old_string) };
+        return { added: nl(toolInput.new_string), removed: nl(toolInput.old_string), hunks: 1 };
     }
     if (toolName === "Write" || toolName === "create_file") {
         // No baseline for Write — report as all-added.
-        return { added: nl(toolInput.content), removed: 0 };
+        return { added: nl(toolInput.content), removed: 0, hunks: 1 };
     }
     if (toolName === "MultiEdit" && Array.isArray(toolInput.edits)) {
         let added = 0, removed = 0;
@@ -82,13 +83,203 @@ function computeLocDelta(toolName, toolInput) {
             added += nl(e.new_string);
             removed += nl(e.old_string);
         }
-        return { added, removed };
+        return { added, removed, hunks: toolInput.edits.length };
     }
     if (toolName === "NotebookEdit") {
         // Rough proxy — notebook cells aren't line-based, count content lines.
-        return { added: nl(toolInput.new_source), removed: nl(toolInput.old_source) };
+        return { added: nl(toolInput.new_source), removed: nl(toolInput.old_source), hunks: 1 };
     }
     return null;
+}
+
+// Cap value used by capStderr / capStdout. Read once per hook invocation;
+// agents can override via INTERLINKED_STDERR_MAX_BYTES env var.
+function streamCapBytes() {
+    const raw = parseInt(process.env.INTERLINKED_STDERR_MAX_BYTES || "", 10);
+    if (!Number.isFinite(raw) || raw <= 0) return 8192;
+    // Hard ceiling so a typo doesn't bloat activity.jsonl.
+    return Math.min(raw, 65536);
+}
+
+// Middle-truncate a string to maxBytes. Preserves head + tail + a marker
+// so the most-useful diagnostic context (top of compiler output, bottom of
+// test runner output) survives independently of which end carries signal.
+function middleTruncateBytes(s, maxBytes) {
+    if (!s) return "";
+    const buf = Buffer.from(String(s), "utf8");
+    if (buf.length <= maxBytes) return buf.toString("utf8");
+    const half = Math.max(1, Math.floor(maxBytes / 2));
+    const head = buf.slice(0, half).toString("utf8");
+    const tail = buf.slice(buf.length - half).toString("utf8");
+    return head + "\\n...[interlinked:truncated " + (buf.length - maxBytes) + " bytes]...\\n" + tail;
+}
+
+// SHA-256 fingerprint of the canonical write payload. Lets downstream
+// retry-loop / thrashing detection compare "agent ran the exact same edit
+// twice in a row" without storing the full payload twice. Returns null on
+// failure (e.g., crypto unavailable in some sandboxed runtimes).
+function fingerprintWrite(toolName, toolInput) {
+    if (!toolInput) return null;
+    let canonical = "";
+    try {
+        if (toolName === "Edit" || toolName === "str_replace" || toolName === "apply_patch") {
+            canonical = String(toolInput.old_string || "") + "\\u0000" + String(toolInput.new_string || "");
+        } else if (toolName === "Write" || toolName === "create_file") {
+            canonical = String(toolInput.content || "");
+        } else if (toolName === "MultiEdit") {
+            canonical = JSON.stringify(toolInput.edits || []);
+        } else if (toolName === "NotebookEdit") {
+            canonical = String(toolInput.old_source || "") + "\\u0000" + String(toolInput.new_source || "");
+        } else {
+            return null;
+        }
+        const h = createHash("sha256");
+        h.update(canonical);
+        return h.digest("hex").slice(0, 16);
+    } catch {
+        return null;
+    }
+}
+
+// Cap an arbitrary tool_response (string or object) before persisting to
+// activity.jsonl. Without this, a single 'find /' or 'curl https://...'
+// can land megabytes into the log; an unbounded log breaks every consumer
+// (statusline reads, sync, grep). Object responses get string-cap on each
+// large string field. Returns:
+//   - null/undefined → unchanged
+//   - small (under cap) → unchanged
+//   - large string → middle-truncated string
+//   - large object → shallow clone with each oversized string field
+//     middle-truncated and a _truncated metadata field appended.
+function capToolResponse(toolResponse) {
+    if (toolResponse === null || toolResponse === undefined) return toolResponse;
+    const cap = (() => {
+        const raw = parseInt(process.env.INTERLINKED_TOOL_RESPONSE_MAX_BYTES || "", 10);
+        if (!Number.isFinite(raw) || raw <= 0) return 32768;
+        return Math.min(raw, 524288);
+    })();
+    if (typeof toolResponse === "string") {
+        return Buffer.byteLength(toolResponse, "utf8") <= cap
+            ? toolResponse
+            : middleTruncateBytes(toolResponse, cap);
+    }
+    if (typeof toolResponse !== "object") return toolResponse;
+    // Shallow-clone so we never mutate the upstream Claude Code payload.
+    let totalBytes = 0;
+    let truncated = false;
+    const clone = Array.isArray(toolResponse) ? [] : {};
+    for (const [k, v] of Object.entries(toolResponse)) {
+        if (typeof v === "string") {
+            const bytes = Buffer.byteLength(v, "utf8");
+            totalBytes += bytes;
+            if (bytes > cap) {
+                clone[k] = middleTruncateBytes(v, cap);
+                truncated = true;
+            } else {
+                clone[k] = v;
+            }
+        } else {
+            clone[k] = v;
+        }
+    }
+    if (truncated && !Array.isArray(clone)) {
+        clone._interlinked_truncated_bytes = totalBytes;
+    }
+    return clone;
+}
+
+// SHA-256 fingerprint of any tool_response (string or object). Used as a
+// general "exact same output" detector across all tools, not just edits.
+function fingerprintResponse(toolResponse) {
+    if (toolResponse === null || toolResponse === undefined) return null;
+    try {
+        const s = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
+        if (!s) return null;
+        const h = createHash("sha256");
+        h.update(s);
+        return h.digest("hex").slice(0, 16);
+    } catch {
+        return null;
+    }
+}
+
+// Derive canonical tool outcome fields from a PostToolUse / PostToolUseFailure
+// payload. The shape is stable across all clients (Claude / Codex / Gemini /
+// Cursor / Copilot) — downstream consumers can read tool_outcome / exit_code /
+// stderr without re-parsing each client's tool_response shape.
+//
+// Capture policy (per the design discussion):
+//   - On success: skip stderr/stdout (they're noise). Hash the response so
+//     identical-output detection still works.
+//   - On error: full stderr up to streamCapBytes() (default 8 KB), stdout
+//     up to half that. Middle-truncate so head+tail both survive — vitest
+//     puts the assertion delta at the bottom, npm install puts the error
+//     at the top.
+function deriveToolOutcome(toolName, toolResponse, errorDetail, status, isInterrupt) {
+    const result = {
+        tool_outcome: status === "error" ? "error" : "success",
+        exit_code: null,
+        stderr: null,
+        stdout: null,
+        tool_response_sha256: fingerprintResponse(toolResponse),
+    };
+    if (isInterrupt) {
+        result.tool_outcome = "interrupted";
+    }
+    const cap = streamCapBytes();
+    const isBash = toolName === "Bash" || toolName === "Shell" || toolName === "shell" || toolName === "run_command";
+
+    if (isBash && toolResponse !== null && toolResponse !== undefined) {
+        if (typeof toolResponse === "object") {
+            const codeRaw = toolResponse.exitCode ?? toolResponse.exit_code ?? toolResponse.returncode;
+            if (typeof codeRaw === "number") result.exit_code = codeRaw;
+            const interrupted = toolResponse.interrupted === true;
+            if (interrupted) result.tool_outcome = "interrupted";
+            const failed = result.tool_outcome !== "success" || (typeof codeRaw === "number" && codeRaw !== 0);
+            if (failed) {
+                if (result.tool_outcome === "success") result.tool_outcome = "error";
+                const respStderr = toolResponse.stderr;
+                const respStdout = toolResponse.stdout;
+                if (respStderr) result.stderr = middleTruncateBytes(respStderr, cap);
+                if (respStdout) result.stdout = middleTruncateBytes(respStdout, Math.floor(cap / 2));
+            }
+        } else if (typeof toolResponse === "string" && result.tool_outcome === "error") {
+            // Bash variants that stringify combined output — capture as stderr.
+            result.stderr = middleTruncateBytes(toolResponse, cap);
+        }
+    } else if (result.tool_outcome === "error") {
+        // Non-Bash failure: errorDetail OR the response string is the diagnostic.
+        let msg = "";
+        if (errorDetail !== null && errorDetail !== undefined) {
+            msg = typeof errorDetail === "string" ? errorDetail : JSON.stringify(errorDetail);
+        } else if (typeof toolResponse === "string") {
+            msg = toolResponse;
+        } else if (toolResponse) {
+            msg = JSON.stringify(toolResponse);
+        }
+        if (msg) result.stderr = middleTruncateBytes(msg, cap);
+    }
+    return result;
+}
+
+// Attach canonical outcome fields onto a PostToolUse / PostToolUseFailure
+// result record. Mutates and returns the record so per-event handlers can
+// chain it after attachEditMetrics. Always sets tool_outcome; the optional
+// fields are skipped when null so the on-disk row stays compact.
+function attachOutcome(result, toolName, toolResponse, errorDetail) {
+    const out = deriveToolOutcome(
+        toolName,
+        toolResponse,
+        errorDetail,
+        result.status,
+        result.is_interrupt === true,
+    );
+    result.tool_outcome = out.tool_outcome;
+    if (out.exit_code !== null) result.exit_code = out.exit_code;
+    if (out.stderr) result.stderr = out.stderr;
+    if (out.stdout) result.stdout = out.stdout;
+    if (out.tool_response_sha256) result.tool_response_sha256 = out.tool_response_sha256;
+    return result;
 }
 
 // Step 1b — sniff whether a Write created a new file vs updated an existing
@@ -113,7 +304,10 @@ function attachEditMetrics(result, toolName, toolInput, toolResponse) {
         result.lines_added = loc.added;
         result.lines_removed = loc.removed;
         result.net_loc_delta = loc.added - loc.removed;
+        result.hunks_count = loc.hunks;
     }
+    const sha = fingerprintWrite(toolName, toolInput);
+    if (sha) result.content_sha256 = sha;
     result.is_new_file = sniffIsNewFile(toolName, toolResponse);
     const fp = toolInput && (toolInput.file_path || toolInput.path || toolInput.target_file);
     if (typeof fp === "string") {
@@ -198,10 +392,11 @@ const CLAUDE_DISPATCH = {
     PostToolUse: ({ input, env, duration_ms }) => {
         const toolName = input.tool_name || null;
         const toolInput = input.tool_input || {};
-        const toolResponse = input.tool_response || null;
-        const toolResponseBytes = toolResponse === null ? 0
-            : typeof toolResponse === "string" ? Buffer.byteLength(toolResponse)
-            : Buffer.byteLength(JSON.stringify(toolResponse));
+        const toolResponseRaw = input.tool_response || null;
+        const toolResponseBytes = toolResponseRaw === null ? 0
+            : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
+            : Buffer.byteLength(JSON.stringify(toolResponseRaw));
+        const toolResponse = capToolResponse(toolResponseRaw);
         const result = {
             event_type: "tool_use", tool_name: toolName, tool_input_summary: summarize(toolName, toolInput),
             hook_event: "PostToolUse", duration_ms,
@@ -212,7 +407,10 @@ const CLAUDE_DISPATCH = {
         };
         const filePath = extractFilePath(toolName, toolInput);
         if (filePath) result.files_modified = [filePath];
-        return attachEditMetrics(result, toolName, toolInput, toolResponse);
+        attachEditMetrics(result, toolName, toolInput, toolResponseRaw);
+        attachOutcome(result, toolName, toolResponseRaw, null);
+        if (input.parent_tool_use_id) result.parent_tool_use_id = input.parent_tool_use_id;
+        return result;
     },
     PostToolUseFailure: ({ input, env }) => {
         const failToolName = input.tool_name || null;
@@ -221,7 +419,7 @@ const CLAUDE_DISPATCH = {
         const summary = errorDetail
             ? truncate(String(errorDetail), 200)
             : summarize(failToolName, failInput);
-        return {
+        const result = {
             event_type: "tool_use_error", tool_name: failToolName, tool_input_summary: summary,
             hook_event: "PostToolUseFailure",
             tool_input: failInput, error: errorDetail, is_interrupt: input.is_interrupt || false,
@@ -230,6 +428,9 @@ const CLAUDE_DISPATCH = {
             status: "error",
             ...env,
         };
+        attachOutcome(result, failToolName, input.tool_response || null, errorDetail);
+        if (input.parent_tool_use_id) result.parent_tool_use_id = input.parent_tool_use_id;
+        return result;
     },
     SubagentStart: ({ input, env }) => ({
         event_type: "subagent_start", tool_name: input.agent_type || null,
@@ -385,10 +586,11 @@ const GEMINI_DISPATCH = {
     AfterTool: ({ input }) => {
         const toolName = input.tool_name || null;
         const toolInput = input.tool_input || {};
-        const toolResponse = input.tool_response || null;
-        const toolResponseBytes = toolResponse === null ? 0
-            : typeof toolResponse === "string" ? Buffer.byteLength(toolResponse)
-            : Buffer.byteLength(JSON.stringify(toolResponse));
+        const toolResponseRaw = input.tool_response || null;
+        const toolResponseBytes = toolResponseRaw === null ? 0
+            : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
+            : Buffer.byteLength(JSON.stringify(toolResponseRaw));
+        const toolResponse = capToolResponse(toolResponseRaw);
         const result = {
             event_type: "tool_use", tool_name: toolName,
             tool_input_summary: summarize(toolName, toolInput),
@@ -400,7 +602,9 @@ const GEMINI_DISPATCH = {
         };
         const filePath = extractFilePath(toolName, toolInput);
         if (filePath) result.files_modified = [filePath];
-        return attachEditMetrics(result, toolName, toolInput, toolResponse);
+        attachEditMetrics(result, toolName, toolInput, toolResponseRaw);
+        attachOutcome(result, toolName, toolResponseRaw, input.error || null);
+        return result;
     },
     AfterModel: ({ input }) => {
         const tokens = extractGeminiTokens(input);
@@ -475,10 +679,11 @@ function parseCopilotToolArgs(rawArgs) {
     return null;
 }
 
-function copilotPostToolEvent(toolName, toolInput, toolResponse, input) {
-    const toolResponseBytes = toolResponse === null ? 0
-        : typeof toolResponse === "string" ? Buffer.byteLength(toolResponse)
-        : Buffer.byteLength(JSON.stringify(toolResponse));
+function copilotPostToolEvent(toolName, toolInput, toolResponseRaw, input) {
+    const toolResponseBytes = toolResponseRaw === null ? 0
+        : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
+        : Buffer.byteLength(JSON.stringify(toolResponseRaw));
+    const toolResponse = capToolResponse(toolResponseRaw);
     const result = {
         event_type: "tool_use", tool_name: toolName,
         tool_input_summary: summarize(toolName, toolInput),
@@ -490,7 +695,9 @@ function copilotPostToolEvent(toolName, toolInput, toolResponse, input) {
     };
     const filePath = extractFilePath(toolName, toolInput);
     if (filePath) result.files_modified = [filePath];
-    return attachEditMetrics(result, toolName, toolInput, toolResponse);
+    attachEditMetrics(result, toolName, toolInput, toolResponseRaw);
+    attachOutcome(result, toolName, toolResponseRaw, input.error || input.errorCode || input.error_code || null);
+    return result;
 }
 
 function copilotPreToolEvent(toolName, toolInput) {
@@ -566,7 +773,8 @@ function normalizeCopilotEvent(input) {
 
 // --- Cursor IDE ---
 //
-// Cursor exposes per-tool gates (beforeShellExecution, beforeMCPExecution,
+// Cursor exposes per-tool gates (beforeShellExecution, beforeMCPExecution /
+// beforeMcpToolExecution,
 // beforeReadFile), file-edit observation (afterFileEdit), prompt + lifecycle
 // hooks (beforeSubmitPrompt, sessionStart, sessionEnd, stop), plus generic
 // preToolUse/postToolUse aliases. Each event has its own native shape; we
@@ -575,7 +783,8 @@ function normalizeCopilotEvent(input) {
 //
 // Mapping rationale:
 //   - beforeShellExecution → tool_name: "Bash", tool_input.command   (matches Bash rules)
-//   - beforeMCPExecution   → tool_name: input.tool_name (MCP-prefixed) (matches MCP rules)
+//   - beforeMCPExecution / beforeMcpToolExecution
+//                        → tool_name: input.tool_name (MCP-prefixed) (matches MCP rules)
 //   - beforeReadFile       → tool_name: "Read", tool_input.file_path (matches Read rules)
 //   - afterFileEdit        → tool_name: "Edit", tool_input.{file_path, edits} (matches PostToolUse Edit)
 //   - beforeSubmitPrompt   → UserPromptSubmit (PII scan path)
@@ -640,6 +849,11 @@ const CURSOR_DISPATCH = {
         };
     },
     beforeMCPExecution: (input, env) => {
+        // Alias to beforeMcpToolExecution for Cursor builds that use the
+        // lower-cased "cpTool" event spelling.
+        return CURSOR_DISPATCH.beforeMcpToolExecution(input, env);
+    },
+    beforeMcpToolExecution: (input, env) => {
         // Cursor sends tool_input as an escaped JSON string per its docs;
         // parse so harness rules can pattern-match against fields directly.
         let parsedInput = {};
@@ -711,21 +925,88 @@ const CURSOR_DISPATCH = {
     postToolUse: (input, env) => {
         const toolName = input.tool_name || null;
         const toolInput = input.tool_input || {};
-        const toolResponse = input.tool_response || null;
+        // Cursor's postToolUse delivers tool_output as a JSON-stringified
+        // payload (per docs); other variants may put structured data in
+        // tool_response. Accept both so the harness sees output content.
+        const toolResponseRaw = input.tool_response ?? input.tool_output ?? null;
+        const toolResponse = capToolResponse(toolResponseRaw);
         const result = {
             event_type: "tool_use", tool_name: toolName,
             tool_input_summary: summarize(toolName, toolInput),
             hook_event: "PostToolUse",
             tool_input: toolInput, tool_response: toolResponse,
-            duration_ms: input.duration_ms || null,
-            tool_output_bytes: toolResponse === null ? 0 : Buffer.byteLength(typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse)),
+            duration_ms: input.duration_ms || input.duration || null,
+            tool_output_bytes: toolResponseRaw === null ? 0 : Buffer.byteLength(typeof toolResponseRaw === "string" ? toolResponseRaw : JSON.stringify(toolResponseRaw)),
             status: input.error ? "error" : "success",
             ...env,
         };
         const filePath = extractFilePath(toolName, toolInput);
         if (filePath) result.files_modified = [filePath];
-        return attachEditMetrics(result, toolName, toolInput, toolResponse);
+        attachEditMetrics(result, toolName, toolInput, toolResponseRaw);
+        attachOutcome(result, toolName, toolResponseRaw, input.error || null);
+        return result;
     },
+    postToolUseFailure: (input, env) => {
+        // Cursor failure shape: { tool_name, tool_input, error_message,
+        // failure_type: "error"|"timeout"|"permission_denied",
+        // duration, is_interrupt }. Map to canonical PostToolUseFailure
+        // so the existing categorizeToolError + error_history pipeline fires.
+        const toolName = input.tool_name || null;
+        const toolInput = input.tool_input || {};
+        const errorDetail = input.error_message || input.error || null;
+        return {
+            event_type: "tool_use_error", tool_name: toolName,
+            tool_input_summary: errorDetail
+                ? truncate(String(errorDetail), 200)
+                : summarize(toolName, toolInput),
+            hook_event: "PostToolUseFailure",
+            tool_input: toolInput,
+            error: errorDetail,
+            failure_type: input.failure_type || null,
+            is_interrupt: input.is_interrupt || false,
+            tool_use_id: input.tool_use_id || null,
+            duration_ms: input.duration || null,
+            status: "error",
+            ...env,
+        };
+    },
+    subagentStart: (input, env) => ({
+        event_type: "subagent_start", tool_name: input.subagent_type || null,
+        tool_input_summary: truncate(input.task || "", 200),
+        hook_event: "SubagentStart",
+        // Map Cursor's snake_case schema onto the canonical Claude shape so
+        // downstream consumers don't need to special-case the runner.
+        parent_agent: input.parent_conversation_id || null,
+        subagent_id: input.subagent_id || null,
+        agent_type: input.subagent_type || null,
+        agent_transcript_path: null,
+        ...env,
+    }),
+    subagentStop: (input, env) => ({
+        event_type: "subagent_stop", tool_name: input.subagent_type || null,
+        tool_input_summary: truncate(input.summary || input.task || "", 200),
+        hook_event: "SubagentStop",
+        parent_agent: null,
+        subagent_id: null,
+        agent_type: input.subagent_type || null,
+        agent_transcript_path: input.agent_transcript_path || null,
+        last_assistant_message: input.summary || null,
+        duration_ms: input.duration_ms || null,
+        status: input.status || null,
+        tool_call_count: input.tool_call_count || 0,
+        message_count: input.message_count || 0,
+        ...env,
+    }),
+    preCompact: (input, env) => ({
+        event_type: "context_compact", tool_name: null, tool_input_summary: null,
+        hook_event: "PreCompact",
+        trigger: input.trigger || null,
+        custom_instructions: null,
+        context_size_hint: input.context_tokens || null,
+        context_usage_percent: input.context_usage_percent || null,
+        messages_to_compact: input.messages_to_compact || null,
+        ...env,
+    }),
 };
 
 function normalizeCursorUnknown(hookEvent, input, env) {

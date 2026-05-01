@@ -25,14 +25,33 @@ export interface ServerReservation {
 	expires_at?: string;
 }
 
+/** Per-event hook invoked on every grant / release / conflict. The hook
+ *  is fire-and-forget — exceptions inside it must not break the lock
+ *  primitive. Used to write reservation-events.jsonl from the harness. */
+export type ReservationEventSink = (event: {
+	ts: string;
+	action: "grant" | "release" | "conflict" | "release_all";
+	file: string;
+	agent_name: string;
+	holder?: string;
+	cohort?: "local" | "remote";
+	expires_at?: string;
+}) => void;
+
 export class ReservationManager {
 	private cache: Map<string, ReservationEntry> = new Map();
 	private releaseTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 	private apiClient: ServerApiClient | null;
 	private refreshInterval: ReturnType<typeof setInterval> | null = null;
+	private eventSink: ReservationEventSink | null = null;
 
-	constructor(apiClient?: ServerApiClient, refreshMs = 30_000) {
+	constructor(
+		apiClient?: ServerApiClient,
+		refreshMs = 30_000,
+		eventSink?: ReservationEventSink,
+	) {
 		this.apiClient = apiClient || null;
+		this.eventSink = eventSink || null;
 
 		if (this.apiClient) {
 			// Initial load from server
@@ -64,11 +83,21 @@ export class ReservationManager {
 					continue;
 				}
 				const isLocal = cohort.hasAgent(entry.agent_name);
-				return {
+				const conflict: ReservationConflict = {
 					agent_name: entry.agent_name,
 					cohort: isLocal ? "local" : "remote",
 					expires_at: entry.expires_at,
 				};
+				this.emit({
+					ts: new Date().toISOString(),
+					action: "conflict",
+					file: filePath,
+					agent_name: agentName,
+					holder: entry.agent_name,
+					cohort: conflict.cohort,
+					expires_at: entry.expires_at,
+				});
+				return conflict;
 			}
 		}
 
@@ -87,6 +116,15 @@ export class ReservationManager {
 		// Track in cohort
 		cohort.addFileReservation(agentName, filePath);
 
+		this.emit({
+			ts: now.toISOString(),
+			action: "grant",
+			file: filePath,
+			agent_name: agentName,
+			cohort: "local",
+			expires_at: expires.toISOString(),
+		});
+
 		// Confirm with server asynchronously (don't block)
 		if (this.apiClient) {
 			this.apiClient.reserveFile(filePath, agentName, RESERVATION_TTL_S).catch(() => {
@@ -95,6 +133,15 @@ export class ReservationManager {
 		}
 
 		return null;
+	}
+
+	private emit(event: Parameters<ReservationEventSink>[0]): void {
+		if (!this.eventSink) return;
+		try {
+			this.eventSink(event);
+		} catch (_err) {
+			/* intentional: sink failure must not break the lock primitive */
+		}
 	}
 
 	/**
@@ -127,6 +174,13 @@ export class ReservationManager {
 
 		this.cache.delete(filePath);
 		cohort.removeFileReservation(agentName, filePath);
+		this.emit({
+			ts: new Date().toISOString(),
+			action: "release",
+			file: filePath,
+			agent_name: agentName,
+			cohort: entry.cohort,
+		});
 
 		// Clear any pending timer
 		const timerKey = `${agentName}:${filePath}`;
@@ -154,6 +208,14 @@ export class ReservationManager {
 			this.release(path, agentName, cohort);
 		}
 		cohort.clearReservations(agentName);
+		if (toRelease.length > 0) {
+			this.emit({
+				ts: new Date().toISOString(),
+				action: "release_all",
+				file: `[${toRelease.length} files]`,
+				agent_name: agentName,
+			});
+		}
 	}
 
 	/** Get all active reservations */

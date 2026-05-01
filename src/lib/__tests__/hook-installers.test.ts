@@ -6,12 +6,15 @@ import {
 	CLAUDE_HOOK_EVENTS,
 	CODEX_HOOK_EVENTS,
 	COPILOT_HOOK_EVENTS,
+	CURSOR_HOOK_EVENTS,
 	GEMINI_HOOK_EVENTS,
 	installCodexHooks,
 	installCopilotHooks,
+	installCursorHooks,
 	installGeminiHooks,
 	uninstallCodexHooks,
 	uninstallCopilotHooks,
+	uninstallCursorHooks,
 	uninstallGeminiHooks,
 } from "../hook-installers.js";
 
@@ -43,6 +46,11 @@ describe("hook event lists", () => {
 		expect(CODEX_HOOK_EVENTS).toContain("PostToolUse");
 		expect(CODEX_HOOK_EVENTS).toContain("PermissionRequest");
 		expect(CODEX_HOOK_EVENTS).toContain("Stop");
+	});
+
+	it("cursor event list includes both MCP naming variants", () => {
+		expect(CURSOR_HOOK_EVENTS).toContain("beforeMCPExecution");
+		expect(CURSOR_HOOK_EVENTS).toContain("beforeMcpToolExecution");
 	});
 });
 
@@ -105,11 +113,16 @@ describe("installGeminiHooks / uninstallGeminiHooks", () => {
 		expect(content).toContain("interlinked-activity");
 	});
 
-	it("scopes AfterTool matcher to mutation tools only", () => {
+	it("registers AfterTool with empty matcher (all-tool capture)", () => {
 		installGeminiHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const content = readFileSync(join(tmp, ".gemini", "settings.json"), "utf-8");
-		// AfterTool entry must carry the mutation-only matcher.
-		expect(content).toContain("Edit|Write|MultiEdit");
+		const settings = JSON.parse(
+			readFileSync(join(tmp, ".gemini", "settings.json"), "utf-8"),
+		);
+		// Per-tool matcher is empty — every tool's result is captured;
+		// the .mjs hook fast-paths non-mutation tools internally.
+		const afterTool = settings.hooks?.AfterTool;
+		expect(Array.isArray(afterTool)).toBe(true);
+		expect(afterTool[0].matcher).toBe("");
 	});
 
 	it("removes interlinked entries on uninstall", () => {
@@ -162,10 +175,21 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		expect(content).toContain('.interlinked/hooks/interlinked-activity.mjs');
 	});
 
-	it("scopes PostToolUse matcher to mutation tools only", () => {
+	it("registers PostToolUse with empty matcher (all-tool capture)", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const content = readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8");
-		expect(content).toContain("Edit|Write|MultiEdit");
+		const hooks = JSON.parse(
+			readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8"),
+		);
+		// Per-tool matcher is empty — every tool's result is captured;
+		// the .mjs hook fast-paths non-mutation tools internally so the
+		// harness round-trip only happens for Edit/Write/MultiEdit/apply_patch.
+		const postToolUse = hooks.hooks?.PostToolUse;
+		expect(Array.isArray(postToolUse)).toBe(true);
+		// Some Codex builds emit a flat object instead of {matcher, hooks}.
+		// Both shapes are acceptable as long as the matcher is empty.
+		const reg = postToolUse[0];
+		const matcher = "matcher" in reg ? reg.matcher : "";
+		expect(matcher).toBe("");
 	});
 
 	it("creates .codex/config.toml with codex_hooks=true when absent", () => {
@@ -255,5 +279,32 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 
 	it("uninstall is a no-op when file is missing", () => {
 		expect(uninstallCodexHooks(tmp)).toBe(false);
+	});
+});
+
+describe("installCursorHooks / uninstallCursorHooks", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "cursor-hooks-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("writes both Cursor MCP hook event variants", () => {
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const hooksPath = join(tmp, ".cursor", "hooks.json");
+		expect(existsSync(hooksPath)).toBe(true);
+		const content = readFileSync(hooksPath, "utf-8");
+		expect(content).toContain('"beforeMCPExecution"');
+		expect(content).toContain('"beforeMcpToolExecution"');
+	});
+
+	it("removes Interlinked entries and deletes hooks.json when empty", () => {
+		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		expect(uninstallCursorHooks(tmp)).toBe(true);
+		expect(existsSync(join(tmp, ".cursor", "hooks.json"))).toBe(false);
 	});
 });

@@ -137,6 +137,55 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 		expect(EVENT_NORMALIZERS_CHUNK).toContain("usageMetadata");
 	});
 
+	it("Cursor dispatcher covers the full agent-side event surface", () => {
+		// Every Cursor event we install in CURSOR_HOOK_EVENTS must have a
+		// CURSOR_DISPATCH entry — otherwise the chunk falls through to
+		// normalizeCursorUnknown and the hook_event gets stamped with the raw
+		// camelCase name, which the harness server doesn't recognise as a
+		// canonical PreToolUse / PostToolUse / lifecycle event.
+		for (const ev of [
+			"sessionStart",
+			"sessionEnd",
+			"stop",
+			"beforeSubmitPrompt",
+			"beforeShellExecution",
+			"beforeMCPExecution",
+			"beforeMcpToolExecution",
+			"beforeReadFile",
+			"afterFileEdit",
+			"preToolUse",
+			"postToolUse",
+			"postToolUseFailure",
+			"subagentStart",
+			"subagentStop",
+			"preCompact",
+		]) {
+			expect(EVENT_NORMALIZERS_CHUNK).toContain(`${ev}: (`);
+		}
+	});
+
+	it("Cursor postToolUseFailure maps to canonical PostToolUseFailure", () => {
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("postToolUseFailure: (");
+		// The PostToolUseFailure handler must emit the canonical hook_event so
+		// the server's error_history pipeline picks it up.
+		expect(EVENT_NORMALIZERS_CHUNK).toMatch(
+			/postToolUseFailure: [\s\S]+?hook_event: "PostToolUseFailure"/,
+		);
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("input.failure_type");
+	});
+
+	it("Cursor subagent + preCompact events map to canonical names", () => {
+		expect(EVENT_NORMALIZERS_CHUNK).toMatch(
+			/subagentStart: [\s\S]+?hook_event: "SubagentStart"/,
+		);
+		expect(EVENT_NORMALIZERS_CHUNK).toMatch(
+			/subagentStop: [\s\S]+?hook_event: "SubagentStop"/,
+		);
+		expect(EVENT_NORMALIZERS_CHUNK).toMatch(
+			/preCompact: [\s\S]+?hook_event: "PreCompact"/,
+		);
+	});
+
 	it("canonical event_type names match the normalized vocabulary", () => {
 		for (const canonical of [
 			"session_start",

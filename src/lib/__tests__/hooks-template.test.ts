@@ -163,14 +163,34 @@ describe("buildHookScript", () => {
 		expect(out).not.toMatch(/if \(!hookEvent && event\.hook_event\)/);
 	});
 
-	it("formatCursorResponse treats canonical PreToolUse as askable (Cursor regression)", () => {
-		// After hookEvent normalization, `incomingEvent` carries the canonical
-		// "PreToolUse" name for every gated Cursor event (beforeShellExecution,
-		// beforeMCPExecution, beforeReadFile, preToolUse all map to it).
-		// Without this case, all gated Cursor events would silently skip the
-		// deny/ask response shape and the agent would proceed unblocked.
+	it("formatCursorResponse gates on the raw Cursor event name (per-event capabilities)", () => {
+		// formatCursorResponse switches on the raw native event (postToolUse
+		// supports additional_context, beforeShellExecution / beforeMCPExecution
+		// support ask, etc.) — not the canonical PreToolUse alias. Without this
+		// the response would either silently skip the gate or misuse fields the
+		// runner doesn't accept.
 		const out = buildHookScript("v");
-		expect(out).toContain('incomingEvent === "PreToolUse"');
+		expect(out).toContain('native === "beforeShellExecution"');
+		expect(out).toContain('native === "beforeMCPExecution"');
+		expect(out).toContain('native === "beforeMcpToolExecution"');
+		expect(out).toContain('native === "subagentStart"');
+		expect(out).toContain('native === "postToolUse"');
+		// And the wiring captures the raw event before normalization rewrites
+		// hookEvent to "PreToolUse".
+		expect(out).toContain("const cursorNativeEvent = hookEvent;");
+	});
+
+	it("formatCursorResponse uses snake_case response fields (per Cursor docs)", () => {
+		// Cursor's documented response contract uses snake_case: user_message,
+		// agent_message, additional_context, updated_input. The previous
+		// camelCase form was silently ignored by Cursor — denials reached the
+		// runner with empty messages. This test pins the field naming so a
+		// future refactor can't regress it.
+		const out = buildHookScript("v");
+		expect(out).toContain("agent_message: data.reason");
+		expect(out).toContain("user_message: data.reason");
+		expect(out).toContain("additional_context: data.summary");
+		expect(out).toContain("additional_context: data.reason");
 	});
 
 	it("inline guard receives the normalized tool_input (Cursor / Copilot regression)", () => {
@@ -241,7 +261,10 @@ describe("buildHookScript", () => {
 		expect(stdout, `expected non-empty stdout; stderr=${res.stderr}`).not.toBe("");
 		const parsed = JSON.parse(stdout);
 		expect(parsed.permission).toBe("deny");
-		expect(String(parsed.agentMessage || parsed.userMessage || "")).toMatch(
+		// Cursor's response contract is snake_case (user_message /
+		// agent_message). The legacy camelCase keys were silently ignored,
+		// causing denial messages to reach Cursor empty.
+		expect(String(parsed.agent_message || parsed.user_message || "")).toMatch(
 			/BLOCKED|recursive|rm -rf/i,
 		);
 	});

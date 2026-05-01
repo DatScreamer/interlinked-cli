@@ -26,8 +26,9 @@
 //   - streaming-output.ts  — human-readable streaming output
 //   - structure.ts         — structure verification (graph, rules, adoption)
 
-import { existsSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { CheckEngine, type CheckResult, formatToolReport } from "../harness/check-engine/index.js";
 import type { Finding } from "../harness/suggestion-scorer.js";
@@ -465,6 +466,70 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 		);
 	}
 	process.stderr.write("\n\n");
+
+	emitVerifyRun(cwd, {
+		mode: opts.allChecks ? "all-checks" : "default",
+		files_scanned: files.length,
+		flagged_files: tally.flaggedFiles,
+		project_findings: tally.projectFindings,
+		summary,
+		duration_ms: Date.now() - cqStart,
+	});
+}
+
+// Emit a row into .interlinked/verify-runs.jsonl so successive verify
+// invocations build a longitudinal record of error counts. Used to
+// bisect when regressions entered the codebase without re-running tools.
+function emitVerifyRun(
+	cwd: string,
+	data: {
+		mode: string;
+		files_scanned: number;
+		flagged_files: number;
+		project_findings: number;
+		summary: Array<{ label: string; count: number; color: string }>;
+		duration_ms: number;
+	},
+): void {
+	try {
+		const path = join(cwd, ".interlinked", "verify-runs.jsonl");
+		const dir = dirname(path);
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		const branch = safeGitOutput(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+		const head = safeGitOutput(["rev-parse", "HEAD"], cwd);
+		const dirty = safeGitOutput(["status", "--porcelain"], cwd) ? true : false;
+		const record = {
+			ts: new Date().toISOString(),
+			cwd,
+			branch: branch || null,
+			head: head || null,
+			dirty,
+			mode: data.mode,
+			files_scanned: data.files_scanned,
+			flagged_files: data.flagged_files,
+			project_findings: data.project_findings,
+			counts: data.summary.map((s) => ({ label: s.label, count: s.count })),
+			duration_ms: data.duration_ms,
+			exit_code: process.exitCode || 0,
+		};
+		appendFileSync(path, `${JSON.stringify(record)}\n`);
+	} catch (_err) {
+		/* intentional: verify-runs is best-effort observability */
+	}
+}
+
+function safeGitOutput(args: string[], cwd: string): string {
+	try {
+		const out = execFileSync("git", args, {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 3000,
+		});
+		return out.trim();
+	} catch (_err) {
+		return "";
+	}
 }
 
 function streamProjectSetup(cwd: string, allFlaggedFiles: Set<string>): void {

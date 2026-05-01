@@ -83,50 +83,78 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
         return {};
     }
 
-    function formatCursorResponse(responseType, data, incomingEvent) {
-        // Cursor's hook response shape is shared by beforeShellExecution,
-        // beforeMCPExecution, beforeReadFile, preToolUse:
-        //   { permission: "allow"|"deny"|"ask", userMessage, agentMessage, continue?, updated_input? }
-        // Cursor SUPPORTS "ask" natively — we map our pre_ask decision to
-        // permission:"ask" so the user sees an interactive prompt rather
-        // than the action being silently denied. This parity with Claude
-        // Code is the whole point of plumbing Cursor through the harness.
+    function formatCursorResponse(responseType, data, incomingEvent, nativeEvent) {
+        // Cursor's hook response shape uses SNAKE_CASE field names per the
+        // public docs (https://cursor.com/docs/hooks):
+        //   { permission: "allow"|"deny"|"ask",
+        //     user_message, agent_message, updated_input?,
+        //     additional_context?, updated_mcp_tool_output?,
+        //     followup_message? }
+        //
+        // Capability map (per-event; Cursor docs are explicit about each):
+        //   - beforeShellExecution / beforeMCPExecution: allow|deny|ask + msgs
+        //   - preToolUse: allow|deny only (ask accepted by schema, not enforced)
+        //   - beforeReadFile: allow|deny + user_message
+        //   - subagentStart: allow|deny + user_message (ask treated as deny)
+        //   - postToolUse: additional_context (model-visible advisory channel,
+        //                  same role as Claude's PostToolUse additionalContext)
+        //   - everything else (afterFileEdit, afterShellExecution,
+        //                      afterMCPExecution, postToolUseFailure,
+        //                      sessionEnd, stop): no enforced output —
+        //                      stderr is the only human-visible surface.
         //
         // After normalization, incomingEvent carries the canonical "PreToolUse"
-        // name for every gated Cursor event (beforeShellExecution,
-        // beforeMCPExecution, beforeReadFile, preToolUse all map to it). We
-        // also keep the native names below as a defence-in-depth guard so a
-        // future caller that bypasses normalization doesn't silently skip the
-        // gate — the only askable post-style event is the canonical PreToolUse.
-        const askable = incomingEvent === "PreToolUse"
-            || incomingEvent === "beforeShellExecution"
-            || incomingEvent === "beforeMCPExecution"
-            || incomingEvent === "beforeReadFile"
-            || incomingEvent === "preToolUse";
+        // / "PostToolUse" / "PostToolUseFailure" name. nativeEvent carries the
+        // raw Cursor event name (beforeShellExecution / postToolUse / etc.) so
+        // we can disambiguate which post-event we're on (only postToolUse
+        // honors additional_context — afterFileEdit does not).
+        const native = nativeEvent || incomingEvent;
+        const isShellOrMcpGate = native === "beforeShellExecution"
+            || native === "beforeMCPExecution"
+            || native === "beforeMcpToolExecution";
+        const isOtherPreGate = native === "preToolUse"
+            || native === "PreToolUse"
+            || native === "beforeReadFile"
+            || native === "subagentStart";
+        const isPreGate = isShellOrMcpGate || isOtherPreGate;
+        const supportsAdditionalContext = native === "postToolUse";
+
         if (responseType === "pre_block" || responseType === "pre_block_grep") {
-            if (!askable) return {};
+            if (!isPreGate) return {};
             return {
                 permission: "deny",
-                agentMessage: data.reason,
-                userMessage: data.reason,
+                agent_message: data.reason,
+                user_message: data.reason,
             };
         }
         if (responseType === "pre_ask") {
-            if (!askable) return {};
+            if (!isPreGate) return {};
+            // Cursor only enforces "ask" on shell/MCP gates. On preToolUse /
+            // beforeReadFile / subagentStart the docs say ask is silently
+            // ignored or treated as deny — collapse to deny so the user sees
+            // the reason rather than the action sneaking through.
+            const permission = isShellOrMcpGate ? "ask" : "deny";
             return {
-                permission: "ask",
-                agentMessage: data.reason,
-                userMessage: data.systemMessage || data.reason,
+                permission,
+                agent_message: data.reason,
+                user_message: data.systemMessage || data.reason,
             };
         }
         if (responseType === "post_block") {
-            // Cursor's afterFileEdit / postToolUse / stop hooks don't gate
-            // execution — surface the reason to stderr so the user sees it
-            // but don't pretend we can roll the edit back.
+            // Cursor postToolUse can't roll back an executed tool, but the
+            // model-visible additional_context channel is the right place to
+            // tell the agent what's wrong so it can self-correct on the next
+            // turn — same UX as Claude's PostToolUse decision:"block".
+            if (supportsAdditionalContext && data.reason) {
+                return { additional_context: data.reason };
+            }
             if (data.reason) process.stderr.write(data.reason + "\\n");
             return {};
         }
         if (responseType === "post_warn" || responseType === "post_success") {
+            if (supportsAdditionalContext && data.summary) {
+                return { additional_context: data.summary };
+            }
             if (data.summary) process.stderr.write(data.summary + "\\n");
             return {};
         }
@@ -179,6 +207,12 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
 
         if (detectedClient === "copilot") return formatCopilotResponse(responseType, data);
         if (detectedClient === "codex") return formatCodexResponse(responseType, data, postEventEcho, incomingEvent);
-        if (detectedClient === "cursor") return formatCursorResponse(responseType, data, incomingEvent);
+        if (detectedClient === "cursor") {
+            // Pass the raw Cursor event (cursorNativeEvent) so per-event
+            // capabilities (additional_context on postToolUse only, ask on
+            // shell/MCP only) can be honored. Falls back to incomingEvent if
+            // the entry didn't capture the native name (older callers).
+            return formatCursorResponse(responseType, data, incomingEvent, cursorNativeEvent);
+        }
         return formatClaudeResponse(responseType, data, preEventEcho, postEventEcho);
     }`;

@@ -46,7 +46,7 @@ function redactSecrets(text) {
     return result;
 }
 
-const SCRUB_FIELDS = ["tool_input_summary", "tool_input_json", "tool_response_json", "prompt", "last_assistant_message", "error_message", "error_detail", "custom_instructions", "permission_suggestions", "thinking"];
+const SCRUB_FIELDS = ["tool_input_summary", "tool_input_json", "tool_response_json", "prompt", "last_assistant_message", "error_message", "error_detail", "custom_instructions", "permission_suggestions", "thinking", "stderr", "stdout"];
 
 function scrubPayload(obj) {
     for (const key of SCRUB_FIELDS) {

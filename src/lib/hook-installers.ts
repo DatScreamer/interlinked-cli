@@ -49,16 +49,21 @@ export const CLAUDE_HOOK_EVENTS = [
 	"TeammateIdle",
 ] as const;
 
-// PostToolUse matcher — scope to mutating tools only.
-// With matcher: "" (match-all), Claude Code counts a PostToolUse hook invocation
-// for every tool in the turn (e.g. Read + Edit = "2 hooks ran"). Scoping to
-// Edit|Write|MultiEdit ensures the count reflects actual mutations only.
-// `apply_patch` is Codex CLI's primary file-edit tool — added explicitly
-// so PostToolUse fires on Codex without relying on Codex's Edit/Write
-// alias engine. Claude has no `apply_patch` tool, so the alternation is
-// safe across both clients. The hook script still receives all
-// PostToolUse events that match this pattern.
-const POST_TOOL_USE_MATCHER = "Edit|Write|MultiEdit|apply_patch";
+// PostToolUse matcher — capture every tool's result for full observability.
+// Empty string = match every tool. The tradeoff: Claude Code shows "N
+// PostToolUse hooks ran" once per tool in the turn (Read + Edit = "2 hooks
+// ran"), which is mildly noisy in the UI. We accept that noise because:
+//   (1) without it, Bash stdout/stderr, Read file contents, Grep results,
+//       WebFetch responses are all lost — there's no other event that
+//       carries them;
+//   (2) the hook script fast-paths non-mutating tools — it appendLocal()s
+//       the result and exits without contacting the harness, so the
+//       per-tool latency cost is ~0.1 ms.
+// `apply_patch` is Codex CLI's primary file-edit tool; with matcher="" it
+// matches naturally alongside Edit/Write/MultiEdit. The hook script's
+// internal `mutationTools` set decides which events run the full quality
+// pipeline.
+const POST_TOOL_USE_MATCHER = "";
 
 // Event names that require scoped matching (only mutating tools). Extracted
 // as a named set so conditionals don't use bare string literals.
@@ -127,11 +132,21 @@ export const CURSOR_HOOK_EVENTS = [
 	"beforeSubmitPrompt",
 	"beforeShellExecution",
 	"beforeMCPExecution",
+	// Cursor has shipped both spellings across builds; install both so the
+	// harness remains active regardless of which contract the local IDE emits.
+	"beforeMcpToolExecution",
 	"beforeReadFile",
 	"afterFileEdit",
 	"stop",
 	"preToolUse",
 	"postToolUse",
+	// Tool failures: surface to error_history + activity feed.
+	"postToolUseFailure",
+	// Subagent (Task tool) lifecycle — parity with Claude's SubagentStop.
+	"subagentStart",
+	"subagentStop",
+	// Compaction observation — parity with Claude's PreCompact.
+	"preCompact",
 ] as const;
 
 // Helpers for conditionals — avoid bare `typeof x === "string"` / `"object"`
@@ -993,8 +1008,12 @@ export function uninstallCursorHooks(cwd: string): boolean {
 export const CURSOR_FAIL_CLOSED_EVENTS = new Set<string>([
 	"beforeShellExecution",
 	"beforeMCPExecution",
+	"beforeMcpToolExecution",
 	"beforeReadFile",
 	"preToolUse",
+	// Subagent spawn — denying spawn is a gate; if the hook crashes we'd
+	// rather block the subagent than allow an unguarded one to launch.
+	"subagentStart",
 ]);
 
 // ===========================================
