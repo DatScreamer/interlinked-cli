@@ -12,6 +12,7 @@
 
 import { execSync, spawnSync } from "node:child_process";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -97,7 +98,14 @@ import {
 	extractAllEditedFilePaths,
 	extractEditedFilePath,
 } from "./server-tool-helpers.js";
-import { acknowledgeChecks, isAcknowledged, SessionTracker } from "./session-state.js";
+import {
+	acknowledgeChecks,
+	getActiveSkills,
+	isAcknowledged,
+	recordSkillEnter,
+	recordSkillLeave,
+	SessionTracker,
+} from "./session-state.js";
 import {
 	formatStructuralWarnings,
 	runStructuralChecks,
@@ -329,7 +337,20 @@ if (serverBridge) {
 	log("No server configured — running in local-only mode");
 }
 
-const reservations = new ReservationManager(serverBridge || undefined);
+const reservationEventsPath = join(CWD, ".interlinked", "reservation-events.jsonl");
+const reservations = new ReservationManager(
+	serverBridge || undefined,
+	undefined,
+	(event) => {
+		try {
+			const dir = dirname(reservationEventsPath);
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			appendFileSync(reservationEventsPath, `${JSON.stringify(event)}\n`);
+		} catch (_err) {
+			/* intentional: reservation-events is best-effort observability */
+		}
+	},
+);
 let idleTimer: ReturnType<typeof setTimeout>;
 let connectionCount = 0;
 let _totalEventsProcessed = 0;
@@ -588,6 +609,56 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			cohort.subagentLeft(event);
 			log(`Subagent left: ${event.agent_name || "unnamed"}`);
 			break;
+		case "SkillEnter": {
+			const name = (event.tool_input?.name as string | undefined)?.trim();
+			if (!name) {
+				return { decision: "allow", warnings: ["SkillEnter: missing tool_input.name"] };
+			}
+			const ttl = event.tool_input?.ttl_seconds as number | undefined;
+			const sourceRaw = event.tool_input?.source as string | undefined;
+			const source: "cli" | "hook" | "manual" =
+				sourceRaw === "hook" || sourceRaw === "manual" ? sourceRaw : "cli";
+			const targetSessions = event.session_id
+				? [session]
+				: sessions.getAll();
+			let count = 0;
+			for (const target of targetSessions) {
+				recordSkillEnter(target, { name, ttl_seconds: ttl, source });
+				count++;
+			}
+			log(`SkillEnter: ${name} (${source}, ${count} session${count === 1 ? "" : "s"})`);
+			return { decision: "allow" };
+		}
+		case "SkillLeave": {
+			const name = (event.tool_input?.name as string | undefined)?.trim();
+			if (!name) {
+				return { decision: "allow", warnings: ["SkillLeave: missing tool_input.name"] };
+			}
+			const targetSessions = event.session_id
+				? [session]
+				: sessions.getAll();
+			let removed = 0;
+			for (const target of targetSessions) {
+				if (recordSkillLeave(target, name)) removed++;
+			}
+			log(`SkillLeave: ${name} (removed from ${removed} session${removed === 1 ? "" : "s"})`);
+			return { decision: "allow" };
+		}
+		case "SkillList": {
+			// `additional_context` is the only string-typed escape hatch on
+			// HarnessDecision; the CLI parses it as JSON. Acceptable because
+			// the caller is `interlinked skill list`, not an agent hook.
+			const targetSessions = event.session_id ? [session] : sessions.getAll();
+			const collected = targetSessions.map((target) => ({
+				session_id: target.session_id,
+				agent_name: target.agent_name,
+				skills: getActiveSkills(target),
+			}));
+			return {
+				decision: "allow",
+				additional_context: JSON.stringify(collected),
+			};
+		}
 		default:
 			cohort.recordActivity(event);
 			break;
