@@ -92,10 +92,11 @@ export function checkFreeMemoryGb(freeMemoryBytes: number): SystemCheckResult {
 }
 
 /**
- * Check for orphan harness daemons. A small number is normal (the daemon
- * idle-shutdown is 30 min by default; recently-ended sessions may still be
- * shutting down gracefully). A large number indicates the auto-reaper isn't
- * running or sessions are exiting without cleanup.
+ * Check for orphan harness daemons. The daemon is always-on by default —
+ * each CWD that's hosted a session keeps its harness alive until the user
+ * runs `interlinked harness stop` or `interlinked harness clean`. A growing
+ * count across many directories suggests the user should run `harness clean`
+ * to reclaim daemons attached to repos they're no longer working in.
  */
 export function checkOrphanHarnessCount(orphanCount: number): SystemCheckResult {
 	if (orphanCount === 0) {

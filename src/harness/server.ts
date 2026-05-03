@@ -162,13 +162,13 @@ const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
-// Default 30 min idle shutdown so daemons don't accumulate as orphans across
-// sessions. The event-driven server has near-zero idle CPU cost, but each
-// living daemon holds ~30 MB resident + an open Unix socket. After 28 stale
-// daemons accumulated on one dev machine across days of sessions, we made
-// idle-shutdown the default. Set `--idle-timeout 0` to opt back into the
-// always-on legacy behavior.
-const IDLE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000;
+// Always-on by default. Per-session Maps (classifierSessions, autoCoordStates,
+// preEditBaselines) drop on SessionEnd, so resident memory stabilizes around
+// ~30 MB per daemon — it doesn't grow with uptime. The original orphan-
+// accumulation concern (many daemons × many CWDs) is handled by the explicit
+// `interlinked harness clean` command, not by an idle timer.
+// Set `--idle-timeout <ms>` to opt back into auto-shutdown if you want it.
+const IDLE_TIMEOUT_DEFAULT_MS = 0;
 const _rawIdleArg = stringArg(args["idle-timeout"]);
 const IDLE_TIMEOUT_MS =
 	_rawIdleArg !== undefined ? Number(_rawIdleArg) : IDLE_TIMEOUT_DEFAULT_MS;
