@@ -54,7 +54,8 @@ The substrate is heavily reusable; the surface is CF-specific.
 **Substrate worth borrowing or invoking:**
 
 - The `outboundByHost` egress-proxy pattern (lane 4 → eventually substrate when we ship our own Workers; documented in `cf-sandbox-egress-proxy-pattern.md`)
-- The proxy-Worker-as-credential-boundary pattern (lane 4 → drives `cli-subscription-credential-plumbing.md` Pattern D and the AI Gateway approach)
+- The proxy-Worker-as-credential-boundary pattern (lane 4 → drives the AI Gateway proxy approach in `cli-subscription-credential-plumbing.md` Fallback B)
+- **The `git-repo-per-sandbox` lifecycle pattern** (lane 4, load-bearing → drives the per-(user, repo) Sandbox architecture for both reviewers; documented in `cli-subscription-credential-plumbing.md` §1)
 - The discovery-endpoint pattern (`/.well-known/<name>` returning `{auth, config}`) (lane 4 → drives the team-config item in `cloud-mirror-compatibility-changes.md`)
 - The risk-tier orchestrator pattern (lane 4 → drives `multi-agent-pre-push-review.md`)
 - Sandbox SDK + Artifacts + Workflows as the cloud-side execution stack (lane 5 — when Interlinked builds its cloud, this is what it runs on)
@@ -65,8 +66,9 @@ The substrate is heavily reusable; the surface is CF-specific.
 - Cloudflare Access (Zero Trust SSO) — substitutable with any OIDC provider but CF's Access flow is what makes the iMARS pattern frictionless for a CF-dependent team
 - AI Gateway specifically (any inference proxy works in principle, but CF's adds caching + ZDR + analytics + BYOK in one box)
 - Workers AI for inference (any inference provider works; CF's locality benefit is real for users on CF infra)
+- Sandbox SDK persistent-Sandbox lifecycle with the auth-survives-sleep property (the load-bearing primitive for the Codex bootstrap path; substitutes are theoretical but not actually shipping in any other cloud platform that matches the per-(user, repo) keying model)
 
-**Critically: subscription-auth portability.** Anthropic's `claude setup-token` works on or off Cloudflare. OpenAI's lack of a Codex equivalent is unaffected by the CF partnership. The CF stack doesn't fix vendor-side ToS gaps — it provides an execution substrate that respects whatever the vendor's auth model is.
+**Critically: subscription-auth portability is partial, but the Sandbox lifecycle bridges the gap.** Anthropic's `claude setup-token` works on or off Cloudflare — fully portable. OpenAI has no `setup-token` equivalent, but **the Sandbox SDK's persistent (user, repo) lifecycle gives Codex an effectively-portable subscription path anyway**: log in once inside the Sandbox, the auth.json persists across all subsequent commits to that repo. The CF stack doesn't fix the vendor-side gap (no portable token) but provides an execution substrate where the vendor's interactive headless auth flow (`codex login --device-auth`) only has to run once per (user, repo) pair, then is reused indefinitely. This is what made the cloud-Sandbox-for-both architecture viable; without the persistent-Sandbox property, we'd have been forced into the heterogeneous local-Codex / cloud-Claude split.
 
 ## 5. Lane (1–6)
 
@@ -88,14 +90,22 @@ A 1-day spike that proves the load-bearing piece: **deploy a minimal CF Worker t
 4. Run `claude -p` against the diff with `--system-prompt` from a security-review template
 5. Return the JSON verdict
 
-If this works end-to-end in <1 day, the substrate is real and `multi-agent-pre-push-review.md` is buildable. If it requires fighting CF's auth, the timing isn't right yet and the design might need to defer cloud sandboxes for Claude reviews to a later phase.
+If this works end-to-end in <1 day, the Claude side of the architecture is real. **Pair it with a second Codex spike** to validate the per-(user, repo) Sandbox lifecycle for Codex specifically:
 
-This spike does NOT touch:
+1. Adapt CF's `git-repo-per-sandbox` template — keyed Sandbox ID, persistent across calls
+2. Run `codex login --device-auth` interactively in the Sandbox; complete OAuth on local browser
+3. Confirm `~/.codex/auth.json` is written and `codex exec '/security-review'` works against subscription
+4. Configure `SANDBOX_SLEEP_AFTER=24h+`, idle the Sandbox, wake it next day
+5. Confirm `codex exec` still works without re-login (refresh-token survives sleep)
 
-- The orchestrator Workflow (deferred — start with single-reviewer flow)
-- Multi-agent fan-out (deferred — same)
-- The local-Codex dispatch path (deferred to its own spike)
+If both spikes pass, the unified cloud-Sandbox architecture is buildable as designed. If `codex login --device-auth` fails for individual Plus/Pro plans (per [Issue #9253](https://github.com/openai/codex/issues/9253)), the fallback is port-forwarded browser flow via Sandbox preview URLs — slightly more complex bootstrap, same end state.
+
+These spikes do NOT touch:
+
+- The orchestrator Workflow (deferred — start with single-reviewer single-call flow)
+- Multi-agent fan-out (deferred — start with serial reviewers in one Sandbox)
 - Risk-tier triage (deferred — start with always-full)
+- Per-tenant config / discovery endpoint (deferred — start with hardcoded test config)
 
 ## 7. Artifact
 
@@ -115,13 +125,21 @@ The pattern reuses are explicitly *not* CLI features — they shape the design o
 
 ## Notes
 
-**Marketing-vs-reality flag (per the rubric).** Several pieces of the announcement coverage paraphrased things in misleading ways:
+**Marketing-vs-reality flag (per the rubric), AND a self-correction.** The press coverage paraphrasing has a real signal-to-noise problem, but **so did my own first read of it.** Both worth flagging:
 
-- "Codex on Cloudflare" headlines suggested Codex itself becomes available with subscription billing in CF Sandboxes. Reading CF's `codex-app-server` example README directly showed it still requires `OPENAI_API_KEY`. The partnership is about *model availability* on CF infrastructure (billed as API tokens / Workers AI), not about subscription-credential portability.
-- "Frontier models in Agent Cloud" reads like agents pay subscription rates. Reading the iMARS post directly showed CF's internal stack still routes via API keys through AI Gateway — no subscription path mentioned.
-- The OpenAI announcement page itself is gated by Cloudflare's bot challenge from automated fetchers; the user pasted the actual text, which confirmed the API/enterprise framing rather than subscription-friendly framing.
+*The press coverage's actual misleading claims:*
 
-This is the rubric's value: reading the source (CF GitHub example READMEs and Anthropic auth docs) rather than the press coverage settled the question. The press release said "Codex available," which we'd have charitably read as "subscription works in cloud sandboxes." The actual code in `codex-app-server/Dockerfile` and the absence of a `codex setup-token` analog says otherwise.
+- "Frontier models in Agent Cloud" reads like agents pay subscription rates. Reading the iMARS post directly showed CF's internal stack still routes via API keys through AI Gateway — no subscription path mentioned in CF's own internal use.
+- The OpenAI/Cloudflare announcement page is gated by CF's bot challenge from automated fetchers; the user pasted the actual text, which confirmed the API/enterprise framing rather than subscription-friendly framing — though that doesn't mean subscription paths *don't exist*, just that this announcement isn't what unlocks them.
+
+*My own initial misread (caught and corrected during this investigation):*
+
+- I conflated "no portable Codex token like `claude setup-token`" (TRUE — there is no `codex setup-token` analog) with "therefore Codex can't be subscription-billed in cloud Sandboxes" (FALSE — overgeneralized).
+- The corrected reading: Codex CAN run in cloud Sandboxes with subscription billing if you treat the Sandbox as a *long-lived per-(user, repo) compute environment* and have the user log in interactively once via `codex login --device-auth`. The auth.json then persists in the Sandbox FS across all subsequent commits, just like it does on a developer's laptop.
+- The "git-repo-per-sandbox" CF template explicitly enables this: same `sandboxId` returns the same Sandbox forever; auth state survives sleep cycles. CF's own `codex-app-server` example uses API keys because it's demonstrating a *multi-tenant app-server* pattern, not a per-developer Sandbox pattern.
+- Reading CF's [`examples/codex-app-server/Dockerfile`](https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex-app-server) once showed me API keys; reading the [`git-repo-per-sandbox` Artifacts example](https://developers.cloudflare.com/artifacts/examples/sandbox-sdk-artifacts/) the user pointed me to settled the question that the per-developer pattern was always available.
+
+This is *the rubric working*. Reading the source closely enough to see what the per-Sandbox pattern actually allows — not just the headline use case CF chose to demonstrate — exposed the false generalization. The lesson generalizes: "vendor doesn't ship a portable headless token" is a different claim from "vendor doesn't authorize headless subscription auth at all."
 
 **Verbatim Anthropic ToS / authentication quotes** that anchor `cli-subscription-credential-plumbing.md` are in that doc and not duplicated here. They were retrieved during this same investigation.
 
@@ -134,6 +152,7 @@ This is the rubric's value: reading the source (CF GitHub example READMEs and An
 
 ## Sources (primary)
 
+- [Cloudflare Sandbox SDK + Artifacts (`git-repo-per-sandbox` template)](https://developers.cloudflare.com/artifacts/examples/sandbox-sdk-artifacts/) — **load-bearing**: the Sandbox-paired-with-Artifacts-repo lifecycle that makes the per-(user, repo) architecture work for both reviewers
 - [Cloudflare Expands its Agent Cloud (press release)](https://www.cloudflare.com/press/press-releases/2026/cloudflare-expands-its-agent-cloud-to-power-the-next-generation-of-agents/) — overview of Dynamic Workers, Artifacts, Sandboxes, Think framework, unified model catalog
 - [The AI engineering stack we built internally (iMARS post)](https://blog.cloudflare.com/internal-ai-engineering-stack/) — the canonical worked example; covers proxy Worker pattern, MCP Server Portal, AGENTS.md generation, AI Code Reviewer, Engineering Codex
 - [Cloudflare Agent Setup — Codex](https://developers.cloudflare.com/agent-setup/codex/) — Codex CLI integration with CF skills + MCP

@@ -7,9 +7,11 @@
 
 ## Why this doc
 
-We've designed a substantial set of cloud-side features (deterministic check mirror, multi-agent pre-push review, AI Gateway proxy Worker, subscription-token credential storage). The cloud substrate is months of work and depends on team decisions outside the CLI. But the CLI can — and should — make small compatibility-preserving changes *now* so that when the cloud arrives, we don't have to retrofit credential serialization, hook installation, or config layering through code that assumed local-only.
+We've designed a substantial set of cloud-side features (deterministic check mirror, multi-agent pre-push review running in per-(user, repo) Cloudflare Sandboxes, AI Gateway proxy Worker for the classifier). The cloud substrate is months of work. But the CLI can — and should — make small compatibility-preserving changes *now* so that when the cloud arrives, we don't have to retrofit credential plumbing, hook installation, or config layering through code that assumed local-only.
 
 These are deliberately narrow refactors. None of them ship a new feature; each one removes a constraint that would later force a wider rewrite. **Each item should be one PR or smaller.**
+
+The corrected architecture (per `cli-subscription-credential-plumbing.md`) is that **both Claude Code and Codex run as reviewers inside per-(user, repo) cloud Sandboxes** with subscription billing — not the heterogeneous cloud/local split previously sketched. Two of the items below have been adjusted to reflect this; one (item #6) has been demoted to "defer until needed."
 
 ---
 
@@ -19,7 +21,9 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 
 **Change.** Add a third resolution path: a configured `proxy_url` (e.g., `https://team.example.com/ai-gateway/anthropic`). If set, model requests go to `<proxy_url>/...` instead of `api.anthropic.com/...`, with auth handled by the proxy Worker per `cf-sandbox-egress-proxy-pattern.md`.
 
-**Why now.** This is one config field. Adding it before any classifier or reviewer code paths exist means those features can be written against the proxy URL from day one. Without it, every cloud-routing feature has to invent its own base-URL configurability, then we have to consolidate.
+**Why now.** This is one config field. Adding it before any classifier or proxied-inference code paths exist means those features can be written against the proxy URL from day one. Without it, every cloud-routing feature has to invent its own base-URL configurability, then we have to consolidate.
+
+This is primarily for the **classifier** (per `policy-classifier.ts`, which today calls Groq directly) and any future Worker-mediated inference. The pre-push reviewers don't use this — they call vendor CLIs directly inside Sandboxes.
 
 **Specifics:**
 - New field in `config.local.json`: `proxy_url?: string` (optional, defaults unset = direct path)
@@ -41,7 +45,7 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 
 **Today.** The `agent_source` field in activity events is a fixed set: `claude` | `copilot` | `gemini` | `codex`. This identifies which CLI generated the event.
 
-**Change.** Add `opencode` and a generic `cloud-reviewer` family (`claude-code-cloud-reviewer`, `codex-cloud-reviewer`) so events from cloud-side reviewers can identify themselves correctly.
+**Change.** Add `claude-code-cloud-reviewer` and `codex-cloud-reviewer` so events from cloud-side reviewers can identify themselves correctly. Also add `opencode` — even though it's not used in the v1 reviewer cohort, it's a documented fallback option in `cli-subscription-credential-plumbing.md` and is referenced in CF's iMARS pattern.
 
 **Why now.** When the multi-agent reviewer pipeline ships, review-agent activity events will need correct provenance. If the enum is closed, we'll be forced to choose between mislabeling (using `claude` for Claude-as-reviewer events, conflating with the user's primary agent) or doing a migration. Adding the entries now is one line and avoids the migration.
 
@@ -49,7 +53,6 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 - Extend `AgentSource` type in `src/lib/activity-utils.ts` (or wherever it's defined)
 - Update validators that whitelist values
 - No behavior change today — entries are valid but unused
-- Add `opencode` as a first-class entry now even though we don't actively integrate OpenCode yet
 
 **Touchpoints:**
 - `src/lib/activity-utils.ts`
@@ -92,7 +95,7 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 
 **Today.** `interlinked enable` installs PreToolUse / PostToolUse hooks for Claude Code, Copilot, Gemini, Codex via `hook-installers.ts`. Git hooks (pre-commit, pre-push) are not installed.
 
-**Change.** Add git pre-commit and pre-push hook installers to the `CLIENT_INSTALL_REGISTRY` pattern. The pre-commit hook calls `interlinked verify --stage=pre-commit`. The pre-push hook calls `interlinked verify --stage=pre-push` and (in the future) the multi-agent reviewer dispatcher.
+**Change.** Add git pre-commit and pre-push hook installers to the `CLIENT_INSTALL_REGISTRY` pattern. The pre-commit hook calls `interlinked verify --stage=pre-commit`. The pre-push hook calls `interlinked verify --stage=pre-push` and (in the future) the cloud orchestrator that dispatches the multi-agent reviewer.
 
 **Why now.** The lifecycle-tiered gating model from `cloud-local-disagreement-policy.md` and `multi-agent-pre-push-review.md` depends on git hooks. Building that infrastructure now is small — it's the same pattern as the existing per-CLI installers. Without it, the lifecycle architecture has nowhere to plug in.
 
@@ -100,6 +103,7 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 - New `installGitHooks(repoRoot)` in `hook-installers.ts`
 - Writes to `.git/hooks/pre-commit` and `.git/hooks/pre-push` (preserving any existing hooks via the same merge pattern used for `.claude/settings.json`)
 - The hook script is a self-contained `.mjs` (matching the existing hook pattern) — no imports from the CLI package, must work standalone
+- The pre-push hook needs to handle streaming responses from the cloud orchestrator (for the bootstrap-login UX flow described in `multi-agent-pre-push-review.md` §8) — design the hook protocol to support this from day one
 - `interlinked enable` calls it; `interlinked disable` removes it
 - Conflict detection: if `.git/hooks/pre-commit` exists with non-Interlinked content, prompt or merge per existing pattern
 - A `--no-git-hooks` flag on `enable` for users who manage git hooks externally (Husky, lefthook, etc.)
@@ -138,27 +142,48 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 
 ---
 
-## 6. Add a credential-export affordance to `auth.ts`
+## 6. (DEFERRED) Credential-export affordance to `auth.ts`
 
-**Today.** `auth.ts` resolves credentials for the CLI's own use. There's no path to *export* a credential bundle for use by another process or environment.
+**Status: deferred until needed.** The corrected architecture (`cli-subscription-credential-plumbing.md`) puts both reviewers in cloud Sandboxes, eliminating the primary motivation for shipping local credentials to remote infrastructure.
 
-**Change.** Add `exportCredentialBundle({ scope })` that produces a sealed credential bundle. Initially used for: local subprocess reviewer dispatch (the orchestrator sends a sealed bundle to the harness, which decrypts and uses it for the local subprocess CLI invocation). Later possibly used for: other agent-environment auth handoff, secure provisioning of cloud sandboxes.
+**Why this was originally proposed.** The previous heterogeneous architecture had Codex reviews running as local subprocesses on the user's machine (because Codex had no portable subscription token). The cloud orchestrator dispatched review specs to the local harness, which spawned `codex exec` against the user's `~/.codex/auth.json`. Sealed credential bundles were the secure handoff primitive for cross-machine credential operations.
 
-**Why now.** The local-subprocess reviewer pattern from `cli-subscription-credential-plumbing.md` needs a clean way for the cloud orchestrator to dispatch a review-spec to the harness, which then runs `claude -p` or `codex exec` locally. Building credential serialization with seal-in-transit semantics now means we don't have to retrofit it later through code that assumed creds-are-local-only.
+**Why it's deferred now.** Codex reviews now run inside the per-(user, repo) Cloudflare Sandbox with the user logging in directly to that Sandbox via `codex login --device-auth`. The credential never transits between machines. Claude's `CLAUDE_CODE_OAUTH_TOKEN` ships from local to cloud once during bootstrap (via Wrangler secret), but that's a one-time operation that doesn't need the bundle primitive — a Wrangler `secret put` covers it.
+
+**When it might come back.** Two scenarios:
+
+1. **Fallback C path becomes important.** If a meaningful number of users can't complete cloud-side Codex bootstrap (workspace-admin gating + no preview-URL access), they'll need the local-subprocess fallback per `cli-subscription-credential-plumbing.md` §7. That path requires the cloud orchestrator to dispatch a review-spec to the local harness — same protocol shape as the original design — and a sealed credential primitive for any credential that would be used in that path.
+2. **Cross-Sandbox auth sharing for a single user.** If we want one Codex login to cover all of a user's project Sandboxes (instead of N logins for N projects), we'd need to copy auth.json between Sandboxes — the credential-bundle primitive would be the right primitive for that. ToS-questionable per `cli-subscription-credential-plumbing.md` §5; defer.
+
+**For now, do nothing.** Build the bundle primitive only if we hit one of the scenarios above. The primary architecture doesn't need it.
+
+---
+
+## 7. (NEW) Reserve the `(userId, repoSlug)` Sandbox identity scheme
+
+**Today.** Nothing. The CLI doesn't yet have a concept of a stable identity for a developer-repo pairing.
+
+**Change.** Decide and document the scheme for `sandboxId` derivation. Per CF's [`git-repo-per-sandbox` template](https://developers.cloudflare.com/artifacts/examples/sandbox-sdk-artifacts/), the orchestrator's `getSandbox(env.Sandbox, sandboxId)` call needs the same `sandboxId` to return the same Sandbox across pushes. We need a stable, collision-free way to derive it.
+
+Proposed scheme: `sandboxId = sha256(`${userId}:${repoCanonicalUrl}`).slice(0, 16)`. Where:
+
+- `userId` is the dev's Cloudflare Access subject claim (or whatever auth identity the orchestrator uses)
+- `repoCanonicalUrl` is the repo's canonical git remote URL (e.g., `https://github.com/QuentinCody/interlinked-cli`)
+- Hash output truncated to 16 chars for readability and CF's sandbox-id constraints
+
+**Why now.** This identity scheme is what binds together all the cloud-side features: same Sandbox across commits (per-push reviews), same Sandbox holds the Codex auth.json, same Sandbox is paired with the same Artifacts repo. Picking the scheme upstream of any cloud-side code means we can plumb it through CLI features (the local hook needs to compute it; the orchestrator needs to validate it) consistently.
 
 **Specifics:**
-- `exportCredentialBundle(opts: { scope: string, recipient_pubkey: string }): Promise<SealedBundle>` — uses the recipient's public key to seal, can only be opened by the holder of the corresponding private key
-- `unsealCredentialBundle(bundle: SealedBundle): Promise<UnsealedCredentials>` — for the harness side
-- `SealedBundle` is a typed structure with the cryptographic envelope, never raw credentials
-- Implementation uses `node:crypto` with libsodium-style box (or similar standard primitive)
-- **Important:** This is *not* shipping creds to a cloud sandbox today. It's the primitive that future flows (local-subprocess dispatch, sealed cloud-token storage) will compose. Keep the surface narrow.
+- Define `deriveSandboxId(userId, repoUrl): string` as a pure function in a new `src/lib/sandbox-identity.ts`
+- `repoCanonicalUrl` derivation: get repo URL from `git remote get-url origin`, normalize (strip `.git` suffix, lowercase host, etc.)
+- The CLI computes this when it sends events to the cloud, so the orchestrator can route to the right Sandbox without round-tripping
+- Document the scheme in `docs/design/multi-agent-pre-push-review.md`
 
 **Touchpoints:**
-- New `src/lib/credential-bundle.ts` with the seal/unseal primitives
-- Tests for the cryptographic round-trip
-- Documentation about scope semantics
+- New `src/lib/sandbox-identity.ts`
+- Tests for stable derivation across repo-URL variants
 
-**Risk:** Medium. Crypto primitives must be correct. Use a battle-tested library (libsodium / Node's `crypto.box`-equivalent), not roll-your-own. Don't ship until the `multi-agent-pre-push-review.md` flow actually needs this; this entry can be DEFERRED if it turns out the local-subprocess path doesn't need cloud-originated credentials at all.
+**Risk:** Trivially low. It's a pure function with no behavior dependencies.
 
 ---
 
@@ -167,13 +192,14 @@ These are deliberately narrow refactors. None of them ship a new feature; each o
 Recommended sequence, by risk and dependency:
 
 1. **#2 (agent_source enum)** — trivial, do first. Unblocks any future event tagging.
-2. **#1 (proxy_url config field)** — small, high-leverage. Unblocks classifier and reviewer routing.
-3. **#3 (verify --stage)** — medium effort, but the cloud orchestration features all depend on it. Worth doing before they ship.
-4. **#5 (remote config URL)** — medium effort, async refactor. Less urgent than #3 but unlocks the team-onboarding story.
-5. **#4 (git hook installers)** — medium effort. Defer until the multi-agent reviewer pipeline is actually about to ship — pre-push hook is useless without something to run on push.
-6. **#6 (credential-export affordance)** — defer until needed. May not be needed at all if the local-subprocess pattern can use vendor credentials directly without cloud-originated bundles.
+2. **#7 (Sandbox identity scheme)** — also trivial. Pure function, no behavior change. Prerequisite for any cloud orchestrator wiring.
+3. **#1 (proxy_url config field)** — small, high-leverage. Unblocks classifier and any Worker-mediated routing.
+4. **#3 (verify --stage)** — medium effort, but the cloud orchestration features all depend on it. Worth doing before they ship.
+5. **#5 (remote config URL)** — medium effort, async refactor. Less urgent than #3 but unlocks the team-onboarding story.
+6. **#4 (git hook installers)** — medium effort. Defer until the multi-agent reviewer pipeline is actually about to ship — pre-push hook is useless without something to run on push.
+7. **#6 (credential-export affordance)** — deferred. Build only if Fallback C becomes load-bearing.
 
-Items 1, 2, and 3 are the hard "do these now" items. The others can wait but should be designed-in (the items above describe the shape so future implementation has a target).
+Items 1, 2, 3, and 7 are the "do these now" items. Items 4-6 can wait but should be designed-in. Item 6 is deferred indefinitely.
 
 ---
 
@@ -186,15 +212,17 @@ Items 1, 2, and 3 are the hard "do these now" items. The others can wait but sho
 ## Cross-references
 
 - [`cloud-local-disagreement-policy.md`](../design/cloud-local-disagreement-policy.md) — drives #3 (stage-aware verify)
-- [`multi-agent-pre-push-review.md`](../design/multi-agent-pre-push-review.md) — drives #4 (git hooks), #6 (credential export)
-- [`cli-subscription-credential-plumbing.md`](../design/cli-subscription-credential-plumbing.md) — drives #1 (proxy URL), #6 (sealed bundles)
+- [`multi-agent-pre-push-review.md`](../design/multi-agent-pre-push-review.md) — drives #4 (git hooks), #7 (Sandbox identity)
+- [`cli-subscription-credential-plumbing.md`](../design/cli-subscription-credential-plumbing.md) — drives #1 (proxy URL), reframes #6 (no longer needed for primary architecture)
 - [`cf-sandbox-egress-proxy-pattern.md`](../design/cf-sandbox-egress-proxy-pattern.md) — server-side counterpart to #1
 - [`three-product-architecture.md`](../design/three-product-architecture.md) — overall product framing
 - [`_phase3-cloud-deferrals.md`](./free-cli-adoption/_phase3-cloud-deferrals.md) — drives #3 (which checks per stage)
 
 ## Sources
 
+- [Cloudflare Sandbox SDK + Artifacts (`git-repo-per-sandbox`)](https://developers.cloudflare.com/artifacts/examples/sandbox-sdk-artifacts/) — the lifecycle pattern that #7 reflects
 - [Cloudflare iMARS / Internal AI Engineering Stack](https://blog.cloudflare.com/internal-ai-engineering-stack/) — the discovery-endpoint pattern that #5 is modeled on
-- [Cloudflare Sandbox SDK](https://developers.cloudflare.com/sandbox/) — the substrate #1 and #4 ultimately route to
-- [Cloudflare Workflows](https://developers.cloudflare.com/workflows/) — durable orchestration that the multi-agent reviewer (drives #4) depends on
-- [Cloudflare Artifacts (press release)](https://www.cloudflare.com/press/press-releases/2026/cloudflare-expands-its-agent-cloud-to-power-the-next-generation-of-agents/) — Git-compatible storage for cloud-side repo forks
+- [Cloudflare Sandbox SDK](https://developers.cloudflare.com/sandbox/) — the substrate #1, #4, and #7 ultimately route to
+- [Cloudflare Workflows](https://developers.cloudflare.com/workflows/) — durable orchestration for the multi-agent reviewer (drives #4)
+- [Anthropic Claude Code Authentication — `claude setup-token`](https://code.claude.com/docs/en/authentication) — the bootstrap flow #4 must support for `CLAUDE_CODE_OAUTH_TOKEN` distribution
+- [OpenAI Codex Authentication](https://developers.openai.com/codex/auth) — the device-auth flow #4 must support for in-Sandbox interactive bootstrap
