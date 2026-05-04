@@ -69,11 +69,11 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/types.ts` | All type definitions |
 | `src/harness/server.ts` | Node.js Unix socket server (main entry, `node:net`) |
 | `src/harness/evaluator.ts` | Guard evaluation: PreToolUse blocking + PostToolUse feedback |
-| `src/harness/rules-loader.ts` | 77 built-in rules + JSON config + hot-reload |
+| `src/harness/rules-loader.ts` | 105 built-in rules + JSON config + hot-reload |
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
-| `src/harness/quality-checks.ts` | PostToolUse: 18 checks across 8+ languages (tsc, biome, cargo, mypy, etc.) |
+| `src/harness/quality-checks.ts` | PostToolUse: 31 checks across 8+ languages (tsc, biome, cargo, mypy, etc.) |
 | `src/harness/server-bridge.ts` | Server coordination: reservation sync, guard event reporting |
 | `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
@@ -82,7 +82,7 @@ npm run docs                               # Regenerate reference docs
 **Harness source files (analysis):**
 | File | Purpose |
 |------|---------|
-| `src/harness/structural-checks.ts` | 22 dependency-aware checks (export surface, import resolution, cycles, blast radius) |
+| `src/harness/structural-checks.ts` | 25 dependency-aware checks (export surface, import resolution, cycles, blast radius) |
 | `src/harness/generic-checks.ts` | 50+ inline code analysis checks (SQL injection, complexity, async/await, etc.) |
 
 ### Agent-quality checks (added 2026-04)
@@ -131,6 +131,7 @@ Shared patterns when adding another agent-quality check:
 | `src/harness/taint-tracker.ts` | Sensitivity classification (Public/Confidential/Secret) and flow tracking |
 | `src/harness/pattern-detector.ts` | Cross-cutting pattern detection |
 | `src/harness/suggestion-scorer.ts` | Weighted finding scoring and ranking |
+| `src/harness/registry-parity.ts` | Configurable drift detector for paired registries / exception lists. Reads `.interlinked/registry-parity.json`; runs as part of `interlinked verify` and surfaces drift in both streaming and `--json` output. |
 | `src/harness/suppressions.ts` | Inline suppression directives |
 | `src/harness/check-metadata.ts` | Structural check metadata for docs generation |
 | `src/harness/check-engine/` | Unified caching/memoization layer for checks |
@@ -153,9 +154,9 @@ Shared patterns when adding another agent-quality check:
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `docs/generated/guard-rules.md` | All 77 built-in guard rules by category |
-| `docs/generated/quality-checks.md` | All 18 PostToolUse quality checks |
-| `docs/generated/structural-checks.md` | All 22 structural checks by tier |
+| `docs/generated/guard-rules.md` | All 105 built-in guard rules by category |
+| `docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
+| `docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
 **How guard evaluation works:**

@@ -99,13 +99,13 @@ Hook Script (.interlinked/hooks/interlinked-activity.mjs)
     │    │  ├─ Candidate file narrowing
     │    │  └─ Block-and-answer with ripgrep results
     │    │
-    │    ├─ Quality Checks (PostToolUse, 18 checks across 8+ languages)
+    │    ├─ Quality Checks (PostToolUse, 31 checks across 8+ languages)
     │    │  ├─ TypeScript (tsc), Biome, ESLint, secrets, strong typing, affected tests
     │    │  ├─ Python (mypy, ruff), Rust (cargo check/clippy), Go (go build, golangci-lint)
     │    │  ├─ C/C++ (compile, clang-tidy), Semgrep, gitleaks, dependency audit
     │    │  └─ Prompt injection detection
     │    │
-    │    ├─ Structural Checks (PostToolUse, 22 dependency-aware checks)
+    │    ├─ Structural Checks (PostToolUse, 25 dependency-aware checks)
     │    │  ├─ Export surface, import resolution, hallucinated imports, dead imports/exports
     │    │  ├─ Import cycles, interface change impact, blast radius, smart tsc
     │    │  └─ Stale read warnings, sibling awareness, route context, completion tracking
@@ -250,7 +250,7 @@ The harness enforces this by:
 
 **Why:** Teams need shared safety policies (everyone should be blocked from `rm -rf /`), but individual developers may need exceptions (e.g., a DevOps engineer who legitimately uses `terraform destroy`).
 
-The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (77 rules across 16 categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
+The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (105 rules across 23 categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
 
 ### 7. Server Bridge — Coordination Without Dependency
 
@@ -274,7 +274,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 | `cli/src/harness/types.ts` | All type definitions: events, decisions, rules, cohort, reservations, config |
 | `cli/src/harness/server.ts` | Node.js Unix socket server — the main entry point (`node:net`) |
 | `cli/src/harness/evaluator.ts` | Guard evaluation — PreToolUse blocking + PostToolUse feedback |
-| `cli/src/harness/rules-loader.ts` | Rule loading: 77 built-in + team JSON + personal overrides + hot-reload |
+| `cli/src/harness/rules-loader.ts` | Rule loading: 105 built-in + team JSON + personal overrides + hot-reload |
 | `cli/src/harness/session-state.ts` | Per-session trajectory tracking (files, commands, tool counts) |
 | `cli/src/harness/cohort.ts` | Agent cohort manager (join/leave/lost detection, file tracking) |
 | `cli/src/harness/reservations.ts` | Auto file reservation (optimistic lock, 30s release, server sync) |
@@ -287,7 +287,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Analysis subsystems:**
 | File | Purpose |
 |------|---------|
-| `cli/src/harness/structural-checks.ts` | 22 dependency-aware checks (export surface, imports, cycles, blast radius) |
+| `cli/src/harness/structural-checks.ts` | 25 dependency-aware checks (export surface, imports, cycles, blast radius) |
 | `cli/src/harness/generic-checks.ts` | 50+ inline code analysis checks (SQL injection, complexity, async/await, etc.) |
 | `cli/src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
 | `cli/src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
@@ -314,9 +314,9 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `cli/docs/generated/guard-rules.md` | All 77 built-in guard rules by category |
-| `cli/docs/generated/quality-checks.md` | All 18 PostToolUse quality checks |
-| `cli/docs/generated/structural-checks.md` | All 22 structural checks by tier |
+| `cli/docs/generated/guard-rules.md` | All 105 built-in guard rules by category |
+| `cli/docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
+| `cli/docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `cli/docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
 ## Grep Acceleration — Trigram Search Index
@@ -409,7 +409,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 
 ## Guard Rules — Overview
 
-> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, 77 rules across 16 categories).
+> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, 105 rules across 23 categories).
 
 ### Lifecycle Enforcement
 
@@ -419,7 +419,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 | AskUserQuestion redirect | Yes | Warn | Tool name is `AskUserQuestion` |
 | Curl-to-MCP detection | Yes | Warn → Block | `curl localhost:PORT` (escalates after 5 calls) |
 
-### Built-in Rule Categories (77 rules across 16 categories)
+### Built-in Rule Categories (105 rules across 23 categories)
 
 Category counts below are derived from `docs/generated/guard-rules.md` (the
 auto-generated source of truth — regenerate with `npm run docs` after adding
@@ -562,7 +562,7 @@ Quality checks, structural checks, and diff-aware filtering are all configurable
 See `docs/generated/configuration.md` for the full default configuration reference.
 
 **Key configuration sections:**
-- `quality_checks` — enable/disable each of the 18 PostToolUse checks
+- `quality_checks` — enable/disable each of the 31 PostToolUse checks
 - `structural_checks` — enable/disable each of the 22 structural checks + thresholds
 - `diff_aware` — control which checks suppress pre-existing findings
 - `error_memory` — error pattern history with optional embeddings support
