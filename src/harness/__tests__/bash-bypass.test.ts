@@ -107,6 +107,14 @@ describe("detectBashCodeFileWrite", () => {
 			expect(detectBashCodeFileWrite("sed 's/foo/bar/' src/app.ts")).toBeNull();
 		});
 
+		it("doesn't mistake sed -n reads across multiple commands for sed -i", () => {
+			expect(
+				detectBashCodeFileWrite(
+					"sed -n '200,250p' src/lib/__tests__/hook-installers.test.ts && sed -n '35,75p' src/lib/codex-feature-flag.test.ts",
+				),
+			).toBeNull();
+		});
+
 		it("returns null on empty command", () => {
 			expect(detectBashCodeFileWrite("")).toBeNull();
 		});

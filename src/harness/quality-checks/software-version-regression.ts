@@ -1,9 +1,11 @@
 // ===========================================
-// Software Version Regression Detection
+// Software Version Regression / Freshness Detection
 // ===========================================
 // PostToolUse-only detector for edits that move software identifiers
 // backward: model names, package/dependency versions, Docker tags, GitHub
 // action versions, API dates, and common config/code version assignments.
+// It also identifies newly introduced freshness-sensitive references so the
+// agent verifies official sources instead of relying on remembered timelines.
 
 import { basename } from "node:path";
 
@@ -21,9 +23,15 @@ export interface SoftwareVersionRegression {
 	after: SoftwareVersionReference;
 }
 
+export interface SoftwareVersionVerificationHint {
+	source: string;
+	instruction: string;
+}
+
 export interface SoftwareVersionFreshnessConcern {
 	ref: SoftwareVersionReference;
 	reason: string;
+	verifyHint: SoftwareVersionVerificationHint;
 }
 
 interface ComparableVersion {
@@ -132,12 +140,12 @@ export function detectSoftwareVersionFreshnessConcerns(
 
 	for (const ref of afterRefs) {
 		if (beforeKeys.has(referenceIdentity(ref))) continue;
-		const reason = freshnessConcernReason(ref);
-		if (!reason) continue;
-		const key = `${ref.anchor}\0${ref.version}\0${reason}`;
+		const concern = freshnessConcernForRef(ref);
+		if (!concern) continue;
+		const key = `${ref.anchor}\0${ref.version}\0${concern.reason}`;
 		if (emitted.has(key)) continue;
 		emitted.add(key);
-		concerns.push({ ref, reason });
+		concerns.push({ ref, ...concern });
 	}
 
 	return concerns;
@@ -145,7 +153,6 @@ export function detectSoftwareVersionFreshnessConcerns(
 
 export function formatSoftwareVersionRegressionDetail(
 	regressions: readonly SoftwareVersionRegression[],
-	concerns: readonly SoftwareVersionFreshnessConcern[] = [],
 ): string {
 	const lines: string[] = [];
 	const shownRegressions = regressions.slice(0, 8);
@@ -157,13 +164,19 @@ export function formatSoftwareVersionRegressionDetail(
 		lines.push(`  ... and ${regressions.length - shownRegressions.length} more`);
 	}
 
+	return lines.join("\n");
+}
+
+export function formatSoftwareVersionFreshnessDetail(
+	concerns: readonly SoftwareVersionFreshnessConcern[],
+): string {
+	const lines: string[] = [];
 	const shownConcerns = concerns.slice(0, 8);
 	if (shownConcerns.length > 0) {
-		if (lines.length > 0) lines.push("");
 		lines.push("Freshness-sensitive new references:");
 	}
-	lines.push(...shownConcerns.map(({ ref, reason }) => {
-		return `  L${ref.line}: ${ref.label} ${ref.version} — ${reason}`;
+	lines.push(...shownConcerns.map(({ ref, reason, verifyHint }) => {
+		return `  L${ref.line}: ${ref.label} ${ref.version} - ${reason}; verify: ${verifyHint.source}`;
 	}));
 	if (concerns.length > shownConcerns.length) {
 		lines.push(`  ... and ${concerns.length - shownConcerns.length} more`);
@@ -453,18 +466,87 @@ function referenceIdentity(ref: SoftwareVersionReference): string {
 	return `${ref.anchor}\0${ref.version}`;
 }
 
-function freshnessConcernReason(ref: SoftwareVersionReference): string | undefined {
+function freshnessConcernForRef(
+	ref: SoftwareVersionReference,
+): { reason: string; verifyHint: SoftwareVersionVerificationHint } | undefined {
 	const haystack = `${ref.label} ${ref.version} ${ref.text}`;
 	if (/\b(deprecated|obsolete|legacy|classic|previous|old)\b/i.test(haystack)) {
-		return "legacy/deprecated wording around a software reference should be verified";
+		return {
+			reason: "legacy/deprecated wording around a software reference should be verified",
+			verifyHint: verificationHintForRef(ref, "legacy"),
+		};
 	}
 	if (ref.kind === "model") {
-		return "model identifiers change frequently; verify against provider docs before relying on memory";
+		return {
+			reason: "model identifiers change frequently; verify against provider docs before relying on memory",
+			verifyHint: verificationHintForRef(ref, "model"),
+		};
 	}
 	if (ref.kind === "api_version") {
-		return "API version/date pins are freshness-sensitive; verify the intended provider version";
+		return {
+			reason: "API version/date pins are freshness-sensitive; verify the intended provider version",
+			verifyHint: verificationHintForRef(ref, "api"),
+		};
 	}
 	return undefined;
+}
+
+function verificationHintForRef(
+	ref: SoftwareVersionReference,
+	context: "api" | "legacy" | "model",
+): SoftwareVersionVerificationHint {
+	if (context === "api") {
+		return {
+			source: "official API versioning docs for the provider that owns this endpoint or SDK",
+			instruction:
+				"Confirm the intended API date/version from provider documentation before introducing the pin.",
+		};
+	}
+
+	if (context === "legacy") {
+		return {
+			source: "official migration, release-note, or deprecation documentation",
+			instruction:
+				"Confirm whether the referenced software is actually legacy/deprecated before writing that claim.",
+		};
+	}
+
+	const provider = modelProviderOf(`${ref.label} ${ref.version} ${ref.text}`);
+	const providerName = providerDisplayName(provider);
+	return {
+		source: providerName
+			? `official ${providerName} model documentation`
+			: "official model provider documentation",
+		instruction:
+			"Confirm current model identifiers and supported aliases from provider documentation before introducing the reference.",
+	};
+}
+
+function providerDisplayName(provider: string | undefined): string | undefined {
+	switch (provider) {
+		case "gpt":
+		case "o":
+			return "OpenAI";
+		case "claude":
+			return "Anthropic";
+		case "gemini":
+			return "Google Gemini";
+		case "llama":
+			return "Meta Llama";
+		case "mistral":
+		case "mixtral":
+			return "Mistral";
+		case "qwen":
+			return "Qwen";
+		case "deepseek":
+			return "DeepSeek";
+		case "command-r":
+			return "Cohere";
+		case "nova":
+			return "Amazon Nova";
+		default:
+			return undefined;
+	}
 }
 
 function findJsonPropLine(content: string, key: string, value: string): number {

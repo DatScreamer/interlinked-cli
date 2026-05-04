@@ -38,7 +38,7 @@ describe("ensureCodexFeatureFlag", () => {
 
 	it("appends [features] when the flag is missing from an existing config", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = '[model]\nname = "gpt-5"\n';
+		const existing = '[model]\nname = "synthetic-model-v5"\n';
 		mkdirSync(join(tmp, ".codex"), { recursive: true });
 		writeFileSync(tomlPath, existing);
 
@@ -51,7 +51,7 @@ describe("ensureCodexFeatureFlag", () => {
 
 	it("adds the flag inside an existing [features] block instead of duplicating it", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = '[model]\nname = "gpt-5"\n\n[features]\nfoo = true\n[profiles.default]\napproval_policy = "never"\n';
+		const existing = '[model]\nname = "synthetic-model-v5"\n\n[features]\nfoo = true\n[profiles.default]\napproval_policy = "never"\n';
 		mkdirSync(join(tmp, ".codex"), { recursive: true });
 		writeFileSync(tomlPath, existing);
 
@@ -66,7 +66,7 @@ describe("ensureCodexFeatureFlag", () => {
 		// A `# codex_hooks = true` line is documentation, not enablement.
 		// We must still append a real flag so hooks actually fire.
 		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = "# codex_hooks = true\n[model]\nname = \"gpt-5\"\n";
+		const existing = "# codex_hooks = true\n[model]\nname = \"synthetic-model-v5\"\n";
 		mkdirSync(join(tmp, ".codex"), { recursive: true });
 		writeFileSync(tomlPath, existing);
 

@@ -423,15 +423,9 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 	}
 
 	// 3. sed -i (in-place edit).
-	const sedMatch = normalized.match(/\bsed\s+(?:[^|;]*?)-i(?:\s|['"]?\S*['"]?\s)+(\S+)/);
-	if (sedMatch) {
-		// Last non-flag arg is typically the file. Simpler: find a code-file-ext arg.
-		const args = normalized.split(/\s+/);
-		for (const arg of args) {
-			if (CODE_FILE_EXT_RE.test(arg)) {
-				return { target: arg, mechanism: "sed -i (in-place)" };
-			}
-		}
+	const sedInPlace = detectSedInPlaceEdit(normalized);
+	if (sedInPlace) {
+		return sedInPlace;
 	}
 
 	// 4. Inline interpreter calls that call writeFileSync / open+write.
@@ -465,4 +459,51 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 	}
 
 	return null;
+}
+
+function detectSedInPlaceEdit(cmd: string): { target: string; mechanism: string } | null {
+	for (const segment of splitCommandSegments(cmd)) {
+		const args = splitShellWordsLoose(segment);
+		const sedIdx = args.findIndex((arg) => /(?:^|\/)sed$/.test(stripOuterQuotes(arg)));
+		if (sedIdx < 0) continue;
+
+		const sedArgs = args.slice(sedIdx + 1).map(stripOuterQuotes);
+		if (!sedArgs.some(isSedInPlaceOption)) continue;
+
+		for (let i = sedArgs.length - 1; i >= 0; i--) {
+			const arg = sedArgs[i];
+			if (arg.startsWith("-")) continue;
+			if (CODE_FILE_EXT_RE.test(arg)) {
+				return { target: arg, mechanism: "sed -i (in-place)" };
+			}
+		}
+	}
+	return null;
+}
+
+function isSedInPlaceOption(arg: string): boolean {
+	return arg === "-i" || /^-[A-Za-z]*i(?:$|[^A-Za-z].*)/.test(arg);
+}
+
+function splitCommandSegments(cmd: string): string[] {
+	return cmd.split(/\s+(?:&&|\|\||;|\|)\s+/).filter(Boolean);
+}
+
+function splitShellWordsLoose(segment: string): string[] {
+	const words: string[] = [];
+	const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+	for (const match of segment.matchAll(re)) {
+		words.push(match[0]);
+	}
+	return words;
+}
+
+function stripOuterQuotes(value: string): string {
+	if (
+		(value.startsWith("'") && value.endsWith("'")) ||
+		(value.startsWith("\"") && value.endsWith("\""))
+	) {
+		return value.slice(1, -1);
+	}
+	return value;
 }

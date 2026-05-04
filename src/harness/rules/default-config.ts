@@ -17,6 +17,31 @@ import type { GuardRulesConfig } from "../types.js";
 /** Seconds in a week — used for the default error-memory expiry. */
 const SECONDS_PER_WEEK = 7 * 24 * 60 * 60;
 
+const SOFTWARE_REFERENCE_FILE_TYPES = [
+	"package.json",
+	"requirements.txt",
+	"go.mod",
+	"Cargo.toml",
+	"Dockerfile",
+	".dockerfile",
+	".ts",
+	".tsx",
+	".js",
+	".jsx",
+	".mjs",
+	".cjs",
+	".py",
+	".go",
+	".rs",
+	".java",
+	".json",
+	".yaml",
+	".yml",
+	".toml",
+	".md",
+	".txt",
+];
+
 /** Resolve the OPF Python sidecar path across three deployment layouts:
  *    (1) dev (tsx):          src/harness/rules/default-config.ts  →  ../content-scanner/sidecars/opf-sidecar.py
  *    (2) prod-from-source:   dist/chunk-XYZ.js                     →  ../src/harness/content-scanner/sidecars/opf-sidecar.py
@@ -265,34 +290,19 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		},
 		software_version_regression: {
 			enabled: true,
-			file_types: [
-				"package.json",
-				"requirements.txt",
-				"go.mod",
-				"Cargo.toml",
-				"Dockerfile",
-				".dockerfile",
-				".ts",
-				".tsx",
-				".js",
-				".jsx",
-				".mjs",
-				".cjs",
-				".py",
-				".go",
-				".rs",
-				".java",
-				".json",
-				".yaml",
-				".yml",
-				".toml",
-				".md",
-				".txt",
-			],
+			file_types: [...SOFTWARE_REFERENCE_FILE_TYPES],
 			timeout_ms: 1_000,
 			severity: "error",
 			description:
 				"PostToolUse attention block for possible stale-memory software downgrades: package versions, model IDs, Docker tags, GitHub Action versions, API dates, and common runtime/config version assignments",
+		},
+		freshness_sensitive_reference: {
+			enabled: true,
+			file_types: [...SOFTWARE_REFERENCE_FILE_TYPES],
+			timeout_ms: 1_000,
+			severity: "warning",
+			description:
+				"PostToolUse advisory when newly introduced software/model/API references require verification against official current sources",
 		},
 		strict_typing_block: {
 			enabled: false,

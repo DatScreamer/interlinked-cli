@@ -42,6 +42,13 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	freshness_sensitive_reference: {
+		name: "Freshness-Sensitive Reference",
+		description:
+			"Flag newly introduced model/API/software references that need verification against official current sources",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	strict_typing_block: {
 		name: "Strict Typing Block",
 		description:

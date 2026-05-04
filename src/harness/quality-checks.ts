@@ -42,6 +42,7 @@ import {
 	detectSoftwareVersionFreshnessConcerns,
 	collectSoftwareVersionReferences,
 	detectSoftwareVersionRegressions,
+	formatSoftwareVersionFreshnessDetail,
 	formatSoftwareVersionRegressionDetail,
 } from "./quality-checks/software-version-regression.js";
 import { findAnyTypes } from "./quality-checks/strong-typing.js";
@@ -75,6 +76,7 @@ export {
 	collectSoftwareVersionReferences,
 	detectSoftwareVersionFreshnessConcerns,
 	detectSoftwareVersionRegressions,
+	formatSoftwareVersionFreshnessDetail,
 	formatSoftwareVersionRegressionDetail,
 	type SoftwareVersionFreshnessConcern,
 	type SoftwareVersionReference,
@@ -420,7 +422,10 @@ export async function runQualityChecks(
 						/* intentional: file unreadable — skip package-json consistency check */
 					}
 				}
-			} else if (name === "software_version_regression") {
+			} else if (
+				name === "software_version_regression" ||
+				name === "freshness_sensitive_reference"
+			) {
 				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
 				if (!existsSync(absPath)) continue;
 				try {
@@ -442,21 +447,27 @@ export async function runQualityChecks(
 						beforeRefs,
 						afterRefs,
 					).filter((c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`));
-					if (regressions.length > 0 || freshnessConcerns.length > 0) {
-						const parts: string[] = [];
-						if (regressions.length > 0) parts.push(`${regressions.length} possible regression(s)`);
-						if (freshnessConcerns.length > 0) {
-							parts.push(`${freshnessConcerns.length} freshness-sensitive new reference(s)`);
-						}
+					if (name === "software_version_regression" && regressions.length > 0) {
 						results.push({
 							name,
 							severity: check.severity,
-							message: `${parts.join(" + ")} in ${filePath}. This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.`,
+							message:
+								`PostToolUse attention required in ${filePath}: ` +
+								`${regressions.length} possible software version regression(s). ` +
+								"This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.",
 							file: filePath,
-							detail: formatSoftwareVersionRegressionDetail(
-								regressions,
-								freshnessConcerns,
-							),
+							detail: formatSoftwareVersionRegressionDetail(regressions),
+						});
+					}
+					if (name === "freshness_sensitive_reference" && freshnessConcerns.length > 0) {
+						results.push({
+							name,
+							severity: check.severity,
+							message:
+								`${freshnessConcerns.length} freshness-sensitive software reference(s) introduced in ${filePath}. ` +
+								"Verify against official source material before relying on remembered model/API/version names.",
+							file: filePath,
+							detail: formatSoftwareVersionFreshnessDetail(freshnessConcerns),
 						});
 					}
 				} catch (_e) {

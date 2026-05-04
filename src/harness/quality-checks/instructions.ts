@@ -63,9 +63,14 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 		"Do NOT leave `any` in place — use `unknown` with type guards if the shape is genuinely dynamic. " +
 		"`unknown` is acceptable when paired with narrowing (type guards, instanceof, assertion functions).",
 	software_version_regression:
-		"You have a knowledge cutoff date. Stop and verify the intended software version before continuing: " +
+		"PostToolUse attention required: the write already landed, so stop and verify the intended software version before continuing. " +
+		"You have a knowledge cutoff date; do not rely on remembered model/API/package timelines. " +
 		"search/fetch official docs, package registries, model provider docs, Docker tags, or release notes for the latest version. " +
 		"If this downgrade is intentional, keep it only after documenting why; otherwise restore or update to the current intended version.",
+	freshness_sensitive_reference:
+		"Verify the newly introduced reference against official current sources before relying on it: " +
+		"provider model docs, API versioning docs, package registries, Docker tags, or release notes. " +
+		"Do not claim the reference is deprecated or current from memory alone; cite or inspect the source of truth.",
 	secrets_in_source:
 		"Remove the detected secrets immediately. Use environment variables or a secrets manager instead. " +
 		"Do NOT commit secrets to source files under any circumstances.",

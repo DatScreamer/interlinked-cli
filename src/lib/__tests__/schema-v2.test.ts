@@ -164,7 +164,7 @@ describe("estimateCost", () => {
 
 	it("returns higher cost for opus model", () => {
 		const sonnet = estimateCost({ input: 100000, output: 10000 });
-		const opus = estimateCost({ input: 100000, output: 10000 }, "claude-opus-4");
+		const opus = estimateCost({ input: 100000, output: 10000 }, "premium-opus-tier");
 		// Extract numeric values
 		const sonnetVal = Number.parseFloat(sonnet.replace("~$", ""));
 		const opusVal = Number.parseFloat(opus.replace("~$", ""));

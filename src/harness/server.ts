@@ -1882,23 +1882,29 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						postDecision.warnings = [...(postDecision.warnings || []), ...warnings];
 
 						// Block only on fully_deterministic quality checks with error severity.
-						// Heuristic checks (strong_typing, prompt_injection) are advisory only,
-						// except software_version_regression: PostToolUse "block" is used as
-						// an attention channel after the write already happened.
+						// Heuristic checks (strong_typing, prompt_injection, freshness-sensitive
+						// references) are advisory only, except software_version_regression:
+						// PostToolUse returns `decision: "block"` for compatibility even though
+						// the mutation already landed. Treat it as an attention-required channel.
 						const hasDeterministicErrors = qualityResults.some(
 							(r) =>
 								r.severity === "error" &&
 								QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic",
 						);
-						const hasSoftwareVersionRegression = qualityResults.some(
+						const hasPostToolAttention = qualityResults.some(
 							(r) => r.name === "software_version_regression",
 						);
-						if (hasDeterministicErrors || hasSoftwareVersionRegression) {
+						if (hasDeterministicErrors || hasPostToolAttention) {
 							postDecision.decision = "block";
 						}
 
+						const outcome = hasDeterministicErrors
+							? "blocking"
+							: hasPostToolAttention
+								? "post-tool attention required"
+								: "advisory";
 						log(
-							`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")}${hasDeterministicErrors || hasSoftwareVersionRegression ? " (blocking)" : " (advisory)"}`,
+							`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")} (${outcome})`,
 						);
 					}
 				}

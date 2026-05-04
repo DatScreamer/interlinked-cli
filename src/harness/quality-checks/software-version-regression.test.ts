@@ -17,6 +17,12 @@ const SOFTWARE_VERSION_CHECKS: Record<string, QualityCheckConfig> = {
 		timeout_ms: 1_000,
 		severity: "error",
 	},
+	freshness_sensitive_reference: {
+		enabled: true,
+		file_types: ["package.json", ".ts", ".yaml", "Dockerfile"],
+		timeout_ms: 1_000,
+		severity: "warning",
+	},
 };
 
 describe("software version regression detector", () => {
@@ -96,6 +102,7 @@ describe("software version regression detector", () => {
 		expect(concerns).toHaveLength(1);
 		expect(concerns[0].ref.version).toBe("vendor-model-v4");
 		expect(concerns[0].reason).toContain("verify against provider docs");
+		expect(concerns[0].verifyHint.source).toContain("official model provider documentation");
 		expect(concerns[0].reason).not.toContain("deprecated");
 	});
 });
@@ -153,6 +160,7 @@ describe("runQualityChecks software_version_regression", () => {
 		expect(warning).toContain("[interlinked:software_version_regression] [heuristic]");
 		expect(warning).toContain("knowledge cutoff date");
 		expect(warning).toContain("search/fetch official docs");
+		expect(warning).toContain("PostToolUse attention required");
 	});
 
 	it("reports a freshness-sensitive new model reference without hardcoding current models", async () => {
@@ -172,10 +180,15 @@ describe("runQualityChecks software_version_regression", () => {
 			dir,
 		);
 
-		const softwareVersionResult = results.find((r) => r.name === "software_version_regression");
-		expect(softwareVersionResult).toBeDefined();
-		expect(softwareVersionResult?.message).toContain("freshness-sensitive new reference");
-		expect(softwareVersionResult?.detail).toContain("vendor-model-v4");
-		expect(softwareVersionResult?.detail).toContain("verify against provider docs");
+		expect(results.find((r) => r.name === "software_version_regression")).toBeUndefined();
+		const freshnessResult = results.find((r) => r.name === "freshness_sensitive_reference");
+		expect(freshnessResult).toBeDefined();
+		expect(freshnessResult?.message).toContain("freshness-sensitive software reference");
+		expect(freshnessResult?.detail).toContain("vendor-model-v4");
+		expect(freshnessResult?.detail).toContain("official model provider documentation");
+
+		const warning = formatQualityWarnings(results).join("\n");
+		expect(warning).toContain("[interlinked:freshness_sensitive_reference] [heuristic]");
+		expect(warning).toContain("Verify the newly introduced reference against official current sources");
 	});
 });

@@ -219,7 +219,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 
 	it("appends [features] block to existing config.toml that lacks the flag", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = "[model]\nname = \"gpt-5\"\n";
+		const existing = "[model]\nname = \"synthetic-model-v5\"\n";
 		const fs = require("node:fs");
 		fs.mkdirSync(join(tmp, ".codex"), { recursive: true });
 		fs.writeFileSync(tomlPath, existing);
@@ -233,7 +233,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 	it("reuses an existing [features] block when installing Codex hooks", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		const existing =
-			"[model]\nname = \"gpt-5\"\n\n[features]\nfoo = true\n[profiles.default]\napproval_policy = \"never\"\n";
+			"[model]\nname = \"synthetic-model-v5\"\n\n[features]\nfoo = true\n[profiles.default]\napproval_policy = \"never\"\n";
 		const fs = require("node:fs");
 		fs.mkdirSync(join(tmp, ".codex"), { recursive: true });
 		fs.writeFileSync(tomlPath, existing);
