@@ -120,6 +120,77 @@ program
 		await checkCommand(opts);
 	});
 
+// ===========================================
+// recurrence — surface repeating agent behaviors (Lopopolo "garbage-
+// collect AI slop" + Bitar "structurally impossible" framing). Three
+// kinds: harness_caught (already enforced, ratchet candidate),
+// harness_missed (slipped past, scaffold a rule), codebase_existing
+// (pre-existing replications, cleanup PR candidate).
+// ===========================================
+const recCmd = program
+	.command("recurrence")
+	.description("Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing)");
+
+recCmd
+	.command("list")
+	.description("Show aggregated recurrence rows (top by count, newest tiebreak)")
+	.option("--kind <kind>", "Filter by kind (harness_caught | harness_missed | codebase_existing)")
+	.option("--top <n>", "Limit to top N rows by count")
+	.option("--since <duration>", "Only include events at-or-after (e.g. 7d, 12h, ISO timestamp)")
+	.option("--agent-source <name>", "Filter by agent_source (claude/copilot/codex/gemini/cursor)")
+	.option("--check-id <id>", "Filter by check_id")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { recurrenceListCommand } = await import("./commands/recurrence.js");
+		await recurrenceListCommand(opts);
+	});
+
+recCmd
+	.command("detail <signature>")
+	.description("List every event for one recurrence signature")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (signature: string, opts: OptionValues) => {
+		const { recurrenceDetailCommand } = await import("./commands/recurrence.js");
+		await recurrenceDetailCommand(signature, opts);
+	});
+
+recCmd
+	.command("flag <signature>")
+	.description("Record a harness_missed event — pattern observed without a rule firing")
+	.option("--message <text>", "Human-readable detail")
+	.option("--check-id <id>", "Check id this should have caught (if known)")
+	.option("--file <path>", "File where the pattern was seen")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (signature: string, opts: OptionValues) => {
+		const { recurrenceFlagCommand } = await import("./commands/recurrence.js");
+		await recurrenceFlagCommand(signature, opts);
+	});
+
+recCmd
+	.command("scan")
+	.description("Walk the working tree, run inline detectors, optionally record codebase_existing events")
+	.option("--root <dir...>", "Subdirectories to scan (default: src)")
+	.option("--record", "Append codebase_existing events (default: dry run)")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { recurrenceScanCommand } = await import("./commands/recurrence.js");
+		await recurrenceScanCommand(opts);
+	});
+
+recCmd
+	.command("propose <signature>")
+	.description("Print the suggested action for a recurrence (ratchet / scaffold_rule / cleanup_pr)")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (signature: string, opts: OptionValues) => {
+		const { recurrenceProposeCommand } = await import("./commands/recurrence.js");
+		await recurrenceProposeCommand(signature, opts);
+	});
+
 const cpCmd = program.command("checkpoint").description("Git checkpoint management");
 
 cpCmd

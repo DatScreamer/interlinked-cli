@@ -544,6 +544,16 @@ export interface PreEditBaseline {
 	asAnyCastCount: number;
 	/** Count of non-null assertions (`foo!.bar`) */
 	nonNullAssertionCount: number;
+	/** Composite type-density counters: bare `: any` / `: unknown` / `: Function` / `: {}`
+	 *  annotations plus untyped exported params and missing exported return types.
+	 *  Optional — older callers/tests may not capture it; the ratchet check
+	 *  fails open in that case. */
+	typeDensity?: import("./quality-checks/ratchet-metrics.js").TypeDensityCounts;
+	/** Software/model/dependency version references captured before the edit.
+	 *  Used by the PostToolUse software_version_regression check to detect
+	 *  accidental downgrades caused by stale model memory. Optional so older
+	 *  direct test callers continue to fail open. */
+	softwareVersions?: import("./quality-checks/software-version-regression.js").SoftwareVersionReference[];
 }
 
 export interface GuardRulesConfig {

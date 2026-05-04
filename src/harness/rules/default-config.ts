@@ -263,6 +263,45 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			description:
 				"Detect explicit `any` and `unknown` types — encourage stronger typing (interfaces, generics, branded types)",
 		},
+		software_version_regression: {
+			enabled: true,
+			file_types: [
+				"package.json",
+				"requirements.txt",
+				"go.mod",
+				"Cargo.toml",
+				"Dockerfile",
+				".dockerfile",
+				".ts",
+				".tsx",
+				".js",
+				".jsx",
+				".mjs",
+				".cjs",
+				".py",
+				".go",
+				".rs",
+				".java",
+				".json",
+				".yaml",
+				".yml",
+				".toml",
+				".md",
+				".txt",
+			],
+			timeout_ms: 1_000,
+			severity: "error",
+			description:
+				"PostToolUse attention block for possible stale-memory software downgrades: package versions, model IDs, Docker tags, GitHub Action versions, API dates, and common runtime/config version assignments",
+		},
+		strict_typing_block: {
+			enabled: false,
+			file_types: [".ts", ".tsx", ".mts", ".cts"],
+			timeout_ms: 500,
+			severity: "error",
+			description:
+				"PreToolUse hard-block when an edit introduces new type-erasure patterns: `as any`, `as unknown as` chains, unjustified `@ts-ignore`/`@ts-expect-error`, bare `: any` annotations. Off by default — opt in via `.interlinked/guard-rules.local.json` once the team is ready to enforce.",
+		},
 		inline_language_checks: {
 			enabled: true,
 			file_types: [

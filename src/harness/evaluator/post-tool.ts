@@ -259,28 +259,123 @@ function collectPostWriteFileWarnings(event: HarnessEvent): string[] {
 	if (/\.(tsx?|jsx?|mjs|cjs)$/.test(filePath)) {
 		try {
 			const content = readFileSync(filePath, "utf-8");
-			const suppressionPatterns = [
-				{ re: /\/\/\s*@ts-ignore\b/g, label: "@ts-ignore" },
-				{ re: /\/\/\s*@ts-expect-error\b/g, label: "@ts-expect-error" },
-				{ re: /\/\/\s*@ts-nocheck\b/g, label: "@ts-nocheck" },
-				{ re: /\/\/\s*eslint-disable/g, label: "eslint-disable" },
-				{ re: /\/\/\s*biome-ignore\b/g, label: "biome-ignore" },
-			];
-			const found: string[] = [];
-			for (const { re, label } of suppressionPatterns) {
-				const count = (content.match(re) || []).length;
-				if (count > 0) found.push(`${count}x ${label}`);
-			}
-			if (found.length > 0) {
-				warnings.push(
-					`[interlinked:suppressions] ${filePath} has suppression comments (${found.join(", ")}). Fix the underlying errors instead of silencing them.`,
-				);
-			}
+			warnings.push(...formatSuppressionWarnings(filePath, content));
 		} catch (_err) {
 			/* best-effort — skip */
 		}
 	}
 	return warnings;
+}
+
+/**
+ * Per Lopopolo's `hyperbola/require-eslint-disable-justification` rule:
+ * suppression directives must carry a reason. A bare `// @ts-ignore` is the
+ * most common AI escape hatch — silent bypass with no audit trail.
+ *
+ * The recognized justification conventions, by tool:
+ *   - `@ts-ignore` / `@ts-expect-error`: any non-empty text after the
+ *     directive counts (TypeScript itself doesn't enforce a separator;
+ *     the de-facto convention is a colon or a space-prefixed reason)
+ *   - `eslint-disable` (any flavor): ESLint 7+ requires the `--` separator
+ *     before the reason, e.g. `// eslint-disable-next-line foo -- reason`
+ *   - `biome-ignore`: Biome requires a colon, e.g.
+ *     `// biome-ignore lint/foo: reason`
+ *   - `@ts-nocheck`: file-level directive with no per-line justification
+ *     convention; not enforced here (just counted as informational)
+ */
+const SUPPRESSION_DIRECTIVES: ReadonlyArray<{
+	label: string;
+	re: RegExp;
+	isJustified: (suffix: string) => boolean;
+}> = [
+	{
+		label: "@ts-ignore",
+		re: /\/\/\s*@ts-ignore\b([^\n]*)/,
+		isJustified: (suffix) => /\S/.test(suffix.replace(/^[: \t]+/, "")),
+	},
+	{
+		label: "@ts-expect-error",
+		re: /\/\/\s*@ts-expect-error\b([^\n]*)/,
+		isJustified: (suffix) => /\S/.test(suffix.replace(/^[: \t]+/, "")),
+	},
+	{
+		label: "@ts-nocheck",
+		re: /\/\/\s*@ts-nocheck\b([^\n]*)/,
+		// File-level, no per-line justification convention — exempt.
+		isJustified: () => true,
+	},
+	{
+		label: "eslint-disable",
+		re: /\/\/\s*eslint-disable(?:-next-line|-line)?\b([^\n]*)/,
+		// ESLint 7+ convention: `// eslint-disable-next-line rule -- reason`.
+		isJustified: (suffix) => / -- \S/.test(suffix),
+	},
+	{
+		label: "biome-ignore",
+		re: /\/\/\s*biome-ignore\b([^\n]*)/,
+		// Biome convention: `// biome-ignore lint/foo: reason` (colon).
+		isJustified: (suffix) => /:\s*\S/.test(suffix),
+	},
+];
+
+interface SuppressionCounts {
+	justified: number;
+	unjustifiedLines: number[];
+}
+
+function analyzeSuppressions(content: string): Map<string, SuppressionCounts> {
+	const byLabel = new Map<string, SuppressionCounts>();
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		for (const { label, re, isJustified } of SUPPRESSION_DIRECTIVES) {
+			const match = re.exec(line);
+			if (!match) continue;
+			const suffix = match[1] ?? "";
+			const counts = byLabel.get(label) ?? { justified: 0, unjustifiedLines: [] };
+			if (isJustified(suffix)) counts.justified++;
+			else counts.unjustifiedLines.push(i + 1);
+			byLabel.set(label, counts);
+		}
+	}
+	return byLabel;
+}
+
+/** Maximum line numbers shown inline before truncating with an ellipsis. */
+const MAX_LINES_SHOWN = 5;
+
+function formatSuppressionWarnings(filePath: string, content: string): string[] {
+	const byLabel = analyzeSuppressions(content);
+	const unjustifiedParts: string[] = [];
+	const justifiedParts: string[] = [];
+	for (const [label, { justified, unjustifiedLines }] of byLabel) {
+		if (unjustifiedLines.length > 0) {
+			const shown = unjustifiedLines.slice(0, MAX_LINES_SHOWN).join(", ");
+			const more = unjustifiedLines.length > MAX_LINES_SHOWN ? ", …" : "";
+			unjustifiedParts.push(
+				`${unjustifiedLines.length}x ${label} (lines: ${shown}${more})`,
+			);
+		}
+		if (justified > 0) justifiedParts.push(`${justified}x ${label}`);
+	}
+
+	const out: string[] = [];
+	if (unjustifiedParts.length > 0) {
+		out.push(
+			`[interlinked:suppressions-unjustified] ${filePath} has bare suppression comments without a reason: ` +
+				`${unjustifiedParts.join(", ")}. Add a justification: ` +
+				"`// @ts-ignore: <reason>`, `// eslint-disable-next-line <rule> -- <reason>`, " +
+				"or `// biome-ignore lint/<rule>: <reason>`. " +
+				"Bare disables silently bypass safety; justified ones leave an audit trail for reviewers.",
+		);
+	}
+	if (justifiedParts.length > 0 && unjustifiedParts.length === 0) {
+		out.push(
+			`[interlinked:suppressions] ${filePath} has suppression comments (${justifiedParts.join(", ")}). ` +
+				"All carry justifications — consider whether the underlying issue can be fixed instead of silenced.",
+		);
+	}
+	return out;
 }
 
 /** Nudge about oversized files on Read to prepare the agent for refactoring. */

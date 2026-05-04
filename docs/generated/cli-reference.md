@@ -41,6 +41,7 @@ Commands:
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
+  recurrence                                 Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing)
   reminder                                   File reminder management (warnings when files are touched)
   reset [options]                            Nuclear: clear all local state
   resume [options] [checkpoint-id]           Resume from latest or specified checkpoint with context
@@ -49,6 +50,7 @@ Commands:
   search [options] <query>                   Search the local codebase (ripgrep with native fallback)
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate
+  skill                                      Skill marker management (scopes distilled rules via active_when)
   status [options]                           Dashboard: local sessions, recent activity, sync status
   structure                                  Generic artifact structure management (manifests, catalogs, adoption)
   sync [options]                             Push locally-buffered events to the server

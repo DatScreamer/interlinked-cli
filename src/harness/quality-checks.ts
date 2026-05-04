@@ -9,7 +9,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, resolve, sep } from "node:path";
 import { configNameToToolId, getOrCreateEngine } from "./check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "./check-engine/output-parsers.js";
-import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/index.js";
+import {
+	buildAgentSafetyChecks,
+	buildCheckInstructions,
+	buildGenericCheckMeta,
+} from "./check-registry/index.js";
 import { findEnclosingScope } from "./checks/shared.js";
 import {
 	checkBinaryContent,
@@ -23,7 +27,7 @@ import {
 import { getProfileForFile } from "./language-profiles.js";
 import { resolveDependencyAuditCommand } from "./quality-checks/dependency-audit.js";
 import { runInlineLanguageChecks } from "./quality-checks/inline-language-checks.js";
-import { TOOL_CHECK_INSTRUCTIONS } from "./quality-checks/instructions.js";
+import { PROVEN_TOOL_CHECKS, TOOL_CHECK_INSTRUCTIONS } from "./quality-checks/instructions.js";
 import { checkLockfileDrift, LOCKFILE_MAP } from "./quality-checks/lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./quality-checks/package-json.js";
 import { findProjectRoot } from "./quality-checks/project-root.js";
@@ -31,8 +35,15 @@ import {
 	countAsAnyCasts,
 	countNonNullAssertions,
 	countSuppressionDirectives,
+	countTypeDensity,
 } from "./quality-checks/ratchet-metrics.js";
 import { containsSecrets } from "./quality-checks/secret-detection.js";
+import {
+	detectSoftwareVersionFreshnessConcerns,
+	collectSoftwareVersionReferences,
+	detectSoftwareVersionRegressions,
+	formatSoftwareVersionRegressionDetail,
+} from "./quality-checks/software-version-regression.js";
 import { findAnyTypes } from "./quality-checks/strong-typing.js";
 import { isLikelyTestFile } from "./quality-checks/test-classifier.js";
 import { TEST_DISPATCHERS } from "./quality-checks/test-dispatchers.js";
@@ -56,8 +67,19 @@ export {
 	countAsAnyCasts,
 	countNonNullAssertions,
 	countSuppressionDirectives,
+	countTypeDensity,
+	type TypeDensityCounts,
 } from "./quality-checks/ratchet-metrics.js";
 export { containsSecrets } from "./quality-checks/secret-detection.js";
+export {
+	collectSoftwareVersionReferences,
+	detectSoftwareVersionFreshnessConcerns,
+	detectSoftwareVersionRegressions,
+	formatSoftwareVersionRegressionDetail,
+	type SoftwareVersionFreshnessConcern,
+	type SoftwareVersionReference,
+	type SoftwareVersionRegression,
+} from "./quality-checks/software-version-regression.js";
 export { findAnyTypes, stripStringLiterals } from "./quality-checks/strong-typing.js";
 
 // ===========================================
@@ -398,6 +420,48 @@ export async function runQualityChecks(
 						/* intentional: file unreadable — skip package-json consistency check */
 					}
 				}
+			} else if (name === "software_version_regression") {
+				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+				if (!existsSync(absPath)) continue;
+				try {
+					const postContent = readFileSync(absPath, "utf-8");
+					const beforeRefs =
+						options?.baseline?.softwareVersions ??
+						(event.tool_input?.old_string
+							? collectSoftwareVersionReferences(
+									event.tool_input.old_string as string,
+									filePath,
+								)
+							: []);
+					const afterRefs = collectSoftwareVersionReferences(postContent, filePath);
+					const regressions = detectSoftwareVersionRegressions(beforeRefs, afterRefs);
+					const regressionAfterKeys = new Set(
+						regressions.map((r) => `${r.after.anchor}\0${r.after.version}`),
+					);
+					const freshnessConcerns = detectSoftwareVersionFreshnessConcerns(
+						beforeRefs,
+						afterRefs,
+					).filter((c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`));
+					if (regressions.length > 0 || freshnessConcerns.length > 0) {
+						const parts: string[] = [];
+						if (regressions.length > 0) parts.push(`${regressions.length} possible regression(s)`);
+						if (freshnessConcerns.length > 0) {
+							parts.push(`${freshnessConcerns.length} freshness-sensitive new reference(s)`);
+						}
+						results.push({
+							name,
+							severity: check.severity,
+							message: `${parts.join(" + ")} in ${filePath}. This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.`,
+							file: filePath,
+							detail: formatSoftwareVersionRegressionDetail(
+								regressions,
+								freshnessConcerns,
+							),
+						});
+					}
+				} catch (_e) {
+					/* intentional: file unreadable — skip software-version inspection */
+				}
 			} else if (check.command) {
 				// Delegate to the unified check engine for subprocess-based tools.
 				const toolId = configNameToToolId(name);
@@ -675,6 +739,35 @@ export async function runQualityChecks(
 					file: absPath,
 				});
 			}
+			// Composite type-density ratchet: bare `: any` / `: unknown` /
+			// `: Function` / `: {}` annotations + untyped exported params +
+			// missing exported return types. One ratchet, six counters,
+			// single warning that lists every dimension that regressed.
+			if (pre.typeDensity) {
+				const post = countTypeDensity(postContent);
+				const dims: Array<[keyof typeof post, string]> = [
+					["anyAnnotations", "`: any`"],
+					["unknownAnnotations", "`: unknown`"],
+					["functionType", "`: Function`"],
+					["emptyObjectType", "`: {}`"],
+					["untypedExportedParams", "untyped exported params"],
+					["missingExportedReturnType", "missing exported return type"],
+				];
+				const regressions: string[] = [];
+				for (const [key, label] of dims) {
+					const before = pre.typeDensity[key];
+					const after = post[key];
+					if (after > before) regressions.push(`${label} (${before}→${after})`);
+				}
+				if (regressions.length > 0) {
+					results.push({
+						name: "type_density_ratchet",
+						severity: "warning",
+						message: `Type density regressed: ${regressions.join(", ")}. Replace bare \`: any\` / \`: unknown\` / \`: Function\` / \`: {}\` with named shapes, and add explicit types to exported function signatures so cold readers know the contract.`,
+						file: absPath,
+					});
+				}
+			}
 		} catch (_e) {
 			/* intentional: non-fatal — file may have been deleted between edits */
 		}
@@ -694,14 +787,55 @@ const CHECK_INSTRUCTIONS: Record<string, string> = {
 	...buildCheckInstructions(),
 };
 
+// Registry checks self-classify via their own `determinism` field. Cache the
+// id→determinism map at module init so the formatter can look up without
+// rebuilding on every warning.
+const REGISTRY_DETERMINISM: Record<
+	string,
+	"fully_deterministic" | "partially_deterministic" | "heuristic"
+> = Object.fromEntries(
+	Object.entries(buildGenericCheckMeta()).map(([id, meta]) => [id, meta.determinism]),
+);
+
+/**
+ * Lopopolo's "proven vs heuristic" framing surfaced to the agent. Returns
+ * the tag to inline into the warning message, or `null` when we don't know
+ * the check's determinism (no tag rather than guess wrong).
+ *
+ * Resolution order:
+ * 1. Registry check (CHECK_REGISTRY) → use the entry's `determinism` field.
+ *    `fully_deterministic` → "proven"; everything else → "heuristic".
+ * 2. Tool check explicitly listed in PROVEN_TOOL_CHECKS → "proven".
+ * 3. Tool check present in TOOL_CHECK_INSTRUCTIONS but not in the proven
+ *    set → "heuristic" (default for non-tool checks: pattern-matched, not
+ *    behavior-verified).
+ * 4. Anything else (id not registered anywhere we know of) → null (no tag).
+ */
+function classifyDeterminism(checkId: string): "proven" | "heuristic" | null {
+	const registry = REGISTRY_DETERMINISM[checkId];
+	if (registry) return registry === "fully_deterministic" ? "proven" : "heuristic";
+	if (PROVEN_TOOL_CHECKS.has(checkId)) return "proven";
+	if (checkId in TOOL_CHECK_INSTRUCTIONS) return "heuristic";
+	return null;
+}
+
 /**
  * Format quality check results as stderr warning strings.
  * Includes per-check instructions so agents know how to fix properly
  * (no suppressions, no shortcuts — fix the actual code).
+ *
+ * Each warning is prefixed with a `[proven]` or `[heuristic]` tag derived
+ * from the check's determinism so the agent can tell which findings are
+ * authoritative (compiler / linter / scanner / parser said so) versus
+ * pattern-matched suggestions (regex/AST shape — could be a false positive).
+ * Lopopolo's framing: *"forbid speculative bug reports."* The tag forces
+ * us to be explicit about what kind of evidence we're presenting.
  */
 export function formatQualityWarnings(results: QualityCheckResult[]): string[] {
 	return results.map((r) => {
-		let msg = `[interlinked:${r.name}] ${r.message}`;
+		const tag = classifyDeterminism(r.name);
+		const prefix = tag ? `[interlinked:${r.name}] [${tag}]` : `[interlinked:${r.name}]`;
+		let msg = `${prefix} ${r.message}`;
 		if (r.detail) {
 			msg += `\n${r.detail}`;
 		}

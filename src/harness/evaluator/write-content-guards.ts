@@ -31,6 +31,10 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import {
+	STRICT_TYPING_RULE_ID,
+	evaluateTypeErasureOverlay,
+} from "./type-erasure-overlay.js";
 
 /** Minimum content length before we bother scanning for prompt injections. */
 const INJECTION_SCAN_MIN_CHARS = 10;
@@ -299,6 +303,42 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 						"Fix the type error(s) in your edit, or retry without introducing them.",
 					warnings,
 					rule_id: "tsc-diff-overlay",
+					severity: "high",
+					category: "pre-block",
+				},
+			};
+		}
+	}
+
+	// ─────────────────────────────────────────────
+	// PreToolUse strict-typing diff overlay (gated, default off)
+	// ─────────────────────────────────────────────
+	// Hard-blocks edits that introduce new type-erasure patterns: `as any`,
+	// `as unknown as` chains, unjustified `@ts-ignore` / `@ts-expect-error`,
+	// and bare `: any` annotations. The post-edit `as_any_ratchet` warning
+	// stays in place when this flag is off; this gate moves the same metric
+	// to PreToolUse + hard-block when teams want stricter enforcement.
+	if (rules.quality_checks?.strict_typing_block?.enabled === true) {
+		const overlay = evaluateTypeErasureOverlay(filePath, content);
+		if (overlay.newFindings.length > 0) {
+			const first = overlay.newFindings[0];
+			const rest = overlay.newFindings.length - 1;
+			const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
+			const lineList = overlay.newFindings
+				.slice(0, 5)
+				.map((f) => `L${f.line}`)
+				.join(", ");
+			return {
+				kind: "block",
+				decision: {
+					decision: "block",
+					reason:
+						`BLOCKED by strict-typing pre-overlay: this edit introduces ${overlay.newFindings.length} new type-erasure pattern(s) in ${filePath} (${lineList}). ` +
+						`First: [${first.ruleId}] L${first.line} — ${first.message}${restSummary}. ` +
+						"Fix the pattern(s) in your edit, or retry without introducing them. " +
+						"Justification escapes are accepted: `// @ts-expect-error: <reason>` for suppression directives.",
+					warnings,
+					rule_id: STRICT_TYPING_RULE_ID,
 					severity: "high",
 					category: "pre-block",
 				},

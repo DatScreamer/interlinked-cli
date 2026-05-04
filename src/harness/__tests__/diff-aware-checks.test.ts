@@ -372,3 +372,83 @@ describe("skip_test_files", () => {
 		expect(secrets).toHaveLength(1);
 	});
 });
+
+// ===========================================
+// type_density_ratchet — composite type-erasure metric
+// ===========================================
+describe("type_density_ratchet", () => {
+	const zeroDensity = {
+		anyAnnotations: 0,
+		unknownAnnotations: 0,
+		functionType: 0,
+		emptyObjectType: 0,
+		untypedExportedParams: 0,
+		missingExportedReturnType: 0,
+	};
+
+	function baselineWith(
+		density: Partial<typeof zeroDensity> = {},
+	): NonNullable<QualityCheckOptions["baseline"]> {
+		return {
+			missingReturnTypes: new Set(),
+			complexFunctions: new Set(),
+			capturedAt: FIXED_NOW,
+			suppressionCount: 0,
+			asAnyCastCount: 0,
+			nonNullAssertionCount: 0,
+			typeDensity: { ...zeroDensity, ...density },
+		};
+	}
+
+	it("fires when bare `: any` annotations increase", async () => {
+		MOCK_FILE_CONTENT = "function f(x: any) { return x; }\nfunction g(y: any) { return y; }";
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: baselineWith({ anyAnnotations: 1 }),
+			diffAware: { enabled: false },
+		});
+		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
+		expect(ratchet).toHaveLength(1);
+		expect(ratchet[0].message).toContain("`: any`");
+		expect(ratchet[0].message).toContain("(1→2)");
+	});
+
+	it("fires when missing exported return types increase", async () => {
+		MOCK_FILE_CONTENT =
+			"export function a(x: number) { return x; }\nexport function b(x: number) { return x; }";
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: baselineWith({ missingExportedReturnType: 1 }),
+			diffAware: { enabled: false },
+		});
+		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
+		expect(ratchet).toHaveLength(1);
+		expect(ratchet[0].message).toContain("missing exported return type");
+	});
+
+	it("does not fire when counters are unchanged", async () => {
+		MOCK_FILE_CONTENT = "function f(x: any) { return x; }";
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: baselineWith({ anyAnnotations: 1 }),
+			diffAware: { enabled: false },
+		});
+		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
+		expect(ratchet).toHaveLength(0);
+	});
+
+	it("does not fire when typeDensity baseline is absent (back-compat)", async () => {
+		MOCK_FILE_CONTENT = "function f(x: any) { return x; }";
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: {
+				missingReturnTypes: new Set(),
+				complexFunctions: new Set(),
+				capturedAt: FIXED_NOW,
+				suppressionCount: 0,
+				asAnyCastCount: 0,
+				nonNullAssertionCount: 0,
+				// typeDensity intentionally omitted
+			},
+			diffAware: { enabled: false },
+		});
+		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
+		expect(ratchet).toHaveLength(0);
+	});
+});

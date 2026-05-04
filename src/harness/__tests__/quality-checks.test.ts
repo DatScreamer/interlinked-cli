@@ -5,6 +5,7 @@ import {
 	countNonNullAssertions,
 	countSuppressionDirectives,
 	findAnyTypes,
+	formatQualityWarnings,
 	stripStringLiterals,
 } from "../quality-checks.js";
 
@@ -272,5 +273,62 @@ describe("containsSecrets", () => {
 			const result = containsSecrets("");
 			expect(result).toHaveLength(0);
 		});
+	});
+});
+
+describe("formatQualityWarnings — proven|heuristic determinism tag", () => {
+	it("tags real-tool checks as [proven]", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "typescript", severity: "error", message: "type error" },
+		]);
+		expect(out).toMatch(/^\[interlinked:typescript\] \[proven\] /);
+	});
+
+	it("tags external-scanner checks as [proven]", () => {
+		for (const name of ["semgrep", "gitleaks", "dependency_audit", "biome_lint", "eslint"]) {
+			const [out] = formatQualityWarnings([{ name, severity: "warning", message: "x" }]);
+			expect(out).toContain(`[interlinked:${name}] [proven]`);
+		}
+	});
+
+	it("tags pattern-matched perf checks as [heuristic]", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "perf_strlen_loop", severity: "warning", message: "strlen in loop" },
+		]);
+		expect(out).toMatch(/^\[interlinked:perf_strlen_loop\] \[heuristic\] /);
+	});
+
+	it("tags taste-enforcement checks as [heuristic]", () => {
+		for (const name of ["bare-catch-block", "untyped-catch", "throw-as-control-flow"]) {
+			const [out] = formatQualityWarnings([{ name, severity: "warning", message: "x" }]);
+			expect(out).toContain(`[interlinked:${name}] [heuristic]`);
+		}
+	});
+
+	it("uses the registry determinism for inline-registered checks", () => {
+		// `eval_usage` is in CHECK_REGISTRY with `determinism: "fully_deterministic"`.
+		const [out] = formatQualityWarnings([
+			{ name: "eval_usage", severity: "error", message: "eval found" },
+		]);
+		expect(out).toMatch(/^\[interlinked:eval_usage\] \[proven\] /);
+	});
+
+	it("omits the tag entirely when the check id is unknown", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "totally_unregistered_check_xyz", severity: "warning", message: "x" },
+		]);
+		expect(out).toMatch(/^\[interlinked:totally_unregistered_check_xyz\] x/);
+		expect(out).not.toContain("[proven]");
+		expect(out).not.toContain("[heuristic]");
+	});
+
+	it("preserves detail and instruction lines after the tag", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "typescript", severity: "error", message: "main", detail: "  L10: foo" },
+		]);
+		const lines = out.split("\n");
+		expect(lines[0]).toMatch(/^\[interlinked:typescript\] \[proven\] main$/);
+		expect(lines[1]).toBe("  L10: foo");
+		expect(lines[2]).toMatch(/^→ /); // instruction line
 	});
 });

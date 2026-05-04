@@ -78,6 +78,8 @@ import {
 	countAsAnyCasts,
 	countNonNullAssertions,
 	countSuppressionDirectives,
+	countTypeDensity,
+	collectSoftwareVersionReferences,
 	findProjectRoot,
 	formatQualityWarnings,
 	ProjectWideSweepState,
@@ -85,8 +87,10 @@ import {
 	runProjectWideChecks,
 	runQualityChecks,
 } from "./quality-checks.js";
+import { recordHarnessCaught } from "./recurrence.js";
 import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
+import { DEFAULT_TRIGGERS, expandSiblings } from "./sibling-expansion.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
@@ -1157,6 +1161,8 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						suppressionCount: countSuppressionDirectives(preContent),
 						asAnyCastCount: countAsAnyCasts(preContent),
 						nonNullAssertionCount: countNonNullAssertions(preContent),
+						typeDensity: countTypeDensity(preContent),
+						softwareVersions: collectSoftwareVersionReferences(preContent, filePath),
 					});
 				} catch (e) {
 					void e;
@@ -1639,6 +1645,19 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 											pre_error_sequence: [...session.tool_sequence],
 										},
 									);
+									// Mirror into the recurrence log so `interlinked recurrence`
+									// can aggregate repeated harness_caught hits across sessions
+									// and propose ratchets. Fire-and-forget; failures inside
+									// recordHarnessCaught are swallowed so the live PostToolUse
+									// path never trips on observability storage errors.
+									recordHarnessCaught({
+										check_id: result.check,
+										agent_source: event.agent_source,
+										session_id: event.session_id,
+										file: relPath,
+										message: result.message,
+										cwd: CWD,
+									});
 								}
 							}
 						}
@@ -1796,6 +1815,52 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							r.severity === "error" || !isAcknowledged(session, editedFilePath, r.name),
 					);
 
+					// --- Sibling expansion (PostToolUse fan-out) ---
+					// When a finding hits a known type-erasure / boundary pattern, query
+					// the trigram index for every other instance and emit one row per
+					// sibling. Codex finding-discovery convention "do not collapse
+					// separate instances under one candidate" — turns a single edit's
+					// `as_any_ratchet` into a worklist covering the whole module.
+					const triggerNames = new Set(DEFAULT_TRIGGERS.map((t) => t.triggerName));
+					const triggers = qualityResults
+						.filter((r) => triggerNames.has(r.name))
+						.map((r) => ({ name: r.name, file: r.file ?? editedFilePath }));
+					if (trigramIndex && triggers.length > 0) {
+						try {
+							const siblings = expandSiblings({
+								triggers,
+								index: trigramIndex,
+								reader: {
+									read: (relPath: string): string | undefined => {
+										try {
+											return readFileSync(`${CWD}/${relPath}`, "utf-8");
+										} catch (e) {
+											void e;
+											return undefined;
+										}
+									},
+								},
+								cwd: CWD,
+							});
+							for (const s of siblings) {
+								qualityResults.push({
+									name: s.siblingRuleId,
+									severity: "warning",
+									message: s.message,
+									file: s.file,
+								});
+							}
+							if (siblings.length > 0) {
+								log(
+									`Sibling expansion: ${siblings.length} row(s) across ${triggers.length} trigger(s)`,
+								);
+							}
+						} catch (e) {
+							// Sibling fan-out is advisory — never fail the post-edit pipeline on it.
+							log(`Sibling expansion failed: ${e instanceof Error ? e.message : String(e)}`);
+						}
+					}
+
 					// Collect quality check results for local persistence
 					for (const r of qualityResults) {
 						allCheckResults.push({
@@ -1817,18 +1882,23 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						postDecision.warnings = [...(postDecision.warnings || []), ...warnings];
 
 						// Block only on fully_deterministic quality checks with error severity.
-						// Heuristic checks (strong_typing, prompt_injection) are advisory only.
+						// Heuristic checks (strong_typing, prompt_injection) are advisory only,
+						// except software_version_regression: PostToolUse "block" is used as
+						// an attention channel after the write already happened.
 						const hasDeterministicErrors = qualityResults.some(
 							(r) =>
 								r.severity === "error" &&
 								QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic",
 						);
-						if (hasDeterministicErrors) {
+						const hasSoftwareVersionRegression = qualityResults.some(
+							(r) => r.name === "software_version_regression",
+						);
+						if (hasDeterministicErrors || hasSoftwareVersionRegression) {
 							postDecision.decision = "block";
 						}
 
 						log(
-							`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")}${hasDeterministicErrors ? " (blocking)" : " (advisory)"}`,
+							`Quality issues found: ${qualityResults.map((r) => r.name).join(", ")}${hasDeterministicErrors || hasSoftwareVersionRegression ? " (blocking)" : " (advisory)"}`,
 						);
 					}
 				}

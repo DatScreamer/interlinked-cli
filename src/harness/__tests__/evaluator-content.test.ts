@@ -332,4 +332,85 @@ describe("evaluatePreToolUse — content checks", () => {
 			expect(result.warnings?.some((w) => w.includes("markdown-first"))).toBeFalsy();
 		});
 	});
+
+	// ===========================================
+	// Strict-typing pre-overlay (gated, default off)
+	// ===========================================
+	describe("strict-typing pre-overlay", () => {
+		it("does not block when the flag is off (default)", () => {
+			const event = makeEvent({
+				tool_name: "Write",
+				tool_input: {
+					file_path: "/tmp/strict-typing-default.ts",
+					content: "const x = foo as any;\n",
+				},
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			// May warn from other checks, but must NOT block on the strict-typing gate.
+			if (result.decision === "block") {
+				expect(result.rule_id).not.toBe("strict-typing-overlay");
+			}
+		});
+
+		it("blocks new `as any` when the flag is enabled", () => {
+			rules.quality_checks.strict_typing_block = {
+				enabled: true,
+				file_types: [".ts", ".tsx"],
+				timeout_ms: 500,
+				severity: "error",
+			};
+			const event = makeEvent({
+				tool_name: "Write",
+				tool_input: {
+					file_path: "/tmp/strict-typing-on.ts",
+					content: "const x = foo as any;\n",
+				},
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+			expect(result.rule_id).toBe("strict-typing-overlay");
+			expect(result.reason).toContain("as_any");
+		});
+
+		it("blocks unjustified @ts-ignore when enabled, allows justified", () => {
+			rules.quality_checks.strict_typing_block = {
+				enabled: true,
+				file_types: [".ts"],
+				timeout_ms: 500,
+				severity: "error",
+			};
+			const blocked = evaluatePreToolUse(
+				makeEvent({
+					tool_name: "Write",
+					tool_input: {
+						file_path: "/tmp/strict-typing-bad.ts",
+						content: "// @ts-ignore\nconst x = foo();\n",
+					},
+				}),
+				rules,
+				session,
+				reservations,
+				cohort,
+			);
+			expect(blocked.decision).toBe("block");
+			expect(blocked.rule_id).toBe("strict-typing-overlay");
+
+			const allowed = evaluatePreToolUse(
+				makeEvent({
+					tool_name: "Write",
+					tool_input: {
+						file_path: "/tmp/strict-typing-ok.ts",
+						content: "// @ts-ignore: third-party types are missing\nconst x = foo();\n",
+					},
+				}),
+				rules,
+				session,
+				reservations,
+				cohort,
+			);
+			if (allowed.decision === "block") {
+				expect(allowed.rule_id).not.toBe("strict-typing-overlay");
+			}
+		});
+	});
 });

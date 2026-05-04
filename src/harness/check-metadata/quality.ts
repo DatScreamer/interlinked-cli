@@ -35,6 +35,20 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	software_version_regression: {
+		name: "Software Version Regression",
+		description:
+			"Detect likely stale-memory downgrades of package versions, model IDs, Docker tags, GitHub Action versions, API dates, and common runtime/config version assignments",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	strict_typing_block: {
+		name: "Strict Typing Block",
+		description:
+			"PreToolUse hard-block on new type-erasure patterns (`as any`, `as unknown as`, unjustified `@ts-ignore`/`@ts-expect-error`, bare `: any`). Off by default — opt in to enforce.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
 	affected_tests: {
 		name: "Affected Tests",
 		description: "Run the test file corresponding to the edited source file",

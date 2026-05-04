@@ -185,6 +185,87 @@ Shared patterns when adding another agent-quality check:
 - Diff-aware filtering suppresses pre-existing findings, only reporting issues introduced by the current edit
 - Secrets detection runs on BOTH PreToolUse (in file content) and PostToolUse (re-check)
 
+## Findings carry a determinism tag
+
+Every warning the harness sends to the agent is prefixed with a `[proven]`
+or `[heuristic]` tag derived from the check's `Determinism`:
+`fully_deterministic` → `[proven]` (compiler / linter / scanner / parser
+ran the actual code); everything else → `[heuristic]` (regex / AST shape,
+not behavior-verified). Unknown check ids get no tag rather than a
+guessed one. The classifier lives in
+`src/harness/quality-checks.ts::classifyDeterminism`; the proven
+allow-list for tool-based checks is in
+`src/harness/quality-checks/instructions.ts::PROVEN_TOOL_CHECKS`.
+
+When adding a new tool-based check (one that wraps an external
+verifier), add its id to `PROVEN_TOOL_CHECKS`. Inline checks in
+`CHECK_REGISTRY` use their existing `determinism` field — no parallel
+maintenance.
+
+Suppression comments (`// @ts-ignore`, `// eslint-disable-next-line`,
+`// biome-ignore`) are split into two warnings: `suppressions-unjustified`
+(loud, line-numbered) and `suppressions` (soft, fired only when every
+disable on the file carries a reason). Justification conventions: any
+text after `@ts-ignore`/`@ts-expect-error`; ` -- ` for ESLint; `:` for
+Biome. `@ts-nocheck` is exempt (file-level, no per-line convention).
+
+## Recurrence — repeating-pattern aggregation
+
+`interlinked recurrence` surfaces patterns that recur across sessions,
+files, or agents. Three observation kinds, all stored in one
+append-only JSONL log at `.interlinked/recurrences.jsonl`:
+
+| Kind | Source | Suggested action |
+|------|--------|------------------|
+| `harness_caught` | Wired into `server.ts` after `errorHistory.recordError(...)` — fires automatically on every PostToolUse check failure | Ratchet (advisory → default → block) |
+| `harness_missed` | Manual: `interlinked recurrence flag <signature>` for patterns the harness should have caught | Scaffold a new rule entry |
+| `codebase_existing` | `interlinked recurrence scan [--record]` walks the working tree with the same inline detectors used at edit time | Cleanup PR |
+
+```bash
+interlinked recurrence list                        # Top rows by count
+interlinked recurrence list --kind harness_caught  # Filter
+interlinked recurrence detail <signature>          # All events for one row
+interlinked recurrence flag raw-sql-concat \
+  --message "spotted in db.ts" --file src/db.ts    # Manual harness_missed
+interlinked recurrence scan --record               # Append codebase_existing
+interlinked recurrence propose <signature>         # Suggested action
+```
+
+All deterministic — counting + grouping over the JSONL, no LLM-as-judge
+in the aggregator (per `feedback_harness_deterministic_only.md`).
+Aggregation is computed on demand from the log; no separate cache.
+
+Source files:
+- `src/harness/recurrence.ts` — types, storage, aggregation, `proposeAction`, `recordHarnessCaught` / `recordHarnessMissed` wrappers
+- `src/harness/recurrence-scanner.ts` — `scanCodebaseForRecurrences` (walks the working tree, runs `buildAgentSafetyChecks` per file)
+- `src/commands/recurrence.ts` — CLI subcommands (list/detail/flag/scan/propose)
+
+The existing `non_null_assertion_ratchet` and `as any` ratchets are a
+specialized form of `harness_caught` recurrence response. Future
+unification: subsume them under the recurrence model (one place to
+declare "this is a recurring shape; ratchet over time").
+
+## Reservations are a single-source-of-truth state machine
+
+`src/harness/reservations.ts` declares its state changes as one
+`ReservationTxn` discriminated union and applies them through one
+`applyTransition(state, txn)` function — Bitar's "edge-defined-once"
+pattern adapted for TS. Both live execution and `replayTransitions(events)`
+go through the same dispatch, so live state and replay can't drift.
+
+Optimistic local grant + async server confirm: the server-confirm
+rejection path now rolls back the local grant and emits a
+`conflict` event with `conflict_reason: "server-rejected"` (was a
+silent `.catch(() => {})` before — the silent-double-allocation bug
+class). The conflict event carries the rollback reason for log
+consumers (`reservation-events.jsonl`, `interlinked recurrence`
+aggregation).
+
+Property tests in `src/harness/__tests__/reservations.test.ts` use
+`fast-check` to assert: replay==live, no double-grant, release
+ownership-respecting + idempotent, evict_remote local-safe,
+release_all targets exactly the named agent.
+
 ## Architecture
 
 ### Relationship to the MCP Server

@@ -10,6 +10,43 @@
 // CHECK_REGISTRY (everything that happens via external tool or inline regex
 // not wired through check-registry/).
 
+/**
+ * Tool-based check ids whose findings are produced by an external verifier
+ * that runs the actual code or a real parser (compiler / linter / security
+ * scanner / test runner / lockfile parser). Per Lopopolo's "proven vs
+ * heuristic" framing — these are *proven*: the source of truth is the
+ * tool's own verdict, not a regex shape.
+ *
+ * Anything in TOOL_CHECK_INSTRUCTIONS but NOT in this set is treated as
+ * heuristic by the formatter. Registry checks self-classify via their own
+ * `determinism` field and are not consulted here.
+ *
+ * Add a check here when you wire in an external verifier whose output is
+ * authoritative; leave it out when the check is your own regex/AST pattern
+ * (those are heuristic by definition — you didn't run the code).
+ */
+export const PROVEN_TOOL_CHECKS: ReadonlySet<string> = new Set([
+	// Real compilers, linters, scanners, test runners
+	"typescript",
+	"biome_lint",
+	"eslint",
+	"semgrep",
+	"gitleaks",
+	"dependency_audit",
+	"secrets_in_source",
+	"affected_tests",
+	// Parser-driven file-state checks
+	"lockfile_drift",
+	"package_json_consistency",
+	"missing_return_types",
+	"export_ripple",
+	// File-state primitives (size, byte content, existence)
+	"binary_content",
+	"empty_file",
+	"large_file",
+	"no_test_file",
+]);
+
 /** Public API — consumed by quality-checks.formatQualityWarnings. */
 export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 	typescript:
@@ -25,6 +62,10 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 		"Replace `any` types with proper interfaces, generics, or branded types. " +
 		"Do NOT leave `any` in place — use `unknown` with type guards if the shape is genuinely dynamic. " +
 		"`unknown` is acceptable when paired with narrowing (type guards, instanceof, assertion functions).",
+	software_version_regression:
+		"You have a knowledge cutoff date. Stop and verify the intended software version before continuing: " +
+		"search/fetch official docs, package registries, model provider docs, Docker tags, or release notes for the latest version. " +
+		"If this downgrade is intentional, keep it only after documenting why; otherwise restore or update to the current intended version.",
 	secrets_in_source:
 		"Remove the detected secrets immediately. Use environment variables or a secrets manager instead. " +
 		"Do NOT commit secrets to source files under any circumstances.",

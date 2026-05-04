@@ -1,8 +1,18 @@
 // ===========================================
 // Reservation Manager — Auto file reservation via harness
 // ===========================================
-// On PreToolUse file writes: check local cache, optimistically reserve, confirm with remote server async.
-// On PostToolUse: start 30s auto-release timer. On session end: release all agent reservations.
+// On PreToolUse file writes: check local cache, optimistically reserve,
+// confirm with remote server async. If the server rejects the optimistic
+// grant, the local cache rolls back and a conflict event fires.
+//
+// Internal architecture: the cache mutations are expressed as a small
+// table of named transitions (`TRANSITIONS` below). Every state change —
+// local grants, remote upserts, releases, expiry — runs through
+// `applyTransition`, so the in-memory state and the replayed event log
+// can never disagree by construction. This is the Bitar single-source-of-
+// truth pattern adapted for TS: one declaration per transition; both the
+// `apply` direction (state mutation) and the `produce` direction (event
+// emission) are derived from the same entry. See `bitar-decider.md`.
 
 import type { CohortManager } from "./cohort.js";
 import type { ReservationConflict, ReservationEntry } from "./types.js";
@@ -28,7 +38,9 @@ export interface ServerReservation {
 /** Per-event hook invoked on every grant / release / conflict. The hook
  *  is fire-and-forget — exceptions inside it must not break the lock
  *  primitive. Used to write reservation-events.jsonl from the harness. */
-export type ReservationEventSink = (event: {
+export type ReservationEventSink = (event: ReservationLogEvent) => void;
+
+export interface ReservationLogEvent {
 	ts: string;
 	action: "grant" | "release" | "conflict" | "release_all";
 	file: string;
@@ -36,10 +48,120 @@ export type ReservationEventSink = (event: {
 	holder?: string;
 	cohort?: "local" | "remote";
 	expires_at?: string;
-}) => void;
+	/** Why a conflict fired — "preexisting" (cache hit on acquire) or
+	 *  "server-rejected" (optimistic local grant was rolled back after the
+	 *  server-side ack returned an error). */
+	conflict_reason?: "preexisting" | "server-rejected";
+}
+
+// ===========================================
+// Reservation state-machine (single source of truth)
+// ===========================================
+// Each transition is declared *once* below. Both the live cache mutation
+// and any future event-log replay run through `applyTransition`, so the
+// two directions cannot drift. Adding a new state change means adding one
+// entry to TRANSITIONS — no parallel updates required.
+
+/** Cache state — a Map of file_pattern → ReservationEntry. Equivalent to
+ *  the field on ReservationManager; declared as a type alias so the
+ *  pure transition functions can be exercised by property tests without
+ *  instantiating the class (see `__tests__/reservations.test.ts`). */
+export type ReservationCache = Map<string, ReservationEntry>;
+
+/** All state-changing events the cache understands. Discriminated union so
+ *  exhaustiveness is checked at compile time. */
+export type ReservationTxn =
+	| {
+			kind: "grant_local";
+			file: string;
+			agent: string;
+			reservedAt: string;
+			expiresAt: string;
+	  }
+	| {
+			kind: "grant_remote";
+			file: string;
+			agent: string;
+			reservedAt: string;
+			expiresAt: string;
+	  }
+	| { kind: "release"; file: string; agent: string }
+	| { kind: "release_all"; agent: string }
+	| { kind: "expire"; file: string }
+	| { kind: "evict_remote"; file: string };
+
+/**
+ * Apply a single transition. Returns the next cache (functional) — caller
+ * is free to mutate in place if it owns the cache (the class does), or to
+ * discard the result and re-derive (property tests do).
+ *
+ * Each branch is the *one* place a given event-kind affects the state. If
+ * a future change adds a new event-kind, TypeScript's exhaustiveness
+ * checker fires on the `never` default — that's the structural guarantee
+ * Bitar's framing buys us in TS without GADTs.
+ */
+export function applyTransition(state: ReservationCache, txn: ReservationTxn): ReservationCache {
+	switch (txn.kind) {
+		case "grant_local":
+			state.set(txn.file, {
+				file_pattern: txn.file,
+				agent_name: txn.agent,
+				cohort: "local",
+				reserved_at: txn.reservedAt,
+				expires_at: txn.expiresAt,
+			});
+			return state;
+		case "grant_remote":
+			state.set(txn.file, {
+				file_pattern: txn.file,
+				agent_name: txn.agent,
+				cohort: "remote",
+				reserved_at: txn.reservedAt,
+				expires_at: txn.expiresAt,
+			});
+			return state;
+		case "release": {
+			const entry = state.get(txn.file);
+			if (entry && entry.agent_name === txn.agent) state.delete(txn.file);
+			return state;
+		}
+		case "release_all": {
+			for (const [file, entry] of state) {
+				if (entry.agent_name === txn.agent) state.delete(file);
+			}
+			return state;
+		}
+		case "expire":
+			state.delete(txn.file);
+			return state;
+		case "evict_remote": {
+			const entry = state.get(txn.file);
+			if (entry && entry.cohort === "remote") state.delete(txn.file);
+			return state;
+		}
+		default: {
+			const _exhaustive: never = txn;
+			void _exhaustive;
+			return state;
+		}
+	}
+}
+
+/** Replay an event log against an empty cache. Used by property tests to
+ *  assert that live execution and replay produce identical state. The
+ *  function is pure (modulo the seeded `state` parameter being mutated). */
+export function replayTransitions(events: readonly ReservationTxn[]): ReservationCache {
+	const state: ReservationCache = new Map();
+	for (const e of events) applyTransition(state, e);
+	return state;
+}
+
+// ===========================================
+// ReservationManager — class wrapping cache, timers, server bridge
+// ===========================================
 
 export class ReservationManager {
-	private cache: Map<string, ReservationEntry> = new Map();
+	private cache: ReservationCache = new Map();
 	private releaseTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 	private apiClient: ServerApiClient | null;
 	private refreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -65,8 +187,17 @@ export class ReservationManager {
 
 	/**
 	 * Check if a file can be written by this agent.
-	 * If no conflict, optimistically reserves it.
-	 * Returns null if allowed, or a conflict descriptor if blocked.
+	 * If no conflict, optimistically reserves it locally and fires an async
+	 * server confirmation. **Server rejection rolls back the local grant**
+	 * and emits a `conflict` event with `conflict_reason: "server-rejected"`
+	 * so the cohort sees the eventual conflict. Pre-Lopopolo this was a
+	 * silent `.catch(() => {})` — the silent-double-allocation bug class.
+	 *
+	 * Returns null if allowed (locally), or a conflict descriptor if blocked
+	 * by an existing cache entry. Server-side rejection is reported via the
+	 * eventSink, not the return value, because callers run synchronously
+	 * (PreToolUse evaluator) and the server roundtrip happens in the
+	 * background.
 	 */
 	checkAndReserve(
 		filePath: string,
@@ -77,9 +208,9 @@ export class ReservationManager {
 		for (const [pattern, entry] of this.cache) {
 			if (entry.agent_name === agentName) continue; // Own reservation
 			if (this.pathMatchesPattern(filePath, pattern)) {
-				// Check if expired
+				// Check if expired — prune via the SSoT transition.
 				if (entry.expires_at && new Date(entry.expires_at).getTime() < Date.now()) {
-					this.cache.delete(pattern);
+					applyTransition(this.cache, { kind: "expire", file: pattern });
 					continue;
 				}
 				const isLocal = cohort.hasAgent(entry.agent_name);
@@ -96,21 +227,21 @@ export class ReservationManager {
 					holder: entry.agent_name,
 					cohort: conflict.cohort,
 					expires_at: entry.expires_at,
+					conflict_reason: "preexisting",
 				});
 				return conflict;
 			}
 		}
 
-		// No conflict — optimistically reserve locally
+		// No conflict — optimistically reserve locally via the SSoT transition.
 		const now = new Date();
 		const expires = new Date(now.getTime() + RESERVATION_TTL_S * 1000);
-
-		this.cache.set(filePath, {
-			file_pattern: filePath,
-			agent_name: agentName,
-			cohort: "local",
-			reserved_at: now.toISOString(),
-			expires_at: expires.toISOString(),
+		applyTransition(this.cache, {
+			kind: "grant_local",
+			file: filePath,
+			agent: agentName,
+			reservedAt: now.toISOString(),
+			expiresAt: expires.toISOString(),
 		});
 
 		// Track in cohort
@@ -125,17 +256,61 @@ export class ReservationManager {
 			expires_at: expires.toISOString(),
 		});
 
-		// Confirm with server asynchronously (don't block)
+		// Confirm with server asynchronously. Rejection is a real signal —
+		// roll back the local grant so the cohort sees the truth on the next
+		// acquire instead of silently double-allocating. Server-unreachable
+		// (network failure) is distinguishable from server-rejected (409 / 4xx
+		// "someone else holds it") only via the API client; for the moment we
+		// treat all errors as rejection because the conservative behavior is
+		// to release the optimistic grant and let the next acquire re-try.
 		if (this.apiClient) {
 			this.apiClient.reserveFile(filePath, agentName, RESERVATION_TTL_S).catch(() => {
-				// Server unreachable — local reservation still holds
+				this.rollbackOptimisticGrant(filePath, agentName, cohort);
 			});
 		}
 
 		return null;
 	}
 
-	private emit(event: Parameters<ReservationEventSink>[0]): void {
+	/**
+	 * Reverse a local optimistic grant after the server-side confirmation
+	 * fails. Idempotent — if the entry has already been replaced (e.g., the
+	 * agent released it before the server replied), this is a no-op aside
+	 * from the conflict event.
+	 *
+	 * The conflict event uses `conflict_reason: "server-rejected"` so log
+	 * consumers (including the future `interlinked recurrence` aggregator)
+	 * can distinguish optimistic-rollbacks from cache-hit conflicts.
+	 */
+	private rollbackOptimisticGrant(
+		filePath: string,
+		agentName: string,
+		cohort: CohortManager,
+	): void {
+		const entry = this.cache.get(filePath);
+		// Only roll back if the entry is still ours; otherwise something
+		// else (release, expiry, remote upsert via refresh) has already moved
+		// the state and our rollback would be a phantom mutation.
+		if (entry && entry.agent_name === agentName && entry.cohort === "local") {
+			applyTransition(this.cache, { kind: "release", file: filePath, agent: agentName });
+			cohort.removeFileReservation(agentName, filePath);
+			const timerKey = `${agentName}:${filePath}`;
+			const timer = this.releaseTimers.get(timerKey);
+			if (timer) {
+				clearTimeout(timer);
+				this.releaseTimers.delete(timerKey);
+			}
+		}
+		this.emit({
+			ts: new Date().toISOString(),
+			action: "conflict",
+			file: filePath,
+			agent_name: agentName,
+			conflict_reason: "server-rejected",
+		});
+	}
+
+	private emit(event: ReservationLogEvent): void {
 		if (!this.eventSink) return;
 		try {
 			this.eventSink(event);
@@ -172,7 +347,7 @@ export class ReservationManager {
 		const entry = this.cache.get(filePath);
 		if (!entry || entry.agent_name !== agentName) return;
 
-		this.cache.delete(filePath);
+		applyTransition(this.cache, { kind: "release", file: filePath, agent: agentName });
 		cohort.removeFileReservation(agentName, filePath);
 		this.emit({
 			ts: new Date().toISOString(),
@@ -220,11 +395,11 @@ export class ReservationManager {
 
 	/** Get all active reservations */
 	getAll(): ReservationEntry[] {
-		// Prune expired entries
+		// Prune expired entries via the SSoT transition.
 		const now = Date.now();
 		for (const [path, entry] of this.cache) {
 			if (entry.expires_at && new Date(entry.expires_at).getTime() < now) {
-				this.cache.delete(path);
+				applyTransition(this.cache, { kind: "expire", file: path });
 			}
 		}
 		return [...this.cache.values()];
@@ -246,10 +421,11 @@ export class ReservationManager {
 			const serverPaths = new Set(serverReservations.map((sr) => sr.path_pattern));
 
 			// Evict remote reservations that are no longer on the server
-			// (e.g., another agent released a file before TTL expired)
+			// (e.g., another agent released a file before TTL expired) via
+			// the SSoT transition.
 			for (const [path, entry] of this.cache) {
 				if (entry.cohort === "remote" && !serverPaths.has(path)) {
-					this.cache.delete(path);
+					applyTransition(this.cache, { kind: "evict_remote", file: path });
 				}
 			}
 
@@ -258,12 +434,12 @@ export class ReservationManager {
 				const existing = this.cache.get(sr.path_pattern);
 				// Only update if this is a remote reservation or we don't have it locally
 				if (!existing || existing.cohort === "remote") {
-					this.cache.set(sr.path_pattern, {
-						file_pattern: sr.path_pattern,
-						agent_name: sr.agent_name,
-						cohort: "remote", // Assume remote until proven local
-						reserved_at: new Date().toISOString(),
-						expires_at:
+					applyTransition(this.cache, {
+						kind: "grant_remote",
+						file: sr.path_pattern,
+						agent: sr.agent_name,
+						reservedAt: new Date().toISOString(),
+						expiresAt:
 							sr.expires_at ||
 							new Date(Date.now() + RESERVATION_TTL_S * 1000).toISOString(),
 					});
