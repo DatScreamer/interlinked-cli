@@ -104,6 +104,12 @@ export interface HarnessEvent {
 
 	/** Agent role for capability scoping (inferred from context if not set) */
 	agent_role?: AgentRole;
+
+	/** Path to the agent's transcript JSONL — populated by the hook script
+	 *  for Claude Code events. Read at Stop time by the commit-cadence
+	 *  module to compute cumulative session token usage for nudge
+	 *  escalation. Absent for agents that don't expose a transcript. */
+	transcript_path?: string;
 }
 
 // ===========================================
@@ -619,6 +625,28 @@ export interface GuardRulesConfig {
 	auto_coordination?: import("./auto-coordinate.js").AutoCoordinationConfig;
 	/** Project-wide checks: periodic cross-file tsc/biome sweep */
 	project_wide_checks?: ProjectWideCheckConfig;
+	/** Commit-cadence nudges (Stop-hook + mid-session backstop). See CommitCadenceConfig. */
+	commit_cadence?: CommitCadenceConfig;
+}
+
+/** Commit-cadence nudge configuration. Two triggers: (a) at Stop /
+ *  SessionEnd when the count of distinct non-doc files edited since the
+ *  last commit exceeds `stop_threshold`, and (b) a mid-session backstop
+ *  one-shot when the same count crosses `mid_session_threshold`. */
+export interface CommitCadenceConfig {
+	enabled: boolean;
+	/** File-count threshold above which the Stop-hook nudge fires. */
+	stop_threshold: number;
+	/** File-count threshold for the one-shot mid-session backstop. */
+	mid_session_threshold: number;
+	/** Cumulative session token count (input+output) above which the Stop nudge wording escalates to "long session". */
+	token_band_low: number;
+	/** Cumulative session token count above which the Stop nudge wording escalates further to "very long session" / "context window degrading". */
+	token_band_high: number;
+	/** Glob list whose matches are excluded from the count (markdown,
+	 *  /docs, /plans, /notes, CLAUDE.md, AGENTS.md, PLAN*.md). Override
+	 *  to add project-specific scratch areas (e.g., RFC drafts). */
+	doc_globs: string[];
 }
 
 // ===========================================
@@ -822,6 +850,27 @@ export interface SessionTrajectory {
 	 * with bare-bones session fixtures don't have to wire it in.
 	 */
 	trajectoryDetector?: import("./trajectory.js").TrajectoryDetector;
+	/**
+	 * Commit-cadence tracking — set of distinct non-doc files edited
+	 * since the last `git commit`. Cleared on every `git commit` Bash
+	 * invocation. Used by the Stop nudge and the mid-session backstop
+	 * to count "uncommitted code-file work" without inflating on
+	 * re-edits to the same file. Optional so tests that hand-build a
+	 * session fixture don't have to wire it in — readers default to
+	 * an empty set when absent.
+	 */
+	non_doc_files_edited_since_commit?: Set<string>;
+	/**
+	 * Number of doc/plan files (markdown, /docs, /plans, /notes,
+	 * CLAUDE.md, AGENTS.md, PLAN*.md) edited since the last commit —
+	 * surfaced in the nudge wording so the agent knows we're aware
+	 * of the doc churn but excluded it on purpose.
+	 */
+	doc_files_edited_since_commit?: number;
+	/** One-shot guard for the mid-session backstop nudge — set when it fires. */
+	mid_session_nudge_emitted?: boolean;
+	/** One-shot guard for the Stop-hook nudge — set when it fires. */
+	stop_nudge_emitted?: boolean;
 }
 
 // ===========================================

@@ -87,6 +87,7 @@ import {
 	runProjectWideChecks,
 	runQualityChecks,
 } from "./quality-checks.js";
+import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import { recordHarnessCaught } from "./recurrence.js";
 import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
@@ -524,6 +525,32 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			const turnWarnings = formatTurnEndWarnings(turnSummary);
 			if (turnWarnings.length > 0) {
 				log(`Turn-end patterns: ${turnSummary.turn_patterns.join(", ")}`);
+			}
+
+			// Commit-cadence Stop nudge — encourage bundling uncommitted code-file
+			// edits into commits before ending. Doc/plan files are excluded.
+			// Wording escalates by cumulative session token count, read once
+			// from the transcript path the hook script forwarded.
+			const cadenceCfg = rules.commit_cadence;
+			if (cadenceCfg?.enabled && session && !session.stop_nudge_emitted) {
+				const nonDocCount = session.non_doc_files_edited_since_commit?.size ?? 0;
+				const docCount = session.doc_files_edited_since_commit ?? 0;
+				const tokens = readSessionTokens(event.transcript_path);
+				const nudge = formatStopNudge({
+					uncommittedNonDocCount: nonDocCount,
+					docFilesExcluded: docCount,
+					threshold: cadenceCfg.stop_threshold,
+					cumulativeTokens: tokens?.total,
+					tokenBandLow: cadenceCfg.token_band_low,
+					tokenBandHigh: cadenceCfg.token_band_high,
+				});
+				if (nudge !== null) {
+					turnWarnings.push(nudge);
+					session.stop_nudge_emitted = true;
+					log(
+						`Commit-cadence Stop nudge: ${nonDocCount} uncommitted code files, ${docCount} doc files excluded, tokens=${tokens?.total ?? "n/a"}`,
+					);
+				}
 			}
 
 			// Persist session trajectory + turn summary before cleanup

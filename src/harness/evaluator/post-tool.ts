@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { CohortManager } from "../cohort.js";
+import { formatMidSessionBackstop, isDocFile } from "../commit-cadence.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import { checkPhantomDependencies, checkTyposquatDependencies } from "../generic-checks.js";
 import type { ReservationManager } from "../reservations.js";
@@ -72,6 +73,7 @@ export function evaluatePostToolUse(
 	warnings.push(...collectReadFileSizeWarning(event));
 	warnings.push(...collectToolMissWarning(event));
 	warnings.push(...collectEditNearMissWarning(event));
+	warnings.push(...collectCommitCadenceWarning(event, rules, session));
 
 	return {
 		decision: "allow",
@@ -444,6 +446,64 @@ function collectEditNearMissWarning(event: HarnessEvent): string[] {
 		}
 	} catch (_err) {
 		/* best-effort — skip */
+	}
+	return warnings;
+}
+
+/** Commit-cadence tracking — increment the per-session "uncommitted
+ *  non-doc files edited" set on Write/Edit, clear it on `git commit`,
+ *  and emit a one-shot mid-session backstop nudge when the set crosses
+ *  `mid_session_threshold`. The Stop-hook nudge is fired separately
+ *  from server.ts (which has access to the transcript path for the
+ *  token-band escalation). Doc/plan files (markdown, /docs, /plans,
+ *  /notes, CLAUDE.md, AGENTS.md, PLAN*.md) are excluded from the count. */
+function collectCommitCadenceWarning(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	session: SessionTrajectory | undefined,
+): string[] {
+	const warnings: string[] = [];
+	const cadence = rules.commit_cadence;
+	if (!cadence?.enabled || !session) return warnings;
+
+	// Bash `git commit` — clear the set and reset the one-shot backstop.
+	// We don't try to gate on success: a failed commit will surface its
+	// own error to the agent, and a stale-counter scenario is far less
+	// disruptive than nagging the agent through a real commit attempt.
+	const toolName = event.tool_name || "";
+	if (isBash(toolName)) {
+		const command = (event.tool_input?.command as string) || "";
+		if (/\bgit\s+commit\b/.test(command)) {
+			session.non_doc_files_edited_since_commit = new Set();
+			session.doc_files_edited_since_commit = 0;
+			session.mid_session_nudge_emitted = false;
+		}
+		return warnings;
+	}
+
+	if (!isFileWrite(toolName)) return warnings;
+	const filePath =
+		(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
+	if (!filePath) return warnings;
+
+	if (isDocFile(filePath, cadence.doc_globs)) {
+		session.doc_files_edited_since_commit = (session.doc_files_edited_since_commit ?? 0) + 1;
+		return warnings;
+	}
+
+	const set = session.non_doc_files_edited_since_commit ?? new Set<string>();
+	set.add(filePath);
+	session.non_doc_files_edited_since_commit = set;
+
+	if (!session.mid_session_nudge_emitted) {
+		const msg = formatMidSessionBackstop({
+			uncommittedNonDocCount: set.size,
+			threshold: cadence.mid_session_threshold,
+		});
+		if (msg !== null) {
+			warnings.push(msg);
+			session.mid_session_nudge_emitted = true;
+		}
 	}
 	return warnings;
 }

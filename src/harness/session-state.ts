@@ -62,6 +62,10 @@ export class SessionTracker {
 				silent_failure_warned: new Set(),
 				bloat_warned: new Set(),
 				active_skills: new Map(),
+				non_doc_files_edited_since_commit: new Set(),
+				doc_files_edited_since_commit: 0,
+				mid_session_nudge_emitted: false,
+				stop_nudge_emitted: false,
 			};
 			this.sessions.set(event.session_id, session);
 		}

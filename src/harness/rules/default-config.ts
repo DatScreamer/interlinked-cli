@@ -673,6 +673,32 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		severity: "warning",
 		max_findings: 20,
 	},
+	commit_cadence: {
+		// Default-on: stderr-only nudges, never block. Stop-hook fires when
+		// the agent ends a session with > stop_threshold uncommitted code-file
+		// edits; the mid-session backstop is a one-shot for the absurd case
+		// of >40 distinct files touched without a commit. Doc/plan files
+		// are excluded so transient agent scratch (markdown plans, /docs)
+		// doesn't pull the trigger. Token-band escalations only fire at
+		// Stop, when the transcript is read once.
+		enabled: true,
+		stop_threshold: 5,
+		mid_session_threshold: 40,
+		token_band_low: 200_000,
+		token_band_high: 400_000,
+		doc_globs: [
+			"**/*.md",
+			"**/*.mdx",
+			"**/*.txt",
+			"**/*.rst",
+			"docs/**",
+			"plans/**",
+			"notes/**",
+			"**/CLAUDE.md",
+			"**/AGENTS.md",
+			"**/PLAN*.md",
+		],
+	},
 	content_scanner: {
 		// Off by default — local runtime needs `pip install opf`; users opt in via
 		// `.interlinked/guard-rules.local.json` → `"content_scanner": {"enabled": true}`.
