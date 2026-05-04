@@ -33,6 +33,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CheckEngine, type CheckResult, formatToolReport } from "../harness/check-engine/index.js";
 import type { Finding } from "../harness/suggestion-scorer.js";
 import {
+	type RegistryDriftFinding,
+	runRegistryParityCheck,
+} from "../harness/registry-parity.js";
+import {
 	addSuppressions,
 	loadFileSuppressions,
 	loadSuppressionFile,
@@ -423,6 +427,7 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	const allFlaggedFiles = new Set<string>();
 
 	streamProjectSetup(cwd, allFlaggedFiles);
+	streamRegistryParity(cwd, allFlaggedFiles);
 
 	const cqStart = Date.now();
 	process.stderr.write("  \x1b[2mscanning files...\x1b[0m");
@@ -543,6 +548,24 @@ function streamProjectSetup(cwd: string, allFlaggedFiles: Set<string>): void {
 		process.stderr.write(`    \x1b[31m✗\x1b[0m ${issue.message}\n`);
 		process.stderr.write(`\x1b[2m         fix: ${issue.fix}\x1b[0m\n`);
 		allFlaggedFiles.add(issue.file);
+	}
+}
+
+function streamRegistryParity(cwd: string, allFlaggedFiles: Set<string>): void {
+	let findings: RegistryDriftFinding[];
+	try {
+		findings = runRegistryParityCheck(cwd);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		process.stderr.write("\n  \x1b[1mregistry parity\x1b[0m\n");
+		process.stderr.write(`    \x1b[31m✗\x1b[0m config error: ${msg}\n`);
+		return;
+	}
+	if (findings.length === 0) return;
+	process.stderr.write("\n  \x1b[1mregistry parity\x1b[0m\n");
+	for (const f of findings) {
+		process.stderr.write(`    \x1b[31m✗\x1b[0m ${f.message}\n`);
+		allFlaggedFiles.add(f.source_file);
 	}
 }
 
@@ -844,6 +867,12 @@ async function runVerifyBatchJson(
 	const auditResult = opts.only && opts.only !== "sca" ? null : engine.runDepAudit();
 	const cq = filterCodeQualityResults(runCodeQualityChecks(files, cwd), skipChecks);
 	const setupIssues = checkProjectSetup(cwd);
+	let registryDrift: RegistryDriftFinding[] = [];
+	try {
+		registryDrift = runRegistryParityCheck(cwd);
+	} catch (e) {
+		void e;
+	}
 	let suggestions: Map<string, Finding[]> | null = null;
 	if (opts.suggestions) {
 		suggestions = runSuggestions({
@@ -865,6 +894,7 @@ async function runVerifyBatchJson(
 		suggestions,
 		totalFiles: files.length,
 		setupIssues,
+		registryDrift,
 		structureSection: opts.structure ? buildStructureJsonSection(cwd, opts) : undefined,
 	});
 }

@@ -7,6 +7,7 @@
 // key here AND in `streaming-output.ts`.
 
 import type { ProjectSetupIssue } from "../../harness/generic-checks.js";
+import type { RegistryDriftFinding } from "../../harness/registry-parity.js";
 import type { Finding } from "../../harness/suggestion-scorer.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import type { AuditResult, CodeQualityResults, DiagnosticResult } from "./tool-results-types.js";
@@ -43,6 +44,7 @@ interface OutputJsonArgs {
 	suggestions: Map<string, Finding[]> | null;
 	totalFiles: number;
 	setupIssues?: ProjectSetupIssue[];
+	registryDrift?: RegistryDriftFinding[];
 	structureSection?: JsonObject;
 }
 
@@ -64,6 +66,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		suggestions,
 		totalFiles,
 		setupIssues,
+		registryDrift,
 		structureSection,
 	} = args;
 
@@ -73,6 +76,18 @@ export function outputJson(args: OutputJsonArgs): void {
 			issues: setupIssues?.length ?? 0,
 			details:
 				setupIssues?.map((i) => ({ file: i.file, message: i.message, fix: i.fix })) ?? [],
+		},
+		registry_parity: {
+			issues: registryDrift?.length ?? 0,
+			details:
+				registryDrift?.map((f) => ({
+					pair: f.pair,
+					kind: f.kind,
+					id: f.id,
+					source_file: f.source_file,
+					target_file: f.target_file,
+					message: f.message,
+				})) ?? [],
 		},
 		tsc: summarizeWithDetails(tscResults),
 		[linterName]: summarizeWithDetails(linterResults),

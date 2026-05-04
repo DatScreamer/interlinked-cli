@@ -196,4 +196,64 @@ describe("outputJson", () => {
 		expect(parsed.suggestions).toBeDefined();
 		expect(parsed.suggestions["a.ts"]).toHaveLength(1);
 	});
+
+	it("emits empty registry_parity section when no drift findings are passed", () => {
+		// Regression: --json must always include the registry_parity key so
+		// CI consumers can rely on its presence. Empty findings → issues: 0,
+		// details: [].
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.registry_parity).toBeDefined();
+		expect(parsed.registry_parity.issues).toBe(0);
+		expect(parsed.registry_parity.details).toEqual([]);
+	});
+
+	it("includes registry drift findings in the JSON output", () => {
+		// Regression: pre-fix, registry parity was only wired into the
+		// streaming path, so `interlinked verify --json` silently dropped
+		// drift findings that the interactive run would have shown.
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				registryDrift: [
+					{
+						pair: "suggestion-checks",
+						kind: "missing-from-right",
+						id: "ghost-check",
+						source_file: "src/harness/server/suggestion-checks.ts",
+						target_file: "src/commands/verify/suggestions.ts",
+						message: '[suggestion-checks] "ghost-check" is in left but not right',
+					},
+				],
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.registry_parity.issues).toBe(1);
+		expect(parsed.registry_parity.details).toHaveLength(1);
+		expect(parsed.registry_parity.details[0]).toMatchObject({
+			pair: "suggestion-checks",
+			kind: "missing-from-right",
+			id: "ghost-check",
+		});
+	});
 });

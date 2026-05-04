@@ -1,0 +1,43 @@
+{
+	"_comment": "Per-project registry-parity config. Pairs of files whose IDs must stay in sync; entries in `left_only_allowed` / `right_only_allowed` are documented exceptions. Detector lives in src/harness/registry-parity.ts and runs on every `interlinked verify`.",
+	"pairs": [
+		{
+			"name": "suggestion-checks",
+			"left": {
+				"file": "src/harness/server/suggestion-checks.ts",
+				"key_re": "check:\\s*\"([a-z0-9-]+)\""
+			},
+			"right": {
+				"file": "src/commands/verify/suggestions.ts",
+				"key_re": "check:\\s*\"([a-z0-9-]+)\""
+			},
+			"left_only_allowed": [
+				"bare-catch-block",
+				"boolean-trap",
+				"c-strcmp-boolean-misuse",
+				"c-unchecked-malloc",
+				"catch-and-ignore",
+				"catch-return-null",
+				"commented-out-code",
+				"deletion-comment",
+				"deprecation-notice",
+				"empty-function-body",
+				"error-string-comparison",
+				"flag-arguments",
+				"function-arity",
+				"god-file",
+				"inconsistent-error-strategy",
+				"magic-numbers",
+				"narrative-naming",
+				"negated-condition-with-else",
+				"nested-ternary",
+				"not-implemented-stub",
+				"orphaned-test-stub",
+				"test-description-quality",
+				"throw-as-control-flow",
+				"untyped-catch"
+			],
+			"right_only_allowed": []
+		}
+	]
+}
