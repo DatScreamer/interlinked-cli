@@ -15,6 +15,7 @@ import { formatMidSessionBackstop, isDocFile } from "../commit-cadence.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import { checkPhantomDependencies, checkTyposquatDependencies } from "../generic-checks.js";
 import type { ReservationManager } from "../reservations.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
 import {
 	classifyFileSensitivity,
@@ -482,17 +483,18 @@ function collectCommitCadenceWarning(
 	}
 
 	if (!isFileWrite(toolName)) return warnings;
-	const filePath =
-		(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
-	if (!filePath) return warnings;
-
-	if (isDocFile(filePath, cadence.doc_globs)) {
-		session.doc_files_edited_since_commit = (session.doc_files_edited_since_commit ?? 0) + 1;
-		return warnings;
-	}
+	const filePaths = extractAllEditedFilePaths(event);
+	if (filePaths.length === 0) return warnings;
 
 	const set = session.non_doc_files_edited_since_commit ?? new Set<string>();
-	set.add(filePath);
+	for (const filePath of filePaths) {
+		if (isDocFile(filePath, cadence.doc_globs)) {
+			session.doc_files_edited_since_commit =
+				(session.doc_files_edited_since_commit ?? 0) + 1;
+			continue;
+		}
+		set.add(filePath);
+	}
 	session.non_doc_files_edited_since_commit = set;
 
 	if (!session.mid_session_nudge_emitted) {

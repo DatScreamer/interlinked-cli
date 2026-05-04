@@ -1458,6 +1458,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			// edit event semantically, and `runProjectWideChecks` spawns subprocesses
 			// we don't want to multiply by file count.
 			let projectWideSweepFiredThisEvent = false;
+			// Marks the suffix of `allCheckResults` not yet mirrored into the
+			// recurrence log. The fan-out body keeps appending across files, so
+			// without a cursor each iteration would re-record prior files'
+			// findings, inflating recurrence counts and tripping ratchets.
+			let recurrenceCursor = 0;
 			for (const currentEditedPath of pathsToCheck) {
 				editedFilePath = currentEditedPath;
 				// For Bash edits, inject the detected file path into a synthetic event
@@ -1672,19 +1677,6 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 											pre_error_sequence: [...session.tool_sequence],
 										},
 									);
-									// Mirror into the recurrence log so `interlinked recurrence`
-									// can aggregate repeated harness_caught hits across sessions
-									// and propose ratchets. Fire-and-forget; failures inside
-									// recordHarnessCaught are swallowed so the live PostToolUse
-									// path never trips on observability storage errors.
-									recordHarnessCaught({
-										check_id: result.check,
-										agent_source: event.agent_source,
-										session_id: event.session_id,
-										file: relPath,
-										message: result.message,
-										cwd: CWD,
-									});
 								}
 							}
 						}
@@ -2183,6 +2175,31 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					if (warningCheckNames.length > 0) {
 						acknowledgeChecks(session, editedFilePath, warningCheckNames);
 					}
+				}
+
+				// Mirror EVERY actionable check failure (quality / structural /
+				// suggestion / impact / structure / behavioral) into the
+				// recurrence log so `interlinked recurrence` can aggregate
+				// repeated harness_caught hits across sessions and propose
+				// ratchets. Independent of error_memory.enabled — that gate
+				// is for embedding-augmented error history; recurrence is its
+				// own JSONL. Fire-and-forget; recordHarnessCaught swallows
+				// storage failures so live PostToolUse never trips.
+				if (editedFilePath && allCheckResults.length > recurrenceCursor) {
+					const recurrenceRelPath = relative(CWD, editedFilePath);
+					for (let i = recurrenceCursor; i < allCheckResults.length; i++) {
+						const r = allCheckResults[i];
+						if (r.severity !== "error" && r.severity !== "warning") continue;
+						recordHarnessCaught({
+							check_id: r.name,
+							agent_source: event.agent_source,
+							session_id: event.session_id,
+							file: r.file ? relative(CWD, r.file) : recurrenceRelPath,
+							message: r.message,
+							cwd: CWD,
+						});
+					}
+					recurrenceCursor = allCheckResults.length;
 				}
 			}
 

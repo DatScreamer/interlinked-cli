@@ -90,6 +90,63 @@ describe("software version regression detector", () => {
 		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
 	});
 
+	it("does not flag unchanged nested versions in a package-lock.json", () => {
+		const lockfile = JSON.stringify(
+			{
+				name: "demo",
+				version: "2.0.0",
+				lockfileVersion: 3,
+				packages: {
+					"node_modules/lodash": { version: "1.0.0" },
+					"node_modules/zod": { version: "3.22.0" },
+				},
+			},
+			null,
+			2,
+		);
+
+		const before = collectSoftwareVersionReferences(lockfile, "package-lock.json");
+		const after = collectSoftwareVersionReferences(lockfile, "package-lock.json");
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("flags a real downgrade of a nested package-lock.json dependency", () => {
+		const beforeContent = JSON.stringify(
+			{
+				name: "demo",
+				version: "2.0.0",
+				lockfileVersion: 3,
+				packages: {
+					"node_modules/lodash": { version: "2.0.0" },
+				},
+			},
+			null,
+			2,
+		);
+		const afterContent = JSON.stringify(
+			{
+				name: "demo",
+				version: "2.0.0",
+				lockfileVersion: 3,
+				packages: {
+					"node_modules/lodash": { version: "1.0.0" },
+				},
+			},
+			null,
+			2,
+		);
+
+		const before = collectSoftwareVersionReferences(beforeContent, "package-lock.json");
+		const after = collectSoftwareVersionReferences(afterContent, "package-lock.json");
+
+		const regressions = detectSoftwareVersionRegressions(before, after);
+		const lodashDowngrade = regressions.find(
+			(r) => r.before.version === "2.0.0" && r.after.version === "1.0.0",
+		);
+		expect(lodashDowngrade).toBeDefined();
+	});
+
 	it("flags newly introduced freshness-sensitive model refs without claiming they are deprecated", () => {
 		const before = collectSoftwareVersionReferences("export const x = 1;\n", "src/config.ts");
 		const after = collectSoftwareVersionReferences(

@@ -2,7 +2,13 @@
 // runs registry inline detectors against each file, optionally records
 // codebase_existing recurrence events for repeated patterns.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -88,5 +94,28 @@ describe("scanCodebaseForRecurrences", () => {
 		const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
 		expect(files.has("lib/in.ts")).toBe(true);
 		expect(files.has("src/in.ts")).toBe(false);
+	});
+
+	it("does not follow symlinked subdirectories", () => {
+		fixture("src/keeper.ts", "export const x = eval('1+1');\n");
+		const externalDir = mkdtempSync(join(tmpdir(), "interlinked-scan-ext-"));
+		try {
+			writeFileSync(join(externalDir, "outside.ts"), "eval('outside');\n");
+			try {
+				symlinkSync(externalDir, join(dir, "src", "linked"), "dir");
+			} catch (_err) {
+				// Some test envs (e.g., locked-down Windows runners) reject
+				// symlink creation; the behavior under test only matters when
+				// symlinks exist, so skipping is the right call.
+				return;
+			}
+			const findings = scanCodebaseForRecurrences({ cwd: dir });
+			const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
+			expect(files.has("src/keeper.ts")).toBe(true);
+			expect([...files].some((f) => f.includes("linked"))).toBe(false);
+			expect([...files].some((f) => f.endsWith("outside.ts"))).toBe(false);
+		} finally {
+			rmSync(externalDir, { recursive: true, force: true });
+		}
 	});
 });

@@ -243,8 +243,11 @@ function recentUniqueFiles(events: Array<{ file: string; ts: string }>): string[
 
 /** Record a harness_caught recurrence from a check failure observed by
  *  the harness (PostToolUse quality / structural check). Single-line
- *  callsite for `server.ts` so the wiring is grep-able. Failures are
- *  swallowed inside `recordRecurrenceEvent` — observability path. */
+ *  callsite for `server.ts` so the wiring is grep-able. Storage failures
+ *  are swallowed here — this is on the PostToolUse hot path, where an
+ *  observability write must never abort the hook response. CLI callers
+ *  that *want* to surface storage failures use `recordRecurrenceEvent`
+ *  or `recordHarnessMissed` directly. */
 export function recordHarnessCaught(opts: {
 	check_id: string;
 	agent_source: string;
@@ -254,18 +257,22 @@ export function recordHarnessCaught(opts: {
 	cwd?: string;
 	ts?: string;
 }): void {
-	recordRecurrenceEvent(
-		{
-			ts: opts.ts ?? new Date().toISOString(),
-			kind: "harness_caught",
-			check_id: opts.check_id,
-			agent_source: opts.agent_source,
-			session_id: opts.session_id,
-			file: opts.file,
-			message: opts.message,
-		},
-		opts.cwd ?? process.cwd(),
-	);
+	try {
+		recordRecurrenceEvent(
+			{
+				ts: opts.ts ?? new Date().toISOString(),
+				kind: "harness_caught",
+				check_id: opts.check_id,
+				agent_source: opts.agent_source,
+				session_id: opts.session_id,
+				file: opts.file,
+				message: opts.message,
+			},
+			opts.cwd ?? process.cwd(),
+		);
+	} catch (e) {
+		void e;
+	}
 }
 
 /** Record a harness_missed recurrence — a pattern that recurred without

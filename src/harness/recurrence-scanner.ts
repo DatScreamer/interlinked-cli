@@ -12,7 +12,7 @@
 // Per `feedback_harness_deterministic_only.md`: counting + grouping +
 // regex / AST detectors only. No LLM.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { buildAgentSafetyChecks } from "./check-registry/index.js";
 import { recordRecurrenceEvent } from "./recurrence.js";
@@ -131,9 +131,9 @@ export function scanCodebaseForRecurrences(
 	return findings;
 }
 
-/** Recursive walker that yields absolute file paths. Skips symlink loops
- *  by stat'ing each entry and refusing to recurse into already-skipped
- *  directory names. */
+/** Recursive walker that yields absolute file paths. Uses lstatSync and
+ *  skips symlinked entries entirely so we can't follow a link out of the
+ *  project tree or into a cycle. */
 function* walk(dirAbs: string): Iterable<string> {
 	let entries: string[];
 	try {
@@ -145,12 +145,13 @@ function* walk(dirAbs: string): Iterable<string> {
 	for (const name of entries) {
 		if (SKIP_DIR_NAMES.has(name)) continue;
 		const abs = join(dirAbs, name);
-		let st: ReturnType<typeof statSync>;
+		let st: ReturnType<typeof lstatSync>;
 		try {
-			st = statSync(abs);
+			st = lstatSync(abs);
 		} catch (_err) {
 			continue;
 		}
+		if (st.isSymbolicLink()) continue;
 		if (st.isDirectory()) yield* walk(abs);
 		else if (st.isFile()) yield abs;
 	}

@@ -209,6 +209,68 @@ describe("commit-cadence — PostToolUse integration", () => {
 		expect(cadenceWarnings.length).toBe(1);
 	});
 
+	it("counts every file in a Codex apply_patch payload (multi-file)", () => {
+		const command = [
+			"*** Begin Patch",
+			"*** Update File: /repo/src/a.ts",
+			"@@",
+			"-old",
+			"+new",
+			"*** Update File: /repo/src/b.ts",
+			"@@",
+			"-old",
+			"+new",
+			"*** Update File: /repo/src/c.ts",
+			"@@",
+			"-old",
+			"+new",
+			"*** End Patch",
+		].join("\n");
+		evaluatePostToolUse(
+			makeEvent({
+				hook_event: "PostToolUse",
+				tool_name: "apply_patch",
+				tool_input: { command },
+			}),
+			rules,
+			session,
+			reservations,
+			cohort,
+		);
+		expect(session.non_doc_files_edited_since_commit?.size).toBe(3);
+	});
+
+	it("counts files supplied via files_modified on apply_patch events", () => {
+		evaluatePostToolUse(
+			makeEvent({
+				hook_event: "PostToolUse",
+				tool_name: "apply_patch",
+				tool_input: {},
+				files_modified: ["/repo/src/x.ts", "/repo/src/y.ts"],
+			}),
+			rules,
+			session,
+			reservations,
+			cohort,
+		);
+		expect(session.non_doc_files_edited_since_commit?.size).toBe(2);
+	});
+
+	it("regression: a plain Edit with tool_input.file_path still counts", () => {
+		evaluatePostToolUse(
+			makeEvent({
+				hook_event: "PostToolUse",
+				tool_name: "Edit",
+				tool_input: { file_path: "/repo/src/edit.ts", old_string: "a", new_string: "b" },
+			}),
+			rules,
+			session,
+			reservations,
+			cohort,
+		);
+		expect(session.non_doc_files_edited_since_commit?.has("/repo/src/edit.ts")).toBe(true);
+	});
+
 	it("is a no-op when commit_cadence is disabled", () => {
 		rules.commit_cadence = {
 			...rules.commit_cadence,

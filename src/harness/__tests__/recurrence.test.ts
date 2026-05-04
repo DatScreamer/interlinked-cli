@@ -295,4 +295,30 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		expect(out).toHaveLength(2);
 		expect(readFileSync(path, "utf-8").length).toBeGreaterThan(0);
 	});
+
+	it("recordHarnessCaught swallows storage errors so the PostToolUse hot path is never aborted", () => {
+		// Force a filesystem failure: pass a regular file as the cwd so the
+		// implicit `mkdir <cwd>/.interlinked` fails with ENOTDIR.
+		const blocking = join(dir, "blocking-file");
+		writeFileSync(blocking, "hello");
+		expect(() =>
+			recordHarnessCaught({
+				check_id: "x",
+				agent_source: "claude",
+				session_id: "s",
+				file: "f",
+				cwd: blocking,
+			}),
+		).not.toThrow();
+	});
+
+	it("recordRecurrenceEvent still throws on filesystem errors (CLI surfaces them)", () => {
+		// Counterpart to the test above: the low-level write primitive must
+		// keep its loud-failure semantics so `interlinked recurrence flag`
+		// reports disk-full / permission errors to the user. Only the
+		// PostToolUse wrapper (`recordHarnessCaught`) swallows.
+		const blocking = join(dir, "blocking-file-2");
+		writeFileSync(blocking, "hello");
+		expect(() => recordRecurrenceEvent(ev(), blocking)).toThrow();
+	});
 });

@@ -15,7 +15,7 @@
 // remove the local entry and emit a conflict with reason "server-rejected".
 
 import * as fc from "fast-check";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CohortManager } from "../cohort.js";
 import {
 	applyTransition,
@@ -28,6 +28,7 @@ import {
 	type ServerApiClient,
 	type ServerReservation,
 } from "../reservations.js";
+import { ServerBridge } from "../server-bridge.js";
 import type { HarnessEvent } from "../types.js";
 
 // ===========================================
@@ -288,5 +289,342 @@ describe("ReservationManager — optimistic-grant rollback", () => {
 		expect(conflict?.agent_name).toBe("alice");
 		const conflictEvt = events.find((ev) => ev.action === "conflict");
 		expect(conflictEvt?.conflict_reason).toBe("preexisting");
+	});
+});
+
+// ===========================================
+// ServerBridge — real reserveFile() path (the regression of record)
+// ===========================================
+//
+// The pre-fix `ServerBridge.reserveFile()` swallowed *all* callTool errors,
+// so the rollback path in reservations.ts:266-269 only fired against the
+// in-test StubApi. These tests exercise the real ServerBridge by mocking
+// global fetch, so a regression that re-introduces a bare catch-all
+// `void e` will fail here — not just in the stub.
+
+describe("ServerBridge.reserveFile — real path (fetch-mocked)", () => {
+	let cohort: CohortManager;
+	let events: ReservationLogEvent[];
+	let mgr: ReservationManager;
+	const sink: ReservationEventSink = (e) => events.push(e);
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		cohort = new CohortManager();
+		events = [];
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		mgr?.shutdown();
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	function makeBridge(): ServerBridge {
+		return new ServerBridge({
+			serverUrl: "http://localhost:9999",
+			workspaceKey: "main",
+			projectKey: "main",
+		});
+	}
+
+	function mockFetch(impl: (url: string) => Response | Promise<Response>): void {
+		globalThis.fetch = vi.fn(((input: string | URL | Request) => {
+			const url = typeof input === "string" ? input : input.toString();
+			return Promise.resolve(impl(url));
+		}) as typeof globalThis.fetch);
+	}
+
+	it("server-rejected (conflicts[] non-empty): rolls back local grant + emits server-rejected conflict", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			// /api/ui/call → file_reservation_paths returns explicit conflict
+			return new Response(
+				JSON.stringify({
+					result: {
+						granted: [],
+						conflicts: [
+							{ file: "a.ts", reserved_by: "other-agent", reservation_pattern: "a.ts" },
+						],
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		const conflict = mgr.checkAndReserve("a.ts", "alice", cohort);
+		expect(conflict).toBeNull(); // optimistic local grant
+		expect(mgr.getAll().some((e) => e.file_pattern === "a.ts")).toBe(true);
+
+		// async server-confirm fails → rollback on microtask queue
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "a.ts")).toBe(false);
+		const rejectEvt = events.find(
+			(e) => e.action === "conflict" && e.conflict_reason === "server-rejected",
+		);
+		expect(rejectEvt).toBeDefined();
+		expect(rejectEvt?.file).toBe("a.ts");
+		expect(rejectEvt?.agent_name).toBe("alice");
+		expect(cohort.getAgent("alice")?.files_reserved).toEqual([]);
+		bridge.shutdown();
+	});
+
+	it("server-rejected (ok:false): rolls back local grant + emits server-rejected conflict", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response(JSON.stringify({ result: { ok: false, reason: "denied" } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("b.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "b.ts")).toBe(false);
+		expect(
+			events.some((e) => e.action === "conflict" && e.conflict_reason === "server-rejected"),
+		).toBe(true);
+		bridge.shutdown();
+	});
+
+	it("network error: optimistic grant is preserved (no rollback, no conflict event)", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			throw new TypeError("simulated network error");
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("c.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "c.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		expect(cohort.getAgent("alice")?.files_reserved).toContain("c.ts");
+		bridge.shutdown();
+	});
+
+	it("HTTP 5xx (transient/timeout class): optimistic grant is preserved", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("internal error", { status: 503 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("d.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		// callTool throws on !res.ok → swallowed → no rollback
+		expect(mgr.getAll().some((e) => e.file_pattern === "d.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("server-accept (granted, empty conflicts): grant persists, no conflict", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response(
+				JSON.stringify({ result: { granted: ["e.ts"], conflicts: [] } }),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("e.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "e.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 409 (callTool throws explicit denial): rolls back local grant", async () => {
+		// Pre-fix: callTool's `throw new Error("Server API error: 409")` was
+		// caught and swallowed unconditionally, so 4xx denials never reached
+		// the rollback path. Post-fix: isExplicitDenialError re-throws on 4xx.
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("conflict", { status: 409 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("f.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "f.ts")).toBe(false);
+		expect(
+			events.some((e) => e.action === "conflict" && e.conflict_reason === "server-rejected"),
+		).toBe(true);
+		bridge.shutdown();
+	});
+
+	it("HTTP 408 (request timeout class): optimistic grant is preserved", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("timeout", { status: 408 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("g.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "g.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 429 (rate limited): optimistic grant is preserved", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("too many", { status: 429 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("h.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "h.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 401 (auth/expired-token): optimistic grant is preserved (NOT a reservation conflict)", async () => {
+		// Regression: pre-fix, ANY 4xx (except 408/429) was treated as a
+		// reservation denial and rolled back the local grant. 401/403/404 say
+		// nothing about whether another agent holds the file — they're
+		// auth/config errors. They must fail open.
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("expired token", { status: 401 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("auth.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "auth.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 403 (forbidden): optimistic grant is preserved", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("forbidden", { status: 403 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("forbidden.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "forbidden.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 404 (wrong server URL / endpoint missing): optimistic grant is preserved", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("not found", { status: 404 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("nf.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "nf.ts")).toBe(true);
+		expect(events.find((e) => e.action === "conflict")).toBeUndefined();
+		bridge.shutdown();
+	});
+
+	it("HTTP 423 (Locked): rolls back — explicit reservation denial", async () => {
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response("locked", { status: 423 });
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("locked.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "locked.ts")).toBe(false);
+		expect(
+			events.some((e) => e.action === "conflict" && e.conflict_reason === "server-rejected"),
+		).toBe(true);
+		bridge.shutdown();
+	});
+
+	it("server-rejected with normalized path (`./a.ts` vs `a.ts`): rolls back", async () => {
+		// Pre-fix: the classifier compared conflicts[].file === filePath with
+		// raw equality. A server that normalized paths (./a.ts vs a.ts, abs
+		// vs rel) would slip past the rejection check, leaving the optimistic
+		// grant in place — recreating the double-allocation bug.
+		mockFetch((url) => {
+			if (url.endsWith("/health")) return new Response("ok", { status: 200 });
+			return new Response(
+				JSON.stringify({
+					result: {
+						granted: [],
+						conflicts: [
+							{ file: "./a.ts", reserved_by: "other-agent" }, // note the leading ./
+						],
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		const bridge = makeBridge();
+		mgr = new ReservationManager(bridge, 60_000_000, sink);
+		cohort.agentJoined(joinEvent("alice"));
+
+		mgr.checkAndReserve("a.ts", "alice", cohort);
+		await flushMicrotasks();
+		await flushMicrotasks();
+
+		expect(mgr.getAll().some((e) => e.file_pattern === "a.ts")).toBe(false);
+		expect(
+			events.some((e) => e.action === "conflict" && e.conflict_reason === "server-rejected"),
+		).toBe(true);
+		bridge.shutdown();
 	});
 });

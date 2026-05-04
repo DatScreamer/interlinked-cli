@@ -84,6 +84,7 @@ export function collectSoftwareVersionReferences(
 	}
 
 	const lines = content.split("\n");
+	const pathByLine = computeObjectPathByLine(content, lines.length);
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		const lineNo = i + 1;
@@ -96,7 +97,7 @@ export function collectSoftwareVersionReferences(
 			collectLineRef(refs, seen, collectCargoDependencyRef(line, lineNo));
 		}
 
-		for (const ref of collectGenericAssignmentRefs(line, lineNo)) {
+		for (const ref of collectGenericAssignmentRefs(line, lineNo, pathByLine[i] ?? "")) {
 			collectLineRef(refs, seen, ref);
 		}
 	}
@@ -316,7 +317,11 @@ function collectCargoDependencyRef(
 	};
 }
 
-function collectGenericAssignmentRefs(line: string, lineNo: number): SoftwareVersionReference[] {
+function collectGenericAssignmentRefs(
+	line: string,
+	lineNo: number,
+	objectPath: string,
+): SoftwareVersionReference[] {
 	const refs: SoftwareVersionReference[] = [];
 	for (const re of [GENERIC_ASSIGNMENT_RE, JSON_STRING_PROP_RE]) {
 		re.lastIndex = 0;
@@ -330,10 +335,11 @@ function collectGenericAssignmentRefs(line: string, lineNo: number): SoftwareVer
 			const kind = classifyGenericKind(key, value);
 			if (!modelProvider && !looksComparable(value, kind)) continue;
 			const modelFamily = kind === "model" ? modelFamilyOf(value) : undefined;
-			const anchor =
+			const baseAnchor =
 				kind === "model"
 					? `model:${key.toLowerCase()}:${modelFamily ?? modelProvider ?? "unknown"}`
 					: `${kind}:${key.toLowerCase()}`;
+			const anchor = objectPath ? `${baseAnchor}@${objectPath}` : baseAnchor;
 			refs.push({
 				anchor,
 				label: `${key}`,
@@ -345,6 +351,65 @@ function collectGenericAssignmentRefs(line: string, lineNo: number): SoftwareVer
 		}
 	}
 	return refs;
+}
+
+// Walk content once tracking object/array nesting so each line gets a parent
+// key chain (e.g. "dependencies.lodash"). Without this, every "version" key in
+// a lockfile maps to the same anchor and unchanged nested versions are wrongly
+// compared against the first occurrence.
+function computeObjectPathByLine(content: string, lineCount: number): string[] {
+	const out = new Array<string>(lineCount).fill("");
+	const stack: string[] = [];
+	let lastKey: string | undefined;
+	let lineIndex = 0;
+	let inString = false;
+	let stringQuote = "";
+	let stringStart = -1;
+	let escape = false;
+
+	for (let i = 0; i < content.length; i++) {
+		const ch = content[i];
+
+		if (ch === "\n") {
+			out[lineIndex] = stack.join(".");
+			lineIndex++;
+			if (lineIndex >= lineCount) break;
+			continue;
+		}
+
+		if (inString) {
+			if (escape) {
+				escape = false;
+			} else if (ch === "\\") {
+				escape = true;
+			} else if (ch === stringQuote) {
+				inString = false;
+				const literal = content.slice(stringStart + 1, i);
+				let j = i + 1;
+				while (j < content.length && (content[j] === " " || content[j] === "\t")) j++;
+				if (content[j] === ":") lastKey = literal;
+			}
+			continue;
+		}
+
+		if (ch === '"' || ch === "'") {
+			inString = true;
+			stringQuote = ch;
+			stringStart = i;
+			continue;
+		}
+
+		if (ch === "{" || ch === "[") {
+			stack.push(lastKey ?? (ch === "[" ? "[]" : "{}"));
+			lastKey = undefined;
+		} else if (ch === "}" || ch === "]") {
+			stack.pop();
+			lastKey = undefined;
+		}
+	}
+
+	if (lineIndex < lineCount) out[lineIndex] = stack.join(".");
+	return out;
 }
 
 function collectLineRef(

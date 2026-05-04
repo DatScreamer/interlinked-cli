@@ -40,6 +40,59 @@ interface GuardEventReport {
 }
 
 // ===========================================
+// Reservation response classifier
+// ===========================================
+
+/**
+ * The MCP `file_reservation_paths` tool returns a body shaped roughly:
+ *   { granted?: [...], conflicts?: [{file, reserved_by, ...}], ok?: boolean }
+ * A non-empty `conflicts[]` (or explicit `ok: false`) means the server has
+ * actively denied the reservation — caller should roll back the optimistic
+ * local grant. Anything else (including missing fields, server returning
+ * the bare success object) is treated as accepted.
+ */
+function isExplicitReservationRejection(
+	result: JsonObject | null | undefined,
+	_filePath: string,
+): boolean {
+	if (!result) return false;
+	if (result.ok === false) return true;
+	const conflicts = result.conflicts;
+	// `reserveFile` is the only caller and always sends a single path. Any
+	// non-empty conflicts list therefore belongs to that path — even if the
+	// server reported it under a normalized form (`./a.ts` vs `a.ts`,
+	// absolute vs relative). Per-conflict file matching here would let those
+	// normalization differences masquerade as "no conflict" and reopen the
+	// double-allocation case this classifier exists to close.
+	return Array.isArray(conflicts) && conflicts.length > 0;
+}
+
+/**
+ * Classify a thrown callTool error as an *explicit reservation denial* vs
+ * a transient/auth/config failure. The reservation rollback path only
+ * fires for explicit denials — anything else must NOT roll back a
+ * legitimate optimistic local grant.
+ *
+ * Explicit reservation denial: HTTP 409 (Conflict) or 423 (Locked). These
+ * are the only 4xx codes that prove "another agent holds this file".
+ *
+ * Auth/config 4xx (401/403/404, etc.): NOT denials. An expired token, a
+ * wrong workspace key, or a stale server URL says nothing about whether
+ * another agent holds the file. Treat as fail-open — keep the optimistic
+ * grant; the user will see auth errors elsewhere and reconcile.
+ *
+ * Network/timeout/5xx errors: also not denials. The server hasn't said no
+ * — it just hasn't said anything we can trust.
+ */
+function isExplicitDenialError(e: unknown): boolean {
+	if (!(e instanceof Error)) return false;
+	const m = e.message.match(/^Server API error: (\d+)$/);
+	if (!m) return false;
+	const status = Number(m[1]);
+	return status === 409 || status === 423;
+}
+
+// ===========================================
 // Server Bridge
 // ===========================================
 
@@ -87,8 +140,16 @@ export class ServerBridge implements ServerApiClient {
 	// ===========================================
 
 	async reserveFile(filePath: string, agentName: string, ttlSeconds: number): Promise<void> {
+		// Network/transient errors are swallowed so flaky connectivity doesn't
+		// roll back legitimate optimistic local grants. *Explicit* server
+		// rejection — either a 4xx HTTP status (callTool throws
+		// `Server API error: <code>`) or a resolved body carrying
+		// `conflicts[]` / `ok:false` — re-throws so the caller's `.catch()`
+		// in reservations.ts:266-269 rolls back the local grant and emits a
+		// "server-rejected" conflict event.
+		let result: JsonObject;
 		try {
-			await this.callTool("file_reservation_paths", {
+			result = await this.callTool("file_reservation_paths", {
 				agent_name: agentName,
 				paths: [filePath],
 				ttl_seconds: ttlSeconds,
@@ -96,7 +157,11 @@ export class ServerBridge implements ServerApiClient {
 				project_key: this.config.projectKey || "main",
 			});
 		} catch (e) {
-			void e;
+			if (isExplicitDenialError(e)) throw e;
+			return;
+		}
+		if (isExplicitReservationRejection(result, filePath)) {
+			throw new Error("server rejected reservation");
 		}
 	}
 
