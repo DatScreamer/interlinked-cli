@@ -9,6 +9,18 @@
 // These checks are deliberately not in the blocking quality-check
 // pipeline — they are heuristic, so false positives are tolerable.
 // The scorer filters noise by context before surfacing them.
+//
+// PARITY BOOKKEEPING — when adding a new entry below:
+//   1. Mirror in `src/commands/verify/suggestions.ts` (offline `verify
+//      --suggestions` runs its own parallel registry).
+//   2. Add the check ID to `PARITY_REQUIRED` in
+//      `src/__tests__/suggestion-registry-parity.test.ts`.
+//   3. If the imported function name is new and *not* wired through
+//      `quality-checks.ts`, add it to `VERIFY_ONLY_CHECKS` in
+//      `src/harness/__tests__/check-pipeline-parity.test.ts` with a
+//      one-line rationale.
+// All three drift-detection tests already exist; they will fail loudly
+// in CI if any of these steps is skipped.
 
 import {
 	checkAwaitInLoop,
@@ -35,7 +47,9 @@ import {
 	checkNotImplementedStubs,
 	checkOrphanedTestStub,
 	checkQueryInLoop,
+	checkRecursiveWalkerLstat,
 	checkSilentCatch,
+	checkSilentPromiseSwallow,
 	checkSqlInjection,
 	checkTestDescriptionQuality,
 	checkThrowAsControlFlow,
@@ -62,6 +76,8 @@ const SUGGESTION_CHECKS: SuggestionCheck[] = [
 	{ check: "perf-query-in-loop", source: "performance", fn: checkQueryInLoop },
 	{ check: "perf-await-in-loop", source: "performance", fn: checkAwaitInLoop },
 	{ check: "silent-catch", source: "quality", fn: checkSilentCatch },
+	{ check: "silent-promise-swallow", source: "quality", fn: checkSilentPromiseSwallow },
+	{ check: "recursive-walker-lstat", source: "security", fn: checkRecursiveWalkerLstat },
 	{ check: "unreachable-code", source: "quality", fn: checkUnreachableCode },
 
 	// --- Taste: opinionated code quality ---

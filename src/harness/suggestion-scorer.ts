@@ -42,6 +42,7 @@ interface ScoredFinding extends Finding {
 const BASE_SEVERITY: Record<string, number> = {
 	// Security (regex)
 	"sql-injection": 0.85,
+	"recursive-walker-lstat": 0.7,
 	secrets_in_source: 0.75,
 	// Type safety (regex, but high-value)
 	"strong-typing": 0.65,
@@ -50,6 +51,10 @@ const BASE_SEVERITY: Record<string, number> = {
 	"perf-await-in-loop": 0.5,
 	// Quality (regex)
 	"unreachable-code": 0.4,
+	// silent-promise-swallow is async-side silent-catch — unhandled rejections
+	// crash Node. Score above default threshold so verify --suggestions
+	// surfaces it without --threshold=0.
+	"silent-promise-swallow": 0.7,
 	"silent-catch": 0.3,
 };
 

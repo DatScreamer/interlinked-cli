@@ -4,6 +4,14 @@
 // Non-deterministic heuristics (SQL injection patterns, perf smells, silent
 // catches). Opt-in via `interlinked verify --suggestions`. Findings are
 // scored and filtered against inline + file-level suppressions.
+//
+// PARITY BOOKKEEPING — when adding a new entry below:
+//   1. Mirror in `src/harness/server/suggestion-checks.ts` (the live
+//      PostToolUse counterpart). See the comment block at the top of
+//      that file for the full checklist.
+//   2. Update the parity tests if the check ID is new:
+//      `src/__tests__/suggestion-registry-parity.test.ts::PARITY_REQUIRED`,
+//      `src/harness/__tests__/check-pipeline-parity.test.ts::VERIFY_ONLY_CHECKS`.
 
 import { readFileSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
@@ -12,7 +20,9 @@ import {
 	checkAwaitInLoop,
 	checkMixedErrorStrategy,
 	checkQueryInLoop,
+	checkRecursiveWalkerLstat,
 	checkSilentCatch,
+	checkSilentPromiseSwallow,
 	checkSqlInjection,
 	checkUnreachableCode,
 } from "../../harness/generic-checks.js";
@@ -48,6 +58,16 @@ function buildChecks(content: string, file: string): SuggestionCheck[] {
 			check: "silent-catch",
 			source: "quality",
 			fn: () => checkSilentCatch(content, file),
+		},
+		{
+			check: "silent-promise-swallow",
+			source: "quality",
+			fn: () => checkSilentPromiseSwallow(content, file),
+		},
+		{
+			check: "recursive-walker-lstat",
+			source: "security",
+			fn: () => checkRecursiveWalkerLstat(content, file),
 		},
 		{
 			check: "unreachable-code",

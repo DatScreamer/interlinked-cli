@@ -907,3 +907,140 @@ export function checkWeakHash(content: string, filePath: string): InlineMatch[] 
 	}
 	return matches;
 }
+
+/**
+ * Detect `.catch(...)` handlers whose body is empty or returns a literal nothing
+ * — the async cousin of `checkSilentCatch`. Swallowed rejections silently
+ * mask bugs and break optimistic-grant rollback patterns (see the recent
+ * ServerBridge.reserveFile fix).
+ *
+ * Patterns flagged (single-line):
+ *   .catch arrow with empty body, undefined/null/void 0 return, or
+ *   .catch(function) with empty body. Inline body comments mark intent
+ *   and exempt the line, matching checkSilentCatch behavior.
+ */
+export function checkSilentPromiseSwallow(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+
+	const arrowPattern =
+		/\.catch\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*(?:\{\s*\}|undefined|null|void\s+0)\s*\)/;
+	const functionPattern =
+		/\.catch\s*\(\s*function\s*[A-Za-z_$\w]*\s*\([^)]*\)\s*\{\s*\}\s*\)/;
+	const intentCommentRe = /\.catch\s*\(.*(?:\/\/|\/\*)/;
+
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = strippedLines[i];
+		if (!arrowPattern.test(line) && !functionPattern.test(line)) continue;
+		if (intentCommentRe.test(originalLines[i] ?? "")) continue;
+		matches.push({ line: i + 1, text: (originalLines[i] ?? "").trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * Detect recursive directory walkers that gate recursion on `statSync(...)`
+ * instead of `lstatSync(...)`. Without lstat, the walker follows symlinks —
+ * leaving the project tree, or looping indefinitely on a cycle.
+ *
+ * A function fires this check when ALL hold inside its body:
+ *   1. calls `readdirSync(...)`             (it is listing a directory)
+ *   2. calls itself or `this.<name>(...)`   (it recurses)
+ *   3. calls `statSync(...)`                (the unsafe stat)
+ *   4. does NOT also call `lstatSync(...)`  (no symlink awareness)
+ */
+export function checkRecursiveWalkerLstat(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	if (isTestFile(filePath)) return [];
+	if (!/\bstatSync\s*\(/.test(content)) return [];
+	if (!/\breaddirSync\s*\(/.test(content)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const sLines = stripped.split("\n");
+	const oLines = content.split("\n");
+
+	const linePrefixLen: number[] = [0];
+	for (const ln of sLines) {
+		linePrefixLen.push(linePrefixLen[linePrefixLen.length - 1] + ln.length + 1);
+	}
+
+	type Decl = { name: string; line: number };
+	const decls: Decl[] = [];
+	const declRe1 = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/;
+	const declRe2 =
+		/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\()/;
+	const declRe3 =
+		/^\s+(?:(?:public|private|protected|static|readonly|override|async)\s+)*(?!(?:if|for|while|switch|catch|do|with|return|new|typeof|throw|delete|void|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{\s*$/;
+	for (let i = 0; i < sLines.length; i++) {
+		const m1 = sLines[i].match(declRe1);
+		if (m1) {
+			decls.push({ name: m1[1], line: i });
+			continue;
+		}
+		const m2 = sLines[i].match(declRe2);
+		if (m2) {
+			decls.push({ name: m2[1], line: i });
+			continue;
+		}
+		const m3 = sLines[i].match(declRe3);
+		if (m3) decls.push({ name: m3[1], line: i });
+	}
+
+	const matches: InlineMatch[] = [];
+	for (const d of decls) {
+		if (matches.length >= 10) break;
+		let bodyOpen = -1;
+		for (let i = d.line; i < sLines.length; i++) {
+			const idx = sLines[i].indexOf("{");
+			if (idx !== -1) {
+				bodyOpen = linePrefixLen[i] + idx;
+				break;
+			}
+		}
+		if (bodyOpen < 0) continue;
+
+		let depth = 0;
+		let bodyClose = -1;
+		for (let i = bodyOpen; i < stripped.length; i++) {
+			const c = stripped[i];
+			if (c === "{") depth++;
+			else if (c === "}") {
+				depth--;
+				if (depth === 0) {
+					bodyClose = i;
+					break;
+				}
+			}
+		}
+		if (bodyClose < 0) continue;
+		const body = stripped.slice(bodyOpen + 1, bodyClose);
+
+		if (!/\breaddirSync\s*\(/.test(body)) continue;
+		const selfRe = new RegExp("(?:\\bthis\\.)?\\b" + d.name + "\\b\\s*\\(");
+		if (!selfRe.test(body)) continue;
+		if (!/\bstatSync\s*\(/.test(body)) continue;
+		if (/\blstatSync\s*\(/.test(body)) continue;
+
+		const sm = body.match(/\bstatSync\s*\(/);
+		if (!sm || sm.index === undefined) continue;
+		const absStat = bodyOpen + 1 + sm.index;
+		const lineNum = stripped.slice(0, absStat).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: (oLines[lineNum - 1] ?? "").trim().slice(0, 150),
+		});
+	}
+	return matches;
+}

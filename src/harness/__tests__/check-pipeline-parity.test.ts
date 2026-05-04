@@ -204,6 +204,8 @@ const VERIFY_ONLY_CHECKS = new Set([
 	"checkAwaitInLoop",
 	"checkUnreachableCode",
 	"checkSilentCatch",
+	"checkSilentPromiseSwallow",
+	"checkRecursiveWalkerLstat",
 	"checkConsoleDebug",
 	// Codebase-wide analysis checks (too broad/slow for single-file PostToolUse)
 	"checkPiiInSource",
