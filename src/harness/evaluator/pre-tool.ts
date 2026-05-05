@@ -43,7 +43,9 @@ import { containsSecrets as containsSecretsDetailed, findProjectRoot } from "../
 import type { ReservationManager } from "../reservations.js";
 import type { RouteMap } from "../route-map.js";
 import type { SessionTracker } from "../session-state.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { getPreToolUseContext } from "../structural-checks.js";
+import { loadGraphForFile } from "../supermodel-graph.js";
 import type {
 	EscalationRequest,
 	GuardRulesConfig,
@@ -147,6 +149,47 @@ function runTrajectoryDetector(
 	return findings
 		.filter((f) => enabledPatterns.has(f.pattern))
 		.map((f) => f.message);
+}
+
+/** Read-only consumer of Supermodel-emitted `.graph.*` shards. Returns one
+ *  warning string when a HIGH or MEDIUM impact section is present for the
+ *  edited file; returns null on LOW, missing shards, parse failures, or any
+ *  I/O error. The shard file IS the API — we never call Supermodel's service
+ *  or generate shards ourselves. See `docs/integrations/supermodel.md`. */
+function getSupermodelGraphWarning(filePath: string, cwd?: string): string | null {
+	const graph = loadGraphForFile(filePath, cwd);
+	if (!graph || !graph.impact) return null;
+	const { risk, domains, direct, transitive, affects } = graph.impact;
+	if (risk === "LOW") return null;
+
+	const relPath = cwd
+		? relative(cwd, graph.sourcePath) || graph.sourcePath
+		: graph.sourcePath;
+
+	if (risk === "HIGH") {
+		const domainsClause =
+			domains.length > 0 ? ` across domains ${domains.join(" · ")}` : "";
+		const affectsClause =
+			affects.length > 0
+				? ` Affects: ${affects.slice(0, 5).join(" · ")}${affects.length > 5 ? " · …" : ""}.`
+				: "";
+		return (
+			`[interlinked:supermodel-graph] ${relPath}: ` +
+			`HIGH-risk edit per .graph shard: ${direct} dependent file(s), ${transitive} transitive${domainsClause}.` +
+			`${affectsClause} Confirm this is intentional.`
+		);
+	}
+
+	const domainsClause =
+		domains.length > 0 ? ` across ${domains.join(" · ")}` : "";
+	const affectsClause =
+		affects.length > 0
+			? ` Affects: ${affects.slice(0, 3).join(" · ")}${affects.length > 3 ? " · …" : ""}.`
+			: "";
+	return (
+		`[interlinked:supermodel-graph] ${relPath}: ` +
+		`${direct} dependent file(s)${domainsClause}.${affectsClause}`
+	);
 }
 
 /** Run tsc and biome against a target file BEFORE an edit, returning existing
@@ -685,6 +728,19 @@ export function evaluatePreToolUse(
 			routeMap,
 		);
 		warnings.push(...contextWarnings);
+	}
+
+	// CONTEXT: Supermodel graph awareness — surface blast radius from
+	// Supermodel-emitted .graph.* shards if the user is running their daemon.
+	// Read-only consumer; silent when no shard exists. Loops over every edited
+	// path so multi-file Codex apply_patch payloads each get their own warning.
+	// `isFileWrite()` already includes "apply_patch" (tool-classifiers.ts:75),
+	// so the existing gate covers Codex too.
+	if (isFileWrite(toolName)) {
+		for (const editedPath of extractAllEditedFilePaths(event)) {
+			const graphWarning = getSupermodelGraphWarning(editedPath, event.cwd);
+			if (graphWarning) warnings.push(graphWarning);
+		}
 	}
 
 	// PROJECT SETUP: One-time validation (first tool call only)

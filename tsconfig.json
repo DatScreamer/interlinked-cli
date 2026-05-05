@@ -12,5 +12,8 @@
         "types": ["node"]
     },
     "include": ["src"],
-    "exclude": ["src/harness/structure/__tests__/fixtures"]
+    "exclude": [
+        "src/harness/structure/__tests__/fixtures",
+        "src/harness/__tests__/fixtures/supermodel"
+    ]
 }
