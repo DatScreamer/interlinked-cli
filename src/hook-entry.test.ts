@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,10 +7,12 @@ import type { EvaluateUnifiedContext } from "./harness/evaluator-unified.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./harness/session-daemon.js";
 import type { DaemonPaths } from "./harness/session-paths.js";
 import type { TsgoRunner } from "./harness/tsgo-runner.js";
+import type { HarnessDecision, HarnessEvent } from "./harness/types.js";
 import { discoverSocket, runHookEntry } from "./hook-entry.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
+let legacyServer: Server | null = null;
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-he-"));
@@ -19,6 +22,10 @@ afterEach(async () => {
 	if (daemon) {
 		await daemon.stop();
 		daemon = null;
+	}
+	if (legacyServer) {
+		await new Promise<void>((resolve) => legacyServer?.close(() => resolve()));
+		legacyServer = null;
 	}
 	rmSync(tmp, { recursive: true, force: true });
 });
@@ -48,6 +55,27 @@ function makeEvaluatorContext(): EvaluateUnifiedContext {
 		reservations: {} as EvaluateUnifiedContext["reservations"],
 		cohort: {} as EvaluateUnifiedContext["cohort"],
 	};
+}
+
+function startLegacyHarnessServer(
+	socketPath: string,
+	decision: HarnessDecision,
+	received: HarnessEvent[],
+): Promise<void> {
+	legacyServer = createServer((socket: Socket) => {
+		let buffer = "";
+		socket.on("data", (chunk) => {
+			buffer += chunk.toString("utf-8");
+			const idx = buffer.indexOf("\n");
+			if (idx === -1) return;
+			received.push(JSON.parse(buffer.slice(0, idx)) as HarnessEvent);
+			socket.write(`${JSON.stringify(decision)}\n`);
+		});
+	});
+	return new Promise((resolve, reject) => {
+		legacyServer?.once("error", reject);
+		legacyServer?.listen(socketPath, () => resolve());
+	});
 }
 
 describe("discoverSocket", () => {
@@ -133,6 +161,45 @@ describe("runHookEntry — end-to-end with real daemon", () => {
 		expect(result.fell_back).toBe(false);
 		expect(result.exit_code).toBe(0);
 	});
+
+	it("uses raw JSON for legacy harness.sock and surfaces the real PreToolUse warning", async () => {
+		const socketPath = join(tmp, ".interlinked", "harness.sock");
+		const received: HarnessEvent[] = [];
+		await startLegacyHarnessServer(
+			socketPath,
+			{ decision: "allow", warnings: ["[interlinked:test] visible warning"] },
+			received,
+		);
+
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "legacy",
+				cwd: tmp,
+				tool_name: "Edit",
+				tool_input: { file_path: "src/a.ts", old_string: "a", new_string: "b" },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath,
+		});
+
+		expect(result.fell_back).toBe(false);
+		expect(result.exit_code).toBe(0);
+		expect(JSON.parse(result.stdout ?? "{}")).toEqual({
+			hookSpecificOutput: {
+				additionalContext: "[interlinked:test] visible warning",
+			},
+		});
+		expect(received[0]).toMatchObject({
+			hook_event: "PreToolUse",
+			tool_name: "Edit",
+			session_id: "legacy",
+		});
+		expect("id" in (received[0] ?? {})).toBe(false);
+		expect("method" in (received[0] ?? {})).toBe(false);
+	});
 });
 
 describe("runHookEntry — cold fallback on daemon absence", () => {
@@ -151,7 +218,10 @@ describe("runHookEntry — cold fallback on daemon absence", () => {
 			socketPath: join(tmp, "nope.sock"),
 		});
 		expect(result.fell_back).toBe(true);
-		// Adapter encodes allow-with-warning → exit 0 + warning on stderr.
+		// Cold fallback allows without putting transport failures in
+		// model-visible PreToolUse additionalContext.
 		expect(result.exit_code).toBe(0);
+		expect(result.stdout).toBeUndefined();
+		expect(result.stderr).toContain("evaluator skipped");
 	});
 });

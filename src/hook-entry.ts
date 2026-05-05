@@ -19,8 +19,15 @@ import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
 import { methodForPhase, type RpcMethod } from "./harness/daemon-protocol.js";
+import {
+	callLegacyHarness,
+	DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS,
+	isLegacyHarnessSocket,
+} from "./harness/legacy-client.js";
 import type { HarnessDecision } from "./harness/types.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
+
+const DEFAULT_HOOK_TIMEOUT_MS = 2000;
 
 export interface HookEntryOptions {
 	/** The native hook event name the runner emitted. */
@@ -70,11 +77,14 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	}
 
 	const method = methodForPhase(event.phase);
-	const timeoutMs = opts.timeout_ms ?? 2000;
-	const client = createDaemonClient(socketPath);
+	const timeoutMs = opts.timeout_ms ?? defaultTimeoutForPhase(event);
 	let decision: HarnessDecision;
 	const fellBack = false;
-	const result = await safeCallDaemon(client, method, event, timeoutMs);
+	const protocol = resolveHookProtocol(socketPath, opts.env);
+	const result =
+		protocol === "raw"
+			? await safeCallLegacy(socketPath, event, timeoutMs)
+			: await safeCallDaemon(createDaemonClient(socketPath), method, event, timeoutMs);
 	if (result.ok) {
 		decision = result.decision;
 	} else {
@@ -153,6 +163,36 @@ async function safeCallDaemon(
 	return { ok: false, reason };
 }
 
+async function safeCallLegacy(
+	socketPath: string,
+	event: UnifiedHookEvent,
+	timeoutMs: number,
+): Promise<{ ok: true; decision: HarnessDecision } | { ok: false; reason: string }> {
+	try {
+		return {
+			ok: true,
+			decision: await callLegacyHarness(socketPath, event, { timeout_ms: timeoutMs }),
+		};
+	} catch (err) {
+		return {
+			ok: false,
+			reason: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): "raw" | "framed" {
+	const requested = env.INTERLINKED_HOOK_PROTOCOL;
+	if (requested === "raw") return "raw";
+	if (requested === "framed") return "framed";
+	return isLegacyHarnessSocket(socketPath) ? "raw" : "framed";
+}
+
+function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
+	if (event.phase === "pre-tool") return DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
+	return DEFAULT_HOOK_TIMEOUT_MS;
+}
+
 /** Discover the daemon socket. Priority:
  *    1. `--socket` flag / INTERLINKED_SOCKET env var (handled by caller)
  *    2. Per-session `.interlinked/harness-<sanitized>.sock`
@@ -205,18 +245,21 @@ function encodeColdFallback(
 	event: UnifiedHookEvent,
 	reason: string,
 ): HookEntryResult {
-	// Cold fallback: allow the action, attach a short notice, never block.
+	// Cold fallback: allow the action and report the skipped evaluator only
+	// on stderr. Do not put timeout/socket failures in decision warnings:
+	// Claude routes PreToolUse warnings into model-visible additionalContext,
+	// and transport failures are not useful task context for the agent.
 	// The full evaluator is too heavy to run inline in the hook process in
 	// every runner — the correct place to add cold checks is here as this
 	// module grows, but never at the cost of the per-tool-class budget.
 	const decision: HarnessDecision = {
 		decision: "allow",
-		warnings: [`[interlinked] ${reason}; evaluator skipped`],
 	};
 	const output = adapter.encodeDecision(decision, event);
+	const fallbackNotice = `[interlinked] ${reason}; evaluator skipped\n`;
 	return {
 		stdout: output.stdout,
-		stderr: output.stderr,
+		stderr: output.stderr ? `${output.stderr}\n${fallbackNotice}` : fallbackNotice,
 		exit_code: output.exit_code,
 		fell_back: true,
 	};

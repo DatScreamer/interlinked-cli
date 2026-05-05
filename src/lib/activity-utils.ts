@@ -2,7 +2,7 @@
 // Shared Activity Utils
 // ===========================================
 // Common types and helpers used by activity, explain, and status commands.
-// Eliminates duplication of parseDuration and formatActivitySummary.
+// Centralizes parseDuration and formatActivitySummary across surfaces.
 
 import { truncate } from "./formatter.js";
 import type { EventAttribution, TokenUsage } from "./local-activity.js";
