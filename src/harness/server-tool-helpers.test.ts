@@ -189,6 +189,31 @@ describe("extractAllEditedFilePaths", () => {
 	it("returns an empty array when no paths can be resolved", () => {
 		expect(extractAllEditedFilePaths(makeEvent({ tool_input: {} }))).toEqual([]);
 	});
+
+	// Parity with the hook-side normalizer in `lib/hooks-template.ts:1130`,
+	// which reads `command || patch || content || _raw_patch`. If the
+	// server-only reads `command`, every Codex/Copilot patch event delivered
+	// under one of the alternate field names is silently skipped — including
+	// the new Supermodel-graph PreToolUse warnings that fan out per file.
+	it.each([
+		["patch", "patch"],
+		["content", "content"],
+		["_raw_patch", "_raw_patch"],
+	])(
+		"reads apply_patch payload from tool_input.%s",
+		(_label: string, field: string) => {
+			const patch =
+				"*** Begin Patch\n" +
+				"*** Update File: src/x.ts\n@@\n-x\n+y\n" +
+				"*** Add File: src/y.ts\n+y\n" +
+				"*** End Patch\n";
+			expect(
+				extractAllEditedFilePaths(
+					makeEvent({ tool_name: "apply_patch", tool_input: { [field]: patch } }),
+				),
+			).toEqual(["src/x.ts", "src/y.ts"]);
+		},
+	);
 });
 
 describe("isPreToolUse", () => {

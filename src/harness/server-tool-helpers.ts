@@ -18,6 +18,24 @@ function nonEmptyString(value: unknown): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+/** Pick the raw `apply_patch` payload text from a tool_input. The hook-side
+ *  normalizer accepts the patch under any of `command`, `patch`, `content`,
+ *  or `_raw_patch` (see `lib/hooks-template.ts` — `command || patch ||
+ *  content || _raw_patch`); server-side code that reads only `command` will
+ *  silently miss every Codex / Copilot patch event delivered under one of
+ *  the alternate names. Keep this helper as the single source of truth so
+ *  the two sides can't drift. */
+function extractApplyPatchRaw(toolInput: HarnessEvent["tool_input"]): string {
+	if (!toolInput) return "";
+	return String(
+		toolInput.command ||
+			toolInput.patch ||
+			toolInput.content ||
+			toolInput._raw_patch ||
+			"",
+	);
+}
+
 /** Extract the destination file path from a raw apply_patch payload.
  *  Returns the first file referenced (or its move destination if present in
  *  the same section). For multi-file payloads, prefer
@@ -97,7 +115,7 @@ export function extractAllEditedFilePaths(event: HarnessEvent): string[] {
 
 	if (event.tool_name === "apply_patch") {
 		const patchPaths = extractAllApplyPatchFilePaths(
-			String(event.tool_input?.command || ""),
+			extractApplyPatchRaw(event.tool_input),
 		);
 		for (const p of patchPaths) push(p);
 		if (paths.length > 0) return paths;
@@ -115,7 +133,7 @@ export function summarizeToolInput(event: HarnessEvent): string {
 	if (!event.tool_input) return event.tool_name || "";
 	const input = event.tool_input;
 	if (event.tool_name === "apply_patch") {
-		const patchPath = extractApplyPatchFilePath(String(input.command || ""));
+		const patchPath = extractApplyPatchFilePath(extractApplyPatchRaw(input));
 		if (patchPath) return patchPath;
 	}
 	if (input.command) return String(input.command).slice(0, 200);
