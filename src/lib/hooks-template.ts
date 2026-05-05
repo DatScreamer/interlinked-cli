@@ -353,7 +353,7 @@ ${GUARDS_INLINE_CHUNK}
  * Fire-and-forget, non-blocking. If Bun is not found, warn once.
  * First PreToolUse uses inline fallback; subsequent calls use harness once it's up.
  */
-function tryAutoStartHarness() {
+function tryAutoStartHarness(sessionId = null) {
     try {
         // Find harness server.js — prefer pre-compiled JS for fast startup
         const candidates = [
@@ -386,7 +386,9 @@ function tryAutoStartHarness() {
 
         // Spawn detached harness daemon using node
         const nodePath = process.execPath;
-        const child = nodeSpawn(nodePath, [serverPath, "--cwd", CWD], {
+        const args = [serverPath, "--cwd", CWD, "--protocol", "dual"];
+        if (sessionId) args.push("--session-id", String(sessionId));
+        const child = nodeSpawn(nodePath, args, {
             detached: true,
             stdio: "ignore",
         });
@@ -569,7 +571,7 @@ async function main() {
     // SessionStart: auto-start harness if socket missing
     // ===========================================
     if (hookEvent === "SessionStart" && !existsSync(HARNESS_SOCK_PATH)) {
-        tryAutoStartHarness();
+        tryAutoStartHarness(sessionId);
     }
     // Daily graph snapshot — fires once per 24h on any SessionStart so
     // graph-history.jsonl carries a longitudinal trend without needing

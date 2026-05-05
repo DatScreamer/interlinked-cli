@@ -90,9 +90,17 @@ describe("discoverSocket", () => {
 
 	it("prefers per-session sockets", () => {
 		writeFileSync(join(tmp, ".interlinked", "harness-abc.sock"), "");
+		writeFileSync(join(tmp, ".interlinked", "harness-default.sock"), "");
 		writeFileSync(join(tmp, ".interlinked", "harness.sock"), "");
 		const path = discoverSocket(tmp, "abc");
 		expect(path?.endsWith("harness-abc.sock")).toBe(true);
+	});
+
+	it("uses the default framed socket before the legacy raw socket", () => {
+		writeFileSync(join(tmp, ".interlinked", "harness-default.sock"), "");
+		writeFileSync(join(tmp, ".interlinked", "harness.sock"), "");
+		const path = discoverSocket(tmp, "no-match");
+		expect(path?.endsWith("harness-default.sock")).toBe(true);
 	});
 
 	it("falls back to legacy socket", () => {
@@ -199,6 +207,63 @@ describe("runHookEntry — end-to-end with real daemon", () => {
 		});
 		expect("id" in (received[0] ?? {})).toBe(false);
 		expect("method" in (received[0] ?? {})).toBe(false);
+	});
+
+	it("honors INTERLINKED_HOOK_PROTOCOL=framed even when the socket is named harness.sock", async () => {
+		const paths: DaemonPaths = {
+			socket: join(tmp, ".interlinked", "harness.sock"),
+			pid: join(tmp, ".interlinked", "harness-framed.pid"),
+			log: join(tmp, ".interlinked", "logs", "daemon-framed.log"),
+		};
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "forced-framed",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "forced-framed",
+				cwd: tmp,
+				tool_name: "Read",
+				tool_input: { file_path: "/a" },
+			},
+			env: { INTERLINKED_HOOK_PROTOCOL: "framed" },
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath: paths.socket,
+		});
+
+		expect(result.fell_back).toBe(false);
+		expect(result.exit_code).toBe(0);
+	});
+
+	it("honors INTERLINKED_HOOK_PROTOCOL=raw for a harness-*.sock path", async () => {
+		const socketPath = join(tmp, ".interlinked", "harness-raw.sock");
+		const received: HarnessEvent[] = [];
+		await startLegacyHarnessServer(
+			socketPath,
+			{ decision: "allow", warnings: ["forced raw"] },
+			received,
+		);
+
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "forced-raw",
+				cwd: tmp,
+				tool_name: "Edit",
+				tool_input: { file_path: "src/a.ts", old_string: "a", new_string: "b" },
+			},
+			env: { INTERLINKED_HOOK_PROTOCOL: "raw" },
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath,
+		});
+
+		expect(result.fell_back).toBe(false);
+		expect(received[0]?.hook_event).toBe("PreToolUse");
 	});
 });
 

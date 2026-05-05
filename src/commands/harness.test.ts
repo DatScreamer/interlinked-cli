@@ -72,6 +72,23 @@ describe("harnessStatusCommand — enriched signals", () => {
 				JSON.stringify({ ts: "2026-04-27T08:00:00.000Z", hook_event: "PostToolUse" }),
 			].join("\n"),
 		);
+		writeFileSync(
+			join(workDir, ".interlinked", "harness-protocol.json"),
+			JSON.stringify({
+				protocol: "dual",
+				protocol_version: "1",
+				started_at: "2026-04-27T07:59:00.000Z",
+				raw_socket_path: join(workDir, ".interlinked", "harness.sock"),
+				framed_socket_path: join(workDir, ".interlinked", "harness-default.sock"),
+				framed_session_id: "default",
+				last_raw_event_at: "2026-04-27T08:00:00.000Z",
+				last_framed_event_at: "2026-04-27T08:00:01.000Z",
+				raw_event_count: 1,
+				framed_event_count: 2,
+				framed_error_count: 0,
+				framed_timeout_count: 0,
+			}),
+		);
 
 		const captured: string[] = [];
 		const realLog = console.log;
@@ -88,10 +105,13 @@ describe("harnessStatusCommand — enriched signals", () => {
 			orphan_count: number;
 			mode: string | null;
 			last_event_at: string | null;
+			protocol_status: { protocol: string; framed_event_count: number } | null;
 		};
 		expect(parsed.running).toBe(false);
 		expect(parsed.mode).toBe("ci");
 		expect(parsed.last_event_at).toBe("2026-04-27T08:00:00.000Z");
+		expect(parsed.protocol_status?.protocol).toBe("dual");
+		expect(parsed.protocol_status?.framed_event_count).toBe(2);
 		expect(typeof parsed.orphan_count).toBe("number");
 	});
 });

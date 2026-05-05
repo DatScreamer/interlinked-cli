@@ -103,10 +103,10 @@ export interface RpcParams {
 export interface RpcResult {
 	"hook.pre_tool_use": HarnessDecision;
 	"hook.post_tool_use": HarnessDecision;
-	"hook.session_start": HookSessionAck;
-	"hook.session_end": HookSessionAck;
+	"hook.session_start": HarnessDecision;
+	"hook.session_end": HarnessDecision;
 	"hook.user_prompt": HarnessDecision;
-	"hook.pre_compact": HookSessionAck;
+	"hook.pre_compact": HarnessDecision;
 	"daemon.health": DaemonHealth;
 	"daemon.shutdown": HookSessionAck;
 	"daemon.invalidate": HookSessionAck;

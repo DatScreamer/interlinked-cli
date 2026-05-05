@@ -51,6 +51,7 @@ import { ErrorHistory } from "./error-history.js";
 import { readSharedConfig } from "../lib/config.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
 import { appendLatencyLog } from "./latency-log.js";
+import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -96,9 +97,11 @@ import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { sanitizeSessionId } from "./session-paths.js";
+import { daemonPathsFor } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
+import { startSessionDaemon, type SessionDaemonHandle } from "./session-daemon.js";
 import {
 	extractAllEditedFilePaths,
 	extractEditedFilePath,
@@ -134,6 +137,7 @@ import {
 	formatSilentFailureWarning,
 } from "./tool-result-checks.js";
 import { TrigramIndex } from "./trigram-index.js";
+import { createTsgoRunner } from "./tsgo-runner.js";
 import type {
 	ExportedSymbol,
 	GuardRulesConfig,
@@ -141,6 +145,8 @@ import type {
 	HarnessEvent,
 	PreEditBaseline,
 } from "./types.js";
+import { toLegacyHarnessEvent } from "./legacy-client.js";
+import type { UnifiedHookEvent } from "./unified-event.js";
 
 // ===========================================
 // CLI Arguments
@@ -152,6 +158,8 @@ const { values: args } = parseArgs({
 		"pid-file": { type: "string" },
 		"idle-timeout": { type: "string" },
 		cwd: { type: "string" },
+		protocol: { type: "string" },
+		"session-id": { type: "string" },
 		verbose: { type: "boolean", short: "v", default: false },
 	},
 	strict: false,
@@ -167,6 +175,16 @@ const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
+type HarnessProtocolMode = "raw" | "framed" | "dual";
+function parseProtocolMode(raw: string | undefined): HarnessProtocolMode {
+	if (raw === "raw" || raw === "framed" || raw === "dual") return raw;
+	return "dual";
+}
+const PROTOCOL_MODE = parseProtocolMode(stringArg(args.protocol));
+const RUN_RAW_SOCKET = PROTOCOL_MODE !== "framed";
+const RUN_FRAMED_SOCKET = PROTOCOL_MODE !== "raw";
+const FRAMED_SESSION_ID = stringArg(args["session-id"]) || process.env.INTERLINKED_SESSION_ID || "default";
+const FRAMED_PATHS = daemonPathsFor(CWD, FRAMED_SESSION_ID);
 // Always-on by default. Per-session Maps (classifierSessions, autoCoordStates,
 // preEditBaselines) drop on SessionEnd, so resident memory stabilizes around
 // ~30 MB per daemon — it doesn't grow with uptime. The original orphan-
@@ -359,6 +377,37 @@ const reservations = new ReservationManager(
 let idleTimer: ReturnType<typeof setTimeout>;
 let connectionCount = 0;
 let _totalEventsProcessed = 0;
+
+interface ProtocolStatusFile {
+	protocol: HarnessProtocolMode;
+	protocol_version: typeof PROTOCOL_VERSION;
+	started_at: string;
+	raw_socket_path: string | null;
+	framed_socket_path: string | null;
+	framed_session_id: string | null;
+	last_raw_event_at: string | null;
+	last_framed_event_at: string | null;
+	raw_event_count: number;
+	framed_event_count: number;
+	framed_error_count: number;
+	framed_timeout_count: number;
+}
+
+const PROTOCOL_STATUS_PATH = join(INTERLINKED_DIR, "harness-protocol.json");
+const protocolStatus: ProtocolStatusFile = {
+	protocol: PROTOCOL_MODE,
+	protocol_version: PROTOCOL_VERSION,
+	started_at: new Date().toISOString(),
+	raw_socket_path: RUN_RAW_SOCKET ? SOCKET_PATH : null,
+	framed_socket_path: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
+	framed_session_id: RUN_FRAMED_SOCKET ? FRAMED_SESSION_ID : null,
+	last_raw_event_at: null,
+	last_framed_event_at: null,
+	raw_event_count: 0,
+	framed_event_count: 0,
+	framed_error_count: 0,
+	framed_timeout_count: 0,
+};
 
 // ===========================================
 // Logging
@@ -2279,6 +2328,62 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 	return { decision: "allow" };
 }
 
+async function evaluateEventLine(
+	line: string,
+	protocol: "raw" | "framed",
+): Promise<HarnessDecision> {
+	const decision = await processEvent(line);
+	recordProtocolEvent(protocol);
+	try {
+		const evt: JsonObject = JSON.parse(line);
+		appendLatencyLog(INTERLINKED_DIR, {
+			hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
+			tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
+			session_id: typeof evt.session_id === "string" ? evt.session_id : null,
+			agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
+			decision: decision.decision,
+			checks_ran: decision.checks_ran ?? null,
+			checks_timing_ms: decision.checks_timing_ms ?? null,
+			tool_breakdown: decision.tool_breakdown ?? null,
+		});
+	} catch (e) {
+		void e;
+	}
+	return decision;
+}
+
+async function evaluateUnifiedViaRuntime(event: UnifiedHookEvent): Promise<HarnessDecision> {
+	try {
+		const legacyEvent = toLegacyHarnessEvent(event);
+		return await evaluateEventLine(JSON.stringify(legacyEvent), "framed");
+	} catch (err) {
+		protocolStatus.framed_error_count++;
+		writeProtocolStatus();
+		throw err;
+	}
+}
+
+function recordProtocolEvent(protocol: "raw" | "framed"): void {
+	const now = new Date().toISOString();
+	if (protocol === "raw") {
+		protocolStatus.raw_event_count++;
+		protocolStatus.last_raw_event_at = now;
+	} else {
+		protocolStatus.framed_event_count++;
+		protocolStatus.last_framed_event_at = now;
+	}
+	writeProtocolStatus();
+}
+
+function writeProtocolStatus(): void {
+	try {
+		ensureDirectory(PROTOCOL_STATUS_PATH);
+		writeFileSync(PROTOCOL_STATUS_PATH, `${JSON.stringify(protocolStatus, null, 2)}\n`);
+	} catch (e) {
+		void e;
+	}
+}
+
 function summarizeToolInput(event: HarnessEvent): string {
 	if (!event.tool_input) return event.tool_name || "";
 	const input = event.tool_input;
@@ -2461,10 +2566,10 @@ function ensureDirectory(path: string): void {
 	}
 }
 
-function cleanupSocket(): void {
+function cleanupSocket(path: string = SOCKET_PATH): void {
 	try {
-		if (existsSync(SOCKET_PATH)) {
-			unlinkSync(SOCKET_PATH);
+		if (existsSync(path)) {
+			unlinkSync(path);
 		}
 	} catch (e) {
 		void e;
@@ -2487,8 +2592,16 @@ function removePidFile(): void {
 }
 
 let socketServer: ReturnType<typeof createServer> | null = null;
+let framedDaemon: SessionDaemonHandle | null = null;
+let shuttingDown = false;
 
 function shutdown(): void {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	void shutdownAsync();
+}
+
+async function shutdownAsync(): Promise<void> {
 	logAlways("Shutting down...");
 	serverBridge?.shutdown();
 	reservations.shutdown();
@@ -2497,21 +2610,76 @@ function shutdown(): void {
 	contentScanner?.shutdown().catch(() => {
 		// best-effort
 	});
-	socketServer?.close();
-	cleanupSocket();
+	await framedDaemon?.stop("server_shutdown");
+	await new Promise<void>((resolve) => {
+		if (!socketServer) return resolve();
+		socketServer.close(() => resolve());
+	});
+	if (RUN_RAW_SOCKET) cleanupSocket();
 	removePidFile();
 	unwatchRules();
 	process.exit(0);
+}
+
+function createRawSocketServer(): ReturnType<typeof createServer> {
+	return createServer((sock: Socket) => {
+		connectionCount++;
+		log(`Connection opened (total: ${connectionCount})`);
+
+		let buffer = "";
+
+		sock.on("data", async (data: Buffer) => {
+			buffer += data.toString("utf-8");
+			// Handle newline-delimited JSON (may receive multiple events in one chunk)
+			let newlineIdx = buffer.indexOf("\n");
+			while (newlineIdx !== -1) {
+				const line = buffer.slice(0, newlineIdx);
+				buffer = buffer.slice(newlineIdx + 1);
+				if (!line.trim()) continue;
+				const decision = await evaluateEventLine(line, "raw");
+				try {
+					sock.write(`${JSON.stringify(decision)}\n`);
+				} catch (e) {
+					void e;
+				}
+				newlineIdx = buffer.indexOf("\n");
+			}
+		});
+
+		sock.on("close", () => {
+			connectionCount--;
+			log(`Connection closed (remaining: ${connectionCount})`);
+		});
+
+		sock.on("error", (err: Error) => {
+			log(`Socket error: ${err.message}`);
+		});
+	});
+}
+
+function buildStartupMessage(): string {
+	const sockets: string[] = [];
+	if (RUN_RAW_SOCKET) sockets.push(`raw ${SOCKET_PATH}`);
+	if (RUN_FRAMED_SOCKET) sockets.push(`framed ${FRAMED_PATHS.socket}`);
+	return (
+		`Harness started (${PROTOCOL_MODE}) on ${sockets.join(", ")} ` +
+		`(PID ${process.pid}, ${rules.rules.length} rules` +
+		`${IDLE_TIMEOUT_MS ? `, idle timeout ${IDLE_TIMEOUT_MS / MS_PER_MINUTE}min` : ""})`
+	);
 }
 
 // ===========================================
 // Start Server
 // ===========================================
 
-// Clean up stale socket from previous run
-cleanupSocket();
-ensureDirectory(SOCKET_PATH);
+// Clean up stale raw socket from previous run. Framed startup performs its own
+// PID-aware stale-artifact check before removing `harness-*.sock`.
+if (RUN_RAW_SOCKET) {
+	cleanupSocket();
+	ensureDirectory(SOCKET_PATH);
+}
 writePidFile();
+writeProtocolStatus();
 
 // Watch rules files for hot-reload
 const unwatchRules = watchRulesFiles(CWD, (newRules) => {
@@ -2584,65 +2752,39 @@ process.on("SIGHUP", () => {
 	logAlways(`Rules reloaded via SIGHUP: ${rules.rules.length} rules active`);
 });
 
-// Start the Unix socket server
-socketServer = createServer((sock: Socket) => {
-	connectionCount++;
-	log(`Connection opened (total: ${connectionCount})`);
+const tsgoRunner = createTsgoRunner();
 
-	let buffer = "";
-
-	sock.on("data", async (data: Buffer) => {
-		buffer += data.toString("utf-8");
-		// Handle newline-delimited JSON (may receive multiple events in one chunk)
-		let newlineIdx = buffer.indexOf("\n");
-		while (newlineIdx !== -1) {
-			const line = buffer.slice(0, newlineIdx);
-			buffer = buffer.slice(newlineIdx + 1);
-			if (!line.trim()) continue;
-			const decision = await processEvent(line);
-			// Record per-event latency before responding so the writer's
-			// own latency doesn't bleed into the next event's measurement.
-			// `appendLatencyLog` swallows fs errors internally — telemetry
-			// must never crash the daemon.
-			try {
-				const evt: JsonObject = JSON.parse(line);
-				appendLatencyLog(INTERLINKED_DIR, {
-					hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
-					tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
-					session_id: typeof evt.session_id === "string" ? evt.session_id : null,
-					agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
-					decision: decision.decision,
-					checks_ran: decision.checks_ran ?? null,
-					checks_timing_ms: decision.checks_timing_ms ?? null,
-					tool_breakdown: decision.tool_breakdown ?? null,
-				});
-			} catch (e) {
-				void e;
-			}
-			try {
-				sock.write(`${JSON.stringify(decision)}\n`);
-			} catch (e) {
-				void e;
-			}
-			newlineIdx = buffer.indexOf("\n");
-		}
+if (RUN_FRAMED_SOCKET) {
+	framedDaemon = await startSessionDaemon({
+		paths: FRAMED_PATHS,
+		session_id: FRAMED_SESSION_ID,
+		idle_shutdown_ms: IDLE_TIMEOUT_MS,
+		state: {
+			tsgo: tsgoRunner,
+			getEvaluatorContext: () => ({
+				rules,
+				session: sessions.get(FRAMED_SESSION_ID),
+				reservations,
+				cohort,
+				graph: getGraphForFile(CWD),
+				sessions,
+				routeMap,
+				errorHistory,
+			}),
+			evaluateHook: evaluateUnifiedViaRuntime,
+		},
 	});
+}
 
-	sock.on("close", () => {
-		connectionCount--;
-		log(`Connection closed (remaining: ${connectionCount})`);
-	});
+if (RUN_RAW_SOCKET) {
+	const rawServer = createRawSocketServer();
+	socketServer = rawServer;
+	rawServer.listen(SOCKET_PATH);
+}
 
-	sock.on("error", (err: Error) => {
-		log(`Socket error: ${err.message}`);
-	});
-});
+writeProtocolStatus();
 
-socketServer.listen(SOCKET_PATH);
-
-logAlways(
-	`Harness started on ${SOCKET_PATH} (PID ${process.pid}, ${rules.rules.length} rules${IDLE_TIMEOUT_MS ? `, idle timeout ${IDLE_TIMEOUT_MS / MS_PER_MINUTE}min` : ""})`,
-);
+logAlways(buildStartupMessage());
 
 // Write initial classifier status for statusline
 if (rules.policy_classifier?.enabled) {

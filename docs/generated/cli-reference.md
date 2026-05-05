@@ -240,10 +240,12 @@ Usage: interlinked harness start [options]
 Start the harness server (background daemon by default)
 
 Options:
-  --no-daemon  Run in foreground instead of background
-  --verbose    Verbose logging
-  --json       Machine-readable output
-  -h, --help   display help for command
+  --no-daemon        Run in foreground instead of background
+  --protocol <mode>  Socket protocol: raw, framed, or dual (default: "dual")
+  --session-id <id>  Framed socket session id (default: "default")
+  --verbose          Verbose logging
+  --json             Machine-readable output
+  -h, --help         display help for command
 ```
 
 ### harness stop
@@ -266,10 +268,12 @@ Usage: interlinked harness restart [options]
 Stop and restart the harness server (picks up config changes)
 
 Options:
-  --no-daemon  Run in foreground instead of daemon
-  --verbose    Verbose output
-  --json       Machine-readable output
-  -h, --help   display help for command
+  --no-daemon        Run in foreground instead of daemon
+  --protocol <mode>  Socket protocol: raw, framed, or dual (default: "dual")
+  --session-id <id>  Framed socket session id (default: "default")
+  --verbose          Verbose output
+  --json             Machine-readable output
+  -h, --help         display help for command
 ```
 
 ### harness status

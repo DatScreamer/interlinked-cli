@@ -18,8 +18,17 @@ import {
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import { evaluateUnified } from "./evaluator-unified.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
+import type { HarnessDecision } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
 import { validateUnifiedEvent } from "./unified-event.js";
+
+type HookDecisionMethod =
+	| "hook.pre_tool_use"
+	| "hook.post_tool_use"
+	| "hook.user_prompt"
+	| "hook.session_start"
+	| "hook.session_end"
+	| "hook.pre_compact";
 
 export interface DispatcherState {
 	/** Wall-clock ms at daemon start. */
@@ -31,6 +40,10 @@ export interface DispatcherState {
 	/** Evaluator context factory — returns fresh context per RPC so sessions,
 	 *  rules, and caches are always current. */
 	getEvaluatorContext(): EvaluateUnifiedContext;
+	/** Optional production runtime bridge. When present, hook RPCs go through
+	 *  the same HarnessEvent evaluator used by the raw socket path so lifecycle
+	 *  side effects, latency hooks, reservations, and scanner state stay shared. */
+	evaluateHook?(event: UnifiedHookEvent): Promise<HarnessDecision>;
 	/** Called from the `daemon.shutdown` RPC. */
 	shutdown(reason?: string): void;
 }
@@ -53,11 +66,10 @@ export async function dispatchRpc(
 		case "hook.pre_tool_use":
 		case "hook.post_tool_use":
 		case "hook.user_prompt":
-			return dispatchHookEvaluation(request as RpcRequest<"hook.pre_tool_use">, state);
 		case "hook.session_start":
 		case "hook.session_end":
 		case "hook.pre_compact":
-			return dispatchHookLifecycle(request as RpcRequest<"hook.session_start">);
+			return dispatchHookDecision(request as RpcRequest<HookDecisionMethod>, state);
 		case "daemon.health":
 			return {
 				id: request.id,
@@ -93,26 +105,42 @@ export async function dispatchRpc(
 // Handlers
 // -----------------------------------------------------------------------------
 
-async function dispatchHookEvaluation<
-	M extends "hook.pre_tool_use" | "hook.post_tool_use" | "hook.user_prompt",
->(request: RpcRequest<M>, state: DispatcherState): Promise<RpcResponse<M> | RpcError> {
+async function dispatchHookDecision<M extends HookDecisionMethod>(
+	request: RpcRequest<M>,
+	state: DispatcherState,
+): Promise<RpcResponse<M> | RpcError> {
 	const event = request.params as UnifiedHookEvent;
 	const violations = validateUnifiedEvent(event);
 	if (violations.length > 0) {
 		return makeError(request.id, "bad_request", `invalid event: ${violations.join("; ")}`);
 	}
+	if (state.evaluateHook) {
+		const decision = await state.evaluateHook(event);
+		return {
+			id: request.id,
+			result: decision as RpcResult[M],
+		};
+	}
+	if (isLifecycleHookMethod(request.method)) {
+		return {
+			id: request.id,
+			result: { decision: "allow" } as RpcResult[M],
+		};
+	}
 	const ctx = state.getEvaluatorContext();
 	const decision = await evaluateUnified(event, ctx);
 	return {
 		id: request.id,
-		result: decision as unknown as RpcResult[M],
+		result: decision as RpcResult[M],
 	};
 }
 
-function dispatchHookLifecycle<
-	M extends "hook.session_start" | "hook.session_end" | "hook.pre_compact",
->(request: RpcRequest<M>): RpcResponse<M> {
-	return { id: request.id, result: { ack: true } as RpcResult[M] };
+function isLifecycleHookMethod(method: HookDecisionMethod): boolean {
+	return (
+		method === "hook.session_start" ||
+		method === "hook.session_end" ||
+		method === "hook.pre_compact"
+	);
 }
 
 async function dispatchTsgoCheck(

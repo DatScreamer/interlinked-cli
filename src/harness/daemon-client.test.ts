@@ -1,8 +1,10 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDaemonClient } from "./daemon-client.js";
+import { encodeFrame } from "./daemon-protocol.js";
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
@@ -10,6 +12,7 @@ import type { TsgoRunner } from "./tsgo-runner.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
+let server: Server | null = null;
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-dc-"));
@@ -18,6 +21,10 @@ afterEach(async () => {
 	if (daemon) {
 		await daemon.stop();
 		daemon = null;
+	}
+	if (server) {
+		await new Promise<void>((resolve) => server?.close(() => resolve()));
+		server = null;
 	}
 	rmSync(tmp, { recursive: true, force: true });
 });
@@ -75,6 +82,52 @@ describe("DaemonClient.call — happy path", () => {
 		const ack = await client.call("daemon.invalidate", { path: "/x.ts" });
 		expect(ack.ack).toBe(true);
 		expect((tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/x.ts");
+	});
+
+	it("ignores responses whose id does not match the request", async () => {
+		const socketPath = join(tmp, "mismatch.sock");
+		server = createServer((socket) => {
+			socket.on("data", () => {
+				socket.write(
+					encodeFrame({
+						id: "wrong-id",
+						result: {
+							status: "degraded",
+							uptime_ms: 0,
+							warm_caches: [],
+							tsgo_status: "unavailable",
+							rpc_inflight: 0,
+							protocol_version: "1",
+						},
+					}),
+				);
+				socket.write(
+					encodeFrame({
+						id: "expected-id",
+						result: {
+							status: "ready",
+							uptime_ms: 1,
+							warm_caches: [],
+							tsgo_status: "ready",
+							rpc_inflight: 0,
+							protocol_version: "1",
+						},
+					}),
+				);
+			});
+		});
+		await new Promise<void>((resolve, reject) => {
+			server?.once("error", reject);
+			server?.listen(socketPath, () => resolve());
+		});
+
+		const health = await createDaemonClient(socketPath).call(
+			"daemon.health",
+			{},
+			{ id: "expected-id", timeout_ms: 250 },
+		);
+
+		expect(health.status).toBe("ready");
 	});
 });
 

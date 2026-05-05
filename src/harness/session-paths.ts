@@ -7,6 +7,9 @@
 //
 // Fallback behavior for backward compatibility: when no session id is
 // provided we return the legacy paths so existing deployments keep working.
+// An explicit "default" session id is different: it names the framed default
+// front door (`harness-default.sock`) used when no runner-specific session id
+// is available.
 
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +23,7 @@ export interface DaemonPaths {
 /** Compute the socket/PID/log paths for a given repo root + optional session id. */
 export function daemonPathsFor(repoRoot: string, sessionId?: string): DaemonPaths {
 	const base = join(repoRoot, ".interlinked");
-	if (!sessionId || sessionId === "default") {
+	if (!sessionId) {
 		return {
 			socket: join(base, "harness.sock"),
 			pid: join(base, "harness.pid"),
@@ -68,7 +71,7 @@ export function discoverDaemons(repoRoot: string): DiscoveredDaemon[] {
 		if (!name.endsWith(".pid")) continue;
 		const pidPath = join(base, name);
 		const sessionId = parseSessionIdFromFilename(name);
-		const paths = daemonPathsFor(repoRoot, sessionId);
+		const paths = name === "harness.pid" ? daemonPathsFor(repoRoot) : daemonPathsFor(repoRoot, sessionId);
 		const pid = readPidFile(pidPath);
 		out.push({
 			session_id: sessionId,

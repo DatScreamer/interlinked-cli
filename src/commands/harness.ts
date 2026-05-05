@@ -13,7 +13,10 @@ import {
 	unlinkSync,
 } from "node:fs";
 import { createConnection } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { createDaemonClient } from "../harness/daemon-client.js";
+import type { DaemonHealth } from "../harness/daemon-protocol.js";
+import { daemonPathsFor, discoverDaemons } from "../harness/session-paths.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
@@ -31,12 +34,52 @@ interface HarnessStatus {
 	pid?: number;
 }
 
+type HarnessProtocolMode = "raw" | "framed" | "dual";
+
+interface HarnessProtocolStatus {
+	protocol: HarnessProtocolMode;
+	protocol_version: string;
+	started_at: string;
+	raw_socket_path: string | null;
+	framed_socket_path: string | null;
+	framed_session_id: string | null;
+	last_raw_event_at: string | null;
+	last_framed_event_at: string | null;
+	raw_event_count: number;
+	framed_event_count: number;
+	framed_error_count: number;
+	framed_timeout_count: number;
+}
+
 export function getSocketPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "harness.sock");
 }
 
+function getFramedSocketPath(cwd: string, sessionId: string | undefined): string {
+	return daemonPathsFor(cwd, sessionId || "default").socket;
+}
+
 function getPidPath(cwd: string = process.cwd()): string {
 	return join(getConfigDir(cwd), "harness.pid");
+}
+
+function getProtocolStatusPath(cwd: string = process.cwd()): string {
+	return join(getConfigDir(cwd), "harness-protocol.json");
+}
+
+function parseHarnessProtocol(raw: string | undefined): HarnessProtocolMode {
+	if (raw === "raw" || raw === "framed" || raw === "dual") return raw;
+	return "dual";
+}
+
+function expectedSocketPaths(
+	cwd: string,
+	protocol: HarnessProtocolMode,
+	sessionId: string,
+): string[] {
+	if (protocol === "raw") return [getSocketPath(cwd)];
+	if (protocol === "framed") return [getFramedSocketPath(cwd, sessionId)];
+	return [getSocketPath(cwd), getFramedSocketPath(cwd, sessionId)];
 }
 
 /**
@@ -68,6 +111,15 @@ export interface ReapOptions {
 	 *  protection and the ancestor protection — this is the equivalent of
 	 *  `pkill -f interlinked-cli/dist/harness/server`). */
 	killAll?: boolean;
+}
+
+interface FramedSocketStatus {
+	session_id: string;
+	pid: number | null;
+	alive: boolean;
+	socket_path: string;
+	health: DaemonHealth | null;
+	health_error: string | null;
 }
 
 /**
@@ -400,9 +452,13 @@ export async function harnessStartCommand(opts: {
 	daemon?: boolean;
 	verbose?: boolean;
 	json?: boolean;
+	protocol?: string;
+	sessionId?: string;
 }): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
+	const protocol = parseHarnessProtocol(opts.protocol);
+	const sessionId = opts.sessionId || "default";
 
 	try {
 		const status = isHarnessRunning(cwd);
@@ -441,6 +497,8 @@ export async function harnessStartCommand(opts: {
 		// env: `INTERLINKED_HARNESS_HEAP_MB`.
 		const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || 1024;
 		const args = [`--max-old-space-size=${heapMb}`, serverPath, "--cwd", cwd];
+		args.push("--protocol", protocol);
+		if (protocol !== "raw") args.push("--session-id", sessionId);
 		if (opts.verbose) args.push("--verbose");
 
 		// Reap orphan daemons before binding our own socket. Without this,
@@ -452,7 +510,7 @@ export async function harnessStartCommand(opts: {
 		if (opts.daemon !== false) {
 			// Clean up stale socket from any previous run
 			const staleSocket = getSocketPath(cwd);
-			if (existsSync(staleSocket)) {
+			if (protocol !== "framed" && existsSync(staleSocket)) {
 				try {
 					unlinkSync(staleSocket);
 				} catch (_) {
@@ -486,15 +544,15 @@ export async function harnessStartCommand(opts: {
 			});
 			child.unref();
 
-			// Poll for socket to appear (harness may take 10-30s to compile TypeScript)
-			const socketPath = getSocketPath(cwd);
+			// Poll for expected sockets to appear (harness may take 10-30s to compile TypeScript)
+			const socketPaths = expectedSocketPaths(cwd, protocol, sessionId);
 			const maxWaitMs = 60_000;
 			const pollMs = 500;
 			const startTime = Date.now();
 			let ready = false;
 			while (Date.now() - startTime < maxWaitMs) {
 				if (childExited) break; // Process crashed — stop waiting
-				if (existsSync(socketPath)) {
+				if (socketPaths.every((socketPath) => existsSync(socketPath))) {
 					ready = true;
 					break;
 				}
@@ -511,6 +569,8 @@ export async function harnessStartCommand(opts: {
 				json: () => ({
 					status: ready ? "started" : "failed",
 					pid: resolvedPid,
+					protocol,
+					sockets: socketPaths,
 				}),
 				normal: () => {
 					if (ready) return c.green(`Harness started (PID ${resolvedPid})`);
@@ -609,9 +669,13 @@ export async function harnessRestartCommand(opts: {
 	daemon?: boolean;
 	verbose?: boolean;
 	json?: boolean;
+	protocol?: string;
+	sessionId?: string;
 }): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
+	const protocol = parseHarnessProtocol(opts.protocol);
+	const sessionId = opts.sessionId || "default";
 
 	try {
 		let oldPid: number | undefined;
@@ -677,15 +741,21 @@ export async function harnessRestartCommand(opts: {
 			}
 			const nodePath = process.execPath;
 			const args = [serverPath, "--cwd", cwd];
+			args.push("--protocol", protocol);
+			if (protocol !== "raw") args.push("--session-id", sessionId);
 			if (opts.verbose) args.push("--verbose");
 			const child = spawn(nodePath, args, { stdio: "ignore", detached: true, cwd });
 			child.unref();
 			// Poll for socket (harness may take 10+ seconds to compile and load)
+			const socketPaths = expectedSocketPaths(cwd, protocol, sessionId);
 			const maxWaitMs = 30_000;
 			const pollMs = 500;
 			const startTime = Date.now();
 			let newStatus = isHarnessRunning(cwd);
-			while (!newStatus.running && Date.now() - startTime < maxWaitMs) {
+			while (
+				(!newStatus.running || !socketPaths.every((socketPath) => existsSync(socketPath))) &&
+				Date.now() - startTime < maxWaitMs
+			) {
 				await new Promise((resolve) => setTimeout(resolve, pollMs));
 				newStatus = isHarnessRunning(cwd);
 			}
@@ -697,6 +767,8 @@ export async function harnessRestartCommand(opts: {
 						status: newStatus.running ? "restarted" : "failed",
 						old_pid: oldPid,
 						new_pid: newStatus.pid,
+						protocol,
+						sockets: socketPaths,
 					}),
 					normal: () => "",
 				},
@@ -742,12 +814,26 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 				: null;
 		const activeMode = readActiveMode(cwd);
 		const lastEventAt = readLastLatencyTimestamp(cwd);
+		const protocolStatus = readProtocolStatus(cwd);
+		const framedSockets = await readFramedSocketStatuses(cwd);
 
 		const result = {
 			running: processStatus.running,
 			pid: processStatus.pid,
 			socket: socketExists,
 			socket_path: getSocketPath(cwd),
+			raw_socket: {
+				path: getSocketPath(cwd),
+				exists: socketExists,
+				health: socketExists ? "legacy-raw" : "missing",
+			},
+			framed_sockets: framedSockets,
+			protocol_status: protocolStatus,
+			protocol_version: protocolStatus?.protocol_version ?? null,
+			last_raw_event_at: protocolStatus?.last_raw_event_at ?? null,
+			last_framed_event_at: protocolStatus?.last_framed_event_at ?? null,
+			framed_error_count: protocolStatus?.framed_error_count ?? null,
+			framed_timeout_count: protocolStatus?.framed_timeout_count ?? null,
 			orphan_count: orphanInfo.candidates.length,
 			rss_mb: rssMb,
 			mode: activeMode,
@@ -773,6 +859,33 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 						socketExists ? c.green(getSocketPath(cwd)) : c.dim("not found"),
 					),
 				);
+				if (protocolStatus) {
+					lines.push(kvLine("Protocol", protocolStatus.protocol));
+					if (protocolStatus.raw_socket_path) {
+						lines.push(kvLine("Raw socket", protocolStatus.raw_socket_path));
+					}
+					if (protocolStatus.framed_socket_path) {
+						lines.push(kvLine("Framed socket", protocolStatus.framed_socket_path));
+					}
+					if (protocolStatus.last_raw_event_at) {
+						lines.push(kvLine("Last raw event", protocolStatus.last_raw_event_at));
+					}
+					if (protocolStatus.last_framed_event_at) {
+						lines.push(kvLine("Last framed event", protocolStatus.last_framed_event_at));
+					}
+					lines.push(
+						kvLine(
+							"Framed errors",
+							`${protocolStatus.framed_error_count} errors, ${protocolStatus.framed_timeout_count} timeouts`,
+						),
+					);
+				}
+				for (const framed of framedSockets) {
+					const health = framed.health
+						? `${framed.health.status} (${framed.health.protocol_version})`
+						: framed.health_error || "unknown";
+					lines.push(kvLine(`Framed ${framed.session_id}`, `${health} — ${framed.socket_path}`));
+				}
 				if (rssMb !== null) {
 					lines.push(kvLine("RSS", `${rssMb} MB`));
 				}
@@ -839,6 +952,78 @@ function readActiveMode(cwd: string): string | null {
 		void e;
 		return null;
 	}
+}
+
+function readProtocolStatus(cwd: string): HarnessProtocolStatus | null {
+	try {
+		const path = getProtocolStatusPath(cwd);
+		if (!existsSync(path)) return null;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<HarnessProtocolStatus>;
+		if (
+			parsed.protocol !== "raw" &&
+			parsed.protocol !== "framed" &&
+			parsed.protocol !== "dual"
+		) {
+			return null;
+		}
+		return {
+			protocol: parsed.protocol,
+			protocol_version:
+				typeof parsed.protocol_version === "string" ? parsed.protocol_version : "unknown",
+			started_at: typeof parsed.started_at === "string" ? parsed.started_at : "",
+			raw_socket_path:
+				typeof parsed.raw_socket_path === "string" ? parsed.raw_socket_path : null,
+			framed_socket_path:
+				typeof parsed.framed_socket_path === "string" ? parsed.framed_socket_path : null,
+			framed_session_id:
+				typeof parsed.framed_session_id === "string" ? parsed.framed_session_id : null,
+			last_raw_event_at:
+				typeof parsed.last_raw_event_at === "string" ? parsed.last_raw_event_at : null,
+			last_framed_event_at:
+				typeof parsed.last_framed_event_at === "string" ? parsed.last_framed_event_at : null,
+			raw_event_count:
+				typeof parsed.raw_event_count === "number" ? parsed.raw_event_count : 0,
+			framed_event_count:
+				typeof parsed.framed_event_count === "number" ? parsed.framed_event_count : 0,
+			framed_error_count:
+				typeof parsed.framed_error_count === "number" ? parsed.framed_error_count : 0,
+			framed_timeout_count:
+				typeof parsed.framed_timeout_count === "number" ? parsed.framed_timeout_count : 0,
+		};
+	} catch (e) {
+		void e;
+		return null;
+	}
+}
+
+async function readFramedSocketStatuses(cwd: string): Promise<FramedSocketStatus[]> {
+	const framedDaemons = discoverDaemons(cwd).filter(
+		(entry) => basename(entry.paths.socket) !== "harness.sock",
+	);
+	return Promise.all(
+		framedDaemons.map(async (entry): Promise<FramedSocketStatus> => {
+			const out: FramedSocketStatus = {
+				session_id: entry.session_id,
+				pid: entry.pid,
+				alive: entry.alive,
+				socket_path: entry.paths.socket,
+				health: null,
+				health_error: null,
+			};
+			if (!entry.alive) {
+				out.health_error = "process not alive";
+				return out;
+			}
+			try {
+				out.health = await createDaemonClient(entry.paths.socket).call("daemon.health", {}, {
+					timeout_ms: 500,
+				});
+			} catch (err) {
+				out.health_error = err instanceof Error ? err.message : String(err);
+			}
+			return out;
+		}),
+	);
 }
 
 /** Tail the latency log for the most recent record's `ts`. Best-effort: we

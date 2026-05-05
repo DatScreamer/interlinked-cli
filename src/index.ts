@@ -499,6 +499,8 @@ harnessCmd
 	.command("start")
 	.description("Start the harness server (background daemon by default)")
 	.option("--no-daemon", "Run in foreground instead of background")
+	.option("--protocol <mode>", "Socket protocol: raw, framed, or dual", "dual")
+	.option("--session-id <id>", "Framed socket session id", "default")
 	.option("--verbose", "Verbose logging")
 	.option("--json", "Machine-readable output")
 	.action(async (opts: OptionValues) => {
@@ -519,6 +521,8 @@ harnessCmd
 	.command("restart")
 	.description("Stop and restart the harness server (picks up config changes)")
 	.option("--no-daemon", "Run in foreground instead of daemon")
+	.option("--protocol <mode>", "Socket protocol: raw, framed, or dual", "dual")
+	.option("--session-id <id>", "Framed socket session id", "default")
 	.option("--verbose", "Verbose output")
 	.option("--json", "Machine-readable output")
 	.action(async (opts: OptionValues) => {

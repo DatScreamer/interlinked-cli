@@ -10,7 +10,7 @@
 // module is the shape Phase E calls for. It may run side-by-side with the
 // legacy daemon on a different socket path.
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { type DispatcherState, dispatchRpc } from "./daemon-dispatcher.js";
@@ -58,8 +58,14 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 	const logsDir = dirname(paths.log);
 	if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
 
-	// Clean any stale socket left over from a crashed previous instance.
+	// Clean stale artifacts only when no live process owns the PID. This keeps
+	// dual-protocol startup from stealing a framed socket from another daemon.
+	const existingPid = readPidFile(paths.pid);
+	if (existingPid !== null && existingPid !== process.pid && isProcessAlive(existingPid)) {
+		throw new Error(`session daemon already running for ${session_id} (PID ${existingPid})`);
+	}
 	if (existsSync(paths.socket)) rmSync(paths.socket, { force: true });
+	if (existsSync(paths.pid)) rmSync(paths.pid, { force: true });
 
 	const clients = new Set<Socket>();
 	let server: Server | null = null;
@@ -69,6 +75,7 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 		rpc_inflight: 0,
 		tsgo: opts.state.tsgo,
 		getEvaluatorContext: opts.state.getEvaluatorContext,
+		evaluateHook: opts.state.evaluateHook,
 		shutdown: (_reason?: string) => {
 			void handle.stop();
 		},
@@ -129,14 +136,18 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 	writeFileSync(paths.pid, String(process.pid));
 
 	// Idle-shutdown poller — lightweight; fires only after true inactivity.
-	const idleTimer = setInterval(
-		() => {
-			if (inflight > 0) return;
-			if (Date.now() - lastActivity < idleMs) return;
-			void handle.stop("idle_shutdown");
-		},
-		Math.min(idleMs, 60_000),
-	).unref();
+	const idleTimer =
+		idleMs > 0
+			? setInterval(
+					() => {
+						if (inflight > 0) return;
+						if (Date.now() - lastActivity < idleMs) return;
+						void handle.stop("idle_shutdown");
+					},
+					Math.min(idleMs, 60_000),
+				)
+			: null;
+	idleTimer?.unref();
 
 	const handle: SessionDaemonHandle = {
 		paths,
@@ -146,7 +157,7 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 		async stop(_reason?: string) {
 			if (stopped) return;
 			stopped = true;
-			clearInterval(idleTimer);
+			if (idleTimer) clearInterval(idleTimer);
 			for (const c of clients) c.destroy();
 			clients.clear();
 			await new Promise<void>((resolve) => {
@@ -160,4 +171,23 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 	};
 
 	return handle;
+}
+
+function readPidFile(path: string): number | null {
+	if (!existsSync(path)) return null;
+	try {
+		const pid = Number.parseInt(readFileSync(path, "utf-8").trim(), 10);
+		return Number.isFinite(pid) && pid > 0 ? pid : null;
+	} catch {
+		return null;
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
 }

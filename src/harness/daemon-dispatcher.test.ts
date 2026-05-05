@@ -214,7 +214,7 @@ describe("dispatchRpc — lifecycle acks", () => {
 			makeState(),
 		);
 		if (isError(result)) throw new Error("unexpected error");
-		expect((result.result as { ack: true }).ack).toBe(true);
+		expect((result.result as { decision: string }).decision).toBe("allow");
 	});
 
 	it("pre_compact acks", async () => {
@@ -223,7 +223,61 @@ describe("dispatchRpc — lifecycle acks", () => {
 			makeState(),
 		);
 		if (isError(result)) throw new Error("unexpected error");
-		expect((result.result as { ack: true }).ack).toBe(true);
+		expect((result.result as { decision: string }).decision).toBe("allow");
+	});
+});
+
+describe("dispatchRpc — hook runtime bridge", () => {
+	const event: UnifiedHookEvent = {
+		schema_version: "1",
+		event_id: "evt-runtime",
+		session_id: "s",
+		ts: "2026-04-23T00:00:00.000Z",
+		runner: "claude-code",
+		runner_native_event: "PreToolUse",
+		phase: "pre-tool",
+		action: {
+			kind: "tool_call",
+			tool_name: "edit",
+			tool_class: "modify",
+			tool_input: { file_path: "src/a.ts" },
+			tool_input_redacted: { file_path: "src/a.ts" },
+		},
+		context: { cwd: "/r" },
+		raw: {},
+	};
+
+	it("routes hook RPCs through evaluateHook when the shared runtime provides it", async () => {
+		const evaluateHook = vi.fn().mockResolvedValue({
+			decision: "allow",
+			warnings: ["runtime warning"],
+		});
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: "rh-1", method: "hook.pre_tool_use", params: event },
+			makeState({ evaluateHook }),
+		);
+
+		if (isError(result)) throw new Error("unexpected error");
+		expect(evaluateHook).toHaveBeenCalledWith(event);
+		expect(result.id).toBe("rh-1");
+		expect((result.result as { warnings?: string[] }).warnings).toEqual(["runtime warning"]);
+	});
+
+	it("routes lifecycle RPCs through evaluateHook so session side effects are shared", async () => {
+		const evaluateHook = vi.fn().mockResolvedValue({ decision: "allow" });
+		const result = await dispatchRpc(
+			{
+				schema_version: "1",
+				id: "rh-2",
+				method: "hook.session_start",
+				params: { ...event, phase: "session-start", runner_native_event: "SessionStart" },
+			},
+			makeState({ evaluateHook }),
+		);
+
+		if (isError(result)) throw new Error("unexpected error");
+		expect(evaluateHook).toHaveBeenCalledOnce();
+		expect((result.result as { decision: string }).decision).toBe("allow");
 	});
 });
 

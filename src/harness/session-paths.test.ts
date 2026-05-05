@@ -31,9 +31,9 @@ describe("daemonPathsFor", () => {
 		expect(p.pid).toBe("/repo/.interlinked/harness-abc123.pid");
 	});
 
-	it("treats the 'default' session id as legacy", () => {
+	it("treats an explicit 'default' session id as the framed default socket", () => {
 		const p = daemonPathsFor("/repo", "default");
-		expect(p.socket.endsWith("/harness.sock")).toBe(true);
+		expect(p.socket.endsWith("/harness-default.sock")).toBe(true);
 	});
 });
 

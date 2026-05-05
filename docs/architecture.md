@@ -269,7 +269,7 @@ The JSONL file is always written synchronously before any network call. Even if 
 
 ## 8. Harness Server (Guard + Lifecycle + Auto-Reservation)
 
-The CLI includes a local harness server (`src/harness/`) that evaluates agent actions in real-time. It runs as a Node.js process on a Unix socket (`.interlinked/harness.sock`).
+The CLI includes a local harness server (`src/harness/`) that evaluates agent actions in real-time. It runs as a Node.js process with a repo-scoped legacy raw socket (`.interlinked/harness.sock`) and, in the default dual-protocol mode, a framed RPC front door (`.interlinked/harness-<session>.sock`, falling back to `.interlinked/harness-default.sock`).
 
 **Full documentation: `cli/docs/harness.md`** — includes architecture, all design decisions with rationale, complete guard rule reference, and testing instructions.
 
@@ -281,6 +281,12 @@ The CLI includes a local harness server (`src/harness/`) that evaluates agent ac
 4. **Agent cohort model** — tracks all agents for one developer, distinguishes "my agent" from "other developer's agent"
 5. **Sleep/terminal prevention** — enforces MCP-first communication (agents should use `wait_for_work`, not `bash sleep`)
 6. **Graceful degradation** — falls back to inline pattern matching when harness is unavailable
+
+### Harness Protocol State Model
+
+Option C uses a **single repo daemon with per-session framed sockets**. One long-lived `server.ts` process owns cohort state, reservations, project graphs, route maps, error history, classifier state, activity/latency logging, and async analysis. The framed `session-daemon.ts` socket is a thin dispatcher front door in that same process, and hook RPCs are converted back into the legacy `HarnessEvent` path before evaluation so raw and framed transports share runtime side effects.
+
+This keeps `.interlinked/harness.sock` working for the generated legacy hook script while making the adapter-based `dist/hook-entry.js` framed path real. A true per-session state split would require a separate coordinator or durable on-disk locking for reservations and cohort awareness, so it is intentionally deferred until framed transport parity is proven.
 
 ### Inspiration
 

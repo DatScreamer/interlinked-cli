@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,6 +116,57 @@ describe("startSessionDaemon", () => {
 		expect(result.status).toBe("ready");
 	});
 
+	it("handles multiple framed requests on one connection", async () => {
+		const paths = makePaths("t2b");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t2b",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		const responses = await new Promise<RpcMessage[]>((resolve, reject) => {
+			const socket = createConnection(paths.socket);
+			let pending = "";
+			const out: RpcMessage[] = [];
+			const timer = setTimeout(() => {
+				socket.destroy();
+				reject(new Error("timeout"));
+			}, 1000);
+			socket.on("connect", () => {
+				socket.write(
+					encodeFrame({
+						schema_version: "1",
+						id: "multi-1",
+						method: "daemon.health",
+						params: {},
+					} as RpcMessage),
+				);
+				socket.write(
+					encodeFrame({
+						schema_version: "1",
+						id: "multi-2",
+						method: "daemon.invalidate",
+						params: { path: "/a.ts" },
+					} as RpcMessage),
+				);
+			});
+			socket.on("data", (b: Buffer) => {
+				const { frames, remainder } = splitFrames(b.toString("utf-8"), pending);
+				pending = remainder;
+				for (const frame of frames) out.push(JSON.parse(frame) as RpcMessage);
+				if (out.length === 2) {
+					clearTimeout(timer);
+					socket.destroy();
+					resolve(out);
+				}
+			});
+			socket.on("error", (err) => {
+				clearTimeout(timer);
+				reject(err);
+			});
+		});
+		expect(responses.map((response) => response.id).sort()).toEqual(["multi-1", "multi-2"]);
+	});
+
 	it("invalidate forwards to tsgo.invalidate and acks", async () => {
 		const paths = makePaths("t3");
 		const tsgo = makeTsgo();
@@ -166,6 +217,20 @@ describe("startSessionDaemon", () => {
 		});
 		const asError = response as { error?: { code: string } };
 		expect(asError.error?.code).toBe("bad_request");
+	});
+
+	it("refuses to steal a framed socket owned by a live PID", async () => {
+		const paths = makePaths("owned");
+		writeFileSync(paths.pid, "1");
+		writeFileSync(paths.socket, "");
+
+		await expect(
+			startSessionDaemon({
+				paths,
+				session_id: "owned",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			}),
+		).rejects.toThrow("already running");
 	});
 
 	it("stop() removes the pid and socket files", async () => {

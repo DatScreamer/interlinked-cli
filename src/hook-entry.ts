@@ -196,8 +196,9 @@ function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
 /** Discover the daemon socket. Priority:
  *    1. `--socket` flag / INTERLINKED_SOCKET env var (handled by caller)
  *    2. Per-session `.interlinked/harness-<sanitized>.sock`
- *    3. Legacy `.interlinked/harness.sock`
- *    4. Any other `harness-*.sock` in the dir (first hit, alphabetical) */
+ *    3. Default framed `.interlinked/harness-default.sock`
+ *    4. Legacy `.interlinked/harness.sock`
+ *    5. Any other `harness-*.sock` in the dir (first hit, alphabetical) */
 export function discoverSocket(cwd: string, sessionId: string): string | null {
 	const root = findRepoRoot(cwd);
 	if (!root) return null;
@@ -207,6 +208,9 @@ export function discoverSocket(cwd: string, sessionId: string): string | null {
 	const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
 	const perSession = join(dir, `harness-${safe}.sock`);
 	if (existsSync(perSession)) return perSession;
+
+	const defaultFramed = join(dir, "harness-default.sock");
+	if (existsSync(defaultFramed)) return defaultFramed;
 
 	const legacy = join(dir, "harness.sock");
 	if (existsSync(legacy)) return legacy;

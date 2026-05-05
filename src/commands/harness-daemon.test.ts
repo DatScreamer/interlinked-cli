@@ -7,7 +7,9 @@ const mocks = vi.hoisted(() => ({
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
 	openSync: vi.fn(),
+	readdirSync: vi.fn(),
 	readFileSync: vi.fn(),
+	rmSync: vi.fn(),
 	spawn: vi.fn(),
 	statSync: vi.fn(),
 	unlinkSync: vi.fn(),
@@ -23,7 +25,9 @@ vi.mock("node:fs", () => ({
 	existsSync: mocks.existsSync,
 	mkdirSync: mocks.mkdirSync,
 	openSync: mocks.openSync,
+	readdirSync: mocks.readdirSync,
 	readFileSync: mocks.readFileSync,
+	rmSync: mocks.rmSync,
 	statSync: mocks.statSync,
 	unlinkSync: mocks.unlinkSync,
 }));
@@ -55,6 +59,7 @@ describe("harness start daemon stderr handling", () => {
 			if (path === "/repo/.interlinked/logs") return false;
 			if (path === "/repo/.interlinked/logs/daemon.log") return false;
 			if (path === "/repo/.interlinked/harness.sock") return true;
+			if (path === "/repo/.interlinked/harness-default.sock") return true;
 			return path.includes("/dist/harness/server.js");
 		});
 		mocks.openSync.mockReturnValue(42);
@@ -75,6 +80,9 @@ describe("harness start daemon stderr handling", () => {
 		expect(mocks.openSync).toHaveBeenCalledWith("/repo/.interlinked/logs/daemon.log", "a");
 		expect(mocks.closeSync).toHaveBeenCalledWith(42);
 		expect(mocks.spawn).toHaveBeenCalledOnce();
+		expect(mocks.spawn.mock.calls[0][1]).toEqual(
+			expect.arrayContaining(["--protocol", "dual", "--session-id", "default"]),
+		);
 		expect(mocks.spawn.mock.calls[0][2]).toMatchObject({
 			cwd: "/repo",
 			detached: true,
