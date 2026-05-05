@@ -117,7 +117,7 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 			return { path, fragment: { hooks }, mergeStrategy: "array-append" };
 		},
 
-		encodeDecision(decision, _event): AdapterOutput {
+		encodeDecision(decision, event): AdapterOutput {
 			const stderr = (decision.warnings ?? []).join("\n");
 			if (decision.decision === "block") {
 				return {
@@ -139,11 +139,22 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 					exit_code: 0,
 				};
 			}
-			// allow
-			if (decision.additional_context) {
+			// allow.
+			// Claude Code drops PreToolUse stderr from the model's view
+			// (PostToolUse stderr IS surfaced as additional context, but
+			// PreToolUse on `allow` is not). Route PreToolUse warnings through
+			// hookSpecificOutput.additionalContext — supported by the spec at
+			// PreToolUse — so the agent actually sees them on the same turn
+			// (alongside the tool result). PostToolUse keeps the stderr-only
+			// path because the runtime already echoes it; duplicating would
+			// double-display.
+			const contextParts: string[] = [];
+			if (decision.additional_context) contextParts.push(decision.additional_context);
+			if (event?.phase === "pre-tool" && stderr) contextParts.push(stderr);
+			if (contextParts.length > 0) {
 				return {
 					stdout: JSON.stringify({
-						hookSpecificOutput: { additionalContext: decision.additional_context },
+						hookSpecificOutput: { additionalContext: contextParts.join("\n") },
 					}),
 					stderr: stderr || undefined,
 					exit_code: 0,

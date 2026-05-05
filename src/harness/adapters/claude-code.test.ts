@@ -148,4 +148,48 @@ describe("Claude Code encodeDecision", () => {
 		);
 		expect(out.stderr).toBe("w1\nw2");
 	});
+
+	// PreToolUse stderr is dropped from the model's view by Claude Code's
+	// runtime (only PostToolUse stderr surfaces as additional context). Without
+	// this fan-out, every PreToolUse advisory the harness emits — including
+	// supermodel-graph blast-radius warnings — is invisible to the agent.
+	it("PreToolUse: also routes warnings into hookSpecificOutput.additionalContext", () => {
+		const out = adapter.encodeDecision(
+			{ decision: "allow", warnings: ["w1", "w2"] },
+			baseEvent,
+		);
+		expect(out.stdout).toBeDefined();
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: { additionalContext: "w1\nw2" },
+		});
+		expect(out.stderr).toBe("w1\nw2");
+	});
+
+	it("PreToolUse: combines explicit additional_context with warnings", () => {
+		const out = adapter.encodeDecision(
+			{ decision: "allow", additional_context: "fyi", warnings: ["w1"] },
+			baseEvent,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: { additionalContext: "fyi\nw1" },
+		});
+	});
+
+	it("PostToolUse: warnings stay stderr-only — runtime already echoes them", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Edit", tool_input: {} },
+			"PostToolUse",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "allow", warnings: ["w1"] },
+			postEvent,
+		);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toBe("w1");
+	});
+
+	it("PreToolUse with no warnings + no additional_context: no stdout", () => {
+		const out = adapter.encodeDecision({ decision: "allow" }, baseEvent);
+		expect(out.stdout).toBeUndefined();
+	});
 });
