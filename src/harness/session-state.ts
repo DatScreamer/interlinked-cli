@@ -3,7 +3,30 @@
 // ===========================================
 
 import type { JsonObject } from "../lib/json-types.js";
-import type { ActiveSkillRecord, HarnessEvent, SessionTrajectory } from "./types.js";
+import type {
+	ActiveSkillRecord,
+	AssertionCounts,
+	FailedFileEntry,
+	HarnessEvent,
+	PendingCompletion,
+	SensitivityLevel,
+	SessionTrajectory,
+	TaintSource,
+	TddCycle,
+	WarningRecord,
+} from "./types.js";
+
+/** Bumped when the serialized snapshot shape changes incompatibly. Hydrate
+ *  refuses snapshots from a higher version (newer harness wrote it) and
+ *  best-effort upgrades older shapes. */
+export const SESSION_SNAPSHOT_SCHEMA_VERSION = 1;
+
+const SENSITIVITY_LEVELS: ReadonlySet<SensitivityLevel> = new Set([
+	"Public",
+	"Internal",
+	"Confidential",
+	"HighlyConfidential",
+]);
 
 const DEFAULT_SKILL_TTL_MS = 30 * 60 * 1000;
 const MAX_SKILL_TTL_MS = 4 * 60 * 60 * 1000;
@@ -66,6 +89,7 @@ export class SessionTracker {
 				doc_files_edited_since_commit: 0,
 				mid_session_nudge_emitted: false,
 				stop_nudge_emitted: false,
+				assertion_counts: new Map(),
 			};
 			this.sessions.set(event.session_id, session);
 		}
@@ -151,12 +175,22 @@ export class SessionTracker {
 		this.sessions.delete(sessionId);
 	}
 
-	/** Serialize a session trajectory to a plain JSON-safe object */
+	/**
+	 * Serialize a session trajectory to a JSON-safe snapshot. Used for both
+	 * the post-end `<id>.trajectory.json` archive and the in-flight
+	 * `<id>.live.json` snapshot — the shape is identical and lossless against
+	 * `hydrate()`. The runtime-only `trajectoryDetector` is intentionally
+	 * dropped (it's lazily reconstructed on the next event when feature flags
+	 * call for it). `step_limit` of `Infinity` is encoded as `null` because
+	 * JSON has no Infinity literal; `hydrate()` reverses the mapping.
+	 */
 	serialize(sessionId: string): JsonObject | null {
 		const s = this.sessions.get(sessionId);
 		if (!s) return null;
 		const endedAt = new Date().toISOString();
+		const stepLimit = Number.isFinite(s.step_limit) ? s.step_limit : null;
 		return {
+			schema_version: SESSION_SNAPSHOT_SCHEMA_VERSION,
 			session_id: s.session_id,
 			agent_name: s.agent_name,
 			started_at: s.started_at,
@@ -169,13 +203,24 @@ export class SessionTracker {
 			mcp_tools_used: s.mcp_tools_used,
 			local_tools_used: s.local_tools_used,
 			sensitivity_level: s.sensitivity_level,
+			step_limit: stepLimit,
+			consecutive_pattern: s.consecutive_pattern,
+			last_coordination_at: s.last_coordination_at,
+			last_coordination_ts: s.last_coordination_ts,
 			files_read: [...s.files_read],
 			files_written: [...s.files_written],
 			commands_run: s.commands_run,
 			tool_sequence: s.tool_sequence,
 			curl_localhost_count: s.curl_localhost_count,
 			taint_sources: s.taint_sources,
+			injection_detected_steps: s.injection_detected_steps,
+			pii_detected_steps: s.pii_detected_steps,
 			suggested_permissions: [...s.suggested_permissions],
+			acknowledged_checks: [...s.acknowledged_checks],
+			fired_reminders: [...s.fired_reminders],
+			soft_blocks: [...s.soft_blocks],
+			silent_failure_warned: [...s.silent_failure_warned],
+			bloat_warned: [...s.bloat_warned],
 			file_write_times: Object.fromEntries(s.file_write_times),
 			file_read_at: Object.fromEntries(s.file_read_at),
 			failed_files: Object.fromEntries(
@@ -187,7 +232,6 @@ export class SessionTracker {
 					{ ...v, resolved_files: [...v.resolved_files] },
 				]),
 			),
-			acknowledged_checks: [...s.acknowledged_checks],
 			file_edit_counts: Object.fromEntries(s.file_edit_counts),
 			warnings_issued: Object.fromEntries(
 				[...s.warnings_issued.entries()].map(([k, v]) => [k, { ...v }]),
@@ -195,7 +239,98 @@ export class SessionTracker {
 			tdd_cycles: Object.fromEntries(
 				[...s.tdd_cycles.entries()].map(([k, v]) => [k, { ...v }]),
 			),
+			consecutive_tool_failures: Object.fromEntries(s.consecutive_tool_failures),
+			test_runs: Object.fromEntries(
+				[...s.test_runs.entries()].map(([k, v]) => [k, { ...v }]),
+			),
+			active_skills: s.active_skills
+				? Object.fromEntries([...s.active_skills.entries()].map(([k, v]) => [k, { ...v }]))
+				: {},
+			non_doc_files_edited_since_commit: s.non_doc_files_edited_since_commit
+				? [...s.non_doc_files_edited_since_commit]
+				: [],
+			doc_files_edited_since_commit: s.doc_files_edited_since_commit ?? 0,
+			mid_session_nudge_emitted: s.mid_session_nudge_emitted ?? false,
+			stop_nudge_emitted: s.stop_nudge_emitted ?? false,
+			assertion_counts: Object.fromEntries(
+				[...s.assertion_counts.entries()].map(([k, v]) => [k, { ...v }]),
+			),
 		};
+	}
+
+	/**
+	 * Reconstruct a SessionTrajectory from a `serialize()` snapshot and add it
+	 * to the tracker. Used on harness restart when the next event for an
+	 * already-active session arrives — without this, every restart would
+	 * silently reset session-relative behavior (acknowledged checks, edit
+	 * counts, fired reminders, TDD cycles, ...).
+	 *
+	 * Defensive: every field is coerced through a reader that falls back to
+	 * the same default `recordEvent` uses for a fresh session. Returns null
+	 * only on missing `session_id` (the one required field).
+	 */
+	hydrate(snapshot: JsonObject): SessionTrajectory | null {
+		const schemaVersion = readNumber(snapshot.schema_version, 0);
+		if (schemaVersion > SESSION_SNAPSHOT_SCHEMA_VERSION) return null;
+
+		const sessionId = readString(snapshot.session_id);
+		if (!sessionId) return null;
+
+		const stepLimit =
+			snapshot.step_limit === null || snapshot.step_limit === undefined
+				? Number.POSITIVE_INFINITY
+				: typeof snapshot.step_limit === "number" && Number.isFinite(snapshot.step_limit)
+					? snapshot.step_limit
+					: Number.POSITIVE_INFINITY;
+
+		const session: SessionTrajectory = {
+			session_id: sessionId,
+			agent_name: readString(snapshot.agent_name) ?? `session-${sessionId.slice(0, 8)}`,
+			started_at: readString(snapshot.started_at) ?? new Date().toISOString(),
+			tool_call_count: readNumber(snapshot.tool_call_count, 0),
+			error_count: readNumber(snapshot.error_count, 0),
+			mcp_tools_used: readNumber(snapshot.mcp_tools_used, 0),
+			local_tools_used: readNumber(snapshot.local_tools_used, 0),
+			sensitivity_level: readSensitivity(snapshot.sensitivity_level),
+			step_limit: stepLimit,
+			consecutive_pattern: readConsecutivePattern(snapshot.consecutive_pattern),
+			last_coordination_at: readNumber(snapshot.last_coordination_at, 0),
+			last_coordination_ts: readNumber(snapshot.last_coordination_ts, Date.now()),
+			files_read: readStringSet(snapshot.files_read),
+			files_written: readStringSet(snapshot.files_written),
+			commands_run: readStringArray(snapshot.commands_run),
+			tool_sequence: readStringArray(snapshot.tool_sequence),
+			curl_localhost_count: readNumberRecord(snapshot.curl_localhost_count),
+			taint_sources: readTaintSources(snapshot.taint_sources),
+			injection_detected_steps: readNumberArray(snapshot.injection_detected_steps),
+			pii_detected_steps: readNumberArray(snapshot.pii_detected_steps),
+			suggested_permissions: readStringSet(snapshot.suggested_permissions),
+			acknowledged_checks: readStringSet(snapshot.acknowledged_checks),
+			fired_reminders: readStringSet(snapshot.fired_reminders),
+			soft_blocks: readStringSet(snapshot.soft_blocks),
+			silent_failure_warned: readStringSet(snapshot.silent_failure_warned),
+			bloat_warned: readStringSet(snapshot.bloat_warned),
+			file_write_times: readStringMap(snapshot.file_write_times),
+			file_read_at: readNumberMap(snapshot.file_read_at),
+			failed_files: readFailedFiles(snapshot.failed_files),
+			pending_completions: readPendingCompletions(snapshot.pending_completions),
+			file_edit_counts: readNumberMap(snapshot.file_edit_counts),
+			warnings_issued: readWarnings(snapshot.warnings_issued),
+			tdd_cycles: readTddCycles(snapshot.tdd_cycles),
+			consecutive_tool_failures: readNumberMap(snapshot.consecutive_tool_failures),
+			test_runs: readTestRuns(snapshot.test_runs),
+			active_skills: readActiveSkills(snapshot.active_skills),
+			non_doc_files_edited_since_commit: readStringSet(
+				snapshot.non_doc_files_edited_since_commit,
+			),
+			doc_files_edited_since_commit: readNumber(snapshot.doc_files_edited_since_commit, 0),
+			mid_session_nudge_emitted: readBoolean(snapshot.mid_session_nudge_emitted),
+			stop_nudge_emitted: readBoolean(snapshot.stop_nudge_emitted),
+			assertion_counts: readAssertionCountsMap(snapshot.assertion_counts),
+		};
+
+		this.sessions.set(sessionId, session);
+		return session;
 	}
 
 	getAll(): SessionTrajectory[] {
@@ -260,6 +395,236 @@ function isWriteOperation(toolName: string | undefined): boolean {
 function isBashTool(toolName: string | undefined): boolean {
 	if (!toolName) return false;
 	return ["Bash", "Shell", "shell", "run_command"].includes(toolName);
+}
+
+// ===========================================
+// Snapshot hydration helpers
+// ===========================================
+// Defensive coercion for fields read off `<id>.live.json`. We never trust
+// the on-disk shape: a file from an older harness version, a half-written
+// snapshot, or a hand-edited file should never crash the daemon — it should
+// resolve to the same default `recordEvent` would use for a fresh session.
+
+function readString(v: unknown): string | null {
+	return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function readNumber(v: unknown, fallback: number): number {
+	return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function readBoolean(v: unknown): boolean {
+	return v === true;
+}
+
+function readStringSet(v: unknown): Set<string> {
+	if (!Array.isArray(v)) return new Set();
+	const out = new Set<string>();
+	for (const item of v) {
+		if (typeof item === "string") out.add(item);
+	}
+	return out;
+}
+
+function readStringArray(v: unknown): string[] {
+	if (!Array.isArray(v)) return [];
+	return v.filter((x): x is string => typeof x === "string");
+}
+
+function readNumberArray(v: unknown): number[] {
+	if (!Array.isArray(v)) return [];
+	return v.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+}
+
+function readStringMap(v: unknown): Map<string, string> {
+	const out = new Map<string, string>();
+	if (!isPlainObject(v)) return out;
+	for (const [k, val] of Object.entries(v)) {
+		if (typeof val === "string") out.set(k, val);
+	}
+	return out;
+}
+
+function readNumberMap(v: unknown): Map<string, number> {
+	const out = new Map<string, number>();
+	if (!isPlainObject(v)) return out;
+	for (const [k, val] of Object.entries(v)) {
+		if (typeof val === "number" && Number.isFinite(val)) out.set(k, val);
+	}
+	return out;
+}
+
+function readNumberRecord(v: unknown): Record<number, number> {
+	const out: Record<number, number> = {};
+	if (!isPlainObject(v)) return out;
+	for (const [k, val] of Object.entries(v)) {
+		const port = Number.parseInt(k, 10);
+		if (Number.isFinite(port) && typeof val === "number" && Number.isFinite(val)) {
+			out[port] = val;
+		}
+	}
+	return out;
+}
+
+function readSensitivity(v: unknown): SensitivityLevel {
+	if (typeof v === "string" && SENSITIVITY_LEVELS.has(v as SensitivityLevel)) {
+		return v as SensitivityLevel;
+	}
+	return "Public";
+}
+
+function readConsecutivePattern(v: unknown): { pattern: string; count: number } | null {
+	if (!isPlainObject(v)) return null;
+	const pattern = readString(v.pattern);
+	const count = readNumber(v.count, 0);
+	return pattern ? { pattern, count } : null;
+}
+
+function readTaintSources(v: unknown): TaintSource[] {
+	if (!Array.isArray(v)) return [];
+	const out: TaintSource[] = [];
+	for (const item of v) {
+		if (!isPlainObject(item)) continue;
+		const file = readString(item.file);
+		if (!file) continue;
+		out.push({
+			file,
+			level: readSensitivity(item.level),
+			at_step: readNumber(item.at_step, 0),
+		});
+	}
+	return out;
+}
+
+function readFailedFiles(v: unknown): Map<string, FailedFileEntry> {
+	const out = new Map<string, FailedFileEntry>();
+	if (!isPlainObject(v)) return out;
+	for (const [file, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		out.set(file, {
+			failure_count: readNumber(raw.failure_count, 0),
+			checks: readStringArray(raw.checks),
+			recorded_at: readString(raw.recorded_at) ?? new Date().toISOString(),
+			tool_call_count: readNumber(raw.tool_call_count, 0),
+		});
+	}
+	return out;
+}
+
+function readPendingCompletions(v: unknown): Map<string, PendingCompletion> {
+	const out = new Map<string, PendingCompletion>();
+	if (!isPlainObject(v)) return out;
+	for (const [key, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		const sourceFile = readString(raw.source_file);
+		if (!sourceFile) continue;
+		out.set(key, {
+			source_file: sourceFile,
+			affected_files: readStringArray(raw.affected_files),
+			resolved_files: readStringSet(raw.resolved_files),
+			recorded_at_tool_call: readNumber(raw.recorded_at_tool_call, 0),
+			description: readString(raw.description) ?? "",
+		});
+	}
+	return out;
+}
+
+function readWarnings(v: unknown): Map<string, WarningRecord> {
+	const out = new Map<string, WarningRecord>();
+	if (!isPlainObject(v)) return out;
+	for (const [key, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		const checkName = readString(raw.check_name);
+		if (!checkName) continue;
+		out.set(key, {
+			check_name: checkName,
+			issue_count: readNumber(raw.issue_count, 0),
+			first_issued_at: readNumber(raw.first_issued_at, 0),
+			last_issued_at: readNumber(raw.last_issued_at, 0),
+			resolved: readBoolean(raw.resolved),
+		});
+	}
+	return out;
+}
+
+const TDD_STATES = new Set(["no_test", "red", "green", "regression"]);
+
+function readTddCycles(v: unknown): Map<string, TddCycle> {
+	const out = new Map<string, TddCycle>();
+	if (!isPlainObject(v)) return out;
+	for (const [key, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		const sourceFile = readString(raw.source_file);
+		if (!sourceFile) continue;
+		const stateStr = typeof raw.state === "string" ? raw.state : "no_test";
+		const state = (TDD_STATES.has(stateStr) ? stateStr : "no_test") as TddCycle["state"];
+		const prevStr = typeof raw.previous_state === "string" ? raw.previous_state : undefined;
+		const previous_state =
+			prevStr && TDD_STATES.has(prevStr) ? (prevStr as TddCycle["state"]) : undefined;
+		out.set(key, {
+			source_file: sourceFile,
+			test_file: typeof raw.test_file === "string" ? raw.test_file : null,
+			state,
+			test_written_at: typeof raw.test_written_at === "number" ? raw.test_written_at : undefined,
+			red_at: typeof raw.red_at === "number" ? raw.red_at : undefined,
+			green_at: typeof raw.green_at === "number" ? raw.green_at : undefined,
+			impl_edits_before_test: readNumber(raw.impl_edits_before_test, 0),
+			previous_state,
+		});
+	}
+	return out;
+}
+
+function readTestRuns(
+	v: unknown,
+): Map<string, { status: "pass" | "fail"; at_step: number }> {
+	const out = new Map<string, { status: "pass" | "fail"; at_step: number }>();
+	if (!isPlainObject(v)) return out;
+	for (const [file, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		const status = raw.status === "pass" || raw.status === "fail" ? raw.status : null;
+		if (!status) continue;
+		out.set(file, { status, at_step: readNumber(raw.at_step, 0) });
+	}
+	return out;
+}
+
+function readAssertionCountsMap(v: unknown): Map<string, AssertionCounts> {
+	const out = new Map<string, AssertionCounts>();
+	if (!isPlainObject(v)) return out;
+	for (const [file, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		out.set(file, {
+			blocks: readNumber(raw.blocks, 0),
+			assertions: readNumber(raw.assertions, 0),
+		});
+	}
+	return out;
+}
+
+function readActiveSkills(v: unknown): Map<string, ActiveSkillRecord> | undefined {
+	if (!isPlainObject(v)) return undefined;
+	const entries = Object.entries(v);
+	if (entries.length === 0) return undefined;
+	const out = new Map<string, ActiveSkillRecord>();
+	for (const [name, raw] of entries) {
+		if (!isPlainObject(raw)) continue;
+		const recordName = readString(raw.name) ?? name;
+		const source = raw.source === "cli" || raw.source === "hook" || raw.source === "manual"
+			? raw.source
+			: "cli";
+		out.set(name, {
+			name: recordName,
+			entered_at: readNumber(raw.entered_at, 0),
+			expires_at: readNumber(raw.expires_at, 0),
+			source,
+		});
+	}
+	return out;
+}
+
+function isPlainObject(v: unknown): v is JsonObject {
+	return v != null && typeof v === "object" && !Array.isArray(v);
 }
 
 // ===========================================

@@ -195,8 +195,12 @@ describe("runHookEntry — end-to-end with real daemon", () => {
 
 		expect(result.fell_back).toBe(false);
 		expect(result.exit_code).toBe(0);
+		// hookEventName is now mandatory in every hookSpecificOutput envelope —
+		// Claude Code's validator rejects responses without it. The adapter
+		// echoes the runner's native event name (PreToolUse here).
 		expect(JSON.parse(result.stdout ?? "{}")).toEqual({
 			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
 				additionalContext: "[interlinked:test] visible warning",
 			},
 		});

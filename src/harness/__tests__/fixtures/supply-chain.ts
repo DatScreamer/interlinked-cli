@@ -54,5 +54,6 @@ export function makeSession(): SessionTrajectory {
 		consecutive_tool_failures: new Map(),
 		silent_failure_warned: new Set(),
 		bloat_warned: new Set(),
+		assertion_counts: new Map(),
 	};
 }

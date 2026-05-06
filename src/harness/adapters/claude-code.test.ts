@@ -123,14 +123,14 @@ describe("Claude Code encodeDecision", () => {
 		expect(out.exit_code).toBe(0);
 		expect(out.stdout).toBeUndefined();
 	});
-	it("allow with additional_context — emits hookSpecificOutput", () => {
+	it("allow with additional_context — emits hookSpecificOutput with hookEventName", () => {
 		const out = adapter.encodeDecision(
 			{ decision: "allow", additional_context: "fyi" },
 			baseEvent,
 		);
 		expect(out.stdout).toBeDefined();
 		expect(JSON.parse(out.stdout as string)).toEqual({
-			hookSpecificOutput: { additionalContext: "fyi" },
+			hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "fyi" },
 		});
 	});
 	it("block — emits decision: deny", () => {
@@ -160,7 +160,7 @@ describe("Claude Code encodeDecision", () => {
 		);
 		expect(out.stdout).toBeDefined();
 		expect(JSON.parse(out.stdout as string)).toEqual({
-			hookSpecificOutput: { additionalContext: "w1\nw2" },
+			hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "w1\nw2" },
 		});
 		expect(out.stderr).toBe("w1\nw2");
 	});
@@ -171,7 +171,7 @@ describe("Claude Code encodeDecision", () => {
 			baseEvent,
 		);
 		expect(JSON.parse(out.stdout as string)).toEqual({
-			hookSpecificOutput: { additionalContext: "fyi\nw1" },
+			hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "fyi\nw1" },
 		});
 	});
 

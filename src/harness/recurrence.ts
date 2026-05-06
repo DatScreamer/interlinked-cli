@@ -7,7 +7,27 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type RecurrenceKind = "harness_caught" | "harness_missed" | "codebase_existing";
+export type RecurrenceKind =
+	| "harness_caught"
+	| "harness_missed"
+	| "codebase_existing"
+	| "outcome_marker";
+
+/** Phase 1 FP-telemetry additions (see docs/plans/11-phase1-...md). */
+export type RecurrencePhase = "pre_block" | "pre_warn" | "post";
+export type RecurrenceSeverity = "error" | "warning";
+/**
+ * Outcome of a prior fire — emitted later in the session lifecycle, not at
+ * fire time. Phase 2's FP-rate aggregator uses these as the FP-candidate set
+ * (`agent_fixed` is the implicit positive). Storage shape is `outcome_marker`
+ * events that cross-reference the original fire by (check_id, file,
+ * session_id, fire_ts).
+ */
+export type OutcomeSignal =
+	| "agent_fixed"
+	| "agent_suppressed"
+	| "user_overrode"
+	| "check_reverted";
 
 export interface RecurrenceEvent {
 	ts: string;
@@ -18,6 +38,19 @@ export interface RecurrenceEvent {
 	file?: string;
 	message?: string;
 	signature?: string;
+	/** Phase the originating check declared. Optional for backwards compat
+	 *  with rows written before Phase 1 of the rollout. */
+	phase?: RecurrencePhase;
+	/** Severity at the originating check. Optional for backwards compat. */
+	severity?: RecurrenceSeverity;
+	/** Set on `outcome_marker` rows; identifies what happened to the fire. */
+	outcome_signal?: OutcomeSignal;
+	/** Free-text one-liner explaining the outcome (e.g., the suppression
+	 *  directive text + justification). */
+	outcome_reason?: string;
+	/** Set on `outcome_marker` rows; the `ts` of the original fire being
+	 *  marked. Lets the aggregator pair markers to fires deterministically. */
+	fire_ts?: string;
 }
 
 export interface Recurrence {
@@ -205,7 +238,7 @@ export function loadRecurrenceEvents(cwd: string): RecurrenceEvent[] {
 	for (const line of lines) {
 		if (!line.trim()) continue;
 		try {
-			const parsed = JSON.parse(line) as unknown;
+			const parsed: unknown = JSON.parse(line);
 			if (isRecurrenceEvent(parsed)) out.push(parsed);
 		} catch (_err) {
 			/* intentional: JSONL may be torn if a process died mid-write — skip bad lines */
@@ -256,6 +289,8 @@ export function recordHarnessCaught(opts: {
 	message?: string;
 	cwd?: string;
 	ts?: string;
+	phase?: RecurrencePhase;
+	severity?: RecurrenceSeverity;
 }): void {
 	try {
 		recordRecurrenceEvent(
@@ -267,6 +302,47 @@ export function recordHarnessCaught(opts: {
 				session_id: opts.session_id,
 				file: opts.file,
 				message: opts.message,
+				phase: opts.phase,
+				severity: opts.severity,
+			},
+			opts.cwd ?? process.cwd(),
+		);
+	} catch (e) {
+		void e;
+	}
+}
+
+/**
+ * Public API surface for Phase 2's FP-rate aggregator. Mark an outcome for
+ * a prior `harness_caught` fire — idempotent on (check_id, file, session_id,
+ * fire_ts). The aggregator dedupes when multiple paths emit (e.g., agent
+ * fixes a finding *and* suppresses an adjacent one). Storage failures
+ * swallowed for the same reason as `recordHarnessCaught`.
+ *
+ * Phase 1 commits to emission only — the producer paths (fix-detection,
+ * suppression-detection, user-override hook) land in Phase 2. This export
+ * intentionally has no in-tree consumers yet; do not remove. */
+export function markOutcome(opts: {
+	check_id: string;
+	file: string;
+	session_id: string;
+	signal: OutcomeSignal;
+	reason?: string;
+	fire_ts?: string;
+	cwd?: string;
+	ts?: string;
+}): void {
+	try {
+		recordRecurrenceEvent(
+			{
+				ts: opts.ts ?? new Date().toISOString(),
+				kind: "outcome_marker",
+				check_id: opts.check_id,
+				session_id: opts.session_id,
+				file: opts.file,
+				outcome_signal: opts.signal,
+				outcome_reason: opts.reason,
+				fire_ts: opts.fire_ts,
 			},
 			opts.cwd ?? process.cwd(),
 		);
@@ -309,6 +385,7 @@ function isRecurrenceEvent(value: unknown): value is RecurrenceEvent {
 		typeof event.ts === "string" &&
 		(event.kind === "harness_caught" ||
 			event.kind === "harness_missed" ||
-			event.kind === "codebase_existing")
+			event.kind === "codebase_existing" ||
+			event.kind === "outcome_marker")
 	);
 }

@@ -27,6 +27,13 @@ function appendJsonl(path, record) {
     } catch (_err) { void 0; /* intentional: best-effort side-stream write */ }
 }
 
+function safeSessionFilePath(sessionId, suffix) {
+    if (!sessionId) return null;
+    const safe = String(sessionId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+    if (!safe) return null;
+    return join(SESSIONS_DIR, safe + suffix);
+}
+
 // --- files-touched.jsonl — flat per-file activity index ---
 // Append on every Edit/Write/MultiEdit PostToolUse so "what's the recent
 // history on file X?" is O(grep) instead of full activity.jsonl scan.
@@ -720,7 +727,8 @@ function captureCodeEdit(sessionId, agentName, event) {
 
     // Append to session state
     try {
-        const sessionPath = join(SESSIONS_DIR, sessionId + ".json");
+        const sessionPath = safeSessionFilePath(sessionId, ".json");
+        if (!sessionPath) return;
         let state = null;
         if (existsSync(sessionPath)) {
             try { state = JSON.parse(readFileSync(sessionPath, "utf-8")); } catch (_err) { void 0; /* intentional: no-op */ }
@@ -764,7 +772,8 @@ function isGitSha(v) {
 function reconcileCommits(sessionId) {
     if (!sessionId) return;
     try {
-        const sessionPath = join(SESSIONS_DIR, sessionId + ".json");
+        const sessionPath = safeSessionFilePath(sessionId, ".json");
+        if (!sessionPath) return;
         if (!existsSync(sessionPath)) return;
         let state = null;
         try { state = JSON.parse(readFileSync(sessionPath, "utf-8")); } catch (_err) { void 0; /* intentional: no-op */ }
@@ -921,7 +930,8 @@ function updateSessionState(sessionId, agentName, event) {
     if (!sessionId) return;
     try {
         if (!existsSync(SESSIONS_DIR)) mkdirSync(SESSIONS_DIR, { recursive: true });
-        const filePath = join(SESSIONS_DIR, sessionId + ".json");
+        const filePath = safeSessionFilePath(sessionId, ".json");
+        if (!filePath) return;
         let existing = null;
         if (existsSync(filePath)) {
             try { existing = JSON.parse(readFileSync(filePath, "utf-8")); } catch (_err) { void 0; /* intentional: no-op */ }
@@ -998,6 +1008,48 @@ function updateSessionState(sessionId, agentName, event) {
             try {
                 sessionStartHead = execSync("git rev-parse HEAD 2>/dev/null", { encoding: "utf-8", timeout: 3000 }).trim();
             } catch (_err) { void 0; /* intentional: no-op */ }
+
+            // Phase 1 Workstream B — full session-start anchor.
+            // \`git stash create\` writes a stash commit to the object DB
+            // representing the working-tree + index state WITHOUT modifying
+            // refs or the working tree itself. Combined with the untracked
+            // file list (which stash-create excludes by default), it gives
+            // a SHA pointer plus path list sufficient to reconstruct the
+            // world-state at session start. All shell args validated as
+            // SHAs / sanitized paths before any further interpolation.
+            try {
+                const SHA_RE = /^[0-9a-f]{40}$/;
+                const BRANCH_RE = /^[A-Za-z0-9._/\\-]+$/;
+                let worktreeSha = null;
+                try {
+                    const out = execSync("git stash create 2>/dev/null", { encoding: "utf-8", timeout: 5000 }).trim();
+                    if (out && SHA_RE.test(out)) worktreeSha = out;
+                } catch (_e) { void 0; /* intentional: clean tree → empty stdout, not an error */ }
+                let untracked = [];
+                try {
+                    const out = execSync("git ls-files --others --exclude-standard 2>/dev/null", { encoding: "utf-8", timeout: 3000 });
+                    untracked = out.split("\\n").map((l) => l.trim()).filter(Boolean).slice(0, 5000);
+                } catch (_e) { void 0; }
+                let branch = null;
+                try {
+                    const out = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8", timeout: 3000 }).trim();
+                    if (out && BRANCH_RE.test(out)) branch = out;
+                } catch (_e) { void 0; }
+                const anchor = {
+                    schema: 1,
+                    session_id: sessionId,
+                    captured_at: now,
+                    head: sessionStartHead && SHA_RE.test(sessionStartHead) ? sessionStartHead : null,
+                    worktree: worktreeSha,
+                    branch,
+                    untracked,
+                };
+                try {
+                    const anchorPath = safeSessionFilePath(sessionId, ".anchor.json");
+                    if (!anchorPath) return;
+                    writeFileSync(anchorPath, JSON.stringify(anchor) + "\\n");
+                } catch (_e) { void 0; /* intentional: anchor capture is best-effort */ }
+            } catch (_err) { void 0; /* intentional: best-effort */ }
         }
 
         const state = {

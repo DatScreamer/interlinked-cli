@@ -55,12 +55,19 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             return { decision: "block", reason: data.reason };
         }
         if (responseType === "post_warn") {
+            // No summary = no model-visible content. Returning an empty
+            // hookSpecificOutput (just hookEventName, no additionalContext)
+            // makes Claude Code's validator reject the hook with
+            // "(root): Invalid input" — emit {} instead so the caller can
+            // skip writing stdout entirely.
+            if (!data.summary) return {};
             return { hookSpecificOutput: {
                 hookEventName: postEventEcho,
                 additionalContext: data.summary,
             }};
         }
         if (responseType === "post_success") {
+            if (!data.summary) return {};
             return { hookSpecificOutput: {
                 hookEventName: postEventEcho,
                 additionalContext: data.summary,
@@ -183,12 +190,16 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             return { decision: "block", reason: data.reason };
         }
         if (responseType === "post_warn") {
+            // Codex inherits the same Claude-Code-shaped validator —
+            // hookSpecificOutput without actual content is rejected.
+            if (!data.summary) return {};
             return { hookSpecificOutput: {
                 hookEventName: postEventEcho,
                 additionalContext: data.summary,
             }};
         }
         if (responseType === "post_success") {
+            if (!data.summary) return {};
             return { hookSpecificOutput: {
                 hookEventName: postEventEcho,
                 additionalContext: data.summary,

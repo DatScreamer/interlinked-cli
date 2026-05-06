@@ -225,6 +225,12 @@ export interface CheckResultEntry {
 	line?: number;
 	/** Determinism class — gates whether this finding can block the agent */
 	determinism: Determinism;
+	/** Phase the originating check declared. Optional because non-registry
+	 *  check sources (tsc/biome/oxlint subprocess wrappers, structural
+	 *  analyzers) don't have a registry phase concept — those are implicitly
+	 *  `post`. Set explicitly for inline registry checks so FP-rate
+	 *  telemetry can route accurately. */
+	phase?: "pre_block" | "pre_warn" | "post";
 	/** Provenance class (structure findings only) */
 	provenance?: "declared" | "extracted" | "inferred";
 	/** Artifact kind (structure findings only) */
@@ -763,6 +769,19 @@ export interface OutputScanningConfig {
 // Session Trajectory
 // ===========================================
 
+/**
+ * Per-test-file counts of `it()`/`test()` blocks and `expect()`/`assert*()`
+ * calls. Captured on every PostToolUse Write/Edit of a test file; the
+ * delta between successive captures is what the assertion-density
+ * behavioral check fires on. Declared here (not in `behavioral-checks.ts`)
+ * because `SessionTrajectory` lives in this module — moving the definition
+ * out would create an import cycle.
+ */
+export interface AssertionCounts {
+	blocks: number;
+	assertions: number;
+}
+
 export interface SessionTrajectory {
 	session_id: string;
 	agent_name: string;
@@ -871,6 +890,14 @@ export interface SessionTrajectory {
 	mid_session_nudge_emitted?: boolean;
 	/** One-shot guard for the Stop-hook nudge — set when it fires. */
 	stop_nudge_emitted?: boolean;
+	/**
+	 * Per-test-file `(blocks, assertions)` counts captured on the previous
+	 * PostToolUse for each test file the agent has touched this session.
+	 * The assertion-density behavioral check compares the post-edit count
+	 * against this prior value to fire on `dBlocks > 0 && dAssertions <= 0`.
+	 * First-sight of any test file silently establishes baseline.
+	 */
+	assertion_counts: Map<string, AssertionCounts>;
 }
 
 // ===========================================

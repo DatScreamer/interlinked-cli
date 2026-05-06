@@ -353,14 +353,43 @@ ${GUARDS_INLINE_CHUNK}
  * Fire-and-forget, non-blocking. If Bun is not found, warn once.
  * First PreToolUse uses inline fallback; subsequent calls use harness once it's up.
  */
+function isInterlinkedCliCheckout(cwd) {
+    // Verify the current working directory is the interlinked-cli source
+    // checkout, not just any project that happens to have a
+    // dist/harness/server.js path. Read package.json and check the name.
+    // Fail-closed on any error: a missing/malformed package.json should NOT
+    // permit auto-spawning a project-local server.js as the daemon.
+    try {
+        const pkgPath = join(cwd, "package.json");
+        if (!existsSync(pkgPath)) return false;
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        return pkg && pkg.name === "interlinked-cli";
+    } catch (_err) {
+        void 0; /* intentional: fail-closed on read/parse error */
+        return false;
+    }
+}
+
 function tryAutoStartHarness(sessionId = null) {
     try {
-        // Find harness server.js — prefer pre-compiled JS for fast startup
-        const candidates = [
+        // Find harness server.js — prefer pre-compiled JS for fast startup.
+        // CWD-relative dist is gated on the CWD being the interlinked-cli
+        // source checkout (package.json name === "interlinked-cli").
+        // Without the gate, any user repo that happens to have a
+        // dist/harness/server.js artifact at that path would have its own
+        // unrelated file spawned as the harness daemon — letting arbitrary
+        // project-local code run and bypassing the installed CLI entirely.
+        // The dev-loop convenience (a fresh \`npm run build\` is picked up
+        // automatically) is preserved for the actual CLI checkout.
+        const candidates = [];
+        if (isInterlinkedCliCheckout(CWD)) {
+            candidates.push(join(CWD, "dist", "harness", "server.js"));
+        }
+        candidates.push(
             join(CONFIG_DIR, "..", "cli", "dist", "harness", "server.js"),
             join(CONFIG_DIR, "..", "node_modules", "interlinked-cli", "dist", "harness", "server.js"),
             join(CONFIG_DIR, "..", "node_modules", ".bin", "interlinked-harness"),
-        ];
+        );
 
         // Also check global npm paths
         try {
@@ -835,11 +864,12 @@ ${PROVIDER_RESPONSES_CHUNK}
         updateSessionState(sessionId, agentName, event);
         // Provide the empty success response so the agent's UI doesn't
         // think the hook failed. Format-aware so Cursor/Codex/Copilot
-        // each see their expected envelope.
-        const fastToolLabel = postToolName || "unknown";
-        console.log(JSON.stringify(formatProviderResponse("post_success", {
-            summary: "[interlinked:" + fastToolLabel + "] observed",
-        })));
+        // each see their expected envelope. No summary: a content-free
+        // "observed" line on every Bash/Read/Grep/WebFetch is pure
+        // context noise — the harness ran nothing, so there's nothing
+        // to tell the model. The empty envelope keeps the validator
+        // (Claude Code's hookEventName check) happy.
+        console.log(JSON.stringify(formatProviderResponse("post_success", {})));
         process.exit(0);
     }
 
@@ -927,14 +957,15 @@ ${PROVIDER_RESPONSES_CHUNK}
             captureCodeEdit(sessionId, agentName, event);
             process.exit(0);
         } else {
-            // Harness unavailable — still report that the hook ran
+            // Harness unavailable — record the diagnostic locally for
+            // \`interlinked doctor\` but don't surface "no harness" to the
+            // model on every event. The user's harness status / statusline
+            // is the right surface for "harness is down".
             const toolLabel = event.tool_name || "unknown";
             const elapsed = Date.now() - postStartMs;
             const naFile = lastCheckFile(event, rawInput);
             writeLastCheck({ result: "no_harness", tool: toolLabel, file: naFile, ms: elapsed });
-            console.log(JSON.stringify(formatProviderResponse("post_success", {
-                summary: "[interlinked:" + toolLabel + "] no harness (" + elapsed + "ms)",
-            })));
+            console.log(JSON.stringify(formatProviderResponse("post_success", {})));
         }
     }
 
@@ -1073,7 +1104,8 @@ function sanitizeAgentName(value) {
 function readSessionAgent(sessionId) {
     if (!sessionId) return null;
     try {
-        const sessionPath = join(SESSIONS_DIR, sessionId + ".json");
+        const sessionPath = safeSessionFilePath(sessionId, ".json");
+        if (!sessionPath) return null;
         if (!existsSync(sessionPath)) return null;
         const session = JSON.parse(readFileSync(sessionPath, "utf-8"));
         return sanitizeAgentName(session?.agent);

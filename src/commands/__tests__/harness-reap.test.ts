@@ -149,10 +149,25 @@ describe("reapOrphanHarnesses helper (refactored to return candidates)", () => {
 
 	it("non-dry-run: SIGTERMs each orphan candidate", () => {
 		const sentSignals: Array<{ pid: number; signal: string | number }> = [];
+		// reapOrphanHarnesses now polls `process.kill(pid, 0)` after SIGTERM
+		// to confirm the daemon actually exited. The mock has to model that
+		// transition (alive -> dead after the signal lands) or the poller spins
+		// until the SIGKILL escalation grace window elapses and the test times
+		// out. Track "dead" PIDs and throw ESRCH from existence checks.
+		const dead = new Set<number>();
 		const killSpy = vi
 			.spyOn(process, "kill")
 			.mockImplementation(((pid: number, sig?: string | number): true => {
+				if (sig === 0) {
+					if (dead.has(pid)) {
+						const err = new Error("ESRCH") as NodeJS.ErrnoException;
+						err.code = "ESRCH";
+						throw err;
+					}
+					return true;
+				}
 				sentSignals.push({ pid, signal: sig ?? 0 });
+				if (sig === "SIGTERM" || sig === "SIGKILL") dead.add(pid);
 				return true;
 			}) as typeof process.kill);
 		try {
@@ -167,6 +182,90 @@ describe("reapOrphanHarnesses helper (refactored to return candidates)", () => {
 			);
 		} finally {
 			killSpy.mockRestore();
+		}
+	});
+
+	it("signals every orphan before waiting for any one of them to exit", () => {
+		const sentSignals: Array<{ pid: number; signal: string | number }> = [];
+		const killSpy = vi
+			.spyOn(process, "kill")
+			.mockImplementation(((pid: number, sig?: string | number): true => {
+				sentSignals.push({ pid, signal: sig ?? 0 });
+				if (sig === 0) {
+					const err = new Error("ESRCH") as NodeJS.ErrnoException;
+					err.code = "ESRCH";
+					throw err;
+				}
+				return true;
+			}) as typeof process.kill);
+		try {
+			const result = reapOrphanHarnesses("/repo");
+			expect(result.killed.sort()).toEqual([ORPHAN_A, ORPHAN_B].sort());
+			const firstPollIndex = sentSignals.findIndex((entry) => entry.signal === 0);
+			expect(firstPollIndex).toBeGreaterThanOrEqual(2);
+			expect(sentSignals.slice(0, firstPollIndex)).toEqual([
+				{ pid: ORPHAN_A, signal: "SIGTERM" },
+				{ pid: ORPHAN_B, signal: "SIGTERM" },
+			]);
+		} finally {
+			killSpy.mockRestore();
+		}
+	});
+
+	it("does not report EPERM as killed or clear pid files", () => {
+		const sentSignals: Array<{ pid: number; signal: string | number }> = [];
+		const killSpy = vi
+			.spyOn(process, "kill")
+			.mockImplementation(((pid: number, sig?: string | number): true => {
+				sentSignals.push({ pid, signal: sig ?? 0 });
+				const err = new Error("EPERM") as NodeJS.ErrnoException;
+				err.code = "EPERM";
+				throw err;
+			}) as typeof process.kill);
+		try {
+			const result = reapOrphanHarnesses("/repo");
+			expect(result.killed).toEqual([]);
+			expect(sentSignals).toEqual(
+				expect.arrayContaining([
+					{ pid: ORPHAN_A, signal: "SIGTERM" },
+					{ pid: ORPHAN_B, signal: "SIGTERM" },
+				]),
+			);
+		} finally {
+			killSpy.mockRestore();
+		}
+	});
+
+	it("treats EPERM from signal-0 polling as still alive", () => {
+		const sentSignals: Array<{ pid: number; signal: string | number }> = [];
+		let now = 1_000;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const killSpy = vi
+			.spyOn(process, "kill")
+			.mockImplementation(((pid: number, sig?: string | number): true => {
+				sentSignals.push({ pid, signal: sig ?? 0 });
+				if (sig === 0) {
+					now += 5_000;
+					const err = new Error("EPERM") as NodeJS.ErrnoException;
+					err.code = "EPERM";
+					throw err;
+				}
+				return true;
+			}) as typeof process.kill);
+		try {
+			const result = reapOrphanHarnesses("/repo");
+			expect(result.killed).toEqual([]);
+			expect(sentSignals).toEqual(
+				expect.arrayContaining([
+					{ pid: ORPHAN_A, signal: "SIGTERM" },
+					{ pid: ORPHAN_A, signal: "SIGKILL" },
+					{ pid: ORPHAN_B, signal: "SIGTERM" },
+					{ pid: ORPHAN_B, signal: "SIGKILL" },
+				]),
+			);
+		} finally {
+			killSpy.mockRestore();
+			nowSpy.mockRestore();
 		}
 	});
 
@@ -296,11 +395,21 @@ describe("harnessReapCommand — CLI surface", () => {
 
 	it("--force calls process.kill(pid, SIGTERM) for each orphan", async () => {
 		const sent: Array<{ pid: number; signal: string | number }> = [];
+		const dead = new Set<number>();
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(((
 			pid: number,
 			sig?: string | number,
 		): true => {
+			if (sig === 0) {
+				if (dead.has(pid)) {
+					const err = new Error("ESRCH") as NodeJS.ErrnoException;
+					err.code = "ESRCH";
+					throw err;
+				}
+				return true;
+			}
 			sent.push({ pid, signal: sig ?? 0 });
+			if (sig === "SIGTERM" || sig === "SIGKILL") dead.add(pid);
 			return true;
 		}) as typeof process.kill);
 		try {
@@ -317,11 +426,26 @@ describe("harnessReapCommand — CLI surface", () => {
 
 	it("--all --force also targets the active daemon", async () => {
 		const sent: number[] = [];
+		// Model process death after SIGTERM so the post-signal exit-poll
+		// (added when reap learned to verify, escalate to SIGKILL, then clean
+		// stale pid files) doesn't time out waiting for the mock process to
+		// "exit". Any signalled PID is marked dead; existence checks throw
+		// ESRCH from then on.
+		const dead = new Set<number>();
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(((
 			pid: number,
 			sig?: string | number,
 		): true => {
+			if (sig === 0) {
+				if (dead.has(pid)) {
+					const err = new Error("ESRCH") as NodeJS.ErrnoException;
+					err.code = "ESRCH";
+					throw err;
+				}
+				return true;
+			}
 			if (sig === "SIGTERM") sent.push(pid);
+			if (sig === "SIGTERM" || sig === "SIGKILL") dead.add(pid);
 			return true;
 		}) as typeof process.kill);
 		try {

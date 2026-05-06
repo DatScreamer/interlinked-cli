@@ -180,6 +180,18 @@ function hasExemptDirective(content: string | undefined): boolean {
 	return TDD_EXEMPT_DIRECTIVE_RE.test(content.slice(0, EXEMPT_DIRECTIVE_SCAN_BYTES));
 }
 
+/**
+ * Public re-export of the same exempt-directive scan, with a non-optional
+ * `content` parameter for call-sites that already have a string in hand.
+ * Behavioral checks (e.g., assertion-density) honor the same
+ * `// interlinked-tdd: exempt` convention as this gate so users don't have
+ * to learn two opt-out mechanisms — keep these in sync by going through
+ * this helper.
+ */
+export function hasTddExemptDirective(content: string): boolean {
+	return TDD_EXEMPT_DIRECTIVE_RE.test(content.slice(0, EXEMPT_DIRECTIVE_SCAN_BYTES));
+}
+
 function toAbsolute(filePath: string, cwd: string | undefined): string {
 	if (isAbsolute(filePath)) return filePath;
 	return resolve(cwd || process.cwd(), filePath);

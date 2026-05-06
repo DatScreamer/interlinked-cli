@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	checkAssertionDensity,
 	checkDomainSensitiveTestNudge,
 	checkPersistentWarningEscalation,
 	checkProdDeltaWithoutTestDelta,
@@ -11,6 +12,7 @@ import {
 	checkRepeatedEditWithoutTest,
 	checkSuppressionAsWorkaround,
 	checkTppLeapfrog,
+	countAssertions,
 } from "../behavioral-checks.js";
 import type { SessionTrajectory, TddCycle } from "../types.js";
 
@@ -61,6 +63,7 @@ function makeSession(overrides: Partial<SessionTrajectory> = {}): SessionTraject
 		consecutive_tool_failures: new Map(),
 		silent_failure_warned: new Set(),
 		bloat_warned: new Set(),
+		assertion_counts: new Map(),
 		...overrides,
 	};
 }
@@ -467,5 +470,235 @@ export class Widget {
 		);
 		const session = makeSession({ files_written: new Set([abs]) });
 		expect(checkTppLeapfrog(session)).toEqual([]);
+	});
+});
+
+// ===========================================
+// checkAssertionDensity (Plan 09 Phase 1)
+// ===========================================
+
+describe("checkAssertionDensity", () => {
+	const TEST_FILE = "/r/src/foo.test.ts";
+	const SOURCE_FILE = "/r/src/foo.ts";
+
+	it("is silent on first sight of any test file (silent baseline)", () => {
+		const session = makeSession();
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			"it('a', () => {});\n",
+		);
+		// First visit must not fire — even if the file has zero assertions —
+		// because we cannot distinguish "agent just wrote this" from "agent
+		// touched a pre-existing assertion-free test."
+		expect(result).toBeNull();
+		// And it MUST have stored the baseline so the next call sees `before`.
+		expect(session.assertion_counts.get(TEST_FILE)).toEqual({
+			blocks: 1,
+			assertions: 0,
+		});
+	});
+
+	it("stays silent when blocks and assertions both grow", () => {
+		const session = makeSession();
+		// First sight establishes baseline
+		checkAssertionDensity(session, TEST_FILE, "it('a', () => { expect(1).toBe(1); });\n");
+		// Second edit: +2 blocks, +2 expects
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			`it('a', () => { expect(1).toBe(1); });
+it('b', () => { expect(2).toBe(2); });
+it('c', () => { expect(3).toBe(3); });
+`,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("fires when blocks grow but assertions stay flat", () => {
+		const session = makeSession();
+		checkAssertionDensity(session, TEST_FILE, "it('a', () => { expect(1).toBe(1); });\n");
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			`it('a', () => { expect(1).toBe(1); });
+it('b', () => { /* TODO */ });
+it('c', () => { /* TODO */ });
+`,
+		);
+		expect(result).not.toBeNull();
+		expect(result?.name).toBe("assertion_density");
+		expect(result?.severity).toBe("warning");
+		expect(result?.determinism).toBe("heuristic");
+		expect(result?.message).toContain("2 test block(s)");
+		expect(result?.message).toContain("0 new assertions");
+	});
+
+	it("fires when assertions are removed even if blocks are added", () => {
+		const session = makeSession();
+		checkAssertionDensity(
+			session,
+			TEST_FILE,
+			`it('a', () => { expect(1).toBe(1); expect(2).toBe(2); expect(3).toBe(3); });\n`,
+		);
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			`it('a', () => { expect(1).toBe(1); });
+it('b', () => {});
+`,
+		);
+		expect(result).not.toBeNull();
+		// 3 → 1 = -2 fewer assertions; 1 → 2 = +1 block. dBlocks=1, dAssertions=-2.
+		expect(result?.message).toContain("1 test block(s)");
+		expect(result?.message).toContain("2 fewer assertions");
+	});
+
+	it("stays silent when only assertions are added", () => {
+		const session = makeSession();
+		checkAssertionDensity(session, TEST_FILE, "it('a', () => { expect(1).toBe(1); });\n");
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			`it('a', () => {
+	expect(1).toBe(1);
+	expect(2).toBe(2);
+	expect(3).toBe(3);
+});
+`,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("never fires on non-test source files", () => {
+		const session = makeSession();
+		// Even with zero assertions and many `function` blocks, source files
+		// are out of scope.
+		expect(checkAssertionDensity(session, SOURCE_FILE, "function a(){}\nfunction b(){}\n"))
+			.toBeNull();
+		expect(checkAssertionDensity(session, SOURCE_FILE, "function a(){}\nfunction b(){}\n"))
+			.toBeNull();
+		// Source files are not even baselined — assertion_counts must stay empty.
+		expect(session.assertion_counts.size).toBe(0);
+	});
+
+	it("honors the // interlinked-tdd: exempt directive", () => {
+		const session = makeSession();
+		const exempt = `// interlinked-tdd: exempt
+it('a', () => {});
+it('b', () => {});
+`;
+		// First call baselines (still silent because first sight)
+		expect(checkAssertionDensity(session, TEST_FILE, exempt)).toBeNull();
+		// Even on the second visit with an obvious "blocks grew, no expects"
+		// pattern, the directive opts out.
+		const second = exempt + "\nit('c', () => {});\nit('d', () => {});\n";
+		expect(checkAssertionDensity(session, TEST_FILE, second)).toBeNull();
+	});
+
+	it("counts node:assert named imports correctly", () => {
+		// `strictEqual` is bare-name FP-prone, so the detector only credits
+		// it when imported from `node:assert`.
+		const withImport = `import { strictEqual, deepStrictEqual } from "node:assert";
+it('a', () => { strictEqual(1, 1); deepStrictEqual({}, {}); });
+`;
+		expect(countAssertions(withImport)).toEqual({ blocks: 1, assertions: 2 });
+
+		// Without the import, identically-named calls don't count.
+		const withoutImport = `it('a', () => { strictEqual(1, 1); deepStrictEqual({}, {}); });\n`;
+		expect(countAssertions(withoutImport)).toEqual({ blocks: 1, assertions: 0 });
+	});
+
+	it("counts chai.assert.* and snapshot matchers", () => {
+		// `chai.assert.X(` matches once (the alternation prefers `chai\.assert`
+		// at position 0 of `chai`). `expect(x).toMatchSnapshot()` matches
+		// twice (both `expect(` and `toMatchSnapshot(` independently fire) —
+		// the over-count is by design: it cancels out across pre/post deltas.
+		const content = `it('a', () => {
+	chai.assert.equal(1, 1);
+	chai.assert.deepEqual([], []);
+	expect(snap).toMatchSnapshot();
+	expect(snap2).toMatchInlineSnapshot();
+});
+`;
+		expect(countAssertions(content)).toEqual({ blocks: 1, assertions: 6 });
+	});
+
+	it("counts data-driven test variants (.each, .skip, .only, etc.) as blocks", () => {
+		const content = `
+it('plain', () => {});
+it.skip('skipped', () => {});
+it.only('only', () => {});
+it.concurrent('conc', () => {});
+test.each([1, 2, 3])('table %i', (n) => {});
+test.each\`${1} | ${2}\`('tagged %i', (n) => {});
+it.todo('todo');
+`;
+		const counts = countAssertions(content);
+		// 7 blocks total, 0 assertions.
+		expect(counts.blocks).toBe(7);
+		expect(counts.assertions).toBe(0);
+	});
+
+	it("counts should-style assertion chains", () => {
+		const content = `
+it('a', () => {
+	result.should.equal(1);
+	should(result).equal(1);
+});
+`;
+		expect(countAssertions(content)).toEqual({ blocks: 1, assertions: 2 });
+	});
+
+	it("ignores expect( inside comments and strings", () => {
+		const content = `
+it('a', () => {
+	// expect(1).toBe(1)  -- in a comment, must not count
+	const s = "expect(stub).toBe(1)"; // string literal, must not count
+	expect(2).toBe(2);
+});
+`;
+		expect(countAssertions(content)).toEqual({ blocks: 1, assertions: 1 });
+	});
+
+	it("counts standalone describe() as zero blocks", () => {
+		const content = `describe('outer', () => { /* no it() */ });\n`;
+		expect(countAssertions(content)).toEqual({ blocks: 0, assertions: 0 });
+	});
+
+	it("does not fire on the second edit when blocks didn't grow", () => {
+		const session = makeSession();
+		checkAssertionDensity(
+			session,
+			TEST_FILE,
+			"it('a', () => {});\nit('b', () => {});\n",
+		);
+		// Same number of blocks, still no assertions — but no growth ⇒ no fire.
+		const result = checkAssertionDensity(
+			session,
+			TEST_FILE,
+			"it('a', () => {});\nit('b', () => {});\n",
+		);
+		expect(result).toBeNull();
+	});
+
+	it("handles common test-file path conventions", () => {
+		const session = makeSession();
+		// First-sight behavior confirms the path regex matches: a populated
+		// `assertion_counts` entry means the file passed the gate. The shared
+		// TEST_FILE_RE requires a leading slash before `tests/`, so a repo
+		// using top-level `tests/` (no leading slash) is not currently
+		// recognized — that gap is shared with other behavioral checks and
+		// out of scope for Phase 1.
+		const recognized = [
+			"src/foo.test.ts",
+			"src/foo.spec.ts",
+			"src/__tests__/foo.ts",
+			"/repo/tests/foo.ts",
+		];
+		for (const p of recognized) {
+			expect(checkAssertionDensity(session, p, "it('x', () => {});\n")).toBeNull();
+			expect(session.assertion_counts.has(p)).toBe(true);
+		}
 	});
 });

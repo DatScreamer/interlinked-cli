@@ -8,7 +8,9 @@ import {
 	existsSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 } from "node:fs";
@@ -24,6 +26,9 @@ import { getOutputMode, output, outputError } from "../lib/output.js";
 
 /** Delay after SIGTERM to let the harness process exit cleanly before we check its status. */
 const HARNESS_SHUTDOWN_WAIT_MS = 1000;
+/** Grace after SIGKILL before declaring the process unkillable. The kernel
+ *  reaps within milliseconds in normal cases; one second is generous. */
+const HARNESS_RESTART_KILL_WAIT_MS = 1000;
 /** Max wait (ms) after SIGTERM during restart before giving up. */
 const HARNESS_RESTART_MAX_WAIT_MS = 3000;
 /** Poll interval (ms) while waiting for the harness to shut down during restart. */
@@ -216,20 +221,156 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 		return { candidates, killed: [], dryRun: true };
 	}
 	const killed: number[] = [];
+	const killedSet = new Set<number>();
+	const markKilled = (pid: number): void => {
+		if (killedSet.has(pid)) return;
+		killedSet.add(pid);
+		killed.push(pid);
+	};
+
+	const termSent: OrphanCandidate[] = [];
 	for (const candidate of candidates) {
+		// Signal every candidate before waiting. With per-candidate waits, N
+		// SIGTERM-deaf orphans cost N * (TERM grace + KILL grace) and later
+		// daemons were not even signalled until earlier timeouts expired.
 		try {
 			process.kill(candidate.pid, "SIGTERM");
-			killed.push(candidate.pid);
-		} catch (e) {
-			void e; // Already gone or insufficient permissions; nothing to do.
+			termSent.push(candidate);
+		} catch (termErr) {
+			// Already gone counts as reaped; permission errors do not.
+			if (isNoSuchProcessError(termErr)) markKilled(candidate.pid);
 		}
 	}
+
+	// Verify all signalled processes under one shared deadline, then
+	// escalate only survivors. This preserves the "don't clear pid files
+	// unless the process is truly gone" contract without serial timeouts.
+	const termSurvivors = waitForProcessesExit(
+		termSent.map((candidate) => candidate.pid),
+		REAP_GRACE_MS,
+		markKilled,
+	);
+	const killSent: number[] = [];
+	for (const candidate of termSent) {
+		if (!termSurvivors.has(candidate.pid)) continue;
+		try {
+			process.kill(candidate.pid, "SIGKILL");
+			killSent.push(candidate.pid);
+		} catch (killErr) {
+			if (isNoSuchProcessError(killErr)) markKilled(candidate.pid);
+		}
+	}
+	waitForProcessesExit(killSent, REAP_KILL_GRACE_MS, markKilled);
+	// After everything dies, sweep the stale pid/sock files so the next
+	// `startSessionDaemon` doesn't see an "existing PID" left behind by a
+	// daemon that crashed without reaching its own removePidFile() call.
 	if (killed.length > 0) {
+		clearOrphanedPidFiles(cwd, killed);
 		process.stderr.write(
 			`[interlinked] Reaped ${killed.length} orphan harness daemon${killed.length === 1 ? "" : "s"}: ${killed.join(", ")}\n`,
 		);
 	}
 	return { candidates, killed, dryRun: false };
+}
+
+/** Grace window for the daemon to exit on SIGTERM before we escalate to
+ *  SIGKILL. Three seconds covers the longest normal shutdown path
+ *  (async-analysis drain caps at 2s) without making restarts feel sluggish. */
+const REAP_GRACE_MS = 3000;
+/** After SIGKILL the kernel reaps within milliseconds; one second is overkill
+ *  but cheap insurance against pathological scheduling. */
+const REAP_KILL_GRACE_MS = 1000;
+
+/** Block synchronously until every PID is gone or `timeoutMs` elapses. Returns
+ *  the still-alive survivors. Polls with `process.kill(pid, 0)` (signal 0 is
+ *  "test for existence") at ~50 ms intervals. */
+function waitForProcessesExit(
+	pids: readonly number[],
+	timeoutMs: number,
+	onExited: (pid: number) => void,
+): Set<number> {
+	const alive = new Set(pids);
+	const deadline = Date.now() + timeoutMs;
+	while (alive.size > 0 && Date.now() < deadline) {
+		for (const pid of [...alive]) {
+			if (!hasProcess(pid)) {
+				alive.delete(pid);
+				onExited(pid);
+			}
+		}
+		if (alive.size === 0) break;
+		// Use Atomics.wait for a no-CPU sleep — busy-looping here would burn
+		// a core during shutdown.
+		const buf = new SharedArrayBuffer(4);
+		Atomics.wait(new Int32Array(buf), 0, 0, 50);
+	}
+	for (const pid of [...alive]) {
+		if (!hasProcess(pid)) {
+			alive.delete(pid);
+			onExited(pid);
+		}
+	}
+	return alive;
+}
+
+function hasProcess(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return !isNoSuchProcessError(err);
+	}
+}
+
+function isNoSuchProcessError(err: unknown): boolean {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		"code" in err &&
+		(err as NodeJS.ErrnoException).code === "ESRCH"
+	);
+}
+
+/** After reaping, drop any pid/sock files whose contents reference the
+ *  killed PIDs. Without this the next start sees `existingPid !== null` and
+ *  refuses to bind even though no daemon is alive. Best-effort: missing or
+ *  unreadable files are skipped silently. */
+function clearOrphanedPidFiles(cwd: string, killedPids: number[]): void {
+	const killedSet = new Set(killedPids);
+	const dir = join(cwd, ".interlinked");
+	const candidates: string[] = [];
+	try {
+		for (const name of readdirSync(dir)) {
+			if (name === "harness.pid" || /^harness-.+\.pid$/.test(name)) {
+				candidates.push(join(dir, name));
+			}
+		}
+	} catch {
+		return;
+	}
+	for (const pidPath of candidates) {
+		let pidStr = "";
+		try {
+			pidStr = readFileSync(pidPath, "utf-8").trim();
+		} catch {
+			continue;
+		}
+		const filePid = Number.parseInt(pidStr, 10);
+		if (!Number.isFinite(filePid)) continue;
+		if (!killedSet.has(filePid)) continue;
+		try {
+			rmSync(pidPath, { force: true });
+		} catch {
+			/* swallow */
+		}
+		// Pair with its socket file — same prefix, .sock suffix.
+		const sockPath = pidPath.replace(/\.pid$/, ".sock");
+		try {
+			if (existsSync(sockPath)) rmSync(sockPath, { force: true });
+		} catch {
+			/* swallow */
+		}
+	}
 }
 
 /**
@@ -682,19 +823,49 @@ export async function harnessRestartCommand(opts: {
 		const status = isHarnessRunning(cwd);
 		if (status.running && status.pid) {
 			oldPid = status.pid;
-			process.kill(status.pid, "SIGTERM");
-			// Wait for shutdown
+			try {
+				process.kill(status.pid, "SIGTERM");
+			} catch {
+				// Already dead between status check and signal — fine, fall
+				// through to the start path.
+			}
+			// Wait for graceful shutdown, then escalate to SIGKILL if the
+			// daemon is wedged. Previously we surfaced the wedge as a hard
+			// error and asked the user to `kill -9` themselves — but the
+			// `Sending termination signals` rule blocks them from doing it
+			// inside an agent session, deadlocking restart entirely. Owning
+			// the escalation here is what makes `harness restart` actually
+			// restart instead of give up.
 			const start = Date.now();
 			while (Date.now() - start < HARNESS_RESTART_MAX_WAIT_MS) {
 				await new Promise((resolve) => setTimeout(resolve, HARNESS_RESTART_POLL_MS));
 				if (!isHarnessRunning(cwd).running) break;
 			}
 			if (isHarnessRunning(cwd).running) {
-				outputError(
-					mode,
-					`Failed to stop harness (PID ${status.pid}). Try: kill -9 ${status.pid}`,
-				);
-				return;
+				if (mode === "normal") {
+					process.stderr.write(
+						c.yellow(
+							`PID ${status.pid} ignored SIGTERM after ${HARNESS_RESTART_MAX_WAIT_MS}ms — escalating to SIGKILL\n`,
+						),
+					);
+				}
+				try {
+					process.kill(status.pid, "SIGKILL");
+				} catch {
+					// Permission denied or just gone — last-ditch fall-through.
+				}
+				const killStart = Date.now();
+				while (Date.now() - killStart < HARNESS_RESTART_KILL_WAIT_MS) {
+					await new Promise((resolve) => setTimeout(resolve, HARNESS_RESTART_POLL_MS));
+					if (!isHarnessRunning(cwd).running) break;
+				}
+				if (isHarnessRunning(cwd).running) {
+					outputError(
+						mode,
+						`PID ${status.pid} survived SIGKILL — possibly a kernel-protected process. Investigate manually.`,
+					);
+					return;
+				}
 			}
 			if (mode === "normal") {
 				process.stderr.write(c.dim(`Stopped harness (was PID ${status.pid})\n`));

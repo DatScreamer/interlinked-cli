@@ -19,6 +19,15 @@ import { SESSION_STATE_CHUNK } from "./session-state.js";
 //   2. Invoke git through execFileSync with an argv array so no string ever
 //      reaches a shell.
 describe("SESSION_STATE_CHUNK — git shell-out hardening (security regression)", () => {
+	it("sanitizes session ids before using them as session filenames", () => {
+		expect(SESSION_STATE_CHUNK).toMatch(/function\s+safeSessionFilePath\s*\(/);
+		expect(SESSION_STATE_CHUNK).toContain('replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64)');
+		expect(SESSION_STATE_CHUNK).not.toContain('join(SESSIONS_DIR, sessionId + ".json")');
+		expect(SESSION_STATE_CHUNK).not.toContain(
+			'join(SESSIONS_DIR, sessionId + ".anchor.json")',
+		);
+	});
+
 	it("defines the isGitSha validator", () => {
 		expect(SESSION_STATE_CHUNK).toMatch(/function\s+isGitSha\s*\(/);
 		// The regex is the load-bearing part — anchor both ends, 7–40 hex only.

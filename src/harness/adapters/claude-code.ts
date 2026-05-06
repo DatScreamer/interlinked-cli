@@ -152,9 +152,18 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 			if (decision.additional_context) contextParts.push(decision.additional_context);
 			if (event?.phase === "pre-tool" && stderr) contextParts.push(stderr);
 			if (contextParts.length > 0) {
+				// Claude Code rejects hookSpecificOutput without hookEventName
+				// ("Hook returned incorrect event name"). Echo the runner's
+				// native event verbatim; fall back by phase if absent.
+				const hookEventName =
+					event?.runner_native_event ??
+					(event?.phase === "pre-tool" ? "PreToolUse" : "PostToolUse");
 				return {
 					stdout: JSON.stringify({
-						hookSpecificOutput: { additionalContext: contextParts.join("\n") },
+						hookSpecificOutput: {
+							hookEventName,
+							additionalContext: contextParts.join("\n"),
+						},
 					}),
 					stderr: stderr || undefined,
 					exit_code: 0,

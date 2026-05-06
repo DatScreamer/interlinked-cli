@@ -144,9 +144,14 @@ export function formatTurnEndWarnings(summary: TurnEndSummary): string[] {
 				);
 				break;
 			case "write-without-read":
-				warnings.push(
-					"[interlinked:turn-end] Some files were written without being read first. Always read a file before editing to understand existing code.",
-				);
+				// Cut: this advisory burned context on every legitimate
+				// new-file creation, template scaffolding, and apply-patch
+				// flow. Claude Code already enforces read-before-edit at the
+				// Edit-tool level (the tool errors without a prior Read);
+				// duplicating that as a turn-end heuristic produced more
+				// noise than signal. If a repo wants the advisory back, it
+				// should be opt-in via guard-rules.local.json with explicit
+				// scoping — not on by default.
 				break;
 			case "file-thrashing":
 				warnings.push(

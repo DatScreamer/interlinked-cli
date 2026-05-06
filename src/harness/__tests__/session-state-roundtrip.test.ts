@@ -1,0 +1,251 @@
+// ===========================================
+// SessionTracker.serialize / hydrate round-trip
+// ===========================================
+// The two methods MUST be perfect inverses for the live-snapshot durability
+// path to work: every field that survives a process restart hinges on this.
+// Test diverse state — Maps with complex values, nested Sets inside
+// pending_completions, optional fields, the Infinity/null step_limit
+// encoding — so a future field addition that forgets either side is caught.
+
+import { describe, expect, it } from "vitest";
+import { acknowledgeChecks, SessionTracker } from "../session-state.js";
+import type { HarnessEvent } from "../types.js";
+
+const baseEvent = (overrides: Partial<HarnessEvent>): HarnessEvent => ({
+	hook_event: "PostToolUse",
+	session_id: "rtt-session",
+	agent_name: "alice",
+	agent_source: "claude",
+	tool_name: "Edit",
+	tool_input: {},
+	timestamp: "2026-05-05T10:00:00Z",
+	...overrides,
+});
+
+describe("SessionTracker round-trip", () => {
+	it("preserves a freshly-created session unchanged", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({ tool_name: "Read", tool_input: { file_path: "a.ts" } }));
+		const snap = writer.serialize("rtt-session");
+		expect(snap).not.toBeNull();
+
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+		expect(restored).not.toBeNull();
+		expect(restored?.session_id).toBe("rtt-session");
+		expect(restored?.tool_call_count).toBe(1);
+		expect(restored?.files_read.has("a.ts")).toBe(true);
+	});
+
+	it("preserves files_read, files_written, tool counts across multiple events", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({ tool_name: "Read", tool_input: { file_path: "src/a.ts" } }));
+		writer.recordEvent(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: { file_path: "src/b.ts", old_string: "x", new_string: "y" },
+			}),
+		);
+		writer.recordEvent(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "git status" },
+			}),
+		);
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.tool_call_count).toBe(3);
+		expect(restored?.files_read.size).toBe(1);
+		expect(restored?.files_written.size).toBe(1);
+		expect(restored?.commands_run).toEqual(["git status"]);
+		expect(restored?.local_tools_used).toBe(3);
+		expect(restored?.mcp_tools_used).toBe(0);
+	});
+
+	it("preserves acknowledged_checks and file_edit_counts (the suppression state)", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: { file_path: "src/x.ts", old_string: "a", new_string: "b" },
+			}),
+		);
+		const session = writer.get("rtt-session");
+		if (session) acknowledgeChecks(session, "src/x.ts", ["typescript", "biome_lint"]);
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.acknowledged_checks.has("src/x.ts::typescript")).toBe(true);
+		expect(restored?.acknowledged_checks.has("src/x.ts::biome_lint")).toBe(true);
+		expect(restored?.file_edit_counts.get("src/x.ts")).toBe(1);
+	});
+
+	it("encodes Infinity step_limit as null and decodes it back", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		expect(session?.step_limit).toBe(Number.POSITIVE_INFINITY);
+
+		const snap = writer.serialize("rtt-session");
+		expect(snap?.step_limit).toBeNull(); // JSON-safe encoding
+
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+		expect(restored?.step_limit).toBe(Number.POSITIVE_INFINITY);
+	});
+
+	it("preserves a finite step_limit unchanged", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) session.step_limit = 25;
+
+		const snap = writer.serialize("rtt-session");
+		expect(snap?.step_limit).toBe(25);
+
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+		expect(restored?.step_limit).toBe(25);
+	});
+
+	it("preserves nested Set inside pending_completions.resolved_files", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) {
+			session.pending_completions.set("api.ts", {
+				source_file: "api.ts",
+				affected_files: ["client.ts", "server.ts"],
+				resolved_files: new Set(["client.ts"]),
+				recorded_at_tool_call: 1,
+				description: "API surface change",
+			});
+		}
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		const pending = restored?.pending_completions.get("api.ts");
+		expect(pending?.source_file).toBe("api.ts");
+		expect(pending?.affected_files).toEqual(["client.ts", "server.ts"]);
+		expect(pending?.resolved_files instanceof Set).toBe(true);
+		expect(pending?.resolved_files.has("client.ts")).toBe(true);
+		expect(pending?.resolved_files.has("server.ts")).toBe(false);
+	});
+
+	it("preserves the previously-missing 'consecutive_tool_failures' counter", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(
+			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+		);
+		writer.recordEvent(
+			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+		);
+		writer.recordEvent(
+			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+		);
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.consecutive_tool_failures.get("Bash")).toBe(3);
+	});
+
+	it("preserves nudge guards, doc/non-doc commit cadence counters", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) {
+			session.mid_session_nudge_emitted = true;
+			session.stop_nudge_emitted = false;
+			session.doc_files_edited_since_commit = 4;
+			session.non_doc_files_edited_since_commit = new Set(["src/a.ts", "src/b.ts"]);
+		}
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.mid_session_nudge_emitted).toBe(true);
+		expect(restored?.stop_nudge_emitted).toBe(false);
+		expect(restored?.doc_files_edited_since_commit).toBe(4);
+		expect(restored?.non_doc_files_edited_since_commit?.has("src/a.ts")).toBe(true);
+		expect(restored?.non_doc_files_edited_since_commit?.size).toBe(2);
+	});
+
+	it("returns null on snapshot missing session_id", () => {
+		const reader = new SessionTracker();
+		const restored = reader.hydrate({ tool_call_count: 5 });
+		expect(restored).toBeNull();
+	});
+
+	it("falls back to defaults on unknown sensitivity_level", () => {
+		const reader = new SessionTracker();
+		const restored = reader.hydrate({
+			session_id: "weird",
+			sensitivity_level: "Bogus",
+		});
+		expect(restored?.sensitivity_level).toBe("Public");
+	});
+
+	it("includes schema_version in the snapshot envelope", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const snap = writer.serialize("rtt-session");
+		expect(snap?.schema_version).toBe(1);
+	});
+
+	it("refuses snapshots from a newer schema version", () => {
+		const reader = new SessionTracker();
+		const restored = reader.hydrate({
+			schema_version: 999,
+			session_id: "future-session",
+			tool_call_count: 5,
+		});
+		expect(restored).toBeNull();
+		expect(reader.get("future-session")).toBeUndefined();
+	});
+
+	it("preserves assertion_counts across serialize/hydrate (Plan 09 Phase 1)", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) {
+			session.assertion_counts.set("src/foo.test.ts", { blocks: 3, assertions: 5 });
+			session.assertion_counts.set("src/bar.test.ts", { blocks: 1, assertions: 1 });
+		}
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.assertion_counts.size).toBe(2);
+		expect(restored?.assertion_counts.get("src/foo.test.ts")).toEqual({
+			blocks: 3,
+			assertions: 5,
+		});
+		expect(restored?.assertion_counts.get("src/bar.test.ts")).toEqual({
+			blocks: 1,
+			assertions: 1,
+		});
+	});
+
+	it("hydrates missing assertion_counts to an empty Map (older snapshot)", () => {
+		// Defensive: a snapshot from before this field landed should not crash
+		// `checkAssertionDensity`'s `session.assertion_counts.get(...)` lookup.
+		const reader = new SessionTracker();
+		const restored = reader.hydrate({
+			session_id: "old-session",
+			// no assertion_counts field
+		});
+		expect(restored?.assertion_counts).toBeInstanceOf(Map);
+		expect(restored?.assertion_counts.size).toBe(0);
+	});
+});

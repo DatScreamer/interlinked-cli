@@ -12,6 +12,7 @@ import {
 	aggregateRecurrences,
 	deriveSignature,
 	loadRecurrenceEvents,
+	markOutcome,
 	parseDurationMs,
 	proposeAction,
 	type Recurrence,
@@ -277,6 +278,31 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		expect(events[0].message).toBe("x");
 		// ts auto-populated as ISO 8601
 		expect(events[0].ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+	});
+
+	it("markOutcome writes outcome_marker rows that survive reload", () => {
+		markOutcome({
+			check_id: "misused_promises",
+			file: "src/foo.ts",
+			session_id: "s1",
+			signal: "agent_suppressed",
+			reason: "inline suppression with justification",
+			fire_ts: "2026-05-01T00:00:00.000Z",
+			ts: "2026-05-02T00:00:00.000Z",
+			cwd: dir,
+		});
+		const events = loadRecurrenceEvents(dir);
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({
+			ts: "2026-05-02T00:00:00.000Z",
+			kind: "outcome_marker",
+			check_id: "misused_promises",
+			file: "src/foo.ts",
+			session_id: "s1",
+			outcome_signal: "agent_suppressed",
+			outcome_reason: "inline suppression with justification",
+			fire_ts: "2026-05-01T00:00:00.000Z",
+		});
 	});
 
 	it("skips torn / malformed lines without throwing", () => {

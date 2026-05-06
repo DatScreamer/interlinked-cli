@@ -26,6 +26,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "../lib/json-types.js";
 import {
+	checkAssertionDensity,
 	checkProdDeltaWithoutTestDelta,
 	checkProdTestLocRatio,
 	checkTddCommitGate,
@@ -115,6 +116,12 @@ import {
 	SessionTracker,
 } from "./session-state.js";
 import {
+	deleteLiveSnapshot,
+	readLiveSnapshot,
+	sweepStaleLiveSnapshots,
+	writeLiveSnapshot,
+} from "./live-snapshot.js";
+import {
 	formatStructuralWarnings,
 	runStructuralChecks,
 	shouldSkipTsc,
@@ -175,6 +182,52 @@ const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
+
+// ============================================================================
+// Early SIGTERM/SIGINT handler — installed BEFORE heavy startup work.
+// ============================================================================
+// Why: Node delivers signals on JS turn boundaries. The full graceful
+// `shutdown()` registered at the bottom of this file can't fire until module
+// initialization finishes — and trigram-index load, project-graph build,
+// rule compilation, etc. are mostly synchronous, so a SIGTERM during
+// startup gets queued for *seconds*. The user-visible symptom is
+// `harness restart` hitting its grace window every time and falling back to
+// SIGKILL.
+//
+// The fix: register a minimal handler immediately. If a signal arrives
+// before the full shutdown machinery is wired, set a "pending" flag and
+// schedule a hard exit. Once startup completes, the bottom-of-file code
+// upgrades the handler to the real `shutdown()`. If the pending flag is
+// set, it triggers shutdown right away.
+let _shutdownReady = false;
+let _shutdownPending = false;
+function _earlyShutdown(): void {
+	if (_shutdownReady) {
+		// Real handler is in place; this branch is unreachable in practice
+		// (process.on rebinds), but defensive against double-binding.
+		return;
+	}
+	_shutdownPending = true;
+	// Best-effort artifact cleanup so the next startup doesn't see a stale
+	// pid file from a daemon that was killed mid-init.
+	try {
+		if (existsSync(PID_PATH)) rmSync(PID_PATH);
+	} catch (cleanupErr) {
+		void cleanupErr; /* intentional: pid file may not have been written yet */
+	}
+	// Hard exit after a short window if the real shutdown never wires up.
+	// 1500 ms covers cold-cache module init (~1s on this repo) but stays
+	// tight enough that the user perceives the shutdown as snappy. Forced
+	// exit isn't graceful, but the daemon hasn't accepted external
+	// connections yet — there's nothing to drain.
+	const t = setTimeout(() => {
+		process.exit(0);
+	}, 1500);
+	t.unref();
+}
+process.on("SIGTERM", _earlyShutdown);
+process.on("SIGINT", _earlyShutdown);
+
 type HarnessProtocolMode = "raw" | "framed" | "dual";
 function parseProtocolMode(raw: string | undefined): HarnessProtocolMode {
 	if (raw === "raw" || raw === "framed" || raw === "dual") return raw;
@@ -541,7 +594,31 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 	_totalEventsProcessed++;
 	resetIdleTimer();
 
-	// Update session trajectory
+	// Lazy hydrate: if the in-memory tracker has no entry for this session
+	// but disk has a `<id>.live.json` from a previous incarnation of this
+	// daemon, restore it before recordEvent so the upcoming event lands on
+	// continuous trajectory state (acknowledged checks, edit counts, fired
+	// reminders, TDD cycles, ...) instead of resetting to a fresh session.
+	if (event.session_id && !sessions.get(event.session_id)) {
+		const snap = readLiveSnapshot(CWD, event.session_id);
+		if (snap) {
+			const restored = sessions.hydrate(snap);
+			if (restored) {
+				log(
+					`Hydrated session ${event.session_id} from live snapshot ` +
+						`(${restored.tool_call_count} tool calls, ${restored.files_written.size} files written)`,
+				);
+			}
+		}
+	}
+
+	// Update session trajectory.
+	// Per-event durability: the snapshot write moved out of this function and
+	// runs from `evaluateEventLine` AFTER `processEvent` returns, so the
+	// snapshot reflects post-event mutations too — PostToolUse handlers
+	// updating `tdd_cycles`, `assertion_counts`, or `active_skills` would
+	// otherwise be lost on a daemon restart even though `recordEvent` mutated
+	// state that *was* captured. See `evaluateEventLine`'s try/finally.
 	const session = sessions.recordEvent(event);
 
 	// Update cohort based on lifecycle events
@@ -655,6 +732,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			cohort.agentLeft(event);
 			reservations.releaseAllForAgent(event.agent_name || session.agent_name, cohort);
 			sessions.remove(event.session_id);
+			// Pair the trajectory.json archive with live-snapshot deletion —
+			// once the session is permanently archived, the live snapshot is
+			// noise that would otherwise be picked up by the startup sweep.
+			deleteLiveSnapshot(CWD, event.session_id);
 			classifierSessions.delete(event.session_id);
 			autoCoordStates.delete(event.session_id);
 			log(`Agent left: ${event.agent_name || event.session_id}`);
@@ -2180,12 +2261,15 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 				// --- Session-level behavioral checks ---
 				if (session && editedFilePath) {
+					// Capture fileContent once — both `countSuppressionDirectives`
+					// and `checkAssertionDensity` need it. Reading twice would
+					// double the I/O on every PostToolUse Edit.
+					let fileContent: string | undefined;
 					let currentSuppressionCount = 0;
 					try {
 						if (existsSync(editedFilePath)) {
-							currentSuppressionCount = countSuppressionDirectives(
-								readFileSync(editedFilePath, "utf-8"),
-							);
+							fileContent = readFileSync(editedFilePath, "utf-8");
+							currentSuppressionCount = countSuppressionDirectives(fileContent);
 						}
 					} catch (e) {
 						void e;
@@ -2197,7 +2281,46 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						previousSuppressionCount,
 						currentSuppressionCount,
 					);
-					allCheckResults.push(...behavioralResults);
+
+					// Plan 09 Phase 1: assertion-density runs outside
+					// `runBehavioralChecks` because it's session-delta-based and
+					// needs the post-edit content (which the orchestrator's
+					// signature doesn't carry). The internal `TEST_FILE_RE` short-
+					// circuit handles the test-file gate.
+					if (fileContent !== undefined) {
+						const r = checkAssertionDensity(session, editedFilePath, fileContent);
+						if (r) behavioralResults.push(r);
+					}
+
+					// Filter-first: only push *shown* results into
+					// `allCheckResults` so the recurrence and effectiveness loops
+					// downstream don't see acknowledged-skipped findings.
+					// Errors bypass the ack check by design — match the
+					// suggestion-check pattern at server.ts:1970 and the quality-
+					// check pattern at :1661 (`r.severity === "error" ||
+					// !isAcknowledged(...)`). Acknowledging an error means "I saw
+					// it"; it should still surface until actually fixed.
+					if (behavioralResults.length > 0) {
+						if (!postDecision.warnings) postDecision.warnings = [];
+						for (const r of behavioralResults) {
+							if (r.severity !== "warning" && r.severity !== "error") {
+								// Info-level — record but don't surface, matching
+								// the pre-existing `checkTddGreenConfirmation`
+								// behavior.
+								allCheckResults.push(r);
+								continue;
+							}
+							const shouldShow =
+								r.severity === "error" ||
+								!isAcknowledged(session, editedFilePath, r.name);
+							if (!shouldShow) continue;
+
+							allCheckResults.push(r);
+							const tag =
+								r.determinism === "fully_deterministic" ? "[proven]" : "[heuristic]";
+							postDecision.warnings.push(`${tag} ${r.name}: ${r.message}`);
+						}
+					}
 				}
 
 				// --- Feedback effectiveness tracking ---
@@ -2246,6 +2369,8 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							file: r.file ? relative(CWD, r.file) : recurrenceRelPath,
 							message: r.message,
 							cwd: CWD,
+							phase: r.phase,
+							severity: r.severity,
 						});
 					}
 					recurrenceCursor = allCheckResults.length;
@@ -2332,24 +2457,57 @@ async function evaluateEventLine(
 	line: string,
 	protocol: "raw" | "framed",
 ): Promise<HarnessDecision> {
-	const decision = await processEvent(line);
-	recordProtocolEvent(protocol);
+	// Parse session_id once up-front so the durability finally block can run
+	// even when `processEvent` throws — the session was already created (or
+	// hydrated) by the time recordEvent ran, so a snapshot is safe to write.
+	let sessionIdForSnap: string | null = null;
 	try {
-		const evt: JsonObject = JSON.parse(line);
-		appendLatencyLog(INTERLINKED_DIR, {
-			hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
-			tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
-			session_id: typeof evt.session_id === "string" ? evt.session_id : null,
-			agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
-			decision: decision.decision,
-			checks_ran: decision.checks_ran ?? null,
-			checks_timing_ms: decision.checks_timing_ms ?? null,
-			tool_breakdown: decision.tool_breakdown ?? null,
-		});
+		const parsed: JsonObject = JSON.parse(line);
+		if (typeof parsed.session_id === "string") sessionIdForSnap = parsed.session_id;
 	} catch (e) {
 		void e;
 	}
-	return decision;
+
+	try {
+		const decision = await processEvent(line);
+		recordProtocolEvent(protocol);
+		try {
+			const evt: JsonObject = JSON.parse(line);
+			appendLatencyLog(INTERLINKED_DIR, {
+				hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
+				tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
+				session_id: typeof evt.session_id === "string" ? evt.session_id : null,
+				agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
+				decision: decision.decision,
+				checks_ran: decision.checks_ran ?? null,
+				checks_timing_ms: decision.checks_timing_ms ?? null,
+				tool_breakdown: decision.tool_breakdown ?? null,
+			});
+		} catch (e) {
+			void e;
+		}
+		return decision;
+	} finally {
+		// Per-event durability: write the live snapshot AFTER processEvent so
+		// the snapshot reflects every post-event state mutation — PostToolUse
+		// handlers updating `tdd_cycles`, `assertion_counts`, `active_skills`,
+		// etc. The earlier "snapshot right after recordEvent" placement lost
+		// those mutations on a daemon restart between events. Best-effort:
+		// write failures are logged but never block the decision return.
+		if (sessionIdForSnap) {
+			try {
+				const snap = sessions.serialize(sessionIdForSnap);
+				if (snap) {
+					const writeResult = writeLiveSnapshot(CWD, sessionIdForSnap, snap);
+					if (!writeResult.ok) {
+						log(`Live snapshot write failed (non-fatal): ${writeResult.error.message}`);
+					}
+				}
+			} catch (e) {
+				log(`Live snapshot write threw: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+	}
 }
 
 async function evaluateUnifiedViaRuntime(event: UnifiedHookEvent): Promise<HarnessDecision> {
@@ -2577,11 +2735,19 @@ function cleanupSocket(path: string = SOCKET_PATH): void {
 }
 
 function writePidFile(): void {
+	// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
+	// is written exclusively by `startSessionDaemon()` (session-daemon.ts:136)
+	// AFTER its ownership check — writing it here too clobbers a sibling
+	// daemon's PID file before the session-daemon code can detect the
+	// existing owner, causing it to remove the live socket and rebind.
 	ensureDirectory(PID_PATH);
 	writeFileSync(PID_PATH, String(process.pid));
 }
 
 function removePidFile(): void {
+	// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
+	// is removed by `session-daemon.handle.stop()` (session-daemon.ts:167-169)
+	// — the side that wrote it owns the lifecycle, so we don't touch it here.
 	try {
 		if (existsSync(PID_PATH)) {
 			rmSync(PID_PATH);
@@ -2595,10 +2761,49 @@ let socketServer: ReturnType<typeof createServer> | null = null;
 let framedDaemon: SessionDaemonHandle | null = null;
 let shuttingDown = false;
 
+/** Tracks every open raw-socket client so shutdown can destroy them. Without
+ *  this, `socketServer.close(callback)` waits for clients to disconnect on
+ *  their own — which never happens for a hung .mjs hook — and SIGTERM appears
+ *  to be ignored. The set is mutated by createRawSocketServer's connect/close
+ *  handlers and emptied during shutdownAsync. */
+const openRawClients: Set<Socket> = new Set();
+
+/** Hard ceiling on graceful shutdown. If `shutdownAsync` doesn't reach
+ *  `process.exit(0)` within this window, force-exit so a stuck connection or
+ *  drain promise can't hold the daemon hostage and block restarts. */
+const SHUTDOWN_GRACE_MS = 3000;
+/** Per-step timeout for individual shutdown phases (framedDaemon.stop, etc.).
+ *  Each phase races against this window; the SHUTDOWN_GRACE_MS umbrella
+ *  catches anything that escapes both. */
+const SHUTDOWN_STEP_TIMEOUT_MS = 500;
+
 function shutdown(): void {
 	if (shuttingDown) return;
 	shuttingDown = true;
-	void shutdownAsync();
+	// Always-armed force-exit. Any path that hangs for more than 3 s — a
+	// pinned client connection, an async drain that never resolves, a third-
+	// party shutdown handler that throws — will fall through to this rather
+	// than leaving the daemon SIGTERM-deaf and forcing the user to SIGKILL.
+	const forceExit = setTimeout(() => {
+		try {
+			logAlways(`Graceful shutdown stalled after ${SHUTDOWN_GRACE_MS}ms — forcing exit`);
+		} catch (logErr) {
+			void logErr; /* intentional: logger may already be torn down */
+		}
+		try {
+			removePidFile();
+		} catch (rmErr) {
+			void rmErr; /* intentional: best-effort cleanup during forced exit */
+		}
+		try {
+			if (RUN_RAW_SOCKET) cleanupSocket();
+		} catch (sockErr) {
+			void sockErr; /* intentional: best-effort cleanup during forced exit */
+		}
+		process.exit(1);
+	}, SHUTDOWN_GRACE_MS);
+	forceExit.unref();
+	shutdownAsync().finally(() => clearTimeout(forceExit));
 }
 
 async function shutdownAsync(): Promise<void> {
@@ -2610,11 +2815,42 @@ async function shutdownAsync(): Promise<void> {
 	contentScanner?.shutdown().catch(() => {
 		// best-effort
 	});
-	await framedDaemon?.stop("server_shutdown");
-	await new Promise<void>((resolve) => {
-		if (!socketServer) return resolve();
-		socketServer.close(() => resolve());
-	});
+	// Destroy open raw-socket clients BEFORE server.close(). Node's
+	// `server.close()` only stops accepting new connections; it waits forever
+	// for active ones to drain on their own. A hung .mjs hook (mid-RPC, parent
+	// exited) will pin the close indefinitely without this loop.
+	for (const sock of openRawClients) {
+		try {
+			sock.destroy();
+		} catch (destroyErr) {
+			void destroyErr; /* intentional: socket already torn down */
+		}
+	}
+	openRawClients.clear();
+	// Stop the framed daemon, but bound it: an in-flight RPC on a stuck
+	// client would otherwise hang stop() forever. 500 ms is generous —
+	// stop() destroys its own clients first, so close() should resolve
+	// in microseconds. The race + timeout is insurance, not the path.
+	if (framedDaemon) {
+		await Promise.race([
+			framedDaemon.stop("server_shutdown"),
+			new Promise<void>((resolve) => {
+				const t = setTimeout(resolve, SHUTDOWN_STEP_TIMEOUT_MS);
+				t.unref();
+			}),
+		]);
+	}
+	// Tell the raw server to stop accepting new connections, but DO NOT
+	// await server.close(callback). The callback only fires after every
+	// active connection drains on its own — and a malformed client (rare
+	// but real, observed in the wild) can keep that pending forever. We
+	// already destroyed openRawClients above; the OS will reclaim the
+	// listening socket on process exit regardless.
+	try {
+		socketServer?.close();
+	} catch (closeErr) {
+		void closeErr; /* intentional: close() can throw if the server is already closed */
+	}
 	if (RUN_RAW_SOCKET) cleanupSocket();
 	removePidFile();
 	unwatchRules();
@@ -2624,6 +2860,7 @@ async function shutdownAsync(): Promise<void> {
 function createRawSocketServer(): ReturnType<typeof createServer> {
 	return createServer((sock: Socket) => {
 		connectionCount++;
+		openRawClients.add(sock);
 		log(`Connection opened (total: ${connectionCount})`);
 
 		let buffer = "";
@@ -2648,6 +2885,7 @@ function createRawSocketServer(): ReturnType<typeof createServer> {
 
 		sock.on("close", () => {
 			connectionCount--;
+			openRawClients.delete(sock);
 			log(`Connection closed (remaining: ${connectionCount})`);
 		});
 
@@ -2680,6 +2918,20 @@ if (RUN_RAW_SOCKET) {
 }
 writePidFile();
 writeProtocolStatus();
+
+// Sweep orphaned `<id>.live.json` snapshots older than 48h. A session that
+// hasn't sent an event in two days is stale enough that its snapshot is no
+// longer load-bearing — keeping it around just delays GC and clutters
+// `interlinked status`. Live snapshots from sessions still active in the
+// last 48h survive and will hydrate on their next event.
+{
+	const sweep = sweepStaleLiveSnapshots(CWD);
+	if (sweep.removed.length > 0) {
+		log(
+			`Reaped ${sweep.removed.length} stale live snapshot(s) (of ${sweep.scanned} scanned)`,
+		);
+	}
+}
 
 // Watch rules files for hot-reload
 const unwatchRules = watchRulesFiles(CWD, (newRules) => {
@@ -2744,8 +2996,22 @@ setInterval(
 );
 
 // Handle process signals
+// Upgrade the early SIGTERM/SIGINT handlers (installed at the top of this
+// file before heavy startup work) to the full graceful `shutdown()`. The
+// early handler covers signals that arrive while module init was still
+// blocking the event loop — without it, restarts during the first ~3s of
+// daemon life always fall through to SIGKILL. Order matters: re-bind first
+// so any signal arriving DURING this turn lands on the real handler, then
+// honor a flag set by the early handler if a signal was already received.
+process.removeListener("SIGTERM", _earlyShutdown);
+process.removeListener("SIGINT", _earlyShutdown);
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+_shutdownReady = true;
+if (_shutdownPending) {
+	logAlways("Shutdown was requested during startup — running graceful path now");
+	shutdown();
+}
 process.on("SIGHUP", () => {
 	// Reload rules on SIGHUP
 	rules = loadRules(CWD);
