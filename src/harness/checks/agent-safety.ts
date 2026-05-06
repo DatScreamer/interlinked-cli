@@ -374,7 +374,12 @@ export function checkPhantomDependencies(pkgJsonPath: string): InlineMatch[] {
 	const depNames = Object.keys(deps);
 	if (depNames.length === 0) return [];
 
-	const projectDir = dirname(pkgJsonPath);
+	// Workspace-aware search root: in a monorepo, deps declared in
+	// `packages/foo/package.json` may be imported from `packages/bar/`.
+	// Scoping the grep to the immediate package dir produces false-positive
+	// "phantom dep" warnings on every monorepo, training agents to ignore
+	// the warning by the time a real supply-chain phantom shows up.
+	const searchRoot = findWorkspaceRootFor(pkgJsonPath);
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
@@ -384,7 +389,7 @@ export function checkPhantomDependencies(pkgJsonPath: string): InlineMatch[] {
 		// Skip @types/* (type-only, never imported at runtime)
 		if (dep.startsWith("@types/")) continue;
 
-		if (!_isDepReferencedInProject(dep, projectDir)) {
+		if (!_isDepReferencedInProject(dep, searchRoot)) {
 			const lineIdx = lines.findIndex((l) => l.includes(`"${dep}"`));
 			matches.push({
 				line: lineIdx >= 0 ? lineIdx + 1 : 1,
@@ -394,6 +399,40 @@ export function checkPhantomDependencies(pkgJsonPath: string): InlineMatch[] {
 	}
 
 	return matches;
+}
+
+/**
+ * Walk upward from a `package.json` looking for a workspace marker:
+ * `pnpm-workspace.yaml`, or a parent `package.json` with a `workspaces`
+ * field. Returns the workspace root if found, otherwise the immediate
+ * package directory. Capped at 8 levels so we don't escape into the user's
+ * home directory on a stray invocation.
+ *
+ * Matters for phantom-dep / cross-package import checks: in a monorepo,
+ * scoping the source-search to a single package is the failure mode.
+ */
+export function findWorkspaceRootFor(pkgJsonPath: string): string {
+	const startDir = dirname(pkgJsonPath);
+	let dir = startDir;
+	for (let i = 0; i < 8; i++) {
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		if (existsSync(join(parent, "pnpm-workspace.yaml"))) {
+			return parent;
+		}
+		const parentPkg = join(parent, "package.json");
+		if (existsSync(parentPkg)) {
+			try {
+				const raw = readFileSync(parentPkg, "utf-8");
+				const json = JSON.parse(raw) as JsonObject;
+				if (json.workspaces !== undefined) return parent;
+			} catch {
+				// Best-effort — unreadable parent package.json doesn't decide the question.
+			}
+		}
+		dir = parent;
+	}
+	return startDir;
 }
 
 /**

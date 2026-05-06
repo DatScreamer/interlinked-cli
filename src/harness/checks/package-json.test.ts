@@ -7,11 +7,12 @@
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	checkPackageJsonPublishInvariants,
 	checkPackageJsonPublishInvariantsWithPublint,
+	checkPackageJsonScriptPaths,
 } from "./package-json.js";
 
 // A "complete" pre-edit package.json with every field the check tracks.
@@ -298,5 +299,115 @@ describe("checkPackageJsonPublishInvariantsWithPublint", () => {
 			pkgPath,
 		);
 		expect(findings).toEqual([]);
+	});
+});
+
+describe("checkPackageJsonScriptPaths", () => {
+	let tmp: string;
+	let pkgPath: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "pjsp-"));
+		pkgPath = join(tmp, "package.json");
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns nothing when scripts is absent", () => {
+		const content = JSON.stringify({ name: "x", version: "1.0.0" });
+		expect(checkPackageJsonScriptPaths(content, pkgPath)).toEqual([]);
+	});
+
+	it("returns nothing when scripts have no file refs", () => {
+		const content = JSON.stringify({
+			scripts: { build: "tsc", test: "vitest run", lint: "eslint ." },
+		});
+		expect(checkPackageJsonScriptPaths(content, pkgPath)).toEqual([]);
+	});
+
+	it("flags `node ./path.mjs` referencing a missing file (the Schwab CI failure)", () => {
+		const content = JSON.stringify({
+			scripts: {
+				"test:custom": "node ./scripts/structured-content-regression.mjs",
+			},
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(findings[0].text).toContain("test:custom");
+		expect(findings[0].text).toContain("structured-content-regression.mjs");
+	});
+
+	it("passes when the referenced file exists", () => {
+		mkdirSync(join(tmp, "scripts"));
+		writeFileSync(join(tmp, "scripts", "go.mjs"), "console.log(1);\n");
+		const content = JSON.stringify({
+			scripts: { run: "node ./scripts/go.mjs" },
+		});
+		expect(checkPackageJsonScriptPaths(content, pkgPath)).toEqual([]);
+	});
+
+	it("recognizes tsx, bun, deno runtimes", () => {
+		const content = JSON.stringify({
+			scripts: {
+				a: "tsx ./missing-a.ts",
+				b: "bun ./missing-b.ts",
+				c: "deno ./missing-c.ts",
+			},
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(3);
+	});
+
+	it("flags `tsc -p tsconfig.build.json` when the config doesn't exist", () => {
+		const content = JSON.stringify({
+			scripts: { build: "tsc -p tsconfig.build.json" },
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(findings[0].text).toContain("tsconfig.build.json");
+	});
+
+	it("flags `--config X.json` when the config doesn't exist", () => {
+		const content = JSON.stringify({
+			scripts: { test: "vitest --config vitest.config.ts" },
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(findings[0].text).toContain("vitest.config.ts");
+	});
+
+	it("does not double-report the same (script, ref) pair", () => {
+		const content = JSON.stringify({
+			scripts: { run: "node ./missing.mjs && node ./missing.mjs" },
+		});
+		expect(checkPackageJsonScriptPaths(content, pkgPath)).toHaveLength(1);
+	});
+
+	it("does NOT flag `eslint .` or other non-file args", () => {
+		const content = JSON.stringify({
+			scripts: { lint: "eslint . --max-warnings 0" },
+		});
+		expect(checkPackageJsonScriptPaths(content, pkgPath)).toEqual([]);
+	});
+
+	it("skips node_modules paths", () => {
+		const innerPkg = join(tmp, "node_modules", "foo", "package.json");
+		mkdirSync(dirname(innerPkg), { recursive: true });
+		const content = JSON.stringify({ scripts: { run: "node ./missing.mjs" } });
+		expect(checkPackageJsonScriptPaths(content, innerPkg)).toEqual([]);
+	});
+
+	it("emits one finding per missing file across multiple scripts", () => {
+		const content = JSON.stringify({
+			scripts: {
+				a: "node ./scripts/a.mjs",
+				b: "tsx ./scripts/b.ts",
+				c: "tsc -p tsconfig.build.json",
+			},
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(3);
 	});
 });

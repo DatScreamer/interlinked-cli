@@ -316,6 +316,7 @@ import {
 } from "./auto-coordinate.js";
 
 const autoCoordStates = new Map<string, AutoCoordinationState>();
+const indexWarningSent = new Set<string>();
 const autoCoordConfig = {
 	...DEFAULT_AUTO_COORDINATION_CONFIG,
 	...(rules.auto_coordination || {}),
@@ -1223,17 +1224,28 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			}
 		}
 
-		// For search tools that weren't accelerated, add index status as a warning
-		if (isSearchTool && preDecision.decision === "allow") {
+		// For search tools that weren't accelerated, add index status as a warning.
+		// Once-per-session dedup: this fired on every search call before, training
+		// agents to ignore it. The status doesn't change mid-session (trigramIndex
+		// is loaded once at startup), so re-emitting buys nothing.
+		const indexWarnKey = event.session_id || "anonymous";
+		if (
+			isSearchTool &&
+			preDecision.decision === "allow" &&
+			!indexWarningSent.has(indexWarnKey)
+		) {
 			const warnings = preDecision.warnings || [];
+			let emitted = false;
 			if (!trigramIndex) {
 				warnings.push(
 					"[interlinked:index] No search index. Run `interlinked index build` to enable grep acceleration.",
 				);
+				emitted = true;
 			} else if (!findRipgrep()) {
 				warnings.push(
 					"[interlinked:index] Index loaded but ripgrep not installed — grep acceleration disabled. Install: brew install ripgrep",
 				);
+				emitted = true;
 			} else {
 				// Index + rg both available. Check freshness by comparing base commit to HEAD.
 				try {
@@ -1250,12 +1262,15 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						warnings.push(
 							`[interlinked:index] Search index is ${behindCount} commit(s) behind HEAD. Run \`interlinked index build\` to refresh.`,
 						);
+						emitted = true;
 					}
 				} catch (e) {
 					void e;
 				}
 			}
-			if (warnings.length > 0) {
+			// Mark sent regardless of whether we emitted — clean state need not re-check.
+			indexWarningSent.add(indexWarnKey);
+			if (emitted) {
 				preDecision.warnings = warnings;
 			}
 		}

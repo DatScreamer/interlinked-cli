@@ -18,7 +18,7 @@
 //     These are almost always fixtures or test data.
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import type { InlineMatch } from "./shared.js";
 
@@ -275,4 +275,85 @@ export async function checkPackageJsonPublishInvariantsWithPublint(
 		text: `[package_json_publish_invariants] ${e.message}`,
 	}));
 	return [...base, ...publintFindings];
+}
+
+// ============================================================================
+// scripts ↔ files-exist
+// ============================================================================
+// Catches the universal CI failure shape: `package.json` declares a script
+// like `"test:custom": "node ./scripts/foo.mjs"` but `./scripts/foo.mjs`
+// doesn't exist on disk. Manifests in monorepos drift from the file tree
+// during refactors / renames / branch merges; the missing-file error only
+// surfaces in CI when the script actually runs.
+//
+// Conservative regex set — only matches patterns where a concrete file path
+// is unambiguous: a known runtime / compiler followed by a path with a known
+// code/config extension. We deliberately do NOT try to parse arbitrary shell;
+// that path leads to false positives that desensitize the user to real ones.
+
+/** Runtimes / compilers whose first file-shaped argument is the script path. */
+const RUNTIME_FILE_REF = /\b(?:node|tsx|bun|deno|ts-node|esno)\s+(?:["']?)([./][\w./-]*\.(?:[mc]?[jt]sx?|json))(?:["']?)/g;
+
+/** `tsc -p <path>` and `tsc --project <path>`. */
+const TSC_PROJECT_REF = /\btsc\s+(?:-p|--project)\s+(?:["']?)([\w./-]+\.json)(?:["']?)/g;
+
+/** `--config <path>` / `-c <path>` for vitest, jest, eslint, biome, etc. */
+const CONFIG_FLAG_REF = /(?:^|\s)(?:--config|-c)\s+(?:["']?)([\w./-]+\.(?:json|jsonc|js|ts|mjs|cjs))(?:["']?)/g;
+
+const SCRIPT_FILE_REF_PATTERNS = [RUNTIME_FILE_REF, TSC_PROJECT_REF, CONFIG_FLAG_REF];
+
+function extractScriptFileRefs(scriptValue: string): string[] {
+	const refs = new Set<string>();
+	for (const pattern of SCRIPT_FILE_REF_PATTERNS) {
+		// Reset lastIndex — these are module-scope `g` regexes, shared across calls.
+		pattern.lastIndex = 0;
+		for (const match of scriptValue.matchAll(pattern)) {
+			if (match[1]) refs.add(match[1]);
+		}
+	}
+	return [...refs];
+}
+
+/**
+ * Detect `package.json#scripts` values that reference files which don't exist
+ * on disk. Runs on PostToolUse against the post-edit content. Conservative:
+ * only flags paths matched by a runtime+path or tsc/--config pattern. Skips
+ * `node_modules/**`. Returns one finding per missing file.
+ */
+export function checkPackageJsonScriptPaths(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (basename(filePath) !== PACKAGE_JSON_BASENAME) return [];
+	if (filePath.includes("/node_modules/") || filePath.includes("\\node_modules\\")) return [];
+
+	const pkg = safeParse(content);
+	if (!pkg) return [];
+
+	const scripts = pkg.scripts;
+	if (!(scripts instanceof Object) || Array.isArray(scripts)) return [];
+
+	const dir = dirname(filePath);
+	const findings: InlineMatch[] = [];
+	const lines = content.split("\n");
+	const seen = new Set<string>();
+
+	for (const [scriptName, scriptVal] of Object.entries(scripts as JsonObject)) {
+		if (typeof scriptVal !== "string") continue;
+		for (const ref of extractScriptFileRefs(scriptVal)) {
+			const refPath = isAbsolute(ref) ? ref : resolve(dir, ref);
+			if (existsSync(refPath)) continue;
+			// One finding per (script, ref) pair — same script invoking the same
+			// missing file twice is one bug, not two.
+			const key = `${scriptName}::${ref}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			const lineIdx = lines.findIndex((l) => l.includes(`"${scriptName}"`));
+			findings.push({
+				line: lineIdx >= 0 ? lineIdx + 1 : 1,
+				text: `[package_json_script_paths] scripts.${scriptName} references "${ref}" but that file does not exist on disk. Either create the file or fix the path before \`npm run ${scriptName}\` is invoked.`,
+			});
+		}
+	}
+	return findings;
 }

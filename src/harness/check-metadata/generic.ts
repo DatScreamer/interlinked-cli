@@ -158,6 +158,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	package_json_script_paths: {
+		name: "Package JSON Script Paths",
+		description:
+			"Detects package.json scripts that reference files which don't exist on disk (node ./X.mjs, tsc -p X.json, --config X). Catches the CI failure where a manifest declares a script path the file tree doesn't have.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	disabled_tests: {
 		name: "Disabled Tests",
 		description: "Detects skipped tests (it.skip, xit, xdescribe)",

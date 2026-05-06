@@ -46,6 +46,7 @@ import {
 	checkEvalInputTainted,
 	checkOsSystemTainted,
 	checkOverMocking,
+	checkPackageJsonScriptPaths,
 	checkPickleUntrustedLoad,
 	checkPrintDebugLeak,
 	checkPyMutableDefaultArg,
@@ -997,5 +998,20 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 		fn: checkRegexInLoopNoCompile,
 		resultsPropName: "regexInLoopNoCompile",
 		content_keywords: ["re.match", "re.search", "re.compile"],
+	},
+	{
+		id: "package_json_script_paths",
+		phase: "post",
+		name: "Package JSON Script Paths",
+		description:
+			"Detects package.json scripts that reference files which don't exist on disk (node ./X.mjs, tsc -p X.json, --config X). Catches the universal CI failure where a manifest declares a script path the file tree doesn't have.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A package.json script references a file that doesn't exist. Either create the file at the referenced path, fix the path to point at an existing file, or remove the script if it's no longer needed. The script will fail the moment anyone runs it.",
+		fn: checkPackageJsonScriptPaths,
+		resultsPropName: "packageJsonScriptPaths",
 	},
 ];

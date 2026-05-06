@@ -128,6 +128,7 @@ export { checkOverMocking } from "./checks/over-mocking.js";
 export {
 	checkPackageJsonPublishInvariants,
 	checkPackageJsonPublishInvariantsWithPublint,
+	checkPackageJsonScriptPaths,
 } from "./checks/package-json.js";
 // ---- performance ----
 export {

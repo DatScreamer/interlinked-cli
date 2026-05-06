@@ -5,6 +5,26 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 
+/**
+ * Read every dependency name from a package.json into a flat record.
+ * Best-effort: returns {} on any read or parse error. Includes peer- and
+ * optional-dependencies because a `types: ["X"]` entry is satisfied by any
+ * declared install relationship — peer deps are still installed by consumers.
+ */
+function readAllDeps(pkgJsonPath: string): Record<string, string> {
+	try {
+		const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as JsonObject;
+		return {
+			...((pkg.dependencies as Record<string, string>) || {}),
+			...((pkg.devDependencies as Record<string, string>) || {}),
+			...((pkg.peerDependencies as Record<string, string>) || {}),
+			...((pkg.optionalDependencies as Record<string, string>) || {}),
+		};
+	} catch {
+		return {};
+	}
+}
+
 // ===========================================
 // Project Setup Validation
 // ===========================================
@@ -15,6 +35,46 @@ export interface ProjectSetupIssue {
 	line: number;
 	message: string;
 	fix: string;
+}
+
+/**
+ * Cross-check `compilerOptions.types: ["X"]` against installed deps. tsc
+ * fails with cryptic global-name errors when an entry isn't installed. The
+ * universal shape — applies to "@cloudflare/workers-types", "vitest",
+ * "bun-types", "@types/node", anything in types[].
+ *
+ * Resolution rule: scoped names (`@org/pkg`) only match the exact package;
+ * unscoped names (`vitest`, `node`) match either the package itself or
+ * `@types/<name>` (DefinitelyTyped fallback).
+ */
+export function checkTsConfigTypesAgainstDeps(
+	compilerOptions: JsonObject,
+	tsconfigDir: string,
+): ProjectSetupIssue[] {
+	const types = compilerOptions.types;
+	if (!Array.isArray(types) || types.length === 0) return [];
+	const allDeps = readAllDeps(resolve(tsconfigDir, "package.json"));
+	const issues: ProjectSetupIssue[] = [];
+	for (const entry of types) {
+		if (typeof entry !== "string" || !entry) continue;
+		const isScoped = entry.startsWith("@");
+		const installed = isScoped
+			? entry in allDeps
+			: entry in allDeps || `@types/${entry}` in allDeps;
+		if (installed) continue;
+		const candidate = isScoped ? entry : `@types/${entry}`;
+		const detail = isScoped
+			? `"${entry}" is not in package.json`
+			: `neither "${entry}" nor "@types/${entry}" is in package.json`;
+		issues.push({
+			check: "project_setup",
+			file: "tsconfig.json",
+			line: 0,
+			message: `tsconfig.json includes types: ["${entry}"] but ${detail}. tsc will fail to resolve these globals.`,
+			fix: `Run \`npm i --save-dev ${candidate}\``,
+		});
+	}
+	return issues;
 }
 
 /**
@@ -140,8 +200,8 @@ export function checkProjectSetup(cwd: string): ProjectSetupIssue[] {
 		}
 
 		// Check tsconfig types field includes "node"
-		const types = compilerOptions.types as string[] | undefined;
-		if (types && !types.includes("node")) {
+		const typesForNode = compilerOptions.types as string[] | undefined;
+		if (typesForNode && !typesForNode.includes("node")) {
 			issues.push({
 				check: "project_setup",
 				file: "tsconfig.json",
@@ -152,6 +212,8 @@ export function checkProjectSetup(cwd: string): ProjectSetupIssue[] {
 			});
 		}
 	}
+
+	issues.push(...checkTsConfigTypesAgainstDeps(compilerOptions, tsconfigDir));
 
 	// Issue: Wrong moduleResolution for node: imports
 	const moduleResolution = compilerOptions.moduleResolution as string | undefined;

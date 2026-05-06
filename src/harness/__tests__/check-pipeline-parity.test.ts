@@ -236,6 +236,11 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"checkPackageJsonPublishInvariants",
 	"checkPackageJsonPublishInvariantsWithPublint",
 	"package_json_publish_invariants",
+	// Package JSON script paths — stateless check, would work in verify too,
+	// but the verify-side wiring (interface + init + push + streamCqSection)
+	// is deferred to a follow-up. Hook-time coverage is the load-bearing path.
+	"checkPackageJsonScriptPaths",
+	"package_json_script_paths",
 ]);
 
 // ===========================================
