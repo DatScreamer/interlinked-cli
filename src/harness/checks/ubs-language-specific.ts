@@ -1,6 +1,7 @@
 // UBS (Ultimate Bug Scanner) language-specific detectors — Phase 1 rows 22, 23,
 // 25, 29, 30. Each function returns InlineMatch[]. Ext-gated where relevant.
 
+import { stripRegexLiterals } from "../strip-helpers.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -1196,7 +1197,10 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	}
 
 	const originalLines = content.split("\n");
-	const strippedLines = stripCommentsPreservingStrings(content).split("\n");
+	// Strip regex literals BEFORE comments so /…localhost…/ doesn't survive into
+	// the match pass — without this, the check FPs on its own implementation
+	// (this file + checks/supply-chain.ts both contain `/…localhost…/`).
+	const strippedLines = stripCommentsPreservingStrings(stripRegexLiterals(content)).split("\n");
 	const matches: InlineMatch[] = [];
 	const re = /\b(?:localhost|127\.0\.0\.1)\b/;
 	// Metadata-shape lines (description / label / noun / fix_instruction

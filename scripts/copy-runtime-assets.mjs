@@ -28,6 +28,13 @@ const ASSETS = [
 		from: "skills/enforce/SKILL.md",
 		to: "dist/skills/enforce/SKILL.md",
 	},
+	// Side-loaded npm popular-packages allowlist — read at runtime by
+	// `src/harness/checks/supply-chain.ts` to augment KNOWN_LEGITIMATE_PACKAGES.
+	// Refreshable via `scripts/refresh-npm-popular.mjs` without rebuild.
+	{
+		from: "src/harness/checks/data/npm-popular-packages.json",
+		to: "dist/checks/data/npm-popular-packages.json",
+	},
 ];
 
 for (const asset of ASSETS) {

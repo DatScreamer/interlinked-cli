@@ -100,3 +100,38 @@ describe("checkTyposquatDependencies — allowlist", () => {
 		expect(matches[0].text).toContain("typescript");
 	});
 });
+
+describe("checkTyposquatDependencies — JSON-loaded allowlist", () => {
+	let tempDir: string;
+	let pkgPath: string;
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "typosquat-data-"));
+		pkgPath = join(tempDir, "package.json");
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("does NOT flag 'jose' (distance 2 from popular 'jest') — the user-reported FP", () => {
+		writeFileSync(pkgPath, JSON.stringify({ dependencies: { jose: "^5.0.0" } }));
+		const matches = checkTyposquatDependencies(pkgPath);
+		expect(matches).toEqual([]);
+	});
+
+	it("does NOT flag 'effect' (FP library, distance to popular)", () => {
+		writeFileSync(pkgPath, JSON.stringify({ dependencies: { effect: "^3.0.0" } }));
+		expect(checkTyposquatDependencies(pkgPath)).toEqual([]);
+	});
+
+	it("does NOT flag 'jiti' (unjs ecosystem)", () => {
+		writeFileSync(pkgPath, JSON.stringify({ devDependencies: { jiti: "^2.0.0" } }));
+		expect(checkTyposquatDependencies(pkgPath)).toEqual([]);
+	});
+
+	it("does NOT flag 'vuex' (Vue ecosystem)", () => {
+		writeFileSync(pkgPath, JSON.stringify({ dependencies: { vuex: "^4.0.0" } }));
+		expect(checkTyposquatDependencies(pkgPath)).toEqual([]);
+	});
+});

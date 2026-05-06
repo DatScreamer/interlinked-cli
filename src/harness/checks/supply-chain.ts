@@ -2,9 +2,48 @@
 // Extracted from generic-checks.ts.
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { JsonObject } from "../../lib/json-types.js";
 import { getExtension, type InlineMatch, isCliFile, isTestFile, JS_TS_EXTS } from "./shared.js";
+
+/**
+ * Read the side-loaded popular-packages JSON. The file lives next to this
+ * module both in source (`src/harness/checks/data/`) and in the built
+ * bundle (copied by `scripts/copy-runtime-assets.mjs`). Returns the parsed
+ * `name` list; empty on any error so the in-source allowlist below remains
+ * the load-bearing fallback.
+ *
+ * Why side-loaded vs imported: the file is refreshable by a script
+ * (`scripts/refresh-npm-popular.mjs`) without rebuilding the bundle.
+ * Adding a name becomes a JSON-only PR.
+ */
+function loadPopularPackagesData(): readonly string[] {
+	try {
+		const here = dirname(fileURLToPath(import.meta.url));
+		const candidates = [
+			resolve(here, "data", "npm-popular-packages.json"),
+			// Bundled layout: dist collapses checks/* into a single file, but
+			// copy-runtime-assets places the JSON at dist/checks/data/...
+			resolve(here, "checks", "data", "npm-popular-packages.json"),
+		];
+		for (const p of candidates) {
+			if (!existsSync(p)) continue;
+			const json = JSON.parse(readFileSync(p, "utf-8")) as {
+				packages?: Array<{ name?: unknown }>;
+			};
+			if (!Array.isArray(json.packages)) return [];
+			return json.packages
+				.map((entry) => (typeof entry?.name === "string" ? entry.name : null))
+				.filter((n): n is string => !!n);
+		}
+		return [];
+	} catch {
+		return [];
+	}
+}
+
+const POPULAR_PACKAGES_DATA = loadPopularPackagesData();
 
 // ===========================================
 // Supply Chain / Runtime Safety Checks
@@ -243,6 +282,13 @@ const KNOWN_LEGITIMATE_PACKAGES = new Set([
 	"simple-git", // git wrapper
 	"isomorphic-git", // Pure JS git
 ]);
+
+// Merge in the side-loaded data file. The file is the refreshable surface;
+// the in-source list above is the always-available fallback. Both feed into
+// the same allowlist used by isAllowlistedDep().
+for (const name of POPULAR_PACKAGES_DATA) {
+	KNOWN_LEGITIMATE_PACKAGES.add(name);
+}
 
 /**
  * Regex-based allowlist for scoped orgs whose package names are inherently

@@ -241,6 +241,42 @@ describe("checkLockfileDrift", () => {
 		expect(afterRegen.drifted).toBe(false);
 		expect(afterRegen.reason).toBe("none");
 	});
+
+	// ===========================================
+	// Cross-language ecosystem coverage
+	// ===========================================
+	// Each row exercises one (manifest, lockfile) pair from LOCKFILE_MAP.
+	// Drift is mtime-based, so the primitive is identical across ecosystems —
+	// these tests pin the entries so a regression in LOCKFILE_MAP is caught.
+
+	const ECOSYSTEMS: Array<{ manifest: string; lockfile: string }> = [
+		{ manifest: "Gemfile", lockfile: "Gemfile.lock" },
+		{ manifest: "composer.json", lockfile: "composer.lock" },
+		{ manifest: "mix.exs", lockfile: "mix.lock" },
+		{ manifest: "Package.swift", lockfile: "Package.resolved" },
+		{ manifest: "pubspec.yaml", lockfile: "pubspec.lock" },
+		{ manifest: "go.mod", lockfile: "go.sum" },
+		{ manifest: "Pipfile", lockfile: "Pipfile.lock" },
+		{ manifest: "requirements.in", lockfile: "requirements.txt" },
+	];
+
+	for (const { manifest: m, lockfile: l } of ECOSYSTEMS) {
+		it(`detects stale ${l} when ${m} is newer`, () => {
+			const manifest = join(tmpDir, m);
+			const lockfile = join(tmpDir, l);
+			writeFileSync(lockfile, "");
+			const past = new Date(Date.now() - 120_000);
+			utimesSync(lockfile, past, past);
+			writeFileSync(manifest, "");
+			const aged = new Date(Date.now() - 60_000);
+			utimesSync(manifest, aged, aged);
+
+			const result = checkLockfileDrift(manifest);
+			expect(result.drifted).toBe(true);
+			expect(result.reason).toBe("stale");
+			expect(result.lockfile).toBe(l);
+		});
+	}
 });
 
 // ===========================================

@@ -10,9 +10,26 @@ import { dirname, resolve } from "node:path";
 
 /** Mapping from manifest filename to candidate lockfile names. */
 export const LOCKFILE_MAP: Record<string, string[]> = {
+	// JS/TS
 	"package.json": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"],
+	// Rust
 	"Cargo.toml": ["Cargo.lock"],
+	// Python
 	"pyproject.toml": ["poetry.lock", "uv.lock", "pdm.lock"],
+	"requirements.in": ["requirements.txt"],
+	"Pipfile": ["Pipfile.lock"],
+	// Ruby
+	Gemfile: ["Gemfile.lock"],
+	// PHP
+	"composer.json": ["composer.lock"],
+	// Elixir
+	"mix.exs": ["mix.lock"],
+	// Swift
+	"Package.swift": ["Package.resolved"],
+	// Dart / Flutter
+	"pubspec.yaml": ["pubspec.lock"],
+	// Go
+	"go.mod": ["go.sum"],
 };
 
 /**
