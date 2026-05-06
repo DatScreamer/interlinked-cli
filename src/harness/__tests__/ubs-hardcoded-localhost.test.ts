@@ -43,4 +43,13 @@ describe("checkUbsHardcodedLocalhost", () => {
 		const code = "The dev server runs at http://localhost:8000.";
 		expect(checkUbsHardcodedLocalhost(code, "docs/setup.md")).toEqual([]);
 	});
+
+	it("does NOT fire on regex literals containing the literal token", () => {
+		// Self-detection regression: this check (and supply-chain.ts's
+		// checkHardcodedLocalhost) contain `/…localhost…/` literals as their
+		// implementation. Without stripRegexLiterals before matching, the
+		// rule trips on its own source.
+		const code = "if (/https?:\\/\\/(localhost|127\\.0\\.0\\.1):\\d+/.test(line)) { /* … */ }";
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/check.ts")).toEqual([]);
+	});
 });
