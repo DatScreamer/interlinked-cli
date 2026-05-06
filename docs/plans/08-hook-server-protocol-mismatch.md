@@ -195,9 +195,318 @@ async function dispatchRpc(method: RpcMethod, params: UnifiedHookEvent): Promise
 
 **Biggest scope. Eventual landing place.**
 
-Make `interlinked harness start` boot `session-daemon.ts` (which speaks framed RPC and is already factored to call into `daemon-dispatcher.ts`). The session daemon owns `harness-<session>.sock`; it forwards heavy-lifting events into `server.ts` (or absorbs server.ts's responsibilities entirely). Hook script discovery picks up the new socket first via `src/hook-entry.ts:163-168`.
+Make `interlinked harness start` boot a framed-RPC daemon path instead of leaving
+`session-daemon.ts` and `daemon-dispatcher.ts` as orphaned source files. This is
+not a mechanical socket rename. It is a runtime migration. Treat it as a product
+surface change with explicit compatibility, observability, and rollback gates.
 
-This is the "what was probably intended" path. The presence of unwired session-daemon code suggests an in-flight refactor toward a per-session daemon model where `harness.sock` is legacy and `harness-<session>.sock` is canonical.
+The intended end state:
+
+```
+dist/hook-entry.js
+  -> framed RPC { id, method, params }
+  -> .interlinked/harness-<session>.sock
+  -> session-daemon.ts
+  -> daemon-dispatcher.ts
+  -> unified evaluator / shared harness state
+  -> framed RPC { id, result }
+```
+
+The compatibility end state during migration:
+
+```
+.interlinked/hooks/interlinked-activity.mjs
+  -> raw HarnessEvent JSON
+  -> .interlinked/harness.sock
+  -> legacy compatibility shim
+  -> same evaluator / shared harness state
+```
+
+Do not start C by deleting `server.ts`, replacing `harness.sock`, or changing
+hook discovery order. The current working product depends on the repo-scoped
+legacy socket. The migration has to make the framed path real first, prove it is
+equivalent, then demote raw JSON to a compatibility shim.
+
+#### Architectural decision to make first
+
+Before writing code, choose one of these two state models and document the choice
+in `docs/architecture.md`:
+
+1. **Single repo daemon with per-session framed sockets.**
+   - One long-lived repo daemon owns cohort state, reservations, project graph,
+     route map, error history, classifier state, activity log writes, latency
+     telemetry, and async analysis.
+   - Each `harness-<session>.sock` is a thin session front door into the same
+     repo daemon state.
+   - This is the safer migration because today's stateful behavior is already
+     repo-scoped.
+
+2. **True per-session daemon plus shared coordinator.**
+   - Each session daemon owns only that session's hook stream.
+   - Cross-session state moves into a coordinator process or durable on-disk
+     store with locking.
+   - This is the cleaner long-term architecture, but it is much easier to break
+     reservations, cohort awareness, and "another agent touched this file"
+     warnings.
+
+Recommendation for C: start with option 1. It preserves current semantics while
+making the framed protocol canonical. Option 2 can become a later refactor after
+the dispatcher is proven.
+
+#### Non-negotiable constraints
+
+- Raw `harness.sock` must continue to work until `.interlinked/hooks/interlinked-activity.mjs`
+  is removed from every supported install path.
+- `PostToolUseFailure` must stay intentionally unregistered unless the duplicate
+  hook-count/output issue in `docs/investigation-posttooluse-hook-count.md` is
+  revisited and disproven.
+- PreToolUse latency should be optimized, but not governed by a hard 2 second
+  product limit. The hook needs a bounded failure mode for dead sockets; the
+  checks themselves should be made fast through indexing, caching, and skip
+  policy.
+- `pre_block` remains zero-FP only. Moving transport layers must not reclassify
+  heuristic findings into blocks.
+- The generated hook script must remain self-contained until the adapter-based
+  `dist/hook-entry.js` path fully replaces it.
+- Uninstall/restart commands must not delete user-managed `.codex/config.toml`,
+  `.claude/settings.json`, or local config while cleaning daemon artifacts.
+
+#### C0. Rediscover why the session daemon stopped
+
+Spend the first hour answering these questions with code references in the PR
+description:
+
+- Why does `src/harness/session-daemon.ts` exist but no command launches it?
+- Which tests currently exercise `daemon-dispatcher.ts`, and which only exercise
+  `server.ts`?
+- Does `evaluateUnified()` produce decisions equivalent to `server.ts`'s
+  `processEvent()` branches for PreToolUse and PostToolUse?
+- Which `processEvent()` responsibilities are not represented in
+  `evaluateUnified()` yet? Likely suspects: session lifecycle side effects,
+  activity/latency logging, content scanner escalation, async analysis drain,
+  classifier session maps, route-map updates, and Stop nudges.
+- Does any command besides hooks talk directly to `harness.sock`?
+- Which files write or read `.interlinked/harness.pid`, `.interlinked/harness.sock`,
+  `.interlinked/latency.jsonl`, `.interlinked/activity.jsonl`, and
+  `.interlinked/sessions/*.trajectory.json`?
+
+Do not proceed until this list is answered. C is risky because `server.ts` is not
+just a transport server; it is also the owner of a lot of product state.
+
+#### C1. Extract server state behind an explicit interface
+
+Before changing sockets, make the state boundary explicit. Introduce a module
+such as `src/harness/runtime-state.ts` with a small factory:
+
+```typescript
+export interface HarnessRuntime {
+  evaluate(event: HarnessEvent): Promise<HarnessDecision>;
+  health(): DaemonHealth;
+  shutdown(reason?: string): Promise<void>;
+}
+
+export function createHarnessRuntime(opts: { cwd: string; mode: HarnessModePreset }): HarnessRuntime;
+```
+
+`server.ts` should become a transport wrapper around this runtime, not the place
+where every state object is born inline. The first PR in C should be a pure
+extraction: raw JSON socket behavior remains byte-for-byte equivalent.
+
+Extraction checklist:
+
+- Move construction of rules, sessions, reservations, cohort, graph, route map,
+  error history, content scanner, async analysis, and latency logger into the
+  runtime factory.
+- Keep `processEvent(rawData)` behavior unchanged, but delegate after parsing.
+- Preserve signal handling (`SIGINT`, `SIGTERM`, `SIGHUP`) in the process entry.
+- Add regression tests around Stop, UserPromptSubmit redaction, PreToolUse
+  warnings, PostToolUse checks, and latency logging before and after extraction.
+
+#### C2. Make `daemon-dispatcher.ts` call the same runtime
+
+Today `daemon-dispatcher.ts` calls `evaluateUnified()` with a context factory.
+That is not equivalent to `server.ts` because `server.ts` performs side effects
+around evaluation. C should change the dispatcher so hook methods are routed
+through the same runtime used by raw JSON:
+
+```typescript
+hook.pre_tool_use    -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+hook.post_tool_use   -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+hook.user_prompt     -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+hook.session_start   -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+hook.session_end     -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+hook.pre_compact     -> toLegacyHarnessEvent(params) -> runtime.evaluate(event)
+```
+
+This intentionally reuses the legacy `HarnessEvent` evaluator until the product
+has enough parity tests to retire it. A later refactor can make
+`UnifiedHookEvent` the internal evaluator shape. Do not combine that rewrite
+with the transport migration.
+
+Dispatcher requirements:
+
+- Every hook RPC response must echo the request `id`.
+- Unknown methods must return a framed `unknown_method` error, not a raw
+  `HarnessDecision`.
+- Bad schema versions must return `schema_mismatch`.
+- Invalid unified events must return `bad_request`.
+- Hook evaluation errors should fail open only when the existing raw path would
+  fail open; deterministic parser errors should preserve current fail-closed
+  behavior where applicable.
+
+#### C3. Start a framed socket without replacing the raw socket
+
+Add a new start mode under `interlinked harness start`:
+
+```
+interlinked harness start --protocol framed
+interlinked harness start --protocol dual
+```
+
+Initial default should be `dual`, not `framed-only`.
+
+In dual mode:
+
+- `.interlinked/harness.sock` accepts raw JSON for legacy hooks.
+- `.interlinked/harness-<session>.sock` accepts framed RPC for `hook-entry.js`.
+- Both sockets use the same `HarnessRuntime` instance.
+- `harness status` reports both sockets:
+  - raw socket path and health
+  - framed socket path and health
+  - protocol version
+  - runtime uptime
+  - last successful raw event timestamp
+  - last successful framed event timestamp
+  - framed timeout/error counters
+
+Session socket naming:
+
+- Use the sanitized session id algorithm already present in `discoverSocket()`.
+- If the session id is `unknown`, use `harness-default.sock` or keep framed RPC
+  on `harness.sock` disabled. Do not create unbounded random sockets for unknown
+  sessions.
+- Clean stale `harness-*.sock` files at daemon startup only after verifying no
+  live process owns the PID file.
+
+#### C4. Make hook discovery protocol-aware
+
+`dist/hook-entry.js` should not infer too much forever. The long-term behavior:
+
+1. If `INTERLINKED_SOCKET` is set, use it.
+2. If `INTERLINKED_HOOK_PROTOCOL=raw`, send raw JSON.
+3. If `INTERLINKED_HOOK_PROTOCOL=framed`, send framed RPC.
+4. If protocol is unset:
+   - `harness-<session>.sock` means framed.
+   - `harness.sock` means raw.
+   - any other `harness-*.sock` means framed only after a health probe succeeds.
+
+Add a cheap `daemon.health` probe for ambiguous sockets. Cache nothing inside the
+hook process; hooks are short-lived and should not carry stale protocol state.
+
+Timeout policy:
+
+- Keep a bounded timeout so a dead socket cannot hang the coding client.
+- Do not encode "2 seconds" as a product invariant.
+- Use phase-specific defaults and make them configurable through environment
+  variables for diagnosis:
+  - `INTERLINKED_PRE_TOOL_TIMEOUT_MS`
+  - `INTERLINKED_POST_TOOL_TIMEOUT_MS`
+  - `INTERLINKED_HOOK_TIMEOUT_MS`
+- Report timeout telemetry to the daemon only when a response path exists; do not
+  invent fake harness timing in the hook.
+
+#### C5. Migrate installers deliberately
+
+Installer migration order:
+
+1. Keep `interlinked enable` generating `.interlinked/hooks/interlinked-activity.mjs`.
+2. Keep `interlinked install-hooks` using `dist/hook-entry.js`.
+3. Make `interlinked doctor` detect mixed installs and report which protocol
+   each installed hook is using.
+4. Add `interlinked harness status --protocols` for raw/framed visibility.
+5. After dual mode is stable, change `interlinked enable` to install
+   `dist/hook-entry.js` for clients whose adapter path is complete.
+6. Leave a `--legacy-hook-script` escape hatch for one release.
+7. Only then consider removing the generated `.mjs` hook path.
+
+Never silently install both hook systems for the same event and matcher. If both
+exist, `doctor` should call it out with exact settings paths and commands.
+
+#### C6. Required tests before C can ship
+
+Unit tests:
+
+- `daemon-dispatcher.test.ts`: framed PreToolUse allow/warn/block/ask, bad
+  schema, unknown method, invalid event.
+- `session-daemon.test.ts`: multiple framed requests, mismatched ids ignored by
+  client, timeout cleanup, pid/socket cleanup on stop.
+- `legacy-client.test.ts`: raw fallback remains compatible.
+- `hook-entry.test.ts`: raw `harness.sock`, framed `harness-<session>.sock`,
+  env-forced raw, env-forced framed, missing daemon fallback.
+- `harness-command.test.ts`: `start`, `stop`, `restart`, and `status` in dual
+  protocol mode.
+
+Integration tests:
+
+- Start the real harness with dual sockets.
+- Pipe a native Claude `PreToolUse Edit` payload into `dist/hook-entry.js`.
+- Assert the output contains the real harness warning in
+  `hookSpecificOutput.additionalContext`.
+- Pipe the same event as raw JSON into `harness.sock`.
+- Assert both paths produce equivalent `HarnessDecision` content.
+- Repeat for PostToolUse Edit so quality/structural checks still fire.
+- Repeat for Stop so trajectory save and cleanup still happen.
+- Repeat for UserPromptSubmit with synthetic PII so redacted prompt persistence
+  still works.
+
+Manual verification:
+
+- Install hooks for Claude and Codex in a temp repo.
+- Run `interlinked harness start --protocol dual`.
+- Confirm `ls .interlinked/*.sock` shows raw and framed sockets.
+- Trigger a PreToolUse warning and verify the agent sees it.
+- Kill the framed socket owner and verify the hook fails open without blocking
+  the client forever.
+- Restart the harness and verify stale socket files are removed.
+- Run `interlinked doctor` and verify protocol diagnostics are accurate.
+
+#### C7. Rollout and rollback
+
+Rollout gates:
+
+- `npm run typecheck`
+- `npm run test`
+- end-to-end hook-entry test against the built `dist/` files
+- manual dual-protocol demo
+- no increase in p95 PreToolUse latency beyond the measured baseline, excluding
+  intentionally slower checks enabled by config
+- zero duplicate hook output for Claude PostToolUse
+
+Rollback plan:
+
+- Keep raw `harness.sock` as the stable fallback.
+- Keep `INTERLINKED_HOOK_PROTOCOL=raw` working.
+- Keep `interlinked enable --legacy-hook-script` working until at least one
+  release after framed is default.
+- `harness restart --legacy` should be able to start only `server.ts` and ignore
+  `session-daemon.ts` artifacts.
+
+#### Red flags during C
+
+Stop and reassess if any of these happen:
+
+- A framed PreToolUse path returns a decision but the raw path logs a different
+  session trajectory for the same event.
+- Reservations are visible to one session but not another.
+- `PostToolUse` output appears twice in Claude.
+- The migration requires lowering safety policy to satisfy latency.
+- Tests start mocking most of `server.ts` instead of exercising the real runtime.
+- `daemon-dispatcher.ts` grows its own copy of evaluation side effects.
+
+This is the "what was probably intended" path. The presence of unwired
+session-daemon code suggests an in-flight refactor toward a framed protocol, but
+the repo today is not ready for a true per-session state split. Make the
+transport framed first; split state later.
 
 **Pros**
 - Architecturally correct: one daemon per session, framed RPC end-to-end, no conditional dispatch.
@@ -225,13 +534,14 @@ C is the right north star and worth doing once we understand why session-daemon 
 
 ## Acceptance criteria for fix A
 
-- [ ] `src/hook-entry.ts` (or a new `src/harness/legacy-client.ts`) sends raw-JSON envelopes when `socketPath` ends in `harness.sock` and reads one line of raw JSON back.
-- [ ] Cold-fallback path stops polluting `additionalContext` with `[interlinked] timeout; evaluator skipped` — empty output is fine, the message is misleading and surfaces in the agent's view.
-- [ ] Unit tests in `src/harness/daemon-client.test.ts` (or a new `legacy-client.test.ts`) cover the legacy round-trip, including the timeout path.
+- [x] `src/hook-entry.ts` (or a new `src/harness/legacy-client.ts`) sends raw-JSON envelopes when `socketPath` ends in `harness.sock` and reads one line of raw JSON back.
+- [x] PreToolUse no longer inherits the hard 2s framed-RPC timeout by default. Keep a bounded dead-socket timeout, but align it with the legacy hook's roomier PreToolUse budget unless explicitly overridden.
+- [x] Cold-fallback path stops polluting `additionalContext` with `[interlinked] timeout; evaluator skipped`. A stderr-only human diagnostic is acceptable; model-visible task context should stay empty when the evaluator did not run.
+- [x] Unit tests in `src/harness/daemon-client.test.ts` (or a new `legacy-client.test.ts`) cover the legacy round-trip, including the timeout path.
 - [ ] Integration test: `printf '{...PreToolUse Edit...}' | node ./dist/hook-entry.js --runner claude-code --event PreToolUse` returns the actual harness `additionalContext` (e.g. a `[interlinked:supermodel-graph]` warning when a shard exists), not a cold-fallback.
 - [ ] Manual demo: drop a HIGH-risk `.graph.ts` next to a real source, perform an Edit on that source, see the warning surface as a system-reminder to the agent.
 - [ ] Activity log records both PreToolUse and PostToolUse Edit entries (proves both phases reach the daemon).
-- [ ] All 5462 existing tests still pass.
+- [x] All 5467 existing tests still pass.
 - [ ] Latency telemetry remains accurate (the per-event `checks_timing_ms` field continues to record real elapsed time, not the new client overhead).
 
 ## Out of scope for A
@@ -247,7 +557,7 @@ C is the right north star and worth doing once we understand why session-daemon 
 | Risk | Mitigation |
 |---|---|
 | The "raw JSON when legacy socket" heuristic misclassifies a non-legacy socket that happens to be named `harness.sock`. | Make it env-overridable (`INTERLINKED_HOOK_PROTOCOL=raw\|framed\|auto`) and default to `auto` with the heuristic. |
-| Future migration to framed RPC silently regresses. | Keep the framed path the primary code path; the legacy fallback should log (to stderr, not stdout) when it activates. |
+| Future migration to framed RPC silently regresses. | Keep framed-path tests passing and make protocol choice env-overridable. Avoid per-hook activation logs by default; they would become noisy on every PreToolUse. |
 | Cold-fallback removal hides genuine daemon failures from the user. | Continue emitting the timeout reason to **stderr** (which Claude Code shows to the human in CLI) but stop putting it in `additionalContext` (which goes to the model). |
 | Existing `daemon-client.test.ts` covers the framed path; a regression there could go unnoticed since the framed path is currently broken in practice. | Keep the framed tests passing — they're future-load-bearing. Add legacy tests alongside. |
 

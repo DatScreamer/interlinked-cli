@@ -20,7 +20,7 @@ Controls which checks suppress pre-existing findings when editing files.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `enabled` | `true` | enabled |
+| `enabled` | `false` | enabled |
 | `export_surface` | `true` | Detects breaking changes to exported symbols (renamed, removed, type-changed) |
 | `import_resolution` | `true` | Validates all imports resolve to real files — catches typos and deleted modules |
 | `duplicate_symbols` | `true` | Flags identical export names across files that could cause ambiguous imports |
