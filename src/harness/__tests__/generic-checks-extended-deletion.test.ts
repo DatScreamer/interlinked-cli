@@ -13,6 +13,7 @@ import {
 	checkEmptyFunctionBody,
 	checkErrorStringComparison,
 	checkInconsistentErrorStrategy,
+	checkLossyErrorRethrow,
 	checkMixedErrorStrategy,
 	checkNotImplementedStubs,
 	checkOrphanedTestStub,
@@ -515,5 +516,110 @@ describe("checkInconsistentErrorStrategy", () => {
 		lines[11] = "return null;";
 		lines[20] = "return { error: 'fail' };";
 		expect(checkInconsistentErrorStrategy(lines.join("\n"), "mixed.test.ts")).toEqual([]);
+	});
+});
+
+describe("checkLossyErrorRethrow", () => {
+	it("flags catch (e) { throw new Error('...') } with no cause", () => {
+		const code = 'try { foo(); } catch (e) { throw new Error("wrapped"); }';
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags catch (err) { throw new TypeError(...) } with no cause", () => {
+		const code = "try { foo(); } catch (err) { throw new TypeError('bad input'); }";
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags throw new <CustomError>(...) without cause", () => {
+		const code = 'try { foo(); } catch (e) { throw new HttpError("upstream"); }';
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags template-literal message that interpolates the caught error", () => {
+		// `${e.message}` is text, not a `cause:` field — original stack is still lost.
+		const code = "try { foo(); } catch (e) { throw new Error(`failed: ${e.message}`); }";
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags log-and-rethrow without cause", () => {
+		const code = [
+			"try { foo(); } catch (e) {",
+			"  logger.error(e);",
+			'  throw new Error("operation failed");',
+			"}",
+		].join("\n");
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does NOT flag bare throw e — cause already preserved", () => {
+		const code = "try { foo(); } catch (e) { throw e; }";
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag throw new Error('msg', { cause: e })", () => {
+		const code =
+			'try { foo(); } catch (e) { throw new Error("wrapped", { cause: e }); }';
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag shorthand { cause }", () => {
+		const code = [
+			"try { foo(); } catch (cause) {",
+			'  throw new Error("wrapped", { cause });',
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a multi-line throw whose cause: is on a later line", () => {
+		const code = [
+			"try { foo(); } catch (err) {",
+			'  throw new Error("wrapped", {',
+			"    cause: err,",
+			"    extraContext: ctx,",
+			"  });",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag catch { ... } with no caught variable", () => {
+		// Nothing to preserve — caught error isn't bound.
+		const code = 'try { foo(); } catch { throw new Error("rethrow"); }';
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag catch (e) { return null; } — different error class entirely", () => {
+		const code = "try { foo(); } catch (e) { return null; }";
+		expect(checkLossyErrorRethrow(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("flags both throws when a catch contains two lossy rethrows", () => {
+		const code = [
+			"try { foo(); } catch (e) {",
+			"  if (a) {",
+			'    throw new Error("branch a");',
+			"  } else {",
+			'    throw new Error("branch b");',
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkLossyErrorRethrow(code, "src/x.ts");
+		expect(out.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("does NOT run on test files", () => {
+		const code = 'try { foo(); } catch (e) { throw new Error("x"); }';
+		expect(checkLossyErrorRethrow(code, "src/x.test.ts")).toEqual([]);
+	});
+
+	it("does NOT run on non-JS/TS files", () => {
+		const code = 'try { foo(); } catch (e) { throw new Error("x"); }';
+		expect(checkLossyErrorRethrow(code, "src/x.py")).toEqual([]);
 	});
 });

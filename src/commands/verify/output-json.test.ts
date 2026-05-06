@@ -44,6 +44,8 @@ function emptyCq(): CodeQualityResults {
 		"numberPrecisionLoss",
 		"throwLiteral",
 		"promiseRejectNonError",
+		"lossyErrorRethrow",
+		"silentPromiseSwallow",
 		"requireAwait",
 		"accumulatingSpread",
 		"excessiveUseState",
@@ -131,6 +133,10 @@ function emptyCq(): CodeQualityResults {
 		"deeplyNestedCallback",
 		"timeFormatLocaleDep",
 		"regexInLoopNoCompile",
+		"childProcessExecUserInput",
+		"mixedSyncAsyncFileApi",
+		"cookieMissingSecurityFlags",
+		"loggerFormatUserInput",
 	] as const;
 	const out = {} as Record<string, []>;
 	for (const k of keys) out[k] = [];

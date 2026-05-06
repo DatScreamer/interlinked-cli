@@ -49,7 +49,6 @@ import {
 	checkQueryInLoop,
 	checkRecursiveWalkerLstat,
 	checkSilentCatch,
-	checkSilentPromiseSwallow,
 	checkSqlInjection,
 	checkTestDescriptionQuality,
 	checkThrowAsControlFlow,
@@ -76,7 +75,9 @@ const SUGGESTION_CHECKS: SuggestionCheck[] = [
 	{ check: "perf-query-in-loop", source: "performance", fn: checkQueryInLoop },
 	{ check: "perf-await-in-loop", source: "performance", fn: checkAwaitInLoop },
 	{ check: "silent-catch", source: "quality", fn: checkSilentCatch },
-	{ check: "silent-promise-swallow", source: "quality", fn: checkSilentPromiseSwallow },
+	// `silent-promise-swallow` was promoted to the default-warning
+	// CHECK_REGISTRY pipeline (entries-warnings.ts → silent_promise_catch). It
+	// no longer runs through the scored suggestion path to avoid double-firing.
 	{ check: "recursive-walker-lstat", source: "security", fn: checkRecursiveWalkerLstat },
 	{ check: "unreachable-code", source: "quality", fn: checkUnreachableCode },
 

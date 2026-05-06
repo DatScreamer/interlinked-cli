@@ -40,18 +40,18 @@ describe("runSuggestions", () => {
 		expect(r.size).toBe(0);
 	});
 
-	it("registers silent-promise-swallow at the DEFAULT threshold (proves it's not filtered out)", () => {
-		// Regression: the harness PostToolUse pipeline and `verify
-		// --suggestions` use parallel registries; new checks must be added
-		// to BOTH or offline verification silently skips them. AND the
-		// scorer must have a BASE_SEVERITY entry above the default
-		// threshold (0.5) — without one, the 0.5 fallback × 0.75 default
-		// proximity scores 0.375 and gets filtered.
+	it("does NOT register silent-promise-swallow — promoted out of the suggestion pipeline", () => {
+		// `silent-promise-swallow` was promoted to the default-warning
+		// CHECK_REGISTRY pipeline (entries-warnings.ts → silent_promise_catch).
+		// It now fires unconditionally on every PostToolUse and through
+		// `runCodeQualityChecks`, so the scored suggestion path was removed
+		// to avoid double-firing. Coverage of the detector itself lives in
+		// `src/harness/checks/agent-safety.test.ts::checkSilentPromiseSwallow`.
 		const file = join(tempDir, "swallow.ts");
 		writeFileSync(file, "fetch('/api').catch(() => {});\n");
 		const r = runSuggestions({ files: [file], cwd: tempDir, limit: 10, threshold: 0.5 });
 		const allFindings = [...r.values()].flat();
-		expect(allFindings.some((f) => f.check === "silent-promise-swallow")).toBe(true);
+		expect(allFindings.some((f) => f.check === "silent-promise-swallow")).toBe(false);
 	});
 
 	it("registers recursive-walker-lstat at the DEFAULT threshold (proves it's not filtered out)", () => {

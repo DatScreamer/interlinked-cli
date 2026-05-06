@@ -65,6 +65,8 @@ export interface CodeQualityResults {
 	numberPrecisionLoss: CodeQualityIssue[];
 	throwLiteral: CodeQualityIssue[];
 	promiseRejectNonError: CodeQualityIssue[];
+	lossyErrorRethrow: CodeQualityIssue[];
+	silentPromiseSwallow: CodeQualityIssue[];
 	requireAwait: CodeQualityIssue[];
 	accumulatingSpread: CodeQualityIssue[];
 	// 13 additional agent safety checks
@@ -190,6 +192,14 @@ export interface CodeQualityResults {
 	timeFormatLocaleDep: CodeQualityIssue[];
 	/** D.1.20: Python re.match / re.search / re.sub inside loop without re.compile. */
 	regexInLoopNoCompile: CodeQualityIssue[];
+	/** Phase 1: Node child_process.exec/execSync/spawn with non-literal first arg — RCE. */
+	childProcessExecUserInput: CodeQualityIssue[];
+	/** Phase 1: function bodies mixing fs.*Sync with await fs.* — partial migration bug. */
+	mixedSyncAsyncFileApi: CodeQualityIssue[];
+	/** Phase 1: cookie-set calls without httpOnly + secure flags — session theft vector. */
+	cookieMissingSecurityFlags: CodeQualityIssue[];
+	/** Phase 1: logger.<level>(<request-bound-ident>) — log-injection / format-string. */
+	loggerFormatUserInput: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -230,6 +240,8 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"numberPrecisionLoss",
 	"throwLiteral",
 	"promiseRejectNonError",
+	"lossyErrorRethrow",
+	"silentPromiseSwallow",
 	"requireAwait",
 	"accumulatingSpread",
 	"excessiveUseState",
@@ -313,6 +325,10 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"deeplyNestedCallback",
 	"timeFormatLocaleDep",
 	"regexInLoopNoCompile",
+	"childProcessExecUserInput",
+	"mixedSyncAsyncFileApi",
+	"cookieMissingSecurityFlags",
+	"loggerFormatUserInput",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

@@ -7,6 +7,7 @@ import {
 	isTestFile,
 	JS_TS_ALL_EXTS,
 	stripComments,
+	stripCommentsAndStrings,
 } from "./shared.js";
 
 // ===========================================
@@ -200,6 +201,110 @@ export function checkErrorStringComparison(content: string, filePath: string): I
 			});
 		}
 		if (matches.length >= 5) break;
+	}
+
+	return matches;
+}
+
+/**
+ * Detect catch blocks that throw a fresh `new Error(...)` (or any `*Error`
+ * subclass constructor) without forwarding the caught exception via the
+ * ES2022 `{ cause: e }` option. Loses the original stack trace and breaks
+ * `error.cause`-chain inspection downstream — the same shape the
+ * "Errors Deserve Better" post (April 2026) flags as the lie-of-omission
+ * around error rethrow.
+ *
+ * Fires on:
+ *   catch (e) { throw new Error("wrapped"); }
+ *   catch (e) { throw new TypeError(`bad: ${e}`); }
+ *   catch (err) { logger.error(err); throw new HttpError("upstream"); }
+ *
+ * Skips:
+ *   - `throw e` / `throw err` (cause already preserved by reference)
+ *   - `throw new Error("msg", { cause: e })` and friends
+ *   - `throw new MyError({ cause }, ...)` shorthand
+ *   - `catch { ... }` with no caught variable (nothing to preserve)
+ *   - test files (legitimate throw-and-rethrow patterns in fixtures)
+ *
+ * Args of the throw expression are scanned with strings/comments blanked,
+ * so a `cause` token inside a template-literal body never silences the check.
+ */
+export function checkLossyErrorRethrow(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	// Comments-only strip preserves string positions for accurate line numbers,
+	// while string-strip is applied per-throw to the args window so a `cause:`
+	// substring inside a template literal can't false-skip the check.
+	const stripped = stripComments(content);
+	const blanked = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	const catchOpenRe = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+	const ERROR_CTOR_RE =
+		/\bthrow\s+new\s+(?:[A-Z][A-Za-z0-9_$]*Error|Error|TypeError|RangeError|SyntaxError|EvalError|URIError|AggregateError)\s*\(/g;
+
+	let openMatch: RegExpExecArray | null = catchOpenRe.exec(stripped);
+	while (openMatch !== null) {
+		if (matches.length >= 10) break;
+		const catchVar = openMatch[1];
+		const openIdx = openMatch.index + openMatch[0].length - 1;
+
+		let depth = 1;
+		let closeIdx = -1;
+		for (let i = openIdx + 1; i < stripped.length; i++) {
+			const ch = stripped[i];
+			if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					closeIdx = i;
+					break;
+				}
+			}
+		}
+		if (closeIdx < 0) {
+			openMatch = catchOpenRe.exec(stripped);
+			continue;
+		}
+
+		const bodyStart = openIdx + 1;
+		ERROR_CTOR_RE.lastIndex = bodyStart;
+		let throwMatch: RegExpExecArray | null = ERROR_CTOR_RE.exec(stripped);
+		while (throwMatch !== null && throwMatch.index < closeIdx) {
+			if (matches.length >= 10) break;
+
+			const argsStart = throwMatch.index + throwMatch[0].length;
+			let pdepth = 1;
+			let argsEnd = -1;
+			for (let i = argsStart; i < stripped.length && i < closeIdx; i++) {
+				const ch = stripped[i];
+				if (ch === "(") pdepth++;
+				else if (ch === ")") {
+					pdepth--;
+					if (pdepth === 0) {
+						argsEnd = i;
+						break;
+					}
+				}
+			}
+			if (argsEnd < 0) break;
+
+			const argsBlanked = blanked.slice(argsStart, argsEnd);
+			const preservesCause = /\bcause\s*[:,}]/.test(argsBlanked);
+			if (!preservesCause) {
+				const lineNum = stripped.slice(0, throwMatch.index).split("\n").length;
+				matches.push({
+					line: lineNum,
+					text: `throw new Error in catch(${catchVar}) without { cause: ${catchVar} } — original stack lost: ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 100)}`,
+				});
+			}
+			throwMatch = ERROR_CTOR_RE.exec(stripped);
+		}
+
+		openMatch = catchOpenRe.exec(stripped);
 	}
 
 	return matches;

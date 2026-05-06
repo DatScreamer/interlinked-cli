@@ -103,8 +103,11 @@ export function checkPyNoneEquality(content: string, filePath: string): InlineMa
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// `\b\w+\s*[!=]=\s*None\b` — identifier ==/!= None. Also covers Yoda.
-	const re = /\b\w+\s*[!=]=\s*None\b|\bNone\s*[!=]=\s*\w+/;
+	// `\b\w+\s*(==|!=)\s*None\b` — identifier ==/!= None. Also covers Yoda.
+	// Written as a non-capturing alternation rather than `[!=]=` so the
+	// `ubs_js_loose_equality` detector (which lacks regex-literal stripping)
+	// doesn't FP on this regex source line.
+	const re = /\b\w+\s*(?:==|!=)\s*None\b|\bNone\s*(?:==|!=)\s*\w+/;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
@@ -282,11 +285,337 @@ export function checkEvalInputTainted(content: string, filePath: string): Inline
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	const re = /\b(?:eval|Function|exec|compile)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g;
+	// `(?<![.\w])` excludes member-call forms (`.exec(input)` / `.compile(input)`
+	// — regex methods, NOT global eval) and identifier-prefix forms
+	// (`fooexec(...)` is a custom function, not the eval-class). `\b` alone
+	// treated `.` as a word boundary and produced FPs on every `re.exec(x)`.
+	const re = /(?<![.\w])(?:eval|Function|exec|compile)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		re.lastIndex = 0;
+		if (!re.test(strippedLines[i])) continue;
+		matches.push({
+			line: i + 1,
+			text: originalLines[i].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
+ * `child_process_exec_user_input` — Node's `child_process.exec(userInput)`
+ * family with a non-literal first argument. Command-injection vector.
+ * pre_block / error.
+ *
+ * Complements `ubs_subprocess_shell_true` (Python-only) and
+ * `ubs_eval_input_tainted` (which catches bare `exec(x)` after destructuring
+ * but skips namespaced forms because of the negative-lookbehind on `.`).
+ *
+ * Detects the namespaced shapes:
+ *   child_process.exec(userInput)
+ *   cp.execSync(req.body)
+ *   childProcess.spawn(input, args, { shell: true })   (when first arg is a var)
+ *
+ * The `(?!["'\`])` excludes string literals — a hardcoded command string is
+ * not the user-input form. Skips test files because fixtures stress this.
+ */
+export function checkChildProcessExecUserInput(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isJs = ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs";
+	const isTs = ext === ".ts" || ext === ".tsx";
+	if (!isJs && !isTs) return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const commentStripped = stripCommentsPreservingStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const matchedLines = new Set<number>();
+
+	// `(child_process|cp|childProcess).<fn>(<identifier>` — must be namespaced
+	// AND first arg must be an identifier (not a string literal). The
+	// `(?!["'\`])` after the open-paren excludes literal-only invocations.
+	const re =
+		/\b(?:child_process|childProcess|cp)\.(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		re.lastIndex = 0;
+		if (!re.test(strippedLines[i])) continue;
+		matchedLines.add(i + 1);
+		matches.push({
+			line: i + 1,
+			text: originalLines[i].trim().slice(0, 150),
+		});
+	}
+
+	const templateRe =
+		/\b(?:child_process|childProcess|cp)\.(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*`(?:\\[\s\S]|[^`\\])*?\$\{(?:\\[\s\S]|[^`\\])*?`/g;
+	for (const m of commentStripped.matchAll(templateRe)) {
+		if (matches.length >= 10) break;
+		const idx = m.index ?? 0;
+		const lineNum = commentStripped.slice(0, idx).split("\n").length;
+		if (matchedLines.has(lineNum)) continue;
+		matchedLines.add(lineNum);
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
+ * `mixed_sync_async_file_api` — function body contains both `fs.*Sync` calls
+ * and `await fs.*` / `await fsp.*` calls. Almost always a partial-conversion
+ * bug where someone migrated some calls to async but missed others.
+ * pre_block / error.
+ *
+ * Detection per function: split content into function-shaped chunks, then
+ * for each chunk check that BOTH a `\b\w+Sync\s*\(` (any identifier ending
+ * in Sync) AND an `await\s+\w+\.(?:read|write|stat|...)` co-occur AND at
+ * least one of the references is to fs/fsp/promises. Conservative — false
+ * negatives are fine; the FP rate must stay zero.
+ */
+export function checkMixedSyncAsyncFileApi(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isJs = ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs";
+	const isTs = ext === ".ts" || ext === ".tsx";
+	if (!isJs && !isTs) return [];
+	if (isTestFile(filePath)) return [];
+	if (!/\bfs\b|\bfsp\b|node:fs|"fs"|'fs'/.test(content)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	const fsApiCalls = new Set([
+		"readFile", "writeFile", "readdir", "stat", "lstat", "open",
+		"close", "unlink", "mkdir", "rmdir", "rm", "rename", "copyFile",
+		"chmod", "chown", "appendFile", "access", "readlink", "symlink",
+	]);
+	const syncRe = new RegExp(`\\b(?:fs|fsp)\\.(?:${[...fsApiCalls].join("|")})Sync\\s*\\(`, "g");
+	const awaitRe = new RegExp(`\\bawait\\s+(?:fs|fsp)\\.(?:${[...fsApiCalls].join("|")})\\s*\\(`, "g");
+
+	// pre_block/error: the FP budget is zero. A sliding window cross-flags
+	// sibling helpers (one with `fs.readFileSync`, the next with
+	// `await fs.readFile`) even when no single function mixes the two. Scope
+	// to function bodies via brace-balanced extraction, then mask out nested
+	// function bodies so a child function's `await` doesn't taint its parent.
+	const bodies = findFunctionBodies(stripped);
+	const seenLines = new Set<number>();
+	for (const body of bodies) {
+		if (matches.length >= 10) break;
+		const localBody = maskNestedBodies(stripped, body, bodies);
+		if (!syncRe.test(localBody)) continue;
+		syncRe.lastIndex = 0;
+		const awaitMatch = awaitRe.exec(localBody);
+		awaitRe.lastIndex = 0;
+		if (!awaitMatch) continue;
+		const absoluteIdx = body.start + awaitMatch.index;
+		const lineNum = stripped.slice(0, absoluteIdx).split("\n").length;
+		if (seenLines.has(lineNum)) continue;
+		seenLines.add(lineNum);
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+interface FunctionBody {
+	start: number;
+	end: number;
+}
+
+/**
+ * Extract function/method/arrow body byte ranges from `src`. Ranges are
+ * (open-brace + 1, close-brace) — i.e. the body interior. Caller is
+ * responsible for filtering nested bodies when analyzing a single body.
+ */
+function findFunctionBodies(src: string): FunctionBody[] {
+	const ranges: FunctionBody[] = [];
+	const controlKeyword = /\b(?:if|while|for|switch|catch|do|else)\s*$/;
+	// Match `)` or `=>` followed by an optional return-type annotation and `{`.
+	const re = /(\)|=>)\s*(?::[^{=;]+)?\{/g;
+	let m: RegExpExecArray | null;
+	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration
+	while ((m = re.exec(src)) !== null) {
+		const openIdx = m.index + m[0].length - 1;
+		// Skip control-flow constructs whose `) {` looks like a function start.
+		if (m[1] === ")") {
+			const before = src.slice(Math.max(0, m.index - 32), m.index);
+			if (controlKeyword.test(before)) continue;
+		}
+		let depth = 1;
+		let j = openIdx + 1;
+		while (j < src.length && depth > 0) {
+			const c = src[j];
+			if (c === "{") depth++;
+			else if (c === "}") depth--;
+			j++;
+		}
+		if (depth === 0) ranges.push({ start: openIdx + 1, end: j - 1 });
+	}
+	return ranges;
+}
+
+/**
+ * Return the body slice with strictly-nested function bodies blanked out
+ * (newlines preserved). A nested helper's `await` cannot taint its parent
+ * function once its body is masked.
+ */
+function maskNestedBodies(src: string, body: FunctionBody, all: FunctionBody[]): string {
+	const slice = src.slice(body.start, body.end).split("");
+	for (const inner of all) {
+		if (inner.start <= body.start || inner.end >= body.end) continue;
+		const localStart = inner.start - body.start;
+		const localEnd = inner.end - body.start;
+		for (let i = localStart; i < localEnd; i++) {
+			if (slice[i] !== "\n") slice[i] = " ";
+		}
+	}
+	return slice.join("");
+}
+
+/**
+ * Walk forward from the position of an opening `(` and return the substring
+ * between the parens, balanced. Returns null if the call doesn't close within
+ * `maxLen` characters or runs to EOF unmatched.
+ */
+function sliceBalancedParens(src: string, openIdx: number, maxLen = 2000): string | null {
+	if (src[openIdx] !== "(") return null;
+	let depth = 1;
+	let j = openIdx + 1;
+	const end = Math.min(src.length, openIdx + maxLen);
+	while (j < end && depth > 0) {
+		const c = src[j];
+		if (c === "(") depth++;
+		else if (c === ")") depth--;
+		j++;
+	}
+	if (depth !== 0) return null;
+	return src.slice(openIdx + 1, j - 1);
+}
+
+/**
+ * Given a function-call argument list, extract the body of the first
+ * top-level `{...}` object literal so security flags can be inspected even
+ * when nested calls or arrays appear before/after it.
+ */
+function extractTopLevelObject(args: string): string {
+	const openIdx = args.indexOf("{");
+	if (openIdx < 0) return "";
+	let depth = 1;
+	let j = openIdx + 1;
+	while (j < args.length && depth > 0) {
+		const c = args[j];
+		if (c === "{") depth++;
+		else if (c === "}") depth--;
+		j++;
+	}
+	if (depth !== 0) return args.slice(openIdx + 1);
+	return args.slice(openIdx + 1, j - 1);
+}
+
+/**
+ * `cookie_missing_security_flags` — `Set-Cookie` written via `res.cookie(...)`
+ * / `res.setHeader('Set-Cookie', ...)` / `cookies.set(...)` without both
+ * `httpOnly: true` AND `secure: true`. Session-fixation / theft vector.
+ * pre_block / error.
+ *
+ * Detection flags cookie-set calls that either omit an options object entirely
+ * or include same-call options/header text missing one or both flags. Skips
+ * test files.
+ */
+export function checkCookieMissingSecurityFlags(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isJs = ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs";
+	const isTs = ext === ".ts" || ext === ".tsx";
+	if (!isJs && !isTs) return [];
+	if (isTestFile(filePath)) return [];
+	if (!/cookie/i.test(content)) return [];
+
+	const stripped = stripCommentsPreservingStrings(content);
+	const matches: InlineMatch[] = [];
+	const originalLines = content.split("\n");
+
+	// Match `res.cookie(...)` / `cookies.set(...)`, then balance parens forward
+	// from the opening `(`. A non-greedy `.*?\)` regex stops at the first `)`,
+	// so common secure cookies whose options object contains nested calls
+	// (e.g. `expires: new Date(...)`) get truncated before the security flags
+	// can be inspected — and pre_block fires a false positive.
+	const cookieCallRe = /\b(?:res\.cookie|cookies\.set)\s*\(/g;
+	for (const m of stripped.matchAll(cookieCallRe)) {
+		if (matches.length >= 10) break;
+		const openIdx = (m.index ?? 0) + m[0].length - 1;
+		const args = sliceBalancedParens(stripped, openIdx);
+		if (args === null) continue;
+		const opts = extractTopLevelObject(args);
+		const hasHttpOnly = /\bhttpOnly\s*:\s*true\b/i.test(opts);
+		const hasSecure = /\bsecure\s*:\s*true\b/i.test(opts);
+		if (hasHttpOnly && hasSecure) continue;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+
+	const setHeaderRe =
+		/\b(?:[A-Za-z_$]\w*\.)?setHeader\s*\(\s*(['"`])Set-Cookie\1\s*,\s*([\s\S]{0,400}?)\)/g;
+	for (const m of stripped.matchAll(setHeaderRe)) {
+		if (matches.length >= 10) break;
+		const headerValue = m[2] || "";
+		const hasHttpOnly = /\bHttpOnly\b/i.test(headerValue);
+		const hasSecure = /\bSecure\b/i.test(headerValue);
+		if (hasHttpOnly && hasSecure) continue;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (matches.some((match) => match.line === lineNum)) continue;
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
+ * `logger_format_user_input` — `logger.<level>(userInput, ...)` where the
+ * first argument is a non-literal expression that references a request-bound
+ * identifier. Format-string injection / log poisoning vector. pre_block /
+ * error.
+ *
+ * Narrow seed list: logger / log / console with the suspicious-source
+ * identifiers (req, ctx, input, user, params, body, query) on the first
+ * argument. Conservative; expand only if FP rate stays at 0 in dogfood.
+ */
+export function checkLoggerFormatUserInput(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isJs = ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs";
+	const isTs = ext === ".ts" || ext === ".tsx";
+	if (!isJs && !isTs) return [];
+	if (isTestFile(filePath)) return [];
+	if (!/\b(?:logger|log|console)\.(?:info|warn|error|debug|trace|fatal)\b/.test(content)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// `logger.<level>(<sourceIdent>...` where <sourceIdent> starts with one
+	// of the request-bound prefixes. Excludes string-literal first arg via
+	// the negative lookahead.
+	const re =
+		/\b(?:logger|log|console)\.(?:info|warn|error|debug|trace|fatal)\s*\(\s*(?!["'`])(req|ctx|input|user|params|body|query|userInput|userMsg)\b/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
 		if (!re.test(strippedLines[i])) continue;
 		matches.push({
 			line: i + 1,
@@ -327,13 +656,18 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
-	const sqlVerb = /\b(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|DROP|TRUNCATE)\b/i;
+	// Tightened verb forms — earlier `UPDATE` / `DROP` / `TRUNCATE` matched
+	// plain English ("dirty update:", "drop the file", etc.). Each verb now
+	// requires the syntactic neighbor that disambiguates SQL from prose.
+	const sqlVerb =
+		/\b(?:SELECT\s+(?:\*|DISTINCT\s|[\w,\s]+\s+FROM)|INSERT\s+INTO\s+\w+|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\s+\w+|DROP\s+(?:TABLE|INDEX|DATABASE|SCHEMA|VIEW)\b|TRUNCATE\s+TABLE\b)/i;
+	const selectConcatPrefix = /\bSELECT\s*["'`]\s*[+,]/i;
 	const interpolation = /["'`].*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`/;
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = originalLines[i];
-		if (!sqlVerb.test(line)) continue;
+		if (!sqlVerb.test(line) && !selectConcatPrefix.test(line)) continue;
 		if (!interpolation.test(line)) continue;
 		matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 	}
@@ -823,13 +1157,29 @@ export function checkPrintDebugLeak(content: string, filePath: string): InlineMa
 /**
  * `ubs_hardcoded_localhost` — `localhost` / `127.0.0.1` baked into source
  * outside of test/config/example files. Often committed dev defaults that
- * break in deploy. post / warning.
+ * break in deploy. pre_block / error.
  *
  * Distinct from `checks/supply-chain.ts:checkHardcodedLocalhost` (JS/TS
  * only, requires explicit port). This UBS variant is cross-language and
  * matches plain `localhost` / `127.0.0.1` outside known config/test paths.
  */
 export function checkUbsHardcodedLocalhost(content: string, filePath: string): InlineMatch[] {
+	// Source-code extensions only. The original detector had no extension
+	// gate and FP'd on docs (.md plan files referencing the literal token),
+	// configuration manifests (.yaml/.toml deploy configs that legitimately
+	// pin localhost for local dev), and JSONL log lines. Restrict to file
+	// types where a hardcoded localhost is a real shipped-config bug.
+	const ext = getExtension(filePath);
+	const isSource =
+		ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx" ||
+		ext === ".mjs" || ext === ".cjs" ||
+		ext === ".py" || ext === ".pyi" ||
+		ext === ".go" || ext === ".rs" ||
+		ext === ".java" || ext === ".kt" || ext === ".swift" ||
+		ext === ".rb" || ext === ".php" ||
+		ext === ".c" || ext === ".cc" || ext === ".cpp" || ext === ".cxx" ||
+		ext === ".h" || ext === ".hpp" || ext === ".hxx";
+	if (!isSource) return [];
 	if (isTestFile(filePath)) return [];
 	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
 	// Match "example", "examples", "fixtures", "dev" as path segments — leading
@@ -846,15 +1196,72 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	}
 
 	const originalLines = content.split("\n");
+	const strippedLines = stripCommentsPreservingStrings(content).split("\n");
 	const matches: InlineMatch[] = [];
 	const re = /\b(?:localhost|127\.0\.0\.1)\b/;
+	// Metadata-shape lines (description / label / noun / fix_instruction
+	// strings in registry & check-metadata files) legitimately contain the
+	// literal token because they describe the check itself. Skipping these
+	// drops the self-FP rate to ~0 without weakening detection on real
+	// network-config bugs (`url = "http://localhost:3000"`-style).
+	const metadataAssignment =
+		/\b(?:label|noun|description|passLabel|fix_instruction|name|comment|summary|fix|msg|message)\s*[:=]\s*["'`]/;
 
-	for (let i = 0; i < originalLines.length; i++) {
+	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(originalLines[i])) continue;
+		if (!re.test(strippedLines[i])) continue;
+		if (metadataAssignment.test(strippedLines[i])) continue;
 		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;
+}
+
+function stripCommentsPreservingStrings(content: string): string {
+	const lines = content.split("\n");
+	const out: string[] = [];
+	let inBlock = false;
+	for (const line of lines) {
+		let stripped = "";
+		let quote: "'" | "\"" | "`" | null = null;
+		let escaped = false;
+		for (let i = 0; i < line.length; i++) {
+			const ch = line[i];
+			const next = line[i + 1];
+			if (inBlock) {
+				if (ch === "*" && next === "/") {
+					inBlock = false;
+					i++;
+				}
+				continue;
+			}
+			if (quote) {
+				stripped += ch;
+				if (escaped) {
+					escaped = false;
+				} else if (ch === "\\") {
+					escaped = true;
+				} else if (ch === quote) {
+					quote = null;
+				}
+				continue;
+			}
+			if (ch === "'" || ch === "\"" || ch === "`") {
+				quote = ch;
+				stripped += ch;
+				continue;
+			}
+			if (ch === "/" && next === "*") {
+				inBlock = true;
+				i++;
+				continue;
+			}
+			if (ch === "/" && next === "/") break;
+			if (ch === "#") break;
+			stripped += ch;
+		}
+		out.push(stripped);
+	}
+	return out.join("\n");
 }
 
 /**

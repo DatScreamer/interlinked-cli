@@ -30,6 +30,15 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.quality_checks.gitleaks).toBeDefined();
 	});
 
+	it("ships the four advisory checks off-by-default", () => {
+		// These four cost more than they pay off in the median repo.
+		// Repos can re-enable per-project via .interlinked/guard-rules.local.json.
+		expect(DEFAULT_CONFIG.quality_checks.affected_tests.enabled).toBe(false);
+		expect(DEFAULT_CONFIG.quality_checks.semgrep.enabled).toBe(false);
+		expect(DEFAULT_CONFIG.quality_checks.prompt_injection.enabled).toBe(false);
+		expect(DEFAULT_CONFIG.structural_checks?.enabled).toBe(false);
+	});
+
 	it("every quality check has required fields", () => {
 		for (const [name, check] of Object.entries(DEFAULT_CONFIG.quality_checks)) {
 			expect(typeof check.enabled).toBe("boolean");
@@ -46,8 +55,10 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.curl_mcp_detection.localhost_ports.length).toBeGreaterThan(0);
 	});
 
-	it("structural_checks enabled with key detectors", () => {
-		expect(DEFAULT_CONFIG.structural_checks?.enabled).toBe(true);
+	it("structural_checks ships off-by-default but with detectors pre-wired", () => {
+		// Off so dependency-graph cost is opt-in. Detectors stay declared so
+		// flipping `enabled = true` in guard-rules.local.json gets full coverage.
+		expect(DEFAULT_CONFIG.structural_checks?.enabled).toBe(false);
 		expect(DEFAULT_CONFIG.structural_checks?.export_surface).toBe(true);
 		expect(DEFAULT_CONFIG.structural_checks?.import_resolution).toBe(true);
 	});

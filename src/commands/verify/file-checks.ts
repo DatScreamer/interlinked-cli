@@ -47,6 +47,7 @@ import {
 	checkLargeFile,
 	checkLargeFunction,
 	checkLifecycleCleanup,
+	checkLossyErrorRethrow,
 	checkMagicLiteralInConditional,
 	checkMagicNumberNoConst,
 	checkMigrationOrdering,
@@ -74,6 +75,7 @@ import {
 	checkSelfImport,
 	checkSequentialAwaits,
 	checkSilentCatch,
+	checkSilentPromiseSwallow,
 	checkSnapshotOveruse,
 	checkSqlSchemaConsistency,
 	checkSqlStringConcat,
@@ -86,6 +88,10 @@ import {
 	checkThrowLiteral,
 	checkTimeFormatLocaleDep,
 	checkTlsVerifyDisabled,
+	checkChildProcessExecUserInput,
+	checkCookieMissingSecurityFlags,
+	checkLoggerFormatUserInput,
+	checkMixedSyncAsyncFileApi,
 	checkUbsHardcodedLocalhost,
 	checkUbsStringConcatInLoop,
 	checkUncheckedRedirect,
@@ -399,6 +405,12 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.promiseRejectNonError.push(
 		...toIssues("promise_reject_non_error", relPath, checkPromiseRejectNonError(content, file)),
 	);
+	r.lossyErrorRethrow.push(
+		...toIssues("lossy_error_rethrow", relPath, checkLossyErrorRethrow(content, file)),
+	);
+	r.silentPromiseSwallow.push(
+		...toIssues("silent_promise_catch", relPath, checkSilentPromiseSwallow(content, file)),
+	);
 	r.requireAwait.push(...toIssues("require_await", relPath, checkRequireAwait(content, file)));
 	r.accumulatingSpread.push(
 		...toIssues("accumulating_spread", relPath, checkAccumulatingSpread(content, file)),
@@ -681,6 +693,34 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			"ubs_hardcoded_localhost",
 			relPath,
 			checkUbsHardcodedLocalhost(content, file),
+		),
+	);
+	r.childProcessExecUserInput.push(
+		...toIssues(
+			"child_process_exec_user_input",
+			relPath,
+			checkChildProcessExecUserInput(content, file),
+		),
+	);
+	r.mixedSyncAsyncFileApi.push(
+		...toIssues(
+			"mixed_sync_async_file_api",
+			relPath,
+			checkMixedSyncAsyncFileApi(content, file),
+		),
+	);
+	r.cookieMissingSecurityFlags.push(
+		...toIssues(
+			"cookie_missing_security_flags",
+			relPath,
+			checkCookieMissingSecurityFlags(content, file),
+		),
+	);
+	r.loggerFormatUserInput.push(
+		...toIssues(
+			"logger_format_user_input",
+			relPath,
+			checkLoggerFormatUserInput(content, file),
 		),
 	);
 	r.magicNumberNoConst.push(

@@ -42,7 +42,10 @@ const PARITY_REQUIRED: readonly string[] = [
 	"perf-query-in-loop",
 	"perf-await-in-loop",
 	"silent-catch",
-	"silent-promise-swallow",
+	// `silent-promise-swallow` was promoted to the default-warning
+	// CHECK_REGISTRY pipeline (entries-warnings.ts → silent_promise_catch),
+	// removing it from both suggestion registries — so it intentionally is
+	// no longer parity-required here.
 	"recursive-walker-lstat",
 	"unreachable-code",
 	"mixed-error-strategy",

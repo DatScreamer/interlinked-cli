@@ -266,7 +266,13 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			description: "Biome lint check after file edits",
 		},
 		eslint: {
-			enabled: true,
+			// Off by default — ESLint is a 5-15s subprocess that overlaps with biome
+			// on most TS/JS projects. The runner already auto-skips when no
+			// `.eslintrc.*` / `eslint.config.*` is present (see runEslint), but the
+			// `npx eslint` spawn itself costs ~3-5s even on the no-config skip path.
+			// Opt in via `.interlinked/guard-rules.local.json` for repos that
+			// genuinely use ESLint instead of (or alongside) biome.
+			enabled: false,
 			command: "npx eslint --no-error-on-unmatched-pattern",
 			file_types: [".ts", ".tsx", ".js", ".jsx"],
 			timeout_ms: 10_000,
@@ -325,7 +331,9 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 				"Per-language inline pattern checks (bare except, .unwrap(), unsafe blocks, force casts, ignored err, etc.) driven by LanguageProfile.inline_checks",
 		},
 		affected_tests: {
-			enabled: true,
+			// Off by default: paired-test execution is high-friction noise on most edits.
+			// Re-enable per repo via .interlinked/guard-rules.local.json when you want it.
+			enabled: false,
 			file_types: [".ts", ".tsx", ".js", ".jsx"],
 			timeout_ms: 15_000,
 			severity: "error",
@@ -397,7 +405,9 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			description: "C/C++ linting with clang-tidy",
 		},
 		semgrep: {
-			enabled: true,
+			// Off by default: requires `semgrep` on PATH and is slow + noisy on many repos.
+			// Re-enable per repo via .interlinked/guard-rules.local.json once you've vetted FP rate.
+			enabled: false,
 			command: "semgrep scan --quiet --no-git-ignore --metrics off --config p/default",
 			file_types: [
 				".ts",
@@ -472,7 +482,9 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 				"Secrets scanning with gitleaks — detects leaked credentials, API keys, and tokens (800+ patterns)",
 		},
 		prompt_injection: {
-			enabled: true,
+			// Off by default: fires too readily on legitimate prose (READMEs, prompts, docs).
+			// Re-enable per repo via .interlinked/guard-rules.local.json when handling untrusted docs.
+			enabled: false,
 			file_types: [
 				".md",
 				".txt",
@@ -577,7 +589,10 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		max_scan_bytes: 100_000,
 	},
 	structural_checks: {
-		enabled: true,
+		// Off by default: dependency-graph scans add latency and warning volume that
+		// many repos don't want by default. Re-enable per repo via
+		// .interlinked/guard-rules.local.json once you've sized the project graph cost.
+		enabled: false,
 		export_surface: true,
 		import_resolution: true,
 		duplicate_symbols: true,

@@ -22,7 +22,6 @@ import {
 	checkQueryInLoop,
 	checkRecursiveWalkerLstat,
 	checkSilentCatch,
-	checkSilentPromiseSwallow,
 	checkSqlInjection,
 	checkUnreachableCode,
 } from "../../harness/generic-checks.js";
@@ -59,11 +58,9 @@ function buildChecks(content: string, file: string): SuggestionCheck[] {
 			source: "quality",
 			fn: () => checkSilentCatch(content, file),
 		},
-		{
-			check: "silent-promise-swallow",
-			source: "quality",
-			fn: () => checkSilentPromiseSwallow(content, file),
-		},
+		// `silent-promise-swallow` promoted to the default-warning
+		// CHECK_REGISTRY pipeline (entries-warnings.ts → silent_promise_catch).
+		// It no longer runs as a scored suggestion to avoid double-firing.
 		{
 			check: "recursive-walker-lstat",
 			source: "security",

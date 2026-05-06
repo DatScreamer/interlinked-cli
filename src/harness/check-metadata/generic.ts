@@ -54,6 +54,20 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	lossy_error_rethrow: {
+		name: "Lossy Error Rethrow",
+		description:
+			"Detects catch (e) { throw new Error('...') } without { cause: e } — the new Error drops the original stack trace and breaks error.cause-chain inspection",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	silent_promise_catch: {
+		name: "Silent Promise Catch",
+		description:
+			"Detects .catch(() => {}), .catch(() => undefined / null / void 0), and .catch(function () {}) — swallowed rejections silently mask bugs (e.g. the optimistic-grant rollback bug class in src/harness/reservations.ts).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	unvalidated_json_boundary: {
 		name: "Unvalidated JSON Boundary",
 		description:
@@ -484,9 +498,37 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 	ubs_hardcoded_localhost: {
 		name: "UBS Hardcoded Localhost",
 		description:
-			"Detects localhost / 127.0.0.1 baked into source outside test/config/example files.",
-		tier: 2,
-		determinism: "heuristic",
+			"Detects localhost / 127.0.0.1 baked into source outside test/config/example/dev paths and outside non-source extensions. Promoted to pre_block / fully_deterministic in Phase 1 of agent-quality rollout.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	child_process_exec_user_input: {
+		name: "Child Process Exec with User Input",
+		description:
+			"Detects Node child_process.exec/execSync/spawn shapes with non-literal first argument. Command-injection vector. Phase 1 pre_block error.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	mixed_sync_async_file_api: {
+		name: "Mixed Sync/Async File API",
+		description:
+			"Detects function bodies mixing fs.*Sync with await fs.* — partial migration bug. Phase 1 pre_block error.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	cookie_missing_security_flags: {
+		name: "Cookie Missing Security Flags",
+		description:
+			"Detects res.cookie / cookies.set / Set-Cookie setHeader without httpOnly+secure flags. Phase 1 pre_block error.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	logger_format_user_input: {
+		name: "Logger Format String with User Input",
+		description:
+			"Detects logger.<level> calls with request-bound first argument — log-injection vector. Phase 1 pre_block error.",
+		tier: 1,
+		determinism: "fully_deterministic",
 	},
 	ubs_magic_number_no_const: {
 		name: "UBS Magic Number No Const",

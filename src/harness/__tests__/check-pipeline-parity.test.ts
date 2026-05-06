@@ -204,7 +204,6 @@ const VERIFY_ONLY_CHECKS = new Set([
 	"checkAwaitInLoop",
 	"checkUnreachableCode",
 	"checkSilentCatch",
-	"checkSilentPromiseSwallow",
 	"checkRecursiveWalkerLstat",
 	"checkConsoleDebug",
 	// Codebase-wide analysis checks (too broad/slow for single-file PostToolUse)
@@ -355,6 +354,10 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			non_null_assertion: "nonNullAssertions",
 			extraneous_deps: "extraneousDeps",
 			no_test_file: "noTestFile",
+			// `silent_promise_catch` (registry id) maps to `silentPromiseSwallow`
+			// (property name) — the property tracks the underlying detector
+			// `checkSilentPromiseSwallow` rather than the registry id.
+			silent_promise_catch: "silentPromiseSwallow",
 			// UBS Plan 04 ids carry the `ubs_` prefix in registry/toIssues, but
 			// per Plan 04 §"Phase matrix" the resultsPropName is the bare camel
 			// form (e.g. `floatEquality` not `ubsFloatEquality`).
@@ -451,6 +454,8 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"numberPrecisionLoss",
 			"throwLiteral",
 			"promiseRejectNonError",
+			"lossyErrorRethrow",
+			"silentPromiseSwallow",
 			"unvalidatedJsonBoundary",
 			"deadExports",
 			"circularImports",

@@ -190,6 +190,12 @@ export function runGitleaks(input: ToolRunnerInput): CheckResult[] {
 	const { scope, timeoutMs } = input;
 
 	try {
+		// Skip gitleaks on the per-edit hot path entirely: even targeted
+		// single-file scans add latency to every PostToolUse cycle, and the
+		// secrets-detection signal we care about is the project sweep run
+		// from `interlinked verify`. Project-mode scans still run below.
+		if (scope.mode !== "project") return [];
+
 		const args = [
 			"detect",
 			"--no-git",
@@ -199,7 +205,7 @@ export function runGitleaks(input: ToolRunnerInput): CheckResult[] {
 			"--report-path",
 			"/dev/stdout",
 			"--source",
-			scope.mode === "file" && scope.targetFile ? scope.targetFile : ".",
+			".",
 		];
 
 		const result = spawnSync("gitleaks", args, {
@@ -310,6 +316,9 @@ export async function runSemgrepAsync(input: ToolRunnerInput): Promise<CheckResu
 
 export async function runGitleaksAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
 	const { scope, timeoutMs } = input;
+	// Skip gitleaks on the per-edit hot path; project sweeps run from
+	// `interlinked verify` are the secrets-detection signal we care about.
+	if (scope.mode !== "project") return [];
 	const args = [
 		"detect",
 		"--no-git",
@@ -319,7 +328,7 @@ export async function runGitleaksAsync(input: ToolRunnerInput): Promise<CheckRes
 		"--report-path",
 		"/dev/stdout",
 		"--source",
-		scope.mode === "file" && scope.targetFile ? scope.targetFile : ".",
+		".",
 	];
 	const result = await runProcessAsync("gitleaks", args, {
 		cwd: scope.projectRoot,

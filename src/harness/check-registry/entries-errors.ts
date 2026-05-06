@@ -3,10 +3,14 @@
 
 import {
 	checkAsyncPromiseExecutor,
+	checkChildProcessExecUserInput,
+	checkCookieMissingSecurityFlags,
 	checkDangerouslySetInnerHTML,
 	checkEvalUsage,
 	checkInnerHtmlUsage,
+	checkLoggerFormatUserInput,
 	checkMisusedPromises,
+	checkMixedSyncAsyncFileApi,
 	checkMutexLockUnwrap,
 	checkNanComparison,
 	checkPackageJsonPublishInvariants,
@@ -16,6 +20,7 @@ import {
 	checkSubprocessShellTrue,
 	checkThrowLiteral,
 	checkTlsVerifyDisabled,
+	checkUbsHardcodedLocalhost,
 	checkUnsafeOptionalChaining,
 	checkWeakHash,
 } from "../generic-checks.js";
@@ -261,5 +266,85 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 		fn: checkWeakHash,
 		resultsPropName: "weakHash",
 		content_keywords: ["md5", "sha1"],
+	},
+	{
+		id: "ubs_hardcoded_localhost",
+		phase: "pre_block",
+		name: "Hardcoded Localhost",
+		description:
+			"Detects `localhost` / `127.0.0.1` baked into source outside of test/config/example/dev paths and outside of non-source extensions (.md/.txt/.yaml/.json/etc.).",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"`localhost` / `127.0.0.1` baked into production source breaks in deploy and is a frequent dev-default leak. Read it from an env var (`process.env.API_URL`) or a config file, with a clear default for local dev.",
+		fn: checkUbsHardcodedLocalhost,
+		resultsPropName: "ubsHardcodedLocalhost",
+		content_keywords: ["localhost", "127.0.0.1"],
+	},
+	{
+		id: "child_process_exec_user_input",
+		phase: "pre_block",
+		name: "Child Process Exec with User Input",
+		description:
+			"Detects Node `child_process.exec(userInput)` / `cp.execSync(req.body)` / `childProcess.spawn(input)` shapes where the first argument is a non-literal expression. Command-injection vector. Complements `ubs_subprocess_shell_true` (Python) and `ubs_eval_input_tainted` (bare `exec` after destructured import).",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Never pass user-controllable input to child_process.exec/execSync/spawn with shell semantics. Use `execFile` (no shell) with a hardcoded program path, validate input against a strict allowlist, or invoke a typed library that doesn't shell out. If a shell is genuinely required, pass argv as an array and ensure the program path is a hardcoded constant.",
+		fn: checkChildProcessExecUserInput,
+		resultsPropName: "childProcessExecUserInput",
+		content_keywords: ["child_process", "childProcess"],
+	},
+	{
+		id: "mixed_sync_async_file_api",
+		phase: "pre_block",
+		name: "Mixed Sync/Async File API",
+		description:
+			"Detects function bodies mixing `fs.*Sync` calls with `await fs.*` calls — almost always a partial migration bug.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Pick one API style for the whole function: either all sync (`readFileSync`, `writeFileSync`) or all async (`await readFile(...)`, `await writeFile(...)`). Mixing them inside one function blocks the event loop on the sync calls while the async ones make the function `async`, which is misleading to callers and almost never intended.",
+		fn: checkMixedSyncAsyncFileApi,
+		resultsPropName: "mixedSyncAsyncFileApi",
+		content_keywords: ["Sync(", "fs."],
+	},
+	{
+		id: "cookie_missing_security_flags",
+		phase: "pre_block",
+		name: "Cookie Missing Security Flags",
+		description:
+			"Detects `res.cookie(...)` / `cookies.set(...)` / `setHeader('Set-Cookie', ...)` calls without both `httpOnly: true` and `secure: true`. Session theft / fixation vector.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Set `{ httpOnly: true, secure: true, sameSite: \"lax\" }` on every cookie. `httpOnly` blocks JS access (XSS-defense); `secure` blocks plaintext-channel transmission. If you genuinely need a JS-readable cookie (e.g., CSRF double-submit), document the exception inline and keep `secure` on.",
+		fn: checkCookieMissingSecurityFlags,
+		resultsPropName: "cookieMissingSecurityFlags",
+		content_keywords: ["cookie"],
+	},
+	{
+		id: "logger_format_user_input",
+		phase: "pre_block",
+		name: "Logger Format String with User Input",
+		description:
+			"Detects `logger.<level>(req|ctx|input|user|params|body|query)` patterns — passing request-bound values as the format string is log-injection / log-poisoning.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Pass user-controllable values as structured arguments, never as the format string itself. `logger.info({ userInput }, \"received input\")` (pino-style) or `logger.info(\"received input: %s\", userInput)` keeps the message template static and the data structured. The current shape lets attackers inject newlines / forge log lines / break log parsers.",
+		fn: checkLoggerFormatUserInput,
+		resultsPropName: "loggerFormatUserInput",
+		content_keywords: ["logger.", "log.", "console."],
 	},
 ];

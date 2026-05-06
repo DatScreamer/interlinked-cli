@@ -34,6 +34,7 @@ import {
 	checkJsonParseUnsafe,
 	checkLargeFunction,
 	checkLifecycleCleanup,
+	checkLossyErrorRethrow,
 	checkMagicLiteralInConditional,
 	checkMagicNumberNoConst,
 	checkMigrationOrdering,
@@ -51,6 +52,7 @@ import {
 	checkRegexInLoopNoCompile,
 	checkRequireAwait,
 	checkSequentialAwaits,
+	checkSilentPromiseSwallow,
 	checkSqlStringConcat,
 	checkSnapshotOveruse,
 	checkSqlSchemaConsistency,
@@ -58,7 +60,6 @@ import {
 	checkTempfileMktempRace,
 	checkTestImportingTest,
 	checkTimeFormatLocaleDep,
-	checkUbsHardcodedLocalhost,
 	checkUbsStringConcatInLoop,
 	checkUncheckedRedirect,
 	checkUnsafeFormatString,
@@ -371,6 +372,38 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"Catching and only logging an error swallows it. Re-throw, return an error value, or add explicit recovery logic.",
 		fn: checkCatchAndLog,
 		resultsPropName: "catchAndLog",
+	},
+	{
+		id: "lossy_error_rethrow",
+		phase: "post",
+		name: "Lossy Error Rethrow",
+		description:
+			"Detects catch (e) { throw new Error('...') } that constructs a fresh Error without forwarding the caught exception via the ES2022 { cause: e } option — drops the original stack trace and breaks downstream error.cause inspection.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Pass the original error through as the rethrow's cause: `throw new Error('wrapped', { cause: e })`. Without it the caught exception's stack and metadata are silently discarded — debuggers, logs, and any code walking `error.cause` see only the new prose message. If the caught error is genuinely uninteresting, document why with a comment alongside the rethrow.",
+		fn: checkLossyErrorRethrow,
+		resultsPropName: "lossyErrorRethrow",
+		content_keywords: ["catch"],
+	},
+	{
+		id: "silent_promise_catch",
+		phase: "post",
+		name: "Silent Promise Catch",
+		description:
+			"Detects .catch(() => {}), .catch(() => undefined), .catch(() => null), and .catch(function () {}) — a swallowed rejection silently masks bugs. The async cousin of bare-catch swallowing; promoted from the heuristic suggestion pipeline because the FP profile is tight (named handler refs, intent comments, and explicit param-ack bodies are exempt).",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A `.catch(() => {})` swallows the rejection without reading it — anyone debugging a downstream symptom has no thread to pull. Either: (a) handle the error meaningfully (`.catch((e) => log.warn({ err: e }, 'failed'))`), (b) name the handler so its intent is documented (`.catch(reportAndContinue)`), or (c) if you genuinely don't care, leave an inline comment on the same line (`/* fire and forget */`) so the next reader knows the omission was deliberate.",
+		fn: checkSilentPromiseSwallow,
+		resultsPropName: "silentPromiseSwallow",
+		content_keywords: [".catch"],
 	},
 	{
 		id: "json_parse_unsafe",
@@ -882,22 +915,11 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 		resultsPropName: "printDebugLeak",
 		content_keywords: ["console.log", "print(", "fmt.Println"],
 	},
-	{
-		id: "ubs_hardcoded_localhost",
-		phase: "post",
-		name: "Hardcoded Localhost",
-		description:
-			"Detects `localhost` / `127.0.0.1` baked into source outside of test/config/example files.",
-		tier: 2,
-		determinism: "heuristic",
-		severity: "warning",
-		pipeline: "agent_safety",
-		fix_instruction:
-			"`localhost` / `127.0.0.1` baked into production source breaks in deploy and is a frequent dev-default leak. Read it from an env var (`process.env.API_URL`) or a config file, with a clear default for local dev.",
-		fn: checkUbsHardcodedLocalhost,
-		resultsPropName: "ubsHardcodedLocalhost",
-		content_keywords: ["localhost", "127.0.0.1"],
-	},
+	// `ubs_hardcoded_localhost` was promoted to pre_block / error severity in
+	// Phase 1 of the agent-quality rollout (see docs/plans/11-...md). After
+	// the extension-gate tightening landed alongside the promotion, the
+	// check's FP rate dropped to ~0 against the dogfood corpus. Entry now
+	// lives in `entries-errors.ts`.
 	{
 		id: "ubs_magic_number_no_const",
 		phase: "post",

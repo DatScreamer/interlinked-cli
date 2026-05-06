@@ -1,6 +1,10 @@
 // Shared helpers used by all check modules.
 // Extracted from generic-checks.ts. These are internal to the checks/ package.
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** A single match found by an inline check. Public API — re-exported by generic-checks.ts. */
 export interface InlineMatch {
 	/** 1-based line number */
@@ -55,12 +59,86 @@ export function countTopLevelCommas(paramStr: string): number {
 // ===========================================
 
 /**
+ * Resolve the interlinked-cli package root once, lazily, by walking up from
+ * this module's location until we hit a `package.json` whose `name` matches.
+ * Used to scope harness-internal test-file exemptions to OUR files only —
+ * a user repo that happens to have a `harness/rules/` directory must not
+ * silently inherit the exemption.
+ *
+ * Returns `null` when the package root can't be located (unusual install
+ * paths, broken layouts). Treated as fail-closed by callers: when null,
+ * the exemption never fires.
+ */
+let _packageRootCache: string | null | undefined;
+function resolveInterlinkedCliPackageRoot(): string | null {
+	if (_packageRootCache !== undefined) return _packageRootCache;
+	try {
+		const moduleDir = dirname(fileURLToPath(import.meta.url));
+		let dir = moduleDir;
+		// Bound the walk so a runaway loop on weird filesystems can't hang.
+		// 8 hops is comfortably more than any realistic install layout
+		// (`<root>/dist/harness/checks/` is 4; npm/pnpm symlinked layouts
+		// add a couple more).
+		for (let i = 0; i < 8; i++) {
+			const pkgPath = join(dir, "package.json");
+			if (existsSync(pkgPath)) {
+				try {
+					const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+						name?: unknown;
+					};
+					if (pkg && pkg.name === "interlinked-cli") {
+						_packageRootCache = dir;
+						return dir;
+					}
+				} catch (e) {
+					// Malformed package.json — keep walking. Swallowing here
+					// matches the resolver's contract (returns null on
+					// failure); callers fail-closed.
+					void e;
+				}
+			}
+			const parent = dirname(dir);
+			if (parent === dir) break;
+			dir = parent;
+		}
+	} catch (e) {
+		// `import.meta.url` resolution failure — extremely rare, but if it
+		// happens we silently fall through to fail-closed (returns null).
+		void e;
+	}
+	_packageRootCache = null;
+	return null;
+}
+
+/**
+ * Test-only override hook for the package-root cache. Lets unit tests
+ * exercise both the "we are running on interlinked-cli source" and the
+ * "we are running on a user repo" branches without filesystem mutation.
+ */
+export function __setPackageRootForTesting(root: string | null | undefined): void {
+	_packageRootCache = root;
+}
+
+/**
  * Check if a file path looks like a test file.
  * Matches common conventions across languages:
  * - Python: `test_*.py`, `*_test.py`
  * - Go: `*_test.go`
  * - JS/TS: `*.test.ts`, `*.spec.ts`, `*.test.js`, `*.spec.js`
  * - Directories: `__tests__/`, `tests/`, `src/test/`
+ *
+ * Also returns true for our own harness rule-definition and check-registry
+ * files. Those files contain dangerous-looking patterns AS DATA (regex
+ * strings about shell commands, registry of patterns we want to detect,
+ * `chmod 777` examples in rule descriptions) — content-quality scans on
+ * them produce only false positives. Treating them as test-equivalents
+ * means every detector that already exempts test files also exempts the
+ * rules registry without each one having to re-implement the check.
+ *
+ * The harness-internals exemption is scoped to interlinked-cli's own
+ * package via `resolveInterlinkedCliPackageRoot()`. A user project whose
+ * source happens to live under `harness/rules/` or `harness/check-registry/`
+ * does NOT inherit the exemption.
  */
 export function isTestFile(filePath: string): boolean {
 	const normalized = filePath.replace(/\\/g, "/");
@@ -70,6 +148,24 @@ export function isTestFile(filePath: string): boolean {
 		normalized.includes("/__tests__/") ||
 		normalized.includes("/tests/") ||
 		normalized.includes("/src/test/")
+	) {
+		return true;
+	}
+
+	// Harness internals where dangerous-looking patterns appear as data.
+	// Scoped to interlinked-cli's own package root (resolved once via
+	// `resolveInterlinkedCliPackageRoot`) so a user repo that happens to
+	// have its own `harness/rules/` or `harness/check-registry/` directory
+	// doesn't get its checks silently disabled. Fail-closed: when the
+	// resolver returns null, the exemption never fires.
+	const pkgRoot = resolveInterlinkedCliPackageRoot();
+	if (
+		pkgRoot &&
+		normalized.startsWith(`${pkgRoot.replace(/\\/g, "/")}/`) &&
+		(normalized.includes("/harness/rules/") ||
+			normalized.includes("/harness/check-registry/") ||
+			normalized.includes("/harness/check-metadata") ||
+			normalized.includes("/harness/checks/ubs-language-specific."))
 	) {
 		return true;
 	}

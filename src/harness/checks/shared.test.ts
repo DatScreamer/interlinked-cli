@@ -88,6 +88,14 @@ describe("shared helpers", () => {
 		expect(isTestFile("src/foo.ts")).toBe(false);
 	});
 
+	// Harness-internals exemption (`src/harness/rules/*`, `*/check-registry/*`,
+	// `*/check-metadata*`, `*/ubs-language-specific.*`) is now scoped to
+	// interlinked-cli's resolved package root — the relative-path form this
+	// test used to assert was unsafe (a user repo with `src/harness/rules/`
+	// was inheriting the exemption). Coverage moved to
+	// `__tests__/shared-test-file-scoping.test.ts`, which exercises both the
+	// scoped-positive and scoped-negative branches with absolute paths.
+
 	test("isCliFile detects CLI entry points", () => {
 		expect(isCliFile("src/commands/foo.ts")).toBe(true);
 		expect(isCliFile("src/cmd/foo.go")).toBe(true);

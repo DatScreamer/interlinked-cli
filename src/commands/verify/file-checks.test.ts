@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { runPerFileChecks } from "./file-checks.js";
-import type { CodeQualityResults } from "./tool-results-types.js";
+import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
 function makeEmptyResults(): CodeQualityResults {
 	const r = {} as CodeQualityResults;
@@ -45,7 +45,10 @@ function makeEmptyResults(): CodeQualityResults {
 		"numberPrecisionLoss",
 		"throwLiteral",
 		"promiseRejectNonError",
+		"lossyErrorRethrow",
+		"silentPromiseSwallow",
 		"requireAwait",
+
 		"accumulatingSpread",
 		"excessiveUseState",
 		"dangerouslySetInnerHtml",
@@ -155,5 +158,38 @@ describe("runPerFileChecks", () => {
 			piiOpts: {},
 		});
 		expect(r.strongTyping.length).toBe(0);
+	});
+
+	it("dispatches silent_promise_catch through the default-warning pipeline (post-promotion regression guard)", () => {
+		// Use the canonical emptyResults() — the JS/TS dispatch touches every
+		// CodeQualityResults bucket, so the partial makeEmptyResults() above
+		// would crash with "Cannot read properties of undefined" on missing
+		// Plan 04 D.1 buckets. The makeEmptyResults() fixture stays as-is to
+		// keep guarding the historical surface; smoke tests use the source.
+		const r = emptyResults();
+		runPerFileChecks({
+			file: "/tmp/swallow.ts",
+			content: 'fetch("/api").catch(() => {});\n',
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		expect(r.silentPromiseSwallow.length).toBeGreaterThan(0);
+	});
+
+	it("dispatches lossy_error_rethrow through the default-warning pipeline", () => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file: "/tmp/lossy.ts",
+			content: 'try { foo(); } catch (e) { throw new Error("wrapped"); }\n',
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		expect(r.lossyErrorRethrow.length).toBeGreaterThan(0);
 	});
 });

@@ -90,6 +90,7 @@ export {
 	checkCatchReturnNull,
 	checkErrorStringComparison,
 	checkInconsistentErrorStrategy,
+	checkLossyErrorRethrow,
 	checkThrowAsControlFlow,
 	checkUntypedCatch,
 } from "./checks/error-handling.js";
@@ -255,6 +256,10 @@ export {
 	checkOsSystemTainted,
 	checkPickleUntrustedLoad,
 	checkPrintDebugLeak,
+	checkChildProcessExecUserInput,
+	checkCookieMissingSecurityFlags,
+	checkLoggerFormatUserInput,
+	checkMixedSyncAsyncFileApi,
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
 	checkRegexInLoopNoCompile,

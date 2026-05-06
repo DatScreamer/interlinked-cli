@@ -30,4 +30,17 @@ describe("checkUbsHardcodedLocalhost", () => {
 		const code = "const HOST = '127.0.0.1';";
 		expect(checkUbsHardcodedLocalhost(code, "src/config.ts")).toEqual([]);
 	});
+
+	it("does NOT fire on comments in production source", () => {
+		const code = [
+			"// Local dev can use http://localhost:8000 while testing manually.",
+			"export const host = process.env.API_HOST;",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/client.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on non-source files", () => {
+		const code = "The dev server runs at http://localhost:8000.";
+		expect(checkUbsHardcodedLocalhost(code, "docs/setup.md")).toEqual([]);
+	});
 });
