@@ -14,8 +14,10 @@
 // session.
 
 import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "../check-registry/index.js";
+import { isTestFile } from "../checks/shared.js";
 import {
 	evaluateBiomeDiffOverlay,
 	evaluateTscDiffOverlay,
@@ -374,29 +376,63 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	}
 
 	// Legacy TS/JS/MJS/CJS + cross-language content-quality regex heuristics.
-	warnings.push(...collectContentQualityWarnings(filePath, content));
+	warnings.push(...collectContentQualityWarnings(filePath, content, event.cwd));
 
 	return { kind: "ok", warnings, escalation };
 }
 
+/**
+ * Files where regex-based content-quality scans produce only false positives:
+ * the dangerous patterns appear AS DATA (rule definitions, test fixtures),
+ * not as live code. Scanning them turns every legitimate use of "chmod 777",
+ * "Access-Control-Allow-Origin: *", or a nested-quantifier regex string into
+ * a misleading warning. The exemption is path-based because content-based
+ * disambiguation (is-this-inside-a-string-literal?) requires a real parser
+ * for a marginal gain.
+ *
+ * Exempt:
+ *  - Interlinked CLI's own rule definition files (`src/harness/rules/**`,
+ *    `check-registry/**`) via the shared package-root-scoped `isTestFile()`
+ *    exemption. User projects with similarly named directories are still scanned.
+ *  - Test fixtures: `*.test.*`, `*.spec.*`, files under `__tests__/`
+ *  - Config/fixture sentinels: `*.config.*`, `*.fixture.*`
+ *
+ * Real bugs in test files still surface via tsc/biome/eslint — those run
+ * regardless. Only the regex-driven content-quality heuristics are skipped.
+ */
+function isContentScanExempt(filePath: string, cwd: string | undefined): boolean {
+	const normalized = filePath.replace(/\\/g, "/");
+	if (/\.(config|fixture)\.\w+$/.test(normalized)) return true;
+	if (isTestFile(normalized)) return true;
+	if (!isAbsolute(filePath) && cwd && isTestFile(resolve(cwd, filePath))) return true;
+	return false;
+}
+
 /** Content-quality regex checks shared across all languages plus a TS/JS-only block.
  *  Pure function over `(filePath, content)` — callers append to their warning list. */
-function collectContentQualityWarnings(filePath: string, content: string): string[] {
+function collectContentQualityWarnings(
+	filePath: string,
+	content: string,
+	cwd: string | undefined,
+): string[] {
 	const warnings: string[] = [];
+
+	// Files in this list legitimately contain dangerous-looking strings as
+	// data — short-circuit the entire content-quality scan for them.
+	if (isContentScanExempt(filePath, cwd)) return warnings;
 
 	// TS/JS content checks
 	if (JS_TS_EXTENSIONS.test(filePath) && content.length > INJECTION_SCAN_MIN_CHARS) {
 		warnings.push(...collectTsJsQualityWarnings(filePath, content));
 	}
 
-	// A7: Hardcoded non-localhost URLs (all file types, skip test/config files)
-	if (!/\.(test|spec|config|fixture)\.\w+$/.test(filePath) && !filePath.includes("__tests__")) {
-		const urlMatches = content.match(/https?:\/\/(?!localhost|127\.0\.0\.1)[^\s"'`>)}\]]+/g);
-		if (urlMatches && urlMatches.length > 3) {
-			warnings.push(
-				`[interlinked:content-quality] ${urlMatches.length} hardcoded URLs in ${filePath}. Consider using configuration or environment variables.`,
-			);
-		}
+	// A7: Hardcoded non-localhost URLs (all file types).
+	// Path-based exemption already handled above; no need to re-filter here.
+	const urlMatches = content.match(/https?:\/\/(?!localhost|127\.0\.0\.1)[^\s"'`>)}\]]+/g);
+	if (urlMatches && urlMatches.length > 3) {
+		warnings.push(
+			`[interlinked:content-quality] ${urlMatches.length} hardcoded URLs in ${filePath}. Consider using configuration or environment variables.`,
+		);
 	}
 
 	// A8: SQL injection patterns — template literal interpolation in SQL

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -176,6 +176,42 @@ describe("evaluateWriteContentGuards — ok cases", () => {
 		// just asserts the warning text appears in whichever branch is taken.
 		const warnings = result.kind === "ok" ? result.warnings : result.decision.warnings || [];
 		expect(warnings.some((w) => w.includes('"as any"') || w.includes("as any"))).toBe(true);
+	});
+
+	it("does not exempt harness-named directories in user projects", () => {
+		const filePath = join(tmpDir, "src", "harness", "rules", "policy.ts");
+		mkdirSync(join(tmpDir, "src", "harness", "rules"), { recursive: true });
+		writeFileSync(filePath, "");
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: {
+				file_path: filePath,
+				content: "export const command = 'chmod 777 /tmp/x';\n",
+			},
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		const warnings = result.kind === "ok" ? result.warnings : result.decision.warnings || [];
+		expect(warnings.some((w) => w.includes("chmod 777"))).toBe(true);
+	});
+
+	it("still exempts interlinked-cli harness internals as data files", () => {
+		const filePath = join(process.cwd(), "src", "harness", "rules", "builtin-rules-local.ts");
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: {
+				file_path: filePath,
+				content: "export const example = 'chmod 777 /tmp/x';\n",
+			},
+			event: makeEvent({ cwd: process.cwd() }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		const warnings = result.kind === "ok" ? result.warnings : result.decision.warnings || [];
+		expect(warnings.some((w) => w.includes("chmod 777"))).toBe(false);
 	});
 
 	it("preserves an existing pendingEscalation when nothing fires", () => {

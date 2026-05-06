@@ -60,6 +60,7 @@ function makeSession(): SessionTrajectory {
 		consecutive_tool_failures: new Map(),
 		silent_failure_warned: new Set(),
 		bloat_warned: new Set(),
+		assertion_counts: new Map(),
 	};
 }
 
@@ -205,6 +206,155 @@ describe("evaluatePreToolUse", () => {
 			const event = makeEvent({
 				tool_input: { command: "killall wrangler" },
 			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		// Regression: multi-PID kill rule was matching `kill <pid> 2>&1` because
+		// the `2` from the redirect operator looked like a second PID. The fix
+		// requires the second token to actually be a PID (not followed by `>`).
+		it("allows kill <pid> with stderr redirect (kill 12345 2>&1)", () => {
+			const event = makeEvent({
+				tool_input: { command: "kill 12345 2>&1" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("allows kill <pid> followed by an unrelated command", () => {
+			const event = makeEvent({
+				tool_input: { command: 'kill 69513; echo "kill issued"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("still blocks a real two-PID kill (kill 12345 67890)", () => {
+			const event = makeEvent({
+				tool_input: { command: "kill 12345 67890" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		// Regression: the shutdown/reboot rule used to allow `\s` as a prefix,
+		// which matched the literal substring "shutdown" anywhere — including
+		// inside echo strings, grep arguments, and source-file paths. Verify
+		// it now requires a true command-start anchor.
+		it("allows the word 'shutdown' inside an echo argument", () => {
+			const event = makeEvent({
+				tool_input: { command: 'echo "Graceful shutdown stalled"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("allows grep with 'shutdown' as a search pattern", () => {
+			const event = makeEvent({
+				tool_input: { command: "grep -n 'Shutting down' src/server.ts" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("still blocks a real shutdown command", () => {
+			const event = makeEvent({
+				tool_input: { command: "shutdown -h now" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("still blocks sudo reboot", () => {
+			const event = makeEvent({
+				tool_input: { command: "sudo reboot" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("still blocks shutdown after a separator (; shutdown -h now)", () => {
+			const event = makeEvent({
+				tool_input: { command: "echo done; shutdown -h now" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		// Pipelines and newlines are command-start positions in shell. An
+		// earlier revision restricted the prefix to ;/&&/|| only, which let
+		// `printf x | sudo reboot` and `echo ok\nreboot` pass. Restored.
+		it("blocks reboot at the right side of a pipeline (printf x | sudo reboot)", () => {
+			const event = makeEvent({
+				tool_input: { command: "printf x | sudo reboot" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks reboot after a newline (echo ok\\nreboot)", () => {
+			const event = makeEvent({
+				tool_input: { command: "echo ok\nreboot" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks shutdown after || (false || shutdown -h now)", () => {
+			const event = makeEvent({
+				tool_input: { command: "false || shutdown -h now" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		// Wrapped invocations — the second-pass review caught that an
+		// anchor-only regex was missing common wrapper forms. Each of these
+		// actually executes the destructive verb at runtime.
+		it("blocks `env FOO=1 reboot`", () => {
+			const event = makeEvent({ tool_input: { command: "env FOO=1 reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks `command reboot` (POSIX command builtin)", () => {
+			const event = makeEvent({ tool_input: { command: "command reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks `bash -c reboot`", () => {
+			const event = makeEvent({ tool_input: { command: "bash -c reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it('blocks `bash -c "reboot"` (quoted)', () => {
+			const event = makeEvent({ tool_input: { command: 'bash -c "reboot"' } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks `nohup reboot`", () => {
+			const event = makeEvent({ tool_input: { command: "nohup reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks `exec reboot`", () => {
+			const event = makeEvent({ tool_input: { command: "exec reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks combined wrappers (`sudo bash -c reboot`)", () => {
+			const event = makeEvent({ tool_input: { command: "sudo bash -c reboot" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks `env A=1 B=2 sudo reboot`", () => {
+			const event = makeEvent({ tool_input: { command: "env A=1 B=2 sudo reboot" } });
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("block");
 		});

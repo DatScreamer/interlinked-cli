@@ -197,7 +197,19 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		trigger: "PreToolUse",
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
-		patterns: [{ field: "command", regex: "\\bkill\\s+[0-9]+\\s+[0-9]+", flags: "i" }],
+		// The negative lookahead `(?![0-9>])` excludes file-descriptor redirects:
+		// `kill 12345 2>&1` would otherwise match because `2` from `2>&1` looks
+		// like a second PID. We require the trailing token to be a real PID
+		// (digits not followed by `>`/`<` or more digits in a redirect context),
+		// followed by end-of-token (whitespace, end-of-string, or shell
+		// separator). Real two-PID kills (`kill 12345 67890\b`) still match.
+		patterns: [
+			{
+				field: "command",
+				regex: "\\bkill\\s+[0-9]+\\s+[0-9]+(?=\\s|$|[;|&])",
+				flags: "i",
+			},
+		],
 		reason: "Killing multiple PIDs at once is dangerous",
 		suggestion: "Kill one PID at a time",
 		severity: "high",
@@ -289,10 +301,45 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		patterns: [
 			{
 				field: "command",
-				regex: "(^|\\s|;|&&|\\|\\|)(shutdown|reboot|halt|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b",
-				flags: "i",
-			},
-		],
+				// Three structural pieces:
+				//
+					// 1. **Command-start anchor**: `^`, `;`, `&&`, `||`, single
+					//    `|` (pipeline), `\n` (multi-line script). The earlier
+					//    `\s` prefix false-positived inside echo/grep strings
+					//    and file paths (`echo "Graceful shutdown stalled"`,
+					//    `cat ./shutdown.log`). `executed_only` masks quoted
+					//    arguments before regex matching, so `rg "x|reboot"`
+					//    stays allowed while real pipelines/newlines still match.
+					//    `\|\|` listed before `[;|\n]` so the engine consumes
+					//    both chars of `||` as one token instead of half-matching.
+				//
+				// 2. **Optional wrapper chain**: `sudo`, `env [VAR=val ...]`,
+				//    `command`, `exec`, `nohup`, and `bash -c "...` /
+				//    `sh -c "...`. Zero-or-more so plain `reboot`,
+				//    `sudo reboot`, `env A=1 sudo reboot`, and
+				//    `sudo bash -c "reboot"` all match. Without this,
+				//    wrappers like `env FOO=1 reboot` or `bash -c reboot`
+				//    would bypass the rule.
+				//
+					// 3. **Verb**: `\b` anchored so `rebootloader` doesn't
+					//    accidentally match.
+					regex: "(^|\\|\\||&&|[;|\\n])\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+|(?:bash|sh)\\s+-c\\s*[\"']?\\s*)*(shutdown|reboot|halt|poweroff|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b",
+					flags: "i",
+					executed_only: true,
+				},
+				{
+					field: "command",
+					// Dedicated raw-text companion for quoted shell scripts. The
+					// main pattern uses `executed_only`, which intentionally masks
+					// `"reboot"` inside `bash -c "reboot"`; this pattern inspects
+					// only the `bash|sh -c` script entrypoint and still requires
+					// the destructive verb to be the first executed token inside
+					// the quoted script, so `bash -c "echo shutdown stalled"` is
+					// not a false positive.
+					regex: "(^|\\|\\||&&|[;|\\n])\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+)*(?:bash|sh)\\s+-c\\s*[\"']\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+)*(shutdown|reboot|halt|poweroff|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b",
+					flags: "i",
+				},
+			],
 		reason: "System shutdown/reboot commands are not allowed",
 		suggestion: "Ask the user to run this manually",
 		severity: "critical",

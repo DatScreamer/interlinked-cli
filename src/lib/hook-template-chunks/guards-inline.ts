@@ -16,13 +16,71 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     const isBash = ["Bash", "Shell", "shell", "run_command"].includes(toolName);
     if (!isBash) return null;
 
-    const cmd = toolInput?.command || "";
-    if (!cmd) return null;
+	const cmd = toolInput?.command || "";
+	if (!cmd) return null;
 
-    // Context detection: skip data-only references (grep/echo/cat examining strings)
-    if (/^\\s*(grep|egrep|fgrep|rg|ag|echo|printf|cat|head|tail|less|more|wc|diff|test|\\[)\\s/.test(cmd)) {
-        return null;
-    }
+	function maskInlineQuotedShell(value) {
+	    let out = "";
+	    let quote = null;
+	    let escaped = false;
+	    let comment = false;
+	    const backtick = String.fromCharCode(96);
+	    for (let i = 0; i < value.length; i++) {
+	        const ch = value[i];
+	        if (comment) {
+	            if (ch === "\\n") {
+	                comment = false;
+	                out += ch;
+	            } else {
+	                out += " ";
+	            }
+	            continue;
+	        }
+	        if (quote) {
+	            if (escaped) {
+	                escaped = false;
+	                out += " ";
+	                continue;
+	            }
+	            if (ch === "\\\\") {
+	                escaped = true;
+	                out += " ";
+	                continue;
+	            }
+	            if (ch === quote) quote = null;
+	            out += " ";
+	            continue;
+	        }
+	        if (ch === "#" && (i === 0 || /\\s/.test(value[i - 1] || ""))) {
+	            comment = true;
+	            out += " ";
+	            continue;
+	        }
+	        if (ch === "'" || ch === "\\"" || ch === backtick) {
+	            quote = ch;
+	            out += " ";
+	            continue;
+	        }
+	        out += ch;
+	    }
+	    return out;
+	}
+
+	function matchesInlineShutdown(cmdValue) {
+	    const masked = maskInlineQuotedShell(cmdValue);
+	    const directRe = /(^|\\|\\||&&|[;|\\n])\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+|(?:bash|sh)\\s+-c\\s*["']?\\s*)*(shutdown|reboot|halt|poweroff|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b/i;
+	    const quotedShellRe = /(^|\\|\\||&&|[;|\\n])\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+)*(?:bash|sh)\\s+-c\\s*["']\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+)*(shutdown|reboot|halt|poweroff|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b/i;
+	    return directRe.test(masked) || quotedShellRe.test(cmdValue);
+	}
+
+	if (matchesInlineShutdown(cmd)) {
+	    return { decision: "block", reason: "BLOCKED: System shutdown/reboot commands." };
+	}
+
+	// Context detection: skip data-only references (grep/echo/cat examining strings)
+	if (/^\\s*(grep|egrep|fgrep|rg|ag|echo|printf|cat|head|tail|less|more|wc|diff|test|\\[)\\s/.test(cmd)) {
+	    return null;
+	}
 
     // --- Sleep ---
     if (/^\\s*(sleep|bash\\s+-c\\s+.*sleep)\\s+/i.test(cmd) || /;\\s*sleep\\s+/i.test(cmd)) {
@@ -146,7 +204,16 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     }
 
     // --- System-level ---
-    if (/(^|\\s|;|&&|\\|\\|)(shutdown|reboot|halt|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))/i.test(cmd)) {
+    // Mirrors the harness rule at builtin-rules-processes.ts so harness-up
+    // and harness-down behavior agrees. Three pieces:
+    //   1. Command-start anchor: ^, ;, &&, ||, single |, \\n. Excludes
+    //      whitespace prefix to avoid FP on echo/grep strings.
+    //   2. Optional wrapper chain: sudo, env [VAR=val ...], command, exec,
+    //      nohup, bash -c "..., sh -c "...  — covers wrapped invocations
+    //      like \`env FOO=1 reboot\` and \`bash -c reboot\` that an
+    //      anchor-only regex misses.
+    //   3. Verb with \\b so \`rebootloader\` doesn't match.
+    if (/(^|\\|\\||&&|[;|\\n])\\s*(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+|(?:bash|sh)\\s+-c\\s*["']?\\s*)*(shutdown|reboot|halt|poweroff|init\\s+[06]|systemctl\\s+(poweroff|reboot|halt))\\b/i.test(cmd)) {
         return { decision: "block", reason: "BLOCKED: System shutdown/reboot commands." };
     }
     if (/\\b(lvremove|vgremove|pvremove)\\s/i.test(cmd)) {

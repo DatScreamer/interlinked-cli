@@ -61,6 +61,7 @@ function makeSession(): SessionTrajectory {
 		consecutive_tool_failures: new Map(),
 		silent_failure_warned: new Set(),
 		bloat_warned: new Set(),
+		assertion_counts: new Map(),
 	};
 }
 
@@ -222,6 +223,26 @@ describe("command-guard-hook.ts parity with harness", () => {
 
 		it("blocks chmod 777", () => {
 			expect(runGuard("chmod 777 mydir")).toBe("block");
+		});
+
+		it("blocks shutdown after a pipeline separator", () => {
+			expect(runGuard("printf x | sudo reboot")).toBe("block");
+		});
+
+		it("blocks wrapped shutdown commands", () => {
+			expect(runGuard("env FOO=1 command reboot")).toBe("block");
+		});
+
+		it("blocks quoted shell-c shutdown commands", () => {
+			expect(runGuard('bash -c "reboot"')).toBe("block");
+		});
+
+		it("allows rg patterns that mention wrapped reboot as data", () => {
+			expect(runGuard("rg -n 'foo|command reboot' src")).toBe("allow");
+		});
+
+		it("allows quoted echo text with a pipe before reboot", () => {
+			expect(runGuard('echo "foo | reboot"')).toBe("allow");
 		});
 	});
 
