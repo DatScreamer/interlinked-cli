@@ -11,6 +11,7 @@ import {
 	checkProdTestLocRatio,
 	checkRepeatedEditWithoutTest,
 	checkSuppressionAsWorkaround,
+	checkTddCommitGate,
 	checkTppLeapfrog,
 	countAssertions,
 } from "../behavioral-checks.js";
@@ -310,46 +311,53 @@ describe("checkProdDeltaWithoutTestDelta", () => {
 // ===========================================
 
 describe("checkProdTestLocRatio", () => {
-	let dir: string;
-	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "loc-ratio-"));
-	});
-	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true });
-	});
+	// Delta-LOC based: pass a stub `getDelta` so tests don't depend on
+	// the working-tree git state. The contract is "ratio of touched-line
+	// counts," not "ratio of file-size totals."
 
-	it("warns when ratio exceeds 5:1", () => {
-		const prodFile = join(dir, "foo.ts");
-		const testFile = join(dir, "foo.test.ts");
-		writeFileSync(prodFile, "a\n".repeat(60));
-		writeFileSync(testFile, "a\n".repeat(10));
-		const session = makeSession({ files_written: new Set([prodFile, testFile]) });
-		const results = checkProdTestLocRatio(session);
+	it("warns when prod-delta / test-delta exceeds 5:1", () => {
+		const session = makeSession({ files_written: new Set() });
+		const results = checkProdTestLocRatio(session, () => ({ prodLoc: 60, testLoc: 10 }));
 		expect(results.length).toBe(1);
-		expect(results[0].message).toMatch(/\d+\.\d+:1/);
+		expect(results[0].message).toMatch(/6\.0:1/);
 	});
 
 	it("passes when ratio is healthy", () => {
-		const prodFile = join(dir, "foo.ts");
-		const testFile = join(dir, "foo.test.ts");
-		writeFileSync(prodFile, "a\n".repeat(30));
-		writeFileSync(testFile, "a\n".repeat(20));
-		const session = makeSession({ files_written: new Set([prodFile, testFile]) });
-		expect(checkProdTestLocRatio(session)).toEqual([]);
+		const session = makeSession({ files_written: new Set() });
+		expect(
+			checkProdTestLocRatio(session, () => ({ prodLoc: 30, testLoc: 20 })),
+		).toEqual([]);
 	});
 
-	it("warns when prod code exists but no tests were written", () => {
-		const prodFile = join(dir, "foo.ts");
-		writeFileSync(prodFile, "a\n".repeat(30));
-		const session = makeSession({ files_written: new Set([prodFile]) });
-		const results = checkProdTestLocRatio(session);
+	it("warns when prod-delta exists but no test-delta", () => {
+		const session = makeSession({ files_written: new Set() });
+		const results = checkProdTestLocRatio(session, () => ({ prodLoc: 30, testLoc: 0 }));
 		expect(results.length).toBe(1);
 		expect(results[0].message).toMatch(/no tests written/);
 	});
 
-	it("is silent when no files were written", () => {
+	it("is silent when delta is zero", () => {
 		const session = makeSession({ files_written: new Set() });
-		expect(checkProdTestLocRatio(session)).toEqual([]);
+		expect(checkProdTestLocRatio(session, () => ({ prodLoc: 0, testLoc: 0 }))).toEqual([]);
+	});
+
+	it("is silent under the limit even when prod is large (delta-aware)", () => {
+		// The previous file-total implementation would have fired here
+		// because session.files_written includes a 1000-line file. Delta
+		// semantics: only a small change was actually made.
+		const dir = mkdtempSync(join(tmpdir(), "loc-ratio-delta-"));
+		const huge = join(dir, "huge.ts");
+		writeFileSync(huge, "a\n".repeat(1000));
+		const test = join(dir, "tiny.test.ts");
+		writeFileSync(test, "a\n".repeat(5));
+		const session = makeSession({ files_written: new Set([huge, test]) });
+		try {
+			expect(
+				checkProdTestLocRatio(session, () => ({ prodLoc: 4, testLoc: 5 })),
+			).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -700,5 +708,115 @@ it('a', () => {
 			expect(checkAssertionDensity(session, p, "it('x', () => {});\n")).toBeNull();
 			expect(session.assertion_counts.has(p)).toBe(true);
 		}
+	});
+});
+
+// ===========================================
+// FP-fix regression: tdd_commit_gate disk-awareness
+// ===========================================
+
+describe("checkTddCommitGate — disk reality check", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "tdd-gate-"));
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("does NOT fire when state='no_test' but a test file exists on disk", () => {
+		// Reproduces the FP we hit: write test file first (red), then impl,
+		// then test run sets state=green; but a harness restart or path
+		// hydration gap can leave the cycle marooned at "no_test" with
+		// impl_edits>0. Disk-truth wins: tests exist, no warning.
+		const sourceFile = join(dir, "foo.ts");
+		const testFile = join(dir, "foo.test.ts");
+		writeFileSync(sourceFile, "export const x = 1;\n");
+		writeFileSync(testFile, "it('x', () => {});\n");
+
+		const cycle: TddCycle = {
+			source_file: sourceFile,
+			test_file: testFile,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([sourceFile]),
+			tdd_cycles: new Map([[sourceFile, cycle]]),
+		});
+
+		const out = checkTddCommitGate(session, "warn");
+		expect(out).toEqual([]);
+	});
+
+	it("STILL fires when state='no_test' and no test file exists anywhere", () => {
+		const sourceFile = join(dir, "bar.ts");
+		writeFileSync(sourceFile, "export const x = 1;\n");
+
+		const cycle: TddCycle = {
+			source_file: sourceFile,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([sourceFile]),
+			tdd_cycles: new Map([[sourceFile, cycle]]),
+		});
+
+		const out = checkTddCommitGate(session, "warn");
+		expect(out.length).toBe(1);
+		expect(out[0].name).toBe("tdd_commit_gate");
+	});
+});
+
+// ===========================================
+// FP-fix regression: prod_delta_no_test_delta sibling-test detection
+// ===========================================
+
+describe("checkProdDeltaWithoutTestDelta — sibling-test detection", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "prod-delta-sibling-"));
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("does NOT fire when a non-conventionally-named test edited this session imports the source", () => {
+		// Real-world shape: src/foo/multi-impl.ts has tests in
+		// __tests__/specific-feature.test.ts (not multi-impl.test.ts).
+		// The conventional-name gate would FP; sibling detection rescues it.
+		const sourceFile = join(dir, "multi-impl.ts");
+		const conventionalTest = join(dir, "multi-impl.test.ts");
+		const siblingTest = join(dir, "specific-feature.test.ts");
+		writeFileSync(sourceFile, "export const x = 1;\n");
+		writeFileSync(conventionalTest, "// stub\n");
+		writeFileSync(siblingTest, 'import { x } from "./multi-impl.js";\n');
+
+		const session = makeSession({
+			files_written: new Set([sourceFile, siblingTest]),
+		});
+		expect(checkProdDeltaWithoutTestDelta(session)).toEqual([]);
+	});
+
+	it("STILL fires when no edited test references the source", () => {
+		const sourceFile = join(dir, "alone.ts");
+		const conventionalTest = join(dir, "alone.test.ts");
+		const unrelatedTest = join(dir, "other.test.ts");
+		writeFileSync(sourceFile, "export const x = 1;\n");
+		writeFileSync(conventionalTest, "// stub\n");
+		writeFileSync(unrelatedTest, 'import { y } from "./other.js";\n');
+
+		const session = makeSession({
+			files_written: new Set([sourceFile, unrelatedTest]),
+		});
+		const out = checkProdDeltaWithoutTestDelta(session);
+		expect(out.length).toBe(1);
+		expect(out[0].name).toBe("prod_delta_no_test_delta");
 	});
 });

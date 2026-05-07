@@ -6,7 +6,7 @@
 // (repeated edits without testing, suppression as workaround,
 // domain-sensitive test nudges, persistent warning escalation).
 
-import { spawnSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
 import { stripCommentsAndStrings } from "./checks/shared.js";
@@ -256,6 +256,14 @@ export function checkTddCommitGate(
 				determinism: "partially_deterministic",
 			});
 		} else if (cycle.state === "no_test" && cycle.impl_edits_before_test > 0) {
+			// Disk reality check: state-machine tracking can miss a transition
+			// (path mismatch, harness restart mid-session, hydration gap), but
+			// if a test file actually exists on disk for this source, the
+			// "no tests written" framing is wrong — tests exist, the tracker
+			// just didn't see the green transition. Suppress.
+			const candidateTest = cycle.test_file ?? findTestFilePath(sourceFile);
+			if (candidateTest && existsSync(candidateTest)) continue;
+
 			results.push({
 				source: "structural",
 				name: "tdd_commit_gate",
@@ -384,44 +392,113 @@ export function checkTppLeapfrog(session: SessionTrajectory): CheckResultEntry[]
 /**
  * Commit gate: flag production files edited this session without a matching
  * test-file edit. Fires on `git commit` detection.
+ *
+ * Suppression rule: a single source file may be covered by multiple test
+ * files (e.g. ubs-language-specific.ts has tests in
+ * __tests__/ubs-hardcoded-localhost.test.ts AND others). If ANY test file
+ * edited in this session imports / references this source by basename, the
+ * "no test was updated" framing is a false positive — tests WERE updated,
+ * just not under the conventional name.
  */
 export function checkProdDeltaWithoutTestDelta(session: SessionTrajectory): CheckResultEntry[] {
 	const results: CheckResultEntry[] = [];
+	const editedTestFiles = [...session.files_written].filter((f) => TEST_FILE_RE.test(f));
 	for (const file of session.files_written) {
 		if (TEST_FILE_RE.test(file)) continue;
 		const testFile = findTestFilePath(file);
-		if (testFile && !session.files_written.has(testFile)) {
-			results.push({
-				source: "structural",
-				name: "prod_delta_no_test_delta",
-				severity: "warning",
-				message: `Edited ${basename(file)} but no corresponding test was updated (expected ${basename(testFile)}).`,
-				file,
-				determinism: "heuristic",
-			});
-		}
+		if (!testFile || session.files_written.has(testFile)) continue;
+		if (anyEditedTestReferencesSource(editedTestFiles, file)) continue;
+
+		results.push({
+			source: "structural",
+			name: "prod_delta_no_test_delta",
+			severity: "warning",
+			message: `Edited ${basename(file)} but no corresponding test was updated (expected ${basename(testFile)}).`,
+			file,
+			determinism: "heuristic",
+		});
 	}
 	return results;
 }
 
+function anyEditedTestReferencesSource(testFiles: string[], sourceFile: string): boolean {
+	const ext = extname(sourceFile);
+	const sourceBase = pathBasename(sourceFile, ext);
+	if (!sourceBase) return false;
+	// Boundary-anchored regex: matches an import / require path that contains
+	// the source basename as a path segment. `./ubs-language-specific.js`
+	// matches; `./other-file.js` doesn't even if "ubs" appears.
+	const re = new RegExp(`["']\\.{1,2}/[^"']*\\b${escapeRe(sourceBase)}\\b[^"']*["']`);
+	for (const testFile of testFiles) {
+		try {
+			const content = readFileSync(testFile, "utf-8");
+			if (re.test(content)) return true;
+		} catch {
+			// intentional: best-effort read; an unreadable test file just means
+			// we can't confirm it covers this source — fall through.
+		}
+	}
+	return false;
+}
+
+function escapeRe(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Lines added + deleted, split by prod vs test path. */
+export interface LocDelta {
+	prodLoc: number;
+	testLoc: number;
+}
+
 /**
- * Commit gate: flag when the per-commit ratio of prod LOC written to test LOC
- * written exceeds PROD_TEST_LOC_RATIO_LIMIT. Cycles of TDD / Uncle Bob.
+ * Compute LOC delta from `git diff --numstat HEAD`. Counts both added and
+ * deleted lines so a refactor that swaps 50 lines registers as 100 churn —
+ * which IS what the ratio gate cares about (proportional test coverage of
+ * touched code, not file size).
+ *
+ * Returns zeroes on any failure (not in a repo, no HEAD, git missing).
  */
-export function checkProdTestLocRatio(session: SessionTrajectory): CheckResultEntry[] {
+export function gitNumstatDelta(): LocDelta {
 	let prodLoc = 0;
 	let testLoc = 0;
-	for (const file of session.files_written) {
-		let content: string;
-		try {
-			content = readFileSync(file, "utf-8");
-		} catch {
-			continue;
+	try {
+		const out = execSync("git diff --numstat HEAD", {
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		for (const line of out.split("\n")) {
+			const parts = line.split("\t");
+			if (parts.length < 3) continue;
+			const added = Number.parseInt(parts[0], 10);
+			const deleted = Number.parseInt(parts[1], 10);
+			if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue;
+			const path = parts[2];
+			const delta = added + deleted;
+			if (TEST_FILE_RE.test(path)) testLoc += delta;
+			else prodLoc += delta;
 		}
-		const loc = content.split("\n").length;
-		if (TEST_FILE_RE.test(file)) testLoc += loc;
-		else prodLoc += loc;
+	} catch {
+		// intentional: git unavailable / not a repo / no HEAD — fall back to 0
 	}
+	return { prodLoc, testLoc };
+}
+
+/**
+ * Commit gate: flag when prod LOC delta exceeds test LOC delta by more than
+ * PROD_TEST_LOC_RATIO_LIMIT × — measured against `git diff HEAD`, NOT against
+ * file totals. Touching a 1000-line file with a 2-line edit contributes 2 to
+ * the delta, not 1000. The previous file-total approach made the gate fire
+ * on any session that brushed a large file, even when the actual change was
+ * small and well-tested.
+ */
+export function checkProdTestLocRatio(
+	session: SessionTrajectory,
+	getDelta: () => LocDelta = gitNumstatDelta,
+): CheckResultEntry[] {
+	void session; // signature kept for symmetry with other commit gates
+	const { prodLoc, testLoc } = getDelta();
 	if (testLoc === 0 && prodLoc === 0) return [];
 	if (testLoc === 0) {
 		return [
