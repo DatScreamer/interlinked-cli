@@ -23,7 +23,6 @@ import { watchCommand } from "./commands/watch.js";
 import { resolveAuthToken } from "./lib/auth.js";
 import { c } from "./lib/formatter.js";
 import { ensureRemoteOnboarding } from "./lib/onboarding.js";
-import { getCachedUpdateNotice, maybeRefreshUpdateCache } from "./lib/update-check.js";
 
 // Common option shapes for commander action callbacks.
 // Commander passes OptionValues (Record<string, any>) to action handlers;
@@ -1264,18 +1263,6 @@ program
 // internal array just before parsing. This keeps help tidy even as
 // new commands are added anywhere in this file.
 (program.commands as Command[]).sort((a: Command, b: Command) => a.name().localeCompare(b.name()));
-
-// Background: refresh the cached "latest on npm" version so the NEXT run
-// can print a notice. Fire-and-forget — doesn't delay this invocation.
-maybeRefreshUpdateCache();
-
-// Print an update notice on clean exit if a newer version is cached. Writes
-// to stderr so it doesn't pollute stdout JSON output. Suppressed in CI,
-// non-TTY, tests, or when INTERLINKED_NO_UPDATE_CHECK=1.
-process.on("beforeExit", () => {
-	const notice = getCachedUpdateNotice(CLI_VERSION);
-	if (notice) process.stderr.write(c.dim(notice));
-});
 
 if (!(await handleImplicitEntry())) {
 	await program.parseAsync(process.argv);

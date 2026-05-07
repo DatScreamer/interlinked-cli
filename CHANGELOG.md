@@ -5,6 +5,17 @@ All notable changes to `interlinked-cli` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- **Update notifier** — the once-per-24-hours anonymous GET to the public
+  npm registry is gone, along with `src/lib/update-check.ts`, the
+  `~/.cache/interlinked-cli/update-check.json` cache, and the
+  `INTERLINKED_NO_UPDATE_CHECK` env var. The CLI now makes zero outbound
+  network calls on its own; only the server-backed commands you
+  explicitly run touch the network.
+
 ## [0.1.0] - 2026-04-23
 
 Initial public release. The codebase was extracted from an internal
