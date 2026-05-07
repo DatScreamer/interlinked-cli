@@ -44,9 +44,11 @@ exercises the same end-to-end path.
 ## What you get
 
 - **Guard harness.** A local Unix-socket server evaluates every agent
-  action against 77 deterministic safety rules (destructive commands,
-  secrets in writes, sensitive-file reads, lockfile drift, etc.) and
-  returns block/allow decisions in about 1–5 ms.
+  action against <!-- gen:builtin_rule_count -->105<!-- /gen:builtin_rule_count -->
+  deterministic safety rules (destructive commands, secrets in writes,
+  sensitive-file reads, lockfile drift, etc.) and returns block/allow
+  decisions in about 1–5 ms for cheap rules; content-checking rules
+  (`tsc`/`biome` diff-overlay) take whatever the compiler takes.
 - **Content-quality gate.** `tsc` and `biome` run over the *proposed*
   file content before a write lands. The gate blocks only on net-new
   findings, never on pre-existing issues. Works for `Edit`/`Write`
@@ -170,14 +172,10 @@ overrides go in `.interlinked/guard-rules.local.json` (gitignored).
 - Harness decisions and activity capture are local by default. Data leaves
   your machine only when you run server-backed commands such as `login` or
   `sync`, or when you explicitly opt into another remote workflow.
-- No telemetry, no analytics, no "phone home".
+- No telemetry, no analytics, no "phone home" — not even an anonymous
+  version-check ping. The CLI makes no outbound network calls on its own.
 - Hook events, guard decisions, and quality findings stay in
   `.interlinked/` under the repo root.
-- **One exception**: once per 24 hours, an anonymous GET request to the
-  public npm registry checks whether a newer version is available. This
-  is the same request `npm view interlinked-cli version` would make and
-  carries no identifying data. Set `INTERLINKED_NO_UPDATE_CHECK=1` to
-  disable; auto-disabled in CI and non-TTY environments.
 
 ## Contributing and reporting issues
 

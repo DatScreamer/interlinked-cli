@@ -67,6 +67,9 @@
         "test:watch": "vitest",
         "bench": "vitest bench --run bench/",
         "docs": "node --import tsx scripts/generate-docs.ts",
+        "docs:check": "node scripts/check-docs.mjs",
+        "docs:build": "node scripts/check-docs.mjs --build",
+        "docs:facts": "node scripts/extract-doc-facts.mjs",
         "prepack": "npm run build",
         "prepare": "npm run build",
         "prepublishOnly": "npm run typecheck:stable && npm test"

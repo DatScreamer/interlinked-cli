@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck:stable
 
+      - name: Doc accuracy (landing + README vs source)
+        run: npm run docs:check
+
       - name: Test
         run: npm test
 

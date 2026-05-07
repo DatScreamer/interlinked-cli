@@ -19,6 +19,12 @@
     "binding": "ASSETS",
     "not_found_handling": "404-page"
   },
+  "routes": [
+    {
+      "pattern": "interlinked.quentincody.dev",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true
   }
