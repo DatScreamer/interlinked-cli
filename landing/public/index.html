@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Interlinked CLI — The harness for your harness</title>
+  <meta name="description" content="Local guard layer for AI coding agents. Hooks into Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI. Blocks dangerous tool calls in ~1 ms, deterministically, on your machine." />
+
+  <link rel="canonical" href="https://interlinked-landing.pages.dev/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Interlinked CLI — The harness for your harness" />
+  <meta property="og:description" content="Local guard layer for AI coding agents. 404 blocks in 2 weeks of dogfooding. Receipts inside." />
+  <meta property="og:image" content="/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Interlinked CLI — The harness for your harness" />
+  <meta name="twitter:description" content="Local guard layer for AI coding agents. 404 blocks in 2 weeks of dogfooding." />
+  <meta name="twitter:image" content="/og.png" />
+
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext y='20' font-size='20'%3E%E2%97%87%3C/text%3E%3C/svg%3E" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+          colors: {
+            ink: { 950: '#08090b', 900: '#0d0f12', 800: '#15181d', 700: '#1c2026', 600: '#262b33' },
+            accent: { 400: '#fbbf24', 500: '#f59e0b', 600: '#d97706' },
+          },
+          maxWidth: { '8xl': '88rem' },
+        },
+      },
+    };
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <style>
+    html { background: #08090b; color-scheme: dark; }
+    body { font-feature-settings: "ss01", "cv11"; }
+    .grain::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle at 20% 0%, rgba(245,158,11,0.08), transparent 40%),
+                        radial-gradient(circle at 80% 100%, rgba(236,72,153,0.05), transparent 50%);
+    }
+    .term-glow { box-shadow: 0 0 0 1px rgba(245,158,11,0.15), 0 12px 60px -10px rgba(245,158,11,0.15); }
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] > summary > .chev { transform: rotate(45deg); }
+    .chev { transition: transform 0.15s ease; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fade-in 0.6s ease-out both; }
+    @media (prefers-reduced-motion: reduce) { .fade-in { animation: none; } }
+  </style>
+</head>
+
+<body class="font-sans bg-ink-950 text-zinc-200 antialiased grain">
+  <div class="relative z-10">
+
+  <!-- Top pill announcement -->
+  <div class="w-full flex justify-center pt-6 px-6">
+    <a href="#receipts" class="group inline-flex items-center gap-2 rounded-full border border-ink-600 bg-ink-800/60 backdrop-blur px-3 py-1.5 text-xs sm:text-sm text-zinc-300 hover:border-accent-500/50 hover:text-zinc-100 transition">
+      <span class="rounded-full bg-accent-500/15 text-accent-400 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">New</span>
+      <span>404 blocks in 2 weeks of dogfooding</span>
+      <span class="opacity-60 group-hover:opacity-100">→</span>
+    </a>
+  </div>
+
+  <!-- Nav -->
+  <nav class="max-w-8xl mx-auto px-6 py-5 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2 text-zinc-100 font-semibold tracking-tight">
+      <span class="text-accent-500 text-xl leading-none">◇</span>
+      <span>interlinked</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7 text-sm text-zinc-400">
+      <a href="#receipts" class="hover:text-zinc-100 transition">Receipts</a>
+      <a href="#how" class="hover:text-zinc-100 transition">How it works</a>
+      <a href="#compare" class="hover:text-zinc-100 transition">Compare</a>
+      <a href="#faq" class="hover:text-zinc-100 transition">FAQ</a>
+    </div>
+    <a href="https://github.com/QuentinCody/interlinked-cli" class="inline-flex items-center gap-2 rounded-md border border-ink-600 bg-ink-800/80 hover:bg-ink-700 hover:border-ink-600 px-3 py-1.5 text-sm text-zinc-200 transition">
+      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.27-.01-1-.02-1.96-3.2.69-3.87-1.54-3.87-1.54-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.69 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.16 1.18a10.96 10.96 0 0 1 5.75 0c2.2-1.49 3.16-1.18 3.16-1.18.62 1.58.23 2.75.11 3.04.74.81 1.18 1.84 1.18 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.13 0 1.54-.02 2.78-.02 3.16 0 .31.21.68.8.56C20.22 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+      Star on GitHub
+    </a>
+  </nav>
+
+  <!-- Hero -->
+  <header class="max-w-8xl mx-auto px-6 pt-12 pb-20 lg:pb-32 grid lg:grid-cols-2 gap-14 lg:gap-10 items-center">
+    <div class="fade-in">
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-zinc-50 leading-[1.05]">
+        The harness for your harness.
+      </h1>
+      <p class="mt-5 text-lg sm:text-xl text-zinc-400 leading-relaxed max-w-xl">
+        Local guard layer for AI coding agents. Hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates every tool call against deterministic rules; blocks the dangerous ones in milliseconds; keeps a local activity log you can grep.
+      </p>
+
+      <div class="mt-8 flex flex-col sm:flex-row gap-3 max-w-xl">
+        <div class="flex-1 group rounded-md border border-ink-600 bg-ink-800/60 px-4 py-3 font-mono text-sm flex items-center gap-3 hover:border-accent-500/40 transition">
+          <span class="text-zinc-500 select-none">$</span>
+          <span id="install-cmd" class="truncate text-zinc-200">git clone github.com/QuentinCody/interlinked-cli</span>
+          <button type="button" class="ml-auto text-zinc-500 hover:text-accent-400 transition" data-copy="git clone https://github.com/QuentinCody/interlinked-cli && cd interlinked-cli && npm ci && npm run build && npm link" aria-label="Copy install command">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+        <a href="#receipts" class="inline-flex items-center justify-center gap-2 rounded-md bg-accent-500 hover:bg-accent-400 text-ink-950 font-semibold px-5 py-3 text-sm transition">
+          See receipts
+          <span aria-hidden="true">→</span>
+        </a>
+      </div>
+
+      <p class="mt-3 text-xs text-zinc-500 max-w-xl">
+        Node 22+, macOS or Linux. <span class="text-zinc-400">No npm package yet — git clone is on purpose, until the public surface stabilizes.</span>
+      </p>
+
+      <div class="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-zinc-500 uppercase tracking-wider font-medium">
+        <span>Works with</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Claude Code</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Codex</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Cursor</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Copilot CLI</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Gemini CLI</span>
+      </div>
+    </div>
+
+    <!-- Hero terminal mockup -->
+    <div class="fade-in">
+      <div class="rounded-xl border border-ink-700 bg-ink-900/80 backdrop-blur term-glow overflow-hidden">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-ink-700 bg-ink-800/60">
+          <span class="w-2.5 h-2.5 rounded-full bg-red-400/70"></span>
+          <span class="w-2.5 h-2.5 rounded-full bg-yellow-400/70"></span>
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400/70"></span>
+          <span class="ml-3 text-xs text-zinc-500 font-mono">~/myproj — claude</span>
+        </div>
+        <pre class="font-mono text-[13px] leading-relaxed p-5 text-zinc-300 overflow-x-auto"><span class="text-zinc-500">$</span> claude
+<span class="text-emerald-400">❯</span> clean up the build artifacts before deploy
+
+  I'll remove the build output now.
+  <span class="text-zinc-500">→ Bash:</span> <span class="text-zinc-100">rm -rf /</span>
+
+  <span class="text-rose-400 font-semibold">⚠ BLOCKED by interlinked harness</span>
+  <span class="text-zinc-400">  rule:    builtin-rm-rf-root  (critical)</span>
+  <span class="text-zinc-400">  reason:  Recursive deletion of root-level or wildcard</span>
+  <span class="text-zinc-400">           paths is dangerous.</span>
+  <span class="text-zinc-400">  hint:    Be more specific about what to delete.</span>
+  <span class="text-zinc-500">  ms:      1</span>
+
+  Let me try the project's build output instead.
+  <span class="text-zinc-500">→ Bash:</span> <span class="text-zinc-100">rm -rf ./dist</span>
+  <span class="text-emerald-400">✓ allowed</span>
+  Removed 14 files.</pre>
+      </div>
+      <p class="mt-3 text-xs text-zinc-500 italic">
+        Reconstructed from a real <code class="text-zinc-400">guard_block</code> event in <code class="text-zinc-400">.interlinked/activity.jsonl</code>.
+      </p>
+    </div>
+  </header>
+
+  <!-- Receipts section -->
+  <section id="receipts" class="max-w-8xl mx-auto px-6 py-20 lg:py-32 border-t border-ink-700/50">
+    <div class="grid lg:grid-cols-3 gap-10 lg:gap-16">
+      <div class="lg:col-span-1">
+        <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">The receipt</p>
+        <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">
+          Two weeks. One developer.<br />
+          <span class="text-accent-500">404 blocks.</span>
+        </h2>
+        <p class="mt-5 text-zinc-400 leading-relaxed">
+          The author dogfooded the harness on his own machine for two weeks while writing it. These are the actual block events from <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">.interlinked/activity.jsonl</code>.
+        </p>
+        <p class="mt-3 text-zinc-400 leading-relaxed">
+          Local-only, no telemetry. The agents tried this stuff while we were watching <em>them</em>; the only surprise is how often.
+        </p>
+      </div>
+
+      <div class="lg:col-span-2">
+        <div class="rounded-lg border border-ink-700 bg-ink-900/60 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-ink-800/60 text-zinc-400 text-xs uppercase tracking-wider">
+              <tr>
+                <th class="text-right px-4 py-3 font-medium">Count</th>
+                <th class="text-left px-4 py-3 font-medium">Severity</th>
+                <th class="text-left px-4 py-3 font-medium">What the agent tried</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-700/60 font-mono">
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">80</td>
+                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Edits that introduced a <em>new</em> TypeScript error — blocked before the write landed</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">33</td>
+                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Used shell redirect (<code class="text-zinc-200">cat &gt; file.ts</code>) to dodge the content-quality gate</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">27</td>
+                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Created a new source file with no companion test</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">25</td>
+                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Empty <code class="text-zinc-200">catch {}</code> blocks landing in code</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">18</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Wrote outside the repo root (e.g. <code class="text-zinc-200">/tmp/x.ts</code>)</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">11</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Tried to <code class="text-zinc-200">shutdown</code> / <code class="text-zinc-200">reboot</code> the laptop</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">7</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Recursive delete of root-level / wildcard paths (<code class="text-zinc-200">rm -rf …</code>)</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">4</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Tried to <code class="text-zinc-200">kill</code> the harness / session process itself</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Prompt-injection text in writes to agent persistent memory</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans"><code class="text-zinc-200">kubectl delete --all</code></td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
+                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans"><code class="text-zinc-200">chmod 777</code> on real files</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">2</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">SQL DROP of tables / databases</td>
+              </tr>
+              <tr class="hover:bg-ink-800/40">
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">1</td>
+                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Detached <code class="text-zinc-200">nohup</code> with network — known npm-RAT persistence pattern</td>
+              </tr>
+              <tr class="bg-ink-800/30 text-zinc-400 italic">
+                <td class="px-4 py-3 text-right tabular-nums">168</td>
+                <td class="px-4 py-3">—</td>
+                <td class="px-4 py-3 font-sans">Two-agent file conflicts — the reservation system caught these</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Total blocks</p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums">404</p>
+          </div>
+          <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Median latency</p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums">1 ms</p>
+          </div>
+          <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Critical</p>
+            <p class="mt-1 text-2xl font-bold text-rose-400 tabular-nums">51</p>
+          </div>
+          <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Built-in rules</p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums">~80</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- What it does (4 columns) -->
+  <section id="how" class="max-w-8xl mx-auto px-6 py-20 lg:py-28 border-t border-ink-700/50">
+    <div class="max-w-3xl">
+      <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">How it works</p>
+      <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">A Unix socket between the agent and disk.</h2>
+      <p class="mt-5 text-zinc-400 leading-relaxed">
+        Every <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-sm">PreToolUse</code> hook fires a JSON-RPC message at <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-sm">.interlinked/harness.sock</code>. The harness evaluates rules, returns a decision, and (optionally) attaches warnings the agent will see on its next turn.
+      </p>
+    </div>
+
+    <div class="mt-12 grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+      <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-5 hover:border-accent-500/40 transition">
+        <p class="text-zinc-50 font-semibold">Local-only</p>
+        <p class="mt-2 text-sm text-zinc-400 leading-relaxed">No cloud, no telemetry, no LLM in the hot path. The socket is on your machine; the activity log stays in your repo.</p>
+      </div>
+      <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-5 hover:border-accent-500/40 transition">
+        <p class="text-zinc-50 font-semibold">Multi-runner</p>
+        <p class="mt-2 text-sm text-zinc-400 leading-relaxed">Same harness for Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI. One config, every agent.</p>
+      </div>
+      <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-5 hover:border-accent-500/40 transition">
+        <p class="text-zinc-50 font-semibold">Deterministic</p>
+        <p class="mt-2 text-sm text-zinc-400 leading-relaxed">Regex + AST + a handful of compilers (<code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">tsc</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">biome</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">gitleaks</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">semgrep</code>). Replayable from the JSONL log.</p>
+      </div>
+      <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-5 hover:border-accent-500/40 transition">
+        <p class="text-zinc-50 font-semibold">Configurable</p>
+        <p class="mt-2 text-sm text-zinc-400 leading-relaxed">Team-shared rules in <code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">.interlinked/guard-rules.json</code>; personal overrides in <code class="text-zinc-300 bg-ink-800 px-1 rounded text-xs">guard-rules.local.json</code> (gitignored).</p>
+      </div>
+    </div>
+
+    <div class="mt-14 rounded-xl border border-ink-700 bg-ink-900/60 p-6 lg:p-8 overflow-x-auto">
+      <pre class="font-mono text-xs sm:text-sm leading-relaxed text-zinc-300"><span class="text-zinc-500"># the hot path</span>
+agent (Claude / Codex / Cursor / Copilot / Gemini)
+  ├─→ <span class="text-accent-400">interlinked-hook</span>  (~0.1 ms)
+  │     ├─→ <span class="text-zinc-100">.interlinked/harness.sock</span>
+  │     │     └─→ guard eval (block / allow / warn) ............ <span class="text-emerald-400">~1 ms</span>
+  │     │     └─→ post-edit quality + structural checks ........ <span class="text-emerald-400">~50–600 ms</span>
+  │     │
+  │     └─→ <span class="text-zinc-100">.interlinked/activity.jsonl</span>  (append-only, ~0.1 ms)
+  │           └─→ <span class="text-zinc-300">interlinked {status, activity, explain, doctor}</span></pre>
+    </div>
+  </section>
+
+  <!-- How we compare -->
+  <section id="compare" class="max-w-8xl mx-auto px-6 py-20 lg:py-28 border-t border-ink-700/50">
+    <div class="max-w-3xl">
+      <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">Why this and not …</p>
+      <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">How we compare.</h2>
+    </div>
+
+    <div class="mt-10 rounded-lg border border-ink-700 bg-ink-900/60 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-ink-800/60 text-zinc-400 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="text-left px-4 py-3 font-medium min-w-[14rem]">Capability</th>
+            <th class="text-left px-4 py-3 font-medium text-accent-400">Interlinked</th>
+            <th class="text-left px-4 py-3 font-medium">Husky / pre-commit</th>
+            <th class="text-left px-4 py-3 font-medium">claude-code-action (CI)</th>
+            <th class="text-left px-4 py-3 font-medium">No harness</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-ink-700/60 text-zinc-300">
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Blocks tool calls before the agent runs them</td>
+            <td class="px-4 py-3 text-emerald-400">✓ PreToolUse hook</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+            <td class="px-4 py-3 text-zinc-500">— (CI is post-action)</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Runs locally, no network on hot path</td>
+            <td class="px-4 py-3 text-emerald-400">✓</td>
+            <td class="px-4 py-3 text-emerald-400">✓</td>
+            <td class="px-4 py-3 text-rose-400">✗ runs in GitHub</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Multi-agent runner support</td>
+            <td class="px-4 py-3 text-emerald-400">✓ 5 runners</td>
+            <td class="px-4 py-3 text-zinc-500">— (git only)</td>
+            <td class="px-4 py-3 text-zinc-500">— (Claude Code only)</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Median latency to decision</td>
+            <td class="px-4 py-3 text-emerald-400">~1 ms</td>
+            <td class="px-4 py-3">~50–500 ms</td>
+            <td class="px-4 py-3 text-rose-400">10s+ (CI startup)</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Logs every PreToolUse / PostToolUse</td>
+            <td class="px-4 py-3 text-emerald-400">✓ JSONL, replayable</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+            <td class="px-4 py-3">CI logs only</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Catches dangerous shell commands (rm -rf, kubectl delete --all, …)</td>
+            <td class="px-4 py-3 text-emerald-400">✓ ~80 rules</td>
+            <td class="px-4 py-3 text-zinc-500">— (file lints, not commands)</td>
+            <td class="px-4 py-3">depends on prompt</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Compiles proposed file content before write lands</td>
+            <td class="px-4 py-3 text-emerald-400">✓ tsc / biome diff-overlay</td>
+            <td class="px-4 py-3">post-commit only</td>
+            <td class="px-4 py-3">CI only</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-3 font-medium text-zinc-100">Open-source, MIT</td>
+            <td class="px-4 py-3 text-emerald-400">✓</td>
+            <td class="px-4 py-3 text-emerald-400">✓</td>
+            <td class="px-4 py-3 text-emerald-400">✓</td>
+            <td class="px-4 py-3 text-zinc-500">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="mt-4 text-xs text-zinc-500 max-w-3xl">
+      Husky and pre-commit are great at what they do — git-time linting on file content. They sit downstream of the moment the agent runs an arbitrary shell command. Interlinked sits at <em>that</em> moment.
+    </p>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="max-w-4xl mx-auto px-6 py-20 lg:py-28 border-t border-ink-700/50">
+    <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">FAQ</p>
+    <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">Frequently asked.</h2>
+
+    <div class="mt-10 space-y-3">
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Does it phone home?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          No telemetry, no analytics. The activity log lives at <code class="text-zinc-300 bg-ink-800 px-1 rounded">.interlinked/activity.jsonl</code> in the repo it's instrumenting. The one exception is a once-per-24-hours anonymous GET to the public npm registry to check whether a newer version exists — the same request <code class="text-zinc-300 bg-ink-800 px-1 rounded">npm view interlinked-cli version</code> would make. Disable with <code class="text-zinc-300 bg-ink-800 px-1 rounded">INTERLINKED_NO_UPDATE_CHECK=1</code>.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Why no LLM in the hot path?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          Latency budget. The PreToolUse hook has a tight cycle and a remote LLM call eats it on a good day. Determinism also makes guard decisions replayable from the JSONL log — you can replay a session and verify exactly why a call was blocked. An LLM classifier is on the roadmap as a narrow escalation layer, not a hot-path replacement.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Why isn't it on npm?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          On purpose, for now. The public surface is moving and an npm publish freezes a lot of names and shapes. <code class="text-zinc-300 bg-ink-800 px-1 rounded">git clone &amp;&amp; npm link</code> is a deliberate filter for serious users. A 0.2 release on npm is planned once the surface stabilizes.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          What does it actually catch?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          Two layers. Guard rules — destructive shell commands, secrets in writes, recursive deletes, force-pushes to protected branches, sensitive-file reads — block by default. Taste rules — style, complexity, coverage, test gaps — surface as warnings. Mode selection (<code class="text-zinc-300 bg-ink-800 px-1 rounded">balanced</code> / <code class="text-zinc-300 bg-ink-800 px-1 rounded">lenient</code> / <code class="text-zinc-300 bg-ink-800 px-1 rounded">strict</code>) governs the second layer.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Will it slow my agent down?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          Hot-path rules add ~1 ms median to PreToolUse — imperceptible. Post-edit checks that compile proposed file content (<code class="text-zinc-300 bg-ink-800 px-1 rounded">tsc</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded">biome</code>) take whatever the compiler takes; for a typical TS file that's a few hundred milliseconds, and the agent only pays it if the diff is suspicious. Latency budgets are enforced per tool class.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Does it work with Cursor / Windsurf / Aider / …?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          Today it ships first-class hooks for Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI. Other agents land as the runtime ecosystem standardizes — if you're using one we don't have a hook generator for, file an issue and we'll prioritize.
+        </div>
+      </details>
+
+      <details class="group rounded-lg border border-ink-700 bg-ink-900/40 hover:border-ink-600 transition">
+        <summary class="flex items-center justify-between p-5 text-zinc-100 font-medium">
+          Can teams share rules?
+          <span class="chev text-accent-500 text-2xl leading-none">+</span>
+        </summary>
+        <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
+          Yes. <code class="text-zinc-300 bg-ink-800 px-1 rounded">.interlinked/guard-rules.json</code> is committed and read by every machine that has the harness; <code class="text-zinc-300 bg-ink-800 px-1 rounded">.interlinked/guard-rules.local.json</code> is gitignored and used for personal overrides. The <code class="text-zinc-300 bg-ink-800 px-1 rounded">/enforce</code> skill also distills imperative prose from <code class="text-zinc-300 bg-ink-800 px-1 rounded">AGENTS.md</code> / <code class="text-zinc-300 bg-ink-800 px-1 rounded">CLAUDE.md</code> into the same JSON format.
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="max-w-4xl mx-auto px-6 py-20 lg:py-28 border-t border-ink-700/50 text-center">
+    <h2 class="text-3xl sm:text-4xl lg:text-5xl font-bold text-zinc-50 tracking-tight">Get the receipts. Run it on your machine.</h2>
+    <p class="mt-5 text-zinc-400 max-w-xl mx-auto leading-relaxed">
+      Five minutes from <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-sm">git clone</code> to your first <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-sm">guard_block</code> in <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-sm">.interlinked/activity.jsonl</code>.
+    </p>
+    <div class="mt-9 flex flex-col sm:flex-row gap-3 justify-center">
+      <a href="https://github.com/QuentinCody/interlinked-cli" class="inline-flex items-center justify-center gap-2 rounded-md bg-accent-500 hover:bg-accent-400 text-ink-950 font-semibold px-6 py-3 text-sm transition">
+        Open the repo
+        <span aria-hidden="true">→</span>
+      </a>
+      <a href="https://github.com/QuentinCody/interlinked-cli/blob/main/README.md" class="inline-flex items-center justify-center gap-2 rounded-md border border-ink-600 bg-ink-800 hover:bg-ink-700 text-zinc-200 px-6 py-3 text-sm transition">
+        Read the docs
+      </a>
+    </div>
+  </section>
+
+  <footer class="max-w-8xl mx-auto px-6 py-12 border-t border-ink-700/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-zinc-500">
+    <div class="flex items-center gap-2">
+      <span class="text-accent-500">◇</span>
+      <span>interlinked-cli — MIT, by <a href="https://github.com/QuentinCody" class="text-zinc-300 hover:text-zinc-100 transition">@QuentinCody</a></span>
+    </div>
+    <div class="flex items-center gap-5">
+      <a href="https://github.com/QuentinCody/interlinked-cli" class="hover:text-zinc-200 transition">GitHub</a>
+      <a href="https://github.com/QuentinCody/interlinked-cli/blob/main/README.md" class="hover:text-zinc-200 transition">Docs</a>
+      <a href="https://github.com/QuentinCody/interlinked-cli/issues" class="hover:text-zinc-200 transition">Issues</a>
+    </div>
+  </footer>
+
+  </div>
+
+  <script>
+    document.querySelectorAll('button[data-copy]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var text = btn.getAttribute('data-copy') || '';
+        navigator.clipboard.writeText(text).then(function () {
+          btn.classList.add('text-emerald-400');
+          var original = btn.innerHTML;
+          btn.innerHTML = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>';
+          setTimeout(function () {
+            btn.innerHTML = original;
+            btn.classList.remove('text-emerald-400');
+          }, 1500);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

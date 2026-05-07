@@ -1,11 +1,21 @@
 # interlinked-cli
 
-Local hooks, taste enforcement, and developer observability for AI coding
-agents (Claude Code, GitHub Copilot CLI, Gemini CLI, Cursor, Codex).
+**The harness for your harness.** A local guard layer for AI coding agents —
+hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates
+every tool call against deterministic rules; blocks the dangerous ones in
+milliseconds; keeps a local activity log you can grep.
 
-Runs local-first. The harness, activity log, and checks run on your machine;
-server-backed collaboration commands are optional and require an Interlinked
-MCP Server URL.
+> **Receipts from 2 weeks of dogfooding on the author's machine.** 404 blocks.
+> 7× `rm -rf` attempts. 11× `shutdown` attempts. 4× the agent tried to kill
+> the harness itself. 3× prompt-injection writes to agent persistent memory.
+> 2× SQL DROP. 1× detached `nohup` matching a known npm-RAT persistence
+> pattern. Plus 80 net-new TypeScript errors blocked before the write
+> landed. Full breakdown on the [landing page](./landing/) or in
+> [What you get](#what-you-get) below.
+
+Local-first by design. The harness, activity log, and checks run on your
+machine; server-backed collaboration commands are optional and require an
+Interlinked MCP Server URL. No cloud, no telemetry, no LLM in the hot path.
 
 ## Install From Source
 
