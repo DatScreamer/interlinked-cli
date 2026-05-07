@@ -18,6 +18,11 @@ import { c, divider, header } from "../lib/formatter.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { getOutputMode, output } from "../lib/output.js";
 import {
+	defaultSettingsPaths,
+	stripMalformedRules,
+	validateSettingsFile,
+} from "../lib/settings-validator.js";
+import {
 	type HarnessMode,
 	DEFAULT_HARNESS_MODE,
 	migrateLegacyMode,
@@ -271,6 +276,38 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 				status: "warn",
 				message: `${client.settingsFile} not found`,
 			});
+		}
+	}
+
+	// 5b. Permission-rule hygiene across Claude Code settings files.
+	// Claude Code's "Always allow" extractor occasionally writes rules
+	// with mismatched parentheses (e.g. `Bash(-d) && cd && echo ... *)`)
+	// which Claude Code's own /doctor flags as "Invalid permission rule
+	// ... was skipped". We can't prevent the upstream write, but we
+	// can scan all known settings files and (with --fix) strip them.
+	for (const settingsPath of defaultSettingsPaths(cwd)) {
+		const v = validateSettingsFile(settingsPath);
+		if (!v.exists || v.parseError) continue;
+		const display = settingsPath.replace(`${cwd}/`, "").replace(process.env.HOME ?? "~", "~");
+		if (v.malformed.length === 0) continue;
+		const checkName = `Permission rules (${display})`;
+		const sample = v.malformed[0]?.rule.slice(0, 60) ?? "";
+		results.push({
+			name: checkName,
+			status: "warn",
+			message: `${v.malformed.length} malformed rule(s) -- e.g. ${JSON.stringify(sample)}${
+				sample.length === 60 ? "..." : ""
+			}. Run 'interlinked doctor --fix' to strip.`,
+			fixable: true,
+			fixAction: "strip-permission-rules",
+		});
+		if (opts.fix) {
+			const stripped = stripMalformedRules(settingsPath);
+			results[results.length - 1] = {
+				name: checkName,
+				status: "pass",
+				message: `Stripped ${stripped} malformed rule(s) from ${display}`,
+			};
 		}
 	}
 
