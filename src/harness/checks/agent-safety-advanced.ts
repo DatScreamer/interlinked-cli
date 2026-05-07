@@ -84,6 +84,8 @@ export function checkDefaultExport(content: string, filePath: string): InlineMat
 		return [];
 	}
 
+	if (isCloudflareWorkerHandler(content)) return [];
+
 	const stripped = stripComments(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
@@ -128,6 +130,40 @@ export function checkDefaultExport(content: string, filePath: string): InlineMat
 	}
 
 	return matches;
+}
+
+// Cloudflare Workers handler-shape detection. The runtime dispatches into
+// these methods on the default export; renaming the symbol or splitting it
+// into named exports breaks the contract. We exempt files that look like
+// Worker handler modules from `default_export` flagging.
+//
+// Detection signals (any one is sufficient):
+//   1. `satisfies ExportedHandler<...>` or `: ExportedHandler<...>` —
+//      explicit type annotation, highest confidence.
+//   2. `export default { ... }` (anonymous object literal) where one of the
+//      canonical handler method names appears within ~400 chars of the
+//      opening brace (covers method shorthand + property assignment).
+//   3. `export default <name>;` paired with `const|let|var <name> = { ... }`
+//      whose body contains a canonical handler method name.
+const WORKER_HANDLER_METHODS = "fetch|email|queue|scheduled|tail|trace";
+const WORKER_HANDLER_TYPE_RE = /(?:satisfies|:)\s*ExportedHandler\b/;
+const WORKER_HANDLER_ANON_RE = new RegExp(
+	`export\\s+default\\s+\\{[\\s\\S]{0,400}?\\b(?:${WORKER_HANDLER_METHODS})\\s*[(:]`,
+);
+const WORKER_HANDLER_NAMED_DEFAULT_RE = /export\s+default\s+([A-Za-z_$][\w$]*)\s*;/;
+
+function isCloudflareWorkerHandler(content: string): boolean {
+	if (WORKER_HANDLER_TYPE_RE.test(content)) return true;
+	if (WORKER_HANDLER_ANON_RE.test(content)) return true;
+	const namedMatch = WORKER_HANDLER_NAMED_DEFAULT_RE.exec(content);
+	if (namedMatch) {
+		const name = namedMatch[1];
+		const declRe = new RegExp(
+			`(?:const|let|var)\\s+${name}\\s*=\\s*\\{[\\s\\S]{0,400}?\\b(?:${WORKER_HANDLER_METHODS})\\s*[(:]`,
+		);
+		if (declRe.test(content)) return true;
+	}
+	return false;
 }
 
 /**

@@ -141,6 +141,9 @@ describe("evaluateTddNewFileGate — exempt paths", () => {
 		["dist artifact", "dist/bundle.ts"],
 		[".claude hook artifact", ".claude/hooks/activity.ts"],
 		[".interlinked runtime", ".interlinked/harness/foo.ts"],
+		["landing/ static-site worker", "landing/src/worker.ts"],
+		["web/ static-site source", "web/src/index.ts"],
+		["site/ docs source", "site/src/page.ts"],
 	];
 	for (const [label, rel] of cases) {
 		it(`allows new file in exempt path (${label})`, () => {

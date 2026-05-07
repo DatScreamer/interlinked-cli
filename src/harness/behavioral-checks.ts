@@ -10,7 +10,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
 import { stripCommentsAndStrings } from "./checks/shared.js";
-import { hasTddExemptDirective } from "./evaluator/tdd-new-file-gate.js";
+import { hasTddExemptDirective, isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
 
 // ---- Helpers ----
@@ -143,6 +143,7 @@ export function checkTddCycleViolation(
 	filePath: string,
 ): CheckResultEntry | null {
 	if (TEST_FILE_RE.test(filePath)) return null;
+	if (isTddExemptPath(filePath)) return null;
 
 	const cycle = session.tdd_cycles.get(filePath);
 	if (!cycle) return null;
@@ -185,6 +186,7 @@ export function checkTddRegression(
 	filePath: string,
 ): CheckResultEntry | null {
 	if (TEST_FILE_RE.test(filePath)) return null;
+	if (isTddExemptPath(filePath)) return null;
 
 	const cycle = session.tdd_cycles.get(filePath);
 	if (!cycle) return null;

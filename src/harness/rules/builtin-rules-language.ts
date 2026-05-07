@@ -38,9 +38,14 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 			"Verify the target paths are correct and consider using a safer pattern (e.g., moving to trash instead of deleting)",
 		severity: "medium",
 		category: "language-destructive",
+		file_extensions: ["py", "pyi"],
 	},
 
-	// --- Python DROP TABLE in ORM/raw SQL ---
+	// --- DROP TABLE in any code file ---
+	// Originally written as a Python rule; the regex matches any language and
+	// the historical rule id is preserved for `disabled_rules` continuity.
+	// Scoped to extensions where embedded SQL is plausible — explicitly NOT
+	// markdown / HTML / plain text where the string is documentation.
 	{
 		id: "builtin-python-drop-table",
 		enabled: true,
@@ -55,6 +60,18 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 		suggestion: "Verify this is intentional and ensure a backup exists before dropping tables",
 		severity: "high",
 		category: "language-destructive",
+		file_extensions: [
+			"py", "pyi",
+			"rs",
+			"go",
+			"java", "kt", "scala",
+			"ts", "tsx", "js", "jsx", "mjs", "cjs",
+			"rb",
+			"php",
+			"cs",
+			"swift",
+			"sql",
+		],
 	},
 
 	// --- Rust destructive filesystem operations ---
@@ -74,6 +91,7 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 		suggestion: "Verify the target paths are correct and consider using a safer pattern",
 		severity: "medium",
 		category: "language-destructive",
+		file_extensions: ["rs"],
 	},
 
 	// --- Go destructive filesystem operations ---
@@ -93,6 +111,7 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 		suggestion: "Verify the target paths are correct and consider using a safer pattern",
 		severity: "medium",
 		category: "language-destructive",
+		file_extensions: ["go"],
 	},
 
 	// --- C/C++ destructive filesystem operations ---
@@ -114,6 +133,7 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 		suggestion: "Verify the target paths are correct and consider safer alternatives",
 		severity: "medium",
 		category: "language-destructive",
+		file_extensions: ["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"],
 	},
 
 	// --- Java destructive filesystem operations ---
@@ -135,6 +155,7 @@ export const LANGUAGE_DESTRUCTIVE_RULES: GuardRule[] = [
 		suggestion: "Verify the target paths are correct and consider safer alternatives",
 		severity: "medium",
 		category: "language-destructive",
+		file_extensions: ["java"],
 	},
 
 	// ===========================================

@@ -437,6 +437,71 @@ describe("checkDefaultExport", () => {
 		const many = Array(15).fill("export default function () {}").join("\n");
 		expect(checkDefaultExport(many, "/tmp/foo.ts").length).toBe(10);
 	});
+
+	// --- Cloudflare Workers handler exemptions ---
+	// The Workers runtime dispatches on the default export's `fetch` /
+	// `email` / `queue` / `scheduled` / `tail` / `trace` methods, so the
+	// "name must match filename" rule cannot apply.
+
+	it("does NOT flag anonymous Worker handler with method shorthand", () => {
+		const code = `
+			export default {
+				async fetch(request, env) { return env.ASSETS.fetch(request); },
+			};
+		`;
+		expect(checkDefaultExport(code, "/tmp/index.ts")).toEqual([]);
+	});
+
+	it("does NOT flag anonymous Worker handler with property assignment", () => {
+		const code = `
+			export default {
+				fetch: async (request, env) => new Response("ok"),
+			};
+		`;
+		expect(checkDefaultExport(code, "/tmp/index.ts")).toEqual([]);
+	});
+
+	it("does NOT flag Worker handler annotated with satisfies ExportedHandler", () => {
+		const code = `
+			export default {
+				async fetch(request, env) { return new Response("ok"); },
+			} satisfies ExportedHandler<Env>;
+		`;
+		expect(checkDefaultExport(code, "/tmp/index.ts")).toEqual([]);
+	});
+
+	it("does NOT flag named Worker handler whose name doesn't match filename", () => {
+		const code = `
+			const handler = {
+				async fetch(request, env) { return new Response("ok"); },
+			} satisfies ExportedHandler<Env>;
+			export default handler;
+		`;
+		expect(checkDefaultExport(code, "/tmp/index.ts")).toEqual([]);
+	});
+
+	it("does NOT flag scheduled-only Worker handler", () => {
+		const code = `
+			export default {
+				async scheduled(controller, env, ctx) { /* cron */ },
+			};
+		`;
+		expect(checkDefaultExport(code, "/tmp/cron.ts")).toEqual([]);
+	});
+
+	it("does NOT flag email Worker handler", () => {
+		const code = `
+			export default {
+				async email(message, env, ctx) { /* email routing */ },
+			};
+		`;
+		expect(checkDefaultExport(code, "/tmp/inbox.ts")).toEqual([]);
+	});
+
+	it("DOES still flag a non-Worker anonymous object default in the same project", () => {
+		const code = "export default { a: 1, b: 2 };";
+		expect(checkDefaultExport(code, "/tmp/index.ts").length).toBe(1);
+	});
 });
 
 describe("checkLifecycleCleanup", () => {

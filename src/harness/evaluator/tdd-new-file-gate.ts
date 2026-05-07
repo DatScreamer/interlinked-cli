@@ -45,6 +45,12 @@ const EXEMPT_PATH_RES: readonly RegExp[] = [
 	/(^|\/)node_modules\//,
 	/(^|\/)scripts\//, // one-off build/release scripts
 	/\.config\.tsx?$/, // vite.config.ts / vitest.config.ts / tsup.config.ts / ...
+	// Static-site / deploy-artifact directories — Workers, landing pages,
+	// docs sites. These ship as deployed bundles, not as application source,
+	// and a unit test for the entrypoint isn't meaningful.
+	/(^|\/)landing\//,
+	/(^|\/)web\//,
+	/(^|\/)site\//,
 ];
 
 const TDD_EXEMPT_DIRECTIVE_RE = /\/\/\s*interlinked-tdd:\s*exempt\b/;
@@ -169,6 +175,17 @@ export function evaluateTddNewFileGateForEvent(
 }
 
 function isExemptPath(p: string): boolean {
+	return isTddExemptPath(p);
+}
+
+/**
+ * Public re-export of the same path-exemption check used by the new-file
+ * gate. Behavioral checks (`checkTddCycleViolation`, `checkTddRegression`)
+ * share this list so a file under `landing/` doesn't trip the cycle check
+ * after slipping past the new-file gate, and vice versa. Keep both consumers
+ * pointed at this helper so the exempt set stays single-sourced.
+ */
+export function isTddExemptPath(p: string): boolean {
 	for (const re of EXEMPT_PATH_RES) {
 		if (re.test(p)) return true;
 	}

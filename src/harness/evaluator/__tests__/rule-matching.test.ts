@@ -115,6 +115,116 @@ describe("matchesRule", () => {
 			}),
 		).toBe(false);
 	});
+
+	// --- file_extensions allowlist ---
+	// A rule that opts into a file-extension allowlist should only fire when the
+	// tool's file_path/path matches one of the listed extensions. Documentation
+	// files (.md/.html) describing the same pattern are not violations.
+
+	it("file_extensions: rule fires when path matches the allowlist", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "DROP\\s+TABLE", flags: "i" }],
+			file_extensions: ["py", "ts", "rb"],
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { file_path: "src/migrate.py", content: "DROP TABLE users" },
+				rule,
+			}),
+		).toBe(true);
+	});
+
+	it("file_extensions: rule skipped when path is documentation (.md)", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "DROP\\s+TABLE", flags: "i" }],
+			file_extensions: ["py", "ts", "rb"],
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { file_path: "docs/dangerous-things.md", content: "DROP TABLE users" },
+				rule,
+			}),
+		).toBe(false);
+	});
+
+	it("file_extensions: rule skipped when path is HTML marketing", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "chmod\\s+777", flags: "i" }],
+			file_extensions: ["py", "rb", "sh"],
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { file_path: "landing/public/index.html", content: "chmod 777 example" },
+				rule,
+			}),
+		).toBe(false);
+	});
+
+	it("file_extensions: tolerates leading dots and case in the allowlist", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "DROP\\s+TABLE", flags: "i" }],
+			file_extensions: [".PY", "Ts"],
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { file_path: "src/migrate.py", content: "DROP TABLE users" },
+				rule,
+			}),
+		).toBe(true);
+	});
+
+	it("file_extensions: empty / undefined allowlist preserves existing fire-on-all behavior", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "DROP\\s+TABLE", flags: "i" }],
+			// no file_extensions
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { file_path: "docs/dangerous.md", content: "DROP TABLE users" },
+				rule,
+			}),
+		).toBe(true);
+	});
+
+	it("file_extensions: rule rejects path-less Bash payload when scope is set", () => {
+		const rule = makeRule({
+			tool_match: ["Bash"],
+			patterns: [{ field: "command", regex: "rm\\s+-rf" }],
+			file_extensions: ["py"],
+		});
+		expect(
+			matchesRule({
+				command: "rm -rf /tmp/x",
+				toolInput: { command: "rm -rf /tmp/x" },
+				rule,
+			}),
+		).toBe(false);
+	});
+
+	it("file_extensions: also reads `path` field as a fallback to `file_path`", () => {
+		const rule = makeRule({
+			tool_match: ["Write"],
+			patterns: [{ field: "content", regex: "DROP\\s+TABLE", flags: "i" }],
+			file_extensions: ["py"],
+		});
+		expect(
+			matchesRule({
+				command: "",
+				toolInput: { path: "src/migrate.py", content: "DROP TABLE users" },
+				rule,
+			}),
+		).toBe(true);
+	});
 });
 
 describe("getField", () => {

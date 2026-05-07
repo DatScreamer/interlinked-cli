@@ -351,6 +351,17 @@ export interface GuardRule {
 	 * docs/design/harness-active-when-scoping.md.
 	 */
 	active_when?: ActiveWhen;
+	/**
+	 * Optional file-extension allowlist. When set, the rule only fires if the
+	 * tool input's `file_path` (or `path`) field has an extension in this
+	 * list. Used by language-specific content rules so a Python regex doesn't
+	 * fire on a Markdown file that *describes* the same pattern in a code
+	 * block, and so a "DROP TABLE" regex doesn't trip on marketing copy
+	 * mentioning what the harness blocks. Match is case-insensitive and
+	 * tolerant of leading dot ('.py' and 'py' both work). Undefined =
+	 * unrestricted (the existing default).
+	 */
+	file_extensions?: string[];
 }
 
 export interface RulePattern {
