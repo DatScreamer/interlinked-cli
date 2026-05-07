@@ -25,6 +25,12 @@
       "custom_domain": true
     }
   ],
+  // Keep the *.workers.dev URL alive alongside the custom domain. It's on
+  // a separate parent zone from quentincody.dev so it sidesteps any
+  // zone-level WAF / Bot Fight Mode / cached-error-state interactions
+  // that might affect the custom hostname for specific visitors. Free
+  // operational hedge.
+  "workers_dev": true,
   "observability": {
     "enabled": true
   }
