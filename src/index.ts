@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { Command, type OptionValues } from "commander";
 import { activityCommand } from "./commands/activity.js";
 import { attachCommand } from "./commands/attach.js";
+import { registerCiCommand } from "./commands/ci-status.js";
 import { cleanCommand } from "./commands/clean.js";
 import { disableCommand } from "./commands/disable.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -673,6 +674,7 @@ program
 	});
 
 registerIndexCommand(program);
+registerCiCommand(program);
 
 program
 	.command("init")
