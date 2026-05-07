@@ -27,11 +27,6 @@ milliseconds; keeps a local activity log you can grep.
 > - <!-- gen:row_self_kill -->4<!-- /gen:row_self_kill -->× `kill <pid>`
 >   where the PID was the harness/session process
 >
-> The remaining <!-- gen:receipts_residual -->219<!-- /gen:receipts_residual -->
-> events did not survive audit — the older destructive-command rules
-> used substring matching that fired on `echo` / `grep` / commit-message
-> bodies. Those rules have since been tightened (commit
-> [`175cace`](https://github.com/QuentinCody/interlinked-cli/commit/175cace)).
 > Full breakdown on the [landing page](./landing/) or in
 > [What you get](#what-you-get) below.
 
