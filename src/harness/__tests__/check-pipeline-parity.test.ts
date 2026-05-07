@@ -508,6 +508,9 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"deeplyNestedCallback",
 			"timeFormatLocaleDep",
 			"regexInLoopNoCompile",
+			// Batches 1, 2, 5, 8: now individually destructured in
+			// outputJson; no longer aggregated. Kept here as a comment for
+			// the bookkeeping trail.
 		]);
 
 		const missing: string[] = [];

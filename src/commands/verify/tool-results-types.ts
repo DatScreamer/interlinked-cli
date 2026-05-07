@@ -180,7 +180,7 @@ export interface CodeQualityResults {
 	numericComparisonChain: CodeQualityIssue[];
 	/** D.1.14: console.log / print / fmt.Println in non-test, non-CLI code. */
 	printDebugLeak: CodeQualityIssue[];
-	/** D.1.15: localhost / 127.0.0.1 baked into source outside test/config/example. */
+	/** D.1.15: dev-default loopback host literal baked into source outside test/config/example paths. */
 	ubsHardcodedLocalhost: CodeQualityIssue[];
 	/** D.1.16: 3+ digit numeric literals in expression context without named constant. */
 	magicNumberNoConst: CodeQualityIssue[];
@@ -200,6 +200,58 @@ export interface CodeQualityResults {
 	cookieMissingSecurityFlags: CodeQualityIssue[];
 	/** Phase 1: logger.<level>(<request-bound-ident>) — log-injection / format-string. */
 	loggerFormatUserInput: CodeQualityIssue[];
+	// === Batch 1: agent-laziness (11 entries) ===
+	/** Agent thumbprint phrases ("for now", "in a real implementation", etc.) in comments. */
+	agentThumbprintProse: CodeQualityIssue[];
+	/** `throw new Error("not implemented")` and variants in non-test source. */
+	stubNotImplementedThrow: CodeQualityIssue[];
+	/** `if (true)` / `if (false)` literal branch conditions. */
+	deadBranchLiteral: CodeQualityIssue[];
+	/** ts-nocheck / eslint-disable (no rule list) / biome-ignore-all at file head. */
+	fileLevelSuppression: CodeQualityIssue[];
+	/** Inline Date.now / Math.random / crypto.randomUUID / new Date() in non-test source. */
+	untestableTimeInSource: CodeQualityIssue[];
+	/** `as unknown as Foo` double-cast escape hatch. */
+	doubleCastUnknown: CodeQualityIssue[];
+	/** `"a" | "b" | string` union widened with bare string. */
+	unionWidenedWithString: CodeQualityIssue[];
+	/** `process.env.NODE_ENV === "test"` (etc.) in production source. */
+	nodeenvBranchInProd: CodeQualityIssue[];
+	/** fetch() / axios without `signal:` / `timeout:` / AbortController. */
+	fetchWithoutTimeout: CodeQualityIssue[];
+	/** `Promise.all(<ident>.map(...))` on unbounded source array. */
+	unboundedPromiseAll: CodeQualityIssue[];
+	/** *Sync I/O calls inside HTTP handler / route / middleware files. */
+	syncIoOnHotPath: CodeQualityIssue[];
+	// === Batch 2: test-hygiene (6 entries) ===
+	/** Duplicate it() / test() name strings within a single file. */
+	duplicateTestNames: CodeQualityIssue[];
+	/** Real network / filesystem calls inside test files (non-loopback / non-tmp). */
+	realIoInTests: CodeQualityIssue[];
+	/** Date.now / Math.random in test bodies without fake-timers / mocked clock. */
+	testNondeterminism: CodeQualityIssue[];
+	/** setTimeout / setImmediate with literal ms delays inside test bodies. */
+	hardcodedTimeoutInTests: CodeQualityIssue[];
+	/** Test files (foo.test.ts) that don't import their SUT. */
+	testMissingSutImport: CodeQualityIssue[];
+	/** vi.mock / jest.mock targeting the file under test from inside its own test. */
+	mockingTheSutSelf: CodeQualityIssue[];
+	// === Batch 5: cross-file (4 entries) ===
+	/** Handler-named functions with empty / no-op bodies. */
+	emptyBodyHandler: CodeQualityIssue[];
+	/** Listener registrations without paired cleanup. */
+	listenerPairing: CodeQualityIssue[];
+	/** Same-file Zod schema vs TS interface drift. */
+	schemaTypeDrift: CodeQualityIssue[];
+	/** Migration *_up.sql without paired *_down.sql. */
+	migrationParity: CodeQualityIssue[];
+	// === Batch 8: demo-data (3 entries) ===
+	/** Fake-data signatures without `@demo-data:` directive. */
+	demoDataUnmarked: CodeQualityIssue[];
+	/** try { real API } catch { return literal } pattern. */
+	silentDemoFallback: CodeQualityIssue[];
+	/** Root layout imports demo runtime but doesn't render DemoBanner. */
+	demoRuntimeMissingBanner: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -329,6 +381,34 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"mixedSyncAsyncFileApi",
 	"cookieMissingSecurityFlags",
 	"loggerFormatUserInput",
+	// Batch 1: agent-laziness
+	"agentThumbprintProse",
+	"stubNotImplementedThrow",
+	"deadBranchLiteral",
+	"fileLevelSuppression",
+	"untestableTimeInSource",
+	"doubleCastUnknown",
+	"unionWidenedWithString",
+	"nodeenvBranchInProd",
+	"fetchWithoutTimeout",
+	"unboundedPromiseAll",
+	"syncIoOnHotPath",
+	// Batch 2: test-hygiene
+	"duplicateTestNames",
+	"realIoInTests",
+	"testNondeterminism",
+	"hardcodedTimeoutInTests",
+	"testMissingSutImport",
+	"mockingTheSutSelf",
+	// Batch 5: cross-file
+	"emptyBodyHandler",
+	"listenerPairing",
+	"schemaTypeDrift",
+	"migrationParity",
+	// Batch 8: demo-data
+	"demoDataUnmarked",
+	"silentDemoFallback",
+	"demoRuntimeMissingBanner",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

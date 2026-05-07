@@ -1,10 +1,49 @@
 import { describe, expect, it } from "vitest";
 import {
 	countAsAnyCasts,
+	countConsoleStatements,
 	countNonNullAssertions,
+	countPublicApiSurface,
 	countSuppressionDirectives,
+	countTodoMarkers,
 	countTypeDensity,
 } from "./ratchet-metrics.js";
+
+describe("Batch 7 ratchet counters", () => {
+	it("counts TODO/FIXME/HACK/XXX markers", () => {
+		const code = `// TODO: x\n// FIXME y\n/* HACK z */\nconst todo = 1; // not a marker comment\n`;
+		expect(countTodoMarkers(code)).toBe(3);
+	});
+
+	it("does not count TODO inside string literals", () => {
+		expect(countTodoMarkers(`const msg = "TODO list"; const a = 1;`)).toBe(0);
+	});
+
+	it("counts console.* statements", () => {
+		const code = `console.log("a"); console.warn("b"); console.error("c"); logger.log("d");`;
+		expect(countConsoleStatements(code)).toBe(3);
+	});
+
+	it("does not count console.* inside string literals", () => {
+		expect(countConsoleStatements(`const s = "console.log(x)";`)).toBe(0);
+	});
+
+	it("counts exported-symbol public API surface", () => {
+		const code = `
+export function foo() {}
+export const bar = 1;
+export class Baz {}
+export interface Qux {}
+function notExported() {}
+`;
+		expect(countPublicApiSurface(code)).toBe(4);
+	});
+
+	it("dedupes same-name exports across declarations", () => {
+		const code = `export const foo = 1; export type foo = string;`;
+		expect(countPublicApiSurface(code)).toBe(1);
+	});
+});
 
 describe("ratchet-metrics — existing counters", () => {
 	it("counts `as any` casts", () => {

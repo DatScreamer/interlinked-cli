@@ -567,6 +567,12 @@ export interface PreEditBaseline {
 	asAnyCastCount: number;
 	/** Count of non-null assertions (`foo!.bar`) */
 	nonNullAssertionCount: number;
+	/** Count of TODO / FIXME / HACK / XXX markers (Batch 7 ratchet). */
+	todoMarkerCount?: number;
+	/** Count of console.* statements (Batch 7 ratchet). */
+	consoleStatementCount?: number;
+	/** Count of exported symbols — public API surface (Batch 7 ratchet). */
+	publicApiSurfaceCount?: number;
 	/** Composite type-density counters: bare `: any` / `: unknown` / `: Function` / `: {}`
 	 *  annotations plus untyped exported params and missing exported return types.
 	 *  Optional — older callers/tests may not capture it; the ratchet check

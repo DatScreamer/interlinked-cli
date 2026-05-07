@@ -33,8 +33,11 @@ import { checkPackageJsonConsistency } from "./quality-checks/package-json.js";
 import { findProjectRoot } from "./quality-checks/project-root.js";
 import {
 	countAsAnyCasts,
+	countConsoleStatements,
 	countNonNullAssertions,
+	countPublicApiSurface,
 	countSuppressionDirectives,
+	countTodoMarkers,
 	countTypeDensity,
 } from "./quality-checks/ratchet-metrics.js";
 import { containsSecrets } from "./quality-checks/secret-detection.js";
@@ -66,8 +69,11 @@ export {
 } from "./quality-checks/project-wide.js";
 export {
 	countAsAnyCasts,
+	countConsoleStatements,
 	countNonNullAssertions,
+	countPublicApiSurface,
 	countSuppressionDirectives,
+	countTodoMarkers,
 	countTypeDensity,
 	type TypeDensityCounts,
 } from "./quality-checks/ratchet-metrics.js";
@@ -749,6 +755,41 @@ export async function runQualityChecks(
 					message: `Non-null assertions increased (${pre.nonNullAssertionCount} → ${postNonNull}). Replace \`foo!.bar\` with an explicit null check, optional chaining (\`foo?.bar\`), or narrow the type so the assertion is unnecessary.`,
 					file: absPath,
 				});
+			}
+
+			// === Batch 7 ratchets ===
+			if (pre.todoMarkerCount !== undefined) {
+				const postTodo = countTodoMarkers(postContent);
+				if (postTodo > pre.todoMarkerCount) {
+					results.push({
+						name: "todo_marker_ratchet",
+						severity: "warning",
+						message: `TODO/FIXME/HACK/XXX markers increased (${pre.todoMarkerCount} → ${postTodo}). Resolve the marker before committing or replace it with a tracked-issue reference (\`// TODO(TICKET-123): ...\`).`,
+						file: absPath,
+					});
+				}
+			}
+			if (pre.consoleStatementCount !== undefined) {
+				const postConsole = countConsoleStatements(postContent);
+				if (postConsole > pre.consoleStatementCount) {
+					results.push({
+						name: "console_statement_ratchet",
+						severity: "warning",
+						message: `console.* statements increased (${pre.consoleStatementCount} → ${postConsole}). Use a structured logger or remove the debug print before committing.`,
+						file: absPath,
+					});
+				}
+			}
+			if (pre.publicApiSurfaceCount !== undefined) {
+				const postSurface = countPublicApiSurface(postContent);
+				if (postSurface > pre.publicApiSurfaceCount) {
+					results.push({
+						name: "public_api_surface_ratchet",
+						severity: "warning",
+						message: `Public API surface grew (${pre.publicApiSurfaceCount} → ${postSurface} exported symbols). Every new export expands the contract callers can rely on; confirm the symbol is genuinely meant for external use.`,
+						file: absPath,
+					});
+				}
 			}
 			// Composite type-density ratchet: bare `: any` / `: unknown` /
 			// `: Function` / `: {}` annotations + untyped exported params +

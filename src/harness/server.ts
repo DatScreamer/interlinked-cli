@@ -33,6 +33,16 @@ import {
 	checkTppLeapfrog,
 	runBehavioralChecks,
 } from "./behavioral-checks.js";
+import {
+	checkAssertionStrengthWeakening,
+	checkClockMockAdded,
+	checkConventionalCommitCoherence,
+	checkDisabledTestDelta,
+	checkDoneWithoutVerify,
+	checkReintroducesRemovedCode,
+	checkTestBlockCountRegression,
+	parseCommitMessageFromBash,
+} from "./behavioral-diff-checks.js";
 import { getOrCreateEngine } from "./check-engine/index.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "./check-metadata.js";
 import { CohortManager } from "./cohort.js";
@@ -78,8 +88,11 @@ import {
 import { ProjectGraph } from "./project-graph.js";
 import {
 	countAsAnyCasts,
+	countConsoleStatements,
 	countNonNullAssertions,
+	countPublicApiSurface,
 	countSuppressionDirectives,
+	countTodoMarkers,
 	countTypeDensity,
 	collectSoftwareVersionReferences,
 	findProjectRoot,
@@ -1175,11 +1188,23 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			/\bgit\s+commit\b/.test((event.tool_input?.command as string) || "")
 		) {
 			const testFirstMode = rules.structural_checks?.test_first_mode || "warn";
+			const commitMessage = parseCommitMessageFromBash(
+				(event.tool_input?.command as string) || "",
+			);
 			const gateResults = [
 				...(session.tdd_cycles.size > 0 ? checkTddCommitGate(session, testFirstMode) : []),
 				...checkProdDeltaWithoutTestDelta(session),
 				...checkProdTestLocRatio(session),
 				...checkTppLeapfrog(session),
+				// Batch 3: diff-aware commit gates.
+				...checkDisabledTestDelta(session),
+				...checkTestBlockCountRegression(session),
+				...checkAssertionStrengthWeakening(session),
+				...checkClockMockAdded(session),
+				...checkConventionalCommitCoherence(session, commitMessage),
+				// Batch 4: trajectory commit gates.
+				...checkReintroducesRemovedCode(session),
+				...checkDoneWithoutVerify(session),
 			];
 			if (gateResults.length > 0) {
 				const warnings = preDecision.warnings || [];
@@ -1333,6 +1358,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						suppressionCount: countSuppressionDirectives(preContent),
 						asAnyCastCount: countAsAnyCasts(preContent),
 						nonNullAssertionCount: countNonNullAssertions(preContent),
+						todoMarkerCount: countTodoMarkers(preContent),
+						consoleStatementCount: countConsoleStatements(preContent),
+						publicApiSurfaceCount: countPublicApiSurface(preContent),
 						typeDensity: countTypeDensity(preContent),
 						softwareVersions: collectSoftwareVersionReferences(preContent, filePath),
 					});

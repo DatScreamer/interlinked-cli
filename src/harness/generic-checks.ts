@@ -45,6 +45,42 @@ export {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./checks/agent-safety-advanced.js";
+// ---- agent-laziness (Batch 1) ----
+export {
+	checkAgentThumbprintProse,
+	checkDeadBranchLiteral,
+	checkDoubleCastUnknown,
+	checkFetchWithoutTimeout,
+	checkFileLevelSuppression,
+	checkNodeEnvBranchInProd,
+	checkStubNotImplementedThrow,
+	checkSyncIoOnHotPath,
+	checkUnboundedPromiseAll,
+	checkUnionWidenedWithString,
+	checkUntestableTimeInSource,
+} from "./checks/agent-laziness.js";
+// ---- test-hygiene (Batch 2) ----
+export {
+	checkDuplicateTestNames,
+	checkHardcodedTimeoutInTests,
+	checkMockingTheSutSelf,
+	checkRealIoInTests,
+	checkTestMissingSutImport,
+	checkTestNondeterminism,
+} from "./checks/test-hygiene.js";
+// ---- cross-file (Batch 5) ----
+export {
+	checkEmptyBodyHandler,
+	checkListenerPairing,
+	checkMigrationParity,
+	checkSchemaTypeDrift,
+} from "./checks/cross-file.js";
+// ---- demo-data (Batch 8) ----
+export {
+	checkDemoDataUnmarked,
+	checkDemoRuntimeMissingBanner,
+	checkSilentDemoFallback,
+} from "./checks/demo-data.js";
 // ---- b-series ----
 export {
 	checkAssertionFreeTests,

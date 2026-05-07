@@ -60,6 +60,7 @@ import { addPermissionToSettings, extractPermissionPattern } from "./permission-
 import { evaluateActiveWhen } from "./active-when.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
+import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import {
 	estimateEditLine,
@@ -461,6 +462,13 @@ export function evaluatePreToolUse(
 	// TDD gate — block new non-test .ts/.tsx without a companion test (enforce mode only).
 	if (isFileWrite(toolName)) {
 		const d = evaluateTddNewFileGateForEvent(event, rules, session);
+		if (d) return { ...d, warnings };
+	}
+
+	// Config-loosening gate — ask before strict-flag relaxations on
+	// tsconfig.json / package.json / known config files.
+	if (isFileWrite(toolName)) {
+		const d = evaluateConfigLooseningForEvent(event);
 		if (d) return { ...d, warnings };
 	}
 

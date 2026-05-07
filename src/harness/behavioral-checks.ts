@@ -321,7 +321,7 @@ const HEAVY_CONSTRUCTS: Array<{ re: RegExp; name: string }> = [
 	{ re: /\bfunction\s*\*/g, name: "generator function" },
 ];
 
-function getStagedDiff(file: string): string {
+export function getStagedDiff(file: string): string {
 	try {
 		const r = spawnSync("git", ["-C", dirname(file), "diff", "--cached", "HEAD", "--", file], {
 			encoding: "utf-8",
@@ -342,7 +342,7 @@ function getStagedDiff(file: string): string {
 	}
 }
 
-function extractAddedLines(diff: string): string {
+export function extractAddedLines(diff: string): string {
 	const out: string[] = [];
 	for (const line of diff.split("\n")) {
 		if (!line.startsWith("+") || line.startsWith("+++")) continue;

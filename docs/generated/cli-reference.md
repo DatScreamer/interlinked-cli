@@ -17,6 +17,7 @@ Commands:
   attach [options]                           Attach local CLI settings to workspace/agent and link remote identity
   check [options]                            Scan project for structural issues and optionally run external tool checks (tsc, biome, eslint, semgrep, gitleaks, mypy, ruff, etc.)
   checkpoint [options] [message]             Git checkpoint management
+  ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)
   clean [options]                            Remove stale data
   completions <shell>                        Output shell completion script (bash, zsh, fish)
   context [options]                          Show effective configuration (merged from all sources)

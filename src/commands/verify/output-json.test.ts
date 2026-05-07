@@ -137,6 +137,34 @@ function emptyCq(): CodeQualityResults {
 		"mixedSyncAsyncFileApi",
 		"cookieMissingSecurityFlags",
 		"loggerFormatUserInput",
+		// Batch 1: agent-laziness
+		"agentThumbprintProse",
+		"stubNotImplementedThrow",
+		"deadBranchLiteral",
+		"fileLevelSuppression",
+		"untestableTimeInSource",
+		"doubleCastUnknown",
+		"unionWidenedWithString",
+		"nodeenvBranchInProd",
+		"fetchWithoutTimeout",
+		"unboundedPromiseAll",
+		"syncIoOnHotPath",
+		// Batch 2: test-hygiene
+		"duplicateTestNames",
+		"realIoInTests",
+		"testNondeterminism",
+		"hardcodedTimeoutInTests",
+		"testMissingSutImport",
+		"mockingTheSutSelf",
+		// Batch 5: cross-file
+		"emptyBodyHandler",
+		"listenerPairing",
+		"schemaTypeDrift",
+		"migrationParity",
+		// Batch 8: demo-data
+		"demoDataUnmarked",
+		"silentDemoFallback",
+		"demoRuntimeMissingBanner",
 	] as const;
 	const out = {} as Record<string, []>;
 	for (const k of keys) out[k] = [];

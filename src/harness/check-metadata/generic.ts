@@ -572,4 +572,183 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	// ========================================================================
+	// Batch 1: agent-laziness (11 entries)
+	// ========================================================================
+	agent_thumbprint_prose: {
+		name: "Agent Thumbprint Prose",
+		description:
+			"Detects literal phrases LLMs use when giving up — placeholder narratives left in comments instead of finishing the work.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	stub_not_implemented_throw: {
+		name: "Stub Not-Implemented Throw",
+		description:
+			"Detects `throw new Error(\"not implemented\" | \"TODO\" | \"stub\" | ...)` and empty `throw new Error()` in non-test source.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	dead_branch_literal: {
+		name: "Dead Branch Literal",
+		description:
+			"Detects `if (true)` / `if (false)` / `else if (true)` debugger artifacts that bypass real control flow.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	file_level_suppression: {
+		name: "File-Level Suppression",
+		description:
+			"Detects file-wide suppression directives (ts-nocheck, eslint-disable with no rule list, biome-ignore-all, pylint disable=all).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	untestable_time_in_source: {
+		name: "Untestable Nondeterminism",
+		description:
+			"Detects inline Date.now / new Date() / Math.random / crypto.randomUUID / performance.now in non-test source — requires injection point.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	double_cast_unknown: {
+		name: "Double-Cast via Unknown",
+		description:
+			"Detects `as unknown as Foo` — agents reach for this when a single `as` won't satisfy TypeScript.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	union_widened_with_string: {
+		name: "Union Widened With Bare String",
+		description:
+			"Detects `\"a\" | \"b\" | string` — TypeScript narrows the union back to `string`, defeating the literal alternatives.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	nodeenv_branch_in_prod: {
+		name: "NODE_ENV Branch in Production",
+		description:
+			"Detects `process.env.NODE_ENV === \"test\"` (or development/staging/local) inside non-test, non-config source.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	fetch_without_timeout: {
+		name: "Fetch / Axios Without Timeout",
+		description:
+			"Detects fetch() and axios calls without `signal:` / `timeout:` / AbortController in their options.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	unbounded_promise_all: {
+		name: "Promise.all on Unbounded Array",
+		description:
+			"Detects `Promise.all(<ident>.map(asyncFn))` patterns — fans out N parallel requests for an N-sized input.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	sync_io_on_hot_path: {
+		name: "Synchronous I/O on Hot Path",
+		description:
+			"Detects *Sync (readFileSync / execSync / etc.) inside HTTP handler / route / middleware files.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	// ========================================================================
+	// Batch 2: test-hygiene (6 entries)
+	// ========================================================================
+	duplicate_test_names: {
+		name: "Duplicate Test Names",
+		description:
+			"Detects two it() / test() / specify() blocks with identical name strings within the same file.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	real_io_in_tests: {
+		name: "Real Network / Filesystem in Tests",
+		description:
+			"Detects fetch / axios / http calls to non-loopback URLs or *Sync writes to non-tmp paths inside test files.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	test_nondeterminism: {
+		name: "Test Nondeterminism",
+		description:
+			"Detects Date.now / Math.random / crypto.randomUUID in test bodies without fake-timers / clock mocking.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	hardcoded_timeout_in_tests: {
+		name: "Hardcoded Timeout in Tests",
+		description:
+			"Detects setTimeout / setImmediate with literal millisecond delays inside test bodies.",
+		tier: 2,
+		determinism: "fully_deterministic",
+	},
+	test_missing_sut_import: {
+		name: "Test Missing SUT Import",
+		description:
+			"Detects test files that don't import their SUT (foo.test.ts without `./foo` / `../foo`).",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	mocking_the_sut_self: {
+		name: "Mocking the SUT in Its Own Test",
+		description:
+			"Detects vi.mock / jest.mock targeting the file under test from inside its own test.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	// ========================================================================
+	// Batch 5: cross-file (4 entries)
+	// ========================================================================
+	empty_body_handler: {
+		name: "Empty-Body Handler",
+		description:
+			"Detects handler-named functions (handle*, route*, on[A-Z]*, HTTP verb-named) with empty / no-op bodies.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	listener_pairing: {
+		name: "Listener Pairing",
+		description:
+			"Detects addEventListener / process.on / emitter.on without paired removeEventListener / off / removeListener.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	schema_type_drift: {
+		name: "Schema ↔ Type Drift",
+		description:
+			"Detects same-file Zod schemas and TS interfaces with overlapping name root but divergent property sets.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	migration_parity: {
+		name: "Migration Parity",
+		description: "Detects `*_up.sql` files without a matching `*_down.sql` in the same dir.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	// ========================================================================
+	// Batch 8: demo-data (3 entries)
+	// ========================================================================
+	demo_data_unmarked: {
+		name: "Unmarked Demo Data",
+		description:
+			"Detects fake-data signatures (test emails, Stripe test cards, lorem ipsum, sentinel UUIDs, faker imports, mock/fake/sample identifier prefixes) without a `// @demo-data:` directive.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	silent_demo_fallback: {
+		name: "Silent Demo Fallback",
+		description:
+			"Detects try { real API call } catch { return [literal] } — silently substitutes fake data on upstream failure.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	demo_runtime_missing_banner: {
+		name: "Demo Runtime Without Banner",
+		description:
+			"Root-layout file imports demo-runtime helpers but does not render <DemoBanner />.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 };

@@ -47,6 +47,48 @@ export function countNonNullAssertions(content: string): number {
 }
 
 // ===========================================
+// Batch 7 ratchets — TODO/FIXME, console.log, public-API surface count.
+// Each is a strict-monotone ratchet: post-edit count must not exceed pre-edit.
+// ===========================================
+// All counters strip strings/comments via stripAllLiterals first so embedded
+// mentions in prose / data don't poison the metric.
+
+const TODO_MARKER_PATTERN = /\b(?:TODO|FIXME|HACK|XXX)\b/g;
+const CONSOLE_STATEMENT_PATTERN = /\bconsole\s*\.\s*(?:log|debug|info|warn|error|trace)\s*\(/g;
+const EXPORTED_NAME_PATTERN =
+	/\b(?:export\s+(?:async\s+)?(?:function\s+\*?|class\s+|const\s+|let\s+|var\s+|interface\s+|type\s+|enum\s+))([A-Za-z_$][\w$]*)/g;
+
+/** Public API — ratchet for TODO/FIXME/HACK/XXX markers.
+ *  TODO markers live in comments, so we only strip strings (preserving
+ *  comments) before matching. Otherwise stripAllLiterals would erase the
+ *  comment contents we're trying to count. */
+export function countTodoMarkers(content: string): number {
+	const stripped = content.replace(/"(?:[^"\\]|\\.)*"/g, '""')
+		.replace(/'(?:[^'\\]|\\.)*'/g, "''")
+		.replace(/`(?:[^`\\]|\\.)*`/g, "``");
+	return countMatches(stripped, TODO_MARKER_PATTERN);
+}
+
+/** Public API — ratchet for console.* statements. */
+export function countConsoleStatements(content: string): number {
+	const stripped = stripAllLiterals(content);
+	return countMatches(stripped, CONSOLE_STATEMENT_PATTERN);
+}
+
+/** Public API — ratchet for exported-symbol count (public API surface). */
+export function countPublicApiSurface(content: string): number {
+	const stripped = stripAllLiterals(content);
+	const names = new Set<string>();
+	EXPORTED_NAME_PATTERN.lastIndex = 0;
+	let m: RegExpExecArray | null = EXPORTED_NAME_PATTERN.exec(stripped);
+	while (m !== null) {
+		names.add(m[1]);
+		m = EXPORTED_NAME_PATTERN.exec(stripped);
+	}
+	return names.size;
+}
+
+// ===========================================
 // Type-density ratchet — composite metric over six type-erasure shapes.
 // ===========================================
 // One ratchet, six counters. The post-edit ratchet check fires once if any

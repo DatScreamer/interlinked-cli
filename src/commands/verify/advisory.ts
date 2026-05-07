@@ -174,6 +174,81 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	"ubs_numeric_comparison_chain",
 	"ubs_goroutine_no_waitgroup",
 	"ubs_defer_in_loop",
+	// === Batch 1 agent-laziness — advisory (heuristic) ===
+	// union_widened_with_string: TS-shape heuristic on type-alias declarations.
+	// FPs on legitimate branded-string patterns and cross-line unions where the
+	// 6-line scan window picks up unrelated type expressions. Promote when the
+	// detection can consult tsc's resolved type instead of regex.
+	"union_widened_with_string",
+	// fetch_without_timeout: window-based heuristic — looks 10 lines ahead for
+	// `signal:` / `timeout:`. Misses options-via-spread (`{ ...defaults }`), and
+	// FPs on short-lived test-server fetches. Promote after we wire a
+	// project-config exemption for known internal hosts.
+	"fetch_without_timeout",
+	// unbounded_promise_all: line-local heuristic. Can't see whether `<ident>` is
+	// bounded by a literal a few lines above. Real signal but moderate FP rate;
+	// the suggested fix (p-limit) is right even when the input is bounded.
+	"unbounded_promise_all",
+	// sync_io_on_hot_path: hot-path detection is dir/path-name based; FPs on
+	// utility files that happen to declare a function named `get*` for a
+	// non-HTTP purpose. Promote when scope can consult an actual route map.
+	"sync_io_on_hot_path",
+	// === Batch 5 cross-file — advisory (heuristic) ===
+	// empty_body_handler: name-based heuristic over handler-shaped names; FPs
+	// on framework router stubs that legitimately delegate to a registry.
+	"empty_body_handler",
+	// listener_pairing: file-wide presence check; FPs on files where the
+	// register/cleanup pair lives in two co-edited files. Promote after
+	// scope can see across the immediate import graph.
+	"listener_pairing",
+	// schema_type_drift: same-file pattern match; FPs on intentionally-narrow
+	// types derived from a wider schema (e.g., `Pick<UserSchema, "id">`).
+	"schema_type_drift",
+	// === Batch 8 demo-data — advisory (heuristic) ===
+	// silent_demo_fallback: structural detection of try/catch with literal
+	// fallback. The fallback is sometimes legitimate (cached default values
+	// for offline mode); promote when the detector can distinguish demo
+	// fixtures from real defaults.
+	"silent_demo_fallback",
+	// === Demoted after dogfood-noise review ===
+	// Verify --json on this repo emitted 30+ / 100+ findings each from the
+	// checks below — heuristic-tier even though I had originally rated the
+	// FP rate as low enough for default-gate. Promote individually only
+	// when sustained --all-checks runs show actionable signal:
+	//
+	// agent_thumbprint_prose: comment-prose phrases ("for now", "in
+	// practice", "in production") fire on legitimate engineering comments
+	// that aren't agent thumbprints. ~30 hits in this repo's source.
+	"agent_thumbprint_prose",
+	// untestable_time_in_source: Date.now / new Date() / Math.random /
+	// crypto.randomUUID legitimately appear in observability, metrics,
+	// telemetry, and id-generation paths that aren't reasonably injected.
+	// ~115 hits in this repo, mostly false-positives on those paths.
+	"untestable_time_in_source",
+	// duplicate_test_names: real signal at high counts but FPs on
+	// table-driven test names ("returns 200", "returns 200" inside two
+	// distinct describe blocks) and on cross-suite name collisions in
+	// large test trees. ~187 hits in this repo, almost all benign.
+	"duplicate_test_names",
+	// test_missing_sut_import: integration / table-driven / fixture-style
+	// tests legitimately don't import the SUT directly; they exercise it
+	// through composition. ~108 hits in this repo, vast majority benign.
+	"test_missing_sut_import",
+	// test_nondeterminism: same structural failure mode as
+	// untestable_time_in_source — Date.now / Math.random in tests is
+	// often legitimate for measurement / sampling, especially without
+	// vi.useFakeTimers (which the check excludes file-wide). Promote
+	// after a refinement that distinguishes assertion-bound reads from
+	// observation-only reads.
+	"test_nondeterminism",
+	// demo_data_unmarked: pattern bank fires on test emails / sentinel
+	// UUIDs / lorem-ipsum / faker imports that often live in legitimate
+	// fixtures, examples, and developer demo paths. The intended use is
+	// alongside the @demo-data: directive convention, which most pre-
+	// existing code obviously hasn't adopted. Advisory until adoption
+	// catches up; the silent_demo_fallback variant remains the higher-
+	// signal half of the demo-data system.
+	"demo_data_unmarked",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */

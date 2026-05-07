@@ -220,6 +220,34 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_deeply_nested_callback: summarizeWithDetails(cq.deeplyNestedCallback),
 		ubs_time_format_locale_dep: summarizeWithDetails(cq.timeFormatLocaleDep),
 		ubs_regex_in_loop_no_compile: summarizeWithDetails(cq.regexInLoopNoCompile),
+		// === Batch 1: agent-laziness (11 entries) ===
+		agent_thumbprint_prose: summarizeWithDetails(cq.agentThumbprintProse),
+		stub_not_implemented_throw: summarizeWithDetails(cq.stubNotImplementedThrow),
+		dead_branch_literal: summarizeWithDetails(cq.deadBranchLiteral),
+		file_level_suppression: summarizeWithDetails(cq.fileLevelSuppression),
+		untestable_time_in_source: summarizeWithDetails(cq.untestableTimeInSource),
+		double_cast_unknown: summarizeWithDetails(cq.doubleCastUnknown),
+		union_widened_with_string: summarizeWithDetails(cq.unionWidenedWithString),
+		nodeenv_branch_in_prod: summarizeWithDetails(cq.nodeenvBranchInProd),
+		fetch_without_timeout: summarizeWithDetails(cq.fetchWithoutTimeout),
+		unbounded_promise_all: summarizeWithDetails(cq.unboundedPromiseAll),
+		sync_io_on_hot_path: summarizeWithDetails(cq.syncIoOnHotPath),
+		// === Batch 2: test-hygiene (6 entries) ===
+		duplicate_test_names: summarizeWithDetails(cq.duplicateTestNames),
+		real_io_in_tests: summarizeWithDetails(cq.realIoInTests),
+		test_nondeterminism: summarizeWithDetails(cq.testNondeterminism),
+		hardcoded_timeout_in_tests: summarizeWithDetails(cq.hardcodedTimeoutInTests),
+		test_missing_sut_import: summarizeWithDetails(cq.testMissingSutImport),
+		mocking_the_sut_self: summarizeWithDetails(cq.mockingTheSutSelf),
+		// === Batch 5: cross-file (4 entries) ===
+		empty_body_handler: summarizeWithDetails(cq.emptyBodyHandler),
+		listener_pairing: summarizeWithDetails(cq.listenerPairing),
+		schema_type_drift: summarizeWithDetails(cq.schemaTypeDrift),
+		migration_parity: summarizeWithDetails(cq.migrationParity),
+		// === Batch 8: demo-data (3 entries) ===
+		demo_data_unmarked: summarizeWithDetails(cq.demoDataUnmarked),
+		silent_demo_fallback: summarizeWithDetails(cq.silentDemoFallback),
+		demo_runtime_missing_banner: summarizeWithDetails(cq.demoRuntimeMissingBanner),
 	};
 
 	if (suggestions) {

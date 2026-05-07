@@ -269,6 +269,24 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"ubs_string_concat_in_loop",
 				"ubs_time_format_locale_dep",
 				"unvalidated_json_boundary",
+				// Batch 1: agent-laziness — advisory (heuristic)
+				"fetch_without_timeout",
+				"sync_io_on_hot_path",
+				"unbounded_promise_all",
+				"union_widened_with_string",
+				// Batch 5: cross-file — advisory (heuristic)
+				"empty_body_handler",
+				"listener_pairing",
+				"schema_type_drift",
+				// Batch 8: demo-data — advisory (heuristic)
+				"silent_demo_fallback",
+				// Demoted after dogfood-noise review (P1 finding):
+				"agent_thumbprint_prose",
+				"untestable_time_in_source",
+				"duplicate_test_names",
+				"test_missing_sut_import",
+				"test_nondeterminism",
+				"demo_data_unmarked",
 			].sort(),
 		);
 	});
