@@ -72,6 +72,10 @@ docs/design/
 # Local manual-test scratch space and harness logs.
 .scratch/
 
+# Wrangler local-dev cache (per-Worker; lives under landing/ for the
+# landing-page Worker and any future Workers added to the repo).
+.wrangler/
+
 # Interlinked: blanket-ignore harness runtime state (sessions, sockets,
 # pids, audit/activity logs, caches, status files, learned rules, the
 # pending review dir, etc.). Carve out the small set of files designed

@@ -72,3 +72,13 @@ jobs:
             | "$HOOK" --runner claude-code --event PreToolUse
           mkdir -p src
           "$INTERLINKED" write src/smoke.ts --stdin --json <<< 'export const smoke: number = 1;'
+
+      - name: Onboarding smoke test (git-clone install path)
+        env:
+          # Run against the in-tree checkout (already built above) so the
+          # smoke catches drift introduced by the current PR before it lands.
+          # On main pushes this also exercises the install path users would
+          # walk through when they first try the project.
+          INTERLINKED_REPO_URL: ${{ github.workspace }}
+          INTERLINKED_REPO_REF: HEAD
+        run: bash scripts/smoke-onboarding.sh

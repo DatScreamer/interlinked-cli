@@ -12,7 +12,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "interlinked-landing",
   "main": "src/index.ts",
-  "compatibility_date": "2026-05-01",
+  "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./public",
