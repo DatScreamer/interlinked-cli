@@ -452,23 +452,30 @@ export interface LocDelta {
 }
 
 /**
- * Compute LOC delta from `git diff --numstat HEAD`. Counts both added and
- * deleted lines so a refactor that swaps 50 lines registers as 100 churn —
- * which IS what the ratio gate cares about (proportional test coverage of
- * touched code, not file size).
+ * Compute LOC delta covering BOTH tracked changes (`git diff --numstat HEAD`)
+ * AND untracked-but-not-ignored files (counted at full line count, since
+ * they're entirely new). Counts added + deleted for tracked files so a
+ * 50-line refactor registers as 100 churn — that's what the ratio gate
+ * cares about (proportional test coverage of touched code).
+ *
+ * The untracked path matters because `git diff` doesn't see new files
+ * before they're staged, and the gate fires at PreToolUse time on
+ * `git add ... && git commit ...` — before staging happens. Without
+ * untracked accounting, a brand-new test file wouldn't count.
  *
  * Returns zeroes on any failure (not in a repo, no HEAD, git missing).
  */
-export function gitNumstatDelta(): LocDelta {
+export function gitNumstatDelta(cwd: string = process.cwd()): LocDelta {
 	let prodLoc = 0;
 	let testLoc = 0;
 	try {
-		const out = execSync("git diff --numstat HEAD", {
+		const numstat = execSync("git diff --numstat HEAD", {
+			cwd,
 			encoding: "utf-8",
 			timeout: 3000,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
-		for (const line of out.split("\n")) {
+		for (const line of numstat.split("\n")) {
 			const parts = line.split("\t");
 			if (parts.length < 3) continue;
 			const added = Number.parseInt(parts[0], 10);
@@ -478,6 +485,23 @@ export function gitNumstatDelta(): LocDelta {
 			const delta = added + deleted;
 			if (TEST_FILE_RE.test(path)) testLoc += delta;
 			else prodLoc += delta;
+		}
+		const untracked = execSync("git ls-files --others --exclude-standard", {
+			cwd,
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		for (const path of untracked.split("\n")) {
+			if (!path) continue;
+			try {
+				const content = readFileSync(join(cwd, path), "utf-8");
+				const loc = content.split("\n").length;
+				if (TEST_FILE_RE.test(path)) testLoc += loc;
+				else prodLoc += loc;
+			} catch {
+				// intentional: best-effort read; skip an unreadable untracked file.
+			}
 		}
 	} catch {
 		// intentional: git unavailable / not a repo / no HEAD — fall back to 0

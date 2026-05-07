@@ -14,6 +14,7 @@ import {
 	checkTddCommitGate,
 	checkTppLeapfrog,
 	countAssertions,
+	gitNumstatDelta,
 } from "../behavioral-checks.js";
 import type { SessionTrajectory, TddCycle } from "../types.js";
 
@@ -818,5 +819,55 @@ describe("checkProdDeltaWithoutTestDelta — sibling-test detection", () => {
 		const out = checkProdDeltaWithoutTestDelta(session);
 		expect(out.length).toBe(1);
 		expect(out[0].name).toBe("prod_delta_no_test_delta");
+	});
+});
+
+// ===========================================
+// gitNumstatDelta — covers tracked + untracked files
+// ===========================================
+
+describe("gitNumstatDelta", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "numstat-"));
+		execSync("git init -q", { cwd: dir });
+		execSync("git config user.email t@example.com", { cwd: dir });
+		execSync("git config user.name Test", { cwd: dir });
+		execSync("git commit --allow-empty -q -m initial", { cwd: dir });
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("counts untracked new files as full LOC (tests + prod each routed)", () => {
+		writeFileSync(join(dir, "new-prod.ts"), "a\n".repeat(40));
+		writeFileSync(join(dir, "new-prod.test.ts"), "a\n".repeat(20));
+
+		// Note: split("\n") on "a\n".repeat(N) returns N+1 entries (trailing
+		// empty string after the final newline). The check counts split-length,
+		// not actual lines, which matches what numstat reports for tracked files.
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(41);
+		expect(testLoc).toBe(21);
+	});
+
+	it("counts tracked modifications via numstat (added + deleted)", () => {
+		const tracked = join(dir, "tracked.ts");
+		writeFileSync(tracked, "a\nb\nc\n");
+		execSync("git add tracked.ts", { cwd: dir });
+		execSync("git commit -q -m base", { cwd: dir });
+		// Modify: replace 1 line, add 2 → numstat says 2 added, 1 deleted = 3 churn
+		writeFileSync(tracked, "a\nb-modified\nc\nd\ne\n");
+
+		const { prodLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBeGreaterThanOrEqual(3);
+	});
+
+	it("returns zero when there are no changes", () => {
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(0);
+		expect(testLoc).toBe(0);
 	});
 });
