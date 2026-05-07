@@ -158,7 +158,7 @@
   Removed 14 files.</pre>
       </div>
       <p class="mt-3 text-xs text-zinc-500 italic">
-        Reconstructed from a real <code class="text-zinc-400">guard_block</code> event in <code class="text-zinc-400">.interlinked/activity.jsonl</code>.
+        Illustrative. The rule (<code class="text-zinc-400">builtin-rm-rf-root</code>) and reason text are loaded verbatim from <code class="text-zinc-400">src/harness/rules/builtin-rules-processes.ts</code>; the surrounding agent dialogue is synthesized to show the block-and-recover flow.
       </p>
     </div>
   </header>
@@ -170,16 +170,16 @@
         <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">The receipt</p>
         <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">
           Two weeks. One developer.<br />
-          <span class="text-accent-500">404 blocks.</span>
+          <span class="text-accent-500"><!-- gen:receipts_verified -->195<!-- /gen:receipts_verified --> verified real blocks.</span>
         </h2>
         <p class="mt-5 text-zinc-400 leading-relaxed">
-          The author dogfooded the harness on his own machine for two weeks while writing it. These are the actual block events from <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">.interlinked/activity.jsonl</code>.
+          The author dogfooded the harness on his own machine for two weeks while writing it. The activity log captured <!-- gen:receipts_logged -->446<!-- /gen:receipts_logged --> <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">guard_block</code> events; the rows below are the ones that survived a per-event audit against Claude Code's session transcripts to confirm the agent's actual <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">tool_input</code>.
         </p>
         <p class="mt-3 text-zinc-400 leading-relaxed">
-          Local-only, no telemetry. The agents tried this stuff while we were watching <em>them</em>; the only surprise is how often.
+          Some early dramatic-looking categories (<code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">shutdown</code>, root-level <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">rm -rf</code>, <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">DROP TABLE</code>) turned out to be false positives — the rules' substring matchers fired on commit-message bodies, <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">echo</code> arguments, and <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">grep</code> patterns. Those rules were tightened with command-start anchors and quote masking; the table reflects only blocks where the agent's resolved command actually matched the row's intent.
         </p>
         <p class="mt-4 text-xs text-zinc-500">
-          Data as of <!-- gen:data_as_of -->2026-05-07<!-- /gen:data_as_of -->. Refresh: <code class="text-zinc-400">npm run docs:refresh-receipts</code>.
+          Data as of <!-- gen:data_as_of -->2026-05-07<!-- /gen:data_as_of -->. Audit method: <code class="text-zinc-400">npm run docs:audit-receipts</code> (re-runs the per-event transcript correlation locally).
         </p>
       </div>
 
@@ -195,74 +195,39 @@
             </thead>
             <tbody class="divide-y divide-ink-700/60 font-mono">
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">80</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tsc_diff_overlay -->84<!-- /gen:row_tsc_diff_overlay --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Edits that introduced a <em>new</em> TypeScript error — blocked before the write landed</td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Edits that introduced a <em>new</em> TypeScript error — blocked before the write landed (<code class="text-zinc-200">tsc-diff-overlay</code>)</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">33</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_bash_redirect_bypass -->35<!-- /gen:row_bash_redirect_bypass --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Used shell redirect (<code class="text-zinc-200">cat &gt; file.ts</code>) to dodge the content-quality gate</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">27</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tdd_new_file -->29<!-- /gen:row_tdd_new_file --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Created a new source file with no companion test</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">25</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_empty_catch -->25<!-- /gen:row_empty_catch --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Empty <code class="text-zinc-200">catch {}</code> blocks landing in code</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">18</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_repo_confinement -->18<!-- /gen:row_repo_confinement --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Wrote outside the repo root (e.g. <code class="text-zinc-200">/tmp/x.ts</code>)</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">11</td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_self_kill -->4<!-- /gen:row_self_kill --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Tried to <code class="text-zinc-200">shutdown</code> / <code class="text-zinc-200">reboot</code> the laptop</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">7</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Recursive delete of root-level / wildcard paths (<code class="text-zinc-200">rm -rf …</code>)</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">4</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Tried to <code class="text-zinc-200">kill</code> the harness / session process itself</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Prompt-injection text in writes to agent persistent memory</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans"><code class="text-zinc-200">kubectl delete --all</code></td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">3</td>
-                <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans"><code class="text-zinc-200">chmod 777</code> on real files</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">2</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">SQL DROP of tables / databases</td>
-              </tr>
-              <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums">1</td>
-                <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
-                <td class="px-4 py-3 text-zinc-300 font-sans">Detached <code class="text-zinc-200">nohup</code> with network — known npm-RAT persistence pattern</td>
+                <td class="px-4 py-3 text-zinc-300 font-sans">Tried to <code class="text-zinc-200">kill</code> a PID that turned out to be the harness or session process</td>
               </tr>
               <tr class="bg-ink-800/30 text-zinc-400 italic">
-                <td class="px-4 py-3 text-right tabular-nums">168</td>
+                <td class="px-4 py-3 text-right tabular-nums"><!-- gen:receipts_residual -->219<!-- /gen:receipts_residual --></td>
                 <td class="px-4 py-3">—</td>
-                <td class="px-4 py-3 font-sans">Other guard-rule fires (TypeScript errors not yet bucketed, multi-PID kills, signal blocks, privacy filters, file-size advisories)</td>
+                <td class="px-4 py-3 font-sans">Did not survive audit. Substring-matching FPs from older destructive-command rules (now fixed), unbucketed TypeScript advisories, and miscellaneous low-severity flags. Reported here for honest accounting; not counted in the headline.</td>
               </tr>
             </tbody>
           </table>
@@ -270,16 +235,16 @@
 
         <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
-            <p class="text-xs text-zinc-500 uppercase tracking-wider">Total blocks</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums">404</p>
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Verified blocks</p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_verified -->195<!-- /gen:receipts_verified --></p>
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">Rule eval p50</p>
             <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums">2 ms</p>
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
-            <p class="text-xs text-zinc-500 uppercase tracking-wider">Critical</p>
-            <p class="mt-1 text-2xl font-bold text-rose-400 tabular-nums">51</p>
+            <p class="text-xs text-zinc-500 uppercase tracking-wider">Total events logged</p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_logged -->446<!-- /gen:receipts_logged --></p>
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">Built-in rules</p>

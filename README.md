@@ -5,12 +5,34 @@ hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates
 every tool call against deterministic rules; blocks the dangerous ones in
 milliseconds; keeps a local activity log you can grep.
 
-> **Receipts from 2 weeks of dogfooding on the author's machine.** 404 blocks.
-> 7× `rm -rf` attempts. 11× `shutdown` attempts. 4× the agent tried to kill
-> the harness itself. 3× prompt-injection writes to agent persistent memory.
-> 2× SQL DROP. 1× detached `nohup` matching a known npm-RAT persistence
-> pattern. Plus 80 net-new TypeScript errors blocked before the write
-> landed. Full breakdown on the [landing page](./landing/) or in
+> **Receipts from 2 weeks of dogfooding on the author's machine.** The
+> activity log captured <!-- gen:receipts_logged -->446<!-- /gen:receipts_logged -->
+> `guard_block` events; **<!-- gen:receipts_verified -->195<!-- /gen:receipts_verified -->
+> of them survived a per-event audit** against Claude Code session
+> transcripts to confirm the agent's actual `tool_input`. The audited
+> breakdown:
+>
+> - <!-- gen:row_tsc_diff_overlay -->84<!-- /gen:row_tsc_diff_overlay -->×
+>   edits that introduced a *new* TypeScript error — blocked before the
+>   write landed (`tsc-diff-overlay`)
+> - <!-- gen:row_bash_redirect_bypass -->35<!-- /gen:row_bash_redirect_bypass -->×
+>   shell-redirect bypass attempts (`cat > file.ts` to dodge the
+>   content-quality gate)
+> - <!-- gen:row_tdd_new_file -->29<!-- /gen:row_tdd_new_file -->× new
+>   source file with no companion test (TDD gate)
+> - <!-- gen:row_empty_catch -->25<!-- /gen:row_empty_catch -->× empty
+>   `catch {}` blocks
+> - <!-- gen:row_repo_confinement -->18<!-- /gen:row_repo_confinement -->×
+>   writes outside the repo root
+> - <!-- gen:row_self_kill -->4<!-- /gen:row_self_kill -->× `kill <pid>`
+>   where the PID was the harness/session process
+>
+> The remaining <!-- gen:receipts_residual -->219<!-- /gen:receipts_residual -->
+> events did not survive audit — the older destructive-command rules
+> used substring matching that fired on `echo` / `grep` / commit-message
+> bodies. Those rules have since been tightened (commit
+> [`175cace`](https://github.com/QuentinCody/interlinked-cli/commit/175cace)).
+> Full breakdown on the [landing page](./landing/) or in
 > [What you get](#what-you-get) below.
 
 Local-first by design. The harness, activity log, and checks run on your

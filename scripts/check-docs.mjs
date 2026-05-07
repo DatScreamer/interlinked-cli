@@ -46,19 +46,48 @@ const DOCS = [
 	join(ROOT, "README.md"),
 ];
 
-// Map gen-marker NAME → how to compute its expected value from `facts`.
-// Each entry returns the canonical string that should appear inside the
-// marker. Missing key here = the marker is unknown and triggers an error.
+// Map gen-marker NAME → how to compute its expected value from
+// `{ facts, receipts }`. Each entry returns the canonical string that
+// should appear inside the marker. Missing key here = the marker is
+// unknown and triggers an error.
+//
+// Code-derived markers use `facts` (from extract-doc-facts.mjs).
+// Receipt-derived markers use `receipts` (from landing/receipts.json,
+// produced by `npm run docs:audit-receipts` against the maintainer's
+// local activity.jsonl + Claude Code transcripts).
 const GEN_MARKERS = {
-	builtin_rule_count: (facts) => String(facts.builtin_rule_count),
-	runner_count: (facts) => String(facts.runner_count),
-	runners_inline: (facts) => facts.runners_inline,
-	mode_names_inline: (facts) => facts.mode_names_inline,
-	node_min_version: (facts) => `${facts.node_min_version}+`,
+	builtin_rule_count: ({ facts }) => String(facts.builtin_rule_count),
+	runner_count: ({ facts }) => String(facts.runner_count),
+	runners_inline: ({ facts }) => facts.runners_inline,
+	mode_names_inline: ({ facts }) => facts.mode_names_inline,
+	node_min_version: ({ facts }) => `${facts.node_min_version}+`,
+
+	// Receipts headline + per-row counts. Each row pulls from
+	// receipts.json's verified_rows array, keyed by rule_id.
+	receipts_verified: ({ receipts }) => String(receipts.total_verified),
+	receipts_logged: ({ receipts }) => String(receipts.total_logged),
+	receipts_residual: ({ receipts }) => String(receipts.residual_unverified),
+	row_tsc_diff_overlay: ({ receipts }) => String(receiptCount(receipts, "tsc-diff-overlay")),
+	row_bash_redirect_bypass: ({ receipts }) => String(receiptCount(receipts, "bash-code-file-write-bypass")),
+	row_tdd_new_file: ({ receipts }) => String(receiptCount(receipts, "tdd_new_file_gate")),
+	row_empty_catch: ({ receipts }) => String(receiptCount(receipts, "empty_catch")),
+	row_repo_confinement: ({ receipts }) => String(receiptCount(receipts, "builtin-repo-confinement")),
+	row_self_kill: ({ receipts }) => String(receiptCount(receipts, "self-kill-protection")),
+
 	// data_as_of is hand-edited; the build script does NOT regenerate it.
 	// CI checks staleness separately (see DATA_AS_OF_MAX_AGE_DAYS).
 	data_as_of: null,
 };
+
+function receiptCount(receipts, ruleId) {
+	const row = receipts.verified_rows.find((r) => r.rule_id === ruleId);
+	if (!row) {
+		throw new Error(
+			`receipts.json has no row for rule_id='${ruleId}'. Either rename the gen marker or rerun 'npm run docs:audit-receipts'.`,
+		);
+	}
+	return row.count_verified;
+}
 
 const DATA_AS_OF_MAX_AGE_DAYS = 30;
 
@@ -182,6 +211,17 @@ function loadFacts() {
 	return JSON.parse(json);
 }
 
+function loadReceipts() {
+	const path = join(ROOT, "landing/receipts.json");
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		throw new Error(
+			`landing/receipts.json missing or unreadable. Run 'npm run docs:audit-receipts' locally to regenerate it (requires .interlinked/activity.jsonl + Claude Code session transcripts).`,
+		);
+	}
+}
+
 function checkDataAsOfStaleness(docs) {
 	const landing = docs[join(ROOT, "landing/public/index.html")];
 	const m = markerRe("data_as_of").exec(landing);
@@ -214,6 +254,8 @@ function findMarkers(text) {
 
 function check() {
 	const facts = loadFacts();
+	const receipts = loadReceipts();
+	const ctx = { facts, receipts };
 	const docs = loadDocs();
 	const errors = [];
 	const warnings = [];
@@ -230,7 +272,13 @@ function check() {
 	// 2. Every gen marker's content matches the canonical value.
 	for (const [name, fn] of Object.entries(GEN_MARKERS)) {
 		if (fn === null) continue;
-		const expected = fn(facts);
+		let expected;
+		try {
+			expected = fn(ctx);
+		} catch (err) {
+			errors.push(`gen:${name} computation failed: ${err.message}`);
+			continue;
+		}
 		for (const [path, text] of Object.entries(docs)) {
 			const re = markerRe(name);
 			let m = re.exec(text);
@@ -251,7 +299,7 @@ function check() {
 	// 3. Hand-written assertions.
 	for (const a of ASSERTIONS) {
 		try {
-			a.run(facts, docs);
+			a.run(facts, docs, receipts);
 		} catch (err) {
 			errors.push(`assertion "${a.name}":\n  ${err.message}`);
 		}
@@ -272,12 +320,14 @@ function check() {
 		process.exit(1);
 	}
 	process.stdout.write(
-		`docs OK (${facts.builtin_rule_count} rules · ${facts.runner_count} runners · ${facts.mode_names_user_facing.length} modes · Node ${facts.node_min_version}+)\n`,
+		`docs OK (${facts.builtin_rule_count} rules · ${facts.runner_count} runners · ${facts.mode_names_user_facing.length} modes · Node ${facts.node_min_version}+ · ${receipts.total_verified} verified blocks / ${receipts.total_logged} logged)\n`,
 	);
 }
 
 function build() {
 	const facts = loadFacts();
+	const receipts = loadReceipts();
+	const ctx = { facts, receipts };
 	const docs = loadDocs();
 	let totalChanges = 0;
 
@@ -285,7 +335,7 @@ function build() {
 		let updated = text;
 		for (const [name, fn] of Object.entries(GEN_MARKERS)) {
 			if (fn === null) continue;
-			const expected = fn(facts);
+			const expected = fn(ctx);
 			updated = updated.replace(
 				markerRe(name),
 				`<!-- gen:${name} -->${expected}<!-- /gen:${name} -->`,

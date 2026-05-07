@@ -1,0 +1,217 @@
+{
+  "audited_at": "2026-05-07T17:07:15.278Z",
+  "method": "Per-event resolution against ~/.claude/projects/<cwd>/<session>.jsonl tool_use entries; nearest-before tool_use within 60s window. FP-heavy rules classified via command-text heuristic (see scripts/audit-receipts.mjs).",
+  "total_logged": 446,
+  "total_verified": 195,
+  "residual_unverified": 219,
+  "verified_rows": [
+    {
+      "rule_id": "tsc-diff-overlay",
+      "label": "Edits that introduced a new TypeScript error — blocked before the write landed",
+      "severity": "high",
+      "count_logged": 84,
+      "count_verified": 84
+    },
+    {
+      "rule_id": "bash-code-file-write-bypass",
+      "label": "Shell-redirect bypass attempts (cat > file.ts to dodge content-quality gate)",
+      "severity": "high",
+      "count_logged": 35,
+      "count_verified": 35
+    },
+    {
+      "rule_id": "tdd_new_file_gate",
+      "label": "New source file with no companion test",
+      "severity": "high",
+      "count_logged": 29,
+      "count_verified": 29
+    },
+    {
+      "rule_id": "empty_catch",
+      "label": "Empty catch{} blocks",
+      "severity": "high",
+      "count_logged": 25,
+      "count_verified": 25
+    },
+    {
+      "rule_id": "builtin-repo-confinement",
+      "label": "Writes outside the repo root",
+      "severity": "critical",
+      "count_logged": 18,
+      "count_verified": 18
+    },
+    {
+      "rule_id": "self-kill-protection",
+      "label": "kill <pid> targeting the harness or session process",
+      "severity": "critical",
+      "count_logged": 4,
+      "count_verified": 4
+    }
+  ],
+  "dropped_rows": [
+    {
+      "rule_id": "builtin-shutdown-reboot",
+      "count_logged": 11,
+      "count_real": 0,
+      "verdicts": {
+        "transcript_missing": 5,
+        "fp_in_text": 6
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "git commit -m \"$(cat <<'EOF' feat(content-scanner): v2 — systemMessage, sidecar pool, UserPromptSubmit, scanner CLI, sta",
+          "ts": "2026-04-24T22:39:47.886Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "DEMO_CWD=$(mktemp -d -t pii-demo-XXXXXX) echo \"Demo cwd: $DEMO_CWD\" node --import tsx --input-type=module - \"$DEMO_CWD\" ",
+          "ts": "2026-04-25T22:17:46.458Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "stat -f \"%Sm %z %N\" /Users/quentincody/interlinked-cli/dist/harness/server.js echo \"--- check shutdown code in dist ---\"",
+          "ts": "2026-05-05T15:28:50.231Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "builtin-rm-rf-root",
+      "count_logged": 7,
+      "count_real": 0,
+      "verdicts": {
+        "fp_in_text": 5,
+        "transcript_missing": 1,
+        "fp_path_under_users": 1
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "grep -n \"scratch\" .gitignore 2>/dev/null | head -3",
+          "ts": "2026-04-24T14:28:21.407Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "echo \"=== Baseline destructive rm -rf test from CLAUDE.md ===\" && echo '{\"hook_event\":\"PreToolUse\",\"session_id\":\"t\",\"age",
+          "ts": "2026-04-24T14:44:19.039Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "ls -la /Users/quentincody/interlinked-cli/.interlinked/ 2>&1 | head -15 && echo \"---harness pid---\" && cat /Users/quenti",
+          "ts": "2026-04-24T14:46:27.004Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "builtin-drop-database",
+      "count_logged": 4,
+      "count_real": 0,
+      "verdicts": {
+        "fp_in_text": 4
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "grep -nE 'blocks DROP DATABASE|blocks sudo|allows targeted process kill|wrangler dev' src/harness/__tests__/evaluator.te",
+          "ts": "2026-04-27T19:36:10.982Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "grep -n 'r\"' /Users/quentincody/interlinked-cli/reference-repos/destructive_command_guard/src/packs/kubernetes/kubectl.r",
+          "ts": "2026-04-29T00:03:17.146Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "git commit -m \"$(cat <<'EOF' fix(harness): three FP classes that fired on the landing-page launch The marketing-day work",
+          "ts": "2026-05-07T14:07:10.954Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "builtin-kubectl-delete-all",
+      "count_logged": 3,
+      "count_real": 0,
+      "verdicts": {
+        "fp_in_text": 3
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "grep -nE 'id:\\s*\"' src/harness/check-registry/entries-{errors,warnings,taste}.ts 2>/dev/null | head -40",
+          "ts": "2026-04-27T19:47:27.260Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "grep -nA8 'known phase-1 limitation' src/harness/rules/__tests__/builtin-rules-resource-bombs.test.ts",
+          "ts": "2026-04-27T20:08:24.163Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "npm test 2>&1 | tail -6",
+          "ts": "2026-04-27T20:09:50.309Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "builtin-chmod-777",
+      "count_logged": 3,
+      "count_real": 0,
+      "verdicts": {
+        "transcript_missing": 1,
+        "fp_in_text": 2
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "git commit -m \"$(cat <<'EOF' fix(harness): destructive-guard FP cleanup + write-content harness-dir scoping Three FP cla",
+          "ts": "2026-05-06T19:31:21.031Z"
+        },
+        {
+          "verdict": "fp_in_text",
+          "command": "git commit -m \"$(cat <<'EOF' fix(harness): destructive-guard FP cleanup + write-content harness-dir scoping Three FP cla",
+          "ts": "2026-05-06T19:31:21.032Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "builtin-nohup-network",
+      "count_logged": 1,
+      "count_real": 0,
+      "verdicts": {
+        "fp_in_text": 1
+      },
+      "samples": [
+        {
+          "verdict": "fp_in_text",
+          "command": "npm run build 2>&1 | tail -3 && echo \"---stop old---\" && HPID=$(cat /Users/quentincody/interlinked-cli/.interlinked/harn",
+          "ts": "2026-04-24T15:00:03.470Z"
+        }
+      ]
+    },
+    {
+      "rule_id": "pretooluse-injection-scan",
+      "count_logged": 3,
+      "count_real": 0,
+      "verdicts": {
+        "needs_review": 3
+      },
+      "samples": [
+        {
+          "verdict": "needs_review",
+          "command": "/Users/quentincody/.claude/projects/-Users-quentincody-interlinked-cli/memory/feedback_verify_against_codebase.md",
+          "ts": "2026-04-24T12:23:24.048Z"
+        },
+        {
+          "verdict": "needs_review",
+          "command": "/Users/quentincody/.claude/projects/-Users-quentincody-interlinked-cli/memory/feedback_safety_continuity.md",
+          "ts": "2026-04-24T12:26:34.263Z"
+        },
+        {
+          "verdict": "needs_review",
+          "command": "/Users/quentincody/.claude/skills/cloudflare-dynamic-workflows/SKILL.md",
+          "ts": "2026-05-01T21:41:47.046Z"
+        }
+      ]
+    }
+  ]
+}

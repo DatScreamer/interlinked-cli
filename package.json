@@ -70,6 +70,7 @@
         "docs:check": "node scripts/check-docs.mjs",
         "docs:build": "node scripts/check-docs.mjs --build",
         "docs:facts": "node scripts/extract-doc-facts.mjs",
+        "docs:audit-receipts": "node scripts/audit-receipts.mjs",
         "prepack": "npm run build",
         "prepare": "npm run build",
         "prepublishOnly": "npm run typecheck:stable && npm test"
