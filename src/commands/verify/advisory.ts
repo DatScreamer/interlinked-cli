@@ -97,6 +97,35 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// need cleanup, delegated cleanup through super.dispose()). Advisory
 	// until the detection can see the handle/listener variable across methods.
 	"lifecycle_cleanup",
+	// Cleanup-skipped-on-early-exit: detects setInterval/setTimeout/subscribe
+	// /addEventListener acquisitions where a throw or return reaches before
+	// the matching release, with no try/finally wrap. Real bug class
+	// (Firefox 2024653/2027298 analog) but the regex pairing is conservative —
+	// receiver-only matching for addEventListener can over-fire when the
+	// same target serves multiple handlers. Advisory until dogfood signal
+	// supports promotion.
+	"cleanup_skipped_on_early_exit",
+	// Tainted-to-privileged-sink: detects req.body/query/params or
+	// process.argv/env reaching eval/new Function/vm.run/child_process.exec*/
+	// fs.write* without a recognized validator (zod .parse, typeof guard,
+	// allow-list .has). Real but heuristic: validators that don't match the
+	// recognized list (e.g. project-specific custom validate fns) FP, and
+	// the two-step flow analyzer is intra-file scope. Advisory until dogfood
+	// signal supports promotion.
+	"tainted_to_privileged_sink",
+	// await_state_toctou — narrow form of async race detection. Real bugs in
+	// `if (state.X) { await...; state.X.method() }` shape, but field/path
+	// matching alone produces FPs when the field is repeatedly checked or
+	// assigned during the await. Advisory until promotion data exists.
+	"await_state_toctou",
+	// cleanup_reentrancy — dispose recursion + useEffect-cleanup state
+	// mutation. The recursion form is sharp; the useEffect form is heuristic
+	// (matches set<Capital>/dispatch in cleanup body). Advisory.
+	"cleanup_reentrancy",
+	// boundary_copy_no_revalidation — Object.assign / spread of external
+	// input into typed slot. Real bug class but FP-prone when the spread
+	// merges with already-validated values upstream. Advisory.
+	"boundary_copy_no_revalidation",
 	// Default-export hygiene: cold-reader/grep clarity signal, but default
 	// exports are idiomatic in React/Vue component files and many build
 	// configs the filename-matching heuristic can't enumerate. Advisory

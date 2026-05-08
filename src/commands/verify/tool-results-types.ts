@@ -52,6 +52,14 @@ export interface CodeQualityResults {
 	floatingPromises: CodeQualityIssue[];
 	broadObjectTypes: CodeQualityIssue[];
 	booleanTrap: CodeQualityIssue[];
+	iteratorInvalidation: CodeQualityIssue[];
+	freshCollectionKeyLookup: CodeQualityIssue[];
+	indexBoundsUnchecked: CodeQualityIssue[];
+	cleanupSkippedOnEarlyExit: CodeQualityIssue[];
+	taintedToPrivilegedSink: CodeQualityIssue[];
+	awaitStateToctou: CodeQualityIssue[];
+	cleanupReentrancy: CodeQualityIssue[];
+	boundaryCopyNoRevalidation: CodeQualityIssue[];
 	magicLiteralInConditional: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];
 	selfImports: CodeQualityIssue[];
@@ -279,6 +287,14 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"floatingPromises",
 	"broadObjectTypes",
 	"booleanTrap",
+	"iteratorInvalidation",
+	"freshCollectionKeyLookup",
+	"indexBoundsUnchecked",
+	"cleanupSkippedOnEarlyExit",
+	"taintedToPrivilegedSink",
+	"awaitStateToctou",
+	"cleanupReentrancy",
+	"boundaryCopyNoRevalidation",
 	"magicLiteralInConditional",
 	"asyncPromiseExecutor",
 	"selfImports",

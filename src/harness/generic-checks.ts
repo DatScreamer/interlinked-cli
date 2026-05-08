@@ -270,6 +270,23 @@ export {
 	checkNegatedConditionWithElse,
 	checkNestedTernary,
 } from "./checks/taste-smell.js";
+// ---- iteration-safety ----
+export {
+	checkFreshCollectionKeyLookup,
+	checkIteratorInvalidation,
+} from "./checks/iteration-safety.js";
+// ---- index-bounds ----
+export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
+// ---- cleanup-early-exit ----
+export { checkCleanupSkippedOnEarlyExit } from "./checks/cleanup-early-exit.js";
+// ---- tainted-sink ----
+export { checkTaintedToPrivilegedSink } from "./checks/tainted-sink.js";
+// ---- flow-safety ----
+export {
+	checkAwaitStateToctou,
+	checkBoundaryCopyNoRevalidation,
+	checkCleanupReentrancy,
+} from "./checks/flow-safety.js";
 // ---- test-file-exists ----
 export { checkTestFileExists } from "./checks/test-file-exists.js";
 // ---- testing ----

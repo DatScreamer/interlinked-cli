@@ -13,12 +13,17 @@ import {
 	checkAccumulatingSpread,
 	checkAgentThumbprintProse,
 	checkAsyncEventHandler,
+	checkAwaitStateToctou,
+	checkBoundaryCopyNoRevalidation,
+	checkCleanupReentrancy,
 	checkAsyncPromiseExecutor,
 	checkBooleanTrap,
 	checkBroadObjectTypes,
 	checkCatchAndLog,
 	checkCircularImports,
+	checkCleanupSkippedOnEarlyExit,
 	checkConsoleDebug,
+	checkTaintedToPrivilegedSink,
 	checkConstantCondition,
 	checkDangerouslySetInnerHTML,
 	checkDeadBranchLiteral,
@@ -49,8 +54,11 @@ import {
 	checkHardcodedTimeout,
 	checkHardcodedTimeoutInTests,
 	checkIndexAsKey,
+	checkFreshCollectionKeyLookup,
+	checkIndexBoundsUnchecked,
 	checkInlineObjectProps,
 	checkInnerHtmlUsage,
+	checkIteratorInvalidation,
 	checkJavaOptionalGet,
 	checkJsLooseEquality,
 	checkJsonParseUnsafe,
@@ -392,6 +400,50 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 		...toIssues("broad_object_types", relPath, checkBroadObjectTypes(content, file)),
 	);
 	r.booleanTrap.push(...toIssues("boolean_trap", relPath, checkBooleanTrap(content, file)));
+	r.iteratorInvalidation.push(
+		...toIssues("iterator_invalidation", relPath, checkIteratorInvalidation(content, file)),
+	);
+	r.freshCollectionKeyLookup.push(
+		...toIssues(
+			"fresh_collection_key_lookup",
+			relPath,
+			checkFreshCollectionKeyLookup(content, file),
+		),
+	);
+	r.indexBoundsUnchecked.push(
+		...toIssues(
+			"index_bounds_unchecked",
+			relPath,
+			checkIndexBoundsUnchecked(content, file),
+		),
+	);
+	r.cleanupSkippedOnEarlyExit.push(
+		...toIssues(
+			"cleanup_skipped_on_early_exit",
+			relPath,
+			checkCleanupSkippedOnEarlyExit(content, file),
+		),
+	);
+	r.taintedToPrivilegedSink.push(
+		...toIssues(
+			"tainted_to_privileged_sink",
+			relPath,
+			checkTaintedToPrivilegedSink(content, file),
+		),
+	);
+	r.awaitStateToctou.push(
+		...toIssues("await_state_toctou", relPath, checkAwaitStateToctou(content, file)),
+	);
+	r.cleanupReentrancy.push(
+		...toIssues("cleanup_reentrancy", relPath, checkCleanupReentrancy(content, file)),
+	);
+	r.boundaryCopyNoRevalidation.push(
+		...toIssues(
+			"boundary_copy_no_revalidation",
+			relPath,
+			checkBoundaryCopyNoRevalidation(content, file),
+		),
+	);
 	r.magicLiteralInConditional.push(
 		...toIssues(
 			"magic_literal_in_conditional",
