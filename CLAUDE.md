@@ -42,7 +42,7 @@ npx vitest run src/commands/__tests__/cli-bugs.test.ts
 | **Default (high-signal gate)** | *(none)* | Tsc/biome/oxlint/gitleaks/semgrep/dep-audit + check-FP-safe generic checks. Intended to run clean; failures are actionable. |
 | **Deep audit** | `--all-checks` | Adds heuristic smell/taste checks (complexity, magic numbers, data clumps, test-coverage signals, etc.). Intended for periodic review, not as a gate. |
 
-The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify.ts` and is pinned by a regression test so policy changes show up in diffs. Edit both together. Each entry has a rationale comment explaining why it's advisory.
+The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/advisory.ts` (re-exported from `verify.ts` for back-compat) and is pinned by a regression test so policy changes show up in diffs. Edit both together. Each entry has a rationale comment explaining why it's advisory.
 
 **When adding a new check**: if false-positive rate is low and the check catches real bugs, leave it in the default set. If it's heuristic (style, complexity, coverage, smell), add it to `DEFAULT_ADVISORY_SKIPS` with a one-line rationale and update the regression test.
 
@@ -83,7 +83,9 @@ npm run docs                               # Regenerate reference docs
 | File | Purpose |
 |------|---------|
 | `src/harness/structural-checks.ts` | 25 dependency-aware checks (export surface, import resolution, cycles, blast radius) |
-| `src/harness/generic-checks.ts` | 50+ inline code analysis checks (SQL injection, complexity, async/await, etc.) |
+| `src/harness/checks/<family>.ts` | 50+ inline code analysis checks split by family (SQL injection, complexity, async/await, PII, secrets, etc.). New detectors go here. |
+| `src/harness/generic-checks.ts` | Compatibility barrel re-exporting from `checks/<family>.ts`. Do not add new detectors here; import from `checks/<family>.js` directly. |
+| `src/harness/check-registry.ts` | Compatibility shim that auto-re-exports from `check-registry/index.js`. Do not edit. |
 
 ### Agent-quality checks (added 2026-04)
 
@@ -111,18 +113,33 @@ on every edit. Non-null-assertion enforcement is a ratchet metric alongside
 `as any` and suppression directives: the pre-edit count is baselined and any
 post-edit increase is flagged.
 
-Shared patterns when adding another agent-quality check:
-1. Detector in `src/harness/generic-checks.ts`.
-2. Canonical registry entry in `src/harness/check-registry/entries-warnings.ts`.
+Shared patterns when adding another agent-quality check (verified
+against current code, May 2026):
+1. Detector in `src/harness/checks/<family>.ts` (a new family file or
+   an existing one — e.g. `iteration-safety.ts`, `b-series.ts`, `pii.ts`).
+   The barrel `src/harness/generic-checks.ts` re-exports automatically;
+   do not add new detectors directly to the barrel.
+2. Canonical registry entry in `src/harness/check-registry/entries-warnings.ts`
+   (or `entries-errors.ts` for `pre_block` errors). Phase contract is in
+   `src/harness/check-registry/types.ts` — `pre_block` is reserved for
+   fully-deterministic, zero-FP errors only.
 3. Metadata entry in `src/harness/check-metadata.ts`.
-4. Legacy-mirror entry in `src/harness/check-registry.ts` (keeps the dead
-   flat file in sync).
-5. `verify.ts` interface + init + push + streamCqSection (the four are
-   co-dependent under the tsc diff-overlay — land atomically via a Node
-   one-shot, not four sequential Edit calls).
+4. ~~Legacy-mirror entry~~ — `src/harness/check-registry.ts` is now an
+   auto-re-exporting compatibility shim. No manual sync step. Skip.
+5. Verify wiring is split across `src/commands/verify/`:
+   - `advisory.ts` — `DEFAULT_ADVISORY_SKIPS`, skip-set helpers
+   - `file-checks.ts` — per-file check orchestration
+   - `tool-results.ts` / `tool-results-types.ts` — tool result aggregation
+   - `section-table.ts` / `output-json.ts` — formatters
+   - `streaming-output.ts` — `streamCqSection` and friends
+   The orchestrator `src/commands/verify.ts` still holds `VerifyOpts` /
+   `ToolSpec` and re-exports `DEFAULT_ADVISORY_SKIPS`. Touch only the
+   subfile your check actually surfaces in.
 6. Update `AGGREGATED_IN_JSON` in `__tests__/check-pipeline-parity.test.ts`
-   and `DEFAULT_ADVISORY_SKIPS` in `verify.ts` + its regression test
-   when demoting to advisory.
+   and `DEFAULT_ADVISORY_SKIPS` in `src/commands/verify/advisory.ts` +
+   its regression test when demoting to advisory.
+7. Each new check ships with ≥3 negative cases (legitimate patterns that
+   must NOT fire) and ≥3 positive cases.
 | `src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
 | `src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
 | `src/harness/change-propagation.ts` | Side-effect tracking across edits |
