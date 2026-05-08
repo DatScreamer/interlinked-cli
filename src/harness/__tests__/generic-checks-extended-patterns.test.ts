@@ -209,6 +209,35 @@ describe("checkMagicLiteralInConditional", () => {
 		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
 	});
 
+	it('does NOT flag `typeof x === "string"` (canonical TS narrowing)', () => {
+		// The typeof operator returns a fixed 8-string set
+		// (string/number/bigint/boolean/symbol/undefined/object/function);
+		// extracting any of them to a constant is pure noise. Each is the
+		// idiomatic narrowing form.
+		const cases = [
+			'if (typeof v === "string") return;',
+			'if (typeof v !== "string") return;',
+			'if (typeof v === "number") return;',
+			'if (typeof v === "boolean") return;',
+			'if (typeof v === "undefined") return;',
+			'if (typeof v === "object") return;',
+			'if (typeof v === "function") return;',
+			'if (typeof v === "bigint") return;',
+			'if (typeof v === "symbol") return;',
+		];
+		for (const code of cases) {
+			expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+		}
+	});
+
+	it('still flags `=== "string"` when there is no `typeof`', () => {
+		// The exemption is gated on the line containing `typeof`. A bare
+		// string compare like `mode === "string"` is exactly the kind of
+		// stringly-typed conditional the check is meant to catch.
+		const code = 'if (mode === "string") return;';
+		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
+	});
+
 	it('does NOT flag short strings like `=== "x"`', () => {
 		const code = 'if (c === "x") return;';
 		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);

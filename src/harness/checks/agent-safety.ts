@@ -536,6 +536,21 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 	// be flagged: keywords that appear in type comparisons.
 	const TRIVIAL_STRINGS = new Set(["true", "false", "null", "undefined"]);
 
+	// `typeof x === "string"` is THE canonical TS narrowing idiom — the RHS is
+	// drawn from a fixed, language-defined set of 8 strings. Hoisting any of
+	// them to a constant (`STRING_TYPE = "string"`) is pure noise. Skip the
+	// comparison-literal hit when the operand is `typeof`.
+	const TYPEOF_RESULTS = new Set([
+		"string",
+		"number",
+		"bigint",
+		"boolean",
+		"symbol",
+		"undefined",
+		"object",
+		"function",
+	]);
+
 	// Self-describing enum-like identifiers inside `case "X":` labels. The
 	// literal IS the name — renaming to `const BASH = "bash"; case BASH:` is
 	// pure noise. Matches: single lowercase words, optionally joined by `_`
@@ -579,13 +594,23 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		const eqMatch = NUM_CMP.exec(line);
 		if (eqMatch) {
 			const [, num, dq, sq] = eqMatch;
-			const hit =
-				(num !== undefined && isMagicNumber(num)) ||
-				(dq !== undefined && isMagicString(dq)) ||
-				(sq !== undefined && isMagicString(sq));
-			if (hit) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
-				continue;
+			const strLiteral = dq ?? sq;
+			// `typeof x === "string"` exemption — see TYPEOF_RESULTS comment.
+			// We only need to check when there's a string capture; numeric
+			// comparisons are never typeof results.
+			const isTypeofCheck =
+				strLiteral !== undefined &&
+				TYPEOF_RESULTS.has(strLiteral) &&
+				/\btypeof\b/.test(line);
+			if (!isTypeofCheck) {
+				const hit =
+					(num !== undefined && isMagicNumber(num)) ||
+					(dq !== undefined && isMagicString(dq)) ||
+					(sq !== undefined && isMagicString(sq));
+				if (hit) {
+					matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+					continue;
+				}
 			}
 		}
 
