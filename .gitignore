@@ -65,10 +65,6 @@ reference-repos/
 # subfolder under docs/plans/ is treated as personal/local-only.
 docs/plans/*/
 
-# Design docs are working artifacts kept locally — PRs reference the
-# implementation they describe rather than the doc itself.
-docs/design/
-
 # Local manual-test scratch space and harness logs.
 .scratch/
 
