@@ -72,27 +72,40 @@ These follow from goal (1) and override earlier draft choices:
 
 **Healthy, just guarded an edit** (the most common screenshot):
 ```
-◆ interlinked  ·  quality/strict  ·  81 rules  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files  ·  realtime → quentin/dev
+◆ interlinked  ·  105 rules  ·  16 tools / 86 inline  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files
 ✓ guarded src/foo.ts (240ms)
 ```
 
 **Just blocked something** (the killer screenshot):
 ```
-◆ interlinked  ·  quality/strict  ·  81 rules  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files  ·  realtime → quentin/dev
+◆ interlinked  ·  105 rules  ·  16 tools / 86 inline  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files
 ✗ blocked rm -rf  ·  2s ago
 ```
 
 **Action needed** (review or sync queue):
 ```
-◆ interlinked  ·  quality/strict  ·  81 rules  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files  ·  realtime → quentin/dev
+◆ interlinked  ·  105 rules  ·  16 tools / 86 inline  ·  classifier ✓  ·  PII filter ✓  ·  index 12k files
 ⚠ 1 file awaiting review — interlinked review
 ```
 
 **Daemon down**:
 ```
-◆ interlinked  ·  ▼ harness offline  ·  quality/strict  ·  81 rules
+◆ interlinked  ·  ▼ harness offline  ·  Claude is bypassing guardrails
 ↻ interlinked harness start
 ```
+
+The `N tools / M inline` split was added after the original draft — a single
+"N checks" number didn't grow when contributors added inline detectors via
+`src/harness/check-registry/entries-*.ts` (the dominant authoring path). The
+split makes each authoring surface visible:
+- **tools** ← `quality_checks` entries with a `command` field (subprocess
+  wrappers). Toggleable per-repo through `guard-rules.local.json`.
+- **inline** ← `CHECK_REGISTRY` (`agent_safety` pipeline) + `quality_checks`
+  entries without a `command` + the `structural_checks` bundle. Mostly
+  built-in; growing the inline count means landing a new detector.
+
+Both segments link to the same `loaded-checks.md` — the markdown breaks them
+out under separate headings so a click answers "which surface grew?".
 
 **Not enabled in this project**:
 ```
@@ -153,9 +166,12 @@ enforcement_mode=balanced
 sync_mode=realtime
 active_server=production
 workspace_id=quentin-dev
-rules_total=81
+rules_total=105
 rules_disabled=3
 rules_custom=4
+tool_checks_enabled=16
+inline_checks_enabled=86
+checks_enabled=102
 reservations_count=3
 index_status=ready
 index_files=12450

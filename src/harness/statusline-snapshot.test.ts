@@ -36,6 +36,7 @@ describe("writeStatuslineArtifacts", () => {
 			indexStatus: "missing",
 			indexFiles: 0,
 			serverBridgeConnected: false,
+			daemonPid: 12345,
 		});
 
 		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
@@ -69,6 +70,7 @@ describe("writeStatuslineArtifacts", () => {
 			indexStatus: "ready",
 			indexFiles: 12450,
 			serverBridgeConnected: true,
+			daemonPid: 12345,
 		});
 		return readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
 	}
@@ -103,6 +105,87 @@ describe("writeStatuslineArtifacts", () => {
 
 	it("reflects current reservations count", () => {
 		expect(writeConfiguredSnapshot()).toMatch(/^reservations_count=2$/m);
+	});
+
+	it("emits the daemon PID for accuracy", () => {
+		// Identifies which harness process wrote the snapshot. Surfaced in
+		// the bash status line so a screenshot tells you whether you're
+		// looking at the daemon you just restarted, not a zombie writer.
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 98765,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^daemon_pid=98765$/m);
+	});
+
+	it("emits split tool/inline check counts plus a back-compat sum", () => {
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: getDefaultConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 12345,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		const tools = Number(text.match(/^tool_checks_enabled=(\d+)$/m)?.[1]);
+		const inline = Number(text.match(/^inline_checks_enabled=(\d+)$/m)?.[1]);
+		const total = Number(text.match(/^checks_enabled=(\d+)$/m)?.[1]);
+		expect(tools).toBeGreaterThan(0);
+		expect(inline).toBeGreaterThan(tools);
+		expect(total).toBe(tools + inline);
+	});
+
+	it("inline count tracks CHECK_REGISTRY size when config inline checks are off", async () => {
+		const { CHECK_REGISTRY } = await import("./check-registry/index.js");
+		const registryAgentSafety = CHECK_REGISTRY.filter(
+			(c) => c.pipeline === "agent_safety",
+		).length;
+		const cfg = emptyConfig();
+		for (const v of Object.values(cfg.quality_checks)) {
+			if (v) v.enabled = false;
+		}
+		cfg.structural_checks.enabled = false;
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: cfg,
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 12345,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(new RegExp("^inline_checks_enabled=" + registryAgentSafety + "$", "m"));
+		expect(text).toMatch(/^tool_checks_enabled=0$/m);
+	});
+
+	it("loaded-checks.md splits tool runners from inline detectors", () => {
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: getDefaultConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 12345,
+		});
+		const md = readFileSync(join(interlinkedDir, "loaded-checks.md"), "utf-8");
+		expect(md).toContain("Tool runners enabled:");
+		expect(md).toContain("Inline detectors loaded:");
+		expect(md).toContain("## Tool runners");
+		expect(md).toContain("## Inline detectors");
 	});
 
 	it("writes loaded-rules.md sorted by category then id", () => {
@@ -152,6 +235,7 @@ describe("writeStatuslineArtifacts", () => {
 			indexStatus: "missing",
 			indexFiles: 0,
 			serverBridgeConnected: false,
+			daemonPid: 12345,
 		});
 
 		const md = readFileSync(join(interlinkedDir, "loaded-rules.md"), "utf-8");

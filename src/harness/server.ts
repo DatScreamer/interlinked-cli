@@ -552,6 +552,7 @@ function refreshStatuslineSnapshot(): void {
 		indexStatus,
 		indexFiles,
 		serverBridgeConnected: serverBridge !== null,
+		daemonPid: process.pid,
 	});
 }
 
@@ -1229,12 +1230,36 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		}
 
 		// --- Grep acceleration: intercept search tools via trigram index ---
+		// Substitution path (block-and-answer) is DISABLED by default. Reason:
+		//   - Bypasses the content scanner — substituted output reaches the
+		//     model via permissionDecisionReason, an envelope the OPF scanner
+		//     and checks/pii.ts weren't designed to inspect.
+		//   - Index can be stale: incrementalUpdate uses `git diff baseCommit
+		//     ..HEAD`, refresh fires on SessionStart only, external file edits
+		//     are invisible until next session.
+		//   - Partially-formed hookSpecificOutput envelopes have hit Claude
+		//     Code's "(root): Invalid input" validator failure (fail-closed
+		//     on a safety boundary, contradicts feedback_safety_continuity).
+		// The trigram index itself stays loaded and is still consumed by
+		// impact analysis, project graph, and structural checks.
+		// Re-enable: set INTERLINKED_GREP_ACCELERATOR=1 OR set
+		// guard-rules.json `grep_acceleration.substitution_enabled: true`.
 		const isSearchTool =
 			event.tool_name === "Grep" ||
 			(event.tool_name === "Bash" &&
 				/\b(rg|ripgrep|grep|egrep)\s/.test((event.tool_input?.command as string) || ""));
 
-		if (preDecision.decision === "allow" && trigramIndex && isSearchTool) {
+		const grepSubstitutionEnabled =
+			process.env.INTERLINKED_GREP_ACCELERATOR === "1" ||
+			(process.env.INTERLINKED_GREP_ACCELERATOR !== "0" &&
+				rules.grep_acceleration?.substitution_enabled === true);
+
+		if (
+			preDecision.decision === "allow" &&
+			trigramIndex &&
+			isSearchTool &&
+			grepSubstitutionEnabled
+		) {
 			const grepDecision = checkGrepAcceleration(event, trigramIndex, {}, fileContentCache);
 			if (grepDecision) {
 				log(`Grep accelerated: ${event.tool_name} → ${grepDecision.decision}`);

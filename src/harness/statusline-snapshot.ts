@@ -12,8 +12,9 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CHECK_REGISTRY } from "./check-registry/index.js";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
-import type { GuardRule, GuardRulesConfig } from "./types.js";
+import type { GuardRule, GuardRulesConfig, QualityCheckConfig } from "./types.js";
 
 export interface StatuslineSnapshotInput {
 	/** Project root — directory that owns `.interlinked/`. */
@@ -30,6 +31,16 @@ export interface StatuslineSnapshotInput {
 	indexFiles: number;
 	/** True when the server bridge is connected. */
 	serverBridgeConnected: boolean;
+	/**
+	 * PID of the harness process writing this snapshot. Surfaced in the
+	 * status line so a screenshot identifies *which* daemon produced the
+	 * counters — confirms freshness when the user has just rebuilt or
+	 * restarted. Defaults to `process.pid` at the call site; pinned via
+	 * input rather than read inside this module so the snapshot writer
+	 * stays a pure function of its inputs (and is testable without
+	 * mocking `process`).
+	 */
+	daemonPid: number;
 }
 
 interface PersistedConfigShape {
@@ -84,7 +95,7 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 	const counts = countRules(input.rules);
 	const toggles = readToggles(input.rules);
 
-	const checksEnabled = countEnabledQualityChecks(input.rules);
+	const checks = countChecks(input.rules);
 
 	const rows: string[] = [
 		`harness_mode=${modes.harness}`,
@@ -95,7 +106,14 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		`rules_total=${input.rules.rules.length}`,
 		`rules_disabled=${counts.disabled}`,
 		`rules_custom=${counts.custom}`,
-		`checks_enabled=${checksEnabled}`,
+		// Split: tool runners (subprocess wrappers like tsc/biome/gitleaks)
+		// vs inline detectors (in-process regex/AST checks from CHECK_REGISTRY
+		// + the inline entries in `quality_checks` that lack a `command`).
+		// `checks_enabled` is preserved as the sum for one release window so
+		// any out-of-band consumer of the snapshot keeps working.
+		`tool_checks_enabled=${checks.tools}`,
+		`inline_checks_enabled=${checks.inline}`,
+		`checks_enabled=${checks.tools + checks.inline}`,
 		`reservations_count=${input.reservationsCount}`,
 		`index_status=${input.indexStatus}`,
 		`index_files=${input.indexFiles}`,
@@ -103,18 +121,58 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		`scanner_enabled=${toggles.scanner}`,
 		`auto_coordination=${toggles.autoCoord}`,
 		`server_bridge=${input.serverBridgeConnected ? "connected" : "local_only"}`,
+		`daemon_pid=${input.daemonPid}`,
 		`generated_at=${new Date().toISOString()}`,
 	];
 	return `${rows.join("\n")}\n`;
 }
 
-function countEnabledQualityChecks(rules: GuardRulesConfig): number {
-	let n = 0;
+interface CheckCounts {
+	/** Subprocess wrappers — entries in `quality_checks` with a `command`. */
+	tools: number;
+	/**
+	 * In-process detectors. Sum of:
+	 * 1. `agent_safety` entries in `CHECK_REGISTRY` (unconditionally loaded;
+	 *    every entry runs on every PostToolUse).
+	 * 2. Inline `quality_checks` entries (no `command` — they dispatch to
+	 *    in-process logic, e.g. `secrets_in_source`, `strong_typing`,
+	 *    `inline_language_checks`, `css_syntax`, …).
+	 * 3. The `structural_checks` bundle as one unit when enabled.
+	 */
+	inline: number;
+}
+
+/**
+ * The pipeline tag we count toward `inline_checks_enabled`. Hoisted so the
+ * filter below isn't a stringly-typed conditional, and so the meaning is
+ * explicit when the registry grows new pipelines (e.g. `suggestion`, which
+ * we deliberately exclude — it doesn't run on every PostToolUse).
+ */
+const AGENT_SAFETY_PIPELINE = "agent_safety" as const;
+
+function countChecks(rules: GuardRulesConfig): CheckCounts {
+	let tools = 0;
+	let inlineFromConfig = 0;
 	for (const cfg of Object.values(rules.quality_checks)) {
-		if (cfg?.enabled) n++;
+		if (!cfg?.enabled) continue;
+		if (isToolRunner(cfg)) {
+			tools++;
+		} else {
+			inlineFromConfig++;
+		}
 	}
-	if (rules.structural_checks?.enabled) n++;
-	return n;
+	const inlineFromRegistry = CHECK_REGISTRY.filter(
+		(c) => c.pipeline === AGENT_SAFETY_PIPELINE,
+	).length;
+	const structural = rules.structural_checks?.enabled ? 1 : 0;
+	return {
+		tools,
+		inline: inlineFromConfig + inlineFromRegistry + structural,
+	};
+}
+
+function isToolRunner(cfg: QualityCheckConfig): boolean {
+	return Boolean(cfg.command);
 }
 
 interface ResolvedModes {
@@ -224,69 +282,151 @@ function buildLoadedRulesMarkdown(rules: GuardRulesConfig): string {
 	return lines.join("\n");
 }
 
+interface QualityEntry {
+	name: string;
+	cfg: QualityCheckConfig;
+}
+
 function buildLoadedChecksMarkdown(rules: GuardRulesConfig): string {
 	const entries = Object.entries(rules.quality_checks)
 		.map(([name, cfg]) => ({ name, cfg }))
-		.sort((a, b) => {
-			if (a.name < b.name) return -1;
-			if (a.name > b.name) return 1;
-			return 0;
-		});
+		.sort(byEntryName);
 
-	const enabled = entries.filter((e) => e.cfg?.enabled);
+	const enabledTools = entries.filter((e) => e.cfg?.enabled && isToolRunner(e.cfg));
+	const enabledInlineFromConfig = entries.filter(
+		(e) => e.cfg?.enabled && !isToolRunner(e.cfg),
+	);
 	const disabled = entries.filter((e) => !e.cfg?.enabled);
 
-	const lines: string[] = [];
-	lines.push("# Interlinked harness — loaded checks");
-	lines.push("");
-	lines.push(
+	const inlineRegistryEntries = CHECK_REGISTRY.filter(
+		(c) => c.pipeline === AGENT_SAFETY_PIPELINE,
+	)
+		.slice()
+		.sort(byId);
+
+	const counts = countChecks(rules);
+
+	const sections: string[][] = [
+		buildChecksHeaderSection(counts),
+		buildToolRunnersSection(enabledTools),
+		buildConfigInlineSection(enabledInlineFromConfig, rules.structural_checks?.enabled === true),
+		buildRegistryInlineSection(inlineRegistryEntries),
+		buildDisabledSection(disabled),
+	];
+
+	return sections.flat().join("\n");
+}
+
+function byEntryName(a: QualityEntry, b: QualityEntry): number {
+	if (a.name < b.name) return -1;
+	if (a.name > b.name) return 1;
+	return 0;
+}
+
+function buildChecksHeaderSection(counts: CheckCounts): string[] {
+	return [
+		"# Interlinked harness — loaded checks",
+		"",
 		"_Auto-generated by the harness on rule load. Do not edit — see " +
 			"`.interlinked/check-policy.json` for the active mode (balanced/strict/lenient) " +
 			"or `.interlinked/guard-rules.local.json` to flip individual checks on/off._",
-	);
+		"",
+		`Tool runners enabled: **${counts.tools}**`,
+		`Inline detectors loaded: **${counts.inline}**`,
+		"",
+	];
+}
+
+function buildToolRunnersSection(enabled: QualityEntry[]): string[] {
+	if (enabled.length === 0) return [];
+	const lines = [
+		`## Tool runners — enabled (${enabled.length})`,
+		"",
+		"_Subprocess wrappers (tsc, biome, gitleaks, …). Each spawns an " +
+			"external command per matching edit._",
+		"",
+	];
+	for (const { name, cfg } of enabled) {
+		const desc =
+			cfg.description ||
+			`Runs on edits to ${cfg.file_types.join(", ") || "all files"}.`;
+		const cmd = cfg.command ? ` — \`${cfg.command}\`` : "";
+		lines.push(`- \`${name}\` — ${cfg.severity}${cmd} — ${desc}`);
+	}
 	lines.push("");
-	let activeCount = enabled.length;
-	if (rules.structural_checks?.enabled) activeCount++;
-	lines.push(`Active checks: **${activeCount}**`);
+	return lines;
+}
+
+function buildConfigInlineSection(
+	enabled: QualityEntry[],
+	structuralEnabled: boolean,
+): string[] {
+	if (!structuralEnabled && enabled.length === 0) return [];
+	const inlineCount = enabled.length + (structuralEnabled ? 1 : 0);
+	const lines = [
+		`## Inline detectors — config-driven (${inlineCount})`,
+		"",
+		"_In-process checks toggleable through `quality_checks` in " +
+			"`guard-rules.local.json`. Each is a built-in detector dispatched " +
+			"in-process — no subprocess spawn._",
+		"",
+	];
+	if (structuralEnabled) {
+		lines.push(
+			"- `structural_checks` — error — bundle — Cross-file dependency " +
+				"checks: export surface, import resolution, dependency cycles, " +
+				"blast radius. Counts as one toggle, runs ~25 sub-checks.",
+		);
+	}
+	for (const { name, cfg } of enabled) {
+		const desc =
+			cfg.description ||
+			`Runs on edits to ${cfg.file_types.join(", ") || "all files"}.`;
+		lines.push(`- \`${name}\` — ${cfg.severity} — ${desc}`);
+	}
 	lines.push("");
+	return lines;
+}
 
-	if (rules.structural_checks?.enabled) {
-		lines.push("## Structural checks");
-		lines.push("");
+function buildRegistryInlineSection(
+	registry: ReadonlyArray<(typeof CHECK_REGISTRY)[number]>,
+): string[] {
+	if (registry.length === 0) return [];
+	const lines = [
+		`## Inline detectors — registry (${registry.length})`,
+		"",
+		"_Built-in `agent_safety` detectors from `src/harness/check-registry/`. " +
+			"Always loaded; gated per-edit by `content_keywords` and the active " +
+			"check-policy mode. Authored by the harness team — not user-toggleable " +
+			"from config._",
+		"",
+	];
+	for (const c of registry) {
 		lines.push(
-			"- `structural_checks` — error — built-in — Cross-file dependency checks: " +
-				"export surface, import resolution, dependency cycles, blast radius.",
+			`- \`${c.id}\` — ${c.severity} — ${c.phase} — tier ${c.tier} — ${c.description}`,
 		);
-		lines.push("");
 	}
+	lines.push("");
+	return lines;
+}
 
-	if (enabled.length > 0) {
-		lines.push(`## Quality checks — enabled (${enabled.length})`);
-		lines.push("");
-		for (const { name, cfg } of enabled) {
-			const desc = cfg.description || `Runs on edits to ${cfg.file_types.join(", ") || "all files"}.`;
-			const cmd = cfg.command ? ` — \`${cfg.command}\`` : "";
-			lines.push(`- \`${name}\` — ${cfg.severity}${cmd} — ${desc}`);
-		}
-		lines.push("");
-	}
-
-	if (disabled.length > 0) {
-		lines.push(`## Quality checks — disabled (${disabled.length})`);
-		lines.push("");
+function buildDisabledSection(disabled: QualityEntry[]): string[] {
+	if (disabled.length === 0) return [];
+	const lines = [
+		`## Quality checks — disabled (${disabled.length})`,
+		"",
+		"_Re-enable in `.interlinked/guard-rules.local.json` under " +
+			"`quality_checks.<name>.enabled = true`._",
+		"",
+	];
+	for (const { name, cfg } of disabled) {
+		const desc = cfg?.description || "";
 		lines.push(
-			"_Re-enable in `.interlinked/guard-rules.local.json` under " +
-				"`quality_checks.<name>.enabled = true`._",
+			`- ~~\`${name}\`~~ — ${cfg?.severity || ""} ${desc ? "— " + desc : ""}`.trim(),
 		);
-		lines.push("");
-		for (const { name, cfg } of disabled) {
-			const desc = cfg?.description || "";
-			lines.push(`- ~~\`${name}\`~~ — ${cfg?.severity || ""} ${desc ? "— " + desc : ""}`.trim());
-		}
-		lines.push("");
 	}
-
-	return lines.join("\n");
+	lines.push("");
+	return lines;
 }
 
 
@@ -294,6 +434,10 @@ function byCategoryThenId(a: GuardRule, b: GuardRule): number {
 	const ca = a.category || "uncategorized";
 	const cb = b.category || "uncategorized";
 	if (ca !== cb) return ca < cb ? -1 : 1;
+	return byId(a, b);
+}
+
+function byId(a: { id: string }, b: { id: string }): number {
 	if (a.id < b.id) return -1;
 	if (a.id > b.id) return 1;
 	return 0;

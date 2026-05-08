@@ -269,11 +269,24 @@ fi
 # --- Snapshot fields (with sensible defaults for missing keys) ---
 SMODE=$(read_snap sync_mode realtime)
 RULES=$(read_snap rules_total 0)
+# Split check counts — \`tool_checks_enabled\` and \`inline_checks_enabled\`
+# were introduced as a pair (see src/harness/statusline-snapshot.ts). When
+# rendered against an older harness daemon that only writes \`checks_enabled\`,
+# we degrade to a single number so the line never shows "0 tools / 0 inline".
+TOOL_CHECKS=$(read_snap tool_checks_enabled "")
+INLINE_CHECKS=$(read_snap inline_checks_enabled "")
 CHECKS=$(read_snap checks_enabled 0)
 CLSF=$(read_snap classifier_enabled disabled)
 SCNF=$(read_snap scanner_enabled disabled)
 IDXS=$(read_snap index_status missing)
 IDXF=$(read_snap index_files 0)
+# Daemon PID — written by the harness itself into the snapshot so a
+# screenshot identifies *which* process produced these counters. Falls
+# back to harness.pid (read at the top of this script) when the running
+# daemon predates the snapshot field.
+SNAP_PID=$(read_snap daemon_pid "")
+DISPLAY_PID="$SNAP_PID"
+[ -z "$DISPLAY_PID" ] && DISPLAY_PID="$PID"
 
 # --- Last-check + pending review state ---
 # Read here (not down with LINE2) so the BRAND can health-color from the
@@ -338,18 +351,26 @@ fi
 BRAND="\${BRAND_COLOR}\${BOLD}◆ interlinked\${RESET}"
 
 # --- Row 1: tight, every segment earns its slot ---
-# "◆ interlinked · 106 rules · 18 checks · classifier off · PII filter off · index off"
-# Active counts (rules, checks) read as scale; off-state badges read as
-# capability marketing — what the product COULD do for them.
+# "◆ interlinked · 105 rules · 16 tools / 86 inline · classifier off · PII filter off · index off"
+# Active counts (rules, tool/inline checks) read as scale; off-state badges
+# read as capability marketing — what the product COULD do for them.
 
 # Rule count — always links to loaded-rules.md (the harness-generated full
 # list). The override file (guard-rules.local.json) only shows what's
 # disabled, not what's loaded — bad first-click experience.
 RULES_SEG="\${BOLD}$(osc8 "file://$ID/loaded-rules.md" "\${RULES} rules")\${RESET}"
 
-# Check count — links to loaded-checks.md (also harness-generated). The
-# raw check-policy.json holds only the mode preset, not the active list.
-CHECKS_SEG="\${BOLD}$(osc8 "file://$ID/loaded-checks.md" "\${CHECKS} checks")\${RESET}"
+# Check count — split into tool runners (subprocess wrappers like tsc/biome)
+# vs inline detectors (in-process regex/AST checks). When the harness daemon
+# is too old to write the split keys, fall back to the legacy single number
+# so the line still says something honest. Both segments link to the same
+# loaded-checks.md target — the markdown distinguishes them in headings.
+if [ -n "$TOOL_CHECKS" ] && [ -n "$INLINE_CHECKS" ]; then
+    CHECKS_TEXT="\${TOOL_CHECKS} tools / \${INLINE_CHECKS} inline"
+else
+    CHECKS_TEXT="\${CHECKS} checks"
+fi
+CHECKS_SEG="\${BOLD}$(osc8 "file://$ID/loaded-checks.md" "\${CHECKS_TEXT}")\${RESET}"
 
 # Off-state badges — each links to its most actionable target:
 # - classifier: docs explaining what it does (no toggle in user's config yet)
@@ -390,7 +411,17 @@ case "$SMODE" in
     manual)  SYNC_SEG="\${SEP}\${DIM}manual sync\${RESET}" ;;
 esac
 
-LINE1="\${BRAND}\${SEP}\${RULES_SEG}\${SEP}\${CHECKS_SEG}\${SEP}\${CLS_SEG}\${SEP}\${SCN_SEG}\${SEP}\${IDX_SEG}\${SYNC_SEG}"
+# PID segment — dim, last on the row. Identifies WHICH harness process
+# wrote these counters. Critical when restarting daemons during
+# development: the snapshot shows the live writer, the harness.pid file
+# may briefly disagree mid-restart. Hyperlinks to the snapshot file
+# itself so a click reveals the full key=value state.
+PID_SEG=""
+if [ -n "$DISPLAY_PID" ]; then
+    PID_SEG="\${SEP}\${DIM}$(osc8 "file://$ID/statusline.snapshot" "pid \${DISPLAY_PID}")\${RESET}"
+fi
+
+LINE1="\${BRAND}\${SEP}\${RULES_SEG}\${SEP}\${CHECKS_SEG}\${SEP}\${CLS_SEG}\${SEP}\${SCN_SEG}\${SEP}\${IDX_SEG}\${SYNC_SEG}\${PID_SEG}"
 
 # --- Row 2: outcome language from structured last-check.txt ---
 # LAST_*/REVIEW_COUNT and the fmt_age/last_field helpers were populated

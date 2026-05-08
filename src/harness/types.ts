@@ -650,6 +650,20 @@ export interface GuardRulesConfig {
 	project_wide_checks?: ProjectWideCheckConfig;
 	/** Commit-cadence nudges (Stop-hook + mid-session backstop). See CommitCadenceConfig. */
 	commit_cadence?: CommitCadenceConfig;
+	/**
+	 * Grep accelerator substitution (block-and-answer for rg/grep/Grep).
+	 * Disabled by default — the substitution bypasses content scanners,
+	 * can serve stale results from a SessionStart-only refreshed index,
+	 * and the partially-formed hookSpecificOutput envelopes have hit
+	 * Claude Code's hook validator. The trigram index itself stays
+	 * loaded and is still used by other consumers (impact analysis,
+	 * project graph, structural checks). Re-enable via this flag or
+	 * `INTERLINKED_GREP_ACCELERATOR=1`.
+	 */
+	grep_acceleration?: {
+		/** Default: false. Set to true to restore the block-and-answer path. */
+		substitution_enabled?: boolean;
+	};
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /
