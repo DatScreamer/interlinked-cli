@@ -1,7 +1,13 @@
 // Function complexity checks.
 // Extracted from generic-checks.ts.
 
-import { collectFunctionSignature, getExtension, type InlineMatch, isTestFile } from "./shared.js";
+import {
+	collectFunctionSignature,
+	getExtension,
+	type InlineMatch,
+	isTestFile,
+	stripCommentsAndStrings,
+} from "./shared.js";
 
 // ===========================================
 // Check: Function Complexity
@@ -24,11 +30,16 @@ export function checkFunctionComplexity(content: string, filePath: string): Inli
 	const lines = content.split("\n");
 
 	if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) {
-		checkComplexityBrace(lines, matches);
+		// Strip strings/comments BEFORE counting braces. Without this, a string
+		// literal containing `{` (e.g. `slice.indexOf("{")`) increments the
+		// nesting depth and reports false-positive complexity warnings.
+		const strippedLines = stripCommentsAndStrings(content).split("\n");
+		checkComplexityBrace(lines, strippedLines, matches);
 	} else if (ext === ".py") {
 		checkComplexityPython(lines, matches);
 	} else if (ext === ".go" || ext === ".rs" || ext === ".swift") {
-		checkComplexityBrace(lines, matches);
+		const strippedLines = stripCommentsAndStrings(content).split("\n");
+		checkComplexityBrace(lines, strippedLines, matches);
 	}
 
 	return matches;
@@ -36,8 +47,20 @@ export function checkFunctionComplexity(content: string, filePath: string): Inli
 
 /**
  * Check function complexity for brace-delimited languages (TS/JS/Go/Rust).
+ *
+ * @param rawLines      Original lines, used for the human-readable signature
+ *                      reported in match.text.
+ * @param strippedLines Lines with comments and string literals replaced by
+ *                      whitespace — used for brace counting and branch
+ *                      detection so a `{` inside `"..."` doesn't inflate
+ *                      the measured nesting depth.
  */
-function checkComplexityBrace(lines: string[], matches: InlineMatch[]): void {
+function checkComplexityBrace(
+	rawLines: string[],
+	strippedLines: string[],
+	matches: InlineMatch[],
+): void {
+	const lines = strippedLines;
 	// Regex patterns to match function declarations
 	const funcPatterns = [
 		// function name( or async function name(
