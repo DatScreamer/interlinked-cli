@@ -178,3 +178,138 @@ export function checkProjectTypecheckClean(cwd: string): CheckResultEntry[] {
 		determinism: "fully_deterministic",
 	}));
 }
+
+// ============================================================
+// Push-time gate: project test suite must pass
+// ============================================================
+// Typecheck-only is necessary but not sufficient. CI also runs the
+// test suite — so we run it on `git push` (not commit; tests take
+// long enough that running on every commit would be punishing).
+//
+// Discovery: prefers `npm test --silent --run` (vitest's no-watch
+// shorthand); falls back to `npm run test --silent --run`. Returns
+// null (silent no-op) if neither is available.
+//
+// Bypass: env var `INTERLINKED_SKIP_PROJECT_TESTS=1` (audited).
+
+const TESTS_TIMEOUT_MS = 300_000; // 5 min ceiling — vitest can be slow on cold cache.
+const MAX_TEST_FAILURES_REPORTED = 10;
+
+export interface ResolvedTestCommand {
+	bin: string;
+	args: string[];
+	source: "npm-test" | "npm-run-test";
+}
+
+/** Resolve the project's test command. Returns null when no `test`
+ *  script is declared — keeps the gate inert in projects that don't
+ *  ship a test suite. */
+export function resolveTestCommand(cwd: string): ResolvedTestCommand | null {
+	const pkgPath = join(cwd, "package.json");
+	if (!existsSync(pkgPath)) return null;
+	let pkg: { scripts?: Record<string, string> } | null = null;
+	try {
+		pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+	} catch {
+		return null;
+	}
+	if (!pkg?.scripts?.test) return null;
+	// `npm test` is the canonical entry — same command CI runs by default.
+	// `--silent` strips npm preamble; `--` passes remaining args to the script.
+	return { bin: "npm", args: ["test", "--silent"], source: "npm-test" };
+}
+
+/** Parse vitest's failure summary to extract per-test failure messages.
+ *  Vitest's output varies by reporter; we look for the standard
+ *  `× <suite> > <test> ...` lines plus the `FAIL <path>` headers. */
+export function parseTestFailures(stdout: string): string[] {
+	const failures: string[] = [];
+	for (const line of stdout.split("\n")) {
+		// Strip ANSI color codes (vitest emits them even with --silent).
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require literal control char
+		const stripped = line.replace(/\[[0-9;]*m/g, "");
+		// Vitest red-cross prefix on failed tests
+		const m = stripped.match(/^\s*(?:×|✗|FAIL)\s+(.+)$/);
+		if (m) {
+			const msg = m[1].trim();
+			// Skip retry-noise duplicates ("(retry x2)")
+			if (!failures.includes(msg)) failures.push(msg);
+		}
+	}
+	return failures;
+}
+
+/** Run the project's test suite and return one CheckResultEntry per
+ *  failing test (capped). Empty array on success. Returns a single
+ *  "skipped" warning entry when bypassed via env var. */
+export function checkProjectTestsClean(cwd: string): CheckResultEntry[] {
+	if (process.env.INTERLINKED_SKIP_PROJECT_TESTS === "1") {
+		return [
+			{
+				source: "structural",
+				name: "project_tests_skipped",
+				severity: "warning",
+				message:
+					"Project test gate bypassed via INTERLINKED_SKIP_PROJECT_TESTS=1. Verify CI manually before merging.",
+				determinism: "fully_deterministic",
+			},
+		];
+	}
+
+	const cmd = resolveTestCommand(cwd);
+	if (!cmd) return [];
+
+	const result = spawnSync(cmd.bin, cmd.args, {
+		cwd,
+		encoding: "utf-8",
+		timeout: TESTS_TIMEOUT_MS,
+	});
+
+	if (result.error) {
+		return [
+			{
+				source: "structural",
+				name: "project_tests_failed_to_run",
+				severity: "warning",
+				message: `Project tests (${cmd.source}) could not run: ${result.error.message}. Verify CI manually.`,
+				determinism: "fully_deterministic",
+			},
+		];
+	}
+
+	if (result.signal === "SIGTERM" || result.status === null) {
+		return [
+			{
+				source: "structural",
+				name: "project_tests_timed_out",
+				severity: "warning",
+				message: `Project tests (${cmd.source}) exceeded ${TESTS_TIMEOUT_MS / 1000}s timeout. Verify CI manually.`,
+				determinism: "fully_deterministic",
+			},
+		];
+	}
+
+	if (result.status === 0) return [];
+
+	const failures = parseTestFailures(`${result.stdout || ""}\n${result.stderr || ""}`);
+	if (failures.length === 0) {
+		const raw = (result.stdout || result.stderr || "").trim().slice(0, 500);
+		return [
+			{
+				source: "structural",
+				name: "project_tests_clean",
+				severity: "error",
+				message: `Project tests (${cmd.source}) failed (exit ${result.status}) but no failure list parsed. Raw tail: ${raw}`,
+				determinism: "fully_deterministic",
+			},
+		];
+	}
+
+	return failures.slice(0, MAX_TEST_FAILURES_REPORTED).map((f) => ({
+		source: "structural",
+		name: "project_tests_clean",
+		severity: "error" as const,
+		message: f,
+		determinism: "fully_deterministic",
+	}));
+}

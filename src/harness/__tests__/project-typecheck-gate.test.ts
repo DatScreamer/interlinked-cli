@@ -8,23 +8,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	checkProjectTestsClean,
 	checkProjectTypecheckClean,
+	parseTestFailures,
 	parseTscDiagnostics,
+	resolveTestCommand,
 	resolveTypecheckCommand,
 } from "../project-typecheck-gate.js";
 
 let tmp: string;
 let savedEnv: string | undefined;
+let savedTestsEnv: string | undefined;
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-tcgate-"));
 	savedEnv = process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK;
 	delete process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK;
+	savedTestsEnv = process.env.INTERLINKED_SKIP_PROJECT_TESTS;
+	delete process.env.INTERLINKED_SKIP_PROJECT_TESTS;
 });
 afterEach(() => {
 	rmSync(tmp, { recursive: true, force: true });
 	if (savedEnv === undefined) delete process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK;
 	else process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK = savedEnv;
+	if (savedTestsEnv === undefined) delete process.env.INTERLINKED_SKIP_PROJECT_TESTS;
+	else process.env.INTERLINKED_SKIP_PROJECT_TESTS = savedTestsEnv;
 });
 
 describe("resolveTypecheckCommand", () => {
@@ -230,5 +238,139 @@ describe("checkProjectTypecheckClean", () => {
 		expect(results[0].severity).toBe("error");
 		expect(results[0].name).toBe("project_typecheck_clean");
 		expect(results[0].message).toContain("compiler crashed");
+	});
+});
+
+describe("resolveTestCommand", () => {
+	it("returns `npm test --silent` when a test script is declared", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: "vitest run" } }),
+		);
+		const cmd = resolveTestCommand(tmp);
+		expect(cmd?.source).toBe("npm-test");
+		expect(cmd?.bin).toBe("npm");
+		expect(cmd?.args).toEqual(["test", "--silent"]);
+	});
+
+	it("returns null when no test script is declared (gate stays inert)", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "no-test-repo" }));
+		expect(resolveTestCommand(tmp)).toBeNull();
+	});
+
+	it("returns null when there's no package.json at all", () => {
+		expect(resolveTestCommand(tmp)).toBeNull();
+	});
+
+	it("returns null when package.json is malformed", () => {
+		writeFileSync(join(tmp, "package.json"), "{ this is not json");
+		expect(resolveTestCommand(tmp)).toBeNull();
+	});
+});
+
+describe("parseTestFailures", () => {
+	it("extracts test names from vitest red-cross lines", () => {
+		const out = [
+			"   × evaluateTscDiffOverlay > TS2322 is classified as blocking 4ms",
+			"   × DEFAULT_ADVISORY_SKIPS > matches the expected set 10ms",
+		].join("\n");
+		expect(parseTestFailures(out)).toEqual([
+			"evaluateTscDiffOverlay > TS2322 is classified as blocking 4ms",
+			"DEFAULT_ADVISORY_SKIPS > matches the expected set 10ms",
+		]);
+	});
+
+	it("extracts FAIL <path> headers", () => {
+		const out =
+			" FAIL  src/harness/__tests__/diff-overlay.test.ts > evaluateBiomeDiffOverlay";
+		const failures = parseTestFailures(out);
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toContain("diff-overlay.test.ts");
+	});
+
+	it("dedupes retry lines so one test counts once even with retries", () => {
+		// Vitest emits the same FAIL line per retry attempt — the user
+		// sees the failure once, not three times.
+		const out = [
+			" FAIL  src/foo.test.ts > a > b",
+			" FAIL  src/foo.test.ts > a > b",
+			" FAIL  src/foo.test.ts > a > b",
+		].join("\n");
+		expect(parseTestFailures(out)).toHaveLength(1);
+	});
+
+	it("returns empty array on clean output", () => {
+		expect(parseTestFailures("Test Files  398 passed (398)\nTests  6120 passed")).toEqual(
+			[],
+		);
+	});
+
+	it("strips ANSI color codes before matching", () => {
+		// Vitest emits ANSI escapes even when piped — without stripping,
+		// the regex wouldn't match the failure prefix.
+		const out = "[31m   ×[0m foo > bar > baz 4ms";
+		const failures = parseTestFailures(out);
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toContain("foo > bar > baz");
+	});
+});
+
+describe("checkProjectTestsClean", () => {
+	it("no-ops on a project with no test script", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "no-test-repo" }));
+		expect(checkProjectTestsClean(tmp)).toEqual([]);
+	});
+
+	it("emits a skipped warning (not error) when bypassed via env var", () => {
+		process.env.INTERLINKED_SKIP_PROJECT_TESTS = "1";
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(results[0].name).toBe("project_tests_skipped");
+		expect(results[0].severity).toBe("warning");
+		expect(results[0].message).toContain("INTERLINKED_SKIP_PROJECT_TESTS");
+	});
+
+	it("returns empty when the test script exits 0", () => {
+		// Stub script — same approach as the typecheck gate tests. We
+		// verify the script-wiring contract, not real vitest behavior.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: "node -e \"process.exit(0)\"" } }),
+		);
+		expect(checkProjectTestsClean(tmp)).toEqual([]);
+	});
+
+	it("returns one error entry per parsed test failure", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					test: 'node -e "console.log(\\"   × suite > test 1 4ms\\");console.log(\\"   × suite > test 2 6ms\\");process.exit(1)"',
+				},
+			}),
+		);
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(2);
+		expect(results.every((r) => r.severity === "error")).toBe(true);
+		expect(results.every((r) => r.name === "project_tests_clean")).toBe(true);
+		expect(results[0].message).toContain("suite > test 1");
+		expect(results[1].message).toContain("suite > test 2");
+	});
+
+	it("surfaces unparseable failure output rather than silently allowing", () => {
+		// Same defensive contract as the typecheck gate. Non-zero exit
+		// must always block — even if no failures parse.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					test: 'node -e "console.error(\\"vitest crashed: out of memory\\");process.exit(2)"',
+				},
+			}),
+		);
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(results[0].severity).toBe("error");
+		expect(results[0].message).toContain("vitest crashed");
 	});
 });

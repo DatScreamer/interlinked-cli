@@ -63,7 +63,7 @@ import { readSharedConfig } from "../lib/config.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
-import { checkProjectTypecheckClean } from "./project-typecheck-gate.js";
+import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -1278,6 +1278,54 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							reason: `project_typecheck_clean: ${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}`,
 							occurred_at: event.timestamp,
 						});
+					}
+				}
+
+				// Push-only second tier: full test suite. Typecheck-clean
+				// is necessary but not sufficient — the codex-flag commit
+				// + 139-repo audit wave were both tsc-clean but had stale
+				// test assertions that turned CI red. Tests are slow
+				// (~40s on this repo), so we only run them on PUSH, not
+				// on every commit. Bypass: INTERLINKED_SKIP_PROJECT_TESTS=1.
+				if (preDecision.decision === "allow" && isPush) {
+					const testResults = checkProjectTestsClean(CWD);
+					const testWarnings = testResults.filter((r) => r.severity === "warning");
+					const testErrors = testResults.filter((r) => r.severity === "error");
+					if (testWarnings.length > 0) {
+						const warnings = preDecision.warnings || [];
+						for (const w of testWarnings) {
+							warnings.push(`[interlinked:${w.name}] ${w.message}`);
+						}
+						preDecision.warnings = warnings;
+					}
+					if (testErrors.length > 0) {
+						preDecision.decision = "block";
+						const failLines = testErrors
+							.slice(0, 10)
+							.map((e) => `  - ${e.message}`)
+							.join("\n");
+						const tail =
+							testErrors.length > 10
+								? `\n  ... and ${testErrors.length - 10} more`
+								: "";
+						preDecision.reason =
+							`BLOCKED: Project tests failed (${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}) — CI will fail on this push. ` +
+							"Pre-existing test failures DO count: every push must build clean. Failing tests:\n" +
+							failLines +
+							tail +
+							"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
+							"INTERLINKED_SKIP_PROJECT_TESTS=1 git push ...";
+						if (serverBridge) {
+							serverBridge.reportGuardEvent({
+								agent_name: event.agent_name || session?.agent_name || "",
+								event_type: "guard_block",
+								tool_name: event.tool_name,
+								tool_input_summary: summarizeToolInput(event),
+								decision: "block",
+								reason: `project_tests_clean: ${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}`,
+								occurred_at: event.timestamp,
+							});
+						}
 					}
 				}
 			}
