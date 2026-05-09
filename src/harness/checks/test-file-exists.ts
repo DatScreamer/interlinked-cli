@@ -2,7 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { existsSync } from "node:fs";
-import { type InlineMatch, isTestFile } from "./shared.js";
+import { type InlineMatch, isGeneratedFile, isTestFile } from "./shared.js";
 
 // ===========================================
 // Check: Test File Existence
@@ -15,14 +15,23 @@ import { type InlineMatch, isTestFile } from "./shared.js";
  * - {dir}/__tests__/{base}.test{ext} / {base}.spec{ext}
  *
  * Skips: test files, index.ts, .d.ts, config files, files in dist/node_modules/etc.
+ * If `content` is provided and looks generator-emitted (OpenAPI, protoc,
+ * `@generated`, etc.), the check short-circuits — generator output never
+ * has unit-test siblings by design (139-repo audit, 2026-05).
+ *
  * Returns a single InlineMatch at line 0 if no test file exists.
  *
  * NOTE: This is a standalone file-existence check (no session/event context).
  * For session-aware test proximity, see checkTestProximity in structural-checks.ts.
  */
-export function checkTestFileExists(filePath: string): InlineMatch[] {
+export function checkTestFileExists(filePath: string, content?: string): InlineMatch[] {
 	// Skip test files themselves
 	if (isTestFile(filePath)) return [];
+	// 139-repo audit: generator output (OpenAPI Generator, protoc, etc.)
+	// emits source files without unit-test siblings by design. Flagging
+	// them produces 67 FPs in one Supermodel sdk/. Content-marker gate
+	// only applies when content is provided.
+	if (content !== undefined && isGeneratedFile(content)) return [];
 
 	const normalized = filePath.replace(/\\/g, "/");
 

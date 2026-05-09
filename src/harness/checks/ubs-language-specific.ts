@@ -5,7 +5,10 @@ import { stripRegexLiterals } from "../strip-helpers.js";
 import {
 	getExtension,
 	type InlineMatch,
+	isScriptOrCliPath,
 	isTestFile,
+	isVendoredOrFixturePath,
+	lineHasNoqaSuppression,
 	stripCommentsAndStrings,
 } from "./shared.js";
 
@@ -61,6 +64,7 @@ export function checkMutexLockUnwrap(content: string, filePath: string): InlineM
 export function checkSubprocessShellTrue(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	if (ext !== ".py" && ext !== ".pyi") return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -73,12 +77,52 @@ export function checkSubprocessShellTrue(content: string, filePath: string): Inl
 		// Anchor at `shell` so the warning points at the dangerous keyword.
 		const shellIdx = (m.index ?? 0) + m[0].lastIndexOf("shell");
 		const lineNum = stripped.slice(0, shellIdx).split("\n").length;
+		// 139-repo audit: respect Bandit `# noqa: S602 / S603` on any
+		// line within the matched call (the suppression typically sits
+		// on the opening line of a multi-line subprocess.run(...)).
+		// Scan original lines from the call start to the match end.
+		const callStartLine = stripped.slice(0, m.index ?? 0).split("\n").length;
+		if (
+			isNoqaSuppressedInRange(
+				originalLines,
+				callStartLine,
+				lineNum,
+				"ubs_subprocess_shell_true",
+			)
+		) {
+			continue;
+		}
 		matches.push({
 			line: lineNum,
 			text: originalLines[lineNum - 1].trim().slice(0, 150),
 		});
 	}
 	return matches;
+}
+
+/**
+ * Helper: scan a 1-based line range of the original (unstripped) content
+ * for a Bandit/flake8-style `# noqa[: <code>]` suppression that maps to
+ * the given check id. Used by Python-language checks where the
+ * suppression often appears on the opening line of a multi-line call
+ * but the match anchors on a deeper keyword (`shell=True`, etc.).
+ *
+ * Both `startLine` and `endLine` are 1-based and inclusive. Returns
+ * true if ANY line in that range carries a suppressing noqa for the
+ * given check.
+ */
+function isNoqaSuppressedInRange(
+	originalLines: string[],
+	startLine: number,
+	endLine: number,
+	checkId: string,
+): boolean {
+	const lo = Math.max(1, Math.min(startLine, endLine));
+	const hi = Math.min(originalLines.length, Math.max(startLine, endLine));
+	for (let i = lo - 1; i < hi; i++) {
+		if (lineHasNoqaSuppression(originalLines[i], checkId)) return true;
+	}
+	return false;
 }
 
 // ===========================================
@@ -280,6 +324,7 @@ export function checkEvalInputTainted(content: string, filePath: string): Inline
 	const isPy = ext === ".py";
 	if (!isJs && !isTs && !isPy) return [];
 	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -296,6 +341,12 @@ export function checkEvalInputTainted(content: string, filePath: string): Inline
 		if (matches.length >= 10) break;
 		re.lastIndex = 0;
 		if (!re.test(strippedLines[i])) continue;
+		// 139-repo audit: respect Bandit `# noqa: S307 / S102` on the
+		// same line. Supermodel's mcpbr/custom_metrics.py:347 was the
+		// canonical case (sandboxed eval + intent comment). The check
+		// anchors on the call line, so a same-line noqa is sufficient
+		// (Python convention).
+		if (lineHasNoqaSuppression(originalLines[i], "ubs_eval_input_tainted")) continue;
 		matches.push({
 			line: i + 1,
 			text: originalLines[i].trim().slice(0, 150),
@@ -752,6 +803,7 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 	const ext = getExtension(filePath);
 	if (!isPyFile(ext)) return [];
 	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -778,6 +830,7 @@ export function checkXmlExternalEntity(content: string, filePath: string): Inlin
 	const ext = getExtension(filePath);
 	if (!isPyFile(ext)) return [];
 	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -810,6 +863,7 @@ export function checkOsSystemTainted(content: string, filePath: string): InlineM
 	const ext = getExtension(filePath);
 	if (!isPyFile(ext)) return [];
 	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -844,6 +898,7 @@ export function checkUnsafeFormatString(content: string, filePath: string): Inli
 		ext === ".hxx" ||
 		ext === ".hh";
 	if (!isC && !isCpp) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
@@ -1139,6 +1194,12 @@ export function checkPrintDebugLeak(content: string, filePath: string): InlineMa
 	if (filePath.includes("/commands/") || filePath.includes("/cmd/") || filePath.includes("/bin/")) {
 		return [];
 	}
+	// 139-repo audit: mcpbr's `scripts/sync_version.py` had 194 print()
+	// hits — all CLI output. Supermodel's `cli/internal/setup/wizard.go`
+	// had 13 fmt.Println — interactive setup wizard. Path-segment gate
+	// covers `scripts/`, `script/`, `cli/`, `tools/`, `tool/`,
+	// `tutorial[s]/` — all places where stdout IS the product.
+	if (isScriptOrCliPath(filePath)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");

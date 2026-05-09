@@ -4,6 +4,7 @@
 import {
 	getExtension,
 	type InlineMatch,
+	isGeneratedFile,
 	isTestFile,
 	scanLinesStripped,
 	stripComments,
@@ -239,6 +240,10 @@ export function checkTrivialAssertions(content: string, filePath: string): Inlin
  */
 export function checkSuppressionDensity(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
+	// 139-repo audit: generator output frequently emits high-density
+	// suppression headers (e.g. OpenAPI's DefaultApi.ts). Density is
+	// expected, not a bug; flagging it produces 66 FPs in one file.
+	if (isGeneratedFile(content)) return [];
 
 	const lines = content.split("\n");
 	if (lines.length < 20) return []; // Too small to judge density

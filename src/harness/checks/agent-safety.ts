@@ -10,6 +10,7 @@ import { stripTemplateLiterals } from "../strip-helpers.js";
 import {
 	getExtension,
 	type InlineMatch,
+	isGeneratedFile,
 	isTestFile,
 	JS_TS_EXTS,
 	scanLinesStripped,
@@ -651,6 +652,10 @@ export function checkBroadObjectTypes(content: string, filePath: string): Inline
 	const ext = getExtension(filePath);
 	if (ext !== ".ts" && ext !== ".tsx") return [];
 	if (isTestFile(filePath)) return [];
+	// 139-repo audit: OpenAPI Generator output emits `Record<string, any>`
+	// and `: any` extensively by design; flagging it produces only FPs (the
+	// fix is to change generator config, not the file).
+	if (isGeneratedFile(content)) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");

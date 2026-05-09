@@ -14,7 +14,7 @@ import {
 	buildCheckInstructions,
 	buildGenericCheckMeta,
 } from "./check-registry/index.js";
-import { findEnclosingScope } from "./checks/shared.js";
+import { findEnclosingScope, isGeneratedFile } from "./checks/shared.js";
 import {
 	checkBinaryContent,
 	checkEmptyFile,
@@ -230,6 +230,12 @@ export async function runQualityChecks(
 				if (existsSync(absPath)) {
 					try {
 						const content = readFileSync(absPath, "utf-8");
+						// 139-repo audit: generator output (OpenAPI, protoc,
+						// @generated) routinely uses `any` extensively by
+						// design. Supermodel's sdk/DefaultApi.ts produced 290
+						// FPs in one file. The fix is to change generator
+						// config, not the file.
+						if (isGeneratedFile(content)) continue;
 						const anyMatches = findAnyTypes(content);
 						if (anyMatches.length > 0) {
 							const anyCount = anyMatches.filter((m) => m.kind === "any").length;
@@ -622,7 +628,10 @@ export async function runQualityChecks(
 					event.tool_name != null &&
 					!["Write", "WriteFile", "write_file"].includes(event.tool_name);
 				if (!isNewFile) {
-					const noTestFile = checkTestFileExists(absFilePath);
+					// Pass file content so the check can short-circuit on
+					// generator-emitted files (OpenAPI, protoc, @generated)
+					// that never have test siblings by design.
+					const noTestFile = checkTestFileExists(absFilePath, fileContent);
 					if (noTestFile.length > 0) {
 						results.push({
 							name: "no_test_file",

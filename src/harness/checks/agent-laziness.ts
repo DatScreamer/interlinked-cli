@@ -10,6 +10,7 @@ import {
 	getExtension,
 	type InlineMatch,
 	isCliFile,
+	isGeneratedFile,
 	isTestFile,
 	JS_TS_EXTS,
 	stripComments,
@@ -234,6 +235,13 @@ export function checkFileLevelSuppression(content: string, filePath: string): In
 	if (filePath.endsWith(".d.ts")) return [];
 	if (isTestFile(filePath)) return [];
 	if (GENERATED_PATH_RE.test(filePath)) return [];
+	// 139-repo audit: the standard pattern in generator output IS to ship a
+	// file-level `eslint-disable` / `tslint:disable` header (e.g. OpenAPI
+	// Generator's DefaultApi.ts). Flagging that produces 132+ FPs in a
+	// single file. The path-name gate above (`/generated/`) catches a few
+	// cases; the content-marker gate catches the rest where the path
+	// doesn't reveal the origin.
+	if (isGeneratedFile(content)) return [];
 
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
