@@ -66,7 +66,7 @@ const CLIENT_SUMMARIES: Record<ClientName, ClientSummary> = {
 	gemini: { label: "gemini", eventCountText: "8 events (Gemini CLI hooks)" },
 	codex: {
 		label: "codex",
-		eventCountText: "6 events (.codex/hooks.json + codex_hooks=true flag)",
+		eventCountText: "6 events (.codex/hooks.json + [features] hooks=true flag)",
 	},
 	cursor: {
 		label: "cursor",

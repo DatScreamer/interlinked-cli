@@ -274,6 +274,15 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"sync_io_on_hot_path",
 				"unbounded_promise_all",
 				"union_widened_with_string",
+				// 139-repo audit additions: structural cleanup + boundary
+				// re-validation checks landed under the same wave as the
+				// FP-reduction helpers (path-segment + content-marker gates).
+				// All advisory because the pattern shapes are heuristic.
+				"await_state_toctou",
+				"boundary_copy_no_revalidation",
+				"cleanup_reentrancy",
+				"cleanup_skipped_on_early_exit",
+				"tainted_to_privileged_sink",
 				// Batch 5: cross-file — advisory (heuristic)
 				"empty_body_handler",
 				"listener_pairing",

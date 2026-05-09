@@ -192,21 +192,24 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		expect(matcher).toBe("");
 	});
 
-	it("creates .codex/config.toml with codex_hooks=true when absent", () => {
+	it("creates .codex/config.toml with canonical `hooks = true` when absent", () => {
 		// Codex requires the feature flag in `[features]` for hooks to
-		// fire. The installer writes it idempotently so users don't have
-		// to remember the gating step.
+		// fire. The installer writes the canonical `hooks = true` key
+		// idempotently. Legacy `codex_hooks` is still recognized by Codex
+		// but emits a deprecation warning — see codex-feature-flag.ts.
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		expect(existsSync(tomlPath)).toBe(true);
 		const toml = readFileSync(tomlPath, "utf-8");
 		expect(toml).toMatch(/\[features\]/);
-		expect(toml).toMatch(/codex_hooks\s*=\s*true/);
+		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
+		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
 	});
 
-	it("preserves an existing config.toml that already enables codex_hooks", () => {
-		// If the user (or another tool) already wrote the flag, we don't
-		// rewrite the file — keeps user comments and section ordering.
+	it("migrates legacy `codex_hooks = true` to canonical `hooks = true` in place", () => {
+		// Codex deprecated `codex_hooks` in favor of `hooks`. We rewrite
+		// existing legacy entries on every install so the deprecation
+		// warning silently goes away after the next `interlinked enable`.
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		const existing = "# user-managed\n[features]\ncodex_hooks = true\nfoo = 42\n";
 		const fs = require("node:fs");
@@ -214,10 +217,13 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		fs.writeFileSync(tomlPath, existing);
 
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
+		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
+		expect(toml).toContain("foo = 42");
 	});
 
-	it("appends [features] block to existing config.toml that lacks the flag", () => {
+	it("appends [features] block with canonical `hooks` key when none exists", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		const existing = "[model]\nname = \"synthetic-model-v5\"\n";
 		const fs = require("node:fs");
@@ -227,7 +233,8 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const toml = readFileSync(tomlPath, "utf-8");
 		expect(toml).toContain("[model]");
-		expect(toml).toMatch(/codex_hooks\s*=\s*true/);
+		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
+		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
 	});
 
 	it("reuses an existing [features] block when installing Codex hooks", () => {
@@ -241,7 +248,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const toml = readFileSync(tomlPath, "utf-8");
 		expect((toml.match(/\[features\]/g) || []).length).toBe(1);
-		expect(toml).toContain("[features]\nfoo = true\ncodex_hooks = true\n[profiles.default]");
+		expect(toml).toContain("[features]\nfoo = true\nhooks = true\n[profiles.default]");
 	});
 
 	it("does not rewrite .codex/hooks.json when rerun with identical settings", () => {
