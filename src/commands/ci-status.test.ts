@@ -14,7 +14,6 @@ function run(partial: Partial<CiRun> & { conclusion: string | null }): CiRun {
 		databaseId: 1,
 		workflowName: "CI",
 		status: "completed",
-		conclusion: partial.conclusion,
 		name: "commit",
 		createdAt: "2026-05-01T00:00:00Z",
 		...partial,
