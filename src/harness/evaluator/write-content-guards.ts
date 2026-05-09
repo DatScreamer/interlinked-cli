@@ -391,6 +391,9 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
  * for a marginal gain.
  *
  * Exempt:
+ *  - Documentation / prose files (`.md`, `.mdx`, `.markdown`, `.txt`, `.rst`,
+ *    `.adoc`). These routinely contain regex examples, "chmod 777" in
+ *    tutorials, sample URLs, etc. — all as documentation, not code.
  *  - Interlinked CLI's own rule definition files (`src/harness/rules/**`,
  *    `check-registry/**`) via the shared package-root-scoped `isTestFile()`
  *    exemption. User projects with similarly named directories are still scanned.
@@ -402,6 +405,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
  */
 function isContentScanExempt(filePath: string, cwd: string | undefined): boolean {
 	const normalized = filePath.replace(/\\/g, "/");
+	if (/\.(md|mdx|markdown|txt|rst|adoc)$/i.test(normalized)) return true;
 	if (/\.(config|fixture)\.\w+$/.test(normalized)) return true;
 	if (isTestFile(normalized)) return true;
 	if (!isAbsolute(filePath) && cwd && isTestFile(resolve(cwd, filePath))) return true;

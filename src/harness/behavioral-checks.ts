@@ -17,6 +17,13 @@ import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./typ
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
 
+// Source-code extensions where TDD cycle tracking is meaningful. The cycle
+// state machine and the "write a failing test first" nudge are about CODE
+// — not docs, configs, JSON data, lockfiles, or generated bundles. Without
+// this gate, editing a markdown design doc N times produces a misleading
+// "write a test for it" warning.
+const TDD_SOURCE_EXT_RE = /\.(tsx?|jsx?|mjs|cjs|py|rs|go|rb|java|kt|swift|c|cc|cpp|h|hpp)$/i;
+
 const SECURITY_DOMAIN_RE =
 	/\/(auth|crypto|security|oauth|jwt|password|secret|encrypt|decrypt|token|credential|session|permission|acl)\//i;
 
@@ -142,6 +149,7 @@ export function checkTddCycleViolation(
 	session: SessionTrajectory,
 	filePath: string,
 ): CheckResultEntry | null {
+	if (!TDD_SOURCE_EXT_RE.test(filePath)) return null;
 	if (TEST_FILE_RE.test(filePath)) return null;
 	if (isTddExemptPath(filePath)) return null;
 
@@ -185,6 +193,7 @@ export function checkTddRegression(
 	session: SessionTrajectory,
 	filePath: string,
 ): CheckResultEntry | null {
+	if (!TDD_SOURCE_EXT_RE.test(filePath)) return null;
 	if (TEST_FILE_RE.test(filePath)) return null;
 	if (isTddExemptPath(filePath)) return null;
 

@@ -41,6 +41,14 @@ import { detectToolMiss } from "./tool-miss.js";
 /** Line-count threshold above which we nudge the agent to split a file. */
 const LARGE_FILE_LINE_THRESHOLD = 800;
 
+/** Extensions where the "consider splitting into smaller modules" nudge
+ *  is meaningless: documentation/prose files, append-only data files,
+ *  generated bundles, and lockfiles all have legitimate reasons to be long.
+ *  The 800-line heuristic is about agent legibility of *code modules* — a
+ *  3000-line CHANGELOG.md or design doc is fine. */
+const FILE_SIZE_SKIP_EXT_RE =
+	/\.(md|mdx|markdown|txt|rst|adoc|json|jsonl|ndjson|csv|tsv|lock|log|svg|min\.[a-z]+)$/i;
+
 /** Minimum bytes of output before we run secrets/injection scans. */
 const OUTPUT_SCAN_MIN_BYTES = 10;
 
@@ -199,17 +207,21 @@ function collectPostWriteFileWarnings(event: HarnessEvent): string[] {
 
 	const ext = filePath.replace(/^.*\./, ".").toLowerCase();
 
-	// File size warning
-	try {
-		const content = readFileSync(filePath, "utf-8");
-		const lineCount = content.split("\n").length;
-		if (lineCount > LARGE_FILE_LINE_THRESHOLD) {
-			warnings.push(
-				`[interlinked:file-size] ${filePath} is ${lineCount} lines. Consider splitting into smaller, focused modules — files over 800 lines are harder for agents to work with.`,
-			);
+	// File size warning — only for code files. Docs, data files, lockfiles
+	// have legitimate reasons to be long; the "split into smaller modules"
+	// nudge is about code-module legibility.
+	if (!FILE_SIZE_SKIP_EXT_RE.test(filePath)) {
+		try {
+			const content = readFileSync(filePath, "utf-8");
+			const lineCount = content.split("\n").length;
+			if (lineCount > LARGE_FILE_LINE_THRESHOLD) {
+				warnings.push(
+					`[interlinked:file-size] ${filePath} is ${lineCount} lines. Consider splitting into smaller, focused modules — files over 800 lines are harder for agents to work with.`,
+				);
+			}
+		} catch (_err) {
+			/* best-effort — skip when unreadable */
 		}
-	} catch (_err) {
-		/* best-effort — skip when unreadable */
 	}
 
 	// JSON validity
@@ -389,6 +401,7 @@ function collectReadFileSizeWarning(event: HarnessEvent): string[] {
 
 	const filePath = (event.tool_input?.file_path as string) || "";
 	if (!filePath) return warnings;
+	if (FILE_SIZE_SKIP_EXT_RE.test(filePath)) return warnings;
 	try {
 		const content = readFileSync(filePath, "utf-8");
 		const lineCount = content.split("\n").length;
