@@ -63,6 +63,7 @@ import { readSharedConfig } from "../lib/config.js";
 import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
+import { checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -1225,6 +1226,59 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							.filter((r) => r.severity === "error")
 							.map((r) => r.message)
 							.join(" ");
+				}
+			}
+		}
+
+		// --- Project-wide typecheck gate (commit + push) ---
+		// Diff-UNaware. Asserts the WHOLE project typechecks before
+		// allowing `git commit` or `git push`. Catches the failure
+		// mode where an agent edits file A, doesn't touch file B, and
+		// CI fails because B was already broken. Per-edit checks are
+		// diff-aware and won't surface that. This gate must.
+		// Bypass via INTERLINKED_SKIP_PROJECT_TYPECHECK=1 (audited).
+		if (preDecision.decision === "allow" && event.tool_name === "Bash") {
+			const cmdStr = (event.tool_input?.command as string) || "";
+			const isCommit = /\bgit\s+commit\b/.test(cmdStr);
+			const isPush = /\bgit\s+push\b/.test(cmdStr);
+			if (isCommit || isPush) {
+				const tcResults = checkProjectTypecheckClean(CWD);
+				const tcWarnings = tcResults.filter((r) => r.severity === "warning");
+				const tcErrors = tcResults.filter((r) => r.severity === "error");
+				if (tcWarnings.length > 0) {
+					const warnings = preDecision.warnings || [];
+					for (const w of tcWarnings) {
+						warnings.push(`[interlinked:${w.name}] ${w.message}`);
+					}
+					preDecision.warnings = warnings;
+				}
+				if (tcErrors.length > 0) {
+					preDecision.decision = "block";
+					const action = isCommit ? "commit" : "push";
+					const errLines = tcErrors
+						.slice(0, 10)
+						.map((e) => `  - ${e.message}`)
+						.join("\n");
+					const tail =
+						tcErrors.length > 10 ? `\n  ... and ${tcErrors.length - 10} more` : "";
+					preDecision.reason =
+						`BLOCKED: Project typecheck failed (${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}) — CI will fail on this ${action}. ` +
+						"Pre-existing errors in untouched files DO count: every commit must build clean. Fix these first:\n" +
+						errLines +
+						tail +
+						"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
+						"INTERLINKED_SKIP_PROJECT_TYPECHECK=1 git ...";
+					if (serverBridge) {
+						serverBridge.reportGuardEvent({
+							agent_name: event.agent_name || session?.agent_name || "",
+							event_type: "guard_block",
+							tool_name: event.tool_name,
+							tool_input_summary: summarizeToolInput(event),
+							decision: "block",
+							reason: `project_typecheck_clean: ${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}`,
+							occurred_at: event.timestamp,
+						});
+					}
 				}
 			}
 		}
