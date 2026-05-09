@@ -91,7 +91,8 @@ export interface RunnerAdapter {
 	/** Optional side-effects to run after the JSON settings fragment has been
 	 *  merged into the target file. Used by runners that need additional
 	 *  out-of-band configuration the JSON merger can't express — e.g. Codex
-	 *  CLI requires `[features] codex_hooks = true` in `.codex/config.toml`
+	 *  CLI requires `[features] hooks = true` in `.codex/config.toml`
+	 *  (legacy `codex_hooks` auto-migrated by the writer)
 	 *  before any hooks.json is honored. The installer calls this after
 	 *  writing the JSON fragment, with the resolved scope and the dryRun
 	 *  flag so adapters can no-op or trace under `--dry-run`. */

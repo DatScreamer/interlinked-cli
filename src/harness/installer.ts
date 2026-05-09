@@ -128,7 +128,8 @@ function installSingle(
 	}
 
 	// Adapter-specific post-install side-effects — e.g. Codex's
-	// `codex_hooks = true` feature flag in `.codex/config.toml`. Adapters
+	// `[features] hooks = true` feature flag in `.codex/config.toml`
+	// (legacy `codex_hooks` is auto-migrated by the writer). Adapters
 	// that don't implement postInstall are no-ops here. Errors are caught
 	// so a failed flag-write doesn't bubble up as a full install failure;
 	// the caller still gets a manifest entry for the JSON fragment that

@@ -864,8 +864,8 @@ export function uninstallGeminiHooks(cwd: string): boolean {
 // Codex's `.codex/hooks.json` shape is identical to Claude Code's
 // `.claude/settings.json` `hooks` field: `{ matcher, hooks: [{ type, command }] }`
 // per event. Hooks are gated behind a feature flag in `.codex/config.toml`
-// (`[features] codex_hooks = true`); we add it idempotently when missing so
-// `interlinked enable` is a one-step setup.
+// (`[features] hooks = true`; legacy `codex_hooks` auto-migrated); we add it
+// idempotently when missing so `interlinked enable` is a one-step setup.
 
 function getCodexHooksPath(cwd: string): string {
 	return join(cwd, ".codex", "hooks.json");
@@ -874,9 +874,10 @@ function getCodexHooksPath(cwd: string): string {
 /**
  * Public API — consumed by `src/lib/hooks.ts` (registered in CLIENT_INSTALL_REGISTRY).
  * Install Interlinked hooks into Codex CLI's `.codex/hooks.json` and ensure
- * `codex_hooks = true` is set in `.codex/config.toml` (gating feature flag —
- * without it Codex silently ignores hooks.json). Feature-flag logic lives
- * in `./codex-feature-flag.ts` and is also called from the modern adapter's
+ * `[features] hooks = true` is set in `.codex/config.toml` (gating feature
+ * flag — without it Codex silently ignores hooks.json; legacy `codex_hooks`
+ * key still recognized but auto-migrated). Feature-flag logic lives in
+ * `./codex-feature-flag.ts` and is also called from the modern adapter's
  * `postInstall` so both install paths are equivalent.
  */
 export function installCodexHooks(cwd: string, hookScriptPath: string): void {

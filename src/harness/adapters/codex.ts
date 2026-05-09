@@ -13,8 +13,10 @@
 //
 // Configuration: Codex reads `.codex/hooks.json` (project) or
 // `~/.codex/hooks.json` (user). Hooks are gated by a `[features]
-// codex_hooks = true` flag in `.codex/config.toml`; the legacy installer
-// in `src/lib/hook-installers.ts` writes that flag automatically. The
+// hooks = true` flag in `.codex/config.toml` (legacy `codex_hooks` is
+// still recognized but emits a deprecation warning; our writer
+// migrates it on every run). The legacy installer in
+// `src/lib/hook-installers.ts` writes that flag automatically. The
 // modern installer in `src/harness/installer.ts` only writes the
 // hooks.json fragment — operators using Phase D should set the flag
 // themselves or call `interlinked enable --clients codex`.
@@ -106,14 +108,14 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): RunnerAdapte
 }
 
 function codexPostInstall(opts: PostInstallOptions): void {
-	// Codex hooks are gated by `[features] codex_hooks = true` in
-	// `<scope>/.codex/config.toml`. Without this, the hooks.json file we
-	// just merged is silently ignored. Writing the flag is idempotent and
-	// preserves existing user-managed config — see
-	// `src/lib/codex-feature-flag.ts`.
+	// Codex hooks are gated by `[features] hooks = true` in
+	// `<scope>/.codex/config.toml` (legacy `codex_hooks` is auto-migrated
+	// by the writer). Without the flag, the hooks.json file we just
+	// merged is silently ignored. Writing is idempotent and preserves
+	// existing user-managed config — see `src/lib/codex-feature-flag.ts`.
 	if (opts.dryRun) {
 		process.stderr.write(
-			`[interlinked] codex postInstall (dry-run): would ensure ${opts.cwd}/.codex/config.toml has codex_hooks=true\n`,
+			`[interlinked] codex postInstall (dry-run): would ensure ${opts.cwd}/.codex/config.toml has [features] hooks = true\n`,
 		);
 		return;
 	}

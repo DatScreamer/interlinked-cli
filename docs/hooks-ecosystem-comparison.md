@@ -20,7 +20,7 @@
 
 | | **Claude Code** | **Codex CLI** | **Gemini CLI** | **Copilot CLI** | **Cursor IDE** |
 |---|---|---|---|---|---|
-| **Status (2026-04)** | GA, broadest | Behind `codex_hooks` feature flag, working but unannounced | GA stable (v0.39.1) | GA, no preview banner | Beta, introduced in 1.7 (Sept 2025) |
+| **Status (2026-04)** | GA, broadest | `[features].hooks` (canonical, default-enabled, Stable as of 2026-05); legacy `codex_hooks` accepted with deprecation warning | GA stable (v0.39.1) | GA, no preview banner | Beta, introduced in 1.7 (Sept 2025) |
 | **Config files** | `~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` | `~/.codex/config.toml` *or* `hooks.json` | `~/.gemini/settings.json`, `.gemini/settings.json`, `/etc/gemini-cli/`, extensions | `.github/hooks/*.json` (repo-only) | `~/.cursor/hooks.json`, `.cursor/hooks.json`, MDM, team-cloud |
 | **Format** | JSON | TOML or JSON | JSON | JSON, dual `bash`/`powershell` per entry | JSON |
 | **Event count** | 28 | 6 | 11 | 8 | 20 |
@@ -88,7 +88,7 @@ Universal pattern: exit code 0 means "parse stdout JSON," exit code 2 means "blo
 | | Trust model | Sandboxing | Ratchet |
 |---|---|---|---|
 | **Claude Code** | Settings precedence; managed-policy MDM can `allowManagedHooksOnly` | None — runs as user | `allowedEnvVars` whitelist for HTTP hooks |
-| **Codex CLI** | Off by default behind `codex_hooks` feature flag; system layer normally MDM-only | None | Validates managed-hook directory is absolute |
+| **Codex CLI** | Stable + default-enabled via `[features] hooks`; system layer normally MDM-only. Legacy `[features] codex_hooks` still accepted with a deprecation warning | None | Validates managed-hook directory is absolute |
 | **Gemini CLI** | **Project hooks fingerprinted** (name+command); re-prompts trust on any change after `git pull` | None | Optional `environmentVariableRedaction` for secrets, off by default |
 | **Copilot CLI** | "Trusted directory" gate before *any* file/exec; per-tool 3-option approval prompt; `--allow-tool` allowlist | None | Plus broader Copilot CLI auth (`/login`) |
 | **Cursor IDE** | Enterprise MDM scope wins over user; **fail-open by default** | None | Per-hook `failClosed: true` flips to fail-closed |
@@ -207,7 +207,7 @@ The full reports below are the underlying source material the comparison was bui
 
 > Sources: [Codex hooks crate](https://github.com/openai/codex/tree/main/codex-rs/hooks), [config schema](https://github.com/openai/codex/blob/main/codex-rs/core/config.schema.json), [docs/config.md](https://github.com/openai/codex/blob/main/docs/config.md), [rust-v0.125.0 release](https://github.com/openai/codex/releases/tag/rust-v0.125.0), [codex config reference](https://developers.openai.com/codex/config-reference)
 
-**Configuration.** `config.toml` (TOML) under top-level `[hooks]` table, OR sibling `hooks.json` (JSON). Three discovery layers, low→high precedence: **system → user (`~/.codex/`) → project (`<repo>/.codex/`)** plus MDM-managed and session-flag layers. Schema (`HookEventsToml`): each event name is an array of `MatcherGroup { matcher: string?, hooks: HookHandlerConfig[] }`. Each handler is `{ type: "command"|"prompt"|"agent", command?, timeout?, async?, statusMessage? }`. Hooks are opt-in via `codex_hooks` flag in `[features]`.
+**Configuration.** `config.toml` (TOML) under top-level `[hooks]` table, OR sibling `hooks.json` (JSON). Three discovery layers, low→high precedence: **system → user (`~/.codex/`) → project (`<repo>/.codex/`)** plus MDM-managed and session-flag layers. Schema (`HookEventsToml`): each event name is an array of `MatcherGroup { matcher: string?, hooks: HookHandlerConfig[] }`. Each handler is `{ type: "command"|"prompt"|"agent", command?, timeout?, async?, statusMessage? }`. Hooks are gated by `[features] hooks = true` (stable + `default_enabled: true` as of 2026-05; the legacy `[features] codex_hooks` key is still accepted but emits a deprecation warning per `codex-rs/features/src/lib.rs:836-841`).
 
 **Lifecycle events** (6 from `HookEventsToml`):
 - `SessionStart` — sub-source `startup`/`resume`/`clear`.
@@ -228,7 +228,7 @@ A separate "legacy notify" hook (`notify` config key) still exists for fire-and-
 - PostToolUse / UserPromptSubmit / Stop: `decision: "block"` + `reason`, plus `additionalContext`.
 - Empty / non-zero exit / unparseable JSON → hook failure (logged, surfaced in TUI). Non-zero exit alone does NOT block.
 
-**Security model.** Hooks run as **trusted local subprocesses** spawned by user's shell; outside the sandbox that constrains tool calls. Three guardrails: (1) system layer normally writable only by admin/MDM, (2) hooks off-by-default behind `codex_hooks` feature flag, (3) "managed hooks" path ships hook bundles from `requirements.toml` and validates the directory exists, is absolute, and is a directory. Hooks matched against `tool_name` plus `matcher_aliases` via `matcher` regex.
+**Security model.** Hooks run as **trusted local subprocesses** spawned by user's shell; outside the sandbox that constrains tool calls. Three guardrails: (1) system layer normally writable only by admin/MDM, (2) hooks were originally off-by-default behind a feature flag — the canonical key is now `[features] hooks` (Stable, `default_enabled: true`); the legacy `codex_hooks` key still works but emits a deprecation warning, (3) "managed hooks" path ships hook bundles from `requirements.toml` and validates the directory exists, is absolute, and is a directory. Hooks matched against `tool_name` plus `matcher_aliases` via `matcher` regex.
 
 **Distinguishing features.** `PermissionRequest` distinct from PreToolUse (no competitor has this); `updatedInput` rewrite; TOML-or-JSON dual format; MDM/managed hook layer via `requirements.toml`; three handler types declared (`command`/`prompt`/`agent`, only `command` wired); async handlers with `statusMessage`; wire format intentionally near-identical to Claude Code's (`ClaudeHooksEngine`).
 
