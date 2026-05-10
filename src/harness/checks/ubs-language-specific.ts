@@ -283,6 +283,13 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 
+	// 139-repo audit (2026-05): pre-compute a set of names that are
+	// ANNOTATED `: Path` or ASSIGNED via `Path(...)` / `pathlib.Path(...)`
+	// in the same file. Python's `pathlib.Path.__truediv__` overloads `/`
+	// for path joins — `path / "subdir"` is NOT division. The 53 hits in
+	// alter/cc-autopipe-source were all of this shape.
+	const pathishNames = isPyFile(ext) ? collectPathishNames(stripped) : null;
+
 	const divisionRegex = /(?:^|[^\w$])([a-zA-Z_$]\w*)\s+\/\s+([a-zA-Z_$]\w*)/g;
 
 	const matches: InlineMatch[] = [];
@@ -292,12 +299,119 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 		// Reset lastIndex defensively for the global regex.
 		divisionRegex.lastIndex = 0;
 		if (!divisionRegex.test(line)) continue;
+
+		// 139-repo audit: skip when a same-line zero-guard is present.
+		// Supermodel mcpbr/analytics shape:
+		//   avg = total / count if count > 0 else 0.0
+		//   rate = (a / b * 100.0) if b > 0 else 0.0
+		// The guard sits on the same line via the Python ternary; in JS/Go
+		// it appears as `count > 0 ? a / b : 0` or `count !== 0 && a / b`.
+		if (lineHasZeroGuard(line)) continue;
+
+		// 139-repo audit: Python `Path / "subdir"` shape — re-run the
+		// regex globally to inspect the operands and skip any match
+		// whose LHS is annotated/assigned as a Path (or whose
+		// neighborhood is a string literal — those are stripped to `""`
+		// already, so we look at the original line).
+		if (pathishNames && isPathDivisionLine(line, originalLines[i], pathishNames)) {
+			continue;
+		}
+
+		// 139-repo audit: skip `os.path.join(...)` shapes — even if the
+		// regex matched some inner identifier-pair, the call's outer
+		// shape is path-join not division.
+		if (/\bos\.path\.join\s*\(/.test(line)) continue;
+
 		matches.push({
 			line: i + 1,
 			text: originalLines[i].trim().slice(0, 150),
 		});
 	}
 	return matches;
+}
+
+/**
+ * Detect a same-line zero-guard for the divisor. Heuristic — covers the
+ * common Python ternary shape (`x / y if y > 0 else 0`), the JS / Go
+ * conditional (`y !== 0 ? x / y : 0`), and the C-style guard
+ * (`if (y) result = x / y;`). Each pattern is anchored on the divisor
+ * relationship so unrelated `if` statements on the same line don't
+ * spuriously suppress.
+ *
+ * Conservative on purpose: the check is already advisory. Missing a
+ * guard that should suppress is fine (FP); falsely suppressing a real
+ * division-by-zero (FN) would defeat the check.
+ */
+function lineHasZeroGuard(line: string): boolean {
+	// `... if <id> > 0 else ...` / `... if <id> != 0 else ...` /
+	// `... if <id> is not None and <id> != 0 else ...`
+	if (/\bif\s+[A-Za-z_$][\w$]*\s*(?:>\s*0|>=\s*1|!=\s*0|!==\s*0|is\s+not\s+None)\b/.test(line)) {
+		return true;
+	}
+	// `... if (<id> > 0)` / `... if (<id> != 0)`  — parenthesized form.
+	if (/\bif\s*\(\s*[A-Za-z_$][\w$]*\s*(?:>\s*0|!=\s*0|!==\s*0)\s*\)/.test(line)) {
+		return true;
+	}
+	// JS/Go ternary: `<id> > 0 ? a / <id> : 0` / `<id> ? a / <id> : 0`.
+	if (/\b[A-Za-z_$][\w$]*\s*(?:>\s*0|!==?\s*0)\s*\?[^?]*\//.test(line)) return true;
+	// `<id> && a / <id>` short-circuit.
+	if (/\b[A-Za-z_$][\w$]*\s*&&\s*[A-Za-z_$][\w$]*\s+\/\s+[A-Za-z_$]/.test(line)) return true;
+	return false;
+}
+
+/**
+ * Walk a Python file's stripped content and collect every identifier
+ * that's annotated as `Path` / `pathlib.Path` or assigned the result of
+ * `Path(...)` / `pathlib.Path(...)`. These names participate in
+ * `__truediv__` overloads and `name / "subdir"` is NOT division.
+ *
+ * Conservative: a name that's BOTH a Path and a number (rare) will be
+ * suppressed even when a real division could happen. The check is
+ * advisory.
+ */
+function collectPathishNames(strippedSrc: string): Set<string> {
+	const names = new Set<string>();
+	// `name: Path` / `name: pathlib.Path` annotations (function args
+	// AND assignment annotations).
+	const annotRe = /\b([A-Za-z_$][\w$]*)\s*:\s*(?:pathlib\s*\.\s*)?Path\b/g;
+	for (const m of strippedSrc.matchAll(annotRe)) names.add(m[1]);
+	// `name = Path(...)` / `name = pathlib.Path(...)`.
+	const assignRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:pathlib\s*\.\s*)?Path\s*\(/g;
+	for (const m of strippedSrc.matchAll(assignRe)) names.add(m[1]);
+	return names;
+}
+
+/**
+ * Return true when the matched division shape is actually a
+ * `pathlib.Path` __truediv__ join — either the LHS is a known
+ * Path-typed name, or the `/` is followed by a string literal in the
+ * ORIGINAL line (which got stripped to `""` in the analyzed line, but
+ * is still visible in the original).
+ */
+function isPathDivisionLine(
+	strippedLine: string,
+	originalLine: string,
+	pathishNames: Set<string>,
+): boolean {
+	// Re-run the regex globally to inspect every match.
+	const re = /(?:^|[^\w$])([a-zA-Z_$]\w*)\s+\/\s+([a-zA-Z_$]\w*)/g;
+	let m: RegExpExecArray | null;
+	let anyNonPathDivision = false;
+	let foundAnyMatch = false;
+	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration
+	while ((m = re.exec(strippedLine)) !== null) {
+		foundAnyMatch = true;
+		const lhs = m[1];
+		if (pathishNames.has(lhs)) continue; // pathlib join — skip
+		anyNonPathDivision = true;
+	}
+	if (!foundAnyMatch) return false;
+	// If every match has a Path-typed LHS, this is a path-join line.
+	if (!anyNonPathDivision) return true;
+	// Path / "literal" shape: stripped line shows `name / ""` because
+	// the literal was stripped. Inspect the original to confirm.
+	if (/\b[A-Za-z_$][\w$]*\s+\/\s+(?:["'`])/.test(originalLine)) return true;
+	return false;
 }
 
 // ===========================================
@@ -331,11 +445,21 @@ export function checkEvalInputTainted(content: string, filePath: string): Inline
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// `(?<![.\w])` excludes member-call forms (`.exec(input)` / `.compile(input)`
-	// — regex methods, NOT global eval) and identifier-prefix forms
-	// (`fooexec(...)` is a custom function, not the eval-class). `\b` alone
-	// treated `.` as a word boundary and produced FPs on every `re.exec(x)`.
-	const re = /(?<![.\w])(?:eval|Function|exec|compile)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g;
+	// 139-repo audit (2026-05): cross-language gate. In JS/TS, bare
+	// `exec(cmd)` is almost always Node `child_process.exec` (shell-out,
+	// caught separately by `child_process_exec_user_input`). Bare
+	// `compile(...)` doesn't exist as a global in JS. Restrict the JS/TS
+	// match to `eval` / `Function` only — the true eval-class. Python
+	// keeps the full `eval` / `exec` / `compile` set.
+	//
+	// `(?<![.\w])` excludes member-call forms (`.exec(input)` /
+	// `.compile(input)` — regex methods, NOT global eval) and identifier-
+	// prefix forms (`fooexec(...)` is a custom function, not the eval-
+	// class). `\b` alone treated `.` as a word boundary and produced FPs
+	// on every `re.exec(x)`.
+	const re = isPy
+		? /(?<![.\w])(?:eval|exec|compile)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g
+		: /(?<![.\w])(?:eval|Function)\s*\(\s*(?!["'`])([A-Za-z_$]\w*)/g;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
@@ -716,11 +840,25 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 	const selectConcatPrefix = /\bSELECT\s*["'`]\s*[+,]/i;
 	const interpolation = /["'`].*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`/;
 
+	// Helicone audit (2026-05): the check was firing 66 times on
+	// `WHERE id = $1` style PARAMETERIZED queries — the `$N` placeholder
+	// IS the safe form. Same for `?` (positional) and `:name` (named).
+	// Skip any line that contains a recognizable parameterized-query
+	// placeholder, regardless of what follows it.
+	const placeholder = /\$\d+\b|[=(,\s]\?[\s,)]|:\w+\b/;
+	// Event-handler shapes that look SQL-y because of an interpolated
+	// callback arg ("`click`", "${selector}") but are not SQL.
+	const eventListener = /\.\s*(?:on|once|addEventListener|removeEventListener)\s*\(/;
+
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = originalLines[i];
 		if (!sqlVerb.test(line) && !selectConcatPrefix.test(line)) continue;
 		if (!interpolation.test(line)) continue;
+		// Tightening: parameterized queries are safe — skip them.
+		if (placeholder.test(line)) continue;
+		// Tightening: event-handler shapes aren't SQL — skip them.
+		if (eventListener.test(line)) continue;
 		matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 	}
 	return matches;
@@ -815,6 +953,8 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
 		if (!re.test(strippedLines[i])) continue;
+		// 139-repo audit: respect Bandit `# noqa: S301`.
+		if (lineHasNoqaSuppression(originalLines[i], "ubs_pickle_untrusted_load")) continue;
 		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;
@@ -822,10 +962,21 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 
 /**
  * `ubs_xml_external_entity` — Python XML parsing without disabling external
- * entity resolution exposes the parser to XXE attacks. Fires on imports of
- * `xml.etree`, `xml.dom`, `xml.sax`, or `lxml.etree` — the stdlib parsers do
- * not disable XXE by default. Recommend `defusedxml`. pre_warn / error.
+ * entity resolution exposes the parser to XXE attacks. Fires when an unsafe
+ * stdlib parser (`xml.etree`, `xml.dom`, `xml.sax`, `lxml.etree`) is BOTH
+ * imported AND used to parse input (`ET.parse(...)`, `ET.fromstring(...)`,
+ * `XMLParser(...)`, `XMLPullParser(...)`, `lxml.etree.parse(...)`,
+ * `lxml.etree.fromstring(...)`). pre_warn / error.
+ *
+ * 139-repo audit (2026-05): an import-only gate produced 2 FPs in
+ * Supermodel's `mcpbr/src/mcpbr/{junit_reporter,reporting}.py` — both
+ * import `xml.etree.ElementTree as ET` only to BUILD/WRITE XML, never
+ * to parse untrusted input. XXE risk requires actual parsing of
+ * potentially-tainted input; writing XML is safe.
  */
+const XML_PARSE_CALL_RE =
+	/\b(?:ET|etree|xml\.etree(?:\.\w+)*|lxml\.etree)\s*\.\s*(?:parse|fromstring|XMLParser|XMLPullParser|iterparse)\s*\(|\bXMLPullParser\s*\(/;
+
 export function checkXmlExternalEntity(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	if (!isPyFile(ext)) return [];
@@ -845,9 +996,15 @@ export function checkXmlExternalEntity(content: string, filePath: string): Inlin
 	// Skip files that already use defusedxml — the safe form.
 	if (/\bdefusedxml\b/.test(stripped)) return [];
 
+	// 139-repo audit: require an actual parse call somewhere in the
+	// file. Import-only files (write-only XML reporters) are safe.
+	if (!XML_PARSE_CALL_RE.test(stripped)) return [];
+
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
 		if (!re.test(strippedLines[i])) continue;
+		// 139-repo audit: respect Bandit `# noqa: S314 / S320`.
+		if (lineHasNoqaSuppression(originalLines[i], "ubs_xml_external_entity")) continue;
 		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;
