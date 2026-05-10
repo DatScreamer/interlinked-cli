@@ -109,20 +109,31 @@ describe("hook script generation", () => {
 		expect(generatedScript).toMatch(/hookEventName:\s*preEventEcho/);
 	});
 
-	it("PostToolUseFailure check is restricted to mutation tools", () => {
+	it("PostToolUseFailure check reaches harness for failure-recovery channels", () => {
 		writeHookScript("/repo");
 		const generatedScript = String(mockWriteFileSync.mock.calls[0][1]);
 
-		// New restrictive set of mutation tools
+		// New restrictive set of mutation tools (still defined for the
+		// successful-Post fast-path skip).
 		expect(generatedScript).toContain("mutationTools");
 		expect(generatedScript).toContain('"Edit"');
 		expect(generatedScript).toContain('"Write"');
 		expect(generatedScript).toContain('"MultiEdit"');
 		expect(generatedScript).toContain('"NotebookEdit"');
 
-		// skipPostCheck negates membership in the mutation set
+		// Phase 1: skipPostCheck disarmed so every Post* failure reaches the
+		// harness for triage/recurrence/recovery. The legacy gate that limited
+		// the harness round-trip to mutation-tool failures is gone.
+		expect(generatedScript).toContain("const skipPostCheck = false;");
+		expect(generatedScript).not.toMatch(
+			/skipPostCheck\s*=\s*hookEvent === "PostToolUseFailure"/,
+		);
+
+		// Fast-path now also gates on tool_outcome — failed Bash (or any
+		// failed non-mutation tool) must NOT take the early-return path.
+		expect(generatedScript).toContain('postOutcomeIsError = event.tool_outcome === "error"');
 		expect(generatedScript).toMatch(
-			/skipPostCheck\s*=\s*hookEvent === "PostToolUseFailure"\s*&&\s*!mutationTools\.has/,
+			/if \(isPostTool && !isMutationPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure"\)/,
 		);
 
 		// Should NOT have the old read-only allowlist approach

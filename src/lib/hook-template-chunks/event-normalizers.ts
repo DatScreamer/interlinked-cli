@@ -203,10 +203,34 @@ function fingerprintResponse(toolResponse) {
     }
 }
 
+// Pull the most-specific diagnostic text out of a tool_response across
+// every supported provider shape. Returns null when nothing useful is set
+// (callers fall back to truncated stderr). Order matches the design doc's
+// 1a-fix step: Claude tool_response.message → Cursor error_message → Copilot
+// toolResult.error / error → Gemini tool_response.error.
+function extractProviderErrorMessage(toolResponse, errorDetail) {
+    if (typeof errorDetail === "string" && errorDetail) return errorDetail;
+    if (toolResponse && typeof toolResponse === "object") {
+        if (typeof toolResponse.message === "string" && toolResponse.message) return toolResponse.message;
+        if (typeof toolResponse.error === "string" && toolResponse.error) return toolResponse.error;
+        if (typeof toolResponse.error_message === "string" && toolResponse.error_message) return toolResponse.error_message;
+        if (toolResponse.toolResult && typeof toolResponse.toolResult === "object") {
+            if (typeof toolResponse.toolResult.error === "string" && toolResponse.toolResult.error) return toolResponse.toolResult.error;
+            if (typeof toolResponse.toolResult.message === "string" && toolResponse.toolResult.message) return toolResponse.toolResult.message;
+        }
+    }
+    if (errorDetail && typeof errorDetail === "object") {
+        if (typeof errorDetail.message === "string" && errorDetail.message) return errorDetail.message;
+        try { return JSON.stringify(errorDetail); } catch { return null; }
+    }
+    return null;
+}
+
 // Derive canonical tool outcome fields from a PostToolUse / PostToolUseFailure
 // payload. The shape is stable across all clients (Claude / Codex / Gemini /
 // Cursor / Copilot) — downstream consumers can read tool_outcome / exit_code /
-// stderr without re-parsing each client's tool_response shape.
+// stderr / error_message without re-parsing each client's tool_response shape.
+// error_message is the canonical diagnostic text for Channels 2/3/6 to classify.
 //
 // Capture policy (per the design discussion):
 //   - On success: skip stderr/stdout (they're noise). Hash the response so
@@ -218,6 +242,7 @@ function fingerprintResponse(toolResponse) {
 function deriveToolOutcome(toolName, toolResponse, errorDetail, status, isInterrupt) {
     const result = {
         tool_outcome: status === "error" ? "error" : "success",
+        error_message: null,
         exit_code: null,
         stderr: null,
         stdout: null,
@@ -258,6 +283,15 @@ function deriveToolOutcome(toolName, toolResponse, errorDetail, status, isInterr
             msg = JSON.stringify(toolResponse);
         }
         if (msg) result.stderr = middleTruncateBytes(msg, cap);
+    }
+    if (result.tool_outcome === "error") {
+        // Canonical diagnostic text. Channels 2/3/6 classify on this.
+        const providerMsg = extractProviderErrorMessage(toolResponse, errorDetail);
+        if (providerMsg) {
+            result.error_message = middleTruncateBytes(providerMsg, cap);
+        } else if (result.stderr) {
+            result.error_message = result.stderr;
+        }
     }
     return result;
 }
@@ -397,12 +431,20 @@ const CLAUDE_DISPATCH = {
             : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
             : Buffer.byteLength(JSON.stringify(toolResponseRaw));
         const toolResponse = capToolResponse(toolResponseRaw);
+        // Folded failures: Claude / Codex deliver tool failures on the regular
+        // PostToolUse event with tool_response.is_error === true (the
+        // PostToolUseFailure event is intentionally not subscribed — see
+        // CLAUDE_HOOK_EVENTS in src/lib/hook-installers.ts). Channels 2/3/5/6
+        // depend on this gate firing — treating these as success would silently
+        // drop every Claude/Codex failure from the recovery pipeline.
+        const isError = toolResponseRaw && typeof toolResponseRaw === "object"
+            && toolResponseRaw.is_error === true;
         const result = {
             event_type: "tool_use", tool_name: toolName, tool_input_summary: summarize(toolName, toolInput),
             hook_event: "PostToolUse", duration_ms,
             tool_input: toolInput, tool_response: toolResponse, tool_use_id: input.tool_use_id || null,
             tool_output_bytes: toolResponseBytes,
-            status: "success",
+            status: isError ? "error" : "success",
             ...env,
         };
         const filePath = extractFilePath(toolName, toolInput);
@@ -591,6 +633,12 @@ const GEMINI_DISPATCH = {
             : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
             : Buffer.byteLength(JSON.stringify(toolResponseRaw));
         const toolResponse = capToolResponse(toolResponseRaw);
+        // Folded failures: Gemini delivers tool failures on AfterTool with
+        // tool_response.success === false. Without this gate, Channels 2/3/5/6
+        // would never see Gemini failures.
+        const responseSaysFailed = toolResponseRaw && typeof toolResponseRaw === "object"
+            && toolResponseRaw.success === false;
+        const isError = !!input.error || responseSaysFailed;
         const result = {
             event_type: "tool_use", tool_name: toolName,
             tool_input_summary: summarize(toolName, toolInput),
@@ -598,7 +646,7 @@ const GEMINI_DISPATCH = {
             tool_input: toolInput, tool_response: toolResponse,
             duration_ms: input.duration || input.duration_ms || null,
             tool_output_bytes: toolResponseBytes,
-            status: input.error ? "error" : "success",
+            status: isError ? "error" : "success",
         };
         const filePath = extractFilePath(toolName, toolInput);
         if (filePath) result.files_modified = [filePath];
@@ -684,6 +732,13 @@ function copilotPostToolEvent(toolName, toolInput, toolResponseRaw, input) {
         : typeof toolResponseRaw === "string" ? Buffer.byteLength(toolResponseRaw)
         : Buffer.byteLength(JSON.stringify(toolResponseRaw));
     const toolResponse = capToolResponse(toolResponseRaw);
+    // Folded failures: Copilot delivers tool failures on postToolUse with
+    // toolResult.resultType === "failure" (the dedicated errorOccurred event
+    // is for non-tool errors). The previous condition ignored this field, so
+    // Copilot tool failures landed flagged status:"success".
+    const resultTypeFailed = toolResponseRaw && typeof toolResponseRaw === "object"
+        && toolResponseRaw.resultType === "failure";
+    const isError = !!(input.error || input.errorCode || input.error_code) || resultTypeFailed;
     const result = {
         event_type: "tool_use", tool_name: toolName,
         tool_input_summary: summarize(toolName, toolInput),
@@ -691,7 +746,7 @@ function copilotPostToolEvent(toolName, toolInput, toolResponseRaw, input) {
         tool_input: toolInput, tool_response: toolResponse,
         duration_ms: input.duration || null,
         tool_output_bytes: toolResponseBytes,
-        status: input.error || input.errorCode || input.error_code ? "error" : "success",
+        status: isError ? "error" : "success",
     };
     const filePath = extractFilePath(toolName, toolInput);
     if (filePath) result.files_modified = [filePath];
@@ -930,6 +985,14 @@ const CURSOR_DISPATCH = {
         // tool_response. Accept both so the harness sees output content.
         const toolResponseRaw = input.tool_response ?? input.tool_output ?? null;
         const toolResponse = capToolResponse(toolResponseRaw);
+        // Folded failures: Cursor opt-in path where it routes tool failures
+        // onto the generic postToolUse instead of the dedicated
+        // postToolUseFailure event. Detect via top-level error_message /
+        // failure_type, or response.success === false.
+        const responseSaysFailed = toolResponseRaw && typeof toolResponseRaw === "object"
+            && toolResponseRaw.success === false;
+        const isError = !!(input.error || input.error_message || input.failure_type) || responseSaysFailed;
+        const errorDetail = input.error || input.error_message || null;
         const result = {
             event_type: "tool_use", tool_name: toolName,
             tool_input_summary: summarize(toolName, toolInput),
@@ -937,13 +1000,13 @@ const CURSOR_DISPATCH = {
             tool_input: toolInput, tool_response: toolResponse,
             duration_ms: input.duration_ms || input.duration || null,
             tool_output_bytes: toolResponseRaw === null ? 0 : Buffer.byteLength(typeof toolResponseRaw === "string" ? toolResponseRaw : JSON.stringify(toolResponseRaw)),
-            status: input.error ? "error" : "success",
+            status: isError ? "error" : "success",
             ...env,
         };
         const filePath = extractFilePath(toolName, toolInput);
         if (filePath) result.files_modified = [filePath];
         attachEditMetrics(result, toolName, toolInput, toolResponseRaw);
-        attachOutcome(result, toolName, toolResponseRaw, input.error || null);
+        attachOutcome(result, toolName, toolResponseRaw, errorDetail);
         return result;
     },
     postToolUseFailure: (input, env) => {
@@ -954,7 +1017,7 @@ const CURSOR_DISPATCH = {
         const toolName = input.tool_name || null;
         const toolInput = input.tool_input || {};
         const errorDetail = input.error_message || input.error || null;
-        return {
+        const result = {
             event_type: "tool_use_error", tool_name: toolName,
             tool_input_summary: errorDetail
                 ? truncate(String(errorDetail), 200)
@@ -969,6 +1032,11 @@ const CURSOR_DISPATCH = {
             status: "error",
             ...env,
         };
+        // attachOutcome populates tool_outcome / error_message / stderr /
+        // tool_response_sha256 — without this, downstream Phase 1 channels
+        // (triage, recovery, recurrence) had no canonical fields to read.
+        attachOutcome(result, toolName, input.tool_response || null, errorDetail);
+        return result;
     },
     subagentStart: (input, env) => ({
         event_type: "subagent_start", tool_name: input.subagent_type || null,

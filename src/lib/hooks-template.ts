@@ -523,6 +523,14 @@ async function main() {
         // shell. Must come BEFORE the Claude catch-all because Cursor sends
         // hook_event_name like Claude does for some events.
         { name: "cursor", detect: (input, src) => src === "stdin" && (RUNNER_ENV === "cursor" || !!input.cursor_version || (!!input.conversation_id && !!input.generation_id)), normalize: normalizeCursorEvent },
+        // Gemini: detect via INTERLINKED_CLIENT env var (set by the hook
+        // command we install into .gemini/settings.json) OR via Gemini-specific
+        // payload fields (gemini_session_id) OR via the PascalCase
+        // Before/After-(Tool/Model/Agent) hook event names. Must come BEFORE
+        // the Claude catch-all — Gemini's PascalCase event names overlap
+        // with Claude's so the catch-all would otherwise normalize them
+        // through the wrong dispatcher and leave normalizeGeminiEvent dead.
+        { name: "gemini", detect: (input, src) => src === "stdin" && (RUNNER_ENV === "gemini" || !!input.gemini_session_id || (typeof input.hook_event_name === "string" && /^(Before|After)(Tool|Model|Agent)$/.test(input.hook_event_name))), normalize: normalizeGeminiEvent },
         // Future clients — add detectors here, before the Claude catch-all.
         // Example shape (NOT active code — documentation for adding a new handler):
         //   Example: { name: "opencode", detect: (input, src) => src === "stdin" && input.client === "opencode", normalize: normalizeOpencodeEvent }
@@ -843,23 +851,28 @@ ${PROVIDER_RESPONSES_CHUNK}
     // The harness runs tsc, lint, secrets, strong_typing, and inline checks.
     // If harness is unavailable, degrade gracefully (no inline fallback).
     //
-    // Skip PostToolUseFailure for any non-mutation tool. Quality checks need
-    // a file on disk; failures from Bash/Read/Grep/etc. have nothing to check
-    // and only produce noise. Restrict to known mutation tools so the failure
-    // case mirrors the PostToolUse matcher (Edit|Write|MultiEdit).
+    // Phase 1 failure-recovery: every PostToolUse / PostToolUseFailure with
+    // tool_outcome === "error" must reach the harness, regardless of tool
+    // class — Channels 1/2/3/6 (recurrence, triage, recovery, explanation)
+    // are tool-agnostic and need to see Bash/Read/Grep failures too. The
+    // mutationTools gate below now only short-circuits *successful*
+    // non-mutation Post events (where the harness has nothing to check).
     const mutationTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "WriteFile", "EditFile", "write_file", "edit_file", "apply_patch", "create_file", "str_replace"]);
-    const failingToolName = event.tool_name || rawInput.tool_name || "";
-    const skipPostCheck = hookEvent === "PostToolUseFailure" && !mutationTools.has(failingToolName);
+    // skipPostCheck: legacy gate kept disarmed so Phase 1 channels see every
+    // failure. Any future "skip on this combo" logic threads through here.
+    const skipPostCheck = false;
 
-    // Fast-path: PostToolUse for non-mutation tools (Bash, Read, Grep,
-    // WebFetch, etc.) — capture the result locally but skip the harness
-    // round-trip. The harness's quality pipeline (tsc, lint, structural
-    // checks) only applies to file edits, so for Bash/Read/etc. the
-    // round-trip is pure latency. Without this fast-path, broadening the
-    // PostToolUse matcher to "" (match all) would 3-5x agent latency.
+    // Fast-path: a SUCCESSFUL PostToolUse on a non-mutation tool (Bash that
+    // exited 0, Read that returned content, Grep with results) — capture
+    // locally, skip the harness round-trip. The pipeline only does
+    // tsc/lint/structural on file edits, so for successful Bash/Read/Grep
+    // the round-trip is pure latency. Critically, the gate now also checks
+    // event.tool_outcome — failed Bash (tool_outcome === "error") must
+    // reach the harness for Channels 1/2/3/6 to surface triage + recurrence.
     const postToolName = event.tool_name || rawInput.tool_name || "";
     const isMutationPost = mutationTools.has(postToolName);
-    if (isPostTool && !isMutationPost && hookEvent !== "PostToolUseFailure") {
+    const postOutcomeIsError = event.tool_outcome === "error";
+    if (isPostTool && !isMutationPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure") {
         appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
         updateSessionState(sessionId, agentName, event);
         // Provide the empty success response so the agent's UI doesn't
@@ -886,6 +899,17 @@ ${PROVIDER_RESPONSES_CHUNK}
             cwd: rawInput.cwd || event.cwd || null,
             model: event.model || null,
             timestamp: new Date().toISOString(),
+            // Canonical post-event outcome fields populated by the per-client
+            // normalizer's deriveToolOutcome step. Without these, Phase 1
+            // failure-recovery channels (triage, recovery, recurrence) on
+            // src/harness/server.ts can't see folded failures (Claude/Codex/
+            // Gemini/Copilot deliver tool failures on the regular Post* event).
+            tool_outcome: event.tool_outcome || null,
+            error_message: event.error_message || null,
+            exit_code: typeof event.exit_code === "number" ? event.exit_code : null,
+            stderr: event.stderr || null,
+            stdout: event.stdout || null,
+            tool_response_sha256: event.tool_response_sha256 || null,
         };
 
         let postResult = await evaluateViaHarness(harnessEvent);
