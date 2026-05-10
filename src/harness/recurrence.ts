@@ -11,7 +11,8 @@ export type RecurrenceKind =
 	| "harness_caught"
 	| "harness_missed"
 	| "codebase_existing"
-	| "outcome_marker";
+	| "outcome_marker"
+	| "tool_failure";
 
 /** Phase 1 FP-telemetry additions (see docs/plans/11-phase1-...md). */
 export type RecurrencePhase = "pre_block" | "pre_warn" | "post";
@@ -101,6 +102,15 @@ export function deriveSignature(event: RecurrenceEvent): string {
 	}
 	if (event.kind === "codebase_existing") {
 		return `codebase_existing:${event.check_id ?? "unknown"}`;
+	}
+	if (event.kind === "tool_failure") {
+		// Phase 1 Channel 1 — tool-failure pattern grouping. Pre-built signature
+		// from the harness handler is `tool_failure:<tool>:<error_class>:<message-prefix>`;
+		// we forward the carrier `signature` if set, falling back to a coarser
+		// `<tool>:<message-prefix>` so old rows still aggregate.
+		if (event.signature) return event.signature;
+		const messagePrefix = (event.message ?? "untagged").slice(0, 30);
+		return `tool_failure:${event.check_id ?? "unknown"}:${messagePrefix}`;
 	}
 	return `harness_missed:${event.signature ?? event.message ?? "untagged"}`;
 }
@@ -312,6 +322,44 @@ export function recordHarnessCaught(opts: {
 	}
 }
 
+/** Phase 1 Channel 1 — tool-failure recurrence. Single grep-able callsite for
+ *  the harness handler in `server.ts` to record a tool failure under the
+ *  recurrence substrate so `interlinked recurrence list --kind tool_failure`
+ *  can aggregate "this exact failure happened N times in M sessions". The
+ *  harness builds the signature `tool_failure:<tool>:<error_class>:<message-prefix>`
+ *  and passes it in directly; we don't try to re-derive it here because
+ *  triage classification (Channel 2) is what produces the error_class. Storage
+ *  failures swallowed for the same reason as `recordHarnessCaught` — this
+ *  fires on the PostToolUse hot path. */
+export function recordToolFailure(opts: {
+	tool_name: string;
+	signature: string;
+	agent_source: string;
+	session_id: string;
+	file?: string;
+	message?: string;
+	cwd?: string;
+	ts?: string;
+}): void {
+	try {
+		recordRecurrenceEvent(
+			{
+				ts: opts.ts ?? new Date().toISOString(),
+				kind: "tool_failure",
+				check_id: opts.tool_name,
+				agent_source: opts.agent_source,
+				session_id: opts.session_id,
+				file: opts.file,
+				signature: opts.signature,
+				message: opts.message,
+			},
+			opts.cwd ?? process.cwd(),
+		);
+	} catch (e) {
+		void e;
+	}
+}
+
 /**
  * Public API surface for Phase 2's FP-rate aggregator. Mark an outcome for
  * a prior `harness_caught` fire — idempotent on (check_id, file, session_id,
@@ -386,6 +434,7 @@ function isRecurrenceEvent(value: unknown): value is RecurrenceEvent {
 		(event.kind === "harness_caught" ||
 			event.kind === "harness_missed" ||
 			event.kind === "codebase_existing" ||
-			event.kind === "outcome_marker")
+			event.kind === "outcome_marker" ||
+			event.kind === "tool_failure")
 	);
 }

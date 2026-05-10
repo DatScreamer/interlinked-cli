@@ -129,12 +129,12 @@ program
 // ===========================================
 const recCmd = program
 	.command("recurrence")
-	.description("Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing)");
+	.description("Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)");
 
 recCmd
 	.command("list")
 	.description("Show aggregated recurrence rows (top by count, newest tiebreak)")
-	.option("--kind <kind>", "Filter by kind (harness_caught | harness_missed | codebase_existing)")
+	.option("--kind <kind>", "Filter by kind (harness_caught | harness_missed | codebase_existing | tool_failure)")
 	.option("--top <n>", "Limit to top N rows by count")
 	.option("--since <duration>", "Only include events at-or-after (e.g. 7d, 12h, ISO timestamp)")
 	.option("--agent-source <name>", "Filter by agent_source (claude/copilot/codex/gemini/cursor)")

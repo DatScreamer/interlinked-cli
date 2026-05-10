@@ -53,6 +53,7 @@ const KNOWN_KINDS: ReadonlySet<RecurrenceKind> = new Set([
 	"harness_caught",
 	"harness_missed",
 	"codebase_existing",
+	"tool_failure",
 ]);
 
 function isRecurrenceKind(value: string | undefined): value is RecurrenceKind {

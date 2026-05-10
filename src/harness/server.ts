@@ -105,6 +105,7 @@ import {
 } from "./quality-checks.js";
 import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import { recordHarnessCaught } from "./recurrence.js";
+import { runFailureChannels } from "./failure-channels.js";
 import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
 import { DEFAULT_TRIGGERS, expandSiblings } from "./sibling-expansion.js";
@@ -1611,6 +1612,32 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		}
 
 		const postDecision = evaluatePostToolUse(event, rules, session, reservations, cohort);
+
+		// --- Phase 1 Failure-Recovery Channels (Channels 1, 2, 3, 5, 6) ---
+		// Gated on the canonical `tool_outcome === "error"` from the wire-format
+		// extension. Both delivery shapes converge here — folded failures
+		// (Claude/Codex/Gemini/Copilot deliver tool failures on the regular
+		// PostToolUse / AfterTool / postToolUse) and the dedicated
+		// PostToolUseFailure (Cursor's postToolUseFailure event) — because
+		// the per-provider normalizers in event-normalizers.ts populate
+		// tool_outcome consistently. Output flows into postDecision.warnings,
+		// which the .mjs surfaces via formatProviderResponse's reason/summary
+		// channels per existing wiring.
+		if (event.tool_outcome === "error") {
+			try {
+				const channelsOutput = runFailureChannels({ event, session, cwd: CWD });
+				if (channelsOutput && channelsOutput.warnings.length > 0) {
+					if (!postDecision.warnings) postDecision.warnings = [];
+					postDecision.warnings.push(...channelsOutput.warnings);
+				}
+			} catch (e) {
+				// Fail-open: a channel-orchestrator crash must not abort the
+				// PostToolUse hook response. The local quality pipeline above
+				// stays authoritative; the recovery channel just becomes
+				// silent for this event.
+				log(`Failure-recovery channels error: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
 
 		// --- Content Scanner: scan Read/Grep results, ratchet session sensitivity on PII ---
 		// Never blocks (we're already past the read), but raises `session.sensitivity_level`
