@@ -5,6 +5,7 @@ import {
 	getExtension,
 	type InlineMatch,
 	isCliFile,
+	isScriptOrCliPath,
 	isTestFile,
 	scanLinesStripped,
 	stripCommentsAndStrings,
@@ -61,6 +62,11 @@ export function checkConsoleDebug(content: string, filePath: string): InlineMatc
 	if (isTestFile(filePath)) return [];
 	// Skip CLI entry points and command files — console.log is the correct output method
 	if (isCliFile(filePath)) return [];
+	// 139-repo audit: also exempt `cli/<deeper>`, `tools/`, and
+	// `tutorial[s]/` — `isCliFile`'s heuristics miss `cli/internal/setup/
+	// wizard.go` (Supermodel, 13 fmt.Println — interactive wizard) and
+	// tutorial fixtures intentionally print example output.
+	if (isScriptOrCliPath(filePath)) return [];
 
 	const normalized = filePath.replace(/\\/g, "/");
 	// Skip server entry points and scripts — console.log is the correct logging

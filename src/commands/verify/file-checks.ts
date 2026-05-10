@@ -163,6 +163,7 @@ import {
 } from "../../harness/taste-checks.js";
 import { computeCrap } from "../../harness/checks/crap.js";
 import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
+import { isGeneratedFile } from "../../harness/checks/shared.js";
 import {
 	coverageForFile,
 	loadCoverageFinal,
@@ -278,10 +279,10 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 
 	if (isDts) return;
 
-	// Strong typing — shared findAnyTypes (non-test only)
+	// Strong typing — shared findAnyTypes (non-test, non-generated only)
 	const base = basename(file, ext);
 	const isTest = base.endsWith(".test") || base.endsWith(".spec") || file.includes("__tests__");
-	if (!isTest && (ext === TS_EXT || ext === TSX_EXT)) {
+	if (!isTest && (ext === TS_EXT || ext === TSX_EXT) && !isGeneratedFile(content)) {
 		for (const m of findAnyTypes(content)) {
 			if (m.kind === ANY_KIND) {
 				r.strongTyping.push({
@@ -299,7 +300,7 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	);
 	r.silentCatches.push(...toIssues("silent_catches", relPath, checkSilentCatch(content, file)));
 
-	if (JS_TS_EXTS.has(ext)) {
+	if (JS_TS_EXTS.has(ext) && !isGeneratedFile(content)) {
 		collectSuppressionFindings(content, relPath, r.suppressions);
 	}
 
@@ -345,7 +346,7 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.missingReturnTypes.push(
 		...toIssues("missing_return_types", relPath, checkMissingReturnTypes(content, file)),
 	);
-	r.noTestFile.push(...toIssues("no_test_file", relPath, checkTestFileExists(file)));
+	r.noTestFile.push(...toIssues("no_test_file", relPath, checkTestFileExists(file, content)));
 	r.complexity.push(...toIssues("complexity", relPath, checkFunctionComplexity(content, file)));
 
 	// CRAP (Change Risk Anti-Patterns) — complexity × coverage composite.

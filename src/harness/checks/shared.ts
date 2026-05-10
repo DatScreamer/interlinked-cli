@@ -324,10 +324,16 @@ export function isGeneratedFile(content: string): boolean {
 export function isScriptOrCliPath(filePath: string): boolean {
 	const norm = filePath.replace(/\\/g, "/");
 	// `scripts/`, `script/`, `bin/`, `cli/`, `tools/`, `tool/`, `tutorial/`,
-	// `tutorials/` as a path segment — anchored start-of-string OR slash.
+	// `tutorials/`, `examples/`, `example/`, `demos/`, `demo/`, `samples/`,
+	// `sample/` as a path segment — anchored start-of-string OR slash.
+	// `examples/` added 2026-05 after Helicone audit found 99 console.log
+	// FPs in `ai-sdk-provider/examples/*.ts` — example code is print-by-design.
 	return (
 		/(^|\/)(?:scripts?|bin|cli|tools?)\//.test(norm) ||
-		/(^|\/)tutorials?\//.test(norm)
+		/(^|\/)tutorials?\//.test(norm) ||
+		/(^|\/)examples?\//.test(norm) ||
+		/(^|\/)demos?\//.test(norm) ||
+		/(^|\/)samples?\//.test(norm)
 	);
 }
 

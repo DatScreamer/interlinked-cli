@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import { isGeneratedFile } from "./checks/shared.js";
 import type { StructuralCheckResult } from "./types.js";
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
@@ -160,8 +161,12 @@ export function scanFilesWithoutTest(
 	reads: FileContent[],
 ): Array<{ file: string; expectedTest: string }> {
 	const out: Array<{ file: string; expectedTest: string }> = [];
-	for (const { file, isTest } of reads) {
+	for (const { file, isTest, content } of reads) {
 		if (isTest) continue;
+		// Generated files (OpenAPI codegen, protoc, etc.) don't have unit-test
+		// siblings by design — flagging them produces 67 FPs in one Supermodel
+		// sdk repo (139-repo audit, 2026-05).
+		if (isGeneratedFile(content)) continue;
 		const ext = extname(file);
 		const base = file.slice(0, -ext.length);
 		const dir = dirname(file);
