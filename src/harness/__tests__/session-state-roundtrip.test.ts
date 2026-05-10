@@ -58,8 +58,11 @@ describe("SessionTracker round-trip", () => {
 		const restored = reader.hydrate(snap as Record<string, unknown>);
 
 		expect(restored?.tool_call_count).toBe(3);
-		expect(restored?.files_read.size).toBe(1);
-		expect(restored?.files_written.size).toBe(1);
+		// Phase 1 path normalization stores BOTH raw + resolved-absolute
+		// forms so existing callers that pass either shape still match. For
+		// relative inputs that's two entries; absolute inputs collapse to one.
+		expect(restored?.files_read.has("src/a.ts")).toBe(true);
+		expect(restored?.files_written.has("src/b.ts")).toBe(true);
 		expect(restored?.commands_run).toEqual(["git status"]);
 		expect(restored?.local_tools_used).toBe(3);
 		expect(restored?.mcp_tools_used).toBe(0);
@@ -141,14 +144,18 @@ describe("SessionTracker round-trip", () => {
 
 	it("preserves the previously-missing 'consecutive_tool_failures' counter", () => {
 		const writer = new SessionTracker();
+		// Phase 1 outcome-aware gating: counter increments on
+		// `tool_outcome === "error"` (folded failures land on regular Post*
+		// for Claude/Codex/Gemini/Copilot — only Cursor uses the dedicated
+		// PostToolUseFailure event). Test both forms to pin the contract.
 		writer.recordEvent(
-			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash", tool_outcome: "error" }),
 		);
 		writer.recordEvent(
-			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+			baseEvent({ hook_event: "PostToolUse", tool_name: "Bash", tool_outcome: "error" }),
 		);
 		writer.recordEvent(
-			baseEvent({ hook_event: "PostToolUseFailure", tool_name: "Bash" }),
+			baseEvent({ hook_event: "PostToolUse", tool_name: "Bash", tool_outcome: "error" }),
 		);
 
 		const snap = writer.serialize("rtt-session");

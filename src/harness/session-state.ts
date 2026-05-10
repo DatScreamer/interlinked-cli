@@ -2,6 +2,8 @@
 // Session State — Per-session trajectory tracking
 // ===========================================
 
+import { resolve as resolvePath } from "node:path";
+
 import type { JsonObject } from "../lib/json-types.js";
 import type {
 	ActiveSkillRecord,
@@ -31,6 +33,23 @@ const SENSITIVITY_LEVELS: ReadonlySet<SensitivityLevel> = new Set([
 const DEFAULT_SKILL_TTL_MS = 30 * 60 * 1000;
 const MAX_SKILL_TTL_MS = 4 * 60 * 60 * 1000;
 const MIN_SKILL_TTL_MS = 60 * 1000;
+
+/** Phase 1 Channel 5 (rollback feasibility) provenance check. Returns true
+ *  iff the session has a successful write to this exact file in its trajectory.
+ *  Path-shape agnostic: matches whether the caller passes the raw form (as the
+ *  runner originally sent it) or the resolved absolute form. Without this, the
+ *  rollback channel would either miss legitimate edits (when stored shape !=
+ *  lookup shape) or attribute the user's own changes to Interlinked. */
+export function isFileTrackedAsWritten(
+	session: SessionTrajectory,
+	filePath: string,
+	cwd?: string,
+): boolean {
+	if (session.files_written.has(filePath)) return true;
+	const baseCwd = cwd ?? process.cwd();
+	const absPath = resolvePath(baseCwd, filePath);
+	return session.files_written.has(absPath);
+}
 
 export class SessionTracker {
 	private sessions: Map<string, SessionTrajectory> = new Map();
@@ -118,34 +137,57 @@ export class SessionTracker {
 			}
 		}
 
-		// Track errors
-		if (event.hook_event === "PostToolUseFailure") {
+		// Track errors. Outcome-gated, not event-name-gated: Claude/Codex/
+		// Gemini/Copilot fold tool failures into the regular Post* event
+		// carrying tool_outcome === "error", and Cursor's dedicated
+		// postToolUseFailure also produces tool_outcome === "error" via the
+		// attachOutcome call in the normalizer. The previous event-name gates
+		// were inverted for folded failures — error_count never bumped, and
+		// consecutive_tool_failures was *cleared* by the very events that
+		// should have incremented it. Phase 1 channels (recurrence, triage,
+		// recovery) read these counters to make decisions.
+		if (event.tool_outcome === "error") {
 			session.error_count++;
 			if (event.tool_name) {
 				const prev = session.consecutive_tool_failures.get(event.tool_name) || 0;
 				session.consecutive_tool_failures.set(event.tool_name, prev + 1);
 			}
-		} else if (event.hook_event === "PostToolUse" && event.tool_name) {
-			// Any success for this tool resets the consecutive counter.
+		} else if (event.tool_outcome === "success" && event.tool_name) {
+			// A successful invocation of this tool resets the consecutive counter.
 			session.consecutive_tool_failures.delete(event.tool_name);
 		}
 
-		// Track file operations
+		// Track file operations. Provenance gate (Channel 5 rollback feasibility)
+		// requires that files_written contains only paths we actually wrote
+		// successfully — gating on tool_outcome === "success" prevents a failed
+		// Edit attempt from being attributed to us. Path normalization stores
+		// BOTH the raw form (preserves existing `.has(rawPath)` consumers in
+		// structural-checks / behavioral-checks / suggestion-scorer) AND the
+		// resolved absolute form (lets the new Channel 5 provenance check do
+		// `.has(resolve(cwd, p))` reliably regardless of input shape).
 		const filePath = event.tool_input?.file_path as string | undefined;
+		const eventCwd = event.cwd ?? process.cwd();
 		if (filePath && event.tool_name) {
+			const absPath = resolvePath(eventCwd, filePath);
 			if (isReadOperation(event.tool_name)) {
 				session.files_read.add(filePath);
+				if (absPath !== filePath) session.files_read.add(absPath);
 				session.file_read_at.set(filePath, session.tool_call_count);
 			}
 			if (isWriteOperation(event.tool_name)) {
-				session.files_written.add(filePath);
-				session.file_write_times.set(filePath, event.timestamp);
-				session.file_edit_counts.set(
-					filePath,
-					(session.file_edit_counts.get(filePath) || 0) + 1,
-				);
-				// Clear acknowledged checks for this file — a new edit may
-				// introduce genuinely different issues.
+				const writeSucceeded = event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
+				if (writeSucceeded) {
+					session.files_written.add(filePath);
+					if (absPath !== filePath) session.files_written.add(absPath);
+					session.file_write_times.set(filePath, event.timestamp);
+					session.file_edit_counts.set(
+						filePath,
+						(session.file_edit_counts.get(filePath) || 0) + 1,
+					);
+				}
+				// Clear acknowledged checks for this file — a new edit (even
+				// a failed one) may introduce genuinely different issues on
+				// the next attempt.
 				clearAcknowledgedChecksForFile(session, filePath);
 			}
 
