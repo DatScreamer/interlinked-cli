@@ -87,6 +87,12 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/generic-checks.ts` | Compatibility barrel re-exporting from `checks/<family>.ts`. Do not add new detectors here; import from `checks/<family>.js` directly. |
 | `src/harness/check-registry.ts` | Compatibility shim that auto-re-exports from `check-registry/index.js`. Do not edit. |
 
+**Stop-event reflection helpers** (formatters returning `string | null`, called from the `server.ts` Stop / SessionEnd branch; never block — all stderr warnings only):
+| File | Purpose |
+|------|---------|
+| `src/harness/commit-cadence.ts` | Stop nudge when too many uncommitted code-file edits this session + mid-session backstop. Escalates wording by session token band. Says "Don't push." |
+| `src/harness/verification-stop-checks.ts` | Three nudges: unverified code (no tsc/test/lint/build), UI not interacted (no dev-server / browser MCP), stubs introduced (TODO/FIXME/disabled-test/throw-not-impl). Signal capture lives in `session-state.ts` (trajectory signals) and `evaluator/post-tool.ts` (content scan). See `docs/design/stop-event-checks.md` for the Tier 2 / 3 backlog. |
+
 ### Agent-quality checks (added 2026-04)
 
 Ten new cold-agent-clarity checks landed as part of the agent-quality rollout

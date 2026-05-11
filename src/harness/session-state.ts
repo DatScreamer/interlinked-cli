@@ -17,6 +17,10 @@ import type {
 	TddCycle,
 	WarningRecord,
 } from "./types.js";
+import {
+	classifyBrowserToolName,
+	classifyVerificationCommand,
+} from "./verification-stop-checks.js";
 
 /** Bumped when the serialized snapshot shape changes incompatibly. Hydrate
  *  refuses snapshots from a higher version (newer harness wrote it) and
@@ -109,6 +113,8 @@ export class SessionTracker {
 				mid_session_nudge_emitted: false,
 				stop_nudge_emitted: false,
 				assertion_counts: new Map(),
+				verification_observed: new Set(),
+				stubs_introduced: [],
 			};
 			this.sessions.set(event.session_id, session);
 		}
@@ -134,6 +140,15 @@ export class SessionTracker {
 			session.tool_sequence.push(`${event.tool_name}:${target}`);
 			if (session.tool_sequence.length > 20) {
 				session.tool_sequence = session.tool_sequence.slice(-20);
+			}
+
+			// Verification-before-stop: record browser-MCP interactions as
+			// a UI verification signal. Bash-command verification signals are
+			// captured below in the command-tracking block.
+			const browserKind = classifyBrowserToolName(event.tool_name);
+			if (browserKind) {
+				if (!session.verification_observed) session.verification_observed = new Set();
+				session.verification_observed.add(browserKind);
 			}
 		}
 
@@ -205,6 +220,16 @@ export class SessionTracker {
 			session.commands_run.push(command.length > 200 ? command.slice(0, 200) : command);
 			if (session.commands_run.length > 100) {
 				session.commands_run = session.commands_run.slice(-100);
+			}
+
+			// Verification-before-stop: classify the command for verification
+			// signals (typecheck / test / lint / build / dev-server) and record
+			// the first matching kind. We track *intent to verify* — a failed
+			// `bun test` still counts because the agent did engage the verifier.
+			const cmdKind = classifyVerificationCommand(command);
+			if (cmdKind) {
+				if (!session.verification_observed) session.verification_observed = new Set();
+				session.verification_observed.add(cmdKind);
 			}
 		}
 
@@ -297,6 +322,8 @@ export class SessionTracker {
 			assertion_counts: Object.fromEntries(
 				[...s.assertion_counts.entries()].map(([k, v]) => [k, { ...v }]),
 			),
+			verification_observed: s.verification_observed ? [...s.verification_observed] : [],
+			stubs_introduced: s.stubs_introduced ? s.stubs_introduced.map((e) => ({ ...e })) : [],
 		};
 	}
 
@@ -369,6 +396,8 @@ export class SessionTracker {
 			mid_session_nudge_emitted: readBoolean(snapshot.mid_session_nudge_emitted),
 			stop_nudge_emitted: readBoolean(snapshot.stop_nudge_emitted),
 			assertion_counts: readAssertionCountsMap(snapshot.assertion_counts),
+			verification_observed: readStringSet(snapshot.verification_observed),
+			stubs_introduced: readStubsIntroduced(snapshot.stubs_introduced),
 		};
 
 		this.sessions.set(sessionId, session);
@@ -476,6 +505,22 @@ function readStringArray(v: unknown): string[] {
 function readNumberArray(v: unknown): number[] {
 	if (!Array.isArray(v)) return [];
 	return v.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+}
+
+function readStubsIntroduced(
+	v: unknown,
+): Array<{ file: string; kind: string; snippet: string }> {
+	if (!Array.isArray(v)) return [];
+	const out: Array<{ file: string; kind: string; snippet: string }> = [];
+	for (const e of v) {
+		if (!e || typeof e !== "object") continue;
+		const r = e as Record<string, unknown>;
+		if (typeof r.file !== "string" || typeof r.kind !== "string" || typeof r.snippet !== "string") {
+			continue;
+		}
+		out.push({ file: r.file, kind: r.kind, snippet: r.snippet });
+	}
+	return out;
 }
 
 function readStringMap(v: unknown): Map<string, string> {

@@ -680,6 +680,8 @@ export interface GuardRulesConfig {
 	project_wide_checks?: ProjectWideCheckConfig;
 	/** Commit-cadence nudges (Stop-hook + mid-session backstop). See CommitCadenceConfig. */
 	commit_cadence?: CommitCadenceConfig;
+	/** Verification-before-stop nudges (unverified-code, ui-not-interacted, stubs-introduced). See VerificationStopChecksConfig. */
+	verification_stop_checks?: VerificationStopChecksConfig;
 	/**
 	 * Grep accelerator substitution (block-and-answer for rg/grep/Grep).
 	 * Disabled by default — the substitution bypasses content scanners,
@@ -694,6 +696,20 @@ export interface GuardRulesConfig {
 		/** Default: false. Set to true to restore the block-and-answer path. */
 		substitution_enabled?: boolean;
 	};
+}
+
+/** Verification-before-stop nudge configuration. Three independent
+ *  Stop / SessionEnd warnings, all stderr-only, all opt-out per-kind:
+ *    - warn_unverified_code: code-file edits with no tsc/test/lint/build
+ *    - warn_ui_not_interacted: UI-file edits with no dev-server / browser MCP
+ *    - warn_stubs_introduced: TODO/FIXME/disabled-test/not-impl-throw
+ *      surfaced via Write/Edit content during the session
+ *  Master `enabled` switch gates all three together. */
+export interface VerificationStopChecksConfig {
+	enabled: boolean;
+	warn_unverified_code: boolean;
+	warn_ui_not_interacted: boolean;
+	warn_stubs_introduced: boolean;
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /
@@ -959,6 +975,24 @@ export interface SessionTrajectory {
 	 * First-sight of any test file silently establishes baseline.
 	 */
 	assertion_counts: Map<string, AssertionCounts>;
+	/**
+	 * Verification-before-stop tracking. Set of `VerificationSignal` kinds
+	 * observed during the session — populated by `session-state.ts` from
+	 * Bash commands (typecheck/test/lint/build/dev-server) and MCP browser
+	 * tool names. Read at Stop by the three verify-before-stop nudges in
+	 * `verification-stop-checks.ts`. Optional so hand-built test fixtures
+	 * don't need to wire it.
+	 */
+	verification_observed?: Set<string>;
+	/**
+	 * Verification-before-stop tracking. Stubs / TODOs / disabled tests /
+	 * not-implemented throws introduced via Write/Edit `content` /
+	 * `new_string` this session. Populated by the post-tool evaluator's
+	 * stub scanner (`scanForStubs`); read at Stop by
+	 * `formatStubsIntroducedWarning`. Capped at `STUB_INTRODUCED_CAP`
+	 * entries to keep long-session memory bounded.
+	 */
+	stubs_introduced?: Array<{ file: string; kind: string; snippet: string }>;
 }
 
 // ===========================================

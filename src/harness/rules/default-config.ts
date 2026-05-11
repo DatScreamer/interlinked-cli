@@ -714,6 +714,25 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			"**/PLAN*.md",
 		],
 	},
+	verification_stop_checks: {
+		// Default-on: stderr-only Stop / SessionEnd reflection nudges, never
+		// block. Three independent axes:
+		//   - warn_unverified_code: code edits with no tsc/test/lint/build
+		//     observed this session (signals captured at PreToolUse).
+		//   - warn_ui_not_interacted: UI-file edits with no dev-server or
+		//     chrome-devtools/playwright MCP call (type-checking is not
+		//     feature-checking, per feedback_landing_test_before_push.md).
+		//   - warn_stubs_introduced: TODO/FIXME/disabled-test/throw-not-
+		//     implemented patterns pushed into Write/Edit content during
+		//     the session (scanned at PostToolUse).
+		// Flip per-kind to false in `.interlinked/guard-rules.local.json` to
+		// disable individual checks; flip the master `enabled` to silence
+		// all three.
+		enabled: true,
+		warn_unverified_code: true,
+		warn_ui_not_interacted: true,
+		warn_stubs_introduced: true,
+	},
 	content_scanner: {
 		// Off by default — local runtime needs `pip install opf`; users opt in via
 		// `.interlinked/guard-rules.local.json` → `"content_scanner": {"enabled": true}`.

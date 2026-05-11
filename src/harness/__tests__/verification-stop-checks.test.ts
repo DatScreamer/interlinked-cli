@@ -1,0 +1,356 @@
+import { describe, expect, it } from "vitest";
+import {
+	classifyBrowserToolName,
+	classifyVerificationCommand,
+	countCodeFilesEdited,
+	countUiFilesEdited,
+	formatStubsIntroducedWarning,
+	formatUiNotInteractedWarning,
+	formatUnverifiedCodeWarning,
+	isCodeFile,
+	isUiFile,
+	scanForStubs,
+	STUB_INTRODUCED_CAP,
+} from "../verification-stop-checks.js";
+
+describe("classifyVerificationCommand", () => {
+	it("classifies typechecker invocations", () => {
+		expect(classifyVerificationCommand("tsc --noEmit")).toBe("typecheck");
+		expect(classifyVerificationCommand("npx tsc -p tsconfig.json")).toBe("typecheck");
+		expect(classifyVerificationCommand("ttsc")).toBe("typecheck");
+	});
+
+	it("classifies test runners across ecosystems", () => {
+		expect(classifyVerificationCommand("bun run test")).toBe("test");
+		expect(classifyVerificationCommand("npm test")).toBe("test");
+		expect(classifyVerificationCommand("npx vitest run")).toBe("test");
+		expect(classifyVerificationCommand("pytest -xvs tests/")).toBe("test");
+		expect(classifyVerificationCommand("cargo test")).toBe("test");
+		expect(classifyVerificationCommand("cargo nextest run")).toBe("test");
+		expect(classifyVerificationCommand("go test ./...")).toBe("test");
+	});
+
+	it("classifies linters and biome/clippy as lint", () => {
+		expect(classifyVerificationCommand("npx biome check")).toBe("lint");
+		expect(classifyVerificationCommand("eslint .")).toBe("lint");
+		expect(classifyVerificationCommand("oxlint src/")).toBe("lint");
+		expect(classifyVerificationCommand("ruff check .")).toBe("lint");
+		expect(classifyVerificationCommand("cargo clippy")).toBe("lint");
+		expect(classifyVerificationCommand("cargo check")).toBe("lint");
+	});
+
+	it("classifies project builds", () => {
+		expect(classifyVerificationCommand("npm run build")).toBe("build");
+		expect(classifyVerificationCommand("bun run build")).toBe("build");
+		expect(classifyVerificationCommand("cargo build --release")).toBe("build");
+		expect(classifyVerificationCommand("go build ./...")).toBe("build");
+		// `tsc --build` is intentionally classified as typecheck rather than
+		// build: tsc is foremost a typechecker, and both signals satisfy the
+		// correctness gate in the unverified-code check, so the user-visible
+		// behavior is identical. The first-match-wins regex order documents
+		// the priority.
+		expect(classifyVerificationCommand("tsc --build")).toBe("typecheck");
+	});
+
+	it("classifies dev-server starters", () => {
+		expect(classifyVerificationCommand("wrangler dev")).toBe("dev-server");
+		expect(classifyVerificationCommand("npm run dev")).toBe("dev-server");
+		expect(classifyVerificationCommand("bun run dev")).toBe("dev-server");
+		expect(classifyVerificationCommand("vite")).toBe("dev-server");
+		expect(classifyVerificationCommand("next dev")).toBe("dev-server");
+	});
+
+	it("returns null for unrelated commands", () => {
+		expect(classifyVerificationCommand("git status")).toBeNull();
+		expect(classifyVerificationCommand("ls -la")).toBeNull();
+		expect(classifyVerificationCommand("npm install lodash")).toBeNull();
+		// Watch mode of typechecker is also a verification signal — `tsc --watch`
+		// matches the typecheck regex (does not require --noEmit/--build).
+		// Commands that merely mention "tsc" as a path component, however, must
+		// not: e.g. /opt/tsconfig-helper.sh — guarded by the word-boundary anchor.
+		expect(classifyVerificationCommand("./tsconfig-helper.sh")).toBeNull();
+	});
+});
+
+describe("classifyBrowserToolName", () => {
+	it("classifies chrome-devtools MCP tools as browser interaction", () => {
+		expect(classifyBrowserToolName("mcp__chrome-devtools__navigate_page")).toBe("browser");
+		expect(classifyBrowserToolName("mcp__chrome-devtools__take_screenshot")).toBe("browser");
+	});
+
+	it("classifies playwright browser_* MCP tools as browser interaction", () => {
+		expect(classifyBrowserToolName("mcp__playwright__browser_navigate")).toBe("browser");
+		expect(classifyBrowserToolName("mcp__playwright__browser_click")).toBe("browser");
+	});
+
+	it("returns null for unrelated tools", () => {
+		expect(classifyBrowserToolName(undefined)).toBeNull();
+		expect(classifyBrowserToolName("Bash")).toBeNull();
+		expect(classifyBrowserToolName("Write")).toBeNull();
+		expect(classifyBrowserToolName("mcp__some-other-server__do_thing")).toBeNull();
+	});
+});
+
+describe("isUiFile / isCodeFile", () => {
+	it("isUiFile matches the component-framework + markup/style extensions", () => {
+		expect(isUiFile("src/App.tsx")).toBe(true);
+		expect(isUiFile("components/Button.jsx")).toBe(true);
+		expect(isUiFile("pages/Index.vue")).toBe(true);
+		expect(isUiFile("routes/_index.svelte")).toBe(true);
+		expect(isUiFile("layouts/Default.astro")).toBe(true);
+		expect(isUiFile("public/index.html")).toBe(true);
+		expect(isUiFile("styles/main.css")).toBe(true);
+		expect(isUiFile("styles/main.scss")).toBe(true);
+	});
+
+	it("isUiFile does NOT match plain ts/js or back-end files", () => {
+		expect(isUiFile("src/server.ts")).toBe(false);
+		expect(isUiFile("src/util.js")).toBe(false);
+		expect(isUiFile("src/api.py")).toBe(false);
+	});
+
+	it("isCodeFile matches source code across languages", () => {
+		expect(isCodeFile("src/index.ts")).toBe(true);
+		expect(isCodeFile("src/index.tsx")).toBe(true);
+		expect(isCodeFile("server.py")).toBe(true);
+		expect(isCodeFile("main.rs")).toBe(true);
+		expect(isCodeFile("main.go")).toBe(true);
+		expect(isCodeFile("script.sh")).toBe(true);
+	});
+
+	it("isCodeFile excludes doc/markdown/plan files", () => {
+		expect(isCodeFile("README.md")).toBe(false);
+		expect(isCodeFile("docs/intro.mdx")).toBe(false);
+		expect(isCodeFile("CLAUDE.md")).toBe(false);
+		expect(isCodeFile("plans/q3.yaml")).toBe(false);
+	});
+
+	it("isCodeFile excludes config/data files", () => {
+		expect(isCodeFile("package.json")).toBe(false);
+		expect(isCodeFile("bun.lock")).toBe(false);
+		expect(isCodeFile("Cargo.toml")).toBe(false);
+	});
+});
+
+describe("scanForStubs", () => {
+	it("matches TODO with delimiter", () => {
+		const stubs = scanForStubs("// TODO: implement this");
+		expect(stubs).toHaveLength(1);
+		expect(stubs[0]?.kind).toBe("TODO");
+		expect(stubs[0]?.snippet).toContain("TODO: implement this");
+	});
+
+	it("matches FIXME", () => {
+		const stubs = scanForStubs("function foo() { /* FIXME — broken */ }");
+		expect(stubs.map((s) => s.kind)).toContain("FIXME");
+	});
+
+	it("matches not-implemented throw forms", () => {
+		const stubs = scanForStubs('function bar() { throw new Error("not implemented"); }');
+		expect(stubs.map((s) => s.kind)).toContain("not-implemented-throw");
+	});
+
+	it("matches throw new Error('TODO ...') variants", () => {
+		const stubs = scanForStubs(`throw new TypeError("TODO: handle stripe webhook")`);
+		expect(stubs.map((s) => s.kind)).toContain("not-implemented-throw");
+	});
+
+	it("matches disabled tests (.skip and xit / xdescribe)", () => {
+		expect(scanForStubs("it.skip('flaky', () => {});").map((s) => s.kind)).toContain(
+			"disabled-test",
+		);
+		expect(scanForStubs("test.skip('TODO', () => {});").map((s) => s.kind)).toContain(
+			"disabled-test",
+		);
+		expect(scanForStubs("describe.skip('legacy', () => {});").map((s) => s.kind)).toContain(
+			"disabled-test",
+		);
+		expect(scanForStubs("xit('was broken', () => {});").map((s) => s.kind)).toContain(
+			"disabled-test",
+		);
+	});
+
+	it("returns at most one match per kind even when multiple appear", () => {
+		const content = "// TODO: one\n// TODO: two\n// FIXME: three";
+		const stubs = scanForStubs(content);
+		const kinds = stubs.map((s) => s.kind);
+		expect(kinds.filter((k) => k === "TODO")).toHaveLength(1);
+		expect(kinds.filter((k) => k === "FIXME")).toHaveLength(1);
+	});
+
+	it("does NOT match TODO embedded inside identifiers", () => {
+		const stubs = scanForStubs("const KOMODOItem = 1;\nfunction MyTODOList() {}");
+		expect(stubs.map((s) => s.kind)).not.toContain("TODO");
+	});
+
+	it("returns empty array for empty / non-string input", () => {
+		expect(scanForStubs("")).toEqual([]);
+		expect(scanForStubs("just a plain line")).toEqual([]);
+		// @ts-expect-error — null is not a string, but the function should
+		// guard against it rather than throw on hostile callers.
+		expect(scanForStubs(null)).toEqual([]);
+	});
+
+	it("truncates long lines to ~120 chars in the snippet", () => {
+		const content = "// TODO: " + "a".repeat(300);
+		const stubs = scanForStubs(content);
+		expect(stubs[0]?.snippet.length).toBeLessThanOrEqual(120);
+		expect(stubs[0]?.snippet.endsWith("...")).toBe(true);
+	});
+
+	it("exports a non-trivial cap constant", () => {
+		expect(STUB_INTRODUCED_CAP).toBeGreaterThanOrEqual(10);
+	});
+});
+
+describe("formatUnverifiedCodeWarning", () => {
+	it("returns null when no code files were edited", () => {
+		expect(
+			formatUnverifiedCodeWarning({
+				codeFilesEdited: 0,
+				verificationObserved: new Set(),
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when any correctness signal was observed", () => {
+		for (const signal of ["typecheck", "test", "lint", "build"]) {
+			expect(
+				formatUnverifiedCodeWarning({
+					codeFilesEdited: 3,
+					verificationObserved: new Set([signal]),
+				}),
+			).toBeNull();
+		}
+	});
+
+	it("returns null when only dev-server / browser signals seen (not correctness)", () => {
+		// Hitting only the dev server doesn't prove the code typechecks or tests pass.
+		// This is the case the unverified-code check exists to catch.
+		expect(
+			formatUnverifiedCodeWarning({
+				codeFilesEdited: 1,
+				verificationObserved: new Set(["dev-server"]),
+			}),
+		).not.toBeNull();
+	});
+
+	it("warns with the file count when unverified", () => {
+		const msg = formatUnverifiedCodeWarning({
+			codeFilesEdited: 4,
+			verificationObserved: new Set(),
+		});
+		expect(msg).toMatch(/4 code file edit\(s\)/);
+		expect(msg).toMatch(/tsc \/ test \/ lint \/ build/);
+		expect(msg).toMatch(/Don't claim done on unverified work/);
+	});
+});
+
+describe("formatUiNotInteractedWarning", () => {
+	it("returns null when no UI files were edited", () => {
+		expect(
+			formatUiNotInteractedWarning({
+				uiFilesEdited: 0,
+				verificationObserved: new Set(),
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when a dev server was started", () => {
+		expect(
+			formatUiNotInteractedWarning({
+				uiFilesEdited: 2,
+				verificationObserved: new Set(["dev-server"]),
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when a browser MCP tool was used", () => {
+		expect(
+			formatUiNotInteractedWarning({
+				uiFilesEdited: 2,
+				verificationObserved: new Set(["browser"]),
+			}),
+		).toBeNull();
+	});
+
+	it("warns when only typecheck/test/build/lint were seen but no browser/dev-server", () => {
+		// Type-checking is not feature-checking.
+		const msg = formatUiNotInteractedWarning({
+			uiFilesEdited: 1,
+			verificationObserved: new Set(["typecheck", "test"]),
+		});
+		expect(msg).toMatch(/UI file edit\(s\)/);
+		expect(msg).toMatch(/Type-checking is not feature-checking/);
+	});
+});
+
+describe("formatStubsIntroducedWarning", () => {
+	it("returns null when no stubs were tracked", () => {
+		expect(formatStubsIntroducedWarning({ stubs: [] })).toBeNull();
+	});
+
+	it("includes file basenames and kinds for the first few stubs", () => {
+		const msg = formatStubsIntroducedWarning({
+			stubs: [
+				{ file: "/repo/src/foo.ts", kind: "TODO", snippet: "// TODO: implement" },
+				{ file: "/repo/src/bar.ts", kind: "FIXME", snippet: "// FIXME broken" },
+			],
+		});
+		expect(msg).toMatch(/2 stub \/ TODO \/ disabled-test addition\(s\)/);
+		expect(msg).toContain("foo.ts");
+		expect(msg).toContain("bar.ts");
+		expect(msg).toContain("[TODO]");
+		expect(msg).toContain("[FIXME]");
+	});
+
+	it("truncates to maxShown and adds an 'and N more' suffix", () => {
+		const stubs = Array.from({ length: 12 }, (_, i) => ({
+			file: `src/file-${i}.ts`,
+			kind: "TODO",
+			snippet: `// TODO ${i}`,
+		}));
+		const msg = formatStubsIntroducedWarning({ stubs, maxShown: 5 });
+		expect(msg).toContain("...and 7 more");
+		// Only the first 5 file basenames should be shown
+		expect(msg).toContain("file-0.ts");
+		expect(msg).toContain("file-4.ts");
+		expect(msg).not.toContain("file-5.ts");
+	});
+});
+
+describe("countCodeFilesEdited / countUiFilesEdited", () => {
+	it("counts code files written, excluding docs", () => {
+		const set = new Set([
+			"src/foo.ts",
+			"src/bar.py",
+			"README.md",
+			"docs/intro.mdx",
+			"package.json",
+		]);
+		expect(countCodeFilesEdited(set)).toBe(2);
+	});
+
+	it("counts UI files written", () => {
+		const set = new Set([
+			"src/Button.tsx",
+			"src/util.ts",
+			"src/page.svelte",
+			"src/server.py",
+			"styles/main.css",
+		]);
+		expect(countUiFilesEdited(set)).toBe(3);
+	});
+
+	it("dedupes raw + absolute forms of the same file", () => {
+		// session-state.ts stores both forms when the resolved abs differs from raw.
+		// The counter should treat them as one file.
+		const set = new Set(["src/foo.ts", "/Users/me/proj/src/foo.ts"]);
+		expect(countCodeFilesEdited(set)).toBe(1);
+	});
+
+	it("returns 0 on an empty set", () => {
+		expect(countCodeFilesEdited(new Set())).toBe(0);
+		expect(countUiFilesEdited(new Set())).toBe(0);
+	});
+});

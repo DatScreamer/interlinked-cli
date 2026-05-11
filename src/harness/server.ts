@@ -111,6 +111,13 @@ import {
 	runQualityChecks,
 } from "./quality-checks.js";
 import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
+import {
+	countCodeFilesEdited,
+	countUiFilesEdited,
+	formatStubsIntroducedWarning,
+	formatUiNotInteractedWarning,
+	formatUnverifiedCodeWarning,
+} from "./verification-stop-checks.js";
 import { recordHarnessCaught } from "./recurrence.js";
 import { runFailureChannels } from "./failure-channels.js";
 import { ReservationManager } from "./reservations.js";
@@ -727,6 +734,44 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					log(
 						`Commit-cadence Stop nudge: ${nonDocCount} uncommitted code files, ${docCount} doc files excluded, tokens=${tokens?.total ?? "n/a"}`,
 					);
+				}
+			}
+
+			// Verification-before-stop nudges — three independent reflection
+			// warnings keyed off the verification_observed / stubs_introduced
+			// session fields populated by session-state.ts (signals) and the
+			// post-tool evaluator (stubs). All stderr-only; none block. See
+			// docs/external-pulse/failproofai.md §"smarter Stop hooks" for the
+			// design rationale and docs/design/stop-event-checks.md for the
+			// tier-2/3 backlog.
+			const vsc = rules.verification_stop_checks;
+			if (vsc?.enabled && session) {
+				const verificationObserved = session.verification_observed ?? new Set<string>();
+				if (vsc.warn_unverified_code) {
+					const codeFilesEdited = countCodeFilesEdited(session.files_written);
+					const warning = formatUnverifiedCodeWarning({ codeFilesEdited, verificationObserved });
+					if (warning !== null) {
+						turnWarnings.push(warning);
+						log(
+							`Verify-before-stop: unverified-code (${codeFilesEdited} files, signals=${[...verificationObserved].join(",") || "none"})`,
+						);
+					}
+				}
+				if (vsc.warn_ui_not_interacted) {
+					const uiFilesEdited = countUiFilesEdited(session.files_written);
+					const warning = formatUiNotInteractedWarning({ uiFilesEdited, verificationObserved });
+					if (warning !== null) {
+						turnWarnings.push(warning);
+						log(`Verify-before-stop: ui-not-interacted (${uiFilesEdited} files)`);
+					}
+				}
+				if (vsc.warn_stubs_introduced) {
+					const stubs = session.stubs_introduced ?? [];
+					const warning = formatStubsIntroducedWarning({ stubs });
+					if (warning !== null) {
+						turnWarnings.push(warning);
+						log(`Verify-before-stop: stubs-introduced (${stubs.length})`);
+					}
 				}
 			}
 
