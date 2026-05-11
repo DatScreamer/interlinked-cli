@@ -163,6 +163,10 @@ export interface QualityCheckOptions {
 	 *  `shouldRunAdvisoryChecks`). Optional — direct test callers
 	 *  that pass nothing run all checks (legacy behavior). */
 	filePriority?: Map<string, FilePriority>;
+	/** Diagnostic: called after each inline check iteration with the check's
+	 *  name. Lets the daemon record per-check elapsed ms into `phase_breakdown`
+	 *  so an inline residual spike can be pinned to a specific check name. */
+	onCheckBoundary?: (name: string) => void;
 }
 
 /**
@@ -598,6 +602,10 @@ export async function runQualityChecks(
 			}
 			// Other errors: log but don't propagate
 		}
+		// Per-check phase boundary for diagnostic instrumentation. Fires
+		// even when the check was a no-op or timed out — the boundary
+		// captures wall time spent on this iteration's branch regardless.
+		options?.onCheckBoundary?.(`inline_${name}`);
 	}
 
 	// Yield between the subprocess-check loop and the inline-check block —
