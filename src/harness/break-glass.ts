@@ -41,7 +41,7 @@ function extractReason(message: string): string | null {
 	// deliberately exclude newlines from the separator class (so \s would be
 	// wrong here — it matches \n) to prevent the regex from bleeding into
 	// the next line and picking up unrelated content like Co-authored-by.
-	const match = /\bbreak\s+glass\b[: \t-]*([^\n]*)/i.exec(message);
+	const match = /\bbreak\s+glass\b[:, \t-]*([^\n]*)/i.exec(message);
 	if (!match?.[1]) return null;
 	const cleaned = match[1].trim();
 	return cleaned.length > 0 ? cleaned : null;
@@ -133,16 +133,22 @@ export interface BreakGlassStats {
 	distinct_days: number;
 }
 
+const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Roll up recent break-glass usage. Caller supplies the window (default
  *  7 days). Rate interpretation is the caller's responsibility — we only
  *  hand back the raw count; division by total commits/events requires
- *  coordinating with the broader telemetry spool. */
+ *  coordinating with the broader telemetry spool.
+ *
+ *  `clock` is injectable so tests can pin "now" without monkey-patching
+ *  globals; production callers omit it and get `Date.now`. */
 export function summarizeBreakGlass(
 	cwd: string,
-	windowMs: number = 7 * 24 * 60 * 60 * 1000,
+	windowMs: number = DEFAULT_WINDOW_MS,
+	clock: () => number = Date.now,
 ): BreakGlassStats {
 	const entries = readBreakGlassLog(cwd);
-	const cutoff = Date.now() - windowMs;
+	const cutoff = clock() - windowMs;
 	const recent: BreakGlassEntry[] = [];
 	const distinctDays = new Set<string>();
 	for (const entry of entries) {

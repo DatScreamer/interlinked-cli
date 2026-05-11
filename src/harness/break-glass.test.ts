@@ -47,6 +47,11 @@ describe("detectBreakGlass — matching", () => {
 		expect(sig.reason).toBe("CI pipeline is down");
 	});
 
+	it("captures reason after a comma", () => {
+		const sig = detectBreakGlass("fix: x\nbreak glass, CI pipeline is down");
+		expect(sig.reason).toBe("CI pipeline is down");
+	});
+
 	it("returns null reason when no trailing text", () => {
 		const sig = detectBreakGlass("fix all the things\nbreak glass\n\nCo-authored-by: x");
 		expect(sig.triggered).toBe(true);
