@@ -187,6 +187,42 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "no boolean traps",
 		color: "31",
 	},
+	// Mythos Phase 2 — comment-vs-behavior drift detectors.
+	{
+		label: "comment claims limit",
+		key: "commentClaimsLimitNoGuard",
+		noun: 'functions whose comment says "max N" / "limited to N" without a guard',
+		passLabel: "no comment-claims-limit drift",
+		color: "33",
+	},
+	{
+		label: "comment claims null",
+		key: "commentClaimsNullThrowsInstead",
+		noun: 'functions whose comment says "returns null" but body throws',
+		passLabel: "no comment-claims-null drift",
+		color: "33",
+	},
+	{
+		label: "comment claims validation",
+		key: "commentClaimsValidationMissing",
+		noun: 'functions whose comment says "validates/sanitizes/escapes" without any check',
+		passLabel: "no comment-claims-validation drift",
+		color: "33",
+	},
+	{
+		label: "comment claims idempotent",
+		key: "commentClaimsIdempotentMutates",
+		noun: 'functions whose comment says "idempotent" but body mutates unconditionally',
+		passLabel: "no comment-claims-idempotent drift",
+		color: "33",
+	},
+	{
+		label: "comment claims throws",
+		key: "commentClaimsThrowsDoesnt",
+		noun: "functions whose @throws {ErrorX} declaration isn't actually thrown",
+		passLabel: "no comment-claims-throws drift",
+		color: "33",
+	},
 	{
 		label: "iterator invalidation",
 		key: "iteratorInvalidation",

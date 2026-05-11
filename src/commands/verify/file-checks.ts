@@ -19,6 +19,11 @@ import {
 	checkAsyncPromiseExecutor,
 	checkBooleanTrap,
 	checkBroadObjectTypes,
+	checkCommentClaimsIdempotentMutates,
+	checkCommentClaimsLimitNoGuard,
+	checkCommentClaimsNullThrowsInstead,
+	checkCommentClaimsThrowsDoesnt,
+	checkCommentClaimsValidationMissing,
 	checkCatchAndLog,
 	checkCircularImports,
 	checkCleanupSkippedOnEarlyExit,
@@ -401,6 +406,42 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 		...toIssues("broad_object_types", relPath, checkBroadObjectTypes(content, file)),
 	);
 	r.booleanTrap.push(...toIssues("boolean_trap", relPath, checkBooleanTrap(content, file)));
+	// Comment-vs-behavior drift (Mythos Phase 2 verify-side wiring).
+	r.commentClaimsLimitNoGuard.push(
+		...toIssues(
+			"comment_claims_limit_no_guard",
+			relPath,
+			checkCommentClaimsLimitNoGuard(content, file),
+		),
+	);
+	r.commentClaimsNullThrowsInstead.push(
+		...toIssues(
+			"comment_claims_null_throws_instead",
+			relPath,
+			checkCommentClaimsNullThrowsInstead(content, file),
+		),
+	);
+	r.commentClaimsValidationMissing.push(
+		...toIssues(
+			"comment_claims_validation_missing",
+			relPath,
+			checkCommentClaimsValidationMissing(content, file),
+		),
+	);
+	r.commentClaimsIdempotentMutates.push(
+		...toIssues(
+			"comment_claims_idempotent_mutates",
+			relPath,
+			checkCommentClaimsIdempotentMutates(content, file),
+		),
+	);
+	r.commentClaimsThrowsDoesnt.push(
+		...toIssues(
+			"comment_claims_throws_doesnt",
+			relPath,
+			checkCommentClaimsThrowsDoesnt(content, file),
+		),
+	);
 	r.iteratorInvalidation.push(
 		...toIssues("iterator_invalidation", relPath, checkIteratorInvalidation(content, file)),
 	);

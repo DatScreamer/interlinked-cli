@@ -10,7 +10,7 @@ import {
 	checkCommentClaimsNullThrowsInstead,
 	checkCommentClaimsThrowsDoesnt,
 	checkCommentClaimsValidationMissing,
-} from "../checks/comment-drift.js";
+} from "../generic-checks.js";
 import {
 	checkAccumulatingSpread,
 	checkAgentThumbprintProse,

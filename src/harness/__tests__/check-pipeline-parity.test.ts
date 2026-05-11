@@ -241,16 +241,6 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	// is deferred to a follow-up. Hook-time coverage is the load-bearing path.
 	"checkPackageJsonScriptPaths",
 	"package_json_script_paths",
-	// Comment-vs-behavior drift detectors (Mythos blog adaptation,
-	// 2026-05-11). Wired through PostToolUse via the standard
-	// agent_safety pipeline. The verify-side `toIssues` wiring is
-	// deferred to a follow-up — the per-edit hook is the load-bearing
-	// path for these advisory heuristics.
-	"comment_claims_limit_no_guard",
-	"comment_claims_null_throws_instead",
-	"comment_claims_validation_missing",
-	"comment_claims_idempotent_mutates",
-	"comment_claims_throws_doesnt",
 ]);
 
 // ===========================================
@@ -456,6 +446,11 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"floatingPromises",
 			"broadObjectTypes",
 			"booleanTrap",
+			"commentClaimsLimitNoGuard",
+			"commentClaimsNullThrowsInstead",
+			"commentClaimsValidationMissing",
+			"commentClaimsIdempotentMutates",
+			"commentClaimsThrowsDoesnt",
 			"iteratorInvalidation",
 			"freshCollectionKeyLookup",
 			"indexBoundsUnchecked",

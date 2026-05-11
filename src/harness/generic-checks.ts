@@ -110,6 +110,14 @@ export {
 } from "./checks/compat-stubs.js";
 // ---- complexity ----
 export { checkFunctionComplexity } from "./checks/complexity.js";
+// ---- comment-drift (Mythos Phase 2) ----
+export {
+	checkCommentClaimsIdempotentMutates,
+	checkCommentClaimsLimitNoGuard,
+	checkCommentClaimsNullThrowsInstead,
+	checkCommentClaimsThrowsDoesnt,
+	checkCommentClaimsValidationMissing,
+} from "./checks/comment-drift.js";
 // ---- cross-language ----
 export { checkSqlInjection } from "./checks/cross-language.js";
 // ---- deletion-hygiene ----

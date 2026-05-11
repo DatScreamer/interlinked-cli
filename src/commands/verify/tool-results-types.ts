@@ -52,6 +52,12 @@ export interface CodeQualityResults {
 	floatingPromises: CodeQualityIssue[];
 	broadObjectTypes: CodeQualityIssue[];
 	booleanTrap: CodeQualityIssue[];
+	// Comment-vs-behavior drift detectors (Mythos Phase 2 verify-side wiring).
+	commentClaimsLimitNoGuard: CodeQualityIssue[];
+	commentClaimsNullThrowsInstead: CodeQualityIssue[];
+	commentClaimsValidationMissing: CodeQualityIssue[];
+	commentClaimsIdempotentMutates: CodeQualityIssue[];
+	commentClaimsThrowsDoesnt: CodeQualityIssue[];
 	iteratorInvalidation: CodeQualityIssue[];
 	freshCollectionKeyLookup: CodeQualityIssue[];
 	indexBoundsUnchecked: CodeQualityIssue[];
@@ -287,6 +293,11 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"floatingPromises",
 	"broadObjectTypes",
 	"booleanTrap",
+	"commentClaimsLimitNoGuard",
+	"commentClaimsNullThrowsInstead",
+	"commentClaimsValidationMissing",
+	"commentClaimsIdempotentMutates",
+	"commentClaimsThrowsDoesnt",
 	"iteratorInvalidation",
 	"freshCollectionKeyLookup",
 	"indexBoundsUnchecked",
