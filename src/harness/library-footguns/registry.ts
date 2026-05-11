@@ -15,7 +15,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InlineMatch } from "../checks/shared.js";
+import { CHILD_PROCESS_FOOTGUNS } from "./child-process.js";
+import { D1_FOOTGUNS } from "./d1.js";
 import { NODE_FETCH_FOOTGUNS } from "./node-fetch.js";
+import { REDIS_FOOTGUNS } from "./redis.js";
+import { WORKERS_KV_FOOTGUNS } from "./workers-kv.js";
 import type { DisabledLibrariesConfig, LibraryFootgunCheck } from "./types.js";
 
 /** A footgun finding emitted by the registry. Wraps an InlineMatch
@@ -32,7 +36,13 @@ export interface FootgunFinding {
 export function getAllFootguns(): LibraryFootgunCheck[] {
 	// Concatenate each library's module here. Adding a new library
 	// is a one-line append below.
-	return [...NODE_FETCH_FOOTGUNS];
+	return [
+		...NODE_FETCH_FOOTGUNS,
+		...REDIS_FOOTGUNS,
+		...D1_FOOTGUNS,
+		...WORKERS_KV_FOOTGUNS,
+		...CHILD_PROCESS_FOOTGUNS,
+	];
 }
 
 /** Filter the bundled footguns by the disabled-libraries set. */
