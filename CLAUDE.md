@@ -401,3 +401,23 @@ node cli/dist/harness/server.js --verbose &
 echo '{"hook_event":"PreToolUse","session_id":"t","agent_source":"claude","tool_name":"Bash","tool_input":{"command":"rm -rf /"},"timestamp":"2026-03-17T00:00:00Z"}' | nc -U .interlinked/harness.sock
 # Expected: {"decision":"block","reason":"BLOCKED: Recursive deletion..."}
 ```
+
+## Graph-prediction probes (checked-in regression harnesses)
+
+Five end-to-end probes under `.interlinked/` exercise the full
+predict/reveal/reconcile flow against the live daemon. Use them to
+verify the system still works after any harness change. All five are
+re-runnable, create + clean their own tmp fixtures, use unique session
+ids; the first four require a running daemon, the cold-fallback probe
+deliberately points at a non-existent socket to exercise fail-closed.
+
+```bash
+node .interlinked/e2e-protocol-probe.mjs    # core block→write→reveal flow (11 assertions)
+node .interlinked/e2e-protocol-suite.mjs    # 6 cases × 3 modes (16 assertions)
+node .interlinked/e2e-stability.mjs         # 5000-event burst, p99 + RSS budget
+node .interlinked/e2e-hook-script.mjs       # dist/hook-entry.js → Claude Code envelope
+node .interlinked/e2e-cold-fallback.mjs     # daemon unreachable → fail-closed gate fires (7 assertions)
+```
+
+See `docs/design/graph-prediction-verification-status.md` for what each
+probe pins, plus the deployed-config snapshot.
