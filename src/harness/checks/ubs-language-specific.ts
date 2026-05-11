@@ -1428,11 +1428,48 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	// network-config bugs (`url = "http://localhost:3000"`-style).
 	const metadataAssignment =
 		/\b(?:label|noun|description|passLabel|fix_instruction|name|comment|summary|fix|msg|message)\s*[:=]\s*["'`]/;
+	// `new RegExp(...)` and `RegExp(...)` invocations are by construction
+	// pattern-matchers, not endpoint configs. The detector that finds
+	// curl-to-localhost calls in agent commands necessarily contains the
+	// literal "localhost" inside the regex source (template string passed
+	// to RegExp). Exempting RegExp constructors avoids the self-FP without
+	// missing real bugs — a real bug uses fetch("http://localhost:3000")
+	// or axios.get(...), not RegExp("...localhost...").
+	const regExpConstructor = /\bRegExp\s*\(/;
+	// Pattern-building exemption (narrowed). The previous blanket "any
+	// interpolated template containing localhost" rule was too broad: it
+	// hid real production endpoints like `fetch(\`http://localhost:${port}/api\`)`.
+	// Tightened to fire only when the template literal also carries a
+	// regex-shape signal (regex metacharacters or a pattern-named target):
+	//   - assigned/declared as `*_RE`, `*Re`, `*Pattern`, `*Regex`
+	//   - contains common regex metacharacters or escape sequences
+	//   - argument to a regex method: `.test(`, `.match(`, `.replace(`, `.exec(`, `.search(`
+	// Lines without those signals fall through to the matcher, so a real
+	// localhost URL inside an interpolated template (real bug) is flagged.
+	const localhostInsideTemplate = /`[^`]*\b(?:localhost|127\.0\.0\.1)\b[^`]*`/;
+	const looksLikeRegexPattern =
+		// eslint-disable-next-line no-template-curly-in-string
+		/(?:[A-Z][A-Za-z0-9_]*_RE\b|[A-Za-z][A-Za-z0-9_]*(?:Re|Pattern|Regex)\b\s*=)|\\(?:b|d|s|w|S|D|W|B|n|r|t)\b|\[\^?\\?[a-zA-Z0-9]|\(\?:|\.\s*(?:test|match|replace|exec|search)\s*\(/;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
 		if (!re.test(strippedLines[i])) continue;
 		if (metadataAssignment.test(strippedLines[i])) continue;
+		if (regExpConstructor.test(strippedLines[i])) continue;
+		// Multi-line RegExp: the constructor is on one line and the literal
+		// argument is on the next. Skip when the previous non-empty line
+		// ends with `RegExp(` (its argument continuation).
+		let prev = i - 1;
+		while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
+		if (prev >= 0 && /\bRegExp\s*\(\s*$/.test(strippedLines[prev])) continue;
+		// Narrowed template-literal exemption: only skip when there's a
+		// pattern-building signal alongside the interpolated localhost.
+		if (
+			localhostInsideTemplate.test(originalLines[i]) &&
+			looksLikeRegexPattern.test(originalLines[i])
+		) {
+			continue;
+		}
 		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;
