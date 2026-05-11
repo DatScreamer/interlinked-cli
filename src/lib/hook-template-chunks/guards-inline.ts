@@ -10,6 +10,79 @@ export const GUARDS_INLINE_CHUNK = `/**
  * When the harness is available, it provides additional quality checks and cohort awareness.
  */
 /**
+ * Fail-closed graph-prediction gate. When the harness daemon is unreachable,
+ * the inline fallback below only knows about Bash shapes — file writes to
+ * Supermodel-shard'd files would otherwise sail through unchallenged. This
+ * check refuses Edit/Write/MultiEdit/NotebookEdit/apply_patch when the
+ * target file has a colocated, fresh \`.graph.*\` shard, telling the user
+ * to restart the harness so the protocol can run. Override via env:
+ * INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1.
+ */
+function inlineGraphShardCheck(hookEvent, toolName, toolInput) {
+    if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
+    if (!toolName) return null;
+    if (process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE === "1") return null;
+
+    const FILE_WRITE_TOOLS = new Set([
+        "Write", "Edit", "MultiEdit", "NotebookEdit",
+        "WriteFile", "EditFile", "write_file", "edit_file",
+        "FileWrite", "FileEdit", "create", "str_replace", "apply_patch",
+    ]);
+    if (!FILE_WRITE_TOOLS.has(toolName)) return null;
+
+    // Extract target file path(s). For most tools it's tool_input.file_path;
+    // for apply_patch the path is embedded in the patch body.
+    const targets = [];
+    const fp = toolInput?.file_path || toolInput?.filePath || toolInput?.path || toolInput?.target_file;
+    if (typeof fp === "string" && fp.trim() !== "") targets.push(fp.trim());
+    if (toolName === "apply_patch") {
+        const patchBody = String(toolInput?.command || toolInput?.patch || toolInput?.content || toolInput?._raw_patch || "");
+        const re = /^\\*\\*\\* (?:Update|Add|Delete) File:\\s+(.+)$/gm;
+        let m;
+        while ((m = re.exec(patchBody)) !== null) {
+            const p = (m[1] || "").trim();
+            if (p && !targets.includes(p)) targets.push(p);
+        }
+        const moveRe = /^\\*\\*\\* Move to:\\s+(.+)$/gm;
+        while ((m = moveRe.exec(patchBody)) !== null) {
+            const p = (m[1] || "").trim();
+            if (p && !targets.includes(p)) targets.push(p);
+        }
+    }
+    if (targets.length === 0) return null;
+
+    const STALENESS_GRACE_MS = 60_000;
+    for (const t of targets) {
+        const abs = t.startsWith("/") ? t : require("node:path").resolve(process.cwd(), t);
+        try {
+            if (!existsSync(abs)) continue;
+            const ext = abs.match(/\\.[^./]+$/)?.[0] || "";
+            const shardPath = ext ? abs.slice(0, -ext.length) + ".graph" + ext : abs + ".graph";
+            if (!existsSync(shardPath)) continue;
+            const sourceMtime = statSync(abs).mtimeMs;
+            const shardMtime = statSync(shardPath).mtimeMs;
+            if (shardMtime < sourceMtime - STALENESS_GRACE_MS) continue;  // E-stale: not fail-closed
+            // E-fresh + harness offline → block. Tell the user precisely how to recover.
+            return {
+                decision: "block",
+                reason:
+                    "[interlinked:graph-pred][harness-offline] Cannot evaluate the graph-prediction protocol because the harness daemon is unreachable, but " +
+                    abs + " has a fresh Supermodel shard colocated. Edits to E-fresh files MUST go through the predict/reveal/reconcile loop. " +
+                    "Start the harness with: interlinked harness start  (or restart it). Once it's up, retry your edit. " +
+                    "Override (advanced, defeats the protocol): set INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1.",
+                rule_id: "graph-prediction-inline-fail-closed",
+                severity: "high",
+                category: "graph-prediction",
+            };
+        } catch (_) {
+            // intentional: best-effort — fs errors on shard probe must not break the hook
+            continue;
+        }
+    }
+    return null;
+}
+
+/**
  * Inline file-dump guard. Mirrors src/harness/evaluator/file-dump-guard.ts so
  * cold-fallback (harness daemon down) still refuses large/unfiltered dumps of
  * tail/head/cat output into the tool result. Three block conditions:
@@ -275,6 +348,12 @@ function inlineFileDumpCheck(hookEvent, toolName, toolInput) {
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
     if (!toolName) return null;
+
+    // Graph-prediction fail-closed gate. Runs FIRST so file-write events
+    // targeting a Supermodel-shard'd file get the protocol-restart message
+    // instead of silently passing through the Bash-only path below.
+    const shardBlock = inlineGraphShardCheck(hookEvent, toolName, toolInput);
+    if (shardBlock) return shardBlock;
 
     // File-dump output-budget gate. Must run BEFORE the data-only references
     // skip below, since that skip returns null for any command starting with
