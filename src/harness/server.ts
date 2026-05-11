@@ -65,7 +65,6 @@ import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
-import { harvestPredictionsFromTranscript } from "./graph-prediction-stop-hook.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -696,22 +695,6 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						`Commit-cadence Stop nudge: ${nonDocCount} uncommitted code files, ${docCount} doc files excluded, tokens=${tokens?.total ?? "n/a"}`,
 					);
 				}
-			}
-
-			// Harvest graph_prediction blocks from the transcript so the
-			// next PreToolUse for the same E-fresh file can hit cache.
-			// Best-effort: failures here must not break the Stop pathway.
-			try {
-				const harvest = harvestPredictionsFromTranscript({
-					cwd: CWD,
-					sessionId: event.session_id,
-					transcriptPath: event.transcript_path,
-				});
-				if (harvest.persisted.length > 0) {
-					log(`Harvested ${harvest.persisted.length} graph_prediction(s) from transcript`);
-				}
-			} catch (err) {
-				log(`graph_prediction harvest failed (non-fatal): ${(err as Error).message}`);
 			}
 
 			// Persist session trajectory + turn summary before cleanup
