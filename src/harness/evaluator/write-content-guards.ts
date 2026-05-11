@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
-import { describeReason, findMalformedRulesIn } from "../../lib/settings-validator.js";
+import { describeReason, findMalformedRulesIn, suggestRuleFix } from "../../lib/settings-validator.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "../check-registry/index.js";
 import { isTestFile } from "../checks/shared.js";
 import {
@@ -240,6 +240,9 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		if (malformed.length > 0) {
 			const first = malformed[0];
 			const others = malformed.length > 1 ? ` (and ${malformed.length - 1} more)` : "";
+			const suggestion = suggestRuleFix(first.rule, first.reason);
+			const suggestionClause =
+				suggestion !== null ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
 			return {
 				kind: "block",
 				decision: {
@@ -247,8 +250,9 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 					reason:
 						`BLOCKED: Write to ${filePath} would add a malformed permission rule. ` +
 						`permissions.${first.bucket}[${first.index}] = ${JSON.stringify(first.rule)} ` +
-						`(${describeReason(first.reason)})${others}. Claude Code's /doctor would ` +
-						"skip this rule at load time. Fix the rule string (or remove it) before retrying.",
+						`(${describeReason(first.reason)})${others}.${suggestionClause} ` +
+						"Claude Code's /doctor would skip this rule at load time. " +
+						"Fix the rule string (or remove it) before retrying.",
 					warnings,
 					rule_id: "permission-rule-syntax",
 					severity: "high",

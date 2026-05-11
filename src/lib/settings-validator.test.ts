@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	analyzeParenBalance,
 	isParenBalanced,
 	stripMalformedRules,
+	suggestRuleFix,
 	validateSettingsFile,
 } from "./settings-validator.js";
 
@@ -148,5 +150,66 @@ describe("validateSettingsFile + stripMalformedRules", () => {
 
 	it("is a no-op on missing files (safe to call from --fix unconditionally)", () => {
 		expect(stripMalformedRules(join(dir, "missing.json"))).toBe(0);
+	});
+});
+
+describe("analyzeParenBalance", () => {
+	it("returns depth 0 for balanced rules", () => {
+		expect(analyzeParenBalance("Bash(grep *)").depth).toBe(0);
+		expect(analyzeParenBalance("Bash(MARKER=$(date *))").depth).toBe(0);
+		expect(analyzeParenBalance("WebFetch(domain:github.com)").depth).toBe(0);
+	});
+
+	it("reports positive depth for missing closing parens", () => {
+		const r = analyzeParenBalance("Bash(MARKER=$(date *)");
+		expect(r.depth).toBe(1);
+		// firstBadCol points at end-of-string for missing-close cases
+		expect(r.firstBadCol).toBe("Bash(MARKER=$(date *)".length);
+	});
+
+	it("reports negative depth for extra closing parens", () => {
+		const r = analyzeParenBalance("Bash(ls))");
+		expect(r.depth).toBe(-1);
+		expect(r.firstBadCol).toBe("Bash(ls)".length); // the offending second `)`
+	});
+});
+
+describe("suggestRuleFix", () => {
+	it("appends `)` for missing-close paren imbalance", () => {
+		expect(suggestRuleFix("Bash(MARKER=$(date *)", "paren_imbalance")).toBe(
+			"Bash(MARKER=$(date *))",
+		);
+		// Two missing closes
+		expect(suggestRuleFix("Bash(a$(b$(c)", "paren_imbalance")).toBe("Bash(a$(b$(c)))");
+	});
+
+	it("drops the first extra `)` for depth = -1 paren imbalance", () => {
+		expect(suggestRuleFix("Bash(ls))", "paren_imbalance")).toBe("Bash(ls)");
+	});
+
+	it("returns null for ambiguous deeper depth-negative cases", () => {
+		// Two excess closing parens — too many plausible edits to guess.
+		expect(suggestRuleFix("Bash(ls))) ", "paren_imbalance")).toBeNull();
+	});
+
+	it("treats undefined reason as paren_imbalance (legacy)", () => {
+		expect(suggestRuleFix("Bash(MARKER=$(date *)", undefined)).toBe("Bash(MARKER=$(date *))");
+	});
+
+	it("returns null for empty_rule (no mechanical fix)", () => {
+		expect(suggestRuleFix("", "empty_rule")).toBeNull();
+		expect(suggestRuleFix("   ", "empty_rule")).toBeNull();
+	});
+
+	it("wraps shell-shaped bodies for missing_tool_prefix", () => {
+		expect(suggestRuleFix("ls *", "missing_tool_prefix")).toBe("Bash(ls *)");
+		expect(suggestRuleFix("rm -rf *", "missing_tool_prefix")).toBe("Bash(rm -rf *)");
+		expect(suggestRuleFix("grep | head", "missing_tool_prefix")).toBe("Bash(grep | head)");
+	});
+
+	it("returns null for missing_tool_prefix when the body has no shell shape", () => {
+		// A single-word entry could be a wrong tool name, a malformed identifier,
+		// or accidental garbage — too ambiguous to auto-wrap.
+		expect(suggestRuleFix("foobar", "missing_tool_prefix")).toBeNull();
 	});
 });

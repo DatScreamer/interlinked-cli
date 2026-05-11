@@ -61,6 +61,66 @@ export function describeReason(reason: MalformedRuleReason | undefined): string 
 	}
 }
 
+/** Paren-balance analysis used to coach the agent on which side is short.
+ *  Returns the net depth (positive = missing `)` closes; negative = extra
+ *  `)`s) and the 0-based column where the imbalance first manifests. The
+ *  column points at the offending `)` for negative depths, or at the end
+ *  of the string for positive ones (no specific char is "missing"). */
+export interface ParenBalance {
+	depth: number;
+	firstBadCol: number;
+}
+
+export function analyzeParenBalance(rule: string): ParenBalance {
+	let depth = 0;
+	let firstBadCol = -1;
+	for (let i = 0; i < rule.length; i++) {
+		const ch = rule[i];
+		if (ch === "(") depth++;
+		else if (ch === ")") {
+			depth--;
+			if (depth < 0 && firstBadCol === -1) firstBadCol = i;
+		}
+	}
+	if (depth > 0 && firstBadCol === -1) firstBadCol = rule.length;
+	return { depth, firstBadCol };
+}
+
+/** Suggest a corrected form of a malformed rule. Returns `null` when no
+ *  mechanical fix is safe — the agent must rewrite the rule itself.
+ *
+ *  Strategies per reason:
+ *    - paren_imbalance: append missing `)` × N for positive depth, or
+ *      drop the first extra `)` for depth = -1. We don't try to repair
+ *      deeper depth-negative cases — too many plausible edits.
+ *    - empty_rule: no suggestion (the agent should remove the entry).
+ *    - missing_tool_prefix: wrap the trimmed rule body in `Bash(...)` if
+ *      it looks shell-shaped (contains spaces, *, or shell metacharacters).
+ *      Otherwise return null — wrong tool prefix is too ambiguous to guess.
+ */
+export function suggestRuleFix(rule: string, reason: MalformedRuleReason | undefined): string | null {
+	const r = reason ?? "paren_imbalance";
+	if (r === "paren_imbalance") {
+		const { depth } = analyzeParenBalance(rule);
+		if (depth > 0) return rule + ")".repeat(depth);
+		if (depth === -1) {
+			// Drop the first extra `)` — usually the offending character.
+			const { firstBadCol } = analyzeParenBalance(rule);
+			if (firstBadCol >= 0) {
+				return rule.slice(0, firstBadCol) + rule.slice(firstBadCol + 1);
+			}
+		}
+		return null;
+	}
+	if (r === "missing_tool_prefix") {
+		const body = rule.trim();
+		if (body.length === 0) return null;
+		if (/[\s*?[\]$|;&<>`]/.test(body)) return `Bash(${body})`;
+		return null;
+	}
+	return null;
+}
+
 /** A well-formed rule starts with `<ToolName>(`. This regex matches
  *  identifier-then-open-paren without requiring full grammar
  *  validation — that's Claude Code's job. */
