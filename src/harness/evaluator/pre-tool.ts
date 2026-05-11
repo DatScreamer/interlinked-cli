@@ -54,6 +54,11 @@ import type {
 	QualityCheckConfig,
 	SessionTrajectory,
 } from "../types.js";
+import {
+	driveGraphPrediction,
+	type GraphPredictionMode,
+} from "../graph-prediction-pre-tool.js";
+import { checkSupermodelShardWrite } from "../supermodel-shard-write-guard.js";
 import { evaluateFileDumpGuard } from "./file-dump-guard.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
@@ -153,6 +158,17 @@ function runTrajectoryDetector(
 		.map((f) => f.message);
 }
 
+/** Read the graph-prediction protocol mode from shared config. Defaults
+ *  to "shadow" — telemetry-only, no challenge fires. Phase 4 of the
+ *  rollout flips the default to "soft_gate" or "enforced". */
+function readGraphPredictionMode(config: SharedConfig | null): GraphPredictionMode {
+	const harness = config?.harness as Record<string, unknown> | undefined;
+	const block = harness?.graph_prediction as Record<string, unknown> | undefined;
+	const mode = block?.mode;
+	if (mode === "shadow" || mode === "soft_gate" || mode === "enforced") return mode;
+	return "shadow";
+}
+
 /** Read-only consumer of Supermodel-emitted `.graph.*` shards. Returns one
  *  warning string when a HIGH or MEDIUM impact section is present for the
  *  edited file; returns null on LOW, missing shards, parse failures, or any
@@ -245,6 +261,7 @@ export function evaluatePreToolUse(
 	const toolInput = event.tool_input || {};
 	let pendingEscalation: EscalationRequest | undefined;
 	let pendingContentScan: ContentScanRequest | undefined;
+	let graphPredAdditionalContext: string | undefined;
 	void _blameInjectedFiles; // reserved for future blame-injection dedup
 
 	// Phase D.2 trajectory detector — feeds the per-session ring buffer and
@@ -254,6 +271,24 @@ export function evaluatePreToolUse(
 	if (session) {
 		const trajectoryWarnings = runTrajectoryDetector(event, session, sharedConfig ?? null);
 		if (trajectoryWarnings.length > 0) warnings.push(...trajectoryWarnings);
+	}
+
+	// GUARD: Supermodel `.graph.*` shard write protection — apply_patch layer.
+	// `builtin-supermodel-graph-write-blocked` covers tools that surface the
+	// path under `tool_input.file_path`, but `apply_patch` embeds destinations
+	// in the patch body. Run before the main rule loop so the block reason is
+	// consistent regardless of which path the agent took to reach the shard.
+	{
+		const shardBlock = checkSupermodelShardWrite(event);
+		if (shardBlock) {
+			return {
+				decision: "block",
+				reason: shardBlock.reason,
+				rule_id: shardBlock.rule_id,
+				severity: shardBlock.severity,
+				category: shardBlock.category,
+			};
+		}
 	}
 
 	// GUARD: Destructive patterns — Bash, Write, Edit, all tools
@@ -766,6 +801,37 @@ export function evaluatePreToolUse(
 		}
 	}
 
+	// CONTEXT: Graph-prediction protocol — predict/reveal/reconcile on top
+	// of the existing impact-warning surface. Only Case E-fresh activates
+	// the challenge; other cases are observation-only. Default mode is
+	// `shadow` (telemetry-only) so the cache fills without disrupting users
+	// before Phase 4 enables enforcement. See
+	// `docs/design/graph-prediction-protocol.md`.
+	{
+		const mode = readGraphPredictionMode(sharedConfig ?? null);
+		const cwd = event.cwd || process.cwd();
+		const result = driveGraphPrediction({ event, cwd, mode });
+		if (result?.decision === "block") {
+			return {
+				decision: "block",
+				reason: result.reason ?? "graph_prediction required",
+				rule_id: "graph-prediction-protocol",
+				severity: "medium",
+				category: "graph-prediction",
+			};
+		}
+		if (result?.additional_context) {
+			// Belt-and-suspenders: warnings → stderr (visible in terminal +
+			// activity.jsonl); additional_context → adapter routes to
+			// hookSpecificOutput.additionalContext (model-only context
+			// injection that Claude Code injects regardless of stderr
+			// display state). Without the dedicated field, the comparison
+			// can be missed if the runner doesn't surface PreToolUse stderr.
+			warnings.push(result.additional_context);
+			graphPredAdditionalContext = result.additional_context;
+		}
+	}
+
 	// PROJECT SETUP: One-time validation (first tool call only)
 	const setupWarnings = getProjectSetupWarnings(event.cwd || process.cwd());
 	if (setupWarnings.length > 0) warnings.push(...setupWarnings);
@@ -965,6 +1031,7 @@ export function evaluatePreToolUse(
 	return {
 		decision: "allow",
 		warnings: warnings.length > 0 ? warnings : undefined,
+		additional_context: graphPredAdditionalContext,
 		_escalation: pendingEscalation,
 		_contentScan: pendingContentScan,
 	};

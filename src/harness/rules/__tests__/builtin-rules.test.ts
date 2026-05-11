@@ -9,6 +9,7 @@ import { PROCESS_AND_FILESYSTEM_RULES } from "../builtin-rules-processes.js";
 import { RAILWAY_RULES } from "../builtin-rules-railway.js";
 import { RESOURCE_BOMB_RULES } from "../builtin-rules-resource-bombs.js";
 import { SECURITY_AND_SAFETY_RULES } from "../builtin-rules-security.js";
+import { SUPERMODEL_RULES } from "../builtin-rules-supermodel.js";
 
 describe("builtin-rules", () => {
 	it("aggregates all category rules", () => {
@@ -21,7 +22,8 @@ describe("builtin-rules", () => {
 			MCP_DESTRUCTIVE_RULES.length +
 			DESTRUCTIVE_HTTP_RULES.length +
 			LANGUAGE_DESTRUCTIVE_RULES.length +
-			SECURITY_AND_SAFETY_RULES.length;
+			SECURITY_AND_SAFETY_RULES.length +
+			SUPERMODEL_RULES.length;
 		expect(BUILTIN_RULES.length).toBe(expectedCount);
 	});
 

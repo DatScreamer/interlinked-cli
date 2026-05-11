@@ -16,6 +16,7 @@ import { PROCESS_AND_FILESYSTEM_RULES } from "./builtin-rules-processes.js";
 import { RAILWAY_RULES } from "./builtin-rules-railway.js";
 import { RESOURCE_BOMB_RULES } from "./builtin-rules-resource-bombs.js";
 import { SECURITY_AND_SAFETY_RULES } from "./builtin-rules-security.js";
+import { SUPERMODEL_RULES } from "./builtin-rules-supermodel.js";
 
 /**
  * Public API — consumed by `rules-loader.ts` and by tests
@@ -30,6 +31,10 @@ import { SECURITY_AND_SAFETY_RULES } from "./builtin-rules-security.js";
 export const BUILTIN_RULES: GuardRule[] = [
 	...PROCESS_AND_FILESYSTEM_RULES,
 	...RESOURCE_BOMB_RULES,
+	// Supermodel `.graph.*` shard write protection — placed alongside other
+	// filesystem-protection rules so it fires before any generic catch-all
+	// has a chance to allow. See `builtin-rules-supermodel.ts`.
+	...SUPERMODEL_RULES,
 	...DATABASE_AND_CLOUD_RULES,
 	...RAILWAY_RULES,
 	// Plan 02 destructive-command extras (DCG ports). Placed AFTER
