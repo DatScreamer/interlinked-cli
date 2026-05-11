@@ -1,0 +1,199 @@
+// ===========================================
+// Stop-hook prediction harvest
+// ===========================================
+// On Stop, walks the Claude Code transcript JSONL backwards, pulls the
+// most recent assistant messages' text, and runs the parser to extract
+// any `graph_prediction:` blocks. For each parsed prediction whose
+// target file is currently Case E-fresh, persists a row to
+// `.interlinked/graph-predictions.jsonl` keyed by current source/shard
+// mtimes.
+//
+// Non-E-fresh predictions are reported as `skipped` with their case so
+// future phases (Phase 5 deferred-comparison) can route Cases B/C
+// voluntary predictions through the deferred mechanism.
+
+import { existsSync, readFileSync } from "node:fs";
+import { classifyCase, type CaseResult } from "./graph-prediction-classifier.js";
+import {
+	appendPredictionRow,
+	type GraphPredictionRow,
+	type PredictionContent,
+} from "./graph-prediction-cache.js";
+import {
+	parseGraphPredictionsFromText,
+	type ParsedGraphPrediction,
+} from "./graph-prediction-parser.js";
+
+const RECENT_ASSISTANT_MESSAGE_LIMIT = 10;
+
+export interface HarvestArgs {
+	cwd: string;
+	sessionId: string;
+	transcriptPath: string | undefined;
+}
+
+export interface HarvestedPersisted {
+	file_path: string;
+	case: "E-fresh";
+}
+
+export interface HarvestedSkipped {
+	file_path: string;
+	case: "A" | "B" | "C" | "D" | "E-fresh" | "E-stale";
+	reason: "non_authoritative_case" | "parse_failed" | "format_violation";
+}
+
+export interface HarvestResult {
+	persisted: HarvestedPersisted[];
+	skipped: HarvestedSkipped[];
+}
+
+export function harvestPredictionsFromTranscript(args: HarvestArgs): HarvestResult {
+	const result: HarvestResult = { persisted: [], skipped: [] };
+	if (!args.transcriptPath || !existsSync(args.transcriptPath)) return result;
+
+	const recentTexts = readRecentAssistantTexts(args.transcriptPath);
+	const allPredictions: ParsedGraphPrediction[] = [];
+	for (const text of recentTexts) {
+		allPredictions.push(...parseGraphPredictionsFromText(text));
+	}
+	if (allPredictions.length === 0) return result;
+
+	const now = new Date().toISOString();
+	for (const pred of allPredictions) {
+		processPrediction(pred, args, now, result);
+	}
+	return result;
+}
+
+function processPrediction(
+	pred: ParsedGraphPrediction,
+	args: HarvestArgs,
+	now: string,
+	result: HarvestResult,
+): void {
+	if (pred.parse_status === "parse_failed") {
+		// Don't even know which file — can't classify; ignore silently.
+		return;
+	}
+	if (!pred.file) return;
+
+	const classification = classifyCase(pred.file, args.cwd);
+	if (classification.case !== "E-fresh") {
+		result.skipped.push({
+			file_path: classification.sourcePath,
+			case: classification.case,
+			reason: pred.parse_status === "format_violation" ? "format_violation" : "non_authoritative_case",
+		});
+		return;
+	}
+
+	if (pred.parse_status === "format_violation") {
+		// E-fresh but the prediction itself is malformed; skip persistence
+		// rather than poisoning the cache. Phase 4 may surface this back to
+		// the agent as a re-emit-with-narrower-top-K request.
+		result.skipped.push({
+			file_path: classification.sourcePath,
+			case: classification.case,
+			reason: "format_violation",
+		});
+		return;
+	}
+
+	const row = buildPredictionRow(pred, classification, args.sessionId, now);
+	if (!row) return;
+	appendPredictionRow(args.cwd, row);
+	result.persisted.push({ file_path: classification.sourcePath, case: "E-fresh" });
+}
+
+function buildPredictionRow(
+	pred: ParsedGraphPrediction,
+	classification: CaseResult,
+	sessionId: string,
+	now: string,
+): GraphPredictionRow | null {
+	if (!classification.shardPath) return null;
+	if (!classification.sourceMtime || !classification.shardMtime) return null;
+	const content: PredictionContent = {
+		deps: pred.deps,
+		calls: pred.calls,
+		impact: pred.impact,
+	};
+	return {
+		session_id: sessionId,
+		file_path: classification.sourcePath,
+		source_mtime: classification.sourceMtime,
+		shard_mtime: classification.shardMtime,
+		shard_path: classification.shardPath,
+		emitted_at: now,
+		tool_input_hash: "",
+		case: "E-fresh",
+		prediction: content,
+		comparison_status: "pending",
+	};
+}
+
+/** Public — also consumed by `graph-prediction-pre-tool.ts` for the §5.3
+ *  same-turn transcript fallback. Reads the Claude Code transcript JSONL
+ *  backwards, returning up to RECENT_ASSISTANT_MESSAGE_LIMIT recent
+ *  assistant-message text bodies. Returns [] when the path is missing /
+ *  unreadable / contains no assistant messages. */
+export function readRecentAssistantTexts(transcriptPath: string): string[] {
+	let raw: string;
+	try {
+		raw = readFileSync(transcriptPath, "utf-8");
+	} catch {
+		return [];
+	}
+	const texts: string[] = [];
+	const lines = raw.split("\n");
+	// Walk backwards so we get the most recent assistant text first; cap
+	// at RECENT_ASSISTANT_MESSAGE_LIMIT to keep parsing cheap.
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (texts.length >= RECENT_ASSISTANT_MESSAGE_LIMIT) break;
+		const line = lines[i];
+		if (!line.trim()) continue;
+		let obj: unknown;
+		try {
+			obj = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		const text = extractAssistantText(obj);
+		if (text) texts.push(text);
+	}
+	return texts.reverse();
+}
+
+interface MaybeAssistantMessage {
+	type?: unknown;
+	message?: unknown;
+}
+
+interface MaybeMessageContent {
+	content?: unknown;
+}
+
+interface MaybeContentBlock {
+	type?: unknown;
+	text?: unknown;
+}
+
+function extractAssistantText(obj: unknown): string | null {
+	if (!obj || typeof obj !== "object") return null;
+	const o = obj as MaybeAssistantMessage;
+	if (o.type !== "assistant") return null;
+	const m = o.message as MaybeMessageContent | undefined;
+	const content = m?.content;
+	if (!Array.isArray(content)) return null;
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		const b = block as MaybeContentBlock;
+		if (b.type !== "text") continue;
+		if (typeof b.text === "string") parts.push(b.text);
+	}
+	if (parts.length === 0) return null;
+	return parts.join("\n");
+}
+
