@@ -115,6 +115,13 @@ const SUGGESTION_CHECKS: SuggestionCheck[] = [
 	{ check: "c-unchecked-malloc", source: "security", fn: checkCUncheckedMalloc },
 ];
 
+/** Above this elapsed-ms, a single suggestion check is treated as
+ *  pathologically slow and logged to stderr so we can locate the
+ *  regex with catastrophic backtracking. Tuned to be roughly an
+ *  order of magnitude above the slowest healthy check on a typical
+ *  300-line source file. */
+const SLOW_CHECK_LOG_THRESHOLD_MS = 500;
+
 /**
  * Public API — consumed by the PostToolUse pipeline in `server.ts` to
  * collect suggestion findings for the scorer. Runs each registered
@@ -122,11 +129,23 @@ const SUGGESTION_CHECKS: SuggestionCheck[] = [
  *
  * Returns findings in registration order. Caller is responsible for
  * scoring/filtering via the suggestion scorer.
+ *
+ * Per-check timing is captured and any check exceeding
+ * `SLOW_CHECK_LOG_THRESHOLD_MS` is logged to stderr — this is how we
+ * isolate the regex responsible for the multi-second
+ * `scored_suggestions` tax that shows up in `phase_breakdown`.
  */
 export function collectSuggestionFindings(content: string, filePath: string): Finding[] {
 	const allFindings: Finding[] = [];
 	for (const { check, source, fn } of SUGGESTION_CHECKS) {
+		const t0 = Date.now();
 		const matches = fn(content, filePath);
+		const elapsed = Date.now() - t0;
+		if (elapsed >= SLOW_CHECK_LOG_THRESHOLD_MS) {
+			process.stderr.write(
+				`[interlinked-suggestion-perf] ${check} took ${elapsed}ms on ${filePath}\n`,
+			);
+		}
 		for (const m of matches) {
 			allFindings.push({ check, line: m.line, message: m.text, source });
 		}

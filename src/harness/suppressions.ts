@@ -8,7 +8,7 @@
 // Suppressions always win over scoring — a suppressed finding is never shown,
 // even if it would score above the threshold.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ===========================================
@@ -87,6 +87,18 @@ export function scanInlineSuppressions(content: string): InlineSuppressions {
 // JSON file loading
 // ===========================================
 
+/** Cached parse of verify-suppressions.json keyed on file mtime. The
+ *  scored-suggestions PostToolUse path calls `loadFileSuppressions` twice
+ *  per event (once for structural checks, once for the scored-findings
+ *  pipeline), and on a quiet daemon the file rarely changes. Reparsing
+ *  the JSON on every call wastes both syscalls and CPU; mtime keying
+ *  means we only re-parse when the file actually changes on disk. */
+interface SuppressionFileCache {
+	mtimeMs: number;
+	data: SuppressionFile;
+}
+let suppressionFileCache: { path: string; cache: SuppressionFileCache } | null = null;
+
 /**
  * Load .interlinked/verify-suppressions.json and return suppressions for a
  * specific file path (relative). Supports glob patterns in keys.
@@ -99,7 +111,18 @@ export function loadFileSuppressions(
 	try {
 		const filePath = join(interlinkedDir, "verify-suppressions.json");
 		if (!existsSync(filePath)) return new Set();
-		const data = JSON.parse(readFileSync(filePath, "utf-8")) as SuppressionFile;
+		const mtimeMs = statSync(filePath).mtimeMs;
+		let data: SuppressionFile;
+		if (
+			suppressionFileCache !== null &&
+			suppressionFileCache.path === filePath &&
+			suppressionFileCache.cache.mtimeMs === mtimeMs
+		) {
+			data = suppressionFileCache.cache.data;
+		} else {
+			data = JSON.parse(readFileSync(filePath, "utf-8")) as SuppressionFile;
+			suppressionFileCache = { path: filePath, cache: { mtimeMs, data } };
+		}
 		const checks = new Set<string>();
 
 		for (const [pattern, entry] of Object.entries(data)) {
