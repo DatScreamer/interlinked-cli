@@ -347,6 +347,16 @@ export function checkConcurrentEdit(
 const CODE_FILE_EXT_RE =
 	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
 
+/** Supermodel `.graph.*` shards are owned by Supermodel's daemon —
+ *  always treat them as protected regardless of the inner extension. */
+const SHARD_FILE_RE = /\.graph(\.[a-zA-Z0-9]+)?$/i;
+
+/** Returns true when the path is something the content-gates protect:
+ *  either a tracked-source extension OR a Supermodel shard. */
+function isProtectedTarget(target: string): boolean {
+	return SHARD_FILE_RE.test(target) || CODE_FILE_EXT_RE.test(target);
+}
+
 /**
  * Offset-preserving blank of quoted string contents so we don't match redirect
  * operators INSIDE argument strings (`echo "x > y"` is not a redirect). Pads
@@ -448,16 +458,83 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 		}
 	}
 
-	// 5. Copy/move from outside the project into a code file:
-	//    `cp /tmp/x.ts src/foo.ts` / `mv /tmp/x.ts src/foo.ts`.
-	const cpMv = normalized.match(/\b(cp|mv)\s+(?:-[a-zA-Z]+\s+)*\S+\s+(\S+)/);
-	if (cpMv) {
-		const target = cpMv[2];
-		if (CODE_FILE_EXT_RE.test(target)) {
-			return { target, mechanism: `${cpMv[1]} (copy/move to tracked file)` };
+	// 5. File-moving verbs that land bytes in a target path:
+	//    cp / mv / ln (hard or symlink) / install / rsync / scp.
+	//    All follow the shape `<verb> [flags...] <src> <dst>` — destination
+	//    is the LAST positional argument. Detect via segment-walk so the
+	//    flag count doesn't tilt the regex.
+	const fileMoveHit = detectFileMoveToProtected(normalized);
+	if (fileMoveHit) return fileMoveHit;
+
+	// 6. dd if=<src> of=<dst> — block-level copy. Destination is in the
+	//    `of=` arg, not the last positional.
+	const ddHit = detectDdWriteToProtected(normalized);
+	if (ddHit) return ddHit;
+
+	return null;
+}
+
+/** Verbs whose effect is "place bytes at <last positional arg>". Every
+ *  one of these bypasses Write/Edit if the destination is a code file or
+ *  a Supermodel shard. */
+const FILE_MOVE_VERBS = new Set(["cp", "mv", "ln", "install", "rsync", "scp"]);
+
+function detectFileMoveToProtected(
+	cmd: string,
+): { target: string; mechanism: string } | null {
+	for (const segment of splitCommandSegments(cmd)) {
+		const args = splitShellWordsLoose(segment).map(stripOuterQuotes);
+		if (args.length < 2) continue;
+		const verb = args[0].split("/").pop() ?? args[0];
+		if (!FILE_MOVE_VERBS.has(verb)) continue;
+		// Skip any subsequent flag-token (starts with `-`), find the last
+		// positional argument. `cp` and friends always put the destination
+		// last when called with N positionals.
+		const positionals: string[] = [];
+		for (let i = 1; i < args.length; i++) {
+			const arg = args[i];
+			if (arg.startsWith("-")) {
+				// Some flags take a value in two-token form (`-m 644`,
+				// `--mode 644`, `-t DIR`). Skip the next token only for those.
+				// `-T` is `--no-target-directory` — a boolean; do NOT skip,
+				// or the destination gets parsed away and `cp -T /tmp/x src/foo.ts`
+				// slips past the guard. Long forms with `=` (e.g. `--mode=644`)
+				// are one token and handled by the no-skip path.
+				const flagTakesArg =
+					arg === "-m" ||
+					arg === "--mode" ||
+					arg === "-t" ||
+					arg === "--target-directory" ||
+					arg === "-S" ||
+					arg === "--suffix";
+				if (flagTakesArg && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+					i++;
+				}
+				continue;
+			}
+			positionals.push(arg);
+		}
+		if (positionals.length < 2) continue;
+		const target = positionals[positionals.length - 1];
+		if (isProtectedTarget(target)) {
+			return { target, mechanism: `${verb} (write to tracked file)` };
 		}
 	}
+	return null;
+}
 
+function detectDdWriteToProtected(
+	cmd: string,
+): { target: string; mechanism: string } | null {
+	for (const segment of splitCommandSegments(cmd)) {
+		if (!/\bdd\b/.test(segment)) continue;
+		const ofMatch = segment.match(/\bof=(\S+)/);
+		if (!ofMatch) continue;
+		const target = stripOuterQuotes(ofMatch[1]);
+		if (isProtectedTarget(target)) {
+			return { target, mechanism: "dd (block-level write)" };
+		}
+	}
 	return null;
 }
 
@@ -490,8 +567,11 @@ function splitCommandSegments(cmd: string): string[] {
 }
 
 function splitShellWordsLoose(segment: string): string[] {
+	// Flatten nested-quantifier alternation: `(?:[^"\\]|\\[\s\S])*` advances
+	// one character per iteration with no backtracking, avoiding the
+	// catastrophic-backtracking shape of `[^"\\]*(?:\\.[^"\\]*)*`.
 	const words: string[] = [];
-	const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+	const re = /"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|(\S+)/g;
 	for (const match of segment.matchAll(re)) {
 		words.push(match[0]);
 	}

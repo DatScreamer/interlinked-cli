@@ -79,6 +79,98 @@ describe("detectBashCodeFileWrite", () => {
 			const hit = detectBashCodeFileWrite("mv /tmp/y.js lib/util.js");
 			expect(hit?.target).toBe("lib/util.js");
 		});
+
+		// `-T` (--no-target-directory) is a boolean flag, NOT a flag that
+		// consumes the next argument. Regression test for the bypass where
+		// `cp -T /tmp/x src/foo.ts` was misparsed as `cp -T <value> src/foo.ts`
+		// and the destination got eaten, leaving only one positional and
+		// silently allowing the write.
+		it("cp -T /tmp/x.ts src/foo.ts (boolean -T must not consume the source)", () => {
+			const hit = detectBashCodeFileWrite("cp -T /tmp/x.ts src/foo.ts");
+			expect(hit?.target).toBe("src/foo.ts");
+		});
+
+		it("mv -T /tmp/y.js lib/util.js (boolean -T)", () => {
+			const hit = detectBashCodeFileWrite("mv -T /tmp/y.js lib/util.js");
+			expect(hit?.target).toBe("lib/util.js");
+		});
+
+		// `-t DIR` does take an arg — the destination is the LAST positional
+		// only when there's no -t. Confirm the parser still flags when the
+		// short-form `-t` is used.
+		it("cp -t lib /tmp/a.js (lowercase -t takes an arg, lib is destination)", () => {
+			const hit = detectBashCodeFileWrite("cp -t lib /tmp/a.js");
+			// "lib" is consumed as the -t argument, "/tmp/a.js" is the source,
+			// and there is no second positional — so the detector should return
+			// null (no protected destination resolvable).
+			expect(hit).toBe(null);
+		});
+	});
+
+	describe("detects link / install / dd / rsync / scp into tracked files", () => {
+		it("ln src dst (hard link)", () => {
+			const hit = detectBashCodeFileWrite("ln /tmp/x.ts src/foo.ts");
+			expect(hit?.target).toBe("src/foo.ts");
+		});
+
+		it("ln -s src dst (symlink)", () => {
+			const hit = detectBashCodeFileWrite("ln -s /tmp/x.ts src/foo.ts");
+			expect(hit?.target).toBe("src/foo.ts");
+		});
+
+		it("install src dst (install copies + sets mode)", () => {
+			const hit = detectBashCodeFileWrite("install -m 644 /tmp/x.py src/foo.py");
+			expect(hit?.target).toBe("src/foo.py");
+		});
+
+		it("dd if= of= (block-level copy)", () => {
+			const hit = detectBashCodeFileWrite("dd if=/tmp/x.ts of=src/foo.ts");
+			expect(hit?.target).toBe("src/foo.ts");
+		});
+
+		it("rsync src dst", () => {
+			const hit = detectBashCodeFileWrite("rsync -a /tmp/y.js lib/util.js");
+			expect(hit?.target).toBe("lib/util.js");
+		});
+
+		it("scp local local (local-to-local form)", () => {
+			const hit = detectBashCodeFileWrite("scp /tmp/x.ts src/foo.ts");
+			expect(hit?.target).toBe("src/foo.ts");
+		});
+	});
+
+	describe("detects writes to `.graph.*` Supermodel shards (any verb)", () => {
+		it("cp into a .graph.ts shard", () => {
+			const hit = detectBashCodeFileWrite("cp /tmp/x.txt src/harness/foo.graph.ts");
+			expect(hit?.target).toBe("src/harness/foo.graph.ts");
+		});
+
+		it("mv into a .graph.go shard", () => {
+			const hit = detectBashCodeFileWrite("mv /tmp/x.txt internal/foo.graph.go");
+			expect(hit?.target).toBe("internal/foo.graph.go");
+		});
+
+		it("ln into a .graph.js shard", () => {
+			const hit = detectBashCodeFileWrite("ln /tmp/x src/foo.graph.js");
+			expect(hit?.target).toBe("src/foo.graph.js");
+		});
+
+		it("rsync into a .graph.py shard", () => {
+			const hit = detectBashCodeFileWrite("rsync -a /tmp/x src/foo.graph.py");
+			expect(hit?.target).toBe("src/foo.graph.py");
+		});
+
+		it("dd if= of= a .graph.ts shard", () => {
+			const hit = detectBashCodeFileWrite("dd if=/tmp/x of=src/foo.graph.ts");
+			expect(hit?.target).toBe("src/foo.graph.ts");
+		});
+
+		it("compound: cp ... && touch — still catches the cp", () => {
+			const hit = detectBashCodeFileWrite(
+				"cp /tmp/x.txt src/harness/break-glass.graph.ts && touch -r src/harness/break-glass.ts src/harness/break-glass.graph.ts",
+			);
+			expect(hit?.target).toBe("src/harness/break-glass.graph.ts");
+		});
 	});
 
 	describe("allows legitimate shell operations", () => {
