@@ -6,19 +6,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
 
-const SKIP_DIRS = new Set([
-	"node_modules",
-	".git",
-	"dist",
-	"build",
-	"__pycache__",
-	"target",
-	".interlinked",
-	"interlinked",
-]);
+const SKIP_DIRS = SHARED_SKIP_DIRS;
 
 const CONFIG_PATTERNS = [
 	/config\.get\(["']([a-zA-Z0-9_.]+)["']\)/g,

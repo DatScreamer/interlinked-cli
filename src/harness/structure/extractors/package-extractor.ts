@@ -6,19 +6,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const PACKAGE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
 
-const SKIP_DIRS = new Set([
-	"node_modules",
-	".git",
-	"dist",
-	"build",
-	"__pycache__",
-	"target",
-	".interlinked",
-	"interlinked",
-]);
+const SKIP_DIRS = SHARED_SKIP_DIRS;
 
 export const metadata: ExtractorMetadata = {
 	name: "package-extractor",
