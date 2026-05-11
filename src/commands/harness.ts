@@ -361,14 +361,14 @@ function clearOrphanedPidFiles(cwd: string, killedPids: number[]): void {
 		try {
 			rmSync(pidPath, { force: true });
 		} catch {
-			/* swallow */
+			/* intentional: best-effort cleanup — already-removed pid is fine */
 		}
 		// Pair with its socket file — same prefix, .sock suffix.
 		const sockPath = pidPath.replace(/\.pid$/, ".sock");
 		try {
 			if (existsSync(sockPath)) rmSync(sockPath, { force: true });
 		} catch {
-			/* swallow */
+			/* intentional: best-effort cleanup — already-removed socket is fine */
 		}
 	}
 }
@@ -631,12 +631,15 @@ export async function harnessStartCommand(opts: {
 
 		const nodePath = process.execPath; // Use the same Node binary running the CLI
 
-		// Hard cap heap at 1 GB. Daemon working set on a typical project is
-		// ~200–500 MB (rules + project graph + trigram index + caches);
-		// 1 GB gives 2× headroom and prevents runaway-leak failure modes
-		// where one bad accumulation pulls the host into swap. Override via
-		// env: `INTERLINKED_HARNESS_HEAP_MB`.
-		const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || 1024;
+		// Cap heap at 4 GB. The previous 1 GB default reliably OOM'd in
+		// long-running sessions where activity logs and trajectory state
+		// accumulate — `.interlinked/logs/daemon.log` showed 46+ V8 fatal
+		// "Reached heap limit" crashes against the old cap in a single
+		// week. 4 GB gives ~8-10× headroom over the typical 200-500 MB
+		// working set while still preventing host-swap death from a
+		// genuine runaway-leak. Override via env:
+		// `INTERLINKED_HARNESS_HEAP_MB`.
+		const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || 4096;
 		const args = [`--max-old-space-size=${heapMb}`, serverPath, "--cwd", cwd];
 		args.push("--protocol", protocol);
 		if (protocol !== "raw") args.push("--session-id", sessionId);
@@ -826,8 +829,7 @@ export async function harnessRestartCommand(opts: {
 			try {
 				process.kill(status.pid, "SIGTERM");
 			} catch {
-				// Already dead between status check and signal — fine, fall
-				// through to the start path.
+				// intentional: already dead between status check and signal — fall through to the start path.
 			}
 			// Wait for graceful shutdown, then escalate to SIGKILL if the
 			// daemon is wedged. Previously we surfaced the wedge as a hard
@@ -852,7 +854,7 @@ export async function harnessRestartCommand(opts: {
 				try {
 					process.kill(status.pid, "SIGKILL");
 				} catch {
-					// Permission denied or just gone — last-ditch fall-through.
+					// intentional: permission denied or already gone — last-ditch fall-through.
 				}
 				const killStart = Date.now();
 				while (Date.now() - killStart < HARNESS_RESTART_KILL_WAIT_MS) {
