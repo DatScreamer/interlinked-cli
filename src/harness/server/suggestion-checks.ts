@@ -115,12 +115,19 @@ const SUGGESTION_CHECKS: SuggestionCheck[] = [
 	{ check: "c-unchecked-malloc", source: "security", fn: checkCUncheckedMalloc },
 ];
 
-/** Above this elapsed-ms, a single suggestion check is treated as
- *  pathologically slow and logged to stderr so we can locate the
- *  regex with catastrophic backtracking. Tuned to be roughly an
- *  order of magnitude above the slowest healthy check on a typical
- *  300-line source file. */
-const SLOW_CHECK_LOG_THRESHOLD_MS = 500;
+/** Above this elapsed-ms, a single suggestion check is logged to
+ *  stderr. Set low enough (50ms) that even moderately slow checks
+ *  show up in the diagnostic stream — the goal is to find what
+ *  collectively makes up the multi-second `scored_suggestions`
+ *  phase, so a tight threshold beats a loose one. */
+const SLOW_CHECK_LOG_THRESHOLD_MS = 50;
+
+/** Above this collected-total, the function logs a single summary
+ *  line with the aggregate elapsed and the top-3 offending checks.
+ *  Catches the "death by a thousand cuts" case where no single
+ *  check trips the per-check threshold but the sum dominates. */
+const SLOW_TOTAL_LOG_THRESHOLD_MS = 2_000;
+const TOP_OFFENDERS_TO_LOG = 3;
 
 /**
  * Public API — consumed by the PostToolUse pipeline in `server.ts` to
@@ -131,16 +138,20 @@ const SLOW_CHECK_LOG_THRESHOLD_MS = 500;
  * scoring/filtering via the suggestion scorer.
  *
  * Per-check timing is captured and any check exceeding
- * `SLOW_CHECK_LOG_THRESHOLD_MS` is logged to stderr — this is how we
- * isolate the regex responsible for the multi-second
- * `scored_suggestions` tax that shows up in `phase_breakdown`.
+ * `SLOW_CHECK_LOG_THRESHOLD_MS` is logged to stderr. A separate summary
+ * line fires when the total exceeds `SLOW_TOTAL_LOG_THRESHOLD_MS` so
+ * we can attribute the `scored_suggestions` phase to *either* one
+ * pathological regex *or* a long tail of moderately slow checks.
  */
 export function collectSuggestionFindings(content: string, filePath: string): Finding[] {
 	const allFindings: Finding[] = [];
+	const perCheckTiming: { check: string; ms: number }[] = [];
+	const collectionStart = Date.now();
 	for (const { check, source, fn } of SUGGESTION_CHECKS) {
 		const t0 = Date.now();
 		const matches = fn(content, filePath);
 		const elapsed = Date.now() - t0;
+		perCheckTiming.push({ check, ms: elapsed });
 		if (elapsed >= SLOW_CHECK_LOG_THRESHOLD_MS) {
 			process.stderr.write(
 				`[interlinked-suggestion-perf] ${check} took ${elapsed}ms on ${filePath}\n`,
@@ -149,6 +160,17 @@ export function collectSuggestionFindings(content: string, filePath: string): Fi
 		for (const m of matches) {
 			allFindings.push({ check, line: m.line, message: m.text, source });
 		}
+	}
+	const totalElapsed = Date.now() - collectionStart;
+	if (totalElapsed >= SLOW_TOTAL_LOG_THRESHOLD_MS) {
+		const top = [...perCheckTiming]
+			.sort((a, b) => b.ms - a.ms)
+			.slice(0, TOP_OFFENDERS_TO_LOG)
+			.map((e) => `${e.check}=${e.ms}ms`)
+			.join(", ");
+		process.stderr.write(
+			`[interlinked-suggestion-perf] total=${totalElapsed}ms top: ${top} on ${filePath}\n`,
+		);
 	}
 	return allFindings;
 }

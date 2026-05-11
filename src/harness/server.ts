@@ -2248,6 +2248,12 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							// Mythos Phase 4: recency-weighted check depth.
 							// Cold files skip heuristic detectors at PostToolUse.
 							filePriority: filePriorityMap,
+							// Diagnostic: per-check phase boundary. Each iteration
+							// of the inline-check loop fires this with its name,
+							// so phase_breakdown carries one entry per check
+							// (inline_software_version_regression, inline_strong_typing,
+							// …). Lets us pin a residual spike to a single check.
+							onCheckBoundary: markPhase,
 						},
 					);
 					// Phase mark — runQualityChecks ran tsc/biome/inline checks.
@@ -2577,6 +2583,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						);
 					}
 				}
+				// Phase mark — everything between project_wide_sweep and here was
+				// the scored-suggestions pipeline (scanInlineSuppressions,
+				// loadFileSuppressions, runStructureChecks). One of these is
+				// re-loading state per event and is the load-bearing tax.
+				markPhase("scored_suggestions");
 
 
 				// --- Session-level behavioral checks ---
@@ -2696,6 +2707,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					recurrenceCursor = allCheckResults.length;
 				}
 			}
+			// Phase mark — covers behavioral-checks + the recurrence log
+			// appender. If `recordHarnessCaught` is doing a full re-scan of
+			// the recurrences.jsonl file each call, this is where it lands.
+			markPhase("recurrence_aggregate");
 
 			// Write all accumulated warnings and remove marker.
 			try {
@@ -2715,10 +2730,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			}
 		}
 
-		// Phase mark — captures suggestion-scoring, recurrence aggregation,
-		// session-state persistence, and the warnings-marker write at the
-		// tail of the handler.
-		markPhase("tail_persist");
+		// Phase mark — covers the final warnings-marker write +
+		// any tail bookkeeping outside the inner block.
+		markPhase("session_persist");
 
 		// Attach structured check results and timing to the decision
 		const elapsedMs = Date.now() - postStartMs;
