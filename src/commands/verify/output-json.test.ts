@@ -399,4 +399,99 @@ describe("outputJson", () => {
 		expect(parsed.multiple_lockfiles.issues).toBe(0);
 		expect(parsed.multiple_lockfiles.details).toEqual([]);
 	});
+
+	it("emits empty decision_surface_growth when not passed", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.decision_surface_growth).toBeDefined();
+		expect(parsed.decision_surface_growth.skipped).toBe("not-computed");
+		expect(parsed.decision_surface_growth.total_growth).toBe(0);
+		expect(parsed.decision_surface_growth.warnings).toEqual([]);
+	});
+
+	it("emits decision_surface_growth when the ratchet ran with growth", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				decisionSurfaceRatchet: {
+					baselineRef: "origin/main",
+					skipped: null,
+					growthByCategory: {
+						package_manager: [],
+						test_framework: ["jest"],
+						linter: [],
+						formatter: [],
+						bundler: [],
+						http_client: [],
+						date_lib: [],
+					},
+					totalGrowth: 1,
+					warnings: [
+						"[heuristic] decision_surface_growth — test_framework expanded since origin/main: added jest.",
+					],
+				},
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.decision_surface_growth.baseline_ref).toBe("origin/main");
+		expect(parsed.decision_surface_growth.skipped).toBeNull();
+		expect(parsed.decision_surface_growth.total_growth).toBe(1);
+		expect(parsed.decision_surface_growth.growth_by_category.test_framework).toEqual(["jest"]);
+		expect(parsed.decision_surface_growth.warnings).toHaveLength(1);
+	});
+
+	it("emits decision_surface_growth with skip reason when the ratchet skipped", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				decisionSurfaceRatchet: {
+					baselineRef: null,
+					skipped: "not-a-repo",
+					growthByCategory: {
+						package_manager: [],
+						test_framework: [],
+						linter: [],
+						formatter: [],
+						bundler: [],
+						http_client: [],
+						date_lib: [],
+					},
+					totalGrowth: 0,
+					warnings: [],
+				},
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.decision_surface_growth.skipped).toBe("not-a-repo");
+		expect(parsed.decision_surface_growth.baseline_ref).toBeNull();
+		expect(parsed.decision_surface_growth.warnings).toEqual([]);
+	});
 });

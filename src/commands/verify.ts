@@ -36,6 +36,10 @@ import {
 	detectLockfileMultiplicity,
 	type LockfileMultiplicityResult,
 } from "../harness/quality-checks/decision-surface.js";
+import {
+	computeDecisionSurfaceRatchet,
+	type DecisionSurfaceRatchetResult,
+} from "../harness/quality-checks/decision-surface-ratchet.js";
 import type { Finding } from "../harness/suggestion-scorer.js";
 import {
 	type RegistryDriftFinding,
@@ -434,6 +438,7 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	streamProjectSetup(cwd, allFlaggedFiles);
 	streamRegistryParity(cwd, allFlaggedFiles);
 	streamLockfileMultiplicity(detectLockfileMultiplicity(cwd));
+	streamDecisionSurfaceRatchet(computeDecisionSurfaceRatchet(cwd));
 
 	const cqStart = Date.now();
 	process.stderr.write("  \x1b[2mscanning files...\x1b[0m");
@@ -590,6 +595,23 @@ function streamLockfileMultiplicity(result: LockfileMultiplicityResult): void {
 	process.stderr.write(
 		`\x1b[2m         pick one (${result.managers.join(" / ")}) and delete the others — installs are non-deterministic until you do\x1b[0m\n`,
 	);
+}
+
+/**
+ * Stream the decision-surface-growth ratchet. Silent when no growth or
+ * when the ratchet skipped (not a git repo / no baseline ref). Loud when
+ * one or more categories gained a new tool since the baseline ref.
+ * See `docs/design/decision-surface-metric.md` §2.
+ */
+function streamDecisionSurfaceRatchet(result: DecisionSurfaceRatchetResult): void {
+	if (result.warnings.length === 0) return;
+	process.stderr.write("\n  \x1b[1mdecision-surface growth\x1b[0m\n");
+	process.stderr.write(
+		`\x1b[2m         baseline ${result.baselineRef}; +${result.totalGrowth} entries\x1b[0m\n`,
+	);
+	for (const line of result.warnings) {
+		process.stderr.write(`    \x1b[33m!\x1b[0m ${line}\n`);
+	}
 }
 
 function streamUndocumentedEnvVars(
@@ -920,6 +942,7 @@ async function runVerifyBatchJson(
 		registryDrift,
 		decisionSurface: detectDecisionSurface(cwd),
 		lockfileMultiplicity: detectLockfileMultiplicity(cwd),
+		decisionSurfaceRatchet: computeDecisionSurfaceRatchet(cwd),
 		structureSection: opts.structure ? buildStructureJsonSection(cwd, opts) : undefined,
 	});
 }

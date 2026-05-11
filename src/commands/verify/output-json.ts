@@ -7,6 +7,7 @@
 // key here AND in `streaming-output.ts`.
 
 import type { ProjectSetupIssue } from "../../harness/generic-checks.js";
+import type { DecisionSurfaceRatchetResult } from "../../harness/quality-checks/decision-surface-ratchet.js";
 import type {
 	DecisionSurfaceReport,
 	LockfileMultiplicityResult,
@@ -51,6 +52,7 @@ interface OutputJsonArgs {
 	registryDrift?: RegistryDriftFinding[];
 	decisionSurface?: DecisionSurfaceReport;
 	lockfileMultiplicity?: LockfileMultiplicityResult;
+	decisionSurfaceRatchet?: DecisionSurfaceRatchetResult;
 	structureSection?: JsonObject;
 }
 
@@ -75,6 +77,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		registryDrift,
 		decisionSurface,
 		lockfileMultiplicity,
+		decisionSurfaceRatchet,
 		structureSection,
 	} = args;
 
@@ -116,6 +119,21 @@ export function outputJson(args: OutputJsonArgs): void {
 						],
 					}
 				: { issues: 0, details: [] },
+		decision_surface_growth: decisionSurfaceRatchet
+			? {
+					baseline_ref: decisionSurfaceRatchet.baselineRef,
+					skipped: decisionSurfaceRatchet.skipped,
+					total_growth: decisionSurfaceRatchet.totalGrowth,
+					growth_by_category: decisionSurfaceRatchet.growthByCategory,
+					warnings: decisionSurfaceRatchet.warnings,
+				}
+			: {
+					baseline_ref: null,
+					skipped: "not-computed",
+					total_growth: 0,
+					growth_by_category: {},
+					warnings: [],
+				},
 		tsc: summarizeWithDetails(tscResults),
 		[linterName]: summarizeWithDetails(linterResults),
 		semgrep: {
