@@ -9,9 +9,278 @@ export const GUARDS_INLINE_CHUNK = `/**
  * This is the PRIMARY guard — runs under Node.js on every tool call with zero dependencies.
  * When the harness is available, it provides additional quality checks and cohort awareness.
  */
+/**
+ * Inline file-dump guard. Mirrors src/harness/evaluator/file-dump-guard.ts so
+ * cold-fallback (harness daemon down) still refuses large/unfiltered dumps of
+ * tail/head/cat output into the tool result. Three block conditions:
+ *   1. tail -f / -F in the foreground (no trailing & and no nohup) — hangs.
+ *   2. No filter & no redirect & file > 100KB — refuse regardless of -n.
+ *   3. No filter & no redirect & lines requested > 50 — refuse.
+ * Redirects (>) bypass the size checks; -c on tail/head counts as a filter.
+ */
+function inlineFileDumpCheck(hookEvent, toolName, toolInput) {
+    if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
+    if (!toolName) return null;
+    var isBash = ["Bash", "Shell", "shell", "run_command"].indexOf(toolName) !== -1;
+    if (!isBash) return null;
+    var cmd = (toolInput && toolInput.command) || "";
+    if (!cmd) return null;
+    if (/^\\s*(tail|head|cat)\\b/.test(cmd) === false && /[;&|]\\s*(tail|head|cat)\\b/.test(cmd) === false) return null;
+
+    var FILE_SIZE_BLOCK_BYTES = 100 * 1024;
+    var NO_FILTER_MAX_LINES = 50;
+    var FILTER_COMMANDS = ["jq","grep","egrep","fgrep","rg","ripgrep","ag","awk","gawk","mawk","sed","head","tail","wc","cut","sort","uniq","fzf","less","more"];
+    var DUMP_VERBS = ["tail","head","cat"];
+
+    function splitPipeline(s) {
+        var out = [];
+        var buf = "";
+        var q = null;
+        for (var i = 0; i < s.length; i++) {
+            var ch = s[i];
+            if (q) {
+                buf += ch;
+                if (ch === q) q = null;
+                continue;
+            }
+            if (ch === '"' || ch === "'") { q = ch; buf += ch; continue; }
+            if (ch === "|") {
+                if (s[i+1] === "|") { buf += "||"; i++; continue; }
+                out.push(buf); buf = "";
+                continue;
+            }
+            buf += ch;
+        }
+        if (buf.length) out.push(buf);
+        return out;
+    }
+
+    function tokenize(seg) {
+        var out = [];
+        var buf = "";
+        var q = null;
+        for (var i = 0; i < seg.length; i++) {
+            var ch = seg[i];
+            if (q) {
+                if (ch === q) { q = null; continue; }
+                buf += ch;
+                continue;
+            }
+            if (ch === '"' || ch === "'") { q = ch; continue; }
+            if (/\\s/.test(ch)) {
+                if (buf) { out.push(buf); buf = ""; }
+                continue;
+            }
+            buf += ch;
+        }
+        if (buf) out.push(buf);
+        return out;
+    }
+
+    function stripWrappers(tokens) {
+        while (tokens.length) {
+            var t = tokens[0];
+            if (t === "sudo" || t === "exec" || t === "nohup" || t === "command") { tokens.shift(); continue; }
+            if (t === "env") {
+                tokens.shift();
+                while (tokens[0] && /^[A-Za-z_]\\w*=/.test(tokens[0])) tokens.shift();
+                continue;
+            }
+            if (/^[A-Za-z_]\\w*=/.test(t)) { tokens.shift(); continue; }
+            break;
+        }
+    }
+
+    function parseCount(tokens, shortFlag) {
+        var longFlag = shortFlag === "-n" ? "--lines" : "--bytes";
+        for (var i = 1; i < tokens.length; i++) {
+            var t = tokens[i];
+            if (t === shortFlag) {
+                var n = tokens[i+1]; if (n === undefined) return null;
+                var mm = n.match(/^\\+?(\\d+)\\b/);
+                return mm ? parseInt(mm[1], 10) : null;
+            }
+            if (t.indexOf(shortFlag + "=") === 0) {
+                var mm2 = t.slice(shortFlag.length+1).match(/^\\+?(\\d+)\\b/);
+                return mm2 ? parseInt(mm2[1], 10) : null;
+            }
+            if (t.indexOf(shortFlag) === 0 && t.length > shortFlag.length && /^\\+?\\d/.test(t.charAt(shortFlag.length))) {
+                var mm3 = t.slice(shortFlag.length).match(/^\\+?(\\d+)\\b/);
+                return mm3 ? parseInt(mm3[1], 10) : null;
+            }
+            if (t.indexOf(longFlag + "=") === 0) {
+                var mm4 = t.slice(longFlag.length+1).match(/^\\+?(\\d+)\\b/);
+                return mm4 ? parseInt(mm4[1], 10) : null;
+            }
+            if (t === longFlag) {
+                var n2 = tokens[i+1]; if (n2 === undefined) return null;
+                var mm5 = n2.match(/^\\+?(\\d+)\\b/);
+                return mm5 ? parseInt(mm5[1], 10) : null;
+            }
+        }
+        return null;
+    }
+
+    var segments = splitPipeline(cmd);
+    if (!segments.length) return null;
+    var tokens = tokenize(segments[0] || "");
+    stripWrappers(tokens);
+    var verb = tokens[0];
+    if (!verb || DUMP_VERBS.indexOf(verb) === -1) return null;
+
+    if (verb === "tail") {
+        var hasFollow = false;
+        for (var ti = 1; ti < tokens.length; ti++) {
+            var tt = tokens[ti];
+            if (tt.indexOf("--") === 0) continue;
+            if (tt.indexOf("-") !== 0) break;
+            if (/[fF]/.test(tt.slice(1))) { hasFollow = true; break; }
+        }
+        if (hasFollow) {
+            var trailingAmp = /(?:^|[^&])&\\s*$/.test(cmd);
+            var nohup = /^\\s*nohup\\s+/.test(cmd);
+            if (!trailingAmp && !nohup) {
+                return {
+                    decision: "block",
+                    reason: "BLOCKED: tail -f in the foreground will hang the tool call indefinitely. " +
+                        "Run it in the background (append ' &'), use the runner's background flag, " +
+                        "or use the Monitor tool for streaming output.",
+                    rule_id: "inline-tail-follow-foreground",
+                    severity: "high",
+                    category: "command-shape"
+                };
+            }
+            return null;
+        }
+    }
+
+    var hasRedirect = false;
+    var qr = null;
+    for (var ri = 0; ri < cmd.length; ri++) {
+        var rc = cmd[ri];
+        if (qr) { if (rc === qr) qr = null; continue; }
+        if (rc === '"' || rc === "'") { qr = rc; continue; }
+        if (rc === ">") {
+            var prev = cmd[ri - 1];
+            var next = cmd[ri + 1];
+            if (next === "=" || prev === "=") continue;
+            hasRedirect = true;
+            break;
+        }
+    }
+    if (hasRedirect) return null;
+
+    var hasFilter = false;
+    for (var si = 1; si < segments.length; si++) {
+        var mm = segments[si].trim().match(/^([\\w.-]+)/);
+        if (mm) {
+            var raw = mm[1];
+            var idx = raw.lastIndexOf("/");
+            var name = idx >= 0 ? raw.slice(idx + 1) : raw;
+            if (FILTER_COMMANDS.indexOf(name) !== -1) { hasFilter = true; break; }
+        }
+    }
+
+    var cFlag = parseCount(tokens, "-c");
+    if (cFlag !== null && (verb === "head" || verb === "tail")) hasFilter = true;
+    var requestedLines = parseCount(tokens, "-n");
+
+    var files = [];
+    var bail = false;
+    var flagsWithValue = ["-n","-c","--lines","--bytes"];
+    for (var fi = 1; fi < tokens.length; fi++) {
+        var ft = tokens[fi];
+        if (!ft) continue;
+        if (ft === "--") {
+            for (var fj = fi+1; fj < tokens.length; fj++) if (tokens[fj]) files.push(tokens[fj]);
+            break;
+        }
+        if (ft.indexOf("-") === 0) {
+            if (flagsWithValue.indexOf(ft) !== -1) fi++;
+            continue;
+        }
+        if (/[*?\\[\\]]/.test(ft)) { bail = true; break; }
+        if (ft.indexOf("$") !== -1) { bail = true; break; }
+        files.push(ft);
+    }
+    if (bail || !files.length) return null;
+
+    var largestBytes = 0;
+    var largestPath = "";
+    var aggregateNewlines = 0;
+    var catLineCountKnown = false;
+    for (var k = 0; k < files.length; k++) {
+        var fp = files[k];
+        var abs = fp.charAt(0) === "/" ? fp : require("node:path").resolve(process.cwd(), fp);
+        try {
+            if (!existsSync(abs)) continue;
+            var st = statSync(abs);
+            if (!st.isFile()) continue;
+            if (st.size > largestBytes) { largestBytes = st.size; largestPath = fp; }
+            if (verb === "cat" && requestedLines === null && st.size <= FILE_SIZE_BLOCK_BYTES) {
+                try {
+                    var content = readFileSync(abs, "utf8");
+                    var matches = content.match(/\\n/g);
+                    aggregateNewlines += matches ? matches.length : 0;
+                    catLineCountKnown = true;
+                } catch (_) { /* leave catLineCountKnown false */ }
+            }
+        } catch (_) { /* best-effort */ }
+    }
+    var lines;
+    if (requestedLines !== null) {
+        lines = requestedLines;
+    } else if (verb === "cat") {
+        lines = catLineCountKnown ? aggregateNewlines : Infinity;
+    } else {
+        lines = 10;
+    }
+
+    function fmtBytes(b) {
+        if (b < 1024) return b + "B";
+        if (b < 1024*1024) return Math.round(b/1024) + "KB";
+        return (b/(1024*1024)).toFixed(1) + "MB";
+    }
+
+    if (!hasFilter) {
+        if (largestBytes > FILE_SIZE_BLOCK_BYTES) {
+            return {
+                decision: "block",
+                reason: "BLOCKED: " + verb + " on " + largestPath + " (" + fmtBytes(largestBytes) + ") without a downstream filter would dump a large payload into the tool result. " +
+                    "Pipe through one of: jq | grep | rg | awk | sed | head | wc | cut | sort | uniq. " +
+                    "If you need the raw bytes on disk, redirect: " + verb + " ... > /tmp/sample. " +
+                    "To check the file first, run: wc -l " + largestPath + ".",
+                rule_id: "inline-file-dump-large-file",
+                severity: "high",
+                category: "command-shape"
+            };
+        }
+        if (lines > NO_FILTER_MAX_LINES) {
+            var linesDesc = lines === Infinity ? "an entire file" : (lines + " lines");
+            return {
+                decision: "block",
+                reason: "BLOCKED: " + verb + " requesting " + linesDesc + " without a downstream filter caps out the tool-result budget. " +
+                    "Cap at " + NO_FILTER_MAX_LINES + " lines, or narrow with a filter (jq / grep / awk / head). " +
+                    "If you really need the raw bytes, redirect: " + verb + " ... > /tmp/sample.",
+                rule_id: "inline-file-dump-too-many-lines",
+                severity: "high",
+                category: "command-shape"
+            };
+        }
+    }
+
+    return null;
+}
+
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
     if (!toolName) return null;
+
+    // File-dump output-budget gate. Must run BEFORE the data-only references
+    // skip below, since that skip returns null for any command starting with
+    // tail/head/cat and would otherwise hide every dump-budget block.
+    const dumpBlock = inlineFileDumpCheck(hookEvent, toolName, toolInput);
+    if (dumpBlock) return dumpBlock;
 
     const isBash = ["Bash", "Shell", "shell", "run_command"].includes(toolName);
     if (!isBash) return null;

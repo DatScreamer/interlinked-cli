@@ -54,6 +54,7 @@ import type {
 	QualityCheckConfig,
 	SessionTrajectory,
 } from "../types.js";
+import { evaluateFileDumpGuard } from "./file-dump-guard.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
@@ -533,6 +534,20 @@ export function evaluatePreToolUse(
 					"MCP servers should be accessed via MCP tools, not HTTP. " +
 					"If the MCP server isn't connected, ask the user to re-configure and restart it.",
 			);
+		}
+	}
+
+	// GUARD: tail/head/cat output-budget enforcement (file-dump-guard).
+	// Blocks foreground `tail -f` and unfiltered dumps of large files or
+	// large line counts; warns on overlarge slices even when filtered.
+	if (isBash(toolName)) {
+		const cmd = (toolInput.command as string) || "";
+		const result = evaluateFileDumpGuard({ command: cmd, cwd: process.cwd() });
+		if (result.kind === "block") {
+			return { ...result.decision, warnings };
+		}
+		if (result.kind === "warn") {
+			warnings.push(result.message);
 		}
 	}
 

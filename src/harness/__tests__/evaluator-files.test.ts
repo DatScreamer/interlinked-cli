@@ -238,6 +238,11 @@ describe("evaluatePreToolUse — file & network guards", () => {
 	// ===========================================
 
 	describe("safe commands", () => {
+		// `cat package.json` is intentionally NOT in this list: the
+		// file-dump guard (`evaluator/file-dump-guard.ts`) blocks an
+		// unfiltered cat on any file with >50 lines, which package.json
+		// usually has. The pattern the agent should use is on the list
+		// instead: `head -n 5 package.json` (explicit small slice).
 		const safeCommands = [
 			"ls -la",
 			"npm run test",
@@ -246,7 +251,7 @@ describe("evaluatePreToolUse — file & network guards", () => {
 			"git add .",
 			"git commit -m 'test'",
 			"git push origin main",
-			"cat package.json",
+			"head -n 5 package.json",
 			"echo hello",
 			"node --version",
 			"npx vitest run",
