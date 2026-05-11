@@ -194,6 +194,42 @@ export async function runQualityChecks(
 		-extForTestCheck.length || undefined,
 	);
 
+	// Snapshot file content once for the whole call: every inline check that
+	// inspects on-disk content (strong_typing, software_version_regression,
+	// freshness_sensitive_reference, package_json_consistency, the inline-checks
+	// section below, and the ratchet block) reads the same file. Hoisting the
+	// read eliminates 5+ identical readFileSync calls per PostToolUse Edit.
+	const sharedAbsPath = absForTestCheck;
+	let sharedFileContent: string | null = null;
+	let sharedFileReadAttempted = false;
+	const getSharedContent = (): string | null => {
+		if (!sharedFileReadAttempted) {
+			sharedFileReadAttempted = true;
+			if (existsSync(sharedAbsPath)) {
+				try {
+					sharedFileContent = readFileSync(sharedAbsPath, "utf-8");
+				} catch {
+					sharedFileContent = null;
+				}
+			}
+		}
+		return sharedFileContent;
+	};
+
+	// Memoize collectSoftwareVersionReferences for the post-edit content:
+	// software_version_regression and freshness_sensitive_reference both call
+	// it on the same content, so without memoization we run the full regex
+	// sweep twice per Edit.
+	let cachedAfterRefs:
+		| ReturnType<typeof collectSoftwareVersionReferences>
+		| undefined;
+	const getAfterRefs = (content: string) => {
+		if (cachedAfterRefs === undefined) {
+			cachedAfterRefs = collectSoftwareVersionReferences(content, filePath);
+		}
+		return cachedAfterRefs;
+	};
+
 	for (const [name, check] of Object.entries(checks)) {
 		if (!check.enabled) continue;
 		if (!check.file_types.some((t) => filePath.endsWith(t))) continue;
@@ -224,43 +260,38 @@ export async function runQualityChecks(
 				const fileBase = filePath.replace(/\.[^.]+$/, "");
 				if (fileBase.endsWith(".test") || fileBase.endsWith(".spec")) continue;
 
-				// Inline check — read the ENTIRE file from disk and scan for `any`/`unknown` usage.
-				// This catches all edits including Bash-based (sed, etc.).
-				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				if (existsSync(absPath)) {
-					try {
-						const content = readFileSync(absPath, "utf-8");
-						// 139-repo audit: generator output (OpenAPI, protoc,
-						// @generated) routinely uses `any` extensively by
-						// design. Supermodel's sdk/DefaultApi.ts produced 290
-						// FPs in one file. The fix is to change generator
-						// config, not the file.
-						if (isGeneratedFile(content)) continue;
-						const anyMatches = findAnyTypes(content);
-						if (anyMatches.length > 0) {
-							const anyCount = anyMatches.filter((m) => m.kind === "any").length;
-							const unknownCount = anyMatches.filter(
-								(m) => m.kind === "unknown",
-							).length;
-							const parts: string[] = [];
-							if (anyCount > 0) parts.push(`${anyCount} \`any\``);
-							if (unknownCount > 0) parts.push(`${unknownCount} \`unknown\``);
-							const shown = anyMatches.slice(0, 8);
-							const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-							const overflow =
-								anyMatches.length > 8
-									? `\n  ... and ${anyMatches.length - 8} more`
-									: "";
-							results.push({
-								name,
-								severity: check.severity,
-								message: `${parts.join(" + ")} type(s) in ${filePath} — prefer strong types (interfaces, generics, branded types)`,
-								file: filePath,
-								detail: detail + overflow,
-							});
-						}
-					} catch (_e) {
-						/* intentional: file unreadable — skip strong-typing inspection silently */
+				// Inline check — scan the ENTIRE file content for `any`/`unknown`.
+				// Uses the shared content snapshot to avoid re-reading the file.
+				const content = getSharedContent();
+				if (content !== null) {
+					// 139-repo audit: generator output (OpenAPI, protoc,
+					// @generated) routinely uses `any` extensively by
+					// design. Supermodel's sdk/DefaultApi.ts produced 290
+					// FPs in one file. The fix is to change generator
+					// config, not the file.
+					if (isGeneratedFile(content)) continue;
+					const anyMatches = findAnyTypes(content);
+					if (anyMatches.length > 0) {
+						const anyCount = anyMatches.filter((m) => m.kind === "any").length;
+						const unknownCount = anyMatches.filter(
+							(m) => m.kind === "unknown",
+						).length;
+						const parts: string[] = [];
+						if (anyCount > 0) parts.push(`${anyCount} \`any\``);
+						if (unknownCount > 0) parts.push(`${unknownCount} \`unknown\``);
+						const shown = anyMatches.slice(0, 8);
+						const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
+						const overflow =
+							anyMatches.length > 8
+								? `\n  ... and ${anyMatches.length - 8} more`
+								: "";
+						results.push({
+							name,
+							severity: check.severity,
+							message: `${parts.join(" + ")} type(s) in ${filePath} — prefer strong types (interfaces, generics, branded types)`,
+							file: filePath,
+							detail: detail + overflow,
+						});
 					}
 				}
 			} else if (name === "dependency_audit") {
@@ -328,14 +359,8 @@ export async function runQualityChecks(
 				// stripping pass. Replaces what was previously dead config.
 				const profile = getProfileForFile(filePath);
 				if (!profile || profile.inline_checks.length === 0) continue;
-				const absPath2 = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				if (!existsSync(absPath2)) continue;
-				let content: string;
-				try {
-					content = readFileSync(absPath2, "utf-8");
-				} catch {
-					continue;
-				}
+				const content = getSharedContent();
+				if (content === null) continue;
 				const findings = runInlineLanguageChecks(filePath, content, profile);
 				for (const f of findings) {
 					results.push({
@@ -404,86 +429,78 @@ export async function runQualityChecks(
 				}
 			} else if (name === "package_json_consistency") {
 				// Inline check — detect duplicate deps and invalid semver
-				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				if (existsSync(absPath)) {
-					try {
-						const content = readFileSync(absPath, "utf-8");
-						const issues = checkPackageJsonConsistency(content);
-						if (issues.length > 0) {
-							const dupes = issues.filter((i) => i.kind === "duplicate");
-							const badVer = issues.filter((i) => i.kind === "invalid_semver");
-							const parts: string[] = [];
-							if (dupes.length > 0) parts.push(`${dupes.length} duplicate(s)`);
-							if (badVer.length > 0)
-								parts.push(`${badVer.length} invalid version(s)`);
-							const detail = issues
-								.slice(0, 10)
-								.map((i) => `  ${i.detail}`)
-								.join("\n");
-							const overflow =
-								issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : "";
-							results.push({
-								name,
-								severity: check.severity,
-								message: `package.json consistency: ${parts.join(", ")} in ${filePath}`,
-								file: filePath,
-								detail: detail + overflow,
-							});
-						}
-					} catch (_e) {
-						/* intentional: file unreadable — skip package-json consistency check */
+				const content = getSharedContent();
+				if (content !== null) {
+					const issues = checkPackageJsonConsistency(content);
+					if (issues.length > 0) {
+						const dupes = issues.filter((i) => i.kind === "duplicate");
+						const badVer = issues.filter((i) => i.kind === "invalid_semver");
+						const parts: string[] = [];
+						if (dupes.length > 0) parts.push(`${dupes.length} duplicate(s)`);
+						if (badVer.length > 0)
+							parts.push(`${badVer.length} invalid version(s)`);
+						const detail = issues
+							.slice(0, 10)
+							.map((i) => `  ${i.detail}`)
+							.join("\n");
+						const overflow =
+							issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : "";
+						results.push({
+							name,
+							severity: check.severity,
+							message: `package.json consistency: ${parts.join(", ")} in ${filePath}`,
+							file: filePath,
+							detail: detail + overflow,
+						});
 					}
 				}
 			} else if (
 				name === "software_version_regression" ||
 				name === "freshness_sensitive_reference"
 			) {
-				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				if (!existsSync(absPath)) continue;
-				try {
-					const postContent = readFileSync(absPath, "utf-8");
-					const beforeRefs =
-						options?.baseline?.softwareVersions ??
-						(event.tool_input?.old_string
-							? collectSoftwareVersionReferences(
-									event.tool_input.old_string as string,
-									filePath,
-								)
-							: []);
-					const afterRefs = collectSoftwareVersionReferences(postContent, filePath);
-					const regressions = detectSoftwareVersionRegressions(beforeRefs, afterRefs);
-					const regressionAfterKeys = new Set(
-						regressions.map((r) => `${r.after.anchor}\0${r.after.version}`),
-					);
-					const freshnessConcerns = detectSoftwareVersionFreshnessConcerns(
-						beforeRefs,
-						afterRefs,
-					).filter((c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`));
-					if (name === "software_version_regression" && regressions.length > 0) {
-						results.push({
-							name,
-							severity: check.severity,
-							message:
-								`PostToolUse attention required in ${filePath}: ` +
-								`${regressions.length} possible software version regression(s). ` +
-								"This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.",
-							file: filePath,
-							detail: formatSoftwareVersionRegressionDetail(regressions),
-						});
-					}
-					if (name === "freshness_sensitive_reference" && freshnessConcerns.length > 0) {
-						results.push({
-							name,
-							severity: check.severity,
-							message:
-								`${freshnessConcerns.length} freshness-sensitive software reference(s) introduced in ${filePath}. ` +
-								"Verify against official source material before relying on remembered model/API/version names.",
-							file: filePath,
-							detail: formatSoftwareVersionFreshnessDetail(freshnessConcerns),
-						});
-					}
-				} catch (_e) {
-					/* intentional: file unreadable — skip software-version inspection */
+				const postContent = getSharedContent();
+				if (postContent === null) continue;
+				const beforeRefs =
+					options?.baseline?.softwareVersions ??
+					(event.tool_input?.old_string
+						? collectSoftwareVersionReferences(
+								event.tool_input.old_string as string,
+								filePath,
+							)
+						: []);
+				// getAfterRefs memoizes — the second check on the same Edit
+				// reuses the first check's full-file regex sweep.
+				const afterRefs = getAfterRefs(postContent);
+				const regressions = detectSoftwareVersionRegressions(beforeRefs, afterRefs);
+				const regressionAfterKeys = new Set(
+					regressions.map((r) => `${r.after.anchor}\0${r.after.version}`),
+				);
+				const freshnessConcerns = detectSoftwareVersionFreshnessConcerns(
+					beforeRefs,
+					afterRefs,
+				).filter((c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`));
+				if (name === "software_version_regression" && regressions.length > 0) {
+					results.push({
+						name,
+						severity: check.severity,
+						message:
+							`PostToolUse attention required in ${filePath}: ` +
+							`${regressions.length} possible software version regression(s). ` +
+							"This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.",
+						file: filePath,
+						detail: formatSoftwareVersionRegressionDetail(regressions),
+					});
+				}
+				if (name === "freshness_sensitive_reference" && freshnessConcerns.length > 0) {
+					results.push({
+						name,
+						severity: check.severity,
+						message:
+							`${freshnessConcerns.length} freshness-sensitive software reference(s) introduced in ${filePath}. ` +
+							"Verify against official source material before relying on remembered model/API/version names.",
+						file: filePath,
+						detail: formatSoftwareVersionFreshnessDetail(freshnessConcerns),
+					});
 				}
 			} else if (check.command) {
 				// Delegate to the unified check engine for subprocess-based tools.
@@ -554,10 +571,11 @@ export async function runQualityChecks(
 	// These run AFTER subprocess checks (tsc, lint, etc.) for additional signal.
 	// Read the file from disk once and reuse for all inline checks.
 
-	const absFilePath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-	if (existsSync(absFilePath)) {
+	const absFilePath = sharedAbsPath;
+	const sharedForInline = getSharedContent();
+	if (sharedForInline !== null) {
 		try {
-			const fileContent = readFileSync(absFilePath, "utf-8");
+			const fileContent = sharedForInline;
 
 			// 1. Binary content — error, skip all other inline checks
 			if (checkBinaryContent(fileContent)) {
@@ -734,8 +752,8 @@ export async function runQualityChecks(
 	// Metrics must not go up (more suppressions, more `as any`).
 	if (options?.diffAware?.enabled === false && options?.baseline) {
 		try {
-			const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-			const postContent = existsSync(absPath) ? readFileSync(absPath, "utf-8") : "";
+			const absPath = sharedAbsPath;
+			const postContent = getSharedContent() ?? "";
 			const pre = options.baseline;
 			const postSuppressions = countSuppressionDirectives(postContent);
 			const postAsAny = countAsAnyCasts(postContent);
