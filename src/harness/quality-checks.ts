@@ -66,6 +66,7 @@ export type { ProjectWideSweepResult } from "./quality-checks/project-wide.js";
 export {
 	ProjectWideSweepState,
 	runProjectWideChecks,
+	runProjectWideChecksAsync,
 } from "./quality-checks/project-wide.js";
 export {
 	countAsAnyCasts,

@@ -64,6 +64,10 @@ export interface ProjectWideSweepResult {
  *
  * Run project-wide checks (tsc, biome, etc.) in project mode.
  * Deduplicates against findings already reported by per-file checks.
+ *
+ * Synchronous variant retained for back-compat. New callers should prefer
+ * `runProjectWideChecksAsync` so the 30s sweep does not block the daemon's
+ * event loop and starve concurrent PostToolUse connections.
  */
 export function runProjectWideChecks(
 	config: ProjectWideCheckConfig,
@@ -72,40 +76,56 @@ export function runProjectWideChecks(
 ): ProjectWideSweepResult {
 	const start = Date.now();
 	const engine = getOrCreateEngine(cwd);
-	const toolsRun: ToolId[] = [];
-	const findings: QualityCheckResult[] = [];
-
 	const report = engine.runChecks(
 		{ projectRoot: cwd, mode: "project" },
 		{ tools: config.tools, timeoutMs: config.timeout_ms },
 	);
+	return buildSweepResult(report, sweepState, config, start);
+}
 
+/**
+ * Async variant. Uses `engine.runChecksAsync` so the project-wide sweep
+ * yields the event loop while tsc/biome subprocesses run, letting other
+ * socket connections be serviced concurrently. Behavior identical to
+ * `runProjectWideChecks`.
+ */
+export async function runProjectWideChecksAsync(
+	config: ProjectWideCheckConfig,
+	sweepState: ProjectWideSweepState,
+	cwd: string,
+): Promise<ProjectWideSweepResult> {
+	const start = Date.now();
+	const engine = getOrCreateEngine(cwd);
+	const report = await engine.runChecksAsync(
+		{ projectRoot: cwd, mode: "project" },
+		{ tools: config.tools, timeoutMs: config.timeout_ms },
+	);
+	return buildSweepResult(report, sweepState, config, start);
+}
+
+function buildSweepResult(
+	report: import("../check-engine/types.js").CheckReport,
+	sweepState: ProjectWideSweepState,
+	config: ProjectWideCheckConfig,
+	start: number,
+): ProjectWideSweepResult {
+	const toolsRun: ToolId[] = [];
+	const findings: QualityCheckResult[] = [];
 	for (const tool of report.toolsRun) {
 		toolsRun.push(tool.id);
 	}
-
-	// Convert engine results to QualityCheckResult, deduplicating against
-	// findings already reported by per-file PostToolUse checks.
 	for (const r of report.results) {
 		const key = ProjectWideSweepState.findingKey(r.tool, r);
 		if (sweepState.reportedFindings.has(key)) continue;
 		sweepState.reportedFindings.add(key);
-
 		findings.push({
 			name: `${r.tool}_project_wide`,
 			severity: config.severity,
 			message: `[cross-file] ${r.file}(${r.line}): ${r.message}`,
 			file: r.file,
 		});
-
 		if (findings.length >= config.max_findings) break;
 	}
-
 	sweepState.resetCounter();
-
-	return {
-		findings,
-		toolsRun,
-		elapsedMs: Date.now() - start,
-	};
+	return { findings, toolsRun, elapsedMs: Date.now() - start };
 }
