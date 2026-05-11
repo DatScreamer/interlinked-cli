@@ -22,10 +22,56 @@ import { homedir } from "node:os";
 
 export type PermissionBucket = "allow" | "deny" | "ask";
 
+/** Reason why a rule is considered malformed. Used by the
+ *  PreToolUse content-guard to render a specific error message at
+ *  write time. Currently the only detected class is paren imbalance
+ *  (matching Claude Code's own /doctor diagnostic). */
+export type MalformedRuleReason = "paren_imbalance";
+
 export interface MalformedRule {
 	bucket: PermissionBucket;
 	index: number;
 	rule: string;
+	/** Why this rule was flagged. Optional so legacy callers that
+	 *  populate the `MalformedRule[]` array without a reason still
+	 *  compile; the PreToolUse guard treats `undefined` as
+	 *  `"paren_imbalance"` (the only detected class today). */
+	reason?: MalformedRuleReason;
+}
+
+/** Human-readable description for a `MalformedRuleReason`. Used by
+ *  the PreToolUse settings-file content guard to render a precise
+ *  error message at write time. */
+export function describeReason(reason: MalformedRuleReason | undefined): string {
+	switch (reason) {
+		case "paren_imbalance":
+		case undefined:
+			return "mismatched parentheses";
+	}
+}
+
+/** Scan a parsed settings-JSON object and return every malformed
+ *  rule it contains. Mirror of `validateSettingsFile`'s logic but
+ *  for an in-memory object — used by the PreToolUse content guard
+ *  to inspect a proposed write BEFORE it lands on disk. */
+export function findMalformedRulesIn(parsedJson: unknown): MalformedRule[] {
+	const out: MalformedRule[] = [];
+	if (typeof parsedJson !== "object" || parsedJson === null) return out;
+	const perms = (parsedJson as { permissions?: Record<PermissionBucket, unknown> })
+		?.permissions;
+	if (!perms || typeof perms !== "object") return out;
+	for (const bucket of ["allow", "deny", "ask"] as const) {
+		const list = perms[bucket];
+		if (!Array.isArray(list)) continue;
+		for (let i = 0; i < list.length; i++) {
+			const rule = list[i];
+			if (typeof rule !== "string") continue;
+			if (!isParenBalanced(rule)) {
+				out.push({ bucket, index: i, rule, reason: "paren_imbalance" });
+			}
+		}
+	}
+	return out;
 }
 
 export interface SettingsValidationResult {
