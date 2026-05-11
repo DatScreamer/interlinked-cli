@@ -1,11 +1,15 @@
 // Tests for project-setup.ts — focuses on the universal
 // tsconfig.types ↔ deps cross-check helper.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkProjectSetup, checkTsConfigTypesAgainstDeps } from "./project-setup.js";
+import {
+	checkClaudeSettingsPermissions,
+	checkProjectSetup,
+	checkTsConfigTypesAgainstDeps,
+} from "./project-setup.js";
 
 describe("checkTsConfigTypesAgainstDeps", () => {
 	let tmp: string;
@@ -131,5 +135,99 @@ describe("checkProjectSetup", () => {
 
 		const issues = checkProjectSetup(tmp);
 		expect(issues.some((i) => i.message.includes("@cloudflare/workers-types"))).toBe(true);
+	});
+
+	it("surfaces malformed .claude/settings.json rules even in non-TS projects", () => {
+		// No tsconfig.json, no .ts files — the TS-only checks short-circuit
+		// but the Claude settings scan must still run.
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({
+				permissions: {
+					allow: ["Bash(ok *)", 'Bash(SESS_B="demo-$(date *)'],
+				},
+			}),
+		);
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.check === "permission_rule_syntax")).toBe(true);
+		expect(issues.find((i) => i.check === "permission_rule_syntax")?.fix).toMatch(
+			/interlinked doctor --fix/,
+		);
+	});
+});
+
+describe("checkClaudeSettingsPermissions", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "psetup-claude-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns no issues when no .claude/ directory exists", () => {
+		expect(checkClaudeSettingsPermissions(tmp)).toEqual([]);
+	});
+
+	it("returns no issues when settings.json is clean", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({
+				permissions: {
+					allow: ["Bash(grep *)", "Bash(git *)", "WebFetch(domain:github.com)"],
+				},
+			}),
+		);
+		expect(checkClaudeSettingsPermissions(tmp)).toEqual([]);
+	});
+
+	it("flags each kind of malformed rule with its reason in the message", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({
+				permissions: {
+					allow: [
+						"Bash(ok *)",
+						'Bash(SESS_B="demo-$(date *)', // parens + quotes
+						"",                              // empty
+						"not-a-rule",                    // prefix
+					],
+				},
+			}),
+		);
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(3);
+		const reasons = issues.map((i) => i.message).join(" | ");
+		expect(reasons).toMatch(/mismatched parentheses/);
+		expect(reasons).toMatch(/empty rule/);
+		expect(reasons).toMatch(/missing Tool\(\.\.\.\) prefix/);
+	});
+
+	it("scans both settings.json and settings.local.json", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({ permissions: { allow: ["Bash(ok *)"] } }),
+		);
+		writeFileSync(
+			join(tmp, ".claude", "settings.local.json"),
+			JSON.stringify({ permissions: { allow: ['Bash(SESS="x *)'] } }),
+		);
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(1);
+		expect(issues[0].file).toMatch(/settings\.local\.json$/);
+	});
+
+	it("surfaces a parse error as a single issue instead of crashing", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(join(tmp, ".claude", "settings.json"), "{ not json");
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(1);
+		expect(issues[0].message).toMatch(/not valid JSON/);
 	});
 });

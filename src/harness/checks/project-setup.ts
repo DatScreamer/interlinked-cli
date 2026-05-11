@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { describeReason, suggestRuleFix, validateSettingsFile } from "../../lib/settings-validator.js";
 
 /**
  * Read every dependency name from a package.json into a flat record.
@@ -78,11 +79,63 @@ export function checkTsConfigTypesAgainstDeps(
 }
 
 /**
+ * Scan project-local Claude Code settings files (`.claude/settings.json`
+ * and `.claude/settings.local.json`) for malformed permission rules. Each
+ * malformed rule becomes one ProjectSetupIssue. The fix instruction tells
+ * the user to run `interlinked doctor --fix`, which already wraps
+ * `stripMalformedRules`.
+ *
+ * Exported separately so tests can target it without going through the
+ * TS-project-detection branches in `checkProjectSetup`.
+ */
+export function checkClaudeSettingsPermissions(cwd: string): ProjectSetupIssue[] {
+	const issues: ProjectSetupIssue[] = [];
+	const candidates = [
+		resolve(cwd, ".claude", "settings.json"),
+		resolve(cwd, ".claude", "settings.local.json"),
+	];
+	for (const filePath of candidates) {
+		const result = validateSettingsFile(filePath);
+		if (!result.exists) continue;
+		if (result.parseError) {
+			issues.push({
+				check: "permission_rule_syntax",
+				file: filePath,
+				line: 0,
+				message: `${filePath} is not valid JSON: ${result.parseError.slice(0, 100)}`,
+				fix: "Fix the JSON syntax (or restore from version control).",
+			});
+			continue;
+		}
+		for (const m of result.malformed) {
+			const suggestion = suggestRuleFix(m.rule, m.reason);
+			const suggestionClause =
+				suggestion !== null ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
+			issues.push({
+				check: "permission_rule_syntax",
+				file: filePath,
+				line: 0,
+				message:
+					`permissions.${m.bucket}[${m.index}] = ${JSON.stringify(m.rule)} ` +
+					`is malformed (${describeReason(m.reason)}).${suggestionClause} ` +
+					"Claude Code's /doctor skips this rule at load time.",
+				fix: "Run `interlinked doctor --fix` to strip malformed permission rules.",
+			});
+		}
+	}
+	return issues;
+}
+
+/**
  * Detect common project setup issues that cause confusing compiler errors.
  * Runs once per project (not per-file). Returns actionable fix instructions.
  */
 export function checkProjectSetup(cwd: string): ProjectSetupIssue[] {
 	const issues: ProjectSetupIssue[] = [];
+
+	// Run the Claude settings scan unconditionally — it applies to every
+	// project that has a .claude/ directory, regardless of language.
+	issues.push(...checkClaudeSettingsPermissions(cwd));
 
 	// Find tsconfig.json (walk up)
 	let tsconfigDir: string | null = null;
