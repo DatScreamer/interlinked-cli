@@ -47,12 +47,19 @@ describe("tool classifiers", () => {
 		expect(isReadOperation(undefined)).toBe(false);
 	});
 
-	it("isFileWrite narrows to file-write tool variants including NotebookEdit", () => {
-		expect(isFileWrite("Write")).toBe(true);
-		expect(isFileWrite("Edit")).toBe(true);
-		expect(isFileWrite("NotebookEdit")).toBe(true);
-		expect(isFileWrite("apply_patch")).toBe(true);
-		expect(isFileWrite("Read")).toBe(false);
+	it.each([
+		["Write", true],
+		["Edit", true],
+		["MultiEdit", true],
+		["multi_edit", true],
+		["NotebookEdit", true],
+		["apply_patch", true],
+		["Read", false],
+	] as const)("isFileWrite(%s) === %s", (name, expected) => {
+		expect(isFileWrite(name)).toBe(expected);
+	});
+
+	it("isFileWrite(undefined) is false", () => {
 		expect(isFileWrite(undefined)).toBe(false);
 	});
 

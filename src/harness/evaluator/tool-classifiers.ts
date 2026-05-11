@@ -59,10 +59,12 @@ export function isFileWrite(toolName: string | undefined): boolean {
 	return [
 		"Write",
 		"Edit",
+		"MultiEdit",
 		"WriteFile",
 		"EditFile",
 		"write_file",
 		"edit_file",
+		"multi_edit",
 		"FileWrite",
 		"FileEdit",
 		"NotebookEdit",
