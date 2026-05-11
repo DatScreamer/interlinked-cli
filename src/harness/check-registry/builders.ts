@@ -1,6 +1,7 @@
 // Builder functions that derive legacy data structures (agentSafetyChecks
 // array, check instructions map, GENERIC_CHECK_META) from CHECK_REGISTRY.
 
+import { applyVerifyPasses } from "../check-pipeline/verify-pass.js";
 import { classifyDiff } from "../diff-classifier.js";
 import type { Determinism } from "../types.js";
 import { CHECK_REGISTRY } from "./registry.js";
@@ -63,7 +64,11 @@ export function buildAgentSafetyChecks(
 		.map((c) => ({
 			name: c.id,
 			severity: c.severity,
-			fn: () => c.fn(content, filePath),
+			// Each detector's candidate findings flow through the
+			// `applyVerifyPasses` second-pass filter chain. When no
+			// passes are registered for this check id, the helper is
+			// effectively a passthrough (one Map lookup, no allocation).
+			fn: () => applyVerifyPasses(c.id, c.fn(content, filePath), content, filePath),
 		}));
 }
 

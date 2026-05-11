@@ -65,6 +65,7 @@ import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
+import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -196,6 +197,12 @@ function stringArg(val: string | boolean | undefined): string | undefined {
 
 const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
+
+// Register the bundled verify-pass filters (Mythos Phase 3). Module-load
+// side effect: every PostToolUse detector now runs through the second-
+// pass FP filter chain. Adding new built-ins is a one-line append in
+// `check-pipeline/builtin-verify-passes.ts`; nothing else needs to change.
+registerAllBuiltinVerifyPasses();
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
 
