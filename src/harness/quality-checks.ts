@@ -251,6 +251,14 @@ export async function runQualityChecks(
 		if (!check.enabled) continue;
 		if (!check.file_types.some((t) => filePath.endsWith(t))) continue;
 
+		// Yield to the event loop between checks so concurrent socket
+		// connections can be serviced. The cost is one microtask boundary
+		// per check; the saving is that an in-flight 20s pipeline no
+		// longer starves other connections (closing the ~23s
+		// `guard_harness_ms` vs `checks_timing_ms` gap measured in 24h
+		// of production telemetry).
+		await yieldEventLoop();
+
 		// Skip test files for checks that opt in (e.g., semgrep, gitleaks)
 		if (check.skip_test_files && isLikelyTestFile(testCheckBaseName, absForTestCheck)) continue;
 
@@ -582,6 +590,11 @@ export async function runQualityChecks(
 		}
 	}
 
+	// Yield between the subprocess-check loop and the inline-check block —
+	// each is a distinct synchronous CPU phase, so giving the event loop
+	// a turn here lets other connections progress between them.
+	await yieldEventLoop();
+
 	// ===========================================
 	// Inline Checks — generic + language-specific (no subprocess, <10ms total)
 	// ===========================================
@@ -760,6 +773,11 @@ export async function runQualityChecks(
 			/* intentional: file unreadable — skip inline checks silently */
 		}
 	}
+
+	// Yield once more before the ratchet phase — it runs several full-file
+	// count passes (countSuppressionDirectives, countAsAnyCasts, etc.) that
+	// are each O(file size) regex sweeps.
+	await yieldEventLoop();
 
 	// ===========================================
 	// Ratchet comparison — warn when countable quality metrics regress
