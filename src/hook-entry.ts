@@ -12,8 +12,8 @@
 //
 // This module is importable (for tests) and also runnable as a CLI script.
 
-import { existsSync, readdirSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
@@ -28,6 +28,22 @@ import type { HarnessDecision } from "./harness/types.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
 
 const DEFAULT_HOOK_TIMEOUT_MS = 2000;
+
+// Hook-socket transport variants. The legacy server uses newline-delimited
+// JSON over a raw stream; the new server uses length-prefixed framing.
+const HOOK_PROTOCOL_RAW = "raw";
+const HOOK_PROTOCOL_FRAMED = "framed";
+type HookProtocol = typeof HOOK_PROTOCOL_RAW | typeof HOOK_PROTOCOL_FRAMED;
+
+// Unified phase tags (a subset of UnifiedPhase). Centralized as constants
+// because hook-entry compares against them in multiple places — magic
+// strings drift across files when one place is refactored and the others
+// aren't.
+const PHASE_PRE_TOOL = "pre-tool";
+
+// Discriminator values for UnifiedAction. Same rationale as above.
+const ACTION_TOOL_CALL = "tool_call";
+const ACTION_FILE_OPERATION = "file_operation";
 
 export interface HookEntryOptions {
 	/** The native hook event name the runner emitted. */
@@ -82,9 +98,9 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	const fellBack = false;
 	const protocol = resolveHookProtocol(socketPath, opts.env);
 	const result =
-		protocol === "raw"
+		protocol === HOOK_PROTOCOL_RAW
 			? await safeCallLegacy(socketPath, event, timeoutMs)
-			: await safeCallDaemon(createDaemonClient(socketPath), method, event, timeoutMs);
+			: await safeCallDaemon({ socketPath, method, event, timeoutMs });
 	if (result.ok) {
 		decision = result.decision;
 	} else {
@@ -102,8 +118,10 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 }
 
 /** Entry point for CLI invocation — reads stdin, detects runner + event,
- *  writes stdout/stderr, exits with the adapter-decided code. */
-export async function mainFromStdin(): Promise<void> {
+ *  writes stdout/stderr, exits with the adapter-decided code. Invoked by
+ *  the IIFE at the bottom of the file when run as a script; not part of
+ *  the importable surface (consumers should use `runHookEntry`). */
+async function mainFromStdin(): Promise<void> {
 	const nativeJson = await readStdinJson();
 	const nativeEventName = argOrEnv("--event") ?? process.env.INTERLINKED_EVENT ?? "PreToolUse";
 	const runner = argOrEnv("--runner") ?? process.env.INTERLINKED_RUNNER;
@@ -135,22 +153,28 @@ function tryBuildEvent(
 	nativeJson: unknown,
 	nativeEventName: string,
 ): UnifiedHookEvent {
-	// Adapters are tolerant of unknown fields; they should never throw.
-	// If they do, we surface a minimal placeholder so the hook exits cleanly.
+	// Adapters are tolerant of unknown fields and never throw; the wrapper
+	// exists only as a single seam where a future caller can add fallback
+	// behavior if adapter contracts change.
 	const event: UnifiedHookEvent = adapter.parseHookInput(nativeJson, nativeEventName);
 	return event;
 }
 
+interface SafeCallDaemonArgs {
+	socketPath: string;
+	method: RpcMethod;
+	event: UnifiedHookEvent;
+	timeoutMs: number;
+}
+
 async function safeCallDaemon(
-	client: ReturnType<typeof createDaemonClient>,
-	method: RpcMethod,
-	event: UnifiedHookEvent,
-	timeoutMs: number,
+	args: SafeCallDaemonArgs,
 ): Promise<{ ok: true; decision: HarnessDecision } | { ok: false; reason: string }> {
+	const client = createDaemonClient(args.socketPath);
 	let decision: HarnessDecision | null = null;
 	let reason = "";
 	const done = await client
-		.call(method as "hook.pre_tool_use", event, { timeout_ms: timeoutMs })
+		.call(args.method as "hook.pre_tool_use", args.event, { timeout_ms: args.timeoutMs })
 		.then((d) => {
 			decision = d as HarnessDecision;
 			return true;
@@ -181,15 +205,15 @@ async function safeCallLegacy(
 	}
 }
 
-function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): "raw" | "framed" {
+function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): HookProtocol {
 	const requested = env.INTERLINKED_HOOK_PROTOCOL;
-	if (requested === "raw") return "raw";
-	if (requested === "framed") return "framed";
-	return isLegacyHarnessSocket(socketPath) ? "raw" : "framed";
+	if (requested === HOOK_PROTOCOL_RAW) return HOOK_PROTOCOL_RAW;
+	if (requested === HOOK_PROTOCOL_FRAMED) return HOOK_PROTOCOL_FRAMED;
+	return isLegacyHarnessSocket(socketPath) ? HOOK_PROTOCOL_RAW : HOOK_PROTOCOL_FRAMED;
 }
 
 function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
-	if (event.phase === "pre-tool") return DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
+	if (event.phase === PHASE_PRE_TOOL) return DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
 	return DEFAULT_HOOK_TIMEOUT_MS;
 }
 
@@ -244,6 +268,150 @@ function safeReaddir(dir: string): string[] {
 	return out;
 }
 
+// Graph-prediction protocol mirror for the cold path. When the harness daemon
+// is unreachable or times out, the runner-adapter path (this file) used to
+// fall through to `allow`. The protocol explicitly requires that edits to
+// files with a fresh `.graph.*` shard go through predict/reveal/reconcile;
+// allowing them silently when the daemon is busy or down breaks the
+// protocol's "must" guarantee. This function mirrors the inline check in
+// `src/lib/hook-template-chunks/guards-inline.ts::inlineGraphShardCheck` —
+// any change here should be reflected there (and vice versa).
+const GRAPH_SHARD_STALENESS_GRACE_MS = 60_000;
+// Tool names AFTER `normalizeToolName` in the Claude Code adapter (PascalCase
+// → snake_case, e.g. `Edit` → `edit`, `MultiEdit` → `multi_edit`). Other
+// adapters use the snake_case form directly. Both are covered here so a future
+// adapter that forwards the raw PascalCase string still hits the same set.
+const GRAPH_SHARD_WRITE_TOOLS = new Set([
+	// Normalized (snake_case) forms — the canonical UnifiedHookEvent shape.
+	"write",
+	"edit",
+	"multi_edit",
+	"notebook_edit",
+	"write_file",
+	"edit_file",
+	"file_write",
+	"file_edit",
+	"create",
+	"str_replace",
+	"apply_patch",
+	// Raw PascalCase fallbacks for adapters that bypass normalization.
+	"Write",
+	"Edit",
+	"MultiEdit",
+	"NotebookEdit",
+	"WriteFile",
+	"EditFile",
+	"FileWrite",
+	"FileEdit",
+]);
+
+// Path keys that appear on tool_input across runners. Centralized so the
+// cold-fallback path doesn't have to keep a separate copy of the list. The
+// adapters normalize input keys but historic callers have used all of these.
+const FILE_PATH_INPUT_KEYS = ["file_path", "filePath", "path", "target_file"] as const;
+
+// `apply_patch` body markers used in OpenAI Codex CLI and similar tools.
+const APPLY_PATCH_TOOL = "apply_patch";
+const APPLY_PATCH_FILE_HEADER_RE = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/gm;
+const APPLY_PATCH_MOVE_HEADER_RE = /^\*\*\* Move to:\s+(.+)$/gm;
+
+// What `colColdToolName` returns when the unified event is a generic
+// file_operation (no specific tool name). "edit" matches the normalized
+// form in GRAPH_SHARD_WRITE_TOOLS.
+const FILE_OPERATION_DEFAULT_TOOL = "edit";
+
+// Sentinel value for `INTERLINKED_DISABLE_GRAPH_SHARD_INLINE` that opts out of
+// the cold-fallback gate. Stored as a constant so the comparison is
+// self-documenting and matches the inline-fallback variant exactly.
+const DISABLE_GRAPH_SHARD_FLAG = "1";
+
+interface ApplyPatchInput {
+	command?: string;
+	patch?: string;
+	content?: string;
+	_raw_patch?: string;
+}
+
+interface FileTargetInput {
+	file_path?: string;
+	filePath?: string;
+	path?: string;
+	target_file?: string;
+}
+
+type ColdToolInput = FileTargetInput & ApplyPatchInput;
+
+function extractColdTargetPaths(event: UnifiedHookEvent): string[] {
+	const paths: string[] = [];
+	const action = event.action;
+	if (action.kind === ACTION_TOOL_CALL) {
+		const ti = (action.tool_input ?? {}) as ColdToolInput;
+		for (const key of FILE_PATH_INPUT_KEYS) {
+			const v = ti[key];
+			if (typeof v === "string" && v.trim() !== "") paths.push(v.trim());
+		}
+		if (action.tool_name === APPLY_PATCH_TOOL) {
+			const patch = String(ti.command ?? ti.patch ?? ti.content ?? ti._raw_patch ?? "");
+			let m: RegExpExecArray | null;
+			while ((m = APPLY_PATCH_FILE_HEADER_RE.exec(patch)) !== null) {
+				const p = (m[1] ?? "").trim();
+				if (p && !paths.includes(p)) paths.push(p);
+			}
+			while ((m = APPLY_PATCH_MOVE_HEADER_RE.exec(patch)) !== null) {
+				const p = (m[1] ?? "").trim();
+				if (p && !paths.includes(p)) paths.push(p);
+			}
+			APPLY_PATCH_FILE_HEADER_RE.lastIndex = 0;
+			APPLY_PATCH_MOVE_HEADER_RE.lastIndex = 0;
+		}
+	} else if (action.kind === ACTION_FILE_OPERATION) {
+		if (typeof action.path === "string" && action.path.trim() !== "") {
+			paths.push(action.path.trim());
+		}
+	}
+	return paths;
+}
+
+function colColdToolName(event: UnifiedHookEvent): string | null {
+	const action = event.action;
+	if (action.kind === ACTION_TOOL_CALL) return action.tool_name;
+	if (action.kind === ACTION_FILE_OPERATION) return FILE_OPERATION_DEFAULT_TOOL;
+	return null;
+}
+
+function coldGraphShardBlockReason(event: UnifiedHookEvent): string | null {
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	if (process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE === "1") return null;
+	const toolName = colColdToolName(event);
+	if (!toolName || !GRAPH_SHARD_WRITE_TOOLS.has(toolName)) return null;
+	const paths = extractColdTargetPaths(event);
+	if (paths.length === 0) return null;
+	const cwd = event.context?.cwd ?? process.cwd();
+	for (const t of paths) {
+		const abs = isAbsolute(t) ? t : resolvePath(cwd, t);
+		try {
+			if (!existsSync(abs)) continue;
+			const m = abs.match(/\.[^./]+$/);
+			const ext = m ? m[0] : "";
+			const shardPath = ext ? abs.slice(0, -ext.length) + ".graph" + ext : abs + ".graph";
+			if (!existsSync(shardPath)) continue;
+			const sourceMtime = statSync(abs).mtimeMs;
+			const shardMtime = statSync(shardPath).mtimeMs;
+			if (shardMtime < sourceMtime - GRAPH_SHARD_STALENESS_GRACE_MS) continue;
+			return (
+				"[interlinked:graph-pred][harness-offline] Cannot evaluate the graph-prediction protocol because the harness daemon is unreachable (or did not respond in time), but " +
+				abs +
+				" has a fresh Supermodel shard colocated. Edits to E-fresh files MUST go through the predict/reveal/reconcile loop. " +
+				"Start the harness with: interlinked harness start  (or restart it). Once it's up, retry your edit. " +
+				"Override (advanced, defeats the protocol): set INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1."
+			);
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
 function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
@@ -256,6 +424,25 @@ function encodeColdFallback(
 	// The full evaluator is too heavy to run inline in the hook process in
 	// every runner — the correct place to add cold checks is here as this
 	// module grows, but never at the cost of the per-tool-class budget.
+	//
+	// Exception: fail-closed graph-prediction gate. If the agent is about to
+	// edit a file with a fresh `.graph.*` shard and we can't reach the
+	// evaluator, block — the protocol requires it.
+	const shardBlockReason = coldGraphShardBlockReason(event);
+	if (shardBlockReason) {
+		const blockDecision: HarnessDecision = {
+			decision: "block",
+			reason: shardBlockReason,
+		};
+		const blockOutput = adapter.encodeDecision(blockDecision, event);
+		const notice = `[interlinked] ${reason}; graph-shard fail-closed gate engaged\n`;
+		return {
+			stdout: blockOutput.stdout,
+			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
+			exit_code: blockOutput.exit_code,
+			fell_back: true,
+		};
+	}
 	const decision: HarnessDecision = {
 		decision: "allow",
 	};
