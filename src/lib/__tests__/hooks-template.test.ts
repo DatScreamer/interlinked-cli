@@ -104,6 +104,14 @@ describe("buildHookScript", () => {
 		expect(out).toContain("[interlinked:strong_typing]");
 	});
 
+	it("inline strong_typing fallback exempts .test.* and .spec.* files (parity with daemon)", () => {
+		// Daemon-side strong_typing skips test files at quality-checks.ts:223–225;
+		// the inline hook fallback used to fire on them anyway. The generated
+		// hook must short-circuit before scanning test files.
+		const out = buildHookScript("v");
+		expect(out).toContain("/\\.(?:test|spec)\\.(?:tsx?|jsx?|mjs|cjs)$/");
+	});
+
 	it("separates advisory PostToolUse warnings from blocking ones in the generated hook", () => {
 		const out = buildHookScript("v");
 		expect(out).toContain('const responseType = isBlockingPostDecision ? "post_block" : "post_warn";');

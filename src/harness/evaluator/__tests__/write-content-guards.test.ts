@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../types.js";
-import { evaluateWriteContentGuards } from "../write-content-guards.js";
+import {
+	buildTscDiffOverlayBlockReason,
+	evaluateWriteContentGuards,
+} from "../write-content-guards.js";
 
 const FIXED_TIMESTAMP = "2026-04-01T00:00:00.000Z";
 
@@ -237,5 +240,94 @@ describe("evaluateWriteContentGuards — ok cases", () => {
 		expect(result.kind).toBe("ok");
 		const escalation = result.kind === "ok" ? result.escalation : undefined;
 		expect(escalation).toEqual(existingEscalation);
+	});
+});
+
+describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
+	const FILE = "/repo/src/foo.ts";
+	const ts2304 = (line: number, name: string) => ({
+		ruleId: "TS2304",
+		line,
+		column: 1,
+		message: `Cannot find name '${name}'.`,
+	});
+	const ts2552 = (line: number, name: string) => ({
+		ruleId: "TS2552",
+		line,
+		column: 1,
+		message: `Cannot find name '${name}'. Did you mean '${name}s'?`,
+	});
+	const ts2322 = (line: number) => ({
+		ruleId: "TS2322",
+		line,
+		column: 1,
+		message: "Type 'string' is not assignable to type 'number'.",
+	});
+
+	it("Edit + all TS2304 → strong MultiEdit nudge with refactor framing", () => {
+		const reason = buildTscDiffOverlayBlockReason(
+			"Edit",
+			[ts2304(10, "FOO"), ts2304(20, "BAR"), ts2304(30, "BAZ")],
+			FILE,
+		);
+		expect(reason).toMatch(/BLOCKED by tsc diff-overlay/);
+		expect(reason).toMatch(/3 new type error\(s\)/);
+		expect(reason).toMatch(/All blocking errors are 'cannot find name'/);
+		expect(reason).toMatch(/coordinated refactor/);
+		expect(reason).toMatch(/Switch to MultiEdit/);
+	});
+
+	it("Edit + all TS2552 → strong MultiEdit nudge (did-you-mean variant)", () => {
+		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2552(15, "Handler")], FILE);
+		expect(reason).toMatch(/All blocking errors are 'cannot find name'/);
+		expect(reason).toMatch(/Switch to MultiEdit/);
+	});
+
+	it("Edit + mixed missing-symbol and other type errors → soft MultiEdit hint", () => {
+		const reason = buildTscDiffOverlayBlockReason(
+			"Edit",
+			[ts2304(10, "FOO"), ts2322(20)],
+			FILE,
+		);
+		expect(reason).not.toMatch(/All blocking errors are 'cannot find name'/);
+		expect(reason).toMatch(/coordinated refactor/);
+		expect(reason).toMatch(/MultiEdit applies the whole change as one transactional unit/);
+	});
+
+	it("Edit + zero missing-symbol errors → soft MultiEdit hint", () => {
+		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2322(10), ts2322(20)], FILE);
+		expect(reason).not.toMatch(/All blocking errors are 'cannot find name'/);
+		expect(reason).toMatch(/MultiEdit applies the whole change as one transactional unit/);
+	});
+
+	it("MultiEdit + all TS2304 → no MultiEdit nudge (agent already used the right primitive)", () => {
+		const reason = buildTscDiffOverlayBlockReason("MultiEdit", [ts2304(10, "FOO")], FILE);
+		expect(reason).toMatch(/BLOCKED by tsc diff-overlay/);
+		expect(reason).not.toMatch(/MultiEdit/);
+		expect(reason).toMatch(/Fix the type error\(s\) in your edit/);
+	});
+
+	it("includes the first finding's location and rule id verbatim", () => {
+		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2304(42, "FOO")], FILE);
+		expect(reason).toMatch(/\[TS2304\] L42:1 — Cannot find name 'FOO'\./);
+	});
+
+	it("collapses additional findings into '(+ N more)'", () => {
+		const reason = buildTscDiffOverlayBlockReason(
+			"Edit",
+			[ts2304(1, "A"), ts2304(2, "B"), ts2304(3, "C"), ts2304(4, "D")],
+			FILE,
+		);
+		expect(reason).toMatch(/\(\+ 3 more\)/);
+	});
+
+	it("omits the '+N more' tail for a single finding", () => {
+		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2304(1, "A")], FILE);
+		expect(reason).not.toMatch(/\+ \d+ more/);
+	});
+
+	it("Write tool with TS2304 still gets the nudge (Write also splices a single edit)", () => {
+		const reason = buildTscDiffOverlayBlockReason("Write", [ts2304(10, "FOO")], FILE);
+		expect(reason).toMatch(/Switch to MultiEdit/);
 	});
 });

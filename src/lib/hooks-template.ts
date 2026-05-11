@@ -323,7 +323,15 @@ function inlinePostToolFallback(rawInput, event) {
     const toolInput = rawInput.tool_input || event.tool_input || null;
     const filePath = extractFilePath(toolName, toolInput);
     if (!filePath || !existsSync(filePath)) return null;
-    if (!/\.(?:tsx?|jsx?|mjs|cjs)$/.test(filePath)) return null;
+    if (!/\\.(?:tsx?|jsx?|mjs|cjs)$/.test(filePath)) return null;
+    // Parity with the daemon's strong_typing exemption (see
+    // quality-checks.ts:223–225): tests legitimately use casts to construct
+    // partial fixtures of large interface types and to drive edge-case paths.
+    // (Note: \\. in this template-literal source emits \\. in the .mjs script,
+    // which the runtime parses as \\.\\. So the regex matches a literal dot.)
+    if (/\\.(?:test|spec)\\.(?:tsx?|jsx?|mjs|cjs)$/.test(filePath)) {
+        return { summary: "inline strong_typing clean" };
+    }
     let content = "";
     try {
         content = readFileSync(filePath, "utf-8");

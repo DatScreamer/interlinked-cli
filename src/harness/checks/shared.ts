@@ -165,7 +165,8 @@ export function isTestFile(filePath: string): boolean {
 		(normalized.includes("/harness/rules/") ||
 			normalized.includes("/harness/check-registry/") ||
 			normalized.includes("/harness/check-metadata") ||
-			normalized.includes("/harness/checks/ubs-language-specific."))
+			normalized.includes("/harness/checks/ubs-language-specific.") ||
+			normalized.includes("/harness/evaluator/write-content-guards."))
 	) {
 		return true;
 	}

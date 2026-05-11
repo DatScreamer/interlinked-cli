@@ -51,6 +51,56 @@ const MERGE_CONFLICT_MARKER = /^<{7}\s|^={7}$|^>{7}\s/m;
 /** TS/JS/MJS/CJS file extensions that trigger the legacy content-quality heuristics. */
 const JS_TS_EXTENSIONS = /\.(tsx?|jsx?|mjs|cjs)$/;
 
+/** TS error codes that indicate the agent referenced a name unresolved in the
+ *  current scope. The canonical signature of a multi-step refactor where the
+ *  missing identifier is defined in a sibling edit that hasn't landed yet —
+ *  retrying the same `Edit` repeatedly will keep tripping the per-edit overlay
+ *  on each intermediate state. Cross-module "no exported member" codes
+ *  (TS2305 / TS2724) are excluded: they more often indicate a real typo in
+ *  the import path than a coordinated refactor. */
+const MULTI_EDIT_REFACTOR_TSC_CODES = new Set(["TS2304", "TS2552"]);
+
+interface TscBlockingFinding {
+	ruleId?: string;
+	line: number;
+	column?: number;
+	message: string;
+}
+
+/** Build the human-readable block reason for a tsc diff-overlay failure.
+ *  When the failing tool is `Edit` AND every blocking finding is a
+ *  "cannot find name" error, append a strong nudge to switch to MultiEdit:
+ *  that is the canonical signature of a coordinated refactor where dependent
+ *  edits must land together. When the tool is already MultiEdit, no nudge —
+ *  the agent used the right primitive and the failure is a real type bug.
+ *  Exported for unit tests. */
+export function buildTscDiffOverlayBlockReason(
+	toolName: string,
+	blocking: ReadonlyArray<TscBlockingFinding>,
+	filePath: string,
+): string {
+	const first = blocking[0];
+	const rest = blocking.length - 1;
+	const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
+	const head =
+		`BLOCKED by tsc diff-overlay: this edit introduces ${blocking.length} new type error(s) in ${filePath}. ` +
+		`First: [${first.ruleId}] L${first.line}:${first.column ?? 1} — ${first.message}${restSummary}. ` +
+		"Fix the type error(s) in your edit, or retry without introducing them.";
+	if (toolName === "MultiEdit") return head;
+	const allMissingSymbols = blocking.every((f) =>
+		MULTI_EDIT_REFACTOR_TSC_CODES.has(f.ruleId ?? ""),
+	);
+	if (allMissingSymbols) {
+		return (
+			`${head} All blocking errors are 'cannot find name' — this is the signature of a coordinated refactor where the missing symbols are defined in sibling edits. ` +
+			"Switch to MultiEdit so the dependent edits land as one transactional unit; the overlay then runs once against the final projected content instead of each intermediate state."
+		);
+	}
+	return (
+		`${head} If this is a coordinated refactor (multiple symbols moving together), MultiEdit applies the whole change as one transactional unit (single overlay check on the final content).`
+	);
+}
+
 /** Public API — return shape from {@link evaluateWriteContentGuards}. Either a
  *  blocking decision (caller must return immediately) or an `ok` envelope
  *  carrying warnings and an optional pending escalation update. */
@@ -292,17 +342,11 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 			);
 		}
 		if (blocking.length > 0) {
-			const first = blocking[0];
-			const rest = blocking.length - 1;
-			const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
 			return {
 				kind: "block",
 				decision: {
 					decision: "block",
-					reason:
-						`BLOCKED by tsc diff-overlay: this edit introduces ${blocking.length} new type error(s) in ${filePath}. ` +
-						`First: [${first.ruleId}] L${first.line}:${first.column ?? 1} — ${first.message}${restSummary}. ` +
-						"Fix the type error(s) in your edit, or retry without introducing them.",
+					reason: buildTscDiffOverlayBlockReason(toolName, blocking, filePath),
 					warnings,
 					rule_id: "tsc-diff-overlay",
 					severity: "high",
