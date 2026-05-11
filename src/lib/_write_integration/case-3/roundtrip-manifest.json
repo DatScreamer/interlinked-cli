@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "writes": [
+    {
+      "path": "/Users/quentincody/interlinked-cli/src/lib/_write_integration/case-3/registry.ts",
+      "content": "import { randomUUID } from \"node:crypto\";\nexport function register(name: string): string {\n\treturn name + \":\" + randomUUID();\n}\n"
+    }
+  ]
+}
