@@ -290,4 +290,113 @@ describe("outputJson", () => {
 			id: "ghost-check",
 		});
 	});
+
+	it("emits empty decision_surface + multiple_lockfiles sections when not passed", () => {
+		// Regression: --json must always include these keys so CI consumers
+		// can rely on the schema. Absent args → empty by_category map +
+		// total_surface 0, issues 0, details [].
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.decision_surface).toBeDefined();
+		expect(parsed.decision_surface.total_surface).toBe(0);
+		expect(parsed.decision_surface.by_category).toEqual({});
+		expect(parsed.multiple_lockfiles).toBeDefined();
+		expect(parsed.multiple_lockfiles.issues).toBe(0);
+		expect(parsed.multiple_lockfiles.details).toEqual([]);
+	});
+
+	it("emits the decision_surface metric when passed", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				decisionSurface: {
+					projectRoot: "/repo",
+					byCategory: {
+						package_manager: ["npm"],
+						test_framework: ["vitest"],
+						linter: ["biome"],
+						formatter: ["biome"],
+						bundler: ["tsup"],
+						http_client: [],
+						date_lib: [],
+					},
+					totalSurface: 5,
+				},
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.decision_surface.total_surface).toBe(5);
+		expect(parsed.decision_surface.by_category.test_framework).toEqual(["vitest"]);
+		expect(parsed.decision_surface.by_category.linter).toEqual(["biome"]);
+	});
+
+	it("emits multiple_lockfiles details when multiplicity is true", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				lockfileMultiplicity: {
+					lockfiles: ["package-lock.json", "pnpm-lock.yaml"],
+					managers: ["npm", "pnpm"],
+					multiplicity: true,
+				},
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.multiple_lockfiles.issues).toBe(1);
+		expect(parsed.multiple_lockfiles.details).toHaveLength(1);
+		expect(parsed.multiple_lockfiles.details[0].managers).toEqual(["npm", "pnpm"]);
+		expect(parsed.multiple_lockfiles.details[0].message).toContain("Multiple lockfiles");
+	});
+
+	it("emits no multiple_lockfiles issue when multiplicity is false", () => {
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq: emptyCq(),
+				suggestions: null,
+				totalFiles: 0,
+				lockfileMultiplicity: {
+					lockfiles: ["package-lock.json"],
+					managers: ["npm"],
+					multiplicity: false,
+				},
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.multiple_lockfiles.issues).toBe(0);
+		expect(parsed.multiple_lockfiles.details).toEqual([]);
+	});
 });

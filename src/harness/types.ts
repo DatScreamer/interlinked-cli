@@ -171,6 +171,13 @@ export interface HarnessDecision {
 	 *  latency.jsonl so `interlinked harness latency --by-tool` can compute
 	 *  per-tool p50/p99. */
 	tool_breakdown?: Array<{ tool: string; ms: number; finding_count: number }>;
+	/** Per-phase wall-clock breakdown of the PostToolUse handler. Keys are
+	 *  named phases (e.g. "structural_checks", "quality_checks",
+	 *  "project_wide_sweep", "tail_persist"); values are elapsed ms.
+	 *  Used to attribute the residual = checks_timing_ms − Σ(tool_breakdown)
+	 *  bucket to a specific phase. Set by the daemon, forwarded into
+	 *  latency.jsonl. */
+	phase_breakdown?: Record<string, number>;
 	/** Grep acceleration statistics (when index intercepts a search) */
 	grep_stats?: GrepStats;
 	/** Summary line for display (e.g., "all clean (300ms)") */

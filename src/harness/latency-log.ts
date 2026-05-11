@@ -34,6 +34,13 @@ export interface LatencyLogEntry {
 	checks_ran?: string[] | null;
 	checks_timing_ms?: number | null;
 	tool_breakdown?: ToolBreakdown[] | null;
+	/** Per-phase wall-clock breakdown of the PostToolUse handler. Each key
+	 *  is a named phase (e.g. "baseline-capture", "structural-checks",
+	 *  "quality-checks", "project-wide-sweep", "scored-suggestions",
+	 *  "session-persist"); each value is elapsed ms. Sum should approximate
+	 *  `checks_timing_ms`. Lets us see which phase is growing on the
+	 *  residual = checks_timing_ms − sum(tool_breakdown.ms) bucket. */
+	phase_breakdown?: Record<string, number> | null;
 }
 
 interface LatencyLogOptions {
@@ -82,6 +89,7 @@ export function appendLatencyLog(
 			checks_ran: entry.checks_ran ?? null,
 			checks_timing_ms: entry.checks_timing_ms ?? null,
 			tool_breakdown: entry.tool_breakdown ?? null,
+			phase_breakdown: entry.phase_breakdown ?? null,
 		};
 		appendFileSync(path, `${JSON.stringify(record)}\n`);
 	} catch (e) {

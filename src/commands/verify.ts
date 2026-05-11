@@ -31,6 +31,11 @@ import { appendFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { CheckEngine, type CheckResult, formatToolReport } from "../harness/check-engine/index.js";
+import {
+	detectDecisionSurface,
+	detectLockfileMultiplicity,
+	type LockfileMultiplicityResult,
+} from "../harness/quality-checks/decision-surface.js";
 import type { Finding } from "../harness/suggestion-scorer.js";
 import {
 	type RegistryDriftFinding,
@@ -428,6 +433,7 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 
 	streamProjectSetup(cwd, allFlaggedFiles);
 	streamRegistryParity(cwd, allFlaggedFiles);
+	streamLockfileMultiplicity(detectLockfileMultiplicity(cwd));
 
 	const cqStart = Date.now();
 	process.stderr.write("  \x1b[2mscanning files...\x1b[0m");
@@ -567,6 +573,23 @@ function streamRegistryParity(cwd: string, allFlaggedFiles: Set<string>): void {
 		process.stderr.write(`    \x1b[31m✗\x1b[0m ${f.message}\n`);
 		allFlaggedFiles.add(f.source_file);
 	}
+}
+
+/**
+ * Stream the lockfile-multiplicity warning. Silent when only one (or
+ * zero) package managers are implied by the lockfiles present. Loud
+ * when two or more managers coexist — that's a config error, not a
+ * decision-surface count. See `docs/design/decision-surface-metric.md` §4.
+ */
+function streamLockfileMultiplicity(result: LockfileMultiplicityResult): void {
+	if (!result.multiplicity) return;
+	process.stderr.write("\n  \x1b[1mlockfile multiplicity\x1b[0m\n");
+	process.stderr.write(
+		`    \x1b[31m✗\x1b[0m multiple lockfiles found: ${result.lockfiles.join(" + ")}\n`,
+	);
+	process.stderr.write(
+		`\x1b[2m         pick one (${result.managers.join(" / ")}) and delete the others — installs are non-deterministic until you do\x1b[0m\n`,
+	);
 }
 
 function streamUndocumentedEnvVars(
@@ -895,6 +918,8 @@ async function runVerifyBatchJson(
 		totalFiles: files.length,
 		setupIssues,
 		registryDrift,
+		decisionSurface: detectDecisionSurface(cwd),
+		lockfileMultiplicity: detectLockfileMultiplicity(cwd),
 		structureSection: opts.structure ? buildStructureJsonSection(cwd, opts) : undefined,
 	});
 }

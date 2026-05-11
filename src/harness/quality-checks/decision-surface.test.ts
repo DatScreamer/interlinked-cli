@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	detectDecisionSurface,
+	detectLockfileMultiplicity,
 	type DetectDecisionSurfaceOptions,
 } from "./decision-surface.js";
 
@@ -472,6 +473,77 @@ describe("detectDecisionSurface — robustness", () => {
 		};
 		const report = detectDecisionSurface("/repo", makeOptions(fs));
 		expect(report.byCategory.test_framework).toEqual(["ava", "jest", "mocha", "vitest"]);
+	});
+});
+
+describe("detectLockfileMultiplicity", () => {
+	function existsFromFiles(files: string[]): (path: string) => boolean {
+		const set = new Set(files);
+		return (path) => set.has(path);
+	}
+
+	it("reports no multiplicity when zero lockfiles are present", () => {
+		const result = detectLockfileMultiplicity("/repo", { exists: () => false });
+		expect(result.multiplicity).toBe(false);
+		expect(result.lockfiles).toEqual([]);
+		expect(result.managers).toEqual([]);
+	});
+
+	it("reports no multiplicity for a single lockfile", () => {
+		const result = detectLockfileMultiplicity("/repo", {
+			exists: existsFromFiles(["/repo/package-lock.json"]),
+		});
+		expect(result.multiplicity).toBe(false);
+		expect(result.lockfiles).toEqual(["package-lock.json"]);
+		expect(result.managers).toEqual(["npm"]);
+	});
+
+	it("flags multiplicity when npm + pnpm coexist", () => {
+		const result = detectLockfileMultiplicity("/repo", {
+			exists: existsFromFiles(["/repo/package-lock.json", "/repo/pnpm-lock.yaml"]),
+		});
+		expect(result.multiplicity).toBe(true);
+		expect(result.managers).toEqual(["npm", "pnpm"]);
+		expect(result.lockfiles).toEqual(["package-lock.json", "pnpm-lock.yaml"]);
+	});
+
+	it("flags multiplicity across all four managers", () => {
+		const result = detectLockfileMultiplicity("/repo", {
+			exists: existsFromFiles([
+				"/repo/package-lock.json",
+				"/repo/pnpm-lock.yaml",
+				"/repo/yarn.lock",
+				"/repo/bun.lockb",
+			]),
+		});
+		expect(result.multiplicity).toBe(true);
+		expect(result.managers).toEqual(["bun", "npm", "pnpm", "yarn"]);
+	});
+
+	it("does NOT flag bun.lockb + bun.lock as multiplicity (same manager, two formats)", () => {
+		const result = detectLockfileMultiplicity("/repo", {
+			exists: existsFromFiles(["/repo/bun.lockb", "/repo/bun.lock"]),
+		});
+		expect(result.multiplicity).toBe(false);
+		expect(result.managers).toEqual(["bun"]);
+		expect(result.lockfiles).toEqual(["bun.lock", "bun.lockb"]);
+	});
+
+	it("returns sorted lockfile basenames for stable output", () => {
+		const result = detectLockfileMultiplicity("/repo", {
+			exists: existsFromFiles([
+				"/repo/yarn.lock",
+				"/repo/package-lock.json",
+				"/repo/pnpm-lock.yaml",
+			]),
+		});
+		expect(result.lockfiles).toEqual(["package-lock.json", "pnpm-lock.yaml", "yarn.lock"]);
+	});
+
+	it("with default exists, returns no multiplicity on a nonexistent path", () => {
+		const result = detectLockfileMultiplicity("/nonexistent-dir-do-not-create-12345");
+		expect(result.multiplicity).toBe(false);
+		expect(result.lockfiles).toEqual([]);
 	});
 });
 

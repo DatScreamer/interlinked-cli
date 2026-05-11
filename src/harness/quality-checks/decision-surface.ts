@@ -151,6 +151,61 @@ function addConfigFileSignals(
 }
 
 // ===========================================
+// Lockfile multiplicity — distinct hard signal
+// ===========================================
+// When more than one package-manager lockfile exists at the project root,
+// installs are non-deterministic: which tool the next contributor runs
+// decides which dependency versions land in node_modules. This is a
+// configuration error, not a decision-surface count. Distinct from the
+// `package_manager` bucket of `detectDecisionSurface` (which is
+// descriptive); this is a binary "broken vs not" signal.
+//
+// Bun's two lockfile formats (`bun.lockb`, `bun.lock`) both resolve to
+// the same canonical manager and do NOT count as multiplicity.
+
+export interface LockfileMultiplicityResult {
+	/** All lockfile basenames present at the project root, sorted. */
+	lockfiles: string[];
+	/** Distinct canonical package managers implied by `lockfiles`, sorted. */
+	managers: string[];
+	/** True when more than one distinct package manager is present. */
+	multiplicity: boolean;
+}
+
+export interface DetectLockfileMultiplicityOptions {
+	/** Override existence check — for tests. */
+	exists?: (path: string) => boolean;
+}
+
+/**
+ * Public API — lockfile-multiplicity detector.
+ *
+ * Returns the set of lockfile basenames at the project root and whether
+ * they imply more than one package manager. Two bun lockfile formats are
+ * collapsed to a single manager (`bun`) — that's not multiplicity, it's
+ * Bun's format migration.
+ */
+export function detectLockfileMultiplicity(
+	projectRoot: string,
+	options: DetectLockfileMultiplicityOptions = {},
+): LockfileMultiplicityResult {
+	const exists = options.exists ?? defaultExists;
+	const found: string[] = [];
+	const managers = new Set<string>();
+	for (const [filename, pm] of Object.entries(LOCKFILE_TO_PACKAGE_MANAGER)) {
+		if (exists(join(projectRoot, filename))) {
+			found.push(filename);
+			managers.add(pm);
+		}
+	}
+	return {
+		lockfiles: found.sort(),
+		managers: [...managers].sort(),
+		multiplicity: managers.size > 1,
+	};
+}
+
+// ===========================================
 // Defaults / utilities
 // ===========================================
 

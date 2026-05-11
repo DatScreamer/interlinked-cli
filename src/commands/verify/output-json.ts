@@ -7,6 +7,10 @@
 // key here AND in `streaming-output.ts`.
 
 import type { ProjectSetupIssue } from "../../harness/generic-checks.js";
+import type {
+	DecisionSurfaceReport,
+	LockfileMultiplicityResult,
+} from "../../harness/quality-checks/decision-surface.js";
 import type { RegistryDriftFinding } from "../../harness/registry-parity.js";
 import type { Finding } from "../../harness/suggestion-scorer.js";
 import type { JsonObject } from "../../lib/json-types.js";
@@ -45,6 +49,8 @@ interface OutputJsonArgs {
 	totalFiles: number;
 	setupIssues?: ProjectSetupIssue[];
 	registryDrift?: RegistryDriftFinding[];
+	decisionSurface?: DecisionSurfaceReport;
+	lockfileMultiplicity?: LockfileMultiplicityResult;
 	structureSection?: JsonObject;
 }
 
@@ -67,6 +73,8 @@ export function outputJson(args: OutputJsonArgs): void {
 		totalFiles,
 		setupIssues,
 		registryDrift,
+		decisionSurface,
+		lockfileMultiplicity,
 		structureSection,
 	} = args;
 
@@ -89,6 +97,25 @@ export function outputJson(args: OutputJsonArgs): void {
 					message: f.message,
 				})) ?? [],
 		},
+		decision_surface: decisionSurface
+			? {
+					by_category: decisionSurface.byCategory,
+					total_surface: decisionSurface.totalSurface,
+				}
+			: { by_category: {}, total_surface: 0 },
+		multiple_lockfiles:
+			lockfileMultiplicity && lockfileMultiplicity.multiplicity
+				? {
+						issues: 1,
+						details: [
+							{
+								lockfiles: lockfileMultiplicity.lockfiles,
+								managers: lockfileMultiplicity.managers,
+								message: `Multiple lockfiles found (${lockfileMultiplicity.lockfiles.join(" + ")}) implying ${lockfileMultiplicity.managers.join(" / ")}. Installs are non-deterministic until one is chosen.`,
+							},
+						],
+					}
+				: { issues: 0, details: [] },
 		tsc: summarizeWithDetails(tscResults),
 		[linterName]: summarizeWithDetails(linterResults),
 		semgrep: {
