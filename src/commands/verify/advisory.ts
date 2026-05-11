@@ -73,6 +73,17 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// booleans correspond to well-known flags). Advisory until FP rate is
 	// measured against a broader codebase.
 	"boolean_trap",
+	// Comment-vs-behavior drift detectors (Mythos blog adaptation). The
+	// claims they check ("max N", "returns null", "validates X",
+	// "idempotent", "@throws ErrorX") are inherently fuzzy — comments
+	// can rot independently of code, and the regex can't model every
+	// guard shape. Ship advisory; ratchet to default once FP rate is
+	// measured against a broader codebase.
+	"comment_claims_limit_no_guard",
+	"comment_claims_null_throws_instead",
+	"comment_claims_validation_missing",
+	"comment_claims_idempotent_mutates",
+	"comment_claims_throws_doesnt",
 	// Magic-literal-in-conditional: cold-reader clarity signal, but FPs on
 	// HTTP status codes, arity checks, and domain enums defined inline in a
 	// nearby object literal. Advisory until the detection can consult a

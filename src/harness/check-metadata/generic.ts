@@ -40,6 +40,41 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	comment_claims_limit_no_guard: {
+		name: "Comment Claims Limit With No Guard",
+		description:
+			"Detects functions whose comment says `max N` / `at most N` / `limited to N` but whose body has no `< N` / `<= N` guard.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	comment_claims_null_throws_instead: {
+		name: "Comment Claims Null But Body Throws",
+		description:
+			"Detects functions whose comment says `returns null on failure` / `may return undefined` but whose body contains an unhandled `throw`.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	comment_claims_validation_missing: {
+		name: "Comment Claims Validation But No Check",
+		description:
+			"Detects functions whose comment says `validates X` / `sanitizes Y` / `escapes Z` but whose body has no conditional/regex/encode call.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	comment_claims_idempotent_mutates: {
+		name: "Comment Claims Idempotent But Mutates",
+		description:
+			"Detects functions whose comment says `idempotent` but whose body contains an unconditional mutation with no guard.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	comment_claims_throws_doesnt: {
+		name: "Declared @throws Never Thrown",
+		description:
+			"Detects JSDoc `@throws {ErrorX}` declarations where the body never throws that error class.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
 	iterator_invalidation: {
 		name: "Iterator Invalidation",
 		description:

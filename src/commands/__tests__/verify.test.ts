@@ -226,6 +226,11 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 			[
 				"assertion_roulette",
 				"boolean_trap",
+				"comment_claims_idempotent_mutates",
+				"comment_claims_limit_no_guard",
+				"comment_claims_null_throws_instead",
+				"comment_claims_throws_doesnt",
+				"comment_claims_validation_missing",
 				"catch_and_log",
 				"circular_imports",
 				"complexity",
