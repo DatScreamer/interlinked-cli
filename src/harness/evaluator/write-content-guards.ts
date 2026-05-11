@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { describeReason, findMalformedRulesIn } from "../../lib/settings-validator.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "../check-registry/index.js";
 import { isTestFile } from "../checks/shared.js";
 import {
@@ -117,6 +118,18 @@ export interface WriteContentGuardsArgs {
 	pendingEscalation: EscalationRequest | undefined;
 }
 
+/** Match Claude Code's settings.json layout: `.claude/settings.json` or
+ *  `.claude/settings.local.json`, anywhere in the path. Covers both project-
+ *  local (`<cwd>/.claude/settings.json`) and user-global (`~/.claude/...`)
+ *  writes. We deliberately do NOT match arbitrary `settings.json` files
+ *  outside a `.claude/` directory — those belong to other tools and have
+ *  unrelated grammars. */
+function isClaudeSettingsFile(filePath: string): boolean {
+	return (
+		/(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(filePath)
+	);
+}
+
 /** Resolve the PRE-edit content for a Write/Edit/MultiEdit call so the
  *  Phase B.4 diff-classifier can decide whether to skip warning-severity
  *  detectors. Returns `undefined` when the pre-edit text is unavailable —
@@ -202,14 +215,46 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	}
 
 	// Validate JSON files
+	let parsedJson: unknown;
 	if (filePath.endsWith(".json") && content.trim()) {
 		try {
-			JSON.parse(content);
+			parsedJson = JSON.parse(content);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			warnings.push(
 				`[interlinked] Warning: Invalid JSON in ${filePath}: ${msg.slice(0, 100)}`,
 			);
+		}
+	}
+
+	// Claude Code settings: block writes that introduce malformed permission
+	// rules (mismatched parens / unbalanced quotes / empty / no Tool prefix).
+	// Claude Code's own /doctor skips these at load time, but the user is
+	// left with a noisy allowlist file. Catching it at write time keeps the
+	// file canonically clean regardless of source (agent edits, interlinked-cli
+	// rewrites, or other tools — Claude Code's own "Always allow" UI doesn't
+	// route through tool calls so it can't be intercepted here; that path is
+	// covered by the verify-time scan in checkProjectSetup).
+	if (isClaudeSettingsFile(filePath) && parsedJson !== undefined) {
+		const malformed = findMalformedRulesIn(parsedJson);
+		if (malformed.length > 0) {
+			const first = malformed[0];
+			const others = malformed.length > 1 ? ` (and ${malformed.length - 1} more)` : "";
+			return {
+				kind: "block",
+				decision: {
+					decision: "block",
+					reason:
+						`BLOCKED: Write to ${filePath} would add a malformed permission rule. ` +
+						`permissions.${first.bucket}[${first.index}] = ${JSON.stringify(first.rule)} ` +
+						`(${describeReason(first.reason)})${others}. Claude Code's /doctor would ` +
+						"skip this rule at load time. Fix the rule string (or remove it) before retrying.",
+					warnings,
+					rule_id: "permission-rule-syntax",
+					severity: "high",
+					category: "settings-integrity",
+				},
+			};
 		}
 	}
 

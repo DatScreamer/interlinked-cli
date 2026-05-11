@@ -113,6 +113,117 @@ describe("evaluateWriteContentGuards — block cases", () => {
 			decision: { reason: expect.stringMatching(/path traversal|system directory/) },
 		});
 	});
+
+	it("blocks writes to .claude/settings.json that introduce malformed permission rules", () => {
+		const dotClaude = join(tmpDir, ".claude");
+		mkdirSync(dotClaude, { recursive: true });
+		const filePath = join(dotClaude, "settings.json");
+		const content = JSON.stringify({
+			permissions: {
+				allow: ["Bash(grep *)", 'Bash(SESS_B="demo-slight-$(date *)'],
+			},
+		});
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: filePath, content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		expect(result).toMatchObject({
+			kind: "block",
+			decision: {
+				rule_id: "permission-rule-syntax",
+				reason: expect.stringMatching(/mismatched parentheses|unbalanced quotes/),
+			},
+		});
+	});
+
+	it("blocks writes to .claude/settings.local.json with an empty rule", () => {
+		const dotClaude = join(tmpDir, ".claude");
+		mkdirSync(dotClaude, { recursive: true });
+		const filePath = join(dotClaude, "settings.local.json");
+		const content = JSON.stringify({
+			permissions: { allow: ["Bash(ok *)", ""] },
+		});
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: filePath, content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		expect(result).toMatchObject({
+			kind: "block",
+			decision: { reason: expect.stringMatching(/empty rule/) },
+		});
+	});
+
+	it("blocks writes that add a rule with no Tool(...) prefix", () => {
+		const dotClaude = join(tmpDir, ".claude");
+		mkdirSync(dotClaude, { recursive: true });
+		const filePath = join(dotClaude, "settings.json");
+		const content = JSON.stringify({
+			permissions: { allow: ["just a string"] },
+		});
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: filePath, content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		expect(result).toMatchObject({
+			kind: "block",
+			decision: { reason: expect.stringMatching(/missing Tool\(\.\.\.\) prefix/) },
+		});
+	});
+
+	it("allows writes to .claude/settings.json when every rule is well-formed", () => {
+		const dotClaude = join(tmpDir, ".claude");
+		mkdirSync(dotClaude, { recursive: true });
+		const filePath = join(dotClaude, "settings.json");
+		const content = JSON.stringify({
+			permissions: {
+				allow: [
+					"Bash(grep *)",
+					"Bash(DEMO_CWD=$(ls *))",
+					'Bash(SID_FILE="/tmp/x.json" *)',
+					"WebFetch(domain:github.com)",
+				],
+			},
+		});
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: filePath, content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("ignores settings.json files outside a .claude/ directory (other tools own those grammars)", () => {
+		// A `settings.json` at the project root is NOT a Claude Code config.
+		// The validator must skip it so we don't false-block other tools.
+		const filePath = join(tmpDir, "settings.json");
+		const content = JSON.stringify({
+			permissions: { allow: ["this would be invalid for Claude"] },
+		});
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: filePath, content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).not.toBe("block");
+	});
 });
 
 describe("evaluateWriteContentGuards — ok cases", () => {
