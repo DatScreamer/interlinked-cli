@@ -28,6 +28,14 @@ export function buildAgentSafetyChecks(
 	filePath: string,
 	phase?: CheckPhase,
 	oldContent?: string,
+	/** Mythos Phase 4 — when true, run ONLY fully-deterministic
+	 *  detectors. Cold files (unchanged 180+ days) have been
+	 *  re-checked by prior pipeline runs many times already; the
+	 *  heuristic / partially-deterministic detectors don't pay
+	 *  their per-edit cost on that code. Untracked and recent
+	 *  files always pass false here — the recency gate is
+	 *  fail-open for new code per `shouldRunAdvisoryChecks`. */
+	coldFileMode?: boolean,
 ): Array<{
 	name: string;
 	severity: "error" | "warning";
@@ -60,6 +68,7 @@ export function buildAgentSafetyChecks(
 	return CHECK_REGISTRY.filter((c) => c.pipeline === "agent_safety")
 		.filter((c) => !phase || c.phase === phase)
 		.filter((c) => !(skipWarnings && c.severity === "warning"))
+		.filter((c) => !coldFileMode || c.determinism === "fully_deterministic")
 		.filter((c) => matchesContentKeywords(c.content_keywords, lcContent))
 		.map((c) => ({
 			name: c.id,

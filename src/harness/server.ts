@@ -66,6 +66,11 @@ import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
+import {
+	type FilePriority,
+	refreshPriorityIfStale as refreshFilePriorityIfStale,
+	shouldRunAdvisoryChecks,
+} from "./file-priority.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -203,6 +208,14 @@ const INTERLINKED_DIR = join(CWD, ".interlinked");
 // pass FP filter chain. Adding new built-ins is a one-line append in
 // `check-pipeline/builtin-verify-passes.ts`; nothing else needs to change.
 registerAllBuiltinVerifyPasses();
+
+// Recency-weighted check-depth state (Mythos Phase 4). Populated lazily
+// on first SessionStart (or first PostToolUse use, whichever fires) so
+// the cold-start cost is paid once per daemon. Per-file priorities map
+// is consulted by `shouldRunAdvisoryChecks(filePath, filePriorityMap)`
+// before each advisory inline detector pass; cold files (>180 days
+// unchanged) skip the heavier checks entirely.
+let filePriorityMap = new Map<string, FilePriority>();
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
 
@@ -651,6 +664,19 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		case "SessionStart":
 			cohort.agentJoined(event);
 			log(`Agent joined: ${event.agent_name || event.session_id} (${event.agent_source})`);
+			// Recency-weighted check depth (Mythos Phase 4): refresh the
+			// per-file priority map from git log if the cache is stale.
+			// Cold files (>180 days unchanged) skip advisory checks at
+			// PostToolUse via `shouldRunAdvisoryChecks`.
+			try {
+				const refreshed = refreshFilePriorityIfStale(CWD);
+				if (refreshed.size > 0) {
+					filePriorityMap = refreshed;
+					log(`File-priority map refreshed: ${refreshed.size} entries`);
+				}
+			} catch (err) {
+				log(`File-priority refresh failed (non-fatal): ${err}`);
+			}
 			// Incremental index update on session start (catches git changes between sessions)
 			if (trigramIndex) {
 				try {
@@ -1677,9 +1703,25 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		// per-tool p50/p99.
 		const postToolMetrics: import("./quality-checks.js").ToolBreakdownEntry[] = [];
 
+		// Per-phase wall-clock breakdown. Lets us see which phase of the
+		// PostToolUse handler is responsible for the residual ms not
+		// attributed to a subprocess tool. `markPhase(name)` records the
+		// delta from the previous mark; the closing `closePhase()` captures
+		// anything between the last mark and end-of-handler.
+		const phaseBreakdown: Record<string, number> = {};
+		let phaseCursor = postStartMs;
+		const markPhase = (name: string): void => {
+			const now = Date.now();
+			phaseBreakdown[name] = (phaseBreakdown[name] ?? 0) + (now - phaseCursor);
+			phaseCursor = now;
+		};
+
 		// --- Tool-response checks (run for ALL PostToolUse events, not just file edits) ---
 		// These inspect tool_response payloads, so they apply equally to MCP tools,
 		// Bash JSON output, and any other tool that returns structured data.
+		// (Phase mark for diagnostic instrumentation — captures time spent in
+		// the bookkeeping between handler entry and tool-response checks.)
+		markPhase("pre_tool_response");
 		if (session && event.tool_name) {
 			const toolName = event.tool_name;
 
@@ -1793,6 +1835,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					: editedFilePath.length > 0
 						? [editedFilePath]
 						: [""];
+			// Phase mark — everything before this point was tool-response checks
+			// (silent-failure, context-bloat) plus paths-to-check setup.
+			markPhase("tool_response_checks");
 			// Project-wide sweep is once-per-evaluation: a multi-file patch is one
 			// edit event semantically, and `runProjectWideChecks` spawns subprocesses
 			// we don't want to multiply by file count.
@@ -2142,6 +2187,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 					const currentBaseline = preEditBaselines.get(editedFilePath);
 					previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
+					// Phase mark — everything from the last mark up to here was
+					// the structural-checks block (export-surface diff, project
+					// graph update, impact analysis, deletion-hygiene).
+					markPhase("structural_checks");
 					const rawQualityResults = await runQualityChecks(
 						checkEvent,
 						rules.quality_checks,
@@ -2151,8 +2200,15 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							baseline: currentBaseline,
 							diffAware: rules.diff_aware,
 							outToolMetrics: postToolMetrics,
+							// Mythos Phase 4: recency-weighted check depth.
+							// Cold files skip heuristic detectors at PostToolUse.
+							filePriority: filePriorityMap,
 						},
 					);
+					// Phase mark — runQualityChecks ran tsc/biome/inline checks.
+					// The subprocess time is captured in tool_breakdown; this
+					// phase covers their wall time + the inline-check residual.
+					markPhase("quality_checks");
 					// Clear consumed baseline
 					preEditBaselines.delete(editedFilePath);
 					// Track which quality checks actually applied to this file type
@@ -2306,6 +2362,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						}
 					}
 				}
+				// Phase mark — project-wide sweep is debounced (every 5 edits), so
+				// for most events this will be ~0ms; only firings show real cost.
+				markPhase("project_wide_sweep");
 
 				// ── Scored suggestions (non-deterministic heuristics, top 1-3) ──
 				if (editedFilePath && existsSync(editedFilePath)) {
@@ -2611,6 +2670,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			}
 		}
 
+		// Phase mark — captures suggestion-scoring, recurrence aggregation,
+		// session-state persistence, and the warnings-marker write at the
+		// tail of the handler.
+		markPhase("tail_persist");
+
 		// Attach structured check results and timing to the decision
 		const elapsedMs = Date.now() - postStartMs;
 		if (allCheckResults.length > 0) {
@@ -2623,6 +2687,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 		if (postToolMetrics.length > 0) {
 			postDecision.tool_breakdown = postToolMetrics;
 		}
+		postDecision.phase_breakdown = phaseBreakdown;
 
 		// Required-tool coverage: warn once per session if required tools are missing
 		if (rules.required_tools?.length && session) {
@@ -2698,6 +2763,7 @@ async function evaluateEventLine(
 				checks_ran: decision.checks_ran ?? null,
 				checks_timing_ms: decision.checks_timing_ms ?? null,
 				tool_breakdown: decision.tool_breakdown ?? null,
+				phase_breakdown: decision.phase_breakdown ?? null,
 			});
 		} catch (e) {
 			void e;

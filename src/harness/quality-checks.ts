@@ -16,6 +16,7 @@ import {
 } from "./check-registry/index.js";
 import { findEnclosingScope, isGeneratedFile } from "./checks/shared.js";
 import { capturePrimitiveViolations } from "./discovered-primitives.js";
+import { type FilePriority, shouldRunAdvisoryChecks } from "./file-priority.js";
 import {
 	checkBinaryContent,
 	checkEmptyFile,
@@ -153,6 +154,14 @@ export interface QualityCheckOptions {
 	 *  per-tool breakdown into latency.jsonl. The caller owns the array
 	 *  (passes it pre-allocated, reads it after the await). */
 	outToolMetrics?: ToolBreakdownEntry[];
+	/** Mythos Phase 4 — per-file priority map populated at
+	 *  SessionStart in the daemon. When provided, advisory inline
+	 *  detectors skip files whose tier is "cold" (>180 days since
+	 *  last git-tracked modification). Untracked / fresh files
+	 *  always run the full pipeline (fail-OPEN per
+	 *  `shouldRunAdvisoryChecks`). Optional — direct test callers
+	 *  that pass nothing run all checks (legacy behavior). */
+	filePriority?: Map<string, FilePriority>;
 }
 
 /**
@@ -745,7 +754,21 @@ export async function runQualityChecks(
 				// Derived from the declarative CHECK_REGISTRY — see check-registry/.
 				// Only run phase="post" here; pre_block/pre_warn entries fire in
 				// evaluator.ts at PreToolUse and are authoritative for their phase.
-				const agentSafetyChecks = buildAgentSafetyChecks(fileContent, absFilePath, "post");
+				//
+				// Mythos Phase 4 recency gate: when filePriority is provided AND
+				// this file is "cold" (>180 days unchanged in git), drop the
+				// heuristic detectors and keep only fully-deterministic ones.
+				// New/untracked files always pass the gate (fail-OPEN).
+				const coldFileMode =
+					options?.filePriority !== undefined &&
+					!shouldRunAdvisoryChecks(filePath, options.filePriority);
+				const agentSafetyChecks = buildAgentSafetyChecks(
+					fileContent,
+					absFilePath,
+					"post",
+					undefined,
+					coldFileMode,
+				);
 
 				for (const check of agentSafetyChecks) {
 					const matches = check.fn();
