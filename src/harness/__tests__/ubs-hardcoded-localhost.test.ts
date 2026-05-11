@@ -52,4 +52,40 @@ describe("checkUbsHardcodedLocalhost", () => {
 		const code = "if (/https?:\\/\\/(localhost|127\\.0\\.0\\.1):\\d+/.test(line)) { /* … */ }";
 		expect(checkUbsHardcodedLocalhost(code, "src/lib/check.ts")).toEqual([]);
 	});
+
+	it("does NOT fire on `new RegExp(...)` constructor pattern strings", () => {
+		// pre-tool.ts's curl-to-MCP detector builds regexes via
+		// `new RegExp(\`...localhost...\`)` so it can interpolate a port.
+		// These are pattern-matchers for agent commands, not endpoint
+		// configs — the constructor argument intentionally contains the
+		// literal token.
+		const code =
+			'const pattern = new RegExp(`(?:curl|wget).*(?:localhost|127\\.0\\.0\\.1):${port}`, "i");';
+		expect(checkUbsHardcodedLocalhost(code, "src/harness/evaluator/pre-tool.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on multi-line `new RegExp(` argument continuation", () => {
+		// Real call site in pre-tool.ts splits the constructor across lines:
+		//   const pattern = new RegExp(
+		//     `...localhost...:${port}`,
+		//     "i",
+		//   );
+		// The literal lives one line below the constructor call; without the
+		// previous-line check, the exemption misses it.
+		const code = [
+			"const pattern = new RegExp(",
+			'\t`(?:curl|wget|fetch).*(?:localhost|127\\.0\\.0\\.1):${port}`,',
+			'\t"i",',
+			");",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/harness/evaluator/pre-tool.ts")).toEqual([]);
+	});
+
+	it("STILL fires on a real fetch() endpoint in production source", () => {
+		// Negative regression: the RegExp exemption must not weaken
+		// detection of the canonical bug shape.
+		const code = 'await fetch("http://localhost:3000/api");';
+		const matches = checkUbsHardcodedLocalhost(code, "src/lib/client.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
 });
