@@ -17,6 +17,7 @@ import {
 import { findEnclosingScope, isGeneratedFile } from "./checks/shared.js";
 import { capturePrimitiveViolations } from "./discovered-primitives.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "./file-priority.js";
+import { loadDisabledLibraries, runFootgunChecks } from "./library-footguns/registry.js";
 import {
 	checkBinaryContent,
 	checkEmptyFile,
@@ -781,6 +782,39 @@ export async function runQualityChecks(
 							name: check.name,
 							severity: check.severity,
 							message: `${matches.length} ${check.name.replace(/_/g, " ")} issue(s) in ${filePath}`,
+							file: filePath,
+							detail: detail + overflow,
+						});
+					}
+				}
+
+				// 8b. Library-footgun registry (Mythos Phase 5). Deterministic
+				// per-library checks that detect known API anti-patterns
+				// (e.g. fetch() without timeout). Findings group by check id
+				// — the fix instruction comes from the registry entry so
+				// the agent sees both WHAT fired and HOW to fix it. Per-
+				// library opt-out via `.interlinked/disabled-libraries.json`.
+				const disabledLibs = loadDisabledLibraries(cwd);
+				const footgunFindings = runFootgunChecks(fileContent, filePath, disabledLibs);
+				if (footgunFindings.length > 0) {
+					const byId = new Map<string, typeof footgunFindings>();
+					for (const f of footgunFindings) {
+						const bucket = byId.get(f.id) || [];
+						bucket.push(f);
+						byId.set(f.id, bucket);
+					}
+					for (const [id, bucket] of byId) {
+						const first = bucket[0];
+						const shown = bucket.slice(0, 5);
+						const detail = `${shown
+							.map((f) => `  L${f.match.line}: ${f.match.text}`)
+							.join("\n")}\n→ ${first.fixInstruction}`;
+						const overflow =
+							bucket.length > 5 ? `\n  ... and ${bucket.length - 5} more` : "";
+						results.push({
+							name: id,
+							severity: "warning",
+							message: `${bucket.length} ${first.name} issue(s) in ${filePath} [${first.library}]`,
 							file: filePath,
 							detail: detail + overflow,
 						});
