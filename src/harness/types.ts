@@ -600,6 +600,12 @@ export interface PreEditBaseline {
 	 *  accidental downgrades caused by stale model memory. Optional so older
 	 *  direct test callers continue to fail open. */
 	softwareVersions?: import("./quality-checks/software-version-regression.js").SoftwareVersionReference[];
+	/** Per-primitive bare-unsafe-builtin counts captured before the edit.
+	 *  Keyed by wrapper name (e.g. "safeParseInt" → 3 bare parseInt
+	 *  calls in this file). The discovered_primitive_ratchet check
+	 *  compares the post-edit counts and warns on any increase. Optional
+	 *  — older direct test callers continue to fail open. */
+	discoveredPrimitiveViolations?: Record<string, number>;
 }
 
 export interface GuardRulesConfig {

@@ -15,6 +15,7 @@ import {
 	buildGenericCheckMeta,
 } from "./check-registry/index.js";
 import { findEnclosingScope, isGeneratedFile } from "./checks/shared.js";
+import { capturePrimitiveViolations } from "./discovered-primitives.js";
 import {
 	checkBinaryContent,
 	checkEmptyFile,
@@ -152,6 +153,21 @@ export interface QualityCheckOptions {
 	 *  per-tool breakdown into latency.jsonl. The caller owns the array
 	 *  (passes it pre-allocated, reads it after the await). */
 	outToolMetrics?: ToolBreakdownEntry[];
+}
+
+/**
+ * Yield the Node event loop so other socket connections in the daemon can
+ * be serviced between heavy synchronous check phases. Without this, a
+ * single PostToolUse evaluation that spends 20s in pure-JS regex passes
+ * starves every concurrent connection — Node only services one request
+ * at a time while the main thread is busy. Adding `await yieldEventLoop()`
+ * at each loop boundary lets interleaved requests make progress and is
+ * what closes the ~23s queue gap measured between
+ * `guard_harness_ms` (hook-observed RTT) and `checks_timing_ms` (daemon
+ * pipeline wall).
+ */
+function yieldEventLoop(): Promise<void> {
+	return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 /**
@@ -783,6 +799,28 @@ export async function runQualityChecks(
 					message: `Non-null assertions increased (${pre.nonNullAssertionCount} → ${postNonNull}). Replace \`foo!.bar\` with an explicit null check, optional chaining (\`foo?.bar\`), or narrow the type so the assertion is unnecessary.`,
 					file: absPath,
 				});
+			}
+
+			// Defensive-primitive coverage ratchet — adapted from curl's
+			// curlx_str_number lesson (Mythos blog, 2026-05). Once the
+			// project has adopted a wrapper around an unsafe builtin
+			// (e.g. safeParseInt wrapping parseInt), each new bare call
+			// to the underlying builtin is a missed coverage opportunity.
+			if (pre.discoveredPrimitiveViolations) {
+				const postViolations = capturePrimitiveViolations(cwd, postContent);
+				if (postViolations) {
+					for (const [wrapperName, postCount] of Object.entries(postViolations)) {
+						const preCount = pre.discoveredPrimitiveViolations[wrapperName] ?? 0;
+						if (postCount > preCount) {
+							results.push({
+								name: "discovered_primitive_ratchet",
+								severity: "warning",
+								message: `Bare unsafe-builtin calls increased for \`${wrapperName}\` (${preCount} → ${postCount}). This project has adopted \`${wrapperName}\` as its safe wrapper — use it instead of the raw builtin. Disable via .interlinked/discovered-primitives.json \`disabled\` list.`,
+								file: absPath,
+							});
+						}
+					}
+				}
 			}
 
 			// === Batch 7 ratchets ===

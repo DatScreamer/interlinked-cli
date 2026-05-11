@@ -64,6 +64,8 @@ import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } fro
 import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
+import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
+import { harvestPredictionsFromTranscript } from "./graph-prediction-stop-hook.js";
 import { shouldSkipPath } from "./skip-paths.js";
 import {
 	computeEffectivenessSummary,
@@ -100,7 +102,7 @@ import {
 	formatQualityWarnings,
 	ProjectWideSweepState,
 	type QualityCheckOptions,
-	runProjectWideChecks,
+	runProjectWideChecksAsync,
 	runQualityChecks,
 } from "./quality-checks.js";
 import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
@@ -694,6 +696,22 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						`Commit-cadence Stop nudge: ${nonDocCount} uncommitted code files, ${docCount} doc files excluded, tokens=${tokens?.total ?? "n/a"}`,
 					);
 				}
+			}
+
+			// Harvest graph_prediction blocks from the transcript so the
+			// next PreToolUse for the same E-fresh file can hit cache.
+			// Best-effort: failures here must not break the Stop pathway.
+			try {
+				const harvest = harvestPredictionsFromTranscript({
+					cwd: CWD,
+					sessionId: event.session_id,
+					transcriptPath: event.transcript_path,
+				});
+				if (harvest.persisted.length > 0) {
+					log(`Harvested ${harvest.persisted.length} graph_prediction(s) from transcript`);
+				}
+			} catch (err) {
+				log(`graph_prediction harvest failed (non-fatal): ${(err as Error).message}`);
 			}
 
 			// Persist session trajectory + turn summary before cleanup
@@ -1491,6 +1509,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						publicApiSurfaceCount: countPublicApiSurface(preContent),
 						typeDensity: countTypeDensity(preContent),
 						softwareVersions: collectSoftwareVersionReferences(preContent, filePath),
+						discoveredPrimitiveViolations: captureDiscoveredPrimitiveViolations(
+							CWD,
+							preContent,
+						),
 					});
 				} catch (e) {
 					void e;
@@ -2268,7 +2290,14 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 	
 						if (shouldSweep) {
 							projectWideSweepFiredThisEvent = true;
-							const sweepResult = runProjectWideChecks(pwConfig, projectWideSweepState, CWD);
+							// Async sweep yields the event loop while tsc/biome subprocesses
+							// run, so other PostToolUse connections can be serviced during
+							// the up-to-30s sweep window instead of queueing behind it.
+							const sweepResult = await runProjectWideChecksAsync(
+								pwConfig,
+								projectWideSweepState,
+								CWD,
+							);
 		
 							if (sweepResult.findings.length > 0) {
 								const sweepWarnings = formatQualityWarnings(sweepResult.findings);
