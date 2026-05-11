@@ -272,6 +272,12 @@ export async function runQualityChecks(
 		// `guard_harness_ms` vs `checks_timing_ms` gap measured in 24h
 		// of production telemetry).
 		await yieldEventLoop();
+		// Diagnostic: close the yield window into a separate bucket so the
+		// check body's own time isn't conflated with whatever the event loop
+		// serviced during the yield. If `yield_<name>` is large while
+		// `inline_<name>` is small, the time was event-loop contention,
+		// not the check's regex/AST work.
+		options?.onCheckBoundary?.(`yield_${name}`);
 
 		// Skip test files for checks that opt in (e.g., semgrep, gitleaks)
 		if (check.skip_test_files && isLikelyTestFile(testCheckBaseName, absForTestCheck)) continue;
