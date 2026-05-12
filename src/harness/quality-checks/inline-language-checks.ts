@@ -189,11 +189,28 @@ function stripForLanguage(content: string, lang: LanguageId): string {
 		case "c_cpp":
 		case "java":
 		case "swift":
+		// GPU / shading languages — all use C-style comments (// and /* */)
+		// and double-quoted string literals, so the existing stripCStyle pass
+		// works without modification. WGSL also supports nested /* */ block
+		// comments per the spec; the current implementation handles the outer
+		// pair correctly and trailing nesting is rare enough that it's not
+		// worth a dedicated stripper until we ship WGSL-specific checks.
+		case "cuda":
+		case "opencl":
+		case "metal":
+		case "hlsl":
+		case "wgsl":
 			return stripCStyle(content);
 		case "typescript":
 			// Currently unused — typescript inline_checks is an empty array.
 			// Return as-is; callers already have stripAllLiterals for TS paths.
 			return content;
+		default: {
+			// Exhaustiveness assertion: any new LanguageId added in
+			// types.ts will trip this as a compile error.
+			const _exhaustive: never = lang;
+			return _exhaustive;
+		}
 	}
 }
 
