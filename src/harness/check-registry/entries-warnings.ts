@@ -99,6 +99,7 @@ import {
 	checkTestNondeterminism,
 	checkTimeFormatLocaleDep,
 	checkTsconfigStrictness,
+	checkTypeSmuggling,
 	checkUbsStringConcatInLoop,
 	checkUnboundedPromiseAll,
 	checkUncheckedRedirect,
@@ -1382,6 +1383,22 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"`as unknown as Foo` bypasses TypeScript entirely. If the value really might be Foo, validate it with a schema parser (zod, valibot, ajv) at the boundary so the runtime check matches the type assertion. If it's truly unsafe but unavoidable, isolate the cast in a single named helper with a comment explaining the invariant the cast relies on.",
 		fn: checkDoubleCastUnknown,
 		resultsPropName: "doubleCastUnknown",
+	},
+	{
+		id: "type_smuggling",
+		phase: "post",
+		name: "Type-Smuggling Cast",
+		description:
+			"Detects TypeScript `as T` casts whose source expression's static type has no structural overlap with `T` — the cast lies, instead of narrowing or widening. Uses the TypeScript compiler API for assignability checks in both directions; `as unknown`/`as any`/`as const` are exempt.",
+		tier: 3,
+		determinism: "partially_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"`as T` is a lie when the source type and `T` share no structural relationship — TypeScript won't catch the bug at runtime. Either (a) validate the value with a schema parser (zod/valibot/ajv) at the boundary so the runtime shape matches the declared type, (b) narrow with a type guard (`if ('id' in value && typeof value.id === 'number') ...`), or (c) restructure so the source type already includes `T` in a union. If you genuinely need a wide cast as an escape hatch, use `as unknown as T` and document the invariant — but prefer validation first.",
+		fn: checkTypeSmuggling,
+		resultsPropName: "typeSmuggling",
+		content_keywords: [" as "],
 	},
 	{
 		id: "union_widened_with_string",

@@ -124,6 +124,7 @@ import {
 	checkTimeFormatLocaleDep,
 	checkTlsVerifyDisabled,
 	checkTsconfigStrictness,
+	checkTypeSmuggling,
 	checkChildProcessExecUserInput,
 	checkCookieMissingSecurityFlags,
 	checkLoggerFormatUserInput,
@@ -916,6 +917,9 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	);
 	r.doubleCastUnknown.push(
 		...toIssues("double_cast_unknown", relPath, checkDoubleCastUnknown(content, file)),
+	);
+	r.typeSmuggling.push(
+		...toIssues("type_smuggling", relPath, checkTypeSmuggling(content, file)),
 	);
 	r.unionWidenedWithString.push(
 		...toIssues(
