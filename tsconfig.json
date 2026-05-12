@@ -14,6 +14,8 @@
     "include": ["src"],
     "exclude": [
         "src/harness/structure/__tests__/fixtures",
-        "src/harness/__tests__/fixtures/supermodel"
+        "src/harness/__tests__/fixtures/supermodel",
+        "**/*.overlay-*.ts",
+        "src/lib/_*"
     ]
 }
