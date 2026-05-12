@@ -63,7 +63,14 @@ reference-repos/
 # check-docs, audit-receipts, etc.) keep being tracked — gitignore only
 # blocks NEW additions. Drop a `!scripts/foo.mjs` carve-out below if a
 # new file in this directory needs to ship to the repo.
-scripts/
+scripts/*
+# Git hook installer + the hooks themselves ship with the repo so every
+# contributor gets the pre-push test gate (see scripts/git-hooks/pre-push).
+# Note: the parent ignore is `scripts/*` (not `scripts/`) so these re-
+# includes actually take effect — gitignore can't re-include children of
+# a fully-excluded parent directory.
+!scripts/setup-git-hooks.mjs
+!scripts/git-hooks/
 
 # Session-internal phase plans + work-in-progress design notes. The older
 # top-level docs/plans/*.md files (security-scanning-pillars, sondera-
