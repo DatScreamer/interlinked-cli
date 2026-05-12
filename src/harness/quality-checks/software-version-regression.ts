@@ -48,8 +48,13 @@ const PACKAGE_SECTIONS = [
 	"overrides",
 ] as const;
 
+// `o(?=\d)` matches OpenAI's o-series prefix (`o1`, `o3`, …) without
+// matching bare `o` tokens. Without the lookahead, `\bo\b` matched the
+// `o` in Unix shell flags like `-o ro` and `--read-only`, causing
+// freshness-sensitive false positives on any content that mentioned
+// shell-flag syntax (e.g., mount, ssh, curl).
 const MODEL_PROVIDER_RE =
-	/\b(gpt|o|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova)\b/i;
+	/\b(?:(?<provider>gpt|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova)\b|(?<oseries>o)(?=\d))/i;
 
 const SOFTWARE_KEY_RE =
 	/(?:^|[_\-.])(?:version|model|modelname|api[_\-.]?version|runtime|engine|image|sdk|tool|package|dependency|node|python|go|rust|java)(?:$|[_\-.])/i;
@@ -514,7 +519,8 @@ function looksComparable(value: string, kind: SoftwareVersionReference["kind"] =
 }
 
 function modelProviderOf(value: string): string | undefined {
-	return MODEL_PROVIDER_RE.exec(value)?.[1]?.toLowerCase();
+	const match = MODEL_PROVIDER_RE.exec(value);
+	return (match?.groups?.provider ?? match?.groups?.oseries)?.toLowerCase();
 }
 
 function modelFamilyOf(value: string): string | undefined {
@@ -528,7 +534,21 @@ function modelFamilyOf(value: string): string | undefined {
 }
 
 function referenceIdentity(ref: SoftwareVersionReference): string {
-	return `${ref.anchor}\0${ref.version}`;
+	// Strip the @<objectPath> suffix from anchor for freshness comparison.
+	// The objectPath component is position-dependent (computed by walking
+	// the file's JSON nesting structure line-by-line), so inserting content
+	// earlier in a file changes the objectPath for unchanged content
+	// downstream — making previously-seen references look "new" in the
+	// before/after diff and firing freshness warnings on content that was
+	// already there. The base anchor (kind:key:family) is position-
+	// independent and is the right granularity for "have we seen this
+	// reference before?". Regressions detection keeps the full anchor
+	// because it needs to track the same package at different nesting
+	// paths (e.g., dependencies.lodash vs devDependencies.lodash)
+	// independently.
+	const atIdx = ref.anchor.indexOf("@");
+	const baseAnchor = atIdx === -1 ? ref.anchor : ref.anchor.slice(0, atIdx);
+	return `${baseAnchor}\0${ref.version}`;
 }
 
 function freshnessConcernForRef(
