@@ -698,16 +698,23 @@ export interface GuardRulesConfig {
 	};
 }
 
-/** Verification-before-stop nudge configuration. Three independent
+/** Verification-before-stop nudge configuration. Four independent
  *  Stop / SessionEnd warnings, all stderr-only, all opt-out per-kind:
- *    - warn_unverified_code: code-file edits with no tsc/test/lint/build
+ *    - warn_unverified_code:   code-file edits with no tsc/test/lint/build
+ *    - warn_verify_not_run:    code edits with partial verification —
+ *                              tsc/test/etc. ran but `interlinked verify`
+ *                              (the canonical local CI mirror) did not.
+ *                              Fires only when individual tools ran but
+ *                              the suite didn't (no double-nudge with
+ *                              warn_unverified_code).
  *    - warn_ui_not_interacted: UI-file edits with no dev-server / browser MCP
- *    - warn_stubs_introduced: TODO/FIXME/disabled-test/not-impl-throw
- *      surfaced via Write/Edit content during the session
- *  Master `enabled` switch gates all three together. */
+ *    - warn_stubs_introduced:  TODO/FIXME/disabled-test/not-impl-throw
+ *                              surfaced via Write/Edit content during the session
+ *  Master `enabled` switch gates all four together. */
 export interface VerificationStopChecksConfig {
 	enabled: boolean;
 	warn_unverified_code: boolean;
+	warn_verify_not_run: boolean;
 	warn_ui_not_interacted: boolean;
 	warn_stubs_introduced: boolean;
 }

@@ -716,9 +716,14 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 	},
 	verification_stop_checks: {
 		// Default-on: stderr-only Stop / SessionEnd reflection nudges, never
-		// block. Three independent axes:
+		// block. Four independent axes:
 		//   - warn_unverified_code: code edits with no tsc/test/lint/build
 		//     observed this session (signals captured at PreToolUse).
+		//   - warn_verify_not_run: code edits where individual tools ran but
+		//     `interlinked verify` (canonical local CI mirror) did not. The
+		//     verify suite catches what individual tools miss — docs:check
+		//     drift, secrets, SAST findings, dep-audit. A green tsc + npm test
+		//     doesn't prove the verify suite is green.
 		//   - warn_ui_not_interacted: UI-file edits with no dev-server or
 		//     chrome-devtools/playwright MCP call (type-checking is not
 		//     feature-checking, per feedback_landing_test_before_push.md).
@@ -727,9 +732,10 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		//     the session (scanned at PostToolUse).
 		// Flip per-kind to false in `.interlinked/guard-rules.local.json` to
 		// disable individual checks; flip the master `enabled` to silence
-		// all three.
+		// all four.
 		enabled: true,
 		warn_unverified_code: true,
+		warn_verify_not_run: true,
 		warn_ui_not_interacted: true,
 		warn_stubs_introduced: true,
 	},

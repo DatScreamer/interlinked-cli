@@ -7,6 +7,7 @@ import {
 	formatStubsIntroducedWarning,
 	formatUiNotInteractedWarning,
 	formatUnverifiedCodeWarning,
+	formatVerifyNotRunWarning,
 	isCodeFile,
 	isUiFile,
 	scanForStubs,
@@ -69,6 +70,23 @@ describe("classifyVerificationCommand", () => {
 		// Commands that merely mention "tsc" as a path component, however, must
 		// not: e.g. /opt/tsconfig-helper.sh — guarded by the word-boundary anchor.
 		expect(classifyVerificationCommand("./tsconfig-helper.sh")).toBeNull();
+	});
+
+	it("classifies `interlinked verify` as verify-suite (not typecheck)", () => {
+		// The suite signal must win over any individual-tool signal because
+		// verify spawns tsc, biome, lint, etc. internally — the suite is
+		// strictly more informative than any one of them.
+		expect(classifyVerificationCommand("interlinked verify")).toBe("verify-suite");
+		expect(classifyVerificationCommand("interlinked verify --json")).toBe("verify-suite");
+		expect(classifyVerificationCommand("npx interlinked verify")).toBe("verify-suite");
+	});
+
+	it("classifies dev-mode verify invocations as verify-suite", () => {
+		// During development, verify is invoked through tsx or via the
+		// dist/index.js binary rather than the installed `interlinked` bin.
+		// Both should still register as a verify-suite signal.
+		expect(classifyVerificationCommand("node dist/index.js verify")).toBe("verify-suite");
+		expect(classifyVerificationCommand("npx tsx src/index.ts verify")).toBe("verify-suite");
 	});
 });
 
@@ -243,6 +261,60 @@ describe("formatUnverifiedCodeWarning", () => {
 		expect(msg).toMatch(/4 code file edit\(s\)/);
 		expect(msg).toMatch(/tsc \/ test \/ lint \/ build/);
 		expect(msg).toMatch(/Don't claim done on unverified work/);
+	});
+});
+
+describe("formatVerifyNotRunWarning", () => {
+	it("returns null when no code files were edited (nothing to verify)", () => {
+		expect(
+			formatVerifyNotRunWarning({
+				codeFilesEdited: 0,
+				verificationObserved: new Set(["typecheck"]),
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when verify-suite was observed (covered)", () => {
+		expect(
+			formatVerifyNotRunWarning({
+				codeFilesEdited: 5,
+				verificationObserved: new Set(["verify-suite"]),
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when NO correctness signals were observed (avoids double-nudge)", () => {
+		// formatUnverifiedCodeWarning carries the message in this case;
+		// formatVerifyNotRunWarning stays silent to avoid stacking nudges.
+		expect(
+			formatVerifyNotRunWarning({
+				codeFilesEdited: 5,
+				verificationObserved: new Set(),
+			}),
+		).toBeNull();
+	});
+
+	it("fires when individual correctness tools ran but not the suite", () => {
+		const msg = formatVerifyNotRunWarning({
+			codeFilesEdited: 5,
+			verificationObserved: new Set(["typecheck", "test"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/5 code file edit\(s\)/);
+		expect(msg).toMatch(/interlinked verify/);
+	});
+
+	it("fires even on a single correctness signal (e.g., just tsc)", () => {
+		// A solo tsc run is verified-enough for warn_unverified_code (one
+		// correctness signal satisfies it), but still triggers the verify-
+		// not-run nudge because the suite catches what tsc misses (docs,
+		// secrets, SAST, dep-audit).
+		const msg = formatVerifyNotRunWarning({
+			codeFilesEdited: 1,
+			verificationObserved: new Set(["typecheck"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/docs:check/);
 	});
 });
 

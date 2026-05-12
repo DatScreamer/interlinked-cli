@@ -123,6 +123,7 @@ import {
 	formatStubsIntroducedWarning,
 	formatUiNotInteractedWarning,
 	formatUnverifiedCodeWarning,
+	formatVerifyNotRunWarning,
 } from "./verification-stop-checks.js";
 import { recordHarnessCaught } from "./recurrence.js";
 import { runFailureChannels } from "./failure-channels.js";
@@ -802,6 +803,16 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						turnWarnings.push(warning);
 						log(
 							`Verify-before-stop: unverified-code (${codeFilesEdited} files, signals=${[...verificationObserved].join(",") || "none"})`,
+						);
+					}
+				}
+				if (vsc.warn_verify_not_run) {
+					const codeFilesEdited = countCodeFilesEdited(session.files_written);
+					const warning = formatVerifyNotRunWarning({ codeFilesEdited, verificationObserved });
+					if (warning !== null) {
+						turnWarnings.push(warning);
+						log(
+							`Verify-before-stop: verify-suite-not-run (${codeFilesEdited} files, signals=${[...verificationObserved].join(",") || "none"})`,
 						);
 					}
 				}

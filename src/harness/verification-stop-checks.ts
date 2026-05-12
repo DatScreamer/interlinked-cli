@@ -22,16 +22,22 @@ import { isDocFile } from "./commit-cadence.js";
 
 /** Verification signal kinds tracked across a session.
  *
- *  Correctness signals (typecheck, test, lint, build) satisfy the
- *  "unverified code" check. UI-interaction signals (browser, dev-server)
- *  satisfy the "UI not interacted" check. Each kind is treated as a
- *  separate axis — running `bun run dev` proves the UI was at least
- *  loadable but does NOT prove the code typechecks. */
+ *  Correctness signals (typecheck, test, lint, build, verify-suite)
+ *  satisfy the "unverified code" check. UI-interaction signals
+ *  (browser, dev-server) satisfy the "UI not interacted" check. Each
+ *  kind is treated as a separate axis — running `bun run dev` proves
+ *  the UI was at least loadable but does NOT prove the code typechecks.
+ *
+ *  `verify-suite` covers `interlinked verify`, the canonical local gate
+ *  that runs tsc + biome + lint + secrets + SAST + docs:check (and
+ *  mirrors the CI pipeline). Observing it satisfies all four
+ *  individual correctness axes at once. */
 export type VerificationSignal =
 	| "typecheck"
 	| "test"
 	| "lint"
 	| "build"
+	| "verify-suite"
 	| "browser"
 	| "dev-server";
 
@@ -62,13 +68,27 @@ const BUILD_RE =
 const DEV_SERVER_RE =
 	/\b(?:wrangler\s+dev|next\s+dev|vite(?:\s+dev|\s+preview|\s+--port)?|astro\s+dev|nuxt\s+dev|svelte-kit\s+dev|webpack\s+serve|remix\s+dev|gatsby\s+develop)\b|\b(?:npm|bun|pnpm|yarn)\s+run\s+dev\b/;
 
+/** `interlinked verify` — the project's canonical local gate. Recognized
+ *  in all the common invocation shapes (direct binary, npx, ts-node, the
+ *  built dist entry). Observing this command in the session trajectory is
+ *  stronger evidence of correctness than any single tool signal because
+ *  verify runs tsc + biome + lint + secrets + SAST + docs:check together
+ *  and aggregates results. */
+const VERIFY_SUITE_RE =
+	/\b(?:npx\s+)?interlinked\s+verify\b|\bnode\s+\S*(?:dist|src)\S*\s+verify\b|\b(?:npx\s+)?tsx\s+\S*index\.ts\s+verify\b/;
+
 /**
  * Public predicate — classify a Bash command into a single verification
  * signal kind, or null. The first matching pattern wins; commands that
  * chain multiple kinds (`bun run test && bun run build`) return whichever
  * the regex order resolves first.
+ *
+ * Verify-suite is checked FIRST so an `interlinked verify` invocation
+ * doesn't get misclassified as just `tsc` because verify spawns tsc
+ * internally — the suite signal is strictly more informative.
  */
 export function classifyVerificationCommand(cmd: string): VerificationSignal | null {
+	if (VERIFY_SUITE_RE.test(cmd)) return "verify-suite";
 	if (TYPECHECK_RE.test(cmd)) return "typecheck";
 	if (TEST_RE.test(cmd)) return "test";
 	if (LINT_RE.test(cmd)) return "lint";
@@ -191,8 +211,29 @@ export interface FormatUnverifiedCodeOpts {
 	verificationObserved: ReadonlySet<string>;
 }
 
-/** Correctness-grade signals — any one satisfies the unverified-code check. */
-const CORRECTNESS_SIGNALS: readonly string[] = ["typecheck", "test", "lint", "build"];
+/** The verify-suite signal — extracted as a named constant so the
+ *  filter expression below reads as intent rather than a literal lookup. */
+const VERIFY_SUITE_SIGNAL: VerificationSignal = "verify-suite";
+
+/** Individual-tool correctness signals — the per-tool axes that
+ *  collectively form the suite. Used as the "did the agent run anything
+ *  at all" predicate for the partial-verification nudge below. */
+const INDIVIDUAL_CORRECTNESS_SIGNALS: readonly VerificationSignal[] = [
+	"typecheck",
+	"test",
+	"lint",
+	"build",
+];
+
+/** Correctness-grade signals — any one satisfies the unverified-code check.
+ *  `verify-suite` is the strongest signal (covers tsc + biome + lint +
+ *  secrets + SAST + docs:check at once), but a standalone tsc/test/lint/
+ *  build still satisfies the check on its own — the nudge fires only
+ *  when none of these were observed. */
+const CORRECTNESS_SIGNALS: readonly string[] = [
+	...INDIVIDUAL_CORRECTNESS_SIGNALS,
+	VERIFY_SUITE_SIGNAL,
+];
 
 /**
  * Public — Stop-time nudge when the session has code-file edits but
@@ -211,6 +252,48 @@ export function formatUnverifiedCodeWarning(opts: FormatUnverifiedCodeOpts): str
 		"Before stopping, run the project's typecheck or tests " +
 		"(e.g., `npx tsc --noEmit`, `bun run test`, or the project's verify command) " +
 		"to confirm the edits actually compile and pass. Don't claim done on unverified work."
+	);
+}
+
+export interface FormatVerifyNotRunOpts {
+	/** Distinct code files written this session. */
+	codeFilesEdited: number;
+	/** Verification signals observed this session. */
+	verificationObserved: ReadonlySet<string>;
+}
+
+/**
+ * Public — Stop-time nudge when code files were edited and the agent
+ * ran *some* verification (tsc, tests, lint, build) but never
+ * `interlinked verify` specifically. The verify suite is broader than
+ * any individual tool — it also runs docs:check, dep-audit, semgrep,
+ * and the gen-marker validators that bit us in commit 5452fac. A
+ * passing tsc + npm test does not prove the verify suite is green.
+ *
+ * Returns null when:
+ *   - No code files were edited (nothing to verify), OR
+ *   - `verify-suite` is already in `verificationObserved` (satisfied), OR
+ *   - No correctness signals at all were observed (the broader
+ *     `warn_unverified_code` nudge handles that case; this one would
+ *     just add noise on top).
+ */
+export function formatVerifyNotRunWarning(opts: FormatVerifyNotRunOpts): string | null {
+	if (opts.codeFilesEdited === 0) return null;
+	if (opts.verificationObserved.has(VERIFY_SUITE_SIGNAL)) return null;
+	// Don't double-nudge: if nothing was verified, let
+	// formatUnverifiedCodeWarning carry the message. This nudge fires
+	// only on the partial-verification case (some individual tool ran
+	// but not the suite).
+	if (!INDIVIDUAL_CORRECTNESS_SIGNALS.some((s) => opts.verificationObserved.has(s))) {
+		return null;
+	}
+	return (
+		`[interlinked:verify-before-stop] Stopping with ${opts.codeFilesEdited} code file edit(s) ` +
+		"and partial verification — individual checks ran but `interlinked verify` did not. " +
+		"The verify suite is the canonical local mirror of CI (tsc + biome + lint + secrets + " +
+		"SAST + docs:check + dep-audit aggregated). Run `interlinked verify` before stopping to " +
+		"confirm the full pipeline is clean — a green tsc doesn't catch docs drift, secrets, or " +
+		"the lint/SAST findings verify aggregates."
 	);
 }
 
