@@ -24,5 +24,27 @@ export default defineConfig({
         env: {
             INTERLINKED_SKIP_DISTILLED_RULES: "1",
         },
+        // CI-only parallelism cap. On macOS GitHub runners (the lower-
+        // resource members of the matrix), running the full ~6700-test
+        // suite with vitest's default parallelism produces enough
+        // reporter IPC traffic to occasionally trip
+        //   "[vitest-worker]: Timeout calling onTaskUpdate"
+        // — every test passes, but the main↔worker RPC times out and
+        // vitest exits non-zero, turning main red despite no real
+        // regression. Capping concurrent worker threads in CI keeps
+        // the IPC pressure under the timeout budget; local dev keeps
+        // full parallelism (`undefined` lets vitest pick).
+        //
+        // Tracked symptom: CI run 25736848966 on commit 4d647ea (rerun
+        // passed without any code change). Both pools are capped because
+        // the project hasn't pinned `pool` — vitest could pick either.
+        poolOptions: {
+            threads: {
+                maxThreads: process.env.CI ? 2 : undefined,
+            },
+            forks: {
+                maxForks: process.env.CI ? 2 : undefined,
+            },
+        },
     },
 });
