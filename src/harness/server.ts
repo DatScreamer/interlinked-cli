@@ -115,6 +115,7 @@ import {
 	defaultStripAuditLogPath,
 	describeReason as describeMalformedReason,
 } from "../lib/settings-validator.js";
+import { watchSettingsFiles } from "./settings-watcher.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import {
@@ -3254,6 +3255,7 @@ async function shutdownAsync(): Promise<void> {
 	if (RUN_RAW_SOCKET) cleanupSocket();
 	removePidFile();
 	unwatchRules();
+	unwatchSettings();
 	process.exit(0);
 }
 
@@ -3370,6 +3372,33 @@ const unwatchRules = watchRulesFiles(CWD, (newRules) => {
 	Object.assign(autoCoordConfig, DEFAULT_AUTO_COORDINATION_CONFIG, rules.auto_coordination || {});
 	log(`Rules reloaded: ${rules.rules.length} rules active`);
 	refreshStatuslineSnapshot();
+});
+
+// Live filesystem watcher on .claude/settings*.json (project + user
+// scope). Claude Code's "Always allow" UI writes those files directly
+// without firing a tool hook, so PreToolUse content guards in
+// `evaluator/write-content-guards.ts` can't intercept it. The
+// SessionStart strip above only runs after Claude Code has already
+// printed its "Invalid permission rule" warning to the terminal —
+// closing that gap is what this watcher is for. On change, the
+// debounced strip runs `autoStripAllScopes` so a malformed rule lives
+// on disk for at most ~poll + debounce before being removed.
+const unwatchSettings = watchSettingsFiles({
+	cwd: CWD,
+	onStrip: (stripResult) => {
+		resetProjectSetupWarningsCache();
+		const previews = stripResult.entries.slice(0, 5).map((e) => {
+			const file = e.file.replace(/^.+?(\.claude\/.+)$/, "$1");
+			return `  - ${file} permissions.${e.bucket}[${e.index}] = ${JSON.stringify(e.rule)} (${describeMalformedReason(e.reason)})`;
+		});
+		const more =
+			stripResult.entries.length > previews.length
+				? `\n  ...and ${stripResult.entries.length - previews.length} more`
+				: "";
+		logAlways(
+			`[interlinked] Live-stripped ${stripResult.totalStripped} malformed permission rule(s) from .claude/settings*.json:\n${previews.join("\n")}${more}`,
+		);
+	},
 });
 
 // Periodically refresh the statusline snapshot so live counters

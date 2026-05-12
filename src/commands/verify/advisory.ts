@@ -233,6 +233,14 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// utility files that happen to declare a function named `get*` for a
 	// non-HTTP purpose. Promote when scope can consult an actual route map.
 	"sync_io_on_hot_path",
+	// type_smuggling: TypeScript compiler-API check that flags `as T` casts
+	// where source and target have no structural overlap (assignability fails
+	// both directions). Advisory: structural-shape overlap heuristic has
+	// moderate FP rate on generic constraint boundaries, union/intersection
+	// edges, and any cast where the source type fell back to `any` because
+	// upstream dependency resolution was incomplete in the single-file
+	// program. Ratchet once dogfood signal supports promotion.
+	"type_smuggling",
 	// === Batch 5 cross-file — advisory (heuristic) ===
 	// empty_body_handler: name-based heuristic over handler-shaped names; FPs
 	// on framework router stubs that legitimately delegate to a registry.
@@ -250,6 +258,15 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// for offline mode); promote when the detector can distinguish demo
 	// fixtures from real defaults.
 	"silent_demo_fallback",
+	// === CUDA inline checks — advisory (heuristic) ===
+	// cuda_kernel_launch_unchecked: every kernel launch should be paired with
+	// `cudaGetLastError()`, but single-regex can't see "followed by"; we fire
+	// on every launch. Advisory until we can do a tiny lookahead window.
+	"cuda_kernel_launch_unchecked",
+	// cuda_printf_in_device_code: `.cu` files legitimately mix host (printf
+	// is fine) and device code (printf is expensive). Single-regex fires on
+	// both. Advisory until we can detect __device__/__global__ context.
+	"cuda_printf_in_device_code",
 	// === Demoted after dogfood-noise review ===
 	// Verify --json on this repo emitted 30+ / 100+ findings each from the
 	// checks below — heuristic-tier even though I had originally rated the

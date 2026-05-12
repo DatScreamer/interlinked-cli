@@ -277,6 +277,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				// Batch 1: agent-laziness — advisory (heuristic)
 				"fetch_without_timeout",
 				"sync_io_on_hot_path",
+				"type_smuggling",
 				"unbounded_promise_all",
 				"union_widened_with_string",
 				// 139-repo audit additions: structural cleanup + boundary
@@ -294,6 +295,9 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"schema_type_drift",
 				// Batch 8: demo-data — advisory (heuristic)
 				"silent_demo_fallback",
+				// CUDA inline checks — advisory (heuristic)
+				"cuda_kernel_launch_unchecked",
+				"cuda_printf_in_device_code",
 				// Demoted after dogfood-noise review (P1 finding):
 				"agent_thumbprint_prose",
 				"untestable_time_in_source",

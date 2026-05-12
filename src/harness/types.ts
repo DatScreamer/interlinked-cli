@@ -1310,7 +1310,19 @@ export interface ErrorMemoryConfig {
 // Language Profiles — Multi-language support
 // ===========================================
 
-export type LanguageId = "typescript" | "python" | "rust" | "go" | "c_cpp" | "java" | "swift";
+export type LanguageId =
+	| "typescript"
+	| "python"
+	| "rust"
+	| "go"
+	| "c_cpp"
+	| "java"
+	| "swift"
+	| "cuda"
+	| "opencl"
+	| "metal"
+	| "hlsl"
+	| "wgsl";
 
 export interface LanguageProfile {
 	id: LanguageId;

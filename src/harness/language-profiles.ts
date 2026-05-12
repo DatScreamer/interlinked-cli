@@ -47,6 +47,14 @@ const LANGUAGE_EXTENSION_MAP: Record<string, LanguageId> = {
 
 	// Swift
 	".swift": "swift",
+
+	// GPU / shading languages
+	".cu": "cuda",
+	".cuh": "cuda",
+	".cl": "opencl",
+	".metal": "metal",
+	".hlsl": "hlsl",
+	".wgsl": "wgsl",
 };
 
 // ===========================================
@@ -153,21 +161,27 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 		display_name: "Rust",
 		file_extensions: [".rs"],
 		project_root_markers: ["Cargo.toml"],
+		// Note: type_check / linter `command` fields are descriptive metadata
+		// only — the real cargo invocation lives in
+		// `check-engine/tool-runners/rust.ts` (runCargoCheck / runCargoClippy)
+		// and already uses `--message-format=json` parsed by parseCargoJson.
+		// Keep this string aligned with the runner's argv so the two surfaces
+		// don't drift in `interlinked harness status` / docs output.
 		type_check: {
-			command: "cargo check --message-format=short",
+			command: "cargo check --message-format=json",
 			append_file: false,
 			config_files: ["Cargo.toml"],
 			timeout_ms: 30_000,
 			severity: "error",
-			description: "cargo check (type and borrow checker)",
+			description: "cargo check (type and borrow checker, NDJSON output)",
 		},
 		linter: {
-			command: "cargo clippy --message-format=short -- -D warnings",
+			command: "cargo clippy --message-format=json -- -W clippy::all",
 			append_file: false,
 			config_files: ["Cargo.toml"],
 			timeout_ms: 30_000,
 			severity: "warning",
-			description: "Clippy lint suite",
+			description: "Clippy lint suite (NDJSON output, parsed by parseCargoJson)",
 		},
 		test_runner: {
 			command: "cargo test --no-run",
@@ -206,6 +220,59 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				severity: "warning",
 				fix_instruction: "Replace with actual implementation or proper error handling",
 				pattern: "\\b(?:todo|unimplemented)!\\s*\\(",
+			},
+			{
+				name: "rust_panic_in_lib",
+				description: "Detect panic!() in non-test code — rarely intentional in library code",
+				file_types: [".rs"],
+				severity: "warning",
+				skip_test_files: true,
+				fix_instruction:
+					"Return Result<T, E> with a meaningful error variant instead of panicking. " +
+					"If this is genuinely unrecoverable, document why with a comment.",
+				// `panic!(` with word boundary so we don't match identifiers like
+				// `my_panic!` or `panicking`.
+				pattern: "\\bpanic!\\s*\\(",
+			},
+			{
+				name: "rust_expect_empty_msg",
+				description: "Detect `.expect(\"\")` — empty message is .unwrap() with extra steps",
+				file_types: [".rs"],
+				severity: "warning",
+				skip_test_files: true,
+				fix_instruction:
+					"Provide a descriptive message in .expect(\"reason this can't be None/Err\"), " +
+					"or use ? to propagate the error.",
+				// `.expect("")` or `.expect( "" )` — empty string content (no chars
+				// at all between matching quotes). Allow single or double quotes.
+				pattern: "\\.expect\\s*\\(\\s*(?:\"\"|'')\\s*\\)",
+			},
+			{
+				name: "rust_box_dyn_error_in_pub_return",
+				description:
+					"Detect `pub fn ... -> Result<_, Box<dyn Error>>` — primitive error type in public API",
+				file_types: [".rs"],
+				severity: "warning",
+				fix_instruction:
+					"Define a typed error enum with thiserror or anyhow::Error for downstream consumers. " +
+					"Box<dyn Error> erases information callers need to handle specific failures.",
+				// `pub fn <ident>(...) -> Result<_, Box<dyn Error...`. The `[^,>]+`
+				// captures the Ok type up to the comma; `[^{]*` lets the signature
+				// span typed parameters and trait bounds on the same line.
+				pattern:
+					"pub\\s+fn\\s+\\w+[^{]*->\\s*Result\\s*<[^,>]+,\\s*Box\\s*<\\s*dyn\\s+Error",
+			},
+			{
+				name: "rust_dbg_macro",
+				description: "Detect `dbg!()` — debug print left in code",
+				file_types: [".rs"],
+				severity: "warning",
+				skip_test_files: true,
+				fix_instruction:
+					"Remove the dbg!() call. Use `tracing` / `log` macros if you need observability, " +
+					"or `eprintln!` for one-off debugging — then clean up before committing.",
+				// `dbg!(` with word boundary. Matches `dbg!()` and `dbg!(value)`.
+				pattern: "\\bdbg!\\s*\\(",
 			},
 		],
 	},
@@ -435,6 +502,145 @@ const LANGUAGE_PROFILES: Record<LanguageId, LanguageProfile> = {
 				pattern: "\\bvar\\s+hashValue\\s*:\\s*Int",
 			},
 		],
+	},
+	// -----------------------------------------
+	// CUDA (.cu / .cuh)
+	// -----------------------------------------
+	// CUDA files mix host (CPU) and device (GPU) code. We deliberately ship
+	// no type_check / linter — nvcc availability is too brittle for a
+	// default-on check, and clang's CUDA mode requires the toolkit. The
+	// inline checks below catch a few common foot-guns that don't need
+	// nvcc to flag.
+	cuda: {
+		id: "cuda",
+		display_name: "CUDA",
+		file_extensions: [".cu", ".cuh"],
+		project_root_markers: ["CMakeLists.txt", "Makefile"],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks: [
+			{
+				// Advisory: any kernel launch should be followed by an error
+				// check (cudaGetLastError / cudaPeekAtLastError). We can't
+				// see "followed by" without lookahead beyond a single line,
+				// so we fire on every launch and rely on the agent (or a
+				// human reviewer) to confirm a check exists nearby. Heuristic.
+				name: "cuda_kernel_launch_unchecked",
+				description:
+					"CUDA kernel launch — pair with `cudaGetLastError()` to catch launch failures",
+				file_types: [".cu", ".cuh"],
+				severity: "warning",
+				fix_instruction:
+					"After every `kernel<<<grid, block>>>(...)` launch, call `cudaGetLastError()` " +
+					"(non-blocking) or `cudaDeviceSynchronize()` + error check (blocking). " +
+					"Kernel-launch failures are otherwise silent until the next CUDA API call.",
+				// `<<<...>>>(...);` — the triple-angle-bracket execution
+				// configuration syntax is unique to CUDA, so this is highly
+				// CUDA-specific. `[^<>]+` forbids nested angle brackets to
+				// avoid catastrophic backtracking on template-heavy code.
+				pattern: "<<<[^<>]+>>>\\s*\\([^)]*\\)\\s*;",
+			},
+			{
+				name: "cuda_device_synchronize_debug",
+				description: "`cudaDeviceSynchronize()` — often a debug leftover, prefer per-stream sync",
+				file_types: [".cu", ".cuh"],
+				severity: "warning",
+				fix_instruction:
+					"Replace global `cudaDeviceSynchronize()` with `cudaStreamSynchronize(stream)` " +
+					"to avoid serializing across all streams. If global sync is intentional " +
+					"(e.g. shutdown, debugging), add a comment explaining why.",
+				pattern: "\\bcudaDeviceSynchronize\\s*\\(\\s*\\)",
+			},
+			{
+				// Advisory: `printf` is fine in __host__ functions but very
+				// expensive in __device__/__global__ code (uses GPU printf
+				// buffer, can serialize the warp). Single-regex can't tell
+				// host from device context, so this surfaces every printf
+				// in a .cu/.cuh file. Heuristic.
+				name: "cuda_printf_in_device_code",
+				description: "`printf()` in CUDA file — expensive if called from device code",
+				file_types: [".cu", ".cuh"],
+				severity: "warning",
+				fix_instruction:
+					"In __device__/__global__ code, prefer copying data back to host before printing, " +
+					"or guard with `if (threadIdx.x == 0 && blockIdx.x == 0)` to limit output volume. " +
+					"In __host__ code, this is fine — the check fires across the whole .cu file " +
+					"and cannot distinguish host from device context.",
+				pattern: "\\bprintf\\s*\\(",
+			},
+			{
+				// `if/while/for/switch` on the same line as `__syncthreads()` is
+				// a classic CUDA deadlock — threads that don't enter the branch
+				// never reach the barrier, hanging the warp. The single-line
+				// regex catches the common idiom; multi-line conditionals are
+				// missed (acceptable — those are rarer and need AST anyway).
+				name: "cuda_syncthreads_in_conditional",
+				description:
+					"`__syncthreads()` inside a single-line conditional — divergent threads cause deadlock",
+				file_types: [".cu", ".cuh"],
+				severity: "warning",
+				fix_instruction:
+					"Move `__syncthreads()` outside the conditional so every thread in the block " +
+					"reaches the barrier. Divergent paths to a barrier deadlock the warp.",
+				pattern: "\\b(?:if|while|for|switch)\\s*\\([^)]*\\)[^{]*__syncthreads\\s*\\(",
+			},
+		],
+	},
+	// -----------------------------------------
+	// OpenCL (.cl) — stub
+	// -----------------------------------------
+	// Recognized so files route to the right LanguageId, but no inline
+	// checks yet. Add anti-patterns here when there's a concrete bug class
+	// worth gating on.
+	opencl: {
+		id: "opencl",
+		display_name: "OpenCL",
+		file_extensions: [".cl"],
+		project_root_markers: ["CMakeLists.txt", "Makefile"],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks: [],
+	},
+	// -----------------------------------------
+	// Apple Metal (.metal) — stub
+	// -----------------------------------------
+	metal: {
+		id: "metal",
+		display_name: "Metal Shading Language",
+		file_extensions: [".metal"],
+		project_root_markers: ["Package.swift", "*.xcodeproj"],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks: [],
+	},
+	// -----------------------------------------
+	// HLSL (.hlsl) — stub
+	// -----------------------------------------
+	hlsl: {
+		id: "hlsl",
+		display_name: "HLSL",
+		file_extensions: [".hlsl"],
+		project_root_markers: ["CMakeLists.txt", "Makefile"],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks: [],
+	},
+	// -----------------------------------------
+	// WGSL (.wgsl) — stub
+	// -----------------------------------------
+	wgsl: {
+		id: "wgsl",
+		display_name: "WGSL",
+		file_extensions: [".wgsl"],
+		project_root_markers: ["Cargo.toml", "package.json"],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks: [],
 	},
 };
 

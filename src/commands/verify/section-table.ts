@@ -1040,6 +1040,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "type smuggling",
+		key: "typeSmuggling",
+		noun: "`as T` casts where source and target types have no structural overlap",
+		passLabel: "no type-smuggling casts",
+		color: "33",
+	},
+	{
 		label: "union widened with string",
 		key: "unionWidenedWithString",
 		noun: "string-literal unions widened by a bare `string` (the literals are erased)",

@@ -228,6 +228,8 @@ export interface CodeQualityResults {
 	untestableTimeInSource: CodeQualityIssue[];
 	/** `as unknown as Foo` double-cast escape hatch. */
 	doubleCastUnknown: CodeQualityIssue[];
+	/** `as T` cast where source type doesn't structurally overlap with target. */
+	typeSmuggling: CodeQualityIssue[];
 	/** `"a" | "b" | string` union widened with bare string. */
 	unionWidenedWithString: CodeQualityIssue[];
 	/** `process.env.NODE_ENV === "test"` (etc.) in production source. */
@@ -419,6 +421,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"fileLevelSuppression",
 	"untestableTimeInSource",
 	"doubleCastUnknown",
+	"typeSmuggling",
 	"unionWidenedWithString",
 	"nodeenvBranchInProd",
 	"fetchWithoutTimeout",

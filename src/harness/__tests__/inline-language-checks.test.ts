@@ -92,6 +92,292 @@ describe("runInlineLanguageChecks — Rust", () => {
 		const results = run("/repo/src/lib.rs", src);
 		expect(results.filter((r) => r.name === "rust_unwrap_usage")).toHaveLength(0);
 	});
+
+	// --- New Rust checks (added with GPU/Rust quality batch) ---
+
+	describe("rust_panic_in_lib", () => {
+		it("flags bare panic!() in lib code", async () => {
+			const src = `fn invariant() { panic!("unreachable"); }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(1);
+		});
+
+		it("flags panic!() with no args", async () => {
+			const src = `fn boom() { panic!(); }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(1);
+		});
+
+		it("does not fire on panic!() in *_test.rs files", async () => {
+			const src = `fn t() { panic!("expected"); }\n`;
+			const results = run("/repo/tests/lib_test.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(0);
+		});
+
+		it("does not fire on panic!() inside a comment", async () => {
+			const src = `// example: panic!() will crash\nfn f() {}\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(0);
+		});
+
+		it("does not fire on panic!() inside a string literal", async () => {
+			const src = `fn f() -> &'static str { "panic!()" }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(0);
+		});
+
+		it("does not fire on identifiers that contain 'panic' as a substring", async () => {
+			const src = `fn my_panic_handler() {}\nfn handle_panicking() {}\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_panic_in_lib")).toHaveLength(0);
+		});
+	});
+
+	describe("rust_expect_empty_msg", () => {
+		it("flags .expect(\"\")", async () => {
+			const src = `fn f(o: Option<u32>) -> u32 { o.expect("") }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_expect_empty_msg")).toHaveLength(1);
+		});
+
+		it("flags .expect( \"\" ) with whitespace", async () => {
+			const src = `fn f(o: Option<u32>) -> u32 { o.expect(  ""  ) }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_expect_empty_msg")).toHaveLength(1);
+		});
+
+		it("does not flag .expect(\"good reason\")", async () => {
+			const src = `fn f(o: Option<u32>) -> u32 { o.expect("must be Some by invariant") }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_expect_empty_msg")).toHaveLength(0);
+		});
+
+		it("does not flag .expect with a non-empty single-char message", async () => {
+			const src = `fn f(o: Option<u32>) -> u32 { o.expect("x") }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_expect_empty_msg")).toHaveLength(0);
+		});
+	});
+
+	describe("rust_box_dyn_error_in_pub_return", () => {
+		it("flags pub fn returning Result<_, Box<dyn Error>>", async () => {
+			const src = `pub fn open() -> Result<File, Box<dyn Error>> { todo!() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(
+				results.filter((r) => r.name === "rust_box_dyn_error_in_pub_return"),
+			).toHaveLength(1);
+		});
+
+		it("flags pub fn with arguments returning Box<dyn Error>", async () => {
+			const src = `pub fn parse(s: &str) -> Result<u32, Box<dyn Error + Send + Sync>> { todo!() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(
+				results.filter((r) => r.name === "rust_box_dyn_error_in_pub_return"),
+			).toHaveLength(1);
+		});
+
+		it("does not flag private fn returning Box<dyn Error>", async () => {
+			const src = `fn open() -> Result<File, Box<dyn Error>> { todo!() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(
+				results.filter((r) => r.name === "rust_box_dyn_error_in_pub_return"),
+			).toHaveLength(0);
+		});
+
+		it("does not flag pub fn returning a typed error", async () => {
+			const src = `pub fn open() -> Result<File, MyError> { todo!() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(
+				results.filter((r) => r.name === "rust_box_dyn_error_in_pub_return"),
+			).toHaveLength(0);
+		});
+
+		it("does not flag pub fn returning Box<ConcreteError> (no `dyn`)", async () => {
+			const src = `pub fn open() -> Result<File, Box<MyError>> { todo!() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(
+				results.filter((r) => r.name === "rust_box_dyn_error_in_pub_return"),
+			).toHaveLength(0);
+		});
+	});
+
+	describe("rust_dbg_macro", () => {
+		it("flags dbg!(x)", async () => {
+			const src = `fn f(x: u32) { let _ = dbg!(x); }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_dbg_macro")).toHaveLength(1);
+		});
+
+		it("flags dbg!() with no args", async () => {
+			const src = `fn f() { dbg!(); }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_dbg_macro")).toHaveLength(1);
+		});
+
+		it("does not fire on dbg!() in *_test.rs files", async () => {
+			const src = `fn t() { dbg!(value); }\n`;
+			const results = run("/repo/tests/lib_test.rs", src);
+			expect(results.filter((r) => r.name === "rust_dbg_macro")).toHaveLength(0);
+		});
+
+		it("does not fire on dbg!() inside a comment", async () => {
+			const src = `// note: use dbg!() during development only\nfn f() {}\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_dbg_macro")).toHaveLength(0);
+		});
+
+		it("does not fire on identifiers that start with 'dbg'", async () => {
+			const src = `fn dbg_helper() {}\nfn dbg_format(s: &str) -> String { s.into() }\n`;
+			const results = run("/repo/src/lib.rs", src);
+			expect(results.filter((r) => r.name === "rust_dbg_macro")).toHaveLength(0);
+		});
+	});
+});
+
+describe("runInlineLanguageChecks — CUDA", () => {
+	describe("cuda_kernel_launch_unchecked", () => {
+		it("flags a bare kernel launch on a .cu file", async () => {
+			const src = `void launch() {\n  add_kernel<<<grid, block>>>(d_a, d_b, d_c, n);\n}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_kernel_launch_unchecked"),
+			).toHaveLength(1);
+		});
+
+		it("flags multiple kernel launches", async () => {
+			const src = `void launch() {\n  k1<<<g, b>>>(d);\n  k2<<<g, b>>>(d);\n}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_kernel_launch_unchecked"),
+			).toHaveLength(2);
+		});
+
+		it("does not fire on text inside a comment", async () => {
+			const src = `// example: kernel<<<g, b>>>(d);\nvoid f() {}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_kernel_launch_unchecked"),
+			).toHaveLength(0);
+		});
+
+		it("does not fire on text inside a string literal", async () => {
+			const src = `const char* msg = "use kernel<<<g, b>>>(d);";\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_kernel_launch_unchecked"),
+			).toHaveLength(0);
+		});
+	});
+
+	describe("cuda_device_synchronize_debug", () => {
+		it("flags cudaDeviceSynchronize()", async () => {
+			const src = `void wait() { cudaDeviceSynchronize(); }\n`;
+			const results = run("/repo/src/host.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_device_synchronize_debug"),
+			).toHaveLength(1);
+		});
+
+		it("flags cudaDeviceSynchronize ( ) with whitespace", async () => {
+			const src = `void wait() { cudaDeviceSynchronize  (  ); }\n`;
+			const results = run("/repo/src/host.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_device_synchronize_debug"),
+			).toHaveLength(1);
+		});
+
+		it("does not flag cudaStreamSynchronize(stream)", async () => {
+			const src = `void wait(cudaStream_t s) { cudaStreamSynchronize(s); }\n`;
+			const results = run("/repo/src/host.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_device_synchronize_debug"),
+			).toHaveLength(0);
+		});
+
+		it("does not fire on commented-out call", async () => {
+			const src = `// removed: cudaDeviceSynchronize();\nvoid f() {}\n`;
+			const results = run("/repo/src/host.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_device_synchronize_debug"),
+			).toHaveLength(0);
+		});
+	});
+
+	describe("cuda_printf_in_device_code", () => {
+		it("flags printf() in a .cu file", async () => {
+			const src = `__global__ void k() { printf("tid=%d\\n", threadIdx.x); }\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_printf_in_device_code"),
+			).toHaveLength(1);
+		});
+
+		it("flags printf() in a .cuh file", async () => {
+			const src = `static inline void log() { printf("ok"); }\n`;
+			const results = run("/repo/src/util.cuh", src);
+			expect(
+				results.filter((r) => r.name === "cuda_printf_in_device_code"),
+			).toHaveLength(1);
+		});
+
+		it("does not fire on commented printf", async () => {
+			const src = `// debug: printf("..."); /* removed */\nvoid f() {}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_printf_in_device_code"),
+			).toHaveLength(0);
+		});
+
+		it("does not fire on printf inside a string literal", async () => {
+			const src = `const char* tmpl = "use printf() carefully";\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_printf_in_device_code"),
+			).toHaveLength(0);
+		});
+
+		it("file_types gate: does not run against a regular .c file", async () => {
+			const src = `int main() { printf("hi"); }\n`;
+			const results = run("/repo/src/m.c", src);
+			expect(
+				results.filter((r) => r.name === "cuda_printf_in_device_code"),
+			).toHaveLength(0);
+		});
+	});
+
+	describe("cuda_syncthreads_in_conditional", () => {
+		it("flags __syncthreads() inside a single-line if", async () => {
+			const src = `__global__ void k() { if (threadIdx.x < n) __syncthreads(); }\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_syncthreads_in_conditional"),
+			).toHaveLength(1);
+		});
+
+		it("flags __syncthreads() inside a single-line while", async () => {
+			const src = `__global__ void k() { while (cond()) __syncthreads(); }\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_syncthreads_in_conditional"),
+			).toHaveLength(1);
+		});
+
+		it("does not flag bare __syncthreads() outside a conditional", async () => {
+			const src = `__global__ void k() {\n  do_work();\n  __syncthreads();\n  more();\n}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_syncthreads_in_conditional"),
+			).toHaveLength(0);
+		});
+
+		it("does not fire on commented-out conditional sync", async () => {
+			const src = `// example bug: if (x) __syncthreads();\n__global__ void k() {}\n`;
+			const results = run("/repo/src/kernel.cu", src);
+			expect(
+				results.filter((r) => r.name === "cuda_syncthreads_in_conditional"),
+			).toHaveLength(0);
+		});
+	});
 });
 
 describe("runInlineLanguageChecks — Go", () => {

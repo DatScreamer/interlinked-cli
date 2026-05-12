@@ -134,6 +134,40 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 	rust_todo_macro:
 		"Replace `todo!()` and `unimplemented!()` with actual implementation or proper error handling. " +
 		"These macros panic at runtime.",
+	rust_panic_in_lib:
+		"Return `Result<T, E>` with a typed error instead of `panic!()`. " +
+		"If the failure is genuinely unrecoverable (corrupt invariant, exhausted resource), " +
+		"document why with a comment so the next reader knows it's intentional.",
+	rust_expect_empty_msg:
+		'`.expect("")` is `.unwrap()` with extra steps — the empty message gives no signal at crash time. ' +
+		'Provide a descriptive `.expect("reason this cannot be None/Err")`, or propagate the error with `?`.',
+	rust_box_dyn_error_in_pub_return:
+		"`Box<dyn Error>` in a public return type erases information callers need to handle specific failures. " +
+		"Define a typed error enum with `thiserror`, or use `anyhow::Error` if you want chaining + context but " +
+		"do not need callers to match on variants. Reserve `Box<dyn Error>` for prototypes and `fn main`.",
+	rust_dbg_macro:
+		"Remove the `dbg!()` call before committing. " +
+		"Use the `tracing` or `log` crate for structured observability; use `eprintln!` for one-off debugging " +
+		"and then clean up afterward.",
+	// --- CUDA inline checks ---
+	cuda_kernel_launch_unchecked:
+		"After every kernel launch `kernel<<<grid, block>>>(...)`, call `cudaGetLastError()` " +
+		"(non-blocking) to surface launch-time failures. For blocking semantics, follow with " +
+		"`cudaDeviceSynchronize()` and check its return code. Otherwise launch errors stay silent " +
+		"until the next CUDA API call, with confusing attribution.",
+	cuda_device_synchronize_debug:
+		"`cudaDeviceSynchronize()` serializes across all streams and is rarely the right tool. " +
+		"Use `cudaStreamSynchronize(stream)` for per-stream barriers, or `cudaEventSynchronize(event)` for " +
+		"fine-grained waiting. Keep global sync only for shutdown / debugging — and comment why.",
+	cuda_printf_in_device_code:
+		"In device code (`__device__` / `__global__`), `printf` uses the GPU printf buffer and can " +
+		"serialize warps. Prefer copying values back to host before printing, or guard with " +
+		"`if (threadIdx.x == 0 && blockIdx.x == 0)` so only one thread emits. In host code (`__host__`) " +
+		"this is fine — the regex can't distinguish, so verify the call site is on the host.",
+	cuda_syncthreads_in_conditional:
+		"`__syncthreads()` is a block-wide barrier: every thread in the block must reach it, or the warp " +
+		"deadlocks. Move the call outside the conditional. If only some threads should act, branch around " +
+		"the work but bring all threads back to the barrier afterward.",
 	go_error_ignored:
 		"Handle errors explicitly. Do NOT discard errors with `_`. " +
 		"At minimum, log the error or return it to the caller.",

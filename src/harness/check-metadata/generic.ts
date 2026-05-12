@@ -722,6 +722,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "partially_deterministic",
 	},
+	type_smuggling: {
+		name: "Type-Smuggling Cast",
+		description:
+			"Detects `as T` casts where the source expression's static type has no structural overlap with `T` — the cast lies, instead of narrowing or widening. TypeScript compiler API; `as unknown`/`as any`/`as const` are exempt.",
+		tier: 3,
+		determinism: "partially_deterministic",
+	},
 	union_widened_with_string: {
 		name: "Union Widened With Bare String",
 		description:

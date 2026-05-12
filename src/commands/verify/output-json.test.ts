@@ -144,6 +144,7 @@ function emptyCq(): CodeQualityResults {
 		"fileLevelSuppression",
 		"untestableTimeInSource",
 		"doubleCastUnknown",
+		"typeSmuggling",
 		"unionWidenedWithString",
 		"nodeenvBranchInProd",
 		"fetchWithoutTimeout",

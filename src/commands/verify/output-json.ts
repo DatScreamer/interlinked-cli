@@ -272,6 +272,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		file_level_suppression: summarizeWithDetails(cq.fileLevelSuppression),
 		untestable_time_in_source: summarizeWithDetails(cq.untestableTimeInSource),
 		double_cast_unknown: summarizeWithDetails(cq.doubleCastUnknown),
+		type_smuggling: summarizeWithDetails(cq.typeSmuggling),
 		union_widened_with_string: summarizeWithDetails(cq.unionWidenedWithString),
 		nodeenv_branch_in_prod: summarizeWithDetails(cq.nodeenvBranchInProd),
 		fetch_without_timeout: summarizeWithDetails(cq.fetchWithoutTimeout),
