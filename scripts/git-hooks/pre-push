@@ -44,23 +44,46 @@ fi
 # pushed. `--keep-index` preserves staged-but-uncommitted hunks so we don't
 # silently bypass the gate on a partial commit.
 # If there's nothing to stash, the stash command exits 0 quietly.
-echo "[pre-push] Running typecheck + tests against pushed tree..."
+echo "[pre-push] Running typecheck + tests (mirrors CI exactly)..."
 
+# Mirror what CI actually runs (see .github/workflows/ci.yml):
+#   - npm run typecheck:stable  (stable tsc, not the experimental tsgo)
+#   - npm run docs:check        (landing + README counters vs source —
+#                                drift here is what bit us on commit
+#                                5452fac; the gen-marker mismatch was
+#                                a CI-only signal before this hook ran it)
+#   - npm test                  (no --silent: vitest's worker IPC needs
+#                                stdio flow, otherwise long runs can hit
+#                                onTaskUpdate timeouts and exit non-zero
+#                                even when every test passes)
 set +e
-npm run typecheck --silent
+npm run typecheck:stable
 tc_status=$?
 set -e
 
 if [ "$tc_status" -ne 0 ]; then
 	echo ""
-	echo "❌ pre-push: typecheck failed (exit $tc_status). Push blocked."
+	echo "❌ pre-push: typecheck:stable failed (exit $tc_status). Push blocked."
 	echo "   Fix the type errors above before pushing, or bypass with:"
 	echo "     git push --no-verify   (use sparingly — same risk as red CI)"
 	exit 1
 fi
 
 set +e
-npm test --silent
+npm run docs:check
+docs_status=$?
+set -e
+
+if [ "$docs_status" -ne 0 ]; then
+	echo ""
+	echo "❌ pre-push: docs:check failed (exit $docs_status). Push blocked."
+	echo "   Run 'npm run docs:build' to regenerate gen markers, then re-push."
+	echo "   Bypass: git push --no-verify (use sparingly — same risk as red CI)"
+	exit 1
+fi
+
+set +e
+npm test
 test_status=$?
 set -e
 
