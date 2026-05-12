@@ -40,10 +40,53 @@ if [ "$should_run" -eq 0 ]; then
 	exit 0
 fi
 
-# Stash any unstaged work so the gate runs against exactly what's being
-# pushed. `--keep-index` preserves staged-but-uncommitted hunks so we don't
-# silently bypass the gate on a partial commit.
-# If there's nothing to stash, the stash command exits 0 quietly.
+# Stash unstaged + untracked work so the gate runs against exactly what
+# would be on origin/main after the push (HEAD + staged hunks), not the
+# current working tree.
+#
+# Without this, the hook produces false positives whenever the working
+# tree diverges from the index — e.g. an earlier session deleted some
+# tracked fixture files without staging the deletions, the current
+# commit doesn't include them, but the hook's `npm test` reads from disk
+# and fails. CI is fine (it tests the pushed commit), but the gate
+# blocks anyway, and the agent learns that `--no-verify` is the way
+# around it. That undermines the gate.
+#
+# `git stash push --keep-index` stashes both index and working tree,
+# THEN re-applies the index back into the working tree — leaving the
+# tree at exactly (HEAD + index). `--include-untracked` adds untracked
+# (but non-ignored) files to the stash. `EXIT` trap restores everything
+# even if a test run is killed by the user.
+STASH_TAG="interlinked-pre-push-$(date +%s)-$$"
+HAS_STASH=0
+if ! git diff --quiet 2>/dev/null \
+	|| [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+	if git stash push --keep-index --include-untracked -m "$STASH_TAG" >/dev/null 2>&1; then
+		HAS_STASH=1
+		echo "[pre-push] Stashed working-tree changes (tag: $STASH_TAG) — testing against staged state only."
+	fi
+fi
+
+restore_stash() {
+	if [ "$HAS_STASH" -ne 1 ]; then return 0; fi
+	# Find by message tag — never reference @{0} because intervening git
+	# operations could shift the stack.
+	stash_ref=$(git stash list --format='%gd %gs' 2>/dev/null \
+		| awk -v tag="$STASH_TAG" 'index($0, tag) > 0 { print $1; exit }')
+	if [ -z "$stash_ref" ]; then
+		echo "[pre-push] WARNING: stash with tag $STASH_TAG not found at restore time." >&2
+		echo "                   Recover with: git stash list  (look for $STASH_TAG)" >&2
+		return 0
+	fi
+	if ! git stash pop "$stash_ref" >/dev/null 2>&1; then
+		echo "[pre-push] WARNING: failed to auto-pop stash $stash_ref." >&2
+		echo "                   The stash is still there — recover with:" >&2
+		echo "                     git stash list  (find $STASH_TAG)" >&2
+		echo "                     git stash apply <stash-ref>" >&2
+	fi
+}
+trap restore_stash EXIT INT TERM
+
 echo "[pre-push] Running typecheck + tests (mirrors CI exactly)..."
 
 # Mirror what CI actually runs (see .github/workflows/ci.yml):
