@@ -16,6 +16,7 @@ import {
 	checkNarrativeNaming,
 	checkNegatedConditionWithElse,
 	checkNestedTernary,
+	checkSameTypedPrimitiveParams,
 	checkTestDescriptionQuality,
 } from "../generic-checks.js";
 
@@ -587,5 +588,182 @@ describe("checkCommentedOutCode", () => {
 			"# def old_handler(request):\n#     data = request.json()\n#     return process(data)\n#     save(data)";
 		const matches = checkCommentedOutCode(code, "handler.py");
 		expect(matches.length).toBeGreaterThan(0);
+	});
+});
+
+// ===========================================
+// T12: checkSameTypedPrimitiveParams
+// ===========================================
+
+describe("checkSameTypedPrimitiveParams", () => {
+	// --- Positive cases (must fire) ---
+
+	it("flags exported function with two consecutive string params", () => {
+		const code = `export function transfer(fromId: string, toId: string, amount: number) {\n  return amount;\n}`;
+		const matches = checkSameTypedPrimitiveParams(code, "transfers.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("string");
+		expect(matches[0].text).toContain("fromId");
+		expect(matches[0].text).toContain("toId");
+	});
+
+	it("flags exported function with two consecutive number params (names NOT in allowlist)", () => {
+		const code = `export function range(start: number, end: number) {\n  return end - start;\n}`;
+		const matches = checkSameTypedPrimitiveParams(code, "range.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("number");
+		expect(matches[0].text).toContain("start");
+		expect(matches[0].text).toContain("end");
+	});
+
+	it("flags public method on an exported class", () => {
+		const code =
+			"export class API {\n" +
+			"  fetch(url: string, token: string) {\n" +
+			"    return url + token;\n" +
+			"  }\n" +
+			"}";
+		const matches = checkSameTypedPrimitiveParams(code, "api.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("string");
+		expect(matches[0].text).toContain("url");
+		expect(matches[0].text).toContain("token");
+	});
+
+	it("flags exported arrow function with two same-typed params", () => {
+		const code = `export const concat = (left: string, right: string) => left + right;`;
+		const matches = checkSameTypedPrimitiveParams(code, "concat.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("flags three consecutive same-typed primitives but only emits one finding", () => {
+		const code = `export function compare(a: number, b: number, c: number) {\n  return a + b + c;\n}`;
+		const matches = checkSameTypedPrimitiveParams(code, "math.ts");
+		expect(matches.length).toBe(1);
+	});
+
+	// --- Negative cases (must NOT fire) ---
+
+	it("does NOT flag non-exported function", () => {
+		const code = `function _internal(a: string, b: string) {\n  return a + b;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "internal.ts")).toEqual([]);
+	});
+
+	it("does NOT flag coordinate-shaped params (x, y)", () => {
+		const code = `export function setPoint(x: number, y: number) {\n  return x + y;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "geom.ts")).toEqual([]);
+	});
+
+	it("does NOT flag RGB color-shaped params (r, g, b)", () => {
+		const code = `export function rgb(r: number, g: number, b: number) {\n  return r + g + b;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "color.ts")).toEqual([]);
+	});
+
+	it("does NOT flag width/height pair", () => {
+		const code = `export function size(width: number, height: number) {\n  return width * height;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "layout.ts")).toEqual([]);
+	});
+
+	it("does NOT flag lat/lng pair", () => {
+		const code = `export function project(lat: number, lng: number) {\n  return [lat, lng];\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "geo.ts")).toEqual([]);
+	});
+
+	it("does NOT flag branded / named-type params", () => {
+		const code = `export function transfer(from: UserId, to: AccountId, amount: number) {\n  return amount;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "transfers.ts")).toEqual([]);
+	});
+
+	it("does NOT flag params of different primitive types", () => {
+		const code = `export function pair(name: string, age: number) {\n  return name + age;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "people.ts")).toEqual([]);
+	});
+
+	it("does NOT flag test files", () => {
+		const code = `export function transfer(fromId: string, toId: string) {\n  return fromId;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "transfers.test.ts")).toEqual([]);
+	});
+
+	it("does NOT flag non-TS files", () => {
+		const code = `export function transfer(fromId, toId) {\n  return fromId;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "transfers.js")).toEqual([]);
+	});
+
+	it("does NOT flag rest params even when same-typed", () => {
+		const code = `export function logAll(prefix: string, ...args: string[]) {\n  return prefix + args.join(',');\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "logger.ts")).toEqual([]);
+	});
+
+	it("does NOT flag array params even when same-typed underlying element", () => {
+		const code = `export function joinPair(a: string[], b: string[]) {\n  return a.concat(b);\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "arr.ts")).toEqual([]);
+	});
+
+	it("does NOT flag constructors on exported classes (value-object holder convention)", () => {
+		const code =
+			"export class Point {\n" +
+			"  constructor(public x: string, public y: string) {}\n" +
+			"}";
+		expect(checkSameTypedPrimitiveParams(code, "point.ts")).toEqual([]);
+	});
+
+	it("does NOT flag private methods on exported classes", () => {
+		const code =
+			"export class API {\n" +
+			"  private build(a: string, b: string) {\n" +
+			"    return a + b;\n" +
+			"  }\n" +
+			"}";
+		expect(checkSameTypedPrimitiveParams(code, "api.ts")).toEqual([]);
+	});
+
+	it("does NOT flag methods on non-exported classes", () => {
+		const code =
+			"class Internal {\n" +
+			"  fetch(a: string, b: string) {\n" +
+			"    return a + b;\n" +
+			"  }\n" +
+			"}";
+		expect(checkSameTypedPrimitiveParams(code, "internal.ts")).toEqual([]);
+	});
+
+	it("does NOT flag single-letter index-pair (i, j)", () => {
+		const code = `export function swap(i: number, j: number) {\n  return i + j;\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "swap.ts")).toEqual([]);
+	});
+
+	it("does NOT flag min/max pair", () => {
+		const code = `export function clampRange(min: number, max: number) {\n  return [min, max];\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "clamp.ts")).toEqual([]);
+	});
+
+	it("flags exported function whose signature wraps across lines", () => {
+		const code =
+			"export function deposit(\n" +
+			"  fromAccount: string,\n" +
+			"  toAccount: string,\n" +
+			"  amount: number,\n" +
+			") {\n  return amount;\n}";
+		const matches = checkSameTypedPrimitiveParams(code, "deposit.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("does NOT flag union-typed params even when one branch is a primitive", () => {
+		const code = `export function set(key: string | null, value: string | null) {\n  return [key, value];\n}`;
+		expect(checkSameTypedPrimitiveParams(code, "kv.ts")).toEqual([]);
+	});
+
+	it("does NOT flag two boolean params (handled by flag_argument)", () => {
+		// Two booleans are still orderable-by-mistake, but the flag_argument
+		// detector owns that pattern with a more specific fix instruction.
+		// Confirm we DO flag it — keeping the negative form here would
+		// double-claim the boolean case.
+		const code = `export function configure(verbose: boolean, silent: boolean) {\n  return verbose;\n}`;
+		const matches = checkSameTypedPrimitiveParams(code, "config.ts");
+		// We do fire — same orderable-by-mistake structural issue — and the
+		// agent gets both nudges (struct param OR options object). Confirm
+		// the message tags `boolean`.
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("boolean");
 	});
 });

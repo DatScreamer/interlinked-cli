@@ -279,6 +279,7 @@ export {
 	checkMagicNumbers,
 	checkNegatedConditionWithElse,
 	checkNestedTernary,
+	checkSameTypedPrimitiveParams,
 } from "./checks/taste-smell.js";
 // ---- iteration-safety ----
 export {

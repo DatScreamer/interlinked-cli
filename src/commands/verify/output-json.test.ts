@@ -31,6 +31,7 @@ function emptyCq(): CodeQualityResults {
 		"floatingPromises",
 		"broadObjectTypes",
 		"booleanTrap",
+		"sameTypedPrimitiveParams",
 		"magicLiteralInConditional",
 		"asyncPromiseExecutor",
 		"selfImports",

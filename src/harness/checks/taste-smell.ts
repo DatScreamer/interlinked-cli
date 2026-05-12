@@ -299,6 +299,319 @@ export function checkFlagArguments(content: string, filePath: string): InlineMat
 }
 
 /**
+ * Detect exported / public-method signatures that take 2+ adjacent parameters
+ * of the same primitive type (`string`, `number`, `boolean`). Callers can swap
+ * positional arguments at the call site with no help from the type system —
+ * `transfer(fromId, toId, amount)` lets `transfer(toId, fromId, amount)`
+ * compile cleanly. The fix is types-that-make-illegal-states-unrepresentable:
+ * branded types (`type UserId = string & { __brand: 'UserId' }`) or a single
+ * struct parameter destructured by name.
+ *
+ * Only flags two consecutive same-typed primitives in the same function/method
+ * signature. We work from the surface annotation, not a resolved alias chain —
+ * `(a: UserId, b: AccountId)` does NOT fire even when both alias to `string`,
+ * because the cold reader sees distinct types at the call site.
+ *
+ * FP controls (the allowlist is the load-bearing FP lever):
+ * - Only public surfaces: top-level `export function`, `export const ... = (...)`,
+ *   `public ...(...)` methods in exported classes.
+ * - Skip test files.
+ * - Skip well-known orderable-by-name pairs: `x/y/z` (coords),
+ *   `r/g/b/a` (colors), `w/h` / `width/height`, `lat/lng/lon/long/latitude/
+ *   longitude`, `i/j/k` (indices), `min/max`. When BOTH same-typed param
+ *   names are in this set, the pair is exempt — `setPoint(x: number, y: number)`
+ *   doesn't fire. Conservative on purpose: a tiny allowlist is easier to grow
+ *   than to retract.
+ * - Skip rest params (`...args: string[]`) and array params (`string[]`) — the
+ *   ordering risk is one parameter, not two.
+ *
+ * Only runs on `.ts`, `.tsx`, `.mts`, `.cts` (needs the surface annotation).
+ */
+export function checkSameTypedPrimitiveParams(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (![".ts", ".tsx", ".mts", ".cts"].includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const lines = stripped.split("\n");
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// Top-level function declarations / arrow assignments must be exported to
+	// be public. `function foo(...)` without `export` is internal-by-default
+	// in an ES module.
+	const exportedFunctionPatterns: RegExp[] = [
+		// export function foo(...), export async function foo(...)
+		/^\s*export\s+(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(/,
+		// export default function foo(...)
+		/^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)?\s*(?:<[^>]*>)?\s*\(/,
+		// export const foo = (...) => ..., export const foo = async (...) => ...
+		/^\s*export\s+(?:const|let|var)\s+(\w+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s+)?\(/,
+	];
+
+	// Track whether we are inside an exported class so we can flag its public
+	// methods. Methods on non-exported classes don't have a public surface
+	// outside the module.
+	let inExportedClass = false;
+	let classBraceDepth = 0;
+	// Running brace depth so we can tell when an exported class block closes.
+	let openBraces = 0;
+
+	for (let i = 0; i < lines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = lines[i];
+		const trimmed = line.trim();
+
+		// Track exported-class scope. Match `export class Foo`, `export default class Foo`,
+		// `export abstract class Foo`.
+		if (
+			!inExportedClass &&
+			/^\s*export\s+(?:default\s+)?(?:abstract\s+)?class\s+\w+/.test(trimmed)
+		) {
+			inExportedClass = true;
+			classBraceDepth = openBraces;
+		}
+
+		// Update brace depth tally for class-scope tracking. (We do this on the
+		// stripped line so brace literals in strings / comments don't drift the
+		// count.)
+		for (const ch of line) {
+			if (ch === "{") openBraces++;
+			else if (ch === "}") openBraces--;
+		}
+		if (inExportedClass && openBraces <= classBraceDepth) {
+			inExportedClass = false;
+			classBraceDepth = 0;
+		}
+
+		// Identify the function signature start point. Three shapes flagged:
+		//   - exported top-level function / arrow assignment
+		//   - public method in an exported class (no `private` / `protected` /
+		//     no leading `#`, optional `public` keyword)
+		let funcName: string | null = null;
+		for (const pat of exportedFunctionPatterns) {
+			const m = trimmed.match(pat);
+			if (m) {
+				funcName = m[1] ?? "<anonymous>";
+				break;
+			}
+		}
+
+		if (!funcName && inExportedClass) {
+			// Method shape: `methodName(...)` or `public methodName(...)` or
+			// `async methodName(...)` or `static methodName(...)`. Class field
+			// arrow methods `name = (...) =>` count too. Avoid getters/setters
+			// (`get foo(`, `set foo(`) — they take 0 or 1 args by spec, no
+			// orderable-by-mistake risk. Skip `constructor` too — value-object
+			// holders are the canonical exception. Skip private (#name) and
+			// explicit `private`/`protected` modifiers.
+			const methodMatch = trimmed.match(
+				/^\s*(?:public\s+|static\s+|async\s+|readonly\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(/,
+			);
+			if (
+				methodMatch &&
+				!/^\s*(?:private|protected|#|get\s|set\s|constructor\b)/.test(trimmed) &&
+				// Avoid matching control-flow keywords that have the same shape:
+				// `if (`, `while (`, `for (`, `switch (`, `return (`, `throw (`.
+				!/^\s*(?:if|while|for|switch|return|throw|catch|else|do|try|new)\b/.test(trimmed) &&
+				methodMatch[1] !== "constructor"
+			) {
+				funcName = methodMatch[1];
+			}
+		}
+		if (!funcName) continue;
+
+		// Collect the full parameter list, balancing nested parens / brackets /
+		// braces / angle brackets. The signature may wrap across many lines.
+		const params = collectParamList(lines, i);
+		if (!params) continue;
+
+		// Walk the parameter list looking for two consecutive same-typed
+		// primitives. We only fire on adjacent pairs; orderable-by-mistake risk
+		// is highest when the swappable parameters sit next to each other in
+		// the call site.
+		const parsed = parseParamPrimitives(params);
+		// Allowlist of conventional name-pairs that are not orderable-by-mistake
+		// in practice. Build it once per call (cheap) — kept small on purpose;
+		// grow it from real-world false positives, not speculation.
+		const NAME_ALLOWLIST = new Set([
+			"x",
+			"y",
+			"z",
+			"r",
+			"g",
+			"b",
+			"a", // alpha channel (RGBA)
+			"w",
+			"h",
+			"width",
+			"height",
+			"i",
+			"j",
+			"k",
+			"lat",
+			"lng",
+			"lon",
+			"long",
+			"latitude",
+			"longitude",
+			"min",
+			"max",
+		]);
+
+		for (let p = 0; p < parsed.length - 1; p++) {
+			const left = parsed[p];
+			const right = parsed[p + 1];
+			if (!left || !right) continue;
+			// Only fire on matched, recognized primitive surface types. `null`
+			// means "we couldn't classify this as a flagged primitive" — rest
+			// params, destructured params, named-type / branded params,
+			// unions, arrays, generics. Two `null` types must not pair.
+			if (left.type === null || right.type === null) continue;
+			if (left.type !== right.type) continue;
+			// Skip when BOTH names are in the allowlist. One match is not
+			// enough — `transfer(x: string, userId: string)` is still orderable
+			// by mistake.
+			const leftLower = left.name.toLowerCase();
+			const rightLower = right.name.toLowerCase();
+			if (NAME_ALLOWLIST.has(leftLower) && NAME_ALLOWLIST.has(rightLower)) continue;
+			matches.push({
+				line: i + 1,
+				text: `[2 same-typed ${left.type} params (${left.name}, ${right.name}) → use branded types or a struct param] ${originalLines[i].trim().slice(0, 100)}`,
+			});
+			// One finding per signature is enough — don't double-report when a
+			// triple of `(a: string, b: string, c: string)` produces two
+			// adjacent pairs.
+			break;
+		}
+	}
+
+	return matches;
+}
+
+/**
+ * Collect a parenthesized parameter list starting at the opening `(` of a
+ * function signature on `lines[startIdx]`. Balances nested parens, brackets,
+ * braces, and angle-brackets (generic params). Reads up to 20 subsequent
+ * lines — long enough for any sane signature, short enough to never run away.
+ * Returns the joined param-list contents (without surrounding parens) or
+ * `null` if the signature can't be closed within the window.
+ */
+function collectParamList(lines: string[], startIdx: number): string | null {
+	const first = lines[startIdx];
+	const openIdx = first.indexOf("(");
+	if (openIdx < 0) return null;
+	let depthParen = 0;
+	let depthAngle = 0;
+	let depthBrace = 0;
+	let depthBracket = 0;
+	let buf = "";
+	let started = false;
+	for (let i = startIdx; i < Math.min(startIdx + 20, lines.length); i++) {
+		const line = lines[i];
+		const startCol = i === startIdx ? openIdx : 0;
+		for (let k = startCol; k < line.length; k++) {
+			const ch = line[k];
+			if (ch === "(") {
+				depthParen++;
+				if (depthParen === 1 && !started) {
+					started = true;
+					continue;
+				}
+			} else if (ch === ")") {
+				depthParen--;
+				if (depthParen === 0 && started) {
+					return buf;
+				}
+			} else if (ch === "<") depthAngle++;
+			else if (ch === ">") depthAngle = Math.max(0, depthAngle - 1);
+			else if (ch === "{") depthBrace++;
+			else if (ch === "}") depthBrace = Math.max(0, depthBrace - 1);
+			else if (ch === "[") depthBracket++;
+			else if (ch === "]") depthBracket = Math.max(0, depthBracket - 1);
+			if (started) buf += ch;
+		}
+		buf += " ";
+		// Sanity: if the depths are way off the signature isn't well-formed.
+		if (depthAngle > 4 || depthBrace > 4 || depthBracket > 4) return null;
+	}
+	return null;
+}
+
+interface ParsedParam {
+	name: string;
+	/** Surface primitive type or null when not a flagged primitive. */
+	type: "string" | "number" | "boolean" | null;
+}
+
+/**
+ * Parse a parameter-list buffer into ordered entries with name + surface
+ * primitive type. Splits on top-level commas (respecting nested
+ * parens/brackets/braces/angle-brackets). For each entry, looks for the
+ * pattern `name: <primitive>` where `<primitive>` is exactly `string`,
+ * `number`, or `boolean` at the surface (no aliases, no unions, no `| undefined`,
+ * no `string[]`, no `Promise<string>`). Rest params and untyped params parse
+ * to `type: null` so they don't pair with anything.
+ */
+function parseParamPrimitives(paramStr: string): ParsedParam[] {
+	const out: ParsedParam[] = [];
+	const parts: string[] = [];
+	let buf = "";
+	let depth = 0;
+	for (const ch of paramStr) {
+		if (ch === "<" || ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ">" || ch === ")" || ch === "}" || ch === "]") depth--;
+		if (ch === "," && depth === 0) {
+			parts.push(buf);
+			buf = "";
+			continue;
+		}
+		buf += ch;
+	}
+	if (buf.trim().length > 0) parts.push(buf);
+
+	for (const part of parts) {
+		const trimmed = part.trim();
+		if (trimmed.length === 0) continue;
+		// Rest param — orderable-by-mistake doesn't apply to a single rest.
+		if (/^\.\.\./.test(trimmed)) {
+			out.push({ name: "<rest>", type: null });
+			continue;
+		}
+		// Destructured param (`{ a, b }: T`) — no single name to pair with;
+		// the type annotation describes a struct, not a primitive.
+		if (/^\{/.test(trimmed) || /^\[/.test(trimmed)) {
+			out.push({ name: "<destructure>", type: null });
+			continue;
+		}
+		// Match: `[modifiers ]?name[?]: <annotation>[= default]`. The annotation
+		// runs until `=` (default value) or end of part. Modifiers covers
+		// constructor-parameter properties (`public name: string`); we won't
+		// reach those here since we skip constructors, but support is cheap.
+		const m = trimmed.match(
+			/^(?:public\s+|private\s+|protected\s+|readonly\s+)*(\w+)\s*\??\s*:\s*([^=]+?)\s*(?:=|$)/,
+		);
+		if (!m) {
+			out.push({ name: trimmed.split(/[\s:?]/)[0] || "<unknown>", type: null });
+			continue;
+		}
+		const name = m[1];
+		const annotation = m[2].trim();
+		// Surface-primitive match: must be exactly `string` / `number` /
+		// `boolean`, no unions, no arrays, no generics, no `| undefined` etc.
+		let type: "string" | "number" | "boolean" | null = null;
+		if (annotation === "string") type = "string";
+		else if (annotation === "number") type = "number";
+		else if (annotation === "boolean") type = "boolean";
+		out.push({ name, type });
+	}
+	return out;
+}
+
+/**
  * Detect blocks of commented-out code (3+ consecutive lines).
  * Commented-out code rots, confuses grep, and makes the real code harder to scan.
  * Use version control instead of comment-preservation.

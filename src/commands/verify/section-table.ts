@@ -187,6 +187,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "no boolean traps",
 		color: "31",
 	},
+	{
+		label: "same-typed primitive params",
+		key: "sameTypedPrimitiveParams",
+		noun: "public signatures with adjacent same-typed primitive params",
+		passLabel: "no orderable-by-mistake param pairs",
+		color: "33",
+	},
 	// Mythos Phase 2 — comment-vs-behavior drift detectors.
 	{
 		label: "comment claims limit",

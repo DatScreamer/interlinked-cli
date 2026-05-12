@@ -82,6 +82,7 @@ import {
 	checkRealIoInTests,
 	checkRegexInLoopNoCompile,
 	checkRequireAwait,
+	checkSameTypedPrimitiveParams,
 	checkSchemaTypeDrift,
 	checkSequentialAwaits,
 	checkSilentDemoFallback,
@@ -353,6 +354,21 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"Replace positional booleans with an options object so the intent is visible at the call site: `createUser('alice', { admin: true, verified: false })` instead of `createUser('alice', true, false)`. Alternatively, use an enum when the booleans represent a discrete mode.",
 		fn: checkBooleanTrap,
 		resultsPropName: "booleanTrap",
+	},
+	{
+		id: "same_typed_primitive_params",
+		phase: "post",
+		name: "Same-Typed Primitive Params",
+		description:
+			"Detects exported / public-method signatures with two consecutive primitive parameters of the same surface type (string, number, boolean) — callers can swap them without a type error, so the ordering risk is structural, not a typo",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Two adjacent parameters of the same primitive type are orderable by mistake — `transfer(fromId: string, toId: string, amount: number)` compiles cleanly when called as `transfer(toId, fromId, amount)`. Make the illegal state unrepresentable: branded types (`type UserId = string & { __brand: 'UserId' }`, `type AccountId = string & { __brand: 'AccountId' }`) keep the runtime cost zero while the compiler now rejects the swapped call. Alternatively, take a single struct parameter and destructure by name: `transfer({ fromId, toId, amount }: { fromId: string; toId: string; amount: number })` — call sites become self-documenting and order-independent.",
+		fn: checkSameTypedPrimitiveParams,
+		resultsPropName: "sameTypedPrimitiveParams",
 	},
 	{
 		id: "broad_object_types",

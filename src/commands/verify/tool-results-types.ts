@@ -52,6 +52,7 @@ export interface CodeQualityResults {
 	floatingPromises: CodeQualityIssue[];
 	broadObjectTypes: CodeQualityIssue[];
 	booleanTrap: CodeQualityIssue[];
+	sameTypedPrimitiveParams: CodeQualityIssue[];
 	// Comment-vs-behavior drift detectors (Mythos Phase 2 verify-side wiring).
 	commentClaimsLimitNoGuard: CodeQualityIssue[];
 	commentClaimsNullThrowsInstead: CodeQualityIssue[];
@@ -298,6 +299,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"floatingPromises",
 	"broadObjectTypes",
 	"booleanTrap",
+	"sameTypedPrimitiveParams",
 	"commentClaimsLimitNoGuard",
 	"commentClaimsNullThrowsInstead",
 	"commentClaimsValidationMissing",

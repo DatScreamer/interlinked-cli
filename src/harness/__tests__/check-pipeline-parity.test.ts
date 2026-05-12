@@ -446,6 +446,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"floatingPromises",
 			"broadObjectTypes",
 			"booleanTrap",
+			"sameTypedPrimitiveParams",
 			"commentClaimsLimitNoGuard",
 			"commentClaimsNullThrowsInstead",
 			"commentClaimsValidationMissing",

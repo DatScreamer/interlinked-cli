@@ -73,6 +73,13 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// booleans correspond to well-known flags). Advisory until FP rate is
 	// measured against a broader codebase.
 	"boolean_trap",
+	// Same-typed primitive params: orderable-by-mistake nudge toward branded
+	// types / struct params. Real bug class, but moderate FP rate — DSL-style
+	// curried builders, `(a: string, b: string) => string` formatter helpers,
+	// and well-known orderable-by-name pairs that escape the small allowlist
+	// will still surface. Advisory until the FP rate is measured against a
+	// broader codebase, mirroring boolean_trap's rollout.
+	"same_typed_primitive_params",
 	// Comment-vs-behavior drift detectors (Mythos blog adaptation). The
 	// claims they check ("max N", "returns null", "validates X",
 	// "idempotent", "@throws ErrorX") are inherently fuzzy — comments

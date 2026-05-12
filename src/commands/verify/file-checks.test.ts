@@ -32,6 +32,7 @@ function makeEmptyResults(): CodeQualityResults {
 		"floatingPromises",
 		"broadObjectTypes",
 		"booleanTrap",
+		"sameTypedPrimitiveParams",
 		"magicLiteralInConditional",
 		"asyncPromiseExecutor",
 		"selfImports",

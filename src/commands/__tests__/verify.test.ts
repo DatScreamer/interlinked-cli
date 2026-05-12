@@ -258,6 +258,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"non_null_assertion",
 				"over_mocking",
 				"require_await",
+				"same_typed_primitive_params",
 				"sequential_awaits",
 				"single_implementation_interface",
 				"test_regressions",

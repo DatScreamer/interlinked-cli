@@ -40,6 +40,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	same_typed_primitive_params: {
+		name: "Same-Typed Primitive Params",
+		description:
+			"Detects exported / public-method signatures with two consecutive primitive parameters of the same surface type (string, number, boolean) — orderable-by-mistake at the call site",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	comment_claims_limit_no_guard: {
 		name: "Comment Claims Limit With No Guard",
 		description:

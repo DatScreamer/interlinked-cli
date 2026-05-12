@@ -19,6 +19,7 @@ import {
 	checkAsyncPromiseExecutor,
 	checkBooleanTrap,
 	checkBroadObjectTypes,
+	checkSameTypedPrimitiveParams,
 	checkCommentClaimsIdempotentMutates,
 	checkCommentClaimsLimitNoGuard,
 	checkCommentClaimsNullThrowsInstead,
@@ -417,6 +418,13 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 		...toIssues("broad_object_types", relPath, checkBroadObjectTypes(content, file)),
 	);
 	r.booleanTrap.push(...toIssues("boolean_trap", relPath, checkBooleanTrap(content, file)));
+	r.sameTypedPrimitiveParams.push(
+		...toIssues(
+			"same_typed_primitive_params",
+			relPath,
+			checkSameTypedPrimitiveParams(content, file),
+		),
+	);
 	// Comment-vs-behavior drift (Mythos Phase 2 verify-side wiring).
 	r.commentClaimsLimitNoGuard.push(
 		...toIssues(
