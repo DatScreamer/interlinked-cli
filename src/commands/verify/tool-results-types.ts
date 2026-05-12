@@ -60,6 +60,7 @@ export interface CodeQualityResults {
 	commentClaimsThrowsDoesnt: CodeQualityIssue[];
 	iteratorInvalidation: CodeQualityIssue[];
 	freshCollectionKeyLookup: CodeQualityIssue[];
+	discriminatedUnionExhaustiveness: CodeQualityIssue[];
 	indexBoundsUnchecked: CodeQualityIssue[];
 	cleanupSkippedOnEarlyExit: CodeQualityIssue[];
 	taintedToPrivilegedSink: CodeQualityIssue[];
@@ -302,6 +303,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"commentClaimsThrowsDoesnt",
 	"iteratorInvalidation",
 	"freshCollectionKeyLookup",
+	"discriminatedUnionExhaustiveness",
 	"indexBoundsUnchecked",
 	"cleanupSkippedOnEarlyExit",
 	"taintedToPrivilegedSink",

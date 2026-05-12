@@ -285,6 +285,8 @@ export {
 	checkFreshCollectionKeyLookup,
 	checkIteratorInvalidation,
 } from "./checks/iteration-safety.js";
+// ---- exhaustiveness ----
+export { checkDiscriminatedUnionExhaustiveness } from "./checks/exhaustiveness.js";
 // ---- index-bounds ----
 export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
 // ---- cleanup-early-exit ----

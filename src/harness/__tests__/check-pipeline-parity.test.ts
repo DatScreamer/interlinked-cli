@@ -453,6 +453,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"commentClaimsThrowsDoesnt",
 			"iteratorInvalidation",
 			"freshCollectionKeyLookup",
+			"discriminatedUnionExhaustiveness",
 			"indexBoundsUnchecked",
 			"cleanupSkippedOnEarlyExit",
 			"taintedToPrivilegedSink",

@@ -42,6 +42,7 @@ import {
 	checkDeferInLoop,
 	checkDirectDomAccess,
 	checkDisabledTests,
+	checkDiscriminatedUnionExhaustiveness,
 	checkDivisionByVariable,
 	checkDoubleCastUnknown,
 	checkEvalUsage,
@@ -459,6 +460,13 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			"fresh_collection_key_lookup",
 			relPath,
 			checkFreshCollectionKeyLookup(content, file),
+		),
+	);
+	r.discriminatedUnionExhaustiveness.push(
+		...toIssues(
+			"discriminated_union_exhaustiveness",
+			relPath,
+			checkDiscriminatedUnionExhaustiveness(content, file),
 		),
 	);
 	r.indexBoundsUnchecked.push(

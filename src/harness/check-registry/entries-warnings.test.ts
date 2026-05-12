@@ -31,6 +31,7 @@ describe("WARNING_ENTRIES", () => {
 			"lifecycle_cleanup",
 			"default_export",
 			"dead_exports",
+			"discriminated_union_exhaustiveness",
 		]) {
 			expect(ids, `WARNING_ENTRIES should include ${expected}`).toContain(expected);
 		}

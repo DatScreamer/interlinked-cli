@@ -1,0 +1,440 @@
+// Discriminated-union exhaustiveness check.
+//
+// Flags TS `switch` statements on a literal-union or discriminated-union typed
+// value when exhaustiveness is NOT asserted in the default branch. Strategy:
+//   1. Cheap text gate (no `switch (` token → bail).
+//   2. Parse via `ts.createSourceFile` (cheap, no Program build).
+//   3. Walk SwitchStatement nodes; resolve discriminant type via AST-only
+//      heuristics (inline annotations, parameter/variable type, type-alias
+//      lookup in the same file). When the type can't be resolved syntactically
+//      we skip — heuristic, false-negative-friendly.
+//   4. For unions of ≥2 literal members, check case coverage + default-branch
+//      assertion (never-typed assignment, assertNever, UnreachableError throw).
+//
+// Bias: aim for the "added a union member, forgot a case, no assertNever
+// default" bug shape without firing on boolean switches, typeof narrowing,
+// runtime parsing of unknown input, or numeric-discriminated fully-covered
+// switches.
+
+import { createRequire } from "node:module";
+
+import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
+
+// `typescript` is a devDep; load lazily so the check is a no-op in
+// environments where the package is missing.
+type TsModule = typeof import("typescript");
+const nodeRequire = createRequire(import.meta.url);
+let _tsCache: TsModule | null | undefined;
+
+function loadTs(): TsModule | null {
+	if (_tsCache !== undefined) return _tsCache;
+	try {
+		_tsCache = nodeRequire("typescript") as TsModule;
+	} catch {
+		_tsCache = null;
+	}
+	return _tsCache;
+}
+
+/** Test-only hook so unit tests can simulate `typescript` being unavailable. */
+export function __resetTsCacheForTesting(): void {
+	_tsCache = undefined;
+}
+
+const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".mts", ".cts"]);
+const DISCRIMINANT_KEYS = ["kind", "type", "tag", "variant", "_tag"] as const;
+const MAX_MATCHES_PER_FILE = 10;
+const REPORT_LINE_TRUNC = 150;
+
+interface LiteralUnion {
+	/** Sorted, deduped literal forms (quoted strings for `string`, digits for `number`). */
+	members: string[];
+}
+
+interface DiscriminatedUnion {
+	/** The shared discriminant property name (kind / type / tag / variant / _tag). */
+	discriminant: string;
+	/** Sorted, deduped literal tag values for that property across members. */
+	tags: string[];
+}
+
+interface ResolutionContext {
+	localUnions: Map<string, LiteralUnion>;
+	localDiscriminated: Map<string, DiscriminatedUnion>;
+}
+
+type ResolvedRaw =
+	| { kind: "union"; value: LiteralUnion }
+	| { kind: "discriminated"; value: DiscriminatedUnion };
+
+interface ResolvedDiscriminant {
+	/** Discriminant key name when resolved via discriminated union, else undefined. */
+	discriminant?: string;
+	tags: string[];
+}
+
+/**
+ * Detect TS switch statements on discriminated unions that lack an
+ * exhaustiveness assertion in the default branch. No-op outside .ts/.tsx/.mts/
+ * .cts, in test files, and when the `typescript` package is unavailable.
+ */
+export function checkDiscriminatedUnionExhaustiveness(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!SUPPORTED_EXTS.has(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (!/\bswitch\s*\(/.test(content)) return [];
+
+	const maybeTs = loadTs();
+	if (!maybeTs) return [];
+	const ts: TsModule = maybeTs;
+
+	const sourceFile = ts.createSourceFile(
+		filePath,
+		content,
+		ts.ScriptTarget.Latest,
+		/* setParentNodes */ true,
+		ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+	);
+
+	const lines = content.split("\n");
+	const matches: InlineMatch[] = [];
+	const ctx: ResolutionContext = {
+		localUnions: indexTypeAliases(ts, sourceFile, typeNodeToLiteralUnion),
+		localDiscriminated: indexTypeAliases(ts, sourceFile, typeNodeToDiscriminatedUnion),
+	};
+
+	const visit = (node: import("typescript").Node): void => {
+		if (matches.length >= MAX_MATCHES_PER_FILE) return;
+		if (ts.isSwitchStatement(node)) {
+			const finding = analyzeSwitch(ts, node, sourceFile, lines, ctx);
+			if (finding) matches.push(finding);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(sourceFile);
+
+	return matches;
+}
+
+// ---------------------------------------------------------------------------
+// Type-alias indexing
+// ---------------------------------------------------------------------------
+
+function indexTypeAliases<T>(
+	ts: TsModule,
+	sourceFile: import("typescript").SourceFile,
+	convert: (ts: TsModule, node: import("typescript").TypeNode) => T | null,
+): Map<string, T> {
+	const out = new Map<string, T>();
+	const walk = (node: import("typescript").Node): void => {
+		if (ts.isTypeAliasDeclaration(node)) {
+			const v = convert(ts, node.type);
+			if (v) out.set(node.name.text, v);
+		}
+		ts.forEachChild(node, walk);
+	};
+	walk(sourceFile);
+	return out;
+}
+
+/** `A | B | C` where every constituent is a string/number literal type. */
+function typeNodeToLiteralUnion(
+	ts: TsModule,
+	node: import("typescript").TypeNode,
+): LiteralUnion | null {
+	if (!ts.isUnionTypeNode(node) || node.types.length < 2) return null;
+	const members: string[] = [];
+	for (const t of node.types) {
+		const m = literalTypeMemberText(ts, t);
+		if (m === null) return null;
+		members.push(m);
+	}
+	return { members: Array.from(new Set(members)).sort() };
+}
+
+/** Read a string/number literal type as its case-tag text; null otherwise. */
+function literalTypeMemberText(
+	ts: TsModule,
+	node: import("typescript").TypeNode,
+): string | null {
+	if (!ts.isLiteralTypeNode(node)) return null;
+	const lit = node.literal;
+	if (ts.isStringLiteral(lit)) return JSON.stringify(lit.text);
+	if (ts.isNumericLiteral(lit)) return lit.text;
+	// Boolean literal members make the union `boolean`; skip via null.
+	return null;
+}
+
+/**
+ * `{ kind: 'a', ... } | { kind: 'b', ... }` where every constituent has the
+ * same literal-typed discriminant property at a recognized key.
+ */
+function typeNodeToDiscriminatedUnion(
+	ts: TsModule,
+	node: import("typescript").TypeNode,
+): DiscriminatedUnion | null {
+	if (!ts.isUnionTypeNode(node) || node.types.length < 2) return null;
+	const perKey = new Map<string, string[]>();
+	for (const t of node.types) {
+		const lit = unwrapTypeLiteral(ts, t);
+		if (!lit) return null;
+		for (const key of DISCRIMINANT_KEYS) {
+			const tag = readLiteralPropTag(ts, lit, key);
+			if (tag === null) continue;
+			let acc = perKey.get(key);
+			if (!acc) {
+				acc = [];
+				perKey.set(key, acc);
+			}
+			acc.push(tag);
+		}
+	}
+	for (const key of DISCRIMINANT_KEYS) {
+		const tags = perKey.get(key);
+		if (!tags || tags.length !== node.types.length) continue;
+		const deduped = Array.from(new Set(tags)).sort();
+		if (deduped.length >= 2) return { discriminant: key, tags: deduped };
+	}
+	return null;
+}
+
+function unwrapTypeLiteral(
+	ts: TsModule,
+	node: import("typescript").TypeNode,
+): import("typescript").TypeLiteralNode | null {
+	if (ts.isTypeLiteralNode(node)) return node;
+	if (ts.isParenthesizedTypeNode(node)) return unwrapTypeLiteral(ts, node.type);
+	return null;
+}
+
+/** Read the literal type of `<key>` on a TypeLiteralNode, or null. */
+function readLiteralPropTag(
+	ts: TsModule,
+	lit: import("typescript").TypeLiteralNode,
+	key: string,
+): string | null {
+	for (const member of lit.members) {
+		if (!ts.isPropertySignature(member) || !member.name) continue;
+		const n = member.name;
+		const propName = ts.isIdentifier(n) ? n.text : ts.isStringLiteral(n) ? n.text : null;
+		if (propName !== key) continue;
+		if (!member.type) return null;
+		return literalTypeMemberText(ts, member.type);
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Switch analysis
+// ---------------------------------------------------------------------------
+
+function analyzeSwitch(
+	ts: TsModule,
+	node: import("typescript").SwitchStatement,
+	sourceFile: import("typescript").SourceFile,
+	lines: string[],
+	ctx: ResolutionContext,
+): InlineMatch | null {
+	const expr = node.expression;
+	// `switch (typeof x)` — type-narrow style; not the bug shape we target.
+	if (ts.isTypeOfExpression(expr)) return null;
+
+	const resolved = resolveExpressionType(ts, expr, ctx);
+	if (!resolved || resolved.tags.length < 2) return null;
+
+	const caseTags = new Set<string>();
+	let defaultClause: import("typescript").DefaultClause | null = null;
+	for (const clause of node.caseBlock.clauses) {
+		if (ts.isDefaultClause(clause)) {
+			defaultClause = clause;
+			continue;
+		}
+		const tag = caseExpressionToLiteralTag(ts, clause.expression);
+		if (tag !== null) caseTags.add(tag);
+	}
+
+	const missing = resolved.tags.filter((t) => !caseTags.has(t));
+	if (missing.length === 0) return null; // Fully covered by cases.
+	if (defaultClause && defaultBranchAssertsNever(ts, defaultClause, sourceFile)) {
+		return null;
+	}
+
+	const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+	const lineNo = line + 1;
+	const raw = (lines[line] ?? "").trim();
+	const missingDisplay = missing.slice(0, 3).join(", ") + (missing.length > 3 ? ", …" : "");
+	const detail = resolved.discriminant
+		? `discriminated union on \`${resolved.discriminant}\` missing case(s): ${missingDisplay}`
+		: `union missing case(s): ${missingDisplay}`;
+	return {
+		line: lineNo,
+		text: `${raw.slice(0, REPORT_LINE_TRUNC)} — ${detail}`.slice(0, 200),
+	};
+}
+
+/**
+ * Resolve the static type of `expr` to a literal-union tag list. AST-only:
+ * inline annotations on the discriminant, type aliases in the same file,
+ * parameter/variable declarations in enclosing scope.
+ */
+function resolveExpressionType(
+	ts: TsModule,
+	expr: import("typescript").Expression,
+	ctx: ResolutionContext,
+): ResolvedDiscriminant | null {
+	if (ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)) {
+		return resolveTypeNode(ts, expr.type, ctx);
+	}
+	if (ts.isIdentifier(expr)) {
+		const declType = findDeclaredTypeForIdentifier(ts, expr);
+		return declType ? resolveTypeNode(ts, declType, ctx) : null;
+	}
+	// `x.kind` — when x's declared type is a discriminated union keyed on
+	// `kind`, the case tags are the discriminant's literal values.
+	if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
+		const propName = expr.name.text;
+		const baseDeclType = findDeclaredTypeForIdentifier(ts, expr.expression);
+		if (!baseDeclType) return null;
+		const base = resolveTypeNodeRaw(ts, baseDeclType, ctx);
+		if (base?.kind === "discriminated" && base.value.discriminant === propName) {
+			return { discriminant: propName, tags: base.value.tags };
+		}
+	}
+	return null;
+}
+
+function resolveTypeNode(
+	ts: TsModule,
+	typeNode: import("typescript").TypeNode,
+	ctx: ResolutionContext,
+): ResolvedDiscriminant | null {
+	const raw = resolveTypeNodeRaw(ts, typeNode, ctx);
+	if (!raw) return null;
+	if (raw.kind === "union") return { tags: raw.value.members };
+	// Switch directly on a discriminated-union-typed expression: agent
+	// would have to switch on `.kind`, not the whole value. Skip.
+	return null;
+}
+
+function resolveTypeNodeRaw(
+	ts: TsModule,
+	typeNode: import("typescript").TypeNode,
+	ctx: ResolutionContext,
+): ResolvedRaw | null {
+	const inline = typeNodeToLiteralUnion(ts, typeNode);
+	if (inline) return { kind: "union", value: inline };
+	const inlineDU = typeNodeToDiscriminatedUnion(ts, typeNode);
+	if (inlineDU) return { kind: "discriminated", value: inlineDU };
+	if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
+		const name = typeNode.typeName.text;
+		const u = ctx.localUnions.get(name);
+		if (u) return { kind: "union", value: u };
+		const du = ctx.localDiscriminated.get(name);
+		if (du) return { kind: "discriminated", value: du };
+	}
+	return null;
+}
+
+/** Walk up from `ident` to find a parameter/variable declaration with a type. */
+function findDeclaredTypeForIdentifier(
+	ts: TsModule,
+	ident: import("typescript").Identifier,
+): import("typescript").TypeNode | null {
+	const name = ident.text;
+	let current: import("typescript").Node | undefined = ident.parent;
+	while (current) {
+		if (
+			ts.isFunctionDeclaration(current) ||
+			ts.isFunctionExpression(current) ||
+			ts.isArrowFunction(current) ||
+			ts.isMethodDeclaration(current) ||
+			ts.isConstructorDeclaration(current) ||
+			ts.isGetAccessorDeclaration(current) ||
+			ts.isSetAccessorDeclaration(current)
+		) {
+			for (const param of current.parameters) {
+				if (ts.isIdentifier(param.name) && param.name.text === name && param.type) {
+					return param.type;
+				}
+			}
+		}
+		if (ts.isBlock(current) || ts.isSourceFile(current) || ts.isModuleBlock(current)) {
+			for (const stmt of current.statements) {
+				if (!ts.isVariableStatement(stmt)) continue;
+				for (const decl of stmt.declarationList.declarations) {
+					if (ts.isIdentifier(decl.name) && decl.name.text === name && decl.type) {
+						return decl.type;
+					}
+				}
+			}
+		}
+		current = current.parent;
+	}
+	return null;
+}
+
+/** Convert a `case <expr>:` expression to its tag form, or null. */
+function caseExpressionToLiteralTag(
+	ts: TsModule,
+	expr: import("typescript").Expression,
+): string | null {
+	if (ts.isStringLiteralLike(expr)) return JSON.stringify(expr.text);
+	if (ts.isNumericLiteral(expr)) return expr.text;
+	if (ts.isNoSubstitutionTemplateLiteral(expr)) return JSON.stringify(expr.text);
+	if (
+		ts.isPrefixUnaryExpression(expr) &&
+		expr.operator === ts.SyntaxKind.MinusToken &&
+		ts.isNumericLiteral(expr.operand)
+	) {
+		return `-${expr.operand.text}`;
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Default-branch assertion detection
+// ---------------------------------------------------------------------------
+
+const ASSERT_NEVER_RE = /\b(?:assertNever|exhaustiveCheck|absurd|unreachable)\b/;
+const UNREACHABLE_THROW_RE = /\bthrow\s+new\s+\w*(?:Unreachable|Exhaustive|Impossible|Assertion)\w*/i;
+
+/**
+ * Recognized shapes:
+ *   - `const _: never = <expr>;`
+ *   - `assertNever(<expr>)` (or aliases above)
+ *   - `throw new UnreachableError(...)` / `Exhaustive…Error` / etc.
+ *   - any `return assertNever(...)` / `throw assertNever(...)` variant
+ */
+function defaultBranchAssertsNever(
+	ts: TsModule,
+	clause: import("typescript").DefaultClause,
+	sourceFile: import("typescript").SourceFile,
+): boolean {
+	for (const stmt of clause.statements) {
+		if (ts.isVariableStatement(stmt)) {
+			for (const decl of stmt.declarationList.declarations) {
+				if (decl.type && decl.type.kind === ts.SyntaxKind.NeverKeyword) return true;
+			}
+		}
+		if (ts.isThrowStatement(stmt) && stmt.expression) {
+			if (ts.isNewExpression(stmt.expression)) {
+				const exprText = stmt.expression.expression.getText(sourceFile);
+				if (UNREACHABLE_THROW_RE.test(`throw new ${exprText}`)) return true;
+			}
+			if (ts.isCallExpression(stmt.expression)) {
+				if (ASSERT_NEVER_RE.test(stmt.expression.expression.getText(sourceFile))) return true;
+			}
+		}
+		if (
+			(ts.isExpressionStatement(stmt) || ts.isReturnStatement(stmt)) &&
+			stmt.expression &&
+			ts.isCallExpression(stmt.expression)
+		) {
+			if (ASSERT_NEVER_RE.test(stmt.expression.expression.getText(sourceFile))) return true;
+		}
+	}
+	return false;
+}

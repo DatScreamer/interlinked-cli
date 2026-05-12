@@ -238,6 +238,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "discriminated union exhaustiveness",
+		key: "discriminatedUnionExhaustiveness",
+		noun: "switch statements on literal/discriminated unions without a never-assertion default",
+		passLabel: "no non-exhaustive discriminated-union switches",
+		color: "31",
+	},
+	{
 		label: "index bounds unchecked",
 		key: "indexBoundsUnchecked",
 		noun: "external-input numbers reaching array subscripts without a bounds guard",

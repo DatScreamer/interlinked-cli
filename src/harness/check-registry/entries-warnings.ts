@@ -35,6 +35,7 @@ import {
 	checkDeferInLoop,
 	checkDirectDomAccess,
 	checkDisabledTests,
+	checkDiscriminatedUnionExhaustiveness,
 	checkDivisionByVariable,
 	checkDoubleCastUnknown,
 	checkExcessiveUseEffect,
@@ -230,6 +231,22 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"`new Map().set({}, 1).get({})` returns `undefined` — the two `{}` literals have different identities. Use a stable key: a primitive (string/number, with NaN explicitly excluded), a value held in a variable across the set/get pair, or a WeakMap keyed on the stable object reference itself.",
 		fn: checkFreshCollectionKeyLookup,
 		resultsPropName: "freshCollectionKeyLookup",
+	},
+	{
+		id: "discriminated_union_exhaustiveness",
+		phase: "post",
+		name: "Discriminated Union Exhaustiveness",
+		description:
+			"Detects TypeScript switch statements on literal-union or discriminated-union types where exhaustiveness is not asserted in the default branch — adding a new union member silently falls through the default with no compile-time error",
+		tier: 2,
+		determinism: "partially_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Either cover every case explicitly OR add an exhaustiveness assertion in the default branch. Three idioms work: (a) `default: { const _exhaustive: never = value; throw new Error('unreachable: ' + _exhaustive); }` — TS will refuse to compile when a new union member is added without a matching case; (b) `default: assertNever(value);` using a helper `function assertNever(x: never): never { throw new Error('unreachable: ' + x); }`; (c) `default: throw new UnreachableError(...);` paired with the assertion form. A bare `default: break;` or `default: return -1;` provides no compile-time safety against the next union member you forget to handle.",
+		fn: checkDiscriminatedUnionExhaustiveness,
+		resultsPropName: "discriminatedUnionExhaustiveness",
+		content_keywords: ["switch"],
 	},
 	{
 		id: "await_state_toctou",

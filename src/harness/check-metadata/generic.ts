@@ -89,6 +89,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "partially_deterministic",
 	},
+	discriminated_union_exhaustiveness: {
+		name: "Discriminated Union Exhaustiveness",
+		description:
+			"Detects TypeScript switch statements on literal-union or discriminated-union types where exhaustiveness is not asserted via a never-typed default branch — adding a new union member silently falls through with no compile-time error",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
 	index_bounds_unchecked: {
 		name: "Index Bounds Unchecked",
 		description:
