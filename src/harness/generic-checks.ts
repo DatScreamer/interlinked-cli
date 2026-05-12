@@ -288,8 +288,6 @@ export {
 } from "./checks/iteration-safety.js";
 // ---- exhaustiveness ----
 export { checkDiscriminatedUnionExhaustiveness } from "./checks/exhaustiveness.js";
-// ---- type-smuggling ----
-export { checkTypeSmuggling } from "./checks/type-smuggling.js";
 // ---- index-bounds ----
 export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
 // ---- cleanup-early-exit ----
