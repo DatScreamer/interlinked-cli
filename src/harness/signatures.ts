@@ -383,7 +383,9 @@ const SECRETS_RULES: SignatureRule[] = [
 		description: "Slack token or webhook",
 		patterns: [
 			/xoxb-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24}/,
-			/xoxp-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24}/,
+			// Slack user tokens have a 24–34 char suffix; widened from a strict
+			// {24} match after sanctum-oss's catalog.
+			/xoxp-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24,34}/,
 			/hooks\.slack\.com\/services\/T[A-Z0-9]{8,}\/B[A-Z0-9]{8,}\/[A-Za-z0-9]{24}/,
 		],
 	},
@@ -508,6 +510,151 @@ const SECRETS_RULES: SignatureRule[] = [
 		severity: "critical",
 		description: "npm authentication token",
 		patterns: [/\/\/registry\.npmjs\.org\/:_authToken=/, /\bnpm_[A-Za-z0-9]{36}\b/],
+	},
+	// Provider-specific shapes ported from sanctum-oss
+	// (reference-repos/sanctum-oss/crates/sanctum-firewall/src/patterns.rs).
+	// Mailgun's `key-<32 hex>` was intentionally NOT ported — it FPs on
+	// `api-key-<32 hex>` in JSON / env payloads because `\b` matches between
+	// `-` and `k`.
+	{
+		id: "sig-secret-gitlab",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "GitLab Personal Access Token",
+		patterns: [/\bglpat-[A-Za-z0-9_-]{20}\b/],
+	},
+	{
+		id: "sig-secret-slack-app",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Slack app-level token (workspace admin scope)",
+		patterns: [/\bxapp-[0-9]-[A-Z0-9]{10,13}-[0-9]{13}-[A-Za-z0-9]{64}\b/],
+	},
+	{
+		id: "sig-secret-pypi",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "PyPI publication token",
+		patterns: [/\bpypi-[A-Za-z0-9_-]{16,}/],
+	},
+	{
+		id: "sig-secret-digitalocean",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "DigitalOcean Personal Access Token",
+		patterns: [/\bdop_v1_[a-f0-9]{64}\b/],
+	},
+	{
+		id: "sig-secret-datadog",
+		category: "secrets_detection",
+		severity: "high",
+		description: "Datadog API or APP key",
+		patterns: [/\bdd(?:api|app)_[a-z0-9]{32,}\b/],
+	},
+	{
+		id: "sig-secret-azure-sas",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Azure Shared Access Signature token",
+		patterns: [/(?:sv=|se=|sp=)[^&]*&.*\bsig=[A-Za-z0-9%+/=]{20,}/],
+	},
+	{
+		id: "sig-secret-vercel",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Vercel deploy token",
+		patterns: [/\bvercel_[A-Za-z0-9]{24,}\b/],
+	},
+	{
+		id: "sig-secret-docker-hub-pat",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Docker Hub Personal Access Token",
+		patterns: [/\bdckr_pat_[A-Za-z0-9_-]{24,}/],
+	},
+	{
+		id: "sig-secret-vault",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Hashicorp Vault token",
+		patterns: [/\bhvs\.[A-Za-z0-9_-]{24,}/],
+	},
+	{
+		id: "sig-secret-huggingface",
+		category: "secrets_detection",
+		severity: "high",
+		description: "Hugging Face access token",
+		patterns: [/\bhf_[A-Za-z0-9]{34,}\b/],
+	},
+	{
+		id: "sig-secret-shopify",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Shopify Admin/Storefront token",
+		patterns: [/\bshp(?:at|ss|pa|ca)_[a-fA-F0-9]{32,}\b/],
+	},
+	{
+		id: "sig-secret-linear",
+		category: "secrets_detection",
+		severity: "high",
+		description: "Linear API key",
+		patterns: [/\blin_api_[A-Za-z0-9]{40,}\b/],
+	},
+	{
+		id: "sig-secret-supabase",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Supabase service-role key",
+		patterns: [/\bsbp_[0-9a-fA-F]{40,}\b/],
+	},
+	{
+		id: "sig-secret-planetscale",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "PlanetScale database token",
+		patterns: [/\bpscale_tkn_[A-Za-z0-9_-]{20,}\b/],
+	},
+	{
+		id: "sig-secret-flyio",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Fly.io API token",
+		patterns: [/\bfo1_[A-Za-z0-9_-]{20,}\b/],
+	},
+	{
+		id: "sig-secret-railway",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Railway API token",
+		patterns: [/\b(?:railway|rlwy)_[A-Za-z0-9_-]{20,}\b/],
+	},
+	{
+		id: "sig-secret-render",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Render API key",
+		patterns: [/\brnd_[A-Za-z0-9]{20,}\b/],
+	},
+	{
+		id: "sig-secret-terraform-cloud",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Terraform Cloud / HCP Atlas token",
+		patterns: [/\batlasv1-[A-Za-z0-9]{40,}\b/],
+	},
+	{
+		id: "sig-secret-grafana-sa",
+		category: "secrets_detection",
+		severity: "high",
+		description: "Grafana service-account token",
+		patterns: [/\bglsa_[A-Za-z0-9_]{20,}\b/],
+	},
+	{
+		id: "sig-secret-neon",
+		category: "secrets_detection",
+		severity: "critical",
+		description: "Neon Postgres connection string with embedded credentials",
+		patterns: [/(?:postgres|postgresql):\/\/[^:]+:[^@]+@[^/]*neon\.tech/],
 	},
 ];
 
