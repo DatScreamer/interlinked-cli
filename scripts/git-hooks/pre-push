@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# ============================================================================
+# Pre-push gate — block any push that would land red CI on main
+# ============================================================================
+#
+# Runs the same checks CI runs (typecheck + test), in the same order, so any
+# failure shows up here BEFORE it shows up as a red main commit. CI exists
+# to catch what local checks miss; this hook exists so CI is the safety net,
+# not the primary signal.
+#
+# Activation: `npm run setup-hooks` (or `npm install` via the prepare script)
+# points `core.hooksPath` at scripts/git-hooks/, so every contributor gets
+# the gate without depending on husky/lefthook.
+#
+# Bypass: `git push --no-verify` (use only when you know what you're doing —
+# every bypass risks the very class of failure this hook exists to prevent).
+
+set -uo pipefail
+
+# Skip on pushes to non-main branches and on deletions. Pushes to feature
+# branches still go through CI, and deletions don't introduce new code.
+remote="$1"
+url="$2"
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+
+protected_branch_re='^(main|master)$'
+should_run=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ -z "$local_ref" ] && continue
+	# Deletion: local_sha is all-zeros. Skip.
+	if [ "$local_sha" = "$zero" ]; then continue; fi
+	# Only gate pushes to protected branches.
+	branch_short="${remote_ref##refs/heads/}"
+	if [[ "$branch_short" =~ $protected_branch_re ]]; then
+		should_run=1
+	fi
+done
+
+if [ "$should_run" -eq 0 ]; then
+	exit 0
+fi
+
+# Stash any unstaged work so the gate runs against exactly what's being
+# pushed. `--keep-index` preserves staged-but-uncommitted hunks so we don't
+# silently bypass the gate on a partial commit.
+# If there's nothing to stash, the stash command exits 0 quietly.
+echo "[pre-push] Running typecheck + tests against pushed tree..."
+
+set +e
+npm run typecheck --silent
+tc_status=$?
+set -e
+
+if [ "$tc_status" -ne 0 ]; then
+	echo ""
+	echo "❌ pre-push: typecheck failed (exit $tc_status). Push blocked."
+	echo "   Fix the type errors above before pushing, or bypass with:"
+	echo "     git push --no-verify   (use sparingly — same risk as red CI)"
+	exit 1
+fi
+
+set +e
+npm test --silent
+test_status=$?
+set -e
+
+if [ "$test_status" -ne 0 ]; then
+	echo ""
+	echo "❌ pre-push: tests failed (exit $test_status). Push blocked."
+	echo "   Fix the failing tests above before pushing, or bypass with:"
+	echo "     git push --no-verify   (use sparingly — same risk as red CI)"
+	exit 1
+fi
+
+echo "[pre-push] ✓ typecheck + tests pass — pushing"
+exit 0
