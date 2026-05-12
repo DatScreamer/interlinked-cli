@@ -11,11 +11,17 @@
 //
 // All 81 evaluator.test.ts cases exercise this function.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { isFeatureEnabled, type SharedConfig } from "../../lib/config.js";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import type { CohortManager } from "../cohort.js";
+import {
+	findDirtyDependents,
+	formatDirtyDependentWarning,
+} from "../checks/dirty-dependent.js";
+import { isTestFile } from "../checks/shared.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
 import type { ContentScanRequest } from "../content-scanner/types.js";
 import {
@@ -611,6 +617,18 @@ export function evaluatePreToolUse(
 				"[interlinked] Warning: --no-verify bypasses safety hooks. These hooks exist to prevent broken commits.",
 			);
 		}
+
+		// GUARD: dirty-dependent pre-commit check. When the agent runs
+		// `git commit`, walk staged files' transitive importers through the
+		// project graph; flag any importer that is dirty-but-unstaged. This
+		// catches the failure class that produced commit 7219b48 → red CI:
+		// production code committed alone while its consumer test stayed
+		// in the working tree, so tests passed locally and broke on the
+		// committed snapshot in CI.
+		if (/\bgit\s+commit\b/.test(cmd) && graph && event.cwd) {
+			const dd = collectDirtyDependentWarning(event.cwd, graph);
+			if (dd) warnings.push(dd);
+		}
 		if (
 			/\b(curl|wget)\b/i.test(cmd) &&
 			/https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(cmd) &&
@@ -1046,4 +1064,67 @@ export function evaluatePreToolUse(
 		_escalation: pendingEscalation,
 		_contentScan: pendingContentScan,
 	};
+}
+
+/** List `git diff` paths (relative to `cwd`) for either the index
+ *  (`--cached`) or the working tree (no flag). Returns [] on any error
+ *  (not a git repo, git not installed, etc.) so the dirty-dependent
+ *  check fails open. */
+function listGitDiffPaths(cwd: string, cached: boolean): string[] {
+	try {
+		const args = ["diff", "--name-only"];
+		if (cached) args.push("--cached");
+		const out = execFileSync("git", args, {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: 3000,
+		});
+		return out
+			.split("\n")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	} catch {
+		return [];
+	}
+}
+
+/** Dirty-dependent pre-commit warning entry point. Returns a formatted
+ *  warning string when the staged commit's transitive importers include
+ *  unstaged-dirty files (e.g., a dirty test importing a staged source);
+ *  null when the commit is self-contained or git/graph data is missing.
+ *
+ *  Path normalization: git emits paths relative to the repo root, but
+ *  `ProjectGraph.getDependents` operates on absolute paths and returns
+ *  absolute paths. Convert everything to absolute up front so the BFS
+ *  walk's visited set and `dirtySet` membership are compared on the same
+ *  basis. The output then relativizes for display. */
+function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string | null {
+	const stagedRel = listGitDiffPaths(cwd, true);
+	if (stagedRel.length === 0) return null;
+	const dirtyRel = listGitDiffPaths(cwd, false);
+	if (dirtyRel.length === 0) return null;
+
+	const toAbs = (p: string): string => (isAbsolute(p) ? p : resolve(cwd, p));
+	const toRel = (p: string): string => relative(cwd, p) || p;
+	const stagedAbs = stagedRel.map(toAbs);
+	const dirtyAbs = dirtyRel.map(toAbs);
+
+	const matches = findDirtyDependents({
+		stagedFiles: stagedAbs,
+		unstagedDirtyFiles: dirtyAbs,
+		getImporters: (file) => graph.getDependents(file),
+		isTestFile: (file) => isTestFile(toRel(file)),
+	});
+	if (matches.length === 0) return null;
+
+	// Convert absolute paths back to repo-relative for the human-facing
+	// warning. The pair structure is preserved; only the display strings
+	// change.
+	const display = matches.map((m) => ({
+		...m,
+		staged: toRel(m.staged),
+		dirtyImporter: toRel(m.dirtyImporter),
+	}));
+	return formatDirtyDependentWarning({ matches: display });
 }
