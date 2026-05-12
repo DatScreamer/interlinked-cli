@@ -166,7 +166,12 @@ export function isTestFile(filePath: string): boolean {
 			normalized.includes("/harness/check-registry/") ||
 			normalized.includes("/harness/check-metadata") ||
 			normalized.includes("/harness/checks/ubs-language-specific.") ||
-			normalized.includes("/harness/evaluator/write-content-guards."))
+			normalized.includes("/harness/evaluator/write-content-guards.") ||
+			// signatures.ts holds the very PI rule descriptions (e.g. the
+			// `sig-pi-system-override` description text) that the daemon's
+			// content scan flags. Without this exemption every edit to the
+			// rule catalog gets blocked by its own rules.
+			normalized.includes("/harness/signatures."))
 	) {
 		return true;
 	}

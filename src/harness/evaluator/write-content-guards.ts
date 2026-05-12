@@ -178,8 +178,23 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	const postEditContent =
 		typeof toolInput.new_string === "string" ? toolInput.new_string : content;
 
-	// PreToolUse injection scanning: catch injection content before it hits disk
-	if (content.length > INJECTION_SCAN_MIN_CHARS) {
+	// PreToolUse injection scanning: catch injection content before it hits
+	// disk. Skip test/spec/doc/fixture files — those legitimately contain PI
+	// patterns as positive-case fixtures for the detector itself (the
+	// canonical example is the signatures-test file, which carries the very
+	// strings the prompt_injection rules are written to catch). Without this
+	// exemption the daemon scans the proposed full-file content, trips on the
+	// existing fixtures, and blocks the Edit; meanwhile the cold-fallback
+	// inline path (which has no PI scan) silently allows the same content.
+	// The resulting block/allow flap depends on whether the hook reached the
+	// daemon within its 500 ms socket timeout — to the caller it looks like
+	// non-determinism. Apply the same path-based exemption already used by
+	// `collectContentQualityWarnings` so both code paths agree on these files.
+	const cwd = typeof event.cwd === "string" ? event.cwd : undefined;
+	if (
+		content.length > INJECTION_SCAN_MIN_CHARS &&
+		!isContentScanExempt(filePath, cwd)
+	) {
 		const injectionMatches = scanPromptInjection(content);
 		if (injectionMatches.length > 0) {
 			const highConfidence = injectionMatches.some(
