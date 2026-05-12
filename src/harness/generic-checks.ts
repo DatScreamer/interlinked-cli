@@ -174,6 +174,8 @@ export {
 	checkPackageJsonPublishInvariantsWithPublint,
 	checkPackageJsonScriptPaths,
 } from "./checks/package-json.js";
+// ---- tsconfig-strictness ----
+export { checkTsconfigStrictness } from "./checks/tsconfig-strictness.js";
 // ---- performance ----
 export {
 	checkArrayFromMap,

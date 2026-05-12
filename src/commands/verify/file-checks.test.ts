@@ -112,6 +112,8 @@ function makeEmptyResults(): CodeQualityResults {
 		"floatEquality",
 		"javaOptionalGet",
 		"divisionByVariable",
+		// tsconfig strictness — runs on .json files inside the JSON branch
+		"tsconfigStrictness",
 	];
 	for (const k of keys) r[k] = [];
 	return r;

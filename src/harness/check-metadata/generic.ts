@@ -256,6 +256,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	tsconfig_strictness: {
+		name: "tsconfig Strictness",
+		description:
+			"Detects tsconfig*.json files missing high-leverage strictness flags not covered by `strict: true` (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride, noImplicitReturns, noFallthroughCasesInSwitch). Walks the `extends` chain so a flag set in a base tsconfig counts as present.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	disabled_tests: {
 		name: "Disabled Tests",
 		description: "Detects skipped tests (it.skip, xit, xdescribe)",

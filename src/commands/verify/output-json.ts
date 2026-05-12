@@ -293,6 +293,8 @@ export function outputJson(args: OutputJsonArgs): void {
 		demo_data_unmarked: summarizeWithDetails(cq.demoDataUnmarked),
 		silent_demo_fallback: summarizeWithDetails(cq.silentDemoFallback),
 		demo_runtime_missing_banner: summarizeWithDetails(cq.demoRuntimeMissingBanner),
+		// === tsconfig strictness ===
+		tsconfig_strictness: summarizeWithDetails(cq.tsconfigStrictness),
 	};
 
 	if (suggestions) {

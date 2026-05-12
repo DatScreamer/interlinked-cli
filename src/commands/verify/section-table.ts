@@ -1161,4 +1161,12 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "demo runtime banner mounted",
 		color: "33",
 	},
+	// === tsconfig strictness — surfaces on tsconfig*.json edits ===
+	{
+		label: "tsconfig strictness",
+		key: "tsconfigStrictness",
+		noun: "missing tsconfig strictness flags (noUncheckedIndexedAccess, exactOptionalPropertyTypes, etc.)",
+		passLabel: "tsconfig has all required strictness flags",
+		color: "33",
+	},
 ];

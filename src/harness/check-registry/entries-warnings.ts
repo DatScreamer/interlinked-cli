@@ -97,6 +97,7 @@ import {
 	checkTestMissingSutImport,
 	checkTestNondeterminism,
 	checkTimeFormatLocaleDep,
+	checkTsconfigStrictness,
 	checkUbsStringConcatInLoop,
 	checkUnboundedPromiseAll,
 	checkUncheckedRedirect,
@@ -1252,6 +1253,25 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"A package.json script references a file that doesn't exist. Either create the file at the referenced path, fix the path to point at an existing file, or remove the script if it's no longer needed. The script will fail the moment anyone runs it.",
 		fn: checkPackageJsonScriptPaths,
 		resultsPropName: "packageJsonScriptPaths",
+	},
+	{
+		id: "tsconfig_strictness",
+		phase: "post",
+		name: "tsconfig Strictness",
+		description:
+			"Detects tsconfig*.json files missing high-leverage strictness flags (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride, noImplicitReturns, noFallthroughCasesInSwitch). None of these are implied by `strict: true`; each catches a documented bug class the type system would otherwise let through.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Add the named strictness flag(s) to `compilerOptions` in your tsconfig and set them to `true`. Each finding includes the one-line rationale for the specific flag. `strict: true` does NOT cover any of the five flags this check enforces — they need to be set explicitly. If you genuinely cannot enable a flag yet, set it to `false` explicitly in the tsconfig with a comment explaining why (this check looks for absence, not the false value).",
+		fn: checkTsconfigStrictness,
+		resultsPropName: "tsconfigStrictness",
+		// The detector itself short-circuits on basename and `compilerOptions`
+		// presence; this keyword gate avoids opening the function on the
+		// thousands of unrelated .json files an edit-stream can touch.
+		content_keywords: ["compilerOptions", "extends"],
 	},
 	// ========================================================================
 	// Batch 1: agent-laziness checks (11 entries)

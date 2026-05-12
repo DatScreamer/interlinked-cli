@@ -165,6 +165,8 @@ function emptyCq(): CodeQualityResults {
 		"demoDataUnmarked",
 		"silentDemoFallback",
 		"demoRuntimeMissingBanner",
+		// tsconfig strictness
+		"tsconfigStrictness",
 	] as const;
 	const out = {} as Record<string, []>;
 	for (const k of keys) out[k] = [];

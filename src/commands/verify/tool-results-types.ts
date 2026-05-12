@@ -266,6 +266,8 @@ export interface CodeQualityResults {
 	silentDemoFallback: CodeQualityIssue[];
 	/** Root layout imports demo runtime but doesn't render DemoBanner. */
 	demoRuntimeMissingBanner: CodeQualityIssue[];
+	/** tsconfig*.json missing high-leverage strictness flags not implied by `strict: true`. */
+	tsconfigStrictness: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -436,6 +438,8 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"demoDataUnmarked",
 	"silentDemoFallback",
 	"demoRuntimeMissingBanner",
+	// tsconfig strictness
+	"tsconfigStrictness",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

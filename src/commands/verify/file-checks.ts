@@ -122,6 +122,7 @@ import {
 	checkThrowLiteral,
 	checkTimeFormatLocaleDep,
 	checkTlsVerifyDisabled,
+	checkTsconfigStrictness,
 	checkChildProcessExecUserInput,
 	checkCookieMissingSecurityFlags,
 	checkLoggerFormatUserInput,
@@ -279,6 +280,14 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 				message: msg.slice(0, JSON_PARSE_ERR_SLICE),
 			});
 		}
+		// tsconfig*.json strictness check — runs BEFORE the early return so
+		// tsconfig files surface in `interlinked verify` the same way they
+		// surface at PostToolUse. The detector handles its own basename
+		// filter (`tsconfig.json` / `tsconfig.*.json`) and node_modules skip
+		// internally, so we can call it unconditionally for any .json file.
+		r.tsconfigStrictness.push(
+			...toIssues("tsconfig_strictness", relPath, checkTsconfigStrictness(content, file)),
+		);
 		return;
 	}
 
