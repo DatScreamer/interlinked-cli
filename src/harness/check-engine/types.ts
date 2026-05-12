@@ -25,7 +25,13 @@ export type ToolId =
 	| "hadolint"
 	| "taplo"
 	| "swiftlint"
-	| "swift-build";
+	| "swift-build"
+	// Project-local check: `node scripts/check-docs.mjs` validates that
+	// `gen:*` markers in README/landing/etc. match the source-of-truth
+	// counts (rule_count, runner_count, …). Mirrors the same CI step
+	// (`npm run docs:check`) and the pre-push hook. Drift here is what
+	// caused the red-CI incident on commit 5452fac.
+	| "docs-check";
 
 /** A single finding from any check tool. */
 export interface CheckResult {

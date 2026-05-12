@@ -88,6 +88,17 @@ const TOOL_SPECS: ToolSpec[] = [
 		configFiles: ["package.json"],
 		requiresConfig: true,
 	},
+	{
+		// docs:check is a project-local Node script — `node scripts/check-docs.mjs`.
+		// "Available" means: Node binary present AND the script file exists at
+		// project root. Version probe is just `node --version` since the script
+		// itself doesn't have a version string.
+		id: "docs-check",
+		versionCmd: ["node", "--version"],
+		versionRegex: /v?(\d+\.\d+\.\d+)/,
+		configFiles: ["scripts/check-docs.mjs"],
+		requiresConfig: true,
+	},
 	// --- Python ---
 	{
 		id: "mypy",

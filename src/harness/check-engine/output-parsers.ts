@@ -182,6 +182,46 @@ export function parseNpmAuditJson(output: string): AuditResult | null {
 }
 
 // -------------------------------------------
+// docs:check (node scripts/check-docs.mjs)
+// -------------------------------------------
+// Format (one block per drift, lines are NOT JSON):
+//   [docs:fail] /abs/path/to/file: <marker> drift
+//     expected: 106
+//     actual:   105
+//   ...
+//   N doc-accuracy failure(s). Run 'npm run docs:build' to ...
+//
+// Each `[docs:fail]` line becomes one CheckResult. The following
+// `expected:` / `actual:` lines are folded into the message so the
+// drift is visible in summary output. The trailing summary line is
+// ignored — it's a count, not a finding.
+
+export function parseDocsCheckOutput(output: string): CheckResult[] {
+	const results: CheckResult[] = [];
+	const lines = output.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const header = lines[i].match(/^\[docs:fail\]\s+(.+?):\s*(.+)$/);
+		if (!header) continue;
+		const file = header[1];
+		let message = header[2];
+		// Fold expected/actual lines into the message when present.
+		const exp = lines[i + 1]?.match(/^\s*expected:\s*(.+)$/);
+		const act = lines[i + 2]?.match(/^\s*actual:\s*(.+)$/);
+		if (exp && act) {
+			message = `${message} (expected ${exp[1].trim()}, actual ${act[1].trim()})`;
+		}
+		results.push({
+			tool: "docs-check",
+			severity: "error",
+			file,
+			line: 0,
+			message,
+		});
+	}
+	return results;
+}
+
+// -------------------------------------------
 // osv-scanner (osv-scanner --format=json)
 // -------------------------------------------
 // JSON format (simplified):

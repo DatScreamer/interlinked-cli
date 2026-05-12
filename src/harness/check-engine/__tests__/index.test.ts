@@ -9,6 +9,7 @@ import {
 	parseBiomeOutput,
 	parseCargoJson,
 	parseClangTidyOutput,
+	parseDocsCheckOutput,
 	parseEslintOutput,
 	parseGccOutput,
 	parseGitleaksJson,
@@ -594,6 +595,61 @@ describe("parseOxlintJson", () => {
 
 	it("returns empty when diagnostics is missing", () => {
 		expect(parseOxlintJson(JSON.stringify({}))).toHaveLength(0);
+	});
+});
+
+// -------------------------------------------
+// parseDocsCheckOutput
+// -------------------------------------------
+
+describe("parseDocsCheckOutput", () => {
+	it("returns empty when output reports clean", () => {
+		expect(parseDocsCheckOutput("docs OK (106 rules · 5 runners · 3 modes)\n")).toHaveLength(
+			0,
+		);
+		expect(parseDocsCheckOutput("")).toHaveLength(0);
+	});
+
+	it("parses a single drift block into one CheckResult", () => {
+		const output =
+			"[docs:fail] /repo/landing/public/index.html: gen:builtin_rule_count drift\n" +
+			"  expected: 106\n" +
+			"  actual:   105\n" +
+			"\n" +
+			"1 doc-accuracy failure(s).\n";
+		const results = parseDocsCheckOutput(output);
+		expect(results).toHaveLength(1);
+		expect(results[0].tool).toBe("docs-check");
+		expect(results[0].severity).toBe("error");
+		expect(results[0].file).toBe("/repo/landing/public/index.html");
+		expect(results[0].message).toMatch(/gen:builtin_rule_count drift/);
+		expect(results[0].message).toMatch(/expected 106/);
+		expect(results[0].message).toMatch(/actual 105/);
+	});
+
+	it("parses multiple drift blocks into one CheckResult each", () => {
+		const output =
+			"[docs:fail] /repo/landing/public/index.html: gen:builtin_rule_count drift\n" +
+			"  expected: 106\n" +
+			"  actual:   105\n" +
+			"[docs:fail] /repo/README.md: gen:builtin_rule_count drift\n" +
+			"  expected: 106\n" +
+			"  actual:   105\n" +
+			"\n" +
+			"2 doc-accuracy failure(s).\n";
+		const results = parseDocsCheckOutput(output);
+		expect(results).toHaveLength(2);
+		expect(results[0].file).toBe("/repo/landing/public/index.html");
+		expect(results[1].file).toBe("/repo/README.md");
+	});
+
+	it("ignores lines that aren't [docs:fail] headers", () => {
+		const output =
+			"some preamble\n" +
+			"npm WARN deprecated\n" +
+			"  expected: 7   (orphan expected line — no header)\n" +
+			"1 doc-accuracy failure(s). Run 'npm run docs:build' to ...\n";
+		expect(parseDocsCheckOutput(output)).toHaveLength(0);
 	});
 });
 

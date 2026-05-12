@@ -181,6 +181,19 @@ const TOOLS_TO_RUN: readonly ToolSpec[] = [
 		severity: "33",
 		cmd: ["npx", "knip", "--no-progress", "--reporter", "json"],
 	},
+	{
+		// docs:check validates that `gen:*` markers in landing/README/etc.
+		// agree with the source-of-truth counts (rule_count, runner_count,
+		// node_min_version, …). Mirrors the same step CI runs and the
+		// pre-push hook. A drift here was the root cause of the red-CI
+		// incident on commit 5452fac.
+		id: "docs-check",
+		label: "docs:check (gen-marker drift)",
+		passLabel: "all gen markers agree with source",
+		noun: "drifts",
+		severity: "31",
+		cmd: ["node", "scripts/check-docs.mjs"],
+	},
 ];
 
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
@@ -692,6 +705,7 @@ async function streamExternalTools(args: StreamExternalToolsArgs): Promise<void>
 		parseGitleaksJson,
 		parseOxlintJson,
 		parseNpmAuditJson,
+		parseDocsCheckOutput,
 	} = await import("../harness/check-engine/output-parsers.js");
 
 	const toolParsers: Record<string, (output: string) => CheckResult[]> = {
@@ -702,6 +716,7 @@ async function streamExternalTools(args: StreamExternalToolsArgs): Promise<void>
 		knip: (out) => parseKnipJson(out),
 		semgrep: (out) => parseSemgrepJson(out, cwd),
 		gitleaks: (out) => parseGitleaksJson(out),
+		"docs-check": (out) => parseDocsCheckOutput(out),
 	};
 
 	const availableTools = TOOLS_TO_RUN.filter((tool) => {
