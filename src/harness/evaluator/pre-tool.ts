@@ -101,6 +101,17 @@ function getProjectSetupWarnings(cwd: string): string[] {
 	return _projectSetupWarnings;
 }
 
+/** Public — invalidate the project-setup-warning cache. Called by the
+ *  SessionStart auto-strip after rewriting `.claude/settings*.json`, so
+ *  the next PreToolUse re-reads the file and stops emitting warnings
+ *  for entries that have just been stripped. Without this, the daemon
+ *  would keep serving the stale warning text for the remainder of its
+ *  process lifetime. */
+export function resetProjectSetupWarningsCache(): void {
+	_projectSetupChecked = false;
+	_projectSetupWarnings = [];
+}
+
 /** Boolean wrapper: delegates to quality-checks.ts signature scanner. */
 function containsSecrets(content: string): boolean {
 	if (!content || content.length < SECRETS_MIN_CHARS) return false;

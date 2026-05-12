@@ -216,7 +216,9 @@ describe("checkClaudeSettingsPermissions", () => {
 		);
 		writeFileSync(
 			join(tmp, ".claude", "settings.local.json"),
-			JSON.stringify({ permissions: { allow: ['Bash(SESS="x *)'] } }),
+			// 2 opens, 1 close — depth = 1, mismatched parens (mirrors the
+			// real-world `Bash(MARKER=$(date *)` shape that bit us on main).
+			JSON.stringify({ permissions: { allow: ["Bash(SESS=$(date *)"] } }),
 		);
 		const issues = checkClaudeSettingsPermissions(tmp);
 		expect(issues).toHaveLength(1);

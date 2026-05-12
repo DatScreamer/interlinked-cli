@@ -16,8 +16,8 @@
 // `interlinked doctor` (read-only) and `interlinked doctor --fix`
 // (rewrite settings file with offenders removed).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 export type PermissionBucket = "allow" | "deny" | "ask";
@@ -126,10 +126,23 @@ export function suggestRuleFix(rule: string, reason: MalformedRuleReason | undef
  *  validation — that's Claude Code's job. */
 const RULE_TOOL_PREFIX_RE = /^[A-Za-z][\w]*\(/;
 
+/** Classify a single rule string. Returns the reason if malformed,
+ *  null if the rule looks well-formed. Single source of truth for
+ *  the three detected classes; both `findMalformedRulesIn` (in-memory
+ *  scan, used by PreToolUse content guard) and `validateSettingsFile`
+ *  (on-disk scan, used by audit-time checks) call through this so the
+ *  two paths can never disagree on what counts as malformed. */
+export function classifyRule(rule: string): MalformedRuleReason | null {
+	if (rule.trim() === "") return "empty_rule";
+	if (!RULE_TOOL_PREFIX_RE.test(rule)) return "missing_tool_prefix";
+	if (!isParenBalanced(rule)) return "paren_imbalance";
+	return null;
+}
+
 /** Scan a parsed settings-JSON object and return every malformed
- *  rule it contains. Mirror of `validateSettingsFile`'s logic but
- *  for an in-memory object — used by the PreToolUse content guard
- *  to inspect a proposed write BEFORE it lands on disk. */
+ *  rule it contains. Used by the PreToolUse content guard to inspect
+ *  a proposed write BEFORE it lands on disk. Classification is
+ *  shared with `validateSettingsFile` via `classifyRule`. */
 export function findMalformedRulesIn(parsedJson: unknown): MalformedRule[] {
 	const out: MalformedRule[] = [];
 	if (typeof parsedJson !== "object" || parsedJson === null) return out;
@@ -142,17 +155,8 @@ export function findMalformedRulesIn(parsedJson: unknown): MalformedRule[] {
 		for (let i = 0; i < list.length; i++) {
 			const rule = list[i];
 			if (typeof rule !== "string") continue;
-			if (rule.trim() === "") {
-				out.push({ bucket, index: i, rule, reason: "empty_rule" });
-				continue;
-			}
-			if (!RULE_TOOL_PREFIX_RE.test(rule)) {
-				out.push({ bucket, index: i, rule, reason: "missing_tool_prefix" });
-				continue;
-			}
-			if (!isParenBalanced(rule)) {
-				out.push({ bucket, index: i, rule, reason: "paren_imbalance" });
-			}
+			const reason = classifyRule(rule);
+			if (reason !== null) out.push({ bucket, index: i, rule, reason });
 		}
 	}
 	return out;
@@ -227,47 +231,150 @@ export function validateSettingsFile(filePath: string): SettingsValidationResult
 			const rule = list[i];
 			if (typeof rule !== "string") continue;
 			result.totalRules++;
-			if (!isParenBalanced(rule)) {
-				result.malformed.push({ bucket, index: i, rule });
+			const reason = classifyRule(rule);
+			if (reason !== null) {
+				result.malformed.push({ bucket, index: i, rule, reason });
 			}
 		}
 	}
 	return result;
 }
 
+/** Audit record for one stripped rule. Written one-per-line to the
+ *  JSONL log so an external consumer can grep / tail without parsing
+ *  a multi-line shape. Schema is stable — adding fields is fine, but
+ *  renaming or removing existing fields is a breaking change to log
+ *  consumers. */
+export interface StripAuditRecord {
+	timestamp: string;
+	file: string;
+	bucket: PermissionBucket;
+	index: number;
+	rule: string;
+	reason: MalformedRuleReason;
+}
+
+/** Public — rich return shape for `stripMalformedRulesAudited`. The
+ *  legacy number-returning `stripMalformedRules` is preserved as a
+ *  thin wrapper around this. */
+export interface StripResult {
+	stripped: number;
+	entries: StripAuditRecord[];
+}
+
 /**
- * Rewrite a settings file with malformed permission rules removed.
- * Returns the count actually stripped. Preserves field order and the
- * file's existing indentation (2-space JSON, matching what Claude Code
- * itself writes). No-op when there are no offenders, so it's safe to
- * call unconditionally from `--fix`.
+ * Rewrite a settings file with malformed permission rules removed and
+ * return every stripped entry as a `StripAuditRecord`. Classification
+ * shares `classifyRule` with `findMalformedRulesIn` /
+ * `validateSettingsFile`, so empty-string and missing-`Tool(`-prefix
+ * rules are stripped here too (not only paren imbalances).
+ *
+ * Preserves field order and the file's existing 2-space indentation.
+ * No-op when there are no offenders.
  */
-export function stripMalformedRules(filePath: string): number {
-	if (!existsSync(filePath)) return 0;
+export function stripMalformedRulesAudited(filePath: string): StripResult {
+	const result: StripResult = { stripped: 0, entries: [] };
+	if (!existsSync(filePath)) return result;
 	let parsed: { permissions?: Record<PermissionBucket, unknown> };
 	try {
-		parsed = JSON.parse(readFileSync(filePath, "utf-8"));
+		parsed = JSON.parse(readFileSync(filePath, "utf-8")) as {
+			permissions?: Record<PermissionBucket, unknown>;
+		};
 	} catch {
-		return 0;
+		return result;
 	}
 	const perms = parsed?.permissions;
-	if (!perms || typeof perms !== "object") return 0;
+	if (!perms || typeof perms !== "object") return result;
 
-	let stripped = 0;
+	const now = new Date().toISOString();
 	for (const bucket of ["allow", "deny", "ask"] as const) {
 		const list = perms[bucket];
 		if (!Array.isArray(list)) continue;
-		const cleaned = list.filter((r) => {
-			if (typeof r !== "string") return true;
-			if (isParenBalanced(r)) return true;
-			stripped++;
-			return false;
-		});
-		if (stripped > 0) perms[bucket] = cleaned;
+		const cleaned: unknown[] = [];
+		for (let i = 0; i < list.length; i++) {
+			const r = list[i];
+			if (typeof r !== "string") {
+				cleaned.push(r);
+				continue;
+			}
+			const reason = classifyRule(r);
+			if (reason === null) {
+				cleaned.push(r);
+				continue;
+			}
+			result.entries.push({
+				timestamp: now,
+				file: filePath,
+				bucket,
+				index: i,
+				rule: r,
+				reason,
+			});
+			result.stripped++;
+		}
+		if (result.stripped > 0) perms[bucket] = cleaned;
 	}
 
-	if (stripped > 0) {
+	if (result.stripped > 0) {
 		writeFileSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 	}
-	return stripped;
+	return result;
+}
+
+/**
+ * Legacy thin wrapper — returns just the stripped count. Kept so the
+ * existing `interlinked doctor --fix` call site stays single-line.
+ * New callers should use `stripMalformedRulesAudited` directly.
+ */
+export function stripMalformedRules(filePath: string): number {
+	return stripMalformedRulesAudited(filePath).stripped;
+}
+
+/** Append each strip-audit record to the given JSONL log path, one
+ *  per line. Creates the parent directory if needed. Safe to call
+ *  with an empty `entries` array (no-op). */
+export function appendStripAuditLog(logPath: string, entries: readonly StripAuditRecord[]): void {
+	if (entries.length === 0) return;
+	mkdirSync(dirname(logPath), { recursive: true });
+	const lines = entries.map((e) => JSON.stringify(e)).join("\n");
+	appendFileSync(logPath, `${lines}\n`, "utf-8");
+}
+
+/** Aggregate strip result across multiple settings paths. Surfaces a
+ *  total + the per-path breakdown so callers can render both. */
+export interface AutoStripResult {
+	totalStripped: number;
+	entries: StripAuditRecord[];
+}
+
+/**
+ * Run `stripMalformedRulesAudited` across every project + user-scope
+ * Claude settings path, appending the union of stripped entries to
+ * `auditLogPath`. The default `auditLogPath` lives under `.interlinked/`
+ * so it travels with the project. Returns the aggregated result for
+ * the caller to surface (e.g. a SessionStart warning).
+ */
+export function autoStripAllScopes(
+	cwd: string,
+	auditLogPath?: string,
+): AutoStripResult {
+	const out: AutoStripResult = { totalStripped: 0, entries: [] };
+	const paths = defaultSettingsPaths(cwd);
+	for (const p of paths) {
+		const r = stripMalformedRulesAudited(p);
+		if (r.stripped > 0) {
+			out.totalStripped += r.stripped;
+			out.entries.push(...r.entries);
+		}
+	}
+	if (out.entries.length > 0 && auditLogPath) {
+		appendStripAuditLog(auditLogPath, out.entries);
+	}
+	return out;
+}
+
+/** Default audit log path for an `autoStripAllScopes` invocation in a
+ *  project. Co-located with other harness state under `.interlinked/`. */
+export function defaultStripAuditLogPath(cwd: string): string {
+	return join(cwd, ".interlinked", "permission-rule-strips.jsonl");
 }

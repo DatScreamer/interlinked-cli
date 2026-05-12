@@ -110,6 +110,12 @@ import {
 	runProjectWideChecksAsync,
 	runQualityChecks,
 } from "./quality-checks.js";
+import {
+	autoStripAllScopes,
+	defaultStripAuditLogPath,
+	describeReason as describeMalformedReason,
+} from "../lib/settings-validator.js";
+import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import {
 	countCodeFilesEdited,
@@ -668,7 +674,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 	// Update cohort based on lifecycle events
 	switch (event.hook_event) {
-		case "SessionStart":
+		case "SessionStart": {
 			cohort.agentJoined(event);
 			log(`Agent joined: ${event.agent_name || event.session_id} (${event.agent_source})`);
 			// Recency-weighted check depth (Mythos Phase 4): refresh the
@@ -701,7 +707,49 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					);
 				}
 			}
+			// Auto-strip malformed permission rules from .claude/settings*.json
+			// (project + user scope), with an audit log so every removed entry
+			// is visible. The agent-write path is already blocked at PreToolUse
+			// (write-content-guards.ts), but Claude Code's "Always allow" UI
+			// writes settings.json internally without firing a tool hook — that
+			// path is invisible to PreToolUse, so SessionStart is the only
+			// surface where we can clean it. JSONL audit at
+			// .interlinked/permission-rule-strips.jsonl.
+			try {
+				const auditPath = defaultStripAuditLogPath(CWD);
+				const stripResult = autoStripAllScopes(CWD, auditPath);
+				if (stripResult.totalStripped > 0) {
+					// Invalidate the project-setup-warning cache so the next
+					// PreToolUse re-reads settings.json and stops emitting
+					// `[interlinked:setup]` for the entries just stripped.
+					// Without this, the daemon serves stale warning text for
+					// the rest of its process lifetime even though the file
+					// is now clean.
+					resetProjectSetupWarningsCache();
+					const previews = stripResult.entries.slice(0, 5).map((e) => {
+						const file = e.file.replace(/^.+?(\.claude\/.+)$/, "$1");
+						return `  - ${file} permissions.${e.bucket}[${e.index}] = ${JSON.stringify(e.rule)} (${describeMalformedReason(e.reason)})`;
+					});
+					const more =
+						stripResult.entries.length > previews.length
+							? `\n  ...and ${stripResult.entries.length - previews.length} more`
+							: "";
+					const relAudit = auditPath.startsWith(`${CWD}/`)
+						? auditPath.slice(CWD.length + 1)
+						: auditPath;
+					const warning =
+						`[interlinked:permission-strip] Auto-stripped ${stripResult.totalStripped} malformed permission rule(s) from Claude Code settings file(s) (full audit at ${relAudit}):\n${previews.join("\n")}${more}\n` +
+						"These rules came from Claude Code's permission UI; the upstream extractor occasionally emits bad parens / empty / missing-Tool() entries. The agent-write path is already blocked at PreToolUse — this strip handles the UI-write path that is invisible to hooks.";
+					log(
+						`Auto-stripped ${stripResult.totalStripped} malformed permission rule(s); audit at ${auditPath}`,
+					);
+					return { decision: "allow", warnings: [warning] };
+				}
+			} catch (err) {
+				log(`Permission-rule auto-strip failed (non-fatal): ${err}`);
+			}
 			break;
+		}
 		case "SessionEnd":
 		case "Stop": {
 			// Build turn-end summary before cleanup (trajectory-level analysis)
