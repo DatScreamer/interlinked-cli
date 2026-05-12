@@ -26,8 +26,14 @@ describe("write command module", () => {
 
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
 const CLI_ENTRY = resolve(CLI_ROOT, "src/index.ts");
-// Each test gets its own subdir under this root so parallel describes
-// don't race on shared paths. Teardown happens once at the end.
+// Fixtures live inside src/lib/_write_integration/ because the diff-overlay
+// tsc gate these tests exercise resolves paths against the project's
+// tsconfig — paths outside src/ exit with the gate's `exit=2` (no matching
+// program). The `_` prefix matches tsconfig.json's exclude pattern
+// `src/lib/_*` so global `tsc --noEmit` skips them, and the same pattern
+// is gitignored (.gitignore) so create/destroy events don't surface in
+// SCM. Empirical: moving to `os.tmpdir()` was attempted and broke 3 tests
+// at the gate; the scope constraint is real.
 const FIXTURE_ROOT = resolve(CLI_ROOT, "src/lib/_write_integration");
 
 let fixtureCounter = 0;

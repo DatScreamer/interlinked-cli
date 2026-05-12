@@ -58,6 +58,28 @@ reports/
 # Third-party reference repos cloned for design/research only — never committed.
 reference-repos/
 
+# Vitest integration-test fixtures — created/destroyed by tests, should
+# never surface in git status or VS Code SCM.
+#
+# They live in src/lib/ (not os.tmpdir()) because the diff-overlay tsc
+# gate exercised by src/commands/write.test.ts + src/commands/__tests__/
+# multi-edit.test.ts resolves paths against the project's tsconfig.
+# Empirically, moving to tmpdir produced exit=2 gate failures: the
+# in-memory tsc Program rejects paths outside the tsconfig include scope.
+#
+# tsconfig.json already excludes `src/lib/_*` from global `tsc --noEmit`.
+# These entries are belt-and-suspenders so git also doesn't track them —
+# eliminates the create/delete flicker in SCM while keeping fixtures in
+# the tsc/biome scope the gate requires.
+#
+# If you add a new vitest integration fixture and it starts flickering in
+# git status, add its specific name here (mirror the explicitness of the
+# entries below — don't use blanket `src/lib/_*` because that pattern
+# also matches `src/lib/__tests__/`).
+src/lib/_gate_inline_fixture.ts
+src/lib/_multi_edit_plumbing_*.ts
+src/lib/_write_integration/
+
 # Discovery / scratch scripts in scripts/ are local-only by default. Files
 # already tracked here (build/CI: copy-runtime-assets, generate-docs,
 # check-docs, audit-receipts, etc.) keep being tracked — gitignore only
