@@ -1,0 +1,134 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Interlinked Cedar schema extension
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Extends Sondera's base.cedarschema with fields needed by /enforce-distilled
+// policies that depend on session state Sondera's vanilla schema doesn't
+// track. Used by Pass 2 Cedar transpilations emitted to
+// `.interlinked/policies/<group_id>.interlinked.cedar` (the per-group
+// extended-schema companion to `<group_id>.cedar`).
+//
+// ─── Compatibility ─────────────────────────────────────────────────────────
+//
+// Engines that support these extensions must populate the listed fields when
+// building the Cedar request. The Interlinked harness does so via:
+//   - SessionTrajectory.active_skills (set by `interlinked skill enter <name>`)
+//   - SessionTrajectory.commands_run (accumulated across tool calls)
+//   - SessionTrajectory.files_read   (accumulated across tool calls)
+//
+// Engines without these extensions (vanilla Sondera) MUST reject any policy
+// file that uses the extended fields (don't silently fall back to evaluating
+// without them — that would change the policy's semantics). Policies needing
+// these fields carry `@requires_extension("<feature>")` annotations; engines
+// should error out at load if they don't recognise the feature.
+//
+// ─── Field additions ───────────────────────────────────────────────────────
+//
+// Extensions are additive. Existing types from base.cedarschema (Trajectory,
+// File, ShellCommandContext, etc.) gain extra optional fields. Sondera's
+// types are reused; no replacement.
+
+namespace Interlinked {
+
+    // ─── Skill-scope axis ──────────────────────────────────────────────────
+    //
+    // The current skill scope for the session. Populated by the harness when
+    // the agent runs `interlinked skill enter <name>` (typically in a slash-
+    // command preamble) and cleared by `interlinked skill leave <name>`.
+    //
+    // Used in policies with `active_when.skill = "<name>"` populated by the
+    // distiller per §7 of the /enforce skill (skill-body imperatives are
+    // scope-gated to their own skill).
+    //
+    // Empty string when no skill is active.
+
+    type SkillScopeExtension = {
+        skill_active: String,
+    };
+
+    // ─── Trajectory state axis ─────────────────────────────────────────────
+    //
+    // Extends Sondera's Trajectory entity with the accumulated command and
+    // file history needed by sequential-precondition policies ("verify hash
+    // before analysis", "read file before edit", etc.). The extension entity
+    // is a child of base Trajectory; policies reference it via:
+    //
+    //   resource is ExtendedTrajectory
+    //
+    // or, equivalently, by referencing the extended fields directly on a
+    // base Trajectory resource — engines that recognise the extension
+    // resolve the fields on the parent.
+
+    entity ExtendedTrajectory in [Trajectory] = {
+        commands_run: Set<String>,   // Shell commands seen this session.
+        files_read:   Set<String>,   // File paths read this session.
+        tools_used:   Set<String>,   // Tool names invoked this session.
+    };
+
+}
+
+// ─── Annotation extensions ─────────────────────────────────────────────────
+//
+// Cedar's standard decision set is binary: permit | forbid. Interlinked
+// engines extend that to a three-state decision (warn | block | ask) using
+// `@action_on_violation`. Vanilla Cedar engines see this annotation as a
+// no-op and treat the policy as `forbid` — strictly safer (over-blocks
+// rather than under-blocks), so the fallback is acceptable but loud.
+//
+//   @action_on_violation("warn")
+//      The policy matches but does not block. Engines emit a PostToolUse
+//      advisory; the tool call proceeds. Used for sequential preconditions
+//      where blocking would be too strict and the agent benefits from
+//      seeing the policy text on the next turn.
+//
+//   @action_on_violation("block")
+//      The policy matches and blocks the tool call (PreToolUse). Default
+//      and matches standard Cedar `forbid` semantics.
+//
+//   @action_on_violation("ask")
+//      Reserved. Currently not emitted by the distiller (see /enforce §15.7).
+//      Engines that support user-prompt confirmation may opt in via config.
+//
+// ─── @requires_extension ───────────────────────────────────────────────────
+//
+// Declares that a policy uses an Interlinked schema extension. Engines that
+// don't support the named extension MUST reject the file at load. Engines
+// MUST NOT silently evaluate the policy without the field — that changes
+// semantics (the policy would always fire, since the missing field is
+// effectively undefined).
+//
+//   @requires_extension("skill_scope")     — uses context.skill_active
+//   @requires_extension("commands_run")    — uses resource.commands_run
+//   @requires_extension("files_read")      — uses resource.files_read
+//   @requires_extension("tools_used")      — uses resource.tools_used
+//
+// Multiple `@requires_extension` annotations on one policy are AND-ed; the
+// engine must support all of them.
+//
+// ─── @source_quote / @source_file / @source_lines ──────────────────────────
+//
+// Provenance back to the markdown imperative. Used by `/enforce show <id>`,
+// audit tools, and IDE integrations to surface the source quote alongside
+// the policy evaluation result. Plain text; no Cedar semantics.
+//
+//   @source_file("path/relative/to/repo/root")
+//   @source_lines("12,12")  or  @source_lines("12,18")
+//   @source_quote("verbatim text from the source markdown")
+//
+// ─── @confidence ───────────────────────────────────────────────────────────
+//
+// Set when regex → Cedar `like` translation was lossy. Engines may use this
+// to weight or rank verdicts; standard Cedar treats it as a no-op.
+//
+//   @confidence("approximate")  — translation loses precision (e.g.,
+//      negative lookahead expanded into a positive-match-with-negated-
+//      exception structure that may produce false negatives on uncommon
+//      flag arrangements)
+//   @confidence("exact")        — translation is lossless (no regex
+//      features used beyond what `like` supports)
+//
+// Default (no annotation): "exact".
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// End of extension schema.
+// ═══════════════════════════════════════════════════════════════════════════

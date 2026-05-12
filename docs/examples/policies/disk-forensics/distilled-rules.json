@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "distilled_at": "2026-05-12T00:00:00Z",
+  "distiller": "skill:enforce@2",
+  "source_hashes": {
+    "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "rules": [
+    {
+      "id": "enforce-skill-disk-forensics-mount-readonly",
+      "enabled": true,
+      "trigger": "PreToolUse",
+      "tool_match": ["Bash"],
+      "action": "block",
+      "patterns": [
+        {
+          "field": "command",
+          "regex": "^\\s*mount\\b(?!.*-o\\s+[^&|;]*\\bro\\b)(?!.*\\s-r\\b)(?!.*--read-only\\b)"
+        }
+      ],
+      "reason": "BLOCKED by disk-forensics SKILL.md:16 — \"Mount everything read-only.\"",
+      "suggestion": "Add `-o ro` (or `-r` / `--read-only`) to mount disk images read-only.",
+      "severity": "high",
+      "category": "distilled-from-md",
+      "keywords": ["mount"],
+      "active_when": { "skill": "disk-forensics" },
+      "source": {
+        "group_id": "skill:disk-forensics",
+        "group_label": "skill:disk-forensics",
+        "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+        "lines": [16, 16],
+        "quote": "Mount everything read-only",
+        "lexical_marker": "everything",
+        "marker_class": "block-positive"
+      },
+      "companions": {
+        "policy_md": ".interlinked/policies/skill-disk-forensics.policy.md#P2",
+        "cedar": ".interlinked/policies/skill-disk-forensics.cedar#enforce-skill-disk-forensics-mount-readonly"
+      },
+      "distilled_action_reason": "positive imperative 'everything read-only' over concrete tool ('mount') → block-on-inverse-flag-missing; FP rate is low because mount calls without -o ro / -r genuinely violate the principle.",
+      "confidence": 0.92
+    },
+    {
+      "id": "enforce-skill-disk-forensics-no-evidence-writes",
+      "enabled": true,
+      "trigger": "PreToolUse",
+      "tool_match": ["Edit", "Write", "MultiEdit", "apply_patch"],
+      "action": "block",
+      "patterns": [
+        {
+          "field": "file_path",
+          "regex": "\\.(E0[12]|dd|raw|vmdk|vhd|aff[2-4]?)$|(^|/)evidence/"
+        }
+      ],
+      "reason": "BLOCKED by disk-forensics SKILL.md:14,18 — \"Always work on copies, never originals\" / \"Preserve timestamps — never modify source evidence.\"",
+      "suggestion": "Work on a copy. Use `dd if=<orig> of=<copy>` or `ewfacquire` to produce a working image first.",
+      "severity": "critical",
+      "category": "distilled-from-md",
+      "active_when": { "skill": "disk-forensics" },
+      "source": {
+        "group_id": "skill:disk-forensics",
+        "group_label": "skill:disk-forensics",
+        "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+        "lines": [14, 18],
+        "quote": "Always work on copies, never originals",
+        "lexical_marker": "never",
+        "marker_class": "block-direct"
+      },
+      "companions": {
+        "policy_md": ".interlinked/policies/skill-disk-forensics.policy.md#P1",
+        "cedar": ".interlinked/policies/skill-disk-forensics.cedar#enforce-skill-disk-forensics-no-evidence-writes"
+      },
+      "distilled_action_reason": "lexical 'never' + concrete file_path glob → block per §5a",
+      "confidence": 0.95
+    },
+    {
+      "id": "enforce-skill-disk-forensics-no-evidence-writes-shell",
+      "enabled": true,
+      "trigger": "PreToolUse",
+      "tool_match": ["Bash"],
+      "action": "block",
+      "patterns": [
+        {
+          "field": "command",
+          "regex": "\\b(dd\\s+[^|;&]*of=|>\\s*|>>\\s*)\\S*\\.(E01|dd|raw|vmdk|vhd|aff[2-4]?)\\b"
+        }
+      ],
+      "reason": "BLOCKED by disk-forensics SKILL.md:14,18 — shell-level write to a disk image path violates \"Always work on copies, never originals.\"",
+      "suggestion": "Pick a different output path (a working copy), not the original image.",
+      "severity": "critical",
+      "category": "distilled-from-md",
+      "keywords": ["dd"],
+      "active_when": { "skill": "disk-forensics" },
+      "source": {
+        "group_id": "skill:disk-forensics",
+        "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+        "lines": [14, 18],
+        "quote": "Always work on copies, never originals",
+        "lexical_marker": "never",
+        "marker_class": "block-direct"
+      },
+      "companions": {
+        "policy_md": ".interlinked/policies/skill-disk-forensics.policy.md#P1",
+        "cedar": ".interlinked/policies/skill-disk-forensics.cedar#enforce-skill-disk-forensics-no-evidence-writes-via-shell"
+      },
+      "distilled_action_reason": "shell-level companion to the FileWrite block — catches `dd of=...` and `> image` patterns that bypass Edit/Write tools",
+      "confidence": 0.88
+    },
+    {
+      "id": "enforce-skill-disk-forensics-no-timestamp-rewrite",
+      "enabled": true,
+      "trigger": "PreToolUse",
+      "tool_match": ["Bash"],
+      "action": "block",
+      "patterns": [
+        {
+          "field": "command",
+          "regex": "\\btouch\\s+([^|;&]*\\s)?(-t\\s|-d\\s|--date\\b|--reference\\b)"
+        }
+      ],
+      "reason": "BLOCKED by disk-forensics SKILL.md:18,147 — \"Preserve timestamps — never modify source evidence.\"",
+      "suggestion": "Preserve original timestamps. If you need to copy a file with metadata intact, use `cp -p` (preserves) or `cp --preserve=timestamps`.",
+      "severity": "high",
+      "category": "distilled-from-md",
+      "keywords": ["touch"],
+      "active_when": { "skill": "disk-forensics" },
+      "source": {
+        "group_id": "skill:disk-forensics",
+        "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+        "lines": [18, 18],
+        "quote": "Preserve timestamps — never modify source evidence",
+        "lexical_marker": "never",
+        "marker_class": "block-direct"
+      },
+      "companions": {
+        "policy_md": ".interlinked/policies/skill-disk-forensics.policy.md#P4",
+        "cedar": ".interlinked/policies/skill-disk-forensics.cedar#enforce-skill-disk-forensics-no-timestamp-rewrite"
+      },
+      "distilled_action_reason": "lexical 'never' + concrete touch-with-time-flags pattern → block",
+      "confidence": 0.93
+    }
+  ],
+  "skipped": [
+    {
+      "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+      "lines": [17, 17],
+      "quote": "Document every command and finding",
+      "reason": "no concrete trigger — what counts as 'documented'?",
+      "marker_class": "skip-no-trigger"
+    },
+    {
+      "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+      "lines": [143, 143],
+      "quote": "Work only on provided images and files",
+      "reason": "scope is engagement context, not observable signal",
+      "marker_class": "skip-abstract-trigger"
+    },
+    {
+      "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+      "lines": [145, 145],
+      "quote": "Document chain of custody for real investigations",
+      "reason": "documentation directive, not a tool-call gate",
+      "marker_class": "skip-no-trigger"
+    },
+    {
+      "file": "reference-repos/cybersecurity-skills/skills/disk-forensics/SKILL.md",
+      "lines": [146, 146],
+      "quote": "For CTF challenges, focus on finding flags and solving the challenge",
+      "reason": "task guidance, not a prohibition",
+      "marker_class": "skip-no-imperative"
+    }
+  ],
+  "conflicts": [],
+  "removed": [],
+  "policies_emitted": [
+    ".interlinked/policies/skill-disk-forensics.policy.md"
+  ],
+  "stats": {
+    "files_scanned": 1,
+    "imperatives_found": 11,
+    "distilled_block": 4,
+    "distilled_ask": 0,
+    "distilled_advisory": 0,
+    "policies_emitted": 5,
+    "merged_into_existing": 2,
+    "skipped_hedged": 0,
+    "skipped_no_trigger": 2,
+    "skipped_abstract_trigger": 1,
+    "skipped_no_imperative": 1,
+    "conflicts": 0,
+    "removed": 0
+  }
+}

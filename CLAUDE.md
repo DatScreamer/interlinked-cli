@@ -356,6 +356,37 @@ Environment variable overrides: `INTERLINKED_SERVER_URL`, `INTERLINKED_ACCESS_TO
 
 Dev mode bypass: when `server_url` is localhost/127.0.0.1, auth is skipped entirely.
 
+## Three-tier policy enforcement (Tier 1 shipped 2026-05, Tier 2/3 designed)
+
+`/enforce` runs three passes over agent-instruction markdown (AGENTS.md,
+SKILL.md, CLAUDE.md, .clinerules/, etc.) and emits artifacts for three
+enforcement tiers:
+
+| Tier | Layer | Consumer | Artifact | Cadence |
+|---|---|---|---|---|
+| 1 | Local deterministic | Interlinked harness (sub-10ms) | `.interlinked/distilled-rules.json` | Every tool call |
+| 2 | Cloud LLM policy gate | gpt-oss-safeguard-120b (~3-6s) | `.interlinked/policies/<group>.policy.md` + `.cedar` + `.interlinked.cedar` | Most tool calls (post-filter) |
+| 3 | Cloud architectural review | Sonnet/Opus on staged commits (~30-120s) | `.interlinked/policies/<group>.prose.md` | Pre-push / on-demand `/review` / `/security-review` |
+| — | Audit | Humans | `.interlinked/policies/skipped.report.md` | After /enforce runs |
+
+The Cedar emission is Sondera-compatible by default (drops into Sondera's
+`policies/` directory). Policies needing skill-scope or trajectory state
+get a sibling `.interlinked.cedar` file using extensions documented at
+`docs/design/interlinked-cedar-extensions.cedarschema`. Pass 3 prose
+artifacts are consumed by the Tier 3 cloud agent during pre-push review
+for after-the-fact evaluation against principles the deterministic layers
+can't enforce. See `skills/enforce/SKILL.md` §15 for the full routing
+contract and `docs/examples/policies/disk-forensics/` for a worked example.
+
+Tier 2 and Tier 3 are designed but not built — full design memos at
+`docs/design/tier-2-llm-policy-gate.md` (architecture, provider selection,
+prompt caching, pre-filter, cost model, rollout cadence) and
+`docs/design/tier-3-async-deep-review.md` (trigger model, scope, model
+selection, prose-policy evaluation pipeline, warn-only contract). Only
+Tier 1 (and the artifact-emission side of /enforce) is shipped. Local-only
+mode (no cloud): policy and prose artifacts load as agent context but
+aren't enforced; Cedar files work for self-hosted Sondera.
+
 ## External-pulse intake
 
 Before "what can we do with X?" on a tool, paper, or repo found on the
