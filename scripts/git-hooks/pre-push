@@ -95,10 +95,11 @@ echo "[pre-push] Running typecheck + tests (mirrors CI exactly)..."
 #                                drift here is what bit us on commit
 #                                5452fac; the gen-marker mismatch was
 #                                a CI-only signal before this hook ran it)
-#   - npm test                  (no --silent: vitest's worker IPC needs
-#                                stdio flow, otherwise long runs can hit
-#                                onTaskUpdate timeouts and exit non-zero
-#                                even when every test passes)
+#   - CI=1 npm test             (no --silent: vitest's worker IPC needs
+#                                stdio flow; CI=1 applies the same worker
+#                                cap as GitHub Actions so local pre-push
+#                                does not run a less-stable, higher-
+#                                parallelism variant than CI)
 set +e
 npm run typecheck:stable
 tc_status=$?
@@ -126,7 +127,7 @@ if [ "$docs_status" -ne 0 ]; then
 fi
 
 set +e
-npm test
+CI=1 npm test
 test_status=$?
 set -e
 
