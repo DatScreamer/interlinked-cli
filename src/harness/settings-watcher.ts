@@ -181,6 +181,12 @@ export function watchSettingsFiles(opts: SettingsWatcherOptions): () => void {
 	for (const path of paths) {
 		watchFile(path, { interval: pollIntervalMs }, onChange);
 	}
+	// Close the startup race where a settings file is written before
+	// watchFile has established its first baseline stat. The debounced strip
+	// re-reads current file contents, so an immediate trigger is harmless on
+	// clean files and catches malformed rules already present or written
+	// during watcher startup.
+	debouncer.trigger();
 
 	let stopped = false;
 	return () => {

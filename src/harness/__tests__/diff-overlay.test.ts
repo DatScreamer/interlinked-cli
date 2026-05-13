@@ -27,7 +27,7 @@ describe("evaluateBiomeDiffOverlay", () => {
 		// as a spurious empty-findings result. One warm invocation primes
 		// the npm cache so the assertion runs have stable timing.
 		evaluateBiomeDiffOverlay(FIXTURE_FILE, CLEAN_CONTENT, CLI_ROOT);
-	});
+	}, 30_000);
 
 	afterAll(() => {
 		try {
