@@ -877,4 +877,11 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	placeholder_data_in_ui: {
+		name: "Placeholder Data in UI",
+		description:
+			"Detects placeholder/mock/fake data rendered into a user-facing UI file — hardcoded numbers a comment marks as fake, mock-named values, lorem ipsum, placeholder image hosts, and placeholder-shaped numbers. Suppressed when the UI shows a visible 'sample data' disclaimer.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 };

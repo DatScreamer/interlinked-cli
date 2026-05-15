@@ -271,6 +271,8 @@ export interface CodeQualityResults {
 	silentDemoFallback: CodeQualityIssue[];
 	/** Root layout imports demo runtime but doesn't render DemoBanner. */
 	demoRuntimeMissingBanner: CodeQualityIssue[];
+	/** Filler/mock data rendered into a user-facing UI surface. */
+	placeholderDataInUi: CodeQualityIssue[];
 	/** tsconfig*.json missing high-leverage strictness flags not implied by `strict: true`. */
 	tsconfigStrictness: CodeQualityIssue[];
 }
@@ -447,6 +449,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"demoDataUnmarked",
 	"silentDemoFallback",
 	"demoRuntimeMissingBanner",
+	"placeholderDataInUi",
 	// tsconfig strictness
 	"tsconfigStrictness",
 ];

@@ -81,6 +81,7 @@ export {
 export {
 	checkDemoDataUnmarked,
 	checkDemoRuntimeMissingBanner,
+	checkPlaceholderDataInUi,
 	checkSilentDemoFallback,
 } from "./checks/demo-data.js";
 // ---- b-series ----

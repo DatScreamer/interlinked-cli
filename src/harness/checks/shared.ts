@@ -166,6 +166,11 @@ export function isTestFile(filePath: string): boolean {
 			normalized.includes("/harness/check-registry/") ||
 			normalized.includes("/harness/check-metadata") ||
 			normalized.includes("/harness/checks/ubs-language-specific.") ||
+			// demo-data.ts is the demo-data detector itself — its pattern
+			// bank holds test-card numbers, filler copy, and example
+			// fake-data strings AS DATA, so the content-quality scans only
+			// ever false-positive on it.
+			normalized.includes("/harness/checks/demo-data.") ||
 			normalized.includes("/harness/evaluator/write-content-guards.") ||
 			// signatures.ts holds the very PI rule descriptions (e.g. the
 			// `sig-pi-system-override` description text) that the daemon's

@@ -38,6 +38,7 @@ import {
 	checkDeeplyNestedCallback,
 	checkDemoDataUnmarked,
 	checkDemoRuntimeMissingBanner,
+	checkPlaceholderDataInUi,
 	checkDuplicateTestNames,
 	checkEmptyBodyHandler,
 	checkDefaultExport,
@@ -1006,5 +1007,8 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			relPath,
 			checkDemoRuntimeMissingBanner(content, file),
 		),
+	);
+	r.placeholderDataInUi.push(
+		...toIssues("placeholder_data_in_ui", relPath, checkPlaceholderDataInUi(content, file)),
 	);
 }

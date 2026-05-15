@@ -1189,6 +1189,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "demo runtime banner mounted",
 		color: "33",
 	},
+	{
+		label: "placeholder data in UI",
+		key: "placeholderDataInUi",
+		noun: "placeholder/mock values rendered into a user-facing UI",
+		passLabel: "no placeholder data in rendered UI",
+		color: "33",
+	},
 	// === tsconfig strictness — surfaces on tsconfig*.json edits ===
 	{
 		label: "tsconfig strictness",

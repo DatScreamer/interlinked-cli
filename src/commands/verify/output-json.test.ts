@@ -168,6 +168,7 @@ function emptyCq(): CodeQualityResults {
 		"demoDataUnmarked",
 		"silentDemoFallback",
 		"demoRuntimeMissingBanner",
+		"placeholderDataInUi",
 		// tsconfig strictness
 		"tsconfigStrictness",
 	] as const;

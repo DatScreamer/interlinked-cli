@@ -29,6 +29,7 @@ import {
 	checkDeadExports,
 	checkDemoDataUnmarked,
 	checkDemoRuntimeMissingBanner,
+	checkPlaceholderDataInUi,
 	checkDuplicateTestNames,
 	checkEmptyBodyHandler,
 	checkDeeplyNestedCallback,
@@ -1710,5 +1711,20 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"The vendored demo-runtime expects `<DemoBanner />` to be mounted in the root layout so any `demoData()` value rendered in the page lifecycle triggers a visible banner. Add `<DemoBanner />` somewhere inside the root `<body>` (or its equivalent) so the runtime can announce when the user is looking at fake data.",
 		fn: checkDemoRuntimeMissingBanner,
 		resultsPropName: "demoRuntimeMissingBanner",
+	},
+	{
+		id: "placeholder_data_in_ui",
+		phase: "post",
+		name: "Placeholder Data in UI",
+		description:
+			"Detects placeholder/mock/fake data rendered into a user-facing UI file (.tsx/.jsx/.vue/.svelte/.astro/.html) — hardcoded numbers a comment marks as fake, mock/fake/dummy-named values, lorem ipsum copy, placeholder image hosts, and placeholder-shaped numbers (1111, 123456). Suppressed when the rendered UI carries a visible 'sample data' disclaimer.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A user will read this value as a real production figure. Fix it one of two ways: (1) wire it to real data — fetch from the API, pass real props, or read from the store; or (2) if the placeholder must stay (early prototype, pending integration), make its status unmistakable IN THE RENDERED UI — a visible 'Sample data' badge, a banner, or muted styling with an explicit label — so no human mistakes it for production. A code comment is not enough; the disclaimer has to be on screen. For values that flow into a chart or stat, prefer wrapping with `demoData(\"<key>\", value, { reason })` from the vendored demo-runtime so the page mounts a banner automatically.",
+		fn: checkPlaceholderDataInUi,
+		resultsPropName: "placeholderDataInUi",
 	},
 ];
