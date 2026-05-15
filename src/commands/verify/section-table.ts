@@ -73,6 +73,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "no grep-hostile default exports",
 		color: "33",
 	},
+	{
+		label: "code clones (DRY)",
+		key: "codeClones",
+		noun: "functions near-duplicating another function",
+		passLabel: "no near-duplicate functions",
+		color: "33",
+	},
 	// --- Warning severity (fast inline) ---
 	{
 		label: "large files",

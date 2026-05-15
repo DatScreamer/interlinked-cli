@@ -47,6 +47,7 @@ export interface CodeQualityResults {
 	circularImports: CodeQualityIssue[];
 	lifecycleCleanup: CodeQualityIssue[];
 	defaultExport: CodeQualityIssue[];
+	codeClones: CodeQualityIssue[];
 	// Agent safety checks
 	misusedPromises: CodeQualityIssue[];
 	floatingPromises: CodeQualityIssue[];
@@ -295,6 +296,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"circularImports",
 	"lifecycleCleanup",
 	"defaultExport",
+	"codeClones",
 	"misusedPromises",
 	"floatingPromises",
 	"broadObjectTypes",

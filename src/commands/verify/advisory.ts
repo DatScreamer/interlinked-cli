@@ -144,6 +144,13 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// input into typed slot. Real bug class but FP-prone when the spread
 	// merges with already-validated values upstream. Advisory.
 	"boundary_copy_no_revalidation",
+	// Code clones (DRY): Jaccard token-shingle similarity over function bodies.
+	// Real duplication signal, but FP-prone — generated code, boilerplate CRUD
+	// handlers, framework lifecycle stubs, and parallel-but-distinct branches
+	// (e.g. per-provider adapters) routinely cross the 0.82 threshold without
+	// being a genuine refactor opportunity. Advisory until the FP rate is
+	// measured against a broader codebase.
+	"code_clones",
 	// Default-export hygiene: cold-reader/grep clarity signal, but default
 	// exports are idiomatic in React/Vue component files and many build
 	// configs the filename-matching heuristic can't enumerate. Advisory

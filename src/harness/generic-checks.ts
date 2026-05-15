@@ -45,6 +45,8 @@ export {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./checks/agent-safety-advanced.js";
+// ---- dry (Jaccard code-clone detector) ----
+export { checkCodeClones } from "./checks/dry-check.js";
 // ---- agent-laziness (Batch 1) ----
 export {
 	checkAgentThumbprintProse,

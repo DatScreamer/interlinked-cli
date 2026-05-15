@@ -23,6 +23,7 @@ import {
 	checkCatchAndLog,
 	checkCircularImports,
 	checkCleanupSkippedOnEarlyExit,
+	checkCodeClones,
 	checkConstantCondition,
 	checkDeadBranchLiteral,
 	checkDeadExports,
@@ -128,6 +129,21 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"Prefer a named export: `export function Foo() {}` + `import { Foo } from './foo'`. If you must use a default export (framework convention), give the symbol a name that matches the filename so grep and rename tools work: `export default function Foo() {}` in foo.ts. Anonymous `export default (...) => ...` is the worst case — rename to a named function.",
 		fn: checkDefaultExport,
 		resultsPropName: "defaultExport",
+	},
+	{
+		id: "code_clones",
+		phase: "post",
+		name: "Code Clones (DRY)",
+		description:
+			"Jaccard-similarity clone detector (modeled on Uncle Bob's dry4* tools) — flags functions that are >=82% token-shingle-similar to another function in the same file or a sibling file",
+		tier: 3,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Two functions share near-identical bodies. Extract the shared logic into one function and have both call sites delegate to it — parameterize the part that differs. Duplicated logic drifts: a bug fixed in one copy silently survives in the other. If the similarity is incidental (the shapes coincide but the intent is genuinely distinct), leave them separate.",
+		fn: checkCodeClones,
+		resultsPropName: "codeClones",
 	},
 	{
 		id: "lifecycle_cleanup",

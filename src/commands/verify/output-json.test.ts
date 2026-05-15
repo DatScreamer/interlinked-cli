@@ -27,6 +27,7 @@ function emptyCq(): CodeQualityResults {
 		"circularImports",
 		"lifecycleCleanup",
 		"defaultExport",
+		"codeClones",
 		"misusedPromises",
 		"floatingPromises",
 		"broadObjectTypes",

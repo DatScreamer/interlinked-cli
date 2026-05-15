@@ -208,6 +208,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 3,
 		determinism: "heuristic",
 	},
+	code_clones: {
+		name: "Code Clones (DRY)",
+		description:
+			"Jaccard-similarity clone detector (modeled on Uncle Bob's dry4* tools) — flags functions >=82% token-shingle-similar to another function in the same file or a sibling file",
+		tier: 3,
+		determinism: "heuristic",
+	},
 	async_promise_executor: {
 		name: "Async Promise Executor",
 		description: "Detects async functions passed to Promise constructor",

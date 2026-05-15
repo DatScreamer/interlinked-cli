@@ -481,6 +481,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"circularImports",
 			"lifecycleCleanup",
 			"defaultExport",
+			"codeClones",
 			"requireAwait",
 			"accumulatingSpread",
 			"excessiveUseState",

@@ -139,7 +139,7 @@ For each remaining argument, classify it:
 |---|---|---|
 | Bare name like `AGENTS.md` | exists as file relative to CWD | local file |
 | Path with `/` like `.claude/skills/tdd/SKILL.md` | exists as file | local file |
-| Directory path like `.claude/skills/tdd/` | exists as dir | walk the dir for .md files |
+| Directory path like `.claude/skills/tdd/` | exists as dir | walk the dir for `.md` and `.prompt` files |
 | Glob like `docs/**/*.md` | contains `*` or `?` | glob expand |
 | `<owner>/<repo>` or `<owner>/<repo>/<subpath>` | matches `^[\w.-]+/[\w.-]+(/.+)?$` and not a local path | github shorthand → fetch from `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<subpath or SKILL.md>` |
 | `https://...` or `http://...` | URL prefix | fetch directly |
@@ -226,7 +226,7 @@ The `skill:` group_id is also used for lifecycle ops (`/enforce remove --source 
 | `PRD.md`, `SPEC.md`, `ROADMAP.md`, `TASKS.md`, `TODO.md` | Forward-looking. |
 | `README.md` | Human-facing overview. |
 | `TOOLS.md` | Tool inventory. |
-| `.agent.md`, `.prompt.md`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md` | Capability bundles — same treatment as SKILL.md per §2c. |
+| `.agent.md`, `.prompt.md`, `*.prompt`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md` | Capability bundles — same treatment as SKILL.md per §2c. `*.prompt` covers bare-extension role/capability prompts (e.g. SwarmForge `<role>.prompt`). |
 | Any `SKILL.md` whose frontmatter `name` is `enforce` | Self-reference. The distiller must not distill its own imperatives — they describe how to distill, not what the agent should do. Drop the file silently regardless of which install path it lives at (`skills/`, `.claude/skills/`, `.codex/skills/`, `.interlinked/skills/`, `.gemini/extensions/`, `.github/skills/`, etc.). |
 | Any `SKILL.md` whose frontmatter `name` is `tdd`, starts with `tdd-`, or ends with `-tdd`; any path matching `**/tdd/SKILL.md` or `**/*-tdd/SKILL.md` | TDD enforcement is owned by the harness's native primitives — `tdd_new_file_gate`, `tdd_cycle_violation`, `tdd_regression`, `tdd_commit_gate`, `tdd_green_confirmation` — driven by the deterministic `tdd_cycles` state machine in `SessionTrajectory`. Distilling a competing TDD skill (Matt Pocock's, gstack's, anyone else's) would either over-fire (always-on rules duplicating our gates) or shadow (action downgraded to `ask`). Drop these files silently. If a project legitimately needs a different TDD policy, edit `structural_checks.test_first_mode` in `guard-rules.local.json`, not via /enforce. |
 
@@ -495,6 +495,11 @@ Skill-sourced rules ALWAYS use the `skill:` scheme; they carry their physical in
 | Skill body imperative referencing TDD state | **not emitted** — TDD is owned by harness primitives; rule is dropped per §2d skip list |
 
 When multiple axes are inferred from one source (e.g., a skill body that also mentions "after /ship"), all axes are AND-ed in `active_when`. The distiller emits the union; `confidence` drops by 0.05 per inferred axis beyond the first.
+
+**`applies_to_roles` population (binding).** A source file is *role-scoped* when its basename is `<role>.prompt` / `<role>.agent.md`, or its body opens with `You are the <role>.`. The harness `AgentRole` type (`src/harness/types.ts`) is exactly `"lead" | "worker" | "subagent" | "unknown"`:
+
+- If `<role>` is one of those four, set `applies_to_roles: ["<role>"]` on every rule distilled from that file.
+- If `<role>` is NOT — e.g. a bespoke multi-agent cohort such as SwarmForge's `architect` / `coder` / `refactorer` / `reviewer` / `specifier` — the harness has no axis to scope the rule, so a Pass 1 rule from one role's prompt applies to *every* agent. That is a correctness bug, not noise: `refactorer.prompt`'s "Do not run mutation tests" emitted globally directly contradicts `reviewer.prompt`'s "Run … mutation tests." Such imperatives MUST NOT be written to `distilled-rules.json`. Route them to Pass 2 (`policy.md`) with the role named in `trigger_signal` ("…when the acting agent's role is `refactorer`"); the Tier-2 gate resolves role from trajectory. If Pass 2 is unavailable (local-only mode), log to `skipped.report.md` with skip class `skip-role-unmodellable`. §10 conflict resolution does NOT catch this — only the prohibition carries a lexical marker, so the contradicting permission never distills and no conflict pair forms.
 
 **Schema attribution.** The shape above is the Interlinked harness's `GuardRule`, defined at `src/harness/types.ts` in the `interlinked-cli` package. The four sidecar fields (`source`, `distilled_action_reason`, `confidence`, `user_modified`) are the only additions this skill makes; the harness ignores them at evaluation. The `active_when` field is a real `GuardRule` field (added 2026-04 alongside the active-when scoping work) — the harness reads and evaluates it at runtime via `evaluator/active-when.ts`. Other hook engines that want to consume the same artifact must implement matching evaluation semantics — regex on `tool_input` fields, the six action types (`block` / `warn` / `rewrite` / `soft_block` / `ask` / advisory), severity, keyword quick-reject, role scoping, exception patterns, AND active_when scope evaluation. The skill targets `GuardRule` because it's the most expressive open enforcement primitive today; downgrading to a less-expressive runtime (Claude Code's `permissions.deny[]`, Cursor `.mdc` globs, Codex deny configs) would lose the regex/PostToolUse/severity/active_when dimensions, so this skill does not ship multi-backend adapters. If you want to use the artifact outside Interlinked, write your own evaluator against this schema.
 
@@ -962,7 +967,7 @@ serialized as Markdown:
 
 - **Lexical marker:** <marker or "none">
 - **Skip class:** `skip-hedged` | `skip-no-trigger` | `skip-abstract-trigger`
-   | `skip-no-imperative` | `skip-out-of-scope`
+   | `skip-no-imperative` | `skip-out-of-scope` | `skip-role-unmodellable`
 - **Skip reason:** <one line>
 - **Could be enforced if:** <suggested rewrite of source for the user>
 ```

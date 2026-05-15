@@ -164,6 +164,69 @@ describe("software version regression detector", () => {
 	});
 });
 
+describe("freshness model-identifier false positives (CLAUDE.md / .claude paths / rule ids)", () => {
+	// Negative cases — none of these embed a real model identifier; the bare
+	// substring "claude" must not be classified as an Anthropic model name.
+	const negativeCases: Array<{ name: string; content: string }> = [
+		{
+			name: "CLAUDE.md filename in prose",
+			content: 'description: "Distill AGENTS.md, CLAUDE.md and GEMINI.md into rules"\n',
+		},
+		{
+			name: "CLAUDE.local.md filename",
+			content: 'home: "home:.claude/CLAUDE.local.md"\n',
+		},
+		{
+			name: ".claude/ path segment",
+			content: 'path: ".claude/skills/migrate-to-shoehorn/SKILL.md"\n',
+		},
+		{
+			name: "kebab-case rule id embedding claude",
+			content: 'id: "enforce-claude-no-cypress"\n',
+		},
+		{
+			name: "kebab-case rule id enforce-local-claude-md-*",
+			content: 'id: "enforce-local-claude-md-test-before-commit"\n',
+		},
+		{
+			name: "prose mentioning CLAUDE.md with a line number",
+			content: 'reason: "CLAUDE.md:88 — Always run npm test before committing."\n',
+		},
+	];
+
+	for (const { name, content } of negativeCases) {
+		it(`does not flag ${name} as a model identifier`, () => {
+			const before = collectSoftwareVersionReferences("placeholder: 1\n", "skills/enforce/SKILL.md");
+			const after = collectSoftwareVersionReferences(content, "skills/enforce/SKILL.md");
+			const concerns = detectSoftwareVersionFreshnessConcerns(before, after);
+			const modelConcerns = concerns.filter((c) => c.ref.kind === "model");
+			expect(modelConcerns).toEqual([]);
+		});
+	}
+
+	// Positive cases — genuine pinned model identifiers MUST still fire.
+	const positiveCases: Array<{ name: string; value: string }> = [
+		{ name: "claude-3-opus-20240229", value: "claude-3-opus-20240229" },
+		{ name: "claude-3-5-sonnet-20241022", value: "claude-3-5-sonnet-20241022" },
+		// REAL_WORLD_VERSION_FIXTURE_OK — the genuine pinned identifier is the behavior under test.
+		{ name: "gpt-4-0613", value: "gpt-4-0613" },
+	];
+
+	for (const { name, value } of positiveCases) {
+		it(`still flags genuine model identifier ${name}`, () => {
+			const before = collectSoftwareVersionReferences("export const x = 1;\n", "src/config.ts");
+			const after = collectSoftwareVersionReferences(
+				`export const llmId = "${value}";\n`,
+				"src/config.ts",
+			);
+			const concerns = detectSoftwareVersionFreshnessConcerns(before, after);
+			const modelConcerns = concerns.filter((c) => c.ref.kind === "model");
+			expect(modelConcerns.length).toBeGreaterThan(0);
+			expect(modelConcerns[0].ref.version).toBe(value);
+		});
+	}
+});
+
 describe("runQualityChecks software_version_regression", () => {
 	let dir: string;
 
@@ -218,6 +281,34 @@ describe("runQualityChecks software_version_regression", () => {
 		expect(warning).toContain("knowledge cutoff date");
 		expect(warning).toContain("search/fetch official docs");
 		expect(warning).toContain("PostToolUse attention required");
+	});
+
+	it("does not re-flag a pre-existing model reference when an earlier insert shifts its line (no baseline)", async () => {
+		// Bug 2: an Edit that inserts content earlier in the file shifts the
+		// line numbers of an untouched model reference downstream. With no
+		// PreToolUse baseline, the check must reconstruct the before-file by
+		// reverting the edit (new_string -> old_string) so the unchanged
+		// reference is not reported as newly introduced.
+		const filePath = join(dir, "config.ts");
+		const oldStr = "const a = 1;\n";
+		const newStr = "const a = 1;\nconst inserted = 2;\nconst more = 3;\n";
+		const afterContent = `${newStr}export const llmId = "claude-3-opus-20240229";\n`;
+		writeFileSync(filePath, afterContent);
+
+		const results = await runQualityChecks(
+			{
+				hook_event: "PostToolUse",
+				session_id: "s",
+				agent_source: "claude",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath, old_string: oldStr, new_string: newStr },
+				timestamp: "2026-05-04T00:00:00.000Z",
+			},
+			SOFTWARE_VERSION_CHECKS,
+			dir,
+		);
+
+		expect(results.find((r) => r.name === "freshness_sensitive_reference")).toBeUndefined();
 	});
 
 	it("reports a freshness-sensitive new model reference without hardcoding current models", async () => {

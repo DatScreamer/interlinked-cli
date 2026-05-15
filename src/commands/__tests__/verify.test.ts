@@ -237,6 +237,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"comment_claims_validation_missing",
 				"catch_and_log",
 				"circular_imports",
+				"code_clones",
 				"complexity",
 				"conditional_in_test",
 				"console_statements",

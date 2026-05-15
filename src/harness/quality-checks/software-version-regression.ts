@@ -56,6 +56,29 @@ const PACKAGE_SECTIONS = [
 const MODEL_PROVIDER_RE =
 	/\b(?:(?<provider>gpt|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova)\b|(?<oseries>o)(?=\d))/i;
 
+// A bare provider word (`claude`, `gpt`, …) is NOT a model identifier on its
+// own. `CLAUDE.md`, `.claude/skills/...`, and kebab-case slugs like
+// `enforce-claude-no-cypress` all contain the substring "claude" but are a
+// filename, a path, and a rule id respectively — none are model names.
+// A real model identifier has a recognizable shape: a provider token joined
+// by `-` or `.` to a model family and at least one numeric version/date
+// component (e.g. `claude-opus-4-7`, `claude-3-5-sonnet-20241022`,
+// `gpt-4-0613`, `gemini-1.5-pro`). `looksLikeModelIdentifier` requires that
+// shape so value-driven model classification can't fire on filenames,
+// paths, or identifiers that merely embed a provider word.
+//
+// File extensions that disqualify a provider-prefixed token from being a
+// model identifier (`CLAUDE.md` -> not a model).
+const NON_MODEL_EXTENSION_RE =
+	/\.(?:md|mdx|txt|json|jsonc|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|cedar|html|css|sh|py|rs|go|lock|local)\b/i;
+
+// The disciplined model-identifier shape: an optional namespace, then a
+// provider word, then `-`/`.` joined family/version tokens. The whole match
+// must contain at least one digit (enforced separately) and the provider
+// must not be followed by a file extension.
+const MODEL_IDENTIFIER_RE =
+	/(?:^|[\s"'`(=:,/])(?<model>(?:[a-z][\w.-]*\/)?(?:gpt|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova|o)[-.][\w.-]*\d[\w.-]*)\b/i;
+
 const SOFTWARE_KEY_RE =
 	/(?:^|[_\-.])(?:version|model|modelname|api[_\-.]?version|runtime|engine|image|sdk|tool|package|dependency|node|python|go|rust|java)(?:$|[_\-.])/i;
 
@@ -429,11 +452,30 @@ function collectLineRef(
 	refs.push(ref);
 }
 
+// True only when `value` contains a token shaped like a real model
+// identifier (provider + family/version), not a bare provider substring
+// embedded in a filename, path, or kebab-case slug.
+function looksLikeModelIdentifier(value: string): boolean {
+	MODEL_IDENTIFIER_RE.lastIndex = 0;
+	const match = MODEL_IDENTIFIER_RE.exec(value);
+	const model = match?.groups?.model;
+	if (!model) return false;
+	// `claude.md`, `gpt.json` etc. — the provider word is a filename stem,
+	// not a model family. Reject when a non-model extension follows the
+	// provider directly.
+	if (NON_MODEL_EXTENSION_RE.test(model)) return false;
+	return true;
+}
+
 function classifyGenericKind(
 	key: string,
 	value: string,
 ): SoftwareVersionReference["kind"] {
-	if (MODEL_PROVIDER_RE.test(value) || /model/i.test(key)) return "model";
+	// Key-driven classification (`model: "..."`, `modelName: "..."`) stays —
+	// the key explicitly declares intent. Value-driven classification now
+	// requires a real model-identifier shape so it can't fire on `CLAUDE.md`,
+	// `.claude/...` paths, or `enforce-claude-*` rule ids.
+	if (/model/i.test(key) || looksLikeModelIdentifier(value)) return "model";
 	if (/api[_\-.]?version/i.test(key) || parseDateVersion(value)) return "api_version";
 	return "generic";
 }

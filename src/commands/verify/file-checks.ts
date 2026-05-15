@@ -28,6 +28,7 @@ import {
 	checkCatchAndLog,
 	checkCircularImports,
 	checkCleanupSkippedOnEarlyExit,
+	checkCodeClones,
 	checkConsoleDebug,
 	checkTaintedToPrivilegedSink,
 	checkConstantCondition,
@@ -406,6 +407,7 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 		...toIssues("lifecycle_cleanup", relPath, checkLifecycleCleanup(content, file)),
 	);
 	r.defaultExport.push(...toIssues("default_export", relPath, checkDefaultExport(content, file)));
+	r.codeClones.push(...toIssues("code_clones", relPath, checkCodeClones(content, file)));
 
 	// --- Agent safety checks ---
 	r.misusedPromises.push(

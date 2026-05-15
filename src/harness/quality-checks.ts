@@ -505,14 +505,30 @@ export async function runQualityChecks(
 			) {
 				const postContent = getSharedContent();
 				if (postContent === null) continue;
-				const beforeRefs =
-					options?.baseline?.softwareVersions ??
-					(event.tool_input?.old_string
-						? collectSoftwareVersionReferences(
-								event.tool_input.old_string as string,
-								filePath,
-							)
-						: []);
+				// Prefer the PreToolUse baseline (full before-file). When it is
+				// absent (e.g. harness restarted between pre/post, or no pre
+				// snapshot), reconstruct the full before-file by reverting the
+				// edit — replace new_string back with old_string in the post
+				// content. Collecting refs from the bare old_string snippet
+				// alone is wrong: every pre-existing reference outside the
+				// edited region would be absent from beforeRefs and so look
+				// "newly introduced", firing freshness warnings on untouched
+				// content whose line numbers merely shifted.
+				let beforeRefs = options?.baseline?.softwareVersions;
+				if (!beforeRefs) {
+					const oldStr = event.tool_input?.old_string;
+					const newStr = event.tool_input?.new_string;
+					if (typeof oldStr === "string" && typeof newStr === "string") {
+						const reverted = postContent.includes(newStr)
+							? postContent.replace(newStr, oldStr)
+							: postContent;
+						beforeRefs = collectSoftwareVersionReferences(reverted, filePath);
+					} else if (typeof oldStr === "string") {
+						beforeRefs = collectSoftwareVersionReferences(oldStr, filePath);
+					} else {
+						beforeRefs = [];
+					}
+				}
 				// getAfterRefs memoizes — the second check on the same Edit
 				// reuses the first check's full-file regex sweep.
 				const afterRefs = getAfterRefs(postContent);
