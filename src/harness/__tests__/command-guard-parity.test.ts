@@ -291,6 +291,18 @@ describe("command-guard-hook.ts parity with harness", () => {
 			expect(runGuard("git branch -D feature-branch")).toBe("block");
 		});
 
+		it("blocks git branch -f (force-move a ref)", () => {
+			expect(runGuard("git branch -f main HEAD~3")).toBe("block");
+		});
+
+		it("blocks git branch -M (force-rename)", () => {
+			expect(runGuard("git branch -M old-name new-name")).toBe("block");
+		});
+
+		it("allows git branch -d (safe, merge-checked delete)", () => {
+			expect(runGuard("git branch -d merged-feature")).not.toBe("block");
+		});
+
 		it("blocks docker system prune", () => {
 			expect(runGuard("docker system prune")).toBe("block");
 		});

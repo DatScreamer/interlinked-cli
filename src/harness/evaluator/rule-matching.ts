@@ -102,7 +102,7 @@ function evaluatePatterns(rule: GuardRule, toolInput: JsonObject, fallback: stri
 	for (const pattern of positivePatterns) {
 		const value = getField(toolInput, pattern.field) || fallback;
 		if (!value) continue;
-		const regex = getCachedRegex(pattern.regex, pattern.flags || "i");
+		const regex = getCachedRegex(pattern.regex, pattern.flags ?? "i");
 		if (regex.test(projectForPattern(String(value), pattern))) {
 			anyPositiveMatched = true;
 			break;
@@ -114,7 +114,7 @@ function evaluatePatterns(rule: GuardRule, toolInput: JsonObject, fallback: stri
 	for (const pattern of negatedPatterns) {
 		const value = getField(toolInput, pattern.field) || fallback;
 		if (!value) continue;
-		const regex = getCachedRegex(pattern.regex, pattern.flags || "i");
+		const regex = getCachedRegex(pattern.regex, pattern.flags ?? "i");
 		if (regex.test(projectForPattern(String(value), pattern))) return PATTERN_RESULT_NEGATED;
 	}
 	return PATTERN_RESULT_MATCH;

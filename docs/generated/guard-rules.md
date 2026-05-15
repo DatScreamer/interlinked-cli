@@ -88,7 +88,7 @@ These evaluate on every PreToolUse event (before tool execution).
 | `builtin-git-clean-f` | high | block | git clean -f permanently deletes untracked files Use git clean -n first to preview what will be deleted |
 | `builtin-git-checkout-dot` | high | block | git checkout -- . discards all unstaged changes Use git stash first to preserve changes |
 | `builtin-git-restore-worktree` | high | block | git restore --worktree discards working tree changes Use git stash first to preserve changes |
-| `builtin-git-branch-D` | medium | block | git branch -D force-deletes a branch without merge check Use -d instead for safe deletion |
+| `builtin-git-branch-D` | medium | block | git branch -D/-M/-f is a force operation: it deletes or moves a branch ref without the usual safety checks For deletion use -d (merge-checked - it refuses unmerged branches). -f/-M force-move a branch ref and can orphan commits; re-run only if intended. |
 | `builtin-git-stash-destroy` | high | block | git stash drop/clear permanently removes stashed work Verify stash contents first with git stash list |
 | `builtin-git-filter-branch` | critical | block | git filter-branch/filter-repo rewrites entire repository history This is a destructive rewrite of all commits. Ask the user to run manually |
 | `builtin-git-restore-dot` | high | block | git restore . discards all unstaged changes Use git stash first to preserve changes, or restore specific files |

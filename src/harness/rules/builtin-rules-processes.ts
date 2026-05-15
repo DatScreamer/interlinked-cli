@@ -421,9 +421,13 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		trigger: "PreToolUse",
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
-		patterns: [{ field: "command", regex: "\\bgit\\s+branch\\s+-D\\s" }],
-		reason: "git branch -D force-deletes a branch without merge check",
-		suggestion: "Use -d instead for safe deletion",
+		patterns: [
+			{ field: "command", regex: "\\bgit\\s+branch\\s+-[DMf]\\s", flags: "" },
+		],
+		reason:
+			"git branch -D/-M/-f is a force operation: it deletes or moves a branch ref without the usual safety checks",
+		suggestion:
+			"For deletion use -d (merge-checked - it refuses unmerged branches). -f/-M force-move a branch ref and can orphan commits; re-run only if intended.",
 		severity: "medium",
 		category: "git-operations",
 	},
