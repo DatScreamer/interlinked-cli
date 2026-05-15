@@ -14,7 +14,11 @@ import {
 	buildCheckInstructions,
 	buildGenericCheckMeta,
 } from "./check-registry/index.js";
-import { findEnclosingScope, isGeneratedFile } from "./checks/shared.js";
+import {
+	findEnclosingScope,
+	isGeneratedFile,
+	isTestFile,
+} from "./checks/shared.js";
 import { capturePrimitiveViolations } from "./discovered-primitives.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "./file-priority.js";
 import { loadDisabledLibraries, runFootgunChecks } from "./library-footguns/registry.js";
@@ -284,6 +288,13 @@ export async function runQualityChecks(
 
 		try {
 			if (name === "secrets_in_source") {
+				// Skip test files (synthetic fixture secrets) and the harness's
+				// own security-pattern definitions (secret-shaped strings as
+				// data) — both yield only false positives on a per-edit scan.
+				// `isTestFile` bundles both exemptions; its harness-internals
+				// block is scoped to interlinked-cli's own package. gitleaks in
+				// `interlinked verify` stays the repo-wide backstop.
+				if (isTestFile(absForTestCheck)) continue;
 				// Inline check — examine file content from the event
 				const content =
 					(event.tool_input?.content as string) ||

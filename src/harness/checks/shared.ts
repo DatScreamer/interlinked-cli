@@ -176,7 +176,11 @@ export function isTestFile(filePath: string): boolean {
 			// `sig-pi-system-override` description text) that the daemon's
 			// content scan flags. Without this exemption every edit to the
 			// rule catalog gets blocked by its own rules.
-			normalized.includes("/harness/signatures."))
+			normalized.includes("/harness/signatures.") ||
+			// secret-detection.ts is the secret detector itself — its regex
+			// literals and example-key references are secret-shaped strings
+			// AS DATA, so secrets_in_source only false-positives on it.
+			normalized.includes("/harness/quality-checks/secret-detection."))
 	) {
 		return true;
 	}

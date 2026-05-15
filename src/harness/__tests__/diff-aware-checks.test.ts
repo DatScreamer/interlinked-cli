@@ -311,26 +311,27 @@ describe("diff-aware: complexity edit-region intersection", () => {
 });
 
 // ===========================================
-// skip_test_files: semgrep/gitleaks exclusion
+// secrets_in_source: test-file exclusion
 // ===========================================
 
-// Construct fake AWS key at runtime so the harness's own secrets_in_source
-// check doesn't fire on this test fixture. This is the exact problem
-// skip_test_files solves — once it's live, scanners won't run on test files.
+// Construct the fake AWS key at runtime so the harness's own secrets_in_source
+// check doesn't fire on this test file's own source. secrets_in_source skips
+// test files unconditionally (synthetic fixture secrets are not real leaks);
+// the `skip_test_files` config flag covers the command-based scanners.
 const FAKE_SECRET_LINE = `const key = "${"AKIA"}IOSFODNN7EXAMPLE";`;
 
-describe("skip_test_files", () => {
-	it("skips checks with skip_test_files on test files", async () => {
+describe("secrets_in_source test-file exclusion", () => {
+	const SECRETS_CHECK = {
+		secrets_in_source: {
+			enabled: true,
+			file_types: [".ts"],
+			timeout_ms: 1000,
+			severity: "error" as const,
+		},
+	};
+
+	it("skips test files when skip_test_files is set", async () => {
 		MOCK_FILE_CONTENT = FAKE_SECRET_LINE;
-		const checksWithSkip = {
-			secrets_in_source: {
-				enabled: true,
-				file_types: [".ts"],
-				timeout_ms: 1000,
-				severity: "error" as const,
-				skip_test_files: true,
-			},
-		};
 		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
@@ -339,24 +340,21 @@ describe("skip_test_files", () => {
 					new_string: FAKE_SECRET_LINE,
 				},
 			}),
-			checksWithSkip,
+			{
+				secrets_in_source: {
+					...SECRETS_CHECK.secrets_in_source,
+					skip_test_files: true,
+				},
+			},
 			"/project",
 		);
-		const secrets = results.filter((r) => r.name === "secrets_in_source");
-		expect(secrets).toHaveLength(0);
+		expect(
+			results.filter((r) => r.name === "secrets_in_source"),
+		).toHaveLength(0);
 	});
 
-	it("runs checks without skip_test_files on test files", async () => {
+	it("skips test files even without skip_test_files set", async () => {
 		MOCK_FILE_CONTENT = FAKE_SECRET_LINE;
-		const checksWithoutSkip = {
-			secrets_in_source: {
-				enabled: true,
-				file_types: [".ts"],
-				timeout_ms: 1000,
-				severity: "error" as const,
-				// skip_test_files not set
-			},
-		};
 		const results = await runQualityChecks(
 			makeEvent({
 				tool_input: {
@@ -365,11 +363,30 @@ describe("skip_test_files", () => {
 					new_string: FAKE_SECRET_LINE,
 				},
 			}),
-			checksWithoutSkip,
+			SECRETS_CHECK,
 			"/project",
 		);
-		const secrets = results.filter((r) => r.name === "secrets_in_source");
-		expect(secrets).toHaveLength(1);
+		expect(
+			results.filter((r) => r.name === "secrets_in_source"),
+		).toHaveLength(0);
+	});
+
+	it("still flags secrets in non-test source files", async () => {
+		MOCK_FILE_CONTENT = FAKE_SECRET_LINE;
+		const results = await runQualityChecks(
+			makeEvent({
+				tool_input: {
+					file_path: "/project/src/auth.ts",
+					old_string: "old",
+					new_string: FAKE_SECRET_LINE,
+				},
+			}),
+			SECRETS_CHECK,
+			"/project",
+		);
+		expect(
+			results.filter((r) => r.name === "secrets_in_source"),
+		).toHaveLength(1);
 	});
 });
 

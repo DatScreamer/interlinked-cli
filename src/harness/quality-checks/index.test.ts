@@ -20,9 +20,10 @@ import { classifyTestFailure, isLikelyTestFile } from "./test-classifier.js";
 
 describe("quality-checks submodules (smoke)", () => {
 	it("secret-detection finds known token formats", () => {
-		// Build an AWS-access-key-ish fixture from parts so this test file itself
-		// doesn't look like a committed secret.
-		const fixture = `AKIA${"X".repeat(16)}`;
+		// Build an AWS-access-key-shaped fixture from parts — a random 16-char
+		// body so it clears the entropy floor — so this test file itself
+		// doesn't read as a committed secret.
+		const fixture = `AKIA${"J7QX2M9FD3KP1WZ8"}`;
 		expect(containsSecrets(`const k = '${fixture}'`).length).toBeGreaterThan(0);
 		expect(containsSecrets("const k = 'plain'")).toEqual([]);
 	});
