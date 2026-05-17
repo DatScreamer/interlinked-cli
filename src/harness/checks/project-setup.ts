@@ -27,6 +27,72 @@ function readAllDeps(pkgJsonPath: string): Record<string, string> {
 }
 
 // ===========================================
+// Bounded project-source walk
+// ===========================================
+// Directory basenames a first-party source scan must never descend into.
+// Walking `node_modules` is what made the node:-protocol-import probe fire on
+// essentially every project — a dependency's own `node:` imports (and the
+// `.d.ts` files it ships) leaked in and looked like the project's own code.
+// Build-output dirs are skipped for the same correctness reason and to keep
+// the per-edit walk cheap.
+const NON_SOURCE_DIRS: ReadonlySet<string> = new Set([
+	"node_modules",
+	"dist",
+	"build",
+	"out",
+	"coverage",
+	"target",
+	"vendor",
+	"__pycache__",
+]);
+
+// Hard cap on directory entries one scan will visit. interlinked-cli itself,
+// minus node_modules, is a few thousand entries; 20K is well clear of any real
+// first-party tree yet aborts a mis-rooted walk in well under a second. The
+// cap fails toward "not found" — the safe bias for a presence probe (skip a
+// dependent check rather than emit a false finding from a partial scan).
+const MAX_PROJECT_SCAN_ENTRIES = 20_000;
+
+/** `readdirSync` with file types, returning `[]` rather than throwing so a
+ *  single unreadable directory never aborts a whole project walk. */
+function readDirEntries(dir: string) {
+	try {
+		return readdirSync(dir, { withFileTypes: true });
+	} catch {
+		// intentional: best-effort walk — an unreadable directory just
+		// shrinks the scan; it must not abort the probe.
+		return [];
+	}
+}
+
+/**
+ * Bounded, skip-list-aware recursive walk of the project subtree rooted at
+ * `root`. Invokes `visit` for every file and stops early (returning `true`)
+ * the moment `visit` does. Never descends into dependency/build-output
+ * directories ({@link NON_SOURCE_DIRS}) or any dotfile directory. Returns
+ * `false` when no file matched or the entry cap was hit.
+ */
+function walkProjectFiles(root: string, visit: (absPath: string) => boolean): boolean {
+	const stack: string[] = [root];
+	let budget = MAX_PROJECT_SCAN_ENTRIES;
+	while (stack.length > 0) {
+		const dir = stack.pop() as string;
+		for (const entry of readDirEntries(dir)) {
+			if (--budget <= 0) return false;
+			const full = resolve(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (!NON_SOURCE_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
+					stack.push(full);
+				}
+			} else if (entry.isFile() && visit(full)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// ===========================================
 // Project Setup Validation
 // ===========================================
 
@@ -150,25 +216,11 @@ export function checkProjectSetup(cwd: string): ProjectSetupIssue[] {
 		searchDir = parent;
 	}
 
-	// Check if this is a TypeScript project (has .ts files in src/ or root)
-	const hasTypeScriptFiles = (() => {
-		const dirs = [resolve(cwd, "src"), cwd];
-		for (const d of dirs) {
-			try {
-				const files = readdirSync(d, { recursive: true });
-				if (
-					files.some(
-						(f) => typeof f === "string" && (f.endsWith(".ts") || f.endsWith(".tsx")),
-					)
-				)
-					return true;
-			} catch {
-				// intentional: best-effort TypeScript-presence probe; an
-				// unreadable candidate directory shouldn't block the scan.
-			}
-		}
-		return false;
-	})();
+	// Check if this is a TypeScript project (has .ts/.tsx files in first-party
+	// source). The walk skips node_modules: an unbounded recursive readdir
+	// over cwd pulled in dependencies' own .ts/.d.ts files and mislabelled
+	// pure-JavaScript projects as TypeScript ones.
+	const hasTypeScriptFiles = walkProjectFiles(cwd, (f) => /\.tsx?$/.test(f));
 
 	if (!hasTypeScriptFiles) return issues;
 
@@ -202,28 +254,19 @@ export function checkProjectSetup(cwd: string): ProjectSetupIssue[] {
 
 	const compilerOptions = (tsconfig.compilerOptions || {}) as JsonObject;
 
-	// Check for node:* protocol imports in source files
-	const hasNodeProtocolImports = (() => {
-		const srcDirs = [resolve(cwd, "src"), cwd];
-		for (const srcDir of srcDirs) {
-			try {
-				const files = readdirSync(srcDir, { recursive: true });
-				for (const f of files) {
-					if (typeof f !== "string" || !f.endsWith(".ts")) continue;
-					try {
-						const content = readFileSync(resolve(srcDir, f), "utf-8");
-						if (/from\s+["']node:/.test(content)) return true;
-					} catch {
-						// intentional: best-effort read; an unreadable file
-						// just means we fail the node-imports probe for this entry.
-					}
-				}
-			} catch {
-				// intentional: best-effort directory walk; skip to the next entry.
-			}
+	// Check for node:* protocol imports in FIRST-PARTY source files. The walk
+	// skips node_modules — otherwise a dependency's own `node:` imports made
+	// this probe fire on nearly every project, recommending @types/node even
+	// when the project's own code never touches a node builtin.
+	const hasNodeProtocolImports = walkProjectFiles(cwd, (f) => {
+		if (!f.endsWith(".ts")) return false;
+		try {
+			return /from\s+["']node:/.test(readFileSync(f, "utf-8"));
+		} catch {
+			// intentional: an unreadable file → treat as no match, keep scanning.
+			return false;
 		}
-		return false;
-	})();
+	});
 
 	// Issue: Uses node: imports but @types/node not installed
 	if (hasNodeProtocolImports) {

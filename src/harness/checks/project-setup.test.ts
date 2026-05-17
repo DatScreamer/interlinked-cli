@@ -155,6 +155,56 @@ describe("checkProjectSetup", () => {
 			/interlinked doctor --fix/,
 		);
 	});
+
+	it("does NOT recommend @types/node for node: imports that exist only in node_modules", () => {
+		// Regression: the node:-protocol probe walked cwd recursively, including
+		// node_modules, so a dependency's own `node:` imports made the check
+		// fire on projects whose first-party code never touches a node builtin.
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, "src", "app.ts"), "export const x = 1;\n");
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		mkdirSync(join(tmp, "node_modules", "some-dep"), { recursive: true });
+		writeFileSync(
+			join(tmp, "node_modules", "some-dep", "index.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("@types/node"))).toBe(false);
+	});
+
+	it("still recommends @types/node when first-party source uses node: imports", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("@types/node"))).toBe(true);
+	});
+
+	it("does NOT label a pure-JavaScript project as TypeScript because node_modules ships .ts files", () => {
+		// hasTypeScriptFiles must not be fooled by dependency .ts/.d.ts files.
+		writeFileSync(join(tmp, "index.js"), "module.exports = 1;\n");
+		mkdirSync(join(tmp, "node_modules", "some-dep"), { recursive: true });
+		writeFileSync(
+			join(tmp, "node_modules", "some-dep", "index.d.ts"),
+			"export const x: number;\n",
+		);
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => /tsconfig\.json/.test(i.message))).toBe(false);
+	});
 });
 
 describe("checkClaudeSettingsPermissions", () => {

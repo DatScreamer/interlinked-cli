@@ -435,6 +435,126 @@ describe("evaluateWriteContentGuards — ok cases", () => {
 	});
 });
 
+describe("evaluateWriteContentGuards — content-quality false-positive fixes", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "wcg-cq-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	/** Run the guards over a proposed Write and return only the content-quality
+	 *  warnings whose text contains `needle`. */
+	function contentQualityWarnings(fileName: string, content: string, needle: string): string[] {
+		const result = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: join(tmpDir, fileName), content },
+			event: makeEvent({ cwd: tmpDir }),
+			rules: makeRules(),
+			session: undefined,
+			pendingEscalation: undefined,
+		});
+		const warnings = result.kind === "ok" ? result.warnings : result.decision.warnings || [];
+		return warnings.filter((w) => w.includes(needle));
+	}
+
+	// A3 — Math.random() is flagged only when it derives a credential, not
+	// whenever a security-ish word appears somewhere else in the file.
+
+	it("does NOT flag Math.random() for A/B bucketing when a bare `key` sits elsewhere", () => {
+		const content = [
+			"export function pickVariant(buckets: Map<string, number>): string {",
+			"  const entries = [...buckets.keys()];",
+			"  const idx = Math.floor(Math.random() * entries.length);",
+			"  return entries[idx];",
+			"}",
+			"export function cacheKey(variant: string): string {",
+			"  const key = `variant:${variant}`;",
+			"  return key;",
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("ab-test.ts", content, "Math.random()")).toEqual([]);
+	});
+
+	it("does NOT flag Math.random() when `location.hash` sits elsewhere", () => {
+		const content = [
+			"function jitter(): number {",
+			"  return Math.random() * 50;",
+			"}",
+			"function scrollToAnchor(): void {",
+			'  window.location.hash = "#section";',
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("scroll.ts", content, "Math.random()")).toEqual([]);
+	});
+
+	it("does NOT flag Math.random() in a plain numeric helper", () => {
+		const content = "export const rollDie = (): number => Math.floor(Math.random() * 6) + 1;\n";
+		expect(contentQualityWarnings("dice.ts", content, "Math.random()")).toEqual([]);
+	});
+
+	it("flags Math.random() assigned to a `token`", () => {
+		const content = "export const token = Math.random().toString(36).slice(2);\n";
+		const hits = contentQualityWarnings("token-gen.ts", content, "Math.random()");
+		expect(hits.length).toBe(1);
+		expect(hits[0]).toMatch(/security-sensitive/);
+	});
+
+	it("flags Math.random() feeding a camelCase `sessionId`", () => {
+		const content = [
+			"export function newSession(): string {",
+			"  const sessionId = `s-${Math.random().toString(16)}`;",
+			"  return sessionId;",
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("session.ts", content, "Math.random()").length).toBe(1);
+	});
+
+	it("flags Math.random() on the line below an `apiKey` assignment", () => {
+		const content = "export const apiKey =\n  Math.random().toString(16).slice(2);\n";
+		expect(contentQualityWarnings("keygen.ts", content, "Math.random()").length).toBe(1);
+	});
+
+	// A7 — hardcoded URLs are flagged in logic files but not in dedicated
+	// constant/content modules that hold URLs as committed data.
+
+	it("does NOT flag many URLs in a consts.ts content module", () => {
+		const content = [
+			"export const SITE = 'https://quentincody.dev';",
+			"export const BLOG = 'https://quentincody.dev/blog';",
+			"export const REPO = 'https://github.com/QuentinCody';",
+			"export const OG = 'https://quentincody.dev/og.png';",
+			"export const FEED = 'https://quentincody.dev/rss.xml';",
+		].join("\n");
+		expect(contentQualityWarnings("consts.ts", content, "hardcoded URLs")).toEqual([]);
+	});
+
+	it("does NOT flag many URLs in a constants.ts module", () => {
+		const content = [
+			"export const A = 'https://a.example.com';",
+			"export const B = 'https://b.example.com';",
+			"export const C = 'https://c.example.com';",
+			"export const D = 'https://d.example.com';",
+		].join("\n");
+		expect(contentQualityWarnings("constants.ts", content, "hardcoded URLs")).toEqual([]);
+	});
+
+	it("still flags many hardcoded URLs in a regular logic file", () => {
+		const content = [
+			"export async function sync(): Promise<void> {",
+			"  await fetch('https://api.one.example.com/v1/sync');",
+			"  await fetch('https://api.two.example.com/v1/sync');",
+			"  await fetch('https://api.three.example.com/v1/sync');",
+			"  await fetch('https://api.four.example.com/v1/sync');",
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("sync-service.ts", content, "hardcoded URLs").length).toBe(1);
+	});
+});
+
 describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
 	const FILE = "/repo/src/foo.ts";
 	const ts2304 = (line: number, name: string) => ({

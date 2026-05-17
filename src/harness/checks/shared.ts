@@ -497,6 +497,42 @@ function matchScopeDeclaration(line: string): string | null {
  * - Multi-line comments: `/* ... *​/` (JS/TS/Rust/Go/C/Java)
  * - Python docstrings on a single line: `""" ... """` and `''' ... '''`
  */
+
+/**
+ * Index of the first `//` or `#` line-comment marker on `line` that is NOT
+ * inside a string literal, or -1 if there is none. `stripComments` runs
+ * before strings are stripped, so it must track string state itself —
+ * otherwise the `//` in a `"https://..."` URL literal reads as a comment and
+ * everything after it (including the string's own closing quote) is blanked,
+ * which then prevents `stripStrings` from recognising the literal at all.
+ * Regex literals are not tracked — a pre-existing limitation of this stripper.
+ */
+function firstUnquotedCommentIndex(line: string): number {
+	let quote: string | null = null;
+	for (let i = 0; i < line.length; i++) {
+		const ch = line[i];
+		if (quote !== null) {
+			if (ch === "\\" && i + 1 < line.length) {
+				i++; // skip the escaped character
+			} else if (ch === quote) {
+				quote = null;
+			}
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") {
+			quote = ch;
+			continue;
+		}
+		if (ch === "/" && line[i + 1] === "/") {
+			return i;
+		}
+		if (ch === "#") {
+			return i;
+		}
+	}
+	return -1;
+}
+
 export function stripComments(content: string): string {
 	const lines = content.split("\n");
 	let inBlockComment = false;
@@ -542,18 +578,10 @@ export function stripComments(content: string): string {
 			searchFrom = openIdx + blanked.length;
 		}
 
-		// Single-line comments: // (JS/TS/Rust/Go/C/Java) and # (Python)
-		// Find earliest unquoted // or #
-		const slashIdx = line.indexOf("//");
-		const hashIdx = line.indexOf("#");
-		let commentStart = -1;
-		if (slashIdx !== -1 && hashIdx !== -1) {
-			commentStart = Math.min(slashIdx, hashIdx);
-		} else if (slashIdx !== -1) {
-			commentStart = slashIdx;
-		} else if (hashIdx !== -1) {
-			commentStart = hashIdx;
-		}
+		// Single-line comments: // (JS/TS/Rust/Go/C/Java) and # (Python).
+		// String-aware so the // inside a "https://..." URL literal — or a #
+		// inside any string — is not mistaken for a comment.
+		const commentStart = firstUnquotedCommentIndex(line);
 
 		if (commentStart !== -1) {
 			line = line.slice(0, commentStart) + " ".repeat(line.length - commentStart);

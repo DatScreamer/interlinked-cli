@@ -76,6 +76,14 @@ describe("checkRealIoInTests", () => {
 			checkRealIoInTests(`fetch("https://api.example.com/users");`, SRC),
 		).toEqual([]);
 	});
+
+	it("does not flag a fetch() call that only appears inside a string literal", () => {
+		// Test files routinely embed example code as string fixtures. A
+		// fetch(...) inside a string is data, not a network call — the // in
+		// its URL must not break string-stripping and expose the call.
+		const code = `const fixture = "await fetch('https://api.example.com/x');";`;
+		expect(checkRealIoInTests(code, TEST)).toEqual([]);
+	});
 });
 
 describe("checkTestNondeterminism", () => {

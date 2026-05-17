@@ -137,6 +137,33 @@ describe("shared helpers", () => {
 		expect(out).not.toContain("STR2");
 	});
 
+	test("stripComments keeps a // inside a URL string literal", () => {
+		// Regression: indexOf("//") found the // in https:// and blanked the
+		// rest of the line, destroying the string's closing quote.
+		const src = 'const u = "https://example.com/path";';
+		expect(stripComments(src)).toBe(src);
+	});
+
+	test("stripComments keeps a # inside a string literal", () => {
+		const src = 'const tag = "#hashtag";';
+		expect(stripComments(src)).toBe(src);
+	});
+
+	test("stripComments still strips a real comment after a URL string literal", () => {
+		const input = 'const u = "https://example.com"; // SECRETNOTE';
+		const out = stripComments(input);
+		expect(out.startsWith('const u = "https://example.com";')).toBe(true);
+		expect(out).not.toContain("SECRETNOTE");
+		expect(out.length).toBe(input.length);
+	});
+
+	test("stripCommentsAndStrings keeps code after a URL string literal visible", () => {
+		const out = stripCommentsAndStrings('fetch("https://api.example.com"); cleanup();');
+		expect(out).toContain("cleanup()");
+		expect(out).toContain("fetch(");
+		expect(out).not.toContain("api.example.com");
+	});
+
 	test("scanLinesStripped reports original text but tests stripped", () => {
 		const original = ["const x = 1; // hit", "const y = 2;"];
 		const stripped = ["const x = 1;      ", "const y = 2;"];

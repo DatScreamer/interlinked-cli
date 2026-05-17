@@ -52,6 +52,16 @@ const MERGE_CONFLICT_MARKER = /^<{7}\s|^={7}$|^>{7}\s/m;
 /** TS/JS/MJS/CJS file extensions that trigger the legacy content-quality heuristics. */
 const JS_TS_EXTENSIONS = /\.(tsx?|jsx?|mjs|cjs)$/;
 
+/** Identifiers that mark a value as a credential. The A3 Math.random() check
+ *  fires only when one of these shares the Math.random() line — a whole-file
+ *  scan for security-ish words made the check fire on any file containing a
+ *  React `key={}` prop, a `location.hash`, or an A/B-test `pickVariant()`.
+ *  Substring (not word-boundary) so camelCase compounds like `sessionToken`
+ *  and `resetToken` match; bare `key`/`hash`/`auth`/`crypto` are deliberately
+ *  excluded as far too common to be a reliable security signal. */
+const A3_SECURITY_CONTEXT =
+	/password|passwd|secret|token|credential|nonce|csrf|\bsalt\b|\bjwt\b|api[_-]?key|private[_-]?key|signing[_-]?key|access[_-]?key|session[_-]?id/i;
+
 /** TS error codes that indicate the agent referenced a name unresolved in the
  *  current scope. The canonical signature of a multi-step refactor where the
  *  missing identifier is defined in a sibling edit that hasn't landed yet —
@@ -520,6 +530,18 @@ function isContentScanExempt(filePath: string, cwd: string | undefined): boolean
 	return false;
 }
 
+/** A file whose entire job is to hold constant data — `consts.ts`,
+ *  `constants.ts`, and the language-agnostic equivalents. URLs in such a file
+ *  are committed content (canonical links, OG images, social handles), not
+ *  deployment config, so the A7 "move to env vars" advice does not apply.
+ *  Stem-only exact match: a `constants.py` qualifies, an `app-constants.ts`
+ *  intentionally does not (kept tight so A7 still fires on real logic files). */
+function isUrlDataFile(filePath: string): boolean {
+	const base = (filePath.replace(/\\/g, "/").split("/").pop() ?? "").toLowerCase();
+	const stem = base.replace(/\.[^.]+$/, "");
+	return stem === "const" || stem === "consts" || stem === "constant" || stem === "constants";
+}
+
 /** Content-quality regex checks shared across all languages plus a TS/JS-only block.
  *  Pure function over `(filePath, content)` — callers append to their warning list. */
 function collectContentQualityWarnings(
@@ -539,12 +561,16 @@ function collectContentQualityWarnings(
 	}
 
 	// A7: Hardcoded non-localhost URLs (all file types).
-	// Path-based exemption already handled above; no need to re-filter here.
-	const urlMatches = content.match(/https?:\/\/(?!localhost|127\.0\.0\.1)[^\s"'`>)}\]]+/g);
-	if (urlMatches && urlMatches.length > 3) {
-		warnings.push(
-			`[interlinked:content-quality] ${urlMatches.length} hardcoded URLs in ${filePath}. Consider using configuration or environment variables.`,
-		);
+	// Path-based exemption already handled above. Dedicated constant/content
+	// modules (consts.ts, constants.ts) legitimately hold URLs as committed
+	// data, so they are exempt from this one check.
+	if (!isUrlDataFile(filePath)) {
+		const urlMatches = content.match(/https?:\/\/(?!localhost|127\.0\.0\.1)[^\s"'`>)}\]]+/g);
+		if (urlMatches && urlMatches.length > 3) {
+			warnings.push(
+				`[interlinked:content-quality] ${urlMatches.length} hardcoded URLs in ${filePath}. Consider using configuration or environment variables.`,
+			);
+		}
 	}
 
 	// A8: SQL injection patterns — template literal interpolation in SQL
@@ -646,14 +672,22 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			`[interlinked:content-quality] eval() or new Function() in ${filePath}. These enable code injection — use safer alternatives.`,
 		);
 	}
-	// A3: Math.random in security context
-	if (
-		/\bMath\.random\b/.test(content) &&
-		/\b(token|secret|password|key|nonce|salt|hash|crypto|auth)\b/i.test(content)
-	) {
-		warnings.push(
-			`[interlinked:content-quality] Math.random() used alongside security-related code in ${filePath}. Use crypto.randomUUID() or crypto.getRandomValues() instead.`,
-		);
+	// A3: Math.random() feeding a security-sensitive value (predictable
+	// tokens). Scoped to the Math.random() line itself (plus the line above,
+	// for multi-line assignments): a whole-file scan fired on any file that
+	// merely contained "key"/"hash"/"auth" elsewhere — a React `key={}` prop
+	// or an A/B-test `pickVariant()` that uses Math.random() for bucketing,
+	// where crypto-grade randomness is genuinely unnecessary.
+	const a3Lines = content.split("\n");
+	for (let i = 0; i < a3Lines.length; i++) {
+		if (!/\bMath\.random\b/.test(a3Lines[i])) continue;
+		const ctx = (i > 0 ? `${a3Lines[i - 1]}\n` : "") + a3Lines[i];
+		if (A3_SECURITY_CONTEXT.test(ctx)) {
+			warnings.push(
+				`[interlinked:content-quality] Math.random() used to derive a security-sensitive value in ${filePath} (line ${i + 1}). Use crypto.randomUUID() or crypto.getRandomValues() instead.`,
+			);
+			break;
+		}
 	}
 	// A4: Floating promises — async-named calls without await/void/return/.then/.catch
 	const floatingPromisePattern =
