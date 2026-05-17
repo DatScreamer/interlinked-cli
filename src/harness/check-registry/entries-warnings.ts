@@ -30,6 +30,7 @@ import {
 	checkDemoDataUnmarked,
 	checkDemoRuntimeMissingBanner,
 	checkPlaceholderDataInUi,
+	checkPlaceholderMarkdownLinks,
 	checkDuplicateTestNames,
 	checkEmptyBodyHandler,
 	checkDeeplyNestedCallback,
@@ -696,6 +697,22 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 		fn: checkSilentPromiseSwallow,
 		resultsPropName: "silentPromiseSwallow",
 		content_keywords: [".catch"],
+	},
+	{
+		id: "placeholder_markdown_link",
+		phase: "post",
+		name: "Placeholder Markdown Link",
+		description:
+			"Detects markdown links with an empty or anchor-only href — [text]() or [text](#) — placeholder links written but never given a real destination. Scoped to .md / .mdx / .markdown files; fenced code blocks are excluded so syntax examples don't fire.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This markdown link has no destination — `[text]()` / `[text](#)`. Fill in the real URL or path, or drop the link syntax if no link was intended. A same-page anchor needs a real slug after the `#` (e.g. `[text](#section-name)`).",
+		fn: checkPlaceholderMarkdownLinks,
+		resultsPropName: "placeholderMarkdownLinks",
+		content_keywords: ["]("],
 	},
 	{
 		id: "json_parse_unsafe",

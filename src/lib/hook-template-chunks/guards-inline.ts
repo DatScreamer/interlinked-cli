@@ -345,11 +345,54 @@ function inlineFileDumpCheck(hookEvent, toolName, toolInput) {
     return null;
 }
 
+/**
+ * Inline merge-conflict guard. Mirrors evaluator/write-content-guards.ts
+ * check A1 — a file written with merge-conflict markers is a guaranteed
+ * parse error. The daemon blocks it; without this the cold fallback would
+ * let it through. Covers Write (content), Edit (new_string), MultiEdit
+ * (edits[].new_string) and NotebookEdit (new_source); apply_patch bodies
+ * are left to the daemon (line-prefixed diff text needs different parsing).
+ */
+function inlineMergeConflictCheck(hookEvent, toolName, toolInput) {
+    if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
+    if (!toolName) return null;
+    let content = "";
+    if (typeof toolInput?.content === "string") content = toolInput.content;
+    else if (typeof toolInput?.new_string === "string") content = toolInput.new_string;
+    else if (typeof toolInput?.new_source === "string") content = toolInput.new_source;
+    else if (Array.isArray(toolInput?.edits)) {
+        content = toolInput.edits
+            .map((e) => (e && typeof e.new_string === "string" ? e.new_string : ""))
+            .join("\\n");
+    }
+    if (!content) return null;
+    if (/^<{7}\\s|^={7}$|^>{7}\\s/m.test(content)) {
+        const fp =
+            toolInput?.file_path || toolInput?.filePath || toolInput?.path || "the target file";
+        return {
+            decision: "block",
+            reason:
+                "BLOCKED: Merge conflict markers detected in " +
+                fp +
+                ". Resolve the conflict before writing.",
+            rule_id: "inline-merge-conflict-markers",
+            severity: "high",
+            category: "command-shape",
+        };
+    }
+    return null;
+}
+
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
     if (!toolName) return null;
 
-    // Graph-prediction fail-closed gate. Runs FIRST so file-write events
+    // Merge-conflict markers in file-write content are a guaranteed parse
+    // error — mirror the daemon's write-content-guards A1 gate.
+    const mergeBlock = inlineMergeConflictCheck(hookEvent, toolName, toolInput);
+    if (mergeBlock) return mergeBlock;
+
+    // Graph-prediction fail-closed gate. Runs early so file-write events
     // targeting a Supermodel-shard'd file get the protocol-restart message
     // instead of silently passing through the Bash-only path below.
     const shardBlock = inlineGraphShardCheck(hookEvent, toolName, toolInput);
@@ -448,7 +491,8 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (/\\bkill\\s+\\$\\(/.test(cmd) || /\\|\\s*xargs\\s+(.*\\s)?kill/i.test(cmd)) {
         return { decision: "block", reason: "BLOCKED: kill with command substitution/xargs. Find the PID first, then kill it by number." };
     }
-    if (/\\bpgrep\\b.*\\|\\s*xargs\\s+kill/i.test(cmd) || /\\bps\\s+(aux|ef)\\b.*\\|\\s*grep\\b.*\\|\\s*(awk|xargs|kill)/i.test(cmd)) {
+    // Require an actual "xargs kill"; a bare ps|grep|awk pipeline is inspection, not a kill.
+    if (/\\bpgrep\\b.*\\|\\s*xargs\\s+kill/i.test(cmd) || /\\bps\\s+(aux|ef)\\b.*\\bxargs\\s+kill/i.test(cmd)) {
         return { decision: "block", reason: "BLOCKED: Pattern kills processes system-wide. Use specific PID." };
     }
 
@@ -479,7 +523,7 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     }
 
     // --- Git destruction ---
-    if (/\\bgit\\s+push\\s+.*--force(?!-with-lease)\\b/i.test(cmd) || /\\bgit\\s+push\\s+-f\\s/i.test(cmd)) {
+    if (/\\bgit\\s+push\\s+.*--force(?!-with-lease)\\b/i.test(cmd) || /\\bgit\\s+push\\s+-f\\b/i.test(cmd)) {
         return { decision: "block", reason: "BLOCKED: git push --force. Use --force-with-lease instead." };
     }
     if (/\\bgit\\s+reset\\s+--hard\\b/.test(cmd)) {
@@ -499,6 +543,18 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     }
     if (/\\bgit\\s+stash\\s+(drop|clear)/i.test(cmd)) {
         return { decision: "block", reason: "BLOCKED: git stash drop/clear permanently removes stashed work." };
+    }
+    if (/\\bgit\\s+restore\\s+\\./.test(cmd)) {
+        return { decision: "block", reason: "BLOCKED: git restore . discards all unstaged changes. Use git stash first." };
+    }
+    if (/\\bgit\\s+filter-branch\\b/i.test(cmd) || /\\bgit\\s+filter-repo\\b/i.test(cmd)) {
+        return { decision: "block", reason: "BLOCKED: git filter-branch/filter-repo rewrites entire repository history." };
+    }
+    if (/\\bgit\\s+rebase\\b.*\\b(-i|--interactive)\\b/i.test(cmd)) {
+        return { decision: "block", reason: "BLOCKED: git rebase -i opens an interactive editor that hangs a non-interactive agent. Use a non-interactive rebase or run it yourself." };
+    }
+    if (/\\bgit\\s+add\\s+(?:\\S+\\s+)*(?:-i|-p|-e|--interactive|--patch|--edit)\\b/i.test(cmd)) {
+        return { decision: "block", reason: "BLOCKED: git add -i/-p/-e opens an interactive prompt that hangs a non-interactive agent. Use git add <pathspec>." };
     }
 
     // --- Database destruction ---

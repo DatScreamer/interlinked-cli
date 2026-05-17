@@ -22,6 +22,9 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		action: "block",
 		patterns: [
 			{
+				// No `executed_only` here (nor on builtin-pkill-node): the
+				// `(dev|tail|logs|pages)` exemption lookahead has to read the
+				// quoted process-name argument, which executed_only masks.
 				field: "command",
 				regex: "\\bpkill\\s+(-\\d+\\s+)?-f\\s+(?![\"']?\\w+\\s+(dev|tail|logs|pages)\\b)",
 			},
@@ -38,7 +41,7 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		trigger: "PreToolUse",
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
-		patterns: [{ field: "command", regex: "\\bkillall\\s+(?!-l\\b)" }],
+		patterns: [{ field: "command", regex: "\\bkillall\\s+(?!-l\\b)", executed_only: true }],
 		reason: "killall terminates ALL processes with matching name",
 		suggestion: "Use specific PID: kill <pid>",
 		severity: "high",
@@ -70,12 +73,31 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
 		patterns: [
-			{ field: "command", regex: "\\bpgrep\\b.*\\|\\s*xargs\\s+kill\\b", flags: "i" },
-			{ field: "command", regex: "\\bkill\\s+.*\\$\\(pgrep\\b", flags: "i" },
 			{
 				field: "command",
-				regex: "\\bps\\s+(aux|ef)\\b.*\\|\\s*grep\\b.*\\|\\s*(awk|xargs|kill)\\b",
+				regex: "\\bpgrep\\b.*\\|\\s*xargs\\s+kill\\b",
 				flags: "i",
+				executed_only: true,
+			},
+			{
+				field: "command",
+				regex: "\\bkill\\s+.*\\$\\(pgrep\\b",
+				flags: "i",
+				executed_only: true,
+			},
+			{
+				// A `ps` pipeline is dangerous only when it actually ends in a
+				// kill — `ps aux | grep x | awk '{print $2}' | xargs kill`. The
+				// old alternation `(awk|xargs|kill)` treated a bare `awk` as a
+				// kill, so pure inspection pipelines such as
+				// `ps aux | grep claude | awk '{print $11}'` false-positived.
+				// Require a real `xargs kill` (the pipe is implied — `xargs`
+				// can only consume `ps` output through one); `executed_only`
+				// keeps the token from matching inside a quoted search argument.
+				field: "command",
+				regex: "\\bps\\s+(aux|ef)\\b.*\\bxargs\\s+kill\\b",
+				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason: "Pattern kills processes system-wide",
@@ -142,7 +164,10 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		action: "block",
 		patterns: [
 			{ field: "command", regex: "\\bgit\\s+push\\s+.*--force(?!-with-lease)\\b" },
-			{ field: "command", regex: "\\bgit\\s+push\\s+-f\\s" },
+			// `-f\b` (not `-f\s`): the short flag can be the final token of the
+			// command (`git push -f`), where a trailing-whitespace anchor never
+			// matches. `\b` fires on space, `;`, `&`, `|`, and end-of-string.
+			{ field: "command", regex: "\\bgit\\s+push\\s+-f\\b" },
 		],
 		reason: "git push --force can destroy remote commits and collaborators' work",
 		suggestion: "Use --force-with-lease for safer force pushing",
@@ -182,9 +207,9 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
 		patterns: [
-			{ field: "command", regex: "\\bkill\\s+-[1-9][0-9]*\\b" },
-			{ field: "command", regex: "\\bkill\\s+-SIG", flags: "i" },
-			{ field: "command", regex: "\\bkill\\s+-s\\s", flags: "i" },
+			{ field: "command", regex: "\\bkill\\s+-[1-9][0-9]*\\b", executed_only: true },
+			{ field: "command", regex: "\\bkill\\s+-SIG", flags: "i", executed_only: true },
+			{ field: "command", regex: "\\bkill\\s+-s\\s", flags: "i", executed_only: true },
 		],
 		reason: "Sending termination signals is dangerous. Use plain 'kill <PID>' (SIGTERM) instead",
 		suggestion: "Use plain: kill <PID>",
@@ -208,6 +233,7 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 				field: "command",
 				regex: "\\bkill\\s+[0-9]+\\s+[0-9]+(?=\\s|$|[;|&])",
 				flags: "i",
+				executed_only: true,
 			},
 		],
 		reason: "Killing multiple PIDs at once is dangerous",
@@ -222,9 +248,14 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
 		patterns: [
-			{ field: "command", regex: "\\bkill\\s+\\$\\(" },
-			{ field: "command", regex: "\\bkill\\s+`" },
-			{ field: "command", regex: "\\|\\s*xargs\\s+(.*\\s)?kill\\b", flags: "i" },
+			{ field: "command", regex: "\\bkill\\s+\\$\\(", executed_only: true },
+			{ field: "command", regex: "\\bkill\\s+`", executed_only: true },
+			{
+				field: "command",
+				regex: "\\|\\s*xargs\\s+(.*\\s)?kill\\b",
+				flags: "i",
+				executed_only: true,
+			},
 		],
 		reason: "kill with command substitution or piped xargs is dangerous",
 		suggestion: "Find the PID first, then kill it by number",
@@ -238,8 +269,8 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		tool_match: ["Bash", "Shell", "run_command"],
 		action: "block",
 		patterns: [
-			{ field: "command", regex: "\\bpkill\\s+-[0-9]+\\b" },
-			{ field: "command", regex: "\\bpkill\\s+-SIG", flags: "i" },
+			{ field: "command", regex: "\\bpkill\\s+-[0-9]+\\b", executed_only: true },
+			{ field: "command", regex: "\\bpkill\\s+-SIG", flags: "i", executed_only: true },
 		],
 		reason: "pkill with signal kills matching processes system-wide",
 		suggestion: "Use specific PID: kill -<signal> <pid>",
@@ -472,7 +503,12 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		patterns: [
 			{
 				field: "command",
-				regex: "\\bbash\\s+-c\\s+.*\\b(rm\\s+-rf|killall|pkill)\\b",
+				// `bash -c` is matched raw (no executed_only) so a destructive
+				// verb inside the quoted script stays visible. The kill-* rules
+				// use executed_only and would otherwise miss
+				// `bash -c "kill -9 ..."`, so the bare-kill danger forms
+				// (signal, command substitution, multi-PID) are covered here.
+				regex: "\\bbash\\s+-c\\s+.*\\b(rm\\s+-rf|killall|pkill|kill\\s+(?:-|\\$\\(|`|[0-9]+\\s+[0-9]))",
 				flags: "i",
 			},
 		],
@@ -534,6 +570,115 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 		reason: "git restore . discards all unstaged changes",
 		suggestion: "Use git stash first to preserve changes, or restore specific files",
 		severity: "high",
+		category: "git-operations",
+	},
+
+	// --- Git: amend, single-file discard, clone-into-tree, interactive add ---
+	// Closes gaps surfaced by the agentic-engineering-patterns review: the
+	// OpenAI Codex system prompt forbids amending commits and destructive
+	// checkout/restore, and Simon Willison's guide recommends cloning
+	// reference repos to /tmp so they can't contaminate the working tree.
+	{
+		id: "builtin-git-commit-amend",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "ask",
+		patterns: [
+			// `[^|&;]*` keeps the match inside one `git commit` invocation so a
+			// `&&`-chained later command can't pull `--amend` in. executed_only
+			// masks quoted strings so `git commit -m "fix --amend bug"` is safe.
+			{
+				field: "command",
+				regex: "\\bgit\\s+commit\\b[^|&;]*\\s--amend\\b",
+				flags: "i",
+				executed_only: true,
+			},
+		],
+		reason:
+			"git commit --amend rewrites the most recent commit. If that commit was already pushed, the local and remote histories diverge and reconciling them needs a force-push.",
+		suggestion:
+			"Confirm the commit being amended has not been pushed to a shared branch. To extend history without rewriting it, make a new commit instead.",
+		severity: "medium",
+		category: "git-operations",
+	},
+	{
+		id: "builtin-git-discard-file",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "ask",
+		patterns: [
+			// `git checkout [<ref>...] -- <file>` discards uncommitted changes to
+			// a specific file. The `.` wildcard form is excluded — it is already
+			// hard-blocked by builtin-git-checkout-dot.
+			{
+				field: "command",
+				regex: "\\bgit\\s+checkout\\s+(?:\\S+\\s+)*--\\s+(?!\\.(?:\\s|$))\\S",
+				flags: "i",
+				executed_only: true,
+			},
+			// `git restore <file>` defaults to --worktree and discards changes.
+			// --staged/-S (index only, non-destructive) and --worktree/-W
+			// (blocked by builtin-git-restore-worktree) are excluded; the bare
+			// `.` form is builtin-git-restore-dot's job.
+			{
+				field: "command",
+				regex: "\\bgit\\s+restore\\s+(?!(?:--staged|-S|--worktree|-W)\\b)(?!\\.(?:\\s|$))\\S",
+				flags: "i",
+				executed_only: true,
+			},
+		],
+		reason:
+			"git checkout -- <file> / git restore <file> discards uncommitted changes to that file with no undo.",
+		suggestion:
+			"Confirm you want to lose those changes — git stash first if you might need them back.",
+		severity: "medium",
+		category: "git-operations",
+	},
+	{
+		id: "builtin-git-clone-into-tree",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "soft_block",
+		patterns: [
+			// Fires when `git clone` ends with a relative destination path —
+			// not an absolute `/...` path, not `~`, not a flag. Absolute and
+			// /tmp destinations don't match, so only in-tree clones trip it.
+			{
+				field: "command",
+				regex: "\\bgit\\s+clone\\b.*\\s(?![-/~])[\\w.][\\w./-]*\\s*$",
+				flags: "i",
+				executed_only: true,
+			},
+		],
+		reason:
+			"git clone with a relative destination drops the cloned repo inside the working tree, where its files can be accidentally staged and committed.",
+		suggestion:
+			"Clone reference repositories to /tmp instead — git clone <url> /tmp/<name> — so they can't contaminate this project. Re-run if the in-tree location is intentional.",
+		severity: "low",
+		category: "git-operations",
+	},
+	{
+		id: "builtin-git-add-interactive",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "block",
+		patterns: [
+			{
+				field: "command",
+				regex: "\\bgit\\s+add\\s+(?:\\S+\\s+)*(?:-i|-p|-e|--interactive|--patch|--edit)\\b",
+				flags: "i",
+				executed_only: true,
+			},
+		],
+		reason:
+			"git add -i / -p / -e opens an interactive prompt or editor that hangs a non-interactive agent tool call indefinitely.",
+		suggestion:
+			"Stage files non-interactively: git add <pathspec>. To stage part of a file, edit the file directly.",
+		severity: "medium",
 		category: "git-operations",
 	},
 ];

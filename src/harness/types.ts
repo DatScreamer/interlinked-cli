@@ -583,6 +583,12 @@ export interface PreEditBaseline {
 	 * Optional — absent when coverage data is unavailable (fail-open).
 	 */
 	crapScores?: Map<string, Map<string, number>>;
+	/**
+	 * Code-clone similarity pairs captured before the edit.
+	 * Consumed by the PostToolUse code_clones block so old duplication in a
+	 * touched file is not reported as a new agent warning.
+	 */
+	dryCloneBaseline?: import("./checks/dry-baseline.js").DryBaseline;
 	/** When this baseline was captured */
 	capturedAt: number;
 	/** Count of suppression directives (@ts-expect-error, @ts-expect-error, eslint-disable, biome-ignore) */

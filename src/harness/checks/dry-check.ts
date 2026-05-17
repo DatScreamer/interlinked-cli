@@ -13,7 +13,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { FunctionShingles } from "./dry.js";
+import type { CloneFinding, FunctionShingles } from "./dry.js";
 import { extractFunctionShingles, findClones } from "./dry.js";
 import { getExtension, type InlineMatch, isTestFile, JS_TS_EXTS } from "./shared.js";
 
@@ -35,6 +35,14 @@ const MAX_SIBLINGS = 40;
  * break an edit.
  */
 export function checkCodeClones(content: string, filePath: string): InlineMatch[] {
+	return checkCodeCloneFindings(content, filePath).map(formatCodeCloneFinding(filePath));
+}
+
+/**
+ * Return raw clone findings for callers that need to apply a pre-edit
+ * baseline before rendering the registered InlineMatch shape.
+ */
+export function checkCodeCloneFindings(content: string, filePath: string): CloneFinding[] {
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 	if (isTestFile(filePath)) return [];
 
@@ -42,9 +50,12 @@ export function checkCodeClones(content: string, filePath: string): InlineMatch[
 	if (edited.length === 0) return [];
 
 	const candidates = collectSiblingFunctions(filePath);
-	const findings = findClones({ edited, candidates });
+	return findClones({ edited, candidates });
+}
 
-	return findings.map((f) => {
+/** Adapt a raw clone pair to the generic registry InlineMatch shape. */
+export function formatCodeCloneFinding(filePath: string): (finding: CloneFinding) => InlineMatch {
+	return (f) => {
 		const where =
 			f.otherFile === filePath
 				? `same file (line ${f.otherLine})`
@@ -53,7 +64,7 @@ export function checkCodeClones(content: string, filePath: string): InlineMatch[
 			line: f.line,
 			text: `${f.name}() is ${Math.round(f.similarity * 100)}% similar to ${f.otherName}() in ${where} -- extract the shared logic`,
 		};
-	});
+	};
 }
 
 /**
@@ -61,7 +72,7 @@ export function checkCodeClones(content: string, filePath: string): InlineMatch[
  * functions. Bounded, non-recursive. Any filesystem error is swallowed: the
  * candidate set just shrinks, the check still runs on within-file clones.
  */
-function collectSiblingFunctions(filePath: string): FunctionShingles[] {
+export function collectSiblingFunctions(filePath: string): FunctionShingles[] {
 	const dir = dirname(filePath);
 	let entries: string[];
 	try {

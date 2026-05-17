@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 import type { QualityCheckOptions } from "../quality-checks.js";
 import type { HarnessEvent } from "../types.js";
 
@@ -43,6 +44,7 @@ vi.mock("../check-engine/index.js", () => ({
 
 let MOCK_FILE_CONTENT = "";
 
+import { snapshotDryShingles } from "../checks/dry-baseline.js";
 import { runQualityChecks } from "../quality-checks.js";
 
 // Deterministic fixtures.
@@ -189,6 +191,93 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(0);
+	});
+});
+
+// ===========================================
+// code_clones: baseline subtraction
+// ===========================================
+describe("diff-aware: code_clones baseline subtraction", () => {
+	const cloneBody = `{
+		const out: number[] = [];
+		for (const row of rows) {
+			if (row.enabled) {
+				out.push(row.value);
+			}
+		}
+		return out;
+	}`;
+
+	const oneClone = `type Row = { enabled: boolean; value: number };
+function collectA(rows: Row[]): number[] ${cloneBody}
+`;
+
+	const twoClones = `type Row = { enabled: boolean; value: number };
+function collectA(rows: Row[]): number[] ${cloneBody}
+function collectB(rows: Row[]): number[] ${cloneBody}
+`;
+
+	function baselineFor(
+		preContent: string,
+		filePath = "/project/src/example.ts",
+	): QualityCheckOptions["baseline"] {
+		return {
+			missingReturnTypes: new Set(),
+			complexFunctions: new Set(),
+			capturedAt: FIXED_NOW,
+			suppressionCount: 0,
+			asAnyCastCount: 0,
+			nonNullAssertionCount: 0,
+			dryCloneBaseline: snapshotDryShingles({
+				preContent,
+				filePath,
+				candidates: [],
+			}),
+		};
+	}
+
+	it("suppresses pre-existing clones when the edit touched unrelated content", async () => {
+		MOCK_FILE_CONTENT = `${twoClones}\nconst unrelated = 2;\n`;
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: baselineFor(`${twoClones}\nconst unrelated = 1;\n`),
+			diffAware: { enabled: true },
+		});
+		expect(results.filter((r) => r.name === "code_clones")).toEqual([]);
+	});
+
+	it("suppresses pre-existing clones when the hook path is relative", async () => {
+		MOCK_FILE_CONTENT = `${twoClones}\nconst unrelated = 2;\n`;
+		const relativeHookPath = "src/example.ts";
+		const results = await runQualityChecks(
+			makeEvent({
+				tool_input: {
+					file_path: relativeHookPath,
+					old_string: "const unrelated = 1;",
+					new_string: "const unrelated = 2;",
+				},
+			}),
+			BASIC_CHECKS,
+			"/project",
+			{
+				baseline: baselineFor(
+					`${twoClones}\nconst unrelated = 1;\n`,
+					resolve("/project", relativeHookPath),
+				),
+				diffAware: { enabled: true },
+			},
+		);
+		expect(results.filter((r) => r.name === "code_clones")).toEqual([]);
+	});
+
+	it("reports a clone pair newly introduced by the edit", async () => {
+		MOCK_FILE_CONTENT = twoClones;
+		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", {
+			baseline: baselineFor(oneClone),
+			diffAware: { enabled: true },
+		});
+		const cloneResults = results.filter((r) => r.name === "code_clones");
+		expect(cloneResults).toHaveLength(1);
+		expect(cloneResults[0].detail).toContain("collectA()");
 	});
 });
 

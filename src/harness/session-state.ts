@@ -20,6 +20,7 @@ import type {
 import {
 	classifyBrowserToolName,
 	classifyVerificationCommand,
+	STUB_INTRODUCED_CAP,
 } from "./verification-stop-checks.js";
 
 /** Bumped when the serialized snapshot shape changes incompatibly. Hydrate
@@ -240,6 +241,49 @@ export class SessionTracker {
 
 	remove(sessionId: string): void {
 		this.sessions.delete(sessionId);
+	}
+
+	/**
+	 * Roll the verification-related signals of one session (typically a
+	 * subagent's) into another (its parent). Called at SubagentStop so a
+	 * parent's Stop nudge doesn't false-positive ("no verification this
+	 * session", "no tests run") when the agent delegated testing or
+	 * verification to a subagent — exactly the test-runner-subagent pattern
+	 * the agentic-engineering-patterns guide recommends.
+	 *
+	 * Merges `verification_observed` (set union), `test_runs` and
+	 * `tdd_cycles` (gap-fill only — the parent's own entry for a file is
+	 * newer and authoritative, never clobbered), and `stubs_introduced`
+	 * (append, capped). Returns true when both sessions exist and distinct.
+	 */
+	rollUpVerificationSignals(fromSessionId: string, toSessionId: string): boolean {
+		if (fromSessionId === toSessionId) return false;
+		const from = this.sessions.get(fromSessionId);
+		const to = this.sessions.get(toSessionId);
+		if (!from || !to) return false;
+
+		if (from.verification_observed && from.verification_observed.size > 0) {
+			if (!to.verification_observed) to.verification_observed = new Set();
+			for (const sig of from.verification_observed) to.verification_observed.add(sig);
+		}
+
+		// Gap-fill only: a run/cycle the parent already tracks for a file is
+		// newer than the subagent's, so never overwrite it.
+		for (const [file, run] of from.test_runs) {
+			if (!to.test_runs.has(file)) to.test_runs.set(file, { ...run });
+		}
+		for (const [file, cycle] of from.tdd_cycles) {
+			if (!to.tdd_cycles.has(file)) to.tdd_cycles.set(file, { ...cycle });
+		}
+
+		if (from.stubs_introduced && from.stubs_introduced.length > 0) {
+			if (!to.stubs_introduced) to.stubs_introduced = [];
+			for (const stub of from.stubs_introduced) {
+				if (to.stubs_introduced.length >= STUB_INTRODUCED_CAP) break;
+				to.stubs_introduced.push({ ...stub });
+			}
+		}
+		return true;
 	}
 
 	/**

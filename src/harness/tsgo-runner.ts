@@ -325,6 +325,9 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		lifecycle.disposed = true;
 		for (const w of watchers.values()) w.kill();
 		watchers.clear();
+		process.removeListener("exit", onExit);
+		process.removeListener("SIGTERM", onExit);
+		process.removeListener("SIGINT", onExit);
 	}
 
 	// Kill the warm child(ren) when the daemon process exits. This keeps the

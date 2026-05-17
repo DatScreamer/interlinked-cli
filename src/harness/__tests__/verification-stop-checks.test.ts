@@ -4,7 +4,9 @@ import {
 	classifyVerificationCommand,
 	countCodeFilesEdited,
 	countUiFilesEdited,
+	formatBisectNotResetWarning,
 	formatStubsIntroducedWarning,
+	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
@@ -59,6 +61,21 @@ describe("classifyVerificationCommand", () => {
 		expect(classifyVerificationCommand("bun run dev")).toBe("dev-server");
 		expect(classifyVerificationCommand("vite")).toBe("dev-server");
 		expect(classifyVerificationCommand("next dev")).toBe("dev-server");
+	});
+
+	it("classifies Python dev servers as dev-server", () => {
+		expect(classifyVerificationCommand("python -m http.server 8000")).toBe("dev-server");
+		expect(classifyVerificationCommand("python3 -m http.server")).toBe("dev-server");
+		expect(classifyVerificationCommand("uvicorn main:app --reload")).toBe("dev-server");
+		expect(classifyVerificationCommand("flask run")).toBe("dev-server");
+	});
+
+	it("classifies browser-automation CLIs as browser interaction", () => {
+		expect(classifyVerificationCommand("uvx rodney screenshot")).toBe("browser");
+		expect(classifyVerificationCommand("rodney --help")).toBe("browser");
+		expect(classifyVerificationCommand("agent-browser snapshot")).toBe("browser");
+		expect(classifyVerificationCommand("npx playwright test")).toBe("browser");
+		expect(classifyVerificationCommand("playwright codegen")).toBe("browser");
 	});
 
 	it("returns null for unrelated commands", () => {
@@ -424,5 +441,63 @@ describe("countCodeFilesEdited / countUiFilesEdited", () => {
 	it("returns 0 on an empty set", () => {
 		expect(countCodeFilesEdited(new Set())).toBe(0);
 		expect(countUiFilesEdited(new Set())).toBe(0);
+	});
+});
+
+describe("formatTddRegressionWarning", () => {
+	it("returns null when there are no regressions", () => {
+		expect(formatTddRegressionWarning({ regressions: [] })).toBeNull();
+	});
+
+	it("warns with the file basename and count for a regression", () => {
+		const msg = formatTddRegressionWarning({
+			regressions: [{ sourceFile: "/repo/src/parser.ts" }],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/1 test regression\(s\)/);
+		expect(msg).toContain("parser.ts");
+		expect(msg).toMatch(/green→red/);
+	});
+
+	it("truncates to maxShown and adds an 'and N more' suffix", () => {
+		const regressions = Array.from({ length: 9 }, (_, i) => ({
+			sourceFile: `src/mod-${i}.ts`,
+		}));
+		const msg = formatTddRegressionWarning({ regressions, maxShown: 5 });
+		expect(msg).toContain("...and 4 more");
+		expect(msg).toContain("mod-0.ts");
+		expect(msg).not.toContain("mod-5.ts");
+	});
+});
+
+describe("formatBisectNotResetWarning", () => {
+	it("returns null when no bisect command ran", () => {
+		expect(
+			formatBisectNotResetWarning({ commandsRun: ["git status", "npm test"] }),
+		).toBeNull();
+	});
+
+	it("returns null when a reset followed the last bisect step", () => {
+		expect(
+			formatBisectNotResetWarning({
+				commandsRun: ["git bisect start", "git bisect bad", "git bisect reset"],
+			}),
+		).toBeNull();
+	});
+
+	it("warns when a bisect was started but never reset", () => {
+		const msg = formatBisectNotResetWarning({
+			commandsRun: ["git bisect start HEAD HEAD~10", "git bisect good"],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/unfinished git bisect/);
+		expect(msg).toMatch(/git bisect reset/);
+	});
+
+	it("warns when a new bisect starts after a prior reset", () => {
+		const msg = formatBisectNotResetWarning({
+			commandsRun: ["git bisect start", "git bisect reset", "git bisect start"],
+		});
+		expect(msg).not.toBeNull();
 	});
 });

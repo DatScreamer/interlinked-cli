@@ -22,7 +22,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "../lib/json-types.js";
 import {
@@ -56,6 +56,8 @@ import { countPendingReviews } from "./content-scanner/review-files.js";
 import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
 import { fetchAndScan } from "./content-scanner/web-fetch-proxy.js";
 import { snapshotCrap } from "./checks/crap-baseline.js";
+import { snapshotDryShingles } from "./checks/dry-baseline.js";
+import { collectSiblingFunctions } from "./checks/dry-check.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
 import { ErrorHistory } from "./error-history.js";
@@ -121,7 +123,9 @@ import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import {
 	countCodeFilesEdited,
 	countUiFilesEdited,
+	formatBisectNotResetWarning,
 	formatStubsIntroducedWarning,
+	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
@@ -833,6 +837,30 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						log(`Verify-before-stop: stubs-introduced (${stubs.length})`);
 					}
 				}
+				// TDD regression — a test that was green earlier this session
+				// is now red, so this session's edits broke working behavior.
+				const tddRegressions: Array<{ sourceFile: string }> = [];
+				for (const cycle of session.tdd_cycles.values()) {
+					if (cycle.state === "regression") {
+						tddRegressions.push({ sourceFile: cycle.source_file });
+					}
+				}
+				const regressionWarning = formatTddRegressionWarning({
+					regressions: tddRegressions,
+				});
+				if (regressionWarning !== null) {
+					turnWarnings.push(regressionWarning);
+					log(`Verify-before-stop: tdd-regression (${tddRegressions.length})`);
+				}
+				// Unfinished git bisect — a bisect start/op with no reset after
+				// it leaves the repo in detached-HEAD bisect state.
+				const bisectWarning = formatBisectNotResetWarning({
+					commandsRun: session.commands_run,
+				});
+				if (bisectWarning !== null) {
+					turnWarnings.push(bisectWarning);
+					log("Verify-before-stop: bisect-not-reset");
+				}
 			}
 
 			// Persist session trajectory + turn summary before cleanup
@@ -922,10 +950,21 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			cohort.subagentJoined(event);
 			log(`Subagent joined: ${event.agent_name || "unnamed"}`);
 			break;
-		case "SubagentStop":
+		case "SubagentStop": {
 			cohort.subagentLeft(event);
+			// Roll the subagent's verification signals up into the parent
+			// session so the parent's Stop nudge doesn't false-positive when
+			// the agent delegated testing/verification to a subagent.
+			const parentSessionId = resolveParentSessionId(event, cohort, sessions);
+			if (
+				parentSessionId &&
+				sessions.rollUpVerificationSignals(event.session_id, parentSessionId)
+			) {
+				log(`Subagent verification rolled up into parent session ${parentSessionId}`);
+			}
 			log(`Subagent left: ${event.agent_name || "unnamed"}`);
 			break;
+		}
 		case "SkillEnter": {
 			const name = (event.tool_input?.name as string | undefined)?.trim();
 			if (!name) {
@@ -1592,20 +1631,21 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				"edit_file",
 			].includes(toolName);
 
-			if (isFileWrite && existsSync(filePath)) {
+			const baselineFilePath = isAbsolute(filePath) ? filePath : resolve(CWD, filePath);
+			if (isFileWrite && existsSync(baselineFilePath)) {
 				try {
-					const preContent = readFileSync(filePath, "utf-8");
-					const missingRT = checkMissingReturnTypes(preContent, filePath);
-					const complexFns = checkFunctionComplexity(preContent, filePath);
+					const preContent = readFileSync(baselineFilePath, "utf-8");
+					const missingRT = checkMissingReturnTypes(preContent, baselineFilePath);
+					const complexFns = checkFunctionComplexity(preContent, baselineFilePath);
 					// CRAP baseline — fail-open when coverage data is absent.
 					let crapScores: Map<string, Map<string, number>> | undefined;
 					try {
 						const coveragePath = resolve(CWD, "coverage", "coverage-final.json");
 						const covCache = loadCoverageFinal(coveragePath, CWD);
 						if (covCache) {
-							const relPath = relative(CWD, filePath).replace(/\\/g, "/");
+							const relPath = relative(CWD, baselineFilePath).replace(/\\/g, "/");
 							const perFile = coverageForFile(covCache, relPath);
-							const mtimeMs = statSync(filePath).mtimeMs;
+							const mtimeMs = statSync(baselineFilePath).mtimeMs;
 							crapScores = snapshotCrap({
 								preContent,
 								filePath: relPath,
@@ -1617,10 +1657,21 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					} catch (crapErr) {
 						void crapErr; /* CRAP snapshot must never break the baseline capture */
 					}
-					preEditBaselines.set(filePath, {
+					let dryCloneBaseline: PreEditBaseline["dryCloneBaseline"] | undefined;
+					try {
+						dryCloneBaseline = snapshotDryShingles({
+							preContent,
+							filePath: baselineFilePath,
+							candidates: collectSiblingFunctions(baselineFilePath),
+						});
+					} catch (dryErr) {
+						void dryErr; /* clone snapshot must never break the baseline capture */
+					}
+					preEditBaselines.set(baselineFilePath, {
 						missingReturnTypes: new Set(missingRT.map((m) => m.text)),
 						complexFunctions: new Set(complexFns.map((m) => m.text)),
 						crapScores,
+						dryCloneBaseline,
 						capturedAt: Date.now(),
 						suppressionCount: countSuppressionDirectives(preContent),
 						asAnyCastCount: countAsAnyCasts(preContent),
@@ -1629,7 +1680,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						consoleStatementCount: countConsoleStatements(preContent),
 						publicApiSurfaceCount: countPublicApiSurface(preContent),
 						typeDensity: countTypeDensity(preContent),
-						softwareVersions: collectSoftwareVersionReferences(preContent, filePath),
+						softwareVersions: collectSoftwareVersionReferences(
+							preContent,
+							baselineFilePath,
+						),
 						discoveredPrimitiveViolations: captureDiscoveredPrimitiveViolations(
 							CWD,
 							preContent,
@@ -2306,7 +2360,10 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						log(`Smart tsc: filtering to ${filterFile} (internal-only edit)`);
 					}
 
-					const currentBaseline = preEditBaselines.get(editedFilePath);
+					const baselineFilePath = isAbsolute(editedFilePath)
+						? editedFilePath
+						: resolve(CWD, editedFilePath);
+					const currentBaseline = preEditBaselines.get(baselineFilePath);
 					previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
 					// Phase mark — everything from the last mark up to here was
 					// the structural-checks block (export-surface diff, project
@@ -2343,7 +2400,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 					// phase covers their wall time + the inline-check residual.
 					markPhase("quality_checks");
 					// Clear consumed baseline
-					preEditBaselines.delete(editedFilePath);
+					preEditBaselines.delete(baselineFilePath);
 					// Track which quality checks actually applied to this file type
 					for (const [name, check] of Object.entries(rules.quality_checks)) {
 						if (
@@ -3101,6 +3158,40 @@ function recordTestWrite(session: import("./types.js").SessionTrajectory, testFi
 	const cycle = getOrCreateCycle(session, sourceFile);
 	cycle.test_file = testFile;
 	cycle.test_written_at = session.tool_call_count;
+}
+
+/**
+ * Resolve the parent session_id for a SubagentStop event so the subagent's
+ * verification signals can be rolled up into the parent's trajectory.
+ * Subagent tool calls arrive under the subagent's own session_id, so the
+ * parent linkage has to be reconstructed: the cohort records each
+ * subagent's `parent_agent` (a name); resolve that name back to a session.
+ * Falls through several shapes because runners populate the linkage
+ * inconsistently. Returns undefined when no parent session can be found —
+ * the caller then simply skips the roll-up (no worse than before).
+ */
+function resolveParentSessionId(
+	event: HarnessEvent,
+	cohort: CohortManager,
+	sessions: SessionTracker,
+): string | undefined {
+	const ti = event.tool_input;
+	const subName =
+		event.agent_name ||
+		(typeof ti?.subagent_id === "string" ? ti.subagent_id : undefined) ||
+		(typeof ti?.agent_id === "string" ? ti.agent_id : undefined);
+	const parentName =
+		(subName ? cohort.getAgent(subName)?.parent_agent : undefined) ??
+		event.parent_agent ??
+		(typeof ti?.parent_agent_name === "string" ? ti.parent_agent_name : undefined) ??
+		(typeof ti?.parent_agent === "string" ? ti.parent_agent : undefined);
+	if (!parentName) return undefined;
+	// parentName is normally an agent name — map it back to a session_id.
+	const byAgent = cohort.getAgent(parentName)?.session_id;
+	if (byAgent && sessions.get(byAgent)) return byAgent;
+	// Some runners pass the parent session_id directly as the linkage value.
+	if (sessions.get(parentName)) return parentName;
+	return undefined;
 }
 
 /** Record a test run result and update the corresponding cycle state. */

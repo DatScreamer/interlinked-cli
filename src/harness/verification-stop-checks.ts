@@ -62,11 +62,21 @@ const LINT_RE =
 const BUILD_RE =
 	/\b(?:tsc\s+--build|cargo\s+build|go\s+build|mvn\s+(?:compile|package)|gradle\s+build)\b|\b(?:npm|bun|pnpm|yarn)\s+run\s+build\b/;
 
-/** Dev-server starters across the common JS frameworks.
- *  Pattern matches both `wrangler dev` and `npm run dev` / `bun run dev`
- *  shapes. */
+/** Dev-server starters across the common JS frameworks plus the Python
+ *  dev servers (`python -m http.server`, `uvicorn`, `flask run`). Matches
+ *  `wrangler dev`, `npm run dev` / `bun run dev`, and the Python shapes. */
 const DEV_SERVER_RE =
-	/\b(?:wrangler\s+dev|next\s+dev|vite(?:\s+dev|\s+preview|\s+--port)?|astro\s+dev|nuxt\s+dev|svelte-kit\s+dev|webpack\s+serve|remix\s+dev|gatsby\s+develop)\b|\b(?:npm|bun|pnpm|yarn)\s+run\s+dev\b/;
+	/\b(?:wrangler\s+dev|next\s+dev|vite(?:\s+dev|\s+preview|\s+--port)?|astro\s+dev|nuxt\s+dev|svelte-kit\s+dev|webpack\s+serve|remix\s+dev|gatsby\s+develop)\b|\b(?:npm|bun|pnpm|yarn)\s+run\s+dev\b|\bpython3?\s+-m\s+http\.server\b|\buvicorn\b|\bflask\s+run\b/;
+
+/** Browser-automation CLIs that prove the agent drove a real page:
+ *  Simon Willison's Rodney (`uvx rodney …`), Vercel's agent-browser, and
+ *  the Playwright CLI. The command-line counterpart of the chrome-devtools
+ *  and playwright MCP tools that `classifyBrowserToolName` already covers —
+ *  added so an agent that manual-tests via a CLI tool (per the
+ *  agentic-engineering-patterns "agentic manual testing" guide) still
+ *  satisfies the UI-not-interacted check. */
+const BROWSER_CLI_RE =
+	/\b(?:rodney|agent-browser)\b|(?:^|[\s;&|])(?:npx\s+|uvx\s+|bunx\s+)?playwright\s+(?:test|codegen|show-report|install|open)\b/;
 
 /** `interlinked verify` — the project's canonical local gate. Recognized
  *  in all the common invocation shapes (direct binary, npx, ts-node, the
@@ -93,6 +103,7 @@ export function classifyVerificationCommand(cmd: string): VerificationSignal | n
 	if (TEST_RE.test(cmd)) return "test";
 	if (LINT_RE.test(cmd)) return "lint";
 	if (BUILD_RE.test(cmd)) return "build";
+	if (BROWSER_CLI_RE.test(cmd)) return "browser";
 	if (DEV_SERVER_RE.test(cmd)) return "dev-server";
 	return null;
 }
@@ -352,6 +363,70 @@ export function formatStubsIntroducedWarning(opts: FormatStubsIntroducedOpts): s
 		`addition(s) introduced this session:\n${lines.join("\n")}${more}\n` +
 		"If these are deliberate scaffolding, document the follow-up in a TODO list or issue. " +
 		"If they're forgotten work, finish them before stopping."
+	);
+}
+
+// ---------------------------------------------------------------------------
+// TDD regression + git-bisect Stop nudges
+// ---------------------------------------------------------------------------
+
+/**
+ * Public — Stop-time nudge when one or more tracked TDD cycles ended the
+ * session in the `regression` state: a test that passed earlier this
+ * session is now failing. A green→red transition is strong evidence the
+ * session's edits broke previously-working behavior. Returns null when
+ * there are no regressions.
+ */
+export function formatTddRegressionWarning(opts: {
+	regressions: ReadonlyArray<{ sourceFile: string }>;
+	maxShown?: number;
+}): string | null {
+	if (opts.regressions.length === 0) return null;
+	const max = opts.maxShown ?? 5;
+	const shown = opts.regressions.slice(0, max);
+	const lines = shown.map((r) => `  - ${basename(r.sourceFile)}`);
+	const more =
+		opts.regressions.length > max
+			? `\n  ...and ${opts.regressions.length - max} more`
+			: "";
+	return (
+		`[interlinked:verify-before-stop] Stopping with ${opts.regressions.length} test ` +
+		"regression(s) — a test that was passing earlier this session is now failing:\n" +
+		`${lines.join("\n")}${more}\n` +
+		"A green→red transition means this session's edits broke previously-working " +
+		"behavior. Re-run the test(s) and fix the regression before stopping."
+	);
+}
+
+/** A `git bisect` sub-command that puts the repo INTO bisect state (or keeps
+ *  it there). `reset` is deliberately excluded — it is the exit. */
+const BISECT_OP_RE = /\bgit\s+bisect\s+(?:start|good|bad|new|old|skip|run)\b/;
+/** `git bisect reset` — the command that restores HEAD and ends a bisect. */
+const BISECT_RESET_RE = /\bgit\s+bisect\s+reset\b/;
+
+/**
+ * Public — Stop-time nudge when the session ran `git bisect start` (or any
+ * bisect step) without a later `git bisect reset`. An unfinished bisect
+ * leaves the working tree on an old commit in detached-HEAD state, which is
+ * a confusing place to stop. Returns null when there is no bisect activity,
+ * or a reset followed the last bisect step.
+ */
+export function formatBisectNotResetWarning(opts: {
+	commandsRun: ReadonlyArray<string>;
+}): string | null {
+	let lastOp = -1;
+	let lastReset = -1;
+	for (let i = 0; i < opts.commandsRun.length; i++) {
+		const c = opts.commandsRun[i];
+		if (BISECT_OP_RE.test(c)) lastOp = i;
+		if (BISECT_RESET_RE.test(c)) lastReset = i;
+	}
+	if (lastOp === -1 || lastReset > lastOp) return null;
+	return (
+		"[interlinked:verify-before-stop] Stopping with an unfinished git bisect — a " +
+		"`git bisect start/good/bad/run` ran this session with no `git bisect reset` " +
+		"after it. The working tree is likely still on an old commit in detached-HEAD " +
+		"bisect state. Run `git bisect reset` to restore HEAD before stopping."
 	);
 }
 

@@ -319,4 +319,62 @@ describe("command-guard-hook.ts parity with harness", () => {
 			expect(runGuard("shred /tmp/file")).toBe("block");
 		});
 	});
+
+	// ===========================================
+	// Git rules added from the agentic-engineering-patterns review:
+	// amend, single-file discard, clone-into-tree, interactive add.
+	// ===========================================
+	describe("agentic-engineering-patterns git rules", () => {
+		it("hard-blocks git add -i (interactive staging hangs the agent)", () => {
+			expect(runGuard("git add -i")).toBe("block");
+		});
+
+		it("hard-blocks git add -p", () => {
+			expect(runGuard("git add -p")).toBe("block");
+		});
+
+		it("allows non-interactive git add", () => {
+			expect(runGuard("git add src/foo.ts")).toBe("allow");
+		});
+
+		it("flags git commit --amend", () => {
+			expect(runGuard("git commit --amend --no-edit")).not.toBe("allow");
+		});
+
+		it("allows a normal git commit -m", () => {
+			expect(runGuard('git commit -m "fix the bug"')).toBe("allow");
+		});
+
+		it("does not flag --amend mentioned inside a quoted commit message", () => {
+			expect(runGuard('git commit -m "document the --amend workflow"')).toBe("allow");
+		});
+
+		it("flags a single-file git checkout -- <file>", () => {
+			expect(runGuard("git checkout -- src/foo.ts")).not.toBe("allow");
+		});
+
+		it("allows a plain git checkout <branch> (branch switch)", () => {
+			expect(runGuard("git checkout main")).toBe("allow");
+		});
+
+		it("flags a single-file git restore <file>", () => {
+			expect(runGuard("git restore src/foo.ts")).not.toBe("allow");
+		});
+
+		it("allows git restore --staged (index only, non-destructive)", () => {
+			expect(runGuard("git restore --staged src/foo.ts")).toBe("allow");
+		});
+
+		it("flags git clone into a relative in-tree path", () => {
+			expect(runGuard("git clone https://example.com/x/y.git ./reference")).not.toBe(
+				"allow",
+			);
+		});
+
+		it("allows git clone to /tmp", () => {
+			expect(runGuard("git clone https://example.com/x/y.git /tmp/reference")).toBe(
+				"allow",
+			);
+		});
+	});
 });

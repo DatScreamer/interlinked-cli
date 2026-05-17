@@ -412,6 +412,64 @@ function coldGraphShardBlockReason(event: UnifiedHookEvent): string | null {
 	return null;
 }
 
+/** Merge-conflict marker regex — mirrors evaluator/write-content-guards.ts. */
+const MERGE_CONFLICT_MARKER_RE = /^<{7}\s|^={7}$|^>{7}\s/m;
+
+interface ColdWriteContentInput {
+	content?: unknown;
+	new_string?: unknown;
+	new_source?: unknown;
+	edits?: unknown;
+}
+
+/** Extract the text a file-write tool call would put on disk, across the
+ *  Write (`content`), Edit (`new_string`), NotebookEdit (`new_source`) and
+ *  MultiEdit (`edits[].new_string`) shapes. Returns null when no write
+ *  content is present (a non-write tool, or apply_patch — whose
+ *  line-prefixed diff body the daemon parses separately). */
+function extractColdWriteContent(event: UnifiedHookEvent): string | null {
+	const action = event.action;
+	if (action.kind !== ACTION_TOOL_CALL) return null;
+	const ti = (action.tool_input ?? {}) as ColdWriteContentInput;
+	if (typeof ti.content === "string") return ti.content;
+	if (typeof ti.new_string === "string") return ti.new_string;
+	if (typeof ti.new_source === "string") return ti.new_source;
+	if (Array.isArray(ti.edits)) {
+		const parts: string[] = [];
+		for (const e of ti.edits) {
+			if (e && typeof e === "object" && "new_string" in e) {
+				const ns = (e as { new_string?: unknown }).new_string;
+				if (typeof ns === "string") parts.push(ns);
+			}
+		}
+		if (parts.length > 0) return parts.join("\n");
+	}
+	return null;
+}
+
+/** Cold fail-closed gate: refuse a file write whose content carries
+ *  merge-conflict markers. A file with `<<<<<<<` / `=======` / `>>>>>>>`
+ *  markers is a guaranteed parse error; the daemon blocks it at
+ *  write-content-guards check A1, so the cold path must too — otherwise a
+ *  daemon outage silently lets broken content through. Returns the block
+ *  reason, or null when the write is clean / not a file write. */
+function coldMergeConflictBlockReason(event: UnifiedHookEvent): string | null {
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	const toolName = colColdToolName(event);
+	if (!toolName || !GRAPH_SHARD_WRITE_TOOLS.has(toolName)) return null;
+	const content = extractColdWriteContent(event);
+	if (!content || !MERGE_CONFLICT_MARKER_RE.test(content)) return null;
+	const paths = extractColdTargetPaths(event);
+	const where = paths.length > 0 ? paths[0] : "the target file";
+	return (
+		"[interlinked:merge-conflict] BLOCKED: merge-conflict markers " +
+		"(<<<<<<<, =======, >>>>>>>) detected in the content being written to " +
+		where +
+		". A file with conflict markers is a guaranteed parse error — resolve " +
+		"the conflict before writing."
+	);
+}
+
 function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
@@ -428,6 +486,24 @@ function encodeColdFallback(
 	// Exception: fail-closed graph-prediction gate. If the agent is about to
 	// edit a file with a fresh `.graph.*` shard and we can't reach the
 	// evaluator, block — the protocol requires it.
+	// Cold fail-closed gate: merge-conflict markers are a guaranteed parse
+	// error. Checked before the graph-shard gate — broken content is a more
+	// immediate signal than the protocol-restart mechanics.
+	const mergeBlockReason = coldMergeConflictBlockReason(event);
+	if (mergeBlockReason) {
+		const blockDecision: HarnessDecision = {
+			decision: "block",
+			reason: mergeBlockReason,
+		};
+		const blockOutput = adapter.encodeDecision(blockDecision, event);
+		const notice = `[interlinked] ${reason}; merge-conflict fail-closed gate engaged\n`;
+		return {
+			stdout: blockOutput.stdout,
+			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
+			exit_code: blockOutput.exit_code,
+			fell_back: true,
+		};
+	}
 	const shardBlockReason = coldGraphShardBlockReason(event);
 	if (shardBlockReason) {
 		const blockDecision: HarnessDecision = {

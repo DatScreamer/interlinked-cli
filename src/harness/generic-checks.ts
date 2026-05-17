@@ -167,6 +167,8 @@ export {
 	checkLargeFile,
 	LARGE_FILE_DEFAULT_MAX_LINES,
 } from "./checks/language-agnostic.js";
+// ---- markdown ----
+export { checkPlaceholderMarkdownLinks } from "./checks/markdown.js";
 // ---- missing-effect-cleanup ----
 export { checkMissingEffectCleanup } from "./checks/missing-effect-cleanup.js";
 // ---- over-mocking ----

@@ -170,6 +170,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		missing_return_types: summarize(cq.missingReturnTypes),
 		no_test_file: summarize(cq.noTestFile),
 		complexity: summarize(cq.complexity),
+		code_clones: summarizeWithDetails(cq.codeClones),
 		crap: summarizeWithDetails(cq.crap),
 		export_ripple: summarize(cq.exportRipple),
 		excessive_use_state: summarize(cq.excessiveUseState),

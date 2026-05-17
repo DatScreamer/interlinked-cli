@@ -241,6 +241,12 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	// is deferred to a follow-up. Hook-time coverage is the load-bearing path.
 	"checkPackageJsonScriptPaths",
 	"package_json_script_paths",
+	// Placeholder markdown-link check: a registry check that fires on every
+	// PostToolUse markdown edit (its load-bearing path). The verify-side
+	// full-scan wiring is a deferred follow-up — same rationale as the
+	// checkPackageJsonScriptPaths note above.
+	"checkPlaceholderMarkdownLinks",
+	"placeholder_markdown_link",
 ]);
 
 // ===========================================

@@ -72,12 +72,12 @@ const MODEL_PROVIDER_RE =
 const NON_MODEL_EXTENSION_RE =
 	/\.(?:md|mdx|txt|json|jsonc|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|cedar|html|css|sh|py|rs|go|lock|local)\b/i;
 
-// The disciplined model-identifier shape: an optional namespace, then a
-// provider word, then `-`/`.` joined family/version tokens. The whole match
-// must contain at least one digit (enforced separately) and the provider
-// must not be followed by a file extension.
+// The disciplined model-identifier shape: an optional namespace, then either
+// a provider word joined by `-`/`.` to family/version tokens, or OpenAI's
+// compact o-series form (`o3`, `o4-mini`). The whole match must contain at
+// least one digit and the provider must not be followed by a file extension.
 const MODEL_IDENTIFIER_RE =
-	/(?:^|[\s"'`(=:,/])(?<model>(?:[a-z][\w.-]*\/)?(?:gpt|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova|o)[-.][\w.-]*\d[\w.-]*)\b/i;
+	/(?:^|[\s"'`(=:,/])(?<model>(?:[a-z][\w.-]*\/)?(?:(?:gpt|claude|gemini|llama|mistral|mixtral|qwen|deepseek|command-r|nova|o)[-.][\w.-]*\d[\w.-]*|o(?=\d)[\w.-]*\d[\w.-]*))\b/i;
 
 const SOFTWARE_KEY_RE =
 	/(?:^|[_\-.])(?:version|model|modelname|api[_\-.]?version|runtime|engine|image|sdk|tool|package|dependency|node|python|go|rust|java)(?:$|[_\-.])/i;

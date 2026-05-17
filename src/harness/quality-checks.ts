@@ -19,6 +19,11 @@ import {
 	isGeneratedFile,
 	isTestFile,
 } from "./checks/shared.js";
+import { filterToRisers as filterDryToRisers } from "./checks/dry-baseline.js";
+import {
+	checkCodeCloneFindings,
+	formatCodeCloneFinding,
+} from "./checks/dry-check.js";
 import { capturePrimitiveViolations } from "./discovered-primitives.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "./file-priority.js";
 import { loadDisabledLibraries, runFootgunChecks } from "./library-footguns/registry.js";
@@ -834,7 +839,15 @@ export async function runQualityChecks(
 				);
 
 				for (const check of agentSafetyChecks) {
-					const matches = check.fn();
+					const matches =
+						check.name === "code_clones" &&
+						options?.diffAware?.enabled !== false &&
+						options?.baseline?.dryCloneBaseline
+							? filterDryToRisers(
+									checkCodeCloneFindings(fileContent, absFilePath),
+									options.baseline.dryCloneBaseline,
+								).map(formatCodeCloneFinding(absFilePath))
+							: check.fn();
 					if (matches.length > 0) {
 						const shown = matches.slice(0, 5);
 						const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");

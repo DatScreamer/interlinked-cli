@@ -237,6 +237,57 @@ describe("evaluatePreToolUse", () => {
 			expect(result.decision).toBe("block");
 		});
 
+		// Regression: process-kill rules vs. search-tool arguments.
+		// builtin-pgrep-xargs-kill pattern 3 used to treat a bare `awk` in a
+		// `ps | grep | awk` pipeline as a kill, and the kill/killall signal
+		// rules used to match their verb inside a quoted search argument.
+		// A required `xargs kill` + `executed_only` fixed both (commit 055bdfa).
+		it("allows a ps|grep|awk inspection pipeline (no xargs kill)", () => {
+			const event = makeEvent({
+				tool_input: { command: "ps aux | grep claude | awk '{print $11}'" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("allows grep for the literal 'kill -9' (search-tool argument)", () => {
+			const event = makeEvent({
+				tool_input: { command: 'grep -rn "kill -9" src/' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("allows grep for the literal 'killall node' (search-tool argument)", () => {
+			const event = makeEvent({
+				tool_input: { command: 'grep -rn "killall node" src/' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("still blocks a real ps|grep|xargs kill pipeline", () => {
+			const event = makeEvent({
+				tool_input: { command: "ps aux | grep node | awk '{print $2}' | xargs kill" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("still blocks kill -9 <pid>", () => {
+			const event = makeEvent({ tool_input: { command: "kill -9 1234" } });
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("still blocks a signal kill wrapped in bash -c", () => {
+			const event = makeEvent({
+				tool_input: { command: 'bash -c "kill -9 1234"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
 		// Regression: the shutdown/reboot rule used to allow `\s` as a prefix,
 		// which matched the literal substring "shutdown" anywhere — including
 		// inside echo strings, grep arguments, and source-file paths. Verify

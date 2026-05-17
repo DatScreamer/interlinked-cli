@@ -353,4 +353,21 @@ describe("createTsgoRunner — warm watch: cache + dispose", () => {
 		// After dispose the watcher map is cleared → back to "not-started".
 		expect(runner.stats().watch_process).toBe("not-started");
 	}, 20000);
+
+	it("dispose() removes process cleanup listeners", () => {
+		const beforeExit = process.listenerCount("exit");
+		const beforeTerm = process.listenerCount("SIGTERM");
+		const beforeInt = process.listenerCount("SIGINT");
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+
+		expect(process.listenerCount("exit")).toBe(beforeExit + 1);
+		expect(process.listenerCount("SIGTERM")).toBe(beforeTerm + 1);
+		expect(process.listenerCount("SIGINT")).toBe(beforeInt + 1);
+
+		runner.dispose?.();
+
+		expect(process.listenerCount("exit")).toBe(beforeExit);
+		expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
+		expect(process.listenerCount("SIGINT")).toBe(beforeInt);
+	});
 });

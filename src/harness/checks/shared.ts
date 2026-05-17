@@ -165,12 +165,13 @@ export function isTestFile(filePath: string): boolean {
 		(normalized.includes("/harness/rules/") ||
 			normalized.includes("/harness/check-registry/") ||
 			normalized.includes("/harness/check-metadata") ||
-			normalized.includes("/harness/checks/ubs-language-specific.") ||
-			// demo-data.ts is the demo-data detector itself — its pattern
-			// bank holds test-card numbers, filler copy, and example
-			// fake-data strings AS DATA, so the content-quality scans only
-			// ever false-positive on it.
-			normalized.includes("/harness/checks/demo-data.") ||
+			// The whole checks/ tree is detector implementations: each file
+			// holds the very patterns it detects (test-card numbers, fake-data
+			// strings, chmod/SQL/ReDoS examples) AS DATA, so the regex-driven
+			// content-quality scans only ever false-positive on them. This
+			// subsumes the former per-file ubs-language-specific / demo-data
+			// entries and covers shared.ts (home of this very exemption).
+			normalized.includes("/harness/checks/") ||
 			normalized.includes("/harness/evaluator/write-content-guards.") ||
 			// signatures.ts holds the very PI rule descriptions (e.g. the
 			// `sig-pi-system-override` description text) that the daemon's
@@ -180,7 +181,16 @@ export function isTestFile(filePath: string): boolean {
 			// secret-detection.ts is the secret detector itself — its regex
 			// literals and example-key references are secret-shaped strings
 			// AS DATA, so secrets_in_source only false-positives on it.
-			normalized.includes("/harness/quality-checks/secret-detection."))
+			normalized.includes("/harness/quality-checks/secret-detection.") ||
+			// verification-stop-checks.ts defines STUB_PATTERNS — regexes that
+			// hold the literal text "TODO" / "FIXME" / "not implemented" /
+			// "stub" as detection DATA, which the stub and task-marker scans
+			// then flag as findings on the file itself.
+			normalized.includes("/harness/verification-stop-checks.") ||
+			// guards-inline.ts is the inline-fallback guard TEMPLATE: its body
+			// is the generated hook script and holds chmod/rm/kill regexes as
+			// DATA, so content-quality scans (chmod 777, ReDoS) only FP on it.
+			normalized.includes("/hook-template-chunks/guards-inline."))
 	) {
 		return true;
 	}

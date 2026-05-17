@@ -210,6 +210,9 @@ describe("freshness model-identifier false positives (CLAUDE.md / .claude paths 
 		{ name: "claude-3-5-sonnet-20241022", value: "claude-3-5-sonnet-20241022" },
 		// REAL_WORLD_VERSION_FIXTURE_OK — the genuine pinned identifier is the behavior under test.
 		{ name: "gpt-4-0613", value: "gpt-4-0613" },
+		{ name: "o3", value: "o3" }, // REAL_WORLD_VERSION_FIXTURE_OK — exact o-series compact alias is the behavior under test.
+		{ name: "o4-mini", value: "o4-mini" }, // REAL_WORLD_VERSION_FIXTURE_OK — exact o-series compact alias is the behavior under test.
+		{ name: "openai/o3-mini", value: "openai/o3-mini" }, // REAL_WORLD_VERSION_FIXTURE_OK — namespaced o-series alias is the behavior under test.
 	];
 
 	for (const { name, value } of positiveCases) {
@@ -225,6 +228,17 @@ describe("freshness model-identifier false positives (CLAUDE.md / .claude paths 
 			expect(modelConcerns[0].ref.version).toBe(value);
 		});
 	}
+
+	it("classifies compact o-series values under software keys as model references", () => {
+		const before = collectSoftwareVersionReferences("export const x = 1;\n", "src/config.ts");
+		const after = collectSoftwareVersionReferences(
+			['export const engine = "o3";', 'export const runtime = "o4-mini";'].join("\n"), // REAL_WORLD_VERSION_FIXTURE_OK — software-key classification of compact o-series IDs is the behavior under test.
+			"src/config.ts",
+		);
+		const concerns = detectSoftwareVersionFreshnessConcerns(before, after);
+		expect(concerns.map((c) => c.ref.version)).toEqual(["o3", "o4-mini"]); // REAL_WORLD_VERSION_FIXTURE_OK — exact o-series IDs are asserted intentionally.
+		expect(concerns.every((c) => c.ref.kind === "model")).toBe(true);
+	});
 });
 
 describe("runQualityChecks software_version_regression", () => {

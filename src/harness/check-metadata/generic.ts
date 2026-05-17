@@ -884,4 +884,11 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	placeholder_markdown_link: {
+		name: "Placeholder Markdown Link",
+		description:
+			"Detects markdown links with an empty or anchor-only href — [text]() or [text](#) — links written but never given a real destination. Scoped to .md / .mdx / .markdown files; fenced code blocks are excluded so syntax examples don't fire.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 };

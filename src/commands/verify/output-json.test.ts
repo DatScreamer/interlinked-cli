@@ -213,6 +213,32 @@ describe("outputJson", () => {
 		expect(parsed.biome.issues).toBe(0);
 	});
 
+	it("serializes code_clones findings for JSON consumers", () => {
+		const cq = emptyCq();
+		cq.codeClones.push({
+			check: "code_clones",
+			file: "src/example.ts",
+			line: 12,
+			message: "collectA() is 95% similar to collectB() -- extract the shared logic",
+		});
+		const out = captureStdout(() => {
+			outputJson({
+				tscResults: [],
+				linterResults: [],
+				linterName: "biome",
+				semgrepResults: [],
+				gitleaksResults: [],
+				auditResult: null,
+				cq,
+				suggestions: null,
+				totalFiles: 1,
+			});
+		});
+		const parsed = JSON.parse(out);
+		expect(parsed.code_clones.issues).toBe(1);
+		expect(parsed.code_clones.details[0].file).toBe("src/example.ts");
+	});
+
 	it("includes suggestions section when provided", () => {
 		const out = captureStdout(() => {
 			outputJson({
