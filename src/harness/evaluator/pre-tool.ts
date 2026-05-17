@@ -32,6 +32,7 @@ import {
 	ruleAppliesToRole,
 } from "../command-decomposition.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
+import { recordDeliveryForShadow } from "../event-dedup.js";
 import type { ErrorHistory } from "../error-history.js";
 import { checkProjectSetup } from "../generic-checks.js";
 import { getPatternWarnings } from "../pattern-detector.js";
@@ -273,6 +274,10 @@ export function evaluatePreToolUse(
 	sharedConfig?: SharedConfig | null,
 ): HarnessDecision {
 	if (!rules.enabled) return { decision: "allow" }; // early exit when harness disabled
+
+	// Shadow-mode delivery de-dup: detect redundant hook deliveries of
+	// this tool call (logged to dedup-shadow.jsonl). Detect-only, never skips.
+	recordDeliveryForShadow(event);
 
 	const warnings: string[] = [];
 	const toolName = event.tool_name || "";

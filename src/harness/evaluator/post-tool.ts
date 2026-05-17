@@ -13,6 +13,7 @@ import { relative } from "node:path";
 import type { CohortManager } from "../cohort.js";
 import { formatMidSessionBackstop, isDocFile } from "../commit-cadence.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
+import { recordDeliveryForShadow } from "../event-dedup.js";
 import { checkPhantomDependencies, checkTyposquatDependencies } from "../generic-checks.js";
 import type { ReservationManager } from "../reservations.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
@@ -66,6 +67,10 @@ export function evaluatePostToolUse(
 	reservations: ReservationManager,
 	cohort: CohortManager,
 ): HarnessDecision {
+	// Shadow-mode delivery de-dup: detect redundant hook deliveries of
+	// this tool call (logged to dedup-shadow.jsonl). Detect-only, never
+	// skips, so behaviour is unchanged. See event-dedup.ts.
+	recordDeliveryForShadow(event);
 	const warnings: string[] = [];
 	const toolName = event.tool_name || "";
 
