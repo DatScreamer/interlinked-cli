@@ -171,6 +171,16 @@ export interface QualityCheckOptions {
 	 *  name. Lets the daemon record per-check elapsed ms into `phase_breakdown`
 	 *  so an inline residual spike can be pinned to a specific check name. */
 	onCheckBoundary?: (name: string) => void;
+	/** False when the edited file is outside the harness's own project
+	 *  (`cwd`). Subprocess / tree-walking `command`-based checks (tsc, biome,
+	 *  semgrep, gitleaks) are project-rooted: for an out-of-tree file
+	 *  `findProjectRoot` returns null and the check engine falls back to
+	 *  `cwd`, running the whole project's tooling for a foreign file — wrong
+	 *  result and an expensive tree walk. When this is `false`, those checks
+	 *  are skipped. Inline content checks (secrets, strong_typing,
+	 *  software_version_regression, the inline-checks block) still run.
+	 *  Defaults to `true` (legacy behavior for verify / direct test callers). */
+	editedFileInRepo?: boolean;
 }
 
 /**
@@ -285,6 +295,17 @@ export async function runQualityChecks(
 
 		// Skip test files for checks that opt in (e.g., semgrep, gitleaks)
 		if (check.skip_test_files && isLikelyTestFile(testCheckBaseName, absForTestCheck)) continue;
+
+		// Skip subprocess / tree-walking `command`-based checks (tsc, biome,
+		// semgrep, gitleaks) when the edited file is outside the harness's
+		// own project. The `check.command` branch below resolves a project
+		// root and runs the check engine project-wide; for a foreign file
+		// `findProjectRoot` falls back to `cwd`, which would run THIS
+		// project's tooling against an unrelated file (wrong result) and
+		// pay the project-tree-walk cost. Inline content checks (secrets,
+		// strong_typing, software_version_regression, the inline-checks
+		// block) carry no `command` and still run for out-of-tree files.
+		if (options?.editedFileInRepo === false && check.command) continue;
 
 		try {
 			if (name === "secrets_in_source") {

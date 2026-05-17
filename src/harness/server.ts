@@ -1966,6 +1966,22 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				const structuralConfig = rules.structural_checks;
 				editedFilePath = (checkEvent.tool_input?.file_path as string) || "";
 
+				// Is the edited file inside this harness's own project (CWD)?
+				// Project-rooted analysis — the cross-file project-wide sweep and
+				// the artifact-graph build in runStructureChecks — walks the tree
+				// from the file's project root. For an out-of-tree edit (e.g. a
+				// file under ~/.claude/...), `findProjectRoot` returns null and
+				// `repoRoot` falls back to CWD, which would build/refresh THIS
+				// repo's graph for a file that isn't in it: wrong result, and an
+				// 11-19s tree walk. Gate those phases on in-repo membership; the
+				// inline content checks below still run for out-of-tree files.
+				const editedFileInRepo =
+					editedFilePath.length > 0 &&
+					(() => {
+						const resolved = resolve(CWD, editedFilePath);
+						return resolved === CWD || resolved.startsWith(CWD + sep);
+					})();
+
 				// --- TDD cycle tracking: record impl edits and test writes ---
 				if (session && editedFilePath) {
 					if (TEST_FILE_RE.test(editedFilePath)) {
@@ -2314,6 +2330,12 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 							// (inline_software_version_regression, inline_strong_typing,
 							// …). Lets us pin a residual spike to a single check.
 							onCheckBoundary: markPhase,
+							// Out-of-tree edits skip subprocess/tree-walking
+							// `command`-based checks (tsc/biome/semgrep/gitleaks):
+							// those are project-rooted and would run THIS repo's
+							// tooling for a foreign file. Inline content checks
+							// still run. See `editedFileInRepo` above.
+							editedFileInRepo,
 						},
 					);
 					// Phase mark — runQualityChecks ran tsc/biome/inline checks.
@@ -2437,8 +2459,11 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				// ── Project-wide sweep (cross-file tsc/biome) ──
 				// Catches cross-file type errors and lint issues that per-file checks miss.
 				// Triggers: every N edits or immediately when export surface changed.
+				// Skipped for out-of-tree edits: the sweep runs project-rooted tsc/
+				// biome over CWD, so it must not fire for a file outside CWD (it
+				// would also wrongly advance the repo's sweep cadence counter).
 				const pwConfig = rules.project_wide_checks;
-				if (pwConfig?.enabled && editedFilePath) {
+				if (pwConfig?.enabled && editedFilePath && editedFileInRepo) {
 					projectWideSweepState.recordFileChecked(editedFilePath);
 					if (!projectWideSweepFiredThisEvent) {
 						const intervalReached = projectWideSweepState.recordEdit(pwConfig);
@@ -2598,10 +2623,19 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				// The 15s PostToolUse timeout is shared with tsc/biome/etc. On large repos, a cold
 				// graph build (~5-10s for 20K+ nodes) can push past the limit. The cached graph
 				// (from a previous call) makes subsequent edits fast (<100ms).
+				// Skipped for out-of-tree edits: runStructureChecks builds/refreshes
+				// the artifact graph rooted at the file's project. For a file
+				// outside CWD that root falls back to CWD, so this would build
+				// THIS repo's graph for a foreign file — wrong, and the tree walk
+				// is the 11-19s cost the out-of-tree guard exists to remove.
 				const structTimeBudgetMs = 12000;
 				const structElapsed = Date.now() - postStartMs;
 				const hasCachedGraph = structureGraph !== null;
-				if (editedFilePath && (hasCachedGraph || structElapsed < structTimeBudgetMs)) {
+				if (
+					editedFilePath &&
+					editedFileInRepo &&
+					(hasCachedGraph || structElapsed < structTimeBudgetMs)
+				) {
 					try {
 						const structRepoRoot = findProjectRoot(editedFilePath, CWD) || CWD;
 						const structResult = runStructureChecks(
