@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
@@ -41,7 +42,13 @@ function scanFile(content: string, configKeys: Map<string, string>, relPath: str
 	}
 }
 
-function walkDir(dir: string, repoRoot: string, configKeys: Map<string, string>): void {
+interface WalkContext {
+	repoRoot: string;
+	configKeys: Map<string, string>;
+	budget: WalkBudget;
+}
+
+function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -49,17 +56,20 @@ function walkDir(dir: string, repoRoot: string, configKeys: Map<string, string>)
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			walkDir(path.join(dir, entry.name), repoRoot, configKeys);
+			walkDir(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const ext = path.extname(entry.name);
 			if (!SOURCE_EXTENSIONS.has(ext)) continue;
 			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(repoRoot, fullPath);
+			const relPath = path.relative(ctx.repoRoot, fullPath);
 			try {
 				const content = fs.readFileSync(fullPath, "utf-8");
-				scanFile(content, configKeys, relPath);
+				scanFile(content, ctx.configKeys, relPath);
 			} catch (_err) {
 				void 0; /* intentional: skip unreadable files */
 			}
@@ -67,9 +77,10 @@ function walkDir(dir: string, repoRoot: string, configKeys: Map<string, string>)
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const configKeys = new Map<string, string>();
-	walkDir(repoRoot, repoRoot, configKeys);
+	walkDir(repoRoot, { repoRoot, configKeys, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	const nodes: ArtifactNode[] = [];
 	for (const [key, file] of configKeys) {
 		const localId = key;

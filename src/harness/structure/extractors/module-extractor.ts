@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const EXTENSIONS = new Set([
@@ -33,7 +34,13 @@ export const metadata: ExtractorMetadata = {
 	version: 1,
 };
 
-function walkDir(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
+interface WalkContext {
+	repoRoot: string;
+	nodes: ArtifactNode[];
+	budget: WalkBudget;
+}
+
+function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -41,16 +48,19 @@ function walkDir(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			walkDir(path.join(dir, entry.name), repoRoot, nodes);
+			walkDir(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const ext = path.extname(entry.name);
 			if (!EXTENSIONS.has(ext)) continue;
 			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(repoRoot, fullPath);
+			const relPath = path.relative(ctx.repoRoot, fullPath);
 			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			nodes.push({
+			ctx.nodes.push({
 				id: makeGlobalRef("module", localId),
 				kind: "module",
 				label: relPath,
@@ -62,8 +72,9 @@ function walkDir(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const nodes: ArtifactNode[] = [];
-	walkDir(repoRoot, repoRoot, nodes);
+	walkDir(repoRoot, { repoRoot, nodes, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	return { nodes, edges: [] };
 }

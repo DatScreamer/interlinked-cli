@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([
@@ -49,11 +50,9 @@ export const metadata: ExtractorMetadata = {
 	version: 1,
 };
 
-function scanFile(
-	filePath: string,
-	content: string,
-	envKeys: Map<string, { provenance: "extracted" | "declared"; file: string }>,
-): void {
+type EnvKeyMap = Map<string, { provenance: "extracted" | "declared"; file: string }>;
+
+function scanFile(filePath: string, content: string, envKeys: EnvKeyMap): void {
 	for (const pattern of ENV_PATTERNS) {
 		pattern.lastIndex = 0;
 		for (;;) {
@@ -67,11 +66,13 @@ function scanFile(
 	}
 }
 
-function walkDir(
-	dir: string,
-	repoRoot: string,
-	envKeys: Map<string, { provenance: "extracted" | "declared"; file: string }>,
-): void {
+interface WalkContext {
+	repoRoot: string;
+	envKeys: EnvKeyMap;
+	budget: WalkBudget;
+}
+
+function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -79,17 +80,20 @@ function walkDir(
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			walkDir(path.join(dir, entry.name), repoRoot, envKeys);
+			walkDir(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const ext = path.extname(entry.name);
 			if (!SOURCE_EXTENSIONS.has(ext)) continue;
 			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(repoRoot, fullPath);
+			const relPath = path.relative(ctx.repoRoot, fullPath);
 			try {
 				const content = fs.readFileSync(fullPath, "utf-8");
-				scanFile(relPath, content, envKeys);
+				scanFile(relPath, content, ctx.envKeys);
 			} catch (_err) {
 				void 0; /* intentional: skip unreadable files */
 			}
@@ -97,10 +101,7 @@ function walkDir(
 	}
 }
 
-function scanEnvExample(
-	repoRoot: string,
-	envKeys: Map<string, { provenance: "extracted" | "declared"; file: string }>,
-): void {
+function scanEnvExample(repoRoot: string, envKeys: EnvKeyMap): void {
 	const examplePath = path.join(repoRoot, ".env.example");
 	try {
 		const content = fs.readFileSync(examplePath, "utf-8");
@@ -118,10 +119,11 @@ function scanEnvExample(
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
-	const envKeys = new Map<string, { provenance: "extracted" | "declared"; file: string }>();
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
+	const envKeys: EnvKeyMap = new Map();
 	scanEnvExample(repoRoot, envKeys);
-	walkDir(repoRoot, repoRoot, envKeys);
+	walkDir(repoRoot, { repoRoot, envKeys, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	const nodes: ArtifactNode[] = [];
 	for (const [key, info] of envKeys) {
 		nodes.push({

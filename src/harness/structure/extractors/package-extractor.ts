@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const PACKAGE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
@@ -21,11 +22,13 @@ export const metadata: ExtractorMetadata = {
 	version: 1,
 };
 
-function findPackages(
-	dir: string,
-	repoRoot: string,
-	results: Array<{ relDir: string; file: string }>,
-): void {
+interface WalkContext {
+	repoRoot: string;
+	results: Array<{ relDir: string; file: string }>;
+	budget: WalkBudget;
+}
+
+function findPackages(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -33,23 +36,27 @@ function findPackages(
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			findPackages(path.join(dir, entry.name), repoRoot, results);
+			findPackages(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile() && PACKAGE_MARKERS.includes(entry.name)) {
-			const relDir = path.relative(repoRoot, dir) || ".";
-			const relFile = path.relative(repoRoot, path.join(dir, entry.name));
-			results.push({ relDir, file: relFile });
+			const relDir = path.relative(ctx.repoRoot, dir) || ".";
+			const relFile = path.relative(ctx.repoRoot, path.join(dir, entry.name));
+			ctx.results.push({ relDir, file: relFile });
 		}
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const nodes: ArtifactNode[] = [];
 	const edges: ArtifactEdge[] = [];
 	const packages: Array<{ relDir: string; file: string }> = [];
 
-	findPackages(repoRoot, repoRoot, packages);
+	findPackages(repoRoot, { repoRoot, results: packages, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 
 	if (packages.length === 0) {
 		const localId = "root";

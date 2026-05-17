@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const EXAMPLE_DIRS = new Set(["examples", "sample", "samples", "demo"]);
@@ -21,7 +22,13 @@ export const metadata: ExtractorMetadata = {
 	version: 1,
 };
 
-function collectFiles(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
+interface WalkContext {
+	repoRoot: string;
+	nodes: ArtifactNode[];
+	budget: WalkBudget;
+}
+
+function collectFiles(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -29,14 +36,17 @@ function collectFiles(dir: string, repoRoot: string, nodes: ArtifactNode[]): voi
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		const fullPath = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			collectFiles(fullPath, repoRoot, nodes);
+			collectFiles(fullPath, ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
-			const relPath = path.relative(repoRoot, fullPath);
+			const relPath = path.relative(ctx.repoRoot, fullPath);
 			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			nodes.push({
+			ctx.nodes.push({
 				id: makeGlobalRef("example", localId),
 				kind: "example",
 				label: relPath,
@@ -48,7 +58,7 @@ function collectFiles(dir: string, repoRoot: string, nodes: ArtifactNode[]): voi
 	}
 }
 
-function walkDir(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
+function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -56,18 +66,22 @@ function walkDir(dir: string, repoRoot: string, nodes: ArtifactNode[]): void {
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (!entry.isDirectory()) continue;
 		if (SKIP_DIRS.has(entry.name)) continue;
 		if (EXAMPLE_DIRS.has(entry.name)) {
-			collectFiles(path.join(dir, entry.name), repoRoot, nodes);
+			collectFiles(path.join(dir, entry.name), ctx);
 		} else {
-			walkDir(path.join(dir, entry.name), repoRoot, nodes);
+			walkDir(path.join(dir, entry.name), ctx);
 		}
+		if (ctx.budget.truncated) return;
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const nodes: ArtifactNode[] = [];
-	walkDir(repoRoot, repoRoot, nodes);
+	walkDir(repoRoot, { repoRoot, nodes, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	return { nodes, edges: [] };
 }

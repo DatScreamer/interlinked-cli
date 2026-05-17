@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
+import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const TEST_PATTERNS = [
@@ -67,6 +68,7 @@ interface WalkContext {
 	repoRoot: string;
 	nodes: ArtifactNode[];
 	edges: ArtifactEdge[];
+	budget: WalkBudget;
 }
 
 function walkDir(dir: string, ctx: WalkContext): void {
@@ -77,9 +79,12 @@ function walkDir(dir: string, ctx: WalkContext): void {
 		return;
 	}
 	for (const entry of entries) {
+		// Hard cap: stop descending/iterating once the entry or time budget trips.
+		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
 			walkDir(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
 			if (!isTestFile(entry.name) && !isUnderTestDir(relPath)) continue;
@@ -110,9 +115,10 @@ function walkDir(dir: string, ctx: WalkContext): void {
 	}
 }
 
-export function extract(repoRoot: string): ExtractorResult {
+export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const nodes: ArtifactNode[] = [];
 	const edges: ArtifactEdge[] = [];
-	walkDir(repoRoot, { repoRoot, nodes, edges });
+	walkDir(repoRoot, { repoRoot, nodes, edges, budget });
+	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	return { nodes, edges };
 }
