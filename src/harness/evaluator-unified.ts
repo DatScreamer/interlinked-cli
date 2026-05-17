@@ -152,6 +152,9 @@ export function toHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	};
 
 	if (event.context.agent?.id) out.agent_name = event.context.agent.id;
+	// Carried for delivery de-duplication (not read by checks): the daemon
+	// keys redundant hook deliveries on tool_use_id.
+	if (event.tool_use_id) out.tool_use_id = event.tool_use_id;
 
 	const action = event.action;
 	if (action.kind === "tool_call") {

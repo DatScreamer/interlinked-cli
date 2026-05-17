@@ -83,6 +83,9 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 				schema_version: "1",
 				event_id: makeEventId(),
 				session_id,
+				// Runner's tool-invocation id (Claude Code `tool_use_id`); the
+				// adapter path used to drop it. See UnifiedHookEvent.tool_use_id.
+				tool_use_id: readString(raw.tool_use_id) ?? undefined,
 				ts,
 				runner: "claude-code",
 				runner_native_event: nativeEventName,

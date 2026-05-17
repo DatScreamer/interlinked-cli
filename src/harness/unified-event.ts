@@ -119,6 +119,12 @@ export interface UnifiedHookEvent {
 	session_id: string;
 	/** For causality; set by adapters when a pre/post pair is emitted. */
 	parent_event_id?: string;
+	/** The runner's own id for the tool invocation, when it supplies one
+	 *  (Claude Code's `tool_use_id`). Stable across the PreToolUse/PostToolUse
+	 *  pair and across duplicate hook deliveries of the same call — so it is
+	 *  the key for de-duplicating redundant deliveries. Absent on non-tool
+	 *  events and for runners that don't supply one. */
+	tool_use_id?: string;
 	/** ISO 8601, ms precision. */
 	ts: string;
 
