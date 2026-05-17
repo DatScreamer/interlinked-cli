@@ -20,6 +20,7 @@ import type { CohortManager } from "../cohort.js";
 import {
 	findDirtyDependents,
 	formatDirtyDependentWarning,
+	looksCoordinated,
 } from "../checks/dirty-dependent.js";
 import { isTestFile } from "../checks/shared.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
@@ -1078,7 +1079,7 @@ function listGitDiffPaths(cwd: string, cached: boolean): string[] {
 			cwd,
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
-			timeout: 3000,
+			timeout: GIT_TIMEOUT_MS,
 		});
 		return out
 			.split("\n")
@@ -1089,16 +1090,34 @@ function listGitDiffPaths(cwd: string, cached: boolean): string[] {
 	}
 }
 
+/** Shared timeout for the short-lived `git` invocations below. */
+const GIT_TIMEOUT_MS = 3000;
+
+/** Run `git diff <extraArgs>` in `cwd` and return its stdout. Returns ""
+ *  on any failure so the dirty-dependent precision filter fails open. */
+function runGitDiff(cwd: string, extraArgs: readonly string[]): string {
+	try {
+		return execFileSync("git", ["diff", ...extraArgs], {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: GIT_TIMEOUT_MS,
+		});
+	} catch {
+		return "";
+	}
+}
+
 /** Dirty-dependent pre-commit warning entry point. Returns a formatted
- *  warning string when the staged commit's transitive importers include
- *  unstaged-dirty files (e.g., a dirty test importing a staged source);
- *  null when the commit is self-contained or git/graph data is missing.
+ *  warning string when a staged file is import-graph related to an
+ *  unstaged-dirty file (a dirty importer or a dirty dependency); null
+ *  when the commit is self-contained or git/graph data is missing.
  *
  *  Path normalization: git emits paths relative to the repo root, but
- *  `ProjectGraph.getDependents` operates on absolute paths and returns
- *  absolute paths. Convert everything to absolute up front so the BFS
- *  walk's visited set and `dirtySet` membership are compared on the same
- *  basis. The output then relativizes for display. */
+ *  `ProjectGraph` operates on absolute paths. Convert everything to
+ *  absolute up front so the BFS walk's visited set and `dirtySet`
+ *  membership compare on the same basis; the output then relativizes
+ *  for display. */
 function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string | null {
 	const stagedRel = listGitDiffPaths(cwd, true);
 	if (stagedRel.length === 0) return null;
@@ -1110,11 +1129,34 @@ function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string 
 	const stagedAbs = stagedRel.map(toAbs);
 	const dirtyAbs = dirtyRel.map(toAbs);
 
+	// Memoized `git diff` fetch, feeding the `isRelevant` precision filter.
+	// Keyed on the argv so the staged (`--cached`) and working-tree diffs
+	// of the same file stay distinct.
+	const diffCache = new Map<string, string>();
+	const diffOf = (gitArgs: readonly string[]): string => {
+		const key = gitArgs.join(" ");
+		const hit = diffCache.get(key);
+		if (hit !== undefined) return hit;
+		const text = runGitDiff(cwd, gitArgs);
+		diffCache.set(key, text);
+		return text;
+	};
+
 	const matches = findDirtyDependents({
 		stagedFiles: stagedAbs,
 		unstagedDirtyFiles: dirtyAbs,
 		getImporters: (file) => graph.getDependents(file),
+		getDependencies: (file) => graph.getDependencies(file).map((e) => e.toFile),
 		isTestFile: (file) => isTestFile(toRel(file)),
+		// Precision: drop a candidate when the dirty file's change and the
+		// staged change are not coordinated — the dirty file is dirty for an
+		// unrelated reason. `looksCoordinated` fails open, so an
+		// indeterminate diff keeps the warning.
+		isRelevant: (m) =>
+			looksCoordinated([
+				diffOf(["--cached", "--", toRel(m.staged)]),
+				diffOf(["--", toRel(m.dirtyFile)]),
+			]),
 	});
 	if (matches.length === 0) return null;
 
@@ -1124,7 +1166,7 @@ function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string 
 	const display = matches.map((m) => ({
 		...m,
 		staged: toRel(m.staged),
-		dirtyImporter: toRel(m.dirtyImporter),
+		dirtyFile: toRel(m.dirtyFile),
 	}));
 	return formatDirtyDependentWarning({ matches: display });
 }
