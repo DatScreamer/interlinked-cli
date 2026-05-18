@@ -1,8 +1,10 @@
 # External-Pulse Intake
 
-When you encounter a tool, paper, framework, or repo and want to evaluate it for adoption into the interlinked CLI or the paid-product roadmap (guardrails-cloud, agency-cloud), copy the template below into `docs/external-pulse/<slug>.md` and fill it in **before** asking an AI agent "what should we do with X?"
+When you encounter a tool, paper, framework, pattern, or repo and want to evaluate it for adoption into the interlinked CLI or the paid-product roadmap, copy the template below into `docs/external-pulse/<slug>.md` and fill it in **before** asking an AI agent "what should we do with X?"
 
-The template forces categorization first. Without it, "what can we do with X?" is undertyped — there's no taxonomy to land in, so the AI gives whatever's associatively nearby and produces shallow integration suggestions. Naming the lane first changes the conversation.
+The template forces categorization first. Without it, "what can we do with X?" is undertyped — there's no taxonomy to land in, so the AI gives whatever's associatively nearby and produces shallow integration suggestions. Naming the lane, surface, and phase first changes the conversation.
+
+Three things do the categorizing: the **lane** (what kind of thing it is), the **surface & phase** (where it lands, and therefore when), and two filters — **determinism** and **dependency cost** — that route it or raise the bar. A find with a lane but no phase is only half-triaged.
 
 ## The six lanes
 
@@ -14,14 +16,47 @@ Every external project resolves to one of these:
 | 2. Detection technique | A specific regex / AST query / taint pattern / structural rule | New entry in `generic-checks.ts` or `structural-checks.ts` |
 | 3. Substrate | A reusable capability — parser, graph algorithm, index, embedding, ranker | Improvement to `project-graph.ts` / `trigram-index.ts` / etc. |
 | 4. Pattern / architecture | A design idea, not code (Sondera escalate, Supermodel writing-vs-modifying regime) | Memory entry; later RFC if still load-bearing |
-| 5. Cloud-only fodder | Inherently agentic / centralized / LLM-as-judge | guardrails-cloud or agency-cloud roadmap, **not** the CLI |
+| 5. Cloud-only fodder | Inherently agentic / centralized / LLM-as-judge | Guardrails or Agent CI roadmap (see Surfaces & phases), **not** the CLI |
 | 6. Skip | Interesting but doesn't fit | One-line memory note at most; otherwise drop |
+
+## Surfaces & phases (the roadmap axis)
+
+Lane says *what kind* of thing a find is. Surface says *which product it lands in*; phase says *when it ships*. Both come from the canonical rollout in `docs/design/three-product-architecture.md` §8 — three products across seven phases:
+
+| Phase(s) | Surface | Product | Status | What lands here |
+|----------|---------|---------|--------|-----------------|
+| 1 | `Free CLI` | `interlinked` — local-only deterministic checks, no network | shipping | lanes 1–3: distilled rules, harness checks, CLI substrate |
+| 2–3 | `Guardrails` | paid fast cloud — sub-second blocking gate (P2 deterministic, P3 + classifier) | designed | lane 5, sync: blocking policy / classifier |
+| 4–5 | `Agent CI` | paid slow cloud — async deep scans (P4 LLM review, P5 + Sandboxes) | designed | lane 5, async: deep review, fan-out scans |
+
+Phases 6–7 (escalation wiring, enterprise tier) are cross-cutting plumbing and packaging — not separate intake surfaces. Every find lands in one of the three products above.
+
+Rules of thumb:
+
+- The determinism filter and this axis line up: deterministic + local → Free CLI; needs inference or central state → Guardrails / Agent CI. Heavy *deterministic* work can still route to a cloud surface — see the determinism filter below.
+- A find can touch several products over its life — that is what §8 Phase relevance captures. Don't flatten a multi-product find into one surface.
+- **"Phase" means the `three-product-architecture.md` §8 number — nothing else.** The term is overloaded: most plan docs carry their own local Phase 1/2/3 rollout, and `project_vision_multiagent.md` numbers a separate collaboration-scale axis. Neither is this axis.
+- **Multi-agent / "multiplayer" is not a phase.** It is a capability the cloud tier enables (the pre/post window as a sync barrier — `feedback_deliberate_prepost_latency.md`); collaboration scale (one-human/many-agents → multi-human federation) is its own axis in `project_vision_multiagent.md`. A find that only matters at multi-human scale has no surface yet — give it an RFC / memory verdict, not a phase number.
+- A lane-4 pattern doesn't *land* on a surface so much as *shape* one or more; it still fills in §8 to say which.
 
 ## The dominant filter: determinism
 
-Per `feedback_harness_deterministic_only.md`, the CLI harness cannot host LLM-as-judge work. Anything whose value depends on model inference auto-routes to lane 5, not the CLI. This is **routing, not rejection** — lane-5 finds are exactly what justifies the paid roadmap. Treating "doesn't fit the CLI" as bad news collapses the framework; treat it as a positive signal toward guardrails-cloud or agency-cloud.
+Per `feedback_harness_deterministic_only.md`, the CLI harness cannot host LLM-as-judge work. Anything whose value depends on model inference auto-routes to lane 5, not the CLI. This is **routing, not rejection** — lane-5 finds are exactly what justifies the paid roadmap. Treating "doesn't fit the CLI" as bad news collapses the framework; treat it as a positive signal toward Guardrails or Agent CI.
+
+Determinism is necessary but not sufficient for CLI placement. A capability can be fully deterministic and still be too heavy for the per-edit compute budget — `three-product-architecture.md` §1 sets it at 300ms (read-class) / 800ms (modify) / 2s (side-effect). Heavy deterministic work — full-repo indexing, AST-aware chunking, mutation runs — routes to a cloud surface for the same reason agentic work does: the binding constraint there is compute budget, not model-in-the-loop. Determinism *clears* a find for the CLI; the compute budget is a second gate it still has to pass. (Surfaced by the `narsil-mcp.md` intake.)
 
 Read the source, not the README. Marketing language ("dynamic programming-inspired", "algorithmic", "deterministic pipeline") often hides LLM calls at the leaves. The CodeWiki worked example in this directory walks through one such case.
+
+## The second filter: dependency & supply-chain cost
+
+The CLI ships with **one runtime dependency** (`commander`) and zero deps for formatting/output. That stance is deliberate and defended: it keeps install fast, the attack surface small, and the generated hook script self-contained. A find that would add a runtime dependency starts from behind.
+
+This filter **raises the bar; it does not reroute** (determinism changes the lane — this changes the threshold). It bites hardest on lane-3 (substrate) finds:
+
+- Prefer **invoke-as-subprocess** over **import-as-dependency**. A tool the CLI shells out to adds no dependency; a library it imports does.
+- A dependency is effectively forever — removal is rare. Weigh the find against *permanent* dep weight, not first-use convenience.
+- The cloud surfaces are separate codebases and may carry deps the CLI won't. "Adds a dep" can itself be the reason to route lane-3 fodder to a cloud surface.
+- A non-permissive license (FSL/BUSL/AGPL/custom) blocks code-borrow regardless — note it in §3.
 
 ## Template
 
@@ -45,8 +80,10 @@ the user invokes; what the agent (if any) sees; one end-to-end session walk-thro
 in 5–10 lines. Cite source where surprising — this is where marketing-vs-reality
 mismatches surface earliest (CodeWiki's `cluster_modules.py` was the canonical case).
 
-For a prose source (blog post, paper, thread): the 3–5 load-bearing claims or
-findings in your own words. Skip Sections 3 and 4 below if they don't apply.>
+For a prose source — blog post, paper, thread, or a pure pattern: the 3–5
+load-bearing claims or findings in your own words. Skip Sections 3 and 4 if they
+don't apply (for a pattern, §3 still does — is the *mechanism* deterministic — and
+§4 is N/A).>
 
 ## 3. Deterministic or agentic?
 <deterministic / agentic / hybrid / N/A. If hybrid, name which parts are which. Read
@@ -62,19 +99,37 @@ substrate be borrowed (or invoked) without the surface? N/A for prose sources.>
 ## 5. Lane (1–6)
 <Pick one (or two with a justification). Lane values stay 1–6: imperative content
 (→ /enforce), detection technique (→ harness check), substrate (→ CLI internals),
-pattern (→ memory + RFC), cloud-only fodder (→ guardrails-cloud / agency-cloud),
-or skip.>
+pattern (→ memory + RFC), cloud-only fodder (→ Guardrails / Agent CI), or skip.>
 
-## 6. Smallest spike
+## 6. Dependency & displacement
+<Two questions, one line each.
+- **Deps:** does adopting this add a runtime dependency? If yes, can it be invoked
+  as a subprocess instead of imported? "No new dep" is the answer to beat.
+- **Displacement:** does it overlap or replace something we already have
+  (`project-graph.ts`, `trigram-index.ts`, an existing check)? Name it. This is
+  internal overlap with our own code — not competitor/market analysis, which stays out.>
+
+## 7. Smallest spike
 <≤1 day of work. What would you build to test viability? If "smallest spike" is
 more than 1 day, the project is too big to adopt directly — write an RFC instead,
 or skip.>
 
-## 7. Artifact
-<PR | RFC | memory note | cloud-roadmap entry | skip>
+## 8. Phase relevance
+<Where on the roadmap does this land — and when? One row per product it touches; a
+single-product find gets one row, and that's fine. Delete rows it doesn't touch. The
+"now" row's spike is §7; later rows name a looser spike. Horizon is now / next / parked.
+If the find only matters beyond the §8 rollout (e.g. multi-human federation), say so
+here in prose and set §9 to RFC / memory note — there is no surface row for it.>
 
-## 8. Surface
-<interlinked-cli | guardrails-cloud | agency-cloud | none>
+| Surface (phase) | Slice that lands here | Spike | Horizon |
+|-----------------|-----------------------|-------|---------|
+| Free CLI (P1) | <what part of this find lands in the CLI> | <…> | <now / next / parked> |
+| Guardrails (P2–3) | <…> | <…> | <…> |
+| Agent CI (P4–5) | <…> | <…> | <…> |
+
+## 9. Artifact
+<PR | RFC | memory note | cloud-roadmap entry | skip. Decide this *after* §8 — the
+artifact follows from where and when the find lands.>
 
 ## Notes
 <Anything else worth recording — quotes from the README, surprising findings,
@@ -90,7 +145,7 @@ INTAKE.md edit if they recur.>
 - One file per project, kebab-case slug: `codewiki.md`, `cline-rules.md`, `cursor-tab-prediction.md`.
 - Commit it. The corpus matters; you'll re-grep this in six months.
 - If your understanding changes after talking to an AI or reading more, **update the file** in place — don't re-evaluate from scratch and don't open a second file for the same project.
-- Resist scope creep. The rubric is intentionally short. Don't add "competitive analysis" or "market positioning" sections — those go elsewhere.
+- Resist scope creep *in the per-project file*. The template is intentionally one page. Don't add "competitive analysis" or "market positioning" sections — those go elsewhere. (This rubric itself can grow when a real new dimension is missing — that is why §6 and §8 exist — but an individual intake stays one page.)
 - A "skip" verdict is a valid output. Recording why something *doesn't* fit is as useful as recording why something does, and it prevents re-evaluating the same project in three months.
 
 ## When to skip the rubric
