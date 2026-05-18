@@ -78,6 +78,7 @@ export interface LocalActivityEvent {
 	prompt?: string;
 	notification_type?: string;
 	notification_title?: string;
+	notification_message?: string;
 	task_id?: string;
 	task_subject?: string;
 	task_description?: string;
@@ -88,6 +89,15 @@ export interface LocalActivityEvent {
 	reason?: string;
 	stop_hook_active?: boolean;
 	permission_suggestions?: unknown;
+
+	// v4 capture fields — error annotation, payload sizes, git context.
+	// Written by the hook's appendLocal; see hook-template-chunks/.
+	error_message?: string;
+	error_category?: string;
+	tool_input_bytes?: number;
+	tool_output_bytes?: number;
+	git_head?: string;
+	git_branch?: string;
 }
 
 export interface SubagentState {

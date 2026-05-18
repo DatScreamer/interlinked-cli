@@ -48,11 +48,14 @@ function envelopeFieldsClaude(input) {
     };
 }
 
-// Classify a PostToolUseFailure so downstream tooling can group errors
-// without re-parsing free-text. Heuristic; errs toward "tool_error".
-function categorizeToolError(input) {
-    if (input.is_interrupt) return "user_interrupt";
-    const raw = String(input.error || input.tool_error || input.message || "").toLowerCase();
+// Classify an error/diagnostic string into a coarse category so downstream
+// tooling can group failures without re-parsing free-text. Heuristic; errs
+// toward "tool_error". Pass interrupted=true to short-circuit to
+// "user_interrupt". Called from attachOutcome, so every client's folded
+// failures get categorized through one path.
+function classifyErrorText(text, interrupted) {
+    if (interrupted) return "user_interrupt";
+    const raw = String(text || "").toLowerCase();
     if (!raw) return "unknown";
     if (raw.includes("timed out") || raw.includes("timeout")) return "timeout";
     if (raw.includes("permission") || raw.includes("denied") || raw.includes("not allowed")) return "permission";
@@ -313,6 +316,21 @@ function attachOutcome(result, toolName, toolResponse, errorDetail) {
     if (out.stderr) result.stderr = out.stderr;
     if (out.stdout) result.stdout = out.stdout;
     if (out.tool_response_sha256) result.tool_response_sha256 = out.tool_response_sha256;
+    // deriveToolOutcome computes the canonical diagnostic text — carry it
+    // through. This assignment used to be missing, so error_message was
+    // computed and dropped: harnessEvent.error_message + the failure-recovery
+    // channels always saw null.
+    if (out.error_message) result.error_message = out.error_message;
+    // Coarse failure category. attachOutcome is the single path every
+    // client's folded failures pass through (Claude/Codex/Gemini/Copilot
+    // deliver tool failures on the regular PostToolUse event), so
+    // categorizing here covers all of them with no per-normalizer code.
+    if (out.tool_outcome !== "success") {
+        result.error_category = classifyErrorText(
+            out.error_message || (typeof errorDetail === "string" ? errorDetail : ""),
+            out.tool_outcome === "interrupted",
+        );
+    }
     return result;
 }
 
@@ -466,10 +484,11 @@ const CLAUDE_DISPATCH = {
             hook_event: "PostToolUseFailure",
             tool_input: failInput, error: errorDetail, is_interrupt: input.is_interrupt || false,
             tool_use_id: input.tool_use_id || null,
-            error_category: categorizeToolError(input),
             status: "error",
             ...env,
         };
+        // attachOutcome sets tool_outcome / error_message / error_category /
+        // stderr / tool_response_sha256 — one path for every client.
         attachOutcome(result, failToolName, input.tool_response || null, errorDetail);
         if (input.parent_tool_use_id) result.parent_tool_use_id = input.parent_tool_use_id;
         return result;
@@ -1013,7 +1032,7 @@ const CURSOR_DISPATCH = {
         // Cursor failure shape: { tool_name, tool_input, error_message,
         // failure_type: "error"|"timeout"|"permission_denied",
         // duration, is_interrupt }. Map to canonical PostToolUseFailure
-        // so the existing categorizeToolError + error_history pipeline fires.
+        // so attachOutcome's error_category + the error_history pipeline fire.
         const toolName = input.tool_name || null;
         const toolInput = input.tool_input || {};
         const errorDetail = input.error_message || input.error || null;

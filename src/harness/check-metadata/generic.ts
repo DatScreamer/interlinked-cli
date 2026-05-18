@@ -891,4 +891,11 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	manual_field_copy: {
+		name: "Manual Field Copy",
+		description:
+			"Detects a run of 5+ consecutive field copies target.k = source.k — hand-copying one object's fields onto another silently skips any field later added to the source.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 };

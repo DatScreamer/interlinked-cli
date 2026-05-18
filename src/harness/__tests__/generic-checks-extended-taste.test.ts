@@ -589,6 +589,99 @@ describe("checkCommentedOutCode", () => {
 		const matches = checkCommentedOutCode(code, "handler.py");
 		expect(matches.length).toBeGreaterThan(0);
 	});
+
+	// --- Additional positive cases: genuinely disabled executable code ---
+
+	it("detects a commented-out if/return statement block", () => {
+		const code = ["// if (y) {", "//   doThing();", "//   return;", "// }"].join("\n");
+		expect(checkCommentedOutCode(code, "handler.ts").length).toBeGreaterThan(0);
+	});
+
+	it("detects a block of commented-out const declarations and calls", () => {
+		const code = [
+			"// const cache = new Map();",
+			"// loadConfig(cache);",
+			"// startServer(port);",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "server.ts").length).toBeGreaterThan(0);
+	});
+
+	it("detects commented-out assignment statements", () => {
+		const code = [
+			"// this.retries = 3;",
+			'// this.endpoint = "https://api.example.com";',
+			"// this.timeout = computeTimeout();",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "client.ts").length).toBeGreaterThan(0);
+	});
+
+	// --- FP regression cases: documentation comments must NEVER fire ------
+
+	it("does NOT flag an illustrative record-shape doc comment (event-normalizers FP)", () => {
+		// This is the exact false-positive class from
+		// src/lib/hook-template-chunks/event-normalizers.ts: a doc comment
+		// drawing a canonical event record. Braces, colons, and parentheticals
+		// are illustrative, not disabled code.
+		const code = [
+			"// Each client maps the raw payload to a canonical record:",
+			"//",
+			"//   {",
+			'//     event_type: "session_start" | "tool_use" | ...',
+			"//     tool_name: string | null",
+			"//     hook_event: <original native event name, preserved verbatim>",
+			"//     ...event-specific fields (tool_input, tokens, prompt, etc.)",
+			"//     ...envelope fields (cwd, transcript_path, session_id_hint)",
+			"//   }",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "event-normalizers.ts")).toEqual([]);
+	});
+
+	it("does NOT flag an ASCII diagram in a comment", () => {
+		const code = [
+			"// +--------+      +--------+",
+			"// | client | ---> | server |",
+			"// +--------+      +--------+",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "arch.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a multi-line prose paragraph", () => {
+		const code = [
+			"// The downstream pipeline (local JSONL append, harness forwarding,",
+			"// server POST) speaks only this canonical shape. Adding a new client",
+			"// means authoring exactly one normalizer and one detector entry.",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "pipeline.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a JSDoc-style illustrative API block", () => {
+		const code = [
+			"// Example usage:",
+			"//   getUser(id): Promise<User>",
+			"//   listUsers(): Promise<User[]>",
+			"//   deleteUser(id): void",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "api.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a bare type-annotation shape list", () => {
+		const code = [
+			"// Config fields:",
+			"//   name: string",
+			"//   retries: number",
+			"//   verbose: boolean",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "config.ts")).toEqual([]);
+	});
+
+	it("does NOT flag prose with incidental parentheticals", () => {
+		const code = [
+			"// The parser accepts JSON (objects, arrays, and scalars).",
+			"// It rejects trailing commas (a common authoring mistake).",
+			"// Every error carries the byte offset (1-indexed) for context.",
+		].join("\n");
+		expect(checkCommentedOutCode(code, "parser.ts")).toEqual([]);
+	});
 });
 
 // ===========================================

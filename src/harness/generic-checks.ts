@@ -40,6 +40,7 @@ export {
 	checkDeadExports,
 	checkDefaultExport,
 	checkLifecycleCleanup,
+	checkManualFieldCopy,
 	checkPromiseRejectNonError,
 	checkRequireAwait,
 	checkThrowLiteral,

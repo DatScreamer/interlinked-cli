@@ -490,6 +490,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"codeClones",
 			"requireAwait",
 			"accumulatingSpread",
+			"manualFieldCopy",
 			"excessiveUseState",
 			// C/C++ checks (PostToolUse only, pending registry refactor)
 			"cUnsafeFunctions",

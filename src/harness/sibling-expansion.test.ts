@@ -143,4 +143,79 @@ describe("expandSiblings", () => {
 		expect(names).toContain("as_any_ratchet");
 		expect(names).toContain("unvalidated_json_boundary");
 	});
+
+	// FP refinement (2026-05): the trigram index covers the whole repo, so
+	// a `JSON.parse(...)` / `as any` shown inside a fenced code block in a
+	// design doc (`docs/design/*.md`) was returned as a sibling candidate
+	// and flagged. Doc-file snippets are illustration, not lintable source.
+
+	it("does NOT emit a sibling for JSON.parse inside a .md doc", () => {
+		const out = expandSiblings({
+			triggers: [{ name: "unvalidated_json_boundary", file: "/repo/src/origin.ts" }],
+			index: makeIndex({ "JSON.parse": ["docs/design/data-flow.md"] }),
+			reader: makeReader({
+				"docs/design/data-flow.md": "```ts\nconst x = JSON.parse(raw);\n```",
+			}),
+			cwd: "/repo",
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT emit a sibling for as any inside a .mdx / .markdown doc", () => {
+		const out = expandSiblings({
+			triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+			index: makeIndex({
+				"as any": ["docs/plans/roadmap.mdx", "docs/notes.markdown"],
+			}),
+			reader: makeReader({
+				"docs/plans/roadmap.mdx": "const x = thing as any;",
+				"docs/notes.markdown": "const y = other as any;",
+			}),
+			cwd: "/repo",
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("excludes doc files but STILL emits siblings for real source files", () => {
+		// Mixed candidate list: the .md must be skipped, the .ts must fire.
+		const out = expandSiblings({
+			triggers: [{ name: "unvalidated_json_boundary", file: "/repo/src/origin.ts" }],
+			index: makeIndex({
+				"JSON.parse": ["docs/design/foo.md", "src/parser.ts"],
+			}),
+			reader: makeReader({
+				"docs/design/foo.md": "```js\nJSON.parse(snippet);\n```",
+				"src/parser.ts": "const cfg = JSON.parse(body);\n",
+			}),
+			cwd: "/repo",
+		});
+		expect(out.length).toBe(1);
+		expect(out[0].file).toBe("src/parser.ts");
+	});
+
+	it("doc-file exclusion is case-insensitive (.MD / .Markdown)", () => {
+		const out = expandSiblings({
+			triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+			index: makeIndex({ "as any": ["docs/README.MD", "docs/Notes.Markdown"] }),
+			reader: makeReader({
+				"docs/README.MD": "const x = a as any;",
+				"docs/Notes.Markdown": "const y = b as any;",
+			}),
+			cwd: "/repo",
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("STILL emits siblings for non-doc source even when path contains 'docs'", () => {
+		// A .ts file living under a docs/ directory is still source code —
+		// only the doc-file *extension* triggers the exclusion, not the path.
+		const out = expandSiblings({
+			triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+			index: makeIndex({ "as any": ["docs/examples/sample.ts"] }),
+			reader: makeReader({ "docs/examples/sample.ts": "const x = z as any;\n" }),
+			cwd: "/repo",
+		});
+		expect(out.length).toBe(1);
+		expect(out[0].file).toBe("docs/examples/sample.ts");
+	});
 });

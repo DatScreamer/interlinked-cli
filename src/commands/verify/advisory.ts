@@ -115,6 +115,10 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// need cleanup, delegated cleanup through super.dispose()). Advisory
 	// until the detection can see the handle/listener variable across methods.
 	"lifecycle_cleanup",
+	// Manual field copy: heuristic run-of-5+ scan for hand-copied object
+	// fields. Real signal (subset-copy drift) but FPs on deliberate field
+	// subsets and renamed-key copies. Advisory while heuristic.
+	"manual_field_copy",
 	// Cleanup-skipped-on-early-exit: detects setInterval/setTimeout/subscribe
 	// /addEventListener acquisitions where a throw or return reaches before
 	// the matching release, with no try/finally wrap. Real bug class

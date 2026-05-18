@@ -1237,6 +1237,16 @@ export function checkUbsStringConcatInLoop(content: string, filePath: string): I
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
+	// Names initialized to a numeric literal anywhere in the file. `n += expr`
+	// on such a name is integer addition, not string building — skip it. Kills
+	// the FP on byte/count accumulators (e.g. `let total = 0; total += len`).
+	const numericVars = new Set<string>();
+	for (const sl of strippedLines) {
+		for (const nm of sl.matchAll(/\b([A-Za-z_$]\w*)\s*=\s*-?\d/g)) {
+			numericVars.add(nm[1]);
+		}
+	}
+
 	let loopDepth = 0;
 	let braceDepth = 0;
 	let inPyLoop = false;
@@ -1257,10 +1267,12 @@ export function checkUbsStringConcatInLoop(content: string, filePath: string): I
 				inPyLoop = true;
 				pyLoopIndent = indent;
 			}
+			const pyConcat = line.match(/\b([A-Za-z_]\w*)\s*\+=\s*[A-Za-z_"'`]/);
 			if (
 				inPyLoop &&
 				indent > pyLoopIndent &&
-				/\b[A-Za-z_]\w*\s*\+=\s*[A-Za-z_"'`]/.test(line)
+				pyConcat &&
+				!numericVars.has(pyConcat[1])
 			) {
 				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 			}
@@ -1274,7 +1286,9 @@ export function checkUbsStringConcatInLoop(content: string, filePath: string): I
 		if (/\b(?:for|while)\b[^{]*\{/.test(line)) {
 			loopDepth++;
 		}
-		if (loopDepth > 0 && /\b[A-Za-z_$]\w*\s*\+=\s*[A-Za-z_$"'`]/.test(line)) {
+		const concat =
+			loopDepth > 0 ? line.match(/\b([A-Za-z_$]\w*)\s*\+=\s*[A-Za-z_$"'`]/) : null;
+		if (concat && !numericVars.has(concat[1])) {
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 		}
 		braceDepth += openCount - closeCount;

@@ -26,6 +26,7 @@ import {
 	checkLifecycleCleanup,
 	checkMagicLiteralInConditional,
 	checkMagicNumbers,
+	checkManualFieldCopy,
 	checkMixedErrorStrategy,
 	checkNarrativeNaming,
 	checkNegatedConditionWithElse,
@@ -44,6 +45,117 @@ import {
 	checkUntypedCatch,
 	checkUnvalidatedJsonBoundary,
 } from "../generic-checks.js";
+
+// ===========================================
+// checkManualFieldCopy
+// ===========================================
+
+describe("checkManualFieldCopy", () => {
+	it("flags a run of 5+ field copies target.k = source.k", () => {
+		const code = [
+			"function attach(result, out) {",
+			"  result.a = out.a;",
+			"  result.b = out.b;",
+			"  result.c = out.c;",
+			"  result.d = out.d;",
+			"  result.e = out.e;",
+			"  return result;",
+			"}",
+		].join("\n");
+		const matches = checkManualFieldCopy(code, "attach.ts");
+		expect(matches.length).toBe(1);
+		expect(matches[0].line).toBe(2);
+	});
+
+	it("flags copies guarded by an inline if (...) — the attachOutcome shape", () => {
+		const code = [
+			"function attach(result, out) {",
+			"  result.a = out.a;",
+			"  if (out.b !== null) result.b = out.b;",
+			"  if (out.c) result.c = out.c;",
+			"  if (out.d) result.d = out.d;",
+			"  if (out.e) result.e = out.e;",
+			"}",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "x.ts").length).toBe(1);
+	});
+
+	it("flags a run interrupted only by comment lines", () => {
+		const code = [
+			"function attach(t, s) {",
+			"  t.a = s.a;",
+			"  t.b = s.b;",
+			"  // a comment between copies",
+			"  t.c = s.c;",
+			"  t.d = s.d;",
+			"  t.e = s.e;",
+			"}",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "x.ts").length).toBe(1);
+	});
+
+	it("does NOT flag a run shorter than 5", () => {
+		const code = [
+			"function attach(t, s) {",
+			"  t.a = s.a;",
+			"  t.b = s.b;",
+			"  t.c = s.c;",
+			"  t.d = s.d;",
+			"}",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag copies with differing keys (a transform, not a copy)", () => {
+		const code = [
+			"function map(dto, row) {",
+			"  dto.fullName = row.name;",
+			"  dto.years = row.age;",
+			"  dto.city = row.town;",
+			"  dto.zip = row.postal;",
+			"  dto.email = row.contact;",
+			"}",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag when a real statement breaks the run before 5", () => {
+		const code = [
+			"function attach(t, s) {",
+			"  t.a = s.a;",
+			"  t.b = s.b;",
+			"  doSomethingElse();",
+			"  t.c = s.c;",
+			"  t.d = s.d;",
+			"}",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "x.ts")).toEqual([]);
+	});
+
+	it("returns empty for non-JS/TS files", () => {
+		const code = [
+			"def attach(t, s):",
+			"  t.a = s.a",
+			"  t.b = s.b",
+			"  t.c = s.c",
+			"  t.d = s.d",
+			"  t.e = s.e",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "attach.py")).toEqual([]);
+	});
+
+	it("returns empty for test files (expected-object building is normal there)", () => {
+		const code = [
+			"const got = {};",
+			"got.a = exp.a;",
+			"got.b = exp.b;",
+			"got.c = exp.c;",
+			"got.d = exp.d;",
+			"got.e = exp.e;",
+		].join("\n");
+		expect(checkManualFieldCopy(code, "thing.test.ts")).toEqual([]);
+	});
+});
 
 // ===========================================
 // B1: checkUnreachableCode

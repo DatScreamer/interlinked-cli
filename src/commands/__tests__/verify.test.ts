@@ -257,6 +257,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"loop_nesting_depth",
 				"magic_literal_in_conditional",
 				"magic_number",
+				"manual_field_copy",
 				"missing_return_types",
 				"nested_ternaries",
 				"no_test_file",

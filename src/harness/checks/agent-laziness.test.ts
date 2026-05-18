@@ -29,9 +29,12 @@ function foo() {
 		expect(matches[0].line).toBe(3);
 	});
 
-	it("flags 'for now' / 'placeholder' / 'simplified version'", () => {
+	it("flags 'for now' / self-describing 'placeholder' / 'simplified version'", () => {
+		// Bare "placeholder" is deliberately NOT a strong phrase (it over-fires
+		// on input labels and doc text — see checkAgentThumbprintProse tier
+		// split). A self-describing form ("this is a placeholder") still fires.
 		const code = `
-const X = 1; // placeholder
+const X = 1; // this is a placeholder
 const Y = 2; // for now
 const Z = 3; // simplified version for now
 `;
@@ -65,6 +68,72 @@ const Z = 3; // simplified version for now
 		// The phrase is in a string, not a comment. Comment-prefix regex
 		// requires // / /* / # / -- / <!--; bare string assignment shouldn't fire.
 		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	// FP refinement (2026-05): weak phrases ("in production", "in practice")
+	// appear in legitimate engineering prose constantly. They are now
+	// two-tiered — a weak phrase fires only when a corroborating
+	// incompleteness signal (TODO, stub, throw, empty body, "for now") sits
+	// on the same line or an immediate neighbour. Strong phrases still fire
+	// alone.
+
+	it("does NOT flag an informative 'in production' engineering comment", () => {
+		// Regression: src/lib/local-activity.ts:374 —
+		// "observed in production (a single workspace grew this file to 3 GB …)"
+		// is a legitimate factual comment, not an abandoned-work thumbprint.
+		const code = `
+const SYNC_ERRORS_MAX_BYTES = 10 * 1024 * 1024;
+// 10 MB cap — the multi-GB bloat observed in production was one workspace
+// growing this log to 3 GB with one identical message per failed POST.
+`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("does NOT flag 'in practice' in a normal explanatory comment", () => {
+		const code = `// in practice the buffer never exceeds 64 KB, so one chunk is enough`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("does NOT flag the bare word 'placeholder' in normal prose", () => {
+		// Known over-fire (project memory): "placeholder" appears in input
+		// labels and doc text. Only self-describing forms are a thumbprint.
+		const code = `// the input renders a greyed-out placeholder when empty`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("STILL flags 'in production' when corroborated by a TODO on a neighbour line", () => {
+		const code = `
+function loadUser(id: string) {
+  // in production this would query the database
+  // TODO: wire up the real datasource
+  return null;
+}`;
+		const matches = checkAgentThumbprintProse(code, TS);
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags 'in practice' when the same line carries a stub throw", () => {
+		const code = `function f() { throw new Error("stub"); /* in practice this calls the API */ }`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags 'this is a placeholder' (self-describing strong form)", () => {
+		const code = `// this is a placeholder until the real service lands`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags 'placeholder implementation' (strong form)", () => {
+		const code = `function compute() { return 0; } // placeholder implementation`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags an 'in production' comment next to an empty-return stub body", () => {
+		const code = `
+function fetchConfig() {
+  // in production this reads from the config service
+  return {};
+}`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
 	});
 });
 
@@ -469,5 +538,76 @@ export function loadConfig() { return readFileSync("config.json"); }
 		expect(
 			checkSyncIoOnHotPath(`readFileSync("x")`, "src/handlers/foo.test.ts"),
 		).toEqual([]);
+	});
+
+	// FP refinement (2026-05): bare HTTP-verb names (`get`, `post`, …) were
+	// matched with a `\w*` suffix, so a camelCase getter named e.g.
+	// `getActivityPath` made an ordinary library module "look like" a hot
+	// path. The verb must now be the WHOLE identifier. Prefix names like
+	// `handle*` / `on*` are unaffected.
+
+	it("STILL flags a file declaring `function get(` (bare-verb route handler)", () => {
+		const code = `
+import { readFileSync } from "node:fs";
+export function get(req) { return readFileSync("x"); }
+`;
+		// Bare verb as the whole identifier IS a router-method shape.
+		expect(checkSyncIoOnHotPath(code, "src/lib/server.ts").length).toBe(1);
+	});
+
+	it("STILL flags an arrow handler named exactly `post`", () => {
+		const code = `
+import { writeFileSync } from "node:fs";
+export const post = async (req) => { writeFileSync("x", req.body); };
+`;
+		expect(checkSyncIoOnHotPath(code, "src/lib/server.ts").length).toBe(1);
+	});
+
+	it("STILL flags sync I/O in a handlers/ directory regardless of fn name", () => {
+		const code = `
+import { readdirSync } from "node:fs";
+export function listEntries() { return readdirSync("/data"); }
+`;
+		// Directory match alone makes this a hot path.
+		expect(checkSyncIoOnHotPath(code, "src/handlers/list.ts").length).toBe(1);
+	});
+
+	it("does NOT fire on a camelCase getter named `getActivityPath`", () => {
+		// Regression: `getActivityPath` starts with `get` but is a plain
+		// path helper, not a route handler. `src/lib/local-activity.ts`
+		// is full of these (getSessionsDir, getSyncStatePath, …).
+		const code = `
+import { readFileSync } from "node:fs";
+export function getActivityPath(cwd: string) { return readFileSync(cwd); }
+`;
+		expect(checkSyncIoOnHotPath(code, "src/lib/local-activity.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on camelCase helpers `getUnsyncedEvents` / `deleteRecord`", () => {
+		const code = `
+import { readFileSync, unlinkSync } from "node:fs";
+export function getUnsyncedEvents() { return readFileSync("log"); }
+export function deleteRecord(id: string) { unlinkSync(id); }
+`;
+		expect(checkSyncIoOnHotPath(code, "src/lib/store.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on the real local-activity.ts shape (sync JSONL library)", () => {
+		// Condensed reproduction of src/lib/local-activity.ts: an
+		// offline-first synchronous library module whose only verb-prefixed
+		// names are getters. None of these are HTTP handlers.
+		const code = `
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+function getActivityPath(cwd) { return cwd + "/activity.jsonl"; }
+function getSessionsDir(cwd) { return cwd + "/sessions"; }
+export function appendLocalActivity(event, cwd) {
+  mkdirSync(getSessionsDir(cwd), { recursive: true });
+  appendFileSync(getActivityPath(cwd), JSON.stringify(event));
+}
+export function readLocalSessions(cwd) {
+  return readdirSync(getSessionsDir(cwd)).map((f) => readFileSync(f, "utf-8"));
+}
+`;
+		expect(checkSyncIoOnHotPath(code, "src/lib/local-activity.ts")).toEqual([]);
 	});
 });

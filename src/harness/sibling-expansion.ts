@@ -88,6 +88,23 @@ const DEFAULT_MAX_SIBLINGS_PER_TRIGGER = 3;
 const DEFAULT_MAX_CANDIDATES = 30;
 const SNIPPET_LENGTH = 120;
 
+// Documentation file extensions. The trigram index covers the whole repo,
+// so a `JSON.parse(...)` / `as any` shown inside a fenced code block in a
+// design doc (`docs/design/*.md`, `docs/plans/*.md`, …) gets returned as a
+// sibling candidate. That text is illustrative prose, not lintable source —
+// flagging it is a pure false positive. Sibling rule ids carry "route
+// through a schema validator" / "same pattern just edited elsewhere"
+// guidance that makes no sense pointed at a markdown snippet. Exclude doc
+// files from the candidate set entirely.
+const DOC_FILE_EXTENSIONS: readonly string[] = [".md", ".mdx", ".markdown"];
+
+/** True when a candidate path is a Markdown / documentation file whose
+ *  embedded code snippets must not be treated as lintable source. */
+function isDocFile(path: string): boolean {
+	const lower = path.toLowerCase();
+	return DOC_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 /** Public API — return sibling rows for every applicable trigger.
  *
  *  Triggers with the same `name` are deduped (same fan-out is computed
@@ -123,6 +140,10 @@ export function expandSiblings(args: ExpandSiblingsArgs): SiblingFinding[] {
 		for (const candidatePath of candidatePaths) {
 			if (emittedForTrigger >= maxSiblings) break;
 			if (originFiles.has(candidatePath)) continue;
+			// Markdown / doc files embed code snippets as illustration, not
+			// as lintable source — skip them so a `JSON.parse` in a fenced
+			// block in `docs/design/*.md` is never emitted as a sibling.
+			if (isDocFile(candidatePath)) continue;
 
 			const content = args.reader.read(candidatePath);
 			if (content === undefined) continue;

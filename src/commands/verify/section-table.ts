@@ -420,6 +420,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "manual field copy",
+		key: "manualFieldCopy",
+		noun: "runs of hand-copied object fields",
+		passLabel: "no manual field copies",
+		color: "33",
+	},
+	{
 		label: "excessive useState",
 		key: "excessiveUseState",
 		noun: "components with 8+ useState hooks",

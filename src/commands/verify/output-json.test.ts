@@ -50,6 +50,7 @@ function emptyCq(): CodeQualityResults {
 		"silentPromiseSwallow",
 		"requireAwait",
 		"accumulatingSpread",
+		"manualFieldCopy",
 		"excessiveUseState",
 		"dangerouslySetInnerHtml",
 		"directDomAccess",

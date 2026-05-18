@@ -612,13 +612,104 @@ function parseParamPrimitives(paramStr: string): ParsedParam[] {
 }
 
 /**
+ * Classify a single uncommented line (comment prefix already stripped).
+ *
+ * Returns:
+ *   - "code": an actual executable statement someone disabled — a real
+ *     keyword statement, an assignment with a real value, a bare call,
+ *     a closing/opening brace of such a statement, a block terminator.
+ *   - "doc": prose or illustrative content — words, type unions (`|`),
+ *     `<placeholder>` brackets, bare `key: type` annotations, `...`
+ *     ellipsis used as prose, parentheticals like `(e.g. ...)`. The
+ *     presence of *any* doc line vetoes the whole block.
+ *   - "neutral": blank, a divider, or a line that is neither — does not
+ *     count toward the code ratio either way.
+ *
+ * The detector fires only on a strong majority of "code" lines with zero
+ * "doc" lines, so it can never flag a documentation comment, an ASCII
+ * diagram, or an illustrative type/shape example.
+ */
+function classifyCommentLine(raw: string, isPython = false): "code" | "doc" | "neutral" {
+	const line = raw.trim();
+	if (line === "") return "neutral";
+
+	// Divider / ASCII-art lines — pure punctuation runs, no real tokens.
+	if (/^[=\-*~_#+.|/\\<>\s]+$/.test(line)) return "neutral";
+
+	// --- Doc markers (any one of these vetoes the block) ---------------
+
+	// Type unions / pipe-separated alternatives (`a | b | c`, `string | null`).
+	// Real code rarely puts ` | ` mid-line outside a type position; doc shape
+	// examples use it constantly. (Python bitwise-or is rare in commented code
+	// and would still need a doc-free majority elsewhere — acceptable veto.)
+	if (/\s\|\s/.test(line)) return "doc";
+	// Angle-bracket placeholders: `<original native event name>`, `<T>` as prose.
+	// A `<...>` span containing a space is a natural-language placeholder, not
+	// a generic type argument (those have no spaces: `Array<string>`).
+	if (/<[^<>]*\s[^<>]*>/.test(line)) return "doc";
+	// Ellipsis used as prose ("...event-specific fields", "etc. ...").
+	if (line.includes("...")) return "doc";
+	// Prose parentheticals: "(e.g. ...)", "(see ...)", "(per the design ...)".
+	if (/\((?:e\.g\.|i\.e\.|see\b|per\b|note\b|or\b|and\b|matches\b|with\b)/i.test(line))
+		return "doc";
+	// A bare `key: type` annotation — illustrative shape line, no value, no
+	// terminator. JS/TS only: in Python `:` ends a compound-statement header
+	// (`if x:`, `def f():`) which is real code, so skip this veto there.
+	if (
+		!isPython &&
+		/^[A-Za-z_$][\w$]*\s*\??:\s*[A-Za-z_$]/.test(line) &&
+		!/[;,{]\s*$/.test(line)
+	) {
+		// Object-literal entries end in `,` or `{`; `case Foo:` starts with the
+		// `case` keyword (caught as code below). Anything left is a bare type
+		// annotation → doc.
+		return "doc";
+	}
+
+	// --- Real-code markers ---------------------------------------------
+
+	// Statement keywords at the start of the line.
+	const jsKeywords =
+		/^(const|let|var|function|async\s+function|class|interface|enum|type\s+[A-Za-z]|import|export|return|throw|await|yield|if|else|for|while|do|switch|case\s|default:|try|catch|finally|break|continue|new\s|delete\s)\b/;
+	const pyKeywords =
+		/^(def|class|import|from\s|return|raise|yield|await|async\s+def|if|elif|else|for|while|with|try|except|finally|break|continue|pass|global|nonlocal|assert|del|lambda\b)\b/;
+	if ((isPython ? pyKeywords : jsKeywords).test(line)) return "code";
+
+	if (isPython) {
+		// Python: statements are newline-terminated. An assignment with a
+		// real right-hand side: `data = request.json()`, `x = 3`.
+		if (/^[\w$.[\]]+\s*[-+*/%|&^]?=\s*\S/.test(line) && !/[=<>!]=\s*$/.test(line))
+			return "code";
+		// A bare call statement: `save(data)`, `obj.run(a, b)`.
+		if (/^[\w$]+(?:\.[\w$]+)*\([^)]*\)\s*$/.test(line)) return "code";
+		return "neutral";
+	}
+
+	// JS/TS: assignment with a real right-hand side ending in a terminator:
+	// `x = foo();`  `this.y = 3;`  `obj.k = "v";`
+	if (/^[\w$.[\]]+\s*[-+*/|&^]?=\s*\S.*[;,]\s*$/.test(line)) return "code";
+	// A bare function/method call statement: `doThing();`  `obj.run(a, b);`
+	if (/^[\w$]+(?:\.[\w$]+)*\([^)]*\)\s*;?\s*$/.test(line)) return "code";
+	// A line that ends in a semicolon and contains a call or assignment — a
+	// disabled statement that didn't match the tighter patterns above.
+	if (/;\s*$/.test(line) && /[\w$]\s*[=(]/.test(line)) return "code";
+	// A lone block-closer that belongs to disabled code: `}`, `};`, `});`,
+	// `} else {`. A lone `{` is too ambiguous (shape examples open with it),
+	// so an opening brace only counts when preceded by code on the same line.
+	if (/^\}[\s;)]*[,;]?\s*(else\b.*)?$/.test(line)) return "code";
+
+	return "neutral";
+}
+
+/**
  * Detect blocks of commented-out code (3+ consecutive lines).
  * Commented-out code rots, confuses grep, and makes the real code harder to scan.
  * Use version control instead of comment-preservation.
  *
- * Only flags comment blocks where >60% of lines look like code
- * (contain semicolons, braces, arrows, keywords).
- * Skips: JSDoc blocks, license headers, ASCII art, prose comments.
+ * Fires only when a comment block is a strong majority of real executable
+ * statements AND contains zero documentation markers. Documentation comments,
+ * ASCII diagrams, illustrative type/shape examples, JSDoc blocks, license
+ * headers, and prose with incidental code-like punctuation are never flagged.
  */
 export function checkCommentedOutCode(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
@@ -629,13 +720,12 @@ export function checkCommentedOutCode(content: string, filePath: string): Inline
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// Code-like tokens that indicate commented-out code rather than prose
-	const codeTokens =
-		/[;{}=]|=>|^\s*\/\/\s*(const|let|var|function|class|import|export|return|if|for|while|switch|try|catch)\b/;
-	// JSDoc/documentation patterns to skip
+	// JSDoc/documentation patterns to skip — line never counts, but unlike a
+	// "doc" classification it does not by itself veto the block (a stray
+	// `// NOTE:` next to real disabled code should not save the block).
 	const docPattern =
 		/^\s*\/\/\s*(@\w+|@param|@returns|@throws|@example|@see|@todo|TODO|FIXME|NOTE|HACK|XXX)\b/i;
-	// License/header patterns
+	// License/header patterns — same: skipped, non-vetoing.
 	const licensePattern = /^\s*\/\/\s*(copyright|license|MIT|Apache|BSD|GPL|all rights reserved)/i;
 
 	const isPython = ext === ".py";
@@ -644,6 +734,30 @@ export function checkCommentedOutCode(content: string, filePath: string): Inline
 	let blockStart = -1;
 	let codeLineCount = 0;
 	let totalLineCount = 0;
+	let docLineCount = 0;
+
+	const flushBlock = () => {
+		// Need 3+ comment lines, a strong code majority, and zero doc lines.
+		// A single doc/prose/shape line vetoes the block — bias hard toward
+		// not firing, since comments are useful and false positives at
+		// edit-time are especially annoying.
+		if (blockStart !== -1 && totalLineCount >= 3 && docLineCount === 0) {
+			// Require at least 3 lines that are unambiguously real code, not
+			// just a >60% ratio of a short block. Two code lines plus a blank
+			// is no longer enough to fire.
+			const codeRatio = totalLineCount > 0 ? codeLineCount / totalLineCount : 0;
+			if (codeLineCount >= 3 && codeRatio > 0.6) {
+				matches.push({
+					line: blockStart + 1,
+					text: `[${totalLineCount} lines of commented-out code → use version control instead]`,
+				});
+			}
+		}
+		blockStart = -1;
+		codeLineCount = 0;
+		totalLineCount = 0;
+		docLineCount = 0;
+	};
 
 	for (let i = 0; i <= originalLines.length; i++) {
 		if (matches.length >= 5) break;
@@ -651,30 +765,18 @@ export function checkCommentedOutCode(content: string, filePath: string): Inline
 		const line = i < originalLines.length ? originalLines[i] : "";
 		const isComment = commentPrefix.test(line);
 
-		if (isComment && !docPattern.test(line) && !licensePattern.test(line)) {
-			if (blockStart === -1) {
-				blockStart = i;
-				codeLineCount = 0;
-				totalLineCount = 0;
-			}
+		if (isComment) {
+			if (blockStart === -1) blockStart = i;
 			totalLineCount++;
-			// Strip the comment prefix and check if it looks like code
+			// JSDoc / license lines are skipped entirely — neither code nor
+			// veto. The block continues across them.
+			if (docPattern.test(line) || licensePattern.test(line)) continue;
 			const uncommented = line.replace(commentPrefix, "");
-			if (codeTokens.test(line) || /[;{}()]/.test(uncommented)) {
-				codeLineCount++;
-			}
+			const kind = classifyCommentLine(uncommented, isPython);
+			if (kind === "code") codeLineCount++;
+			else if (kind === "doc") docLineCount++;
 		} else {
-			// End of comment block — check if it was a code block
-			if (blockStart !== -1 && totalLineCount >= 3) {
-				const codeRatio = codeLineCount / totalLineCount;
-				if (codeRatio > 0.6) {
-					matches.push({
-						line: blockStart + 1,
-						text: `[${totalLineCount} lines of commented-out code → use version control instead]`,
-					});
-				}
-			}
-			blockStart = -1;
+			flushBlock();
 		}
 	}
 

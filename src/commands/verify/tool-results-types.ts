@@ -86,6 +86,7 @@ export interface CodeQualityResults {
 	silentPromiseSwallow: CodeQualityIssue[];
 	requireAwait: CodeQualityIssue[];
 	accumulatingSpread: CodeQualityIssue[];
+	manualFieldCopy: CodeQualityIssue[];
 	// 13 additional agent safety checks
 	excessiveUseState: CodeQualityIssue[];
 	dangerouslySetInnerHtml: CodeQualityIssue[];
@@ -335,6 +336,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"silentPromiseSwallow",
 	"requireAwait",
 	"accumulatingSpread",
+	"manualFieldCopy",
 	"excessiveUseState",
 	"dangerouslySetInnerHtml",
 	"directDomAccess",

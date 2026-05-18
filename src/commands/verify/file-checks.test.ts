@@ -51,6 +51,7 @@ function makeEmptyResults(): CodeQualityResults {
 		"requireAwait",
 
 		"accumulatingSpread",
+		"manualFieldCopy",
 		"excessiveUseState",
 		"dangerouslySetInnerHtml",
 		"directDomAccess",

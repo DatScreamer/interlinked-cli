@@ -455,6 +455,65 @@ function extractNewThinking(transcriptPath) {
     }
 }
 
+// --- Git context (commit attribution) ---
+// Resolve HEAD sha + branch by reading .git directly — no subprocess, so it
+// stays well within the hook budget. Memoized per process: the .mjs runs
+// once per event, so a single resolution serves every record it writes.
+// Fail-open to nulls on any error (missing .git, detached HEAD, worktree
+// pointer files) — git context is an annotation, never a gate.
+let _gitContextCache = null;
+function gitContext(startDir) {
+    if (_gitContextCache) return _gitContextCache;
+    _gitContextCache = resolveGitContext(startDir);
+    return _gitContextCache;
+}
+function resolveGitContext(startDir) {
+    try {
+        let dir = startDir || process.cwd();
+        let gitPath = null;
+        for (let i = 0; i < 25; i++) {
+            const candidate = join(dir, ".git");
+            if (existsSync(candidate)) { gitPath = candidate; break; }
+            const parent = dirname(dir);
+            if (parent === dir) break;
+            dir = parent;
+        }
+        if (!gitPath) return { git_head: null, git_branch: null };
+        let gitDir = gitPath;
+        if (statSync(gitPath).isFile()) {
+            // Worktree / submodule: .git is a "gitdir: <path>" pointer file.
+            const ptr = readFileSync(gitPath, "utf-8").trim().match(/^gitdir:\\s*(.+)$/);
+            if (!ptr) return { git_head: null, git_branch: null };
+            gitDir = ptr[1].charAt(0) === "/" ? ptr[1] : join(dir, ptr[1]);
+        }
+        const headTxt = readFileSync(join(gitDir, "HEAD"), "utf-8").trim();
+        const refMatch = headTxt.match(/^ref:\\s*(.+)$/);
+        if (!refMatch) {
+            // Detached HEAD — the file holds the commit sha directly.
+            return { git_head: headTxt.slice(0, 40) || null, git_branch: null };
+        }
+        const ref = refMatch[1];
+        const branch = ref.replace(/^refs\\/heads\\//, "");
+        let head = null;
+        const loosePath = join(gitDir, ref);
+        if (existsSync(loosePath)) {
+            head = readFileSync(loosePath, "utf-8").trim();
+        } else {
+            const packedPath = join(gitDir, "packed-refs");
+            if (existsSync(packedPath)) {
+                for (const line of readFileSync(packedPath, "utf-8").split("\\n")) {
+                    if (!line || line.charAt(0) === "#" || line.charAt(0) === "^") continue;
+                    const sp = line.indexOf(" ");
+                    if (sp > 0 && line.slice(sp + 1) === ref) { head = line.slice(0, sp); break; }
+                }
+            }
+        }
+        return { git_head: head ? head.slice(0, 40) : null, git_branch: branch || null };
+    } catch (_err) {
+        return { git_head: null, git_branch: null };
+    }
+}
+
 // --- Local JSONL append (full capture, sync) ---
 function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey) {
     try {
@@ -491,6 +550,14 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         if (event.stderr) record.stderr = event.stderr;
         if (event.stdout) record.stdout = event.stdout;
         if (event.tool_response_sha256) record.tool_response_sha256 = event.tool_response_sha256;
+        // v4 error annotation — canonical diagnostic text + coarse category,
+        // both set by attachOutcome. Previously computed and dropped here.
+        if (event.error_message) record.error_message = event.error_message;
+        if (event.error_category) record.error_category = event.error_category;
+        // v4 payload sizes — original (pre-cap) byte counts from the
+        // normalizer, so a truncated tool_response is still measurable.
+        if (event.tool_input_bytes !== undefined) record.tool_input_bytes = event.tool_input_bytes;
+        if (event.tool_output_bytes !== undefined) record.tool_output_bytes = event.tool_output_bytes;
         // v4 diff fingerprints (set by attachEditMetrics for Edit/Write/MultiEdit/NotebookEdit)
         if (event.lines_added !== undefined) record.lines_added = event.lines_added;
         if (event.lines_removed !== undefined) record.lines_removed = event.lines_removed;
@@ -533,6 +600,11 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         // (prompt, tool_input_summary, thinking, etc.) before persisting to
         // activity.jsonl. Defense-in-depth alongside the harness content scanner:
         // this regex pass is always on, catches credentials, runs offline.
+        // Git context — ties every event to a commit without timestamp-
+        // fuzzing the reflog. Memoized; reads .git directly, no subprocess.
+        const gc = gitContext(event.cwd);
+        if (gc.git_head) record.git_head = gc.git_head;
+        if (gc.git_branch) record.git_branch = gc.git_branch;
         scrubPayload(record);
         appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
     } catch (_err) { void 0; /* intentional: no-op */ }
@@ -564,6 +636,9 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
         };
         if (event.model) record.model = event.model;
         if (event.cwd) record.cwd = event.cwd;
+        const guardGc = gitContext(event.cwd);
+        if (guardGc.git_head) record.git_head = guardGc.git_head;
+        if (guardGc.git_branch) record.git_branch = guardGc.git_branch;
         // Enriched data from harness (PostToolUse check results, timing, grep stats)
         if (guardResult.check_results) record.guard_check_results = guardResult.check_results;
         if (guardResult.checks_timing_ms != null) record.guard_checks_timing_ms = guardResult.checks_timing_ms;

@@ -88,11 +88,20 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 	it("Step 1: emits status + error_category on tool events", () => {
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('status: "success"');
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('status: "error"');
-		expect(EVENT_NORMALIZERS_CHUNK).toContain("categorizeToolError");
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("classifyErrorText");
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('"user_interrupt"');
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('"timeout"');
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('"permission"');
 		expect(EVENT_NORMALIZERS_CHUNK).toContain('"tool_error"');
+	});
+
+	it("attachOutcome carries error_message + error_category onto the record", () => {
+		// deriveToolOutcome computes the canonical diagnostic text; attachOutcome
+		// must assign it (regression: the assignment was missing, so the field
+		// was computed and silently dropped). error_category is derived in the
+		// same place, so every client's folded failures get categorized once.
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("result.error_message = out.error_message");
+		expect(EVENT_NORMALIZERS_CHUNK).toContain("result.error_category = classifyErrorText(");
 	});
 
 	it("Step 1: emits byte counts on PreToolUse / PostToolUse", () => {

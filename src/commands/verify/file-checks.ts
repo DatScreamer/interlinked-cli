@@ -27,6 +27,7 @@ import {
 	checkCommentClaimsValidationMissing,
 	checkCatchAndLog,
 	checkCircularImports,
+	checkManualFieldCopy,
 	checkCleanupSkippedOnEarlyExit,
 	checkCodeClones,
 	checkConsoleDebug,
@@ -561,6 +562,9 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.requireAwait.push(...toIssues("require_await", relPath, checkRequireAwait(content, file)));
 	r.accumulatingSpread.push(
 		...toIssues("accumulating_spread", relPath, checkAccumulatingSpread(content, file)),
+	);
+	r.manualFieldCopy.push(
+		...toIssues("manual_field_copy", relPath, checkManualFieldCopy(content, file)),
 	);
 
 	// --- 13 additional agent safety checks ---

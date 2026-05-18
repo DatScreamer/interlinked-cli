@@ -14,6 +14,7 @@ import {
 import {
 	checkAccumulatingSpread,
 	checkAgentThumbprintProse,
+	checkManualFieldCopy,
 	checkAsyncEventHandler,
 	checkAwaitStateToctou,
 	checkBoundaryCopyNoRevalidation,
@@ -1743,5 +1744,20 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 			"A user will read this value as a real production figure. Fix it one of two ways: (1) wire it to real data — fetch from the API, pass real props, or read from the store; or (2) if the placeholder must stay (early prototype, pending integration), make its status unmistakable IN THE RENDERED UI — a visible 'Sample data' badge, a banner, or muted styling with an explicit label — so no human mistakes it for production. A code comment is not enough; the disclaimer has to be on screen. For values that flow into a chart or stat, prefer wrapping with `demoData(\"<key>\", value, { reason })` from the vendored demo-runtime so the page mounts a banner automatically.",
 		fn: checkPlaceholderDataInUi,
 		resultsPropName: "placeholderDataInUi",
+	},
+	{
+		id: "manual_field_copy",
+		phase: "post",
+		name: "Manual Field Copy",
+		description:
+			"Detects a run of 5+ consecutive field copies target.k = source.k (matching key, same target + source objects) — hand-copying one object's fields onto another silently skips any field later added to the source.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Hand-copying fields object-to-object (target.k = source.k, repeated) silently skips any field later added to the source — the bug class behind a builder that computes a field its caller forgets to forward. Use object spread ({ ...source }) or Object.assign(target, source) so the field set stays in sync. If the subset is deliberate, leave a comment saying so.",
+		fn: checkManualFieldCopy,
+		resultsPropName: "manualFieldCopy",
 	},
 ];

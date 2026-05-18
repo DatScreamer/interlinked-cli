@@ -565,4 +565,29 @@ describe("FP: commented-out-code skips banner dividers", () => {
 		);
 		expect(checkCommentedOutCode(content, "/src/foo.ts").length).toBeGreaterThan(0);
 	});
+
+	it("does not flag an illustrative record-shape doc comment", () => {
+		// Doc comment drawing a data shape — braces, `key: type` annotations,
+		// `|` unions, `<placeholder>` brackets, and `...` ellipsis are all
+		// documentation, not disabled code. (event-normalizers.ts FP class.)
+		const content = [
+			"// Canonical event record:",
+			"//   {",
+			'//     event_type: "session_start" | "tool_use" | ...',
+			"//     tool_name: string | null",
+			"//     hook_event: <original native event name>",
+			"//     ...event-specific fields (tool_input, etc.)",
+			"//   }",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("does not flag prose with incidental parentheses and colons", () => {
+		const content = [
+			"// The downstream pipeline (JSONL append, server POST) speaks",
+			"// exactly one shape: the canonical record. Adding a client means",
+			"// authoring one normalizer (and one detector entry) — nothing else.",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
 });

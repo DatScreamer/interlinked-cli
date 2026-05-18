@@ -714,3 +714,57 @@ export function checkAccumulatingSpread(content: string, filePath: string): Inli
 	}
 	return matches;
 }
+
+/**
+ * Detect a run of 5+ consecutive field copies `target.k = source.k` — same
+ * property name on both sides, same target + source objects. Hand-copying one
+ * object's fields onto another is fragile: a field later added to the source
+ * is silently skipped at the copy site. This is the bug class behind a builder
+ * that computes a field its caller forgets to forward.
+ */
+export function checkManualFieldCopy(content: string, filePath: string): InlineMatch[] {
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	if (isTestFile(filePath)) return [];
+	const strippedLines = stripCommentsAndStrings(content).split("\n");
+	const matches: InlineMatch[] = [];
+	// A field copy is `<obj>.<key> = <obj>.<key>` ending the statement (after
+	// an optional `if (...)` guard). Captures target obj/key + source obj/key.
+	const copyRe =
+		/([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*;?\s*$/;
+	let runTarget = "";
+	let runSource = "";
+	let runCount = 0;
+	let runStart = 0;
+	const flushRun = () => {
+		if (runCount >= 5 && matches.length < 10) {
+			matches.push({
+				line: runStart,
+				text:
+					`${runCount} consecutive field copies ${runTarget}.x = ${runSource}.x` +
+					` — a field added to ${runSource} is silently skipped here`,
+			});
+		}
+		runCount = 0;
+	};
+	for (let i = 0; i < strippedLines.length; i++) {
+		const trimmed = strippedLines[i].trim();
+		if (trimmed === "") continue; // blank / comment-only — does not break a run
+		const m = trimmed.match(copyRe);
+		const isCopy = m !== null && m[2] === m[4] && m[1] !== m[3];
+		if (isCopy && m) {
+			if (runCount > 0 && m[1] === runTarget && m[3] === runSource) {
+				runCount++;
+			} else {
+				flushRun();
+				runTarget = m[1];
+				runSource = m[3];
+				runStart = i + 1;
+				runCount = 1;
+			}
+		} else {
+			flushRun();
+		}
+	}
+	flushRun();
+	return matches;
+}

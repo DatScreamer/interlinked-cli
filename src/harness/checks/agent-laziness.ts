@@ -36,16 +36,33 @@ const BIOME_IGNORE_ALL_TOKEN = `biome-ignore-${"all"}`;
 // production code essentially never uses these phrases verbatim, but agents
 // produce them constantly when their context runs out or the task gets
 // awkward.
+//
+// Two tiers, because not every phrase is equally diagnostic:
+//
+//   STRONG — the phrase alone signals abandoned/incomplete work. A human
+//   writing finished code essentially never uses these verbatim. Fires on
+//   sight.
+//
+//   WEAK — the phrase is *consistent with* a thumbprint but also appears
+//   constantly in legitimate engineering prose ("observed in production",
+//   "in practice this is fine"). On its own it is a false-positive magnet.
+//   It only fires when a corroborating incompleteness signal sits nearby
+//   (a TODO/FIXME, a "not implemented", a stub/throw, an empty body) — see
+//   `lineOrNeighborsHaveIncompletenessSignal` below.
 
-const AGENT_THUMBPRINT_PHRASES: readonly RegExp[] = [
+const STRONG_THUMBPRINT_PHRASES: readonly RegExp[] = [
 	/\bin\s+(?:a\s+)?real\s+(?:implementation|production|app|application|world|system|environment|deployment|version|scenario)\b/i,
-	/\bin\s+production\b(?!\s*(?:builds?|mode|environment\s+only))/i,
 	/\bfor\s+now\b/i,
 	/\breal\s+(?:code|implementation|version|api|backend|service)\s+would\b/i,
 	/\b(?:proper|actual)\s+implementation\b/i,
-	/\b(?:this\s+is\s+a\s+|just\s+a\s+)?placeholder\b/i,
+	// `placeholder` only when it self-describes the code ("this is a
+	// placeholder", "temporary placeholder", "placeholder implementation").
+	// Bare "placeholder" appears in legitimate prose constantly (input
+	// placeholders, doc text) — known over-fire, see project memory
+	// `agent_thumbprint_overfires_placeholder`.
+	/\b(?:this\s+is\s+(?:a|just\s+a)\s+|just\s+a\s+|temporary\s+|simple\s+)placeholder\b/i,
+	/\bplaceholder\s+(?:implementation|value|for\s+now|until)\b/i,
 	/\bsimplified\s+(?:version|for\s+now)\b/i,
-	/\bin\s+practice\b/i,
 	/\bTODO\s*:?\s*(?:actually\s+|properly\s+)?(?:implement|wire\s*up|hook\s*up|connect)\b/i,
 	/\b(?:should|will|would)\s+(?:eventually|actually)\s+(?:be|use|call|fetch|connect)\b/i,
 	/\bhardcod(?:ed?|ing)\s+for\s+now\b/i,
@@ -54,6 +71,32 @@ const AGENT_THUMBPRINT_PHRASES: readonly RegExp[] = [
 	/\b(?:we\s+would|we'd)\s+(?:normally|actually|usually)\b/i,
 	/\bin\s+(?:the\s+)?(?:real|final|actual|production)\s+(?:version|app|code)\b/i,
 ];
+
+// Weak phrases. These match informative engineering comments ("a single
+// workspace grew this file to 3 GB ... observed in production") just as
+// readily as a thumbprint. Each only counts when corroborated — see
+// `lineOrNeighborsHaveIncompletenessSignal`.
+const WEAK_THUMBPRINT_PHRASES: readonly RegExp[] = [
+	/\bin\s+production\b(?!\s*(?:builds?|mode|environment\s+only))/i,
+	/\bin\s+practice\b/i,
+];
+
+// An incompleteness signal: separate evidence that the surrounding code is
+// a stub / unfinished / abandoned. A weak phrase fires only when one of
+// these appears on the same line or an immediate neighbour (±2 lines).
+//
+// Two top-level arms, because a single trailing `\b` cannot cover both:
+//   - WORD arm — `TODO`, `implemented`, `stub`, … all end in a word char,
+//     so a trailing `\b` correctly anchors them.
+//   - EMPTY-BODY return arm — `return {}` / `return []` / `return ""` end
+//     in `}` / `]` / a quote (non-word chars). A trailing `\b` after `}`
+//     would never match (no word↔non-word transition), so this arm is
+//     anchored only at the front and matched without a trailing `\b`.
+const INCOMPLETENESS_SIGNAL_RE =
+	/\b(?:TODO|FIXME|XXX|HACK|WIP|not\s+(?:yet\s+)?implemented|unimplemented|coming\s+soon|for\s+now|placeholder|stub(?:bed)?|throw\s+new\s+Error)\b|\breturn\s+(?:null|undefined|\[\s*\]|\{\s*\}|""|'')\s*;?/i;
+
+// Lines around a weak-phrase hit are scanned for corroboration.
+const WEAK_CORROBORATION_WINDOW = 2;
 
 // Comment-marker scan. Match ANY of `//`, `/*`, leading `*` (jsdoc body),
 // `#` (Python/Ruby/shell), `--` (SQL/Lua), `<!--` (HTML/markdown). The
@@ -66,9 +109,32 @@ const COMMENT_BODY_RE =
 
 const SKIPPED_DOC_EXTS = new Set([".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml"]);
 
-function commentMatchesThumbprint(commentText: string): boolean {
-	for (const re of AGENT_THUMBPRINT_PHRASES) {
+/** True when the comment carries a STRONG thumbprint phrase — fires alone. */
+function commentMatchesStrongThumbprint(commentText: string): boolean {
+	for (const re of STRONG_THUMBPRINT_PHRASES) {
 		if (re.test(commentText)) return true;
+	}
+	return false;
+}
+
+/** True when the comment carries a WEAK thumbprint phrase — needs
+ *  corroboration before it counts. */
+function commentMatchesWeakThumbprint(commentText: string): boolean {
+	for (const re of WEAK_THUMBPRINT_PHRASES) {
+		if (re.test(commentText)) return true;
+	}
+	return false;
+}
+
+/** Scan the hit line plus ±WEAK_CORROBORATION_WINDOW neighbours for an
+ *  incompleteness signal. `lines` is the comment-marker-preserving,
+ *  string-stripped view so a signal inside a string literal can't satisfy
+ *  corroboration, while a signal in a neighbouring comment still can. */
+function lineOrNeighborsHaveIncompletenessSignal(lines: string[], idx: number): boolean {
+	const start = Math.max(0, idx - WEAK_CORROBORATION_WINDOW);
+	const end = Math.min(lines.length - 1, idx + WEAK_CORROBORATION_WINDOW);
+	for (let j = start; j <= end; j++) {
+		if (INCOMPLETENESS_SIGNAL_RE.test(lines[j])) return true;
 	}
 	return false;
 }
@@ -91,7 +157,18 @@ export function checkAgentThumbprintProse(content: string, filePath: string): In
 		const m = COMMENT_BODY_RE.exec(cleaned[i]);
 		const commentText = m?.[1];
 		if (!commentText) continue;
-		if (!commentMatchesThumbprint(commentText)) continue;
+
+		// Strong phrases fire on sight. Weak phrases only fire when a
+		// separate incompleteness signal (TODO, stub, empty/throwing body,
+		// "for now", …) sits on the line or an immediate neighbour —
+		// otherwise normal engineering prose ("observed in production",
+		// "in practice this is fine") would false-positive.
+		const isHit =
+			commentMatchesStrongThumbprint(commentText) ||
+			(commentMatchesWeakThumbprint(commentText) &&
+				lineOrNeighborsHaveIncompletenessSignal(cleaned, i));
+		if (!isHit) continue;
+
 		matches.push({
 			line: i + 1,
 			text: `agent-thumbprint phrase in comment: ${original[i].trim().slice(0, 130)}`,
@@ -541,10 +618,26 @@ export function checkUnboundedPromiseAll(content: string, filePath: string): Inl
 // of CLIs and one-shot scripts.
 
 const HOT_PATH_DIR_RE = /(?:^|\/)(?:handlers|routes|api|middleware|controllers)(?:\/|$)/;
-const HOT_PATH_FN_NAME_RE =
-	/\b(?:async\s+)?function\s+(?:handle|route|onRequest|on[A-Z]\w*|get|post|put|patch|delete|fetch|serve)\w*\s*\(/;
-const HOT_PATH_ARROW_RE =
-	/\b(?:const|let|var)\s+(?:handle|route|onRequest|on[A-Z]\w*|get|post|put|patch|delete|fetch|serve)\w*\s*[:=]\s*(?:async\s*)?\(/;
+// Handler-shaped function names. Two families:
+//   1. `handle` / `route` / `onRequest` / `on<Capital>` — prefix match is
+//      safe: these strings essentially never begin a non-handler identifier.
+//   2. Bare HTTP verbs (`get` / `post` / `put` / `patch` / `delete` /
+//      `fetch` / `serve`) — these MUST be the WHOLE identifier. A `\w*`
+//      suffix here is the FP source: `getActivityPath`, `getSessionsDir`,
+//      `getUnsyncedEvents`, `deleteRecord`, `fetchPage`, … are plain
+//      getters/helpers in ordinary library code, not route handlers. A
+//      router method is registered as exactly `get(` / `post(` etc., so
+//      anchoring the verb to a full identifier keeps the true positives
+//      (`function get(req) {…}`, `router.get(...)`) while dropping the
+//      camelCase-helper false positives.
+const HOT_PATH_PREFIX_NAMES = "handle|route|onRequest|on[A-Z]\\w*";
+const HOT_PATH_VERB_NAMES = "get|post|put|patch|delete|fetch|serve";
+const HOT_PATH_FN_NAME_RE = new RegExp(
+	`\\b(?:async\\s+)?function\\s+(?:(?:${HOT_PATH_PREFIX_NAMES})\\w*|(?:${HOT_PATH_VERB_NAMES}))\\s*\\(`,
+);
+const HOT_PATH_ARROW_RE = new RegExp(
+	`\\b(?:const|let|var)\\s+(?:(?:${HOT_PATH_PREFIX_NAMES})\\w*|(?:${HOT_PATH_VERB_NAMES}))\\s*[:=]\\s*(?:async\\s*)?\\(`,
+);
 const SYNC_IO_RE =
 	/\b(?:readFileSync|writeFileSync|appendFileSync|execSync|spawnSync|statSync|lstatSync|mkdirSync|readdirSync|unlinkSync|rmSync|copyFileSync|renameSync|chmodSync|openSync|closeSync|realpathSync)\s*\(/;
 
