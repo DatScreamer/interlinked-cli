@@ -8,7 +8,6 @@ import {
 	getEffectiveSkipChecks,
 	getSkipTools,
 	JS_TS_EXTS,
-	LARGE_FILE_THRESHOLD,
 	TOOL_IDS,
 } from "./advisory.js";
 
@@ -27,12 +26,6 @@ describe("TOOL_IDS", () => {
 		expect(TOOL_IDS).toContain("tsc");
 		expect(TOOL_IDS).toContain("biome");
 		expect(TOOL_IDS).toContain("semgrep");
-	});
-});
-
-describe("LARGE_FILE_THRESHOLD", () => {
-	it("is a sensible positive number", () => {
-		expect(LARGE_FILE_THRESHOLD).toBeGreaterThan(0);
 	});
 });
 

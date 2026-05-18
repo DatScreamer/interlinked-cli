@@ -48,6 +48,31 @@ The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/a
 
 **When an existing check produces noise in production**: prefer refining the check's detection logic over demoting it. Demotion should be a last resort when the check can't cleanly separate true positives from legitimate patterns.
 
+## Per-file line cap (`large-file-policy.ts`)
+
+Hand-written code modules are capped at **1500 lines** (`DEFAULT_MAX_LINES`).
+`src/harness/large-file-policy.ts` is the single source of truth — the
+threshold, the `isCappableFile` predicate (generated / test / `.d.ts` /
+non-code files are exempt), the baseline loader, and the ratchet verdict.
+
+Three enforcement surfaces, one policy:
+- **PreToolUse block** — `checkLargeFileLineCountWrite` (`pre-checks.ts`)
+  blocks a Write/Edit that would grow a cappable file past the cap. It is a
+  pure before/after delta against live file state — shrinking or holding an
+  over-cap file is always allowed (the refactor-down path).
+- **`interlinked verify`** — the `large_files` check (default gate, no
+  longer in `DEFAULT_ADVISORY_SKIPS`) reports any cappable file over the cap.
+- **PostToolUse nudge** — the `[interlinked:file-size]` warning on write/read.
+
+The cap and the grandfather list live in `.interlinked/large-files-baseline.json`
+(committed — carved out of the `.interlinked/*` gitignore). A grandfathered
+file may shrink or hold but not grow; decompose it below `max_lines` to drop
+its entry. Ratchet `max_lines` down (1500 → 1200 → 1000) as the list empties —
+lowering the cap is a one-number edit to that file. The cap is a coarse proxy;
+the `complexity` / `cyclomatic` checks do the fine-grained "is this file bad"
+work, which is why the enforced line number sits well above the ~300–500-line
+aspirational module size.
+
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 
 The CLI includes a **local harness server** (`src/harness/`) that runs on Node.js and evaluates agent actions via a Unix socket. Full documentation: `cli/docs/harness.md`. Auto-generated reference docs: `cli/docs/generated/`.
@@ -78,6 +103,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
 | `src/harness/grep-accelerator.ts` | PreToolUse grep acceleration: index query + block-and-answer |
+| `src/harness/large-file-policy.ts` | Per-file line cap: threshold, `isCappableFile` predicate, baseline loader, ratchet verdict |
 
 **Harness source files (analysis):**
 | File | Purpose |

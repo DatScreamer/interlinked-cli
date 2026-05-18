@@ -44,6 +44,7 @@ import {
 	checkConcurrentEdit,
 	checkDirtyWorkingTree,
 	checkEnvLeakToGit,
+	checkLargeFileLineCountWrite,
 	checkLargeFileWrite,
 	checkSelfKill,
 	checkStaleBranch,
@@ -969,6 +970,21 @@ export function evaluatePreToolUse(
 				};
 			}
 			if (envResult?.warning) warnings.push(envResult.warning);
+		}
+	}
+
+	// GUARD: per-file line cap — block a Write/Edit that would grow a
+	// hand-written code file past the cap (see large-file-policy.ts).
+	if (isFileWrite(toolName)) {
+		const sizeBlock = checkLargeFileLineCountWrite(toolInput, eventCwd);
+		if (sizeBlock?.block) {
+			return {
+				decision: "block",
+				reason: sizeBlock.block,
+				rule_id: "large-file-cap",
+				severity: "medium",
+				category: "file-size",
+			};
 		}
 	}
 	if (session && session.tool_call_count <= STALE_BRANCH_CHECK_LIMIT) {

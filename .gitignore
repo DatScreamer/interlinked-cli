@@ -112,12 +112,14 @@ docs/plans/*/
 # pids, audit/activity logs, caches, status files, learned rules, the
 # pending review dir, etc.). Carve out the small set of files designed
 # to be team-shared and committed (guard rules, project structure
-# declaration). New harness state files added by future features are
-# gitignored automatically — no .gitignore update required.
+# declaration, the per-file line-cap baseline). New harness state files
+# added by future features are gitignored automatically — no .gitignore
+# update required.
 .interlinked/*
 !.interlinked/guard-rules.json
 !.interlinked/structure.json
 !.interlinked/registry-parity.json
+!.interlinked/large-files-baseline.json
 
 # Agent-driven test reports (generated, not committed)
 test/agent-driven/reports/*.json

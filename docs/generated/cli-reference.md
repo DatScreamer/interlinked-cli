@@ -197,6 +197,8 @@ Options:
   --adoption-gate          Fail when adopted categories drop below thresholds
   --all-checks             Include broad advisory smell checks and dead-code
                            scans in addition to the default high-signal audit
+  --dead-code              Run Supermodel's cloud dead-code analysis (opt-in;
+                           requires the `supermodel` CLI)
   -h, --help               display help for command
 ```
 

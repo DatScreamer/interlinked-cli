@@ -1,5 +1,6 @@
-// Language-agnostic checks: binary content, empty file, large file, console/debug.
-// Extracted from generic-checks.ts.
+// Language-agnostic checks: binary content, empty file, console/debug.
+// Extracted from generic-checks.ts. (The per-file line cap moved to
+// harness/large-file-policy.ts — the single source of truth for file size.)
 
 import {
 	getExtension,
@@ -29,22 +30,6 @@ export function checkBinaryContent(content: string): boolean {
  */
 export function checkEmptyFile(content: string): boolean {
 	return content.trim().length === 0;
-}
-
-/** Default upper-bound line count for the large-file check. Files over this
- *  threshold are harder to review and usually indicate poor decomposition. */
-export const LARGE_FILE_DEFAULT_MAX_LINES = 2000;
-
-/**
- * Check if a file exceeds a maximum line count.
- * Large files are harder to review and may indicate poor decomposition.
- */
-export function checkLargeFile(
-	content: string,
-	maxLines: number = LARGE_FILE_DEFAULT_MAX_LINES,
-): { lines: number; exceeded: boolean } {
-	const lines = content.split("\n").length;
-	return { lines, exceeded: lines > maxLines };
 }
 
 /**

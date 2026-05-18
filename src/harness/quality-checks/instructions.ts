@@ -40,10 +40,9 @@ export const PROVEN_TOOL_CHECKS: ReadonlySet<string> = new Set([
 	"package_json_consistency",
 	"missing_return_types",
 	"export_ripple",
-	// File-state primitives (size, byte content, existence)
+	// File-state primitives (byte content, existence)
 	"binary_content",
 	"empty_file",
-	"large_file",
 	"no_test_file",
 ]);
 
@@ -97,7 +96,6 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 	empty_file:
 		"This file is empty. If content was intended, write it now. " +
 		"If the file is intentionally empty, add a comment explaining why.",
-	large_file: "This file is too large. Consider splitting it into smaller, focused modules.",
 	lockfile_drift:
 		"The lockfile is out of sync with the manifest. Run the package manager's install/lock command " +
 		"(`npm install`, `yarn install`, `cargo generate-lockfile`, `poetry lock`) to regenerate it. " +

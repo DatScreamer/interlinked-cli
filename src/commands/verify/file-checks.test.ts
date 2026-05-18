@@ -197,3 +197,39 @@ describe("runPerFileChecks", () => {
 		expect(r.lossyErrorRethrow.length).toBeGreaterThan(0);
 	});
 });
+
+describe("runPerFileChecks — large_files cap", () => {
+	const overCap = Array.from({ length: 1600 }, () => "const x = 1;").join("\n");
+	const underCap = Array.from({ length: 100 }, () => "const x = 1;").join("\n");
+	const run = (file: string, content: string): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags a hand-written code file over the 1500-line cap", () => {
+		const r = run("/tmp/huge.ts", overCap);
+		expect(r.largeFiles).toHaveLength(1);
+		expect(r.largeFiles[0].check).toBe("large_files");
+	});
+
+	it("does not flag a file under the cap", () => {
+		expect(run("/tmp/small.ts", underCap).largeFiles).toHaveLength(0);
+	});
+
+	it("does not flag an over-cap test file (exempt)", () => {
+		expect(run("/tmp/huge.test.ts", overCap).largeFiles).toHaveLength(0);
+	});
+
+	it("does not flag an over-cap generated file (exempt)", () => {
+		expect(run("/tmp/huge.ts", `// @generated\n${overCap}`).largeFiles).toHaveLength(0);
+	});
+});

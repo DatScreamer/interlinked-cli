@@ -31,10 +31,8 @@ import {
 	checkBinaryContent,
 	checkEmptyFile,
 	checkFunctionComplexity,
-	checkLargeFile,
 	checkMissingReturnTypes,
 	checkTestFileExists,
-	LARGE_FILE_DEFAULT_MAX_LINES,
 } from "./generic-checks.js";
 import { getProfileForFile } from "./language-profiles.js";
 import { resolveDependencyAuditCommand } from "./quality-checks/dependency-audit.js";
@@ -699,17 +697,6 @@ export async function runQualityChecks(
 						name: "empty_file",
 						severity: "warning",
 						message: `File is empty: ${filePath} — was content intended?`,
-						file: filePath,
-					});
-				}
-
-				// 3. Large file check
-				const sizeCheck = checkLargeFile(fileContent);
-				if (sizeCheck.exceeded) {
-					results.push({
-						name: "large_file",
-						severity: "warning",
-						message: `File has ${sizeCheck.lines} lines (>${LARGE_FILE_DEFAULT_MAX_LINES}): ${filePath} — consider decomposing`,
 						file: filePath,
 					});
 				}

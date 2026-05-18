@@ -252,7 +252,6 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"fuzzy_responsibility_name",
 				"hybrid_class",
 				"knip",
-				"large_files",
 				"lifecycle_cleanup",
 				"loop_nesting_depth",
 				"magic_literal_in_conditional",

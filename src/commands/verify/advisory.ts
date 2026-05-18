@@ -52,9 +52,11 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	"knip",
 	"no_test_file",
 	"files_without_test",
-	// File/function size and complexity — heuristic thresholds, frequent FPs on
-	// generated templates, barrel files, and long-but-linear code.
-	"large_files",
+	// Function size and complexity — heuristic thresholds, frequent FPs on
+	// generated templates, barrel files, and long-but-linear code. (The
+	// per-file line cap `large_files` was promoted to the default gate in
+	// 2026-05 once it learned to exempt generated/test files — see
+	// harness/large-file-policy.ts.)
 	"complexity",
 	"function_arg_count",
 	"loop_nesting_depth",
@@ -325,9 +327,6 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// signal half of the demo-data system.
 	"demo_data_unmarked",
 ]);
-
-/** Public API — consumed by `verify.ts` and `tool-results.ts`. */
-export const LARGE_FILE_THRESHOLD = 800;
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */
 export const JS_TS_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);

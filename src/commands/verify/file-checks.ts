@@ -72,7 +72,6 @@ import {
 	checkJavaOptionalGet,
 	checkJsLooseEquality,
 	checkJsonParseUnsafe,
-	checkLargeFile,
 	checkLargeFunction,
 	checkListenerPairing,
 	checkMigrationParity,
@@ -180,7 +179,14 @@ import {
 	coverageForFile,
 	loadCoverageFinal,
 } from "../../harness/coverage-final-reader.js";
-import { JS_TS_EXTS, LARGE_FILE_THRESHOLD } from "./advisory.js";
+import {
+	countLines,
+	DEFAULT_MAX_LINES,
+	evaluateLargeFile,
+	isCappableFile,
+	loadLargeFileBaseline,
+} from "../../harness/large-file-policy.js";
+import { JS_TS_EXTS } from "./advisory.js";
 import { collectSuppressionFindings } from "./suppressions.js";
 import type { CodeQualityIssue, CodeQualityResults } from "./tool-results-types.js";
 
@@ -260,15 +266,20 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	const relPath = relative(cwd, file);
 	const isDts = file.endsWith(DTS_SUFFIX);
 
-	// Large files
-	if (!isDts) {
-		const sizeCheck = checkLargeFile(content, LARGE_FILE_THRESHOLD);
-		if (sizeCheck.exceeded) {
+	// Oversized written-code files — enforced cap (default gate). Generated,
+	// test, .d.ts and non-code files are exempt; files in the baseline are
+	// grandfathered up to their recorded size (a ratchet — they may shrink
+	// or hold but not grow). See harness/large-file-policy.ts.
+	if (isCappableFile({ filePath: file, content })) {
+		const baseline = loadLargeFileBaseline(cwd);
+		const verdict = evaluateLargeFile({ relPath, lines: countLines(content), baseline });
+		if (verdict.overCap && !verdict.grandfathered) {
+			const cap = baseline?.max_lines ?? DEFAULT_MAX_LINES;
 			r.largeFiles.push({
 				check: "large_files",
 				file: relPath,
 				line: 0,
-				message: `${sizeCheck.lines} lines — consider splitting into smaller, focused modules`,
+				message: `${verdict.lines} lines — over the ${cap}-line cap for hand-written code. Split into smaller, focused modules.`,
 			});
 		}
 	}
