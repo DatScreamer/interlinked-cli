@@ -16,24 +16,27 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { manifestPath, readManifest } from "../harness/installer.js";
+import { installHooks, manifestPath, readManifest } from "../harness/installer.js";
 import {
 	getModePreset,
 	type HarnessModePreset,
 	migrateLegacyMode,
 	QUALITY_MODE,
 } from "../harness/rules/modes.js";
+import type { RunnerId } from "../harness/unified-event.js";
 import { readSharedConfig } from "./config.js";
 import {
 	CLAUDE_HOOK_EVENTS,
 	CODEX_HOOK_EVENTS,
 	COPILOT_HOOK_EVENTS,
 	CURSOR_HOOK_EVENTS,
+	findParentWithHooks,
 	GEMINI_HOOK_EVENTS,
 	installAllClaudeHooks,
 	installCodexHooks,
@@ -48,6 +51,7 @@ import {
 	uninstallGeminiHooks,
 } from "./hook-installers.js";
 import { buildHookScript } from "./hooks-template.js";
+import { CLIENT_CLAUDE } from "./hook-types.js";
 import type { ClientName } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
@@ -180,6 +184,55 @@ export function deleteConfigDir(cwd: string): boolean {
 }
 
 // ===========================================
+// Hook Binary Resolution
+// ===========================================
+
+/**
+ * Resolve the hook binary that installed hooks should invoke. The canonical
+ * binary is the compiled adapter hook; the generated self-contained `.mjs` is
+ * the fallback for unbuilt source checkouts. Priority:
+ *   1. `.interlinked/hooks/interlinked-hook` — a project-local compiled override
+ *   2. the packaged `hook-entry.js` bundled beside `dist/index.js`
+ *   3. the generated `.mjs` (written on demand when `writeFallback` is set)
+ * The returned path always exists on disk.
+ *
+ * Public API — consumed by `src/commands/install-hooks.ts` and `installAllHooks`.
+ */
+export function resolveHookBinaryPath(
+	cwd: string,
+	opts: { writeFallback?: boolean } = {},
+): string {
+	const compiled = join(cwd, ".interlinked", "hooks", "interlinked-hook");
+	if (existsSync(compiled)) return compiled;
+	const packaged = packagedHookEntryPath();
+	if (packaged && existsSync(packaged)) return packaged;
+	const legacy = getHookScriptPath(cwd);
+	if (existsSync(legacy)) return legacy;
+	const writeFallback = opts.writeFallback ?? true;
+	return writeFallback ? writeHookScript(cwd) : legacy;
+}
+
+/**
+ * Locate the packaged `hook-entry.js` bundled next to `dist/index.js`. Resolves
+ * from `process.argv[1]` (the invoked CLI entry) so a globally-installed CLI
+ * still finds its own bundled hook. Returns null when not found — e.g. a source
+ * checkout running via `tsx`, where there is no `dist/`.
+ */
+function packagedHookEntryPath(): string | null {
+	const invoked = process.argv[1];
+	if (!invoked) return null;
+	try {
+		const real = realpathSync(invoked);
+		const candidate = join(dirname(real), "hook-entry.js");
+		if (existsSync(candidate)) return candidate;
+	} catch {
+		/* intentional: argv[1] unreadable / not a real path — no packaged hook */
+		return null;
+	}
+	return null;
+}
+
+// ===========================================
 // Hook Installation — All Clients
 // ===========================================
 
@@ -197,10 +250,16 @@ interface ClientInstallEntry {
 }
 
 /**
- * Per-client install/uninstall registry. The single source of truth for which
- * clients Interlinked knows how to wire up. Adding a new client means adding
- * a new entry here AND a matching `(install|uninstall)XHooks` pair in
- * `./hook-installers.ts`.
+ * Per-client install/uninstall registry. The single source of truth for the
+ * clients Interlinked knows how to wire up — their event lists and uninstall
+ * closures.
+ *
+ * Note on `install`: the canonical install path is now the adapter installer
+ * (`installHooks` in `src/harness/installer.ts`), reached via `installAllHooks`
+ * below. The legacy per-client `.install` closures are retained here pending
+ * full retirement of the legacy install path; `uninstall` is still the live
+ * uninstall path. Adding a new client still means a matching pair in
+ * `./hook-installers.ts` plus a `CLIENT_TO_RUNNER` entry.
  */
 const CLIENT_INSTALL_REGISTRY: Record<ClientName, ClientInstallEntry> = {
 	claude: {
@@ -230,31 +289,70 @@ const CLIENT_INSTALL_REGISTRY: Record<ClientName, ClientInstallEntry> = {
 	},
 };
 
+// Maps a legacy `ClientName` id to the adapter `RunnerId` vocabulary. The two
+// id sets diverge: the adapter layer uses `claude-code` / `copilot-cli` /
+// `gemini-cli` where the legacy client layer uses `claude` / `copilot` /
+// `gemini`. `installAllHooks` translates here before calling the adapter
+// installer.
+const CLIENT_TO_RUNNER: Record<ClientName, RunnerId> = {
+	claude: "claude-code",
+	copilot: "copilot-cli",
+	gemini: "gemini-cli",
+	codex: "codex",
+	cursor: "cursor",
+};
+
 /**
  * Install hooks into all specified clients.
- * Uses CLIENT_INSTALL_REGISTRY — add new clients there, not here.
+ *
+ * Routes through the adapter installer (`installHooks` in
+ * `src/harness/installer.ts`) — the canonical install path. That installer is
+ * idempotent: it purges any prior Interlinked registration (legacy `.mjs` or
+ * adapter) before inserting one canonical entry, so re-running `enable` never
+ * stacks duplicates. The generated `.mjs` is kept only as the binary fallback
+ * for unbuilt source checkouts (see `resolveHookBinaryPath`).
+ *
+ * Claude Code merges hooks from every `.claude/settings.json` up the directory
+ * tree, so installing into a nested checkout when an ancestor already has hooks
+ * would double-fire the harness — that client is skipped with a pointer to the
+ * ancestor.
  */
-export function installAllHooks(
-	cwd: string,
-	hookScriptPath: string,
-	clients: ClientName[],
-): InstallResult[] {
-	return clients.map((client) => {
+export function installAllHooks(cwd: string, clients: ClientName[]): InstallResult[] {
+	const binaryPath = resolveHookBinaryPath(cwd);
+	const skipReason = new Map<ClientName, string>();
+	const runners: RunnerId[] = [];
+
+	for (const client of clients) {
 		const entry = CLIENT_INSTALL_REGISTRY[client];
 		if (!entry) {
-			return { client, installed: false, events: [], error: `Unknown client: ${client}` };
+			skipReason.set(client, `Unknown client: ${client}`);
+			continue;
 		}
-		try {
-			entry.install(cwd, hookScriptPath);
-			return { client, installed: true, events: [...entry.events] };
-		} catch (e) {
-			return {
-				client,
-				installed: false,
-				events: [],
-				error: e instanceof Error ? e.message : String(e),
-			};
+		if (client === CLIENT_CLAUDE) {
+			const ancestor = findParentWithHooks(cwd, join(".claude", "settings.json"));
+			if (ancestor) {
+				skipReason.set(
+					client,
+					`hooks already installed at ${ancestor}/.claude/settings.json — run \`interlinked enable\` from there`,
+				);
+				continue;
+			}
 		}
+		runners.push(CLIENT_TO_RUNNER[client]);
+	}
+
+	const installed =
+		runners.length > 0 ? installHooks({ cwd, binaryPath, runners, scope: "project" }) : null;
+
+	return clients.map((client) => {
+		const skip = skipReason.get(client);
+		if (skip) return { client, installed: false, events: [], error: skip };
+		const runner = CLIENT_TO_RUNNER[client];
+		if (installed?.entries.some((e) => e.runner === runner)) {
+			return { client, installed: true, events: [...CLIENT_INSTALL_REGISTRY[client].events] };
+		}
+		const reason = installed?.skipped.find((s) => s.runner === runner)?.reason;
+		return { client, installed: false, events: [], error: reason ?? "install failed" };
 	});
 }
 

@@ -231,15 +231,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		console.log(`   ${c.green("✓")} Config written to .interlinked/`);
 	}
 
-	// Write hook script
-	const hookPath = writeHookScript(cwd);
+	// Write the generated .mjs — kept as the unbuilt-source-checkout binary
+	// fallback; the canonical hook binary is resolved inside installAllHooks.
+	writeHookScript(cwd);
 	if (!isJson) {
 		console.log(`   ${c.green("✓")} Hook script v${HOOK_SCRIPT_VERSION}`);
 	}
 
 	// Install hooks for detected clients
 	if (detectedNames.length > 0) {
-		const results = installAllHooks(cwd, hookPath, detectedNames);
+		const results = installAllHooks(cwd, detectedNames);
 		for (const r of results) {
 			if (r.installed && !isJson) {
 				console.log(`   ${c.green("✓")} ${r.client} hooks (${r.events.length} events)`);

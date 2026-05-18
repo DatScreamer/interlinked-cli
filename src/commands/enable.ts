@@ -103,7 +103,7 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	const targetClients = resolveTargetClients(requestedClients, detectedNames);
 
 	console.log(`\n${c.bold("Installing hooks:")}`);
-	const results = installAllHooks(cwd, relativeHookPath, targetClients);
+	const results = installAllHooks(cwd, targetClients);
 	const installedCount = printInstallResults(results, detectedNames);
 
 	if (ensureGitignore(cwd)) {

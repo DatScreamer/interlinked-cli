@@ -55,3 +55,25 @@ export function hookEntryCommands(entry: unknown): string[] {
 export function isInterlinkedHookEntry(entry: unknown): boolean {
 	return hookEntryCommands(entry).some(isInterlinkedHookCommand);
 }
+
+/** True when an Interlinked hook entry was registered by the project rooted
+ *  at `projectRoot` — i.e. one of its commands references a path inside that
+ *  project. The installer bakes an absolute binary path (`<projectRoot>/…`)
+ *  into every adapter hook command, so this distinguishes *this* project's
+ *  registration from another repo's inside a shared user-scope settings file:
+ *  a user-scope cleanup may purge the former but must leave the latter alone.
+ *
+ *  The legacy `$PWD`-relative hook command embeds no absolute project path,
+ *  so it reads as not-owned here — the safe answer, leaving an ambiguous
+ *  entry in place rather than removing another repo's hook. The legacy
+ *  installer writes only project-scope files, so a relative command never
+ *  lands in a shared user-scope file regardless. */
+export function isProjectOwnedHookEntry(entry: unknown, projectRoot: string): boolean {
+	if (projectRoot.length === 0) return false;
+	// Match `<projectRoot>/` (with the separator) so a sibling repo whose path
+	// is a string prefix — e.g. `/repo` vs `/repo-fork` — is not misattributed.
+	const needle = projectRoot.endsWith("/") ? projectRoot : `${projectRoot}/`;
+	return hookEntryCommands(entry).some(
+		(command) => isInterlinkedHookCommand(command) && command.includes(needle),
+	);
+}

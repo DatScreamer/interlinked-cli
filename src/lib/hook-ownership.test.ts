@@ -3,6 +3,7 @@ import {
 	hookEntryCommands,
 	isInterlinkedHookCommand,
 	isInterlinkedHookEntry,
+	isProjectOwnedHookEntry,
 } from "./hook-ownership.js";
 
 // The real command shapes the two install systems write.
@@ -65,5 +66,42 @@ describe("isInterlinkedHookEntry", () => {
 	it("does not match a foreign hook entry", () => {
 		const entry = { matcher: "", hooks: [{ type: "command", command: "npx lint-staged" }] };
 		expect(isInterlinkedHookEntry(entry)).toBe(false);
+	});
+});
+
+describe("isProjectOwnedHookEntry", () => {
+	it("recognizes an adapter entry whose binary path is inside the project", () => {
+		// ADAPTER_CMD bakes in /repo/dist/hook-entry.js — owned by /repo.
+		expect(isProjectOwnedHookEntry({ command: ADAPTER_CMD }, "/repo")).toBe(true);
+	});
+	it("recognizes a Claude Code nested adapter entry for the project", () => {
+		const entry = { matcher: "Edit|Write", hooks: [{ type: "command", command: ADAPTER_CMD }] };
+		expect(isProjectOwnedHookEntry(entry, "/repo")).toBe(true);
+	});
+	it("accepts a project root passed with a trailing slash", () => {
+		expect(isProjectOwnedHookEntry({ command: ADAPTER_CMD }, "/repo/")).toBe(true);
+	});
+	it("rejects an Interlinked entry owned by a different project", () => {
+		expect(isProjectOwnedHookEntry({ command: ADAPTER_CMD }, "/other")).toBe(false);
+	});
+	it("rejects a sibling repo whose path is a string prefix of the root", () => {
+		// /repo-fork/... must not be attributed to project root /repo.
+		const forkCmd = ADAPTER_CMD.replace(/\/repo\//g, "/repo-fork/");
+		expect(isProjectOwnedHookEntry({ command: forkCmd }, "/repo")).toBe(false);
+	});
+	it("rejects the legacy $PWD-relative command (no absolute project path)", () => {
+		expect(isProjectOwnedHookEntry({ command: LEGACY_MJS }, "/repo")).toBe(false);
+	});
+	it("rejects a non-Interlinked command even when it mentions the root", () => {
+		expect(isProjectOwnedHookEntry({ command: "node /repo/scripts/other.js" }, "/repo")).toBe(
+			false,
+		);
+	});
+	it("rejects an empty project root", () => {
+		expect(isProjectOwnedHookEntry({ command: ADAPTER_CMD }, "")).toBe(false);
+	});
+	it("rejects junk entries", () => {
+		expect(isProjectOwnedHookEntry(null, "/repo")).toBe(false);
+		expect(isProjectOwnedHookEntry({ matcher: "" }, "/repo")).toBe(false);
 	});
 });

@@ -11,6 +11,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import { ensureCodexFeatureFlag as ensureCodexFlag } from "./codex-feature-flag.js";
+import { isInterlinkedHookCommand, isInterlinkedHookEntry } from "./hook-ownership.js";
 import {
 	CLIENT_CLAUDE,
 	CLIENT_CODEX,
@@ -627,7 +628,7 @@ export function installAllClaudeHooks(cwd: string, hookScriptPath: string): void
  * interlinked hooks in the given settings file. Returns the ancestor path
  * if found, or null if no parent has hooks.
  */
-function findParentWithHooks(cwd: string, settingsSubpath: string): string | null {
+export function findParentWithHooks(cwd: string, settingsSubpath: string): string | null {
 	const gitRoot = findProjectRoot(cwd);
 	let dir = dirname(cwd);
 	const stopAt = gitRoot || parse(cwd).root;
@@ -637,7 +638,7 @@ function findParentWithHooks(cwd: string, settingsSubpath: string): string | nul
 		if (existsSync(settingsPath)) {
 			try {
 				const content = readFileSync(settingsPath, "utf-8");
-				if (content.includes(INTERLINKED_MARKER)) {
+				if (isInterlinkedHookCommand(content)) {
 					return dir;
 				}
 			} catch (_err) {
@@ -659,14 +660,14 @@ function cleanClaudeHooksFromFile(settingsPath: string): boolean {
 
 	const hooks = settings.hooks as JsonObject;
 	let changed = false;
-	for (const eventName of CLAUDE_HOOK_EVENTS) {
-		const entries = hooks[eventName] as HookEntry[] | undefined;
-		if (!entries) continue;
+	// Iterate every event present, not a fixed list — the adapter installer
+	// can register events the legacy CLAUDE_HOOK_EVENTS list omits (e.g.
+	// PostToolUseFailure); uninstall must still remove all of them.
+	for (const eventName of Object.keys(hooks)) {
+		const entries = hooks[eventName];
+		if (!Array.isArray(entries)) continue;
 
-		const filtered = entries.filter(
-			(entry: HookEntry) =>
-				!entry.hooks?.some((h) => h.command?.includes(INTERLINKED_MARKER)),
-		);
+		const filtered = entries.filter((entry: HookEntry) => !isInterlinkedHookEntry(entry));
 
 		if (filtered.length !== entries.length) {
 			hooks[eventName] = filtered.length > 0 ? filtered : undefined;
@@ -793,13 +794,11 @@ export function uninstallCopilotHooks(cwd: string): boolean {
 	if (!config?.hooks) return false;
 
 	let changed = false;
-	for (const eventName of COPILOT_HOOK_EVENTS) {
-		const entries = config.hooks[eventName] as
-			| Array<{ type: string; bash?: string }>
-			| undefined;
-		if (!entries) continue;
+	for (const eventName of Object.keys(config.hooks)) {
+		const entries = config.hooks[eventName];
+		if (!Array.isArray(entries)) continue;
 
-		const filtered = entries.filter((e) => !e.bash?.includes(INTERLINKED_MARKER));
+		const filtered = entries.filter((e) => !isInterlinkedHookEntry(e));
 		if (filtered.length !== entries.length) {
 			config.hooks[eventName] = filtered.length > 0 ? filtered : [];
 			changed = true;
@@ -855,7 +854,7 @@ export function installGeminiHooks(cwd: string, hookScriptPath: string): void {
  * Remove Interlinked hooks from Gemini CLI settings.
  */
 export function uninstallGeminiHooks(cwd: string): boolean {
-	return cleanJsonHookFile(getGeminiSettingsPath(cwd), GEMINI_HOOK_EVENTS);
+	return cleanJsonHookFile(getGeminiSettingsPath(cwd));
 }
 
 // ===========================================
@@ -903,7 +902,7 @@ export function installCodexHooks(cwd: string, hookScriptPath: string): void {
  * and we don't want to clobber user-managed Codex configuration.
  */
 export function uninstallCodexHooks(cwd: string): boolean {
-	return cleanJsonHookFile(getCodexHooksPath(cwd), CODEX_HOOK_EVENTS);
+	return cleanJsonHookFile(getCodexHooksPath(cwd));
 }
 
 // ===========================================
@@ -1015,11 +1014,11 @@ export function uninstallCursorHooks(cwd: string): boolean {
 	if (!config?.hooks) return false;
 
 	let changed = false;
-	for (const eventName of CURSOR_HOOK_EVENTS) {
+	for (const eventName of Object.keys(config.hooks)) {
 		const entries = config.hooks[eventName];
-		if (!entries) continue;
+		if (!Array.isArray(entries)) continue;
 
-		const filtered = entries.filter((e) => !e.command?.includes(INTERLINKED_MARKER));
+		const filtered = entries.filter((e) => !isInterlinkedHookEntry(e));
 		if (filtered.length !== entries.length) {
 			config.hooks[eventName] = filtered;
 			changed = true;
@@ -1219,7 +1218,7 @@ function buildHookCommand(hookScriptPath: string, client?: ClientName): string {
 	);
 }
 
-function cleanJsonHookFile(cwdOrPath: string, events: readonly string[]): boolean {
+function cleanJsonHookFile(cwdOrPath: string): boolean {
 	const settingsPath = cwdOrPath;
 	if (!existsSync(settingsPath)) return false;
 
@@ -1229,13 +1228,11 @@ function cleanJsonHookFile(cwdOrPath: string, events: readonly string[]): boolea
 	const hooks = settings.hooks as JsonObject;
 	let changed = false;
 
-	for (const eventName of events) {
-		const entries = hooks[eventName] as HookEntry[] | undefined;
-		if (!entries) continue;
+	for (const eventName of Object.keys(hooks)) {
+		const entries = hooks[eventName];
+		if (!Array.isArray(entries)) continue;
 
-		const filtered = entries.filter(
-			(entry) => !entry.hooks?.some((h) => h.command?.includes(INTERLINKED_MARKER)),
-		);
+		const filtered = entries.filter((entry) => !isInterlinkedHookEntry(entry));
 		if (filtered.length !== entries.length) {
 			hooks[eventName] = filtered.length > 0 ? filtered : undefined;
 			changed = true;

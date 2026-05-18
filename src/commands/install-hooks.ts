@@ -7,12 +7,12 @@
 // runtime introduced in Phase A–C and uses the installer-manifest.json for
 // precise uninstall.
 
-import { existsSync, mkdirSync, readSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { installHooks, manifestPath } from "../harness/installer.js";
 import { ALL_PRESETS, isKnownMode, type ModeName } from "../harness/modes.js";
 import type { RunnerId } from "../harness/unified-event.js";
-import { writeHookScript } from "../lib/hooks.js";
+import { resolveHookBinaryPath } from "../lib/hooks.js";
 import { writeMode } from "./mode.js";
 
 export interface InstallHooksOptions {
@@ -42,7 +42,9 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 	const runners = parseRunners(options.runner);
 	const scope = parseScope(options.scope);
 	const dryRun = options.dryRun === true;
-	const binaryPath = resolve(options.binary ?? defaultBinaryPath(cwd, { writeFallback: !dryRun }));
+	const binaryPath = resolve(
+		options.binary ?? resolveHookBinaryPath(cwd, { writeFallback: !dryRun }),
+	);
 
 	// Resolve enforcement mode: explicit flag > interactive prompt > balanced.
 	const resolvedMode = resolveMode(options);
@@ -64,6 +66,9 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 			entries: result.entries,
 			skipped: result.skipped,
 			manifest_path: result.manifest_path,
+			purged: result.purged,
+			foreign: result.foreign,
+			orphans_cleaned: result.orphans_cleaned,
 			mode: resolvedMode,
 			cloud: options.cloud ?? null,
 		};
@@ -145,35 +150,6 @@ function parseScope(raw: string | undefined): "user" | "project" | "local" {
 	return raw as "user" | "project" | "local";
 }
 
-function defaultBinaryPath(cwd: string, opts: { writeFallback: boolean }): string {
-	// Prefer an existing project-local hook override, then the packaged
-	// hook-entry bundled beside dist/index.js. Source checkouts without a
-	// build still get the legacy self-contained hook script as a fallback.
-	const compiled = join(cwd, ".interlinked", "hooks", "interlinked-hook");
-	if (existsSync(compiled)) return compiled;
-
-	const packaged = packagedHookEntryPath();
-	if (packaged && existsSync(packaged)) return packaged;
-
-	const legacy = join(cwd, ".interlinked", "hooks", "interlinked-activity.mjs");
-	if (existsSync(legacy)) return legacy;
-	if (opts.writeFallback) return writeHookScript(cwd);
-	return legacy;
-}
-
-function packagedHookEntryPath(): string | null {
-	const invoked = process.argv[1];
-	if (!invoked) return null;
-	try {
-		const real = realpathSync(invoked);
-		const candidate = join(dirname(real), "hook-entry.js");
-		if (existsSync(candidate)) return candidate;
-	} catch {
-		return null;
-	}
-	return null;
-}
-
 function writeCloudConfig(cwd: string, product: string, tokenEnv: string | undefined): void {
 	if (!VALID_CLOUD_PRODUCTS.has(product)) {
 		process.stderr.write(
@@ -202,6 +178,9 @@ function printHuman(
 		entries: Array<{ runner: string; settings_path: string; added_paths: string[] }>;
 		skipped: Array<{ runner: string; reason: string }>;
 		manifest_path: string;
+		purged: number;
+		foreign: number;
+		orphans_cleaned: string[];
 	},
 	dryRun: boolean,
 	mode: ModeName,
@@ -215,6 +194,20 @@ function printHuman(
 	}
 	for (const s of result.skipped) {
 		process.stdout.write(`  ${s.runner.padEnd(14)} skipped: ${s.reason}\n`);
+	}
+	// Idempotency accounting: stale prior registrations the install cleaned up.
+	if (result.purged > 0) {
+		process.stdout.write(`  purged ${result.purged} stale hook registration(s)\n`);
+	}
+	if (result.orphans_cleaned.length > 0) {
+		process.stdout.write(
+			`  cleaned a prior install in ${result.orphans_cleaned.length} other file(s)\n`,
+		);
+	}
+	if (result.foreign > 0) {
+		process.stdout.write(
+			`  left ${result.foreign} hook registration(s) owned by other projects in place\n`,
+		);
 	}
 	process.stdout.write(`manifest: ${manifestPath(process.cwd())}\n`);
 	if (!dryRun) {
