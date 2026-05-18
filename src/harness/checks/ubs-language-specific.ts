@@ -1450,12 +1450,33 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	const looksLikeRegexPattern =
 		// eslint-disable-next-line no-template-curly-in-string
 		/(?:[A-Z][A-Za-z0-9_]*_RE\b|[A-Za-z][A-Za-z0-9_]*(?:Re|Pattern|Regex)\b\s*=)|\\(?:b|d|s|w|S|D|W|B|n|r|t)\b|\[\^?\\?[a-zA-Z0-9]|\(\?:|\.\s*(?:test|match|replace|exec|search)\s*\(/;
+	// A localhost literal that is a *configurable default* or a *detection
+	// test* is not a baked endpoint — it is exactly the shape this check's own
+	// fix_instruction endorses ("a clear default for local dev"). Without these
+	// exemptions the check FP'd on `interlinked enable`/`init`, where the CLI's
+	// documented localhost dev-server default is correct. Three legitimate forms:
+	//   1. fallback default after `||` / `??`  — `flag || "http://localhost:8787"`
+	const localhostAsDefault = /(?:\|\||\?\?)\s*["'`][^"'`]*(?:localhost|127\.0\.0\.1)/;
+	//   2. membership / equality test  — `url.includes("localhost")`, `h === "localhost"`
+	const localhostAsTest =
+		/(?:\.(?:includes|indexOf|startsWith|endsWith|search|match)\s*\(|[=!]==?)\s*["'`][^"'`]*(?:localhost|127\.0\.0\.1)/;
+	//   3. a default-/fallback-named declaration  — `const DEFAULT_SERVER = "...localhost"`
+	const localhostNamedDefault = /\b(?:const|let|var)\s+\w*(?:default|fallback)\w*\s*=/i;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
 		if (!re.test(strippedLines[i])) continue;
 		if (metadataAssignment.test(strippedLines[i])) continue;
 		if (regExpConstructor.test(strippedLines[i])) continue;
+		// Configurable-default / detection-test shapes (see the three regexes
+		// above) are not baked endpoints — the override path already exists.
+		if (
+			localhostAsDefault.test(strippedLines[i]) ||
+			localhostAsTest.test(strippedLines[i]) ||
+			localhostNamedDefault.test(strippedLines[i])
+		) {
+			continue;
+		}
 		// Multi-line RegExp: the constructor is on one line and the literal
 		// argument is on the next. Skip when the previous non-empty line
 		// ends with `RegExp(` (its argument continuation).

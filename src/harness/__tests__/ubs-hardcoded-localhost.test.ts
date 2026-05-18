@@ -88,4 +88,53 @@ describe("checkUbsHardcodedLocalhost", () => {
 		const matches = checkUbsHardcodedLocalhost(code, "src/lib/client.ts");
 		expect(matches.length).toBeGreaterThan(0);
 	});
+
+	// --- Configurable-default / detection-test exemptions ---
+	// A localhost literal that is a *configurable default* or a *detection
+	// test* is not a baked endpoint — it is the shape the check's own
+	// fix_instruction endorses ("a clear default for local dev"). Before these
+	// exemptions the check FP'd on `interlinked enable` / `init`, whose
+	// documented localhost dev-server default is correct.
+
+	it("does NOT fire on a `||` fallback default", () => {
+		// The shape `interlinked enable` uses: a configurable flag with a
+		// localhost fallback.
+		const code = 'const serverUrl = options.server || "http://localhost:8787";';
+		expect(checkUbsHardcodedLocalhost(code, "src/commands/enable.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a `??` fallback default", () => {
+		const code = 'const url = configured ?? "http://127.0.0.1:8787";';
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/client.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a default-/fallback-named declaration", () => {
+		// `interlinked init` declares DEFAULT_LOCAL_SERVER / DEFAULT_REMOTE_SERVER.
+		const code = [
+			'const DEFAULT_REMOTE_SERVER = "http://localhost:8787";',
+			'const fallbackHost = "127.0.0.1";',
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/commands/init.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a membership / equality test against the literal", () => {
+		// `isLocalServer` in init.ts searches a URL for the token rather than
+		// baking an endpoint.
+		const code = [
+			'function isLocalServer(url) {',
+			'\treturn url.includes("localhost") || url.includes("127.0.0.1");',
+			"}",
+			'const dev = host === "localhost";',
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/commands/init.ts")).toEqual([]);
+	});
+
+	it("STILL fires on a plain baked endpoint constant that is not a default", () => {
+		// Negative regression: a const that is neither default-named nor has an
+		// override path is the canonical bug — the new exemptions must not
+		// swallow it.
+		const code = 'const apiUrl = "http://localhost:3000";';
+		const matches = checkUbsHardcodedLocalhost(code, "src/lib/client.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
 });
