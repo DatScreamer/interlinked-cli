@@ -4,12 +4,14 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { InternalDependencyView } from "../dependency-view.js";
 import {
 	checkFollowUpViolation,
 	formatImpactWarning,
 	recordImpactFollowUps,
 	runImpactAnalysis,
 } from "../impact-analysis.js";
+import type { ProjectGraph } from "../project-graph.js";
 import type {
 	ExportedSymbol,
 	ImpactAnalysisResult,
@@ -79,7 +81,16 @@ function makeGraph(opts: {
 		getExports: vi.fn().mockReturnValue([]),
 		toRelative: opts.toRelative || ((f: string) => f.replace(/^\/project\//, "")),
 		isInitialized: true,
-	} as any;
+	} as unknown as ProjectGraph;
+}
+
+/**
+ * Wrap a mock graph in a real `InternalDependencyView`. The view only calls
+ * `getDependents`/`classifyModule`, both of which the mock provides — so the
+ * dependency-aware facts under test still come from `opts`.
+ */
+function makeView(graph: ProjectGraph): InternalDependencyView {
+	return new InternalDependencyView(graph);
 }
 
 function makeExports(...names: string[]): ExportedSymbol[] {
@@ -104,6 +115,7 @@ describe("runImpactAnalysis — severity", () => {
 
 		const result = runImpactAnalysis(
 			"/project/src/leaf.ts",
+			makeView(graph),
 			graph,
 			exports,
 			exports,
@@ -125,6 +137,7 @@ describe("runImpactAnalysis — severity", () => {
 
 		const result = runImpactAnalysis(
 			"/project/src/utils.ts",
+			makeView(graph),
 			graph,
 			exports,
 			exports,
@@ -154,6 +167,7 @@ describe("runImpactAnalysis — severity", () => {
 
 		const result = runImpactAnalysis(
 			"/project/src/utils.ts",
+			makeView(graph),
 			graph,
 			oldExports,
 			newExports,
@@ -173,6 +187,7 @@ describe("runImpactAnalysis — severity", () => {
 
 		const result = runImpactAnalysis(
 			"/project/src/core.ts",
+			makeView(graph),
 			graph,
 			oldExports,
 			newExports,
@@ -198,6 +213,7 @@ describe("runImpactAnalysis — severity", () => {
 
 		const result = runImpactAnalysis(
 			"/project/src/hub.ts",
+			makeView(graph),
 			graph,
 			makeExports("doStuff"),
 			makeExports(),

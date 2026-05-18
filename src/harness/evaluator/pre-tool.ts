@@ -16,27 +16,30 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { isFeatureEnabled, type SharedConfig } from "../../lib/config.js";
 import { getOrCreateEngine } from "../check-engine/index.js";
-import type { CohortManager } from "../cohort.js";
 import {
 	findDirtyDependents,
 	formatDirtyDependentWarning,
 	looksCoordinated,
 } from "../checks/dirty-dependent.js";
 import { isTestFile } from "../checks/shared.js";
-import { extractScannableContent } from "../content-scanner/extractor.js";
-import type { ContentScanRequest } from "../content-scanner/types.js";
+import type { CohortManager } from "../cohort.js";
 import {
 	applyRewrite,
 	evaluateCompoundCommand,
 	inferAgentRole,
 	ruleAppliesToRole,
 } from "../command-decomposition.js";
+import { extractScannableContent } from "../content-scanner/extractor.js";
+import type { ContentScanRequest } from "../content-scanner/types.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
-import { recordDeliveryForShadow } from "../event-dedup.js";
 import type { ErrorHistory } from "../error-history.js";
+import { recordDeliveryForShadow } from "../event-dedup.js";
 import { checkProjectSetup } from "../generic-checks.js";
+import {
+	driveGraphPrediction,
+	type GraphPredictionMode,
+} from "../graph-prediction-pre-tool.js";
 import { getPatternWarnings } from "../pattern-detector.js";
-import { createTrajectoryDetector, type TrajectoryEvent } from "../trajectory.js";
 import {
 	checkConcurrentEdit,
 	checkDirtyWorkingTree,
@@ -50,10 +53,12 @@ import type { ProjectGraph } from "../project-graph.js";
 import { containsSecrets as containsSecretsDetailed, findProjectRoot } from "../quality-checks.js";
 import type { ReservationManager } from "../reservations.js";
 import type { RouteMap } from "../route-map.js";
-import type { SessionTracker } from "../session-state.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
+import type { SessionTracker } from "../session-state.js";
 import { getPreToolUseContext } from "../structural-checks.js";
 import { loadGraphForFile } from "../supermodel-graph.js";
+import { checkSupermodelShardWrite } from "../supermodel-shard-write-guard.js";
+import { createTrajectoryDetector, type TrajectoryEvent } from "../trajectory.js";
 import type {
 	EscalationRequest,
 	GuardRulesConfig,
@@ -62,19 +67,14 @@ import type {
 	QualityCheckConfig,
 	SessionTrajectory,
 } from "../types.js";
-import {
-	driveGraphPrediction,
-	type GraphPredictionMode,
-} from "../graph-prediction-pre-tool.js";
-import { checkSupermodelShardWrite } from "../supermodel-shard-write-guard.js";
+import { evaluateActiveWhen } from "./active-when.js";
+import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateFileDumpGuard } from "./file-dump-guard.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
-import { evaluateActiveWhen } from "./active-when.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
-import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import {
 	estimateEditLine,
@@ -226,6 +226,54 @@ function getSupermodelGraphWarning(filePath: string, cwd?: string): string | nul
 	return (
 		`[interlinked:supermodel-graph] ${relPath}: ` +
 		`${direct} dependent file(s)${domainsClause}.${affectsClause}`
+	);
+}
+
+/** Minimum external caller sites before the call-graph context line fires.
+ *  A function with a single caller is under the noise floor — not a
+ *  blast-radius signal worth a PreToolUse line. Tunable from telemetry; see
+ *  `docs/plans/08-supermodel-graph-provider.md` §3a. */
+const SUPERMODEL_CALL_MIN_CALLERS = 2;
+/** Cap on functions listed in the call-graph context line. */
+const SUPERMODEL_CALL_FN_CAP = 5;
+
+/** Plan 08 §3a — read-only consumer of the `[calls]` section of a Supermodel
+ *  `.graph.*` shard. Returns a function-level context line naming which
+ *  functions defined in the edited file have external callers, ranked by
+ *  caller count; null when the shard carries no `[calls]` section or has
+ *  fewer than `SUPERMODEL_CALL_MIN_CALLERS` caller sites. The caller gates
+ *  this behind a firing `[impact]` line, so plan 07's "LOW edits are silent"
+ *  guarantee holds — no new noise surface on routine edits. */
+function getSupermodelCallContext(filePath: string, cwd?: string): string | null {
+	const graph = loadGraphForFile(filePath, cwd);
+	if (!graph?.calls) return null;
+	const { callers } = graph.calls;
+	if (callers.length < SUPERMODEL_CALL_MIN_CALLERS) return null;
+
+	// Group caller sites by the function they target — callers[].fn is
+	// defined in THIS file; a function with more caller sites is the
+	// higher-risk edit, so rank by count.
+	const byFn = new Map<string, number>();
+	for (const c of callers) {
+		byFn.set(c.fn, (byFn.get(c.fn) ?? 0) + 1);
+	}
+	const ranked = [...byFn.entries()].sort((a, b) => b[1] - a[1]);
+	const shown = ranked
+		.slice(0, SUPERMODEL_CALL_FN_CAP)
+		.map(([fn, n]) => `${fn} (${n} caller${n === 1 ? "" : "s"})`)
+		.join(", ");
+	const more =
+		ranked.length > SUPERMODEL_CALL_FN_CAP
+			? ` (+${ranked.length - SUPERMODEL_CALL_FN_CAP} more)`
+			: "";
+
+	const relPath = cwd
+		? relative(cwd, graph.sourcePath) || graph.sourcePath
+		: graph.sourcePath;
+	return (
+		`[interlinked:supermodel-graph] ${relPath}: call graph per .graph shard — ` +
+		`${callers.length} caller site(s) into ${byFn.size} function(s): ${shown}${more}. ` +
+		"Changing these signatures ripples to every caller."
 	);
 }
 
@@ -823,16 +871,21 @@ export function evaluatePreToolUse(
 		warnings.push(...contextWarnings);
 	}
 
-	// CONTEXT: Supermodel graph awareness — surface blast radius from
-	// Supermodel-emitted .graph.* shards if the user is running their daemon.
-	// Read-only consumer; silent when no shard exists. Loops over every edited
-	// path so multi-file Codex apply_patch payloads each get their own warning.
-	// `isFileWrite()` already includes "apply_patch" (tool-classifiers.ts:75),
-	// so the existing gate covers Codex too.
+	// CONTEXT: Supermodel graph awareness — surface blast radius and the
+	// function-level call graph from Supermodel-emitted .graph.* shards if
+	// the user is running their daemon. Read-only consumer; silent when no
+	// shard exists. Loops over every edited path so multi-file Codex
+	// apply_patch payloads each get their own warning(s). `isFileWrite()`
+	// already includes "apply_patch" (tool-classifiers.ts:75), so the gate
+	// covers Codex too. The [calls] context line (plan 08 §3a) is gated
+	// behind a firing [impact] line — see docs/plans/08-supermodel-graph-provider.md.
 	if (isFileWrite(toolName)) {
 		for (const editedPath of extractAllEditedFilePaths(event)) {
 			const graphWarning = getSupermodelGraphWarning(editedPath, event.cwd);
-			if (graphWarning) warnings.push(graphWarning);
+			if (!graphWarning) continue;
+			warnings.push(graphWarning);
+			const callContext = getSupermodelCallContext(editedPath, event.cwd);
+			if (callContext) warnings.push(callContext);
 		}
 	}
 

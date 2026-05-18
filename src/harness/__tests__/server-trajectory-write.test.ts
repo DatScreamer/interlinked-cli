@@ -34,8 +34,11 @@ describe("harness trajectory write - path traversal regression", () => {
 	const serverSource = readFileSync(SERVER_TS, "utf-8");
 
 	it("imports sanitizeSessionId from session-paths", () => {
+		// Brace group is [^}]* on both sides so the assertion survives an
+		// import-organizer merging sanitizeSessionId with co-imports from
+		// the same module (e.g. `{ daemonPathsFor, sanitizeSessionId }`).
 		expect(serverSource).toMatch(
-			/import\s*\{\s*sanitizeSessionId\s*\}\s*from\s*["']\.\/session-paths\.js["']/,
+			/import\s*\{[^}]*\bsanitizeSessionId\b[^}]*\}\s*from\s*["']\.\/session-paths\.js["']/,
 		);
 	});
 

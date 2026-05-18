@@ -24,6 +24,7 @@ import {
 	checkCrossFileSwitchDiscriminant,
 	checkSingleImplementationInterface,
 } from "./cross-file-checks.js";
+import { resolveDependencyView } from "./dependency-view.js";
 import { checkFollowUpViolation } from "./impact-analysis.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type { RouteMap } from "./route-map.js";
@@ -294,19 +295,29 @@ export function getPreToolUseContext(
 		}
 	}
 
-	// Blast radius: warn when editing a high-connectivity file (with module role)
+	// Blast radius: warn when editing a high-connectivity file (with module role).
+	// Dependency facts come through the DependencyView seam: a fresh Supermodel
+	// `.graph` shard when present, the internal import graph otherwise. The
+	// view is resolved per-file here so getPreToolUseContext's signature is
+	// untouched. When `view.source === "internal"` the wording is byte-identical
+	// to the pre-seam code; the Supermodel path adds a provenance clause.
 	if (config.blast_radius && isWriteOperation(toolName)) {
-		const dependents = graph.getDependents(filePath);
+		const view = resolveDependencyView(filePath, event.cwd ?? process.cwd(), graph);
+		const dependents = view.getDependents(filePath);
 		if (dependents.length >= config.blast_radius_threshold) {
-			const role = graph.classifyModule(filePath);
+			const role = view.classifyModule(filePath);
 			const roleLabel = role === "hub" ? " (hub module)" : "";
 			const depList = dependents
 				.slice(0, 5)
 				.map((d) => graph.toRelative(d))
 				.join(", ");
 			const more = dependents.length > 5 ? ` and ${dependents.length - 5} more` : "";
+			const provenance =
+				view.source === "supermodel"
+					? " Changes to exports will have wide impact (per Supermodel `.graph` shard)."
+					: " Changes to exports will have wide impact.";
 			warnings.push(
-				`[interlinked:blast-radius] ${relPath}${roleLabel} is imported by ${dependents.length} files (${depList}${more}). Changes to exports will have wide impact.`,
+				`[interlinked:blast-radius] ${relPath}${roleLabel} is imported by ${dependents.length} files (${depList}${more}).${provenance}`,
 			);
 		}
 	}

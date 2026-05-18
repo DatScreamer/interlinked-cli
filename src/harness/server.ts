@@ -24,7 +24,13 @@ import {
 import { createServer, type Socket } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
+import { readSharedConfig } from "../lib/config.js";
 import type { JsonObject } from "../lib/json-types.js";
+import {
+	autoStripAllScopes,
+	defaultStripAuditLogPath,
+	describeReason as describeMalformedReason,
+} from "../lib/settings-validator.js";
 import {
 	checkAssertionDensity,
 	checkProdDeltaWithoutTestDelta,
@@ -45,7 +51,12 @@ import {
 } from "./behavioral-diff-checks.js";
 import { getOrCreateEngine } from "./check-engine/index.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "./check-metadata.js";
+import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
+import { snapshotCrap } from "./checks/crap-baseline.js";
+import { snapshotDryShingles } from "./checks/dry-baseline.js";
+import { collectSiblingFunctions } from "./checks/dry-check.js";
 import { CohortManager } from "./cohort.js";
+import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
 import { applyAllowlist, compileAllowlist } from "./content-scanner/allowlist.js";
 import { decideFromFindings } from "./content-scanner/policy.js";
 import { runPostToolScan } from "./content-scanner/post-scan.js";
@@ -55,30 +66,25 @@ import { createScanner } from "./content-scanner/registry.js";
 import { countPendingReviews } from "./content-scanner/review-files.js";
 import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
 import { fetchAndScan } from "./content-scanner/web-fetch-proxy.js";
-import { snapshotCrap } from "./checks/crap-baseline.js";
-import { snapshotDryShingles } from "./checks/dry-baseline.js";
-import { collectSiblingFunctions } from "./checks/dry-check.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
-import { checkOrphanedTests } from "./deletion-hygiene.js";
-import { ErrorHistory } from "./error-history.js";
-import { readSharedConfig } from "../lib/config.js";
-import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
-import { appendLatencyLog } from "./latency-log.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
-import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
+import { checkOrphanedTests } from "./deletion-hygiene.js";
+import { resolveDependencyView } from "./dependency-view.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
-import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
-import {
-	type FilePriority,
-	refreshPriorityIfStale as refreshFilePriorityIfStale,
-	shouldRunAdvisoryChecks,
-} from "./file-priority.js";
-import { shouldSkipPath } from "./skip-paths.js";
+import { ErrorHistory } from "./error-history.js";
+import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
+import { evaluatePostToolUse, evaluatePreToolUse, extractPermissionPattern } from "./evaluator.js";
+import { runFailureChannels } from "./failure-channels.js";
 import {
 	computeEffectivenessSummary,
 	recordWarningResolutions,
 	recordWarningsIssued,
 } from "./feedback-effectiveness.js";
+import {
+	type FilePriority,
+	refreshPriorityIfStale as refreshFilePriorityIfStale,
+	shouldRunAdvisoryChecks,
+} from "./file-priority.js";
 import { checkFunctionComplexity, checkMissingReturnTypes } from "./generic-checks.js";
 import { checkGrepAcceleration, FileContentCache, findRipgrep } from "./grep-accelerator.js";
 import {
@@ -86,6 +92,14 @@ import {
 	recordImpactFollowUps,
 	runImpactAnalysis,
 } from "./impact-analysis.js";
+import { appendLatencyLog } from "./latency-log.js";
+import { toLegacyHarnessEvent } from "./legacy-client.js";
+import {
+	deleteLiveSnapshot,
+	readLiveSnapshot,
+	sweepStaleLiveSnapshots,
+	writeLiveSnapshot,
+} from "./live-snapshot.js";
 import {
 	appendShadowLog,
 	buildEvidenceEnvelope,
@@ -96,7 +110,9 @@ import {
 	resolveApiKey,
 } from "./policy-classifier.js";
 import { ProjectGraph } from "./project-graph.js";
+import { checkProjectTestsClean, checkProjectTypecheckClean } from "./project-typecheck-gate.js";
 import {
+	collectSoftwareVersionReferences,
 	countAsAnyCasts,
 	countConsoleStatements,
 	countNonNullAssertions,
@@ -104,7 +120,6 @@ import {
 	countSuppressionDirectives,
 	countTodoMarkers,
 	countTypeDensity,
-	collectSoftwareVersionReferences,
 	findProjectRoot,
 	formatQualityWarnings,
 	ProjectWideSweepState,
@@ -112,42 +127,20 @@ import {
 	runProjectWideChecksAsync,
 	runQualityChecks,
 } from "./quality-checks.js";
-import {
-	autoStripAllScopes,
-	defaultStripAuditLogPath,
-	describeReason as describeMalformedReason,
-} from "../lib/settings-validator.js";
-import { watchSettingsFiles } from "./settings-watcher.js";
-import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
-import { formatStopNudge, readSessionTokens } from "./commit-cadence.js";
-import {
-	countCodeFilesEdited,
-	countUiFilesEdited,
-	formatBisectNotResetWarning,
-	formatStubsIntroducedWarning,
-	formatTddRegressionWarning,
-	formatUiNotInteractedWarning,
-	formatUnverifiedCodeWarning,
-	formatVerifyNotRunWarning,
-} from "./verification-stop-checks.js";
 import { recordHarnessCaught } from "./recurrence.js";
-import { runFailureChannels } from "./failure-channels.js";
 import { ReservationManager } from "./reservations.js";
 import { isErr, tryFn } from "./result.js";
-import { DEFAULT_TRIGGERS, expandSiblings } from "./sibling-expansion.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
-import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
-import { sanitizeSessionId } from "./session-paths.js";
-import { daemonPathsFor } from "./session-paths.js";
 import { collectDeletionHygieneDiffFindings } from "./server/deletion-hygiene-diff.js";
 import { collectSuggestionFindings } from "./server/suggestion-checks.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
-import { startSessionDaemon, type SessionDaemonHandle } from "./session-daemon.js";
 import {
 	extractAllEditedFilePaths,
 	extractEditedFilePath,
 } from "./server-tool-helpers.js";
+import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
+import { daemonPathsFor, sanitizeSessionId } from "./session-paths.js";
 import {
 	acknowledgeChecks,
 	getActiveSkills,
@@ -156,12 +149,10 @@ import {
 	recordSkillLeave,
 	SessionTracker,
 } from "./session-state.js";
-import {
-	deleteLiveSnapshot,
-	readLiveSnapshot,
-	sweepStaleLiveSnapshots,
-	writeLiveSnapshot,
-} from "./live-snapshot.js";
+import { watchSettingsFiles } from "./settings-watcher.js";
+import { DEFAULT_TRIGGERS, expandSiblings } from "./sibling-expansion.js";
+import { shouldSkipPath } from "./skip-paths.js";
+import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import {
 	formatStructuralWarnings,
 	runStructuralChecks,
@@ -193,8 +184,17 @@ import type {
 	HarnessEvent,
 	PreEditBaseline,
 } from "./types.js";
-import { toLegacyHarnessEvent } from "./legacy-client.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
+import {
+	countCodeFilesEdited,
+	countUiFilesEdited,
+	formatBisectNotResetWarning,
+	formatStubsIntroducedWarning,
+	formatTddRegressionWarning,
+	formatUiNotInteractedWarning,
+	formatUnverifiedCodeWarning,
+	formatVerifyNotRunWarning,
+} from "./verification-stop-checks.js";
 
 // ===========================================
 // CLI Arguments
@@ -2131,8 +2131,12 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 						// --- Impact analysis (fast, graph-only, no subprocesses) ---
 						if (structuralConfig?.impact_analysis && editedFilePath) {
 							const newExportsForImpact = fileGraph.getExports(editedFilePath);
+							// Dependency facts come through the seam: a fresh Supermodel
+							// `.graph` shard when present, the internal graph otherwise.
+							const depView = resolveDependencyView(editedFilePath, CWD, fileGraph);
 							const impactResult = runImpactAnalysis(
 								editedFilePath,
+								depView,
 								fileGraph,
 								oldExports,
 								newExportsForImpact,

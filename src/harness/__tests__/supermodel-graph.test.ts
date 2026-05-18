@@ -526,7 +526,7 @@ describe("evaluatePreToolUse — Supermodel graph awareness", () => {
 		});
 		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
 		const graphWarnings = findAllGraphWarnings(decision.warnings);
-		expect(graphWarnings).toHaveLength(2); // HIGH + MEDIUM (LOW silent)
+		expect(graphWarnings).toHaveLength(3); // high-risk: impact + calls; medium-risk: impact; low-risk: silent
 		expect(graphWarnings.find((w) => w.includes("high-risk.ts:"))).toBeDefined();
 		expect(graphWarnings.find((w) => w.includes("medium-risk.ts:"))).toBeDefined();
 		expect(graphWarnings.find((w) => w.includes("low-risk.ts:"))).toBeUndefined();
@@ -621,5 +621,98 @@ describe("evaluatePreToolUse — Supermodel graph awareness", () => {
 		});
 		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
 		expect(findGraphWarning(decision.warnings)).toBeUndefined();
+	});
+
+	it("emits a [calls] context line for a HIGH-risk file with >= 2 caller sites", () => {
+		const event = makeEvent({
+			tool_name: "Write",
+			tool_input: { file_path: "high-risk.ts", content: "// stub" },
+			cwd: FIXTURES_DIR,
+		});
+		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
+		const graphWarnings = findAllGraphWarnings(decision.warnings);
+		expect(graphWarnings).toHaveLength(2); // [impact] line + [calls] line
+		const callLine = graphWarnings.find((w) =>
+			w.includes("call graph per .graph shard"),
+		);
+		expect(callLine).toBeDefined();
+		expect(callLine).toContain("high-risk.ts:");
+		expect(callLine).toContain("2 caller site(s) into 1 function(s)");
+		expect(callLine).toContain("process (2 callers)");
+	});
+
+	it("orders the [calls] line after the [impact] line", () => {
+		const event = makeEvent({
+			tool_name: "Write",
+			tool_input: { file_path: "high-risk.ts", content: "// stub" },
+			cwd: FIXTURES_DIR,
+		});
+		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
+		const graphWarnings = findAllGraphWarnings(decision.warnings);
+		expect(graphWarnings[0]).toContain("HIGH-risk edit");
+		expect(graphWarnings[1]).toContain("call graph per .graph shard");
+	});
+
+	it("does not emit a [calls] line below the 2-caller threshold", () => {
+		// medium-risk.graph.ts carries a [calls] section with a single caller.
+		const event = makeEvent({
+			tool_name: "Edit",
+			tool_input: {
+				file_path: "medium-risk.ts",
+				old_string: "a",
+				new_string: "b",
+			},
+			cwd: FIXTURES_DIR,
+		});
+		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
+		const graphWarnings = findAllGraphWarnings(decision.warnings);
+		expect(graphWarnings).toHaveLength(1); // [impact] only
+		expect(graphWarnings[0]).not.toContain("call graph per .graph shard");
+	});
+
+	it("does not emit a [calls] line when the shard has no [calls] section", () => {
+		// no-affects.graph.ts is HIGH-risk but carries only an [impact] section.
+		const event = makeEvent({
+			tool_name: "Write",
+			tool_input: { file_path: "no-affects.ts", content: "// stub" },
+			cwd: FIXTURES_DIR,
+		});
+		const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
+		const graphWarnings = findAllGraphWarnings(decision.warnings);
+		expect(graphWarnings).toHaveLength(1);
+		expect(graphWarnings[0]).not.toContain("call graph");
+	});
+
+	it("stays fully silent on a LOW-impact file even when callers are present", () => {
+		// The [calls] line is gated behind the [impact] line: a LOW-rated file
+		// with external callers must still produce zero warnings — plan 07's
+		// "LOW edits are silent" guarantee.
+		const dir = mkdtempSync(join(tmpdir(), "supermodel-lowcalls-"));
+		try {
+			writeFileSync(
+				join(dir, "x.graph.ts"),
+				[
+					"// @generated supermodel-shard — do not edit",
+					"// [calls]",
+					"// run ← a    src/a.ts:1",
+					"// run ← b    src/b.ts:2",
+					"// run ← c    src/c.ts:3",
+					"// [impact]",
+					"// risk        LOW",
+					"// direct      3",
+					"// transitive  3",
+					"// affects     src/a.ts · src/b.ts · src/c.ts",
+				].join("\n"),
+			);
+			const event = makeEvent({
+				tool_name: "Write",
+				tool_input: { file_path: "x.ts", content: "// stub" },
+				cwd: dir,
+			});
+			const decision = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(findAllGraphWarnings(decision.warnings)).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

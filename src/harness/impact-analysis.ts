@@ -1,11 +1,19 @@
 // ===========================================
 // Impact Analysis — PostToolUse blast radius & follow-up tracking
 // ===========================================
-// Runs after structural checks. Uses ProjectGraph only (no subprocesses).
-// Provides severity classification, test impact, and follow-up enforcement.
+// Runs after structural checks (no subprocesses). Provides severity
+// classification, test impact, and follow-up enforcement.
+//
+// The dependency-aware facts — module role and dependent count — come
+// through a `DependencyView` (plan-08 §3b): the internal regex graph by
+// default, or a Supermodel `.graph` shard when a fresh one is present.
+// `ProjectGraph` is still passed for path formatting (`toRelative`) and
+// test-file discovery, which are not dependency-graph queries and stay
+// off the seam.
 
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import type { DependencyView } from "./dependency-view.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type {
 	ExportedSymbol,
@@ -29,17 +37,23 @@ interface ImpactAnalysisConfig {
 /**
  * Analyze the impact of a file edit.
  * Must be called AFTER structural checks have run and the graph has been updated.
+ *
+ * `view` supplies the dependency-aware facts (module role, dependent
+ * count) — the internal regex graph or a fresh Supermodel shard, per
+ * `resolveDependencyView`. `graph` is retained for `toRelative` path
+ * formatting and test-file discovery, neither of which is a seam query.
  */
 export function runImpactAnalysis(
 	filePath: string,
+	view: DependencyView,
 	graph: ProjectGraph,
 	oldExports: ExportedSymbol[],
 	newExports: ExportedSymbol[],
 	structuralResults: StructuralCheckResult[],
 	config: ImpactAnalysisConfig,
 ): ImpactAnalysisResult {
-	const moduleRole = graph.classifyModule(filePath);
-	const dependents = graph.getDependents(filePath);
+	const moduleRole = view.classifyModule(filePath);
+	const dependents = view.getDependents(filePath);
 	const dependentCount = dependents.length;
 
 	// Detect export surface change
@@ -63,7 +77,7 @@ export function runImpactAnalysis(
 	}
 
 	// Find test files covering this module
-	const testFiles = findTestFiles(filePath, graph);
+	const testFiles = findTestFiles(filePath, view, graph);
 
 	// Follow-up files = breaking files + interface change affected files
 	const followUpFiles = [...breakingFiles];
@@ -136,7 +150,16 @@ function classifySeverity(
 
 const TEST_PATTERNS = [".test", ".spec", "_test"];
 
-function findTestFiles(filePath: string, graph: ProjectGraph): string[] {
+/**
+ * Discover test files for a source file. Dependent-test discovery uses the
+ * `DependencyView` (so a Supermodel shard's dependents feed it too);
+ * `graph` supplies `toRelative` for display paths.
+ */
+function findTestFiles(
+	filePath: string,
+	view: DependencyView,
+	graph: ProjectGraph,
+): string[] {
 	const testFiles: string[] = [];
 	const ext = extname(filePath);
 	const base = basename(filePath, ext);
@@ -160,7 +183,7 @@ function findTestFiles(filePath: string, graph: ProjectGraph): string[] {
 	}
 
 	// 2. Dependents that are test files (1-hop only, bounded)
-	const dependents = graph.getDependents(filePath);
+	const dependents = view.getDependents(filePath);
 	const checked = 0;
 	for (const dep of dependents) {
 		if (checked >= 50) break;
