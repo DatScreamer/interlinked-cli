@@ -9,10 +9,10 @@ graph the reader already parses gets surfaced and used.
 
 | Phase | Scope | State |
 |---|---|---|
-| 3a | `[calls]` PreToolUse context line | **DONE** (this commit) |
-| 3b | `DependencyView` provider seam | planned |
-| 3c | Stop-event dead-on-arrival check | planned |
-| 3d | Supermodel analyses (dead-code, test-coverage-map) | planned (tail) |
+| 3a | `[calls]` PreToolUse context line | **DONE** (commit 12a29ac) |
+| 3b | `DependencyView` provider seam | **DONE** (commit 12a29ac) |
+| 3c | Stop-event dead-on-arrival check | **DONE** (commit 054d615) |
+| 3d | Supermodel `dead-code` analysis consumer | **module DONE**; verify-wiring pending |
 
 ## Context — what plan 07 left on the table
 
@@ -131,23 +131,38 @@ list of *defined* symbols), which the `[deps]`/`[calls]`/`[impact]` sidecar
 does not enumerate — that is 3d territory. Warning, never blocks; zero
 false positives by construction (stale shards are skipped, not guessed).
 
-## 3d — Supermodel analyses (tail)
+## 3d — Supermodel `dead-code` analysis consumer
 
-Supermodel ships analyses beyond the per-file sidecars: `supermodel
-dead-code` (ranked unreachable symbols), `supermodel test-coverage-map`
-(per-function test reachability). Consuming these is a different
-integration shape than reading sidecars — it means invoking their CLI or
-reading whatever artifact the CLI writes.
+`supermodel dead-code` is the CLI's repo-wide unreachable-function
+analysis (call-graph reachability + entry-point detection + transitive
+propagation, with confidence levels). Verified against the CLI source
+(`reference-repos/supermodel-cli/cmd/deadcode.go` and
+`internal/api/types.go`): it is a **cloud API call** — it uploads the
+repository archive, requires an API key, and the CLI's own default
+timeout is 7200s. It exposes a machine-readable `--output json` mode
+returning `{ metadata: { totalDeclarations }, deadCodeCandidates: [{
+file, name, line, confidence, reason }] }`.
 
-Deferred to the tail of this plan and gated on a decision:
+**Decision resolved — invoke-CLI.** The plan-07-style "parse-artifact"
+route is not available: `dead-code` writes nothing to disk (unlike the
+`.graph.*` sidecars). Because it is cloud-backed, slow, and key-gated,
+this is **not a harness check** — it is a `verify`-tier, on-demand,
+opt-in integration that runs only when the `supermodel` CLI is installed
+and degrades silently otherwise.
 
-- **Invoke-CLI vs parse-artifact.** Shelling out to `supermodel dead-code`
-  may trigger a cloud round-trip; reading a CLI-written artifact keeps the
-  harness fully passive (preferred — consistent with the sidecar model).
-- **Async only.** Never on the PreToolUse/PostToolUse critical path.
-  Surface at Stop or in `interlinked verify`.
+**Shipped:** `src/harness/supermodel-analyses.ts` — `parseDeadCodeJson`
+(tolerant parser), `isSupermodelCliAvailable`, `runSupermodelDeadCode`
+(argv-array `execFileSync`, no shell; graceful `null` on absence / error
+/ timeout), `formatDeadCodeFindings` (confidence-ranked, capped, tagged
+`[interlinked:supermodel-dead-code]`). 15 tests.
 
-Open until 3b/3c land and there is a concrete need.
+**Connector (pending):** surface it through `interlinked verify` as an
+opt-in tool — gate on `isSupermodelCliAvailable()`, run on demand, fold
+`formatDeadCodeFindings` output into the report. This touches the
+`src/commands/verify/` pipeline (TOOL_IDS, advisory list, formatters)
+and is best done as its own focused change. The ranking is Supermodel's,
+consumed verbatim — the playbook lesson is "don't re-derive a precise
+analysis with a less-precise one."
 
 ## Files to add / change
 
@@ -193,5 +208,6 @@ Open until 3b/3c land and there is a concrete need.
    compute a real transitive count, or report `direct` and let Supermodel
    be the only source of `transitive`? Default: `direct` for v1; BFS is a
    cheap follow-on (memoized reverse-graph walk).
-3. **3d** — invoke-CLI vs parse-artifact. Default: parse-artifact, decided
-   when 3d is actually scheduled.
+3. **3d** — RESOLVED: invoke-CLI. `dead-code` writes no artifact (it is a
+   cloud call), so parse-artifact was not an option. The module is
+   shipped; the `interlinked verify` connector remains.
