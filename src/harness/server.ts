@@ -68,6 +68,10 @@ import type { ContentScanner, ScanFinding } from "./content-scanner/types.js";
 import { fetchAndScan } from "./content-scanner/web-fetch-proxy.js";
 import { coverageForFile, loadCoverageFinal } from "./coverage-final-reader.js";
 import { PROTOCOL_VERSION } from "./daemon-protocol.js";
+import {
+	detectDeadOnArrival,
+	formatDeadOnArrivalWarning,
+} from "./dead-on-arrival.js";
 import { checkOrphanedTests } from "./deletion-hygiene.js";
 import { resolveDependencyView } from "./dependency-view.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "./discovered-primitives.js";
@@ -860,6 +864,17 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 				if (bisectWarning !== null) {
 					turnWarnings.push(bisectWarning);
 					log("Verify-before-stop: bisect-not-reset");
+				}
+				// Dead-on-arrival — a file edited this session whose fresh
+				// Supermodel `.graph` shard reports zero dependent files and
+				// no callers: nothing imports it or calls into it. Plan 08
+				// §3c. Freshness-gated (only E-fresh shards), so a stale or
+				// missing shard yields no finding — zero false positives.
+				const doaHits = detectDeadOnArrival(session.files_written, event.cwd || CWD);
+				const doaWarning = formatDeadOnArrivalWarning(doaHits, event.cwd || CWD);
+				if (doaWarning !== null) {
+					turnWarnings.push(doaWarning);
+					log(`Verify-before-stop: dead-on-arrival (${doaHits.length})`);
 				}
 			}
 
