@@ -973,6 +973,10 @@ program
 		"--all-checks",
 		"Include broad advisory smell checks and dead-code scans in addition to the default high-signal audit",
 	)
+	.option(
+		"--dead-code",
+		"Run Supermodel's cloud dead-code analysis (opt-in; requires the `supermodel` CLI)",
+	)
 	.action(async (target: string | undefined, opts: OptionValues) => {
 		const { verifyCommand } = await import("./commands/verify.js");
 		await verifyCommand({ ...opts, target });

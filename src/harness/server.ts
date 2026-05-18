@@ -322,6 +322,15 @@ let rules: GuardRulesConfig = loadRules(CWD);
 const cohort = new CohortManager();
 const sessions = new SessionTracker();
 
+// --- Async-deferred finding queue ---
+// Holds findings computed off the hook critical path (slow checks);
+// drained into PreToolUse output and cleared on SessionEnd. No enqueuers
+// are wired yet — drain is a no-op until the first async check lands
+// (see docs/plans/08 and async-finding-queue.ts).
+import { AsyncFindingQueue } from "./async-finding-queue.js";
+
+const asyncFindings = new AsyncFindingQueue();
+
 // --- Learned rules (cross-session permission learning) ---
 import { createLearnedRulesStore } from "./learned-rules.js";
 
@@ -931,6 +940,7 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			cohort.agentLeft(event);
 			reservations.releaseAllForAgent(event.agent_name || session.agent_name, cohort);
 			sessions.remove(event.session_id);
+			asyncFindings.clearSession(event.session_id);
 			// Pair the trajectory.json archive with live-snapshot deletion —
 			// once the session is permanently archived, the live snapshot is
 			// noise that would otherwise be picked up by the startup sweep.
@@ -1061,6 +1071,18 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 			errorHistory,
 			readSharedConfig(CWD),
 		);
+
+		// Async-deferred findings — deliver anything an off-critical-path
+		// check enqueued for this session as PreToolUse context. Drain is
+		// exactly-once and drops stale entries; it is a no-op until the
+		// first async check is wired (async-finding-queue.ts).
+		const deferredFindings = asyncFindings.drain(event.session_id);
+		if (deferredFindings.length > 0) {
+			preDecision.warnings = [
+				...(preDecision.warnings ?? []),
+				...deferredFindings.map((f) => f.message),
+			];
+		}
 
 		// --- LLM Policy Classifier: escalation check (shadow mode) ---
 		// Only runs when: decision is "allow", escalation criteria matched, classifier enabled.

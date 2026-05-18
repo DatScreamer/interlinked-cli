@@ -40,11 +40,16 @@ import {
 	computeDecisionSurfaceRatchet,
 	type DecisionSurfaceRatchetResult,
 } from "../harness/quality-checks/decision-surface-ratchet.js";
-import type { Finding } from "../harness/suggestion-scorer.js";
 import {
 	type RegistryDriftFinding,
 	runRegistryParityCheck,
 } from "../harness/registry-parity.js";
+import type { Finding } from "../harness/suggestion-scorer.js";
+import {
+	formatDeadCodeFindings,
+	isSupermodelCliAvailable,
+	runSupermodelDeadCode,
+} from "../harness/supermodel-analyses.js";
 import {
 	addSuppressions,
 	loadFileSuppressions,
@@ -280,6 +285,7 @@ interface VerifyOpts {
 	structureOnly?: boolean;
 	adoptionGate?: boolean;
 	allChecks?: boolean;
+	deadCode?: boolean;
 	skip?: string;
 }
 
@@ -474,6 +480,8 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 		details,
 	});
 
+	streamSupermodelDeadCode(cwd, opts, allFlaggedFiles);
+
 	if (opts.suggestions) {
 		streamSuggestionsSummary(files, cwd);
 	}
@@ -624,6 +632,52 @@ function streamDecisionSurfaceRatchet(result: DecisionSurfaceRatchetResult): voi
 	);
 	for (const line of result.warnings) {
 		process.stderr.write(`    \x1b[33m!\x1b[0m ${line}\n`);
+	}
+}
+
+/**
+ * Stream the Supermodel dead-code section. Opt-in via `--dead-code`:
+ * `supermodel dead-code` is a cloud API call (uploads the repo, requires
+ * an API key, can take minutes), so it is never part of the default fast
+ * `verify` gate. Silent unless the flag is set. When the flag is set but
+ * the `supermodel` CLI is absent, prints a one-line skip note rather than
+ * failing — the integration is opt-in and degrades gracefully. See
+ * `docs/plans/08-supermodel-graph-provider.md` §3d.
+ */
+function streamSupermodelDeadCode(
+	cwd: string,
+	opts: VerifyOpts,
+	allFlaggedFiles: Set<string>,
+): void {
+	if (!opts.deadCode) return;
+	process.stderr.write("\n  \x1b[1msupermodel dead-code\x1b[0m\n");
+	if (!isSupermodelCliAvailable()) {
+		process.stderr.write(
+			"    \x1b[2m· skipped — `supermodel` CLI not found on PATH\x1b[0m\n",
+		);
+		return;
+	}
+	process.stderr.write("    \x1b[2m· running cloud analysis...\x1b[0m");
+	const analysis = runSupermodelDeadCode(cwd);
+	process.stderr.write("\r\x1b[K");
+	if (!analysis) {
+		process.stderr.write(
+			"    \x1b[2m· no result — `supermodel` errored (API key, network, or timeout)\x1b[0m\n",
+		);
+		return;
+	}
+	if (analysis.candidates.length === 0) {
+		process.stderr.write(
+			`    \x1b[32m✓\x1b[0m no dead code (${analysis.totalDeclarations} declarations analyzed)\n`,
+		);
+		return;
+	}
+	process.stderr.write(
+		`    \x1b[33m!\x1b[0m \x1b[33m${analysis.candidates.length}\x1b[0m dead-code candidate(s) of ${analysis.totalDeclarations} declarations\n`,
+	);
+	for (const c of analysis.candidates) allFlaggedFiles.add(c.file);
+	for (const line of formatDeadCodeFindings(analysis, { max: MAX_LISTED_FILES })) {
+		process.stderr.write(`\x1b[2m         ${line}\x1b[0m\n`);
 	}
 }
 
