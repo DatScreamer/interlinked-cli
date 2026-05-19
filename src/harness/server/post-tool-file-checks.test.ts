@@ -88,8 +88,12 @@ function makeAcc(): PerFileCheckCtx {
 	};
 }
 
+// runPerFileChecks on a .ts fixture spawns the real tsc (the `typescript`
+// quality check); under the CI=1 vitest worker cap a cold start can blow past
+// the 10s default test timeout. Match write.test.ts's tsc-spawning-test
+// pattern: an explicit generous timeout + retry.
 describe("runPerFileChecks", () => {
-	it("leaves a clean source file as allow with no findings", async () => {
+	it("leaves a clean source file as allow with no findings", { timeout: 60_000, retry: 2 }, async () => {
 		const ctx = makeCtx();
 		writeFileSync(
 			join(tmp, "clean.ts"),
@@ -103,7 +107,7 @@ describe("runPerFileChecks", () => {
 		expect(decision.decision).toBe("allow");
 	});
 
-	it("records the quality check families in checksRan for a .ts edit", async () => {
+	it("records the quality check families in checksRan for a .ts edit", { timeout: 60_000, retry: 2 }, async () => {
 		const ctx = makeCtx();
 		writeFileSync(join(tmp, "mod.ts"), "export const x = 1;\n");
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: join(tmp, "mod.ts") } });
@@ -115,7 +119,7 @@ describe("runPerFileChecks", () => {
 		expect(acc.checksRan).toContain("typescript");
 	});
 
-	it("advances recurrenceCursor to the result count after processing", async () => {
+	it("advances recurrenceCursor to the result count after processing", { timeout: 60_000, retry: 2 }, async () => {
 		const ctx = makeCtx();
 		writeFileSync(join(tmp, "ok.ts"), "export const y = 2;\n");
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: join(tmp, "ok.ts") } });
