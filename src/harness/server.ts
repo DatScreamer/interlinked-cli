@@ -85,6 +85,8 @@ import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, PreEditBaseline } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
+import { buildCollectionRecord } from "../lib/collection/builder.js";
+import { appendCollection } from "../lib/collection/writer.js";
 
 // ===========================================
 // CLI Arguments
@@ -556,6 +558,58 @@ function syncRuntimeOut(): void {
 }
 
 // ===========================================
+// Collection v1 record writer
+// ===========================================
+
+/** Map a HarnessEvent to the JsonObject shape the collection builder expects,
+ *  build a collection.v1 record, and append it. Fire-and-forget — never
+ *  blocks the pipeline. Only called for tool events (pre/post). */
+function writeCollectionRecord(event: HarnessEvent): void {
+	try {
+		// Derive event_type from hook_event
+		let eventType: string;
+		if (event.hook_event === "PreToolUse" || event.hook_event === "BeforeTool") {
+			eventType = "tool_use_start";
+		} else if (event.hook_event === "PostToolUseFailure") {
+			eventType = "tool_use_error";
+		} else {
+			// PostToolUse / AfterTool
+			eventType = "tool_use";
+		}
+
+		// Detect client_runner from agent_source for non-Claude providers
+		let clientRunner: string | undefined;
+		let cursorVersion: string | undefined;
+		const src = event.agent_source ?? "";
+		if (src.includes("codex")) clientRunner = "codex";
+		else if (src.includes("copilot")) clientRunner = "copilot";
+		else if (src.includes("cursor")) cursorVersion = "1";
+
+		const mapped: JsonObject = {
+			event_type: eventType,
+			ts: event.timestamp,
+			hook_event: event.hook_event,
+			session: event.session_id,
+			tool_name: event.tool_name ?? "",
+			tool_input: event.tool_input ?? {},
+			tool_response: event.tool_response as JsonObject | undefined,
+			tool_use_id: event.tool_use_id,
+			cwd: event.cwd ?? CWD,
+			tool_response_sha256: event.tool_response_sha256,
+			...(clientRunner ? { client_runner: clientRunner } : {}),
+			...(cursorVersion ? { cursor_version: cursorVersion } : {}),
+		};
+
+		const record = buildCollectionRecord(mapped);
+		if (record) {
+			appendCollection(record, event.cwd ?? CWD);
+		}
+	} catch {
+		// collection is best-effort — never break the pipeline
+	}
+}
+
+// ===========================================
 // Event Processing
 // ===========================================
 
@@ -611,11 +665,15 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 		// Evaluate based on hook type
 		if (isPreToolUse(event)) {
-			return await runPreToolPipeline(serverRuntime, event, session);
+			const decision = await runPreToolPipeline(serverRuntime, event, session);
+			writeCollectionRecord(event);
+			return decision;
 		}
 
 		if (isPostToolUse(event)) {
-			return await runPostToolPipeline(serverRuntime, event, session);
+			const decision = await runPostToolPipeline(serverRuntime, event, session);
+			writeCollectionRecord(event);
+			return decision;
 		}
 
 		// Non-tool events (lifecycle, notifications, etc.) — always allow
