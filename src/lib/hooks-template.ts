@@ -17,6 +17,7 @@
 // pre-split template. See `hooks-template.test.ts` for the byte-level invariants.
 
 import { type HarnessModePreset, QUALITY_MODE } from "../harness/rules/modes.js";
+import { COLLECTION_WRITER_CHUNK } from "./hook-template-chunks/collection-writer.js";
 import { EVENT_NORMALIZERS_CHUNK } from "./hook-template-chunks/event-normalizers.js";
 import { GUARDS_INLINE_CHUNK } from "./hook-template-chunks/guards-inline.js";
 import { PROVIDER_RESPONSES_CHUNK } from "./hook-template-chunks/provider-responses.js";
@@ -477,6 +478,8 @@ function lastCheckFile(event, rawInput) {
 
 ${SESSION_STATE_CHUNK}
 
+${COLLECTION_WRITER_CHUNK}
+
 async function main() {
     const localConfig = existsSync(CONFIG_LOCAL_PATH)
         ? safeReadConfig(CONFIG_LOCAL_PATH)
@@ -797,6 +800,7 @@ ${PROVIDER_RESPONSES_CHUNK}
         // If blocked on PreToolUse, output decision to stdout and exit
         if (guardDecision?.decision === "block") {
             appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+            appendCollectionRecord(event, DATA_DIR);
             appendGuardDecision("block", guardDecision, event, hookEvent, sessionId, agentName, workspaceKey, projectKey, preElapsedMs);
             updateSessionState(sessionId, agentName, event);
 
@@ -825,6 +829,7 @@ ${PROVIDER_RESPONSES_CHUNK}
         // instruction for context.
         if (guardDecision?.decision === "ask") {
             appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+            appendCollectionRecord(event, DATA_DIR);
             appendGuardDecision("ask", guardDecision, event, hookEvent, sessionId, agentName, workspaceKey, projectKey, preElapsedMs);
             updateSessionState(sessionId, agentName, event);
             const askTool = event.tool_name || rawInput.tool_name || "unknown";
@@ -882,6 +887,7 @@ ${PROVIDER_RESPONSES_CHUNK}
     const postOutcomeIsError = event.tool_outcome === "error";
     if (isPostTool && !isMutationPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure") {
         appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+        appendCollectionRecord(event, DATA_DIR);
         updateSessionState(sessionId, agentName, event);
         // Provide the empty success response so the agent's UI doesn't
         // think the hook failed. Format-aware so Cursor/Codex/Copilot
@@ -958,6 +964,7 @@ ${PROVIDER_RESPONSES_CHUNK}
                     };
                 console.log(JSON.stringify(formatProviderResponse(responseType, responsePayload)));
                 appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+                appendCollectionRecord(event, DATA_DIR);
                 appendGuardDecision(
                     isBlockingPostDecision ? "block" : "warn",
                     postResult,
@@ -985,6 +992,7 @@ ${PROVIDER_RESPONSES_CHUNK}
                 summary: "[interlinked:" + toolLabel + "] " + summary,
             })));
             appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+            appendCollectionRecord(event, DATA_DIR);
             updateSessionState(sessionId, agentName, event);
             captureCodeEdit(sessionId, agentName, event);
             process.exit(0);
@@ -1003,6 +1011,7 @@ ${PROVIDER_RESPONSES_CHUNK}
 
     // --- Always write locally (works offline) ---
     appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
+    appendCollectionRecord(event, DATA_DIR);
     updateSessionState(sessionId, agentName, event);
 
     // Capture code edits from PostToolUse Edit/Write events
