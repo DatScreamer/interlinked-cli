@@ -1,0 +1,26 @@
+// ===========================================
+// Collection v1 — JSONL Writer
+// ===========================================
+// Appends collection.v1 records to .interlinked/collection.jsonl.
+// Synchronous, fire-and-forget — mirrors appendLocalActivity() semantics.
+
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import type { CollectionRecord } from "./types.js";
+
+export function getCollectionPath(cwd: string): string {
+	return join(cwd, ".interlinked", "collection.jsonl");
+}
+
+export function appendCollection(record: CollectionRecord, cwd: string): void {
+	try {
+		const filePath = getCollectionPath(cwd);
+		const dir = join(cwd, ".interlinked");
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+		appendFileSync(filePath, `${JSON.stringify(record)}\n`);
+	} catch {
+		// collection is best-effort — never break the hook pipeline
+	}
+}

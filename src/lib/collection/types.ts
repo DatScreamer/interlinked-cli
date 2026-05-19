@@ -1,0 +1,261 @@
+// interlinked-tdd: exempt
+// ===========================================
+// Collection v1 — Canonical provider-agnostic tool activity schema
+// ===========================================
+// See docs/design/normalized-collection-layer.md for the full design.
+
+// --- Tool Classes ---
+
+export type ToolClass =
+	| "shell_exec"
+	| "file_read"
+	| "file_edit"
+	| "file_write"
+	| "file_delete"
+	| "search"
+	| "mcp_call"
+	| "fetch"
+	| "task"
+	| "notebook_edit"
+	| "other";
+
+// --- Per-class Action shapes ---
+
+export interface ShellExecAction {
+	command: string;
+	cwd?: string | null;
+}
+
+export interface FileReadAction {
+	path: string;
+	offset?: number | null;
+	limit?: number | null;
+}
+
+export interface FileEditAction {
+	path: string;
+	diff: { hunks: Array<{ old: string; new: string }>; unified?: string | null };
+}
+
+export interface FileWriteAction {
+	path: string;
+	content?: string | null;
+	content_ref?: string | null;
+	is_new_file?: boolean;
+}
+
+export interface FileDeleteAction {
+	path: string;
+}
+
+export interface SearchAction {
+	pattern: string;
+	path?: string | null;
+	flags?: string | null;
+}
+
+export interface McpCallAction {
+	server?: string | null;
+	tool: string;
+	params?: unknown;
+	params_ref?: string | null;
+}
+
+export interface FetchAction {
+	url: string;
+	prompt?: string | null;
+}
+
+export interface TaskAction {
+	task: string;
+	params?: unknown;
+}
+
+export interface NotebookEditAction {
+	path: string;
+	cell?: string | null;
+	diff?: unknown;
+}
+
+export interface OtherAction {
+	provider_input?: unknown;
+	provider_input_ref?: string | null;
+}
+
+export type CollectionAction =
+	| ShellExecAction
+	| FileReadAction
+	| FileEditAction
+	| FileWriteAction
+	| FileDeleteAction
+	| SearchAction
+	| McpCallAction
+	| FetchAction
+	| TaskAction
+	| NotebookEditAction
+	| OtherAction;
+
+// --- Per-class Observation shapes ---
+
+export interface ShellExecObservation {
+	stdout?: string | null;
+	stderr?: string | null;
+	exit_code?: number | null;
+	duration_ms?: number | null;
+	combined_output?: boolean;
+}
+
+export interface FileReadObservation {
+	content?: string | null;
+	content_ref?: string | null;
+	line_count?: number | null;
+	byte_count?: number | null;
+}
+
+export interface FileEditObservation {
+	applied: boolean;
+	result_message?: string | null;
+	provider_echo_ref?: string | null;
+}
+
+export interface FileWriteObservation {
+	applied: boolean;
+	result_message?: string | null;
+	provider_echo_ref?: string | null;
+}
+
+export interface FileDeleteObservation {
+	deleted: boolean;
+	result_message?: string | null;
+}
+
+export interface SearchObservation {
+	matches?: unknown;
+	match_count?: number | null;
+	result_text?: string | null;
+}
+
+export interface McpCallObservation {
+	result?: unknown;
+	result_ref?: string | null;
+}
+
+export interface FetchObservation {
+	status?: number | null;
+	result?: unknown;
+	result_ref?: string | null;
+	bytes?: number | null;
+}
+
+export interface TaskObservation {
+	result?: unknown;
+}
+
+export interface NotebookEditObservation {
+	applied: boolean;
+	result_message?: string | null;
+}
+
+export interface OtherObservation {
+	provider_output?: unknown;
+	provider_output_ref?: string | null;
+}
+
+export type CollectionObservation =
+	| ShellExecObservation
+	| FileReadObservation
+	| FileEditObservation
+	| FileWriteObservation
+	| FileDeleteObservation
+	| SearchObservation
+	| McpCallObservation
+	| FetchObservation
+	| TaskObservation
+	| NotebookEditObservation
+	| OtherObservation;
+
+// --- Fidelity ---
+
+export type CompletenessValue =
+	| "complete"
+	| "provider_truncated"
+	| "interlinked_capped"
+	| "absent"
+	| "redacted"
+	| "unknown";
+
+export interface FieldFidelity {
+	source: "provider_hook";
+	provider_truncated: boolean | "unknown";
+	interlinked_capped: boolean;
+	provider_payload_bytes: number;
+	captured_bytes: number;
+	completeness: CompletenessValue;
+}
+
+export interface RecordFidelity {
+	source: "provider_hook";
+	completeness: CompletenessValue;
+}
+
+export interface FidelityBlock {
+	record: RecordFidelity;
+	fields: Record<string, FieldFidelity>;
+}
+
+// --- Privacy ---
+
+export type RedactionStatus =
+	| "unscanned"
+	| "regex_scrubbed"
+	| "pii_scanned"
+	| "redacted"
+	| "quarantined"
+	| "not_required";
+
+export interface PrivacyBlock {
+	redaction_status: RedactionStatus;
+	redaction_passes: string[];
+	sensitivity: "unknown" | "public" | "confidential" | "secret";
+	contains_sensitive: "unknown" | boolean;
+	allowed_for_training: boolean;
+	allowed_for_cloud_upload: boolean;
+}
+
+// --- Provider Raw ---
+
+export interface ProviderRawBlock {
+	tool_input_ref: string | null;
+	tool_response_ref: string | null;
+	tool_input_sha256: string | null;
+	tool_response_sha256: string | null;
+}
+
+// --- Git context ---
+
+export interface GitContext {
+	head: string | null;
+	branch: string | null;
+}
+
+// --- The record ---
+
+export interface CollectionRecord {
+	schema: "collection.v1";
+	kind: "tool_event";
+	ts: string;
+	session_id: string | null;
+	turn_id: string | null;
+	tool_use_id: string | null;
+	provider: string;
+	phase: "pre" | "post";
+	tool_class: ToolClass;
+	provider_tool: string | null;
+	cwd: string | null;
+	git: GitContext | null;
+	action: CollectionAction | null;
+	observation: CollectionObservation | null;
+	fidelity: FidelityBlock;
+	privacy: PrivacyBlock;
+	provider_raw: ProviderRawBlock;
+}

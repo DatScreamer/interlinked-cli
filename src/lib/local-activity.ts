@@ -19,6 +19,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { buildCollectionRecord } from "./collection/builder.js";
+import { appendCollection } from "./collection/writer.js";
 import { getDataDir } from "./config.js";
 import type { JsonObject } from "./json-types.js";
 
@@ -243,12 +245,18 @@ function getSyncErrorsPath(cwd: string = process.cwd()): string {
  * Synchronous (~0.1ms) — safe to call from hook scripts.
  */
 export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): void {
-	const path = getActivityPath(cwd);
-	const dir = dirname(path);
+	const resolvedCwd = cwd || process.cwd();
+	const activityPath = getActivityPath(resolvedCwd);
+	const dir = dirname(activityPath);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
-	appendFileSync(path, `${JSON.stringify(event)}\n`);
+	appendFileSync(activityPath, `${JSON.stringify(event)}\n`);
+
+	const collectionRecord = buildCollectionRecord({ ...event });
+	if (collectionRecord) {
+		appendCollection(collectionRecord, resolvedCwd);
+	}
 }
 
 // ===========================================
