@@ -387,10 +387,13 @@ export function uninstallAllHooks(cwd: string, clients: ClientName[]): InstallRe
 const GITIGNORE_ENTRIES = [
 	".interlinked/config.local.json",
 	".interlinked/activity.jsonl",
+	".interlinked/collection.jsonl",
+	".interlinked/recurrences.jsonl",
 	".interlinked/realtime-retry.jsonl",
 	".interlinked/sync-errors.jsonl",
 	".interlinked/sync-state.json",
 	".interlinked/sessions/",
+	".interlinked/failures/",
 	".interlinked/checkpoints.json",
 	".interlinked/guard-cache.json",
 	".interlinked/guard-rules.local.json",
@@ -403,10 +406,13 @@ const GITIGNORE_ENTRIES = [
 
 const DATA_GITIGNORE_ENTRIES = new Set([
 	".interlinked/activity.jsonl",
+	".interlinked/collection.jsonl",
+	".interlinked/recurrences.jsonl",
 	".interlinked/realtime-retry.jsonl",
 	".interlinked/sync-errors.jsonl",
 	".interlinked/sync-state.json",
 	".interlinked/sessions/",
+	".interlinked/failures/",
 	".interlinked/checkpoints.json",
 ]);
 
