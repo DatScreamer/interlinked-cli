@@ -46,11 +46,21 @@ function readFullVerifySource(): string {
  * was split across entries-errors/entries-warnings/entries-taste/entries-c-cpp
  * to keep individual files under the file-size threshold; the test still
  * needs a single string to run regex extraction over.
+ *
+ * `entries-warnings.ts` was itself decomposed into the `entries-warnings/`
+ * subdirectory for the same reason — it is now a thin barrel, so its entry
+ * blocks live in the five submodules listed below. They must be concatenated
+ * here so the regex extraction continues to see every registry entry.
  */
 function readRegistrySources(): string {
 	return [
 		"entries-errors.ts",
 		"entries-warnings.ts",
+		"entries-warnings/agent-clarity.ts",
+		"entries-warnings/code-quality.ts",
+		"entries-warnings/ubs-checks.ts",
+		"entries-warnings/agent-laziness.ts",
+		"entries-warnings/test-and-demo.ts",
 		"entries-taste.ts",
 		"entries-c-cpp.ts",
 		"builders.ts",

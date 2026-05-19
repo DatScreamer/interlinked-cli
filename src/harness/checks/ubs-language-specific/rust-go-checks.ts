@@ -1,0 +1,139 @@
+// UBS language-specific detectors — Rust and Go checks. Extracted from
+// ubs-language-specific.ts during the 1500-line decomposition. Each function
+// returns InlineMatch[]. Ext-gated to .rs / .go.
+
+import {
+	getExtension,
+	type InlineMatch,
+	isTestFile,
+	stripCommentsAndStrings,
+} from "../shared.js";
+import { MATCH_LIMIT } from "./_shared.js";
+
+// ===========================================
+// Row 22 — `ubs_mutex_lock_unwrap` (Rust)
+// ===========================================
+
+/**
+ * Detect `Mutex<T>...lock().unwrap()` — panics on poisoned mutex.
+ *
+ * Plan 04 §4.1 regex: `\bMutex<[^>]+>[\s\S]{0,200}?\.lock\(\)\.unwrap\(\)`.
+ * `[^<>]*(?:<[^<>]*>[^<>]*)?` allows one nested generic level so
+ * `Mutex<HashMap<String, u64>>` participates. The 200-char window lets the
+ * lock and unwrap land on a different line from the declaration.
+ */
+export function checkMutexLockUnwrap(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".rs") return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	const re = /\bMutex\s*<[^<>]*(?:<[^<>]*>[^<>]*)?>[\s\S]{0,200}?\.lock\s*\(\s*\)\s*\.unwrap\s*\(\s*\)/g;
+
+	for (const m of stripped.matchAll(re)) {
+		if (matches.length >= 10) break;
+		// Anchor finding at the `.unwrap` token — the panic site cold readers
+		// jump to from the warning.
+		const idx = (m.index ?? 0) + m[0].lastIndexOf(".unwrap");
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
+ * `ubs_goroutine_no_waitgroup` — Go `go func() { ... }()` started without an
+ * accompanying `wg.Add` / `wg.Done` pair (or other synchronization context).
+ * Fire-and-forget goroutines leak when the caller exits before they complete.
+ * post / warning.
+ *
+ * Heuristic: a `go func` line whose surrounding ±200-char window contains no
+ * `wg.Add`, `wg.Done`, `errgroup`, `sync.WaitGroup`, or `<-` channel receive.
+ */
+export function checkGoroutineNoWaitgroup(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".go") return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+	const goRe = /\bgo\s+func\b/g;
+	const SAFE_CONTEXT_RE =
+		/\b(?:wg\.(?:Add|Done|Wait)|errgroup|sync\.WaitGroup|<-\s*\w|\.Wait\(\))/;
+	const WINDOW = 240;
+
+	for (const m of stripped.matchAll(goRe)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const start = Math.max(0, idx - WINDOW);
+		const end = Math.min(stripped.length, idx + WINDOW);
+		const window = stripped.slice(start, end);
+		if (SAFE_CONTEXT_RE.test(window)) continue;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	return matches;
+}
+
+/**
+ * `ubs_defer_in_loop` — Go `defer` inside a `for` loop accumulates calls
+ * until the function returns; if the loop iterates many times you blow up
+ * memory / leak file handles before any defer executes. post / warning.
+ *
+ * Heuristic: track loop nesting via simple `for ` line scan; flag any
+ * `defer ` line that appears while loop depth > 0.
+ */
+export function checkDeferInLoop(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".go") return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// Track function depth and loop depth separately. A `defer` is fine at
+	// the top of a function but NOT inside a `for` body.
+	let braceDepth = 0;
+	let loopDepth = 0;
+	// Stack of brace-depths at which a `for` loop was entered.
+	const loopStack: number[] = [];
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const line = strippedLines[i];
+
+		// Count braces opening before checking the line content.
+		const openCount = (line.match(/\{/g) || []).length;
+		const closeCount = (line.match(/\}/g) || []).length;
+
+		// Detect a `for` loop on this line.
+		const forMatch = /\bfor\b/.test(line);
+		if (forMatch && openCount > 0) {
+			loopStack.push(braceDepth);
+			loopDepth++;
+		}
+
+		// Now if we're inside a loop and the line has `defer `, flag it.
+		if (loopDepth > 0 && /\bdefer\s+\w/.test(line)) {
+			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		}
+
+		// Apply brace depth changes for next iteration.
+		braceDepth += openCount - closeCount;
+
+		// Pop loops whose entry depth is now above the current depth.
+		while (loopStack.length > 0 && loopStack[loopStack.length - 1] >= braceDepth) {
+			loopStack.pop();
+			loopDepth--;
+		}
+	}
+	return matches;
+}

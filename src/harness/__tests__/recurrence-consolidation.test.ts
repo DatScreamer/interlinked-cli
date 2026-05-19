@@ -8,101 +8,21 @@
 // `recordHarnessCaught` for every error/warning, regardless of source or
 // error_memory setting.
 //
-// Two layers of assertion:
-//   1. Source-level pin on server.ts so the contract can't silently regress.
-//   2. Behavioral round-trip exercising the same shape of consolidation
-//      against synthetic CheckResultEntry rows for each source kind.
+// The consolidation loop moved out of the monolithic server.ts into
+// server/post-tool-file-checks.ts during the 1500-line decomposition. Its
+// source-level pins now live in server/post-tool-file-checks.test.ts; this
+// file keeps the behavioral round-trip — exercising the same shape of
+// consolidation against synthetic CheckResultEntry rows for each source kind.
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	loadRecurrenceEvents,
 	recordHarnessCaught,
 } from "../recurrence.js";
 import type { CheckResultEntry } from "../types.js";
-
-const HERE = fileURLToPath(new URL(".", import.meta.url));
-const SERVER_TS = resolve(HERE, "..", "server.ts");
-
-describe("PostToolUse recurrence consolidation — source-level pins", () => {
-	const src = readFileSync(SERVER_TS, "utf-8");
-
-	it("imports recordHarnessCaught from recurrence.js", () => {
-		expect(src).toMatch(
-			/import\s*\{\s*recordHarnessCaught\s*\}\s*from\s*["']\.\/recurrence\.js["']/,
-		);
-	});
-
-	it("walks allCheckResults via a cursor and fires recordHarnessCaught for every error/warning", () => {
-		// The consolidation loop must slice from a cursor to avoid replaying
-		// prior fan-out iterations' findings, filter on severity, and call
-		// recordHarnessCaught with the standard fields.
-		const consolidationBlock = src.match(
-			/for\s*\(\s*let\s+i\s*=\s*recurrenceCursor[\s\S]*?recordHarnessCaught\(\{[\s\S]*?\}\);[\s\S]*?\}\s*recurrenceCursor\s*=\s*allCheckResults\.length/,
-		);
-		expect(consolidationBlock, "cursor-driven consolidation pass missing").toBeTruthy();
-		const block = consolidationBlock?.[0] ?? "";
-		expect(block).toContain('r.severity !== "error"');
-		expect(block).toContain('r.severity !== "warning"');
-		expect(block).toContain("check_id: r.name");
-		expect(block).toContain("agent_source: event.agent_source");
-		expect(block).toContain("session_id: event.session_id");
-	});
-
-	it("declares recurrenceCursor outside the fan-out so it persists across files", () => {
-		// The cursor must be declared above the `for (const currentEditedPath
-		// of pathsToCheck)` loop, otherwise it resets each iteration and the
-		// dedup is meaningless.
-		const fanOutIdx = src.indexOf("for (const currentEditedPath of pathsToCheck)");
-		expect(fanOutIdx).toBeGreaterThan(-1);
-		const cursorDecl = src.indexOf("let recurrenceCursor");
-		expect(cursorDecl).toBeGreaterThan(-1);
-		expect(cursorDecl).toBeLessThan(fanOutIdx);
-	});
-
-	it("does NOT nest the recurrence write inside error_memory.enabled", () => {
-		// The recurrence consolidation loop must not be syntactically inside the
-		// `if (rules.error_memory?.enabled)` block. We extract the error_memory
-		// block and assert recordHarnessCaught isn't called from it.
-		// Find the error_memory block (greedy enough to span the structural
-		// recordError loop but not the consolidation pass below it).
-		const idx = src.indexOf("if (rules.error_memory?.enabled)");
-		expect(idx, "error_memory block missing").toBeGreaterThan(-1);
-		// Walk forward, balancing braces, to find the end of that if-block.
-		let depth = 0;
-		let started = false;
-		let end = idx;
-		for (let i = idx; i < src.length; i++) {
-			const c = src[i];
-			if (c === "{") {
-				depth++;
-				started = true;
-			} else if (c === "}") {
-				depth--;
-				if (started && depth === 0) {
-					end = i + 1;
-					break;
-				}
-			}
-		}
-		const errorMemoryBlock = src.slice(idx, end);
-		expect(errorMemoryBlock).not.toContain("recordHarnessCaught(");
-	});
-
-	it("does NOT scope the recurrence write to a single source kind", () => {
-		// Pre-fix code only fired inside the `for (const result of structuralResults)`
-		// loop. Pin that the consolidation loop iterates allCheckResults, not
-		// structuralResults, so quality/suggestion/behavioral findings record too.
-		const block =
-			src.match(
-				/Mirror EVERY actionable check failure[\s\S]*?allCheckResults\.length\s*>\s*recurrenceCursor/,
-			) ?? [];
-		expect(block.length).toBeGreaterThan(0);
-	});
-});
 
 describe("PostToolUse recurrence consolidation — behavioral round-trip", () => {
 	let dir: string;

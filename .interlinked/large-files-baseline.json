@@ -1,11 +1,6 @@
 {
   "version": 1,
   "max_lines": 1500,
-  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). Files listed below exceeded the cap when enforcement was enabled (2026-05-18) and are grandfathered at their recorded line count: a listed file may shrink or hold, but the harness blocks any edit that grows it and verify fails it. Drop a file below max_lines (decompose it) to delete its entry. Generated, test, and .d.ts files are exempt from the cap and never appear here. Ratchet `max_lines` downward (1500 -> 1200 -> 1000) as this list empties. Policy: src/harness/large-file-policy.ts.",
-  "files": {
-    "src/harness/server.ts": 3747,
-    "src/harness/checks/ubs-language-specific.ts": 1809,
-    "src/harness/check-registry/entries-warnings.ts": 1763,
-    "src/harness/types.ts": 1737
-  }
+  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). `files` grandfathers offenders (repo-relative path -> recorded line count): a listed file may shrink or hold, but the harness blocks any edit that grows it and verify fails it. The list is currently EMPTY — every cappable file is under the cap (the four original offenders were decomposed 2026-05-18). Generated, test, and .d.ts files are exempt. To tighten, ratchet `max_lines` downward (1500 -> 1200 -> 1000); any file that then exceeds it must be added here or decomposed. Policy: src/harness/large-file-policy.ts.",
+  "files": {}
 }
