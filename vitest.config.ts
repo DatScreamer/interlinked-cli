@@ -5,13 +5,17 @@ export default defineConfig({
         globals: true,
         environment: "node",
         include: ["src/**/*.test.ts"],
-        testTimeout: 10_000,
-        // Several tests spawn real `npx biome` / `tsc` subprocesses. Under
-        // parallel full-suite load, cold-start npx can overshoot the per-file
-        // diff-overlay budget, producing empty results that fail assertions.
-        // A global retry absorbs these rare transient flakes without masking
-        // real regressions — a genuinely broken test will still fail on every
-        // retry. Keep the value conservative so retry isn't a crutch.
+        // Integration tests spawn real `npx biome` / `tsc` / CLI subprocesses.
+        // Under the worker-capped full-suite run (see `poolOptions` below) a
+        // cold start can take tens of seconds, so vitest's 10s default
+        // produced timeout flakes that reddened `CI=1 npm test`. A 30s floor
+        // gives ~3x headroom; genuinely-heavier cases keep explicit per-test
+        // overrides (e.g. write.test.ts at 60s). hookTimeout matches so a slow
+        // `beforeAll`/`afterAll` (biome warm-up, fixture I/O) is covered too.
+        testTimeout: 30_000,
+        hookTimeout: 30_000,
+        // A global retry absorbs rare transient flakes without masking real
+        // regressions — a genuinely broken test still fails on every retry.
         retry: 2,
         // Test isolation for the distilled-rules layer: the per-developer
         // `.interlinked/distilled-rules.json` (output of `/enforce`) varies

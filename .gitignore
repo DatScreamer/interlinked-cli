@@ -76,6 +76,7 @@ reference-repos/
 # git status, add its specific name here (mirror the explicitness of the
 # entries below — don't use blanket `src/lib/_*` because that pattern
 # also matches `src/lib/__tests__/`).
+src/lib/_content_gate_fixtures/
 src/lib/_gate_inline_fixture.ts
 src/lib/_multi_edit_plumbing_*.ts
 src/lib/_write_integration/

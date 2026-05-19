@@ -15,7 +15,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	formatGateResult,
 	GATE_SEVERITY_ERROR,
@@ -40,22 +40,25 @@ export function identity<T>(x: T): T {
 }
 `;
 
-// Shared fixture lifecycle — all three describe blocks below rely on the
-// same on-disk fixture files. Lifting setup/teardown to the file level
-// keeps the `readOnDiskOrUndefined` check working when it runs in a
-// separate `describe` block.
+// Fixture lifecycle. `beforeAll` primes biome once — cold `npx biome` is
+// slow, so a throwaway run stabilises timing for the real assertions.
+// `beforeEach` then re-materialises all four fixtures before every test:
+// the dir is untracked and lives under src/lib, so across a long full-suite
+// run a concurrent test's working-tree cleanup can delete it out from under
+// a later `describe` block. Per-test rewrites keep every case hermetic.
 beforeAll(() => {
+	mkdirSync(FIXTURE_DIR, { recursive: true });
+	writeFileSync(CLEAN_FIXTURE, CLEAN_CONTENT);
+	gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
+		projectRoot: CLI_ROOT,
+	});
+});
+beforeEach(() => {
 	mkdirSync(FIXTURE_DIR, { recursive: true });
 	writeFileSync(CLEAN_FIXTURE, CLEAN_CONTENT);
 	writeFileSync(BIOME_FIXTURE, CLEAN_CONTENT);
 	writeFileSync(MIXED_FIXTURE_OK, CLEAN_CONTENT);
 	writeFileSync(MIXED_FIXTURE_BAD, CLEAN_CONTENT);
-	// Warm biome — under parallel test load, npx biome's cold-start can
-	// exceed the diff-overlay's per-file budget, surfacing as empty results.
-	// A priming run stabilises timing for the real assertions below.
-	gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
-		projectRoot: CLI_ROOT,
-	});
 });
 
 afterAll(() => {
