@@ -28,10 +28,19 @@
 // release-time / package-shape checks that don't gate the coding
 // loop, and always attach a one-line `reason`.
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	copyFileSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
 const CI_WORKFLOW = resolve(REPO_ROOT, ".github", "workflows", "ci.yml");
@@ -166,5 +175,176 @@ describe("CI ↔ pre-push pipeline parity", () => {
 				expect((step.reason as string).trim().length).toBeGreaterThan(0);
 			});
 		}
+	});
+});
+
+// ===========================================
+// pre-push hook — exit-status behavior
+// ===========================================
+//
+// Regression coverage for the bug where `git push` failed with a bare
+// "failed to push some refs" even though typecheck + tests passed.
+//
+// Root cause: the hook stashes the working tree and installs an EXIT
+// trap to restore it. The trap handler inherited `set -e` from the
+// gate region; once the repo had accumulated enough stashes, the
+// `git stash list | awk` pipeline inside the handler took SIGPIPE and
+// reported failure, which under `set -e` aborted the handler — and a
+// `set -e` abort inside an EXIT trap *overrides* the script's pending
+// `exit 0` with a non-zero status. git then rejected the push.
+//
+// These tests run the real hook against a throwaway repo with a
+// `file://` remote (no network, no flakiness) and stub the three slow
+// gates so the suite stays fast. The stash list is preloaded with many
+// entries — that is the condition that triggered the original bug, so
+// a regression here would resurface it.
+describe("pre-push hook exit-status behavior", () => {
+	let tmp: string;
+	let work: string;
+	let bare: string;
+
+	// Minimum stash count that reliably outlives `awk`'s early exit and
+	// makes the upstream `git stash list` take SIGPIPE. The real repo
+	// hit this naturally because every buggy run orphaned one stash.
+	const PRELOADED_STASHES = 40;
+
+	const git = (cwd: string, ...args: string[]): string =>
+		execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+
+	/** Build a package.json whose three gate scripts behave as given. */
+	const writePackageJson = (
+		dir: string,
+		gates: { typecheck: string; docs: string; test: string },
+	): void => {
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({
+				name: "pre-push-fixture",
+				version: "1.0.0",
+				scripts: {
+					"typecheck:stable": gates.typecheck,
+					"docs:check": gates.docs,
+					test: gates.test,
+				},
+			}),
+		);
+	};
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "interlinked-prepush-"));
+		work = join(tmp, "work");
+		bare = join(tmp, "remote.git");
+
+		execFileSync("git", ["init", "--bare", "-q", bare]);
+		execFileSync("git", ["init", "-q", work]);
+		git(work, "config", "user.email", "test@example.com");
+		git(work, "config", "user.name", "Test");
+		git(work, "config", "core.hooksPath", "scripts/git-hooks");
+		git(work, "remote", "add", "origin", `file://${bare}`);
+
+		// Install the real hook verbatim.
+		execFileSync("mkdir", ["-p", join(work, "scripts", "git-hooks")]);
+		copyFileSync(PRE_PUSH_HOOK, join(work, "scripts", "git-hooks", "pre-push"));
+		chmodSync(join(work, "scripts", "git-hooks", "pre-push"), 0o755);
+
+		// Initial commit, seeded to the remote with --no-verify so the
+		// hook only runs on the push under test.
+		writePackageJson(work, { typecheck: "true", docs: "true", test: "true" });
+		writeFileSync(join(work, "file.txt"), "base\n");
+		git(work, "add", "-A");
+		git(work, "commit", "-q", "-m", "initial");
+		git(work, "push", "-q", "--no-verify", "origin", "HEAD:refs/heads/main");
+
+		// Preload the stash stack — the bug-triggering condition.
+		for (let i = 0; i < PRELOADED_STASHES; i++) {
+			writeFileSync(join(work, "file.txt"), `stash-fill-${i}\n`);
+			git(work, "stash", "push", "-q", "-m", `preload-${i}`);
+		}
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	/** Stage a new commit (so there is something to push) and leave a
+	 *  dirty working-tree edit (so the hook's stash path triggers). */
+	const stageCommitAndDirty = (): void => {
+		writeFileSync(join(work, "file.txt"), "committed change\n");
+		git(work, "add", "file.txt");
+		git(work, "commit", "-q", "-m", "change to push");
+		writeFileSync(join(work, "file.txt"), "committed change\nworking-tree edit\n");
+	};
+
+	const push = (): { status: number; output: string } => {
+		const r = spawnSync("git", ["push", "origin", "HEAD:refs/heads/main"], {
+			cwd: work,
+			encoding: "utf-8",
+		});
+		return { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+	};
+
+	it("a passing gate allows the push (exit 0) despite a long stash list", () => {
+		// The exact original bug: gates pass, hook prints the success
+		// line, yet `git push` previously exited non-zero.
+		stageCommitAndDirty();
+		const before = git(work, "rev-parse", "HEAD");
+
+		const { status, output } = push();
+
+		expect(output).toContain("typecheck + tests pass");
+		expect(status).toBe(0);
+		// Push actually landed.
+		expect(git(work, "rev-parse", "origin/main")).toBe(before);
+	});
+
+	it("the stashed working-tree edit is restored after a passing push", () => {
+		stageCommitAndDirty();
+
+		expect(push().status).toBe(0);
+
+		// The dirty edit is back in the working tree, not orphaned.
+		expect(readFileSync(join(work, "file.txt"), "utf-8")).toContain("working-tree edit");
+		// The hook's own stash was popped — no net new stash entry.
+		const stashCount = git(work, "stash", "list").split("\n").filter(Boolean).length;
+		expect(stashCount).toBe(PRELOADED_STASHES);
+	});
+
+	it("a failing test gate still blocks the push (non-zero exit)", () => {
+		writePackageJson(work, {
+			typecheck: "true",
+			docs: "true",
+			test: "echo gate-failure; exit 1",
+		});
+		git(work, "add", "package.json");
+		git(work, "commit", "-q", "-m", "failing test gate");
+		writeFileSync(join(work, "file.txt"), "dirty\n");
+		const before = git(work, "rev-parse", "origin/main");
+
+		const { status, output } = push();
+
+		expect(status).not.toBe(0);
+		expect(output).toContain("tests failed");
+		// Push was rejected — origin/main did not move.
+		expect(git(work, "rev-parse", "origin/main")).toBe(before);
+		// Working tree still restored even on the failure path.
+		expect(readFileSync(join(work, "file.txt"), "utf-8")).toBe("dirty\n");
+	});
+
+	it("a failing typecheck gate still blocks the push (non-zero exit)", () => {
+		writePackageJson(work, {
+			typecheck: "echo type-error; exit 2",
+			docs: "true",
+			test: "true",
+		});
+		git(work, "add", "package.json");
+		git(work, "commit", "-q", "-m", "failing typecheck gate");
+		writeFileSync(join(work, "file.txt"), "dirty\n");
+		const before = git(work, "rev-parse", "origin/main");
+
+		const { status, output } = push();
+
+		expect(status).not.toBe(0);
+		expect(output).toContain("typecheck:stable failed");
+		expect(git(work, "rev-parse", "origin/main")).toBe(before);
 	});
 });

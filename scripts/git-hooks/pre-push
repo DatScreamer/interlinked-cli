@@ -68,11 +68,30 @@ if ! git diff --quiet 2>/dev/null \
 fi
 
 restore_stash() {
+	# This runs as an EXIT/INT/TERM trap handler. Disable errexit FIRST:
+	# the gate region below leaves `set -e` active, and a trap handler
+	# inherits it. Without this, the first command in here that returns
+	# non-zero (e.g. the `git stash list` pipeline taking SIGPIPE — see
+	# below) aborts the handler mid-function, AND — because a `set -e`
+	# abort inside an EXIT trap overrides the script's pending exit
+	# status — turns a successful `exit 0` into a non-zero exit. git then
+	# rejects the push with a bare "failed to push some refs" and no
+	# transport detail. `set +e` here is load-bearing, not cosmetic.
+	set +e
 	if [ "$HAS_STASH" -ne 1 ]; then return 0; fi
 	# Find by message tag — never reference @{0} because intervening git
 	# operations could shift the stack.
+	#
+	# No `exit` inside the awk: `git stash list | awk '...; exit'` makes
+	# awk close the pipe after the first match, so `git stash list` takes
+	# SIGPIPE and the pipeline reports failure once the stash list is
+	# long enough to outlive awk. Under the script's `set -o pipefail`
+	# that failure used to propagate. awk without `exit` drains the whole
+	# list; `tag_match` keeps only the first hit.
 	stash_ref=$(git stash list --format='%gd %gs' 2>/dev/null \
-		| awk -v tag="$STASH_TAG" 'index($0, tag) > 0 { print $1; exit }')
+		| awk -v tag="$STASH_TAG" \
+			'tag_match == "" && index($0, tag) > 0 { tag_match = $1 }
+			 END { print tag_match }')
 	if [ -z "$stash_ref" ]; then
 		echo "[pre-push] WARNING: stash with tag $STASH_TAG not found at restore time." >&2
 		echo "                   Recover with: git stash list  (look for $STASH_TAG)" >&2
@@ -84,8 +103,22 @@ restore_stash() {
 		echo "                     git stash list  (find $STASH_TAG)" >&2
 		echo "                     git stash apply <stash-ref>" >&2
 	fi
+	return 0
 }
-trap restore_stash EXIT INT TERM
+
+# Run restore_stash, then exit with the verdict the gate decided —
+# never with whatever status restore_stash happens to leave behind.
+# `exit 1` below is unreachable for a passing gate (every failure path
+# `exit 1`s before reaching here, before the trap is even relevant);
+# it is the safe default if this handler is ever reached on an
+# unexpected EXIT. PRE_PUSH_VERDICT is set to 0 immediately before the
+# script's own `exit 0`.
+PRE_PUSH_VERDICT=1
+on_exit() {
+	restore_stash
+	exit "$PRE_PUSH_VERDICT"
+}
+trap on_exit EXIT INT TERM
 
 echo "[pre-push] Running typecheck + tests (mirrors CI exactly)..."
 
@@ -140,4 +173,8 @@ if [ "$test_status" -ne 0 ]; then
 fi
 
 echo "[pre-push] ✓ typecheck + tests pass — pushing"
+# Record the passing verdict BEFORE `exit 0`. The EXIT trap (on_exit)
+# runs restore_stash and then `exit "$PRE_PUSH_VERDICT"` — so this
+# assignment, not the literal `exit 0`, is what git ultimately sees.
+PRE_PUSH_VERDICT=0
 exit 0
