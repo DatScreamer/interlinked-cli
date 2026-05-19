@@ -160,6 +160,7 @@ function emptyCq(): CodeQualityResults {
 		"hardcodedTimeoutInTests",
 		"testMissingSutImport",
 		"mockingTheSutSelf",
+		"testSubprocessDefaultTimeout",
 		// Batch 5: cross-file
 		"emptyBodyHandler",
 		"listenerPairing",

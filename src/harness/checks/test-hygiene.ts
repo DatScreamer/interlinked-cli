@@ -1,6 +1,6 @@
 // Test-file hygiene checks (Batch 2).
 //
-// Six inline detectors that fire only on test files. Each catches a
+// Seven inline detectors that fire only on test files. Each catches a
 // distinct test-suite-gaming or test-isolation failure mode common in
 // LLM-authored test code. All are <1ms regex-based.
 
@@ -275,4 +275,142 @@ export function checkMockingTheSutSelf(content: string, filePath: string): Inlin
 		m = SUT_MOCK_RE.exec(content);
 	}
 	return matches;
+}
+
+// ==========================================================================
+// 7. it() / test() spawning a known-slow subprocess with no explicit timeout
+// ==========================================================================
+// A vitest case whose callback shells out to a known-slow tool — `tsc`,
+// `biome`, `npx`, `tsx`, `eslint`, `vitest`, or the project's own CLI — but
+// relies on the default `testTimeout`. Under CI's worker cap a cold `tsc`
+// start can exceed the 10s default and intermittently redden the suite (see
+// the runPerFileChecks / write.test.ts / verify.test.ts pattern). An explicit
+// `{ timeout: N }` (options-object form) or a trailing numeric-timeout
+// argument suppresses the finding — that is the established fix.
+//
+// Deliberately scoped to KNOWN-SLOW invocations: spawning `tsc` is genuinely
+// slow, spawning `echo` is not, so a `child_process` call to a trivial
+// command does NOT fire — this keeps the false-positive rate low.
+
+// `it` / `test` (with the usual modifier chain), capturing only the call
+// opening. `specify` is intentionally excluded — vitest's slow-subprocess
+// flake is `it`/`test`, and `specify` carries no `{ timeout }` overload.
+const IT_TEST_OPEN_RE = /\b(it|test)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|sequential|failing))*\s*\(/g;
+
+// child_process spawn primitives. `exec`/`execFile`/`spawn` are matched with
+// a word boundary so member calls like `cp.execSync` and bare `execSync`
+// both hit; the leading boundary keeps `myExec(` from matching.
+const CHILD_PROCESS_SPAWN_RE =
+	/\b(?:execSync|spawnSync|execFileSync|execFile|exec|spawn)\s*\(/;
+
+// Known-slow tools. Each entry is matched as a shell token (start-of-string,
+// whitespace, or a quote boundary on the left; whitespace / end / quote on
+// the right) so `tsc` matches `npx tsc --noEmit` but not `tscfg` or a path
+// fragment like `artscript`.
+const SLOW_TOOL_RE =
+	/(?:^|["'`\s/])(?:tsc|tsgo|biome|npx|tsx|eslint|vitest|vite|interlinked)(?:["'`\s]|$)/;
+
+/** Public API — flags it()/test() spawning a slow subprocess with no explicit timeout. */
+export function checkTestSubprocessDefaultTimeout(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (!isTestFile(filePath)) return [];
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	// The check only makes sense when child_process is in play at all — a cheap
+	// pre-filter that skips the brace-matching scan for the common case.
+	if (!/child_process/.test(content)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const matches: InlineMatch[] = [];
+	const MAX_MATCHES = 5;
+
+	IT_TEST_OPEN_RE.lastIndex = 0;
+	let m: RegExpExecArray | null = IT_TEST_OPEN_RE.exec(stripped);
+	while (m !== null && matches.length < MAX_MATCHES) {
+		const callName = m[1];
+		// Index of the char right after the opening `(`.
+		const argsStart = m.index + m[0].length;
+		const span = findCallSpan(stripped, argsStart);
+		if (span === null) {
+			m = IT_TEST_OPEN_RE.exec(stripped);
+			continue;
+		}
+		// The body region — the original (un-stripped) text so we can read the
+		// real command-string contents to identify the slow tool.
+		const bodyOriginal = content.slice(argsStart, span.end);
+		const bodyStripped = stripped.slice(argsStart, span.end);
+
+		// A spawn call has to be present as real code (stripped view), and the
+		// slow-tool token has to be present in the original (string contents
+		// survive there). Both conditions guard against fixture-string FPs.
+		const spawnsSubprocess =
+			CHILD_PROCESS_SPAWN_RE.test(bodyStripped) && SLOW_TOOL_RE.test(bodyOriginal);
+		if (spawnsSubprocess && !hasExplicitTimeout(stripped, argsStart, span)) {
+			const lineIdx = (stripped.slice(0, m.index).match(/\n/g) || []).length;
+			matches.push({
+				line: lineIdx + 1,
+				text: `\`${callName}(...)\` spawns a known-slow subprocess (tsc / biome / npx / tsx / eslint / vitest / the CLI) but has no explicit timeout — under CI's worker cap a cold start can exceed the default testTimeout and flake. Pass an options object: \`${callName}(name, { timeout: 60_000 }, fn)\`.`,
+			});
+		}
+		m = IT_TEST_OPEN_RE.exec(stripped);
+	}
+	return matches;
+}
+
+/**
+ * Brace/paren-balanced span of an `it(...)` / `test(...)` call argument list.
+ * `from` is the index just inside the opening `(`. Returns the index of the
+ * matching close `)` plus the comma offsets at depth 0 (argument separators),
+ * or null if unbalanced (truncated file / regex artifact).
+ */
+function findCallSpan(
+	text: string,
+	from: number,
+): { end: number; topLevelCommas: number[] } | null {
+	let depth = 1; // already inside the `it(` paren
+	const topLevelCommas: number[] = [];
+	const MAX_SCAN = 20_000; // a single test block past this is pathological
+	const limit = Math.min(text.length, from + MAX_SCAN);
+	for (let i = from; i < limit; i++) {
+		const ch = text[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") {
+			depth--;
+			if (depth === 0) return { end: i, topLevelCommas };
+		} else if (ch === "," && depth === 1) {
+			topLevelCommas.push(i);
+		}
+	}
+	return null;
+}
+
+// An object literal carrying a `timeout:` key — the vitest options-object form
+// `it(name, { timeout: N }, fn)`.
+const TIMEOUT_OPTION_RE = /\{[^{}]*\btimeout\s*:/;
+// A trailing numeric (or numeric-separator) literal as the last argument:
+// `it(name, fn, 60_000)` / `it(name, fn, 30000)`.
+const TRAILING_NUMERIC_RE = /^\s*[0-9][0-9_]*\s*$/;
+
+/**
+ * True when an `it(...)` / `test(...)` call declares an explicit timeout —
+ * either the `{ timeout: N }` options-object argument or a trailing numeric
+ * timeout argument. Both are the documented vitest ways to override the
+ * default, so either one means the author opted in deliberately.
+ */
+function hasExplicitTimeout(
+	stripped: string,
+	argsStart: number,
+	span: { end: number; topLevelCommas: number[] },
+): boolean {
+	const argRegion = stripped.slice(argsStart, span.end);
+	// Options-object form: a `{ ... timeout: ... }` anywhere in the arg list.
+	if (TIMEOUT_OPTION_RE.test(argRegion)) return true;
+	// Trailing-numeric form: text of the final argument is a bare number.
+	if (span.topLevelCommas.length > 0) {
+		const lastComma = span.topLevelCommas[span.topLevelCommas.length - 1];
+		const lastArg = stripped.slice(lastComma + 1, span.end);
+		if (TRAILING_NUMERIC_RE.test(lastArg)) return true;
+	}
+	return false;
 }

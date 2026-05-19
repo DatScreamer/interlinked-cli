@@ -123,6 +123,7 @@ import {
 	checkTestMissingSutImport,
 	checkTestNondeterminism,
 	checkTestRegressions,
+	checkTestSubprocessDefaultTimeout,
 	checkThrowLiteral,
 	checkTimeFormatLocaleDep,
 	checkTlsVerifyDisabled,
@@ -993,6 +994,13 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	);
 	r.mockingTheSutSelf.push(
 		...toIssues("mocking_the_sut_self", relPath, checkMockingTheSutSelf(content, file)),
+	);
+	r.testSubprocessDefaultTimeout.push(
+		...toIssues(
+			"test_subprocess_default_timeout",
+			relPath,
+			checkTestSubprocessDefaultTimeout(content, file),
+		),
 	);
 
 	// === Batch 5: cross-file checks ===

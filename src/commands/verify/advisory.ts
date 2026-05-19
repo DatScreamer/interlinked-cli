@@ -326,6 +326,16 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// catches up; the silent_demo_fallback variant remains the higher-
 	// signal half of the demo-data system.
 	"demo_data_unmarked",
+	// test_subprocess_default_timeout: heuristic. Flags an it()/test() that
+	// spawns a known-slow subprocess (tsc/biome/npx/tsx/eslint/vitest/the CLI)
+	// without an explicit { timeout } — the flaky-test class fixed in the
+	// runPerFileChecks / write.test.ts / verify.test.ts wave. Heuristic because
+	// brace-matching can't model whether the slow tool actually runs on the
+	// hot path of the case (it may sit behind a skipped branch), and a generous
+	// suite-level testTimeout in vitest.config can make a per-case timeout
+	// redundant. Advisory per CLAUDE.md's heuristic-checks-go-advisory rule;
+	// promote once dogfood FP rate is measured.
+	"test_subprocess_default_timeout",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */

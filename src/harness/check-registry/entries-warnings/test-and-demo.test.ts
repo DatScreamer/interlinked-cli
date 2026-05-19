@@ -37,6 +37,7 @@ describe("TEST_AND_DEMO_ENTRIES", () => {
 			"hardcoded_timeout_in_tests",
 			"test_missing_sut_import",
 			"mocking_the_sut_self",
+			"test_subprocess_default_timeout",
 		]) {
 			expect(ids, `should include ${expected}`).toContain(expected);
 		}

@@ -6,6 +6,7 @@ import {
 	checkRealIoInTests,
 	checkTestMissingSutImport,
 	checkTestNondeterminism,
+	checkTestSubprocessDefaultTimeout,
 } from "./test-hygiene.js";
 
 const TEST = "src/lib/foo.test.ts";
@@ -189,5 +190,104 @@ describe("checkMockingTheSutSelf", () => {
 
 	it("does not fire in production source", () => {
 		expect(checkMockingTheSutSelf(`vi.mock("./foo");`, SRC)).toEqual([]);
+	});
+});
+
+describe("checkTestSubprocessDefaultTimeout", () => {
+	// --- positive: must fire ---
+	it("flags an it() that runs tsc via execSync with no timeout", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("typechecks the fixture", () => {',
+			'  const out = execSync("npx tsc --noEmit fixture.ts", { encoding: "utf8" });',
+			'  expect(out).toBe("");',
+			"});",
+		].join("\n");
+		const matches = checkTestSubprocessDefaultTimeout(code, TEST);
+		expect(matches.length).toBe(1);
+		expect(matches[0].text).toContain("known-slow subprocess");
+		expect(matches[0].line).toBe(2);
+	});
+
+	it("flags a test() that spawnSyncs biome with no timeout", () => {
+		const code = [
+			'import { spawnSync } from "node:child_process";',
+			'test("biome lints clean", async () => {',
+			'  const r = spawnSync("biome", ["check", "src"]);',
+			"  expect(r.status).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST).length).toBe(1);
+	});
+
+	it("flags an it() spawning the project CLI via execFileSync with no timeout", () => {
+		const code = [
+			'import { execFileSync } from "node:child_process";',
+			'it("interlinked verify exits clean", () => {',
+			'  execFileSync("interlinked", ["verify", "--json"]);',
+			"});",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST).length).toBe(1);
+	});
+
+	// --- negative: must NOT fire ---
+	it("does not fire when the it() already declares { timeout: N }", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("typechecks", { timeout: 60_000, retry: 2 }, () => {',
+			'  execSync("npx tsc --noEmit");',
+			"});",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire when the it() passes a trailing numeric timeout", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("typechecks", () => {',
+			'  execSync("npx tsc --noEmit");',
+			"}, 60000);",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire when the spawned command is trivially fast (echo)", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("echoes", () => {',
+			'  expect(execSync("echo hello").toString()).toContain("hello");',
+			"});",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire when the test spawns no subprocess at all", () => {
+		const code = [
+			'import { add } from "./foo.js";',
+			'it("adds", () => { expect(add(1, 2)).toBe(3); });',
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire in production (non-test) source", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'export function build() { execSync("npx tsc --noEmit"); }',
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, SRC)).toEqual([]);
+	});
+
+	it("does not fire when the slow command only appears inside a string fixture", () => {
+		// A test that embeds example code as a string fixture must not be
+		// mistaken for one that actually shells out — the execSync token is
+		// data here, not a real call.
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("documents the command", () => {',
+			'  const example = "execSync(npx tsc --noEmit)";',
+			'  expect(example).toContain("tsc");',
+			"});",
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
 	});
 });

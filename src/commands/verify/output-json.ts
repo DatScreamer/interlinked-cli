@@ -279,13 +279,14 @@ export function outputJson(args: OutputJsonArgs): void {
 		fetch_without_timeout: summarizeWithDetails(cq.fetchWithoutTimeout),
 		unbounded_promise_all: summarizeWithDetails(cq.unboundedPromiseAll),
 		sync_io_on_hot_path: summarizeWithDetails(cq.syncIoOnHotPath),
-		// === Batch 2: test-hygiene (6 entries) ===
+		// === Batch 2: test-hygiene (7 entries) ===
 		duplicate_test_names: summarizeWithDetails(cq.duplicateTestNames),
 		real_io_in_tests: summarizeWithDetails(cq.realIoInTests),
 		test_nondeterminism: summarizeWithDetails(cq.testNondeterminism),
 		hardcoded_timeout_in_tests: summarizeWithDetails(cq.hardcodedTimeoutInTests),
 		test_missing_sut_import: summarizeWithDetails(cq.testMissingSutImport),
 		mocking_the_sut_self: summarizeWithDetails(cq.mockingTheSutSelf),
+		test_subprocess_default_timeout: summarizeWithDetails(cq.testSubprocessDefaultTimeout),
 		// === Batch 5: cross-file (4 entries) ===
 		empty_body_handler: summarizeWithDetails(cq.emptyBodyHandler),
 		listener_pairing: summarizeWithDetails(cq.listenerPairing),

@@ -70,6 +70,7 @@ export {
 	checkRealIoInTests,
 	checkTestMissingSutImport,
 	checkTestNondeterminism,
+	checkTestSubprocessDefaultTimeout,
 } from "./checks/test-hygiene.js";
 // ---- cross-file (Batch 5) ----
 export {

@@ -1145,6 +1145,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		passLabel: "no SUT-self mocks",
 		color: "31",
 	},
+	{
+		label: "test subprocess without timeout",
+		key: "testSubprocessDefaultTimeout",
+		noun: "it() / test() spawning a slow subprocess (tsc / biome / npx / tsx / eslint / vitest / CLI) with no explicit timeout",
+		passLabel: "no slow-subprocess tests without an explicit timeout",
+		color: "33",
+	},
 	// === Batch 5: cross-file ===
 	{
 		label: "empty-body handler",

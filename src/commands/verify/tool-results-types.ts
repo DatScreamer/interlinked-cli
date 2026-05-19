@@ -256,6 +256,8 @@ export interface CodeQualityResults {
 	testMissingSutImport: CodeQualityIssue[];
 	/** vi.mock / jest.mock targeting the file under test from inside its own test. */
 	mockingTheSutSelf: CodeQualityIssue[];
+	/** it() / test() spawning a known-slow subprocess with no explicit timeout. */
+	testSubprocessDefaultTimeout: CodeQualityIssue[];
 	// === Batch 5: cross-file (4 entries) ===
 	/** Handler-named functions with empty / no-op bodies. */
 	emptyBodyHandler: CodeQualityIssue[];
@@ -442,6 +444,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"hardcodedTimeoutInTests",
 	"testMissingSutImport",
 	"mockingTheSutSelf",
+	"testSubprocessDefaultTimeout",
 	// Batch 5: cross-file
 	"emptyBodyHandler",
 	"listenerPairing",

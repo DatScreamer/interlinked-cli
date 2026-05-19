@@ -311,6 +311,8 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"test_missing_sut_import",
 				"test_nondeterminism",
 				"demo_data_unmarked",
+				// Test-hygiene heuristic — slow-subprocess flake detector.
+				"test_subprocess_default_timeout",
 			].sort(),
 		);
 	});

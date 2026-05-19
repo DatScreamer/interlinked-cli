@@ -823,6 +823,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	test_subprocess_default_timeout: {
+		name: "Test Spawns Slow Subprocess Without Timeout",
+		description:
+			"Detects it() / test() callbacks that spawn a known-slow subprocess (tsc, biome, npx, tsx, eslint, vitest, the project CLI) via node:child_process exec/spawn primitives with no explicit `{ timeout: N }` options object or trailing numeric-timeout argument.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries)
 	// ========================================================================

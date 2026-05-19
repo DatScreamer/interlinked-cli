@@ -20,6 +20,7 @@ import {
 	checkSilentDemoFallback,
 	checkTestMissingSutImport,
 	checkTestNondeterminism,
+	checkTestSubprocessDefaultTimeout,
 } from "../../generic-checks.js";
 import type { CheckRegistration } from "../types.js";
 
@@ -116,6 +117,21 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 			"A test that mocks its own SUT is testing the mock, not the code. Either remove the `vi.mock(./foo)` and let the real implementation run, or rename the test file (e.g., `foo-integration.test.ts`) so it's clearly testing the contract some other consumer has with `./foo`. Mocking `./foo` inside `foo.test.ts` is almost always the agent silencing a failing test rather than fixing it.",
 		fn: checkMockingTheSutSelf,
 		resultsPropName: "mockingTheSutSelf",
+	},
+	{
+		id: "test_subprocess_default_timeout",
+		phase: "post",
+		name: "Test Spawns Slow Subprocess Without Timeout",
+		description:
+			"Detects `it()` / `test()` callbacks that spawn a known-slow subprocess (tsc, biome, npx, tsx, eslint, vitest, the project CLI) via node:child_process exec/spawn primitives with no explicit `timeout` — neither the `{ timeout: N }` options-object form nor a trailing numeric-timeout argument.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A test that shells out to tsc / biome / npx / tsx / eslint / vitest / the CLI but relies on the default `testTimeout` flakes under CI's worker cap — a cold tsc start alone can exceed the 10s default. Pass an explicit timeout via the vitest options object: `it(name, { timeout: 60_000, retry: 2 }, fn)`. The trailing-numeric form `it(name, fn, 60_000)` also works. Match the established pattern in write.test.ts / verify.test.ts.",
+		fn: checkTestSubprocessDefaultTimeout,
+		resultsPropName: "testSubprocessDefaultTimeout",
 	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries; new-export orphan deferred)
