@@ -112,7 +112,7 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 				const hookCommand = buildHookCommand(binaryPath, "claude-code", event);
 				hooks[event] = [
 					{
-						matcher: event === "PostToolUse" ? "Edit|Write|MultiEdit" : "",
+						matcher: "",
 						hooks: [{ type: "command", command: hookCommand }],
 					},
 				];

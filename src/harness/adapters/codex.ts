@@ -57,11 +57,10 @@ const NATIVE_EVENTS = [
 	EVT_STOP,
 ] as const;
 
-// PostToolUse matcher — scope to mutating tools only, mirroring the
-// Claude+Gemini installers. The hook still receives every PostToolUse
-// matching this regex; it's just that read-only tools (Read, Grep,
-// Bash without writes) don't trigger it.
-const POST_TOOL_USE_MATCHER = "Edit|Write|MultiEdit|apply_patch";
+// PostToolUse matcher — empty string matches all tools. The hook script
+// itself fast-paths non-mutation tools internally, so the provider-level
+// matcher must be empty to let all events through to the collection layer.
+const POST_TOOL_USE_MATCHER = "";
 
 // Decision verbs as named constants — used both to choose the encoder
 // branch in encodeDecision and to populate the JSON shape on stdout.

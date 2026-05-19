@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import {
 	COPILOT_HOOK_EVENTS,
 	CURSOR_HOOK_EVENTS,
 	GEMINI_HOOK_EVENTS,
+	installAllClaudeHooks,
 	installCodexHooks,
 	installCopilotHooks,
 	installCursorHooks,
@@ -264,7 +266,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		expect(statSync(tomlPath).mtimeMs).toBe(sentinel.getTime());
 	});
 
-	it("removes interlinked entries on uninstall", () => {
+	it("removes Codex interlinked entries on uninstall", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const changed = uninstallCodexHooks(tmp);
 		expect(changed).toBe(true);
@@ -284,7 +286,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		expect(tomlAfter).toBe(tomlBefore);
 	});
 
-	it("uninstall is a no-op when file is missing", () => {
+	it("Codex uninstall is a no-op when file is missing", () => {
 		expect(uninstallCodexHooks(tmp)).toBe(false);
 	});
 });
@@ -313,5 +315,118 @@ describe("installCursorHooks / uninstallCursorHooks", () => {
 		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		expect(uninstallCursorHooks(tmp)).toBe(true);
 		expect(existsSync(join(tmp, ".cursor", "hooks.json"))).toBe(false);
+	});
+});
+
+// ===========================================
+// Matcher Reconciliation — Step 1 of collection layer
+// ===========================================
+// installHookEntry must update stale PostToolUse matchers to "" (all-tool
+// capture) when re-running installation. Without this, non-edit tools
+// (Read, Bash, Grep, WebFetch) never reach the hook at PostToolUse.
+
+describe("matcher reconciliation — Claude Code", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "matcher-reconcile-"));
+		execSync("git init", { cwd: tmp, stdio: "ignore" });
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("rewrites stale PostToolUse matcher from Edit|Write|MultiEdit to empty", () => {
+		const settingsDir = join(tmp, ".claude");
+		mkdirSync(settingsDir, { recursive: true });
+		const staleMatcher = "Edit|Write|MultiEdit";
+		const staleSettings = {
+			hooks: {
+				PostToolUse: [
+					{
+						matcher: staleMatcher,
+						hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
+					},
+				],
+			},
+		};
+		writeFileSync(join(settingsDir, "settings.json"), JSON.stringify(staleSettings, null, 2));
+
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+
+		const updated = JSON.parse(readFileSync(join(settingsDir, "settings.json"), "utf-8"));
+		const postToolUse = updated.hooks.PostToolUse;
+		expect(Array.isArray(postToolUse)).toBe(true);
+		expect(postToolUse).toHaveLength(1);
+		expect(postToolUse[0].matcher).toBe("");
+	});
+
+	it("leaves PreToolUse matcher as empty (no scoped restriction)", () => {
+		const settingsDir = join(tmp, ".claude");
+		mkdirSync(settingsDir, { recursive: true });
+		writeFileSync(
+			join(settingsDir, "settings.json"),
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [
+						{
+							matcher: "",
+							hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
+						},
+					],
+				},
+			}),
+		);
+
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+
+		const updated = JSON.parse(readFileSync(join(settingsDir, "settings.json"), "utf-8"));
+		expect(updated.hooks.PreToolUse[0].matcher).toBe("");
+	});
+
+	it("does not regress PostToolUse matcher back to mutation-only", () => {
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const first = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
+		expect(first.hooks.PostToolUse[0].matcher).toBe("");
+
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const second = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
+		expect(second.hooks.PostToolUse[0].matcher).toBe("");
+	});
+});
+
+describe("matcher reconciliation — Codex", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "matcher-reconcile-codex-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("rewrites stale Codex PostToolUse matcher to empty", () => {
+		const codexDir = join(tmp, ".codex");
+		mkdirSync(codexDir, { recursive: true });
+		const staleHooks = {
+			hooks: {
+				PostToolUse: [
+					{
+						matcher: "Edit|Write|MultiEdit|apply_patch",
+						hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
+					},
+				],
+			},
+		};
+		writeFileSync(join(codexDir, "hooks.json"), JSON.stringify(staleHooks, null, 2));
+
+		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+
+		const updated = JSON.parse(readFileSync(join(codexDir, "hooks.json"), "utf-8"));
+		const postToolUse = updated.hooks.PostToolUse;
+		expect(Array.isArray(postToolUse)).toBe(true);
+		expect(postToolUse[0].matcher).toBe("");
 	});
 });

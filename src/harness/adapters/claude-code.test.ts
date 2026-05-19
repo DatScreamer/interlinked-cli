@@ -101,15 +101,31 @@ describe("Claude Code renderSettingsFragment", () => {
 	it("uses array-append for hook merge", () => {
 		expect(frag.mergeStrategy).toBe("array-append");
 	});
-	it("includes PostToolUse with a scoped matcher", () => {
+	it("includes PostToolUse with an empty matcher (match all tools)", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
 		};
-		expect(fragment.hooks.PostToolUse[0].matcher).toBe("Edit|Write|MultiEdit");
+		expect(fragment.hooks.PostToolUse[0].matcher).toBe("");
 		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("--runner 'claude-code'");
 		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("--event 'PostToolUse'");
 		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("if test -f");
 		expect(fragment.hooks.PostToolUse[0].hooks[0].command).not.toContain("|| true");
+	});
+
+	it("uses empty matcher for PreToolUse as well", () => {
+		const fragment = frag.fragment as {
+			hooks: Record<string, Array<{ matcher: string }>>;
+		};
+		expect(fragment.hooks.PreToolUse[0].matcher).toBe("");
+	});
+
+	it("uses empty matcher for all events", () => {
+		const fragment = frag.fragment as {
+			hooks: Record<string, Array<{ matcher: string }>>;
+		};
+		for (const eventName of Object.keys(fragment.hooks)) {
+			expect(fragment.hooks[eventName][0].matcher).toBe("");
+		}
 	});
 });
 
