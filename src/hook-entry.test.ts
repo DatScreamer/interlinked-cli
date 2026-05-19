@@ -272,7 +272,7 @@ describe("runHookEntry — end-to-end with real daemon", () => {
 });
 
 describe("runHookEntry — cold fallback on daemon absence", () => {
-	it("never blocks when socket is missing", async () => {
+	it("allows a benign tool call when the socket is missing", async () => {
 		const result = await runHookEntry({
 			nativeEventName: "PreToolUse",
 			nativeJson: {
@@ -291,6 +291,68 @@ describe("runHookEntry — cold fallback on daemon absence", () => {
 		// model-visible PreToolUse additionalContext.
 		expect(result.exit_code).toBe(0);
 		expect(result.stdout).toBeUndefined();
+		expect(result.stderr).toContain("evaluator skipped");
+	});
+
+	it("blocks a destructive bash command when the socket is missing", async () => {
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "none",
+				cwd: tmp,
+				tool_name: "Bash",
+				tool_input: { command: "rm -rf /" },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath: join(tmp, "nope.sock"),
+		});
+		expect(result.fell_back).toBe(true);
+		// The cold path runs the shared destructive-command guard, so `rm -rf /`
+		// is blocked even with the daemon unreachable — the fail-closed floor.
+		expect(result.stderr).toContain("destructive-command fail-closed gate engaged");
+		expect(result.stdout).toBeTruthy();
+	});
+
+	it("blocks a destructive shell_command (Cursor) when the socket is missing", async () => {
+		const result = await runHookEntry({
+			nativeEventName: "beforeShellExecution",
+			nativeJson: {
+				session_id: "none",
+				cwd: tmp,
+				command: "rm -rf /",
+			},
+			env: {},
+			runner: "cursor",
+			cwd: tmp,
+			socketPath: join(tmp, "nope.sock"),
+		});
+		expect(result.fell_back).toBe(true);
+		// Cursor's beforeShellExecution produces a shell_command action — the cold
+		// fallback must still engage the destructive-command guard on it.
+		expect(result.stderr).toContain("destructive-command fail-closed gate engaged");
+		expect(result.stdout).toBeTruthy();
+	});
+
+	it("allows a benign shell_command (Cursor) when the socket is missing", async () => {
+		const result = await runHookEntry({
+			nativeEventName: "beforeShellExecution",
+			nativeJson: {
+				session_id: "none",
+				cwd: tmp,
+				command: "ls",
+			},
+			env: {},
+			runner: "cursor",
+			cwd: tmp,
+			socketPath: join(tmp, "nope.sock"),
+		});
+		expect(result.fell_back).toBe(true);
+		expect(result.exit_code).toBe(0);
+		// Cursor's adapter emits {"permission":"allow"} on stdout for gated
+		// events (beforeShellExecution), unlike Claude Code which returns undefined.
+		expect(result.stdout).toContain("allow");
 		expect(result.stderr).toContain("evaluator skipped");
 	});
 });

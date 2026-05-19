@@ -15,6 +15,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkDestructiveCommand } from "./lib/hook-template-chunks/destructive-command-guard.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
@@ -43,6 +44,7 @@ const PHASE_PRE_TOOL = "pre-tool";
 
 // Discriminator values for UnifiedAction. Same rationale as above.
 const ACTION_TOOL_CALL = "tool_call";
+const ACTION_SHELL_COMMAND = "shell_command";
 const ACTION_FILE_OPERATION = "file_operation";
 
 export interface HookEntryOptions {
@@ -470,6 +472,46 @@ function coldMergeConflictBlockReason(event: UnifiedHookEvent): string | null {
 	);
 }
 
+// Shell-command tool names across runners — normalized (Claude Code
+// lowercases via normalizeToolName, Cursor lowercases) and raw forms.
+// Over-inclusion is harmless: a non-shell tool here simply has no
+// `.command` and yields null.
+const COLD_BASH_TOOL_NAMES = new Set([
+	"bash",
+	"Bash",
+	"shell",
+	"Shell",
+	"run_command",
+	"local_shell",
+]);
+
+/** Cold fail-closed gate: refuse a destructive shell command (`rm -rf`,
+ *  force push, `DROP TABLE`, ...) when the daemon is unreachable. Runs the
+ *  SAME `checkDestructiveCommand` the generated .mjs hook runs inline as its
+ *  primary guard, so the two hook paths block the identical set — daemon up
+ *  or down. Returns the block reason, or null when the command is benign. */
+function coldDestructiveCommandBlockReason(event: UnifiedHookEvent): string | null {
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	const action = event.action;
+
+	let command = "";
+	if (action.kind === ACTION_SHELL_COMMAND) {
+		// Cursor's beforeShellExecution produces shell_command actions with the
+		// command string directly on `action.command` — no tool_name gating needed.
+		command = action.command;
+	} else if (action.kind === ACTION_TOOL_CALL) {
+		if (!COLD_BASH_TOOL_NAMES.has(action.tool_name)) return null;
+		const ti = (action.tool_input ?? {}) as { command?: unknown };
+		command = typeof ti.command === "string" ? ti.command : "";
+	} else {
+		return null;
+	}
+
+	if (!command) return null;
+	const verdict = checkDestructiveCommand(command);
+	return verdict ? verdict.reason : null;
+}
+
 function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
@@ -512,6 +554,21 @@ function encodeColdFallback(
 		};
 		const blockOutput = adapter.encodeDecision(blockDecision, event);
 		const notice = `[interlinked] ${reason}; graph-shard fail-closed gate engaged\n`;
+		return {
+			stdout: blockOutput.stdout,
+			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
+			exit_code: blockOutput.exit_code,
+			fell_back: true,
+		};
+	}
+	const destructiveReason = coldDestructiveCommandBlockReason(event);
+	if (destructiveReason) {
+		const blockDecision: HarnessDecision = {
+			decision: "block",
+			reason: destructiveReason,
+		};
+		const blockOutput = adapter.encodeDecision(blockDecision, event);
+		const notice = `[interlinked] ${reason}; destructive-command fail-closed gate engaged\n`;
 		return {
 			stdout: blockOutput.stdout,
 			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
