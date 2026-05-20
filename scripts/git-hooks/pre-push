@@ -25,6 +25,7 @@ zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 
 protected_branch_re='^(main|master)$'
 should_run=0
+docs_only=1
 while read -r local_ref local_sha remote_ref remote_sha; do
 	[ -z "$local_ref" ] && continue
 	# Deletion: local_sha is all-zeros. Skip.
@@ -33,10 +34,45 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 	branch_short="${remote_ref##refs/heads/}"
 	if [[ "$branch_short" =~ $protected_branch_re ]]; then
 		should_run=1
+		# Docs-only fast-path: if the net diff being pushed to a protected
+		# branch touches only Markdown files, skip the typecheck + test gate
+		# (which would otherwise stash the working tree — racy under
+		# parallel agents — and burn ~4 minutes to test code that isn't
+		# changing). CI still runs on the pushed commit. Force-push that
+		# rewrites history with non-md changes is still detected because
+		# we look at the net `remote..local` diff.
+		#
+		# Any uncertainty falls back to the full gate: a new branch (no
+		# remote_sha), a shallow / pruned clone where `git diff` can't
+		# reach the remote_sha, or an empty diff. Better to spend the
+		# 4 minutes than to let a code push through unverified — the
+		# whole point of the gate is to catch CI failures BEFORE the
+		# push, not to optimize the push experience.
+		if [ "$remote_sha" = "$zero" ]; then
+			# New branch being created on the remote — no diff base.
+			docs_only=0
+		elif diff_files="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)"; then
+			# `git diff` exited 0. Empty diff or any non-md file → full gate.
+			# Otherwise (every changed path ends in .md) leave docs_only=1.
+			if [ -z "$diff_files" ] \
+				|| printf '%s\n' "$diff_files" | grep -qvE '\.md$'; then
+				docs_only=0
+			fi
+		else
+			# `git diff` failed — typically a shallow / pruned clone where
+			# remote_sha is no longer reachable locally. We have no idea
+			# what's actually being pushed, so don't trust the fast-path.
+			docs_only=0
+		fi
 	fi
 done
 
 if [ "$should_run" -eq 0 ]; then
+	exit 0
+fi
+
+if [ "$docs_only" -eq 1 ]; then
+	echo "[pre-push] Push is Markdown-only — skipping typecheck + tests (CI still runs)."
 	exit 0
 fi
 
