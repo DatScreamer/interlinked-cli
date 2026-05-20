@@ -162,6 +162,204 @@ export function checkFunctionArity(content: string, filePath: string): InlineMat
 }
 
 /**
+ * Detect function signatures with a positional optional boolean parameter.
+ *
+ * `function setUser(name: string, force?: boolean)` — callers write
+ * `setUser("alice", true)` and a cold reader can't tell what `true` means
+ * without jumping to the definition. This is the signature-side twin of
+ * `checkBooleanTrap`, which fires at call sites with 2+ literal booleans.
+ * The signature-level catch is broader: a single positional optional
+ * boolean is still opaque at every call site, even when only one bool is
+ * passed.
+ *
+ * Fires on three shapes:
+ *   - `flag?: boolean`              (TS optional marker)
+ *   - `flag: boolean = false`       (typed default)
+ *   - `flag = false`                (inferred default)
+ *
+ * Skips:
+ *   - Booleans inside an options-object parameter (`opts: { flag?: boolean }`)
+ *     — splitTopLevelParams treats the object as one param.
+ *   - Required positional booleans (`flag: boolean`) — checkBooleanTrap
+ *     catches the multi-arg form at call sites.
+ *   - Union types (`flag?: boolean | null`) — kept narrow to avoid FP on
+ *     genuinely tri-state configs.
+ *   - Test files, non-JS/TS files.
+ */
+export function checkPositionalOptionalBoolean(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (![".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const trimmed = strippedLines[i].trim();
+		if (!JS_TS_FUNC_PATTERNS.some((pat) => pat.test(trimmed))) continue;
+
+		const sig = collectFunctionSignature(strippedLines, i);
+		const paramStr = extractParamStr(sig);
+		if (paramStr === null) continue;
+
+		const params = splitTopLevelParams(paramStr);
+		for (const raw of params) {
+			const offender = findPositionalOptionalBoolean(raw);
+			if (offender !== null) {
+				matches.push({
+					line: i + 1,
+					text: `[positional optional boolean: ${offender}] ${originalLines[i].trim().slice(0, 120)}`,
+				});
+				break; // one match per function is enough
+			}
+		}
+	}
+
+	return matches;
+}
+
+/**
+ * Detect function signatures with 3+ optional parameters.
+ *
+ * Each optional param doubles the call-shape surface: N optionals = 2^N
+ * call shapes that nobody tests in combination, and a default change is a
+ * silent semantic API break. The cure is an options object — one param,
+ * named fields, defaults visible at the schema level.
+ *
+ * "Optional" = `?:` (TS optional marker) OR `=` default value at top level
+ * within the param's expression. Rest params (`...args`) are excluded —
+ * one rest is a single knob (variadic), not a combinatorial knob.
+ *
+ * Skips: test files, non-JS/TS files. Distinct from `checkFunctionArity`,
+ * which counts total params regardless of optionality.
+ */
+export function checkManyOptionalParams(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (![".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const trimmed = strippedLines[i].trim();
+		if (!JS_TS_FUNC_PATTERNS.some((pat) => pat.test(trimmed))) continue;
+
+		const sig = collectFunctionSignature(strippedLines, i);
+		const paramStr = extractParamStr(sig);
+		if (paramStr === null) continue;
+
+		const params = splitTopLevelParams(paramStr);
+		const optionalCount = params.filter((p) => isOptionalParam(p)).length;
+		if (optionalCount >= 3) {
+			matches.push({
+				line: i + 1,
+				text: `[${optionalCount} optional params → consider options object] ${originalLines[i].trim().slice(0, 100)}`,
+			});
+		}
+	}
+
+	return matches;
+}
+
+// === Shared helpers: positional_optional_boolean + many_optional_params ===
+
+const JS_TS_FUNC_PATTERNS: RegExp[] = [
+	/(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(/,
+	/(?:export\s+)?(?:const|let|var)\s+(\w+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s+)?\(/,
+];
+
+/** Extract the (...) body from a collected function signature. Skips a leading <generic> block. */
+function extractParamStr(sig: string): string | null {
+	let angleDepth = 0;
+	let start = -1;
+	for (let i = 0; i < sig.length; i++) {
+		const ch = sig[i];
+		if (ch === "<") angleDepth++;
+		else if (ch === ">") angleDepth--;
+		else if (ch === "(" && angleDepth === 0) {
+			start = i;
+			break;
+		}
+	}
+	if (start === -1) return null;
+	let depth = 0;
+	for (let i = start; i < sig.length; i++) {
+		const ch = sig[i];
+		if (ch === "(") depth++;
+		else if (ch === ")") {
+			depth--;
+			if (depth === 0) return sig.slice(start + 1, i);
+		}
+	}
+	return null;
+}
+
+/** Split a parameter string at top-level commas, respecting <>(){}[]. */
+function splitTopLevelParams(paramStr: string): string[] {
+	const result: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < paramStr.length; i++) {
+		const ch = paramStr[i];
+		if (ch === "<" || ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ">" || ch === ")" || ch === "}" || ch === "]") depth--;
+		else if (ch === "," && depth === 0) {
+			result.push(paramStr.slice(start, i));
+			start = i + 1;
+		}
+	}
+	result.push(paramStr.slice(start));
+	return result.map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
+/** Return the param name if this is a positional optional boolean, else null. */
+function findPositionalOptionalBoolean(param: string): string | null {
+	const stripped = param.replace(/^(public|private|protected|readonly|static)\s+/, "").trim();
+	if (stripped.startsWith("{") || stripped.startsWith("[") || stripped.startsWith("...")) {
+		return null;
+	}
+	const idMatch = stripped.match(/^(\w+)([\s\S]*)$/);
+	if (!idMatch) return null;
+	const name = idMatch[1];
+	const rest = idMatch[2].trim();
+	// `?: boolean` (no union — narrow to avoid FP on tri-state configs)
+	if (/^\?\s*:\s*boolean\s*$/.test(rest)) return name;
+	// `: boolean = (true|false)`
+	if (/^:\s*boolean\s*=\s*(?:true|false)\s*$/.test(rest)) return name;
+	// `= (true|false)` (no annotation — TS infers boolean from literal)
+	if (/^=\s*(?:true|false)\s*$/.test(rest)) return name;
+	return null;
+}
+
+/** True if a param string is optional (TS `?:` marker or top-level `=` default). Rest params excluded. */
+function isOptionalParam(param: string): boolean {
+	const stripped = param.replace(/^(public|private|protected|readonly|static)\s+/, "").trim();
+	if (stripped.startsWith("...")) return false;
+	let depth = 0;
+	for (let i = 0; i < stripped.length; i++) {
+		const ch = stripped[i];
+		if (ch === "<" || ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ">" || ch === ")" || ch === "}" || ch === "]") depth--;
+		else if (depth === 0) {
+			if (ch === "?" && stripped[i + 1] === ":") return true;
+			// `=` (default) — but not `=>` (arrow type) or `==` (comparison, shouldn't appear in a param)
+			if (ch === "=" && stripped[i + 1] !== ">" && stripped[i + 1] !== "=") return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Detect variable declarations with semantically empty names.
  * Names like `data`, `result`, `temp`, `val` carry no information about
  * what they hold — the reader must infer from context.
@@ -405,6 +603,12 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
  * Skips: barrel/index files (mostly re-exports), .d.ts, test files, generated files.
  * Only counts value exports (functions, classes, consts) — type-only exports don't count.
  */
+// God-file thresholds (kept inline so the heuristic is auditable in one place).
+const GOD_FILE_MIN_LINES = 300;
+const GOD_FILE_MIN_VALUE_EXPORTS = 5;
+const GOD_FILE_EXPORTS_X_LINES_THRESHOLD = 3000;
+const GOD_FILE_BARREL_REEXPORT_RATIO = 0.8;
+
 export function checkGodFile(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
 	if (filePath.endsWith(".d.ts")) return [];
@@ -413,7 +617,7 @@ export function checkGodFile(content: string, filePath: string): InlineMatch[] {
 
 	const lines = content.split("\n");
 	const lineCount = lines.length;
-	if (lineCount < 300) return [];
+	if (lineCount < GOD_FILE_MIN_LINES) return [];
 
 	// Skip generated files
 	const header = lines.slice(0, 5).join("\n");
@@ -444,12 +648,18 @@ export function checkGodFile(content: string, filePath: string): InlineMatch[] {
 		}
 	}
 
-	// Skip barrel files (>80% re-exports)
+	// Skip barrel files: re-exports dominate the file. `totalExports > 0` guards
+	// the division — checked before reaching the ratio comparison.
 	const totalExports = valueExportCount + reExportCount;
-	if (totalExports > 0 && reExportCount / totalExports > 0.8) return [];
+	if (
+		totalExports > 0 &&
+		reExportCount / totalExports > GOD_FILE_BARREL_REEXPORT_RATIO
+	) {
+		return [];
+	}
 
-	if (valueExportCount < 5) return [];
-	if (valueExportCount * lineCount <= 3000) return [];
+	if (valueExportCount < GOD_FILE_MIN_VALUE_EXPORTS) return [];
+	if (valueExportCount * lineCount <= GOD_FILE_EXPORTS_X_LINES_THRESHOLD) return [];
 
 	return [
 		{

@@ -40,6 +40,20 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	positional_optional_boolean: {
+		name: "Positional Optional Boolean",
+		description:
+			"Signature-side twin of boolean_trap — flags function declarations with a positional optional boolean (`flag?: boolean`, `flag: boolean = false`, `flag = false`). Every call site is unreadable; move the bool into an options object or a string-literal union.",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	many_optional_params: {
+		name: "Many Optional Params",
+		description:
+			"Detects signatures with 3+ optional parameters (`?:` markers + `=` defaults). Each optional doubles call-shape surface and a default change is a silent semantic API break. Move them into an options object.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	same_typed_primitive_params: {
 		name: "Same-Typed Primitive Params",
 		description:

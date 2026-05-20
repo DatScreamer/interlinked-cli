@@ -139,6 +139,8 @@ through `check-registry/entries-warnings.ts` (or `entries-errors.ts` for
 | `circular_imports` | post | warning | advisory |
 | `lifecycle_cleanup` | post | warning | advisory |
 | `default_export` | post | warning | advisory |
+| `positional_optional_boolean` | post | warning | advisory |
+| `many_optional_params` | post | warning | advisory |
 
 Advisory checks only run under `verify --all-checks`; default-gate ones run
 on every edit. Non-null-assertion enforcement is a ratchet metric alongside

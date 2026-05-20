@@ -27,6 +27,8 @@ import {
 	checkIteratorInvalidation,
 	checkLifecycleCleanup,
 	checkMagicLiteralInConditional,
+	checkManyOptionalParams,
+	checkPositionalOptionalBoolean,
 	checkSameTypedPrimitiveParams,
 	checkTaintedToPrivilegedSink,
 	checkUnvalidatedJsonBoundary,
@@ -289,6 +291,36 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 			"Replace positional booleans with an options object so the intent is visible at the call site: `createUser('alice', { admin: true, verified: false })` instead of `createUser('alice', true, false)`. Alternatively, use an enum when the booleans represent a discrete mode.",
 		fn: checkBooleanTrap,
 		resultsPropName: "booleanTrap",
+	},
+	{
+		id: "positional_optional_boolean",
+		phase: "post",
+		name: "Positional Optional Boolean",
+		description:
+			"Signature-side twin of boolean_trap — detects function declarations with a positional optional boolean parameter (`flag?: boolean`, `flag: boolean = false`, or `flag = false`). Every call site of such a function is unreadable: `setUser(\"alice\", true)` gives a cold reader no clue what `true` means.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Move the boolean into an options object so the intent is visible at every call site: `function setUser(name: string, opts: { force?: boolean } = {})` and `setUser('alice', { force: true })`. If the boolean represents a discrete mode (e.g. read/write), promote it to a string-literal union or enum. A single positional optional boolean is the cause of the boolean-trap class — defining it that way pre-commits every caller to the unreadable shape.",
+		fn: checkPositionalOptionalBoolean,
+		resultsPropName: "positionalOptionalBoolean",
+	},
+	{
+		id: "many_optional_params",
+		phase: "post",
+		name: "Many Optional Params",
+		description:
+			"Detects function signatures with 3+ optional parameters (`?:` TS markers or `=` defaults combined). Each optional doubles the call-shape surface — 3 optionals = 8 untested call shapes, and a default change becomes a silent semantic API break.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Replace the optional positional params with a single options-object parameter so the call shapes collapse into one and defaults are visible at the schema level: `function build(name: string, opts: { cache?: boolean; retries?: number; timeout?: number } = {})`. Cold readers see every knob in one place, and adding a new option doesn't reorder or expand the signature.",
+		fn: checkManyOptionalParams,
+		resultsPropName: "manyOptionalParams",
 	},
 	{
 		id: "same_typed_primitive_params",

@@ -274,7 +274,9 @@ export {
 	checkCatchAndIgnore,
 	checkFunctionArity,
 	checkGodFile,
+	checkManyOptionalParams,
 	checkNarrativeNaming,
+	checkPositionalOptionalBoolean,
 	checkTestDescriptionQuality,
 } from "./checks/taste.js";
 // ---- taste-smell ----

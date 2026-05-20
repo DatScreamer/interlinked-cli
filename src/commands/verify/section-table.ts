@@ -195,6 +195,20 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "positional optional boolean",
+		key: "positionalOptionalBoolean",
+		noun: "function signatures with a positional optional boolean param",
+		passLabel: "no positional optional booleans",
+		color: "33",
+	},
+	{
+		label: "many optional params",
+		key: "manyOptionalParams",
+		noun: "function signatures with 3+ optional params",
+		passLabel: "no signatures with 3+ optional params",
+		color: "33",
+	},
+	{
 		label: "same-typed primitive params",
 		key: "sameTypedPrimitiveParams",
 		noun: "public signatures with adjacent same-typed primitive params",

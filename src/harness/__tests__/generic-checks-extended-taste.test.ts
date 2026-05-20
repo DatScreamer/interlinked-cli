@@ -13,9 +13,11 @@ import {
 	checkFunctionArity,
 	checkGodFile,
 	checkMagicNumbers,
+	checkManyOptionalParams,
 	checkNarrativeNaming,
 	checkNegatedConditionWithElse,
 	checkNestedTernary,
+	checkPositionalOptionalBoolean,
 	checkSameTypedPrimitiveParams,
 	checkTestDescriptionQuality,
 } from "../generic-checks.js";
@@ -123,6 +125,163 @@ describe("checkFunctionArity", () => {
 	it("does NOT flag Go function with 5 params (Go threshold is 6)", () => {
 		const code = "func Create(a string, b string, c string, d int, e int) {\n}";
 		expect(checkFunctionArity(code, "handler.go")).toEqual([]);
+	});
+});
+
+// ===========================================
+// T2b: checkPositionalOptionalBoolean — signature-side twin of checkBooleanTrap
+// ===========================================
+
+describe("checkPositionalOptionalBoolean", () => {
+	// --- positive cases (must fire) ---
+
+	it("detects `flag?: boolean` as positional optional boolean", () => {
+		const code = "export function setUser(name: string, force?: boolean) {\n  return name;\n}";
+		const matches = checkPositionalOptionalBoolean(code, "user.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("force");
+	});
+
+	it("detects `flag: boolean = false` (typed default)", () => {
+		const code =
+			"export function configure(host: string, verbose: boolean = false) {\n  return host;\n}";
+		const matches = checkPositionalOptionalBoolean(code, "cfg.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("verbose");
+	});
+
+	it("detects `flag = false` (inferred default, no annotation)", () => {
+		const code = "function send(msg: string, retry = true) {\n  return msg;\n}";
+		const matches = checkPositionalOptionalBoolean(code, "send.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("retry");
+	});
+
+	it("detects positional optional boolean in arrow function", () => {
+		const code = "export const send = (msg: string, retry?: boolean) => msg;";
+		const matches = checkPositionalOptionalBoolean(code, "send.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("detects positional optional boolean across a multi-line signature", () => {
+		const code = [
+			"export function build(",
+			"  name: string,",
+			"  cache?: boolean,",
+			") {",
+			"  return name;",
+			"}",
+		].join("\n");
+		const matches = checkPositionalOptionalBoolean(code, "build.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	// --- negative cases (must NOT fire) ---
+
+	it("does NOT flag boolean inside an options object", () => {
+		const code =
+			"export function setUser(name: string, opts: { force?: boolean }) {\n  return name;\n}";
+		expect(checkPositionalOptionalBoolean(code, "user.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a required (non-optional) boolean", () => {
+		const code = "export function setUser(name: string, force: boolean) {\n  return name;\n}";
+		expect(checkPositionalOptionalBoolean(code, "user.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a union-typed optional (`flag?: boolean | null`)", () => {
+		const code =
+			"export function setUser(name: string, force?: boolean | null) {\n  return name;\n}";
+		expect(checkPositionalOptionalBoolean(code, "user.ts")).toEqual([]);
+	});
+
+	it("does NOT flag an optional string", () => {
+		const code = "export function greet(name: string, suffix?: string) {\n  return name + suffix;\n}";
+		expect(checkPositionalOptionalBoolean(code, "greet.ts")).toEqual([]);
+	});
+
+	it("does NOT flag test files", () => {
+		const code = "export function setUser(name: string, force?: boolean) {\n  return name;\n}";
+		expect(checkPositionalOptionalBoolean(code, "user.test.ts")).toEqual([]);
+	});
+
+	it("does NOT flag non-JS/TS files", () => {
+		const code = "fn set_user(name: &str, force: Option<bool>) { }";
+		expect(checkPositionalOptionalBoolean(code, "user.rs")).toEqual([]);
+	});
+});
+
+// ===========================================
+// T2c: checkManyOptionalParams — combinatorial explosion at the signature
+// ===========================================
+
+describe("checkManyOptionalParams", () => {
+	// --- positive cases (must fire) ---
+
+	it("detects 3 optional `?:` params", () => {
+		const code =
+			"export function build(name: string, a?: number, b?: string, c?: boolean) {\n  return name;\n}";
+		const matches = checkManyOptionalParams(code, "build.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("3 optional params");
+	});
+
+	it("detects a mix of `?:` and `=` defaults adding up to 3", () => {
+		const code =
+			"function send(msg: string, retry?: boolean, timeout = 1000, host: string = 'localhost') {\n  return msg;\n}";
+		const matches = checkManyOptionalParams(code, "send.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("detects 4+ optional params (ride-along nudge for higher counts)", () => {
+		const code =
+			"export function create(name: string, a?: number, b?: number, c?: number, d?: number) {\n  return name;\n}";
+		const matches = checkManyOptionalParams(code, "create.ts");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches[0].text).toContain("4 optional params");
+	});
+
+	// --- negative cases (must NOT fire) ---
+
+	it("does NOT flag 2 optional params (under threshold)", () => {
+		const code =
+			"export function build(name: string, a?: number, b?: string) {\n  return name;\n}";
+		expect(checkManyOptionalParams(code, "build.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a signature with no optional params", () => {
+		const code =
+			"export function transfer(from: string, to: string, amount: number) {\n  return from;\n}";
+		expect(checkManyOptionalParams(code, "tx.ts")).toEqual([]);
+	});
+
+	it("does NOT count a rest param as optional (variadic, not combinatorial)", () => {
+		const code =
+			"export function logAll(prefix: string, a?: number, b?: number, ...rest: string[]) {\n  return prefix;\n}";
+		expect(checkManyOptionalParams(code, "log.ts")).toEqual([]);
+	});
+
+	it("does NOT flag when optionality is inside an options object (one positional param)", () => {
+		const code =
+			"export function build(name: string, opts: { a?: number; b?: string; c?: boolean }) {\n  return name;\n}";
+		expect(checkManyOptionalParams(code, "build.ts")).toEqual([]);
+	});
+
+	it("does NOT confuse a default-value object literal for additional params", () => {
+		const code = "export function build(opts: Opts = { a: 1, b: 2, c: 3 }) {\n  return opts;\n}";
+		expect(checkManyOptionalParams(code, "build.ts")).toEqual([]);
+	});
+
+	it("does NOT flag test files", () => {
+		const code =
+			"export function build(name: string, a?: number, b?: string, c?: boolean) {\n  return name;\n}";
+		expect(checkManyOptionalParams(code, "build.test.ts")).toEqual([]);
+	});
+
+	it("does NOT flag callback-shaped params (function type with internal optionality)", () => {
+		const code =
+			"export function listen(handler: (msg?: string, code?: number) => void) {\n  return handler;\n}";
+		expect(checkManyOptionalParams(code, "listen.ts")).toEqual([]);
 	});
 });
 

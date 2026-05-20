@@ -19,6 +19,8 @@ import {
 	checkAsyncPromiseExecutor,
 	checkBooleanTrap,
 	checkBroadObjectTypes,
+	checkManyOptionalParams,
+	checkPositionalOptionalBoolean,
 	checkSameTypedPrimitiveParams,
 	checkCommentClaimsIdempotentMutates,
 	checkCommentClaimsLimitNoGuard,
@@ -434,6 +436,16 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 		...toIssues("broad_object_types", relPath, checkBroadObjectTypes(content, file)),
 	);
 	r.booleanTrap.push(...toIssues("boolean_trap", relPath, checkBooleanTrap(content, file)));
+	r.positionalOptionalBoolean.push(
+		...toIssues(
+			"positional_optional_boolean",
+			relPath,
+			checkPositionalOptionalBoolean(content, file),
+		),
+	);
+	r.manyOptionalParams.push(
+		...toIssues("many_optional_params", relPath, checkManyOptionalParams(content, file)),
+	);
 	r.sameTypedPrimitiveParams.push(
 		...toIssues(
 			"same_typed_primitive_params",

@@ -75,6 +75,20 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// booleans correspond to well-known flags). Advisory until FP rate is
 	// measured against a broader codebase.
 	"boolean_trap",
+	// Positional optional boolean: signature-side twin of boolean_trap.
+	// Real signal — every call site of `f(x, force?: boolean)` is opaque
+	// at the call site — but FP-prone where legacy APIs intentionally
+	// preserve positional shape for backwards compat. Ship advisory until
+	// diff-attribution lands; otherwise re-firing on every edit of a
+	// pre-existing offender amplifies under persistent_warning_escalation
+	// (see project_escalation_amplifies_stable_fp).
+	"positional_optional_boolean",
+	// Many optional params (≥3): real combinatorial-explosion signal but
+	// FP-prone on legitimate factory / builder shapes (e.g. fetch wrappers
+	// that proxy a handful of optional knobs through). Advisory ride-along
+	// with positional_optional_boolean; ratchet to default-gate together
+	// once dogfood signal exists.
+	"many_optional_params",
 	// Same-typed primitive params: orderable-by-mistake nudge toward branded
 	// types / struct params. Real bug class, but moderate FP rate — DSL-style
 	// curried builders, `(a: string, b: string) => string` formatter helpers,
