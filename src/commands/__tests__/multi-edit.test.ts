@@ -340,9 +340,38 @@ describe("isTscFindingBlocking (re-exported)", () => {
 // ───────────────────────────────────────────────
 // Write fixtures inside cli/src/lib/ so biome + tsc config scope picks them
 // up, matching the existing diff-overlay test pattern.
+//
+// Cleanup story (belt-and-suspenders so the working tree never leaks a
+// fixture into git status / the harness fixture-leak detector):
+//   1. Per-describe `afterAll(rmFixture)` — the happy path.
+//   2. Module-level `afterAll` — runs at file-scope, after all describes.
+//      Catches the case where a per-describe afterAll threw mid-cleanup.
+//   3. `process.on('exit')` handler — runs even when vitest's worker is
+//      hard-killed (SIGTERM under CI worker-cap pressure, tsc cold-start
+//      timeout, uncaught throw in a sibling test). Synchronous-only.
+//   4. Module-level `beforeAll` sweep — wipes stale fixtures from a
+//      prior crashed run before the current run starts writing.
 
 const CLI_ROOT = resolve(import.meta.dirname, "../..", "..");
 const FIXTURE_DIR = resolve(CLI_ROOT, "src", "lib");
+
+// Filenames the suite is allowed to sweep at startup. Anchored as a Set so
+// the stale-fixture sweep can't accidentally wipe a hand-written `_*.ts`
+// module that happens to live in src/lib/. Add to this when a new fixture
+// is introduced.
+const KNOWN_FIXTURE_BASENAMES: ReadonlySet<string> = new Set([
+	"_multi_edit_case_a.ts",
+	"_multi_edit_case_b.ts",
+	"_multi_edit_gate_fail.ts",
+	"_gate_inline_fixture.ts",
+	"_multi_edit_plumbing_a.ts",
+	"_multi_edit_plumbing_b.ts",
+]);
+
+// Module-level registry. `writeFixture` adds, `rmFixture` removes on
+// successful (or ENOENT) cleanup. The process-exit handler iterates
+// whatever is still pending.
+const registeredFixtures = new Set<string>();
 
 function fixturePath(name: string): string {
 	return resolve(FIXTURE_DIR, name);
@@ -352,21 +381,71 @@ function writeFixture(name: string, content: string): string {
 	mkdirSync(FIXTURE_DIR, { recursive: true });
 	const p = fixturePath(name);
 	writeFileSync(p, content, "utf-8");
+	registeredFixtures.add(p);
 	return p;
 }
 
 function rmFixture(p: string): void {
 	try {
 		rmSync(p);
+		registeredFixtures.delete(p);
 	} catch (err) {
-		// Best-effort cleanup; surface the failure so a genuine I/O issue
-		// doesn't silently leave the tree dirty.
 		const msg = err instanceof Error ? err.message : String(err);
-		if (!msg.includes("ENOENT")) {
-			console.error(`[multi-edit.test] cleanup warning for ${p}: ${msg}`);
+		if (msg.includes("ENOENT")) {
+			// Already gone — drop from registry so we don't retry.
+			registeredFixtures.delete(p);
+			return;
 		}
+		// Surface a genuine I/O failure (permission denied etc.) but leave
+		// the entry in the registry so the process-exit handler retries.
+		console.error(`[multi-edit.test] cleanup warning for ${p}: ${msg}`);
 	}
 }
+
+// Synchronous backstop — fires even if the vitest worker is hard-killed
+// or a sibling describe's afterAll throws. Uses `force: true` so a missing
+// file doesn't propagate as an exit-handler error.
+process.on("exit", () => {
+	for (const p of registeredFixtures) {
+		try {
+			rmSync(p, { force: true });
+		} catch {
+			// intentional: process is exiting; nothing useful to do.
+		}
+	}
+});
+
+// Pre-suite sweep: any stale fixture left by a prior crashed run gets
+// removed before the current suite writes its own copy. Constrained to
+// KNOWN_FIXTURE_BASENAMES so a legitimate `_*.ts` module never gets
+// touched.
+beforeAll(() => {
+	for (const name of KNOWN_FIXTURE_BASENAMES) {
+		const stale = resolve(FIXTURE_DIR, name);
+		try {
+			rmSync(stale, { force: true });
+		} catch {
+			// intentional: best-effort sweep.
+		}
+	}
+});
+
+// Post-suite belt: per-describe afterAll covers the happy path; this
+// catches anything that slipped (a thrown rmFixture, a path mismatch
+// between the describe's `let fixturePathAbs` and what writeFixture
+// actually returned, etc.).
+afterAll(() => {
+	for (const p of [...registeredFixtures]) {
+		try {
+			rmSync(p, { force: true });
+			registeredFixtures.delete(p);
+		} catch (err) {
+			console.error(
+				`[multi-edit.test] post-suite cleanup failed for ${p}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+});
 
 // ───────────────────────────────────────────────
 // Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY
