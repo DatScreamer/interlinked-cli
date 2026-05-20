@@ -413,6 +413,68 @@ Tier 1 (and the artifact-emission side of /enforce) is shipped. Local-only
 mode (no cloud): policy and prose artifacts load as agent context but
 aren't enforced; Cedar files work for self-hosted Sondera.
 
+## Supply-chain allowlist (fail-closed package installs)
+
+Built 2026-05 in response to the surge of malicious npm / PyPI packages.
+**Default stance: any new dep is potentially malicious.** Three gates,
+one allowlist, every ecosystem:
+
+| Vector | Gate | File |
+|---|---|---|
+| Shell `npm install <pkg>`, `pip install <pkg>`, `cargo add`, `go get`, … | PreToolUse Bash gate | `src/harness/evaluator/package-install-guard.ts` |
+| Edit/Write to `package.json` / `requirements.txt` / `pyproject.toml` / `Cargo.toml` / `Gemfile` / `go.mod` that adds a new dep | PreToolUse Write gate | `src/harness/evaluator/manifest-edit-guard.ts` |
+| Same shell commands when the daemon is unreachable | Cold-fallback gate | `src/hook-entry.ts::coldPackageInstallBlockReason` + `src/lib/hook-template-chunks/guards-inline.ts::inlinePackageInstallCheck` |
+
+Coverage: **npm / pnpm / yarn / bun + pip / pip3 / pipx / poetry / uv +
+cargo + gem / bundle + go**. URL-based specs (`git+`, tarball, `file:`)
+are blocked unconditionally — they bypass registry signing entirely.
+Custom `--registry` / `--index-url` overrides are likewise blocked.
+
+The allowlist lives at `.interlinked/package-allowlist.json` (committed).
+Two grant kinds:
+- **Per-package** — exact name match, ecosystem-keyed.
+- **Lockfile snapshot** — sha256 of a manifest or lockfile, approving its
+  entire resolved state. Re-snapshot whenever the file changes.
+
+Bypass for one command: `INTERLINKED_DISABLE_PACKAGE_GUARD=1` (logged,
+intended for documented bootstrap flows only).
+
+```bash
+interlinked allowlist add npm lodash --by qcody --reason utility
+interlinked allowlist snapshot --by qcody                    # hash all manifests + lockfiles in cwd
+interlinked allowlist snapshot --lockfile package-lock.json --by qcody
+interlinked allowlist list                                   # human-readable
+interlinked allowlist list --json
+interlinked allowlist verify                                 # diff manifest deps vs allowlist
+interlinked allowlist remove npm lodash
+```
+
+**Approving a typosquat is the worst failure mode** (after which install
+proceeds silently), so `allowlist add` runs the Levenshtein-distance
+typosquat detector (`src/harness/checks/supply-chain.ts::findTyposquatMatch`)
+on the name and refuses unless `--force` is passed. Per-package
+detection currently fires for npm only (the popular-package list is
+npm-specific); extension to PyPI would mean curating an equivalent list.
+
+Source files (added 2026-05):
+- `src/harness/package-install-parser.ts` — pure-function parser for ten
+  install verbs (npm/pnpm/yarn/bun/pip/pipx/poetry/uv/cargo/gem/bundle/go),
+  classifies each positional spec as registry / git_url / tarball_url /
+  local_path / file_url.
+- `src/harness/package-allowlist.ts` — file I/O, sha256 snapshotting,
+  per-spec `isPackageAllowed` decision.
+- `src/harness/evaluator/package-install-guard.ts` — daemon-side
+  PreToolUse Bash gate combining parser + allowlist.
+- `src/harness/evaluator/manifest-edit-guard.ts` — daemon-side
+  PreToolUse Write gate; diffs the manifest's dep entries before/after
+  the edit and blocks if any newly-added entry is not on the allowlist.
+- `src/commands/allowlist.ts` — `interlinked allowlist` subcommand.
+
+Tests pin every ecosystem path (positive + negative cases). The pre-2026-05
+`builtin-npm-no-ignore-scripts` warn-only rule still fires for
+defense-in-depth on allowlisted installs (a stale `--ignore-scripts`-less
+install of a package that's been updated since approval is still risky).
+
 ## External-pulse intake
 
 Before "what can we do with X?" on a tool, paper, or repo found on the
