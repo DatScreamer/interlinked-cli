@@ -730,14 +730,18 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		//   - warn_stubs_introduced: TODO/FIXME/disabled-test/throw-not-
 		//     implemented patterns pushed into Write/Edit content during
 		//     the session (scanned at PostToolUse).
+		//   - warn_fixture_leaks: untracked src/**/_*.ts-shaped files whose
+		//     basename appears in a writeFixture()/setupFixture()/createFixture()
+		//     call in a tracked test file — the afterAll cleanup didn't run.
 		// Flip per-kind to false in `.interlinked/guard-rules.local.json` to
 		// disable individual checks; flip the master `enabled` to silence
-		// all four.
+		// all five.
 		enabled: true,
 		warn_unverified_code: true,
 		warn_verify_not_run: true,
 		warn_ui_not_interacted: true,
 		warn_stubs_introduced: true,
+		warn_fixture_leaks: true,
 	},
 	content_scanner: {
 		// Off by default — local runtime needs `pip install opf`; users opt in via

@@ -12,6 +12,7 @@ import { dirname, extname, join, basename as pathBasename } from "node:path";
 import { stripCommentsAndStrings } from "./checks/shared.js";
 import { hasTddExemptDirective, isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
+import { isCodeFile } from "./verification-stop-checks.js";
 
 // ---- Helpers ----
 
@@ -469,6 +470,15 @@ export interface LocDelta {
  * 50-line refactor registers as 100 churn — that's what the ratio gate
  * cares about (proportional test coverage of touched code).
  *
+ * Three-bucket classification: a path counts toward testLoc if it matches
+ * the test convention, prodLoc if it's a known code-file extension, and
+ * is dropped otherwise. The third bucket exists because the previous
+ * bipartite split routed every non-test path into prodLoc — docs
+ * (CLAUDE.md), JSON data, lockfiles, and shell-script bootstraps then
+ * tripped the "wrote N lines of production code with no tests" warning
+ * on doc-only sessions. `isCodeFile` is the shared positive predicate
+ * used by the Stop-event verification nudges.
+ *
  * The untracked path matters because `git diff` doesn't see new files
  * before they're staged, and the gate fires at PreToolUse time on
  * `git add ... && git commit ...` — before staging happens. Without
@@ -495,7 +505,8 @@ export function gitNumstatDelta(cwd: string = process.cwd()): LocDelta {
 			const path = parts[2];
 			const delta = added + deleted;
 			if (TEST_FILE_RE.test(path)) testLoc += delta;
-			else prodLoc += delta;
+			else if (isCodeFile(path)) prodLoc += delta;
+			// else: docs, JSON data, lockfiles, etc. — not "production code"
 		}
 		const untracked = execSync("git ls-files --others --exclude-standard", {
 			cwd,
@@ -505,6 +516,7 @@ export function gitNumstatDelta(cwd: string = process.cwd()): LocDelta {
 		});
 		for (const path of untracked.split("\n")) {
 			if (!path) continue;
+			if (!TEST_FILE_RE.test(path) && !isCodeFile(path)) continue;
 			try {
 				const content = readFileSync(join(cwd, path), "utf-8");
 				const loc = content.split("\n").length;

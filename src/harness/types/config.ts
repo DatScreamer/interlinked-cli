@@ -230,7 +230,7 @@ export interface GuardRulesConfig {
 	};
 }
 
-/** Verification-before-stop nudge configuration. Four independent
+/** Verification-before-stop nudge configuration. Five independent
  *  Stop / SessionEnd warnings, all stderr-only, all opt-out per-kind:
  *    - warn_unverified_code:   code-file edits with no tsc/test/lint/build
  *    - warn_verify_not_run:    code edits with partial verification —
@@ -242,13 +242,17 @@ export interface GuardRulesConfig {
  *    - warn_ui_not_interacted: UI-file edits with no dev-server / browser MCP
  *    - warn_stubs_introduced:  TODO/FIXME/disabled-test/not-impl-throw
  *                              surfaced via Write/Edit content during the session
- *  Master `enabled` switch gates all four together. */
+ *    - warn_fixture_leaks:     untracked src/**\/_*.ts-shaped files whose
+ *                              basename appears in a writeFixture()-shaped
+ *                              call in a test — afterAll cleanup didn't run
+ *  Master `enabled` switch gates all five together. */
 export interface VerificationStopChecksConfig {
 	enabled: boolean;
 	warn_unverified_code: boolean;
 	warn_verify_not_run: boolean;
 	warn_ui_not_interacted: boolean;
 	warn_stubs_introduced: boolean;
+	warn_fixture_leaks: boolean;
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /

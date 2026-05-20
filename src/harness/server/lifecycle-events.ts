@@ -31,6 +31,7 @@ import {
 import { resetProjectSetupWarningsCache } from "../evaluator/pre-tool.js";
 import { computeEffectivenessSummary } from "../feedback-effectiveness.js";
 import { refreshPriorityIfStale as refreshFilePriorityIfStale } from "../file-priority.js";
+import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
 import { findRipgrep } from "../grep-accelerator.js";
 import { deleteLiveSnapshot } from "../live-snapshot.js";
 import { isErr, tryFn } from "../result.js";
@@ -260,6 +261,18 @@ export async function handleLifecycleEvent(
 					if (warning !== null) {
 						turnWarnings.push(warning);
 						log(`Verify-before-stop: stubs-introduced (${stubs.length})`);
+					}
+				}
+				// Fixture leaks — untracked src/**/_*.ts whose basename appears
+				// in a writeFixture()-shaped call in a tracked test file. The
+				// test's afterAll cleanup didn't run (killed mid-test, helper
+				// threw, runner panicked). Deterministic; no session state.
+				if (vsc.warn_fixture_leaks) {
+					const leaks = detectFixtureLeaks(event.cwd || ctx.cwd);
+					const warning = formatFixtureLeakWarning({ leaks });
+					if (warning !== null) {
+						turnWarnings.push(warning);
+						log(`Verify-before-stop: fixture-leaks (${leaks.length})`);
 					}
 				}
 				// TDD regression — a test that was green earlier this session

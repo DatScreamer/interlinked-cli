@@ -870,4 +870,44 @@ describe("gitNumstatDelta", () => {
 		expect(prodLoc).toBe(0);
 		expect(testLoc).toBe(0);
 	});
+
+	// Regression: a session that only edited CLAUDE.md fired the
+	// "wrote N lines of production code with no tests" warning because
+	// the bipartite test-vs-everything split routed every non-test path
+	// into prodLoc. Docs/data files must be in a third (ignored) bucket.
+	it("ignores doc files (markdown, txt, rst) — neither prod nor test", () => {
+		writeFileSync(join(dir, "CLAUDE.md"), "a\n".repeat(50));
+		writeFileSync(join(dir, "notes.txt"), "a\n".repeat(30));
+		writeFileSync(join(dir, "guide.rst"), "a\n".repeat(20));
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(0);
+		expect(testLoc).toBe(0);
+	});
+
+	it("ignores data files (json, lockfiles) — not production code", () => {
+		writeFileSync(join(dir, "package-lock.json"), "a\n".repeat(500));
+		writeFileSync(join(dir, "config.json"), "a\n".repeat(40));
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(0);
+		expect(testLoc).toBe(0);
+	});
+
+	it("counts only the code portion when mixed with docs", () => {
+		writeFileSync(join(dir, "feature.ts"), "a\n".repeat(20));
+		writeFileSync(join(dir, "README.md"), "a\n".repeat(200));
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(21);
+		expect(testLoc).toBe(0);
+	});
+
+	it("ignores doc edits on tracked files via numstat", () => {
+		const tracked = join(dir, "DOCS.md");
+		writeFileSync(tracked, "line one\n");
+		execSync("git add DOCS.md", { cwd: dir });
+		execSync("git commit -q -m base", { cwd: dir });
+		writeFileSync(tracked, "line one updated\nline two\n");
+		const { prodLoc, testLoc } = gitNumstatDelta(dir);
+		expect(prodLoc).toBe(0);
+		expect(testLoc).toBe(0);
+	});
 });
