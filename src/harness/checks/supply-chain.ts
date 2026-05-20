@@ -376,6 +376,24 @@ function levenshtein(a: string, b: string): number {
 	return matrix[a.length][b.length];
 }
 
+/**
+ * Public single-name typosquat check. Returns the popular package + distance
+ * when `name` looks like a near-miss, or null when it's clean. Used by the
+ * allowlist CLI to refuse approving a typosquat name into the allowlist.
+ */
+export function findTyposquatMatch(
+	name: string,
+): { popular: string; distance: number } | null {
+	if (!name || name.length < 3) return null;
+	if (POPULAR_PACKAGES.has(name)) return null;
+	if (isAllowlistedDep(name)) return null;
+	for (const popular of POPULAR_PACKAGES) {
+		const dist = levenshtein(name.toLowerCase(), popular.toLowerCase());
+		if (dist > 0 && dist <= 2) return { popular, distance: dist };
+	}
+	return null;
+}
+
 export function checkTyposquatDependencies(pkgJsonPath: string): InlineMatch[] {
 	if (!existsSync(pkgJsonPath)) return [];
 	let content: string;

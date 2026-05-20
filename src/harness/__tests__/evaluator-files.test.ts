@@ -243,10 +243,13 @@ describe("evaluatePreToolUse — file & network guards", () => {
 		// unfiltered cat on any file with >50 lines, which package.json
 		// usually has. The pattern the agent should use is on the list
 		// instead: `head -n 5 package.json` (explicit small slice).
+		//
+		// `npm install` is also NOT here — the supply-chain allowlist gate
+		// (added 2026-05) now blocks bare installs until a snapshot is
+		// approved. See `evaluator/package-install-guard.test.ts`.
 		const safeCommands = [
 			"ls -la",
 			"npm run test",
-			"npm install",
 			"git status",
 			"git add .",
 			"git commit -m 'test'",

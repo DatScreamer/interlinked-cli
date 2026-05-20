@@ -387,6 +387,58 @@ function inlineMergeConflictCheck(hookEvent, toolName, toolInput) {
 
 const checkDestructiveCommand = ${DESTRUCTIVE_COMMAND_GUARD_SOURCE};
 
+/**
+ * Inline supply-chain fail-closed gate. Daemon-down + a package-install
+ * verb = block. Conservative: we can't reach the allowlist's full
+ * decision logic from inside the .mjs template (the daemon-side parser
+ * lives in src/harness/package-install-parser.ts), so when the daemon
+ * is unreachable we refuse all install verbs and tell the user to
+ * restart the harness. Bypass for one command via
+ * INTERLINKED_DISABLE_PACKAGE_GUARD=1.
+ */
+function inlinePackageInstallCheck(hookEvent, toolName, toolInput) {
+    if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
+    if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD === "1") return null;
+    if (!toolName) return null;
+    const isBash = ["Bash", "Shell", "shell", "run_command"].indexOf(toolName) !== -1;
+    if (!isBash) return null;
+    const cmd = (toolInput && toolInput.command) || "";
+    if (!cmd) return null;
+
+    // Detect package-install verbs across the ten covered managers. This
+    // mirrors the entry points of the daemon-side parser (any of these
+    // would dispatch to a parser branch) — what we lose in granularity
+    // (per-package allowlist match) we make up for in fail-closed safety.
+    const INSTALL_RE = /\\b(?:npm|pnpm|yarn|bun)\\s+(?:install|i|add|ci)\\b|\\b(?:pip|pip3)\\s+install\\b|\\bpipx\\s+(?:install|inject|run)\\b|\\bpoetry\\s+(?:add|install)\\b|\\buv\\s+(?:add|sync|pip\\s+install|tool\\s+install)\\b|\\bcargo\\s+(?:add|install)\\b|\\bgem\\s+install\\b|\\bbundle(?:r)?\\s+(?:install|add)\\b|\\bgo\\s+(?:get|install)\\b/;
+    // bare 'yarn' with no args also runs install:
+    const BARE_YARN = /^\\s*(?:sudo\\s+|nohup\\s+|exec\\s+)?yarn\\s*(?:$|;|&|\\|)/;
+    if (!INSTALL_RE.test(cmd) && !BARE_YARN.test(cmd)) return null;
+
+    // Allow uninstall/remove explicitly — these don't add new code.
+    if (/\\b(?:npm|pnpm|yarn|bun)\\s+(?:uninstall|remove|rm|un|unlink)\\b/.test(cmd)) return null;
+    if (/\\bpip(?:3)?\\s+uninstall\\b/.test(cmd)) return null;
+    if (/\\bpipx\\s+uninstall\\b/.test(cmd)) return null;
+    if (/\\bpoetry\\s+remove\\b/.test(cmd)) return null;
+    if (/\\buv\\s+remove\\b/.test(cmd)) return null;
+    if (/\\bcargo\\s+(?:remove|uninstall)\\b/.test(cmd)) return null;
+    if (/\\bgem\\s+uninstall\\b/.test(cmd)) return null;
+    if (/\\bbundle(?:r)?\\s+remove\\b/.test(cmd)) return null;
+    // Not 'npm run X', 'npm test', etc. — those are NOT install verbs and the
+    // INSTALL_RE doesn't match them, but be explicit:
+    if (/^\\s*npm\\s+(?:run|test|version|publish|view|outdated|audit|exec)\\b/.test(cmd)) return null;
+
+    return {
+        decision: "block",
+        reason:
+            "[interlinked:supply-chain][harness-offline] Package install commands are blocked when the harness daemon is unreachable, because the allowlist gate can't run. " +
+            "Restart the harness with: interlinked harness start. Once it's up, retry — approved packages in .interlinked/package-allowlist.json will be allowed. " +
+            "Override for one command (advanced, bypasses the gate): set INTERLINKED_DISABLE_PACKAGE_GUARD=1.",
+        rule_id: "supply-chain-inline-fail-closed",
+        severity: "high",
+        category: "supply-chain",
+    };
+}
+
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
     if (!toolName) return null;
@@ -401,6 +453,10 @@ function inlineGuardCheck(hookEvent, toolName, toolInput) {
     // instead of silently passing through the Bash-only path below.
     const shardBlock = inlineGraphShardCheck(hookEvent, toolName, toolInput);
     if (shardBlock) return shardBlock;
+
+    // Supply-chain fail-closed gate. Daemon-down + package install = block.
+    const supplyBlock = inlinePackageInstallCheck(hookEvent, toolName, toolInput);
+    if (supplyBlock) return supplyBlock;
 
     // File-dump output-budget gate. Must run BEFORE the data-only references
     // skip below, since that skip returns null for any command starting with

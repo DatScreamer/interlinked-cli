@@ -72,6 +72,10 @@ import { evaluateActiveWhen } from "./active-when.js";
 import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateFileDumpGuard } from "./file-dump-guard.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
+import { loadAllowlist } from "../package-allowlist.js";
+import { parseInstallCommands } from "../package-install-parser.js";
+import { evaluateManifestEdit } from "./manifest-edit-guard.js";
+import { evaluatePackageInstall } from "./package-install-guard.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
@@ -360,6 +364,29 @@ export function evaluatePreToolUse(
 				severity: shardBlock.severity,
 				category: shardBlock.category,
 			};
+		}
+	}
+
+	// GUARD: Supply-chain — block package-install shell commands whose
+	// packages are not on the per-ecosystem allowlist. Runs before the main
+	// rule loop because the existing `builtin-npm-no-ignore-scripts` rule
+	// only warns; this gate fails closed. Bypass via INTERLINKED_DISABLE_PACKAGE_GUARD=1
+	// (logged; intended for documented bootstrap flows only).
+	if (
+		process.env.INTERLINKED_DISABLE_PACKAGE_GUARD !== "1" &&
+		isBash(toolName)
+	) {
+		const cmd = (toolInput.command as string) || "";
+		if (cmd) {
+			const installCommands = parseInstallCommands(cmd);
+			if (installCommands.length > 0) {
+				const evalCwd = event.cwd || process.cwd();
+				const allowlist = loadAllowlist(evalCwd);
+				const supplyDecision = evaluatePackageInstall(installCommands, evalCwd, allowlist);
+				if (supplyDecision && supplyDecision.decision === "block") {
+					return supplyDecision;
+				}
+			}
 		}
 	}
 
@@ -973,6 +1000,29 @@ export function evaluatePreToolUse(
 		}
 	}
 
+	// GUARD: Supply-chain — block Write/Edit of a package manifest that
+	// would introduce a new, unapproved dependency. Catches the vector
+	// where an agent skips the install command and adds an entry directly
+	// to package.json / requirements.txt / pyproject.toml / Cargo.toml /
+	// Gemfile / go.mod.
+	if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD !== "1" && isFileWrite(toolName)) {
+		const mfPath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+		if (mfPath) {
+			const mfCwd = event.cwd || process.cwd();
+			const absPath = isAbsolute(mfPath) ? mfPath : resolve(mfCwd, mfPath);
+			const fullNewContent = computeFullNewContent(absPath, toolInput);
+			if (fullNewContent !== null) {
+				const manifestBlock = evaluateManifestEdit({
+					filePath: absPath,
+					newContent: fullNewContent,
+					allowlist: loadAllowlist(mfCwd),
+					cwd: mfCwd,
+				});
+				if (manifestBlock) return manifestBlock;
+			}
+		}
+	}
+
 	// GUARD: per-file line cap — block a Write/Edit that would grow a
 	// hand-written code file past the cap (see large-file-policy.ts).
 	if (isFileWrite(toolName)) {
@@ -1243,4 +1293,46 @@ function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string 
 		dirtyFile: toRel(m.dirtyFile),
 	}));
 	return formatDirtyDependentWarning({ matches: display });
+}
+
+/**
+ * Compute the full post-write content of a file from a Write / Edit /
+ * MultiEdit tool_input. Returns null when the operation's shape doesn't
+ * map cleanly to a full content (apply_patch, NotebookEdit) — callers
+ * skip the supply-chain manifest check on those paths.
+ */
+function computeFullNewContent(
+	absPath: string,
+	toolInput: Record<string, unknown>,
+): string | null {
+	if (typeof toolInput.content === "string") return toolInput.content;
+	const readCurrent = (): string | null => {
+		if (!existsSync(absPath)) return "";
+		try {
+			return readFileSync(absPath, "utf-8");
+		} catch {
+			return null;
+		}
+	};
+	if (typeof toolInput.new_string === "string" && typeof toolInput.old_string === "string") {
+		const current = readCurrent();
+		if (current === null) return null;
+		return current.replace(toolInput.old_string, toolInput.new_string);
+	}
+	if (Array.isArray(toolInput.edits)) {
+		const current = readCurrent();
+		if (current === null) return null;
+		let result = current;
+		for (const edit of toolInput.edits as unknown[]) {
+			if (edit && typeof edit === "object") {
+				const oldS = (edit as Record<string, unknown>).old_string;
+				const newS = (edit as Record<string, unknown>).new_string;
+				if (typeof oldS === "string" && typeof newS === "string") {
+					result = result.replace(oldS, newS);
+				}
+			}
+		}
+		return result;
+	}
+	return null;
 }

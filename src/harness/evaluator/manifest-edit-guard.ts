@@ -1,0 +1,382 @@
+// Block Write/Edit/MultiEdit to a package manifest that introduces a new,
+// unapproved dependency. Covers the vector where an agent skips the install
+// command entirely and just adds an entry directly to package.json /
+// requirements.txt / pyproject.toml / Cargo.toml — then a later install
+// (run by a human, in CI, etc.) pulls the new code in.
+
+import { existsSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
+import {
+	type Allowlist,
+	isPackageAllowed,
+} from "../package-allowlist.js";
+import type { Ecosystem, PackageSpec } from "../package-install-parser.js";
+import type { HarnessDecision } from "../types.js";
+
+export interface ManifestEditInput {
+	filePath: string;
+	newContent: string;
+	allowlist: Allowlist;
+	cwd: string;
+}
+
+interface DepDelta {
+	ecosystem: Ecosystem;
+	name: string;
+	value: string;
+}
+
+const MANIFEST_HANDLERS: Record<
+	string,
+	(before: string, after: string) => DepDelta[]
+> = {
+	"package.json": diffPackageJson,
+	"requirements.txt": (b, a) => diffLineOriented(b, a, "pypi", parsePipRequirementLine),
+	"requirements.in": (b, a) => diffLineOriented(b, a, "pypi", parsePipRequirementLine),
+	"pyproject.toml": diffPyprojectToml,
+	"Cargo.toml": diffCargoToml,
+	"go.mod": diffGoMod,
+	Gemfile: diffGemfile,
+};
+
+export function evaluateManifestEdit(input: ManifestEditInput): HarnessDecision | null {
+	const name = basename(input.filePath);
+	const handler = MANIFEST_HANDLERS[name];
+	if (!handler) return null;
+
+	const before = existsSync(input.filePath)
+		? safeRead(input.filePath)
+		: ""; // brand-new file
+	let added: DepDelta[];
+	try {
+		added = handler(before, input.newContent);
+	} catch {
+		// Don't fail-closed on parse errors — other guards will surface
+		// JSON/TOML/etc. validity. We only block on deltas we can see.
+		return null;
+	}
+	if (added.length === 0) return null;
+
+	for (const delta of added) {
+		const spec = classifyManifestValue(delta.ecosystem, delta.name, delta.value);
+		const dec = isPackageAllowed(input.allowlist, delta.ecosystem, spec);
+		if (!dec.allowed) {
+			return {
+				decision: "block",
+				reason: `[interlinked:supply-chain] ${name} adds new ${delta.ecosystem} dependency "${delta.name}": ${dec.reason ?? "unapproved"}`,
+				rule_id: "supply-chain-manifest-add",
+				severity: "high",
+				category: "supply-chain",
+			};
+		}
+	}
+	return null;
+}
+
+function safeRead(path: string): string {
+	try {
+		return readFileSync(path, "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+// ============================================================
+// package.json
+// ============================================================
+function diffPackageJson(before: string, after: string): DepDelta[] {
+	const FIELDS = [
+		"dependencies",
+		"devDependencies",
+		"optionalDependencies",
+		"peerDependencies",
+	];
+	const beforeJson = parseJsonSafe(before) ?? {};
+	const afterJson = parseJsonSafe(after);
+	if (!afterJson) throw new Error("invalid JSON in new content");
+	const out: DepDelta[] = [];
+	for (const field of FIELDS) {
+		const oldDeps = recordOf(beforeJson, field);
+		const newDeps = recordOf(afterJson, field);
+		for (const [name, value] of Object.entries(newDeps)) {
+			if (!(name in oldDeps)) {
+				out.push({ ecosystem: "npm", name, value: String(value) });
+			} else if (typeof oldDeps[name] === "string" && oldDeps[name] !== value) {
+				// Same name, different value. If the new value is a URL-shaped
+				// spec, treat as a re-pinning to a non-registry source — that
+				// IS a substantive change worth gating.
+				if (looksLikeUrlSpec(String(value))) {
+					out.push({ ecosystem: "npm", name, value: String(value) });
+				}
+			}
+		}
+	}
+	return out;
+}
+
+function recordOf(obj: unknown, key: string): Record<string, unknown> {
+	if (!obj || typeof obj !== "object") return {};
+	const v = (obj as Record<string, unknown>)[key];
+	return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+function parseJsonSafe(s: string): unknown {
+	if (!s.trim()) return null;
+	try {
+		return JSON.parse(s);
+	} catch {
+		return null;
+	}
+}
+
+function looksLikeUrlSpec(value: string): boolean {
+	return (
+		/^git\+/.test(value) ||
+		/^https?:/.test(value) ||
+		/^file:/.test(value) ||
+		/^github:/.test(value) ||
+		/^gitlab:/.test(value) ||
+		/^bitbucket:/.test(value)
+	);
+}
+
+// ============================================================
+// line-oriented manifests (requirements.txt, requirements.in)
+// ============================================================
+function diffLineOriented(
+	before: string,
+	after: string,
+	ecosystem: Ecosystem,
+	parser: (line: string) => { name: string; value: string } | null,
+): DepDelta[] {
+	const beforeSet = new Set(
+		before
+			.split(/\r?\n/)
+			.map((l) => parser(l)?.name)
+			.filter((n): n is string => !!n),
+	);
+	const added: DepDelta[] = [];
+	for (const line of after.split(/\r?\n/)) {
+		const parsed = parser(line);
+		if (!parsed) continue;
+		if (!beforeSet.has(parsed.name)) {
+			added.push({ ecosystem, name: parsed.name, value: parsed.value });
+		}
+	}
+	return added;
+}
+
+export function parsePipRequirementLine(line: string): { name: string; value: string } | null {
+	const trimmed = line.replace(/#.*$/, "").trim();
+	if (!trimmed) return null;
+	// git+, http(s):, file:, local path
+	if (looksLikeUrlSpec(trimmed) || trimmed.startsWith("-e ")) {
+		// Use the line itself as both name (for diff-set) and value
+		const value = trimmed.replace(/^-e\s+/, "");
+		return { name: value, value };
+	}
+	if (trimmed.startsWith("-")) return null; // pip flags
+	const m = trimmed.match(/^([A-Za-z0-9._-]+)/);
+	if (!m) return null;
+	return { name: m[1], value: trimmed };
+}
+
+/** Detect a TOML-inline-table or Ruby-hash dep value that points to a
+ *  non-registry source (git, path, file:, registry alias). When an
+ *  already-approved package name flips from a plain version string to
+ *  this shape, the dep is effectively a different package — the same
+ *  treatment npm gets in diffPackageJson. */
+function looksLikeNonRegistrySource(value: string): boolean {
+	return (
+		/\bgit\s*[:=]/.test(value) ||
+		/\bpath\s*[:=]/.test(value) ||
+		/\brepository\s*[:=]/.test(value) ||
+		/\bregistry\s*[:=]/.test(value) ||
+		/\burl\s*[:=]/.test(value) ||
+		/\bsource\s*[:=]/.test(value) ||
+		/^git\+/.test(value) ||
+		/^https?:/.test(value) ||
+		/^file:/.test(value) ||
+		/^github:/.test(value)
+	);
+}
+
+/** Shared diff: new entries are deltas; same-name-different-value entries
+ *  are deltas only when the new value points at a non-registry source.
+ *  Plain version bumps stay allowed — they're caught by the install-time
+ *  gate + lockfile snapshot, not by the new-dep diff. */
+function diffByValueShape(
+	beforeDeps: Map<string, string>,
+	afterDeps: Map<string, string>,
+	ecosystem: Ecosystem,
+): DepDelta[] {
+	const out: DepDelta[] = [];
+	for (const [name, value] of afterDeps) {
+		const oldValue = beforeDeps.get(name);
+		if (oldValue === undefined) {
+			out.push({ ecosystem, name, value });
+			continue;
+		}
+		if (oldValue !== value && looksLikeNonRegistrySource(value)) {
+			out.push({ ecosystem, name, value });
+		}
+	}
+	return out;
+}
+
+// ============================================================
+// pyproject.toml (heuristic — no TOML parser dep)
+// ============================================================
+function diffPyprojectToml(before: string, after: string): DepDelta[] {
+	return diffByValueShape(
+		extractPyprojectDeps(before),
+		extractPyprojectDeps(after),
+		"pypi",
+	);
+}
+
+export function extractPyprojectDeps(content: string): Map<string, string> {
+	const deps = new Map<string, string>();
+	const lines = content.split(/\r?\n/);
+	let inDepsBlock = false;
+	const TARGET_HEADERS = /^\[(?:tool\.poetry\.(?:dev-)?dependencies|tool\.poetry\.group\.[^.\]]+\.dependencies|project\.optional-dependencies\.[^\]]+)\]/;
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (line.startsWith("[")) {
+			inDepsBlock = TARGET_HEADERS.test(line);
+			continue;
+		}
+		if (line.startsWith("#") || !line) continue;
+		// project.dependencies takes a different shape: an array of PEP 508 strings.
+		// We handle it via a separate parser below.
+		if (!inDepsBlock) continue;
+		const m = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+?)(?:\s*#.*)?$/);
+		if (!m) continue;
+		if (m[1] === "python") continue; // not a dep — Python version pin
+		deps.set(m[1], m[2]);
+	}
+	// project.dependencies = [ "a==1", "b" ]
+	const projectDepsMatch = content.match(/(?:^|\n)\s*dependencies\s*=\s*\[([\s\S]*?)\]/);
+	if (projectDepsMatch) {
+		const items = projectDepsMatch[1].match(/"([^"]+)"/g) || [];
+		for (const it of items) {
+			const inner = it.slice(1, -1);
+			const nm = inner.match(/^([A-Za-z0-9._-]+)/);
+			if (nm) deps.set(nm[1], inner);
+		}
+	}
+	return deps;
+}
+
+// ============================================================
+// Cargo.toml
+// ============================================================
+function diffCargoToml(before: string, after: string): DepDelta[] {
+	return diffByValueShape(extractCargoDeps(before), extractCargoDeps(after), "cargo");
+}
+
+export function extractCargoDeps(content: string): Map<string, string> {
+	const deps = new Map<string, string>();
+	const lines = content.split(/\r?\n/);
+	let inBlock = false;
+	const TARGET = /^\[(?:dependencies|dev-dependencies|build-dependencies|target\.[^.\]]+\.dependencies)\]/;
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (line.startsWith("[")) {
+			inBlock = TARGET.test(line);
+			continue;
+		}
+		if (!inBlock) continue;
+		if (line.startsWith("#") || !line) continue;
+		const m = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+?)(?:\s*#.*)?$/);
+		if (m) deps.set(m[1], m[2]);
+	}
+	return deps;
+}
+
+// ============================================================
+// go.mod
+// ============================================================
+function diffGoMod(before: string, after: string): DepDelta[] {
+	const beforeDeps = extractGoModDeps(before);
+	const afterDeps = extractGoModDeps(after);
+	const out: DepDelta[] = [];
+	for (const [name, value] of afterDeps) {
+		if (!beforeDeps.has(name)) {
+			out.push({ ecosystem: "go", name, value });
+		}
+	}
+	return out;
+}
+
+export function extractGoModDeps(content: string): Map<string, string> {
+	const deps = new Map<string, string>();
+	const lines = content.split(/\r?\n/);
+	let inBlock = false;
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (line.startsWith("require (")) {
+			inBlock = true;
+			continue;
+		}
+		if (line === ")") {
+			inBlock = false;
+			continue;
+		}
+		const m = inBlock
+			? line.match(/^([^\s]+)\s+([^\s]+)/)
+			: line.match(/^require\s+([^\s]+)\s+([^\s]+)/);
+		if (m) deps.set(m[1], m[2]);
+	}
+	return deps;
+}
+
+// ============================================================
+// Gemfile
+// ============================================================
+function diffGemfile(before: string, after: string): DepDelta[] {
+	return diffByValueShape(
+		extractGemfileDeps(before),
+		extractGemfileDeps(after),
+		"rubygems",
+	);
+}
+
+export function extractGemfileDeps(content: string): Map<string, string> {
+	const deps = new Map<string, string>();
+	const re = /^\s*gem\s+["']([A-Za-z0-9._-]+)["'](?:\s*,\s*(.+))?$/gm;
+	for (const m of content.matchAll(re)) {
+		deps.set(m[1], m[2] || "");
+	}
+	return deps;
+}
+
+// ============================================================
+// Spec classification (mirrors package-install-parser's logic for
+// manifest-value strings, plus TOML inline-table and Ruby-hash shapes)
+// ============================================================
+function classifyManifestValue(_eco: Ecosystem, name: string, value: string): PackageSpec {
+	if (/^https?:\/\/.+\.(tgz|tar\.gz|whl|zip)(?:[?#].*)?$/i.test(value))
+		return { kind: "tarball_url", url: value };
+	if (
+		/^git\+/.test(value) ||
+		/^github:/.test(value) ||
+		/^gitlab:/.test(value) ||
+		/^bitbucket:/.test(value) ||
+		/^https?:\/\/.+\.git(?:#.+)?$/.test(value)
+	)
+		return { kind: "git_url", url: value };
+	if (/^file:/.test(value)) return { kind: "file_url", path: value.replace(/^file:\/*/, "") };
+	// TOML inline table or Ruby hash: { git = "..." } / git: "..." / { path = "..." }.
+	// `path =` in a manifest is NOT the same as `npm install ./localdir` from
+	// the shell — the manifest can point at arbitrary fs paths under the
+	// install resolver, including outside the workspace. Treat as file_url
+	// (always blocked) so the allowlist gate fires.
+	const gitInline = value.match(/\bgit\s*[:=]\s*['"]?([^'"\s,}]+)/);
+	if (gitInline) return { kind: "git_url", url: gitInline[1] };
+	const pathInline = value.match(/\bpath\s*[:=]\s*['"]?([^'"\s,}]+)/);
+	if (pathInline) return { kind: "file_url", path: pathInline[1] };
+	const urlInline = value.match(/\burl\s*[:=]\s*['"]?(https?:\/\/[^'"\s,}]+)/);
+	if (urlInline) return { kind: "tarball_url", url: urlInline[1] };
+	return { kind: "registry", name };
+}

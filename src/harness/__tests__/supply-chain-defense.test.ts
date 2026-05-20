@@ -104,10 +104,17 @@ describe("--ignore-scripts enforcement", () => {
 		cohort = new CohortManager();
 		reservations = new ReservationManager();
 		session = makeSession();
+		// These tests target the legacy --ignore-scripts warn rule in
+		// isolation. The supply-chain allowlist gate (added 2026-05) now
+		// blocks unapproved installs before that rule can fire — different
+		// concern, separately tested. Bypass the new gate here so the rule
+		// under test still runs.
+		process.env.INTERLINKED_DISABLE_PACKAGE_GUARD = "1";
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
+		delete process.env.INTERLINKED_DISABLE_PACKAGE_GUARD;
 	});
 
 	// --- Should WARN (allow with warning) ---

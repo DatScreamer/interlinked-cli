@@ -16,6 +16,9 @@ import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkDestructiveCommand } from "./lib/hook-template-chunks/destructive-command-guard.js";
+import { evaluatePackageInstall } from "./harness/evaluator/package-install-guard.js";
+import { loadAllowlist } from "./harness/package-allowlist.js";
+import { parseInstallCommands } from "./harness/package-install-parser.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
@@ -512,6 +515,37 @@ function coldDestructiveCommandBlockReason(event: UnifiedHookEvent): string | nu
 	return verdict ? verdict.reason : null;
 }
 
+/** Cold fail-closed gate: refuse a package-install shell command when the
+ *  daemon is unreachable. Mirrors the daemon-side `evaluatePackageInstall`
+ *  by loading the same `.interlinked/package-allowlist.json` and running
+ *  the same parser, so the .mjs path and hook-entry cold path block the
+ *  identical set whether the daemon is up or down. Returns the block
+ *  reason, or null when the command is benign / approved / not an install.
+ *  Bypass via INTERLINKED_DISABLE_PACKAGE_GUARD=1. */
+function coldPackageInstallBlockReason(event: UnifiedHookEvent): string | null {
+	if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD === "1") return null;
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	const action = event.action;
+	let command = "";
+	if (action.kind === ACTION_SHELL_COMMAND) {
+		command = action.command;
+	} else if (action.kind === ACTION_TOOL_CALL) {
+		if (!COLD_BASH_TOOL_NAMES.has(action.tool_name)) return null;
+		const ti = (action.tool_input ?? {}) as { command?: unknown };
+		command = typeof ti.command === "string" ? ti.command : "";
+	} else {
+		return null;
+	}
+	if (!command) return null;
+	const installCommands = parseInstallCommands(command);
+	if (installCommands.length === 0) return null;
+	const cwd = event.context?.cwd || process.cwd();
+	const allowlist = loadAllowlist(cwd);
+	const decision = evaluatePackageInstall(installCommands, cwd, allowlist);
+	if (!decision || decision.decision !== "block") return null;
+	return decision.reason ?? "package install blocked by supply-chain allowlist";
+}
+
 function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
@@ -569,6 +603,21 @@ function encodeColdFallback(
 		};
 		const blockOutput = adapter.encodeDecision(blockDecision, event);
 		const notice = `[interlinked] ${reason}; destructive-command fail-closed gate engaged\n`;
+		return {
+			stdout: blockOutput.stdout,
+			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
+			exit_code: blockOutput.exit_code,
+			fell_back: true,
+		};
+	}
+	const packageInstallReason = coldPackageInstallBlockReason(event);
+	if (packageInstallReason) {
+		const blockDecision: HarnessDecision = {
+			decision: "block",
+			reason: packageInstallReason,
+		};
+		const blockOutput = adapter.encodeDecision(blockDecision, event);
+		const notice = `[interlinked] ${reason}; supply-chain fail-closed gate engaged\n`;
 		return {
 			stdout: blockOutput.stdout,
 			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
