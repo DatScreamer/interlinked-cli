@@ -541,7 +541,7 @@ node .interlinked/e2e-protocol-probe.mjs    # core block→write→reveal flow (
 node .interlinked/e2e-protocol-suite.mjs    # 6 cases × 3 modes (16 assertions)
 node .interlinked/e2e-stability.mjs         # 5000-event burst, p99 + RSS budget
 node .interlinked/e2e-hook-script.mjs       # dist/hook-entry.js → Claude Code envelope
-node .interlinked/e2e-cold-fallback.mjs     # daemon unreachable → fail-closed gate fires (7 assertions)
+node .interlinked/e2e-cold-fallback.mjs     # daemon unreachable → fail-closed gate fires (18 assertions)
 ```
 
 See `docs/design/graph-prediction-verification-status.md` for what each
