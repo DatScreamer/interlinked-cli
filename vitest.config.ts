@@ -42,12 +42,19 @@ export default defineConfig({
         // Tracked symptom: CI run 25736848966 on commit 4d647ea (rerun
         // passed without any code change). Both pools are capped because
         // the project hasn't pinned `pool` — vitest could pick either.
+        //
+        // 2026-05-19: the 2-worker cap was no longer enough after the
+        // supply-chain allowlist tests landed (+~150 tests, ~7800 total).
+        // Three consecutive local pre-push runs on macOS hit the IPC
+        // timeout despite all 7799 tests passing. Dropped to 1 worker in
+        // CI to eliminate IPC contention entirely. Local dev keeps
+        // unbounded parallelism via the `undefined` branch.
         poolOptions: {
             threads: {
-                maxThreads: process.env.CI ? 2 : undefined,
+                maxThreads: process.env.CI ? 1 : undefined,
             },
             forks: {
-                maxForks: process.env.CI ? 2 : undefined,
+                maxForks: process.env.CI ? 1 : undefined,
             },
         },
     },
