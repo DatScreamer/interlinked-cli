@@ -76,87 +76,22 @@ if [ "$docs_only" -eq 1 ]; then
 	exit 0
 fi
 
-# Stash unstaged + untracked work so the gate runs against exactly what
-# would be on origin/main after the push (HEAD + staged hunks), not the
-# current working tree.
-#
-# Without this, the hook produces false positives whenever the working
-# tree diverges from the index — e.g. an earlier session deleted some
-# tracked fixture files without staging the deletions, the current
-# commit doesn't include them, but the hook's `npm test` reads from disk
-# and fails. CI is fine (it tests the pushed commit), but the gate
-# blocks anyway, and the agent learns that `--no-verify` is the way
-# around it. That undermines the gate.
-#
-# `git stash push --keep-index` stashes both index and working tree,
-# THEN re-applies the index back into the working tree — leaving the
-# tree at exactly (HEAD + index). `--include-untracked` adds untracked
-# (but non-ignored) files to the stash. `EXIT` trap restores everything
-# even if a test run is killed by the user.
-STASH_TAG="interlinked-pre-push-$(date +%s)-$$"
-HAS_STASH=0
-if ! git diff --quiet 2>/dev/null \
-	|| [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
-	if git stash push --keep-index --include-untracked -m "$STASH_TAG" >/dev/null 2>&1; then
-		HAS_STASH=1
-		echo "[pre-push] Stashed working-tree changes (tag: $STASH_TAG) — testing against staged state only."
-	fi
-fi
+# Tests run against the live working tree — we deliberately do NOT stash
+# unstaged / untracked changes. The earlier stash/pop machinery was a
+# repeat data-loss source: when the test suite writes paths the stash
+# also holds (the fixture files at src/lib/_multi_edit_*.ts being the
+# canonical example), `git stash pop` fails on conflict, the work sits in
+# the stash invisibly, and the working tree appears clean — easy to miss,
+# easy to delete by accident later. We accept the trade-off the comment
+# above already calls out: the gate may now occasionally produce a false
+# positive (test reads disk state that differs from what's being pushed),
+# or — more dangerously — a false NEGATIVE (working-tree changes mask a
+# failure the pushed commit would actually have). The user has explicitly
+# opted into "sometimes CI catches it instead of pre-push" rather than
+# any continued risk of silent work loss. Bypass via `--no-verify` if a
+# specific working-tree divergence is producing a false positive.
 
-restore_stash() {
-	# This runs as an EXIT/INT/TERM trap handler. Disable errexit FIRST:
-	# the gate region below leaves `set -e` active, and a trap handler
-	# inherits it. Without this, the first command in here that returns
-	# non-zero (e.g. the `git stash list` pipeline taking SIGPIPE — see
-	# below) aborts the handler mid-function, AND — because a `set -e`
-	# abort inside an EXIT trap overrides the script's pending exit
-	# status — turns a successful `exit 0` into a non-zero exit. git then
-	# rejects the push with a bare "failed to push some refs" and no
-	# transport detail. `set +e` here is load-bearing, not cosmetic.
-	set +e
-	if [ "$HAS_STASH" -ne 1 ]; then return 0; fi
-	# Find by message tag — never reference @{0} because intervening git
-	# operations could shift the stack.
-	#
-	# No `exit` inside the awk: `git stash list | awk '...; exit'` makes
-	# awk close the pipe after the first match, so `git stash list` takes
-	# SIGPIPE and the pipeline reports failure once the stash list is
-	# long enough to outlive awk. Under the script's `set -o pipefail`
-	# that failure used to propagate. awk without `exit` drains the whole
-	# list; `tag_match` keeps only the first hit.
-	stash_ref=$(git stash list --format='%gd %gs' 2>/dev/null \
-		| awk -v tag="$STASH_TAG" \
-			'tag_match == "" && index($0, tag) > 0 { tag_match = $1 }
-			 END { print tag_match }')
-	if [ -z "$stash_ref" ]; then
-		echo "[pre-push] WARNING: stash with tag $STASH_TAG not found at restore time." >&2
-		echo "                   Recover with: git stash list  (look for $STASH_TAG)" >&2
-		return 0
-	fi
-	if ! git stash pop "$stash_ref" >/dev/null 2>&1; then
-		echo "[pre-push] WARNING: failed to auto-pop stash $stash_ref." >&2
-		echo "                   The stash is still there — recover with:" >&2
-		echo "                     git stash list  (find $STASH_TAG)" >&2
-		echo "                     git stash apply <stash-ref>" >&2
-	fi
-	return 0
-}
-
-# Run restore_stash, then exit with the verdict the gate decided —
-# never with whatever status restore_stash happens to leave behind.
-# `exit 1` below is unreachable for a passing gate (every failure path
-# `exit 1`s before reaching here, before the trap is even relevant);
-# it is the safe default if this handler is ever reached on an
-# unexpected EXIT. PRE_PUSH_VERDICT is set to 0 immediately before the
-# script's own `exit 0`.
-PRE_PUSH_VERDICT=1
-on_exit() {
-	restore_stash
-	exit "$PRE_PUSH_VERDICT"
-}
-trap on_exit EXIT INT TERM
-
-echo "[pre-push] Running typecheck + tests (mirrors CI exactly)..."
+echo "[pre-push] Running typecheck + tests against working tree (mirrors CI exactly)..."
 
 # Mirror what CI actually runs (see .github/workflows/ci.yml):
 #   - npm run typecheck:stable  (stable tsc, not the experimental tsgo)
@@ -209,8 +144,4 @@ if [ "$test_status" -ne 0 ]; then
 fi
 
 echo "[pre-push] ✓ typecheck + tests pass — pushing"
-# Record the passing verdict BEFORE `exit 0`. The EXIT trap (on_exit)
-# runs restore_stash and then `exit "$PRE_PUSH_VERDICT"` — so this
-# assignment, not the literal `exit 0`, is what git ultimately sees.
-PRE_PUSH_VERDICT=0
 exit 0
