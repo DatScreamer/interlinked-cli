@@ -9,6 +9,9 @@
 - `harness-firefox-bug-class-checks-plan.md` — Tier 3 dynamic checks land here when cloud arrives
 - `harness-jsonl-output-contract.md` — output channel spec
 - Existing local infrastructure: `src/harness/recurrence.ts`, `src/harness/session-state.ts`, `.interlinked/hooks/interlinked-activity.mjs`, `src/harness/checks/`
+- `runtime-pipeline-staging.md` — names the seven-stage pipeline (Stages 0 through 6) this doc's Pre → Post timing contract slots into (Stage 4-Pre spawn + Stage 4-Post collect/Cedar/merge, with the cloud classifier off-process between them).
+
+**Scope: this doc is the *single-receipt primitive*.** Everything below — receipt id, Pre→Post threading, status states, fail-open semantics, pending-receipt UX — describes the contract for **one** cloud check on one event. `runtime-pipeline-staging.md` composes this primitive into a per-channel receipt map at Stage 4: the typed-signal classifier mints its receipt at Pre (call pipelines with tool execution), and the Tier 3 live-feedback supermodel mints its receipt at Post (input depends on landed tool output, so the spawn waits for the tool to run). Each channel is an independent instance of the primitive below — same status states, same fail-open semantics, same pending UX — wired into the runtime doc's `StageOutput.receipts?: Partial<Record<Stage4Subchannel, string>>` map (§5 of that doc) and §9.13 implementation hook. Implementers should read the primitive contract here, then read `runtime-pipeline-staging.md` §3 Stage 4-Pre / Stage 4-Post / §9.13 for the composition rules and the per-channel mint-stage split.
 
 **Audience:** Engineering. Anyone implementing should also have read `three-product-architecture.md` §1 (latency framework) and `harness-firefox-bug-class-checks-plan.md` (the Firefox-bug-class checks that benefit most from the cloud upgrade).
 

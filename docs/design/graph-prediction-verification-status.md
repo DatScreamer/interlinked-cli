@@ -1,5 +1,7 @@
 # Graph-Prediction Protocol — Verified Status (May 10–11)
 
+**Related.** `runtime-pipeline-staging.md` — the protocol exercised by the e2e probes documented here runs at Stage 2 of the staged pipeline.
+
 ## 2026-05-11 stage-3 cold-fallback tolerance
 
 After landing the stage-1 cold-fallback fix, a follow-up failure surfaced

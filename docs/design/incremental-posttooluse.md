@@ -8,6 +8,8 @@
 
 **Constraint.** PostToolUse stays synchronous. Warnings still reach the agent on the same hook response that issued the edit. No latency hides behind delayed delivery; speedups come from doing less work, not from rescheduling it.
 
+**Related.** `runtime-pipeline-staging.md` — the staged pipeline's Stage 3 (local expensive deterministic, 1–15s) is what this doc optimizes; the incremental approach is the latency lever within Stage 3.
+
 ---
 
 ## TL;DR

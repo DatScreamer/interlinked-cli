@@ -11,6 +11,7 @@
 - `~/.claude/projects/-Users-quentincody-interlinked-cli/memory/project_three_tier_policy_enforcement.md` — architecture summary
 - `~/.claude/projects/-Users-quentincody-interlinked-cli/memory/project_llm_policy_enforcement.md` — original RFC (scope updated to reflect Tier 2 framing)
 - `~/sondera-coding-agent-hooks/` — reference implementation (Rust + Cedar + YARA-X + Ollama)
+- `docs/design/runtime-pipeline-staging.md` — Tier 2 corresponds to Stage 4 in the staged pipeline; see for trigger conditions and confidence-based skip logic.
 
 ---
 

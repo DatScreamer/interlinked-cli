@@ -2,7 +2,10 @@
 
 **Status:** Plan / not yet implementation. Builds on `three-product-architecture.md` (Agent CI tier) and `cloud-local-disagreement-policy.md` (verdict policy).
 **Scope:** A pre-push gate that dispatches the diff to multiple AI reviewers — Claude Code, Codex CLI — running as `/security-review` invocations against the diff in **per-(user, repo) Cloudflare Sandboxes**. Risk-tier orchestrator decides which cohort runs. Verdicts merge under unanimous-allow.
+**Product surface:** **Agent CI / managed remote tier only.** This doc's hard-gate semantics (unanimous-allow, "any reviewer says block, push is blocked", audited bypass) belong to the managed remote surface — the place where team policy, audit trails, and asymmetric false-block-vs-false-allow reasoning earn their cost. The local Interlinked CLI's git pre-push hook is **warn-only by default** with personal opt-in blocking — see `runtime-pipeline-staging.md` §9.9 for the local-surface contract and `feedback_reluctance_to_push.md` for why local push-gating creates bad pressure. Same reviewer architecture, two different product contracts.
 **Audience:** Engineers building the pre-push gate; reviewers approving the orchestrator architecture; product folks evaluating the commercial frame.
+
+**Related.** `runtime-pipeline-staging.md` — this doc's multi-agent fan-out at pre-push is the §9.9 multi-agent debate / synthesis check at Stage 6 in the seven-stage pipeline. Note the product-surface split: §9.9 (Free CLI / local pre-push hook) is warn-only by default; this doc (Agent CI / managed remote) is the canonical hard-gate version.
 
 ---
 

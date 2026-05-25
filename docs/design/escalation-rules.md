@@ -8,6 +8,8 @@
 
 **Constraint.** Deterministic only (per `feedback_harness_deterministic_only.md`). No LLM in the trigger or in the synthesized advice. Plan-shape comes from author-curated escalation entries, not from inference.
 
+**Related.** `runtime-pipeline-staging.md` — the deterministic escalation evaluator described here runs at the end of Stage 3 in the staged pipeline, feeding aggregated findings into Stage 4 escalation triggers.
+
 ---
 
 ## TL;DR

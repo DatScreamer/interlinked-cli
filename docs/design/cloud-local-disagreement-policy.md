@@ -1,8 +1,10 @@
 # Cloud ↔ local disagreement policy
 
 **Status:** Plan / not yet implementation. Pairs with `three-product-architecture.md` (the three-tier product) and `_phase3-cloud-deferrals.md` (which checks live where).
-**Scope:** How verdicts from local deterministic checks combine with verdicts from the cloud mirror (Guardrails / Agent CI) when they disagree, and what gets enforced when they're absent or stale.
+**Scope:** How verdicts from local deterministic checks combine with verdicts from the cloud mirror (Guardrails / Agent CI) when they disagree, and what gets enforced when they're absent or stale. *This document covers the deterministic cloud-mirror layer only* — i.e. the same rule pack (tsc / biome / semgrep / structural checks) executed in both places against the same diff, where parity is a testable invariant per §1. It does **not** cover the language-model channels in `runtime-pipeline-staging.md` Stage 4 (typed-signal classifier, Tier 3 live-feedback supermodel) — those are not parity mirrors, are governed by their own fail-open contract per `runtime-pipeline-staging.md` §10.4 and `three-tier-architecture-v2.md` §6.3 lines 757–758, and the categories below (especially §6 "fail-degraded") do not apply to them. See §6 for the explicit exclusion.
 **Audience:** Engineers implementing the cloud-mirror feature; reviewers approving any verdict-merging behavior.
+
+**Related.** `runtime-pipeline-staging.md` — the staged pipeline's Stage 3 (local determinism) → Stage 4 (cloud language-model escalation) handoff uses this disagreement policy when verdicts diverge **for the deterministic cloud-mirror layer only**. Stage 4's language-model subchannels (typed-signal classifier, Tier 3 live feedback) use the runtime doc's §10.4 fail-open semantics, not this doc's §6 fail-degraded posture.
 
 ---
 
@@ -92,7 +94,9 @@ This reuses the existing prompt-injection-detection machinery — late cloud-blo
 
 ## 6. Infrastructure failure — fail-degraded
 
-When the cloud is genuinely unreachable (timeout, 5xx, sandbox boot failure), there's no verdict, just an absence. Three postures:
+**Scope (do not apply to Stage 4 language-model channels).** §6 governs the **deterministic cloud-mirror layer** only — the same rule pack (tsc / biome / semgrep / structural checks) executed in both places per §1's "parity as a testable invariant." Stage 4's language-model subchannels in `runtime-pipeline-staging.md` (the typed-signal classifier and the Tier 3 live-feedback supermodel) are **not** parity mirrors — there is no "same check run twice" semantic — and their cloud-unreachable behavior is governed by `runtime-pipeline-staging.md` §10.4 (fail-open: null verdict, empty `confidence_delta`, no automatic sensitivity bump) per `three-tier-architecture-v2.md` §6.3 lines 757–758. The fail-degraded posture below intentionally does not apply to those subchannels because (a) there is no local verdict to compare against — the local stages have already emitted theirs at Stages 0–3, and Stage 4 is the cloud-only language-model layer; and (b) the trajectory-sensitivity bump in §5b is reserved for the case where local fail-classifies-conservative without an authoritative cloud verdict (per `runtime-pipeline-staging.md` §10.4 step 6), not for every cloud-channel outage. Implementers reading this section should consult §10.4 of the runtime doc for Stage 4 cloud failure semantics.
+
+When the **deterministic cloud-mirror layer** is genuinely unreachable (timeout, 5xx, sandbox boot failure), there's no verdict, just an absence. Three postures:
 
 - **Fail-open** — cloud unavailability silently allows; local-only verdict applies. Preserves dev flow, but accepts a security gap.
 - **Fail-closed** — cloud unavailability blocks; dev can't work offline without an explicit `--offline-mode` flag. Strongest security, worst UX.

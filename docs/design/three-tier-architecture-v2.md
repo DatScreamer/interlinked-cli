@@ -24,6 +24,7 @@
 - `docs/design/harness-active-when-scoping.md` — trajectory-axis scoping is in scope for T2 trajectory classifier.
 - `docs/design/interlinked-cedar-extensions.cedarschema` — Cedar extensions, keep.
 - `~/.claude/projects/-Users-quentincody-interlinked-cli/memory/reference_sondera_products_two_repos.md` — Sondera's two repos and architectural distinction.
+- `docs/design/runtime-pipeline-staging.md` — names the explicit seven-stage pipeline (Stages 0 through 6) + confidence-based skip logic; Tier 2 corresponds to Stage 4 (split across PreToolUse Stage 4-Pre and PostToolUse Stage 4-Post). Tier 3 has **two runtime surfaces** per v2 §5.1: (a) **live-feedback Tier 3 (Surface 1)** corresponds to **Stage 4-Post** — the supermodel runs alongside the typed-signal classifier on the v2 §5.4 selected subset, emits typed prose findings (`LiveFeedbackOutput` per `runtime-pipeline-staging.md` §9.13), and surfaces them as PostToolUse `additional_context` during agent work; (b) **pre-push Tier 3 (Surface 2)** corresponds to **Stage 6** (git pre-push hook auto-invocation plus on-demand `/review`, `/security-review`, `/ultrareview`; warn-only by default per `tier-3-async-deep-review.md`). The Stage 5 placement in earlier drafts was for the pre-push Surface only and was relocated to Stage 6 per `tier-3-async-deep-review.md:29` ("less frequent (per push, not per tool call), warn-only output") and `tier-3-async-deep-review.md:52` ("The natural integration point is the git pre-push hook"). Surface 1 was never a Stage 5 placement; it landed at Stage 4-Post in round 9 of the runtime-staging reconciliation cycle.
 
 ---
 
@@ -85,7 +86,7 @@ This adopts the useful part of Jeffrey's negative-evidence ledger pattern withou
 ### 3.1 What's shipped (2026-05)
 
 Per CLAUDE.md and `project_three_tier_policy_enforcement.md`:
-- 105 built-in guard rules (`src/harness/rules-loader.ts`)
+- 110 built-in guard rules (`src/harness/rules-loader.ts`)
 - 31 PostToolUse quality checks (tsc, biome, cargo, mypy, oxlint, etc.)
 - 25 structural checks (export surface, import resolution, cycles, blast radius)
 - 50+ inline code analysis checks across `src/harness/checks/<family>.ts`
@@ -626,7 +627,7 @@ What the supermodel does:
 - Helps with architectural taste decisions ("this introduces an abstraction that doesn't pay for itself yet").
 
 What it does NOT do by default:
-- Block tool calls (warn-only, never blocks).
+- Block tool calls — Tier 3 does not block by default; local opt-in `block_on_critical` may block critical findings; Agent CI hard gate (per `multi-agent-pre-push-review.md`) is a separate surface.
 - Act autonomously (it advises; the agent decides; the user decides).
 - Override Cedar decisions.
 
@@ -637,11 +638,11 @@ Retained from `tier-3-async-deep-review.md`, with §6.4 redaction/data-class rou
 - Loads active prose policies + **redacted** session trajectory + **redacted/minimized** commit diff. The input composer uses the same §6.4 scanner/redactor/data-class router as T2; if redaction fails, no cloud reviewer call is attempted and the review is recorded as skipped.
 - Reviewer agent (Sonnet default, Opus on demand) emits structured findings.
 - Findings written to `.interlinked/reviews/<range-sha>.md`.
-- **Never blocks push.** Warn-only per `feedback_reluctance_to_push.md`.
+- **Default warn-only; local opt-in `block_on_critical` may block critical findings; Agent CI hard gate is a separate surface.** Per `feedback_reluctance_to_push.md`. The default-warn / opt-in-block split is canonical for the local pre-push surface; the canonical hard-gate semantics (unanimous-allow, audited bypass) live in `multi-agent-pre-push-review.md` and apply to the Agent CI / managed remote product, not the local CLI.
 
 ### 5.2 Defaults: warn-only, opt-in escalation
 
-**Decision (consistent with `feedback_reluctance_to_push`):** Tier 3 is warn-only by default. Surfaces findings, never blocks, never halts.
+**Decision (consistent with `feedback_reluctance_to_push`):** Tier 3 is **default warn-only**. By default it surfaces findings and the push proceeds. The local opt-in `block_on_critical` settings (below) are the only path to a local block; the Agent CI hard gate (`multi-agent-pre-push-review.md`) is a separate product surface and is not a promotion of the local default — same reviewer architecture, two product contracts. Use one phrase everywhere in this doc and the synthesis: "default warn-only; local opt-in `block_on_critical`; Agent CI hard gate is a separate surface."
 
 Opt-in escalations:
 - `tier3.live_feedback.block_on_critical: true` — let live-feedback escalate to a block on critical findings. Default off.
@@ -1225,7 +1226,7 @@ When you sit down to build this, here's the order:
 
 11. **Selective T2 enforce based on shadow data.** Per-rule enforcement toggle.
 
-12. **T3 live feedback channel.** Add the supermodel cloud endpoint (Sonnet 4.6 default). Wire to PostToolUse `additional_context` (model-visible on Claude Code / Cursor; stderr fallback on Codex / Copilot / Gemini per §10). Default invocation policy: every commit + every 50 tool calls.
+12. **T3 live feedback channel.** Add the supermodel cloud endpoint (Sonnet 4.6 default). Wire to PostToolUse `additional_context` (model-visible on Claude Code / Cursor; stderr fallback on Codex / Copilot / Gemini per §10). Default invocation policy per §5.4: every commit + every 50 tool calls + on T2 fail-open (same-event fallback when typed-signal classifier returns no usable verdict — see `runtime-pipeline-staging.md` §9.13 Trigger).
 
 13. **T3 pre-push review.** Existing design from `tier-3-async-deep-review.md` — redacted session trajectory persistence + redacted/minimized diff composer + git note linkage + pre-push hook + Sonnet reviewer.
 

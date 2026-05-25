@@ -37,6 +37,8 @@ The consequent simplification: protocol surface drops from "five cases each with
 
 **Audience:** Engineers building this system. Anyone implementing should also have read `agent-memory-architecture.md` (parent design — alignment principles, claim_dependencies contract, authority tiers) and `docs/integrations/supermodel.md` (existing consumer).
 
+**Related.** `runtime-pipeline-staging.md` — the predict → reveal → reconcile loop described here runs at Stage 2 in the staged pipeline; counterfactual Graph Prediction (sandbox replay), transitive prediction K hops downstream, and test-outcome prediction are Stage 2/5 extensions specified there.
+
 ---
 
 ## 1. The motivating question

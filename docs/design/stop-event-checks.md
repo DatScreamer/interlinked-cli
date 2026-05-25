@@ -2,6 +2,8 @@
 
 **Origin:** 2026-05-11 conversation triggered by `docs/external-pulse/failproofai.md`. Failproofai ships five `require-*-before-stop` policies (commit / push / PR / no-conflicts / CI-green) that form a *forward-march* pipeline pushing the agent toward `git push` as the path of progress. We adopted Tier 1 below and explicitly rejected the failproofai gate set as the wrong *direction* for our culture.
 
+**Related.** `runtime-pipeline-staging.md` — the Tier 1 stop-event checks here are Stage 5 in the seven-stage pipeline; this doc's Tier 2/3 backlog enumerates Stage 5 deep gates (diff-mutation testing, counterfactual Graph Prediction Protocol, property-based testing, patch-level cloud review). Multi-agent debate / synthesis and Tier 3 prose-policy review have been relocated to Stage 6 (pre-push hook + on-demand), not Stage 5.
+
 ## Design principle
 
 **Stop hooks should make the agent reflect before claiming done, not push it to ship.** Reuse signals only available at session boundaries (trajectory, cumulative edits, tool-use patterns). Prefer warnings / `instruct`-style nudges over hard denies — denies should be reserved for things genuinely unsafe to leave unfinished.

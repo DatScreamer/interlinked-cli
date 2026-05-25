@@ -8,6 +8,8 @@
 
 **Constraint.** Descriptive, not prescriptive. The metric reports what the repo chose; it does not declare any tool correct or any choice wrong. The harness has no authority to dictate a customer's stack — only to surface what's there, deterministically (per `feedback_harness_deterministic_only.md`).
 
+**Related.** `runtime-pipeline-staging.md` — the decision-surface metric is one of the Stage 3 inline checks in the staged pipeline; its ratchet variant would feed into the per-edit confidence-delta accumulation.
+
 ---
 
 ## TL;DR

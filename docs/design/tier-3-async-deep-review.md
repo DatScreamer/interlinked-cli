@@ -2,14 +2,15 @@
 
 **Status:** Designed (2026-05). Not built. Existing `/review` and `/security-review` skills cover the on-demand version; Tier 3 adds auto-invocation on pre-push and integrates the prose-policy evaluation that Tier 1 and Tier 2 can't reach.
 
-**Audience:** Future-you when you build Tier 3 wiring. Companion to `tier-2-llm-policy-gate.md`.
+**Audience:** Future-you when you build Tier 3 wiring. Companion to `three-tier-architecture-v2.md` (the canonical Tier 2 spec; the earlier `tier-2-llm-policy-gate.md` draft has been superseded).
 
 **Companion docs:**
-- `docs/design/tier-2-llm-policy-gate.md` — the synchronous LLM gate
+- `docs/design/three-tier-architecture-v2.md` — the canonical Tier 2 spec (typed-signal classifier + Cedar adjudication); supersedes the earlier `tier-2-llm-policy-gate.md` draft which is historical only
 - `skills/enforce/SKILL.md` §15.4 — prose.md artifact format
 - `~/.claude/projects/-Users-quentincody-interlinked-cli/memory/feedback_reluctance_to_push.md` — why we don't gate push
 - `~/.claude/projects/-Users-quentincody-interlinked-cli/memory/feedback_ci_failure_is_harness_gap.md` — every red CI is a harness gap
 - `skills/security-review/` and `skills/review/` — existing on-demand reviewers (if applicable; pull paths from `interlinked skill list`)
+- `docs/design/runtime-pipeline-staging.md` — **This memo covers only the pre-push Tier 3 surface (Surface 2 per `three-tier-architecture-v2.md` §5.1), which maps to Stage 6** in the seven-stage pipeline (Stages 0 through 6); see for trigger conditions, the default-warn-only contract at the push boundary, and confidence-based skip logic. Stage 6 is the only stage of the pipeline that fires outside the agent-runtime hook framework — it is driven by the git pre-push hook, CI, scheduled background jobs, and on-demand commands (`/review`, `/security-review`, `/ultrareview`), not by PreToolUse / PostToolUse / Stop / SubagentStop / SessionEnd. **The Tier 3 live feedback channel (Surface 1 per v2 §5.1) is a different surface entirely: it runs at Stage 4-Post during agent work, mints its own per-event receipt, and is documented in `runtime-pipeline-staging.md` §9.13 rather than here.** Earlier drafts of `runtime-pipeline-staging.md` placed pre-push Tier 3 at Stage 5 / Stop; that placement was corrected in the 2026-05-20 second-round review and is now consistent with this memo's §3.1 (pre-push trigger) and §3.2 (on-demand trigger).
 
 ---
 
@@ -66,12 +67,12 @@ $ git push
   │   ├── invoke Tier 3 review with (repo, diff, prose, session log)
   │   ├── write findings to .interlinked/reviews/<range-sha>.md
   │   ├── print summary findings to stderr
-  │   └── exit 0  (warn-only — never blocks push per feedback_reluctance_to_push)
+  │   └── exit 0  (default warn-only; opt-in `block_on_critical: true` may exit non-zero on critical findings — see §13 for the contract)
   │
   ▼ git push proceeds
 ```
 
-Critical: Tier 3 **never** blocks push. It writes findings, prints to stderr, exits 0. The user reads the findings and decides whether to act on them — fix locally, address in follow-up, or accept.
+Critical: Tier 3 is **default warn-only**. By default it writes findings, prints to stderr, exits 0 — the user reads the findings and decides whether to act on them (fix locally, address in follow-up, or accept). The only path to a block is the opt-in `block_on_critical: true` setting in `.interlinked/config.local.json` (see §13) combined with at least one finding at severity `critical`. Without that opt-in the push always proceeds; with it, push is blocked on critical findings until the user resolves them or bypasses with `--no-verify`.
 
 ### 3.2 On-demand (`/review`, `/security-review`)
 
@@ -227,7 +228,7 @@ Did the session follow the skill's prescribed methodology? **Yes/No**
 
 ## Did this review affect the push?
 
-No. Tier 3 is warn-only. Push proceeded; findings written here for reference.
+No (default warn-only mode). Tier 3 does not block by default — push proceeded; findings written here for reference. With the opt-in `block_on_critical: true` setting in `.interlinked/config.local.json` (see §13), critical-severity findings would block the push, and this section would read instead: "Yes (blocked by opt-in `block_on_critical` on N critical finding(s); resolve them or push with `git push --no-verify` to bypass)."
 ```
 
 ### 7.2 Stderr summary (printed before push)
@@ -244,7 +245,7 @@ No. Tier 3 is warn-only. Push proceeded; findings written here for reference.
   MEDIUM: src/api/users.ts:88 — banned vocabulary "service" used in
         architectural comments
 
-Push proceeding (warn-only).
+Push proceeding (default warn-only). Opt-in `block_on_critical` variant would print "Push BLOCKED: N critical finding(s); resolve them or bypass with --no-verify" before the runtime exits non-zero — see §13.
 ```
 
 ### 7.3 Optional: integration with /ultrareview
@@ -329,7 +330,7 @@ This is the auditability story. Any finding can be traced back to a specific imp
 
 ## 13. Warn-only contract (binding per feedback_reluctance_to_push)
 
-Tier 3 **NEVER blocks push.** Even on critical findings, the push proceeds and the findings get written to disk.
+Tier 3 is **default warn-only.** Without the opt-in setting, even critical findings let the push proceed and the findings get written to disk. The only path to a block is the opt-in `block_on_critical: true` setting in `.interlinked/config.local.json` (see §13) combined with at least one finding at severity `critical`; with that opt-in active, push is blocked on critical findings until the user resolves them or bypasses with `--no-verify`.
 
 Reasons:
 1. Push-gating creates pressure to fast-path around the gate (e.g., `git push --no-verify`).
