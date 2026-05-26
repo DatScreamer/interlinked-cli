@@ -83,3 +83,47 @@ describe("checkTestFileExists — generator-output gate (FP refinement)", () => 
 		expect(out.length).toBe(1);
 	});
 });
+
+describe("checkTestFileExists — type-only module gate (FP refinement)", () => {
+	// A fabricated path with no test sibling on disk: the ONLY thing that can
+	// return [] for these is the type-only gate. Without it the check fires.
+	const NO_SIBLING = "/tmp/__interlinked_test_does_not_exist__";
+
+	// Negative cases — pure type-definition modules MUST be exempted.
+
+	test("a pure interface module is exempted", () => {
+		const code = [
+			"export interface Config {",
+			"  enabled: boolean;",
+			"}",
+			"export interface Server { url: string; }",
+		].join("\n");
+		expect(checkTestFileExists(`${NO_SIBLING}/types/config.ts`, code)).toEqual([]);
+	});
+
+	test("a pure type-alias module is exempted", () => {
+		const code = [
+			'export type SyncMode = "realtime" | "local" | "manual";',
+			"export type Handler = (e: string) => void;",
+		].join("\n");
+		expect(checkTestFileExists(`${NO_SIBLING}/types/modes.ts`, code)).toEqual([]);
+	});
+
+	// Positive cases — runtime code must STILL be flagged for a missing test.
+
+	test("STILL flags a module that mixes a type with runtime code", () => {
+		const code = [
+			'export type Mode = "on" | "off";',
+			'export const DEFAULT_MODE: Mode = "on";',
+		].join("\n");
+		const out = checkTestFileExists(`${NO_SIBLING}/lib/with-runtime.ts`, code);
+		expect(out.length).toBe(1);
+	});
+
+	test("STILL flags a type-only module when content is undefined (no gate)", () => {
+		// The gate is content-based — callers that pass no content keep the
+		// original behavior.
+		const out = checkTestFileExists(`${NO_SIBLING}/lib/types-no-content.ts`);
+		expect(out.length).toBe(1);
+	});
+});

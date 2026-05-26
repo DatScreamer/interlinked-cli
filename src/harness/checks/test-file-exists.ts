@@ -2,7 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { existsSync } from "node:fs";
-import { type InlineMatch, isGeneratedFile, isTestFile } from "./shared.js";
+import { type InlineMatch, isGeneratedFile, isTestFile, isTypeOnlyModule } from "./shared.js";
 
 // ===========================================
 // Check: Test File Existence
@@ -85,6 +85,11 @@ export function checkTestFileExists(filePath: string, content?: string): InlineM
 		".java",
 	]);
 	if (!codeExts.has(ext.toLowerCase())) return [];
+
+	// Pure type-definition modules (only interface/type declarations, no
+	// runtime code) have nothing to unit-test — tsc already validates them.
+	// Flagging them was a recurring FP on type-only `*.ts` files.
+	if (content !== undefined && isTypeOnlyModule(filePath, content)) return [];
 
 	const dir = lastSlash >= 0 ? filePath.slice(0, lastSlash) : ".";
 

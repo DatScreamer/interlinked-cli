@@ -10,6 +10,7 @@ import {
 	isGeneratedFile,
 	isScriptOrCliPath,
 	isTestFile,
+	isTypeOnlyModule,
 	lineHasNoqaSuppression,
 	scanLinesStripped,
 	stripComments,
@@ -371,5 +372,131 @@ describe("lineHasNoqaSuppression", () => {
 	test("`# nope: S307` (typo, not noqa) does NOT suppress", () => {
 		const line = `value = eval(x)  # nope: S307`;
 		expect(lineHasNoqaSuppression(line, "ubs_eval_input_tainted")).toBe(false);
+	});
+});
+
+// `isTypeOnlyModule` gates the `no_test_file` and TDD-cycle checks: a
+// TypeScript module that declares only types has nothing to unit-test, so
+// demanding a `.test.<ext>` sibling is pure noise. Negative cases are the
+// type-only modules that MUST be detected; positive cases are modules with
+// runtime code that MUST still flow through to the check.
+
+describe("isTypeOnlyModule", () => {
+	// Negative cases — pure type-definition modules MUST be detected.
+
+	test("a module of only interface declarations", () => {
+		const code = [
+			"export interface Config {",
+			"  enabled: boolean;",
+			"}",
+			"export interface Server { url: string; }",
+		].join("\n");
+		expect(isTypeOnlyModule("src/harness/types/config.ts", code)).toBe(true);
+	});
+
+	test("a module of only type aliases", () => {
+		const code = [
+			'export type SyncMode = "realtime" | "local";',
+			"type Internal = { id: string };",
+		].join("\n");
+		expect(isTypeOnlyModule("types.ts", code)).toBe(true);
+	});
+
+	test("a type re-export barrel", () => {
+		const code = [
+			'export type { Config } from "./config.js";',
+			'import type { Base } from "./base.js";',
+			"export type Wrapped = Base;",
+		].join("\n");
+		expect(isTypeOnlyModule("index.ts", code)).toBe(true);
+	});
+
+	test("runtime keywords inside comments and strings do not disqualify", () => {
+		// The exact FP shape: a type module whose doc comment and string
+		// members spell out `const` / `function` / `class`.
+		const code = [
+			"/** Holds a frozen const built by a factory function. */",
+			'export type Keyword = "const" | "function" | "class" | "enum";',
+			"export interface Spec { enabled: boolean; }",
+		].join("\n");
+		expect(isTypeOnlyModule("keywords.ts", code)).toBe(true);
+	});
+
+	// Positive cases — a module with ANY runtime code MUST NOT be type-only.
+
+	test("a module with an exported const is not type-only", () => {
+		const code = [
+			'export type Mode = "on" | "off";',
+			'export const DEFAULT: Mode = "on";',
+		].join("\n");
+		expect(isTypeOnlyModule("config.ts", code)).toBe(false);
+	});
+
+	test("a module with a function is not type-only", () => {
+		const code = [
+			"export interface Result { ok: boolean; }",
+			"export function check(): Result { return { ok: true }; }",
+		].join("\n");
+		expect(isTypeOnlyModule("check.ts", code)).toBe(false);
+	});
+
+	test("a module with a class is not type-only", () => {
+		const code = [
+			'export type State = "idle" | "busy";',
+			'export class Machine { state: State = "idle"; }',
+		].join("\n");
+		expect(isTypeOnlyModule("machine.ts", code)).toBe(false);
+	});
+
+	test("a module with an enum is not type-only (enums emit runtime code)", () => {
+		const code = ["export type Alias = number;", "export enum Color { Red, Green }"].join("\n");
+		expect(isTypeOnlyModule("color.ts", code)).toBe(false);
+	});
+
+	test("a module with a default export is not type-only", () => {
+		const code = [
+			"export type Settings = { debug: boolean };",
+			"export default { debug: false };",
+		].join("\n");
+		expect(isTypeOnlyModule("settings.ts", code)).toBe(false);
+	});
+
+	test("a module with a side-effect import is not type-only", () => {
+		const code = [
+			"export interface Options { enabled: boolean; }",
+			'import "./polyfill.js";',
+		].join("\n");
+		expect(isTypeOnlyModule("bootstrap.ts", code)).toBe(false);
+	});
+
+	test("a module with a runtime re-export is not type-only", () => {
+		const code = [
+			"export type Options = { enabled: boolean };",
+			'export { start } from "./server.js";',
+		].join("\n");
+		expect(isTypeOnlyModule("server.ts", code)).toBe(false);
+	});
+
+	test("a module with an expression statement is not type-only", () => {
+		const code = [
+			"export interface Options { enabled: boolean; }",
+			"init();",
+		].join("\n");
+		expect(isTypeOnlyModule("init.ts", code)).toBe(false);
+	});
+
+	test("same-line runtime code after a type declaration is not type-only", () => {
+		const code = "export type Options = { enabled: boolean }; init();";
+		expect(isTypeOnlyModule("inline-init.ts", code)).toBe(false);
+	});
+
+	test("a non-TS file is never type-only (Go `type X struct`)", () => {
+		const code = ["type Point struct {", "  X int", "}"].join("\n");
+		expect(isTypeOnlyModule("point.go", code)).toBe(false);
+	});
+
+	test("a file with no type declaration is not type-only", () => {
+		const code = ['import "./side-effects.js";', "// no interface or type here"].join("\n");
+		expect(isTypeOnlyModule("bootstrap.ts", code)).toBe(false);
 	});
 });

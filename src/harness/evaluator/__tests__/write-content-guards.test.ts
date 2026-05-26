@@ -553,6 +553,50 @@ describe("evaluateWriteContentGuards — content-quality false-positive fixes", 
 		].join("\n");
 		expect(contentQualityWarnings("sync-service.ts", content, "hardcoded URLs").length).toBe(1);
 	});
+
+	// `as any` / `as unknown` are flagged only as real casts (code), not when
+	// the words appear inside a doc comment or string literal — the FP that
+	// fired on type-definition files documenting the as-any ratchet metric.
+
+	it("does NOT flag `as any` mentioned inside a doc comment", () => {
+		const content = [
+			"/** Count of `as any` casts captured before the edit. */",
+			"export interface Baseline {",
+			"  asAnyCastCount: number;",
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("baseline.ts", content, "as any")).toEqual([]);
+	});
+
+	it("does NOT flag `as any` inside a string literal", () => {
+		const content = 'export const label = "pass cast as any to silence tsc";\n';
+		expect(contentQualityWarnings("labels.ts", content, "as any")).toEqual([]);
+	});
+
+	it("does NOT flag `as any` in plain template-literal text", () => {
+		const content = "export const label = `pass cast as any to silence tsc`;\n";
+		expect(contentQualityWarnings("template-label.ts", content, "as any")).toEqual([]);
+	});
+
+	it("still flags a real `as any` cast in code", () => {
+		const content = "export const wrapped = rawValue as any;\n";
+		expect(contentQualityWarnings("real-cast.ts", content, "as any").length).toBe(1);
+	});
+
+	it("still flags a real `as any` cast after a JS private field", () => {
+		const content = "export class Box { #value = rawValue as any; }\n";
+		expect(contentQualityWarnings("private-field.ts", content, "as any").length).toBe(1);
+	});
+
+	it("still flags a real `as unknown` cast after a JS private field access", () => {
+		const content = "export class Box { read() { return this.#value as unknown; } }\n";
+		expect(contentQualityWarnings("private-access.ts", content, "as unknown").length).toBe(1);
+	});
+
+	it("still flags a real `as any` cast inside template interpolation", () => {
+		const content = "export const wrapped = `value: ${rawValue as any}`;\n";
+		expect(contentQualityWarnings("template-cast.ts", content, "as any").length).toBe(1);
+	});
 });
 
 describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {

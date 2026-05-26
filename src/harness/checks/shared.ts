@@ -331,6 +331,143 @@ export function isGeneratedFile(content: string): boolean {
 }
 
 /**
+ * Detect a TypeScript module whose entire surface is type-level — only
+ * `interface` / `type` declarations (plus imports and type re-exports),
+ * with no runtime code. Such a module emits nothing executable; `tsc`
+ * already validates it, so checks that demand a `.test.<ext>` sibling
+ * (`no_test_file`, the TDD-cycle nudges) only ever false-positive on it.
+ * The harness's own `src/harness/types/*.ts` were the recurring trigger.
+ *
+ * TS-only by extension: `interface` / `type` are not reliable type-only
+ * markers in Go (`type X struct`) or JS, so non-TS files return false.
+ *
+ * Conservative — any top-level runtime declaration, import/export, or
+ * expression statement marks the module NOT type-only. A file with even one
+ * runtime value is still checked; the failure mode is "check a file that
+ * needn't be tested", never "skip a real one".
+ */
+export function isTypeOnlyModule(filePath: string, content: string): boolean {
+	if (!/\.(?:ts|tsx|mts|cts)$/i.test(filePath)) return false;
+	const code = stripCommentsAndStrings(content);
+	// Must declare at least one type — otherwise "type-only" is vacuous
+	// (an empty file, a pure side-effect import module, etc.).
+	if (!/^[ \t]*(?:export[ \t]+)?(?:interface|type)[ \t]/m.test(code)) {
+		return false;
+	}
+	// `export default <expr>` ships a runtime value even with no keyword.
+	if (/^[ \t]*export[ \t]+default\b/m.test(code)) return false;
+	if (!hasOnlyTypeLevelTopLevelStatements(code)) return false;
+	return true;
+}
+
+type TypeOnlyTopLevelMode = "import-type" | "type" | "interface";
+
+function hasOnlyTypeLevelTopLevelStatements(code: string): boolean {
+	let offset = 0;
+
+	while (true) {
+		offset = skipWhitespace(code, offset);
+		if (offset >= code.length) return true;
+
+		const mode = typeOnlyTopLevelModeAt(code, offset);
+		if (mode === null) return false;
+
+		const nextOffset = findTypeOnlyStatementEnd(code, offset, mode);
+		if (nextOffset === null || nextOffset <= offset) return false;
+		offset = nextOffset;
+	}
+}
+
+function skipWhitespace(code: string, offset: number): number {
+	let i = offset;
+	while (i < code.length && /\s/.test(code[i])) i++;
+	return i;
+}
+
+function typeOnlyTopLevelModeAt(code: string, offset: number): TypeOnlyTopLevelMode | null {
+	const rest = code.slice(offset);
+	if (/^import[ \t]+type\b/.test(rest)) return "import-type";
+	if (/^(?:export[ \t]+)?type\b/.test(rest)) return "type";
+	if (/^(?:export[ \t]+)?interface\b/.test(rest)) return "interface";
+	return null;
+}
+
+function findTypeOnlyStatementEnd(
+	code: string,
+	offset: number,
+	mode: TypeOnlyTopLevelMode,
+): number | null {
+	let braceDepth = 0;
+	let bracketDepth = 0;
+	let parenDepth = 0;
+	let interfaceSawBody = false;
+
+	for (let i = offset; i < code.length; i++) {
+		const ch = code[i];
+
+		if (ch === "{") {
+			braceDepth++;
+			if (mode === "interface") interfaceSawBody = true;
+		} else if (ch === "}") {
+			braceDepth = Math.max(0, braceDepth - 1);
+			if (mode === "interface" && interfaceSawBody && braceDepth === 0) {
+				return consumeOptionalSemicolon(code, i + 1);
+			}
+		} else if (ch === "[") {
+			bracketDepth++;
+		} else if (ch === "]") {
+			bracketDepth = Math.max(0, bracketDepth - 1);
+		} else if (ch === "(") {
+			parenDepth++;
+		} else if (ch === ")") {
+			parenDepth = Math.max(0, parenDepth - 1);
+		} else if (ch === ";" && braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) {
+			return i + 1;
+		} else if (
+			ch === "\n" &&
+			mode !== "interface" &&
+			braceDepth === 0 &&
+			bracketDepth === 0 &&
+			parenDepth === 0 &&
+			canEndTypeOnlyStatementAtNewline(code, i, mode)
+		) {
+			return i + 1;
+		}
+	}
+
+	if (braceDepth !== 0 || bracketDepth !== 0 || parenDepth !== 0) return null;
+	if (mode === "interface" && !interfaceSawBody) return null;
+	return code.length;
+}
+
+function consumeOptionalSemicolon(code: string, offset: number): number {
+	let i = offset;
+	while (i < code.length && (code[i] === " " || code[i] === "\t" || code[i] === "\r")) {
+		i++;
+	}
+	return code[i] === ";" ? i + 1 : offset;
+}
+
+function canEndTypeOnlyStatementAtNewline(
+	code: string,
+	newlineOffset: number,
+	mode: TypeOnlyTopLevelMode,
+): boolean {
+	const nextLineStart = newlineOffset + 1;
+	const nextLineEnd = code.indexOf("\n", nextLineStart);
+	const nextLine =
+		nextLineEnd === -1
+			? code.slice(nextLineStart).trim()
+			: code.slice(nextLineStart, nextLineEnd).trim();
+	if (nextLine.length === 0) return true;
+	if (mode === "import-type") return !/^from\b/.test(nextLine);
+	return !(
+		/^[|&=?:,\]>)]/.test(nextLine) ||
+		/^(?:keyof|readonly|infer|typeof|unique|this)\b/.test(nextLine)
+	);
+}
+
+/**
  * Detect script/CLI/tool/tutorial paths where `print()` and
  * `console.log()` are the legitimate output channel — not a debug
  * leak. Used to suppress `ubs_print_debug_leak` and `console_debug` on

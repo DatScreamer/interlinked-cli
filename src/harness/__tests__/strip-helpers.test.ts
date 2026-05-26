@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	extractTemplateInterpolationExpressions,
 	stripAllLiterals,
 	stripComments,
 	stripRegexLiterals,
@@ -85,6 +86,25 @@ describe("stripTemplateLiterals", () => {
 		const input = `const x = ${BT}a${DOLLAR}{b + 1}c${BT};`;
 		const out = stripTemplateLiterals(input);
 		expect(out).toBe(`const x = ${BT}          ${BT};`);
+	});
+});
+
+describe("extractTemplateInterpolationExpressions", () => {
+	const BT = String.fromCharCode(96);
+	const DOLLAR = String.fromCharCode(36);
+
+	it("returns executable interpolation bodies, not template text", () => {
+		const input = `const x = ${BT}avoid as any in prose ${DOLLAR}{raw as any}${BT};`;
+		expect(extractTemplateInterpolationExpressions(input)).toEqual(["raw as any"]);
+	});
+
+	it("ignores backticks inside comments and quoted strings", () => {
+		const input = [
+			`// ${BT}${DOLLAR}{commented as any}${BT}`,
+			`const text = "${BT}${DOLLAR}{quoted as any}${BT}";`,
+			`const real = ${BT}${DOLLAR}{value as unknown}${BT};`,
+		].join("\n");
+		expect(extractTemplateInterpolationExpressions(input)).toEqual(["value as unknown"]);
 	});
 });
 

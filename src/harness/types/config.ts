@@ -84,7 +84,7 @@ export interface QualityCheckConfig {
 
 /** Controls which checks use diff-aware filtering to suppress pre-existing issues */
 export interface DiffAwareConfig {
-	/** Master switch (default: true) */
+	/** Master switch — true = suppress pre-existing findings; false = report all (default: false) */
 	enabled: boolean;
 	/** "baseline" = only report new findings; "off" = report all (default: "baseline") */
 	missing_return_types?: "baseline" | "off";
@@ -200,7 +200,7 @@ export interface GuardRulesConfig {
 	strict_skips?: boolean;
 	/** Skip reason categories that are acceptable in strict mode */
 	skip_allowlist?: string[];
-	/** Diff-aware filtering: only report newly-introduced issues (default: enabled) */
+	/** Diff-aware filtering: when enabled, only report newly-introduced issues (default: disabled) */
 	diff_aware?: DiffAwareConfig;
 	/** LLM policy classifier for ambiguous PreToolUse cases */
 	policy_classifier?: ClassifierConfig;

@@ -27,6 +27,7 @@ import {
 import { resolveProposedContent } from "../overlay-content.js";
 import { findProjectRoot } from "../quality-checks.js";
 import { scanPromptInjection } from "../signatures.js";
+import { extractTemplateInterpolationExpressions, stripAllLiterals } from "../strip-helpers.js";
 import type {
 	EscalationRequest,
 	GuardRulesConfig,
@@ -632,9 +633,17 @@ function collectContentQualityWarnings(
 function collectTsJsQualityWarnings(filePath: string, content: string): string[] {
 	const warnings: string[] = [];
 
-	// Warn on unsafe type assertions
-	const asAnyCount = (content.match(/\bas\s+any\b/g) || []).length;
-	const asUnknownCount = (content.match(/\bas\s+unknown\b/g) || []).length;
+	// Warn on unsafe type assertions. Scan comment- and string-stripped
+	// content: a real `as any` / `as unknown` cast is always code, so the
+	// bare words inside a doc comment (e.g. "Count of `as any` casts") or a
+	// string literal are not assertions — counting those was a recurring FP
+	// on type-definition files that document the ratchet metrics.
+	const interpolationCode = extractTemplateInterpolationExpressions(content)
+		.map((expr) => stripAllLiterals(expr))
+		.join("\n");
+	const codeOnly = `${stripAllLiterals(content)}\n${interpolationCode}`;
+	const asAnyCount = (codeOnly.match(/\bas\s+any\b/g) || []).length;
+	const asUnknownCount = (codeOnly.match(/\bas\s+unknown\b/g) || []).length;
 	const parts: string[] = [];
 	if (asAnyCount > 0) parts.push(`${asAnyCount} "as any"`);
 	if (asUnknownCount > 0) parts.push(`${asUnknownCount} "as unknown"`);
