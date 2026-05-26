@@ -246,12 +246,14 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		description: "Detects use of eval() and Function()",
 		tier: 1,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	inner_html: {
 		name: "innerHTML Usage",
 		description: "Detects direct innerHTML assignment (XSS risk)",
 		tier: 1,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	nan_comparison: {
 		name: "NaN Comparison",
@@ -276,6 +278,7 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		description: "Detects React dangerouslySetInnerHTML usage",
 		tier: 1,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	package_json_publish_invariants: {
 		name: "Package JSON Publish Invariants",

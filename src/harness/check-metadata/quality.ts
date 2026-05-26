@@ -28,6 +28,7 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		description: "Detect secrets written into source files",
 		tier: 1,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	strong_typing: {
 		name: "Strong Typing",
@@ -41,6 +42,7 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 			"Detect likely stale-memory downgrades of package versions, model IDs, Docker tags, GitHub Action versions, API dates, and common runtime/config version assignments",
 		tier: 1,
 		determinism: "heuristic",
+		asi: "ASI04",
 	},
 	freshness_sensitive_reference: {
 		name: "Freshness-Sensitive Reference",
@@ -122,24 +124,28 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		description: "SAST analysis with Semgrep",
 		tier: 2,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	dependency_audit: {
 		name: "Dependency Audit",
 		description: "SCA dependency audit for known CVEs",
 		tier: 2,
 		determinism: "fully_deterministic",
+		asi: "ASI04",
 	},
 	gitleaks: {
 		name: "Gitleaks",
 		description: "Secrets scanning with gitleaks",
 		tier: 1,
 		determinism: "fully_deterministic",
+		asi: "ASI05",
 	},
 	prompt_injection: {
 		name: "Prompt Injection",
 		description: "Detect prompt injection patterns in file content",
 		tier: 2,
 		determinism: "heuristic",
+		asi: "ASI06",
 	},
 	shellcheck: {
 		name: "ShellCheck",
@@ -188,6 +194,7 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		description: "Lockfile drift — manifest changed but lockfile not regenerated",
 		tier: 2,
 		determinism: "fully_deterministic",
+		asi: "ASI04",
 	},
 	schema_drift: {
 		name: "Schema Drift",

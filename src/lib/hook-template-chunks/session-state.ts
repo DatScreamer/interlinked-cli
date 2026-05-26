@@ -514,6 +514,58 @@ function resolveGitContext(startDir) {
     }
 }
 
+// --- Audit chain helpers (borrowed from Microsoft AGT's audit.mjs pattern, MIT) ---
+// Used by appendGuardDecision to make guard_* decisions tamper-evident. Verifier
+// lives in src/lib/audit-chain.ts; same canonical JSON + sha256 + genesis. Maps
+// to OWASP ASI11 (Agent Untraceability).
+const AUDIT_GUARD_TYPES = { guard_block: 1, guard_warn: 1, guard_allow: 1 };
+const AUDIT_GENESIS_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
+
+function auditCanonicalJson(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return "[" + value.map(auditCanonicalJson).join(",") + "]";
+    const keys = Object.keys(value).sort();
+    return "{" + keys.map(function (k) { return JSON.stringify(k) + ":" + auditCanonicalJson(value[k]); }).join(",") + "}";
+}
+
+function computeAuditHash(record) {
+    // Exclude 'hash' itself — chain over everything else including previousHash.
+    const rest = {};
+    for (const k of Object.keys(record)) { if (k !== "hash") rest[k] = record[k]; }
+    return createHash("sha256").update(auditCanonicalJson(rest)).digest("hex");
+}
+
+// Tail-read activity.jsonl to find the most recent hash-bearing guard_* entry.
+// Cost is one read of up to AUDIT_TAIL_BYTES from EOF (typically ~one syscall);
+// for a healthy log the last line is reachable inside the first chunk.
+const AUDIT_TAIL_BYTES = 64 * 1024;
+function readPreviousGuardHash() {
+    try {
+        if (!existsSync(ACTIVITY_PATH)) return AUDIT_GENESIS_HASH;
+        const size = statSync(ACTIVITY_PATH).size;
+        if (size === 0) return AUDIT_GENESIS_HASH;
+        const readSize = Math.min(AUDIT_TAIL_BYTES, size);
+        const buf = Buffer.alloc(readSize);
+        const fd = openSync(ACTIVITY_PATH, "r");
+        try { readSync(fd, buf, 0, readSize, size - readSize); } finally { closeSync(fd); }
+        const lines = buf.toString("utf-8").split("\\n");
+        // Walk newest-first; first line may be partial if the tail clipped mid-record.
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            try {
+                const rec = JSON.parse(line);
+                if (rec && AUDIT_GUARD_TYPES[rec.type] && typeof rec.hash === "string" && rec.hash.length === 64) {
+                    return rec.hash;
+                }
+            } catch (_e) { /* partial / malformed — keep walking */ }
+        }
+        return AUDIT_GENESIS_HASH;
+    } catch (_err) {
+        return AUDIT_GENESIS_HASH;
+    }
+}
+
 // --- Local JSONL append (full capture, sync) ---
 function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey) {
     try {
@@ -644,6 +696,11 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
         if (guardResult.checks_timing_ms != null) record.guard_checks_timing_ms = guardResult.checks_timing_ms;
         if (guardResult.checks_ran) record.guard_checks_ran = guardResult.checks_ran;
         if (guardResult.grep_stats) record.guard_grep_stats = guardResult.grep_stats;
+        // Hash chain (OWASP ASI11): previousHash links to the most recent
+        // hash-bearing guard_* entry; hash is sha256 over canonical JSON of
+        // every field except 'hash' itself. Verify with: interlinked audit verify.
+        record.previousHash = readPreviousGuardHash();
+        record.hash = computeAuditHash(record);
         appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
     } catch (_err) { void 0; /* intentional: no-op */ }
 }

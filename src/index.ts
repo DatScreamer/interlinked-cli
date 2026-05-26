@@ -192,6 +192,26 @@ recCmd
 	});
 
 // ===========================================
+// interlinked audit — verify the hash-chained guard-decision log.
+// Borrowed from Microsoft Agent Governance Toolkit's audit.mjs pattern;
+// maps to OWASP ASI11 "Agent Untraceability". See docs/design/
+// agt-cloud-tier-adoptions.md for the broader framing.
+// ===========================================
+const auditCmd = program
+	.command("audit")
+	.description("Verify tamper-evidence of the guard-decision audit chain in activity.jsonl");
+
+auditCmd
+	.command("verify")
+	.description("Walk the hash chain forward, report the first integrity failure (OWASP ASI11)")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { auditVerifyCommand } = await import("./commands/audit.js");
+		await auditVerifyCommand(opts);
+	});
+
+// ===========================================
 // interlinked allowlist — supply-chain package approvals
 // ===========================================
 const alCmd = program
