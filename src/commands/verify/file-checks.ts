@@ -63,6 +63,7 @@ import {
 	checkFocusedTests,
 	checkFunctionComplexity,
 	checkGoroutineNoWaitgroup,
+	checkHappyPathOnlyTest,
 	checkHardcodedTimeout,
 	checkHardcodedTimeoutInTests,
 	checkIndexAsKey,
@@ -86,6 +87,7 @@ import {
 	checkMissingReturnTypes,
 	checkMisusedPromises,
 	checkMockingTheSutSelf,
+	checkMockOnlyTest,
 	checkMutexLockUnwrap,
 	checkNanComparison,
 	checkNestedTernaries,
@@ -1013,6 +1015,10 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			relPath,
 			checkTestSubprocessDefaultTimeout(content, file),
 		),
+	);
+	r.mockOnlyTest.push(...toIssues("mock_only_test", relPath, checkMockOnlyTest(content, file)));
+	r.happyPathOnlyTest.push(
+		...toIssues("happy_path_only_test", relPath, checkHappyPathOnlyTest(content, file)),
 	);
 
 	// === Batch 5: cross-file checks ===

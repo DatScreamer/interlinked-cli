@@ -9,11 +9,13 @@ import {
 	checkDemoRuntimeMissingBanner,
 	checkDuplicateTestNames,
 	checkEmptyBodyHandler,
+	checkHappyPathOnlyTest,
 	checkHardcodedTimeoutInTests,
 	checkListenerPairing,
 	checkManualFieldCopy,
 	checkMigrationParity,
 	checkMockingTheSutSelf,
+	checkMockOnlyTest,
 	checkPlaceholderDataInUi,
 	checkRealIoInTests,
 	checkSchemaTypeDrift,
@@ -132,6 +134,39 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 			"A test that shells out to tsc / biome / npx / tsx / eslint / vitest / the CLI but relies on the default `testTimeout` flakes under CI's worker cap — a cold tsc start alone can exceed the 10s default. Pass an explicit timeout via the vitest options object: `it(name, { timeout: 60_000, retry: 2 }, fn)`. The trailing-numeric form `it(name, fn, 60_000)` also works. Match the established pattern in write.test.ts / verify.test.ts.",
 		fn: checkTestSubprocessDefaultTimeout,
 		resultsPropName: "testSubprocessDefaultTimeout",
+	},
+	// ========================================================================
+	// Test-quality checks (2 entries)
+	// ========================================================================
+	{
+		id: "mock_only_test",
+		phase: "post",
+		name: "Mock-Only Test",
+		description:
+			"Detects it() / test() blocks whose every assertion is a call-interaction matcher (toHaveBeenCalled* / toHaveReturned*) with no assertion on a return value, output, or state — a change-detector that verifies the call was made, not the behavior. Blocks whose call assertions are all negated (only `not.toHaveBeenCalled()`) are exempt.",
+		tier: 2,
+		determinism: "partially_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This test asserts only that a mock/spy was called — never that the code produced a correct value, output, or observable state, so it passes even when the behavior is wrong (it restates the call you wrote). Add an assertion on a return value, the rendered output, or post-state. `not.toHaveBeenCalled()` on its own is fine — asserting a call did NOT happen is a real guarantee; asserting it DID happen with no value check is not.",
+		fn: checkMockOnlyTest,
+		resultsPropName: "mockOnlyTest",
+	},
+	{
+		id: "happy_path_only_test",
+		phase: "post",
+		name: "Happy-Path-Only Test File",
+		description:
+			"Detects test files with 3+ cases that never assert a failure path — no `.not.*`, toThrow, `.rejects`, false/null/undefined assertion, error-handling case, or failure-named test/describe block.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			'Every test in this file asserts a success outcome — nothing exercises a failure path. A suite that can only observe success still passes when a regression breaks the error path, so it gives false confidence. Add at least one negative case: an invalid input, a thrown error, a rejected promise, or an assertion that something did NOT happen. Naming one test for the failure it covers (e.g. "rejects malformed input") also clears the check.',
+		fn: checkHappyPathOnlyTest,
+		resultsPropName: "happyPathOnlyTest",
 	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries; new-export orphan deferred)

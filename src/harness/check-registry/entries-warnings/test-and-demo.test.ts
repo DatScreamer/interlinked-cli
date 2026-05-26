@@ -43,6 +43,12 @@ describe("TEST_AND_DEMO_ENTRIES", () => {
 		}
 	});
 
+	it("includes the test-quality checks", () => {
+		const ids = new Set(TEST_AND_DEMO_ENTRIES.map((c) => c.id));
+		expect(ids).toContain("mock_only_test");
+		expect(ids).toContain("happy_path_only_test");
+	});
+
 	it("includes the Batch 5 cross-file and Batch 8 demo-data checks", () => {
 		const ids = new Set(TEST_AND_DEMO_ENTRIES.map((c) => c.id));
 		for (const expected of [

@@ -287,6 +287,9 @@ export function outputJson(args: OutputJsonArgs): void {
 		test_missing_sut_import: summarizeWithDetails(cq.testMissingSutImport),
 		mocking_the_sut_self: summarizeWithDetails(cq.mockingTheSutSelf),
 		test_subprocess_default_timeout: summarizeWithDetails(cq.testSubprocessDefaultTimeout),
+		// === Test-quality checks (2 entries) ===
+		mock_only_test: summarizeWithDetails(cq.mockOnlyTest),
+		happy_path_only_test: summarizeWithDetails(cq.happyPathOnlyTest),
 		// === Batch 5: cross-file (4 entries) ===
 		empty_body_handler: summarizeWithDetails(cq.emptyBodyHandler),
 		listener_pairing: summarizeWithDetails(cq.listenerPairing),

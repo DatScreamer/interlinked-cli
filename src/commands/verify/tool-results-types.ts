@@ -260,6 +260,11 @@ export interface CodeQualityResults {
 	mockingTheSutSelf: CodeQualityIssue[];
 	/** it() / test() spawning a known-slow subprocess with no explicit timeout. */
 	testSubprocessDefaultTimeout: CodeQualityIssue[];
+	// === Test-quality checks (2 entries) ===
+	/** it() / test() blocks asserting only mock-call interactions, no value / state. */
+	mockOnlyTest: CodeQualityIssue[];
+	/** Test files with 3+ cases that never assert a failure path. */
+	happyPathOnlyTest: CodeQualityIssue[];
 	// === Batch 5: cross-file (4 entries) ===
 	/** Handler-named functions with empty / no-op bodies. */
 	emptyBodyHandler: CodeQualityIssue[];
@@ -449,6 +454,9 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"testMissingSutImport",
 	"mockingTheSutSelf",
 	"testSubprocessDefaultTimeout",
+	// Test-quality checks
+	"mockOnlyTest",
+	"happyPathOnlyTest",
 	// Batch 5: cross-file
 	"emptyBodyHandler",
 	"listenerPairing",

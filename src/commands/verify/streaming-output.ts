@@ -41,6 +41,7 @@ export function getActiveSkipChecks(): Set<string> {
 
 interface StreamCqSectionArgs {
 	label: string;
+	skipId?: string;
 	issues: CodeQualityIssue[];
 	noun: string;
 	passLabel: string;
@@ -56,12 +57,11 @@ interface StreamCqSectionArgs {
  * Skips silently when the check is in the active skip-check set.
  */
 export function streamCqSection(args: StreamCqSectionArgs): void {
-	const { label, issues, noun, passLabel, details, color, allFlaggedFiles } = args;
-	// Skip if this check's label (normalized) is in the skip set.
-	if (
-		activeSkipChecks.size > 0 &&
-		activeSkipChecks.has(label.replace(/[\s-]/g, "_").toLowerCase())
-	) {
+	const { label, skipId, issues, noun, passLabel, details, color, allFlaggedFiles } = args;
+	// Skip if this section's explicit check id (or normalized label for legacy
+	// sections) is in the skip set.
+	const skipKey = skipId ?? label.replace(/[\s-]/g, "_").toLowerCase();
+	if (activeSkipChecks.size > 0 && activeSkipChecks.has(skipKey)) {
 		return;
 	}
 	if (issues.length === 0) {
@@ -111,6 +111,7 @@ export function streamAllCqSections(
 	for (const spec of SECTIONS) {
 		streamCqSection({
 			label: spec.label,
+			skipId: spec.skipId,
 			issues: cq[spec.key],
 			noun: spec.noun,
 			passLabel: spec.passLabel,

@@ -315,6 +315,9 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"demo_data_unmarked",
 				// Test-hygiene heuristic — slow-subprocess flake detector.
 				"test_subprocess_default_timeout",
+				// Test-quality heuristics — mock-only + happy-path-only.
+				"mock_only_test",
+				"happy_path_only_test",
 			].sort(),
 		);
 	});

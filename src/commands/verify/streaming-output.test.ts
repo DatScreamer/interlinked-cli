@@ -7,8 +7,10 @@ import {
 	getActiveSkipChecks,
 	SPINNER_FRAMES,
 	setActiveSkipChecks,
+	streamAllCqSections,
 	streamCqSection,
 } from "./streaming-output.js";
+import { emptyResults } from "./tool-results-types.js";
 
 let stderrChunks: string[];
 let origErr: typeof process.stderr.write;
@@ -90,5 +92,46 @@ describe("streamCqSection", () => {
 			allFlaggedFiles: allFlagged,
 		});
 		expect(stderrChunks.join("")).toBe("");
+	});
+
+	it("respects an explicit skip id when the human label differs", () => {
+		setActiveSkipChecks(new Set(["mock_only_test"]));
+		const allFlagged = new Set<string>();
+		streamCqSection({
+			label: "mock-only tests",
+			skipId: "mock_only_test",
+			issues: [{ check: "mock_only_test", file: "a.test.ts", line: 1, message: "m" }],
+			noun: "x",
+			passLabel: "pass",
+			details: false,
+			color: "33",
+			allFlaggedFiles: allFlagged,
+		});
+		expect(stderrChunks.join("")).toBe("");
+		expect(allFlagged.size).toBe(0);
+	});
+});
+
+describe("streamAllCqSections", () => {
+	it("uses section skip ids instead of normalized labels", () => {
+		setActiveSkipChecks(new Set(["mock_only_test", "happy_path_only_test"]));
+		const cq = emptyResults();
+		cq.mockOnlyTest = [
+			{ check: "mock_only_test", file: "a.test.ts", line: 1, message: "mock only" },
+		];
+		cq.happyPathOnlyTest = [
+			{
+				check: "happy_path_only_test",
+				file: "b.test.ts",
+				line: 1,
+				message: "happy path only",
+			},
+		];
+
+		streamAllCqSections(cq, false, new Set<string>());
+
+		const out = stderrChunks.join("");
+		expect(out).not.toContain("mock-only tests");
+		expect(out).not.toContain("happy-path-only test files");
 	});
 });

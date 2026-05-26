@@ -65,8 +65,10 @@ export {
 // ---- test-hygiene (Batch 2) ----
 export {
 	checkDuplicateTestNames,
+	checkHappyPathOnlyTest,
 	checkHardcodedTimeoutInTests,
 	checkMockingTheSutSelf,
+	checkMockOnlyTest,
 	checkRealIoInTests,
 	checkTestMissingSutImport,
 	checkTestNondeterminism,

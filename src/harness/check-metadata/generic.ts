@@ -847,6 +847,20 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	mock_only_test: {
+		name: "Mock-Only Test",
+		description:
+			"Detects it() / test() blocks whose every assertion is a call-interaction matcher (toHaveBeenCalled* / toHaveReturned*) with no value, output, or state assertion.",
+		tier: 2,
+		determinism: "partially_deterministic",
+	},
+	happy_path_only_test: {
+		name: "Happy-Path-Only Test File",
+		description:
+			"Detects test files with 3+ cases that never assert a failure path (no .not.*, toThrow, .rejects, falsy assertion, or failure-named case).",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries)
 	// ========================================================================

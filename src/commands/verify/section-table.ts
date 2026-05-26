@@ -16,6 +16,7 @@ import type { CodeQualityResults } from "./tool-results-types.js";
 export interface SectionSpec {
 	label: string;
 	key: keyof CodeQualityResults;
+	skipId?: string;
 	noun: string;
 	passLabel: string;
 	color: string;
@@ -1164,6 +1165,22 @@ export const SECTIONS: readonly SectionSpec[] = [
 		key: "testSubprocessDefaultTimeout",
 		noun: "it() / test() spawning a slow subprocess (tsc / biome / npx / tsx / eslint / vitest / CLI) with no explicit timeout",
 		passLabel: "no slow-subprocess tests without an explicit timeout",
+		color: "33",
+	},
+	{
+		label: "mock-only tests",
+		key: "mockOnlyTest",
+		skipId: "mock_only_test",
+		noun: "it() / test() blocks asserting only mock-call interactions, never a value / output / state",
+		passLabel: "no mock-only tests",
+		color: "33",
+	},
+	{
+		label: "happy-path-only test files",
+		key: "happyPathOnlyTest",
+		skipId: "happy_path_only_test",
+		noun: "test files (3+ cases) that never assert a failure path",
+		passLabel: "all test files exercise a failure path",
 		color: "33",
 	},
 	// === Batch 5: cross-file ===

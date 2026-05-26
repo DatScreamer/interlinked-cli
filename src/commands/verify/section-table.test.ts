@@ -30,4 +30,10 @@ describe("SECTIONS", () => {
 			expect(["31", "33"].includes(spec.color)).toBe(true);
 		}
 	});
+
+	it("pins explicit skip ids for labels that do not normalize to check ids", () => {
+		const byKey = new Map(SECTIONS.map((spec) => [spec.key, spec]));
+		expect(byKey.get("mockOnlyTest")?.skipId).toBe("mock_only_test");
+		expect(byKey.get("happyPathOnlyTest")?.skipId).toBe("happy_path_only_test");
+	});
 });

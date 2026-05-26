@@ -195,6 +195,13 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	"conditional_in_test",
 	"assertion_roulette",
 	"test_regressions",
+	// Test-quality heuristics — real signal but FP-prone. mock_only_test fires
+	// on legitimate fire-and-forget assertions ("the event was emitted") that
+	// have no value to check; happy_path_only_test fires on pure-function test
+	// files (formatters, getters) that genuinely have no failure path. Advisory
+	// until dogfood FP rate is measured.
+	"mock_only_test",
+	"happy_path_only_test",
 	// CRAP (Change Risk Anti-Patterns) — composite metric of cyclomatic
 	// complexity × statement coverage. Requires `coverage/coverage-final.json`
 	// (fails open and emits nothing when absent). Line-matching has ±3 slack

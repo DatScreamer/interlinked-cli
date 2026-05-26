@@ -163,6 +163,9 @@ function emptyCq(): CodeQualityResults {
 		"testMissingSutImport",
 		"mockingTheSutSelf",
 		"testSubprocessDefaultTimeout",
+		// Test-quality checks
+		"mockOnlyTest",
+		"happyPathOnlyTest",
 		// Batch 5: cross-file
 		"emptyBodyHandler",
 		"listenerPairing",
