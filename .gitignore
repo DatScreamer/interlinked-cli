@@ -141,3 +141,6 @@ tmp/
 .interlinked/pending-quality-warnings.json
 .interlinked/index/
 .interlinked/error-history.jsonl
+.interlinked/collection.jsonl
+.interlinked/recurrences.jsonl
+.interlinked/failures/

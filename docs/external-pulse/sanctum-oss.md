@@ -2,7 +2,7 @@
 
 - **Source:** https://github.com/postrv/sanctum-oss
 - **Encountered:** 2026-05-12, asked to evaluate against INTAKE
-- **Verdict:** PR (extract credential patterns) + memory note (verification-discipline lesson)
+- **Verdict:** PR (extract credential patterns — landed 2026-05-12) + **new PR candidate** (4-ecosystem extension to `package-install-parser.ts` — opened 2026-05-26, see re-read addendum) + memory note (verification-discipline lesson, also recorded in [[reference-arbitersec-competitor]])
 
 ## 1. Core idea (one sentence)
 
@@ -174,6 +174,44 @@ without the `crates/<crate-name>/` Cargo-workspace prefix
 that for Rust workspaces, full crate-prefixed paths are required —
 without them, a future re-grep won't find the load-bearing files.
 Not a rubric edit yet, just noting it here in case it recurs.
+
+## Re-read addendum (2026-05-26)
+
+Re-cloned at v0.5.0 (HEAD `7a08396`, `Stabilize daemon IPC e2e tests`, +5 days post-original-intake). Source re-read end-to-end. Three updates:
+
+**Original credential-pattern PR landed.** The 20-pattern port + the `evaluator/write-content-guards.ts` exemption fix + `signatures.ts` updates went in during the May-12 sprint per the crash addendum below. Nothing new on that axis — closed.
+
+**New PR candidate (open): 4-ecosystem extension to `src/harness/package-install-parser.ts`.** The May-12 intake didn't drill into `crates/sanctum-firewall/src/package_policy.rs` (2369 LoC at v0.5.0). Reading it now: Sanctum's slopsquatting parser covers **four ecosystems we don't** —
+
+| Ecosystem | Commands Sanctum parses | Validity predicate | URL probe |
+|---|---|---|---|
+| NuGet | `dotnet add package`, `dotnet tool install`, `dotnet new install`, `dotnet workload install`, `nuget install` | `is_valid_nuget_package_name` (≤128 chars, no `..`, first alnum, charset `alnum + . - _`) | `api.nuget.org/v3-flatcontainer/{name}/index.json` |
+| Maven | `mvn dependency:get -Dartifact=group:artifact[:version]`, `./mvnw`, `mvnw` | `is_valid_maven_coordinate` (must contain `:`, group must contain `.`) | `repo1.maven.org/maven2/{group}/{artifact}/maven-metadata.xml` |
+| Gradle | `gradle build/test/check/dependencies/publish/run/--refresh-dependencies`, `./gradlew`, `gradlew` | (warn-only, no per-package extraction — Gradle resolves from `build.gradle(.kts)`) | n/a (plugin probe at `plugins.gradle.org/plugin/{name}` for named plugins only) |
+| Docker | `docker pull`, image-tag analysis | (tag/registry validation rather than name validation) | n/a (warning surface, not block surface) |
+
+Plus a meaningful **Homebrew extension** beyond what we cover: tap-trust list (`homebrew/core`/`homebrew/cask`/`homebrew/services`/`homebrew/bundle`), `warn_untrusted_taps`, `warn_no_quarantine` for casks, `block_external_formula_installs` (URL/path formula references), and `extract_homebrew_external_formula_refs` / `extract_homebrew_taps` / `extract_homebrew_tap_urls` / `extract_homebrew_package_taps` / `is_bare_homebrew_upgrade` / `is_homebrew_bundle_command` as named helpers. Worth a side audit of our current `brew`-parsing coverage.
+
+**Spike (1 day, real PR):**
+1. **Parser additions** (~3h, ~250 LoC): port NuGet (5 entry shapes) + Maven (`dependency:get`) + Gradle (resolve-command detection, warn-only) + Docker (`:latest` and untrusted-registry warnings) into `src/harness/package-install-parser.ts`. Mirror the validity-predicate shape, not the HTTP probe.
+2. **Allowlist schema** (~1h): extend `.interlinked/package-allowlist.json` to accept `nuget`/`maven`/`gradle-plugin`/`docker` ecosystem keys (sha256 snapshot continues to work unchanged).
+3. **Cold-fallback parity** (~2h): update `coldPackageInstallBlockReason` in `src/hook-entry.ts` and `inlinePackageInstallCheck` in `src/lib/hook-template-chunks/guards-inline.ts` per `project_hook_paths_two_implementations.md` — both implementations recognise the new ecosystems.
+4. **Tests** (~2h): per-ecosystem positive + negative + URL-spec + custom-registry cases, daemon path and cold-fallback path both pinned.
+
+**Hard out-of-scope for this spike (record + park):**
+- **HEAD-probe registry-existence check.** Sanctum's `check_package_exists_with_timeout` makes a 5 s HTTP HEAD to the registry for `Exists`/`NotFound`/`CheckFailed`, fail-open on `CheckFailed`. This crosses our offline-first stance and "no fail-open on safety" stance (`feedback_safety_continuity.md` argues the opposite direction — fail-open *can* be right, but the safety-continuity tradeoff needs an explicit RFC, not a quiet inclusion in a parser PR).
+- **Per-ecosystem `Config` struct** (allowlists, trusted prefixes, warn flags). Our allowlist is one JSON file; Sanctum's per-ecosystem TOML config is more granular but more surface area. Defer pending evidence the granularity buys something.
+
+**New patterns to record (no action today):**
+
+- **Integer-cents LLM-spend tracking (ADR-009).** `BudgetAmount` parses `"$50"` → `u64` cents at config load. Pricing tables: integer cents per million tokens. Cost = `(tokens * price + 999_999) / 1_000_000` with `saturating_mul`/`saturating_add`. State as JSON, 0o600. Float-free, drift-free, panic-free. Clean shape *if* Interlinked ever intercepts LLM calls — but the harness mediates hooks, not LLM API traffic. Sanctum is also still partly-wired here (ADR-017 phases this in v0.1 → v0.2 → v0.3). Parked.
+- **22 numbered ADRs in `docs/ARCHITECTURE.md`.** Every design decision named, with "Context / Decision / Rationale" — including deferred ones (ADR-014 `secrecy` later, ADR-017 budget pipeline phased, ADR-019 macOS process-attribution best-effort, ADR-020 dead threat categories wired up). Borrowable as a *process*: our `docs/design/*.md` is informal-numbered, and several of our most-cited decisions (e.g. `feedback_harness_deterministic_only.md`, `feedback_posttooluse_stays_sync.md`) would benefit from this shape. Lightweight pattern note; not a process change today.
+- **Threat-model-with-explicit-residual-risk-per-protection** (`docs/THREAT_MODEL.md`). 10 protections, each with a residual-risk paragraph naming what the protection *doesn't* cover (e.g. "On macOS, FSEvent is less granular than Linux's inotify. Process identification may be imprecise"). This is the most honest doc in the repo. Worth modelling for our pre/post cloud-check design memos.
+- **CEL policy rules** (non-Turing-complete, no side effects, fixed context vars `tool_name` / `paths` / `payload_size`, three forms only). Cleaner shape for user-authored policy than embedding JavaScript. If `/enforce` ever surfaces user-writable rules beyond the JSON in `.interlinked/distilled-rules.overrides.json`, CEL is the reference target.
+
+**Convergence still holds, restated:** Sanctum's `sanctum-types::ipc` (length-prefixed framing, 64 KB cap, 0o600 socket perms, NDJSON audit log) is the same shape as our `src/harness/server.ts` + `.interlinked/harness.sock` + activity/recurrence JSONL. The threat-ID + `sanctum fix` flow (SHA-256 content-addressed threat IDs + resolutions in a separate NDJSON log preserving the audit log's append-only integrity) is the same shape as our `interlinked recurrence` aggregator. Two independent implementations of these primitives is a strong signal the abstractions are right.
+
+**Methodology note for this re-read:** the May-12 intake correctly named the borrowable detection technique (the 37 patterns) and explicitly drew a category line ("the daemon, the proxy, and `.pth` analysis are separate adoption decisions"). Re-reading 14 days later with the source in hand surfaces an *additional* borrowable detection technique that didn't get drilled into the first time — the per-ecosystem parsers. The rubric guidance "Resist scope creep *in the per-project file*. The template is intentionally one page" was followed correctly the first time — the right move was to come back and amend, not to over-extend the original draft. (This addendum is itself a small case study of the rubric working as designed.)
 
 ## Crash addendum (2026-05-12)
 
