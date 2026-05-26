@@ -260,6 +260,112 @@ describe("checkPersistentWarningEscalation", () => {
 });
 
 // ===========================================
+// 5. checkPersistentWarningEscalation — diff-aware proximity (refinement 2026-05)
+// ===========================================
+//
+// Captures the FP class where pre-existing findings re-fire on every edit
+// to a file (regardless of whether the edit touched their lines), causing
+// the escalation to amplify the noise without value. The two refinements
+// gate that behavior:
+//   1. once-per-record rate limit (no amplification across an edit storm)
+//   2. edited-line proximity (only escalate findings near the edit)
+
+describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
+	function priorRecord(checkName: string, lines: number[]) {
+		return new Map([
+			[
+				`src/foo.ts::${checkName}`,
+				{
+					check_name: checkName,
+					issue_count: 1,
+					first_issued_at: 1,
+					last_issued_at: 1,
+					resolved: false,
+					last_lines: lines,
+				},
+			],
+		]);
+	}
+
+	it("suppresses escalation when the edit's lines are FAR from the finding's line", () => {
+		// Pre-existing finding at line 200 of the file. Agent's current edit
+		// is at lines 1-3 — completely unrelated. No escalation.
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal", [200]) });
+		const editedLines = new Set([1, 2, 3]);
+		const currentResults = [{ name: "magic_literal", line: 200 }];
+
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			currentResults,
+			editedLines,
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("STILL escalates when the edit's lines are NEAR the finding's line", () => {
+		// Agent edited line 198 — finding at line 200 is within ±3.
+		// Persistent warning still nags.
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal", [200]) });
+		const editedLines = new Set([198]);
+		const currentResults = [{ name: "magic_literal", line: 200 }];
+
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			currentResults,
+			editedLines,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].name).toBe("persistent_warning_escalation");
+	});
+
+	it("rate-limits — fires once per (file, check) per session, not on every re-edit", () => {
+		const warnings = priorRecord("magic_literal", [200]);
+		const session = makeSession({ warnings_issued: warnings });
+		const editedLines = new Set([198]);
+		const currentResults = [{ name: "magic_literal", line: 200 }];
+
+		// First escalation in the session fires.
+		const first = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			currentResults,
+			editedLines,
+		);
+		expect(first).toHaveLength(1);
+
+		// Second consecutive edit on the same file → still in agency range,
+		// the issue still persists, but the once-per-record gate suppresses it.
+		const second = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			currentResults,
+			editedLines,
+		);
+		expect(second).toEqual([]);
+	});
+
+	it("fails open (escalates) when editedLines is omitted — legacy callers preserved", () => {
+		const session = makeSession({ warnings_issued: priorRecord("typescript", [50]) });
+		// String[]-shaped legacy call — no line info, no edit info — old behavior.
+		const out = checkPersistentWarningEscalation(session, "src/foo.ts", ["typescript"]);
+		expect(out).toHaveLength(1);
+	});
+
+	it("fails open when editedLines is empty (e.g. tool we couldn't decode)", () => {
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal", [200]) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "magic_literal", line: 200 }],
+			new Set(),
+		);
+		expect(out).toHaveLength(1);
+	});
+});
+
+// ===========================================
 // 6. checkProdDeltaWithoutTestDelta (git commit gate)
 // ===========================================
 
@@ -755,6 +861,135 @@ describe("checkTddCommitGate — disk reality check", () => {
 	it("STILL fires when state='no_test' and no test file exists anywhere", () => {
 		const sourceFile = join(dir, "bar.ts");
 		writeFileSync(sourceFile, "export const x = 1;\n");
+
+		const cycle: TddCycle = {
+			source_file: sourceFile,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([sourceFile]),
+			tdd_cycles: new Map([[sourceFile, cycle]]),
+		});
+
+		const out = checkTddCommitGate(session, "warn");
+		expect(out.length).toBe(1);
+		expect(out[0].name).toBe("tdd_commit_gate");
+	});
+});
+
+// ===========================================
+// FP-fix regression: tdd_commit_gate exempt-path / non-source / deleted
+// ===========================================
+//
+// Captures the false-positives observed on the 2026-05-26 commit of the
+// audit-chain landing: a transient `.interlinked/*.patch` file the agent
+// wrote and deleted in the same session tripped the gate (gitignored
+// path + non-source extension), as did a metadata-only edit to a file
+// whose own tests aren't conventionally named. These checks now share
+// the same exemption surface as the in-edit TDD checks.
+
+describe("checkTddCommitGate — exemption surface (post-2026-05 refinement)", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "tdd-gate-exempt-"));
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("does NOT fire on a non-source-extension file (.patch)", () => {
+		const patchFile = join(dir, "fix.patch");
+		writeFileSync(patchFile, "diff --git a/x b/x\n");
+
+		const cycle: TddCycle = {
+			source_file: patchFile,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([patchFile]),
+			tdd_cycles: new Map([[patchFile, cycle]]),
+		});
+
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("does NOT fire on a file under .interlinked/ (gitignored)", () => {
+		const ilDir = join(dir, ".interlinked");
+		const stagedPatch = join(ilDir, "stage.patch");
+		// Create the file so existsSync passes — the exempt-path check is
+		// what we want to verify here, not the missing-file shortcut.
+		writeFileSync(join(dir, ".gitkeep"), ""); // mkdir-equivalent
+		execSync(`mkdir -p ${ilDir}`);
+		writeFileSync(stagedPatch, "diff");
+
+		const cycle: TddCycle = {
+			source_file: stagedPatch,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([stagedPatch]),
+			tdd_cycles: new Map([[stagedPatch, cycle]]),
+		});
+
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("does NOT fire on a .ts file under an exempt path (.interlinked/)", () => {
+		// .ts file passes the extension filter, exempt path filter drops it.
+		const ilDir = join(dir, ".interlinked");
+		execSync(`mkdir -p ${ilDir}`);
+		const tsInInterlinked = join(ilDir, "scratch.ts");
+		writeFileSync(tsInInterlinked, "export const x = 1;\n");
+
+		const cycle: TddCycle = {
+			source_file: tsInInterlinked,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([tsInInterlinked]),
+			tdd_cycles: new Map([[tsInInterlinked, cycle]]),
+		});
+
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("does NOT fire on a file that no longer exists on disk (deleted in same session)", () => {
+		// Path that was Written earlier in the session but is gone now —
+		// covers the transient-file case. The cycle still has impl_edits>0
+		// because recordImplEdit ran on the Write event.
+		const deleted = join(dir, "ephemeral.ts");
+		// Note: NOT writing the file — simulating post-delete state.
+
+		const cycle: TddCycle = {
+			source_file: deleted,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([deleted]),
+			tdd_cycles: new Map([[deleted, cycle]]),
+		});
+
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("STILL fires on a real source file with no test and no exemption", () => {
+		// Belt-and-suspenders: the refinements don't widen the exemption
+		// surface beyond what's intended.
+		const sourceFile = join(dir, "src", "real.ts");
+		execSync(`mkdir -p ${join(dir, "src")}`);
+		writeFileSync(sourceFile, "export function real() { return 1; }\n");
 
 		const cycle: TddCycle = {
 			source_file: sourceFile,

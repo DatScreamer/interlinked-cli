@@ -249,6 +249,73 @@ describe("looksCoordinated", () => {
 		);
 		expect(looksCoordinated([noContext, dirty])).toBe(true);
 	});
+
+	// Refinement (2026-05): top-level diffs (new commander registrations,
+	// new top-level `const X = …`) produce hunk-contexts that don't yield
+	// a definition name. Previously the check failed-open in that case, so
+	// an unrelated dirty companion would always trip the warning. The
+	// fallback extracts identifier-shaped tokens from added/removed lines
+	// instead, so the cross-reference still has a topic to anchor on.
+	it("uses fallback identifier extraction when the staged side has no hunk-context", () => {
+		// staged: top-level addition with no enclosing function in the hunk
+		// header. The fallback should pull `auditCmd` and `auditVerifyCommand`
+		// from the added lines.
+		const stagedTopLevel = [
+			"@@ -180,5 +180,17 @@",
+			"+const auditCmd = program",
+			'+	.command("audit")',
+			'+	.description("Verify audit chain");',
+			"+",
+			"+auditCmd",
+			'+	.command("verify")',
+			"+	.action(async (opts) => {",
+			"+		const { auditVerifyCommand } = await import('./commands/audit.js');",
+			"+		await auditVerifyCommand(opts);",
+			"+	});",
+		].join("\n");
+		// dirty companion: unrelated, names a different symbol.
+		const dirtyUnrelated = fnDiff(
+			"export const DEFAULT_ADVISORY_SKIPS = new Set<string>([",
+			'+	"mock_only_test",',
+			'+	"happy_path_only_test",',
+		);
+		// With the fallback, the staged side's topic set = {auditCmd,
+		// auditVerifyCommand, ...}; the dirty side names DEFAULT_ADVISORY_SKIPS.
+		// No cross-reference → drop the candidate.
+		expect(looksCoordinated([stagedTopLevel, dirtyUnrelated])).toBe(false);
+	});
+
+	it("the fallback still surfaces a coordinated edit when the identifier matches", () => {
+		const stagedTopLevel = [
+			"@@ -180,5 +180,8 @@",
+			"+export function applyDiscount(price: number): number {",
+			"+	return price * 0.9;",
+			"+}",
+		].join("\n");
+		// Dirty companion mentions applyDiscount on a changed line.
+		const dirtyConsumer = fnDiff(
+			'describe("discount", () => {',
+			"+	expect(applyDiscount(100)).toBe(90);",
+		);
+		expect(looksCoordinated([stagedTopLevel, dirtyConsumer])).toBe(true);
+	});
+
+	it("the fallback excludes JS/TS keywords and universal globals", () => {
+		// Both diffs name only keywords/globals — neither contributes a
+		// real topic, so even the fallback yields no symbols and the check
+		// fails open.
+		const onlyKeywords = [
+			"@@ -1,1 +1,1 @@",
+			"+const x = true;",
+			"-const x = false;",
+		].join("\n");
+		const alsoOnlyKeywords = [
+			"@@ -1,1 +1,1 @@",
+			"+const y = null;",
+			"-const y = undefined;",
+		].join("\n");
+		expect(looksCoordinated([onlyKeywords, alsoOnlyKeywords])).toBe(true);
+	});
 });
 
 describe("formatDirtyDependentWarning", () => {

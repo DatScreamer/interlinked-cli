@@ -198,6 +198,23 @@ export interface WarningRecord {
 	last_issued_at: number;
 	/** Whether the warning was resolved (next edit passed the check) */
 	resolved: boolean;
+	/**
+	 * Line numbers where this check most recently fired on this file.
+	 * Used by `checkPersistentWarningEscalation` (refinement 2026-05) to
+	 * suppress escalation when the agent's current edit didn't touch any
+	 * line near a persistent finding — the canonical FP shape, where a
+	 * pre-existing warning at line N re-fires on every unrelated edit to
+	 * the same file. Empty array means "no line info on file-level checks
+	 * like export_surface"; absent means "legacy record predating this
+	 * field". Both are treated as fall-back-to-issue_count-only.
+	 */
+	last_lines?: number[];
+	/**
+	 * Whether a persistent-warning escalation has been emitted for this
+	 * record. Rate-limit: at most one escalation per (file, check) per
+	 * session, so a stale FP does not amplify across an edit storm.
+	 */
+	escalation_emitted?: boolean;
 }
 
 /** Aggregate effectiveness stats for a single check across the session */

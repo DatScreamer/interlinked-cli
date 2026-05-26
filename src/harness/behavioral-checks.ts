@@ -9,7 +9,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
-import { stripCommentsAndStrings } from "./checks/shared.js";
+import { isTypeOnlyModule, stripCommentsAndStrings } from "./checks/shared.js";
 import { hasTddExemptDirective, isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
 import { isCodeFile } from "./verification-stop-checks.js";
@@ -111,30 +111,105 @@ export function checkDomainSensitiveTestNudge(
 }
 
 /**
+ * Predicate for `checkPersistentWarningEscalation`'s diff-aware gate:
+ * does any line in `findingLines` sit within `radius` of any line in
+ * `editedLines`? Pulled out to keep the escalation function's main loop
+ * at two-deep nesting; the predicate itself is a clean O(F × E) scan
+ * with early exit on the first match.
+ */
+function anyFindingNearEditedLine(
+	findingLines: ReadonlyArray<number>,
+	editedLines: ReadonlySet<number>,
+	radius: number,
+): boolean {
+	for (const line of findingLines) {
+		if (editedLineWithinRadius(editedLines, line, radius)) return true;
+	}
+	return false;
+}
+
+function editedLineWithinRadius(
+	editedLines: ReadonlySet<number>,
+	target: number,
+	radius: number,
+): boolean {
+	for (const el of editedLines) {
+		if (Math.abs(el - target) <= radius) return true;
+	}
+	return false;
+}
+
+/**
  * Escalate warnings that persist after the agent re-edits the same file.
  * If a warning was already issued and the agent edits the file again without
  * fixing it, escalate from warning to error.
+ *
+ * Refinement 2026-05 — addresses the FP class where pre-existing findings
+ * (already in HEAD before the session started) re-fire on every edit and
+ * the escalation amplifies the noise without value. Two gates:
+ *
+ *  1. **Edited-line proximity** — when `editedLines` is provided AND the
+ *     current results carry line numbers, escalate only if at least one
+ *     finding's line is within `±PROXIMITY_RADIUS` of a line the agent's
+ *     current edit actually changed. A persistent finding the agent
+ *     didn't have agency over (line shifted by an unrelated insertion,
+ *     finding in a region untouched by this edit) is suppressed.
+ *  2. **Once-per-record rate limit** — at most one escalation per
+ *     (file, check) per session. After the first escalation fires the
+ *     record is flagged; subsequent emissions of the same check on the
+ *     same file don't re-escalate. Caps the amplification independent
+ *     of the proximity test.
+ *
+ * Legacy callers that pass `string[]` keep working — without line data
+ * the proximity gate fails open (escalates), preserving the old behavior
+ * for callers we haven't migrated.
  */
 export function checkPersistentWarningEscalation(
 	session: SessionTrajectory,
 	filePath: string,
-	currentCheckNames: string[],
+	currentResults: ReadonlyArray<string | { name: string; line?: number }>,
+	editedLines?: ReadonlySet<number>,
 ): CheckResultEntry[] {
 	const escalated: CheckResultEntry[] = [];
+	const PROXIMITY_RADIUS = 3;
 
-	for (const name of currentCheckNames) {
+	// Group current findings by check name; collect line numbers per check.
+	const linesByCheck = new Map<string, number[]>();
+	for (const r of currentResults) {
+		const name = typeof r === "string" ? r : r.name;
+		const line = typeof r === "string" ? undefined : r.line;
+		if (!linesByCheck.has(name)) linesByCheck.set(name, []);
+		if (typeof line === "number" && Number.isFinite(line)) {
+			const list = linesByCheck.get(name);
+			if (list) list.push(line);
+		}
+	}
+
+	for (const [name, currentLines] of linesByCheck) {
 		const key = `${filePath}::${name}`;
 		const record = session.warnings_issued.get(key);
-		if (record && record.issue_count >= 1) {
-			escalated.push({
-				source: "structural",
-				name: "persistent_warning_escalation",
-				severity: "error",
-				message: `Warning "${name}" persists after re-edit (issued ${record.issue_count + 1} times). Fix the underlying issue.`,
-				file: filePath,
-				determinism: "fully_deterministic",
-			});
+		if (!record || record.issue_count < 1) continue;
+		if (record.escalation_emitted) continue;
+
+		// Diff-aware proximity gate. Skip when:
+		//   - we have edited-line data,
+		//   - the current results carry line info,
+		//   - and no finding line is within PROXIMITY_RADIUS of an edit line.
+		if (editedLines && editedLines.size > 0 && currentLines.length > 0) {
+			if (!anyFindingNearEditedLine(currentLines, editedLines, PROXIMITY_RADIUS)) {
+				continue;
+			}
 		}
+
+		escalated.push({
+			source: "structural",
+			name: "persistent_warning_escalation",
+			severity: "error",
+			message: `Warning "${name}" persists after re-edit (issued ${record.issue_count + 1} times). Fix the underlying issue.`,
+			file: filePath,
+			determinism: "fully_deterministic",
+		});
+		record.escalation_emitted = true;
 	}
 
 	return escalated;
@@ -159,6 +234,9 @@ export function checkTddCycleViolation(
 
 	// Agent is editing implementation with no test interaction at all
 	if (cycle.impl_edits_before_test >= 3 && cycle.state === "no_test") {
+		// Pure type-definition modules have nothing to unit-test — exempt
+		// them from the "write a failing test" nudge (tsc is their test).
+		if (isTypeOnlySourceFile(filePath)) return null;
 		const msg = cycle.test_file
 			? `${cycle.impl_edits_before_test} implementation edits to ${basename(filePath)} without running its test. Run the test first to establish a baseline.`
 			: `${cycle.impl_edits_before_test} implementation edits to ${basename(filePath)} with no test file. Write a failing test that captures the expected behavior, then make it pass.`;
@@ -275,6 +353,21 @@ export function checkTddCommitGate(
 			// just didn't see the green transition. Suppress.
 			const candidateTest = cycle.test_file ?? findTestFilePath(sourceFile);
 			if (candidateTest && existsSync(candidateTest)) continue;
+			// Pure type-definition modules have nothing to unit-test.
+			if (isTypeOnlySourceFile(sourceFile)) continue;
+			// Inherit the same exemption surface the in-edit TDD checks already
+			// apply at lines 153/155 + 200/202: non-source extensions (e.g. a
+			// .patch / .md / .json the agent happened to Write) and exempt
+			// paths (.interlinked/, dist/, node_modules/, scripts/, …). Without
+			// these the commit-gate had a wider net than the in-edit checks,
+			// so a transient `.interlinked/foo.patch` write fired the gate.
+			if (!TDD_SOURCE_EXT_RE.test(sourceFile)) continue;
+			if (isTddExemptPath(sourceFile)) continue;
+			// A file that no longer exists on disk can't be tested. Covers the
+			// transient-file case (agent Writes a working file, then deletes
+			// it later in the same session) and renames where the cycle's
+			// recorded path no longer resolves.
+			if (!existsSync(sourceFile)) continue;
 
 			results.push({
 				source: "structural",
@@ -315,6 +408,21 @@ function findTestFilePath(filePath: string): string | null {
 		join(dir, "__tests__", `${baseName}.spec${ext}`),
 	];
 	return candidates.find((p) => existsSync(p)) || null;
+}
+
+/**
+ * Best-effort: is `filePath` a pure type-definition module on disk?
+ * Reads the file and delegates to {@link isTypeOnlyModule}. A missing or
+ * unreadable file returns false so the caller's check still runs.
+ */
+function isTypeOnlySourceFile(filePath: string): boolean {
+	try {
+		if (!existsSync(filePath)) return false;
+		return isTypeOnlyModule(filePath, readFileSync(filePath, "utf-8"));
+	} catch {
+		// unreadable — fall through; the caller's check still applies
+		return false;
+	}
 }
 
 const PROD_TEST_LOC_RATIO_LIMIT = 5;
@@ -733,6 +841,7 @@ export function runBehavioralChecks(
 	currentCheckResults: CheckResultEntry[],
 	previousSuppressionCount?: number,
 	currentSuppressionCount?: number,
+	editedLines?: ReadonlySet<number>,
 ): CheckResultEntry[] {
 	const results: CheckResultEntry[] = [];
 
@@ -757,9 +866,20 @@ export function runBehavioralChecks(
 	const nudge = checkDomainSensitiveTestNudge(session, filePath);
 	if (nudge) results.push(nudge);
 
-	// 4. Persistent warning escalation
-	const checkNames = currentCheckResults.map((r) => r.name);
-	const escalations = checkPersistentWarningEscalation(session, filePath, checkNames);
+	// 4. Persistent warning escalation — pass full result objects so the
+	// diff-aware proximity gate can read each finding's line number, plus
+	// the optional editedLines set so the gate can decide whether the
+	// agent had agency over each persistent finding.
+	const escalationInputs = currentCheckResults.map((r) => ({
+		name: r.name,
+		line: r.line,
+	}));
+	const escalations = checkPersistentWarningEscalation(
+		session,
+		filePath,
+		escalationInputs,
+		editedLines,
+	);
 	results.push(...escalations);
 
 	// 5. TDD cycle checks

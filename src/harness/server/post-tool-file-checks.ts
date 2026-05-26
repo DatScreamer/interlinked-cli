@@ -19,6 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { checkAssertionDensity, runBehavioralChecks } from "../behavioral-checks.js";
+import { deriveEditedLineNumbers } from "./edit-line-derivation.js";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META, STRUCTURAL_CHECK_META } from "../check-metadata.js";
 import { checkOrphanedTests } from "../deletion-hygiene.js";
 import { resolveDependencyView } from "../dependency-view.js";
@@ -871,12 +872,24 @@ export async function runPerFileChecks(
 		} catch (e) {
 			void e;
 		}
+		// Refinement 2026-05: derive the set of lines this edit actually
+		// touched from tool_input + post-edit file content. Threaded into
+		// `runBehavioralChecks` → `checkPersistentWarningEscalation` so
+		// the escalation only fires for persistent findings within ±3
+		// lines of an edit, suppressing the FP where stale findings in
+		// untouched regions amplified on every unrelated re-edit.
+		const editedLines = deriveEditedLineNumbers(
+			checkEvent.tool_name,
+			checkEvent.tool_input,
+			fileContent,
+		);
 		const behavioralResults = runBehavioralChecks(
 			session,
 			editedFilePath,
 			allCheckResults,
 			previousSuppressionCount,
 			currentSuppressionCount,
+			editedLines,
 		);
 
 		// Plan 09 Phase 1: assertion-density runs outside
@@ -921,12 +934,15 @@ export async function runPerFileChecks(
 	}
 
 	// --- Feedback effectiveness tracking ---
+	// Pass full evidence (name + line) so the escalation check on the NEXT
+	// edit can read each persistent finding's line for the diff-aware
+	// proximity gate (refinement 2026-05).
 	if (session && editedFilePath && allCheckResults.length > 0) {
-		const warningNames = allCheckResults
+		const warningEvidence = allCheckResults
 			.filter((r) => r.severity === "warning" || r.severity === "error")
-			.map((r) => r.name);
-		if (warningNames.length > 0) {
-			recordWarningsIssued(session, editedFilePath, warningNames);
+			.map((r) => ({ name: r.name, line: r.line }));
+		if (warningEvidence.length > 0) {
+			recordWarningsIssued(session, editedFilePath, warningEvidence);
 		}
 		recordWarningResolutions(
 			session,

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	checkTddCommitGate,
 	checkTddCycleViolation,
@@ -128,7 +131,7 @@ describe("checkTddCycleViolation", () => {
 		expect(checkTddCycleViolation(session, cycle.source_file)).toBeNull();
 	});
 
-	it("does NOT fire for test files", () => {
+	it("does NOT fire for test files (cycle violation branch)", () => {
 		const session = makeSession();
 		const testPath = "/project/src/parser.test.ts";
 		const cycle = makeCycle({
@@ -190,7 +193,7 @@ describe("checkTddRegression", () => {
 		expect(checkTddRegression(session, cycle.source_file)).toBeNull();
 	});
 
-	it("does NOT fire for test files", () => {
+	it("does NOT fire for test files (regression branch)", () => {
 		const session = makeSession();
 		const testPath = "/project/src/parser.test.ts";
 		const cycle = makeCycle({
@@ -247,7 +250,7 @@ describe("checkTddGreenConfirmation", () => {
 		expect(checkTddGreenConfirmation(session, cycle.source_file)).toBeNull();
 	});
 
-	it("does NOT fire for test files", () => {
+	it("does NOT fire for test files (green-confirmation branch)", () => {
 		const session = makeSession();
 		const testPath = "/project/src/__tests__/parser.test.ts";
 		const cycle = makeCycle({
@@ -266,6 +269,19 @@ describe("checkTddGreenConfirmation", () => {
 // ===========================================
 
 describe("checkTddCommitGate", () => {
+	// Disk-realization scratch dir: the no_test branch of the gate
+	// short-circuits when the source file is missing (refinement
+	// 2026-05). Severity-mapping tests that need a real `.ts` file on
+	// disk write into here; tests on the red/regression branches still
+	// use synthetic paths because those branches don't hit the disk check.
+	let gateTmp: string;
+	beforeEach(() => {
+		gateTmp = mkdtempSync(join(tmpdir(), "tdd-gate-"));
+	});
+	afterEach(() => {
+		rmSync(gateTmp, { recursive: true, force: true });
+	});
+
 	it("reports failing tests in enforce mode as errors", () => {
 		const session = makeSession();
 		session.tdd_cycles.set(
@@ -296,12 +312,14 @@ describe("checkTddCommitGate", () => {
 	});
 
 	it("reports untested files in enforce mode as warnings (not errors)", () => {
+		const sourceFile = join(gateTmp, "utils.ts");
+		writeFileSync(sourceFile, "export function utils() { return 1; }\n");
 		const session = makeSession();
 		session.tdd_cycles.set(
-			"/project/src/utils.ts",
+			sourceFile,
 			makeCycle({
 				state: "no_test",
-				source_file: "/project/src/utils.ts",
+				source_file: sourceFile,
 				impl_edits_before_test: 3,
 			}),
 		);
@@ -352,31 +370,26 @@ describe("checkTddCommitGate", () => {
 	});
 
 	it("reports multiple files", () => {
+		// Only b.ts (no_test branch) is gated by the disk-existence
+		// refinement; a.ts (red) and c.ts (green) are not. Realize b.ts
+		// so the multi-file aggregation test still asserts what it intends.
+		const aFile = "/project/src/a.ts"; // red branch — no disk check
+		const bFile = join(gateTmp, "b.ts"); // no_test branch — disk-realized
+		const cFile = "/project/src/c.ts"; // green branch — skipped anyway
+		writeFileSync(bFile, "export function b() { return 1; }\n");
+
 		const session = makeSession();
+		session.tdd_cycles.set(aFile, makeCycle({ state: "red", source_file: aFile }));
 		session.tdd_cycles.set(
-			"/project/src/a.ts",
-			makeCycle({ state: "red", source_file: "/project/src/a.ts" }),
+			bFile,
+			makeCycle({ state: "no_test", source_file: bFile, impl_edits_before_test: 2 }),
 		);
-		session.tdd_cycles.set(
-			"/project/src/b.ts",
-			makeCycle({
-				state: "no_test",
-				source_file: "/project/src/b.ts",
-				impl_edits_before_test: 2,
-			}),
-		);
-		session.tdd_cycles.set(
-			"/project/src/c.ts",
-			makeCycle({ state: "green", source_file: "/project/src/c.ts" }),
-		);
+		session.tdd_cycles.set(cFile, makeCycle({ state: "green", source_file: cFile }));
 
 		const results = checkTddCommitGate(session, "enforce");
 		// a.ts = red (error), b.ts = no_test with edits (warning), c.ts = green (skip)
 		expect(results.length).toBe(2);
-		expect(results.map((r) => r.file).sort()).toEqual([
-			"/project/src/a.ts",
-			"/project/src/b.ts",
-		]);
+		expect(results.map((r) => r.file).sort()).toEqual([aFile, bFile].sort());
 	});
 
 	it("does NOT report no_test files with zero edits", () => {
@@ -391,5 +404,67 @@ describe("checkTddCommitGate", () => {
 		);
 
 		expect(checkTddCommitGate(session, "enforce")).toEqual([]);
+	});
+});
+
+// ===========================================
+// checkTddCycleViolation — type-only module exemption (FP refinement)
+// ===========================================
+// These need a real file on disk: the exemption reads the file to decide
+// whether it is a pure type-definition module. The positive case (runtime
+// code in the same tmpdir) guards the negative — if it still fires, the
+// null result above is the type-only gate, not some unrelated path exemption.
+
+describe("checkTddCycleViolation — type-only module exemption", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tdd-typeonly-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("does NOT fire for a pure type-definition module", () => {
+		const filePath = join(tmpDir, "shapes.ts");
+		writeFileSync(
+			filePath,
+			["export interface Config {", "  enabled: boolean;", "}"].join("\n"),
+		);
+		const session = makeSession();
+		session.tdd_cycles.set(
+			filePath,
+			makeCycle({
+				source_file: filePath,
+				test_file: null,
+				state: "no_test",
+				impl_edits_before_test: 4,
+			}),
+		);
+		expect(checkTddCycleViolation(session, filePath)).toBeNull();
+	});
+
+	it("STILL fires for a module that has runtime code", () => {
+		const filePath = join(tmpDir, "engine.ts");
+		writeFileSync(
+			filePath,
+			["export interface Config { enabled: boolean; }", "export function run(): void {}"].join(
+				"\n",
+			),
+		);
+		const session = makeSession();
+		session.tdd_cycles.set(
+			filePath,
+			makeCycle({
+				source_file: filePath,
+				test_file: null,
+				state: "no_test",
+				impl_edits_before_test: 4,
+			}),
+		);
+		const result = checkTddCycleViolation(session, filePath);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe("tdd_cycle_violation");
 	});
 });

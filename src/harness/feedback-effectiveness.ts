@@ -8,15 +8,41 @@
 import type { FeedbackEffectivenessSummary, SessionTrajectory, WarningRecord } from "./types.js";
 
 /**
+ * Minimal shape `recordWarningsIssued` needs from a check result — the
+ * check name plus optional finding line. Avoids importing the whole
+ * `CheckResultEntry` type and keeps the function easy to call from tests.
+ */
+export interface WarningEvidence {
+	name: string;
+	line?: number;
+}
+
+/**
  * Record that warnings were issued for specific checks on a file.
  * Called after PostToolUse checks produce warnings.
+ *
+ * Accepts either the legacy shape (array of check names) or the post-2026-05
+ * shape (array of {name, line} so the escalation check can suppress FPs that
+ * fire on lines the current edit didn't touch). Names-only callers keep
+ * working — line info is just absent.
  */
 export function recordWarningsIssued(
 	session: SessionTrajectory,
 	filePath: string,
-	checkNames: string[],
+	evidence: ReadonlyArray<string | WarningEvidence>,
 ): void {
-	for (const checkName of checkNames) {
+	const linesByCheck = new Map<string, number[]>();
+	for (const item of evidence) {
+		const name = typeof item === "string" ? item : item.name;
+		const line = typeof item === "string" ? undefined : item.line;
+		if (!linesByCheck.has(name)) linesByCheck.set(name, []);
+		if (typeof line === "number" && Number.isFinite(line)) {
+			const list = linesByCheck.get(name);
+			if (list) list.push(line);
+		}
+	}
+
+	for (const [checkName, lines] of linesByCheck) {
 		const key = `${filePath}::${checkName}`;
 		const existing = session.warnings_issued.get(key);
 
@@ -24,6 +50,7 @@ export function recordWarningsIssued(
 			existing.issue_count++;
 			existing.last_issued_at = session.tool_call_count;
 			existing.resolved = false; // re-opened
+			if (lines.length > 0) existing.last_lines = lines;
 		} else {
 			const record: WarningRecord = {
 				check_name: checkName,
@@ -31,6 +58,7 @@ export function recordWarningsIssued(
 				first_issued_at: session.tool_call_count,
 				last_issued_at: session.tool_call_count,
 				resolved: false,
+				last_lines: lines.length > 0 ? lines : undefined,
 			};
 			session.warnings_issued.set(key, record);
 		}

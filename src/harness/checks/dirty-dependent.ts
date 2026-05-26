@@ -268,6 +268,43 @@ function changedLineIdentifiers(diff: string): Set<string> {
 	return tokens;
 }
 
+/** Stop-words excluded from {@link fallbackTopicSymbols} so the fallback
+ *  doesn't latch onto JS/TS keywords or universal-constant identifiers. */
+const COORD_STOP_WORDS: ReadonlySet<string> = new Set([
+	// JS/TS keywords + universal globals
+	"const", "let", "var", "function", "class", "interface", "type",
+	"enum", "import", "export", "from", "default", "return", "true",
+	"false", "null", "undefined", "void", "this", "new", "throw",
+	"async", "await", "yield", "static", "public", "private", "protected",
+	"readonly", "extends", "implements", "namespace", "module", "abstract",
+	// Universal type names (would falsely cross-reference across unrelated files)
+	"string", "number", "boolean", "object", "Record", "Array",
+	"Promise", "Map", "Set", "Date", "Error", "RegExp", "Buffer",
+	"console", "process",
+]);
+
+/**
+ * Fallback topic set used by {@link looksCoordinated} when {@link changedSymbols}
+ * extracted nothing — typical for top-level additions whose hunk context
+ * is empty. Pulls identifier-shaped tokens from added/removed lines so
+ * pure-registration diffs (e.g., `const newCmd = program.command(...)` at
+ * file scope) still surface a "topic" the other side can cross-reference.
+ *
+ * Filters: identifier shape, length ≥ 4 chars, not a JS keyword or
+ * universal global. The length floor is what keeps `a` / `is` / `if`
+ * out of the topic set; the stop-word set kills `const` / `Promise`.
+ */
+function fallbackTopicSymbols(diff: string): Set<string> {
+	const out = new Set<string>();
+	for (const tok of changedLineIdentifiers(diff)) {
+		if (tok.length < 4) continue;
+		if (COORD_STOP_WORDS.has(tok)) continue;
+		if (!/^[A-Za-z_$]/.test(tok)) continue;
+		out.add(tok);
+	}
+	return out;
+}
+
 /**
  * Public, pure — heuristic: do the two changes look COORDINATED (two halves
  * of one logical edit) rather than unrelated? The two diffs are a symmetric
@@ -278,16 +315,23 @@ function changedLineIdentifiers(diff: string): Set<string> {
  * (changed `foo`, updated `foo`'s test) leaves that cross-reference; an
  * unrelated edit does not.
  *
+ * Two-pass topic extraction: per-side, prefer {@link changedSymbols} (hunk-
+ * context-derived); fall back to {@link fallbackTopicSymbols} when the hunk
+ * context is empty — catches top-level diffs (new top-level `const`, new
+ * commander registrations, new exports) whose hunk header has no enclosing
+ * function/class context.
+ *
  * Fails OPEN — returns `true` (treat as coordinated → keep the warning)
- * whenever evidence is insufficient (either diff yields no identifiable
- * changed definition). Returns `false` (drop) only with positive evidence
- * of non-coordination: both diffs name changed definitions and neither
- * side's names appear on the other's changed lines.
+ * whenever evidence is insufficient (both sides yield no identifier even
+ * via the fallback). Returns `false` (drop) only with positive evidence
+ * of non-coordination: both sides have identifiers and no cross-match.
  */
 export function looksCoordinated(diffs: readonly [string, string]): boolean {
 	const [diffA, diffB] = diffs;
-	const symsA = changedSymbols(diffA);
-	const symsB = changedSymbols(diffB);
+	let symsA = changedSymbols(diffA);
+	let symsB = changedSymbols(diffB);
+	if (symsA.size === 0) symsA = fallbackTopicSymbols(diffA);
+	if (symsB.size === 0) symsB = fallbackTopicSymbols(diffB);
 	if (symsA.size === 0 || symsB.size === 0) return true;
 	const tokensA = changedLineIdentifiers(diffA);
 	const tokensB = changedLineIdentifiers(diffB);
