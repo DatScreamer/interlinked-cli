@@ -1,0 +1,608 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { _clearCrossSessionCache } from "../cross-session.js";
+import { buildTrajectoryFixture, makeCandidate } from "../__tests__/sequence-fixtures.js";
+import {
+	CROSS_AGENT_DETECTORS,
+	fileOverwriteAfterOtherAgent,
+	staleReadThenWrite,
+	subagentDivergedEdit,
+} from "./cross-agent.js";
+
+// Pin "now" so detectors that compare ISO timestamps against `Date.now()`
+// (subagent_diverged_edit, file_overwrite_after_other_agent) behave
+// deterministically across CI runs.
+const FROZEN_NOW = new Date("2026-05-27T12:00:00.000Z");
+
+beforeAll(() => {
+	vi.useFakeTimers();
+	vi.setSystemTime(FROZEN_NOW);
+});
+
+afterAll(() => {
+	vi.useRealTimers();
+});
+
+// ===========================================
+// Shared helpers
+// ===========================================
+
+interface ActivityRow {
+	hook_event?: string;
+	session_id?: string;
+	agent_source?: string;
+	agent_name?: string;
+	tool_name?: string;
+	tool_input?: Record<string, unknown>;
+	timestamp: string;
+	cwd?: string;
+}
+
+function writeActivityLog(dir: string, events: ReadonlyArray<ActivityRow>): void {
+	const sub = join(dir, ".interlinked");
+	mkdirSync(sub, { recursive: true });
+	const lines = events.map((e) =>
+		JSON.stringify({
+			hook_event: "PostToolUse",
+			session_id: "other-session",
+			agent_source: "claude",
+			...e,
+		}),
+	);
+	writeFileSync(join(sub, "activity.jsonl"), `${lines.join("\n")}\n`, "utf-8");
+}
+
+/** Minutes from now, formatted as ISO. Negative values are in the past. */
+function isoMinutesFromNow(minutes: number): string {
+	return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+// ===========================================
+// stale_read_then_write
+// ===========================================
+
+describe("stale_read_then_write", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "stale-read-"));
+		_clearCrossSessionCache();
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("fires when another agent wrote the file after this session's started_at", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		const matches = staleReadThenWrite.fn(session, candidate);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.message).toMatch(/stale|rival|since this session/i);
+	});
+
+	it("fires for Write candidate even when prior other-agent write was MultiEdit", () => {
+		const filePath = "src/auth.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "MultiEdit",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:10:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate).length).toBe(1);
+	});
+
+	it("fires when multiple other-agent writes are observed, summarizing the latest", () => {
+		const filePath = "src/db.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:03:00.000Z",
+			},
+			{
+				agent_name: "rival",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:09:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		const matches = staleReadThenWrite.fn(session, candidate);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.prior_event_count).toBe(2);
+	});
+
+	it("does not fire when the candidate is not a Write/Edit", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Read",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the session has never read the file", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "other.ts" }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the only other writes are by the same agent_name", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "me",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the other-agent write predates started_at", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:10:00.000Z", agent_name: "me" },
+		);
+		// Write is older than started_at — but loadRecentWorkspaceEvents
+		// would filter it out at the since-timestamp boundary, so this
+		// also exercises that we don't accidentally include pre-session
+		// writes.
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+});
+
+// ===========================================
+// subagent_diverged_edit
+// ===========================================
+
+describe("subagent_diverged_edit", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "subagent-div-"));
+		_clearCrossSessionCache();
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("fires when this session and another agent both recently wrote the same file", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "subagent-x",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-10),
+			},
+		]);
+		const candidate = makeCandidate({
+			hook_event: "Stop",
+			cwd: dir,
+			agent_name: "parent",
+		});
+		const matches = subagentDivergedEdit.fn(session, candidate);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.message).toMatch(/subagent|divergence|both|wrote/i);
+	});
+
+	it("fires once per file even with multiple other-agent writes", () => {
+		const filePath = "src/db.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Edit", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub-a",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-20),
+			},
+			{
+				agent_name: "sub-b",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		const matches = subagentDivergedEdit.fn(session, candidate);
+		expect(matches.length).toBe(1);
+	});
+
+	it("fires for two different files written by two different other agents", () => {
+		const fileA = "src/a.ts";
+		const fileB = "src/b.ts";
+		const { session } = buildTrajectoryFixture(
+			[
+				{ tool_name: "Write", tool_input: { file_path: fileA }, cwd: dir },
+				{ tool_name: "Edit", tool_input: { file_path: fileB }, cwd: dir },
+			],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub-a",
+				tool_name: "Edit",
+				tool_input: { file_path: fileA },
+				timestamp: isoMinutesFromNow(-5),
+			},
+			{
+				agent_name: "sub-b",
+				tool_name: "Write",
+				tool_input: { file_path: fileB },
+				timestamp: isoMinutesFromNow(-3),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		const matches = subagentDivergedEdit.fn(session, candidate);
+		expect(matches.length).toBe(2);
+	});
+
+	it("does not fire when the other-agent write is older than 30 minutes", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-90),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when only this agent has written the file", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "parent",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when this session has not written anything", () => {
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "src/foo.ts" }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Write",
+				tool_input: { file_path: "src/foo.ts" },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+});
+
+// ===========================================
+// file_overwrite_after_other_agent
+// ===========================================
+
+describe("file_overwrite_after_other_agent", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "overwrite-other-"));
+		_clearCrossSessionCache();
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("fires when another agent wrote the file in the last hour and we haven't read it", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "other.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-15),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		const matches = fileOverwriteAfterOtherAgent.fn(session, candidate);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.message).toMatch(/overwrite|read it|rival/i);
+	});
+
+	it("fires for Edit candidate, not just Write", () => {
+		const filePath = "src/auth.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate).length).toBe(1);
+	});
+
+	it("fires even when no activity log existed for the session before now", () => {
+		const filePath = "src/new.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-1),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate).length).toBe(1);
+	});
+
+	it("does not fire when this session has already read the file", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-10),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the other-agent write is older than one hour", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-120),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the only other writes are by the same agent_name", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "me",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire on non-Write candidates", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Read",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+});
+
+// ===========================================
+// CROSS_AGENT_DETECTORS array export
+// ===========================================
+
+describe("CROSS_AGENT_DETECTORS", () => {
+	it("exports the three detectors in declared order", () => {
+		expect(CROSS_AGENT_DETECTORS).toEqual([
+			staleReadThenWrite,
+			subagentDivergedEdit,
+			fileOverwriteAfterOtherAgent,
+		]);
+	});
+
+	it("every detector has family === 'cross-agent'", () => {
+		for (const d of CROSS_AGENT_DETECTORS) {
+			expect(d.family).toBe("cross-agent");
+		}
+	});
+
+	it("every detector has determinism === 'fully_deterministic' and default_enabled === true", () => {
+		for (const d of CROSS_AGENT_DETECTORS) {
+			expect(d.determinism).toBe("fully_deterministic");
+			expect(d.default_enabled).toBe(true);
+		}
+	});
+});

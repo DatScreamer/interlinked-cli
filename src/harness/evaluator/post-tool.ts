@@ -21,6 +21,14 @@ import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
 import { scanForStubs, STUB_INTRODUCED_CAP } from "../verification-stop-checks.js";
 import {
+	classifyBashCommandProvenance,
+	recordBashTaintSource,
+} from "../bash-provenance.js";
+import {
+	DEFAULT_EGRESS_FILTER_CONFIG,
+	filterOutputEgress,
+} from "../output-egress-filter.js";
+import {
 	classifyFileSensitivity,
 	ratchetSensitivity,
 	SENSITIVITY_ORDER,
@@ -87,6 +95,27 @@ export function evaluatePostToolUse(
 	};
 }
 
+/** Bash CLI provenance — tag the session's `taint_sources` with
+ *  `fetched_external` when the Bash command matches a known web-fetching
+ *  shape (`gh issue view`, `wget`, `curl <non-localhost>`, etc.). Required
+ *  for the lethal-trifecta and partial-leg sequence detectors to fire on
+ *  Bash-routed external content. Independent of `output_scanning.enabled` —
+ *  driven by `taint_tracking.enabled` alone since this is a provenance fix,
+ *  not output scanning. */
+function recordBashProvenanceIfFetching(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	session: SessionTrajectory | undefined,
+): void {
+	if (!session || !rules.taint_tracking?.enabled) return;
+	if (!isBash(event.tool_name || "")) return;
+	const command = (event.tool_input?.command as string) || "";
+	if (!command) return;
+	const provenance = classifyBashCommandProvenance(command);
+	if (!provenance) return;
+	recordBashTaintSource(session, command, provenance);
+}
+
 /** File-scoped reminders (non-blocking). */
 function collectFileReminders(
 	event: HarnessEvent,
@@ -149,6 +178,21 @@ function collectOutputScanWarnings(
 					"<command-output>",
 					"Confidential",
 					rules.taint_tracking,
+				);
+			}
+			// PR-N2: egress filter — surface a redacted-count line alongside the
+			// detection warning. Disabled by default; will gate on a
+			// `rules.output_scanning.redact_secrets` config field once that
+			// lands. The filter is pure; the actual response rewrite (assigning
+			// back to event.tool_response) is intentionally deferred to a
+			// follow-up architecture pass — the harness's response forwarding
+			// path needs broader review before we mutate the response wire.
+			const filtered = filterOutputEgress(responseText, DEFAULT_EGRESS_FILTER_CONFIG);
+			if (filtered.redaction_count > 0) {
+				warnings.push(
+					`[interlinked:egress-filter] would redact ${filtered.redaction_count} secret occurrence(s) ` +
+						`(rules: ${filtered.redacted_rule_ids.join(", ")}). Enable redact_secrets in config ` +
+						"to scrub the response before it reaches the agent's context.",
 				);
 			}
 		}

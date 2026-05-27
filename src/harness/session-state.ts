@@ -3,6 +3,7 @@
 // ===========================================
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 
 /** Timeout for the SessionStart git-baseline snapshot. Both `git rev-parse HEAD`
@@ -287,6 +288,22 @@ export class SessionTracker {
 				// a failed one) may introduce genuinely different issues on
 				// the next attempt.
 				clearAcknowledgedChecksForFile(session, filePath);
+			}
+			// Sequence-detector input population (§3.5 / §3.18 / §3.21).
+			// Best-effort, success-only — feeds add_then_revert_loop and
+			// magic_literal_cross_file_proliferation. Lives next to the
+			// write-tracking block so the same outcome gate, file_path
+			// resolution, and tool_name classifier already in scope drive
+			// it; detectors silently no-op when the maps are empty.
+			if (isSequenceWriteOperation(event.tool_name)) {
+				const seqWriteSucceeded =
+					event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
+				if (seqWriteSucceeded) {
+					for (const chunk of extractWriteChunks(event)) {
+						recordRecentLineEdit(session, filePath, chunk);
+						recordLiteralOccurrences(session, filePath, chunk);
+					}
+				}
 			}
 
 			// Resolve pending completions when agent reads/edits affected files
@@ -637,6 +654,173 @@ function isWriteOperation(toolName: string | undefined): boolean {
 function isBashTool(toolName: string | undefined): boolean {
 	if (!toolName) return false;
 	return ["Bash", "Shell", "shell", "run_command"].includes(toolName);
+}
+
+// ===========================================
+// Sequence-detector input population
+// ===========================================
+// Populates `session.recent_line_edits`, `session.literal_occurrences` from
+// successful Write / Edit / MultiEdit events so the §3.21 add-then-revert
+// and §3.18 magic-literal-cross-file detectors have non-empty input.
+// Best-effort: bounded ring buffer + per-edit literal cap so a runaway
+// agent can't blow the trajectory's memory footprint. The detectors read
+// these maps directly; recent_user_urls is populated separately from
+// `lifecycle-events.ts::handleUserPromptSubmit`.
+
+/** Per-file ring buffer ceiling for `recent_line_edits`. The §3.21
+ *  detector only needs enough history to detect non-consecutive re-appearance
+ *  of a content hash; 20 entries comfortably covers a thrashing loop. */
+const RECENT_LINE_EDITS_PER_FILE_CAP = 20;
+
+/** Max distinct literals extracted from a single edit. Bounds the work the
+ *  literal scanner does per-event so a one-shot blob-write can't pin the
+ *  CPU or memory-balloon the session trajectory. */
+const LITERAL_OCCURRENCES_PER_EDIT_CAP = 50;
+
+/** Lower-edge of the boring-number range. -1, 0, 1, 2, ... 256 — the
+ *  range every codebase uses for status flags / array sizes / bit shifts;
+ *  excluding them keeps the cross-file detector targeting *meaningful*
+ *  literals. Matches the spec literal range. */
+const TRIVIAL_NUMBER_LO = -1;
+const TRIVIAL_NUMBER_HI = 256;
+
+/** HTTP status-code window. 100..599 are response codes spread across
+ *  effectively every web codebase; treating them as magic constants
+ *  would drown the detector. */
+const HTTP_STATUS_LO = 100;
+const HTTP_STATUS_HI = 599;
+
+/** Tools whose successful invocation produces a content chunk we feed to
+ *  the §3.21 / §3.18 sequence detectors. Superset of `isWriteOperation`
+ *  because that one excludes MultiEdit (no `file_path`/`content` pair on
+ *  the top-level input) but the sequence-input scanner *does* unpack the
+ *  per-edit `new_string`. Read-only — every other tool short-circuits. */
+function isSequenceWriteOperation(toolName: string | undefined): boolean {
+	if (!toolName) return false;
+	return [
+		"Write",
+		"Edit",
+		"WriteFile",
+		"EditFile",
+		"write_file",
+		"edit_file",
+		"MultiEdit",
+		"NotebookEdit",
+	].includes(toolName);
+}
+
+/** Shape of a single MultiEdit edit entry's `new_string` slot. */
+interface MultiEditEntry {
+	new_string?: unknown;
+}
+
+/** Extract every content chunk this event introduced. Write → one chunk
+ *  from `tool_input.content`; Edit → `tool_input.new_string`; MultiEdit →
+ *  one chunk per `tool_input.edits[i].new_string`. Returns [] when none of
+ *  the recognized fields is present, so the call site can iterate without
+ *  guard logic. */
+function extractWriteChunks(event: HarnessEvent): string[] {
+	const input = event.tool_input ?? {};
+	const chunks: string[] = [];
+	const content = input.content;
+	if (typeof content === "string") chunks.push(content);
+	const newString = input.new_string;
+	if (typeof newString === "string") chunks.push(newString);
+	const edits = input.edits;
+	if (Array.isArray(edits)) {
+		for (const e of edits) {
+			if (e && typeof e === "object") {
+				const ns = (e as MultiEditEntry).new_string;
+				if (typeof ns === "string") chunks.push(ns);
+			}
+		}
+	}
+	return chunks;
+}
+
+/** Push one ring-buffer entry for the file. content_hash is sha256 over the
+ *  raw chunk; `range.end` is the chunk's line-count (the spec's
+ *  simplification: Write/Edit don't expose precise line ranges, so we treat
+ *  each edit as touching its full new content). Drops the oldest entry on
+ *  overflow so the buffer stays bounded. */
+function recordRecentLineEdit(
+	session: SessionTrajectory,
+	filePath: string,
+	chunk: string,
+): void {
+	if (!session.recent_line_edits) session.recent_line_edits = new Map();
+	const lines = chunk.split("\n").length;
+	const entry = {
+		range: { start: 0, end: lines },
+		content_hash: createHash("sha256").update(chunk).digest("hex"),
+		at_step: session.tool_call_count,
+	};
+	const existing = session.recent_line_edits.get(filePath);
+	if (existing) {
+		existing.push(entry);
+		while (existing.length > RECENT_LINE_EDITS_PER_FILE_CAP) {
+			existing.shift();
+		}
+	} else {
+		session.recent_line_edits.set(filePath, [entry]);
+	}
+}
+
+/** Scan the chunk for non-trivial literals and add this file's path to
+ *  each literal's occurrence set. Per-event count is capped to keep a
+ *  large generated blob from creating thousands of map entries. */
+function recordLiteralOccurrences(
+	session: SessionTrajectory,
+	filePath: string,
+	chunk: string,
+): void {
+	if (!session.literal_occurrences) session.literal_occurrences = new Map();
+	let count = 0;
+	for (const literal of extractNonTrivialLiterals(chunk)) {
+		if (count >= LITERAL_OCCURRENCES_PER_EDIT_CAP) break;
+		const hash = createHash("sha256").update(literal).digest("hex");
+		const existing = session.literal_occurrences.get(hash);
+		if (existing) {
+			existing.add(filePath);
+		} else {
+			session.literal_occurrences.set(hash, new Set([filePath]));
+		}
+		count++;
+	}
+}
+
+/** Yield every literal worth tracking. String literals ≥8 chars (skips
+ *  short tokens like punctuation strings) and integer literals outside
+ *  the boring -1..256 range AND outside the HTTP status 100..599 window.
+ *  Pure, dependency-free — exported only for the dedicated unit tests
+ *  that pin the rule set. */
+export function extractNonTrivialLiterals(chunk: string): string[] {
+	const out: string[] = [];
+	// String literals: capture the delimiter, then anything that isn't a
+	// matching delimiter or newline. 8..200 char body bounds.
+	const stringRe = /(["'`])((?:(?!\1)[^\n]){8,200})\1/g;
+	let m: RegExpExecArray | null;
+	m = stringRe.exec(chunk);
+	while (m !== null) {
+		const body = m[2];
+		if (body !== undefined) out.push(body);
+		m = stringRe.exec(chunk);
+	}
+	// Integer literals (3+ digits) outside the boring and HTTP-status ranges.
+	const numberRe = /\b(\d{3,})\b/g;
+	let n: RegExpExecArray | null;
+	n = numberRe.exec(chunk);
+	while (n !== null) {
+		const raw = n[1];
+		if (raw !== undefined) {
+			const value = Number.parseInt(raw, 10);
+			const trivial = value >= TRIVIAL_NUMBER_LO && value <= TRIVIAL_NUMBER_HI;
+			const httpStatus = value >= HTTP_STATUS_LO && value <= HTTP_STATUS_HI;
+			if (!trivial && !httpStatus) out.push(raw);
+		}
+		n = numberRe.exec(chunk);
+	}
+	return out;
 }
 
 // ===========================================

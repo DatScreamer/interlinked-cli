@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SessionTracker } from "../session-state.js";
+import { extractNonTrivialLiterals, SessionTracker } from "../session-state.js";
 import type { HarnessEvent } from "../types.js";
+
+/** sha256 helper used to assert content_hash and literal_hash equality. */
+function sha256(s: string): string {
+	return createHash("sha256").update(s).digest("hex");
+}
 
 /** Minimal PreToolUse event — enough for recordEvent to mint a trajectory.
  *  The timestamp is a fixed literal: this suite asserts on signal merges,
@@ -67,5 +73,253 @@ describe("SessionTracker.rollUpVerificationSignals", () => {
 		t.recordEvent(evt("only"));
 		expect(t.rollUpVerificationSignals("only", "ghost")).toBe(false);
 		expect(t.rollUpVerificationSignals("ghost", "only")).toBe(false);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sequence-detector input population.
+//
+// `recent_line_edits` and `literal_occurrences` were added as fields on
+// SessionTrajectory for the §3.21 add-then-revert and §3.18 magic-literal
+// cross-file detectors. These tests pin the recordEvent population so the
+// detectors don't silently no-op in production.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Build a PostToolUse Edit event with the given content. Defaults to a
+ *  successful outcome (`tool_outcome === undefined` is treated as success
+ *  by the writeSucceeded predicate). */
+function editEvt(opts: {
+	sessionId?: string;
+	tool?: string;
+	filePath?: string;
+	newString?: string;
+	content?: string;
+	edits?: ReadonlyArray<{ new_string: string }>;
+	tool_outcome?: "success" | "error" | "interrupted";
+}): HarnessEvent {
+	const ev: HarnessEvent = {
+		hook_event: "PostToolUse",
+		session_id: opts.sessionId ?? "s",
+		agent_source: "claude",
+		timestamp: "2026-05-27T00:00:00.000Z",
+		tool_name: opts.tool ?? "Edit",
+		tool_input: {
+			file_path: opts.filePath ?? "src/foo.ts",
+		},
+	};
+	if (opts.newString !== undefined && ev.tool_input) ev.tool_input.new_string = opts.newString;
+	if (opts.content !== undefined && ev.tool_input) ev.tool_input.content = opts.content;
+	if (opts.edits !== undefined && ev.tool_input) ev.tool_input.edits = [...opts.edits];
+	if (opts.tool_outcome !== undefined) ev.tool_outcome = opts.tool_outcome;
+	return ev;
+}
+
+describe("SessionTracker.recordEvent — recent_line_edits population", () => {
+	it("creates one ring-buffer entry after one successful Edit", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "const x = 1;" }),
+		);
+		const entries = session.recent_line_edits?.get("src/a.ts");
+		expect(entries?.length).toBe(1);
+		expect(entries?.[0]?.content_hash).toBe(sha256("const x = 1;"));
+	});
+
+	it("appends a second entry on a second Edit to the same file", () => {
+		const t = new SessionTracker();
+		t.recordEvent(editEvt({ filePath: "src/a.ts", newString: "first" }));
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "second" }),
+		);
+		const entries = session.recent_line_edits?.get("src/a.ts");
+		expect(entries?.length).toBe(2);
+		expect(entries?.[1]?.content_hash).toBe(sha256("second"));
+	});
+
+	it("emits identical content_hash on identical re-edits (so detectors can match)", () => {
+		const t = new SessionTracker();
+		t.recordEvent(editEvt({ filePath: "src/a.ts", newString: "same" }));
+		t.recordEvent(editEvt({ filePath: "src/a.ts", newString: "other" }));
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "same" }),
+		);
+		const entries = session.recent_line_edits?.get("src/a.ts");
+		expect(entries?.[0]?.content_hash).toBe(entries?.[2]?.content_hash);
+	});
+
+	it("caps the ring buffer at 20 entries per file (drops oldest)", () => {
+		const t = new SessionTracker();
+		let session = t.recordEvent(editEvt({ filePath: "src/a.ts", newString: "x0" }));
+		for (let i = 1; i < 25; i++) {
+			session = t.recordEvent(editEvt({ filePath: "src/a.ts", newString: `x${i}` }));
+		}
+		const entries = session.recent_line_edits?.get("src/a.ts");
+		expect(entries?.length).toBe(20);
+		// First entry should now be x5 (we wrote x0..x24, kept last 20 → x5..x24).
+		expect(entries?.[0]?.content_hash).toBe(sha256("x5"));
+		expect(entries?.[19]?.content_hash).toBe(sha256("x24"));
+	});
+
+	it("does not record an entry when tool_outcome === 'error'", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({
+				filePath: "src/a.ts",
+				newString: "won't land",
+				tool_outcome: "error",
+			}),
+		);
+		expect(session.recent_line_edits?.get("src/a.ts")).toBeUndefined();
+	});
+
+	it("does not record an entry when tool_outcome === 'interrupted'", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({
+				filePath: "src/a.ts",
+				newString: "halted",
+				tool_outcome: "interrupted",
+			}),
+		);
+		expect(session.recent_line_edits?.get("src/a.ts")).toBeUndefined();
+	});
+
+	it("records each MultiEdit edit as a separate ring-buffer entry", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({
+				tool: "MultiEdit",
+				filePath: "src/a.ts",
+				edits: [{ new_string: "a" }, { new_string: "b" }, { new_string: "c" }],
+			}),
+		);
+		const entries = session.recent_line_edits?.get("src/a.ts");
+		expect(entries?.length).toBe(3);
+	});
+
+	it("records Write events via their `content` field", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ tool: "Write", filePath: "src/new.ts", content: "fresh module" }),
+		);
+		const entries = session.recent_line_edits?.get("src/new.ts");
+		expect(entries?.[0]?.content_hash).toBe(sha256("fresh module"));
+	});
+
+	it("`range.end` reflects the chunk's line count (spec simplification)", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "line1\nline2\nline3" }),
+		);
+		const entry = session.recent_line_edits?.get("src/a.ts")?.[0];
+		expect(entry?.range).toEqual({ start: 0, end: 3 });
+	});
+});
+
+describe("SessionTracker.recordEvent — literal_occurrences population", () => {
+	it("introducing the same string literal in two files yields a Set of size 2", () => {
+		const t = new SessionTracker();
+		t.recordEvent(
+			editEvt({
+				filePath: "src/a.ts",
+				newString: 'const SECRET_KEY_PATH = "/etc/secret-keys/app";',
+			}),
+		);
+		const session = t.recordEvent(
+			editEvt({
+				filePath: "src/b.ts",
+				newString: 'const KEY = "/etc/secret-keys/app";',
+			}),
+		);
+		const hash = sha256("/etc/secret-keys/app");
+		expect(session.literal_occurrences?.get(hash)?.size).toBe(2);
+		expect(session.literal_occurrences?.get(hash)?.has("src/a.ts")).toBe(true);
+		expect(session.literal_occurrences?.get(hash)?.has("src/b.ts")).toBe(true);
+	});
+
+	it("includes a non-trivial integer literal (≥3 digits, outside HTTP-status / -1..256)", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "const PORT_HIGH = 65535;" }),
+		);
+		const hash = sha256("65535");
+		expect(session.literal_occurrences?.get(hash)?.has("src/a.ts")).toBe(true);
+	});
+
+	it("ignores numbers in the -1..256 boring range (255, 100 still possible via HTTP)", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "const MAX = 256;" }),
+		);
+		const hash = sha256("256");
+		expect(session.literal_occurrences?.get(hash)).toBeUndefined();
+	});
+
+	it("ignores HTTP status codes (200, 404, 500)", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({
+				filePath: "src/a.ts",
+				newString: "if (res.status === 200) return; if (res.status === 404) throw;",
+			}),
+		);
+		expect(session.literal_occurrences?.get(sha256("200"))).toBeUndefined();
+		expect(session.literal_occurrences?.get(sha256("404"))).toBeUndefined();
+	});
+
+	it("does not pollute the map when the chunk contains no qualifying literals", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: "const x = a + b" }),
+		);
+		// No string literal ≥8 chars, no number ≥3 digits outside boring range.
+		expect(session.literal_occurrences?.size ?? 0).toBe(0);
+	});
+
+	it("does not record literals when tool_outcome === 'error'", () => {
+		const t = new SessionTracker();
+		const session = t.recordEvent(
+			editEvt({
+				filePath: "src/a.ts",
+				newString: 'const LONG_LITERAL = "this_is_a_long_string";',
+				tool_outcome: "error",
+			}),
+		);
+		expect(session.literal_occurrences?.size ?? 0).toBe(0);
+	});
+
+	it("caps literal extraction per edit at 50 entries", () => {
+		const t = new SessionTracker();
+		// Build a chunk with 80 unique non-trivial number literals (each
+		// 4-digit, outside HTTP-status and boring ranges).
+		const parts: string[] = [];
+		for (let i = 0; i < 80; i++) parts.push(`const N${i} = ${1000 + i};`);
+		const session = t.recordEvent(
+			editEvt({ filePath: "src/a.ts", newString: parts.join("\n") }),
+		);
+		expect(session.literal_occurrences?.size).toBe(50);
+	});
+});
+
+describe("extractNonTrivialLiterals — unit tests for the literal scanner", () => {
+	it("returns string literals ≥8 chars", () => {
+		expect(extractNonTrivialLiterals('const x = "abcdefghij";')).toContain("abcdefghij");
+	});
+
+	it("skips short string literals (<8 chars)", () => {
+		expect(extractNonTrivialLiterals('const x = "abc";')).not.toContain("abc");
+	});
+
+	it("returns numbers ≥3 digits outside boring and HTTP-status ranges", () => {
+		expect(extractNonTrivialLiterals("const x = 12345;")).toContain("12345");
+	});
+
+	it("skips HTTP status codes (200/404/500)", () => {
+		expect(extractNonTrivialLiterals("status === 200")).not.toContain("200");
+		expect(extractNonTrivialLiterals("status === 404")).not.toContain("404");
+	});
+
+	it("skips boring numbers (≤256)", () => {
+		expect(extractNonTrivialLiterals("const x = 256;")).not.toContain("256");
 	});
 });

@@ -192,6 +192,48 @@ recCmd
 	});
 
 // ===========================================
+// interlinked trajectory — inspect session trajectory state and replay
+// recorded event streams through the sequence-detector framework. See
+// docs/design/trajectory-detectors-implementation-plan.md §2.3.
+// ===========================================
+const trajCmd = program
+	.command("trajectory")
+	.description("Inspect trajectory snapshots; replay recorded event streams through sequence detectors");
+
+trajCmd
+	.command("list")
+	.description("Enumerate trajectory snapshots in .interlinked/sessions/")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { trajectoryListCommand } = await import("./commands/trajectory.js");
+		await trajectoryListCommand(opts);
+	});
+
+trajCmd
+	.command("show")
+	.description("Show one trajectory snapshot (latest by default)")
+	.option("--session <id>", "Specific session_id to show")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { trajectoryShowCommand } = await import("./commands/trajectory.js");
+		await trajectoryShowCommand(opts);
+	});
+
+trajCmd
+	.command("replay <file>")
+	.description("Replay a JSONL event stream through the sequence-detector framework")
+	.option("--check <id>", "Restrict to a single detector id")
+	.option("--phase <phase>", "Restrict to one phase: pre_block | pre_warn | stop")
+	.option("--cwd <path>", "Project root")
+	.option("--json", "Machine-readable output")
+	.action(async (file: string, opts: OptionValues) => {
+		const { trajectoryReplayCommand } = await import("./commands/trajectory.js");
+		await trajectoryReplayCommand({ ...opts, file });
+	});
+
+// ===========================================
 // interlinked audit — verify the hash-chained guard-decision log.
 // Borrowed from Microsoft Agent Governance Toolkit's audit.mjs pattern;
 // maps to OWASP ASI11 "Agent Untraceability". See docs/design/

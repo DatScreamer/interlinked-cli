@@ -39,7 +39,15 @@ import {
 	driveGraphPrediction,
 	type GraphPredictionMode,
 } from "../graph-prediction-pre-tool.js";
+import {
+	DEFAULT_LOCKDOWN_CONFIG,
+	evaluateLockdown,
+} from "../lockdown-policy.js";
 import { getPatternWarnings } from "../pattern-detector.js";
+import {
+	formatSequenceFinding,
+	runSequenceDetectorsForPhase,
+} from "../sequence-checks/index.js";
 import {
 	checkConcurrentEdit,
 	checkDirtyWorkingTree,
@@ -348,6 +356,55 @@ export function evaluatePreToolUse(
 	if (session) {
 		const trajectoryWarnings = runTrajectoryDetector(event, session, sharedConfig ?? null);
 		if (trajectoryWarnings.length > 0) warnings.push(...trajectoryWarnings);
+	}
+
+	// Sequence detectors — local-tier trajectory checks (security, cross-agent,
+	// injection, quality). pre_block findings short-circuit with a block
+	// decision; pre_warn findings append to warnings. Stop runs in
+	// `lifecycle-events.ts::buildStopWarnings`. No-op until detectors register
+	// with `default_enabled: true`. Lockdown policy (PR-N1) runs after the
+	// dispatcher and may upgrade pre_warn → pre_block when active.
+	if (session) {
+		const preBlockFindings = runSequenceDetectorsForPhase({
+			phase: "pre_block",
+			trajectory: session,
+			candidate: event,
+		});
+		const preWarnFindings = runSequenceDetectorsForPhase({
+			phase: "pre_warn",
+			trajectory: session,
+			candidate: event,
+		});
+		// Lockdown evaluation: may upgrade some pre_warn findings to pre_block,
+		// and may emit new findings (2-of-3-legs trifecta) the structural
+		// detector wouldn't catch. Disabled by default; activate via config or
+		// trajectory state. TODO(config-plumb): once `GuardRulesConfig` carries
+		// a `lockdown` field, replace DEFAULT_LOCKDOWN_CONFIG with the resolved
+		// value. For now the default config keeps lockdown off.
+		const lockdownResult = evaluateLockdown({
+			trajectory: session,
+			candidate: event,
+			sequenceFindings: [...preBlockFindings, ...preWarnFindings],
+			config: DEFAULT_LOCKDOWN_CONFIG,
+		});
+		// Suppress the original pre_warn entry for any finding that got
+		// upgraded — avoid double-rendering the same detector at both tiers.
+		const upgradedIds = new Set(lockdownResult.upgradedFindings.map((f) => f.detector_id));
+		const remainingPreWarn = preWarnFindings.filter((f) => !upgradedIds.has(f.detector_id));
+		const finalPreBlock = [
+			...preBlockFindings,
+			...lockdownResult.upgradedFindings,
+			...lockdownResult.emittedFindings,
+		];
+		const blockFinding = finalPreBlock[0];
+		if (blockFinding) {
+			return {
+				decision: "block",
+				reason: `[interlinked:sequence] ${blockFinding.detector_id}: ${blockFinding.match.message}`,
+				warnings: warnings.length > 0 ? warnings : undefined,
+			};
+		}
+		for (const f of remainingPreWarn) warnings.push(formatSequenceFinding(f));
 	}
 
 	// GUARD: Supermodel `.graph.*` shard write protection — apply_patch layer.

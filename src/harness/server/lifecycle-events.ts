@@ -49,6 +49,10 @@ import {
 	recordSkillLeave,
 	type SessionTracker,
 } from "../session-state.js";
+import {
+	formatSequenceFinding,
+	runSequenceDetectorsForPhase,
+} from "../sequence-checks/index.js";
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
@@ -372,7 +376,60 @@ async function handleUserPromptSubmit(
 			return { decision: "allow", redacted_prompt: scanResult.redacted };
 		}
 	}
+	// Sequence-detector input: feed §3.5 (network_after_user_input_url_match).
+	// Extract URLs + hostnames from the raw prompt and stash them on the
+	// session so subsequent Bash network calls can be matched against them.
+	// Cap kept small (RECENT_USER_URLS_CAP) so a many-link prompt doesn't
+	// balloon the in-memory trajectory state.
+	if (event.prompt && session) {
+		recordRecentUserUrls(session, event.prompt);
+	}
 	return { decision: "allow" };
+}
+
+/** Upper bound on `session.recent_user_urls`. The §3.5 detector substring-
+ *  matches each candidate-command host against this set, so the cost grows
+ *  linearly; 100 entries comfortably covers a long planning prompt without
+ *  letting the set grow unbounded. */
+const RECENT_USER_URLS_CAP = 100;
+
+/** Scan a prompt for URL literals and stash the full URL + the parsed
+ *  hostname (lowercased) into `session.recent_user_urls`. Hostnames are
+ *  what the §3.5 detector matches against; the full URL is included as
+ *  back-up so a `recent_user_urls.has(url)` lookup also works for direct
+ *  exact-string matches. Best-effort: malformed URLs are skipped (a single
+ *  bad input shouldn't taint the set), but the full URL is still added so
+ *  a `recent_user_urls.has(url)` lookup still works. */
+function recordRecentUserUrls(session: SessionTrajectory, prompt: string): void {
+	if (!session.recent_user_urls) session.recent_user_urls = new Set();
+	const urlRe = /https?:\/\/[^\s'"<>]+/gi;
+	let m: RegExpExecArray | null;
+	m = urlRe.exec(prompt);
+	while (m !== null) {
+		const url = m[0];
+		session.recent_user_urls.add(url);
+		const host = parseHostnameLowercase(url);
+		if (host) session.recent_user_urls.add(host);
+		m = urlRe.exec(prompt);
+	}
+	// Cap by dropping oldest. Set iteration order is insertion order in JS,
+	// so reconstructing from the tail keeps the most recent N.
+	if (session.recent_user_urls.size > RECENT_USER_URLS_CAP) {
+		const kept = [...session.recent_user_urls].slice(-RECENT_USER_URLS_CAP);
+		session.recent_user_urls = new Set(kept);
+	}
+}
+
+/** Best-effort hostname extraction. Returns null on a malformed URL so the
+ *  caller can skip without a try/catch at the loop layer; the calling
+ *  scanner only needs to know "did this URL yield a usable host?" */
+function parseHostnameLowercase(url: string): string | null {
+	try {
+		const host = new URL(url).hostname.toLowerCase();
+		return host || null;
+	} catch (_err) {
+		return null;
+	}
 }
 
 /** SubagentStop — cohort tracking + verification-signal rollup into the
@@ -501,6 +558,16 @@ function buildStopWarnings(
 	for (const w of buildPatternRescanWarnings(session, cwd)) {
 		warnings.push(w);
 	}
+	// Stop-phase sequence detectors — multi-event quality + cross-agent +
+	// install-then-execute shapes. Sibling family to `buildPatternRescanWarnings`
+	// (which rescans per-file content); these run over the trajectory state.
+	// No-op until detectors register with `default_enabled: true`.
+	const stopFindings = runSequenceDetectorsForPhase({
+		phase: "stop",
+		trajectory: session,
+		candidate: event,
+	});
+	for (const f of stopFindings) warnings.push(formatSequenceFinding(f));
 	return warnings;
 }
 
