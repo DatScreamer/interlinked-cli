@@ -49,6 +49,8 @@ function makeEmptyResults(): CodeQualityResults {
 		"throwLiteral",
 		"promiseRejectNonError",
 		"lossyErrorRethrow",
+		"importFromOwnBarrel",
+		"errorDispatchByInstanceof",
 		"silentPromiseSwallow",
 		"requireAwait",
 

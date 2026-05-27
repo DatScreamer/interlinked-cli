@@ -31,6 +31,7 @@ import {
 	checkPyMutableDefaultArg,
 	checkRegexInLoopNoCompile,
 	checkScriptWithoutSri,
+	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkTempfileMktempRace,
 	checkTimeFormatLocaleDep,
@@ -146,6 +147,22 @@ export const UBS_ENTRIES: CheckRegistration[] = [
 		fn: checkSqlStringConcat,
 		resultsPropName: "sqlStringConcat",
 		content_keywords: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+	},
+	{
+		id: "sql_escape_hatch_non_literal",
+		phase: "pre_warn",
+		name: "SQL escape hatch with non-literal",
+		description:
+			"Detects SQL libraries' `sql.unsafe(...)` / `sql.raw(...)` / `sql.lit(...)` escape hatch invoked with a non-literal argument — runtime expressions reach the unparameterized path, restoring the SQL-injection vector the library otherwise prevents. Mirrors Effect's `Statement` discipline: `sql.unsafe` is reserved for compile-time constants like schema names. Effect-TS lessons port.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Wrap the value as a parameter, not via the escape hatch: `` sql`SELECT * FROM users WHERE id = ${userId}` `` (Effect/Drizzle) or `db.query('... WHERE id = $1', [userId])` (node-postgres). The escape hatch (`sql.unsafe` / `sql.raw` / `sql.lit`) is for compile-time constants only — schema names, version strings, hand-audited DDL fragments — never for runtime values. If you genuinely need to interpolate a column or table name from a closed allow-list, do the validation explicitly and then `sql.unsafe('<the_validated_constant>')` with the literal still hard-coded after the check.",
+		fn: checkSqlEscapeHatchNonLiteral,
+		resultsPropName: "sqlEscapeHatchNonLiteral",
+		content_keywords: [".unsafe", ".raw", ".lit"],
 	},
 	{
 		id: "ubs_python_mutable_default_arg",

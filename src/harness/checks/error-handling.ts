@@ -310,6 +310,92 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 	return matches;
 }
 
+/**
+ * Detect `instanceof <BuiltinError>` dispatch inside a catch block.
+ *
+ * Effect-TS lessons port (docs/design/effect-ts-harness-additions.md §2.1).
+ * Effect dispatches errors via `Effect.catchTag("NetworkError", ...)` — tag
+ * discrimination on a structural field, not nominal class identity. The
+ * vanilla-JS `instanceof Error` analog is fragile: it returns false across
+ * realm boundaries (iframes, worker contexts, vm.runInContext), so a real
+ * `Error` instance from another realm slips past the branch and ends up
+ * in whatever the catch's fall-through path does.
+ *
+ * Limited to the JS-builtin error classes (`Error`, `TypeError`,
+ * `RangeError`, `SyntaxError`, `EvalError`, `URIError`, `ReferenceError`,
+ * `AggregateError`) — user-defined error subclasses can legitimately be
+ * dispatched on, because no cross-realm leakage applies and the project
+ * controls construction.
+ */
+const BUILTIN_ERROR_CLASSES = new Set([
+	"Error",
+	"TypeError",
+	"RangeError",
+	"SyntaxError",
+	"EvalError",
+	"URIError",
+	"ReferenceError",
+	"AggregateError",
+]);
+
+export function checkErrorDispatchByInstanceof(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+
+	const stripped = stripComments(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	const catchOpenRe = /\bcatch\s*\(\s*[A-Za-z_$][\w$]*\s*\)\s*\{/g;
+	const INSTANCEOF_RE = /\binstanceof\s+([A-Z][A-Za-z0-9_$]*)\b/g;
+
+	let openMatch: RegExpExecArray | null = catchOpenRe.exec(stripped);
+	while (openMatch !== null) {
+		if (matches.length >= 10) break;
+		const openIdx = openMatch.index + openMatch[0].length - 1;
+		let depth = 1;
+		let closeIdx = -1;
+		for (let i = openIdx + 1; i < stripped.length; i++) {
+			const ch = stripped[i];
+			if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					closeIdx = i;
+					break;
+				}
+			}
+		}
+		if (closeIdx < 0) {
+			openMatch = catchOpenRe.exec(stripped);
+			continue;
+		}
+
+		INSTANCEOF_RE.lastIndex = openIdx + 1;
+		let opMatch: RegExpExecArray | null = INSTANCEOF_RE.exec(stripped);
+		while (opMatch !== null && opMatch.index < closeIdx) {
+			if (matches.length >= 10) break;
+			const className = opMatch[1];
+			if (BUILTIN_ERROR_CLASSES.has(className)) {
+				const lineNum = stripped.slice(0, opMatch.index).split("\n").length;
+				matches.push({
+					line: lineNum,
+					text: `instanceof ${className} inside catch — fragile across realm boundaries; dispatch on a _tag/code/name field instead: ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 120)}`,
+				});
+			}
+			opMatch = INSTANCEOF_RE.exec(stripped);
+		}
+
+		openMatch = catchOpenRe.exec(stripped);
+	}
+
+	return matches;
+}
+
 /** Detect inconsistent error strategy in a single file: mix of throw + return { error } + return null */
 export function checkInconsistentErrorStrategy(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];

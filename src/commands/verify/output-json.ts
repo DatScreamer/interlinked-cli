@@ -241,6 +241,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		// === Plan 04 D.1 partial ===
 		ubs_eval_input_tainted: summarizeWithDetails(cq.evalInputTainted),
 		ubs_sql_string_concat: summarizeWithDetails(cq.sqlStringConcat),
+		sql_escape_hatch_non_literal: summarizeWithDetails(cq.sqlEscapeHatchNonLiteral),
 		ubs_python_mutable_default_arg: summarizeWithDetails(cq.pyMutableDefaultArg),
 		// === Plan 04 D.1 backlog (17 of 20) ===
 		ubs_tempfile_mktemp_race: summarizeWithDetails(cq.tempfileMktempRace),
@@ -256,6 +257,8 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_print_debug_leak: summarizeWithDetails(cq.printDebugLeak),
 		ubs_hardcoded_localhost: summarizeWithDetails(cq.ubsHardcodedLocalhost),
 		lossy_error_rethrow: summarizeWithDetails(cq.lossyErrorRethrow),
+		import_from_own_barrel: summarizeWithDetails(cq.importFromOwnBarrel),
+		error_dispatch_by_instanceof: summarizeWithDetails(cq.errorDispatchByInstanceof),
 		silent_promise_catch: summarizeWithDetails(cq.silentPromiseSwallow),
 		child_process_exec_user_input: summarizeWithDetails(cq.childProcessExecUserInput),
 		mixed_sync_async_file_api: summarizeWithDetails(cq.mixedSyncAsyncFileApi),

@@ -118,3 +118,89 @@ describe("checkCleanupSkippedOnEarlyExit — negative cases (must NOT fire)", ()
 		expect(checkCleanupSkippedOnEarlyExit(code, TS)).toEqual([]);
 	});
 });
+
+// Effect-TS lessons port (docs/design/effect-ts-harness-additions.md §2.5):
+// extend NAMED_ACQUISITIONS to cover file/socket/process handles. Same
+// semantic — cleanup line exists but an early-exit bypasses it.
+describe("checkCleanupSkippedOnEarlyExit — file/socket/process handles (Effect §2.5)", () => {
+	it("flags fs.openSync acquisition with throw before fs.closeSync", () => {
+		const code = [
+			"import fs from 'node:fs';",
+			"function bug() {",
+			"  const fd = fs.openSync('a.txt', 'r');",
+			"  if (corrupted) throw new Error('bad');",
+			"  fs.closeSync(fd);",
+			"}",
+		].join("\n");
+		const out = checkCleanupSkippedOnEarlyExit(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags fs.createReadStream acquisition with early return before close", () => {
+		const code = [
+			"import fs from 'node:fs';",
+			"function bug() {",
+			"  const stream = fs.createReadStream('a.txt');",
+			"  if (!ready) return;",
+			"  stream.close();",
+			"}",
+		].join("\n");
+		const out = checkCleanupSkippedOnEarlyExit(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags fs.createWriteStream acquisition with early return before .destroy()", () => {
+		const code = [
+			"import fs from 'node:fs';",
+			"function bug() {",
+			"  const ws = fs.createWriteStream('out.txt');",
+			"  if (failed) return;",
+			"  ws.destroy();",
+			"}",
+		].join("\n");
+		const out = checkCleanupSkippedOnEarlyExit(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags child_process.spawn with throw before .kill()", () => {
+		const code = [
+			"import { spawn } from 'node:child_process';",
+			"function bug() {",
+			"  const child = spawn('ls');",
+			"  if (cond) throw new Error('bad');",
+			"  child.kill();",
+			"}",
+		].join("\n");
+		const out = checkCleanupSkippedOnEarlyExit(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does NOT flag fs.openSync wrapped in try/finally", () => {
+		const code = [
+			"import fs from 'node:fs';",
+			"function ok() {",
+			"  const fd = fs.openSync('a.txt', 'r');",
+			"  try {",
+			"    if (corrupted) throw new Error('bad');",
+			"  } finally {",
+			"    fs.closeSync(fd);",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkCleanupSkippedOnEarlyExit(code, TS)).toEqual([]);
+	});
+
+	it("does NOT flag fs.createReadStream returned from the function", () => {
+		const code = [
+			"import fs from 'node:fs';",
+			"function ok() {",
+			"  const stream = fs.createReadStream('a.txt');",
+			"  return stream;",
+			"}",
+		].join("\n");
+		// `return stream` precedes any cleanup line, so cleanup is genuinely
+		// absent and this is a different bug class (lifecycle_cleanup), not
+		// this one. Must not fire here.
+		expect(checkCleanupSkippedOnEarlyExit(code, TS)).toEqual([]);
+	});
+});

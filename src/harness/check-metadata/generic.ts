@@ -180,6 +180,20 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	import_from_own_barrel: {
+		name: "Import From Own Barrel",
+		description:
+			"Detects a non-barrel source file importing from its own-directory barrel ('./index', './', or the file's own published package name) — forms latent module-init cycles and defeats tree-shaking. Effect-TS lessons port.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	error_dispatch_by_instanceof: {
+		name: "Error Dispatch by instanceof",
+		description:
+			"Detects `e instanceof <BuiltinError>` inside a catch block — fragile across realm boundaries (iframes, workers, vm contexts). Prefer tag/code/name dispatch. Effect-TS lessons port.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	silent_promise_catch: {
 		name: "Silent Promise Catch",
 		description:
@@ -550,6 +564,13 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		name: "UBS SQL String Concat",
 		description:
 			"Detects SQL keyword inside a quoted string with `+` / template-literal interpolation — canonical SQL-injection shape.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	sql_escape_hatch_non_literal: {
+		name: "SQL Escape Hatch With Non-Literal",
+		description:
+			"Detects `sql.unsafe`/`sql.raw`/`sql.lit` invoked with a non-literal argument — restores the SQL-injection vector the library otherwise prevents. Effect-TS lessons port.",
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
@@ -1027,5 +1048,49 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 			"Detects `.insertAdjacentHTML(position, htmlString)` — the second argument is parsed as HTML; attacker-controlled fragments become live DOM nodes.",
 		tier: 1,
 		determinism: "fully_deterministic",
+	},
+	// === Phase B endpoint-security pack (2026-05) ===
+	// All five fire as PostToolUse warnings (heuristic shape match against the
+	// route-extracted Endpoint + handler scope). Externality is `local_write`
+	// — they fire on per-file edits via the standard registry adapter path.
+	endpoint_auth_missing: {
+		name: "Endpoint Auth Missing",
+		description:
+			"Detects HTTP endpoints whose route-extracted auth_chain is empty AND no recognized auth middleware appears at the router-mount level. Covers Express, Hono, Next.js, FastAPI.",
+		tier: 1,
+		determinism: "heuristic",
+		externality: "local_write",
+	},
+	endpoint_idor_shape: {
+		name: "Endpoint IDOR Shape",
+		description:
+			"Detects handlers that read a path param and feed it to a DB call without an auth-context predicate — the canonical Insecure Direct Object Reference shape.",
+		tier: 1,
+		determinism: "heuristic",
+		externality: "local_write",
+	},
+	endpoint_missing_tenant_filter: {
+		name: "Endpoint Missing Tenant Filter",
+		description:
+			"Detects DB queries inside a handler scope whose WHERE clause omits all configured tenant columns (org_id, workspace_id, business_id, tenant_id). Conservative — dynamic WHEREs are skipped.",
+		tier: 1,
+		determinism: "heuristic",
+		externality: "local_write",
+	},
+	endpoint_ssrf_shape: {
+		name: "Endpoint SSRF Shape",
+		description:
+			"Detects handlers that read a URL-shaped value and pass it to an HTTP client without an allow-list sanitizer registered in `.interlinked/sanitizers.json#url`.",
+		tier: 1,
+		determinism: "heuristic",
+		externality: "local_write",
+	},
+	endpoint_mass_assignment: {
+		name: "Endpoint Mass Assignment",
+		description:
+			"Detects handlers that spread request body into a model create/update without an explicit field allowlist or schema validator (zod / Pydantic / pick).",
+		tier: 1,
+		determinism: "heuristic",
+		externality: "local_write",
 	},
 };

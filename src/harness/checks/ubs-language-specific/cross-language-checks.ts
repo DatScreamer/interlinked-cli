@@ -70,6 +70,68 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 }
 
 /**
+ * `sql_escape_hatch_non_literal` — SQL libraries expose a single "unsafe"
+ * escape hatch reserved for compile-time constants (Effect's `sql.unsafe`,
+ * Drizzle's `sql.raw`, Kysely's `sql.lit`). Passing a runtime expression
+ * into it almost always means a SQL-injection vector — bypasses the
+ * library's parameterization guarantee for a value that should have been
+ * a parameter.
+ *
+ * Effect-TS lessons port (docs/design/effect-ts-harness-additions.md §2.6).
+ *
+ * Flags: `sql.unsafe(`/`sql.raw(`/`sql.lit(` whose first argument is NOT a
+ * string literal (single quote, double quote, or template literal opening
+ * backtick) or a recognized literal-template-tag pattern.
+ *
+ * Skips: test files, non-JS/TS files.
+ */
+const SQL_ESCAPE_HATCH_RE = /\b(?:sql|db|orm)\.(?:unsafe|raw|lit)\s*\(\s*/g;
+
+export function checkSqlEscapeHatchNonLiteral(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isCode =
+		ext === ".ts" ||
+		ext === ".tsx" ||
+		ext === ".js" ||
+		ext === ".jsx" ||
+		ext === ".mjs" ||
+		ext === ".cjs" ||
+		ext === ".mts" ||
+		ext === ".cts";
+	if (!isCode) return [];
+	if (isTestFile(filePath)) return [];
+
+	// Strip comments only — preserve string contents so we can read the
+	// character right after the opening paren and decide literal-vs-not.
+	const stripped = stripCommentsPreservingStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	const re = new RegExp(SQL_ESCAPE_HATCH_RE.source, "g");
+	let m: RegExpExecArray | null = re.exec(stripped);
+	while (m !== null) {
+		if (matches.length >= MATCH_LIMIT) break;
+		// The match ends right at the first non-whitespace position after `(`.
+		const firstChar = stripped[m.index + m[0].length];
+		const isLiteralOpen =
+			firstChar === '"' || firstChar === "'" || firstChar === "`";
+		if (!isLiteralOpen) {
+			const lineNum = stripped.slice(0, m.index).split("\n").length;
+			matches.push({
+				line: lineNum,
+				text: `SQL escape hatch (${m[0].trim()}) called with non-literal argument — should only wrap compile-time constants (schema names, etc.): ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 120)}`,
+			});
+		}
+		m = re.exec(stripped);
+	}
+
+	return matches;
+}
+
+/**
  * `ubs_hardcoded_localhost` — `localhost` / `127.0.0.1` baked into source
  * outside of test/config/example files. Often committed dev defaults that
  * break in deploy. pre_block / error.

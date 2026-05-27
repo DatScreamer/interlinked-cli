@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkUbsHardcodedLocalhost,
 } from "./cross-language-checks.js";
@@ -41,6 +42,48 @@ describe("ubs-language-specific/cross-language-checks", () => {
 
 		it("does not flag non-source extensions", () => {
 			expect(checkUbsHardcodedLocalhost("uses localhost here", "notes.md")).toEqual([]);
+		});
+	});
+
+	describe("checkSqlEscapeHatchNonLiteral (Effect §2.6)", () => {
+		it("flags `sql.unsafe(<identifier>)` (Effect SQL)", () => {
+			const code = "const q = sql.unsafe(tableName);";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts").length).toBeGreaterThan(0);
+		});
+
+		it("flags `sql.raw(<identifier>)` (Drizzle)", () => {
+			const code = "const q = sql.raw(userInput);";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts").length).toBeGreaterThan(0);
+		});
+
+		it("flags `sql.lit(<expression>)` (Kysely)", () => {
+			const code = "const q = sql.lit(getName());";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts").length).toBeGreaterThan(0);
+		});
+
+		it("does NOT flag `sql.unsafe(\"<string literal>\")`", () => {
+			const code = 'const q = sql.unsafe("public.users");';
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts")).toEqual([]);
+		});
+
+		it("does NOT flag `sql.raw('<single-quoted>')`", () => {
+			const code = "const q = sql.raw('public');";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts")).toEqual([]);
+		});
+
+		it("does NOT flag `sql.unsafe(`<template literal>`)`", () => {
+			const code = "const q = sql.unsafe(`public.users`);";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.ts")).toEqual([]);
+		});
+
+		it("skips test files entirely", () => {
+			const code = "const q = sql.unsafe(tableName);";
+			expect(checkSqlEscapeHatchNonLiteral(code, "db.test.ts")).toEqual([]);
+		});
+
+		it("skips non-source files", () => {
+			const code = "const q = sql.unsafe(tableName);";
+			expect(checkSqlEscapeHatchNonLiteral(code, "notes.md")).toEqual([]);
 		});
 	});
 });

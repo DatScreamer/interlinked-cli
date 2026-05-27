@@ -10,6 +10,13 @@ import { existsSync, statSync } from "node:fs";
 import { basename, extname, relative, resolve } from "node:path";
 
 import {
+	adaptEndpointAuthMissing,
+	adaptEndpointIdorShape,
+	adaptEndpointMassAssignment,
+	adaptEndpointMissingTenantFilter,
+	adaptEndpointSsrfShape,
+} from "../../harness/check-registry/endpoint-security-adapters.js";
+import {
 	checkAccumulatingSpread,
 	checkAgentThumbprintProse,
 	checkAsyncEventHandler,
@@ -76,6 +83,8 @@ import {
 	checkJsLooseEquality,
 	checkJsonParseUnsafe,
 	checkLargeFunction,
+	checkErrorDispatchByInstanceof,
+	checkImportFromOwnBarrel,
 	checkListenerPairing,
 	checkMigrationParity,
 	checkLifecycleCleanup,
@@ -127,6 +136,7 @@ import {
 	checkSilentPromiseSwallow,
 	checkSnapshotOveruse,
 	checkSqlSchemaConsistency,
+	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkStubNotImplementedThrow,
 	checkSubprocessShellTrue,
@@ -595,6 +605,16 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.lossyErrorRethrow.push(
 		...toIssues("lossy_error_rethrow", relPath, checkLossyErrorRethrow(content, file)),
 	);
+	r.importFromOwnBarrel.push(
+		...toIssues("import_from_own_barrel", relPath, checkImportFromOwnBarrel(content, file)),
+	);
+	r.errorDispatchByInstanceof.push(
+		...toIssues(
+			"error_dispatch_by_instanceof",
+			relPath,
+			checkErrorDispatchByInstanceof(content, file),
+		),
+	);
 	r.silentPromiseSwallow.push(
 		...toIssues("silent_promise_catch", relPath, checkSilentPromiseSwallow(content, file)),
 	);
@@ -805,6 +825,13 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 	r.sqlStringConcat.push(
 		...toIssues("ubs_sql_string_concat", relPath, checkSqlStringConcat(content, file)),
 	);
+	r.sqlEscapeHatchNonLiteral.push(
+		...toIssues(
+			"sql_escape_hatch_non_literal",
+			relPath,
+			checkSqlEscapeHatchNonLiteral(content, file),
+		),
+	);
 	r.pyMutableDefaultArg.push(
 		...toIssues(
 			"ubs_python_mutable_default_arg",
@@ -993,6 +1020,35 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			"ubs_insert_adjacent_html",
 			relPath,
 			checkInsertAdjacentHtml(content, file),
+		),
+	);
+
+	// === Phase B endpoint-security pack (2026-05) ===
+	// Five PostToolUse warning detectors run through a registry-call-site
+	// shim (`harness/check-registry/endpoint-security-adapters.ts`) so they
+	// fit the standard `(content, filePath) => InlineMatch[]` shape while
+	// internally loading RouteMap + SecurityConfig + SanitizerRegistry.
+	r.endpointAuthMissing.push(
+		...toIssues("endpoint_auth_missing", relPath, adaptEndpointAuthMissing(content, file)),
+	);
+	r.endpointIdorShape.push(
+		...toIssues("endpoint_idor_shape", relPath, adaptEndpointIdorShape(content, file)),
+	);
+	r.endpointMissingTenantFilter.push(
+		...toIssues(
+			"endpoint_missing_tenant_filter",
+			relPath,
+			adaptEndpointMissingTenantFilter(content, file),
+		),
+	);
+	r.endpointSsrfShape.push(
+		...toIssues("endpoint_ssrf_shape", relPath, adaptEndpointSsrfShape(content, file)),
+	);
+	r.endpointMassAssignment.push(
+		...toIssues(
+			"endpoint_mass_assignment",
+			relPath,
+			adaptEndpointMassAssignment(content, file),
 		),
 	);
 

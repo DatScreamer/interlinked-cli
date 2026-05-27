@@ -414,6 +414,20 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "import from own barrel",
+		key: "importFromOwnBarrel",
+		noun: "imports from own-directory barrel ('./index' / './' / own package name)",
+		passLabel: "no own-barrel re-imports",
+		color: "33",
+	},
+	{
+		label: "error dispatch by instanceof",
+		key: "errorDispatchByInstanceof",
+		noun: "`instanceof <BuiltinError>` inside a catch — fragile across realm boundaries",
+		passLabel: "no instanceof-builtin-Error dispatch in catch",
+		color: "33",
+	},
+	{
 		label: "silent promise catch",
 		key: "silentPromiseSwallow",
 		noun: ".catch(() => {}) handlers that swallow rejections",
@@ -878,6 +892,13 @@ export const SECTIONS: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "sql escape hatch non-literal",
+		key: "sqlEscapeHatchNonLiteral",
+		noun: "sql.unsafe / sql.raw / sql.lit called with non-literal argument",
+		passLabel: "no sql.unsafe with runtime expression",
+		color: "33",
+	},
+	{
 		label: "ubs py mutable default arg",
 		key: "pyMutableDefaultArg",
 		noun: "Python `def f(x=[])` / `def f(x={})` (mutable default shared across calls)",
@@ -1339,6 +1360,42 @@ export const SECTIONS: readonly SectionSpec[] = [
 		key: "tsconfigStrictness",
 		noun: "missing tsconfig strictness flags (noUncheckedIndexedAccess, exactOptionalPropertyTypes, etc.)",
 		passLabel: "tsconfig has all required strictness flags",
+		color: "33",
+	},
+	// === Phase B endpoint-security pack (2026-05) ===
+	{
+		label: "endpoint auth missing",
+		key: "endpointAuthMissing",
+		noun: "HTTP endpoints with no recognized auth middleware",
+		passLabel: "every endpoint has an auth chain or is in the exempt list",
+		color: "33",
+	},
+	{
+		label: "endpoint IDOR shape",
+		key: "endpointIdorShape",
+		noun: "handlers using a path param as a DB key without an auth-context predicate",
+		passLabel: "no IDOR-shape handlers",
+		color: "33",
+	},
+	{
+		label: "endpoint missing tenant filter",
+		key: "endpointMissingTenantFilter",
+		noun: "DB queries in a handler scope without a tenant column filter",
+		passLabel: "every query filters by tenant",
+		color: "33",
+	},
+	{
+		label: "endpoint SSRF shape",
+		key: "endpointSsrfShape",
+		noun: "handlers fetching a URL-shaped value without an allow-list sanitizer",
+		passLabel: "no unguarded URL-fetching handlers",
+		color: "33",
+	},
+	{
+		label: "endpoint mass assignment",
+		key: "endpointMassAssignment",
+		noun: "handlers spreading request body into a model without an allowlist",
+		passLabel: "every body assignment is explicitly allowlisted or schema-validated",
 		color: "33",
 	},
 ];

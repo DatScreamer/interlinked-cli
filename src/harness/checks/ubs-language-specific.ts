@@ -83,6 +83,7 @@ export {
 
 // ---- Cross-language checks ----
 export {
+	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkUbsHardcodedLocalhost,
 } from "./ubs-language-specific/cross-language-checks.js";

@@ -318,6 +318,9 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				// Test-quality heuristics — mock-only + happy-path-only.
 				"mock_only_test",
 				"happy_path_only_test",
+				// Effect-TS lessons port (advisory until cross-realm-vs-single-realm
+				// FP rate is measured).
+				"error_dispatch_by_instanceof",
 			].sort(),
 		);
 	});

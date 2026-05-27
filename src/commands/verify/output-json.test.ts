@@ -49,6 +49,8 @@ function emptyCq(): CodeQualityResults {
 		"throwLiteral",
 		"promiseRejectNonError",
 		"lossyErrorRethrow",
+		"importFromOwnBarrel",
+		"errorDispatchByInstanceof",
 		"silentPromiseSwallow",
 		"requireAwait",
 		"accumulatingSpread",
@@ -119,6 +121,7 @@ function emptyCq(): CodeQualityResults {
 		// Plan 04 D.1 partial — high-leverage backlog
 		"evalInputTainted",
 		"sqlStringConcat",
+		"sqlEscapeHatchNonLiteral",
 		"pyMutableDefaultArg",
 		// Plan 04 D.1 backlog (17 of 20)
 		"tempfileMktempRace",

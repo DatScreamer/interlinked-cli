@@ -43,6 +43,43 @@ const NAMED_ACQUISITIONS: NamedAcquisition[] = [
 		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*[\w.]+\.subscribe\s*\(/g,
 		cleanupReFor: (n) => new RegExp(`\\b${n}\\.unsubscribe\\s*\\(`),
 	},
+	// Effect-TS lessons port (docs/design/effect-ts-harness-additions.md §2.5):
+	// file/socket/process handles. Same semantic as the original three — cleanup
+	// call exists somewhere in the function, but an early throw/return bypasses
+	// it. Bare-name variants cover destructured imports (`import { spawn } from
+	// 'node:child_process'`); the `fs.openSync` form ALSO matches `openSync` via
+	// the optional `(?:\w+\.)?` qualifier.
+	{
+		// fs.openSync (closed by separate fs.closeSync(fd) call, NOT a method on fd)
+		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?openSync\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b(?:\\w+\\.)?closeSync\\s*\\(\\s*${n}\\s*\\)`),
+	},
+	{
+		// fs.createReadStream — close/destroy method on the stream
+		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?createReadStream\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b${n}\\.(?:close|destroy)\\s*\\(`),
+	},
+	{
+		// fs.createWriteStream — close/destroy/end method on the stream
+		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?createWriteStream\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b${n}\\.(?:close|destroy|end)\\s*\\(`),
+	},
+	{
+		// net.connect / net.createConnection — destroy/end method on the socket
+		acqRe:
+			/\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?(?:connect|createConnection)\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b${n}\\.(?:destroy|end)\\s*\\(`),
+	},
+	{
+		// dgram.createSocket — close method on the socket
+		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?createSocket\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b${n}\\.close\\s*\\(`),
+	},
+	{
+		// child_process.spawn / fork — kill method on the child
+		acqRe: /\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*(?:\w+\.)?(?:spawn|fork)\s*\(/g,
+		cleanupReFor: (n) => new RegExp(`\\b${n}\\.kill\\s*\\(`),
+	},
 ];
 
 /**

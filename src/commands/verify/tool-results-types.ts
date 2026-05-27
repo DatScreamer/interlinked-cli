@@ -85,6 +85,8 @@ export interface CodeQualityResults {
 	throwLiteral: CodeQualityIssue[];
 	promiseRejectNonError: CodeQualityIssue[];
 	lossyErrorRethrow: CodeQualityIssue[];
+	importFromOwnBarrel: CodeQualityIssue[];
+	errorDispatchByInstanceof: CodeQualityIssue[];
 	silentPromiseSwallow: CodeQualityIssue[];
 	requireAwait: CodeQualityIssue[];
 	accumulatingSpread: CodeQualityIssue[];
@@ -175,6 +177,8 @@ export interface CodeQualityResults {
 	evalInputTainted: CodeQualityIssue[];
 	/** D.1.b: SQL keyword inside a quoted string with `+` / template-literal interpolation. */
 	sqlStringConcat: CodeQualityIssue[];
+	/** Effect §2.6: SQL library escape hatch (`sql.unsafe`/`raw`/`lit`) called with non-literal. */
+	sqlEscapeHatchNonLiteral: CodeQualityIssue[];
 	/** D.1.c: Python `def f(x=[])` / `def f(x={})` — mutable default shared across calls. */
 	pyMutableDefaultArg: CodeQualityIssue[];
 	// === Plan 04 D.1 backlog (17 of 20) ===
@@ -312,6 +316,17 @@ export interface CodeQualityResults {
 	outerHtmlAssignment: CodeQualityIssue[];
 	/** `.insertAdjacentHTML(...)` — XSS sink. */
 	insertAdjacentHtml: CodeQualityIssue[];
+	// === Phase B endpoint-security pack (2026-05) ===
+	/** HTTP endpoint with no recognized auth middleware (per-framework heuristic). */
+	endpointAuthMissing: CodeQualityIssue[];
+	/** Handler reads a path param and uses it as a DB key with no auth-context predicate. */
+	endpointIdorShape: CodeQualityIssue[];
+	/** DB query inside a handler that omits every configured tenant column. */
+	endpointMissingTenantFilter: CodeQualityIssue[];
+	/** Handler reads a URL-shaped value and fetches it without an allow-list sanitizer. */
+	endpointSsrfShape: CodeQualityIssue[];
+	/** Handler spreads request body into a model create/update without an allowlist. */
+	endpointMassAssignment: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -371,6 +386,8 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"throwLiteral",
 	"promiseRejectNonError",
 	"lossyErrorRethrow",
+	"importFromOwnBarrel",
+	"errorDispatchByInstanceof",
 	"silentPromiseSwallow",
 	"requireAwait",
 	"accumulatingSpread",
@@ -438,6 +455,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"weakHash",
 	"evalInputTainted",
 	"sqlStringConcat",
+	"sqlEscapeHatchNonLiteral",
 	"pyMutableDefaultArg",
 	"tempfileMktempRace",
 	"pickleUntrustedLoad",
@@ -510,6 +528,12 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"documentWrite",
 	"outerHtmlAssignment",
 	"insertAdjacentHtml",
+	// Phase B endpoint-security pack (2026-05)
+	"endpointAuthMissing",
+	"endpointIdorShape",
+	"endpointMissingTenantFilter",
+	"endpointSsrfShape",
+	"endpointMassAssignment",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

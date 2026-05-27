@@ -140,6 +140,7 @@ export {
 export {
 	checkBareCatchBlock,
 	checkCatchReturnNull,
+	checkErrorDispatchByInstanceof,
 	checkErrorStringComparison,
 	checkInconsistentErrorStrategy,
 	checkLossyErrorRethrow,
@@ -304,6 +305,8 @@ export { checkTypeSmuggling } from "./checks/type-smuggling.js";
 export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
 // ---- cleanup-early-exit ----
 export { checkCleanupSkippedOnEarlyExit } from "./checks/cleanup-early-exit.js";
+// ---- imports (own-barrel re-import, Effect-TS port) ----
+export { checkImportFromOwnBarrel } from "./checks/imports.js";
 // ---- tainted-sink ----
 export { checkTaintedToPrivilegedSink } from "./checks/tainted-sink.js";
 // ---- flow-safety ----
@@ -351,6 +354,7 @@ export {
 	checkRegexInLoopNoCompile,
 	checkScriptWithoutSri,
 	checkShelveOpen,
+	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkSubprocessShellTrue,
 	checkTempfileMktempRace,

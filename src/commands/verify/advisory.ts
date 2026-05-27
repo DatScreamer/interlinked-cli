@@ -202,6 +202,16 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// until dogfood FP rate is measured.
 	"mock_only_test",
 	"happy_path_only_test",
+	// Error-dispatch-by-instanceof — Effect-TS lessons port
+	// (docs/design/effect-ts-harness-additions.md §2.1). `e instanceof Error`
+	// inside catch is fragile across realm boundaries — iframes, workers,
+	// vm.runInContext — so a real Error from another realm slips through the
+	// branch. The bug class only manifests in cross-realm setups, though;
+	// single-realm Node code where `instanceof TypeError` legitimately
+	// disambiguates a Node-thrown error vs. user error is more common. Ship
+	// advisory; promote to default once dogfood signal shows FP rate is low
+	// in one-realm projects too.
+	"error_dispatch_by_instanceof",
 	// CRAP (Change Risk Anti-Patterns) — composite metric of cyclomatic
 	// complexity × statement coverage. Requires `coverage/coverage-final.json`
 	// (fails open and emits nothing when absent). Line-matching has ±3 slack
