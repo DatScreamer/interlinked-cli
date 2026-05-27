@@ -92,12 +92,21 @@ import {
 	checkNanComparison,
 	checkNestedTernaries,
 	checkNodeEnvBranchInProd,
+	checkAesEcbMode,
+	checkDocumentWrite,
+	checkGithubActionsInjection,
+	checkGoShellInjection,
+	checkInsertAdjacentHtml,
+	checkMarshalLoad,
+	checkNodeCreateCipher,
 	checkNonNullAssertions,
 	checkNumberPrecisionLoss,
 	checkNumericComparisonChain,
 	checkOsSystemTainted,
+	checkOuterHtmlAssignment,
 	checkOverMocking,
 	checkPickleUntrustedLoad,
+	checkPickleWrapperLoad,
 	checkPiiInSource,
 	checkPlaceholderTests,
 	checkPrintDebugLeak,
@@ -109,8 +118,10 @@ import {
 	checkRegexInLoopNoCompile,
 	checkRequireAwait,
 	checkSchemaTypeDrift,
+	checkScriptWithoutSri,
 	checkSelfImport,
 	checkSequentialAwaits,
+	checkShelveOpen,
 	checkSilentCatch,
 	checkSilentDemoFallback,
 	checkSilentPromiseSwallow,
@@ -131,6 +142,7 @@ import {
 	checkThrowLiteral,
 	checkTimeFormatLocaleDep,
 	checkTlsVerifyDisabled,
+	checkTorchUnsafeLoad,
 	checkTsconfigStrictness,
 	checkTypeSmuggling,
 	checkChildProcessExecUserInput,
@@ -149,6 +161,7 @@ import {
 	checkVisibilityFilterMissing,
 	checkWeakHash,
 	checkXmlExternalEntity,
+	checkYamlUnsafeLoad,
 	extractEnvReferences,
 	extractMockDefinitions,
 } from "../../harness/generic-checks.js";
@@ -929,6 +942,57 @@ export function runPerFileChecks(args: RunFileChecksArgs): void {
 			"ubs_regex_in_loop_no_compile",
 			relPath,
 			checkRegexInLoopNoCompile(content, file),
+		),
+	);
+
+	// === Plan 04 D.2 (2026-05): pattern-parity expansion ===
+	r.marshalLoad.push(
+		...toIssues("ubs_marshal_load", relPath, checkMarshalLoad(content, file)),
+	);
+	r.shelveOpen.push(...toIssues("ubs_shelve_open", relPath, checkShelveOpen(content, file)));
+	r.yamlUnsafeLoad.push(
+		...toIssues("ubs_yaml_unsafe_load", relPath, checkYamlUnsafeLoad(content, file)),
+	);
+	r.torchUnsafeLoad.push(
+		...toIssues("ubs_torch_unsafe_load", relPath, checkTorchUnsafeLoad(content, file)),
+	);
+	r.pickleWrapperLoad.push(
+		...toIssues("ubs_pickle_wrapper_load", relPath, checkPickleWrapperLoad(content, file)),
+	);
+	r.aesEcbMode.push(
+		...toIssues("ubs_aes_ecb_mode", relPath, checkAesEcbMode(content, file)),
+	);
+	r.nodeCreateCipher.push(
+		...toIssues("ubs_node_create_cipher", relPath, checkNodeCreateCipher(content, file)),
+	);
+	r.scriptWithoutSri.push(
+		...toIssues("ubs_script_without_sri", relPath, checkScriptWithoutSri(content, file)),
+	);
+	r.goShellInjection.push(
+		...toIssues("ubs_go_shell_injection", relPath, checkGoShellInjection(content, file)),
+	);
+	r.githubActionsInjection.push(
+		...toIssues(
+			"ubs_github_actions_injection",
+			relPath,
+			checkGithubActionsInjection(content, file),
+		),
+	);
+	r.documentWrite.push(
+		...toIssues("ubs_document_write", relPath, checkDocumentWrite(content, file)),
+	);
+	r.outerHtmlAssignment.push(
+		...toIssues(
+			"ubs_outer_html_assignment",
+			relPath,
+			checkOuterHtmlAssignment(content, file),
+		),
+	);
+	r.insertAdjacentHtml.push(
+		...toIssues(
+			"ubs_insert_adjacent_html",
+			relPath,
+			checkInsertAdjacentHtml(content, file),
 		),
 	);
 

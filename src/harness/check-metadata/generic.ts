@@ -936,4 +936,96 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	// === Plan 04 D.2 (2026-05) — pattern-parity expansion ===
+	ubs_marshal_load: {
+		name: "Python marshal.load(s)",
+		description:
+			"Detects `marshal.load(...)` / `marshal.loads(...)` — deserializing untrusted bytes through the `marshal` module executes arbitrary code.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_shelve_open: {
+		name: "Python shelve.open",
+		description:
+			"Detects `shelve.open(...)`. `shelve` is a pickle-backed persistent dict; the same arbitrary-code-execution surface as `pickle.load`.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_yaml_unsafe_load: {
+		name: "PyYAML unsafe load",
+		description:
+			"Detects PyYAML `yaml.load(...)` without a Safe-class Loader, plus the explicit `yaml.unsafe_load(...)` alias. Both construct arbitrary Python objects from `!!python/object` tags.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_torch_unsafe_load: {
+		name: "PyTorch unsafe load",
+		description:
+			"Detects `torch.load(...)` without `weights_only=True`. Older torch defaults `weights_only=False`, which unpickles arbitrary Python objects from the checkpoint file.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_pickle_wrapper_load: {
+		name: "Pickle wrapper load",
+		description:
+			"Detects libraries that unpickle without the word `pickle` in the call: `joblib.load`, `pandas.read_pickle`, `numpy.load(..., allow_pickle=True)`.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_aes_ecb_mode: {
+		name: "AES in ECB mode",
+		description:
+			"Detects AES used in ECB mode across languages (Python `AES.MODE_ECB`, `modes.ECB`, Node `\"aes-N-ecb\"`, Go `cipher.NewECBEncrypter`). ECB leaks plaintext structure.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_node_create_cipher: {
+		name: "Node deprecated createCipher",
+		description:
+			"Detects Node `crypto.createCipher(...)` / `createDecipher(...)` — derives the key via an MD5 KDF with no IV. Removed in Node 22.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_script_without_sri: {
+		name: "External script without SRI",
+		description:
+			"Detects `<script src=\"https://...\">` external URLs without `integrity=\"sha...\"`. CDN compromise / substitution executes attacker code with full page privileges.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_go_shell_injection: {
+		name: "Go exec.Command shell invocation",
+		description:
+			"Detects Go `exec.Command(\"sh\"|\"bash\"|/bin/sh|/bin/bash, ...)` — routing arguments through a shell interpreter enables command injection on concatenated user input.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_github_actions_injection: {
+		name: "GitHub Actions workflow injection",
+		description:
+			"Detects interpolation of attacker-controllable GitHub-event fields (PR title, issue body, commit message, head ref, `client_payload.*`) into workflow expressions.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_document_write: {
+		name: "document.write XSS",
+		description:
+			"Detects `document.write(...)` / `document.writeln(...)` — XSS sink and render-blocking anti-pattern.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_outer_html_assignment: {
+		name: "outerHTML assignment XSS",
+		description:
+			"Detects `<expr>.outerHTML = <value>` — equivalent XSS sink to `.innerHTML =`, but replaces the element itself.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_insert_adjacent_html: {
+		name: "insertAdjacentHTML XSS",
+		description:
+			"Detects `.insertAdjacentHTML(position, htmlString)` — the second argument is parsed as HTML; attacker-controlled fragments become live DOM nodes.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 };

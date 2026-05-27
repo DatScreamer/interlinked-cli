@@ -413,6 +413,20 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			ubs_deeply_nested_callback: "deeplyNestedCallback",
 			ubs_time_format_locale_dep: "timeFormatLocaleDep",
 			ubs_regex_in_loop_no_compile: "regexInLoopNoCompile",
+			// Plan 04 D.2 (2026-05) — pattern-parity expansion
+			ubs_marshal_load: "marshalLoad",
+			ubs_shelve_open: "shelveOpen",
+			ubs_yaml_unsafe_load: "yamlUnsafeLoad",
+			ubs_torch_unsafe_load: "torchUnsafeLoad",
+			ubs_pickle_wrapper_load: "pickleWrapperLoad",
+			ubs_aes_ecb_mode: "aesEcbMode",
+			ubs_node_create_cipher: "nodeCreateCipher",
+			ubs_script_without_sri: "scriptWithoutSri",
+			ubs_go_shell_injection: "goShellInjection",
+			ubs_github_actions_injection: "githubActionsInjection",
+			ubs_document_write: "documentWrite",
+			ubs_outer_html_assignment: "outerHtmlAssignment",
+			ubs_insert_adjacent_html: "insertAdjacentHtml",
 		};
 
 		for (const name of toIssuesNames) {
@@ -543,6 +557,23 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"deeplyNestedCallback",
 			"timeFormatLocaleDep",
 			"regexInLoopNoCompile",
+			// Plan 04 D.2 (2026-05) — pattern-parity expansion. Aggregated for
+			// now under the same convention as the rest of the UBS family; can
+			// be promoted to individual JSON destructuring when downstream
+			// tooling needs per-rule filters.
+			"marshalLoad",
+			"shelveOpen",
+			"yamlUnsafeLoad",
+			"torchUnsafeLoad",
+			"pickleWrapperLoad",
+			"aesEcbMode",
+			"nodeCreateCipher",
+			"scriptWithoutSri",
+			"goShellInjection",
+			"githubActionsInjection",
+			"documentWrite",
+			"outerHtmlAssignment",
+			"insertAdjacentHtml",
 			// Batches 1, 2, 5, 8: now individually destructured in
 			// outputJson; no longer aggregated. Kept here as a comment for
 			// the bookkeeping trail.

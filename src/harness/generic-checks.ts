@@ -12,6 +12,7 @@
 
 // ---- agent-safety ----
 export {
+	checkAesEcbMode,
 	checkAsyncPromiseExecutor,
 	checkBroadObjectTypes,
 	checkConstantCondition,
@@ -321,33 +322,47 @@ export {
 } from "./checks/testing.js";
 // ---- ubs-language-specific (Plan 04 rows 22, 23, 25, 29, 30 + D.1 backlog) ----
 export {
+	checkChildProcessExecUserInput,
+	checkCookieMissingSecurityFlags,
 	checkDeeplyNestedCallback,
 	checkDeferInLoop,
 	checkDivisionByVariable,
+	checkDocumentWrite,
 	checkEvalInputTainted,
 	checkGoroutineNoWaitgroup,
+	checkGoShellInjection,
+	checkInsertAdjacentHtml,
 	checkJavaOptionalGet,
 	checkLargeFunction,
+	checkLoggerFormatUserInput,
 	checkMagicNumberNoConst,
+	checkMarshalLoad,
+	checkMixedSyncAsyncFileApi,
 	checkMutexLockUnwrap,
+	checkNodeCreateCipher,
 	checkNumericComparisonChain,
 	checkOsSystemTainted,
+	checkOuterHtmlAssignment,
 	checkPickleUntrustedLoad,
+	checkPickleWrapperLoad,
 	checkPrintDebugLeak,
-	checkChildProcessExecUserInput,
-	checkCookieMissingSecurityFlags,
-	checkLoggerFormatUserInput,
-	checkMixedSyncAsyncFileApi,
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
 	checkRegexInLoopNoCompile,
+	checkScriptWithoutSri,
+	checkShelveOpen,
 	checkSqlStringConcat,
 	checkSubprocessShellTrue,
 	checkTempfileMktempRace,
 	checkTimeFormatLocaleDep,
+	checkTorchUnsafeLoad,
 	checkUbsHardcodedLocalhost,
 	checkUbsStringConcatInLoop,
 	checkUncheckedRedirect,
 	checkUnsafeFormatString,
 	checkXmlExternalEntity,
+	checkYamlUnsafeLoad,
 } from "./checks/ubs-language-specific.js";
+
+// ---- github-actions (workflow-injection detector) ----
+export { checkGithubActionsInjection } from "./checks/github-actions.js";

@@ -9,6 +9,7 @@ import {
 	checkEvalUsage,
 	checkInnerHtmlUsage,
 	checkLoggerFormatUserInput,
+	checkMarshalLoad,
 	checkMisusedPromises,
 	checkMixedSyncAsyncFileApi,
 	checkMutexLockUnwrap,
@@ -17,12 +18,14 @@ import {
 	checkPromiseRejectNonError,
 	checkPyNoneEquality,
 	checkSelfImport,
+	checkShelveOpen,
 	checkSubprocessShellTrue,
 	checkThrowLiteral,
 	checkTlsVerifyDisabled,
 	checkUbsHardcodedLocalhost,
 	checkUnsafeOptionalChaining,
 	checkWeakHash,
+	checkYamlUnsafeLoad,
 } from "../generic-checks.js";
 import type { CheckRegistration } from "./types.js";
 
@@ -346,5 +349,53 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 		fn: checkLoggerFormatUserInput,
 		resultsPropName: "loggerFormatUserInput",
 		content_keywords: ["logger.", "log.", "console."],
+	},
+	{
+		id: "ubs_marshal_load",
+		phase: "pre_block",
+		name: "Python marshal.load(s)",
+		description:
+			"Detects `marshal.load(...)` / `marshal.loads(...)`. The `marshal` module deserializes Python bytecode and arbitrary objects; passing untrusted bytes through it executes attacker-controlled code on import.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"The `marshal` module is for internal-use bytecode caches, not for data interchange. Switch to JSON (`json.loads`), msgspec, or a schema-validated deserializer if the input represents data. Never feed externally-sourced bytes to `marshal.load(s)` — there is no safe form.",
+		fn: checkMarshalLoad,
+		resultsPropName: "marshalLoad",
+		content_keywords: ["marshal."],
+	},
+	{
+		id: "ubs_shelve_open",
+		phase: "pre_block",
+		name: "Python shelve.open",
+		description:
+			"Detects `shelve.open(...)`. `shelve` is a pickle-backed persistent dict; opening one from an untrusted path or shared filesystem exposes the same arbitrary-code-execution surface as `pickle.load`.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Replace with a safe key-value store (sqlite via `sqlite3`, dbm.dumb, or a JSON-on-disk dict) that does not unpickle on read. If you control both the writer and the reader and the storage location is private to your process, document the trust boundary in a comment — but prefer the safer alternatives.",
+		fn: checkShelveOpen,
+		resultsPropName: "shelveOpen",
+		content_keywords: ["shelve."],
+	},
+	{
+		id: "ubs_yaml_unsafe_load",
+		phase: "pre_block",
+		name: "PyYAML unsafe load",
+		description:
+			"Detects PyYAML `yaml.load(...)` without a `Safe`-class Loader, plus the explicit `yaml.unsafe_load(...)` alias. Both construct arbitrary Python objects from `!!python/object` tags — RCE on adversarial YAML input.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Use `yaml.safe_load(...)`. It accepts only the standard YAML types (dict, list, str, int, float, bool, None, datetime) and rejects the `!!python/...` constructors that the unsafe loaders honor. If you need typed objects, deserialize with `safe_load` first and validate the result against a schema (pydantic, msgspec, marshmallow) — never use a custom Loader that constructs arbitrary Python types.",
+		fn: checkYamlUnsafeLoad,
+		resultsPropName: "yamlUnsafeLoad",
+		content_keywords: ["yaml.load", "yaml.unsafe_load"],
 	},
 ];

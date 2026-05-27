@@ -285,6 +285,33 @@ export interface CodeQualityResults {
 	placeholderDataInUi: CodeQualityIssue[];
 	/** tsconfig*.json missing high-leverage strictness flags not implied by `strict: true`. */
 	tsconfigStrictness: CodeQualityIssue[];
+	// === Plan 04 D.2 (2026-05): pattern-parity expansion ===
+	/** Python marshal.load(s) — pickle-equivalent RCE surface. */
+	marshalLoad: CodeQualityIssue[];
+	/** Python shelve.open — pickle-backed persistent dict. */
+	shelveOpen: CodeQualityIssue[];
+	/** PyYAML `yaml.load` without Safe loader / explicit `yaml.unsafe_load`. */
+	yamlUnsafeLoad: CodeQualityIssue[];
+	/** PyTorch torch.load without `weights_only=True`. */
+	torchUnsafeLoad: CodeQualityIssue[];
+	/** joblib.load / pandas.read_pickle / np.load(allow_pickle=True). */
+	pickleWrapperLoad: CodeQualityIssue[];
+	/** AES in ECB mode (Python / Node / Go shapes). */
+	aesEcbMode: CodeQualityIssue[];
+	/** Node deprecated createCipher / createDecipher (no IV). */
+	nodeCreateCipher: CodeQualityIssue[];
+	/** External `<script src>` without `integrity=` (SRI). */
+	scriptWithoutSri: CodeQualityIssue[];
+	/** Go exec.Command("sh"|"bash"|...) — shell-out injection. */
+	goShellInjection: CodeQualityIssue[];
+	/** GitHub Actions workflow injection — attacker-controlled github.event fields. */
+	githubActionsInjection: CodeQualityIssue[];
+	/** document.write / document.writeln — XSS sink + render-blocking. */
+	documentWrite: CodeQualityIssue[];
+	/** `.outerHTML =` assignment — XSS sink. */
+	outerHtmlAssignment: CodeQualityIssue[];
+	/** `.insertAdjacentHTML(...)` — XSS sink. */
+	insertAdjacentHtml: CodeQualityIssue[];
 }
 
 /** Public API — consumed by verify submodules. Every top-level key. */
@@ -469,6 +496,20 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"placeholderDataInUi",
 	// tsconfig strictness
 	"tsconfigStrictness",
+	// Plan 04 D.2 (2026-05) — pattern-parity expansion
+	"marshalLoad",
+	"shelveOpen",
+	"yamlUnsafeLoad",
+	"torchUnsafeLoad",
+	"pickleWrapperLoad",
+	"aesEcbMode",
+	"nodeCreateCipher",
+	"scriptWithoutSri",
+	"goShellInjection",
+	"githubActionsInjection",
+	"documentWrite",
+	"outerHtmlAssignment",
+	"insertAdjacentHtml",
 ];
 
 /** Public API — consumed by verify submodules. Build an empty result set. */

@@ -23,23 +23,33 @@
 
 // ---- Python-language checks ----
 export {
+	checkMarshalLoad,
 	checkOsSystemTainted,
 	checkPickleUntrustedLoad,
+	checkPickleWrapperLoad,
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
 	checkRegexInLoopNoCompile,
+	checkShelveOpen,
 	checkSubprocessShellTrue,
 	checkTempfileMktempRace,
+	checkTorchUnsafeLoad,
 	checkXmlExternalEntity,
+	checkYamlUnsafeLoad,
 } from "./ubs-language-specific/python-checks.js";
 
 // ---- JS/TS injection & security checks ----
 export {
 	checkChildProcessExecUserInput,
 	checkCookieMissingSecurityFlags,
+	checkDocumentWrite,
 	checkEvalInputTainted,
+	checkInsertAdjacentHtml,
 	checkLoggerFormatUserInput,
 	checkMixedSyncAsyncFileApi,
+	checkNodeCreateCipher,
+	checkOuterHtmlAssignment,
+	checkScriptWithoutSri,
 	checkUncheckedRedirect,
 } from "./ubs-language-specific/js-security-checks.js";
 
@@ -61,6 +71,7 @@ export {
 export {
 	checkDeferInLoop,
 	checkGoroutineNoWaitgroup,
+	checkGoShellInjection,
 	checkMutexLockUnwrap,
 } from "./ubs-language-specific/rust-go-checks.js";
 
