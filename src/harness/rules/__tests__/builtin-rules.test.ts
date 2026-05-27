@@ -5,7 +5,10 @@ import { DESTRUCTIVE_HTTP_RULES } from "../builtin-rules-destructive-http.js";
 import { DESTRUCTIVE_V1_EXTRA_RULES } from "../builtin-rules-extras.js";
 import { LANGUAGE_DESTRUCTIVE_RULES } from "../builtin-rules-language.js";
 import { MCP_DESTRUCTIVE_RULES } from "../builtin-rules-mcp.js";
-import { PROCESS_AND_FILESYSTEM_RULES } from "../builtin-rules-processes.js";
+import {
+	PROCESS_AND_FILESYSTEM_RULES,
+	TEMPORAL_PRECONDITION_RULES,
+} from "../builtin-rules-processes.js";
 import { RAILWAY_RULES } from "../builtin-rules-railway.js";
 import { RESOURCE_BOMB_RULES } from "../builtin-rules-resource-bombs.js";
 import { SECURITY_AND_SAFETY_RULES } from "../builtin-rules-security.js";
@@ -23,7 +26,8 @@ describe("builtin-rules", () => {
 			DESTRUCTIVE_HTTP_RULES.length +
 			LANGUAGE_DESTRUCTIVE_RULES.length +
 			SECURITY_AND_SAFETY_RULES.length +
-			SUPERMODEL_RULES.length;
+			SUPERMODEL_RULES.length +
+			TEMPORAL_PRECONDITION_RULES.length;
 		expect(BUILTIN_RULES.length).toBe(expectedCount);
 	});
 

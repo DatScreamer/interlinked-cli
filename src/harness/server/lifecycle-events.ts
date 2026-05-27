@@ -37,6 +37,11 @@ import { refreshPriorityIfStale as refreshFilePriorityIfStale } from "../file-pr
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
 import { findRipgrep } from "../grep-accelerator.js";
 import { deleteLiveSnapshot } from "../live-snapshot.js";
+import {
+	maybeCaptureFromPreToolUse,
+	maybeCaptureFromUserPromptSubmit,
+} from "../plan-capture.js";
+import { detectPlanDrift, formatPlanDriftWarning } from "../plan-drift.js";
 import { sanitizeSessionId } from "../session-paths.js";
 import {
 	getActiveSkills,
@@ -118,6 +123,25 @@ export async function handleLifecycleEvent(
 	session: SessionTrajectory,
 ): Promise<HarnessDecision | null> {
 	const { cohort, log } = ctx;
+	// Plan capture (PB&J item #2) — fires BEFORE the switch to observe
+	// TaskCreate / ExitPlanMode on PreToolUse without intercepting the
+	// pipeline. Best-effort, never blocks.
+	if (event.hook_event === "PreToolUse") {
+		const cfg = ctx.rules.plan_capture;
+		const enabled = cfg?.enabled !== false;
+		const captured = await maybeCaptureFromPreToolUse({
+			event,
+			session,
+			cwd: ctx.cwd,
+			enabled,
+			log: ctx.log,
+		});
+		if (captured) {
+			ctx.log(
+				`Plan capture: ${captured.source} → ${captured.steps.length} step(s) (session ${captured.session_id})`,
+			);
+		}
+	}
 	switch (event.hook_event) {
 		case "SessionStart":
 			return handleSessionStart(ctx, event);
@@ -126,7 +150,7 @@ export async function handleLifecycleEvent(
 		case "Stop":
 			return handleStop(ctx, event, session);
 		case "UserPromptSubmit":
-			return handleUserPromptSubmit(ctx, event);
+			return handleUserPromptSubmit(ctx, event, session);
 		case "SubagentStart":
 			cohort.subagentJoined(event);
 			log(`Subagent joined: ${event.agent_name || "unnamed"}`);
@@ -293,6 +317,13 @@ async function handleStop(
 	for (const w of buildStopWarnings(ctx, event, session)) {
 		turnWarnings.push(w);
 	}
+	// Plan-drift reflection (PB&J item #6) — compare session.declared_plan
+	// against the actual tool_sequence; advisory-only, never blocks.
+	const driftReport = detectPlanDrift(session);
+	if (driftReport) {
+		const driftWarning = formatPlanDriftWarning({ report: driftReport });
+		if (driftWarning) turnWarnings.push(driftWarning);
+	}
 	await persistSessionTrajectory({ ctx, event, session, turnSummary });
 	await ctx.asyncAnalysis.drain(ASYNC_ANALYSIS_DRAIN_TIMEOUT_MS);
 	cleanupSessionState(ctx, event, session);
@@ -309,9 +340,28 @@ async function handleStop(
 async function handleUserPromptSubmit(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
+	session?: SessionTrajectory,
 ): Promise<HarnessDecision> {
 	const { cohort, log } = ctx;
 	cohort.recordActivity(event);
+	// Plan capture (PB&J item #2) — structured `## Plan` parser, behind a
+	// config flag (default off — false-positive risk). Best-effort.
+	if (session) {
+		const planCfg = ctx.rules.plan_capture;
+		const planCaptured = await maybeCaptureFromUserPromptSubmit({
+			event,
+			session,
+			cwd: ctx.cwd,
+			enabled: planCfg?.enabled !== false,
+			parseUserPrompt: planCfg?.parse_userprompt === true,
+			log: ctx.log,
+		});
+		if (planCaptured) {
+			log(
+				`Plan capture (user-prompt): ${planCaptured.steps.length} step(s) (session ${planCaptured.session_id})`,
+			);
+		}
+	}
 	if (ctx.rules.content_scanner?.enabled && ctx.contentScanner) {
 		const promptText = event.prompt ?? "";
 		const scanResult = await scanUserPrompt(promptText, ctx.rules, ctx.contentScanner);
@@ -337,6 +387,12 @@ function handleSubagentStop(ctx: ServerRuntime, event: HarnessEvent): void {
 		sessions.rollUpVerificationSignals(event.session_id, parentSessionId)
 	) {
 		log(`Subagent verification rolled up into parent session ${parentSessionId}`);
+	}
+	// File-tracking rollup (PB&J item #7) — merges subagent's files_written
+	// into parent so the git-session-scope-gate doesn't refuse a parent's
+	// `git commit` for files its subagent legitimately wrote.
+	if (parentSessionId && sessions.rollUpFileTracking(event.session_id, parentSessionId)) {
+		log(`Subagent file-tracking rolled up into parent session ${parentSessionId}`);
 	}
 	log(`Subagent left: ${event.agent_name || "unnamed"}`);
 }

@@ -145,6 +145,24 @@ export function mergeLocalOverrides(
 	if (local.structural_checks) {
 		Object.assign(config.structural_checks, local.structural_checks);
 	}
+	// Plan-capture (PB&J Free-CLI item #2) — local can toggle the master
+	// switch and the structured-userprompt parser flag.
+	if (local.plan_capture) {
+		if (config.plan_capture) {
+			Object.assign(config.plan_capture, local.plan_capture);
+		} else {
+			config.plan_capture = local.plan_capture;
+		}
+	}
+	// Git session-scope gate (PB&J Free-CLI item #7) — local can flip the
+	// gate on/off and choose ask vs block mode.
+	if (local.git_session_scope_gate) {
+		if (config.git_session_scope_gate) {
+			Object.assign(config.git_session_scope_gate, local.git_session_scope_gate);
+		} else {
+			config.git_session_scope_gate = local.git_session_scope_gate;
+		}
+	}
 }
 
 /** Deep-merge overrides for the content scanner config. Nested blocks

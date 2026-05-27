@@ -10,6 +10,7 @@
 //   exit 0 + no stdout = allow
 
 import type { JsonObject } from "../../lib/json-types.js";
+import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
 import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
@@ -133,10 +134,19 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 				};
 			}
 			if (decision.decision === "ask") {
+				// Append the resolved targets bullet list to the ask prompt body
+				// so the human sees exactly what's about to happen (specific
+				// file, URL, branch) instead of just the rule description.
+				// When `resolved_targets` is unset the formatter returns the
+				// reason verbatim — pre-existing callers render unchanged.
+				const reason = formatAskReasonWithTargets(
+					decision.reason ?? "Confirmation required",
+					decision.resolved_targets,
+				);
 				return {
 					stdout: JSON.stringify({
 						decision: "ask",
-						reason: decision.reason ?? "Confirmation required",
+						reason,
 					}),
 					stderr: stderr || undefined,
 					exit_code: 0,

@@ -228,6 +228,31 @@ export interface GuardRulesConfig {
 		/** Default: false. Set to true to restore the block-and-answer path. */
 		substitution_enabled?: boolean;
 	};
+	/** Plan-capture (PB&J Free-CLI item #2) — detects TaskCreate / ExitPlanMode /
+	 *  structured `## Plan` user prompts. See PlanCaptureConfig. */
+	plan_capture?: PlanCaptureConfig;
+	/** Git session-scope gate (PB&J Free-CLI item #7) — PreToolUse Bash
+	 *  check that asks before git add/commit/push touches files outside
+	 *  session.files_written ∪ pre-session baseline. */
+	git_session_scope_gate?: GitSessionScopeGateConfig;
+}
+
+/** Plan-capture configuration. Master toggle + structured-userprompt parser
+ *  (default off — false-positive risk). */
+export interface PlanCaptureConfig {
+	enabled: boolean;
+	parse_userprompt: boolean;
+}
+
+/** Config for the PreToolUse Bash git-session-scope gate. See
+ *  `evaluator/git-session-scope-gate.ts` for the parser + verdict logic. */
+export interface GitSessionScopeGateConfig {
+	/** Master switch. Default: false (off until proven on real sessions). */
+	enabled: boolean;
+	/** What to do when the operation includes files outside the session's
+	 *  writes + baseline: "ask" (confirmation), "block" (refuse), "off"
+	 *  (loaded-but-disabled — same effect as enabled=false). */
+	mode: "ask" | "block" | "off";
 }
 
 /** Verification-before-stop nudge configuration. Five independent

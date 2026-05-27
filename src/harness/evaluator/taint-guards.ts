@@ -7,6 +7,14 @@
 // outbound network commands once the session is tainted, escalates for the
 // classifier at the Internal threshold, and enforces step budgets with
 // graceful degradation to read-only once exceeded.
+//
+// Provenance axis (orthogonal to sensitivity): the
+// `checkProvenanceTaintToExternalAction` guard intercepts external-action
+// tool calls whose input strings contain references to files whose taint
+// source was flagged as `fetched_external` or `mcp_remote`. This is the
+// "data from the internet flowing into a publish / push / deploy" failure
+// mode — even if the data is labelled Public, the agent should confirm
+// before acting on it externally.
 
 import type { JsonObject } from "../../lib/json-types.js";
 import {
@@ -24,6 +32,7 @@ import type {
 	GuardRulesConfig,
 	HarnessDecision,
 	SessionTrajectory,
+	TaintProvenance,
 } from "../types.js";
 import { isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
 
@@ -40,8 +49,146 @@ const HIGH_BUDGET_THRESHOLD = 0.8;
 /** Public API — return shape from {@link evaluateTaintGuards}. */
 export type TaintGuardsResult =
 	| { kind: "block"; decision: HarnessDecision }
+	| { kind: "ask"; decision: HarnessDecision }
 	| { kind: "allow-readonly"; decision: HarnessDecision }
 	| { kind: "ok"; warnings: string[]; escalation?: EscalationRequest };
+
+/** Untrusted provenance values — taint sources from these origins gate the
+ *  external-action confirmation. Local code reads and document reads of
+ *  local files are considered trusted (the prose may carry instructions
+ *  but did not come over an unverified channel). */
+const UNTRUSTED_PROVENANCE: ReadonlySet<TaintProvenance> = new Set<TaintProvenance>([
+	"fetched_external",
+	"mcp_remote",
+]);
+
+/**
+ * External-action tool detection — stubbed allowlist gating which tool
+ * invocations are sensitive enough to require confirmation when their
+ * input may carry untrusted-provenance data. Three signals match:
+ *   1. Explicit network-fetch tools (WebFetch, WebSearch).
+ *   2. Bash commands containing destructive-external verbs
+ *      (curl/wget/scp/rsync/ssh/mail/git push/npm publish/gh pr create/
+ *      docker push/kubectl apply/terraform apply).
+ *   3. MCP tool names with mutating-verb segments (send / publish /
+ *      deploy / push / email / create_pull_request / post).
+ *
+ * TODO(item-4-coordination): Item #4 ships a proper
+ * `classifyToolExternality(toolName, toolInput)` taxonomy. When that
+ * lands, the merger should replace this stub with
+ * `classifyToolExternality(toolName, toolInput) === "external_action"`
+ * and delete this helper.
+ */
+const BASH_EXTERNAL_VERBS = [
+	"curl",
+	"wget",
+	"scp",
+	"rsync",
+	"ssh",
+	"mail",
+	"git push",
+	"npm publish",
+	"gh pr create",
+	"docker push",
+	"kubectl apply",
+	"terraform apply",
+];
+
+/** Compile once — case-sensitive, word-boundary where appropriate. The
+ *  multi-token entries (`git push`, `npm publish`) check literal substrings
+ *  rather than word boundaries because the second token would not match a
+ *  `\b` after the space on some regex flavors. */
+const MCP_EXTERNAL_ACTION_RE =
+	/^mcp__.*(send|publish|deploy|push|email|create_pull_request|post)/i;
+
+function isExternalActionTool(toolName: string, toolInput: JsonObject): boolean {
+	if (toolName === "WebFetch" || toolName === "web_fetch" || toolName === "WebSearch") {
+		return true;
+	}
+	if (MCP_EXTERNAL_ACTION_RE.test(toolName)) return true;
+	if (isBash(toolName)) {
+		const cmd = (toolInput.command as string) || "";
+		if (!cmd) return false;
+		for (const verb of BASH_EXTERNAL_VERBS) {
+			if (cmd.includes(verb)) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Flatten the tool_input into a single searchable string — every value in
+ * the JsonObject is concatenated so substring matching can find a tainted
+ * file path regardless of which key it was passed under (`file_path`,
+ * `command`, `url`, `body`, MCP-specific keys, etc.).
+ *
+ * v1 derivation tracking is coarse substring-match — it catches the obvious
+ * cases ("pipe README.md through curl") but misses derived values (read the
+ * file, base64-encode it, send the result). v2 is byte-level data-flow.
+ *
+ * TODO(provenance-v2): track byte-level data-flow so derived/transformed
+ * values from a tainted source still trip this guard.
+ */
+function flattenToolInputToString(toolInput: JsonObject): string {
+	const parts: string[] = [];
+	const walk = (v: unknown): void => {
+		if (v == null) return;
+		if (typeof v === "string") {
+			parts.push(v);
+			return;
+		}
+		if (typeof v === "number" || typeof v === "boolean") {
+			parts.push(String(v));
+			return;
+		}
+		if (Array.isArray(v)) {
+			for (const e of v) walk(e);
+			return;
+		}
+		if (typeof v === "object") {
+			for (const e of Object.values(v as Record<string, unknown>)) walk(e);
+		}
+	};
+	walk(toolInput);
+	return parts.join("\n");
+}
+
+/**
+ * Public API — guard that fires `decision: "ask"` when an external-action
+ * tool call carries any reference (substring match) to a taint source whose
+ * provenance is `fetched_external` or `mcp_remote`. Returns `null` when no
+ * untrusted-provenance flow is detected, letting the rest of the guard
+ * chain proceed.
+ *
+ * The "ask" decision is preferred over "block" here because the action
+ * may be legitimate — the agent might intentionally be pushing data the
+ * user gave it from the web. Confirmation lets the user make the call.
+ */
+export function checkProvenanceTaintToExternalAction(
+	toolName: string,
+	toolInput: JsonObject,
+	session: SessionTrajectory,
+): HarnessDecision | null {
+	if (!isExternalActionTool(toolName, toolInput)) return null;
+	if (!session.taint_sources || session.taint_sources.length === 0) return null;
+
+	const haystack = flattenToolInputToString(toolInput);
+	if (!haystack) return null;
+
+	for (const src of session.taint_sources) {
+		if (!UNTRUSTED_PROVENANCE.has(src.provenance)) continue;
+		if (!src.file) continue;
+		if (haystack.includes(src.file)) {
+			return {
+				decision: "ask",
+				reason:
+					`${toolName} would act on data sourced from untrusted provenance ` +
+					`(${src.file} via ${src.provenance}). Confirm intent before proceeding.`,
+			};
+		}
+	}
+	return null;
+}
 
 export interface TaintGuardsArgs {
 	toolName: string;
@@ -92,6 +239,27 @@ export function evaluateTaintGuards(args: TaintGuardsArgs): TaintGuardsResult {
 				},
 			};
 		}
+	}
+
+	// Provenance axis (orthogonal to sensitivity): if the current tool is
+	// an external-action tool and its input carries any reference to a
+	// taint source with untrusted provenance (fetched_external / mcp_remote),
+	// surface a confirmation prompt. The sensitivity-axis hard block above
+	// already catches Confidential+ exfiltration; this catches the case
+	// where Public-but-untrusted data flows outward.
+	const provenanceAskDecision = checkProvenanceTaintToExternalAction(
+		toolName,
+		toolInput,
+		session,
+	);
+	if (provenanceAskDecision) {
+		return {
+			kind: "ask",
+			decision: {
+				...provenanceAskDecision,
+				warnings,
+			},
+		};
 	}
 
 	// ESCALATION: tainted_network_internal — network command at Internal sensitivity.

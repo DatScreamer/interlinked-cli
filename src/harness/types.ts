@@ -40,6 +40,7 @@ export type {
 	GrepStats,
 	LogEntry,
 	ReservationAction,
+	ResolvedTarget,
 } from "./types/decisions.js";
 
 // --- guard rules ---
@@ -52,6 +53,8 @@ export type {
 	AfterCommandSpec,
 	SessionPredicateSpec,
 	ActiveSkillRecord,
+	ToolExternality,
+	TemporalPredicate,
 } from "./types/rules.js";
 
 // --- guard rules configuration ---
@@ -69,7 +72,17 @@ export type {
 	StructuralChecksConfig,
 	ErrorMemoryConfig,
 	ErrorRecord,
+	PlanCaptureConfig,
+	GitSessionScopeGateConfig,
 } from "./types/config.js";
+
+// --- captured agent plans ---
+export type {
+	CapturedPlan,
+	PlanSource,
+	PlanStep,
+	PlanStepStatus,
+} from "./types/plan.js";
 
 // --- agent cohort + file reservations ---
 export type {
@@ -82,6 +95,7 @@ export type {
 // --- sensitivity / taint tracking + output scanning ---
 export type {
 	SensitivityLevel,
+	TaintProvenance,
 	TaintSource,
 	TaintTrackingConfig,
 	OutputScanningConfig,
@@ -111,6 +125,7 @@ export type {
 	ModuleRole,
 	ImpactSeverity,
 	ImpactAnalysisResult,
+	ReachabilityVerdict,
 } from "./types/graph.js";
 
 // --- language profiles + tool concurrency ---

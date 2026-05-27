@@ -38,6 +38,7 @@
 // can refine.
 
 import type { JsonObject } from "../../lib/json-types.js";
+import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
 	classifyCommand,
@@ -247,14 +248,26 @@ function encodeCursorAsk(
 	decision: import("../types.js").HarnessDecision,
 	ctx: EncodeContext,
 ): AdapterOutput {
+	// Pre-append resolved targets to BOTH the agent-facing `reason` and the
+	// user-facing message so the human sees the concrete file/URL/branch in
+	// the prompt body. On the deny-fallback path (preToolUse / beforeReadFile
+	// / subagentStart) the same enriched reason still surfaces — the user
+	// hits a deny dialog with the targets attached.
+	const baseReason = decision.reason ?? DEFAULT_ASK_REASON;
+	const reasonWithTargets = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
+	const baseUserMsg = decision.system_message || decision.reason || DEFAULT_ASK_REASON;
+	const userMsgWithTargets = formatAskReasonWithTargets(baseUserMsg, decision.resolved_targets);
+
 	if (!ctx.isGated) {
-		return stderrOut(decision.reason || ctx.stderr || undefined);
+		return stderrOut(reasonWithTargets || ctx.stderr || undefined);
 	}
-	const reason = decision.reason ?? DEFAULT_ASK_REASON;
-	const userMsg = decision.system_message || decision.reason || DEFAULT_ASK_REASON;
 	if (ctx.askCapable) {
 		return jsonOut(
-			{ permission: ASK_DECISION, agent_message: reason, user_message: userMsg },
+			{
+				permission: ASK_DECISION,
+				agent_message: reasonWithTargets,
+				user_message: userMsgWithTargets,
+			},
 			ctx.stderr,
 		);
 	}
@@ -263,7 +276,11 @@ function encodeCursorAsk(
 	// these events — silently treats it as allow on preToolUse, deny on
 	// subagentStart. Collapsing to deny is the safer and more consistent UX.
 	return jsonOut(
-		{ permission: "deny", agent_message: reason, user_message: userMsg },
+		{
+			permission: "deny",
+			agent_message: reasonWithTargets,
+			user_message: userMsgWithTargets,
+		},
 		ctx.stderr,
 	);
 }

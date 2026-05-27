@@ -15,6 +15,7 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Detects breaking changes to exported symbols (renamed, removed, type-changed)",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	import_resolution: {
 		name: "Import Resolution",
@@ -22,12 +23,14 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Validates all imports resolve to real files — catches typos and deleted modules",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	duplicate_symbols: {
 		name: "Duplicate Symbols",
 		description: "Flags identical export names across files that could cause ambiguous imports",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	co_dependency_staleness: {
 		name: "Co-Dependency Staleness",
@@ -35,42 +38,49 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Warns when a file's dependencies were recently edited but this file wasn't updated",
 		tier: 1,
 		determinism: "partially_deterministic",
+		externality: "local_write",
 	},
 	dead_imports: {
 		name: "Dead Imports",
 		description: "Detects imports that are no longer used after an edit",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	dead_exports: {
 		name: "Dead Exports",
 		description: "Detects exports with no importers in the project",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	hallucinated_imports: {
 		name: "Hallucinated Imports",
 		description: "Catches imports of symbols that don't exist in the target module",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	cross_package_imports: {
 		name: "Cross-Package Imports",
 		description: "Warns on imports that cross monorepo package boundaries incorrectly",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	undefined_env_vars: {
 		name: "Undefined Env Vars",
 		description: "Flags process.env references not documented in .env.example",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	sibling_awareness: {
 		name: "Sibling Awareness",
 		description: "Suggests related files that may need updates when editing a module",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	stale_read_warning: {
 		name: "Stale Read Warning",
@@ -78,18 +88,21 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Warns when reading a file that was modified earlier in the session but not re-read",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "pure_read",
 	},
 	recently_failed: {
 		name: "Recently Failed",
 		description: "Warns when editing a file that had check failures earlier in the session",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	redundant_reread: {
 		name: "Redundant Re-read",
 		description: "Detects reading a file that was already read and hasn't changed",
 		tier: 1,
 		determinism: "fully_deterministic",
+		externality: "pure_read",
 	},
 	route_context: {
 		name: "Route Context",
@@ -110,12 +123,14 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 		description: "Detects circular import chains that can cause runtime issues",
 		tier: 2,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	interface_change_impact: {
 		name: "Interface Change Impact",
 		description: "Identifies files affected when an interface or type definition changes",
 		tier: 2,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	test_proximity: {
 		name: "Test Proximity",
@@ -128,6 +143,7 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 		description: "Estimates how many files are affected by changes to a hub module",
 		tier: 2,
 		determinism: "heuristic",
+		externality: "local_write",
 	},
 	layer_violations: {
 		name: "Layer Violations",
@@ -135,6 +151,7 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Enforces architectural layering rules (e.g., UI must not import from DB layer)",
 		tier: 2,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 
 	// Tier 3: conditional
@@ -144,6 +161,7 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Runs tsc only on the edited file when export surface didn't change (avoids full project rebuild)",
 		tier: 3,
 		determinism: "fully_deterministic",
+		externality: "local_write",
 	},
 	impact_analysis: {
 		name: "Impact Analysis",
@@ -151,6 +169,7 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 			"Full dependency graph analysis showing breaking changes and affected downstream files",
 		tier: 3,
 		determinism: "heuristic",
+		externality: "local_write",
 	},
 	test_first: {
 		name: "Test First",

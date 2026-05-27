@@ -2,9 +2,89 @@
 // Session State — Per-session trajectory tracking
 // ===========================================
 
+import { execFileSync } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
 
+/** Timeout for the SessionStart git-baseline snapshot. Both `git rev-parse HEAD`
+ *  and `git status --porcelain` should complete in milliseconds on a normal
+ *  repo; the timeout is defensive against hung git (lock contention, NFS, etc.). */
+const GIT_BASELINE_TIMEOUT_MS = 2000;
+
+/** Capture the git working-tree state at session start: HEAD sha + porcelain-
+ *  classified sets of modified/staged/untracked paths. Tolerates non-git dirs
+ *  (returns empty baseline). Cached for the lifetime of the session — never
+ *  re-snapshotted. Exported for direct testing. */
+export function captureGitBaseline(cwd: string): {
+	modified: Set<string>;
+	staged: Set<string>;
+	untracked: Set<string>;
+	head_sha: string;
+} {
+	const empty = {
+		modified: new Set<string>(),
+		staged: new Set<string>(),
+		untracked: new Set<string>(),
+		head_sha: "",
+	};
+	let headSha = "";
+	try {
+		headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: GIT_BASELINE_TIMEOUT_MS,
+		}).trim();
+	} catch {
+		headSha = "";
+	}
+
+	let porcelain = "";
+	try {
+		porcelain = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: GIT_BASELINE_TIMEOUT_MS,
+		});
+	} catch {
+		return empty;
+	}
+
+	const modified = new Set<string>();
+	const staged = new Set<string>();
+	const untracked = new Set<string>();
+	const entries = porcelain.split("\0").filter((e) => e.length > 0);
+	for (let i = 0; i < entries.length; i++) {
+		const raw = entries[i];
+		if (raw.length < 3) continue;
+		const indexStatus = raw[0];
+		const worktreeStatus = raw[1];
+		const path = raw.slice(3);
+		if (indexStatus === "R" || indexStatus === "C") {
+			i++; // skip the old-path entry of a rename/copy
+		}
+		if (indexStatus === "?" && worktreeStatus === "?") {
+			untracked.add(path);
+			continue;
+		}
+		if (indexStatus === "!" && worktreeStatus === "!") continue;
+		if (indexStatus !== " " && indexStatus !== "?" && indexStatus !== "!") {
+			staged.add(path);
+		}
+		if (worktreeStatus !== " " && worktreeStatus !== "?" && worktreeStatus !== "!") {
+			modified.add(path);
+		}
+	}
+	return { modified, staged, untracked, head_sha: headSha };
+}
+
 import type { JsonObject } from "../lib/json-types.js";
+import type {
+	CapturedPlan,
+	PlanSource,
+	PlanStep,
+	PlanStepStatus,
+} from "./types/plan.js";
 import type {
 	ActiveSkillRecord,
 	AssertionCounts,
@@ -13,6 +93,7 @@ import type {
 	PendingCompletion,
 	SensitivityLevel,
 	SessionTrajectory,
+	TaintProvenance,
 	TaintSource,
 	TddCycle,
 	WarningRecord,
@@ -116,6 +197,7 @@ export class SessionTracker {
 				assertion_counts: new Map(),
 				verification_observed: new Set(),
 				stubs_introduced: [],
+				git_session_baseline: captureGitBaseline(event.cwd ?? process.cwd()),
 			};
 			this.sessions.set(event.session_id, session);
 		}
@@ -287,6 +369,40 @@ export class SessionTracker {
 	}
 
 	/**
+	 * Roll a subagent's file-tracking state into its parent at SubagentStop.
+	 * Parallel to {@link rollUpVerificationSignals}: verification signals and
+	 * file-tracking state are independent concerns sharing a call site, so
+	 * they get parallel functions rather than one monolithic rollup. The
+	 * git-baseline is deliberately NOT rolled up — the parent's baseline is
+	 * canonical. Without this rollup, parent agents can't legitimately commit
+	 * files their subagents wrote (git-session-scope-gate would refuse).
+	 *
+	 * Merge semantics:
+	 *  - files_written / files_read: set union (parent ∪ subagent).
+	 *  - file_write_times: gap-fill (don't clobber parent's newer entries).
+	 *  - file_edit_counts: sum (parent + subagent counts).
+	 */
+	rollUpFileTracking(fromSessionId: string, toSessionId: string): boolean {
+		if (fromSessionId === toSessionId) return false;
+		const from = this.sessions.get(fromSessionId);
+		const to = this.sessions.get(toSessionId);
+		if (!from || !to) return false;
+
+		for (const f of from.files_written) to.files_written.add(f);
+		for (const f of from.files_read) to.files_read.add(f);
+
+		for (const [file, ts] of from.file_write_times) {
+			if (!to.file_write_times.has(file)) to.file_write_times.set(file, ts);
+		}
+
+		for (const [file, count] of from.file_edit_counts) {
+			to.file_edit_counts.set(file, (to.file_edit_counts.get(file) ?? 0) + count);
+		}
+
+		return true;
+	}
+
+	/**
 	 * Serialize a session trajectory to a JSON-safe snapshot. Used for both
 	 * the post-end `<id>.trajectory.json` archive and the in-flight
 	 * `<id>.live.json` snapshot — the shape is identical and lossless against
@@ -368,6 +484,15 @@ export class SessionTracker {
 			),
 			verification_observed: s.verification_observed ? [...s.verification_observed] : [],
 			stubs_introduced: s.stubs_introduced ? s.stubs_introduced.map((e) => ({ ...e })) : [],
+			declared_plan: s.declared_plan ? serializeCapturedPlan(s.declared_plan) : null,
+			git_session_baseline: s.git_session_baseline
+				? {
+						head_sha: s.git_session_baseline.head_sha,
+						modified: [...s.git_session_baseline.modified],
+						staged: [...s.git_session_baseline.staged],
+						untracked: [...s.git_session_baseline.untracked],
+					}
+				: null,
 		};
 	}
 
@@ -442,6 +567,8 @@ export class SessionTracker {
 			assertion_counts: readAssertionCountsMap(snapshot.assertion_counts),
 			verification_observed: readStringSet(snapshot.verification_observed),
 			stubs_introduced: readStubsIntroduced(snapshot.stubs_introduced),
+			declared_plan: readCapturedPlan(snapshot.declared_plan),
+			git_session_baseline: readGitSessionBaseline(snapshot.git_session_baseline),
 		};
 
 		this.sessions.set(sessionId, session);
@@ -611,6 +738,23 @@ function readConsecutivePattern(v: unknown): { pattern: string; count: number } 
 	return pattern ? { pattern, count } : null;
 }
 
+const TAINT_PROVENANCE_VALUES: ReadonlySet<TaintProvenance> = new Set<TaintProvenance>([
+	"fetched_external",
+	"mcp_remote",
+	"document_content",
+	"user_provided",
+	"local_read",
+]);
+
+/** Coerce an unknown to a TaintProvenance, defaulting to "local_read" for
+ *  older snapshots (pre-provenance field) and any malformed value. */
+function readProvenance(v: unknown): TaintProvenance {
+	if (typeof v === "string" && TAINT_PROVENANCE_VALUES.has(v as TaintProvenance)) {
+		return v as TaintProvenance;
+	}
+	return "local_read";
+}
+
 function readTaintSources(v: unknown): TaintSource[] {
 	if (!Array.isArray(v)) return [];
 	const out: TaintSource[] = [];
@@ -622,6 +766,7 @@ function readTaintSources(v: unknown): TaintSource[] {
 			file,
 			level: readSensitivity(item.level),
 			at_step: readNumber(item.at_step, 0),
+			provenance: readProvenance(item.provenance),
 		});
 	}
 	return out;
@@ -731,6 +876,23 @@ function readAssertionCountsMap(v: unknown): Map<string, AssertionCounts> {
 		});
 	}
 	return out;
+}
+
+function readGitSessionBaseline(v: unknown):
+	| {
+			modified: Set<string>;
+			staged: Set<string>;
+			untracked: Set<string>;
+			head_sha: string;
+		}
+	| undefined {
+	if (!isPlainObject(v)) return undefined;
+	return {
+		head_sha: readString(v.head_sha) ?? "",
+		modified: readStringSet(v.modified),
+		staged: readStringSet(v.staged),
+		untracked: readStringSet(v.untracked),
+	};
 }
 
 function readActiveSkills(v: unknown): Map<string, ActiveSkillRecord> | undefined {
@@ -873,4 +1035,83 @@ export function getActiveSkills(session: SessionTrajectory): ActiveSkillRecord[]
 	gcExpiredSkills(session);
 	if (!session.active_skills) return [];
 	return [...session.active_skills.values()];
+}
+
+// ===========================================
+// Declared-plan serialize / hydrate
+// ===========================================
+// `session.declared_plan` is the latest `CapturedPlan` produced by
+// plan-capture.ts. Round-trip support so a daemon restart doesn't drop
+// the most-recent plan — item #6 (plan-drift) reads this field at Stop.
+
+const PLAN_SOURCES: ReadonlySet<PlanSource> = new Set([
+	"TaskCreate",
+	"ExitPlanMode",
+	"structured_userprompt",
+]);
+
+const PLAN_STEP_STATUSES: ReadonlySet<PlanStepStatus> = new Set([
+	"pending",
+	"executed",
+	"skipped",
+]);
+
+/** Convert a CapturedPlan to a JSON-safe object. The plan shape is
+ *  already plain JSON (no Maps, Sets, dates), so this is a deep copy
+ *  that documents the shape in one place. */
+function serializeCapturedPlan(plan: CapturedPlan): JsonObject {
+	return {
+		session_id: plan.session_id,
+		agent_name: plan.agent_name,
+		created_at_iso: plan.created_at_iso,
+		created_at_step: plan.created_at_step,
+		source: plan.source,
+		steps: plan.steps.map((s) => ({
+			intent: s.intent,
+			tool_hint: s.tool_hint ?? null,
+			target_hint: s.target_hint ?? null,
+			status: s.status,
+		})),
+	};
+}
+
+/** Defensive read of the serialized plan. Returns undefined for null,
+ *  missing, or malformed shapes so older snapshots (predating this
+ *  field) hydrate cleanly. Unknown step statuses default to "pending";
+ *  unknown sources default to "TaskCreate" so we never crash. */
+function readCapturedPlan(v: unknown): CapturedPlan | undefined {
+	if (!isPlainObject(v)) return undefined;
+	const sessionId = readString(v.session_id);
+	const agentName = readString(v.agent_name);
+	const createdAtIso = readString(v.created_at_iso);
+	if (!sessionId || !agentName || !createdAtIso) return undefined;
+	const sourceRaw = typeof v.source === "string" ? v.source : "";
+	const source = PLAN_SOURCES.has(sourceRaw as PlanSource)
+		? (sourceRaw as PlanSource)
+		: "TaskCreate";
+	const stepsRaw = Array.isArray(v.steps) ? v.steps : [];
+	const steps: PlanStep[] = [];
+	for (const raw of stepsRaw) {
+		if (!isPlainObject(raw)) continue;
+		const intent = readString(raw.intent);
+		if (!intent) continue;
+		const statusRaw = typeof raw.status === "string" ? raw.status : "pending";
+		const status = PLAN_STEP_STATUSES.has(statusRaw as PlanStepStatus)
+			? (statusRaw as PlanStepStatus)
+			: "pending";
+		const step: PlanStep = { intent, status };
+		const toolHint = readString(raw.tool_hint);
+		if (toolHint) step.tool_hint = toolHint;
+		const targetHint = readString(raw.target_hint);
+		if (targetHint) step.target_hint = targetHint;
+		steps.push(step);
+	}
+	return {
+		session_id: sessionId,
+		agent_name: agentName,
+		created_at_iso: createdAtIso,
+		created_at_step: readNumber(v.created_at_step, 0),
+		source,
+		steps,
+	};
 }

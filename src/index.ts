@@ -782,6 +782,34 @@ scannerCmd
 		await scannerReviewCommand(opts);
 	});
 
+// ===========================================
+// plan — show agent-emitted plans captured at PreToolUse / UserPromptSubmit.
+// Data capture only (no evaluation); see src/harness/plan-capture.ts.
+// ===========================================
+const planCmd = program
+	.command("plan")
+	.description("Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts");
+
+planCmd
+	.command("list", { isDefault: true })
+	.description("Show the 20 most recent CapturedPlans (newest first)")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.option("--json", "Machine-readable output")
+	.action(async (opts: OptionValues) => {
+		const { planListCommand } = await import("./commands/plan.js");
+		await planListCommand(opts);
+	});
+
+planCmd
+	.command("show <session_id>")
+	.description("Pretty-print the most recent captured plan for a session")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.option("--json", "Machine-readable output")
+	.action(async (sessionId: string, opts: OptionValues) => {
+		const { planShowCommand } = await import("./commands/plan.js");
+		await planShowCommand(sessionId, opts);
+	});
+
 program
 	.command("inbox")
 	.description("Show recent messages from the server")

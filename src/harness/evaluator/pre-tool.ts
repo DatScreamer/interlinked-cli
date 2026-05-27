@@ -75,6 +75,7 @@ import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-gu
 import { loadAllowlist } from "../package-allowlist.js";
 import { parseInstallCommands } from "../package-install-parser.js";
 import { evaluateManifestEdit } from "./manifest-edit-guard.js";
+import { evaluateGitScopeGateSync } from "./git-session-scope-gate.js";
 import { evaluatePackageInstall } from "./package-install-guard.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
@@ -390,6 +391,33 @@ export function evaluatePreToolUse(
 		}
 	}
 
+	// GUARD: Git session-scope gate (PB&J Free-CLI item #7) — asks before
+	// `git add` / `git commit` / `git push` includes files this session didn't
+	// write. Off by default until validated on real sessions; force-push is
+	// intentionally deferred to the existing force-push rule.
+	if (isBash(toolName) && session) {
+		const gateConfig = rules.git_session_scope_gate;
+		if (gateConfig?.enabled && gateConfig.mode !== "off") {
+			const cmd = (toolInput.command as string) || "";
+			if (cmd) {
+				const evalCwd = event.cwd || process.cwd();
+				const verdict = evaluateGitScopeGateSync(cmd, session, evalCwd);
+				if (verdict && verdict.decision === "ask") {
+					const mappedDecision: "ask" | "block" =
+						gateConfig.mode === "block" ? "block" : "ask";
+					return {
+						decision: mappedDecision,
+						reason: verdict.reason ?? "git operation scope ambiguous",
+						rule_id: "git-session-scope-gate",
+						severity: "medium",
+						category: "git-scope",
+						warnings,
+					};
+				}
+			}
+		}
+	}
+
 	// GUARD: Destructive patterns — Bash, Write, Edit, all tools
 	{
 		const cmd = (toolInput.command as string) || "";
@@ -438,6 +466,8 @@ export function evaluatePreToolUse(
 					toolInput: matchInput,
 					rule,
 					extraExceptions: rules.extra_exceptions,
+					toolName,
+					session,
 				})
 			)
 				continue;
@@ -542,6 +572,8 @@ export function evaluatePreToolUse(
 						toolInput: inp,
 						rule,
 						extraExceptions: extras,
+						toolName,
+						session,
 					}),
 			);
 			if (compoundResult.decision === "block") {
@@ -1087,6 +1119,12 @@ export function evaluatePreToolUse(
 			pendingEscalation,
 		});
 		if (taintResult.kind === "block") {
+			return {
+				...taintResult.decision,
+				warnings: [...warnings, ...(taintResult.decision.warnings || [])],
+			};
+		}
+		if (taintResult.kind === "ask") {
 			return {
 				...taintResult.decision,
 				warnings: [...warnings, ...(taintResult.decision.warnings || [])],

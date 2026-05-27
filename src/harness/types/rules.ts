@@ -9,6 +9,24 @@ import type { AgentRole, AgentSource } from "./events.js";
 // Guard Rules
 // ===========================================
 
+/**
+ * Coarse "blast radius" axis for the side effects a tool call can have.
+ *
+ * Distinct from the read/write predicates that only describe local
+ * file-system semantics:
+ *
+ * - `pure_read`       — observation only (no mutation, no network).
+ * - `local_write`     — mutates state confined to this machine.
+ * - `external_action` — escapes the machine (network, remote API, push,
+ *                       deploy, publish, email, …).
+ *
+ * Mirrors the same union exported from
+ * `src/harness/evaluator/tool-classifiers.ts`; declared here so
+ * `GuardRule.tool_externality` can reference it without pulling in the
+ * evaluator module (types/rules.ts is intentionally side-effect free).
+ */
+export type ToolExternality = "pure_read" | "local_write" | "external_action";
+
 /** Input rewrite specification for guard rules with action: "rewrite" */
 export interface InputRewrite {
 	/** Field to rewrite (dot-path, e.g. "command") */
@@ -97,6 +115,53 @@ export interface GuardRule {
 	 * unrestricted (the existing default).
 	 */
 	file_extensions?: string[];
+	/**
+	 * Optional externality-tier allowlist. When set, the rule only fires if
+	 * `classifyToolExternality(tool_name, tool_input)` (see
+	 * `evaluator/tool-classifiers.ts`) is in this list. Lets policy authors
+	 * target the strictest tier (`external_action`) cleanly — e.g. "block
+	 * destructive Bash unless I'm pushing/publishing" reduces to
+	 * `tool_externality: ["external_action"]` rather than a hand-rolled
+	 * regex over every network verb. Undefined = unrestricted (preserves
+	 * existing fire-on-all behaviour).
+	 */
+	tool_externality?: ToolExternality[];
+	/**
+	 * Temporal precondition. After content patterns match, evaluated against
+	 * the live `SessionTrajectory`. Rule fires only when predicate is NOT
+	 * satisfied (the required earlier action is missing). Pure read; see
+	 * `src/harness/evaluator/temporal-matching.ts`.
+	 */
+	requires_prior?: TemporalPredicate;
+	/**
+	 * Temporal anti-precondition. After content patterns match, evaluated
+	 * against the live `SessionTrajectory`. Rule fires only when predicate
+	 * IS satisfied (the forbidden earlier action is present). Pure read.
+	 */
+	forbids_after?: TemporalPredicate;
+}
+
+/**
+ * Predicate over the session's recent trajectory — `tool_sequence`,
+ * `commands_run`, `files_read`, `verification_observed`. Used by `GuardRule`'s
+ * `requires_prior` / `forbids_after` axes. A predicate with multiple fields
+ * set is AND-combined: every populated field must hold for the predicate to
+ * be considered satisfied.
+ */
+export interface TemporalPredicate {
+	/** Match against `session.tool_sequence` entries (format `"ToolName:target"`).
+	 *  Case-sensitive prefix match on tool name; `"*"` matches any tool. */
+	tool?: string;
+	/** Case-insensitive regex applied to entries of `session.commands_run`. */
+	bash_match?: string;
+	/** Path or simple glob (`*` matches one segment, `**` matches any number)
+	 *  tested against `session.files_read`. */
+	file_read?: string;
+	/** Membership check against `session.verification_observed`. */
+	verification_kind?: "typecheck" | "test" | "lint" | "build" | "dev_server" | "browser";
+	/** How far back in `tool_sequence` / `commands_run` to scan. Omit (or
+	 *  non-positive) to scan the full session. */
+	within_last_n?: number;
 }
 
 export interface RulePattern {

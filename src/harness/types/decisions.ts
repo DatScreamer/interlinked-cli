@@ -99,6 +99,31 @@ export interface HarnessDecision {
 	 * for local storage.
 	 */
 	redacted_prompt?: string;
+	/**
+	 * Resolved concrete targets for `decision: "ask"` confirmation prompts.
+	 * When a rule fires "ask" on a high-blast action, this surfaces the
+	 * specific file paths, URLs, branches, tables, recipients, or packages
+	 * the operation will touch so the human reviewer sees exactly what is
+	 * about to happen — not just the rule description. Adapters render
+	 * these as a `Targets:` bullet list after the ask reason. Values are
+	 * truncated to 200 chars; arrays are capped at 5 entries.
+	 */
+	resolved_targets?: ResolvedTarget[];
+}
+
+/**
+ * A concrete target value extracted from a tool invocation when a rule fires
+ * `decision: "ask"`. Used to populate the user-facing confirmation prompt
+ * with specific files / URLs / branches rather than just the rule reason.
+ *
+ * Values must already be truncated by the producer to ≤200 chars to keep
+ * the per-adapter rendering bounded.
+ */
+export interface ResolvedTarget {
+	/** What kind of resource this target refers to. */
+	kind: "file" | "table" | "url" | "branch" | "recipient" | "package";
+	/** Concrete value (path, URL, branch name, table id, etc.) — ≤200 chars. */
+	value: string;
 }
 
 /** Structured result from a single check (quality, structural, suggestion, impact, or structure) */

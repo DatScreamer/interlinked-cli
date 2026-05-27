@@ -5,7 +5,12 @@
 // Once a session reads sensitive data, its label ratchets UP (never down).
 // Outbound network commands are blocked when sensitivity reaches threshold.
 
-import type { SensitivityLevel, SessionTrajectory, TaintTrackingConfig } from "./types.js";
+import type {
+	SensitivityLevel,
+	SessionTrajectory,
+	TaintProvenance,
+	TaintTrackingConfig,
+} from "./types.js";
 
 // ===========================================
 // Sensitivity Level Ordering
@@ -105,15 +110,104 @@ export function classifyFileSensitivity(
 }
 
 // ===========================================
+// Provenance Classification
+// ===========================================
+//
+// Provenance is independent from sensitivity (see types/taint.ts). It records
+// WHERE data originated — trusted local read vs untrusted external source.
+// The external-action-on-untrusted-input guard
+// (`checkProvenanceTaintToExternalAction`) consults this to decide whether
+// to surface a confirmation prompt.
+
+/** Doc-shaped extensions whose contents are typically prose, not code.
+ *  Treated as `document_content` provenance (prompts may live in here). */
+const DOCUMENT_EXTENSIONS = new Set([".md", ".pdf", ".txt", ".rst", ".adoc"]);
+
+/** Code-shaped extensions whose contents we treat as trusted local reads. */
+const CODE_EXTENSIONS = new Set([
+	".ts",
+	".tsx",
+	".js",
+	".jsx",
+	".py",
+	".go",
+	".rs",
+	".rb",
+	".java",
+	".c",
+	".cpp",
+	".h",
+]);
+
+function extLower(filePath: string): string {
+	const idx = filePath.lastIndexOf(".");
+	if (idx < 0) return "";
+	return filePath.slice(idx).toLowerCase();
+}
+
+/**
+ * Classify the provenance of a taint source given the tool and target path.
+ * Used wherever a TaintSource is created to populate the new `provenance`
+ * field. Defaults to `local_read` when nothing else matches — the safe
+ * choice for the external-action gate (no extra ask fires).
+ *
+ * Inputs:
+ *   - toolName: the originating tool ("Read", "WebFetch", "WebSearch",
+ *     "UserPromptSubmit", or any `mcp__*__*` tool name). May be undefined
+ *     when the caller (e.g. `ratchetSensitivity` without a toolName arg)
+ *     can only consult the filePath — pseudo-filepaths like
+ *     `<WebFetch-response>` are parsed in that fallback.
+ *   - filePath: the file or pseudo-file (e.g. `<command-output>`) the
+ *     taint source was attributed to. Used to discriminate doc vs code
+ *     for local reads, and as the fallback signal when toolName is
+ *     missing.
+ */
+export function classifyProvenance(
+	toolName: string | undefined,
+	filePath: string,
+): TaintProvenance {
+	// Direct toolName match — takes precedence when caller knows.
+	if (toolName === "UserPromptSubmit") return "user_provided";
+	if (toolName === "WebFetch" || toolName === "web_fetch" || toolName === "WebSearch") {
+		return "fetched_external";
+	}
+	if (toolName && /^mcp__/.test(toolName)) return "mcp_remote";
+	// Pseudo-filepath fallback — content-scanner / output-scan callers
+	// attribute taint to `<WebFetch-response>`, `<mcp__github__list_issues-response>`,
+	// `<command-output>` etc. without threading the originating toolName
+	// through to `ratchetSensitivity`. Parse the bracketed token so those
+	// taint sources still land with the correct provenance.
+	if (filePath.startsWith("<") && filePath.endsWith(">")) {
+		const inner = filePath.slice(1, -1);
+		if (/^(?:WebFetch|web_fetch|WebSearch)/.test(inner)) return "fetched_external";
+		if (/^mcp__/.test(inner)) return "mcp_remote";
+		// `<command-output>`, `<UserPromptSubmit-...>`, etc. fall through.
+		if (/^UserPromptSubmit/.test(inner)) return "user_provided";
+	}
+	// File reads — discriminate doc-shaped vs code-shaped by extension.
+	const ext = extLower(filePath);
+	if (DOCUMENT_EXTENSIONS.has(ext)) return "document_content";
+	if (CODE_EXTENSIONS.has(ext)) return "local_read";
+	return "local_read";
+}
+
+// ===========================================
 // Taint Ratchet
 // ===========================================
 
-/** Ratchet session sensitivity upward if the new level is higher */
+/**
+ * Ratchet session sensitivity upward if the new level is higher.
+ * The optional `provenance` parameter records where the data originated
+ * (default: classified from `file` extension as a local read). Older
+ * call sites that don't pass it get the inferred classification, which
+ * matches the v1 default behaviour for backward compatibility.
+ */
 export function ratchetSensitivity(
 	session: SessionTrajectory,
 	file: string,
 	level: SensitivityLevel,
 	config: TaintTrackingConfig,
+	provenance?: TaintProvenance,
 ): boolean {
 	const currentOrder = SENSITIVITY_ORDER[session.sensitivity_level];
 	const newOrder = SENSITIVITY_ORDER[level];
@@ -125,6 +219,10 @@ export function ratchetSensitivity(
 			file,
 			level,
 			at_step: session.tool_call_count,
+			// When the caller doesn't specify provenance, infer from the file
+			// extension. The Read-of-source-file path passes filePath only;
+			// the file extension is enough to discriminate doc vs code.
+			provenance: provenance ?? classifyProvenance("Read", file),
 		});
 		return true; // Sensitivity was escalated
 	}

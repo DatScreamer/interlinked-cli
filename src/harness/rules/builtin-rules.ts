@@ -12,7 +12,10 @@ import { DESTRUCTIVE_HTTP_RULES } from "./builtin-rules-destructive-http.js";
 import { DESTRUCTIVE_V1_EXTRA_RULES } from "./builtin-rules-extras.js";
 import { LANGUAGE_DESTRUCTIVE_RULES } from "./builtin-rules-language.js";
 import { MCP_DESTRUCTIVE_RULES } from "./builtin-rules-mcp.js";
-import { PROCESS_AND_FILESYSTEM_RULES } from "./builtin-rules-processes.js";
+import {
+	PROCESS_AND_FILESYSTEM_RULES,
+	TEMPORAL_PRECONDITION_RULES,
+} from "./builtin-rules-processes.js";
 import { RAILWAY_RULES } from "./builtin-rules-railway.js";
 import { RESOURCE_BOMB_RULES } from "./builtin-rules-resource-bombs.js";
 import { SECURITY_AND_SAFETY_RULES } from "./builtin-rules-security.js";
@@ -46,4 +49,9 @@ export const BUILTIN_RULES: GuardRule[] = [
 	...DESTRUCTIVE_HTTP_RULES,
 	...LANGUAGE_DESTRUCTIVE_RULES,
 	...SECURITY_AND_SAFETY_RULES,
+	// Trajectory-aware temporal-precondition rules (PB&J Free-CLI item #1)
+	// — always LAST so upstream rules get first claim on every call.
+	// Temporal rules surface only when no specific hard-block / vendor-scoped
+	// / warn-only rule has already matched the same command shape.
+	...TEMPORAL_PRECONDITION_RULES,
 ];

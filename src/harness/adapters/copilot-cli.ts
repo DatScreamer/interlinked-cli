@@ -7,6 +7,7 @@
 // allow. "ask" semantics limited — Copilot surfaces as allow + note.
 
 import type { JsonObject } from "../../lib/json-types.js";
+import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
 import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
@@ -93,7 +94,11 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 		encodeDecision(decision, _event): AdapterOutput {
 			const stderr = (decision.warnings ?? []).join("\n");
 			if (decision.decision === "block") {
-				const reason = decision.reason ?? "Blocked by interlinked harness";
+				// Append resolved targets to the deny reason when present so
+				// the human sees the concrete file/URL/branch instead of just
+				// the rule description.
+				const baseReason = decision.reason ?? "Blocked by interlinked harness";
+				const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
 				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
 			}
 			if (decision.decision === "ask") {
@@ -104,7 +109,11 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 				// hook-template-chunks/provider-responses.ts. Surfacing as exit 0
 				// + stderr note (the previous behaviour) let an ask rule's match
 				// proceed unchecked, defeating the purpose of the gate.
-				const reason = decision.reason ?? "Confirmation required";
+				//
+				// Resolved targets are appended to the deny reason so the human
+				// hitting the prompt sees what would have happened.
+				const baseReason = decision.reason ?? "Confirmation required";
+				const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
 				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
 			}
 			// allow

@@ -23,6 +23,7 @@
 
 import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
 	classifyFromToolName,
@@ -179,7 +180,13 @@ function codexRenderSettingsFragment(binaryPath: string, scope: string): Setting
 }
 
 function codexEncodeDecision(
-	decision: { decision: string; reason?: string; warnings?: string[]; additional_context?: string },
+	decision: {
+		decision: string;
+		reason?: string;
+		warnings?: string[];
+		additional_context?: string;
+		resolved_targets?: import("../types.js").ResolvedTarget[];
+	},
 	event: UnifiedHookEvent,
 ): AdapterOutput {
 	const isPermissionRequest = event.runner_native_event === EVT_PERMISSION_REQUEST;
@@ -188,16 +195,28 @@ function codexEncodeDecision(
 		// "ask" as a block so the agent at minimum sees the reason and the
 		// human can intervene. PermissionRequest gets the dedicated
 		// decision shape regardless.
+		//
+		// For ask→block collapse, append resolved targets so the deny
+		// reason includes the specific file/URL/branch the agent was about
+		// to touch. Plain block decisions also surface targets when present.
 		return encodeCodexBlock(decision, isPermissionRequest);
 	}
 	return encodeCodexAllow(decision, isPermissionRequest);
 }
 
 function encodeCodexBlock(
-	decision: { reason?: string; warnings?: string[] },
+	decision: {
+		reason?: string;
+		warnings?: string[];
+		resolved_targets?: import("../types.js").ResolvedTarget[];
+	},
 	isPermissionRequest: boolean,
 ): AdapterOutput {
-	const reason = decision.reason ?? "Blocked by interlinked harness";
+	// Append resolved targets to the deny reason. When ask→deny collapses
+	// (Codex has no ask primitive on PreToolUse) this is how the user sees
+	// the specific resources the action would have touched.
+	const baseReason = decision.reason ?? "Blocked by interlinked harness";
+	const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
 	const stderrTail = (decision.warnings ?? []).join("\n");
 	if (isPermissionRequest) {
 		const stdout = JSON.stringify({

@@ -16,6 +16,7 @@ Commands:
   activity [options]                         Recent activity feed
   allowlist                                  Manage the supply-chain package allowlist (.interlinked/package-allowlist.json)
   attach [options]                           Attach local CLI settings to workspace/agent and link remote identity
+  audit                                      Verify tamper-evidence of the guard-decision audit chain in activity.jsonl
   check [options]                            Scan project for structural issues and optionally run external tool checks (tsc, biome, eslint, semgrep, gitleaks, mypy, ruff, etc.)
   checkpoint [options] [message]             Git checkpoint management
   ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)

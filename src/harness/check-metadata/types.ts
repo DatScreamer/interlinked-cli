@@ -2,7 +2,7 @@
 // each metadata constant file can import from here without re-importing
 // Determinism directly from ../types.
 
-import type { Determinism } from "../types.js";
+import type { Determinism, ToolExternality } from "../types.js";
 
 /**
  * OWASP Agentic Security Initiative 2026 risk IDs (ASI01–ASI11).
@@ -51,4 +51,19 @@ export interface CheckMeta {
 	 * (style/complexity/taste checks usually don't).
 	 */
 	asi?: OwaspAsi;
+	/**
+	 * Optional externality tier this check is scoped to (see
+	 * `src/harness/evaluator/tool-classifiers.ts`).
+	 *
+	 * - `pure_read`       — check fires on Read / Glob / Grep targets only.
+	 * - `local_write`     — check fires after a local file write / edit.
+	 * - `external_action` — check fires on calls that escape the local
+	 *                       machine (WebFetch, mcp send, git push, …).
+	 *
+	 * Biased toward correctness: leave undefined when unsure, when the check
+	 * is session-level (not tied to one tool call), or when it runs across
+	 * multiple externality tiers. Docs generation and policy authoring use
+	 * this to surface coverage by tier.
+	 */
+	externality?: ToolExternality;
 }
