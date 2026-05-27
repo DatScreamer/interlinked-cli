@@ -69,6 +69,30 @@ export interface StructuralCheckResult {
 export type ModuleRole = "leaf" | "internal" | "hub" | "root";
 
 // ===========================================
+// Reachability (Phase A2)
+// ===========================================
+
+/**
+ * Verdict returned by `ProjectGraph.isFileReachableFromEntryPoints`.
+ *
+ * `reachable` is true when there is an import chain
+ * `entryPoint → ... → file` (runtime control flow direction). When true,
+ * `distance` is the minimum number of import hops over all entry points
+ * and `path` is the file sequence for that shortest chain
+ * (`path[0]` is the entry point, `path[path.length - 1] === file`).
+ *
+ * When unreachable (or depth-cap hit), `distance` and `path` are
+ * omitted. `entry_points_considered` echoes back the inputs verbatim
+ * so the caller can attach them to a finding without re-deriving them.
+ */
+export interface ReachabilityVerdict {
+	reachable: boolean;
+	distance?: number;
+	path?: string[];
+	entry_points_considered: string[];
+}
+
+// ===========================================
 // Impact Analysis
 // ===========================================
 
