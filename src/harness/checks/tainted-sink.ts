@@ -13,12 +13,35 @@
 // JS analog of Firefox 2023817 (parent process trusted sandbox-supplied
 // input). Advisory until dogfood signal supports promotion.
 
+import { isSanitized, load as loadSanitizerRegistry } from "../sanitizer-registry.js";
 import {
 	getExtension,
 	type InlineMatch,
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+
+/**
+ * Lazy-load the sanitizer registry once per process. The registry file is
+ * project-local and small; loading on first use avoids paying the I/O cost
+ * for callers that never reach the tainted-flow path. The registry is
+ * memoized in-memory; the daemon's hot-reload watcher
+ * (`watchSanitizerFiles`) will be wired in a later phase.
+ */
+let cachedRegistry: ReturnType<typeof loadSanitizerRegistry> | null = null;
+function getRegistry(): ReturnType<typeof loadSanitizerRegistry> {
+	if (cachedRegistry === null) cachedRegistry = loadSanitizerRegistry();
+	return cachedRegistry;
+}
+
+/**
+ * Test-only hook. The lazy registry cache can hold a stale view across test
+ * files that mutate the on-disk config; tests call this to drop the cache
+ * before reloading. Public API — consumed by future migration tests.
+ */
+export function _resetSanitizerRegistryCacheForTests(): void {
+	cachedRegistry = null;
+}
 
 const LOOKAHEAD_CHARS = 6000;
 const REPORT_LINE_TRUNC = 150;
@@ -44,21 +67,13 @@ const SINK_PATTERNS: { re: RegExp; label: string }[] = [
 	},
 ];
 
-const VALIDATOR_PATTERNS: RegExp[] = [
-	// Schema.parse(name) / Schema.safeParse(name) — zod, valibot, arktype
-	/\.parse\s*\(/,
-	/\.safeParse\s*\(/,
-	// Schema.validate(name) — joi, ajv, yup
-	/\.validate\s*\(/,
-	// typeof name === "string" / typeof name !== "..."
-	/\btypeof\s+\w+\s*[!=]==?/,
-	// Array.isArray(name)
-	/\bArray\.isArray\s*\(/,
-	// name instanceof X
-	/\binstanceof\b/,
-	// allowList.has(name) / Set/Map .has acting as allow-list
-	/\.has\s*\(/,
-];
+// The previous inline VALIDATOR_PATTERNS list moved to the sanitizer
+// registry as the `identity` sink-class defaults
+// (`.interlinked/sanitizers.json`). The migration preserves every prior
+// tainted-sink.test.ts case — see the parity-pinning suite in
+// `src/harness/__tests__/sanitizer-registry.test.ts` for the contract.
+// Detector queries the registry via
+// `isSanitized(getRegistry(), "identity", rhs)`.
 
 /** Find the matching closing paren for the `(` at `openParenIdx`. */
 function findCloseParen(s: string, openParenIdx: number): number {
@@ -141,7 +156,11 @@ export function checkTaintedToPrivilegedSink(
 		if (!externalInputRe.test(rhs)) continue;
 		// If the RHS itself routes through a validator, the bound name is
 		// already validated — record but mark validated.
-		const validatedAtAssignment = VALIDATOR_PATTERNS.some((re) => re.test(rhs));
+		// The sanitizer registry's `identity` defaults mirror the prior
+		// inline VALIDATOR_PATTERNS list verbatim, so this query is exactly
+		// equivalent to the previous `.some(re => re.test(rhs))`. See the
+		// parity-pinning suite in sanitizer-registry.test.ts.
+		const validatedAtAssignment = isSanitized(getRegistry(), "identity", rhs);
 		taintedAssignments.set(name, {
 			offset: assignHit.index,
 			validatedAtAssignment,

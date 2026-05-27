@@ -122,6 +122,8 @@ docs/plans/*/
 !.interlinked/registry-parity.json
 !.interlinked/large-files-baseline.json
 !.interlinked/package-allowlist.json
+!.interlinked/sanitizers.json
+!.interlinked/security-config.json
 
 # Agent-driven test reports (generated, not committed)
 test/agent-driven/reports/*.json

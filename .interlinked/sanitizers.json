@@ -1,0 +1,90 @@
+{
+    "version": 1,
+    "_comment": "Sanitizer / validator registry consumed by src/harness/sanitizer-registry.ts. Each entry under `sanitizers.<sink-class>` is matched against an expression by checkTaintedToSink-class detectors. The defaults shipped here preserve the prior inline VALIDATOR_PATTERNS behavior from src/harness/checks/tainted-sink.ts so the existing checkTaintedToPrivilegedSink answers don't change. Carved out of the .interlinked/* gitignore (see .gitignore) so it commits alongside guard-rules.json and large-files-baseline.json. Per-developer overrides go in .interlinked/sanitizers.local.json (gitignored).",
+    "sanitizers": {
+        "sql": [],
+        "html": [],
+        "shell": [],
+        "url": [
+            {
+                "name": "url-host-allowlist-check",
+                "kind": "regex",
+                "pattern": "new\\s+URL\\s*\\([^)]*\\)\\s*\\.\\s*host[\\s\\S]{0,200}(?:\\.includes|\\.indexOf|\\.has|===|==)",
+                "scope": "global",
+                "description": "URL host extracted via `new URL(x).host` then compared against an allow-list (includes/indexOf/has/===) within ~3 lines"
+            },
+            {
+                "name": "is-allowed-url",
+                "kind": "function",
+                "pattern": "isAllowedUrl",
+                "scope": "global",
+                "description": "Identity-style allowlist function: isAllowedUrl(target) returns boolean"
+            },
+            {
+                "name": "assert-allowed-domain",
+                "kind": "function",
+                "pattern": "assertAllowedDomain",
+                "scope": "global",
+                "description": "Identity-style allowlist assertion: assertAllowedDomain(target) throws on disallowed"
+            },
+            {
+                "name": "check-redirect",
+                "kind": "function",
+                "pattern": "checkRedirect",
+                "scope": "global",
+                "description": "Identity-style allowlist function: checkRedirect(target) gates redirects"
+            }
+        ],
+        "identity": [
+            {
+                "name": "schema-parse",
+                "kind": "regex",
+                "pattern": "\\.parse\\s*\\(",
+                "scope": "global",
+                "description": "Schema validators: zod / valibot / arktype Schema.parse(name)"
+            },
+            {
+                "name": "schema-safeparse",
+                "kind": "regex",
+                "pattern": "\\.safeParse\\s*\\(",
+                "scope": "global",
+                "description": "Schema validators: zod / valibot / arktype Schema.safeParse(name)"
+            },
+            {
+                "name": "schema-validate",
+                "kind": "regex",
+                "pattern": "\\.validate\\s*\\(",
+                "scope": "global",
+                "description": "Schema validators: joi / ajv / yup Schema.validate(name)"
+            },
+            {
+                "name": "typeof-guard",
+                "kind": "regex",
+                "pattern": "\\btypeof\\s+\\w+\\s*[!=]==?",
+                "scope": "global",
+                "description": "typeof name === \"string\" / typeof name !== \"...\" runtime guard"
+            },
+            {
+                "name": "array-isarray",
+                "kind": "regex",
+                "pattern": "\\bArray\\.isArray\\s*\\(",
+                "scope": "global",
+                "description": "Array.isArray(name) runtime guard"
+            },
+            {
+                "name": "instanceof",
+                "kind": "regex",
+                "pattern": "\\binstanceof\\b",
+                "scope": "global",
+                "description": "name instanceof X runtime guard"
+            },
+            {
+                "name": "set-map-has",
+                "kind": "regex",
+                "pattern": "\\.has\\s*\\(",
+                "scope": "global",
+                "description": "allowList.has(name) — Set / Map .has(...) acting as allow-list"
+            }
+        ]
+    }
+}
