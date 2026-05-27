@@ -368,15 +368,29 @@ export function getPreToolUseContext(
 		}
 	}
 
-	// Route context: inject handler/route info when editing API files
+	// Route context: inject handler/route info when editing API files.
+	// Migrated to the Phase A3 Endpoint shape: we read the richer record
+	// (auth_chain, declared_params, handler_symbol) and project to the
+	// same human-readable string the V0 getRouteContext returned. The
+	// return type stays `string | null` for back-compat with the
+	// structural-checks formatter.
 	if (
 		config.route_context &&
 		routeMap &&
 		(isWriteOperation(toolName) || isReadOperation(toolName))
 	) {
-		const context = routeMap.getRouteContext(filePath);
-		if (context) {
-			warnings.push(`[interlinked:route-context] ${context}`);
+		const endpoints = routeMap.extractEndpointsForFile(filePath);
+		if (endpoints.length > 0) {
+			const MCP_TOOL_METHOD = "TOOL";
+			const ANY_METHOD = "ALL";
+			const descriptions = endpoints.map((e) => {
+				if (e.method === MCP_TOOL_METHOD) return `${MCP_TOOL_METHOD} ${e.path}`;
+				if (e.method === ANY_METHOD) return e.path;
+				return `${e.method} ${e.path}`;
+			});
+			const unique = [...new Set(descriptions)];
+			const summary = `This file handles: ${unique.join(", ")}. Changes may affect API consumers.`;
+			warnings.push(`[interlinked:route-context] ${summary}`);
 		}
 	}
 

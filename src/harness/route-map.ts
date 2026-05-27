@@ -1,31 +1,47 @@
 // ===========================================
-// Route Map — API Route Detection & Context
+// Route Map — API Route Detection & Context (Phase A3 dispatcher)
 // ===========================================
-// Detects API routes from filesystem conventions (Next.js, SvelteKit, Nuxt)
-// and explicit route patterns (Express, Hono, Koa, manual routing, MCP tools).
-// Provides contextual warnings when agents edit handler files so they
-// understand the downstream impact of their changes.
+// Thin dispatcher that delegates per-framework extraction to the
+// adapter modules in `route-map/`. Each adapter exports
+// `extractEndpoints(filePath, content): Endpoint[]` (with Next.js
+// taking an extra `{ projectRoot }` option for matcher resolution).
 //
-// Design goals:
-//   - Zero external dependencies (pure regex-based parsing, no AST library)
-//   - Incremental updates (re-scan single file on PostToolUse)
-//   - Convention-aware (only detect framework routes if framework markers are present)
+// Design:
+//   - Detect which frameworks are present in the project (cheap fs
+//     check on startup) and only call those adapters' file-convention
+//     paths for matching files.
+//   - Always call the explicit-call adapters (Express / Hono / MCP)
+//     because their patterns can appear in any TS/JS file regardless
+//     of project shape.
+//
+// Public surface (consumers: server.ts, structural-checks.ts):
+//   - `extractAllEndpoints(): Endpoint[]`   — bulk, every file initialized
+//   - `extractEndpointsForFile(filePath): Endpoint[]` — incremental
+//   - `getRouteContext(filePath): string | null` — formatted PostToolUse
+//     context string (back-compat with structural-checks.ts)
+//   - `getRoutesForFile(filePath): RouteInfo[]` — back-compat projection
+//     from `Endpoint`; left as a thin shim for the lone existing consumer.
 
 import { existsSync, readFileSync } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
-import type { RouteInfo } from "./types.js";
+import { extname, join, resolve, sep } from "node:path";
+
+import * as expressAdapter from "./route-map/express.js";
+import * as fastapiAdapter from "./route-map/fastapi.js";
+import * as honoAdapter from "./route-map/hono.js";
+import * as mcpAdapter from "./route-map/mcp.js";
+import * as nextjsAdapter from "./route-map/nextjs.js";
+import * as nuxtAdapter from "./route-map/nuxt.js";
+import * as sveltekitAdapter from "./route-map/sveltekit.js";
+import type { Endpoint, RouteInfo } from "./types/session.js";
 
 // ===========================================
 // Framework Detection
 // ===========================================
 
-type Framework = "nextjs" | "sveltekit" | "nuxt";
+type ConventionFramework = "nextjs" | "sveltekit" | "nuxt";
 
-/** Check which file-convention frameworks are present in the project */
-function detectFrameworks(projectRoot: string): Set<Framework> {
-	const frameworks = new Set<Framework>();
-
-	// Next.js: has next.config.* or app/ directory with route files
+function detectFrameworks(projectRoot: string): Set<ConventionFramework> {
+	const frameworks = new Set<ConventionFramework>();
 	const nextConfigs = ["next.config.js", "next.config.mjs", "next.config.ts"];
 	if (
 		nextConfigs.some((f) => existsSync(join(projectRoot, f))) ||
@@ -33,8 +49,6 @@ function detectFrameworks(projectRoot: string): Set<Framework> {
 	) {
 		frameworks.add("nextjs");
 	}
-
-	// SvelteKit: has svelte.config.* or src/routes/
 	const svelteConfigs = ["svelte.config.js", "svelte.config.ts"];
 	if (
 		svelteConfigs.some((f) => existsSync(join(projectRoot, f))) ||
@@ -42,8 +56,6 @@ function detectFrameworks(projectRoot: string): Set<Framework> {
 	) {
 		frameworks.add("sveltekit");
 	}
-
-	// Nuxt: has nuxt.config.* or server/api/
 	const nuxtConfigs = ["nuxt.config.js", "nuxt.config.ts"];
 	if (
 		nuxtConfigs.some((f) => existsSync(join(projectRoot, f))) ||
@@ -51,184 +63,22 @@ function detectFrameworks(projectRoot: string): Set<Framework> {
 	) {
 		frameworks.add("nuxt");
 	}
-
 	return frameworks;
 }
 
-// ===========================================
-// Convention-based Route Extraction
-// ===========================================
-
-const NEXTJS_ROUTE_FILE = /[/\\]app[/\\](.*?)[/\\]route\.(ts|js)$/;
-const SVELTEKIT_ROUTE_FILE = /[/\\]src[/\\]routes[/\\](.*?)[/\\]\+server\.(ts|js)$/;
-const NUXT_API_FILE = /[/\\]server[/\\]api[/\\](.+)\.(ts|js)$/;
-
-/** HTTP methods exported in Next.js/SvelteKit route files */
-const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-
-/**
- * Extract route path from a file-convention framework.
- * Converts directory segments to URL path segments.
- * Handles dynamic segments: [id] → :id, [...slug] → *slug
- */
-function conventionPath(rawSegments: string): string {
-	const parts = rawSegments.split(/[/\\]/);
-	const urlParts = parts.map((part) => {
-		// Catch-all: [...slug] → *slug
-		if (/^\[\.\.\.(\w+)\]$/.test(part)) {
-			return `*${part.slice(4, -1)}`;
-		}
-		// Dynamic: [id] → :id
-		if (/^\[(\w+)\]$/.test(part)) {
-			return `:${part.slice(1, -1)}`;
-		}
-		// Route groups: (group) → skip
-		if (/^\(.+\)$/.test(part)) {
-			return null;
-		}
-		return part;
-	});
-	return `/${urlParts.filter(Boolean).join("/")}`;
-}
-
-/** Detect HTTP methods exported from a convention route file */
-function detectExportedMethods(content: string): string[] {
-	const methods: string[] = [];
-	for (const method of HTTP_METHODS) {
-		// Match: export async function GET, export function GET, export const GET
-		const pattern = new RegExp(
-			`^\\s*export\\s+(?:async\\s+)?(?:function|const|let)\\s+${method}\\b`,
-			"m",
-		);
-		if (pattern.test(content)) {
-			methods.push(method);
-		}
-	}
-	return methods.length > 0 ? methods : ["ALL"];
-}
-
-/** Try to extract routes from filesystem conventions */
-function extractConventionRoutes(
-	filePath: string,
-	projectRoot: string,
-	frameworks: Set<Framework>,
-	content: string,
-): RouteInfo[] {
-	const _relPath = relative(projectRoot, filePath);
-	const routes: RouteInfo[] = [];
-
-	// Next.js: app/**/route.ts
-	if (frameworks.has("nextjs")) {
-		const match = filePath.match(NEXTJS_ROUTE_FILE);
-		if (match) {
-			const urlPath = conventionPath(match[1]);
-			const methods = detectExportedMethods(content);
-			for (const method of methods) {
-				routes.push({
-					method,
-					path: `/api${urlPath === "/" ? "" : urlPath}`,
-					handler_file: filePath,
-				});
-			}
-		}
-	}
-
-	// SvelteKit: src/routes/**/+server.ts
-	if (frameworks.has("sveltekit")) {
-		const match = filePath.match(SVELTEKIT_ROUTE_FILE);
-		if (match) {
-			const urlPath = conventionPath(match[1]);
-			const methods = detectExportedMethods(content);
-			for (const method of methods) {
-				routes.push({ method, path: urlPath, handler_file: filePath });
-			}
-		}
-	}
-
-	// Nuxt: server/api/**/*.ts
-	if (frameworks.has("nuxt")) {
-		const match = filePath.match(NUXT_API_FILE);
-		if (match) {
-			// Nuxt strips the extension and uses filename as path
-			const segments = match[1].replace(/\.(?:get|post|put|patch|delete)$/, "");
-			const urlPath = `/api/${segments.replace(/[/\\]/g, "/").replace(/\[(\w+)\]/g, ":$1")}`;
-			// Check for method suffix in filename (e.g., users.get.ts)
-			const methodSuffix = match[1].match(/\.(get|post|put|patch|delete)$/i);
-			const method = methodSuffix ? methodSuffix[1].toUpperCase() : "ALL";
-			routes.push({ method, path: urlPath, handler_file: filePath });
-		}
-	}
-
-	return routes;
-}
-
-// ===========================================
-// Explicit Route Pattern Detection (Regex)
-// ===========================================
-
-/** Regex patterns for explicit route definitions with line-level detection */
-const ROUTE_PATTERNS: {
-	pattern: RegExp;
-	extract: (match: RegExpMatchArray) => { method: string; path: string };
-}[] = [
-	// Express/Hono/Koa style: app.get("/path" or router.post("/path"
-	{
-		pattern:
-			/(?:app|router|server|api|hono)\.(get|post|put|patch|delete|all|use)\(\s*["'`]([^"'`]+)["'`]/gi,
-		extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }),
-	},
-	// url.pathname === "/path" or url.pathname.startsWith("/path")
-	{
-		pattern: /url\.pathname\s*===?\s*["'`]([^"'`]+)["'`]/gi,
-		extract: (m) => ({ method: "ALL", path: m[1] }),
-	},
-	{
-		pattern: /url\.pathname\.startsWith\(\s*["'`]([^"'`]+)["'`]\s*\)/gi,
-		extract: (m) => ({ method: "ALL", path: m[1] }),
-	},
-	// MCP tool definitions: server.tool("name"
-	{
-		pattern: /server\.tool\(\s*["'`]([^"'`]+)["'`]/gi,
-		extract: (m) => ({ method: "TOOL", path: m[1] }),
-	},
-];
-
-/** Scan file content for explicit route patterns */
-function extractExplicitRoutes(filePath: string, content: string): RouteInfo[] {
-	const routes: RouteInfo[] = [];
-	const seen = new Set<string>();
-	const _lines = content.split("\n");
-
-	for (const { pattern, extract } of ROUTE_PATTERNS) {
-		// Reset lastIndex for global regex
-		pattern.lastIndex = 0;
-
-		for (let match = pattern.exec(content); match !== null; match = pattern.exec(content)) {
-			const { method, path } = extract(match);
-			const key = `${method}:${path}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-
-			// Find line number by counting newlines before match position
-			const before = content.slice(0, match.index);
-			const line = before.split("\n").length;
-
-			routes.push({ method, path, handler_file: filePath, line });
-		}
-	}
-
-	return routes;
-}
+/** Extensions extractors are willing to scan. */
+const TS_JS_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+const PYTHON_EXT = new Set([".py"]);
 
 // ===========================================
 // RouteMap Class
 // ===========================================
 
 export class RouteMap {
-	/** file path → routes defined in that file */
-	private routes: Map<string, RouteInfo[]> = new Map();
+	/** absolute file path → endpoints defined in that file */
+	private endpoints: Map<string, Endpoint[]> = new Map();
 	private projectRoot: string;
-	private frameworks: Set<Framework>;
+	private frameworks: Set<ConventionFramework>;
 
 	constructor(projectRoot: string) {
 		this.projectRoot = resolve(projectRoot);
@@ -236,8 +86,8 @@ export class RouteMap {
 	}
 
 	/**
-	 * Scan project files to detect convention-based and explicit routes.
-	 * Call once on startup with the list of indexed files.
+	 * Scan project files to detect convention-based and explicit
+	 * endpoints. Call once on startup with the list of indexed files.
 	 */
 	initialize(files: string[]): void {
 		for (const file of files) {
@@ -246,34 +96,65 @@ export class RouteMap {
 	}
 
 	/**
-	 * Re-scan a single file after edit (called on PostToolUse).
-	 * Clears old routes for the file and re-detects.
+	 * Re-scan a single file after edit (called on PostToolUse). Clears
+	 * old endpoints for the file and re-detects.
 	 */
 	updateFile(filePath: string, content?: string): void {
 		const absPath = this.toAbsolute(filePath);
-		this.routes.delete(absPath);
+		this.endpoints.delete(absPath);
 		this.scanFile(absPath, content);
 	}
 
-	/** Get routes handled by a given file */
-	getRoutesForFile(filePath: string): RouteInfo[] {
-		return this.routes.get(this.toAbsolute(filePath)) || [];
+	/** All endpoints across every initialized file. */
+	extractAllEndpoints(): Endpoint[] {
+		const out: Endpoint[] = [];
+		for (const list of this.endpoints.values()) {
+			for (const ep of list) out.push(ep);
+		}
+		return out;
 	}
 
 	/**
-	 * Generate context string for PreToolUse injection.
-	 * Returns null when the file has no detected routes.
+	 * Endpoints for a single file (incremental). Re-scans on the fly if
+	 * the file was edited since the last scan and `content` is provided.
+	 */
+	extractEndpointsForFile(filePath: string, content?: string): Endpoint[] {
+		const absPath = this.toAbsolute(filePath);
+		if (content !== undefined) {
+			this.endpoints.delete(absPath);
+			this.scanFile(absPath, content);
+		}
+		return this.endpoints.get(absPath) ?? [];
+	}
+
+	/**
+	 * @deprecated Back-compat projection from {@link Endpoint}. The lone
+	 * existing consumer is `structural-checks.ts` via `getRouteContext`;
+	 * external callers should use `extractEndpointsForFile`.
+	 */
+	getRoutesForFile(filePath: string): RouteInfo[] {
+		const endpoints = this.endpoints.get(this.toAbsolute(filePath)) ?? [];
+		return endpoints.map((e) => ({
+			method: e.method,
+			path: e.path,
+			handler_file: e.file,
+			line: e.line,
+		}));
+	}
+
+	/**
+	 * Generate the human-readable PostToolUse context line for a file.
+	 * Reads from the richer {@link Endpoint} shape but the return type
+	 * remains `string | null` to stay back-compat with structural-checks.
 	 */
 	getRouteContext(filePath: string): string | null {
-		const fileRoutes = this.getRoutesForFile(filePath);
-		if (fileRoutes.length === 0) return null;
-
-		const descriptions = fileRoutes.map((r) => {
-			if (r.method === "TOOL") return `TOOL ${r.path}`;
-			if (r.method === "ALL") return r.path;
-			return `${r.method} ${r.path}`;
+		const fileEndpoints = this.endpoints.get(this.toAbsolute(filePath)) ?? [];
+		if (fileEndpoints.length === 0) return null;
+		const descriptions = fileEndpoints.map((e) => {
+			if (e.method === "TOOL") return `TOOL ${e.path}`;
+			if (e.method === "ALL") return e.path;
+			return `${e.method} ${e.path}`;
 		});
-
 		const unique = [...new Set(descriptions)];
 		return `This file handles: ${unique.join(", ")}. Changes may affect API consumers.`;
 	}
@@ -286,43 +167,76 @@ export class RouteMap {
 			: resolve(this.projectRoot, filePath);
 	}
 
+	/**
+	 * Decide which adapter(s) apply to this file and merge their output.
+	 * The order is: convention adapters first (Next.js / SvelteKit / Nuxt),
+	 * then explicit-call adapters (Express / Hono / MCP), then FastAPI.
+	 * Each adapter returns `[]` for files that don't fit its conventions.
+	 */
 	private scanFile(filePath: string, content?: string): void {
 		const absPath = this.toAbsolute(filePath);
 		const ext = extname(absPath);
 
-		// Only scan TS/JS files
-		if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) {
-			return;
-		}
+		const isTsJs = TS_JS_EXT.has(ext);
+		const isPython = PYTHON_EXT.has(ext);
+		if (!isTsJs && !isPython) return;
 
 		let fileContent: string;
-		if (content) {
+		if (content !== undefined) {
 			fileContent = content;
 		} else {
 			try {
 				fileContent = readFileSync(absPath, "utf-8");
 			} catch {
-				return; // File not readable
+				return;
 			}
 		}
 
-		const fileRoutes: RouteInfo[] = [];
+		const endpoints: Endpoint[] = [];
 
-		// Convention-based detection
-		const conventionRoutes = extractConventionRoutes(
-			absPath,
-			this.projectRoot,
-			this.frameworks,
-			fileContent,
-		);
-		fileRoutes.push(...conventionRoutes);
+		if (isTsJs) {
+			if (this.frameworks.has("nextjs")) {
+				endpoints.push(
+					...nextjsAdapter.extractEndpoints(absPath, fileContent, {
+						projectRoot: this.projectRoot,
+					}),
+				);
+			}
+			if (this.frameworks.has("sveltekit")) {
+				endpoints.push(...sveltekitAdapter.extractEndpoints(absPath, fileContent));
+			}
+			if (this.frameworks.has("nuxt")) {
+				endpoints.push(...nuxtAdapter.extractEndpoints(absPath, fileContent));
+			}
+			endpoints.push(...expressAdapter.extractEndpoints(absPath, fileContent));
+			endpoints.push(...honoAdapter.extractEndpoints(absPath, fileContent));
+			endpoints.push(...mcpAdapter.extractEndpoints(absPath, fileContent));
+		}
+		if (isPython) {
+			endpoints.push(...fastapiAdapter.extractEndpoints(absPath, fileContent));
+		}
 
-		// Explicit pattern detection
-		const explicitRoutes = extractExplicitRoutes(absPath, fileContent);
-		fileRoutes.push(...explicitRoutes);
-
-		if (fileRoutes.length > 0) {
-			this.routes.set(absPath, fileRoutes);
+		// Dedupe — adapter overlap (Express + Hono share most of the
+		// call-site regex) can double-count the same route.
+		const deduped = dedupeEndpoints(endpoints);
+		if (deduped.length > 0) {
+			this.endpoints.set(absPath, deduped);
 		}
 	}
+}
+
+function dedupeEndpoints(endpoints: Endpoint[]): Endpoint[] {
+	const seen = new Set<string>();
+	const out: Endpoint[] = [];
+	for (const e of endpoints) {
+		// Hono and Express produce structurally identical results on the
+		// same file — prefer the first occurrence. The key intentionally
+		// ignores `framework` so identical method+path on the same line
+		// from two adapters collapses to one entry.
+		const key = `${e.method}:${e.path}:${e.line ?? 0}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(e);
+	}
+	return out;
 }

@@ -15,6 +15,7 @@
     "exclude": [
         "src/harness/structure/__tests__/fixtures",
         "src/harness/__tests__/fixtures/supermodel",
+        "src/harness/__tests__/fixtures/route-extraction",
         "**/*.overlay-*.ts",
         "src/lib/_*"
     ]

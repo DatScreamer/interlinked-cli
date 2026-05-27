@@ -187,6 +187,40 @@ export interface SessionTrajectory {
 		untracked: Set<string>;
 		head_sha: string;
 	};
+	/**
+	 * Per-file ring buffer of recent line edits. Consumed by
+	 * `add_then_revert_loop` (sequence-checks §3.21) to detect content-hash
+	 * cycling within the same file/line-range. Capped at
+	 * RECENT_LINE_EDITS_PER_FILE_CAP entries per file (drop oldest on
+	 * overflow). Optional so older snapshots and bare test fixtures hydrate
+	 * cleanly; detectors return [] when undefined. Population logic lives
+	 * in `session-state.ts::recordEvent` and is best-effort.
+	 */
+	recent_line_edits?: Map<
+		string,
+		Array<{
+			range: { start: number; end: number };
+			content_hash: string;
+			at_step: number;
+		}>
+	>;
+	/**
+	 * Session-scoped mapping from literal hash to the set of files where
+	 * the literal was introduced this session. Consumed by
+	 * `magic_literal_cross_file_proliferation` (sequence-checks §3.18) at
+	 * Stop to surface cross-file repetition the per-file
+	 * `magic_literal_in_conditional` check can't see. Optional for
+	 * hydration safety.
+	 */
+	literal_occurrences?: Map<string, Set<string>>;
+	/**
+	 * URLs / hostnames extracted from UserPromptSubmit events this session.
+	 * Consumed by `network_after_user_input_url_match` (sequence-checks
+	 * §3.5) to detect the "execute fetched content against a target named
+	 * in fetched content" indirect-injection shape. Populated at
+	 * UserPromptSubmit in `lifecycle-events.ts`. Optional for hydration safety.
+	 */
+	recent_user_urls?: Set<string>;
 }
 
 // ===========================================
