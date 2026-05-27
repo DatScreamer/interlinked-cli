@@ -84,6 +84,103 @@ export function scanInlineSuppressions(content: string): InlineSuppressions {
 }
 
 // ===========================================
+// Inline deferrals — `// interlinked: defer <check>` / `# interlinked: defer <check>`
+// ===========================================
+//
+// Distinct from `interlinked-ignore`:
+//   - `interlinked-ignore` SUPPRESSES the finding entirely (never surfaces)
+//   - `interlinked: defer`  ACKNOWLEDGES the finding (still logged, but
+//     amplification machinery treats it as "seen, intentionally not fixed
+//     this turn"). The agent uses defer to acknowledge a pre-existing
+//     finding in a touched file without scope-creep refactor pressure;
+//     unaddressed findings without defer keep escalating per
+//     `[[feedback_recurring_warnings_amplify_not_silence]]`.
+//
+// Cross-language: matches both `//`- and `#`-comment shapes so Python,
+// Ruby, shell, and YAML defer markers all work.
+
+/** Map line-number → (check-name → optional reason). Reason is null when
+ *  the agent declined to provide one; the marker still suppresses
+ *  amplification but the empty-reason form is loud audit signal — agents
+ *  that defer findings without explanation flag themselves. */
+export type InlineDeferrals = Map<number, Map<string, string | null>>;
+
+/** Matches either `// interlinked: defer ...` or `# interlinked: defer ...`. */
+const DEFER_PATTERN = /^\s*(?:\/\/|#)\s*interlinked:\s*defer\s+(.+)/;
+/** Matches the same shape but as a trailing comment on a non-comment line. */
+const TRAILING_DEFER_PATTERN = /(?:\/\/|#)\s*interlinked:\s*defer\s+(.+)$/;
+
+/**
+ * Scan source content for `// interlinked: defer <check>` and
+ * `# interlinked: defer <check>` markers. Returns a map from line number
+ * (1-based) to a map of check-name → reason.
+ *
+ * Two valid placements:
+ *   1. **Marker above offending line** (matches `scanInlineSuppressions`):
+ *        // interlinked: defer pickle-untrusted-load -- legacy trusted RPC
+ *        obj = pickle.load(f)
+ *   2. **Trailing same-line marker** (more compact, universal across languages):
+ *        obj = pickle.load(f)  # interlinked: defer pickle-untrusted-load
+ */
+export function scanInlineDeferrals(content: string): InlineDeferrals {
+	const lines = content.split("\n");
+	const result: InlineDeferrals = new Map();
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+
+		// Trailing form: marker on the SAME line as the offending code. The
+		// line itself is the target.
+		const trimmed = line.trim();
+		const isCommentOnly = trimmed.startsWith("//") || trimmed.startsWith("#");
+		if (!isCommentOnly) {
+			const trailing = TRAILING_DEFER_PATTERN.exec(line);
+			if (trailing) {
+				recordDeferral(result, i + 1, trailing[1]);
+			}
+			continue;
+		}
+
+		// Marker-on-own-line form: applies to the next non-comment line.
+		const above = DEFER_PATTERN.exec(line);
+		if (!above) continue;
+		let targetLine = i + 2; // default if no following line
+		for (let j = i + 1; j < lines.length; j++) {
+			const next = lines[j].trim();
+			if (next && !next.startsWith("//") && !next.startsWith("#")) {
+				targetLine = j + 1;
+				break;
+			}
+		}
+		recordDeferral(result, targetLine, above[1]);
+	}
+
+	return result;
+}
+
+/** Parse "<check1>, <check2> -- reason text" into an entry on `result`. */
+function recordDeferral(result: InlineDeferrals, line: number, raw: string): void {
+	const dashSplit = raw.split(/\s+[—–-]{1,3}\s+/);
+	const checksRaw = dashSplit[0];
+	const reason = dashSplit[1]?.trim() ?? null;
+	const checks = checksRaw
+		.split(",")
+		.map((s) => s.trim().toLowerCase())
+		.filter(Boolean);
+	if (checks.length === 0) return;
+	let existing = result.get(line);
+	if (!existing) {
+		existing = new Map();
+		result.set(line, existing);
+	}
+	for (const check of checks) {
+		// Last-write-wins on duplicate (check, line) pairs — the more
+		// specific reason (from the later marker) is kept.
+		existing.set(check, reason);
+	}
+}
+
+// ===========================================
 // JSON file loading
 // ===========================================
 
