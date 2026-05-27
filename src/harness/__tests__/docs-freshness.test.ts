@@ -8,6 +8,7 @@ import {
 	SUGGESTION_CHECK_META,
 } from "../check-metadata.js";
 import { getBuiltinRules, getDefaultConfig } from "../rules-loader.js";
+import { ALL_SEQUENCE_DETECTORS } from "../sequence-checks/registry.js";
 
 const DOCS_DIR = join(import.meta.dirname, "..", "..", "..", "docs", "generated");
 
@@ -125,6 +126,42 @@ describe("docs freshness", () => {
 		const ids = rules.map((r) => r.id);
 		const dups = ids.filter((id, i) => ids.indexOf(id) !== i);
 		expect(dups, `Duplicate guard rule IDs: ${dups.join(", ")}`).toEqual([]);
+	});
+
+	it("sequence-detectors.md exists", () => {
+		const path = join(DOCS_DIR, "sequence-detectors.md");
+		expect(existsSync(path)).toBe(true);
+	});
+
+	it("sequence-detectors.md matches current ALL_SEQUENCE_DETECTORS count", () => {
+		const path = join(DOCS_DIR, "sequence-detectors.md");
+		if (!existsSync(path)) return;
+		const content = readFileSync(path, "utf-8");
+		expect(content).toContain(
+			`${ALL_SEQUENCE_DETECTORS.length} sequence detectors registered`,
+		);
+	});
+
+	it("every sequence detector id appears in sequence-detectors.md", () => {
+		const path = join(DOCS_DIR, "sequence-detectors.md");
+		if (!existsSync(path)) return;
+		const content = readFileSync(path, "utf-8");
+		const missing = ALL_SEQUENCE_DETECTORS.filter(
+			(d) => !content.includes(`\`${d.id}\``),
+		);
+		expect(
+			missing.map((d) => d.id),
+			`Sequence detectors missing from docs/generated/sequence-detectors.md: ${missing.map((d) => d.id).join(", ")}`,
+		).toEqual([]);
+	});
+
+	it("every sequence detector has a non-empty description", () => {
+		for (const detector of ALL_SEQUENCE_DETECTORS) {
+			expect(
+				detector.description,
+				`Sequence detector ${detector.id} is missing a description`,
+			).toBeTruthy();
+		}
 	});
 
 	it("every determinism value in metadata registries is valid", () => {

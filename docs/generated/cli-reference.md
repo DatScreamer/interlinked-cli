@@ -44,6 +44,7 @@ Commands:
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
+  plan                                       Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts
   recurrence                                 Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)
   reminder                                   File reminder management (warnings when files are touched)
   reset [options]                            Nuclear: clear all local state
@@ -60,6 +61,7 @@ Commands:
   tasks                                      Task management via the server
   telemetry [options]                        View or tail the local telemetry spool (.interlinked/offline-spool.jsonl)
   trace                                      Agent trace export/import
+  trajectory                                 Inspect trajectory snapshots; replay recorded event streams through sequence detectors
   uninstall-hooks [options]                  Remove hooks previously installed via install-hooks (manifest-driven)
   update|upgrade [options]                   Clone or pull from GitHub, rebuild, and link the CLI
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
