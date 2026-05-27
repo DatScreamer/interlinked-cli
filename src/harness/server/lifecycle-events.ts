@@ -44,6 +44,7 @@ import {
 	recordSkillLeave,
 	type SessionTracker,
 } from "../session-state.js";
+import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import {
@@ -429,6 +430,19 @@ function buildStopWarnings(
 	const cadenceWarning = buildCommitCadenceNudge(ctx, event, session);
 	if (cadenceWarning !== null) warnings.push(cadenceWarning);
 	for (const w of buildVerificationStopWarnings(ctx, event, session)) {
+		warnings.push(w);
+	}
+	// Deterministic pattern rescan over every file the agent touched this
+	// turn. Surfaces inline-detector findings that PERSISTED into Stop —
+	// either pre-existing in a touched file (per
+	// `[[feedback_fix_pre_existing_in_touched_files]]`) or introduced
+	// during the turn and not addressed before end. Findings carrying a
+	// `// interlinked: defer <check-id>` (or `# ...`) marker are logged
+	// but not amplified. Per `[[feedback_safety_continuity]]`, errors in
+	// individual detectors are swallowed inside the rescan; this branch
+	// never throws.
+	const cwd = event.cwd || ctx.cwd;
+	for (const w of buildPatternRescanWarnings(session, cwd)) {
 		warnings.push(w);
 	}
 	return warnings;

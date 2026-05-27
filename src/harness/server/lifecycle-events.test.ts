@@ -193,3 +193,29 @@ describe("lifecycle trajectory write - path traversal regression", () => {
 		expect(source).toContain('throw new Error("invalid session_id: no safe characters")');
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Stop-event pattern rescan wiring regression.
+//
+// `buildPatternRescanWarnings` from stop-rescan.ts must be called from
+// `buildStopWarnings` so every Stop runs the deterministic pattern rescan
+// over `session.files_written`. The function itself has dedicated unit
+// coverage in stop-rescan.test.ts; this assertion pins the WIRING so a
+// future refactor that drops the call from the Stop path fails loudly.
+
+describe("Stop-event pattern rescan wiring", () => {
+	const source = readFileSync(LIFECYCLE_TS, "utf-8");
+
+	it("imports buildPatternRescanWarnings from stop-rescan", () => {
+		expect(source).toMatch(
+			/import\s*\{[^}]*\bbuildPatternRescanWarnings\b[^}]*\}\s*from\s*["']\.\.\/stop-rescan\.js["']/,
+		);
+	});
+
+	it("invokes buildPatternRescanWarnings inside buildStopWarnings", () => {
+		// The wiring sits between the verification-stop-checks block and the
+		// function's return — flexible match so refactors that keep the call
+		// but move surrounding code still pass.
+		expect(source).toMatch(/buildPatternRescanWarnings\s*\(\s*session\s*,/);
+	});
+});
