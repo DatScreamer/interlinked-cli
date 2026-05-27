@@ -45,7 +45,14 @@ export function shouldEvaluateRule(
 const _ruleRegexCache = new Map<string, RegExp>();
 
 /** Public API — consumed by evaluator sub-modules to cheaply reuse compiled regex
- *  objects derived from trusted guard-rule config patterns. */
+ *  objects derived from trusted guard-rule config patterns.
+ *
+ *  ReDoS validation is intentionally NOT applied here. Admin-authored built-in
+ *  rules contain bounded patterns like `(-[rf]+\s+)*` whose outer shape
+ *  matches a generic ReDoS heuristic but are actually safe (anchored by
+ *  literal characters between groups). The ReDoS gate runs at the LOAD point
+ *  for user-supplied / `/enforce`-distilled rules instead — see
+ *  `rules/distilled-rules.ts` and `safeCompileRegex` in `redos-validation.ts`. */
 export function getCachedRegex(pattern: string, flags: string): RegExp {
 	const key = `${pattern}\0${flags}`;
 	let re = _ruleRegexCache.get(key);

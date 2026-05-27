@@ -24,6 +24,7 @@
 
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { looksLikeReDoS } from "../redos-validation.js";
 import type { GuardRule } from "../types.js";
 
 /**
@@ -174,6 +175,26 @@ export function loadDistilledRules(cwd: string): GuardRule[] {
 		const groupId = raw.source?.group_id;
 		if (groupId && removedGroups.has(groupId)) continue;
 		if (removedIds.has(raw.id)) continue;
+
+		// ReDoS gate. `/enforce`-distilled rules can carry regexes from
+		// arbitrary third-party AGENTS.md / CLAUDE.md files; a nested-
+		// quantifier or prefix-overlap shape hangs the daemon on adversarial
+		// input. Skip the entire rule (don't add to `out`) if any of its
+		// patterns fails the shape check, and emit one stderr line so the
+		// operator notices their distilled output had a poisoned pattern.
+		if (Array.isArray(raw.patterns)) {
+			const unsafe = raw.patterns.find(
+				(p) => p && typeof p.regex === "string" && looksLikeReDoS(p.regex),
+			);
+			if (unsafe) {
+				process.stderr.write(
+					`[interlinked] skipping distilled rule ${raw.id}: ReDoS-prone pattern ${
+						unsafe.regex?.slice(0, 120) ?? ""
+					}\n`,
+				);
+				continue;
+			}
+		}
 
 		// Clone so we don't mutate the source object.
 		const rule: DistilledRule = { ...raw };

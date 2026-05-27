@@ -602,7 +602,13 @@ function collectContentQualityWarnings(
 		);
 	}
 
-	// A10: Regex DoS — nested quantifiers
+	// A10: Regex DoS — nested quantifiers. Fires on `(...)[+*]` in the raw
+	// content. The check is intentionally a coarse shape-match: the goal is
+	// to surface every nested-quantifier regex in user source so the agent
+	// considers backtracking complexity. Files designed to DETECT ReDoS (e.g.
+	// the validator at `src/harness/redos-validation.ts`) deliberately contain
+	// such shapes as pattern data; they are a known-FP class and accept the
+	// noise as the cost of broad coverage elsewhere.
 	if (/\([^)]*[+*][^)]*\)[+*]/.test(content)) {
 		warnings.push(
 			`[interlinked:content-quality] Potential ReDoS pattern (nested quantifiers) in ${filePath}. Simplify the regex to avoid catastrophic backtracking.`,

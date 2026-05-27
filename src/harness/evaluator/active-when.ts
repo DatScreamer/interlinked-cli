@@ -35,6 +35,11 @@ const DEFAULT_AFTER_COMMAND_WINDOW = 10;
  *  on every PreToolUse. */
 const _activeWhenRegexCache = new Map<string, RegExp>();
 
+// ReDoS validation intentionally NOT applied here. Built-in active_when
+// patterns are bounded literals that match a generic nested-quantifier shape
+// (`(-[rf]+\s+)*`-style) but are anchored by surrounding literals and don't
+// catastrophically backtrack. The ReDoS gate runs at the LOAD point for
+// user-supplied / distilled rules instead (see `rules/distilled-rules.ts`).
 function getCachedRegex(pattern: string, flags = "i"): RegExp {
 	const key = `${pattern}\0${flags}`;
 	let re = _activeWhenRegexCache.get(key);
