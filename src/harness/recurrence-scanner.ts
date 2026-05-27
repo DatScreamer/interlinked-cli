@@ -15,6 +15,7 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { buildAgentSafetyChecks } from "./check-registry/index.js";
+import type { DetectorFinding } from "./checks/endpoint-security.js";
 import { recordRecurrenceEvent } from "./recurrence.js";
 
 /** Default directory roots scanned when the caller doesn't override. The
@@ -129,6 +130,83 @@ export function scanCodebaseForRecurrences(
 	}
 
 	return findings;
+}
+
+// ===========================================
+// Phase D — scoped-scan API for a single detector
+// ===========================================
+//
+// `scanFilesForDetector` is the file-scoped sibling of
+// `scanCodebaseForRecurrences`. It runs ONE arbitrary detector against an
+// explicit list of files (the Phase D bundle for sibling rescan + the
+// cloud-extensibility seam called out in the plan). The existing
+// full-tree scanner pivots on the entire registry, which is the wrong
+// shape for "rescan one detector against a small file set"; this
+// function is the dedicated kernel.
+//
+// The implementation deliberately duplicates the ~15 lines of file-read +
+// skip-on-ENOENT logic from `scanCodebaseForRecurrences` instead of
+// factoring it out: the result types differ (`DetectorFinding[]` here vs
+// `ScanCodebaseFinding[]` there) and the loop bodies converge to one
+// `detector(file, content)` call vs an N-detector loop. Factoring out
+// would force a generic wrapper or a callback for the per-file step,
+// neither of which is cleaner than the current split.
+
+/** Detector function signature accepted by `scanFilesForDetector`. Pure:
+ * the caller's responsibility to make sure the function has no side
+ * effects. */
+export type DetectorFn = (file: string, content: string) => DetectorFinding[];
+
+export interface ScanFilesForDetectorOpts {
+	/** The single detector to run against each file. */
+	detector: DetectorFn;
+	/** Absolute paths to scan. */
+	files: string[];
+	/** Injectable file reader for tests. Defaults to
+	 * `fs.readFileSync(p, "utf-8")`. ENOENT and other read errors are
+	 * logged on stderr (matching the existing scanner) and the file is
+	 * skipped — they never throw out of this function. */
+	readFile?: (p: string) => string;
+}
+
+/**
+ * Run `detector` against each absolute path in `files`. Returns the flat
+ * array of findings across all files; unreadable files are logged via
+ * stderr and skipped.
+ *
+ * This is the scoped-scan API the existing full-tree `scanCodebaseForRecurrences`
+ * lacks. Phase D's sibling-expansion transformer wraps this for the
+ * file-local case; the eventual cloud Agent CI worker reuses it verbatim
+ * for full-repo sweeps (per the plan's cloud-extensibility seam).
+ */
+export function scanFilesForDetector(opts: ScanFilesForDetectorOpts): DetectorFinding[] {
+	const readFn = opts.readFile ?? defaultReadFile;
+	const out: DetectorFinding[] = [];
+	for (const file of opts.files) {
+		let content: string;
+		try {
+			content = readFn(file);
+		} catch (err) {
+			// The existing scanner logs nothing on read failure (just skips);
+			// downstream tooling needs visibility for misbehaving callers, so
+			// we surface a warning here on stderr. Same fail-open posture.
+			const msg = err instanceof Error ? err.message : String(err);
+			process.stderr.write(`[interlinked:scanFilesForDetector] skipping ${file}: ${msg}\n`);
+			continue;
+		}
+		try {
+			out.push(...opts.detector(file, content));
+		} catch (err) {
+			// A buggy detector must not break the whole batch.
+			const msg = err instanceof Error ? err.message : String(err);
+			process.stderr.write(`[interlinked:scanFilesForDetector] detector threw on ${file}: ${msg}\n`);
+		}
+	}
+	return out;
+}
+
+function defaultReadFile(p: string): string {
+	return readFileSync(p, "utf-8");
 }
 
 /** Recursive walker that yields absolute file paths. Uses lstatSync and

@@ -13,8 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRecurrenceEvents } from "../recurrence.js";
+import type { DetectorFinding } from "../checks/endpoint-security.js";
 import {
 	scanCodebaseForRecurrences,
+	scanFilesForDetector,
 	type ScanCodebaseFinding,
 } from "../recurrence-scanner.js";
 
@@ -116,6 +118,132 @@ describe("scanCodebaseForRecurrences", () => {
 			expect([...files].some((f) => f.endsWith("outside.ts"))).toBe(false);
 		} finally {
 			rmSync(externalDir, { recursive: true, force: true });
+		}
+	});
+});
+
+// ===========================================
+// Phase D — scoped-scan API (scanFilesForDetector)
+// ===========================================
+
+describe("scanFilesForDetector", () => {
+	/** Tiny synthetic detector — flags every line containing "BAD". */
+	function badLineDetector(file: string, content: string): DetectorFinding[] {
+		const out: DetectorFinding[] = [];
+		const lines = content.split("\n");
+		for (let i = 0; i < lines.length; i += 1) {
+			if (lines[i].includes("BAD")) {
+				out.push({
+					check_id: "bad_line",
+					file,
+					line: i + 1,
+					message: `bad line ${i + 1}`,
+				});
+			}
+		}
+		return out;
+	}
+
+	it("returns an empty array when given no files", () => {
+		const out = scanFilesForDetector({
+			detector: badLineDetector,
+			files: [],
+			readFile: () => "",
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("returns an empty array when the single file has zero detector hits", () => {
+		const out = scanFilesForDetector({
+			detector: badLineDetector,
+			files: ["/abs/clean.ts"],
+			readFile: () => "// nothing flagged here\nconst x = 1;\n",
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("returns N findings from a single file with N detector hits", () => {
+		const out = scanFilesForDetector({
+			detector: badLineDetector,
+			files: ["/abs/dirty.ts"],
+			readFile: () => "ok\nBAD here\nok\nBAD again\n",
+		});
+		expect(out).toHaveLength(2);
+		expect(out[0]).toMatchObject({ check_id: "bad_line", file: "/abs/dirty.ts", line: 2 });
+		expect(out[1]).toMatchObject({ check_id: "bad_line", file: "/abs/dirty.ts", line: 4 });
+	});
+
+	it("aggregates findings across multiple files with mixed content", () => {
+		const contents: Record<string, string> = {
+			"/abs/a.ts": "clean\nclean\n",
+			"/abs/b.ts": "BAD line\n",
+			"/abs/c.ts": "ok\nBAD\nBAD again\n",
+		};
+		const out = scanFilesForDetector({
+			detector: badLineDetector,
+			files: ["/abs/a.ts", "/abs/b.ts", "/abs/c.ts"],
+			readFile: (p) => contents[p],
+		});
+		expect(out).toHaveLength(3);
+		const files = out.map((f) => f.file);
+		expect(files).toContain("/abs/b.ts");
+		expect(files).toContain("/abs/c.ts");
+		expect(files).not.toContain("/abs/a.ts");
+	});
+
+	it("logs to stderr and skips files that are unreadable (does not throw)", () => {
+		const stderrWrites: string[] = [];
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = ((chunk: unknown) => {
+			stderrWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const out = scanFilesForDetector({
+				detector: badLineDetector,
+				files: ["/abs/missing.ts", "/abs/exists.ts"],
+				readFile: (p) => {
+					if (p === "/abs/missing.ts") {
+						throw new Error("ENOENT: no such file");
+					}
+					return "BAD line\n";
+				},
+			});
+			// The exists.ts hit must come through; missing.ts must be skipped.
+			expect(out).toHaveLength(1);
+			expect(out[0].file).toBe("/abs/exists.ts");
+			// And the failure must have been logged.
+			expect(stderrWrites.some((s) => s.includes("missing.ts"))).toBe(true);
+			expect(stderrWrites.some((s) => s.includes("ENOENT"))).toBe(true);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+	});
+
+	it("isolates a misbehaving detector — one file's throw doesn't break the batch", () => {
+		const stderrWrites: string[] = [];
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = ((chunk: unknown) => {
+			stderrWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const out = scanFilesForDetector({
+				detector: (file, content) => {
+					if (file === "/abs/blowup.ts") {
+						throw new Error("detector bug");
+					}
+					return badLineDetector(file, content);
+				},
+				files: ["/abs/blowup.ts", "/abs/ok.ts"],
+				readFile: () => "BAD line\n",
+			});
+			// The blowup is swallowed; ok.ts still produces a finding.
+			expect(out).toHaveLength(1);
+			expect(out[0].file).toBe("/abs/ok.ts");
+			expect(stderrWrites.some((s) => s.includes("blowup.ts"))).toBe(true);
+		} finally {
+			process.stderr.write = origWrite;
 		}
 	});
 });

@@ -12,7 +12,17 @@
 // Costs: trigram query is ~10-50µs (bounded by the index intersection),
 // candidate verification is one regex pass per candidate file. Both fit
 // comfortably inside the existing PostToolUse budget.
+//
+// Phase D (#5) adds `expandEndpointDetectorSiblings` below — a separate,
+// pure `findings → findings` transformer that rescans the same file for
+// the same detector's hits and bundles sibling endpoints into the lead
+// finding's message. Same overall theme (find siblings of a finding) at a
+// different scope (file-local rescan, detector-agnostic) — so it lives
+// alongside the trigram-based fan-out instead of fragmenting the module.
 
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
+import type { DetectorFinding } from "./checks/endpoint-security.js";
 import { decomposePattern } from "./regex-trigrams.js";
 
 /** A single sibling instance discovered for a triggered finding. */
@@ -184,4 +194,137 @@ function findFirstMatch(
 function toRelative(filePath: string, cwd: string): string {
 	if (filePath.startsWith(`${cwd}/`)) return filePath.slice(cwd.length + 1);
 	return filePath;
+}
+
+// ===========================================
+// Phase D — endpoint-detector sibling rescan
+// ===========================================
+//
+// Pure `findings → findings` transformer. When a Phase B endpoint-security
+// detector fires on endpoint E in file F, rescan F for the same detector's
+// hits and bundle sibling endpoints into the lead finding's `message`.
+//
+// Format (appended to the lead finding's message, separated by a blank
+// line):
+//
+//   Same shape on N sibling endpoint(s) in <basename(file)>: <line>, <line>, …
+//
+// Detector-agnostic: the `rescan` callback isolates this transformer from
+// which detector it's calling, so the same code works for all five
+// endpoint-security detectors and any future detector following the
+// `DetectorFinding` shape.
+//
+// Constraints (per the plan):
+//   - Pure: input `findings` is not mutated; a new array is returned.
+//   - Performance: <100ms per call even for routers with 100+ endpoints.
+//     Each file is read at most once per call (content cache) and rescanned
+//     at most once per call (rescan cache).
+//   - Resilient: if `rescan` throws, the affected group's findings pass
+//     through unchanged — a buggy detector cannot break the harness.
+
+export interface ExpandEndpointDetectorSiblingsOpts {
+	/** Re-run the same detector against the whole file. The transformer
+	 * passes the file path + content and expects the full detector-finding
+	 * set for that file. */
+	rescan: (file: string, content: string) => DetectorFinding[];
+	/** Read sibling file content. Defaults to `fs.readFileSync(p, "utf-8")`. */
+	readFile?: (p: string) => string;
+}
+
+/**
+ * Group findings by `(check_id, file)`, rescan each file once for siblings,
+ * and append a `Same shape on N sibling endpoints in <file>: <line>, …`
+ * suffix to the first finding in each group when siblings exist.
+ *
+ * Returns a new array; never mutates the input.
+ */
+export function expandEndpointDetectorSiblings(
+	findings: DetectorFinding[],
+	opts: ExpandEndpointDetectorSiblingsOpts,
+): DetectorFinding[] {
+	if (findings.length === 0) return [];
+	const readFileFn = opts.readFile ?? defaultReadFile;
+
+	// Per-call caches so a file with N original findings only triggers one
+	// read + one rescan even when multiple check_ids hit it.
+	const contentCache = new Map<string, string | null>();
+	const rescanCache = new Map<string, DetectorFinding[] | null>();
+
+	// Preserve input order; clone each finding so we never mutate the input.
+	const result: DetectorFinding[] = findings.map((f) => ({ ...f }));
+
+	// Build groups: check_id|file → indices into `result`.
+	const groups = new Map<string, number[]>();
+	for (let i = 0; i < findings.length; i += 1) {
+		const key = `${findings[i].check_id}|${findings[i].file}`;
+		const list = groups.get(key);
+		if (list) list.push(i);
+		else groups.set(key, [i]);
+	}
+
+	for (const [, indices] of groups) {
+		const lead = result[indices[0]];
+		const file = lead.file;
+		const checkId = lead.check_id;
+
+		// Load file content (once per file, regardless of how many groups
+		// share it). A null cache entry means we already tried and failed.
+		let content = contentCache.get(file);
+		if (content === undefined) {
+			try {
+				content = readFileFn(file);
+			} catch {
+				content = null;
+			}
+			contentCache.set(file, content);
+		}
+		if (content === null) continue;
+
+		// Rescan once per file. The detector typically returns findings for
+		// all five check_ids on the file; we filter to the current group's
+		// check_id below.
+		let rescanned = rescanCache.get(file);
+		if (rescanned === undefined) {
+			try {
+				rescanned = opts.rescan(file, content);
+			} catch {
+				rescanned = null;
+			}
+			rescanCache.set(file, rescanned);
+		}
+		if (rescanned === null) continue;
+
+		const sameCheck = rescanned.filter((f) => f.check_id === checkId);
+
+		// Siblings = rescan findings on lines NOT already in the original
+		// group. Deduplicate by line — a detector that fires twice on the
+		// same line counts once.
+		const originalLines = new Set(indices.map((i) => result[i].line));
+		const siblingLines: number[] = [];
+		const seen = new Set<number>();
+		for (const f of sameCheck) {
+			if (originalLines.has(f.line)) continue;
+			if (seen.has(f.line)) continue;
+			seen.add(f.line);
+			siblingLines.push(f.line);
+		}
+		if (siblingLines.length === 0) continue;
+
+		siblingLines.sort((a, b) => a - b);
+		const noun = siblingLines.length === 1 ? "endpoint" : "endpoints";
+		const suffix = `Same shape on ${siblingLines.length} sibling ${noun} in ${basename(file)}: ${siblingLines.join(", ")}`;
+		// Append with a blank line so the formatter renders the bundle as a
+		// distinct paragraph. The lead finding owns the bundle; the rest of
+		// the group is unchanged so the suffix doesn't print N times.
+		result[indices[0]] = {
+			...lead,
+			message: `${lead.message}\n\n${suffix}`,
+		};
+	}
+
+	return result;
+}
+
+function defaultReadFile(p: string): string {
+	return readFileSync(p, "utf-8");
 }
