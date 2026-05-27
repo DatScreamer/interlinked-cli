@@ -208,13 +208,12 @@ function findFunctionBodies(src: string): FunctionBody[] {
 	const controlKeyword = /\b(?:if|while|for|switch|catch|do|else)\s*$/;
 	// Match `)` or `=>` followed by an optional return-type annotation and `{`.
 	const re = /(\)|=>)\s*(?::[^{=;]+)?\{/g;
-	let m: RegExpExecArray | null;
-	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration
-	while ((m = re.exec(src)) !== null) {
-		const openIdx = m.index + m[0].length - 1;
+	for (const m of src.matchAll(re)) {
+		const matchIdx = m.index ?? 0;
+		const openIdx = matchIdx + m[0].length - 1;
 		// Skip control-flow constructs whose `) {` looks like a function start.
 		if (m[1] === ")") {
-			const before = src.slice(Math.max(0, m.index - 32), m.index);
+			const before = src.slice(Math.max(0, matchIdx - 32), matchIdx);
 			if (controlKeyword.test(before)) continue;
 		}
 		let depth = 1;
@@ -248,12 +247,22 @@ function maskNestedBodies(src: string, body: FunctionBody, all: FunctionBody[]):
 	return slice.join("");
 }
 
+// Upper bound on how far `sliceBalancedParens` will scan from the opening
+// paren when searching for its match. Most call expressions close within a
+// few hundred characters; the bound exists to keep the scan O(maxLen) on
+// pathologically long single-line code rather than O(file).
+const BALANCED_PARENS_MAX_SCAN = 2000;
+
 /**
  * Walk forward from the position of an opening `(` and return the substring
  * between the parens, balanced. Returns null if the call doesn't close within
  * `maxLen` characters or runs to EOF unmatched.
  */
-function sliceBalancedParens(src: string, openIdx: number, maxLen = 2000): string | null {
+function sliceBalancedParens(
+	src: string,
+	openIdx: number,
+	maxLen = BALANCED_PARENS_MAX_SCAN,
+): string | null {
 	if (src[openIdx] !== "(") return null;
 	let depth = 1;
 	let j = openIdx + 1;
@@ -436,4 +445,159 @@ function isJsTsExt(ext: string): boolean {
 		ext === ".mts" ||
 		ext === ".cts"
 	);
+}
+
+/**
+ * `ubs_document_write` — `document.write(...)` / `document.writeln(...)` is an
+ * XSS sink and a render-blocking anti-pattern. No legitimate use in modern
+ * code; the safe alternatives are `textContent` or DOM construction with
+ * `createElement` / `appendChild`. pre_warn / warning.
+ */
+export function checkDocumentWrite(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isJsTsExt(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\bdocument\s*\.\s*write(?:ln)?\s*\(/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (!re.test(strippedLines[i])) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_outer_html_assignment` — `<expr>.outerHTML = <value>`. Equivalent XSS
+ * sink to `.innerHTML =` (which `checkInnerHtmlUsage` already covers); kept
+ * separate because the safe-alternative guidance differs (`outerHTML` replaces
+ * the element itself, so `replaceWith(textNode)` is the textContent analog).
+ * pre_warn / warning.
+ */
+export function checkOuterHtmlAssignment(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isJsTsExt(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\.outerHTML\s*=/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (!re.test(strippedLines[i])) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_insert_adjacent_html` — `.insertAdjacentHTML(position, htmlString)`
+ * parses the second arg as HTML and is an XSS sink whenever any part of the
+ * string is attacker-controlled. Safe alternative is `insertAdjacentText`
+ * for text, or `insertAdjacentElement` with a DOM-constructed node.
+ * pre_warn / warning.
+ */
+export function checkInsertAdjacentHtml(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isJsTsExt(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\.insertAdjacentHTML\s*\(/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (!re.test(strippedLines[i])) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_node_create_cipher` — Node `crypto.createCipher(...)` /
+ * `createDecipher(...)` derive the key via an MD5-based KDF with no IV. The
+ * function was removed entirely in Node 22; pre-22 code using it has a
+ * predictable key schedule. `createCipheriv` / `createDecipheriv` with a
+ * random IV is the safe replacement. pre_warn / error.
+ *
+ * Negative lookahead excludes the `iv`-suffixed safe forms. Matches both the
+ * `crypto.createCipher(...)` and bare-destructured `createCipher(...)` shapes.
+ */
+export function checkNodeCreateCipher(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isJsTsExt(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	// Node API casing is inconsistent: `createCipher` (capital C) but
+	// `createDecipher` (capital D, lowercase c). Spell both branches out so
+	// the regex catches all four legacy variants while the `(?!iv)` negative
+	// lookahead excludes the safe `createCipheriv` / `createDecipheriv`
+	// forms. Matches both `crypto.create*(...)` and bare-destructured
+	// `create*(...)` shapes.
+	const re = /\bcreate(?:Cipher|Decipher)(?!iv)\s*\(/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		if (!re.test(strippedLines[i])) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_script_without_sri` — `<script src="https://..."></script>` with an
+ * external URL but no `integrity="sha..."` attribute. If the CDN is
+ * compromised or substituted, the loaded code executes with full page
+ * privileges. SRI ties the script content to a known hash so a swapped file
+ * fails to load instead of silently executing.
+ *
+ * Scans HTML and JSX/TSX/Vue/Svelte sources. Markdown is intentionally
+ * skipped — documentation routinely shows unsafe examples for illustration.
+ * pre_warn / warning.
+ */
+export function checkScriptWithoutSri(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	const isHtml = ext === ".html" || ext === ".htm";
+	const isJsxLike =
+		ext === ".jsx" || ext === ".tsx" || ext === ".vue" || ext === ".svelte" || ext === ".astro";
+	if (!isHtml && !isJsxLike) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// Match an entire `<script ...>` opening tag. The negative-lookahead window
+	// requires that NO `integrity=` attribute appears before the closing `>`.
+	// `src=` must reference an absolute external URL (`//` or `http(s)?://`).
+	// Bounded character runs (400 / 300 chars) keep the regex linear-time.
+	const re =
+		/<script\s+(?![^>]{0,400}\bintegrity\s*=)[^>]{0,200}\bsrc\s*=\s*["'](?:https?:)?\/\/[^"']{1,300}["'][^>]{0,100}>/gi;
+
+	for (const m of content.matchAll(re)) {
+		if (matches.length >= 10) break;
+		const idx = m.index ?? 0;
+		const lineNum = content.slice(0, idx).split("\n").length;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+	}
+	return matches;
 }

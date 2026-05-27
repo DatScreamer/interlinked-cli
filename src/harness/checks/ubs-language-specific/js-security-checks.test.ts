@@ -7,9 +7,14 @@ import { describe, expect, it } from "vitest";
 import {
 	checkChildProcessExecUserInput,
 	checkCookieMissingSecurityFlags,
+	checkDocumentWrite,
 	checkEvalInputTainted,
+	checkInsertAdjacentHtml,
 	checkLoggerFormatUserInput,
 	checkMixedSyncAsyncFileApi,
+	checkNodeCreateCipher,
+	checkOuterHtmlAssignment,
+	checkScriptWithoutSri,
 	checkUncheckedRedirect,
 } from "./js-security-checks.js";
 
@@ -44,6 +49,35 @@ describe("ubs-language-specific/js-security-checks", () => {
 
 	it("checkUncheckedRedirect flags redirect with an identifier arg", () => {
 		expect(checkUncheckedRedirect("redirect(url)", "a.js").length).toBeGreaterThan(0);
+	});
+
+	it("checkDocumentWrite flags document.write", () => {
+		expect(checkDocumentWrite("document.write(html)", "a.ts").length).toBeGreaterThan(0);
+		expect(checkDocumentWrite("document.body.appendChild(n)", "a.ts")).toEqual([]);
+	});
+
+	it("checkOuterHtmlAssignment flags `.outerHTML =`", () => {
+		expect(checkOuterHtmlAssignment("el.outerHTML = h", "a.ts").length).toBeGreaterThan(0);
+		expect(checkOuterHtmlAssignment("const x = el.outerHTML", "a.ts")).toEqual([]);
+	});
+
+	it("checkInsertAdjacentHtml flags `.insertAdjacentHTML(`", () => {
+		expect(checkInsertAdjacentHtml("el.insertAdjacentHTML(p, h)", "a.ts").length).toBeGreaterThan(
+			0,
+		);
+		expect(checkInsertAdjacentHtml("el.insertAdjacentText(p, t)", "a.ts")).toEqual([]);
+	});
+
+	it("checkNodeCreateCipher flags `createCipher(`", () => {
+		expect(checkNodeCreateCipher("crypto.createCipher(k)", "a.ts").length).toBeGreaterThan(0);
+		expect(checkNodeCreateCipher("crypto.createCipheriv(a, k, iv)", "a.ts")).toEqual([]);
+	});
+
+	it("checkScriptWithoutSri flags external script without integrity", () => {
+		const yes = `<script src="https://cdn/lib.js"></script>`;
+		expect(checkScriptWithoutSri(yes, "page.html").length).toBeGreaterThan(0);
+		const no = `<script src="https://cdn/lib.js" integrity="sha384-x"></script>`;
+		expect(checkScriptWithoutSri(no, "page.html")).toEqual([]);
 	});
 
 	it("all checks return empty for non-JS/TS files", () => {

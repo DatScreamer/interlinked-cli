@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	checkAesEcbMode,
 	checkAsyncPromiseExecutor,
 	checkFloatingPromises,
 	checkMisusedPromises,
@@ -68,6 +69,14 @@ describe("agent-safety check surface — smoke", () => {
 
 	it("checkSelfImport returns an array", () => {
 		expect(Array.isArray(checkSelfImport("", "a.ts"))).toBe(true);
+	});
+
+	it("checkAesEcbMode flags AES.MODE_ECB in Python", () => {
+		expect(checkAesEcbMode("c = AES.new(k, AES.MODE_ECB)", "a.py").length).toBeGreaterThan(0);
+	});
+
+	it("checkAesEcbMode does NOT fire on AES-GCM strings", () => {
+		expect(checkAesEcbMode('createCipheriv("aes-256-gcm", k, iv)', "a.ts")).toEqual([]);
 	});
 });
 

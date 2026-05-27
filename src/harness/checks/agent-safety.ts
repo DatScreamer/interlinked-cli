@@ -773,7 +773,17 @@ export function checkNanComparison(content: string, filePath: string): InlineMat
 export function checkJsLooseEquality(content: string, filePath: string): InlineMatch[] {
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
-	const stripped = stripCommentsAndStrings(content);
+	// Also blank single-line regex literals — the operators this check looks
+	// for (`==`, `!=`) commonly appear as pattern characters inside detector
+	// regexes (e.g. `/===|!==|==|!=/`). The replacement preserves character
+	// count so line/column offsets used downstream stay accurate. Imperfect
+	// (misses multi-line regexes and constructor-form `new RegExp("...")`);
+	// covers the common false-positive shape that bit this check on its own
+	// source files.
+	const stripped = stripCommentsAndStrings(content).replace(
+		/\/(?:\\.|\[[^\]]*\]|[^/\\\n])+\/[dgimsuy]*/g,
+		(m) => " ".repeat(m.length),
+	);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 
@@ -898,26 +908,49 @@ export function checkNumberPrecisionLoss(content: string, filePath: string): Inl
 /**
  * Detect TLS verification disabled across languages.
  *
- * Plan 04 §4.1 regex:
- *   `\bverify\s*=\s*False\b|InsecureSkipVerify:\s*true|rejectUnauthorized\s*:\s*false`
+ * Catches the common Python (`requests` / `httpx` / stdlib `ssl`), Go
+ * (`tls.Config{}`), and Node (`https.request` / `tls.connect` / env var)
+ * idioms for turning off the TLS peer-cert check. Each is a man-in-the-middle
+ * vector unless the call sits behind a controlled proxy with a documented
+ * justification.
  *
- * Catches the common Python (`requests` / `httpx`), Go (`tls.Config{}`), and
- * Node (`https.request` / `tls.connect`) idioms for turning off the TLS
- * peer-cert check. Each is a man-in-the-middle vector unless the call sits
- * behind a controlled proxy with a documented justification.
+ * Shapes covered:
+ *   - `verify=False`                          (Python requests / httpx)
+ *   - `InsecureSkipVerify: true`              (Go crypto/tls)
+ *   - `rejectUnauthorized: false`             (Node https / tls)
+ *   - `NODE_TLS_REJECT_UNAUTHORIZED=0`        (Node env var)
+ *   - `ssl._create_unverified_context()`      (Python stdlib bypass)
+ *   - `check_hostname=False`                  (Python stdlib / httpx)
  */
 export function checkTlsVerifyDisabled(content: string, filePath: string): InlineMatch[] {
 	void filePath; // cross-language; no extension gate.
 	const stripped = stripCommentsAndStrings(content);
+	const commentStripped = stripComments(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
+	const commentStrippedLines = commentStripped.split("\n");
 
-	const re = /\bverify\s*=\s*False\b|\bInsecureSkipVerify\s*:\s*true\b|\brejectUnauthorized\s*:\s*false\b/;
+	// Code-level shapes — must NOT fire inside string literals (`const msg =
+	// "verify=False is unsafe"` is documentation, not a TLS bypass), so scan
+	// the strings-blanked view.
+	const codeRe =
+		/\bverify\s*=\s*False\b|\bInsecureSkipVerify\s*:\s*true\b|\brejectUnauthorized\s*:\s*false\b|\bssl\._create_unverified_context\b|\bcheck_hostname\s*=\s*False\b/;
+	// Node env-var assignment — the value lives in a string literal (`= "0"`),
+	// so this shape must scan the comment-only-stripped view (strings preserved)
+	// to find the assignment. The env-var name itself is so specific that
+	// matching it inside a string is still a real finding (an env var named
+	// that with value 0 anywhere in source is a TLS-bypass).
+	const envRe = /\bNODE_TLS_REJECT_UNAUTHORIZED\b[\s\S]{0,20}?=\s*["']?0\b/;
 
 	const matches: InlineMatch[] = [];
+	const flagged = new Set<number>();
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (re.test(strippedLines[i])) {
+		const fired =
+			codeRe.test(strippedLines[i] ?? "") ||
+			envRe.test(commentStrippedLines[i] ?? "");
+		if (fired && !flagged.has(i)) {
+			flagged.add(i);
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 		}
 	}
@@ -927,6 +960,49 @@ export function checkTlsVerifyDisabled(content: string, filePath: string): Inlin
 // ===========================================
 // Row 26 — `ubs_weak_hash` (cross-language)
 // ===========================================
+
+/**
+ * `ubs_aes_ecb_mode` — AES in ECB mode leaks plaintext structure: identical
+ * 16-byte blocks encrypt to identical ciphertext, so an attacker can detect
+ * patterns and substitute ciphertext blocks. The safe replacements are GCM
+ * (AEAD; integrity + confidentiality) or CBC with a separately-derived HMAC.
+ * pre_warn / error.
+ *
+ * Cross-language shapes:
+ *   - Python `pycryptodome`:  `AES.MODE_ECB`
+ *   - Python `cryptography`:  `modes.ECB(`
+ *   - Node `createCipheriv`:  string `"aes-128-ecb"` / `"aes-256-ecb"` / etc.
+ *   - Go `crypto/aes`:        `cipher.NewECBEncrypter` (rare; flag for review)
+ *
+ * Node algorithm strings live inside literals, so the Node shape needs the
+ * comment-stripped (but string-preserving) view rather than the strip-strings
+ * pass.
+ */
+export function checkAesEcbMode(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const commentOnlyStripped = stripComments(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const commentOnlyLines = commentOnlyStripped.split("\n");
+
+	const codeRe = /\bAES\.MODE_ECB\b|\bmodes\.ECB\s*\(|\bcipher\.NewECB(?:En|De)crypter\b/;
+	const stringRe = /["'`]aes-\d{2,4}-ecb["'`]/i;
+
+	const matches: InlineMatch[] = [];
+	const flagged = new Set<number>();
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const fired =
+			codeRe.test(strippedLines[i] ?? "") || stringRe.test(commentOnlyLines[i] ?? "");
+		if (fired && !flagged.has(i)) {
+			flagged.add(i);
+			matches.push({ line: i + 1, text: (originalLines[i] ?? "").trim().slice(0, 150) });
+		}
+	}
+	return matches;
+}
 
 /**
  * Detect weak cryptographic hash usage (MD5, SHA-1) across languages.

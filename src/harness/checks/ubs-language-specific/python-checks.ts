@@ -157,8 +157,9 @@ export function checkTempfileMktempRace(content: string, filePath: string): Inli
 
 /**
  * `ubs_pickle_untrusted_load` — Python `pickle.load(...)` / `pickle.loads(...)`
- * unpickles arbitrary bytes, which can execute attacker-controlled `__reduce__`
- * code on import. pre_warn / error.
+ * and the equivalent third-party unpicklers (`cloudpickle`, `dill`) all
+ * execute attacker-controlled `__reduce__` code when fed adversarial bytes.
+ * pre_warn / error.
  */
 export function checkPickleUntrustedLoad(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
@@ -170,8 +171,9 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	// Match pickle.load / pickle.loads / cPickle.load{,s}
-	const re = /\b(?:c?[Pp]ickle|cPickle)\.loads?\s*\(/;
+	// `pickle` / `Pickle` / `cPickle` / `cloudpickle` / `dill` — all share the
+	// arbitrary-`__reduce__`-execution surface on `.load(s)`.
+	const re = /\b(?:c?[Pp]ickle|cPickle|cloudpickle|dill)\.loads?\s*\(/;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
@@ -297,6 +299,188 @@ export function checkRegexInLoopNoCompile(content: string, filePath: string): In
 		if (inLoop && /\bre\.(?:match|search|sub|fullmatch|findall|finditer)\s*\(/.test(line)) {
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 		}
+	}
+	return matches;
+}
+
+/**
+ * `ubs_marshal_load` — Python `marshal.load(...)` / `marshal.loads(...)`.
+ * The `marshal` module is for internal-use bytecode caches; deserializing
+ * untrusted bytes through it executes arbitrary code via the same surface
+ * pickle exposes. pre_block / error.
+ */
+export function checkMarshalLoad(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isPyFile(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\bmarshal\.loads?\s*\(/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= MATCH_LIMIT) break;
+		if (!re.test(strippedLines[i])) continue;
+		if (lineHasNoqaSuppression(originalLines[i], "ubs_marshal_load")) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_shelve_open` — Python `shelve.open(...)`. `shelve` is a pickle-backed
+ * persistent dict; opening one from an untrusted path exposes the same
+ * arbitrary-code-execution surface as `pickle.load`. pre_block / error.
+ */
+export function checkShelveOpen(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isPyFile(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\bshelve\.open\s*\(/;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= MATCH_LIMIT) break;
+		if (!re.test(strippedLines[i])) continue;
+		if (lineHasNoqaSuppression(originalLines[i], "ubs_shelve_open")) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_yaml_unsafe_load` — PyYAML's `yaml.load(...)` without a `Safe`-class
+ * Loader, plus the explicit `yaml.unsafe_load(...)` alias. Both construct
+ * arbitrary Python objects via `!!python/object` tags.
+ *
+ * The 200-char window after the open paren is long enough for typical
+ * keyword-arg call shapes; multi-line YAML loads beyond that fall through
+ * (false negative, acceptable since the unsafe shape is also detectable by
+ * the missing `safe_load`). pre_block / error for `yaml.unsafe_load`;
+ * pre_warn / error for the bare `yaml.load` form without a Safe loader.
+ *
+ * Returns matches in two buckets keyed by the kind via the source text;
+ * the registry entries differentiate severity by ruleName.
+ */
+export function checkYamlUnsafeLoad(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isPyFile(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// `yaml.unsafe_load(` — always unsafe by name.
+	const unsafeRe = /\byaml\.unsafe_load\s*\(/g;
+	for (const m of stripped.matchAll(unsafeRe)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_yaml_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+	}
+
+	// `yaml.load(arg)` without a `Safe`-class Loader argument within the call.
+	// Negative-lookahead window of 200 chars after the open paren: if `Safe`
+	// appears anywhere (matches `SafeLoader`, `CSafeLoader`, `safe_load`-as-
+	// string, `Loader=yaml.SafeLoader`), the call is the safe form. No word
+	// boundary on `Safe` so `CSafeLoader` (where the C is a word-char prefix)
+	// is recognized.
+	const loadRe = /\byaml\.load\s*\((?![^)\n]{0,200}Safe)/g;
+	for (const m of stripped.matchAll(loadRe)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (matches.some((mx) => mx.line === lineNum)) continue;
+		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_yaml_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_torch_unsafe_load` — PyTorch `torch.load(...)` without
+ * `weights_only=True`. Older torch defaults to `weights_only=False`, which
+ * unpickles arbitrary Python objects from the checkpoint file — a documented
+ * supply-chain RCE vector against model artifacts. pre_warn / error.
+ *
+ * `weights_only=True` within the same call (200-char window) suppresses the
+ * warning. Multi-line calls past the window fall through.
+ */
+export function checkTorchUnsafeLoad(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isPyFile(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// `torch.load(...)` whose 200-char arg window does NOT contain
+	// `weights_only=True`. The negative lookahead is anchored after the
+	// opening paren, so a same-line opt-in suppresses the finding.
+	const re = /\btorch\.load\s*\((?![^)\n]{0,200}weights_only\s*=\s*True\b)/g;
+	for (const m of stripped.matchAll(re)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_torch_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+	}
+	return matches;
+}
+
+/**
+ * `ubs_pickle_wrapper_load` — library APIs that unpickle without saying
+ * "pickle" in the call site: `joblib.load(...)`, `pandas.read_pickle(...)`
+ * (and the `pd.` alias), and `numpy.load(..., allow_pickle=True)` (and the
+ * `np.` alias; numpy defaults to `allow_pickle=False` since 1.16.3, so the
+ * dangerous form must explicitly opt in). pre_warn / error.
+ *
+ * Each match anchors at the call line. `numpy.load` is flagged ONLY when
+ * `allow_pickle=True` appears within the 200-char call window — bare
+ * `np.load(arr.npy)` for `.npy` arrays is the safe form.
+ */
+export function checkPickleWrapperLoad(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!isPyFile(ext)) return [];
+	if (isTestFile(filePath)) return [];
+	if (isVendoredOrFixturePath(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// joblib.load / pd.read_pickle / pandas.read_pickle — always pickle-backed.
+	const directRe = /\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\(/g;
+	for (const m of stripped.matchAll(directRe)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_pickle_wrapper_load")) continue;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+	}
+
+	// numpy.load(..., allow_pickle=True) — only flagged with explicit opt-in.
+	const numpyRe = /\b(?:np|numpy)\.load\s*\([^)\n]{0,200}\ballow_pickle\s*=\s*True\b/g;
+	for (const m of stripped.matchAll(numpyRe)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (matches.some((mx) => mx.line === lineNum)) continue;
+		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_pickle_wrapper_load")) continue;
+		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
 	}
 	return matches;
 }

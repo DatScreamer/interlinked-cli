@@ -137,3 +137,44 @@ export function checkDeferInLoop(content: string, filePath: string): InlineMatch
 	}
 	return matches;
 }
+
+/**
+ * `ubs_go_shell_injection` — Go `exec.Command("sh", "-c", ...)` or
+ * `exec.Command("bash", "-c", ...)` (and the absolute-path forms
+ * `/bin/sh` / `/bin/bash`). Invoking a shell interpreter as the program
+ * routes the remaining arguments through shell parsing, so any user-input
+ * concatenated into the command string can inject arbitrary commands.
+ * pre_warn / error.
+ *
+ * Safe form passes the program and its arguments directly:
+ *   `exec.Command("ping", "-c", "1", host)` — no shell involved.
+ *
+ * Conservative: matches only when the first arg is a literal shell program
+ * string. A variable program name is a different (broader) class and is not
+ * flagged here.
+ */
+export function checkGoShellInjection(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".go") return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+
+	// First-arg literal == "sh" / "bash" / "/bin/sh" / "/bin/bash". `stripCommentsAndStrings`
+	// blanks string contents, so match against a comments-only strip.
+	const commentOnly = content.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+	const re = /\bexec\.Command\s*\(\s*"(?:sh|bash|\/bin\/sh|\/bin\/bash)"/g;
+
+	for (const m of commentOnly.matchAll(re)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const idx = m.index ?? 0;
+		const lineNum = commentOnly.slice(0, idx).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: originalLines[lineNum - 1].trim().slice(0, 150),
+		});
+	}
+	void stripped; // kept consistent with sibling checks' shape
+	return matches;
+}

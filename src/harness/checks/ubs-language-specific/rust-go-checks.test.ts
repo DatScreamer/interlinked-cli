@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
 	checkDeferInLoop,
 	checkGoroutineNoWaitgroup,
+	checkGoShellInjection,
 	checkMutexLockUnwrap,
 } from "./rust-go-checks.js";
 
@@ -37,5 +38,12 @@ describe("ubs-language-specific/rust-go-checks", () => {
 	it("checkDeferInLoop does not flag a top-of-function defer", () => {
 		const code = "func f() {\n  defer cleanup()\n  work()\n}";
 		expect(checkDeferInLoop(code, "a.go")).toEqual([]);
+	});
+
+	it("checkGoShellInjection flags exec.Command with shell interpreter", () => {
+		const code = `cmd := exec.Command("sh", "-c", "ping "+host)`;
+		expect(checkGoShellInjection(code, "a.go").length).toBeGreaterThan(0);
+		const safe = `cmd := exec.Command("ping", "-c", "1", host)`;
+		expect(checkGoShellInjection(safe, "a.go")).toEqual([]);
 	});
 });
