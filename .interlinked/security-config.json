@@ -1,0 +1,34 @@
+{
+  "_comment": "Endpoint-security detector config consumed by src/harness/security-config.ts. Each top-level key matches a detector check_id; the schema lives in src/harness/security-config.ts. Carved out of the .interlinked/* gitignore (see .gitignore) so it commits alongside guard-rules.json and sanitizers.json. Per-developer overrides are NOT supported in pass 1 — if you need to override defaults, edit this file directly and commit the change.",
+  "endpoint_auth_missing": {
+    "exempt_paths": [
+      "/health",
+      "/healthz",
+      "/ready",
+      "/readyz",
+      "/metrics",
+      "/oauth/callback",
+      "/auth/callback",
+      "/api/health"
+    ]
+  },
+  "endpoint_idor_shape": {
+    "auth_context_identifiers": [
+      "req.user",
+      "ctx.user",
+      "session.user",
+      "current_user",
+      "ctx.session.user",
+      "request.user",
+      "auth.user"
+    ]
+  },
+  "endpoint_missing_tenant_filter": {
+    "tenant_columns": ["org_id", "workspace_id", "business_id", "tenant_id"],
+    "exempt_tables": ["sessions", "audit_log", "platform_settings", "feature_flags"]
+  },
+  "endpoint_ssrf_shape": {
+    "exempt_paths": []
+  },
+  "endpoint_mass_assignment": {}
+}
