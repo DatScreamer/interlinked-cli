@@ -61,6 +61,7 @@ function readRegistrySources(): string {
 		"entries-warnings/ubs-checks.ts",
 		"entries-warnings/agent-laziness.ts",
 		"entries-warnings/test-and-demo.ts",
+		"entries-warnings/endpoint-security.ts",
 		"entries-taste.ts",
 		"entries-c-cpp.ts",
 		"builders.ts",
@@ -574,6 +575,15 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"documentWrite",
 			"outerHtmlAssignment",
 			"insertAdjacentHtml",
+			// Phase B endpoint-security pack (2026-05) — aggregated under the
+			// same convention as the rest of the warning families. Promoted to
+			// individual JSON destructuring later if downstream tooling needs
+			// per-rule filters.
+			"endpointAuthMissing",
+			"endpointIdorShape",
+			"endpointMissingTenantFilter",
+			"endpointSsrfShape",
+			"endpointMassAssignment",
 			// Batches 1, 2, 5, 8: now individually destructured in
 			// outputJson; no longer aggregated. Kept here as a comment for
 			// the bookkeeping trail.
