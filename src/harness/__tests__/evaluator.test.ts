@@ -491,6 +491,113 @@ describe("evaluatePreToolUse", () => {
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
 		});
+
+		it("blocks wrangler workflows delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler workflows delete my-workflow" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks wrangler hyperdrive delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler hyperdrive delete my-config" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks wrangler dispatch-namespace delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler dispatch-namespace delete my-ns" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks wrangler mtls-certificate delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler mtls-certificate delete --id abc" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks wrangler pages deployment delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler pages deployment delete my-id" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("warns on wrangler deploy --env production", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler deploy --env production" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+			expect(result.warnings?.some((w) => w.includes("production"))).toBe(true);
+		});
+
+		it("does NOT warn on wrangler deploy --env staging", () => {
+			const event = makeEvent({
+				tool_input: { command: "wrangler deploy --env staging" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+			expect(result.warnings?.some((w) => w.includes("production"))).toBeFalsy();
+		});
+
+		it("blocks cf zones delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf zones delete --zone-id abc123" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks cf registrar domain delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf registrar domain delete example.com" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("blocks cf accounts members delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf accounts members delete --id abc" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("allows cf zones list (non-destructive)", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf zones list" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("warns on cf dns records delete", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf dns records delete --id rec123" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+			expect(result.warnings?.some((w) => w.includes("DNS"))).toBe(true);
+		});
+
+		it("allows cf dns records list (non-destructive)", () => {
+			const event = makeEvent({
+				tool_input: { command: "cf dns records list" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
 	});
 
 	// ===========================================

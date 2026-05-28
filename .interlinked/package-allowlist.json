@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "packages": {
+    "npm": {
+      "wrangler": {
+        "approved_at": "2026-05-28T12:40:14.494Z",
+        "approved_by": "qcody",
+        "reason": "Cloudflare Workers CLI; updating to latest for cloud governor work"
+      }
+    },
+    "pypi": {},
+    "cargo": {},
+    "rubygems": {},
+    "go": {}
+  },
+  "lockfile_snapshots": {}
+}

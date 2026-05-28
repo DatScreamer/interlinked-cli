@@ -331,10 +331,15 @@ export const DATABASE_AND_CLOUD_RULES: GuardRule[] = [
 		patterns: [
 			{ field: "command", regex: "\\bwrangler\\s+delete\\b", flags: "i" },
 			{ field: "command", regex: "\\bwrangler\\s+pages\\s+project\\s+delete\\b", flags: "i" },
+			{ field: "command", regex: "\\bwrangler\\s+pages\\s+deployment\\s+delete\\b", flags: "i" },
 			{ field: "command", regex: "\\bwrangler\\s+queues\\s+delete\\b", flags: "i" },
 			{ field: "command", regex: "\\bwrangler\\s+vectorize\\s+delete\\b", flags: "i" },
+			{ field: "command", regex: "\\bwrangler\\s+workflows\\s+delete\\b", flags: "i" },
+			{ field: "command", regex: "\\bwrangler\\s+hyperdrive\\s+delete\\b", flags: "i" },
+			{ field: "command", regex: "\\bwrangler\\s+mtls-certificate\\s+delete\\b", flags: "i" },
+			{ field: "command", regex: "\\bwrangler\\s+dispatch-namespace\\s+delete\\b", flags: "i" },
 		],
-		reason: "Deleting a Worker, Pages project, Queue, or Vectorize index is irreversible",
+		reason: "Deleting a Worker, Pages project/deployment, Queue, Vectorize, Workflow, Hyperdrive, mTLS certificate, or Dispatch namespace is irreversible",
 		suggestion: "Ask the user to confirm and run this manually",
 		severity: "critical",
 		category: "wrangler",
@@ -387,6 +392,61 @@ export const DATABASE_AND_CLOUD_RULES: GuardRule[] = [
 		suggestion: "Test on a local D1 database first, and ask the user to run against production",
 		severity: "critical",
 		category: "wrangler",
+	},
+
+	{
+		id: "builtin-wrangler-prod-deploy-warn",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "warn",
+		patterns: [
+			{
+				field: "command",
+				regex: "\\bwrangler\\s+(deploy|publish)\\b.*--env(?:\\s+|=)(production|prod|live)\\b",
+				flags: "i",
+			},
+		],
+		reason: "Deploying to a production environment via wrangler has wide blast radius",
+		suggestion: "Confirm tests passed and the change is intended for production before proceeding",
+		severity: "high",
+		category: "wrangler",
+	},
+
+	// --- Cloudflare cf CLI destructive commands ---
+	{
+		id: "builtin-cf-destructive-state",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "block",
+		patterns: [
+			{ field: "command", regex: "\\bcf\\s+zones\\s+delete\\b", flags: "i" },
+			{
+				field: "command",
+				regex: "\\bcf\\s+registrar\\s+(domain|domains)\\s+delete\\b",
+				flags: "i",
+			},
+			{ field: "command", regex: "\\bcf\\s+accounts\\s+members\\s+delete\\b", flags: "i" },
+		],
+		reason: "Deleting a zone, registrar domain, or account member via cf is irreversible and account-wide",
+		suggestion: "Ask the user to confirm and run this manually via the Cloudflare dashboard",
+		severity: "critical",
+		category: "cloudflare",
+	},
+	{
+		id: "builtin-cf-dns-record-delete",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "warn",
+		patterns: [
+			{ field: "command", regex: "\\bcf\\s+dns\\s+records?\\s+delete\\b", flags: "i" },
+		],
+		reason: "DNS record deletion has wide blast radius and is reversible only via manual recreation",
+		suggestion: "Confirm the record is intentional to delete; for transient testing prefer disabling",
+		severity: "high",
+		category: "cloudflare",
 	},
 
 	// --- Vercel CLI destructive commands ---
