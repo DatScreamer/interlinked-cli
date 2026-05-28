@@ -770,24 +770,41 @@ describe("evaluatePreToolUse", () => {
 	// ===========================================
 
 	describe("curl-to-MCP detection", () => {
-		it("warns on curl to localhost:8787", () => {
+		it("warns on curl to an /mcp path on a configured port", () => {
 			const event = makeEvent({
-				tool_input: { command: "curl http://localhost:8787/health" },
+				tool_input: { command: "curl http://localhost:8787/mcp" },
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
 			expect(result.warnings).toBeDefined();
-			expect(result.warnings?.[0]).toContain("localhost");
+			expect(result.warnings?.some((w) => w.includes("localhost"))).toBe(true);
 		});
 
-		it("warns (not blocks) after configured threshold", () => {
-			// Simulate 5 curl calls to same port
+		it("does NOT warn on curl to a non-MCP path (e.g. /health) — #21 FP", () => {
+			// :8787 is the wrangler dev port for our own cloud governor; curling
+			// /health or /governor/evaluate is normal dev work, not a dropped MCP.
+			const healthEvent = makeEvent({
+				tool_input: { command: "curl http://localhost:8787/health" },
+			});
+			const healthResult = evaluatePreToolUse(healthEvent, rules, session, reservations, cohort);
+			expect(healthResult.warnings?.some((w) => w.includes("disconnected"))).toBeFalsy();
+			expect(healthResult.warnings?.some((w) => w.includes("MCP server"))).toBeFalsy();
+
+			const governorEvent = makeEvent({
+				tool_input: { command: "curl -X POST http://localhost:8787/governor/evaluate" },
+			});
+			const govResult = evaluatePreToolUse(governorEvent, rules, session, reservations, cohort);
+			expect(govResult.warnings?.some((w) => w.includes("disconnected"))).toBeFalsy();
+		});
+
+		it("warns (not blocks) after configured threshold on an /mcp path", () => {
+			// Simulate 4 prior curl calls to same port
 			for (let i = 0; i < 4; i++) {
 				session.curl_localhost_count[8787] = i + 1;
 			}
 
 			const event = makeEvent({
-				tool_input: { command: "curl http://localhost:8787/api/test" },
+				tool_input: { command: "curl http://localhost:8787/mcp/messages" },
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
@@ -795,13 +812,26 @@ describe("evaluatePreToolUse", () => {
 			expect(result.warnings?.some((w) => w.includes("disconnected"))).toBe(true);
 		});
 
-		it("does not warn for non-configured ports", () => {
+		it("warns on /sse path (MCP transport) too", () => {
 			const event = makeEvent({
-				tool_input: { command: "curl http://localhost:9999/test" },
+				tool_input: { command: "curl http://localhost:3000/sse" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.warnings?.some((w) => w.includes("localhost"))).toBe(true);
+		});
+
+		it("does not fire port-keyed curl-mcp detection for non-configured ports", () => {
+			const event = makeEvent({
+				tool_input: { command: "curl http://localhost:9999/mcp" },
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
-			expect(result.warnings).toBeUndefined();
+			// The generic /mcp-route guard ("use MCP tools, not curl") still fires
+			// on any /mcp curl, but the port-keyed disconnection detector must NOT —
+			// 9999 isn't a configured port.
+			expect(
+				result.warnings?.some((w) => w.includes("disconnected") || w.includes("9999")),
+			).toBeFalsy();
 		});
 	});
 

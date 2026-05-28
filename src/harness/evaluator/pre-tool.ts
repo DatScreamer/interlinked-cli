@@ -739,7 +739,14 @@ export function evaluatePreToolUse(
 	}
 
 	// LIFECYCLE: curl-to-MCP detection
-	if (isBash(toolName) && rules.curl_mcp_detection?.enabled && session) {
+	// Only treat repeated localhost curls as an "MCP server may be disconnected"
+	// signal when the request targets an MCP-shaped path (/mcp, /sse, /messages).
+	// Port presence alone is NOT an MCP signal: :8787 is the wrangler dev port
+	// (our own cloud governor), :3000/:5173/:4321 are generic dev servers. Curling
+	// `/health` or `/governor/evaluate` on those is normal dev work, not a
+	// dropped MCP connection. The precise /mcp-route guard below complements this.
+	const targetsMcpPath = /\/(?:mcp|sse|messages?)\b/i.test((toolInput.command as string) || "");
+	if (isBash(toolName) && rules.curl_mcp_detection?.enabled && session && targetsMcpPath) {
 		const cmd = (toolInput.command as string) || "";
 		for (const port of rules.curl_mcp_detection.localhost_ports) {
 			// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp

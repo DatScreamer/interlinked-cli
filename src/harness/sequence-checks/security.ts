@@ -72,15 +72,35 @@ export const secretReadThenNetworkCall: SequenceDetector = {
 const DOWNLOAD_RE =
 	/\b(?:curl|wget|http|https)\b[^|;]*?(?:\s-o\s+([^\s]+)|\s>\s*([^\s|;]+))/i;
 
+/** Redirection sinks that are not real downloaded artifacts. `curl -o /dev/null`
+ *  discards the response body; treating it as a downloaded file produces false
+ *  positives — any later command mentioning the sink path looks like
+ *  "executing the download". `-` is curl's stdout sink. */
+const NON_ARTIFACT_SINKS = new Set([
+	"/dev/null",
+	"/dev/stdout",
+	"/dev/stderr",
+	"/dev/zero",
+	"-",
+]);
+
 /** Match an execution of a specific path: `bash <path>`, `./<path>`,
- *  `python <path>`, `sh <path>`, or a bare absolute-path invocation. */
+ *  `python <path>`, `sh <path>`, or a bare path invoked as argv[0].
+ *
+ *  m2 requires the path to be in COMMAND position — the start of the line or
+ *  immediately after a `;` / `|` / `&` segment delimiter — NOT merely an
+ *  argument to some other command. `cat /tmp/x`, `jq . /tmp/x`, `rm /tmp/x`,
+ *  `head /tmp/x` pass a path as an argument, which is not execution; only
+ *  `/tmp/x` invoked directly is. The earlier `(?:^|\s|\|)` matched the
+ *  argument case too and produced false download-then-execute positives on
+ *  read-only inspectors (`cat downloaded.json`) and discarded-output curls. */
 function findExecutedPath(cmd: string): string | null {
 	// `bash <path>` / `sh <path>` / `python <path>` / `node <path>`
 	const m1 =
 		/\b(?:bash|sh|zsh|python3?|node|ruby|perl|php)\s+(\.?\/[^\s|;&]+)/i.exec(cmd);
 	if (m1) return m1[1] ?? null;
-	// `./<path>` or absolute `/<path>` invoked directly
-	const m2 = /(?:^|\s|\|)((?:\.\/|\/)[^\s|;&]+)/.exec(cmd);
+	// `./<path>` or absolute `/<path>` invoked directly as argv[0].
+	const m2 = /(?:^|[;|&])\s*((?:\.\/|\/)[^\s|;&]+)/.exec(cmd);
 	if (m2) return m2[1] ?? null;
 	return null;
 }
@@ -104,6 +124,7 @@ export const downloadThenExecute: SequenceDetector = {
 			if (!m) continue;
 			const downloadedPath = m[1] ?? m[2];
 			if (!downloadedPath) continue;
+			if (NON_ARTIFACT_SINKS.has(downloadedPath)) continue;
 			if (executedPath === downloadedPath || executedPath.endsWith(downloadedPath)) {
 				return [
 					{

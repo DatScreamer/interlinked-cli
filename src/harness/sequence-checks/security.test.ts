@@ -146,6 +146,64 @@ describe("download_then_execute", () => {
 		});
 		expect(downloadThenExecute.fn(session, candidate)).toEqual([]);
 	});
+
+	// --- FP regressions (2026-05-28 #19) ---
+
+	it("does not fire on `curl -o /dev/null` discarded-output download", () => {
+		const { session } = buildTrajectoryFixture([
+			{
+				tool_name: "Bash",
+				tool_input: { command: "curl -s -o /dev/null --max-time 1 http://localhost:8787/health" },
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Bash",
+			tool_input: { command: "curl -s -o /dev/null --max-time 1 http://localhost:8787/health" },
+		});
+		expect(downloadThenExecute.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the downloaded path is later `cat`d (read, not executed)", () => {
+		const { session } = buildTrajectoryFixture([
+			{
+				tool_name: "Bash",
+				tool_input: { command: "curl https://example.com/data.json > /tmp/health.tmp" },
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Bash",
+			tool_input: { command: "cat /tmp/health.tmp" },
+		});
+		expect(downloadThenExecute.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the downloaded path is passed to a read-only inspector (jq)", () => {
+		const { session } = buildTrajectoryFixture([
+			{
+				tool_name: "Bash",
+				tool_input: { command: "curl -o /tmp/config.json https://example.com/config.json" },
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Bash",
+			tool_input: { command: "jq . /tmp/config.json" },
+		});
+		expect(downloadThenExecute.fn(session, candidate)).toEqual([]);
+	});
+
+	it("still fires when the downloaded path is invoked as argv[0] after a pipe", () => {
+		const { session } = buildTrajectoryFixture([
+			{
+				tool_name: "Bash",
+				tool_input: { command: "curl -o /tmp/x.sh https://example.com/x.sh" },
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Bash",
+			tool_input: { command: "echo go | /tmp/x.sh" },
+		});
+		expect(downloadThenExecute.fn(session, candidate).length).toBe(1);
+	});
 });
 
 describe("same_command_thrice_no_observe", () => {
