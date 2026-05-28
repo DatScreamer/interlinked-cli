@@ -1580,6 +1580,33 @@ describe("checkConsoleDebug — false positive reduction", () => {
 		const code = `void parse() {\n    printf("x=%d\\n", x);\n}`;
 		expect(checkConsoleDebug(code, "src/parser.c").length).toBeGreaterThan(0);
 	});
+
+	// --- Swift debug API coverage ---
+
+	it("flags Swift debugPrint", () => {
+		const code = `func foo() {\n    debugPrint("trace:", value)\n}`;
+		expect(checkConsoleDebug(code, "Foo.swift").length).toBeGreaterThan(0);
+	});
+
+	it("flags Swift dump()", () => {
+		const code = `func inspect() {\n    dump(self)\n}`;
+		expect(checkConsoleDebug(code, "Foo.swift").length).toBeGreaterThan(0);
+	});
+
+	it("flags Swift NSLog()", () => {
+		const code = `func legacy() {\n    NSLog("auth flow reached %@", user)\n}`;
+		expect(checkConsoleDebug(code, "Foo.swift").length).toBeGreaterThan(0);
+	});
+
+	it("does NOT flag Swift print() (too common in CLIs/scripts)", () => {
+		const code = `func main() {\n    print("Hello")\n}`;
+		expect(checkConsoleDebug(code, "Foo.swift")).toEqual([]);
+	});
+
+	it("does NOT flag Swift debugPrint in a test file", () => {
+		const code = `func testIt() {\n    debugPrint(value)\n}`;
+		expect(checkConsoleDebug(code, "FooTests.swift")).toEqual([]);
+	});
 });
 
 // ===========================================

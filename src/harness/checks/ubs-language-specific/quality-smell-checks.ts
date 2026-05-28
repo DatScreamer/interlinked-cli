@@ -195,7 +195,12 @@ export function checkPrintDebugLeak(content: string, filePath: string): InlineMa
  */
 export function checkMagicNumberNoConst(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
-	const supported = isJsTsFile(ext) || isPyFile(ext) || ext === ".go" || ext === ".java";
+	const supported =
+		isJsTsFile(ext) ||
+		isPyFile(ext) ||
+		ext === ".go" ||
+		ext === ".java" ||
+		ext === ".swift";
 	if (!supported) return [];
 	if (isTestFile(filePath)) return [];
 
@@ -206,6 +211,7 @@ export function checkMagicNumberNoConst(content: string, filePath: string): Inli
 
 	// 3+ digit integer or fractional numeric literal — flag if NOT preceded by
 	// `const`/`let`/`var`/`final` (the assignment-to-constant case).
+	// Swift uses `let`/`var` like JS; `static let` is the named-constant idiom.
 	const re = /\b(?:const|let|var|final)\b\s*\w+\s*=\s*\d+/;
 	const magicRe = /(?<![\w.])\d{3,}(?:\.\d+)?\b/;
 
@@ -232,7 +238,8 @@ export function checkLargeFunction(content: string, filePath: string): InlineMat
 		ext === ".java" ||
 		ext === ".rs" ||
 		ext === ".c" ||
-		ext === ".cpp";
+		ext === ".cpp" ||
+		ext === ".swift";
 	if (!supported) return [];
 	if (isTestFile(filePath)) return [];
 

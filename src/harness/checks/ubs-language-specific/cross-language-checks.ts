@@ -30,7 +30,8 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 		ext === ".cjs" ||
 		ext === ".py" ||
 		ext === ".go" ||
-		ext === ".rs";
+		ext === ".rs" ||
+		ext === ".swift";
 	if (!isCode) return [];
 	if (isTestFile(filePath)) return [];
 
@@ -43,14 +44,22 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 	const sqlVerb =
 		/\b(?:SELECT\s+(?:\*|DISTINCT\s|[\w,\s]+\s+FROM)|INSERT\s+INTO\s+\w+|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\s+\w+|DROP\s+(?:TABLE|INDEX|DATABASE|SCHEMA|VIEW)\b|TRUNCATE\s+TABLE\b)/i;
 	const selectConcatPrefix = /\bSELECT\s*["'`]\s*[+,]/i;
-	const interpolation = /["'`].*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`/;
+	// JS/Py/Go/Rust: `"…" + ident` or `` `…${expr}…` ``.
+	// Swift: `"…\(ident)…"` — Swift's string interpolation uses `\(expr)`.
+	const interpolation =
+		/["'`].*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`|"[^"]*\\\([^)]+\)/;
 
 	// Helicone audit (2026-05): the check was firing 66 times on
 	// `WHERE id = $1` style PARAMETERIZED queries — the `$N` placeholder
 	// IS the safe form. Same for `?` (positional) and `:name` (named).
 	// Skip any line that contains a recognizable parameterized-query
 	// placeholder, regardless of what follows it.
-	const placeholder = /\$\d+\b|[=(,\s]\?[\s,)]|:\w+\b/;
+	//
+	// The `?` placeholder accepts any closing context (whitespace, comma,
+	// `)`, `"`, `'`) so Swift / Java forms like `"WHERE id = ?"` are
+	// recognized as parameterized — the placeholder sits at the END of
+	// the string literal, immediately followed by the closing quote.
+	const placeholder = /\$\d+\b|[=(,\s]\?[\s,)"']|:\w+\b/;
 	// Event-handler shapes that look SQL-y because of an interpolated
 	// callback arg ("`click`", "${selector}") but are not SQL.
 	const eventListener = /\.\s*(?:on|once|addEventListener|removeEventListener)\s*\(/;

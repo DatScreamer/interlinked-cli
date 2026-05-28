@@ -101,6 +101,13 @@ export function checkConsoleDebug(content: string, filePath: string): InlineMatc
 		if (/\b(example|demo|sample)/i.test(cFileName)) return [];
 		pattern = /\bprintf\s*\(/;
 	}
+	// Swift — flag debug-intent APIs only. `print(` is too common (CLIs,
+	// SwiftPM tools, examples) to flag globally; `debugPrint(` / `dump(` /
+	// `NSLog(` are unambiguous debug breadcrumbs that ship to logs. Modern
+	// Swift apps should use `os.Logger` / `Logger` instead of `NSLog`.
+	else if (ext === ".swift") {
+		pattern = /\b(?:debugPrint|dump|NSLog)\s*\(/;
+	}
 
 	if (!pattern) return [];
 

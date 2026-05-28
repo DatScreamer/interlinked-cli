@@ -27,6 +27,16 @@ describe("ubs-language-specific/cross-language-checks", () => {
 			const code = 'db.query("SELECT * FROM users WHERE id = $1", [id]);';
 			expect(checkSqlStringConcat(code, "db.ts")).toEqual([]);
 		});
+
+		it("flags a Swift string with `\\(...)` interpolation around a SELECT", () => {
+			const code = 'let q = "SELECT * FROM users WHERE id = \\(userId)"';
+			expect(checkSqlStringConcat(code, "DB.swift").length).toBeGreaterThan(0);
+		});
+
+		it("does not flag a Swift parameterized query (`?` placeholder)", () => {
+			const code = 'db.execute("SELECT * FROM users WHERE id = ?", arguments: [id])';
+			expect(checkSqlStringConcat(code, "DB.swift")).toEqual([]);
+		});
 	});
 
 	describe("checkUbsHardcodedLocalhost", () => {

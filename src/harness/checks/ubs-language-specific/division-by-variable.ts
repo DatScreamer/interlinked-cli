@@ -34,7 +34,7 @@ import { isJsTsFile, isPyFile } from "./_shared.js";
  * gates on a source-file extension allow-list (mirroring
  * `checkLargeFunction`'s coverage). Markdown, plain-text, config, and
  * unknown extensions short-circuit before the matcher runs. Extending
- * the allow-list to `.kt` / `.swift` / `.rb` / `.cs` is a one-line edit
+ * the allow-list to `.kt` / `.rb` / `.cs` is a one-line edit
  * if a TP is reported there.
  *
  * The detector strips comments and strings first, so `*\/` block-comment
@@ -50,7 +50,8 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 		ext === ".java" ||
 		ext === ".rs" ||
 		ext === ".c" ||
-		ext === ".cpp";
+		ext === ".cpp" ||
+		ext === ".swift";
 	if (!supported) return [];
 
 	const stripped = stripCommentsAndStrings(content);

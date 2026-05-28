@@ -43,6 +43,24 @@ export function checkSqlInjection(content: string, filePath: string): InlineMatc
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 			continue;
 		}
+		// Swift: SQLite.swift / GRDB / Core Data — `.execute`/`.run`/`.prepare`/`.query`
+		// or `NSPredicate(format:)` called with a Swift-interpolated string `"...\(v)..."`.
+		// The safe form uses `?`/`$1` placeholders with a binding array, or `%@` for
+		// NSPredicate. Skip lines that look like a parameterized call shape.
+		if (ext === ".swift") {
+			if (
+				/\.(?:execute|run|prepare|query|fetch)\s*\(\s*(?:sql\s*:\s*)?"[^"]*\\\([^)]+\)/.test(
+					line,
+				)
+			) {
+				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				continue;
+			}
+			if (/\bNSPredicate\s*\(\s*format\s*:\s*"[^"]*\\\([^)]+\)/.test(line)) {
+				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				continue;
+			}
+		}
 		if (/\.(query|execute)\s*\(\s*["'][^"']*["']\s*\+/.test(line)) {
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 		}
