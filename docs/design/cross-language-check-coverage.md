@@ -1,6 +1,18 @@
 # Cross-language ports of harness check coverage
 
-**Status:** Design / not yet implementation (2026-05-27). Companion to [`effect-ts-harness-additions.md`](effect-ts-harness-additions.md); ships *after* that doc converges. Captures the cross-language generalizations of the Effect-TS lessons that were deliberately deferred from the TS-first proposal.
+**Status:** Partially shipped (2026-05-27).
+
+- **Swift expansion landed in this commit** — extended `checkConsoleDebug`,
+  `checkSqlStringConcat`, `checkSqlInjection`, `checkDivisionByVariable`,
+  `checkMagicNumberNoConst`, `checkLargeFunction` to include `.swift`; wired
+  the seven previously-orphan Swift detectors in `swift.ts`; added 13 new
+  Swift detectors across `swift-concurrency.ts`, `swift-lifecycle.ts`,
+  `swift-security.ts`, `swift-quality.ts`. See `entries-swift.ts` and the
+  Swift table in §3.5 below.
+- §3.1–3.4 (Python / Java / Go / Rust ports per the original design) remain
+  unshipped — design intent captured here for the next pass.
+
+Companion to [`effect-ts-harness-additions.md`](effect-ts-harness-additions.md); captures the cross-language generalizations of the Effect-TS lessons that were deliberately deferred from the TS-first proposal.
 
 **Audience:** The next engineer extending non-TS check coverage. The Effect intake produced four bug classes that generalize beyond TypeScript; this doc names the per-language regex set for each, plus a small list of further TS-only checks that should follow the same generalization treatment.
 
@@ -25,7 +37,7 @@ The harness has a TS center of gravity that the dogfooding feedback loop reinfor
 | Python | ~12 in `python-checks.ts` (pickle / marshal / yaml / torch security, subprocess, mutable default, regex-in-loop, mktemp race, etc.) | second-deepest; security-focused |
 | Rust / Go | 4 in `rust-go-checks.ts` (mutex lock unwrap, goroutine without waitgroup, defer in loop, go shell injection) | thin |
 | Java / C | 2 visible in `java-c-checks.ts` (Optional.get, unsafe format string) + a separate `c-cpp.ts` | thin |
-| Swift | 1 file | very thin |
+| Swift / iOS | **~28 (post 2026-05 expansion)** — 7 declarative Apple-ADG regexes in `language-profiles.ts` + 7 newly-wired complex detectors in `swift.ts` (Task.detached, unhandled task error, global-var isolation, escaping-closure self, .filter{}.count, #fileID, abbreviations) + 13 new detectors in `swift-{concurrency,lifecycle,security,quality}.ts` (DispatchQueue.main.sync, Task.sleep legacy, NotificationCenter/Timer/Combine leak, weak crypto, http URL, UserDefaults secret, ATS plist, empty catch, try? discard, NSURL bridge, fatalError-in-guard, print-in-View-body) | first-class as of 2026-05 |
 | Ruby / PHP / C# / Kotlin | 0 | unaddressed |
 
 The recent "agent-quality" check series (`floating_promises`, `non_null_assertion_ratchet`, `as any`, `promise_reject_non_error`, `unvalidated_json_boundary`, etc.) is entirely TS. The Effect-TS lessons in the companion doc continue that pattern. This doc is the deliberate counter-move: ship cross-language ports of the Effect bug classes that generalize, *after* the TS-first doc converges.
@@ -134,6 +146,40 @@ Coverage: 4 languages × ~9 libraries.
 **Severity:** pre_warn.
 
 ---
+
+### 3.5 Swift / iOS — shipped 2026-05
+
+Twenty new detectors landed (seven wiring existing functions, thirteen new). Coverage by category:
+
+| Category | Check ID | Severity | Determinism | Default gate |
+|---|---|---|---|---|
+| Concurrency | `swift_task_detached` | warning | fully | default |
+| Concurrency | `swift_unhandled_task_error` | warning | heuristic | advisory |
+| Concurrency | `swift_global_var_no_isolation` | warning | heuristic | advisory |
+| Concurrency | `swift_self_in_escaping_closure` | warning | heuristic | advisory |
+| Concurrency | `swift_dispatch_main_sync` | warning | fully | default |
+| Concurrency | `swift_task_sleep_legacy` | warning | fully | default |
+| Lifecycle | `swift_notification_observer_no_removal` | warning | heuristic | advisory |
+| Lifecycle | `swift_timer_no_invalidate` | warning | heuristic | advisory |
+| Lifecycle | `swift_combine_no_store` | warning | heuristic | advisory |
+| Security | `swift_weak_crypto` | warning | fully | default |
+| Security | `swift_http_url_literal` | warning | fully | default |
+| Security | `swift_userdefaults_for_secret` | warning | fully | default |
+| Security | `swift_ats_arbitrary_loads` | warning | fully | default |
+| Quality | `swift_empty_catch` | warning | fully | default |
+| Quality | `swift_try_question_discarded` | warning | heuristic | advisory |
+| Quality | `swift_nsurl_legacy_bridge` | warning | fully | default |
+| Quality | `swift_fatalerror_in_guard` | warning | heuristic | advisory |
+| Quality | `swift_print_in_view_body` | warning | heuristic | advisory |
+| Performance | `swift_filter_count` | warning | fully | default |
+| Privacy | `swift_file_id_over_file_path` | warning | fully | default |
+| Style | `swift_abbreviations` | warning | heuristic | advisory |
+
+The seven heuristic ones live in `DEFAULT_ADVISORY_SKIPS` per CLAUDE.md's heuristic-checks-go-advisory rule. Several share an absence-of-pairing heuristic (notification observer / timer / Combine store) — those FP when the pair sits in a sibling file. The split between `swift.ts` and the new family files is purely a per-file line-cap concern; future Swift checks land in whichever family file fits the bug class.
+
+What **did not** ship in this pass and remains in §3.1–3.4 above:
+- The Python / Java / Go / Rust per-language ports of `error_dispatch_by_class_widening`, `error_chain_dropped`, `resource_handle_leak`, `sql_escape_hatch_non_literal` — design intact, implementation deferred.
+- The TS-only side of `sql_escape_hatch_non_literal` already shipped via the Effect-TS doc; the Python / Go / Java symbol-table extension is still on the backlog.
 
 ## 4. Beyond Effect — what else looks ripe?
 

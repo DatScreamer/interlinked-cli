@@ -321,6 +321,17 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				// Effect-TS lessons port (advisory until cross-realm-vs-single-realm
 				// FP rate is measured).
 				"error_dispatch_by_instanceof",
+				// Swift / iOS heuristic checks — see advisory.ts for per-line rationale.
+				"swift_abbreviations",
+				"swift_combine_no_store",
+				"swift_fatalerror_in_guard",
+				"swift_global_var_no_isolation",
+				"swift_notification_observer_no_removal",
+				"swift_print_in_view_body",
+				"swift_self_in_escaping_closure",
+				"swift_timer_no_invalidate",
+				"swift_try_question_discarded",
+				"swift_unhandled_task_error",
 			].sort(),
 		);
 	});

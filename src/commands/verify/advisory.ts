@@ -367,6 +367,47 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// redundant. Advisory per CLAUDE.md's heuristic-checks-go-advisory rule;
 	// promote once dogfood FP rate is measured.
 	"test_subprocess_default_timeout",
+	// === Swift / iOS heuristic checks ===
+	// swift_unhandled_task_error: scope-tracked across up to 30 lines of a
+	// Task body — heuristic on what counts as the "task body" boundary.
+	// Real bugs are clearly TPs; closures-returning-Task patterns may FP.
+	"swift_unhandled_task_error",
+	// swift_global_var_no_isolation: file-scope brace-depth tracking; can
+	// FP on `var` inside `extension Module { }` and similar. Stays advisory
+	// until measured. Swift 6 strict-concurrency mode catches the same
+	// thing at compile-time when it's enabled — this check is the bridge
+	// for codebases still on Swift 5 / 5.10 default mode.
+	"swift_global_var_no_isolation",
+	// swift_self_in_escaping_closure: 20-line lookahead from `@escaping`;
+	// misses captures further down and may FP on uses that legitimately
+	// don't escape (e.g., the closure runs synchronously before return).
+	// Advisory until refined to read the @escaping closure's call shape.
+	"swift_self_in_escaping_closure",
+	// swift_notification_observer_no_removal: file-scope absence-of-pairing.
+	// FPs when the removal lives in a sibling file (rare but real).
+	"swift_notification_observer_no_removal",
+	// swift_timer_no_invalidate: same file-scope absence-of-pairing heuristic.
+	"swift_timer_no_invalidate",
+	// swift_combine_no_store: same file-scope absence-of-pairing heuristic.
+	// FPs on assign(to: &$published) where the `to:` parameter takes an
+	// inout Published and manages its own lifecycle (we still flag).
+	"swift_combine_no_store",
+	// swift_try_question_discarded: statement-position heuristic. Misses
+	// `try?` inside conditionals where the operator is on a separate line;
+	// FPs on tools that intentionally use `try?` for fire-and-forget calls.
+	"swift_try_question_discarded",
+	// swift_fatalerror_in_guard: a taste call — `guard let x = … else
+	// { fatalError() }` is a force-unwrap with a better message. Advisory
+	// because the message IS sometimes load-bearing for crash triage.
+	"swift_fatalerror_in_guard",
+	// swift_print_in_view_body: detects body-scope `print()` via brace
+	// counting. FPs on `let _ = { print(); return ... }()` patterns where
+	// the print is genuinely part of view construction (rare). Advisory
+	// until measured.
+	"swift_print_in_view_body",
+	// swift_abbreviations: pure style enforcement — the most heuristic of
+	// the batch. Advisory by design; promotes only if a project opts in.
+	"swift_abbreviations",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */
