@@ -1,5 +1,4 @@
 // interlinked-tdd: exempt
-import type { Facet } from "./dos/facet.js";
 import type { Supervisor } from "./dos/supervisor.js";
 
 export interface HookEvent {
@@ -23,7 +22,6 @@ export interface Verdict {
 
 export interface Env {
 	SUPERVISOR: DurableObjectNamespace<Supervisor>;
-	FACET: DurableObjectNamespace<Facet>;
 	BEARER_TOKEN?: string;
 	ENVIRONMENT?: string;
 }

@@ -8,12 +8,19 @@
   },
   "durable_objects": {
     "bindings": [
-      { "class_name": "Supervisor", "name": "SUPERVISOR" },
-      { "class_name": "Facet", "name": "FACET" }
+      { "class_name": "Supervisor", "name": "SUPERVISOR" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Supervisor", "Facet"] }
+    { "tag": "v1", "new_sqlite_classes": ["Supervisor", "Facet"] },
+    // v0 scaffolded a Facet DO modelled as a per-session DATA partition. That
+    // mis-applies the primitive: a Facet is an isolated EXECUTION unit
+    // (dynamic/untrusted code, or a static sub-agent DO class), not a data
+    // bucket. Per-session/project data belongs in the Supervisor's own tables.
+    // The class was never instantiated, so deleting it is safe. A real facet
+    // returns later as a sub-agent execution unit (cloud-side review/test), in
+    // its own migration. See docs/design/onboarding-and-connection-flow.md.
+    { "tag": "v2", "deleted_classes": ["Facet"] }
   ],
   "vars": {
     "ENVIRONMENT": "development"

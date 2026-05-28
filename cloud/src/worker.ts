@@ -4,7 +4,6 @@ import { evaluate } from "./governor/evaluate.js";
 import type { Env, HookEvent, Verdict } from "./types.js";
 
 export { Supervisor } from "./dos/supervisor.js";
-export { Facet } from "./dos/facet.js";
 
 const HEALTH_PATH = "/health";
 const EVALUATE_PATH = "/governor/evaluate";

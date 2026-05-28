@@ -5,7 +5,7 @@ import type { Env } from "./types.js";
 // Default parameters resolve `makeEnv(undefined)` to the default value, which
 // we don't want in the fails-closed test — keep token explicit.
 function makeEnv(token: string | undefined): Env {
-	// Whole-object cast — auth doesn't touch SUPERVISOR/FACET, so we
+	// Whole-object cast — auth doesn't touch SUPERVISOR, so we
 	// avoid constructing a fake DurableObjectNamespace stub.
 	return { BEARER_TOKEN: token } as Env;
 }
