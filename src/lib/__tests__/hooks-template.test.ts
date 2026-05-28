@@ -125,7 +125,16 @@ describe("buildHookScript", () => {
 		// writes get the same credential redaction the remote sync path does.
 		// If this assertion fails, credentials in prompts/tool_input_summary/
 		// thinking will hit disk unmasked again.
-		expect(out).toMatch(/scrubPayload\(record\);\s*appendFileSync\(ACTIVITY_PATH/);
+		//
+		// 2026-05: appendLocal now optionally applies audit-chain fields
+		// (previousHash + hash) between scrub and append when the record's
+		// type is in AUDIT_GUARD_TYPES (session_end + guard_*). Those fields
+		// are sha256 hex strings — no PII to scrub — so the chain block is
+		// permitted here. Anything else inserted between scrub and append is
+		// a security regression and this regex must not match it.
+		expect(out).toMatch(
+			/scrubPayload\(record\);(?:\s|\/\/[^\n]*\n)*(?:if\s*\(AUDIT_GUARD_TYPES\[record\.type\]\)\s*\{[\s\S]*?\}\s*)?appendFileSync\(ACTIVITY_PATH/,
+		);
 	});
 
 	it("generated .mjs parses as valid JavaScript (end-to-end syntactic check)", () => {

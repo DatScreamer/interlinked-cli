@@ -10,9 +10,11 @@ import {
 	verifyAuditChain,
 } from "./audit-chain.js";
 
+type ChainedRecordType = "guard_block" | "guard_warn" | "guard_allow" | "session_end";
+
 function makeEntry(opts: {
 	previousHash: string;
-	type?: "guard_block" | "guard_warn" | "guard_allow";
+	type?: ChainedRecordType;
 	ts?: string;
 	tool?: string;
 	reason?: string;
@@ -24,6 +26,23 @@ function makeEntry(opts: {
 		type: opts.type ?? "guard_allow",
 		tool: opts.tool ?? "Bash",
 		summary: opts.reason ?? "ok",
+		previousHash: opts.previousHash,
+	};
+	base.hash = computeEntryHash(base);
+	return base;
+}
+
+function makeSessionEndEntry(opts: {
+	previousHash: string;
+	ts?: string;
+	reason?: string;
+}): Record<string, unknown> {
+	const base: Record<string, unknown> = {
+		schema_version: 4,
+		ts: opts.ts ?? "2026-05-26T10:30:00.000Z",
+		agent: "claude",
+		type: "session_end",
+		reason: opts.reason ?? "prompt_input_exit",
 		previousHash: opts.previousHash,
 	};
 	base.hash = computeEntryHash(base);
@@ -180,6 +199,43 @@ describe("verifyAuditChain", () => {
 		expect(res.guard_events).toBe(2);
 		expect(res.chained_events).toBe(1);
 		expect(res.unchained_guard_events).toBe(1);
+	});
+
+	it("chains a session_end record from a guard_allow predecessor", () => {
+		const e1 = makeEntry({
+			previousHash: GENESIS_HASH,
+			type: "guard_allow",
+			ts: "2026-05-26T10:00:00.000Z",
+		});
+		const e2 = makeSessionEndEntry({
+			previousHash: e1.hash as string,
+			ts: "2026-05-26T10:30:00.000Z",
+			reason: "prompt_input_exit",
+		});
+		writeJsonl(activityPath, [e1, e2]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.guard_events).toBe(2);
+		expect(res.chained_events).toBe(2);
+		expect(res.last_hash).toBe(e2.hash as string);
+	});
+
+	it("detects a session_end record whose reason was rewritten post-hash", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH });
+		const e2 = makeSessionEndEntry({
+			previousHash: e1.hash as string,
+			ts: "2026-05-26T10:30:00.000Z",
+			reason: "logout",
+		});
+		// Tamper: rewrite reason after the hash was computed.
+		const tampered = { ...e2, reason: "other" };
+		writeJsonl(activityPath, [e1, tampered]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_index).toBe(1);
+		expect(res.first_bad_reason).toMatch(/hash mismatch/);
 	});
 
 	it("tolerates malformed JSONL lines without breaking the chain", () => {

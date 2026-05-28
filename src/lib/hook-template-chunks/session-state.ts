@@ -515,10 +515,14 @@ function resolveGitContext(startDir) {
 }
 
 // --- Audit chain helpers (borrowed from Microsoft AGT's audit.mjs pattern, MIT) ---
-// Used by appendGuardDecision to make guard_* decisions tamper-evident. Verifier
-// lives in src/lib/audit-chain.ts; same canonical JSON + sha256 + genesis. Maps
-// to OWASP ASI11 (Agent Untraceability).
-const AUDIT_GUARD_TYPES = { guard_block: 1, guard_warn: 1, guard_allow: 1 };
+// Used by appendGuardDecision (guard_* decisions) and appendLocal (session_end
+// records carrying Claude Code's \`reason\` field). All chained record types
+// share the same canonical-JSON + sha256 + genesis chain. Verifier lives in
+// src/lib/audit-chain.ts. Maps to OWASP ASI11 (Agent Untraceability).
+//
+// The constant name is historical — it was guard-only before session_end was
+// added 2026-05. Semantically this is "chained record types," not just guards.
+const AUDIT_GUARD_TYPES = { guard_block: 1, guard_warn: 1, guard_allow: 1, session_end: 1 };
 const AUDIT_GENESIS_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
 
 function auditCanonicalJson(value) {
@@ -658,6 +662,16 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         if (gc.git_head) record.git_head = gc.git_head;
         if (gc.git_branch) record.git_branch = gc.git_branch;
         scrubPayload(record);
+        // Audit chain extension: for session_end records, apply chain fields
+        // (previousHash + hash) so the chain captures *how* the session ended
+        // via Claude Code's \`reason\` field. The chain still includes guard_*
+        // decisions written by appendGuardDecision; session_end is just the
+        // second chained record type. Maps to OWASP ASI11. Verify with:
+        //   interlinked audit verify
+        if (AUDIT_GUARD_TYPES[record.type]) {
+            record.previousHash = readPreviousGuardHash();
+            record.hash = computeAuditHash(record);
+        }
         appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
     } catch (_err) { void 0; /* intentional: no-op */ }
 }

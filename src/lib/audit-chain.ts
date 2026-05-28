@@ -6,12 +6,17 @@
 // "Agent Untraceability" — tamper-evident decision audit.
 //
 // Scope: the chain covers `guard_block` / `guard_warn` / `guard_allow`
-// records written to .interlinked/activity.jsonl by the hook template's
-// `appendGuardDecision` (src/lib/hook-template-chunks/session-state.ts).
-// Non-decision entries (raw event transcripts written by `appendLocal`)
+// records written by the hook template's `appendGuardDecision`, PLUS
+// `session_end` records written by `appendLocal` (which applies chain
+// fields when the event type is session_end so the chain captures *how*
+// the session ended via Claude Code's `reason` field). All chained
+// records live in .interlinked/activity.jsonl
+// (src/lib/hook-template-chunks/session-state.ts).
+//
+// Non-decision entries (other event_types written by `appendLocal`)
 // share the same file but live outside the chain by design — the chain's
-// `previousHash` walks back to the most recent guard_* entry, skipping
-// transcript noise.
+// `previousHash` walks back to the most recent chained entry of any
+// supported type, skipping transcript noise.
 //
 // This module is the verifier. The writer is inlined in the hook template
 // so the generated .mjs stays self-contained per CLAUDE.md.
@@ -22,7 +27,17 @@ import { join } from "node:path";
 import { getDataDir } from "./config.js";
 
 export const GENESIS_HASH = "0".repeat(64);
-const GUARD_DECISION_TYPES = new Set(["guard_block", "guard_warn", "guard_allow"]);
+// Record types that participate in the hash chain. Originally guard_* only;
+// session_end was added 2026-05 so the audit chain captures *how* sessions
+// terminate (Claude Code's `reason` field). The set name is historical —
+// kept for back-compat with consumers reading the field name; semantically
+// these are "chained record types," not just guard decisions.
+const GUARD_DECISION_TYPES = new Set([
+	"guard_block",
+	"guard_warn",
+	"guard_allow",
+	"session_end",
+]);
 
 export interface GuardChainEntry {
 	ts?: string;
