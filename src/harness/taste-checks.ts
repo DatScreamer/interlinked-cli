@@ -482,6 +482,10 @@ export function checkLawOfDemeter(content: string, filePath: string): InlineMatc
 		if (!m) continue;
 		if (m[0].startsWith("import.meta.")) continue;
 		if (sLines[i].includes("Object.prototype.")) continue;
+		// Cloudflare Worker / DurableObject canonical access: `this.ctx.storage.sql.exec(...)`,
+		// `this.ctx.storage.put(...)`, `this.ctx.exports.facetName.method()`. The base
+		// class exposes this exact API shape — DO code can't and shouldn't flatten it.
+		if (m[0].startsWith("this.ctx.")) continue;
 		push(matches, i, lines, 5);
 	}
 	return matches;

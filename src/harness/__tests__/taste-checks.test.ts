@@ -223,6 +223,23 @@ describe("checkLawOfDemeter", () => {
 		const content = "const v = a.b.c.d.e;";
 		expect(checkLawOfDemeter(content, "/x/foo.test.ts")).toEqual([]);
 	});
+
+	it("skips Cloudflare DurableObject canonical access (#17)", () => {
+		// `this.ctx.storage.sql.exec(...)` is the documented DO+SQLite API; the
+		// chain depth is mandated by the platform, not a Demeter smell.
+		const content = `this.ctx.storage.sql.exec("CREATE TABLE x (id INT)");`;
+		expect(checkLawOfDemeter(content, "/src/dos/supervisor.ts")).toEqual([]);
+	});
+
+	it("skips this.ctx.exports.facetName.method() — sub-agent RPC pattern", () => {
+		const content = `await this.ctx.exports.subAgent.handleEvent(event);`;
+		expect(checkLawOfDemeter(content, "/src/dos/supervisor.ts")).toEqual([]);
+	});
+
+	it("still fires on a non-DO five-deep chain", () => {
+		const content = "const v = user.profile.settings.theme.colors.primary;";
+		expect(checkLawOfDemeter(content, "/src/foo.ts").length).toBe(1);
+	});
 });
 
 describe("checkFlagArgument", () => {
