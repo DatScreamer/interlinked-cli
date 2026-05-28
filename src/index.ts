@@ -358,6 +358,27 @@ alCmd
 		verifyAllowlistCommand({ cwd: opts.cwd || process.cwd() });
 	});
 
+const cloudCmd = program
+	.command("cloud")
+	.description("Inspect the cloud governor (reads cloud_governor from config.local.json)");
+
+cloudCmd
+	.command("recent")
+	.description("Show recent events + verdicts recorded by the cloud governor")
+	.option("--limit <n>", "How many events to show (default 20, max 200)", "20")
+	.option("--json", "Machine-readable output")
+	.option("--cwd <path>", "Project root (default: current directory)")
+	.action(async (opts: { limit?: string; json?: boolean; cwd?: string }) => {
+		const parsedLimit = Number.parseInt(opts.limit ?? "20", 10);
+		const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
+		const { cloudRecentCommand } = await import("./commands/cloud.js");
+		await cloudRecentCommand({
+			cwd: opts.cwd || process.cwd(),
+			limit,
+			json: opts.json,
+		});
+	});
+
 const cpCmd = program.command("checkpoint").description("Git checkpoint management");
 
 cpCmd
