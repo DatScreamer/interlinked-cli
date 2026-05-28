@@ -1,12 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	deriveAdminUrl,
-	formatRecentEvents,
-	loadCloudConfigForCli,
-} from "../cloud.js";
+import { deriveAdminUrl, formatRecentEvents, loadCloudUrl } from "../cloud.js";
 
 describe("deriveAdminUrl", () => {
 	it("derives /admin/recent from the evaluate URL, preserving origin+port", () => {
@@ -58,7 +54,7 @@ describe("formatRecentEvents", () => {
 	});
 });
 
-describe("loadCloudConfigForCli", () => {
+describe("loadCloudUrl", () => {
 	let dir: string;
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "cloud-cli-test-"));
@@ -69,35 +65,29 @@ describe("loadCloudConfigForCli", () => {
 	});
 
 	it("returns null when config.local.json is missing", () => {
-		expect(loadCloudConfigForCli(dir)).toBeNull();
+		expect(loadCloudUrl(dir)).toBeNull();
 	});
 
 	it("returns null when there is no cloud_governor block", () => {
 		writeFileSync(join(dir, ".interlinked", "config.local.json"), JSON.stringify({ agent_name: "x" }));
-		expect(loadCloudConfigForCli(dir)).toBeNull();
+		expect(loadCloudUrl(dir)).toBeNull();
 	});
 
-	it("returns null when url or bearer_token is missing", () => {
+	it("returns null when the url is missing", () => {
 		writeFileSync(
 			join(dir, ".interlinked", "config.local.json"),
-			JSON.stringify({ cloud_governor: { url: "http://localhost:8787/governor/evaluate" } }),
+			JSON.stringify({ cloud_governor: { enabled: true, timeout_ms: 3000 } }),
 		);
-		expect(loadCloudConfigForCli(dir)).toBeNull();
+		expect(loadCloudUrl(dir)).toBeNull();
 	});
 
-	it("returns url + bearer_token when present", () => {
+	it("returns the url string when present", () => {
 		writeFileSync(
 			join(dir, ".interlinked", "config.local.json"),
 			JSON.stringify({
-				cloud_governor: {
-					url: "http://localhost:8787/governor/evaluate",
-					bearer_token: "tok",
-				},
+				cloud_governor: { url: "https://interlinked-cloud.example.workers.dev/governor/evaluate" },
 			}),
 		);
-		expect(loadCloudConfigForCli(dir)).toEqual({
-			url: "http://localhost:8787/governor/evaluate",
-			bearer_token: "tok",
-		});
+		expect(loadCloudUrl(dir)).toBe("https://interlinked-cloud.example.workers.dev/governor/evaluate");
 	});
 });

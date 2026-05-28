@@ -5,36 +5,28 @@
 //   recent   — GET /admin/recent from the configured cloud governor and
 //              render the most recent events + verdicts.
 //
-// Reads `cloud_governor.{url,bearer_token}` from
-// `.interlinked/config.local.json` (the same block the daemon's
-// cloud-forward path uses). This is the admin-side window into the
-// Supervisor DO's events table — see docs/design/cloud-governor-architecture.md
-// §4 (admin vs end-user POVs).
+// Reads `cloud_governor.url` from `.interlinked/config.local.json` and
+// authenticates with the OAuth access_token (the same token the daemon's
+// cloud-forward uses, set by `interlinked login`). /admin/recent is OAuth-
+// gated and returns events for the caller's own workspace (derived from the
+// token's props). See docs/design/cloud-governor-architecture.md §4.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveAuthToken } from "../lib/auth.js";
 import { c, relativeTime, table } from "../lib/formatter.js";
 
-export interface CloudCliConfig {
-	url: string;
-	bearer_token: string;
-}
-
-/** Read the cloud_governor block from config.local.json. Returns null when the
- *  file is missing, unparseable, or the block lacks url/bearer_token — callers
- *  print a setup hint in that case. */
-export function loadCloudConfigForCli(cwd: string): CloudCliConfig | null {
+/** Read cloud_governor.url from config.local.json. Returns null when the file
+ *  is missing, unparseable, or the block lacks a url. */
+export function loadCloudUrl(cwd: string): string | null {
 	try {
 		const path = join(cwd, ".interlinked", "config.local.json");
 		if (!existsSync(path)) return null;
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as { cloud_governor?: unknown };
 		const cg = parsed.cloud_governor;
 		if (!cg || typeof cg !== "object") return null;
-		const candidate = cg as { url?: unknown; bearer_token?: unknown };
-		if (typeof candidate.url !== "string" || typeof candidate.bearer_token !== "string") {
-			return null;
-		}
-		return { url: candidate.url, bearer_token: candidate.bearer_token };
+		const url = (cg as { url?: unknown }).url;
+		return typeof url === "string" && url.length > 0 ? url : null;
 	} catch {
 		return null;
 	}
@@ -94,6 +86,7 @@ interface RecentResponse {
 const FETCH_TIMEOUT_MS = 10_000;
 const EXIT_MISCONFIGURED = 2;
 const EXIT_UNREACHABLE = 1;
+const HTTP_UNAUTHORIZED = 401;
 
 export interface CloudRecentOpts {
 	cwd: string;
@@ -102,17 +95,22 @@ export interface CloudRecentOpts {
 }
 
 export async function cloudRecentCommand(opts: CloudRecentOpts): Promise<void> {
-	const config = loadCloudConfigForCli(opts.cwd);
-	if (!config) {
+	const url = loadCloudUrl(opts.cwd);
+	if (!url) {
 		process.stderr.write(
-			"error: no cloud_governor block in .interlinked/config.local.json.\n" +
-				'Add { "cloud_governor": { "url": "...", "bearer_token": "..." } } to use this command.\n',
+			"error: no cloud_governor.url in .interlinked/config.local.json.\n" +
+				'Add { "cloud_governor": { "enabled": true, "url": "https://…/governor/evaluate" } }.\n',
 		);
 		process.exit(EXIT_MISCONFIGURED);
 	}
+	const token = resolveAuthToken(opts.cwd);
+	if (!token) {
+		process.stderr.write("error: not authenticated — run `interlinked login` first.\n");
+		process.exit(EXIT_MISCONFIGURED);
+	}
 
-	const adminUrl = deriveAdminUrl(config.url, opts.limit);
-	const body = await fetchRecent(adminUrl, config.bearer_token);
+	const adminUrl = deriveAdminUrl(url, opts.limit);
+	const body = await fetchRecent(adminUrl, token);
 
 	if (opts.json) {
 		process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
@@ -128,11 +126,11 @@ export async function cloudRecentCommand(opts: CloudRecentOpts): Promise<void> {
 	process.stdout.write(`${formatRecentEvents(events)}\n`);
 }
 
-async function fetchRecent(adminUrl: string, bearerToken: string): Promise<RecentResponse> {
+async function fetchRecent(adminUrl: string, token: string): Promise<RecentResponse> {
 	let res: Response;
 	try {
 		res = await fetch(adminUrl, {
-			headers: { authorization: `Bearer ${bearerToken}` },
+			headers: { authorization: `Bearer ${token}` },
 			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
 	} catch (err) {
@@ -144,7 +142,7 @@ async function fetchRecent(adminUrl: string, bearerToken: string): Promise<Recen
 		process.exit(EXIT_UNREACHABLE);
 	}
 	if (!res.ok) {
-		const detail = res.status === 401 ? " (check bearer_token)" : "";
+		const detail = res.status === HTTP_UNAUTHORIZED ? " — token expired? run `interlinked login`" : "";
 		process.stderr.write(`error: cloud governor returned ${res.status} ${res.statusText}${detail}\n`);
 		process.exit(EXIT_UNREACHABLE);
 	}
