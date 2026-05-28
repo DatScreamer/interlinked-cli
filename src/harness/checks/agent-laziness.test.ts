@@ -466,6 +466,40 @@ await fetch(url, {
 	it("does not fire in test files", () => {
 		expect(checkFetchWithoutTimeout(`fetch(url);`, TEST)).toEqual([]);
 	});
+
+	it("does not fire on Cloudflare Worker entry handler (#17)", () => {
+		// `async fetch(request: Request, env, ctx)` is a method declaration on the
+		// default ExportedHandler — runtime invokes it on incoming requests; it's
+		// not a fetch() call.
+		const code = `export default {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		return new Response("ok");
+	},
+};`;
+		expect(checkFetchWithoutTimeout(code, TS)).toEqual([]);
+	});
+
+	it("does not fire on Worker handler without 'async' prefix", () => {
+		const code = `export default {
+	fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		return new Response("ok");
+	},
+};`;
+		expect(checkFetchWithoutTimeout(code, TS)).toEqual([]);
+	});
+
+	it("still fires on a real fetch() call inside a Worker handler body", () => {
+		const code = `export default {
+	async fetch(request: Request, env: Env): Promise<Response> {
+		const upstream = await fetch("https://example.com");
+		return upstream;
+	},
+};`;
+		// Two `fetch(` occurrences — the handler (skipped) AND the call (flagged).
+		const matches = checkFetchWithoutTimeout(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(matches[0].text).toContain("fetch()");
+	});
 });
 
 describe("checkUnboundedPromiseAll", () => {

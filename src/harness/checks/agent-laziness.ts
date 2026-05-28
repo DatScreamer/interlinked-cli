@@ -534,6 +534,12 @@ export function checkNodeEnvBranchInProd(content: string, filePath: string): Inl
 const FETCH_CALL_RE = /\bfetch\s*\(/;
 const AXIOS_CALL_RE = /\baxios\s*\.\s*(?:get|post|put|patch|delete|request)\s*\(/;
 const TIMEOUT_OR_SIGNAL_RE = /\b(?:signal|timeout|AbortSignal|AbortController)\b/;
+// Cloudflare Worker entry handler — `async fetch(request: Request, env: Env, ctx: ExecutionContext)`
+// or `fetch(req: Request, ...)` as a method on the default ExportedHandler. NOT a
+// `fetch()` call; the runtime invokes it on incoming requests. Detect by the
+// `: Request` typed parameter — that string essentially never appears inside a
+// fetch() function call.
+const FETCH_HANDLER_DECL_RE = /(?:^|\s|,)\(?\s*(?:async\s+)?fetch\s*\(\s*\w+\s*:\s*Request\b/;
 
 const FETCH_CONTEXT_LINES = 10;
 
@@ -558,6 +564,10 @@ export function checkFetchWithoutTimeout(content: string, filePath: string): Inl
 		const isFetch = FETCH_CALL_RE.test(strippedLines[i]);
 		const isAxios = AXIOS_CALL_RE.test(strippedLines[i]);
 		if (!isFetch && !isAxios) continue;
+		// Skip Cloudflare Worker entry handler — the `fetch(req: Request, ...)`
+		// method declaration on the default ExportedHandler is invoked by the
+		// runtime, not a `fetch()` call we'd want to add a timeout to.
+		if (isFetch && FETCH_HANDLER_DECL_RE.test(strippedLines[i])) continue;
 		if (fetchHasTimeoutInWindow(strippedLines, i)) continue;
 		const label = isFetch ? "fetch()" : "axios call";
 		matches.push({
