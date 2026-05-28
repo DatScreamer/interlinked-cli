@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "packages": {
+    "npm": {},
+    "pypi": {},
+    "cargo": {},
+    "rubygems": {},
+    "go": {}
+  },
+  "lockfile_snapshots": {
+    "package.json": {
+      "sha256": "c73e048c066a5d39df43a1e7e96e1bba69ff9af31d4127c95b187214c8c2e43d",
+      "approved_at": "2026-05-28T13:12:42.687Z",
+      "approved_by": "qcody",
+      "reason": "Initial cloud/ deps: typescript, @cloudflare/workers-types, vitest, wrangler — all individually approved"
+    }
+  }
+}

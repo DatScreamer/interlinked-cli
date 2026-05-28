@@ -6,6 +6,21 @@
         "approved_at": "2026-05-28T12:40:14.494Z",
         "approved_by": "qcody",
         "reason": "Cloudflare Workers CLI; updating to latest for cloud governor work"
+      },
+      "typescript": {
+        "approved_at": "2026-05-28T13:03:11.959Z",
+        "approved_by": "qcody",
+        "reason": "Cloud Worker TypeScript compilation"
+      },
+      "@cloudflare/workers-types": {
+        "approved_at": "2026-05-28T13:03:15.355Z",
+        "approved_by": "qcody",
+        "reason": "Cloudflare Workers TS types for cloud governor"
+      },
+      "vitest": {
+        "approved_at": "2026-05-28T13:06:03.114Z",
+        "approved_by": "qcody",
+        "reason": "Cloud Worker unit tests"
       }
     },
     "pypi": {},

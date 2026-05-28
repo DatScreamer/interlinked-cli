@@ -75,6 +75,7 @@ import { handleLifecycleEvent } from "./server/lifecycle-events.js";
 import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
 import { runPreToolPipeline } from "./server/pre-tool-pipeline.js";
 import { isBashTsc, tryTsgoRewrite } from "./server-tsgo-bash.js";
+import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import { daemonPathsFor } from "./session-paths.js";
@@ -665,9 +666,9 @@ async function processEvent(rawData: string): Promise<HarnessDecision> {
 
 		// Evaluate based on hook type
 		if (isPreToolUse(event)) {
-			const decision = await runPreToolPipeline(serverRuntime, event, session);
+			const local = await runPreToolPipeline(serverRuntime, event, session);
 			writeCollectionRecord(event);
-			return decision;
+			return forwardCloudPreToolUse(event, local);
 		}
 
 		if (isPostToolUse(event)) {

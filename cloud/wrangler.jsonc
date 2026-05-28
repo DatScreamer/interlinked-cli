@@ -1,0 +1,28 @@
+{
+  "name": "interlinked-cloud",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-05-28",
+  "account_id": "d6f63b7e2306adea17b338d4b6b4c739",
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "Supervisor", "name": "SUPERVISOR" },
+      { "class_name": "Facet", "name": "FACET" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Supervisor", "Facet"] }
+  ],
+  "vars": {
+    "ENVIRONMENT": "development"
+  }
+  // Future bindings (uncomment when wiring the corresponding capability):
+  //   "ai": { "binding": "AI" }                       — Tier 2 LLM policy gate
+  //   "vars": { "ANTHROPIC_API_KEY": "..." }          — Tier 3 deep review
+  //   Artifacts binding                                — project state snapshots
+  //   Sandbox SDK binding                              — mirror tool-based checks
+  // Secrets (set with `wrangler secret put`):
+  //   BEARER_TOKEN — required; the Worker rejects all requests without it
+}
