@@ -1,19 +1,23 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	type CloudGovernorConfig,
-	type CloudVerdict,
-	evaluateRemote,
-} from "../lib/cloud-governor.js";
+import { resolveAuthToken } from "../lib/auth.js";
+import { type CloudVerdict, evaluateRemote } from "../lib/cloud-governor.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
-// Module-cached config. v0: load once at first call, no hot-reload — restart
-// the daemon to pick up config changes. Sufficient for the opt-in dev path;
-// proper file-watcher hot-reload is a v0.1 follow-up.
-let cachedConfig: CloudGovernorConfig | null = null;
+// Static file-config for the cloud governor. The bearer is NO LONGER stored
+// here — it's the OAuth access_token from `interlinked login`, resolved fresh
+// per call via resolveAuthToken so a token refresh is picked up without a
+// daemon restart. Only these static settings are cached.
+interface CloudGovernorSettings {
+	enabled: boolean;
+	url: string;
+	timeout_ms?: number;
+}
+
+let cachedConfig: CloudGovernorSettings | null = null;
 let configLoaded = false;
 
-function loadCloudConfig(cwd: string): CloudGovernorConfig | null {
+function loadCloudConfig(cwd: string): CloudGovernorSettings | null {
 	if (configLoaded) return cachedConfig;
 	configLoaded = true;
 	try {
@@ -25,17 +29,13 @@ function loadCloudConfig(cwd: string): CloudGovernorConfig | null {
 		const candidate = cg as {
 			enabled?: unknown;
 			url?: unknown;
-			bearer_token?: unknown;
 			timeout_ms?: unknown;
 		};
 		if (typeof candidate.enabled !== "boolean") return null;
-		if (typeof candidate.url !== "string" || typeof candidate.bearer_token !== "string") {
-			return null;
-		}
+		if (typeof candidate.url !== "string") return null;
 		cachedConfig = {
 			enabled: candidate.enabled,
 			url: candidate.url,
-			bearer_token: candidate.bearer_token,
 			timeout_ms:
 				typeof candidate.timeout_ms === "number" ? candidate.timeout_ms : undefined,
 		};
@@ -70,7 +70,12 @@ export async function forwardCloudPreToolUse(
 	if (isMetaTestWrapper(event)) return localDecision;
 	const config = loadCloudConfig(cwd);
 	if (!config || !config.enabled) return localDecision;
-	const cloudVerdict = await evaluateRemote(event, config);
+	// The bearer is the OAuth access_token from `interlinked login`, resolved
+	// fresh each call. No token → not logged in → cloud governor is effectively
+	// off (fail-open to the local decision).
+	const token = resolveAuthToken(cwd);
+	if (!token) return localDecision;
+	const cloudVerdict = await evaluateRemote(event, { ...config, bearer_token: token });
 	return mergeCloudVerdict(localDecision, cloudVerdict);
 }
 
