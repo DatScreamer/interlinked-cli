@@ -207,7 +207,20 @@ The full reports below are the underlying source material the comparison was bui
 
 > Sources: [Codex hooks crate](https://github.com/openai/codex/tree/main/codex-rs/hooks), [config schema](https://github.com/openai/codex/blob/main/codex-rs/core/config.schema.json), [docs/config.md](https://github.com/openai/codex/blob/main/docs/config.md), [rust-v0.125.0 release](https://github.com/openai/codex/releases/tag/rust-v0.125.0), [codex config reference](https://developers.openai.com/codex/config-reference)
 
-**Configuration.** `config.toml` (TOML) under top-level `[hooks]` table, OR sibling `hooks.json` (JSON). Three discovery layers, low→high precedence: **system → user (`~/.codex/`) → project (`<repo>/.codex/`)** plus MDM-managed and session-flag layers. Schema (`HookEventsToml`): each event name is an array of `MatcherGroup { matcher: string?, hooks: HookHandlerConfig[] }`. Each handler is `{ type: "command"|"prompt"|"agent", command?, timeout?, async?, statusMessage? }`. Hooks are gated by `[features] hooks = true` (stable + `default_enabled: true` as of 2026-05; the legacy `[features] codex_hooks` key is still accepted but emits a deprecation warning per `codex-rs/features/src/lib.rs:836-841`).
+**Configuration.** `config.toml` (TOML) under top-level `[hooks]` table, OR sibling `hooks.json` (JSON). Three discovery layers, low→high precedence: **system → user (`~/.codex/`) → project (`<repo>/.codex/`)** plus MDM-managed and session-flag layers. Schema (`HookEventsToml`): each event name is an array of `MatcherGroup { matcher: string?, hooks: HookHandlerConfig[] }`. Each handler is `{ type: "command"|"prompt"|"agent", command?, timeout_sec?, async?, statusMessage? }`. Hooks are gated by `[features] hooks = true` (stable + `default_enabled: true` as of 2026-05; the legacy `[features] codex_hooks` key is still accepted but emits a deprecation warning per `codex-rs/features/src/lib.rs:836-841`).
+
+**Timeout default (verified 2026-05-26).** When `timeout_sec` is omitted in the TOML/JSON, the discovery layer at `codex-rs/hooks/src/engine/discovery.rs:457` resolves it to **600 seconds (10 minutes)** with a 1-second floor:
+```rust
+let timeout_sec = timeout_sec.unwrap_or(600).max(1);
+```
+Enforcement: the dispatcher wraps the spawned child process via `tokio::time::timeout(Duration::from_secs(handler.timeout_sec), child.wait_with_output())` in `codex-rs/hooks/src/engine/command_runner.rs:71-72`. On timeout the runner returns `error: Some(format!("hook timed out after {}s", handler.timeout_sec))`. The default is uniform across all hook events because the resolution happens at handler discovery, not at event dispatch.
+
+**Lifecycle event list.** Per `codex-rs/hooks/src/lib.rs:19-30`, `HOOK_EVENT_NAMES` is:
+```
+PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact,
+SessionStart, UserPromptSubmit, SubagentStart, SubagentStop, Stop
+```
+Notably **no `SessionEnd` event** — Codex's only end-of-work surface is `Stop`, which fires per-turn (not per-session). The legacy `notify` mechanism still exists for fire-and-forget after-turn notifications and is being superseded by `Stop`.
 
 **Lifecycle events** (6 from `HookEventsToml`):
 - `SessionStart` — sub-source `startup`/`resume`/`clear`.
