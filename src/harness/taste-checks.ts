@@ -438,6 +438,14 @@ export function checkHybridClass(content: string, filePath: string): InlineMatch
 			i++;
 			continue;
 		}
+		// Cloudflare DurableObject (and WorkerEntrypoint) base classes inherently
+		// combine state (SQLite via this.ctx.storage) and behavior (RPC methods)
+		// — that's the design center, not a hybrid-class smell.
+		if (/\bextends\s+(DurableObject|WorkerEntrypoint)\b/.test(sLines[i])) {
+			const end = findBlockEnd(sLines, i);
+			i = end + 1;
+			continue;
+		}
 		const end = findBlockEnd(sLines, i);
 		if (isHybrid(sLines.slice(i + 1, end))) push(matches, i, lines, 5);
 		i = end + 1;

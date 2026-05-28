@@ -242,6 +242,32 @@ describe("checkLawOfDemeter", () => {
 	});
 });
 
+describe("checkHybridClass — Cloudflare DurableObject exemption (#17)", () => {
+	it("skips classes extending DurableObject", () => {
+		const content = `export class Supervisor extends DurableObject<Env> {
+	now = Date.now();
+	async record() { return 1; }
+}`;
+		expect(checkHybridClass(content, "/src/dos/supervisor.ts")).toEqual([]);
+	});
+
+	it("skips classes extending WorkerEntrypoint", () => {
+		const content = `export class Hello extends WorkerEntrypoint<Env> {
+	count = 0;
+	async fetch() { return new Response("ok"); }
+}`;
+		expect(checkHybridClass(content, "/src/handlers/hello.ts")).toEqual([]);
+	});
+
+	it("still fires on a non-Worker hybrid class", () => {
+		const content = `export class UserStore {
+	users: User[] = [];
+	addUser(u: User) { this.users.push(u); }
+}`;
+		expect(checkHybridClass(content, "/src/store.ts").length).toBe(1);
+	});
+});
+
 describe("checkFlagArgument", () => {
 	it("flags positional boolean literal", () => {
 		const content = "doThing(x, true);";
