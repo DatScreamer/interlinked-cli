@@ -176,7 +176,7 @@ interlinked-cli/                         (the repo you're in)
 │   └── ...rest of the CLI...
 │
 └── cloud/                               (the Cloudflare Worker)
-    ├── wrangler.jsonc                   ← bindings: Supervisor + Facet DOs
+    ├── wrangler.jsonc                   ← binding: Supervisor DO
     ├── package.json                     ← own deps; npm workspace not used
     ├── tsconfig.json                    ← targets Workers, no Node types
     ├── vitest.config.ts                 ← own test runner
@@ -189,8 +189,7 @@ interlinked-cli/                         (the repo you're in)
         │   ├── evaluate.ts              ← Tier 1 deterministic rules
         │   └── evaluate.test.ts         ← 6 cases
         ├── dos/
-        │   ├── supervisor.ts            ← per-workspace DO with SQLite
-        │   └── facet.ts                 ← per-session DO scaffold
+        │   └── supervisor.ts            ← per-workspace DO with SQLite
         └── auth.test.ts                 ← 5 cases
 
 .interlinked/                            (per-repo state)
