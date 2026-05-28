@@ -1,5 +1,93 @@
 import { describe, expect, it } from "vitest";
-import { parseInstallCommands, splitShellSegments } from "./package-install-parser.js";
+import {
+	parseInstallCommands,
+	splitShellSegments,
+	stripRedirections,
+} from "./package-install-parser.js";
+
+describe("stripRedirections", () => {
+	it("drops `2>&1` FD-dup tokens", () => {
+		expect(stripRedirections(["npm", "install", "pkg", "2>&1"])).toEqual([
+			"npm",
+			"install",
+			"pkg",
+		]);
+	});
+
+	it("drops `>` operator AND the following filename token", () => {
+		expect(stripRedirections(["cmd", ">", "out.log"])).toEqual(["cmd"]);
+	});
+
+	it("drops `>>` operator AND the following filename token", () => {
+		expect(stripRedirections(["cmd", ">>", "out.log"])).toEqual(["cmd"]);
+	});
+
+	it("drops `>file` operator+file embedded as one token", () => {
+		expect(stripRedirections(["cmd", ">out.log"])).toEqual(["cmd"]);
+	});
+
+	it("drops `2>file` operator+FD+file embedded", () => {
+		expect(stripRedirections(["cmd", "2>err.log"])).toEqual(["cmd"]);
+	});
+
+	it("drops `&>` and `&>>` (combined stdout+stderr)", () => {
+		expect(stripRedirections(["cmd", "&>", "out"])).toEqual(["cmd"]);
+		expect(stripRedirections(["cmd", "&>>", "out"])).toEqual(["cmd"]);
+	});
+
+	it("drops `<file` input redirection", () => {
+		expect(stripRedirections(["cmd", "<input.txt"])).toEqual(["cmd"]);
+	});
+
+	it("drops `<<EOF` heredoc start (body handling is a separate concern)", () => {
+		expect(stripRedirections(["cmd", "<<EOF"])).toEqual(["cmd"]);
+	});
+
+	it("preserves package specs with version constraints — `<3.0` glued to name", () => {
+		// `pip install foo<3.0` tokenizes as `foo<3.0`; the token does NOT start
+		// with a redirection operator, so it survives.
+		expect(stripRedirections(["pip", "install", "foo<3.0"])).toEqual([
+			"pip",
+			"install",
+			"foo<3.0",
+		]);
+	});
+
+	it("is a no-op on commands with no redirections", () => {
+		expect(stripRedirections(["npm", "install", "lodash"])).toEqual([
+			"npm",
+			"install",
+			"lodash",
+		]);
+	});
+});
+
+describe("parseInstallCommands — regression: shell redirections (2026-05-28 #15)", () => {
+	it("npm install with `2>&1` no longer treats it as a package", () => {
+		const cmds = parseInstallCommands("npm install -g wrangler@latest 2>&1");
+		expect(cmds).toHaveLength(1);
+		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "wrangler", version: "latest" }]);
+	});
+
+	it("npm install with `> log` doesn't parse log as a package", () => {
+		const cmds = parseInstallCommands("npm install lodash > install.log");
+		expect(cmds).toHaveLength(1);
+		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+	});
+
+	it("npm install with `2>err.log` doesn't parse err.log as a package", () => {
+		const cmds = parseInstallCommands("npm install lodash 2>err.log");
+		expect(cmds).toHaveLength(1);
+		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+	});
+
+	it("compound command `npm install ... 2>&1 | tail` still parses the install correctly", () => {
+		const cmds = parseInstallCommands("npm install lodash 2>&1 | tail -15");
+		// tail isn't an install verb, so only the npm segment surfaces
+		expect(cmds).toHaveLength(1);
+		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+	});
+});
 
 describe("splitShellSegments", () => {
 	it("splits on ;, &&, ||, |, &", () => {

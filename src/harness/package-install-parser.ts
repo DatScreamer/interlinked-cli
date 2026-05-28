@@ -74,7 +74,7 @@ export function parseInstallCommands(rawCommand: string): InstallCommand[] {
  *  with no argument (those go HOME / OLDPWD — the script's cwd is the
  *  baseline we can't statically know). */
 function parseCdSegment(seg: string): string | null {
-	const t = tokenize(seg);
+	const t = stripRedirections(tokenize(seg));
 	const stripped = stripWrappers(t).tokens;
 	if (stripped.length < 2) return null;
 	if (stripped[0] !== "cd") return null;
@@ -139,6 +139,40 @@ export function splitShellSegments(s: string): string[] {
 	}
 	if (buf) out.push(buf);
 	return out.map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
+/** Strip shell-redirection tokens. Bash treats `2>&1`, `>file`, `<<EOF`, etc.
+ *  as redirection metadata, not command arguments — but our tokenizer only
+ *  splits on whitespace, so they appear in the token list and get mistaken
+ *  for positional package specs (bug: `npm install pkg 2>&1 | tail` parsed
+ *  `2>&1` as a package, blocking the install).
+ *
+ *  Forms handled:
+ *  - Pure operators (`>`, `>>`, `<`, `<<`, `<<<`, `<>`, `&>`, `&>>`, `2>`,
+ *    etc.) — drop the operator AND the following filename token.
+ *  - Operator + FD dup (`2>&1`, `1>&2`) — drop only the token (no separate
+ *    filename follows).
+ *  - Operator + embedded file (`>file`, `2>file`, `&>file`) — drop only the
+ *    token (filename is baked in).
+ *  - Process substitution (`<(cmd)`, `>(cmd)`) is NOT stripped here — that
+ *    runs a subshell which can matter for guard analysis; left as a future
+ *    refinement.
+ */
+const PURE_REDIR_RE = /^(?:&|\d+)?(?:>>?|<<?<?|<>)$/;
+const COMPOUND_REDIR_RE = /^(?:&|\d+)?(?:>>?|<<?<?|<>)\S+$/;
+
+export function stripRedirections(tokens: string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i];
+		if (PURE_REDIR_RE.test(t)) {
+			i++;
+			continue;
+		}
+		if (COMPOUND_REDIR_RE.test(t)) continue;
+		out.push(t);
+	}
+	return out;
 }
 
 function tokenize(seg: string): string[] {
@@ -302,7 +336,7 @@ function dropPreVerbFlags(
 }
 
 function parseOneSegment(seg: string): InstallCommand | null {
-	const tokens0 = tokenize(seg);
+	const tokens0 = stripRedirections(tokenize(seg));
 	if (tokens0.length === 0) return null;
 	const { tokens, envVars } = stripWrappers(tokens0);
 	if (tokens.length === 0) return null;
