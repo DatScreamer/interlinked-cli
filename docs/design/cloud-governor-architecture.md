@@ -5,6 +5,7 @@
 **Audience:** future-you (or any agent) asking "where does X live? what calls what? what is and isn't running?"
 
 **Companions:**
+
 - `harness-system-diagrams.md` — the local-kernel diagrams the cloud sits ON TOP of (not behind)
 - `tier-2-llm-policy-gate.md` / `tier-3-async-deep-review.md` — the next layers, designed but not built
 - The cloud governor v0 source: `cloud/` (Worker + DOs) + `src/lib/cloud-governor.ts` + `src/harness/cloud-forward.ts` + the one-liner in `src/harness/server.ts`
@@ -18,7 +19,7 @@
 
 ## 1. The big picture — top-to-bottom stack
 
-```
+```text
    ┌──────────────────────────────────────────────────────────────┐
    │                       AGENT (the model)                       │
    │  decides "run `cf dns records delete --id rec-abc`"           │
@@ -103,7 +104,7 @@ The boxes drawn `═` are processes that run continuously (the daemon and the Wo
 
 ## 2. Single-tool-call sequence — what happens in ~5ms
 
-```
+```text
  Agent       Runner        Hook          Daemon         Worker         DO
    │           │            │              │              │             │
    │  tool_use │            │              │              │             │
@@ -147,6 +148,7 @@ The boxes drawn `═` are processes that run continuously (the daemon and the Wo
 ```
 
 Time budget (typical on wrangler dev, localhost):
+
 - Hook → daemon (Unix socket): ~0.1ms
 - Daemon local eval: ~1-5ms
 - Daemon → Worker HTTPS round-trip: ~1ms (local) / ~50-200ms (production)
@@ -159,7 +161,7 @@ The "cloud doesn't block on DO write" property is what `ctx.waitUntil` gives us 
 
 ## 3. Where things live — file map
 
-```
+```text
 interlinked-cli/                         (the repo you're in)
 ├── src/
 │   ├── lib/
@@ -200,7 +202,7 @@ interlinked-cli/                         (the repo you're in)
 
 The admin and end-user touch the system at completely different points. Side-by-side:
 
-```
+```text
 ADMIN POV                                  END-USER POV
 ─────────                                  ────────────
 
@@ -255,7 +257,7 @@ The asymmetry is intentional: the cloud governor is a *governance* layer, not a 
 
 ## 5. What's running RIGHT NOW vs what's just designed
 
-```
+```text
         WHAT'S RUNNING                                   WHAT'S DESIGNED
         (binary + tests pass + observed working)         (memo only)
    ┌────────────────────────────────────┐         ┌────────────────────────────┐
