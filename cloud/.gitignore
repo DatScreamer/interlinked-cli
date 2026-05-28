@@ -5,3 +5,10 @@ worker-configuration.d.ts
 .env
 .env.local
 *.log
+
+# Harness runtime state created when interlinked hooks fire with cwd=cloud/.
+# Pure runtime cruft (sessions, logs, pids, a local config that may hold a
+# token) — never commit it. Mirrors the root repo's .interlinked carve-out:
+# only the committed package-allowlist.json is tracked.
+.interlinked/*
+!.interlinked/package-allowlist.json
