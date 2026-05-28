@@ -598,6 +598,35 @@ describe("evaluatePreToolUse", () => {
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
 		});
+
+		it("does not double-fire on `interlinked harness test \"<destructive>\"` wrapper (#16)", () => {
+			const event = makeEvent({
+				tool_input: { command: 'interlinked harness test "cf dns records delete --id abc"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+			// The wrapper's outer evaluation must NOT fire the inner cf-dns rule.
+			expect(result.warnings?.some((w) => w.includes("DNS"))).toBeFalsy();
+		});
+
+		it("skip applies to harness-test wrapper even with block-tier inner commands", () => {
+			const event = makeEvent({
+				tool_input: { command: 'interlinked harness test "wrangler delete my-worker"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("does NOT skip `interlinked harness restart` or other non-test subcommands", () => {
+			// `restart` is not `test` — should NOT short-circuit, though no rule fires on
+			// the restart command itself so the verdict is still allow. This just pins
+			// that the prefix match is exact on `test`.
+			const event = makeEvent({
+				tool_input: { command: "interlinked harness restart" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
 	});
 
 	// ===========================================

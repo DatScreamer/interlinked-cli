@@ -344,6 +344,21 @@ export function evaluatePreToolUse(
 	const warnings: string[] = [];
 	const toolName = event.tool_name || "";
 	const toolInput = event.tool_input || {};
+
+	// Meta-test wrapper short-circuit: `interlinked harness test "..."` is the
+	// CLI's own command for evaluating a synthetic tool call against the rule
+	// set. Re-evaluating the outer wrapper would double-fire — the inner
+	// quoted-string content matches rule regexes literally, surfacing warnings
+	// on the wrapper that belong to the inner event the wrapper will dispatch
+	// over the socket. Returning allow here skips the wrapper; the inner
+	// synthetic event still runs through the full pipeline normally.
+	if (toolName === "Bash" || toolName === "Shell" || toolName === "run_command") {
+		const command = typeof toolInput.command === "string" ? toolInput.command : "";
+		if (/^\s*interlinked\s+harness\s+test\b/.test(command)) {
+			return { decision: "allow" };
+		}
+	}
+
 	let pendingEscalation: EscalationRequest | undefined;
 	let pendingContentScan: ContentScanRequest | undefined;
 	let graphPredAdditionalContext: string | undefined;

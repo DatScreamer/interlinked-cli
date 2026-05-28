@@ -61,10 +61,27 @@ export async function forwardCloudPreToolUse(
 	localDecision: HarnessDecision,
 	cwd: string = process.cwd(),
 ): Promise<HarnessDecision> {
+	// Meta-test wrapper short-circuit — see `evaluator/pre-tool.ts` for the
+	// same skip applied locally. Cloud needs its own copy because the local
+	// evaluator returns allow on the wrapper (no warnings, no rule_id), which
+	// is indistinguishable from a normal allow to forwardCloud; without this,
+	// cloud's rule regexes still match the inner quoted-string content of the
+	// wrapper and meta-fire on the outer.
+	if (isMetaTestWrapper(event)) return localDecision;
 	const config = loadCloudConfig(cwd);
 	if (!config || !config.enabled) return localDecision;
 	const cloudVerdict = await evaluateRemote(event, config);
 	return mergeCloudVerdict(localDecision, cloudVerdict);
+}
+
+const META_TEST_RE = /^\s*interlinked\s+harness\s+test\b/;
+
+export function isMetaTestWrapper(event: HarnessEvent): boolean {
+	if (event.tool_name !== "Bash" && event.tool_name !== "Shell" && event.tool_name !== "run_command") {
+		return false;
+	}
+	const command = event.tool_input?.command;
+	return typeof command === "string" && META_TEST_RE.test(command);
 }
 
 // Merge a cloud verdict into the local HarnessDecision. Local authority:
