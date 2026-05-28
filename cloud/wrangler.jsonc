@@ -11,6 +11,10 @@
       { "class_name": "Supervisor", "name": "SUPERVISOR" }
     ]
   },
+  "kv_namespaces": [
+    // workers-oauth-provider grant/token store (encrypted props, hashed secrets).
+    { "binding": "OAUTH_KV", "id": "f61cfe4d7ce645ec84564bb0b3d010ed" }
+  ],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Supervisor", "Facet"] },
     // v0 scaffolded a Facet DO modelled as a per-session DATA partition. That
@@ -23,7 +27,9 @@
     { "tag": "v2", "deleted_classes": ["Facet"] }
   ],
   "vars": {
-    "ENVIRONMENT": "development"
+    "ENVIRONMENT": "development",
+    // GitHub OAuth App client id — public (sent in OAuth URLs), safe to commit.
+    "GITHUB_CLIENT_ID": "Ov23ctpuSM9wAaw52VlI"
   }
   // Future bindings (uncomment when wiring the corresponding capability):
   //   "ai": { "binding": "AI" }                       — Tier 2 LLM policy gate
@@ -31,5 +37,6 @@
   //   Artifacts binding                                — project state snapshots
   //   Sandbox SDK binding                              — mirror tool-based checks
   // Secrets (set with `wrangler secret put`):
-  //   BEARER_TOKEN — required; the Worker rejects all requests without it
+  //   GITHUB_CLIENT_SECRET — GitHub OAuth App secret (upstream identity)
+  //   BEARER_TOKEN — legacy shared bearer for /governor; removed in Auth D
 }

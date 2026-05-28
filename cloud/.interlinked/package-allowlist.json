@@ -1,7 +1,13 @@
 {
   "version": 1,
   "packages": {
-    "npm": {},
+    "npm": {
+      "@cloudflare/workers-oauth-provider": {
+        "approved_at": "2026-05-28T21:57:30.367Z",
+        "approved_by": "qcody",
+        "reason": "OAuth 2.1 provider framework for the cloud auth layer (GitHub upstream)"
+      }
+    },
     "pypi": {},
     "cargo": {},
     "rubygems": {},

@@ -1,4 +1,5 @@
 // interlinked-tdd: exempt
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import type { Supervisor } from "./dos/supervisor.js";
 
 export interface HookEvent {
@@ -20,8 +21,24 @@ export interface Verdict {
 	rule_id?: string;
 }
 
+// Identity carried in the OAuth grant props (end-to-end encrypted by
+// workers-oauth-provider, passed to the apiHandler on every authorized
+// request via this.ctx.props). workspaceId is DERIVED from the GitHub user
+// at login (ws_<githubId>) — never supplied by the client.
+export interface Props {
+	githubId: number;
+	login: string;
+	name?: string;
+	workspaceId: string;
+}
+
 export interface Env {
 	SUPERVISOR: DurableObjectNamespace<Supervisor>;
-	BEARER_TOKEN?: string;
+	OAUTH_KV: KVNamespace;
+	// Injected by workers-oauth-provider — the callback API (parseAuthRequest,
+	// completeAuthorization, lookupClient, ...).
+	OAUTH_PROVIDER: OAuthHelpers;
+	GITHUB_CLIENT_ID: string;
+	GITHUB_CLIENT_SECRET: string;
 	ENVIRONMENT?: string;
 }
