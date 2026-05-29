@@ -65,9 +65,16 @@ describe("scrubSecrets — pattern matching", () => {
 	});
 
 	it("detects generic api_key patterns", () => {
-		const result = scrubSecrets('config.api_key = "sk-abc123def456ghi789jkl012mno"');
+		const result = scrubSecrets('config.api_key = "AbCdEf123456789XyZ012345"');
 		expect(result.found).toBeGreaterThanOrEqual(1);
 		expect(result.types).toContain("generic_secret");
+	});
+
+	it("detects OpenAI-style sk- keys and 64-char hex secrets", () => {
+		const sk = scrubSecrets("token sk-ABCDEF0123456789abcdef0123456789");
+		expect(sk.types).toContain("openai_key");
+		const hex = scrubSecrets(`digest ${"a1b2c3d4".repeat(8)} done`);
+		expect(hex.types).toContain("hex_secret");
 	});
 
 	it("returns unchanged text with no secrets", () => {

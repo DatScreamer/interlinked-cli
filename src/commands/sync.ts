@@ -15,7 +15,7 @@ import {
 	updateSyncState,
 } from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
-import { loadScrubConfig, recordScrub, scrubSecrets } from "../lib/secrets.js";
+import { loadScrubConfig, recordScrub, scrubEgressPayload } from "../lib/secrets.js";
 
 const BATCH_SIZE = 100;
 const MAX_BATCH_RETRIES = 3;
@@ -189,24 +189,14 @@ export async function syncCommand(opts: {
 							: JSON.stringify(e.permission_suggestions);
 				if (e.agent_transcript_path)
 					payload.agent_transcript_path = e.agent_transcript_path;
-				// Scrub secrets from text fields
-				const scrubFields = [
-					"tool_input_summary",
-					"tool_input_json",
-					"tool_response_json",
-					"prompt",
-					"last_assistant_message",
-					"error_detail",
-				] as const;
-				for (const field of scrubFields) {
-					if (payload[field] && typeof payload[field] === "string") {
-						const result = scrubSecrets(payload[field] as string, scrubConfig);
-						if (result.found > 0) {
-							payload[field] = result.text;
-							totalScrubbed++;
-							recordScrub(result.types);
-						}
-					}
+				// Redact at the cloud boundary via the single shared egress scrubber
+				// (lib/secrets.ts): secrets on every string field + PII on
+				// prompt/thinking — identical contract to the hook egress paths, so
+				// `interlinked sync` can no longer leak PII the hook would have caught.
+				const scrub = scrubEgressPayload(payload, scrubConfig);
+				if (scrub.found > 0) {
+					totalScrubbed += scrub.found;
+					recordScrub(scrub.types);
 				}
 				return payload;
 			});

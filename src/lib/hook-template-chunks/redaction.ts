@@ -46,12 +46,51 @@ function redactSecrets(text) {
     return result;
 }
 
+// --- PII Redaction (natural-language fields only) ---
+// Applied to prompt + thinking — the user/model free-text where real PII lands.
+// Deliberately NOT applied to tool I/O (commands, file contents, stdout): that
+// is the observability payload, and masking it would corrupt data the operator
+// needs to read. Skip-lists mirror src/harness/checks/pii.ts so example domains
+// and private IPs survive. Runs after redactSecrets so already-masked tokens are
+// not re-scanned. Digit classes use [0-9] and literal dots use [.] to keep
+// backslash-escaping (and its emit-time pitfalls) to a minimum.
+function redactPii(text) {
+    if (!text || typeof text !== "string") return text;
+    let result = text;
+    // SSN (NNN-NN-NNNN) — high signal, low false-positive.
+    result = result.replace(/\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b/g, "[REDACTED:ssn]");
+    // Payment card — 16-digit (optionally grouped) and 15-digit Amex.
+    result = result.replace(/\\b[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}\\b/g, "[REDACTED:cc]");
+    result = result.replace(/\\b[0-9]{4}[ -]?[0-9]{6}[ -]?[0-9]{5}\\b/g, "[REDACTED:cc]");
+    // Email — skip example/noreply domains and localhost.
+    result = result.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}/g, (m) => {
+        if (/noreply|example[.](?:com|org|net)|test[.]com|localhost/i.test(m)) return m;
+        return "[REDACTED:email]";
+    });
+    // US phone — require separators so plain digit runs / IDs do not match.
+    result = result.replace(/\\b[(]?[0-9]{3}[)]?[-. ][0-9]{3}[-. ][0-9]{4}\\b/g, "[REDACTED:phone]");
+    // IPv4 — mask public addresses only; loopback / private / link-local survive.
+    result = result.replace(/\\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)[.]){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b/g, (m) => {
+        if (/^(?:0[.]|10[.]|127[.]|169[.]254[.]|192[.]168[.]|172[.](?:1[6-9]|2[0-9]|3[01])[.]|255[.])/.test(m)) return m;
+        return "[REDACTED:ip]";
+    });
+    return result;
+}
+
 const SCRUB_FIELDS = ["tool_input_summary", "tool_input_json", "tool_response_json", "prompt", "last_assistant_message", "error_message", "error_detail", "custom_instructions", "permission_suggestions", "thinking", "stderr", "stdout"];
+// PII masking is scoped to natural-language fields only (see redactPii) so tool
+// I/O — the observability payload — is never mangled.
+const PII_FIELDS = ["prompt", "thinking"];
 
 function scrubPayload(obj) {
     for (const key of SCRUB_FIELDS) {
         if (obj[key] && typeof obj[key] === "string") {
             obj[key] = redactSecrets(obj[key]);
+        }
+    }
+    for (const key of PII_FIELDS) {
+        if (obj[key] && typeof obj[key] === "string") {
+            obj[key] = redactPii(obj[key]);
         }
     }
     return obj;

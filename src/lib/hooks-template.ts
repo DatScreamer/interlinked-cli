@@ -1073,7 +1073,9 @@ ${PROVIDER_RESPONSES_CHUNK}
             stop_hook_active: event.stop_hook_active || undefined,
             permission_suggestions: event.permission_suggestions ? (typeof event.permission_suggestions === "string" ? event.permission_suggestions : JSON.stringify(event.permission_suggestions)) : undefined,
             agent_transcript_path: event.agent_transcript_path || undefined,
-            thinking: event.thinking || undefined,
+            // Bounded copy for the server; the full reasoning trace stays in
+            // the local activity.jsonl (extractNewThinking is uncapped). "Local for now."
+            thinking: event.thinking ? truncate(event.thinking, 4000) : undefined,
         };
 
         // Scrub secrets before sending to server

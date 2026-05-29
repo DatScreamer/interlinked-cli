@@ -44,7 +44,6 @@ function classifyTool(toolName: string): ToolClass {
 const PRE_EVENT_TYPES = new Set(["tool_use_start", "permission_request"]);
 const POST_EVENT_TYPES = new Set(["tool_use", "tool_use_error"]);
 const TOOL_EVENT_TYPES = new Set([...PRE_EVENT_TYPES, ...POST_EVENT_TYPES]);
-const GUARD_SCHEMA_VERSION = 3;
 
 const GEMINI_HOOK_EVENTS = new Set(["BeforeTool", "AfterTool"]);
 
@@ -382,8 +381,11 @@ function buildGit(event: JsonObject): GitContext | null {
  */
 export function buildCollectionRecord(event: JsonObject): CollectionRecord | null {
 	const eventType = String(event.event_type || event.type || "");
+	// Guard telemetry (guard_allow/guard_warn/guard_block) is local-only and is
+	// never collected — keyed on record TYPE (either discriminator field), not
+	// schema_version (the version is the log-format version, shared across families).
+	if (eventType.startsWith("guard_") || String(event.type || "").startsWith("guard_")) return null;
 	if (!TOOL_EVENT_TYPES.has(eventType)) return null;
-	if (event.schema_version === GUARD_SCHEMA_VERSION) return null;
 
 	const toolName = String(event.tool_name || event.tool || "");
 	if (!toolName) return null;

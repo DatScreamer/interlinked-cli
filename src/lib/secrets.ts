@@ -7,6 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config.js";
+import type { JsonObject } from "./json-types.js";
 
 // ===========================================
 // Types
@@ -41,8 +42,12 @@ const BUILTIN_PATTERNS: SecretPattern[] = [
 		name: "aws_secret",
 		regex: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}/g,
 	},
-	{ name: "github_token", regex: /gh[ps]_[A-Za-z0-9_]{36,}/g },
+	{ name: "github_token", regex: /gh[psor]_[A-Za-z0-9_]{36,}/g },
 	{ name: "github_pat", regex: /github_pat_[A-Za-z0-9_]{22,}/g },
+	// OpenAI-style sk- keys + 64-char hex secrets — parity with the hook's
+	// inline SECRET_PATTERNS, which caught these but BUILTIN_PATTERNS missed.
+	{ name: "openai_key", regex: /sk-[A-Za-z0-9_-]{20,}/g },
+	{ name: "hex_secret", regex: /\b[0-9a-fA-F]{64}\b/g },
 	{ name: "jwt", regex: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g },
 	{ name: "private_key", regex: /-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g },
 	{
@@ -196,6 +201,132 @@ export function scrubSecrets(text: string, opts?: ScrubConfig): ScrubResult {
 	}
 
 	return { text: scrubbed, found, types: foundTypes };
+}
+
+// ===========================================
+// PII Redaction (canonical source)
+// ===========================================
+// Applied ONLY to natural-language fields (prompt/thinking); secrets are
+// scrubbed on every string field. These patterns are the SINGLE SOURCE OF
+// TRUTH — the self-contained `.mjs` hook (REDACTION_CHUNK) mirrors them, and
+// `__tests__/redaction-parity.test.ts` behaviorally pins the two implementations
+// identical so they can't drift. Digit classes use [0-9] and literal dots use
+// [.] to match the mirror exactly (the .mjs template avoids extra backslashes).
+
+interface PiiPattern {
+	name: string;
+	regex: RegExp;
+	skip?: RegExp;
+}
+
+const PII_PATTERNS: PiiPattern[] = [
+	{ name: "ssn", regex: /\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/g },
+	{ name: "cc", regex: /\b[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}\b/g },
+	{ name: "cc", regex: /\b[0-9]{4}[ -]?[0-9]{6}[ -]?[0-9]{5}\b/g },
+	{
+		name: "email",
+		regex: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}/g,
+		skip: /noreply|example[.](?:com|org|net)|test[.]com|localhost/i,
+	},
+	{ name: "phone", regex: /\b[(]?[0-9]{3}[)]?[-. ][0-9]{3}[-. ][0-9]{4}\b/g },
+	{
+		name: "ip",
+		regex: /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)[.]){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g,
+		skip: /^(?:0[.]|10[.]|127[.]|169[.]254[.]|192[.]168[.]|172[.](?:1[6-9]|2[0-9]|3[01])[.]|255[.])/,
+	},
+];
+
+/**
+ * Redact PII from natural-language text. Behavioral mirror of the hook's
+ * inline `redactPii` (pinned by redaction-parity.test.ts). Used at egress for
+ * the prompt/thinking fields only — never on tool I/O (avoids mangling code/logs).
+ */
+export function redactPii(text: string): ScrubResult {
+	if (!text) return { text, found: 0, types: [] };
+	let scrubbed = text;
+	const types: string[] = [];
+	let found = 0;
+	for (const { name, regex, skip } of PII_PATTERNS) {
+		regex.lastIndex = 0;
+		scrubbed = scrubbed.replace(regex, (m) => {
+			if (skip?.test(m)) return m;
+			if (!types.includes(name)) types.push(name);
+			found++;
+			return `[REDACTED:${name}]`;
+		});
+	}
+	return { text: scrubbed, found, types };
+}
+
+// ===========================================
+// Egress payload scrub (single entry point for every egress path)
+// ===========================================
+// Secrets on every string carrier; PII on natural-language fields. The realtime
+// POST, batch sync (both via the .mjs mirror), `interlinked sync`, and the
+// daemon server-bridge all route their server-bound payloads through this one
+// contract — so no egress path can silently skip a redaction layer. This is the
+// cloud-boundary scrub the two-tier model (raw local / redacted egress) relies on.
+
+/** String fields scrubbed for secrets at egress. Mirrors the hook's SCRUB_FIELDS. */
+const EGRESS_SECRET_FIELDS = [
+	"tool_input_summary",
+	"tool_input_json",
+	"tool_response_json",
+	"prompt",
+	"last_assistant_message",
+	"error_message",
+	"error_detail",
+	"custom_instructions",
+	"permission_suggestions",
+	"thinking",
+	"stderr",
+	"stdout",
+] as const;
+
+/** Natural-language fields additionally scrubbed for PII. Mirrors the hook's PII_FIELDS. */
+const EGRESS_PII_FIELDS = ["prompt", "thinking"] as const;
+
+export interface EgressScrubStats {
+	found: number;
+	types: string[];
+}
+
+/**
+ * Scrub a server-bound payload IN PLACE: secrets on every string field, PII on
+ * the natural-language fields. Call on EVERY egress payload.
+ */
+export function scrubEgressPayload(
+	payload: JsonObject,
+	config?: ScrubConfig,
+): EgressScrubStats {
+	const cfg = config ?? loadScrubConfig();
+	const types: string[] = [];
+	let found = 0;
+	const note = (r: ScrubResult) => {
+		found += r.found;
+		for (const t of r.types) if (!types.includes(t)) types.push(t);
+	};
+	for (const field of EGRESS_SECRET_FIELDS) {
+		const value = payload[field];
+		if (typeof value === "string" && value) {
+			const r = scrubSecrets(value, cfg);
+			if (r.found > 0) {
+				payload[field] = r.text;
+				note(r);
+			}
+		}
+	}
+	for (const field of EGRESS_PII_FIELDS) {
+		const value = payload[field];
+		if (typeof value === "string" && value) {
+			const r = redactPii(value);
+			if (r.found > 0) {
+				payload[field] = r.text;
+				note(r);
+			}
+		}
+	}
+	return { found, types };
 }
 
 /**

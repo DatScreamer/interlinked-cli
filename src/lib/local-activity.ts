@@ -51,8 +51,10 @@ export interface LocalActivityEvent {
 	session?: string | null;
 	hook?: string | null;
 
-	// v2 additions
-	schema_version?: 2 | 3;
+	// v2 additions. schema_version is the LOG-FORMAT version, shared across
+	// record families (activity events + guard telemetry). Family is keyed on
+	// `type`, never on this number. Historical: 2, 3 (guard), 4 (activity); 5 unified.
+	schema_version?: 2 | 3 | 4 | 5;
 	trace_id?: string;
 	parent_agent?: string;
 	subagent_id?: string;

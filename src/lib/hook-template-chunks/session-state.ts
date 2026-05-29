@@ -401,7 +401,6 @@ function maybeRollupRulesStats() {
 // hook invocation. Uses a byte-offset cursor persisted to disk so the
 // short-lived hook process only reads incremental content.
 const THINKING_CURSOR_PATH = join(DATA_DIR, "thinking-cursor.json");
-const THINKING_MAX_LEN = 4000;
 
 function extractNewThinking(transcriptPath) {
     if (!transcriptPath || !existsSync(transcriptPath)) return null;
@@ -446,9 +445,10 @@ function extractNewThinking(transcriptPath) {
         if (thinkingParts.length === 0) return null;
 
         let combined = thinkingParts.join("\\n---\\n");
-        if (combined.length > THINKING_MAX_LEN) {
-            combined = combined.slice(0, THINKING_MAX_LEN) + "... [truncated]";
-        }
+        // No cap: the full reasoning trace is captured locally (scrubbed for
+        // secrets + PII by scrubPayload in appendLocal). The server-bound copy
+        // is bounded separately at the realtime-payload site, so uncapping here
+        // does not increase what leaves the machine.
         return combined;
     } catch {
         return null;
@@ -571,12 +571,19 @@ function readPreviousGuardHash() {
 }
 
 // --- Local JSONL append (full capture, sync) ---
+// Unified log-format version for activity.jsonl. BOTH record families —
+// activity/lifecycle events (appendLocal) and guard decisions
+// (appendGuardDecision) — share this one version. The record FAMILY is
+// distinguished by \`type\` (guard_* vs tool_use/user_prompt/...), never by the
+// version number. (Historically activity=4, guard=3; unified to 5 so the
+// number means "format", and \`type\` means "family".)
+const ACTIVITY_SCHEMA_VERSION = 5;
 function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey) {
     try {
         const dir = dirname(ACTIVITY_PATH);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         const record = {
-            schema_version: 4,
+            schema_version: ACTIVITY_SCHEMA_VERSION,
             ts: new Date().toISOString(),
             agent: agentName || "unknown",
             workspace_key: workspaceKey || null,
@@ -682,7 +689,7 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         const typeMap = { block: "guard_block", warn: "guard_warn", allow: "guard_allow" };
         const record = {
-            schema_version: 3,
+            schema_version: ACTIVITY_SCHEMA_VERSION,
             ts: new Date().toISOString(),
             agent: agentName || "unknown",
             workspace_key: workspaceKey || null,

@@ -36,7 +36,6 @@ function collectionClassifyTool(toolName) {
 const COLLECTION_PRE_EVENTS = new Set(["tool_use_start", "permission_request"]);
 const COLLECTION_POST_EVENTS = new Set(["tool_use", "tool_use_error"]);
 const COLLECTION_TOOL_EVENTS = new Set([...COLLECTION_PRE_EVENTS, ...COLLECTION_POST_EVENTS]);
-const COLLECTION_GUARD_SCHEMA = 3;
 
 function collectionDetectPhase(eventType) {
     if (COLLECTION_PRE_EVENTS.has(eventType)) return "pre";
@@ -191,8 +190,11 @@ function collectionBuildFidelity(phase, toolClass, observation, resp, event) {
 
 function buildCollectionRecord(event) {
     const eventType = String(event.event_type || event.type || "");
+    // Guard telemetry (guard_allow/guard_warn/guard_block) is local-only and is
+    // never collected — keyed on record TYPE (either discriminator field), not
+    // schema_version (the version is the log-format version, shared across families).
+    if (eventType.startsWith("guard_") || String(event.type || "").startsWith("guard_")) return null;
     if (!COLLECTION_TOOL_EVENTS.has(eventType)) return null;
-    if (event.schema_version === COLLECTION_GUARD_SCHEMA) return null;
 
     const toolName = String(event.tool_name || event.tool || "");
     if (!toolName) return null;

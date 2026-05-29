@@ -35,10 +35,27 @@ describe("buildCollectionRecord — tool class detection", () => {
 		expect(buildCollectionRecord(baseEvent({ event_type: "notification" }))).toBeNull();
 	});
 
-	it("returns null for guard telemetry", () => {
-		expect(
-			buildCollectionRecord(baseEvent({ event_type: "guard_block", schema_version: 3 })),
-		).toBeNull();
+	it("returns null for guard telemetry regardless of schema_version (type-based, not version-based)", () => {
+		// Guard exclusion is keyed on record TYPE (guard_*), not the version
+		// number. After the schema unification, guard records carry version 5
+		// (was 3); the exclusion must hold across every historical version.
+		for (const schema_version of [3, 4, 5, undefined]) {
+			for (const event_type of ["guard_block", "guard_warn", "guard_allow"]) {
+				expect(
+					buildCollectionRecord(baseEvent({ event_type, schema_version })),
+					`event_type=${event_type} schema_version=${schema_version}`,
+				).toBeNull();
+			}
+		}
+	});
+
+	it("collects tool events regardless of schema_version (version = format, family = type)", () => {
+		for (const schema_version of [3, 4, 5]) {
+			const rec = buildCollectionRecord(
+				baseEvent({ tool_name: "Bash", tool_input: { command: "ls" }, schema_version }),
+			);
+			expect(rec, `schema_version=${schema_version}`).not.toBeNull();
+		}
 	});
 
 	it.each([

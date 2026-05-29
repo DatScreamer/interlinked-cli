@@ -32,8 +32,10 @@ export interface ActivityEvent {
 	duration_ms?: number;
 	_source?: string;
 
-	// v2 fields
-	schema_version?: 2;
+	// v2 fields. schema_version is the LOG-FORMAT version (shared across record
+	// families); the record family is keyed on `type`, not this number.
+	// Historical: 2, 3 (guard), 4 (activity); 5 unified.
+	schema_version?: 2 | 3 | 4 | 5;
 	trace_id?: string;
 	parent_agent?: string;
 	subagent_id?: string;

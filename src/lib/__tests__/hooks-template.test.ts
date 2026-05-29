@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -284,5 +284,113 @@ describe("buildHookScript", () => {
 		expect(String(parsed.agent_message || parsed.user_message || "")).toMatch(
 			/BLOCKED|recursive|rm -rf/i,
 		);
+	});
+
+	it("embeds PII redaction scoped to prompt + thinking", () => {
+		const out = buildHookScript("v");
+		expect(out).toContain("function redactPii");
+		expect(out).toContain("[REDACTED:ssn]");
+		expect(out).toContain("[REDACTED:email]");
+		// PII masking must be scoped to natural-language fields, never tool I/O.
+		expect(out).toContain('const PII_FIELDS = ["prompt", "thinking"]');
+	});
+
+	it("captures full thinking locally (no 4000-char cap) but bounds the server copy", () => {
+		const out = buildHookScript("v");
+		// The local capture path must no longer reference the retired cap constant.
+		expect(out).not.toContain("THINKING_MAX_LEN");
+		// The server-bound realtime payload stays bounded so full reasoning
+		// traces do not leave the machine ("store locally for now").
+		expect(out).toContain("truncate(event.thinking, 4000)");
+	});
+
+	it("masks PII in prompt + thinking before activity.jsonl, and stores full untruncated thinking", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-pii-e2e-"));
+		const interlinkedDir = join(tempDir, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+		writeFileSync(
+			join(interlinkedDir, "config.local.json"),
+			JSON.stringify({ sync_mode: "local", agent_name: "pii-test-agent" }),
+		);
+		// Pretend a harness is "alive" so the hook doesn't spin on retry — we
+		// only care about the local write path here (mirrors the Cursor e2e).
+		writeFileSync(join(interlinkedDir, "harness.pid"), String(process.pid));
+		writeFileSync(join(interlinkedDir, "harness.sock"), "");
+
+		// A transcript whose assistant thinking block exceeds the old 4000 cap
+		// and carries PII — proves (a) no truncation, (b) PII masking on thinking.
+		const longThinking =
+			"reasoning step ".repeat(400) +
+			" my ssn is 521-44-8190 and email jane.real@acme.com end";
+		const transcriptPath = join(tempDir, "transcript.jsonl");
+		writeFileSync(
+			transcriptPath,
+			`${JSON.stringify({
+				type: "assistant",
+				message: { content: [{ type: "thinking", thinking: longThinking }] },
+			})}\n`,
+		);
+
+		const scriptPath = join(tempDir, "hook.mjs");
+		writeFileSync(scriptPath, buildHookScript("test"));
+
+		const payload = {
+			hook_event_name: "UserPromptSubmit",
+			session_id: "pii-e2e-session",
+			cwd: tempDir,
+			transcript_path: transcriptPath,
+			prompt: "reach me at 521-44-8190 or jane.real@acme.com",
+		};
+
+		const res = spawnSync(process.execPath, [scriptPath], {
+			input: JSON.stringify(payload),
+			encoding: "utf-8",
+			cwd: tempDir,
+			env: {
+				...process.env,
+				INTERLINKED_HOME: interlinkedDir,
+				INTERLINKED_DATA_DIR: interlinkedDir,
+				INTERLINKED_CLIENT: "claude",
+			},
+			timeout: 10_000,
+		});
+		expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+
+		const activityPath = join(interlinkedDir, "activity.jsonl");
+		expect(existsSync(activityPath), `no activity.jsonl; stderr=${res.stderr}`).toBe(true);
+		const records = readFileSync(activityPath, "utf-8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l));
+
+		const withPrompt = records.find((r) => typeof r.prompt === "string");
+		expect(withPrompt, `no prompt record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
+		expect(withPrompt.prompt).toContain("[REDACTED:ssn]");
+		expect(withPrompt.prompt).toContain("[REDACTED:email]");
+		expect(withPrompt.prompt).not.toContain("521-44-8190");
+		expect(withPrompt.prompt).not.toContain("jane.real@acme.com");
+
+		const withThinking = records.find((r) => typeof r.thinking === "string");
+		expect(withThinking, `no thinking record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
+		// Full-fidelity: longer than the retired 4000-char cap, no truncation marker.
+		expect(withThinking.thinking.length).toBeGreaterThan(4000);
+		expect(withThinking.thinking).not.toContain("... [truncated]");
+		// PII masked inside the thinking trace too.
+		expect(withThinking.thinking).toContain("[REDACTED:ssn]");
+		expect(withThinking.thinking).toContain("[REDACTED:email]");
+		expect(withThinking.thinking).not.toContain("521-44-8190");
+	});
+
+	it("emits one unified activity schema_version for both record families", () => {
+		const out = buildHookScript("v");
+		// Single source of truth for the log-format version, used by BOTH writers:
+		// appendLocal (activity events) + appendGuardDecision (guard telemetry).
+		expect(out).toContain("const ACTIVITY_SCHEMA_VERSION = 5");
+		expect(out).toContain("schema_version: ACTIVITY_SCHEMA_VERSION");
+		// No stray hard-coded family versions remain (was activity=4 / guard=3).
+		expect(out).not.toContain("schema_version: 3,");
+		expect(out).not.toContain("schema_version: 4,");
+		// Guard exclusion from collection.jsonl is keyed on record TYPE, not version.
+		expect(out).toContain('eventType.startsWith("guard_")');
 	});
 });
