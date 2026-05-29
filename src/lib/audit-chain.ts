@@ -24,6 +24,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { getDataDir } from "./config.js";
 
 export const GENESIS_HASH = "0".repeat(64);
@@ -98,6 +99,40 @@ export function getActivityPath(cwd: string = process.cwd()): string {
 }
 
 /**
+ * Read archived audit lines (compacted segments) in manifest order, gunzipped.
+ * `interlinked compact` moves a synced, pre-audit-tail PREFIX of activity.jsonl
+ * into .interlinked/archive/<seq>.jsonl.gz; the hash chain spans those segments
+ * plus the live file, so verification must read them first. The writer is
+ * src/commands/compact.ts.
+ */
+function readArchivedAuditLines(cwd: string): string[] {
+	const dir = join(getDataDir(cwd), "archive");
+	const manifestPath = join(dir, "manifest.json");
+	if (!existsSync(manifestPath)) return [];
+	let parsed: { segments?: Array<{ file?: string; seq?: number }> };
+	try {
+		parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
+	} catch {
+		return [];
+	}
+	const segments = Array.isArray(parsed.segments) ? [...parsed.segments] : [];
+	segments.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+	const lines: string[] = [];
+	for (const seg of segments) {
+		if (typeof seg.file !== "string") continue;
+		try {
+			const text = gunzipSync(readFileSync(join(dir, seg.file))).toString("utf-8");
+			for (const ln of text.split("\n")) {
+				if (ln.trim()) lines.push(ln);
+			}
+		} catch {
+			/* intentional: skip an unreadable segment rather than abort verify */
+		}
+	}
+	return lines;
+}
+
+/**
  * Walk activity.jsonl forward, treating guard_* entries with a `hash` field
  * as chain links. Returns the first integrity failure (or success at end).
  *
@@ -106,31 +141,25 @@ export function getActivityPath(cwd: string = process.cwd()): string {
  */
 export function verifyAuditChain(cwd: string = process.cwd()): AuditVerifyResult {
 	const path = getActivityPath(cwd);
-	if (!existsSync(path)) {
-		return {
-			valid: true,
-			total_events: 0,
-			guard_events: 0,
-			chained_events: 0,
-			unchained_guard_events: 0,
-		};
+	const archivedLines = readArchivedAuditLines(cwd);
+
+	let liveLines: string[] = [];
+	if (existsSync(path)) {
+		try {
+			liveLines = readFileSync(path, "utf-8").split("\n");
+		} catch (err) {
+			return {
+				valid: false,
+				total_events: 0,
+				guard_events: 0,
+				chained_events: 0,
+				unchained_guard_events: 0,
+				first_bad_reason: `activity.jsonl unreadable: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
 	}
 
-	let contents: string;
-	try {
-		contents = readFileSync(path, "utf-8");
-	} catch (err) {
-		return {
-			valid: false,
-			total_events: 0,
-			guard_events: 0,
-			chained_events: 0,
-			unchained_guard_events: 0,
-			first_bad_reason: `activity.jsonl unreadable: ${err instanceof Error ? err.message : String(err)}`,
-		};
-	}
-
-	const lines = contents.split("\n");
+	const lines = [...archivedLines, ...liveLines];
 	let totalEvents = 0;
 	let guardEvents = 0;
 	let chainedEvents = 0;

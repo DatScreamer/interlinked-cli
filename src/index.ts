@@ -9,6 +9,7 @@ import { activityCommand } from "./commands/activity.js";
 import { attachCommand } from "./commands/attach.js";
 import { registerCiCommand } from "./commands/ci-status.js";
 import { cleanCommand } from "./commands/clean.js";
+import { registerCompactCommand } from "./commands/compact.js";
 import { disableCommand } from "./commands/disable.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { enableCommand } from "./commands/enable.js";
@@ -1070,6 +1071,8 @@ program
 	.option("--limit <n>", "Max events to sync")
 	.option("--json", "Machine-readable output")
 	.action(syncCommand);
+
+registerCompactCommand(program);
 
 const tasksCmd = program
 	.command("tasks")
