@@ -2,6 +2,12 @@
 
 **Purpose:** visual reference for how the verification harness fires at each stage of the agentic loop, what substrates each stage reads from, and how the 16 verification modalities map to (purpose, stage, local/cloud). Read top-to-bottom.
 
+> ⚠️ **Read this as a roadmap, not an as-built diagram.** The loop diagrams (§1–§2) draw the **target** architecture; a large share is designed-not-built. Each section below now carries a **ground-truth status table** marking every box against the actual code (verified 2026-05-29). The load-bearing gap: the §1 budget/banding and **smart-selection (§13) are not built**, so §1 is — in this doc's own words (see "How to read this together") — "a slogan, not a system" until §13 exists. Heavy verification (mutation, coverage, test runs) **cannot run synchronously** (`docs/plans/10-mutation-testing.md`) and must live at async-PostToolUse / Stop / pre-push / cloud, not inside the PreToolUse window.
+>
+> **Status legend (used in every table below):** ✅ shipped (running today, with tests) · 🟡 partial (a related mechanism exists, but not in the shape/stage drawn) · ⬜ designed-not-built (plan/doc only) · ❌ wrong (contradicts the code or another design doc) · ☁️ cloud-future (v3.2 Phase 4+, not local-kernel).
+>
+> **Built today:** the synchronous guard pass (rules, secrets, package-allowlist, grep-accel), the Supermodel import/call graph + blast radius, the `structure/` knowledge graph, the per-file coverage + CRAP + large-file baselines, the full test-hygiene / TDD-state / sequence-check family, and the Stop reflection nudges. **Not built:** the 30s budget, the INSTANT/FAST/SELECTED bands, smart-selection, in-loop test/coverage/mutation execution, the persistent receipt ledger, the per-test coverage map, and the entire pre-push / CI / Tier-4 / Tier-5 tail.
+
 **Companions:**
 - `docs/design/test-quality-harness-local-first.md` — the local-first kernel (Phases 0–3.7) these diagrams describe.
 - `docs/test-quality-harness-plan.md` — the full v3.2 plan; cloud Tier 2 substrate sits *additive* on top of what's here.
@@ -11,7 +17,7 @@
 
 ---
 
-## 1. Inner loop — per tool use (the 30s PreToolUse window)
+## 1. Inner loop — per tool use (the 30s PreToolUse window) · TARGET STATE (see §1 status table below)
 
 ```
                        AGENT ┐
@@ -84,7 +90,28 @@
                              └──→ LOOP BACK (next tool use)
 ```
 
-## 2. Outer loop — per session / per push / nightly
+### §1 ground truth — what fires at PreToolUse / PostToolUse today (verified 2026-05-29)
+
+| Diagram box | Status | Reality |
+|---|---|---|
+| 30s / 25s PreToolUse budget | ❌ | `pre-tool-pipeline.ts` is a synchronous guard pass; no budget concept exists |
+| INSTANT / FAST / SELECTED bands | ❌ | No band scheduler in code |
+| Smart selection (§13) — rank → admit ≤25s | ⬜ | **Zero code.** The load-bearing component |
+| INSTANT · shape checks (`.only`, `it.skip`, assertion density) | ✅ | `focused_tests` (pre_block/error), `disabled_tests` (pre_warn), `assertion_density` (`behavioral-checks.ts:848` → `post-tool-file-checks.ts:901`) |
+| INSTANT · secrets / import-cycle / module-size / dep-on-lockfile | ✅ | All shipped |
+| INSTANT · CRAP lookup "precomputed" | 🟡 | `crap-baseline.ts` is in-memory per-edit, not precomputed/persisted |
+| INSTANT · blast-radius + KG companion query | ✅ | `supermodel-graph.ts` + `structure/` |
+| FAST · tsc / biome / semgrep "on changed files" | 🟡 | Run in `interlinked verify`, or at PreToolUse only on `git commit`/`push` — not an every-edit FAST band |
+| FAST · cyclomatic complexity | ✅ | Shipped (Post) |
+| SELECTED · mutation diff-scoped | ❌ | Contradicts `docs/plans/10-mutation-testing.md` ("can never run inside a sync hook"); only an async Post trigger w/ 5-min cooldown |
+| SELECTED · selected unit tests / property / acceptance | ⬜ | No selection, no in-loop runner; **zero property-test infra** |
+| PostToolUse · secrets re-scan | ✅ | `post-tool.ts:84` |
+| PostToolUse · KG companion re-check | 🟡 | `public_symbol_test_case_missing` is shipped/enabled (structure Post path) — narrower than the "was the promised test written?" framing |
+| PostToolUse · diff-coverage piggyback / test-runtime ratchet update | ⬜ | Not implemented (`TestRuntimeRatchet` is a type with no writer) |
+| PostToolUse · receipt finalized + signed | 🟡 | Trajectory persisted at **Stop**, not Post; not signed; no per-tool-call receipt |
+| `BLOCKED` drawn as universal | 🟡 | Decisions are runner-agnostic, but only Claude/Codex block at Stop and Copilot only *denies* at PreToolUse (see §7) |
+
+## 2. Outer loop — per session / per push / nightly · TARGET STATE
 
 ```
    (many inner loops accumulate; eventually agent stops)
@@ -156,6 +183,22 @@
    ╚═══════════════════════════════════════════════════════════════╝
 ```
 
+### §2 ground truth — Stop / pre-push / CI / scheduled today (verified 2026-05-29)
+
+| Diagram box | Status | Reality |
+|---|---|---|
+| Stop · verification reflection (8 nudges) + commit-cadence + pattern-rescan | ✅ | `lifecycle-events.ts:543–558` (incl. fixture-leak, bisect-not-reset, dead-on-arrival) |
+| Stop · whole-suite coverage ratchet | ⬜ | Coverage is *read* for baselines, never ratcheted at Stop |
+| Stop · mutation vs changed lines | ⬜ | Async Post trigger only (Plan 10); not at Stop |
+| Stop · acceptance smoke | ⬜ | No runner; the harness *observes* agent-invoked tests, doesn't launch them |
+| Stop · dead-code "Supermodel Deadcode Hunter" | 🟡 | `dead-on-arrival` reads `.graph` shards; no hunter tool invoked |
+| Stop · whole-project tsc | ❌ | tsc gate runs at PreToolUse on `git commit`/`push`, not Stop |
+| Stop · KG adoption / glossary drift | ⬜ | `structure/` read at Pre; not audited at Stop |
+| Pre-push (every box) | ⬜ | **No pre-push hook installer exists** |
+| CI / pre-merge (every box) | ⬜ | No CI invocation of the harness |
+| Tier 4 Scheduled (every box) | ⬜ | No scheduler/cron; only opportunistic background analysis that drains at Stop |
+| Tier 5 Continuous (every box) | ⬜ | No always-on process (no fuzzing corpus, no vuln-DB poller) |
+
 ## 3. Substrates — what every stage reads from / writes to
 
 ```
@@ -224,6 +267,20 @@
    ╚════════════════════════════════════════════════════════════╝
 ```
 
+### §3 ground truth — substrates today, and one box the diagram omits (verified 2026-05-29)
+
+| Substrate | Status | Reality |
+|---|---|---|
+| Storage engine `harness.sqlite` | ❌ | No SQLite anywhere — all substrates are append-only JSONL (`error-history.jsonl`, `recurrences.jsonl`, `activity.jsonl`, … 20+ files) |
+| Codebase graph (Supermodel) — imports, symbol calls, blast radius | ✅ | `supermodel-graph.ts` — in-repo consumer of `.graph` shards emitted by the external Supermodel daemon |
+| └ "test-coverage map" (what tests cover X?) | ❌ | **Does not exist.** Only path-pattern discovery (`impact-analysis.ts::findTestFiles`). This gap blocks §13 selection, diff-coverage, and mutation-scoping |
+| Knowledge graph (`structure/`) | ✅ | Shipped — layers, companions, package boundaries, glossary residue |
+| Receipt ledger (Phase 0.3) | ⬜ | `HarnessDecision` computes `check_results`/timing/breakdowns in-memory but is **ephemeral** — not persisted; no `tool_call_id` / `diff_hash` |
+| Finding history (Phase 0.4) | 🟡 | `error-history.jsonl` exists but is append-by-timestamp; no per-fingerprint `first_seen` / `last_seen` / `status` / `confidence` |
+| Test-runtime ratchet (Phase 2.1) | ⬜ | Type only; no writer; `latency-log.ts` is tool-level, not per-test |
+| Baselines | mixed | large-files ✅ · coverage-%/file ✅ (`coverage-baseline.json`) · non-null & as-any 🟡 (in-mem, reset per session) · CRAP 🟡 (in-mem) · suppressions ⬜ · mutation-score/file ⬜ |
+| **Trajectory / session-state substrate — MISSING FROM THE DIAGRAM** | ✅ | `session-state.ts`: TDD cycles, `test_runs`, `verification_observed`, stubs. Powers `coverage_silent_regression`, `regression_test_missing_after_fix`, and the Stop nudges. **Add this box** — it's the most differentiated shipped capability and currently invisible here |
+
 ## 4. Local vs Cloud split
 
 ```
@@ -235,7 +292,7 @@
    ║   Pre-push · CI · Scheduled · Continuous                  ║
    ║                                                           ║
    ║ All substrates live local-canonical:                      ║
-   ║   .interlinked/harness.sqlite + .interlinked/*.jsonl      ║
+   ║   .interlinked/*.jsonl  (append-only; no SQLite yet)      ║
    ║                                                           ║
    ║ Storage is local-canonical, period. Always authoritative. ║
    ╚═══════════════════════════════════════════════════════════╝
@@ -279,6 +336,27 @@ Reading guide: "where it fires" = which stage(s) in diagrams 1–2.
 | 15 | Per-tool-use eval | The receipt produced for each PreToolUse + PostToolUse pair, joined with subsequent findings to attribute outcomes; feeds §13.7 adaptive loop | PostToolUse (write) — read by §13 every PreToolUse | Local |
 | 16 | Brownfield / greenfield | Not a check — a *posture*. Same loop, different baseline starting points (see below) | Affects every stage's threshold | Local |
 
+### §5 ground truth — which modalities actually run today (verified 2026-05-29)
+
+| # | Modality | Built today? |
+|---|---|---|
+| 1 | Test coverage | 🟡 per-file baseline shipped (`coverage-ratchet.ts`); no piggyback/ratchet at the stages drawn |
+| 2 | Dependency structure | ✅ Supermodel graph |
+| 3 | Cyclomatic complexity | ✅ |
+| 4 | Module sizes | ✅ |
+| 5 | Mutation testing | ⬜ CLI reader only (`mutation-gate.ts`, dormant); not wired into any loop |
+| 6 | Property testing | ⬜ zero infra |
+| 7 | Unit testing | 🟡 *observed* via TDD-state; not *selected/orchestrated* |
+| 8 | CRAP analysis | 🟡 in-memory baseline; advisory in `verify` |
+| 9 | Automated testing (general / §13) | ⬜ gated on §13 (unbuilt) |
+| 10 | Codebase graph | ✅ graph + blast-radius; ❌ the "test-coverage map" sub-claim |
+| 11 | Knowledge graph (`structure/`) | ✅ |
+| 12 | Acceptance tests | ⬜ no runner |
+| 13 | Acceptance mutation | ⬜ |
+| 14 | Dependency checking | ✅ allowlist shipped |
+| 15 | Per-tool-use eval (receipt) | ⬜ ephemeral, not persisted |
+| 16 | Brownfield / greenfield | 🟡 posture; some baselines exist; triage wizard unbuilt |
+
 ## 6. Brownfield vs greenfield — same loop, different priors
 
 ```
@@ -321,6 +399,8 @@ The loop in diagrams 1–2 is the same in both brownfield and greenfield, both l
 ---
 
 ## 7. Per-runner Stop / SessionEnd table (verified 2026-05-26)
+
+> ✅ **This section is verified accurate** against `docs/hooks-ecosystem-comparison.md` — the one part of this doc with no shipped-vs-designed gap.
 
 > **Local kernel policy: SessionEnd is narrow + Claude-Code-only.** Two items run at SessionEnd and only there: (1) a reason-aware audit-chain row using Claude Code's `reason` field (`clear` / `resume` / `logout` / `prompt_input_exit` / `bypass_permissions_disabled` / `other`); (2) one-time `reconcileCommits` finalization (already gated on session_end in `hooks-template.ts:1023-1025`). Everything else stays on Stop because SessionEnd is fire-and-forget on Gemini, missing on Codex, skipped on hard-kill, and unable to block — so load-bearing work there is unreliable. The kernel's incremental durability discipline (PostToolUse receipts + Stop reflection) ensures state-at-exit is recoverable on any runner. SessionEnd's broader future role is the cloud/remote tier (final session-bundle upload, batched sync). The table below is comparative reference; the LCD framing still applies to cross-runner work.
 
