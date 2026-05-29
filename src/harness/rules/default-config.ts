@@ -629,6 +629,10 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		single_implementation_interface: true,
 	},
 	repo_confinement_allowlist: ["~/.claude"],
+	// No linked sibling projects by default — single-root confinement. A
+	// multi-repo workspace (e.g. public CLI + private cloud) declares its
+	// sibling roots here, relative to the project root.
+	linked_projects: [],
 	// Path globs that short-circuit the PostToolUse check pipeline entirely.
 	// See `SharedConfig.skip_paths` JSDoc in `src/lib/config.ts` and the
 	// matcher in `src/lib/path-glob.ts`. Opinionated defaults below cover

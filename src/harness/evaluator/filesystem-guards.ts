@@ -63,8 +63,9 @@ export function evaluateRepoConfinement(args: {
 	rawPath: string;
 	cwd: string;
 	allowlist: string[];
+	linkedProjects?: string[];
 }): HarnessDecision | null {
-	const { rawPath, cwd, allowlist } = args;
+	const { rawPath, cwd, allowlist, linkedProjects = [] } = args;
 	const absPath = isAbsolute(rawPath) ? resolve(rawPath) : resolve(cwd, rawPath);
 	let resolvedPath: string;
 	try {
@@ -85,9 +86,21 @@ export function evaluateRepoConfinement(args: {
 	});
 	if (isAllowed) return null;
 
+	// Linked workspace members: declared sibling project roots that compose
+	// this workspace, resolved against the project root (cwd). Bounded and
+	// explicit — the multi-repo workspace model (e.g. public CLI + private
+	// cloud), not a blanket escape.
+	const inLinkedProject = linkedProjects.some((rel) => {
+		const absRoot = isAbsolute(rel) ? resolve(rel) : resolve(cwd, rel);
+		const normalized = absRoot.endsWith("/") ? absRoot : `${absRoot}/`;
+		return resolvedPath.startsWith(normalized) || resolvedPath === absRoot;
+	});
+	if (inLinkedProject) return null;
+
+	const linkedHint = linkedProjects.length > 0 ? " or a declared linked project" : "";
 	return {
 		decision: "block",
-		reason: `BLOCKED: Writing to ${rawPath} is outside the repo root (${cwd}). Agents must confine writes to the project directory.`,
+		reason: `BLOCKED: Writing to ${rawPath} is outside the repo root (${cwd})${linkedHint}. Agents must confine writes to the project directory.`,
 		rule_id: "builtin-repo-confinement",
 		severity: "critical",
 		category: "Security",

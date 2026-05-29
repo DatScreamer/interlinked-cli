@@ -96,4 +96,63 @@ describe("evaluateRepoConfinement", () => {
 			}),
 		).toBeNull();
 	});
+
+	// --- Linked workspace (multi-repo) ---
+
+	it("permits writes to a declared linked project (absolute sibling root)", () => {
+		const sibling = mkdtempSync(join(tmpdir(), "confine-linked-"));
+		try {
+			expect(
+				evaluateRepoConfinement({
+					rawPath: join(sibling, "cloud", "worker.ts"),
+					cwd: tmpDir,
+					allowlist: [],
+					linkedProjects: [sibling],
+				}),
+			).toBeNull();
+		} finally {
+			rmSync(sibling, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves a relative linked project against the project root", () => {
+		const sibling = mkdtempSync(join(tmpdir(), "confine-linked-"));
+		try {
+			const rel = join("..", sibling.split("/").pop() as string);
+			expect(
+				evaluateRepoConfinement({
+					rawPath: join(sibling, "x.ts"),
+					cwd: tmpDir,
+					allowlist: [],
+					linkedProjects: [rel],
+				}),
+			).toBeNull();
+		} finally {
+			rmSync(sibling, { recursive: true, force: true });
+		}
+	});
+
+	it("still blocks paths outside primary + linked + allowlist", () => {
+		const sibling = mkdtempSync(join(tmpdir(), "confine-linked-"));
+		try {
+			const decision = evaluateRepoConfinement({
+				rawPath: "/tmp/elsewhere.txt",
+				cwd: tmpDir,
+				allowlist: [],
+				linkedProjects: [sibling],
+			});
+			expect(decision?.decision).toBe("block");
+			expect(decision?.rule_id).toBe("builtin-repo-confinement");
+		} finally {
+			rmSync(sibling, { recursive: true, force: true });
+		}
+	});
+
+	it("does not change single-root behavior when linkedProjects is empty/absent", () => {
+		expect(
+			evaluateRepoConfinement({ rawPath: "/tmp/x.txt", cwd: tmpDir, allowlist: [], linkedProjects: [] })
+				?.decision,
+		).toBe("block");
+		expect(evaluateRepoConfinement({ rawPath: "src/ok.ts", cwd: tmpDir, allowlist: [] })).toBeNull();
+	});
 });

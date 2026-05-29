@@ -693,6 +693,7 @@ export function evaluatePreToolUse(
 				rawPath,
 				cwd: event.cwd,
 				allowlist: rules.repo_confinement_allowlist || [],
+				linkedProjects: rules.linked_projects || [],
 			});
 			if (rcDecision) return { ...rcDecision, warnings };
 		}

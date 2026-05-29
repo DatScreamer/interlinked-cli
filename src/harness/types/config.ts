@@ -194,6 +194,14 @@ export interface GuardRulesConfig {
 	suggestion_threshold?: number;
 	/** Paths outside repo root that agents are allowed to write to (e.g., ~/.claude/) */
 	repo_confinement_allowlist?: string[];
+	/** Sibling project roots that compose this workspace. Agents may write to
+	 *  these in addition to the primary root. Relative paths resolve against the
+	 *  project root (e.g., "../interlinked-cloud"). Distinct from
+	 *  repo_confinement_allowlist (absolute escape hatches like ~/.claude):
+	 *  linked_projects are declared, auditable workspace members — the
+	 *  multi-repo workspace model. Confinement stays bounded to this explicit
+	 *  set; it is never "write anywhere". */
+	linked_projects?: string[];
 	/** Tools that must be available. Missing required tools cause warnings instead of silent skips. */
 	required_tools?: import("../check-engine/types.js").ToolId[];
 	/** When true, unknown skip reasons (not in skip_allowlist) cause exit code 1 in verify */
