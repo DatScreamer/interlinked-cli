@@ -59,6 +59,33 @@ describe("checkErrorDispatchByInstanceof — positive cases", () => {
 		const out = checkErrorDispatchByInstanceof(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(2);
 	});
+
+	it("still flags subtype `e instanceof TypeError` in a ternary (only base Error is exempt)", () => {
+		const code = [
+			"function f() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			"    const msg = e instanceof TypeError ? e.message : String(e);",
+			"    log(msg);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkErrorDispatchByInstanceof(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still flags base `instanceof Error` used for real dispatch, not extraction", () => {
+		const code = [
+			"function f() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			"    if (e instanceof Error) { retry(); } else { giveUp(); }",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkErrorDispatchByInstanceof(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
 });
 
 describe("checkErrorDispatchByInstanceof — negative cases (must NOT fire)", () => {
@@ -123,6 +150,48 @@ describe("checkErrorDispatchByInstanceof — negative cases (must NOT fire)", ()
 			"  catch (e) {",
 			"    // Note: e instanceof Error fails across realms",
 			"    handle(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkErrorDispatchByInstanceof(code, TS);
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag the message-extraction guard `e instanceof Error ? e.message : String(e)`", () => {
+		const code = [
+			"function f() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			"    const msg = e instanceof Error ? e.message : String(e);",
+			"    log(msg);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkErrorDispatchByInstanceof(code, TS);
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag the multi-line message-extraction guard", () => {
+		const code = [
+			"function f() {",
+			"  try { risky(); }",
+			"  catch (err) {",
+			"    return err instanceof Error",
+			"      ? err.message",
+			"      : String(err);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkErrorDispatchByInstanceof(code, TS);
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag the `.stack` extraction guard", () => {
+		const code = [
+			"function f() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			"    report(e instanceof Error ? e.stack : String(e));",
 			"  }",
 			"}",
 		].join("\n");

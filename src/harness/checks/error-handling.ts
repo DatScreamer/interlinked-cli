@@ -338,6 +338,28 @@ const BUILTIN_ERROR_CLASSES = new Set([
 	"AggregateError",
 ]);
 
+/**
+ * The rule exempts the "is this any thrown Error at all?" guard when it is
+ * message/property EXTRACTION rather than subtype dispatch — e.g.
+ * `e instanceof Error ? e.message : String(e)`. A cross-realm Error that slips
+ * past the guard just takes the fallback branch, which yields an equivalent
+ * string; no divergent handler is selected, so the realm-boundary fragility is
+ * harmless here. Only the BASE `Error` qualifies (subtype checks like
+ * `instanceof TypeError` remain genuine dispatch), and the ternary consequent
+ * must read a message-ish property off the operand or stringify it.
+ */
+function isMessageExtractionGuard(
+	className: string,
+	stripped: string,
+	afterIdx: number,
+): boolean {
+	if (className !== "Error") return false;
+	const after = stripped.slice(afterIdx, afterIdx + 120);
+	return /^\s*\?\s*(?:[\w$]+\s*\.\s*(?:message|stack|name|cause)\b|[\w$]+\s*\.\s*toString\s*\(|String\s*\()/.test(
+		after,
+	);
+}
+
 export function checkErrorDispatchByInstanceof(
 	content: string,
 	filePath: string,
@@ -380,7 +402,11 @@ export function checkErrorDispatchByInstanceof(
 		while (opMatch !== null && opMatch.index < closeIdx) {
 			if (matches.length >= 10) break;
 			const className = opMatch[1];
-			if (BUILTIN_ERROR_CLASSES.has(className)) {
+			const afterIdx = opMatch.index + opMatch[0].length;
+			if (
+				BUILTIN_ERROR_CLASSES.has(className) &&
+				!isMessageExtractionGuard(className, stripped, afterIdx)
+			) {
 				const lineNum = stripped.slice(0, opMatch.index).split("\n").length;
 				matches.push({
 					line: lineNum,
