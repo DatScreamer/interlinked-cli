@@ -163,6 +163,15 @@ export function mergeLocalOverrides(
 			config.git_session_scope_gate = local.git_session_scope_gate;
 		}
 	}
+	// Linked workspace roots — sibling project dirs the agent may also write to
+	// (the multi-repo workspace model; see docs/design/linked-workspace.md).
+	// LOCAL-ONLY by design: this WIDENS write-confinement, so it must be the
+	// user's own explicit choice on their own machine — never settable via
+	// committed team config (a PR adding linked_projects: ["/"] would widen
+	// every developer's agent write scope). Not merged in mergeTeamRules.
+	if (local.linked_projects) {
+		config.linked_projects = local.linked_projects;
+	}
 }
 
 /** Deep-merge overrides for the content scanner config. Nested blocks
