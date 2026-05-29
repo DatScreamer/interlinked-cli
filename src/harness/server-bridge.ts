@@ -8,6 +8,7 @@
 // - Team rule sync
 
 import type { JsonObject } from "../lib/json-types.js";
+import { scrubEgressPayload } from "../lib/secrets.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CoordinationResponse } from "./auto-coordinate.js";
@@ -221,19 +222,28 @@ export class ServerBridge implements ServerApiClient {
 		// Report as activity events with guard-specific fields
 		try {
 			const batchPayload = {
-				events: events.map((e) => ({
-					agent_name: e.agent_name,
-					event_type: e.event_type,
-					tool_name: e.tool_name,
-					tool_input_summary: e.tool_input_summary,
-					occurred_at: e.occurred_at,
-					workspace_key: this.config.workspaceKey || "main",
-					project_key: this.config.projectKey || "main",
-					// Store guard decision details in error_message field
-					error_message: `[${e.decision}] ${e.reason}`.slice(0, 500),
-					hook_event: e.event_type,
-					source: "harness",
-				})),
+				events: events.map((e) => {
+					const payload: JsonObject = {
+						agent_name: e.agent_name,
+						event_type: e.event_type,
+						tool_name: e.tool_name,
+						tool_input_summary: e.tool_input_summary,
+						occurred_at: e.occurred_at,
+						workspace_key: this.config.workspaceKey || "main",
+						project_key: this.config.projectKey || "main",
+						// Store guard decision details in error_message field
+						error_message: `[${e.decision}] ${e.reason}`.slice(0, 500),
+						hook_event: e.event_type,
+						source: "harness",
+					};
+					// Redact at the cloud boundary via the shared scrubber — same
+					// contract as the hook + `interlinked sync` egress. A guard
+					// summary/reason can echo a command containing a secret; the PII
+					// pass is a no-op here (no prompt/thinking). Two-tier model:
+					// raw local, redacted egress.
+					scrubEgressPayload(payload);
+					return payload;
+				}),
 			};
 
 			await fetchWithTimeout(`${this.config.serverUrl}/api/hooks/activity/batch`, {

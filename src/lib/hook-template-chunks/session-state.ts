@@ -659,16 +659,17 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         if (event.stop_hook_active !== undefined) record.stop_hook_active = event.stop_hook_active;
         if (event.permission_suggestions) record.permission_suggestions = event.permission_suggestions;
         if (event.thinking) record.thinking = event.thinking;
-        // Mask credentials/high-entropy strings in any of the 10 SCRUB_FIELDS
-        // (prompt, tool_input_summary, thinking, etc.) before persisting to
-        // activity.jsonl. Defense-in-depth alongside the harness content scanner:
-        // this regex pass is always on, catches credentials, runs offline.
         // Git context — ties every event to a commit without timestamp-
         // fuzzing the reflog. Memoized; reads .git directly, no subprocess.
         const gc = gitContext(event.cwd);
         if (gc.git_head) record.git_head = gc.git_head;
         if (gc.git_branch) record.git_branch = gc.git_branch;
-        scrubPayload(record);
+        // The local activity.jsonl is kept 100% FAITHFUL — NO secret/PII redaction
+        // here. This is the full-fidelity capture for replay / trajectory /
+        // prediction / training. Redaction is an EGRESS-ONLY transform: every
+        // server-bound path (the realtime POST + batchSync below, the
+        // \`interlinked sync\` CLI, and the daemon server-bridge) runs the shared
+        // scrubber before sending. Two-tier model: raw local, redacted egress.
         // Audit chain extension: for session_end records, apply chain fields
         // (previousHash + hash) so the chain captures *how* the session ended
         // via Claude Code's \`reason\` field. The chain still includes guard_*

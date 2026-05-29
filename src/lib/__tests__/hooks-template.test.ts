@@ -119,22 +119,19 @@ describe("buildHookScript", () => {
 		expect(out).toContain('Advisory findings:');
 	});
 
-	it("scrubs credentials in appendLocal before writing to activity.jsonl", () => {
+	it("keeps the local activity.jsonl write 100% faithful (no scrub) while every egress path scrubs", () => {
 		const out = buildHookScript("v");
-		// Regression guard: scrubPayload must run inside appendLocal so local
-		// writes get the same credential redaction the remote sync path does.
-		// If this assertion fails, credentials in prompts/tool_input_summary/
-		// thinking will hit disk unmasked again.
-		//
-		// 2026-05: appendLocal now optionally applies audit-chain fields
-		// (previousHash + hash) between scrub and append when the record's
-		// type is in AUDIT_GUARD_TYPES (session_end + guard_*). Those fields
-		// are sha256 hex strings — no PII to scrub — so the chain block is
-		// permitted here. Anything else inserted between scrub and append is
-		// a security regression and this regex must not match it.
-		expect(out).toMatch(
-			/scrubPayload\(record\);(?:\s|\/\/[^\n]*\n)*(?:if\s*\(AUDIT_GUARD_TYPES\[record\.type\]\)\s*\{[\s\S]*?\}\s*)?appendFileSync\(ACTIVITY_PATH/,
-		);
+		// Two-tier model (raw local / redacted egress): the LOCAL write is
+		// full-fidelity — appendLocal must NOT run scrubPayload on the record
+		// before appendFileSync (raw capture for replay / trajectory / training).
+		// If a scrubPayload(record) reappears, local PII/secrets get masked again
+		// and the corpus loses fidelity.
+		expect(out).not.toMatch(/scrubPayload\(record\)/);
+		// ...but EGRESS must still redact: the realtime payload and the batchSync
+		// event both run scrubPayload before POSTing. If either regresses, raw
+		// PII/secrets would leave the machine.
+		expect(out).toContain("scrubPayload(realtimePayload)");
+		expect(out).toContain("scrubPayload(ev)");
 	});
 
 	it("generated .mjs parses as valid JavaScript (end-to-end syntactic check)", () => {
@@ -304,7 +301,7 @@ describe("buildHookScript", () => {
 		expect(out).toContain("truncate(event.thinking, 4000)");
 	});
 
-	it("masks PII in prompt + thinking before activity.jsonl, and stores full untruncated thinking", () => {
+	it("stores raw prompt + thinking faithfully in activity.jsonl (local unredacted) + full untruncated thinking", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-pii-e2e-"));
 		const interlinkedDir = join(tempDir, ".interlinked");
 		mkdirSync(interlinkedDir, { recursive: true });
@@ -318,7 +315,8 @@ describe("buildHookScript", () => {
 		writeFileSync(join(interlinkedDir, "harness.sock"), "");
 
 		// A transcript whose assistant thinking block exceeds the old 4000 cap
-		// and carries PII — proves (a) no truncation, (b) PII masking on thinking.
+		// and carries PII — proves (a) no truncation, (b) the local write is RAW
+		// (PII intact; redaction is egress-only, never applied to local capture).
 		const longThinking =
 			"reasoning step ".repeat(400) +
 			" my ssn is 521-44-8190 and email jane.real@acme.com end";
@@ -365,20 +363,20 @@ describe("buildHookScript", () => {
 
 		const withPrompt = records.find((r) => typeof r.prompt === "string");
 		expect(withPrompt, `no prompt record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
-		expect(withPrompt.prompt).toContain("[REDACTED:ssn]");
-		expect(withPrompt.prompt).toContain("[REDACTED:email]");
-		expect(withPrompt.prompt).not.toContain("521-44-8190");
-		expect(withPrompt.prompt).not.toContain("jane.real@acme.com");
+		// Local is 100% faithful: the prompt's PII is stored RAW, not redacted.
+		expect(withPrompt.prompt).toContain("521-44-8190");
+		expect(withPrompt.prompt).toContain("jane.real@acme.com");
+		expect(withPrompt.prompt).not.toContain("[REDACTED");
 
 		const withThinking = records.find((r) => typeof r.thinking === "string");
 		expect(withThinking, `no thinking record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
 		// Full-fidelity: longer than the retired 4000-char cap, no truncation marker.
 		expect(withThinking.thinking.length).toBeGreaterThan(4000);
 		expect(withThinking.thinking).not.toContain("... [truncated]");
-		// PII masked inside the thinking trace too.
-		expect(withThinking.thinking).toContain("[REDACTED:ssn]");
-		expect(withThinking.thinking).toContain("[REDACTED:email]");
-		expect(withThinking.thinking).not.toContain("521-44-8190");
+		// PII stored RAW inside the thinking trace too (egress-only redaction).
+		expect(withThinking.thinking).toContain("521-44-8190");
+		expect(withThinking.thinking).toContain("jane.real@acme.com");
+		expect(withThinking.thinking).not.toContain("[REDACTED");
 	});
 
 	it("emits one unified activity schema_version for both record families", () => {
