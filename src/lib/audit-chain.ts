@@ -195,7 +195,14 @@ export function verifyAuditChain(cwd: string = process.cwd()): AuditVerifyResult
 		const previousHash =
 			typeof record.previousHash === "string" ? record.previousHash : "";
 
-		if (!safeEqualHex(previousHash, expectedPrev)) {
+		// A previousHash of GENESIS legitimately starts a NEW chain segment: the
+		// writer (readPreviousGuardHash) roots a fresh segment whenever no prior
+		// hash sits in its tail window — e.g. at every session boundary. A real
+		// audit log is a SEQUENCE of GENESIS-rooted segments, not one chain.
+		// Tamper-evidence holds WITHIN each segment (every link + hash is verified);
+		// only a non-GENESIS previousHash that fails to continue is a real break.
+		const startsNewSegment = safeEqualHex(previousHash, GENESIS_HASH);
+		if (!startsNewSegment && !safeEqualHex(previousHash, expectedPrev)) {
 			return {
 				valid: false,
 				total_events: totalEvents,
@@ -204,7 +211,7 @@ export function verifyAuditChain(cwd: string = process.cwd()): AuditVerifyResult
 				unchained_guard_events: unchainedGuardEvents,
 				first_bad_index: chainedEvents,
 				first_bad_line_number: i + 1,
-				first_bad_reason: `previousHash mismatch at chained event #${chainedEvents}: expected ${expectedPrev.slice(0, 12)}…, got ${previousHash.slice(0, 12) || "(missing)"}…`,
+				first_bad_reason: `previousHash mismatch at chained event #${chainedEvents}: expected ${expectedPrev.slice(0, 12)}… (or GENESIS to start a segment), got ${previousHash.slice(0, 12) || "(missing)"}…`,
 				last_hash: lastHash,
 			};
 		}
