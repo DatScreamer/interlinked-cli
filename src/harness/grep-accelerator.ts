@@ -27,9 +27,6 @@ import type { HarnessDecision, HarnessEvent } from "./types.js";
 const DEFAULT_CACHE_MAX = 500;
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
 
-/** Repo size threshold above which rg spawn overhead is worth paying vs in-process matcher. */
-const RG_SPAWN_WORTHWHILE_FILE_COUNT = 2000;
-
 export class FileContentCache {
 	private entries = new Map<string, { content: string; ts: number }>();
 	private maxEntries: number;
@@ -98,11 +95,23 @@ interface GrepAcceleratorConfig {
 	/** Ripgrep timeout in milliseconds (default: 10000) */
 	rgTimeout?: number;
 	/** Maximum candidates for in-process JS matching instead of rg spawn (default: 50).
-	 *  In-process matching (readFileSync + RegExp) avoids the ~5ms execSync overhead
-	 *  of spawning rg. Safe up to ~50 files for all pattern types (including regex
-	 *  with backtracking). For literal patterns the crossover is higher (~125 files)
-	 *  but regex patterns like `.*` are much slower in JS than rg's SIMD engine. */
+	 *  Used ONLY for fixed-string (-F) patterns, where a JS substring match is
+	 *  provably identical to `rg -F`. Regex patterns always go through rg so the
+	 *  engine dialect matches the native command exactly. */
 	inProcessThreshold?: number;
+	/** Whether the index is provably current with disk — HEAD == baseCommit, a
+	 *  clean working tree, and no in-memory dirty layer. The daemon computes this
+	 *  and passes it in. When false the accelerator declines (returns null) so a
+	 *  stale index can never produce a silent false negative — the central
+	 *  completeness guarantee of the never-worse-than-native contract. Default
+	 *  false: callers MUST opt in by asserting freshness. */
+	indexFresh?: boolean;
+	/** Minimum total indexed files before substitution is permitted. Below this,
+	 *  a native rg/ugrep full scan is already fast enough that the index lookup +
+	 *  rg spawn overhead cannot guarantee a net win, so we decline. Default 25000
+	 *  — the substitution only pays off at large-monorepo scale (see the timing
+	 *  analysis in docs). */
+	minFilesForAccel?: number;
 }
 
 const DEFAULTS: Required<GrepAcceleratorConfig> = {
@@ -111,6 +120,8 @@ const DEFAULTS: Required<GrepAcceleratorConfig> = {
 	maxOutputLines: 200,
 	rgTimeout: 10_000,
 	inProcessThreshold: 50,
+	indexFresh: false,
+	minFilesForAccel: 25_000,
 };
 
 // ===========================================
@@ -139,6 +150,22 @@ export function checkGrepAcceleration(
 	if (!searchParams) return null;
 
 	const { pattern, isRegex, caseInsensitive, path, glob, outputMode } = searchParams;
+
+	// --- Never-worse-than-native gates ---
+	// On ANY uncertainty, return null so the real rg/ugrep runs unchanged.
+	//   (1) Staleness: only substitute when the index is provably current with
+	//       disk (the daemon asserts this via cfg.indexFresh). A stale index
+	//       could omit a file that exists on disk and matches — a silent false
+	//       negative the agent could not detect. This is the completeness gate.
+	//   (2) Speed: only when the repo is large enough that the guaranteed win
+	//       exceeds index-lookup + rg-spawn overhead; below that a native full
+	//       scan is already fast, so substituting risks being *slower*.
+	//   (3) Output shape: a glob (-g) or a non-content output mode (-l/-c) would
+	//       change the file universe or the output format in ways the
+	//       substitution does not reproduce byte-for-byte.
+	if (!cfg.indexFresh) return null;
+	if (index.totalFiles < cfg.minFilesForAccel) return null;
+	if (glob || outputMode) return null;
 
 	// Decompose pattern into required trigrams
 	const decomposition = decomposePattern(pattern, isRegex, caseInsensitive);
@@ -204,15 +231,16 @@ export function checkGrepAcceleration(
 		};
 	}
 
-	// Choose execution strategy based on candidate count:
-	// 1. <= inProcessThreshold: in-process (readFileSync + RegExp, no spawn overhead)
-	// 2. > inProcessThreshold on small repos: pass through (rg full scan is fast enough)
-	// 3. > inProcessThreshold on large repos: rg spawn on candidates (scan savings exceed spawn cost)
-	//
-	// The execSync overhead (~5ms) means rg-spawn is only worthwhile when the repo
-	// is large enough that raw rg takes significantly longer than the spawn cost.
+	// --- Match with native-identical semantics ---
+	// Fixed-string (-F) patterns: a JS substring scan is provably identical to
+	// `rg -F`, so the in-process matcher is used for small candidate sets to
+	// avoid a spawn. Regex patterns: ALWAYS use rg's real engine — JS RegExp and
+	// rg's regex dialect differ (POSIX classes, backreferences, Unicode), and
+	// only rg guarantees the same matches as the native command. The freshness
+	// gate above makes the candidate set a complete superset, so rg-on-candidates
+	// returns exactly what rg-on-the-whole-tree would.
 	let rgResult: RipgrepResult | null;
-	if (candidates.length <= cfg.inProcessThreshold) {
+	if (!isRegex && candidates.length <= cfg.inProcessThreshold) {
 		rgResult = matchInProcess({
 			pattern,
 			candidates,
@@ -221,7 +249,10 @@ export function checkGrepAcceleration(
 			caseInsensitive,
 			outputMode,
 			maxOutputLines: cfg.maxOutputLines,
-			contentCache,
+			// Read disk, not the dirty-layer cache: under the freshness gate the
+			// working tree is clean so disk == index, and bypassing the cache
+			// closes the narrow edit-then-revert-within-TTL staleness window.
+			contentCache: undefined,
 		});
 		// Fall back to rg if JS regex compilation fails
 		if (rgResult === null) {
@@ -235,8 +266,7 @@ export function checkGrepAcceleration(
 				cfg,
 			);
 		}
-	} else if (totalFiles >= RG_SPAWN_WORTHWHILE_FILE_COUNT) {
-		// Large repo: rg spawn is worthwhile (scan savings exceed ~5ms spawn overhead)
+	} else {
 		rgResult = runRipgrepOnCandidates(
 			pattern,
 			candidates,
@@ -246,13 +276,22 @@ export function checkGrepAcceleration(
 			outputMode,
 			cfg,
 		);
-	} else {
-		// Small repo: pass through to normal rg (full scan is already fast)
-		return null;
 	}
 
 	if (rgResult === null) {
-		// ripgrep not available or failed — fall through
+		// ripgrep unavailable or errored — fall through to native.
+		return null;
+	}
+	if (rgResult.truncated) {
+		// Completeness: native rg/ugrep returns ALL matches. Rather than hand
+		// back a truncated answer, decline so the real command runs.
+		return null;
+	}
+	if (rgResult.matchCount === 0) {
+		// Zero matches: native rg/ugrep prints nothing (exit 1). Decline so the
+		// agent sees that empty result rather than a substituted "no matches"
+		// message — keeps the substitution neutral on empty results, and guards
+		// against a stale index that over-selected candidates which don't match.
 		return null;
 	}
 
@@ -264,7 +303,7 @@ export function checkGrepAcceleration(
 			rgResult.matchCount,
 			candidates.length,
 			totalFiles,
-			rgResult.truncated,
+			false,
 		),
 		grep_stats: {
 			candidates: candidates.length,
@@ -396,8 +435,10 @@ function matchInProcess(opts: MatchOptions): RipgrepResult | null {
 					break; // one match per file
 				}
 				if (outputMode !== "count") {
+					// No per-file cap: the substitution must return the SAME matches
+					// as native rg. Completeness is enforced by the caller's
+					// truncation check (checkGrepAcceleration declines if exceeded).
 					lines.push(`${relPath}:${lineNum + 1}:${fileLines[lineNum]}`);
-					if (fileMatches >= 50) break; // match --max-count=50 from rg path
 				}
 			}
 		}
@@ -455,8 +496,11 @@ function runRipgrepOnCandidates(
 	} else if (outputMode === "count") {
 		args.push("--count");
 	} else {
-		// Default: content mode with line numbers
-		args.push("--line-number", "--max-count=50");
+		// Default: content mode with line numbers, ALWAYS with the filename so a
+		// single-candidate result still emits `path:line:content` (rg omits the
+		// path for a lone file argument) — matching native recursive output. No
+		// per-file cap: completeness is enforced by the caller's truncation check.
+		args.push("--with-filename", "--line-number");
 	}
 
 	if (!isRegex) args.push("--fixed-strings");

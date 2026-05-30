@@ -599,27 +599,66 @@ export async function runPreToolPipeline(
 	//   - Partially-formed hookSpecificOutput envelopes have hit Claude
 	//     Code's "(root): Invalid input" validator failure (fail-closed
 	//     on a safety boundary, contradicts feedback_safety_continuity).
-	// The trigram index itself stays loaded and is still consumed by
-	// impact analysis, project graph, and structural checks.
+	// The trigram index itself stays loaded, but with substitution off its
+	// only live consumer is PostToolUse sibling expansion (sibling-expansion.ts);
+	// it is also read for the freshness warning below. Impact analysis, the
+	// project graph, and structural checks build their own dependency graphs
+	// and do NOT use it.
 	// Re-enable: set INTERLINKED_GREP_ACCELERATOR=1 OR set
 	// guard-rules.json `grep_acceleration.substitution_enabled: true`.
 	const isSearchTool =
 		event.tool_name === "Grep" ||
 		(event.tool_name === "Bash" &&
-			/\b(rg|ripgrep|grep|egrep)\s/.test((event.tool_input?.command as string) || ""));
+			/\b(ugrep|ug|rg|ripgrep|grep|egrep|fgrep)\s/.test(
+				(event.tool_input?.command as string) || "",
+			));
 
 	const grepSubstitutionEnabled =
 		process.env.INTERLINKED_GREP_ACCELERATOR === "1" ||
 		(process.env.INTERLINKED_GREP_ACCELERATOR !== "0" &&
 			rules.grep_acceleration?.substitution_enabled === true);
 
+	const searchIndex = ctx.trigramIndex;
 	if (
 		preDecision.decision === "allow" &&
-		ctx.trigramIndex &&
+		searchIndex &&
 		isSearchTool &&
 		grepSubstitutionEnabled
 	) {
-		const grepDecision = checkGrepAcceleration(event, ctx.trigramIndex, {}, ctx.fileContentCache);
+		// Never-worse-than-native completeness gate: only allow the accelerator to
+		// substitute a result when the index provably reflects current disk —
+		// HEAD == baseCommit, a clean working tree, and no in-memory dirty layer.
+		// If any of these fails, a file could have changed on disk in a way the
+		// index doesn't capture (a silent false negative), so we pass
+		// indexFresh:false and checkGrepAcceleration declines to the real
+		// rg/ugrep. Fail-safe to false on any git error. Computed ONLY when
+		// substitution is enabled (off by default), so the git cost is paid only
+		// by opt-in users — and amortized against the large repos the size gate
+		// requires.
+		let indexFresh = false;
+		try {
+			const head = execSync("git rev-parse HEAD", {
+				cwd: CWD,
+				encoding: "utf-8",
+				timeout: 2000,
+			}).trim();
+			if (head && head === searchIndex.baseCommit && !searchIndex.isDirty) {
+				const porcelain = execSync("git status --porcelain", {
+					cwd: CWD,
+					encoding: "utf-8",
+					timeout: 5000,
+				}).trim();
+				indexFresh = porcelain.length === 0;
+			}
+		} catch (e) {
+			void e; // any git failure → treat as not-fresh → decline to native
+		}
+		const grepDecision = checkGrepAcceleration(
+			event,
+			searchIndex,
+			{ indexFresh },
+			ctx.fileContentCache,
+		);
 		if (grepDecision) {
 			log(`Grep accelerated: ${event.tool_name} → ${grepDecision.decision}`);
 			// Merge any warnings from the guard evaluation

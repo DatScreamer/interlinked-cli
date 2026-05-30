@@ -900,10 +900,8 @@ describe("parseGrepCommand", () => {
 		expect(result!.isRegex).toBe(false);
 	});
 
-	it("parses glob flag", () => {
-		const result = parseGrepCommand("rg -g '*.ts' 'pattern'");
-		expect(result).not.toBeNull();
-		expect(result!.glob).toBe("*.ts");
+	it("declines on the glob flag (-g) — unsound glob filter, so native runs", () => {
+		expect(parseGrepCommand("rg -g '*.ts' 'pattern'")).toBeNull();
 	});
 
 	it("parses double-quoted pattern", () => {
@@ -934,16 +932,22 @@ describe("parseGrepCommand", () => {
 		expect(parseGrepCommand("rg")).toBeNull();
 	});
 
-	it("handles combined flags", () => {
-		const result = parseGrepCommand("rg -n --color=never -i 'test'");
+	it("parses safe combined flags (-i -F)", () => {
+		const result = parseGrepCommand("rg -i -F 'test'");
 		expect(result).not.toBeNull();
 		expect(result!.caseInsensitive).toBe(true);
+		expect(result!.isRegex).toBe(false);
 	});
 
-	it("stops at shell operators", () => {
-		const result = parseGrepCommand("rg 'pattern' | head -20");
-		expect(result).not.toBeNull();
-		expect(result!.pattern).toBe("pattern");
+	it("declines on unmodeled flags (-n, --color, -v, -l) → native", () => {
+		expect(parseGrepCommand("rg -n --color=never -i 'test'")).toBeNull();
+		expect(parseGrepCommand("rg -v 'test'")).toBeNull();
+		expect(parseGrepCommand("rg -l 'test'")).toBeNull();
+	});
+
+	it("declines on pipelines / compound commands → native", () => {
+		expect(parseGrepCommand("rg 'pattern' | head -20")).toBeNull();
+		expect(parseGrepCommand("rg 'x' && echo done")).toBeNull();
 	});
 
 	it("handles backslash-escaped characters in pattern", () => {
@@ -1104,16 +1108,20 @@ describe("checkGrepAcceleration", () => {
 		expect(result !== undefined).toBe(true);
 	});
 
-	it("intercepts Grep tool calls", () => {
-		const index = buildTestIndex({
-			"a.ts": "uniqueidentifierforsearch",
-			"b.ts": "completely different content",
-		});
-
+	it("declines (null) when the index is not fresh — staleness completeness gate", () => {
+		const index = buildTestIndex({ "a.ts": "uniqueidentifierforsearch" });
 		const event = makeGrepEvent("uniqueidentifierforsearch");
-		const result = checkGrepAcceleration(event, index);
-		expect(result).not.toBeNull();
-		// Should be a block (with results) since the pattern is very specific
+		// Default indexFresh:false → never substitute (a stale index could miss
+		// a file that changed on disk — a silent false negative).
+		expect(checkGrepAcceleration(event, index, { minFilesForAccel: 1 })).toBeNull();
+	});
+
+	it("declines (null) when the repo is below the size gate", () => {
+		const index = buildTestIndex({ "a.ts": "uniqueidentifierforsearch" });
+		const event = makeGrepEvent("uniqueidentifierforsearch");
+		expect(
+			checkGrepAcceleration(event, index, { indexFresh: true, minFilesForAccel: 999_999 }),
+		).toBeNull();
 	});
 
 	it("handles missing pattern in Grep tool", () => {

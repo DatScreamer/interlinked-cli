@@ -85,6 +85,13 @@ export function mergeTeamRules(config: GuardRulesConfig, team: Partial<GuardRule
 	if (team.project_wide_checks && config.project_wide_checks) {
 		Object.assign(config.project_wide_checks, team.project_wide_checks);
 	}
+	// Grep-acceleration substitution toggle. Without this branch the flag the
+	// pre-tool pipeline reads (`grep_acceleration.substitution_enabled`) was
+	// silently dropped from team config — the documented re-enable path never
+	// reached the daemon.
+	if (team.grep_acceleration) {
+		config.grep_acceleration = { ...config.grep_acceleration, ...team.grep_acceleration };
+	}
 }
 
 /**
@@ -171,6 +178,12 @@ export function mergeLocalOverrides(
 	// every developer's agent write scope). Not merged in mergeTeamRules.
 	if (local.linked_projects) {
 		config.linked_projects = local.linked_projects;
+	}
+	// Per-developer grep-acceleration toggle. This is the documented personal
+	// re-enable path; without the branch the flag in guard-rules.local.json
+	// reached neither merge function and was silently dropped.
+	if (local.grep_acceleration) {
+		config.grep_acceleration = { ...config.grep_acceleration, ...local.grep_acceleration };
 	}
 }
 

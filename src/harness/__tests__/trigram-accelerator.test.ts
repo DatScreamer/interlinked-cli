@@ -103,16 +103,16 @@ describe("checkGrepAcceleration", () => {
 
 		const index = buildTestIndex(files);
 		const event = makeGrepEvent("function");
-		const result = checkGrepAcceleration(event, index, { maxCandidateRatio: 0.3 });
+		const result = checkGrepAcceleration(event, index, {
+			maxCandidateRatio: 0.3,
+			indexFresh: true,
+			minFilesForAccel: 1,
+		});
 
-		// "function" appears in many files — should allow with warning
-		if (result) {
-			// If the accelerator decided to act, it should be allow+warning for broad patterns
-			if (result.decision === "allow") {
-				expect(result.warnings).toBeDefined();
-				expect(result.warnings!.some((w) => w.includes("broad pattern"))).toBe(true);
-			}
-		}
+		// "function" appears in (nearly) every file — the key invariant is that a
+		// broad pattern is NEVER substituted (block); at most it is allow+warning,
+		// so the native command still runs.
+		expect(result?.decision).not.toBe("block");
 	});
 
 	it("intercepts Bash rg commands", () => {
@@ -128,16 +128,31 @@ describe("checkGrepAcceleration", () => {
 		expect(result !== undefined).toBe(true);
 	});
 
-	it("intercepts Grep tool calls", () => {
-		const index = buildTestIndex({
-			"a.ts": "uniqueidentifierforsearch",
-			"b.ts": "completely different content",
-		});
-
+	it("declines (null) when the index is not fresh — the staleness completeness gate", () => {
+		const index = buildTestIndex({ "a.ts": "uniqueidentifierforsearch" });
 		const event = makeGrepEvent("uniqueidentifierforsearch");
-		const result = checkGrepAcceleration(event, index);
-		expect(result).not.toBeNull();
-		// Should be a block (with results) since the pattern is very specific
+		// Default indexFresh:false → never substitute (a stale index could miss a
+		// file that changed on disk — a silent false negative).
+		expect(checkGrepAcceleration(event, index, { minFilesForAccel: 1 })).toBeNull();
+		expect(
+			checkGrepAcceleration(event, index, { indexFresh: false, minFilesForAccel: 1 }),
+		).toBeNull();
+	});
+
+	it("declines (null) when the repo is below the size gate — no guaranteed win", () => {
+		const index = buildTestIndex({ "a.ts": "uniqueidentifierforsearch" });
+		const event = makeGrepEvent("uniqueidentifierforsearch");
+		expect(
+			checkGrepAcceleration(event, index, { indexFresh: true, minFilesForAccel: 999_999 }),
+		).toBeNull();
+	});
+
+	it("declines (null) when a Grep glob or output_mode is set — output shape not reproduced", () => {
+		const index = buildTestIndex({ "a.ts": "uniqueidentifierforsearch" });
+		const globEvent = makeGrepEvent("uniqueidentifierforsearch", { glob: "*.ts" });
+		expect(
+			checkGrepAcceleration(globEvent, index, { indexFresh: true, minFilesForAccel: 1 }),
+		).toBeNull();
 	});
 
 	it("handles missing pattern in Grep tool", () => {

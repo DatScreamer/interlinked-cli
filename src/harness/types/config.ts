@@ -228,8 +228,11 @@ export interface GuardRulesConfig {
 	 * can serve stale results from a SessionStart-only refreshed index,
 	 * and the partially-formed hookSpecificOutput envelopes have hit
 	 * Claude Code's hook validator. The trigram index itself stays
-	 * loaded and is still used by other consumers (impact analysis,
-	 * project graph, structural checks). Re-enable via this flag or
+	 * loaded, but with substitution off its only live consumer is
+	 * PostToolUse sibling expansion (sibling-expansion.ts); it is also
+	 * read for the SessionStart freshness warning. Impact analysis, the
+	 * project graph, and structural checks build their own dependency
+	 * graphs and do NOT use it. Re-enable via this flag or
 	 * `INTERLINKED_GREP_ACCELERATOR=1`.
 	 */
 	grep_acceleration?: {

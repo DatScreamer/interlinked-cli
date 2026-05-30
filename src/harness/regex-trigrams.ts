@@ -458,101 +458,170 @@ export interface ParsedGrepCommand {
 	glob?: string;
 }
 
-interface FlagAdvance {
-	consumedExtra?: number;
-	expectGlob?: boolean;
-	patternFound?: boolean;
-}
+/** Flags whose effect the accelerator can reproduce exactly when it answers a
+ *  search itself. ANY flag outside this set forces parseGrepCommand to return
+ *  null → the daemon falls through to the real rg/ugrep, guaranteeing the
+ *  accelerator never returns a result that differs from the native command.
+ *  This is the conservative half of the never-worse-than-native contract; the
+ *  freshness / size / completeness half lives in grep-accelerator.ts. */
+type SafeGrepFlag = "ignore_case" | "fixed_strings" | "case_sensitive" | "regexp";
 
 /**
- * Apply a single ripgrep/grep-style flag token to the accumulating result and
- * report any side effects the caller needs to propagate (extra tokens consumed,
- * the next arg expected to be a glob, a pattern that terminates flag parsing).
+ * Classify a single rg/grep/ugrep flag token. Returns the modeled effect, or
+ * "unsafe" for anything we cannot reproduce identically — which includes flags
+ * that invert (`-v`), change the file universe (`--no-ignore`, `-z`), change
+ * which lines match (`-w`, `-x`, `-S` smart-case, `-U` multiline, `-P` pcre2),
+ * change output shape (`-l`, `-c`, `-o`, `-A`/`-B`/`-C`, `-N`, `--heading`,
+ * `--color=always`), filter files (`-g`, `-t`), or supply patterns from a file
+ * (`-f`). Callers MUST decline (fall through to native) on "unsafe".
  */
-function applyRipgrepFlag(
-	tok: string,
-	tokens: string[],
-	i: number,
-	result: ParsedGrepCommand,
-): FlagAdvance {
-	if (tok === "-i" || tok === "--ignore-case") {
-		result.caseInsensitive = true;
-		return {};
+function classifyGrepFlag(tok: string): SafeGrepFlag | "unsafe" {
+	switch (tok) {
+		case "-i":
+		case "--ignore-case":
+			return "ignore_case";
+		case "-F":
+		case "--fixed-strings":
+			return "fixed_strings";
+		case "-s":
+		case "--case-sensitive":
+			return "case_sensitive";
+		case "-e":
+		case "--regexp":
+			return "regexp";
+		default:
+			return "unsafe";
 	}
-	if (tok === "-F" || tok === "--fixed-strings") {
-		result.isRegex = false;
-		return {};
-	}
-	if (tok === "-g" || tok === "--glob") {
-		return { expectGlob: true };
-	}
-	if (tok.startsWith("-g") && tok.length > 2) {
-		result.glob = tok.slice(2);
-		return {};
-	}
-	if (tok === "-t" || tok === "--type") {
-		return { consumedExtra: 1 };
-	}
-	if (tok === "-e" || tok === "--regexp") {
-		if (i + 1 < tokens.length) {
-			result.pattern = tokens[i + 1];
-			return { consumedExtra: 1, patternFound: true };
+}
+
+/** True when `argsStr` contains a shell operator OUTSIDE quotes — i.e. the
+ *  command is a pipeline or compound command (`rg … | …`, `rg … && …`,
+ *  `$(…)`, backticks, brace/paren groups). The accelerator can only answer the
+ *  single rg invocation; substituting it would silently drop the rest of the
+ *  command, so these must run natively. Quoted operators (e.g. the `|` in the
+ *  regex `'a|b'`) are part of the pattern and are ignored. */
+function hasUnquotedShellOperator(argsStr: string): boolean {
+	let inSingle = false;
+	let inDouble = false;
+	for (let i = 0; i < argsStr.length; i++) {
+		const ch = argsStr[i];
+		if (inSingle) {
+			if (ch === "'") inSingle = false;
+			continue;
+		}
+		if (inDouble) {
+			if (ch === "\\") i++;
+			else if (ch === '"') inDouble = false;
+			continue;
+		}
+		if (ch === "'") {
+			inSingle = true;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			continue;
+		}
+		if (ch === "\\") {
+			i++; // escaped char is literal
+			continue;
+		}
+		if (
+			ch === "|" ||
+			ch === ";" ||
+			ch === "&" ||
+			ch === ">" ||
+			ch === "<" ||
+			ch === "$" ||
+			ch === "`" ||
+			ch === "(" ||
+			ch === ")" ||
+			ch === "{" ||
+			ch === "}" ||
+			ch === "\n"
+		) {
+			return true;
 		}
 	}
-	return {};
+	return false;
 }
 
 /**
- * Parse a Bash command to detect ripgrep/grep invocations and extract
- * the search pattern. Returns null if the command isn't a grep-like search.
+ * Parse a Bash command into a ripgrep/grep/ugrep invocation the accelerator can
+ * answer, or return null to decline (fall through to native). Declines on: any
+ * shell operator / pipeline (`hasUnquotedShellOperator`), any flag outside the
+ * safe set (`classifyGrepFlag` → "unsafe"), and more than one search path.
+ * Returning null is always safe — it just means the real command runs.
  */
 export function parseGrepCommand(command: string): ParsedGrepCommand | null {
 	const trimmed = command.trim();
 
 	// Match ripgrep: rg [flags] 'pattern' [path]
-	// Match grep: grep [flags] 'pattern' [path]
-	const rgMatch = trimmed.match(/^(?:rg|ripgrep|grep|egrep|fgrep)\s+(.*)/s);
+	// Match grep/ugrep: grep [flags] 'pattern' [path]
+	// Native Claude Code (macOS/Linux) replaced the Grep tool with embedded
+	// `ugrep` (binary `ug` / `ugrep`) invoked through Bash, so recognize those
+	// alongside rg/grep. The optional `\S*\/` prefix matches the embedded
+	// binary invoked by absolute path (e.g. `/…/ugrep`) — we key off basename.
+	const rgMatch = trimmed.match(
+		/^(?:\S*\/)?(?:ugrep|ug|rg|ripgrep|grep|egrep|fgrep)\s+(.*)/s,
+	);
 	if (!rgMatch) return null;
 
 	const argsStr = rgMatch[1];
+	// Pipeline / compound command → only native can run the whole thing.
+	if (hasUnquotedShellOperator(argsStr)) return null;
+
 	const result: ParsedGrepCommand = {
 		pattern: "",
 		isRegex: true,
 		caseInsensitive: false,
 	};
 
-	// Parse flags and arguments
 	const tokens = tokenizeShellArgs(argsStr);
-	let expectGlob = false;
-	let patternFound = false;
+	const positionals: string[] = [];
+	let patternFromFlag = false;
+	let endOfFlags = false;
 
 	for (let i = 0; i < tokens.length; i++) {
 		const tok = tokens[i];
 
-		if (expectGlob) {
-			result.glob = tok;
-			expectGlob = false;
+		// `--` ends flag parsing; everything after is positional.
+		if (!endOfFlags && tok === "--") {
+			endOfFlags = true;
 			continue;
 		}
 
-		// Flag handling
-		if (tok.startsWith("-") && !patternFound) {
-			const advance = applyRipgrepFlag(tok, tokens, i, result);
-			if (advance.consumedExtra) i += advance.consumedExtra;
-			if (advance.expectGlob) expectGlob = true;
-			if (advance.patternFound) patternFound = true;
-			// Skip other flags (-n, -l, --color, etc.)
+		if (!endOfFlags && tok.length > 1 && tok.startsWith("-")) {
+			const cls = classifyGrepFlag(tok);
+			if (cls === "unsafe") return null; // any unmodeled flag → native
+			if (cls === "ignore_case") {
+				result.caseInsensitive = true;
+			} else if (cls === "case_sensitive") {
+				result.caseInsensitive = false;
+			} else if (cls === "fixed_strings") {
+				result.isRegex = false;
+			} else if (cls === "regexp") {
+				// `-e PATTERN` — the next token is the pattern.
+				if (i + 1 >= tokens.length) return null;
+				result.pattern = tokens[++i];
+				patternFromFlag = true;
+			}
 			continue;
 		}
 
-		// First non-flag token is the pattern
-		if (!patternFound) {
-			result.pattern = tok;
-			patternFound = true;
-		} else {
-			// Subsequent non-flag token is the path
-			result.path = tok;
-		}
+		positionals.push(tok);
+	}
+
+	// First positional is the pattern (unless `-e` supplied it); a single
+	// trailing positional is the search path. More than one path → decline
+	// (the candidate prefix filter models only one).
+	if (patternFromFlag) {
+		if (positionals.length > 1) return null;
+		if (positionals.length === 1) result.path = positionals[0];
+	} else {
+		if (positionals.length === 0 || positionals.length > 2) return null;
+		result.pattern = positionals[0];
+		if (positionals.length === 2) result.path = positionals[1];
 	}
 
 	if (!result.pattern) return null;

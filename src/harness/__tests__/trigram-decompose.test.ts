@@ -195,10 +195,10 @@ describe("parseGrepCommand", () => {
 		expect(result!.isRegex).toBe(false);
 	});
 
-	it("parses glob flag", () => {
-		const result = parseGrepCommand("rg -g '*.ts' 'pattern'");
-		expect(result).not.toBeNull();
-		expect(result!.glob).toBe("*.ts");
+	it("declines on the glob flag (-g) — unsound glob filter, so native runs", () => {
+		// Reproducing rg's glob semantics (braces, negation) is error-prone, so
+		// the conservative contract declines rather than risk a wrong file set.
+		expect(parseGrepCommand("rg -g '*.ts' 'pattern'")).toBeNull();
 	});
 
 	it("parses double-quoted pattern", () => {
@@ -229,21 +229,64 @@ describe("parseGrepCommand", () => {
 		expect(parseGrepCommand("rg")).toBeNull();
 	});
 
-	it("handles combined flags", () => {
-		const result = parseGrepCommand("rg -n --color=never -i 'test'");
+	it("parses safe combined flags (-i -F)", () => {
+		const result = parseGrepCommand("rg -i -F 'test'");
 		expect(result).not.toBeNull();
 		expect(result!.caseInsensitive).toBe(true);
+		expect(result!.isRegex).toBe(false);
 	});
 
-	it("stops at shell operators", () => {
-		const result = parseGrepCommand("rg 'pattern' | head -20");
-		expect(result).not.toBeNull();
-		expect(result!.pattern).toBe("pattern");
+	it("declines on unmodeled flags (-n, --color) → native", () => {
+		// Conservative contract: any flag outside {-i,-F,-s,-e} forces a decline —
+		// even harmless ones — so the accelerator can never diverge from the
+		// native command's output. Coverage is traded for provable correctness.
+		expect(parseGrepCommand("rg -n --color=never -i 'test'")).toBeNull();
+		expect(parseGrepCommand("rg -v 'test'")).toBeNull(); // invert — must never substitute
+		expect(parseGrepCommand("rg -l 'test'")).toBeNull(); // files-with-matches
+		expect(parseGrepCommand("rg -w 'test'")).toBeNull(); // word boundary
+		expect(parseGrepCommand("rg -A2 'test'")).toBeNull(); // context lines
+	});
+
+	it("declines on pipelines / compound commands → native", () => {
+		// The accelerator can only answer the single rg invocation; substituting
+		// it would drop the rest of the command, so the whole thing runs natively.
+		expect(parseGrepCommand("rg 'pattern' | head -20")).toBeNull();
+		expect(parseGrepCommand("rg 'x' && echo done")).toBeNull();
+		expect(parseGrepCommand("rg 'x' $(cat f)")).toBeNull();
+		expect(parseGrepCommand("rg 'x'; rm y")).toBeNull();
 	});
 
 	it("handles backslash-escaped characters in pattern", () => {
 		const result = parseGrepCommand("rg 'foo\\.bar'");
 		expect(result).not.toBeNull();
 		expect(result!.pattern).toBe("foo\\.bar");
+	});
+
+	// Native Claude Code (macOS/Linux) replaced the Grep tool with embedded
+	// `ugrep` (`ug` / `ugrep`) invoked through Bash. These must parse so the
+	// accelerator still recognizes search on native builds.
+	it("parses ugrep command", () => {
+		const result = parseGrepCommand("ugrep 'handleAuth' src/");
+		expect(result).not.toBeNull();
+		expect(result!.pattern).toBe("handleAuth");
+		expect(result!.path).toBe("src/");
+	});
+
+	it("parses the ug short binary with flags", () => {
+		const result = parseGrepCommand("ug -i 'pattern'");
+		expect(result).not.toBeNull();
+		expect(result!.pattern).toBe("pattern");
+		expect(result!.caseInsensitive).toBe(true);
+	});
+
+	it("parses ugrep invoked by absolute path (embedded binary)", () => {
+		const result = parseGrepCommand("/opt/claude/bin/ugrep 'needle'");
+		expect(result).not.toBeNull();
+		expect(result!.pattern).toBe("needle");
+	});
+
+	it("does not treat a command merely starting with other letters as ugrep", () => {
+		// Anchored at command start: 'debug …' begins with 'd', not a search verb.
+		expect(parseGrepCommand("debug --port 9229")).toBeNull();
 	});
 });
