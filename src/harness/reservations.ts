@@ -23,6 +23,44 @@ const AUTO_RELEASE_MS = 30_000;
 /** Default reservation TTL sent to the server (5 minutes) */
 const RESERVATION_TTL_S = 300;
 
+// ===========================================
+// Agent identity — self-ownership across name variants
+// ===========================================
+// One local CLI session can surface under more than one synthetic agent
+// name: a `session-<id>` from one hook path and a `session-<source>-<id>`
+// from another (raw vs framed socket; `event.agent_name` vs the session
+// fallback). With raw string equality those variants look like two
+// different agents, so a session would block *itself* out of a file it had
+// just reserved — and the local/remote cohort split would even label the
+// holder "remote". That whole multi-identity model is a holdover from the
+// mcp-agent-chat era, when every agent name was server-issued and globally
+// unique. `canonicalAgent` collapses the variants so a session always owns
+// its own reservations; non-`session-` names (explicit agent names,
+// subagent ids, real remote agents) pass through untouched, so genuine
+// cross-agent coordination is preserved.
+
+/** Agent-source tokens that may appear as the `<source>` infix in a
+ *  synthetic `session-<source>-<id>` agent name. */
+const KNOWN_AGENT_SOURCES = ["claude", "codex", "gemini", "copilot", "cursor"] as const;
+
+/** Canonical owner key for a reservation agent name: strips a known
+ *  `session-<source>-` prefix down to `session-<id>`. Idempotent, and a
+ *  no-op for any name that isn't a synthetic per-source session name. */
+export function canonicalAgent(name: string): string {
+	for (const source of KNOWN_AGENT_SOURCES) {
+		const prefix = `session-${source}-`;
+		if (name.startsWith(prefix)) return `session-${name.slice(prefix.length)}`;
+	}
+	return name;
+}
+
+/** True when two agent names denote the same reservation owner — an exact
+ *  match, or the same session expressed under different synthetic-name
+ *  variants. Used for every ownership decision in {@link ReservationManager}. */
+export function sameOwner(a: string, b: string): boolean {
+	return a === b || canonicalAgent(a) === canonicalAgent(b);
+}
+
 export interface ServerApiClient {
 	reserveFile(filePath: string, agentName: string, ttlSeconds: number): Promise<void>;
 	releaseFile(filePath: string, agentName: string): Promise<void>;
@@ -126,7 +164,9 @@ export function applyTransition(state: ReservationCache, txn: ReservationTxn): R
 			return state;
 		}
 		case "release_all": {
-			for (const [file, entry] of state) {
+			// Snapshot before mutating: deleting from a Map mid-iteration is
+			// safe for visited keys, but the snapshot makes the intent explicit.
+			for (const [file, entry] of [...state]) {
 				if (entry.agent_name === txn.agent) state.delete(file);
 			}
 			return state;
@@ -177,10 +217,14 @@ export class ReservationManager {
 
 		if (this.apiClient) {
 			// Initial load from server
-			this.refreshFromServer().catch(() => {});
+			this.refreshFromServer().catch(() => {
+				/* best-effort: a failed refresh just means stale-until-next-tick */
+			});
 			// Periodic refresh
 			this.refreshInterval = setInterval(() => {
-				this.refreshFromServer().catch(() => {});
+				this.refreshFromServer().catch(() => {
+					/* best-effort: a failed refresh just means stale-until-next-tick */
+				});
 			}, refreshMs);
 		}
 	}
@@ -206,7 +250,7 @@ export class ReservationManager {
 	): ReservationConflict | null {
 		// Check cache for conflicts
 		for (const [pattern, entry] of this.cache) {
-			if (entry.agent_name === agentName) continue; // Own reservation
+			if (sameOwner(entry.agent_name, agentName)) continue; // Own reservation (any name variant)
 			if (this.pathMatchesPattern(filePath, pattern)) {
 				// Check if expired — prune via the SSoT transition.
 				if (entry.expires_at && new Date(entry.expires_at).getTime() < Date.now()) {
@@ -291,10 +335,11 @@ export class ReservationManager {
 		// Only roll back if the entry is still ours; otherwise something
 		// else (release, expiry, remote upsert via refresh) has already moved
 		// the state and our rollback would be a phantom mutation.
-		if (entry && entry.agent_name === agentName && entry.cohort === "local") {
-			applyTransition(this.cache, { kind: "release", file: filePath, agent: agentName });
-			cohort.removeFileReservation(agentName, filePath);
-			const timerKey = `${agentName}:${filePath}`;
+		if (entry && sameOwner(entry.agent_name, agentName) && entry.cohort === "local") {
+			const owner = entry.agent_name;
+			applyTransition(this.cache, { kind: "release", file: filePath, agent: owner });
+			cohort.removeFileReservation(owner, filePath);
+			const timerKey = `${owner}:${filePath}`;
 			const timer = this.releaseTimers.get(timerKey);
 			if (timer) {
 				clearTimeout(timer);
@@ -326,16 +371,20 @@ export class ReservationManager {
 	 */
 	scheduleRelease(filePath: string, agentName: string, cohort: CohortManager): void {
 		const entry = this.cache.get(filePath);
-		if (!entry || entry.agent_name !== agentName) return;
+		if (!entry || !sameOwner(entry.agent_name, agentName)) return;
+		// Key the timer + release on the *stored* owner, not the caller's name
+		// variant, so a session-claude-<id> PostToolUse can't strand a
+		// session-<id> grant past the idle timeout.
+		const owner = entry.agent_name;
 
 		// Clear existing timer for this file
-		const timerKey = `${agentName}:${filePath}`;
+		const timerKey = `${owner}:${filePath}`;
 		const existing = this.releaseTimers.get(timerKey);
 		if (existing) clearTimeout(existing);
 
 		// Set new release timer
 		const timer = setTimeout(() => {
-			this.release(filePath, agentName, cohort);
+			this.release(filePath, owner, cohort);
 			this.releaseTimers.delete(timerKey);
 		}, AUTO_RELEASE_MS);
 
@@ -345,20 +394,24 @@ export class ReservationManager {
 	/** Immediately release a specific file reservation */
 	release(filePath: string, agentName: string, cohort: CohortManager): void {
 		const entry = this.cache.get(filePath);
-		if (!entry || entry.agent_name !== agentName) return;
+		if (!entry || !sameOwner(entry.agent_name, agentName)) return;
+		// Operate on the *stored* owner name, not the caller's variant, so the
+		// SSoT release transition and the server/cohort bookkeeping all target
+		// the exact identity the grant used.
+		const owner = entry.agent_name;
 
-		applyTransition(this.cache, { kind: "release", file: filePath, agent: agentName });
-		cohort.removeFileReservation(agentName, filePath);
+		applyTransition(this.cache, { kind: "release", file: filePath, agent: owner });
+		cohort.removeFileReservation(owner, filePath);
 		this.emit({
 			ts: new Date().toISOString(),
 			action: "release",
 			file: filePath,
-			agent_name: agentName,
+			agent_name: owner,
 			cohort: entry.cohort,
 		});
 
 		// Clear any pending timer
-		const timerKey = `${agentName}:${filePath}`;
+		const timerKey = `${owner}:${filePath}`;
 		const timer = this.releaseTimers.get(timerKey);
 		if (timer) {
 			clearTimeout(timer);
@@ -367,7 +420,9 @@ export class ReservationManager {
 
 		// Release on server async
 		if (this.apiClient) {
-			this.apiClient.releaseFile(filePath, agentName).catch(() => {});
+			this.apiClient.releaseFile(filePath, owner).catch(() => {
+				/* best-effort: server-side release is reconciled by TTL + refresh */
+			});
 		}
 	}
 
@@ -375,7 +430,7 @@ export class ReservationManager {
 	releaseAllForAgent(agentName: string, cohort: CohortManager): void {
 		const toRelease: string[] = [];
 		for (const [path, entry] of this.cache) {
-			if (entry.agent_name === agentName) {
+			if (sameOwner(entry.agent_name, agentName)) {
 				toRelease.push(path);
 			}
 		}
@@ -407,7 +462,7 @@ export class ReservationManager {
 
 	/** Get reservations for a specific agent */
 	getForAgent(agentName: string): ReservationEntry[] {
-		return this.getAll().filter((e) => e.agent_name === agentName);
+		return this.getAll().filter((e) => sameOwner(e.agent_name, agentName));
 	}
 
 	/** Refresh the local cache from the server */

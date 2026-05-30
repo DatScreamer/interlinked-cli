@@ -19,12 +19,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CohortManager } from "../cohort.js";
 import {
 	applyTransition,
+	canonicalAgent,
 	type ReservationCache,
 	type ReservationEventSink,
 	type ReservationLogEvent,
 	ReservationManager,
 	type ReservationTxn,
 	replayTransitions,
+	sameOwner,
 	type ServerApiClient,
 	type ServerReservation,
 } from "../reservations.js";
@@ -174,6 +176,83 @@ describe("ReservationTxn — pure state machine", () => {
 	it("expire(file) is a no-op when the file is not in the cache", () => {
 		const empty = replayTransitions([{ kind: "expire", file: "phantom.ts" }]);
 		expect(empty.size).toBe(0);
+	});
+});
+
+// ===========================================
+// Agent-identity canonicalization — session self-conflict fix
+// ===========================================
+//
+// Regression guard for the mcp-agent-chat holdover: one CLI session could
+// surface under two synthetic names (`session-<id>` from one hook path,
+// `session-<source>-<id>` from another) and block itself out of files it
+// had just reserved. `canonicalAgent` collapses the variants; `sameOwner`
+// is the ownership predicate now used throughout ReservationManager.
+
+describe("canonicalAgent / sameOwner — session identity", () => {
+	it("collapses the session-<source>-<id> variant to session-<id>", () => {
+		expect(canonicalAgent("session-claude-2d113be2")).toBe("session-2d113be2");
+		expect(canonicalAgent("session-codex-2d113be2")).toBe("session-2d113be2");
+		expect(canonicalAgent("session-2d113be2")).toBe("session-2d113be2");
+	});
+
+	it("passes non-session names through unchanged (explicit + subagent ids)", () => {
+		expect(canonicalAgent("alice")).toBe("alice");
+		expect(canonicalAgent("sub-abcd1234")).toBe("sub-abcd1234");
+		// "clauded" is not the "claude" source token — must NOT be stripped.
+		expect(canonicalAgent("session-clauded-x")).toBe("session-clauded-x");
+	});
+
+	it("treats name variants of one session as the same owner", () => {
+		expect(sameOwner("session-2d113be2", "session-claude-2d113be2")).toBe(true);
+		expect(sameOwner("session-claude-2d113be2", "session-2d113be2")).toBe(true);
+		expect(sameOwner("session-2d113be2", "session-2d113be2")).toBe(true);
+	});
+
+	it("keeps genuinely different sessions / agents distinct", () => {
+		expect(sameOwner("session-2d113be2", "session-99999999")).toBe(false);
+		expect(sameOwner("session-claude-2d113be2", "session-claude-99999999")).toBe(false);
+		expect(sameOwner("alice", "bob")).toBe(false);
+	});
+});
+
+describe("ReservationManager — session self-conflict (regression)", () => {
+	let events: ReservationLogEvent[];
+	let cohort: CohortManager;
+	let mgr: ReservationManager;
+	const sink: ReservationEventSink = (e) => events.push(e);
+
+	beforeEach(() => {
+		events = [];
+		cohort = new CohortManager();
+		// No apiClient: mirror the local daemon with no server configured, so
+		// the grant path is purely local (no async confirm to flush).
+		mgr = new ReservationManager(undefined, 60_000_000, sink);
+	});
+
+	afterEach(() => {
+		mgr?.shutdown();
+	});
+
+	it("a session's other name variant does NOT conflict with its own reservation", () => {
+		expect(mgr.checkAndReserve("doc.md", "session-2d113be2", cohort)).toBeNull();
+		// Same session, different synthetic name — must be recognized as self.
+		const conflict = mgr.checkAndReserve("doc.md", "session-claude-2d113be2", cohort);
+		expect(conflict).toBeNull();
+		expect(events.some((e) => e.action === "conflict")).toBe(false);
+	});
+
+	it("release under a different name variant frees the reservation", () => {
+		mgr.checkAndReserve("doc.md", "session-2d113be2", cohort);
+		mgr.release("doc.md", "session-claude-2d113be2", cohort);
+		expect(mgr.getAll()).toEqual([]);
+	});
+
+	it("a genuinely different session still conflicts (coordination preserved)", () => {
+		mgr.checkAndReserve("doc.md", "session-2d113be2", cohort);
+		const conflict = mgr.checkAndReserve("doc.md", "session-99999999", cohort);
+		expect(conflict).not.toBeNull();
+		expect(conflict?.agent_name).toBe("session-2d113be2");
 	});
 });
 
