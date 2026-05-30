@@ -55,6 +55,14 @@ reports/
 # See: `git bundle verify .archive/<name>.bundle`.
 .archive/
 
+# cloud/ graduated to the private `interlinked-cloud` repo — its source no longer
+# lives here (interlinked-cli tracks 0 files under cloud/). What remains in the
+# working tree is local-only: .dev.vars (wrangler dev SECRETS), .wrangler/ cache,
+# .interlinked/ harness runtime, .claude/ settings. Blanket-ignore so a stray
+# `git add -A` can never commit those secrets/cruft into this repo. (If cloud/ is
+# ever re-added as a submodule, revisit this rule.)
+cloud/
+
 # Third-party reference repos cloned for design/research only — never committed.
 reference-repos/
 
