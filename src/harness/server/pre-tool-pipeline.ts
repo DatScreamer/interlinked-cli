@@ -606,12 +606,19 @@ export async function runPreToolPipeline(
 	// and do NOT use it.
 	// Re-enable: set INTERLINKED_GREP_ACCELERATOR=1 OR set
 	// guard-rules.json `grep_acceleration.substitution_enabled: true`.
+	// The index-status warning below uses the classic rg/grep scope (its
+	// pre-existing behavior). Substitution additionally recognizes native-build
+	// ugrep/ug, but that path is gated on grepSubstitutionEnabled (off by
+	// default) — so with substitution disabled, ugrep recognition has NO
+	// behavioral effect anywhere.
 	const isSearchTool =
 		event.tool_name === "Grep" ||
 		(event.tool_name === "Bash" &&
-			/\b(ugrep|ug|rg|ripgrep|grep|egrep|fgrep)\s/.test(
-				(event.tool_input?.command as string) || "",
-			));
+			/\b(rg|ripgrep|grep|egrep)\s/.test((event.tool_input?.command as string) || ""));
+	const ugrepAwareSearch =
+		isSearchTool ||
+		(event.tool_name === "Bash" &&
+			/\b(ugrep|ug|fgrep)\s/.test((event.tool_input?.command as string) || ""));
 
 	const grepSubstitutionEnabled =
 		process.env.INTERLINKED_GREP_ACCELERATOR === "1" ||
@@ -622,7 +629,7 @@ export async function runPreToolPipeline(
 	if (
 		preDecision.decision === "allow" &&
 		searchIndex &&
-		isSearchTool &&
+		ugrepAwareSearch &&
 		grepSubstitutionEnabled
 	) {
 		// Never-worse-than-native completeness gate: only allow the accelerator to
