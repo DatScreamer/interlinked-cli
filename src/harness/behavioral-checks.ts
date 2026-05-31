@@ -128,6 +128,33 @@ function anyFindingNearEditedLine(
 	return false;
 }
 
+// Matches the `L<number>:` prefix every inline-check producer writes into a
+// finding's `detail` block (e.g. `  L18: export function foo(` or
+// `  L18 (in scope): ...`). The single source of per-finding line numbers
+// the escalation can attribute to an edit — `CheckResultEntry.line` is a
+// single optional slot, but one check (magic_literal, missing_return_types,
+// …) routinely reports many lines, all of which live only in `detail`.
+const DETAIL_LINE_PREFIX_RE = /(?:^|\n)\s*L(\d+)\b/g;
+
+/**
+ * Parse every `L<n>:` finding line out of a check result's `detail` block.
+ * Deterministic (regex over the harness's own detail format), no I/O.
+ * Returns [] when `detail` is absent or carries no line prefixes (file-level
+ * checks like `export_surface` that have no per-line anchor).
+ */
+function extractDetailLines(detail: string | undefined): number[] {
+	if (!detail) return [];
+	const out: number[] = [];
+	DETAIL_LINE_PREFIX_RE.lastIndex = 0;
+	let m: RegExpExecArray | null = DETAIL_LINE_PREFIX_RE.exec(detail);
+	while (m !== null) {
+		const n = Number.parseInt(m[1], 10);
+		if (Number.isFinite(n)) out.push(n);
+		m = DETAIL_LINE_PREFIX_RE.exec(detail);
+	}
+	return out;
+}
+
 function editedLineWithinRadius(
 	editedLines: ReadonlySet<number>,
 	target: number,
@@ -144,46 +171,71 @@ function editedLineWithinRadius(
  * If a warning was already issued and the agent edits the file again without
  * fixing it, escalate from warning to error.
  *
- * Refinement 2026-05 — addresses the FP class where pre-existing findings
- * (already in HEAD before the session started) re-fire on every edit and
- * the escalation amplifies the noise without value. Two gates:
+ * Per-finding line attribution (refinement 2026-05, sharpened 2026-05-29) —
+ * addresses the FP class where pre-existing findings (already in HEAD before
+ * the session started) re-fire on every edit and the escalation amplifies the
+ * noise without value. The agent is only responsible for a finding when its
+ * edit actually touched the finding's line. Three gates:
  *
- *  1. **Edited-line proximity** — when `editedLines` is provided AND the
- *     current results carry line numbers, escalate only if at least one
- *     finding's line is within `±PROXIMITY_RADIUS` of a line the agent's
- *     current edit actually changed. A persistent finding the agent
- *     didn't have agency over (line shifted by an unrelated insertion,
- *     finding in a region untouched by this edit) is suppressed.
+ *  1. **Edited-line attribution (fail-CLOSED when edit data is present)** —
+ *     when `editedLines` is provided, escalate a finding only if at least one
+ *     of its lines is within `±PROXIMITY_RADIUS` of a line the agent's
+ *     current edit changed. Critically, this is fail-CLOSED: a finding that
+ *     carries NO line evidence (file-level checks, or a finding whose lines we
+ *     couldn't recover) is NOT escalated when we have edit data — we cannot
+ *     prove the agent is responsible for it, and "findings on unchanged lines
+ *     must not escalate" is the contract. This is the fix for the observed FP
+ *     where a stable advisory on line X amplified to an error on every edit to
+ *     an unrelated line. (The previous gate failed OPEN whenever a finding
+ *     lacked a `line` field — and in production findings never carried one,
+ *     so the gate never engaged and every pre-existing finding escalated.)
  *  2. **Once-per-record rate limit** — at most one escalation per
- *     (file, check) per session. After the first escalation fires the
- *     record is flagged; subsequent emissions of the same check on the
- *     same file don't re-escalate. Caps the amplification independent
- *     of the proximity test.
+ *     (file, check) per session. After the first escalation fires the record
+ *     is flagged; subsequent emissions of the same check on the same file
+ *     don't re-escalate. Caps amplification independent of the proximity test.
+ *  3. **Legacy fail-open** — only when `editedLines` is entirely absent
+ *     (truly legacy callers with no edit context at all) does the gate fall
+ *     back to the old issue-count-only behavior, so those callers still nag.
  *
- * Legacy callers that pass `string[]` keep working — without line data
- * the proximity gate fails open (escalates), preserving the old behavior
- * for callers we haven't migrated.
+ * Finding lines arrive two ways: an explicit `line` slot AND a `lines[]`
+ * array (one check often reports many lines). Callers that pass `string[]`
+ * or `{name, line}` keep working — `runBehavioralChecks` enriches the input
+ * with lines parsed from each finding's `detail` block.
  */
+export interface EscalationFinding {
+	name: string;
+	/** Single finding line (legacy single-slot callers / tests). */
+	line?: number;
+	/** All lines this check fired on, recovered from the `detail` block. */
+	lines?: number[];
+}
+
 export function checkPersistentWarningEscalation(
 	session: SessionTrajectory,
 	filePath: string,
-	currentResults: ReadonlyArray<string | { name: string; line?: number }>,
+	currentResults: ReadonlyArray<string | EscalationFinding>,
 	editedLines?: ReadonlySet<number>,
 ): CheckResultEntry[] {
 	const escalated: CheckResultEntry[] = [];
 	const PROXIMITY_RADIUS = 3;
 
-	// Group current findings by check name; collect line numbers per check.
+	// Group current findings by check name; collect every line number per
+	// check (from both the single `line` slot and the `lines[]` array).
 	const linesByCheck = new Map<string, number[]>();
 	for (const r of currentResults) {
 		const name = typeof r === "string" ? r : r.name;
-		const line = typeof r === "string" ? undefined : r.line;
 		if (!linesByCheck.has(name)) linesByCheck.set(name, []);
-		if (typeof line === "number" && Number.isFinite(line)) {
-			const list = linesByCheck.get(name);
-			if (list) list.push(line);
+		const list = linesByCheck.get(name);
+		if (!list || typeof r === "string") continue;
+		if (typeof r.line === "number" && Number.isFinite(r.line)) list.push(r.line);
+		if (Array.isArray(r.lines)) {
+			for (const l of r.lines) {
+				if (typeof l === "number" && Number.isFinite(l)) list.push(l);
+			}
 		}
 	}
+
+	const haveEditData = editedLines !== undefined && editedLines.size > 0;
 
 	for (const [name, currentLines] of linesByCheck) {
 		const key = `${filePath}::${name}`;
@@ -191,11 +243,15 @@ export function checkPersistentWarningEscalation(
 		if (!record || record.issue_count < 1) continue;
 		if (record.escalation_emitted) continue;
 
-		// Diff-aware proximity gate. Skip when:
-		//   - we have edited-line data,
-		//   - the current results carry line info,
-		//   - and no finding line is within PROXIMITY_RADIUS of an edit line.
-		if (editedLines && editedLines.size > 0 && currentLines.length > 0) {
+		// Diff-aware attribution gate. When we know which lines the edit
+		// touched, the agent is responsible for a finding ONLY if one of its
+		// lines sits within PROXIMITY_RADIUS of an edited line. Fail closed:
+		// a finding with no recoverable line (or no nearby edit) is not the
+		// agent's to answer for, so we do not amplify it. The legacy fall-back
+		// (escalate on issue_count alone) applies only when there is no edit
+		// data at all.
+		if (haveEditData) {
+			if (currentLines.length === 0) continue;
 			if (!anyFindingNearEditedLine(currentLines, editedLines, PROXIMITY_RADIUS)) {
 				continue;
 			}
@@ -867,12 +923,17 @@ export function runBehavioralChecks(
 	if (nudge) results.push(nudge);
 
 	// 4. Persistent warning escalation — pass full result objects so the
-	// diff-aware proximity gate can read each finding's line number, plus
-	// the optional editedLines set so the gate can decide whether the
-	// agent had agency over each persistent finding.
-	const escalationInputs = currentCheckResults.map((r) => ({
+	// diff-aware attribution gate can read each finding's line numbers, plus
+	// the optional editedLines set so the gate can decide whether the agent
+	// had agency over each persistent finding. A single `CheckResultEntry`
+	// carries at most one `line`, but most inline checks report several lines,
+	// all of which live only in the `detail` block — so we recover them here.
+	// Without this, the gate saw zero finding lines, failed open, and
+	// amplified every stale pre-existing finding on every unrelated edit.
+	const escalationInputs: EscalationFinding[] = currentCheckResults.map((r) => ({
 		name: r.name,
 		line: r.line,
+		lines: extractDetailLines(r.detail),
 	}));
 	const escalations = checkPersistentWarningEscalation(
 		session,

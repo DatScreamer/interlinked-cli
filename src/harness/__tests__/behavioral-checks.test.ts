@@ -15,8 +15,9 @@ import {
 	checkTppLeapfrog,
 	countAssertions,
 	gitNumstatDelta,
+	runBehavioralChecks,
 } from "../behavioral-checks.js";
-import type { SessionTrajectory, TddCycle } from "../types.js";
+import type { CheckResultEntry, SessionTrajectory, TddCycle } from "../types.js";
 
 // ===========================================
 // Helpers
@@ -362,6 +363,149 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 			new Set(),
 		);
 		expect(out).toHaveLength(1);
+	});
+
+	// --- FALSE-POSITIVE regression: stable pre-existing findings on UNTOUCHED
+	// lines must not escalate when the edit touched an unrelated region. This
+	// is the exact production FP: the agent edited lines around 300, while a
+	// pre-existing advisory sat on line 18 — the escalation amplified it to an
+	// error every single edit. With per-finding line attribution + fail-closed
+	// (when edit data is present), the finding's own line decides agency.
+
+	it("FP: pre-existing finding (lines from `lines[]`) FAR from a real edit does NOT escalate", () => {
+		// Finding fired on lines 18 + 655 (recovered from a detail block); the
+		// agent's edit touched lines 298-318. None within ±3. No escalation.
+		const session = makeSession({ warnings_issued: priorRecord("missing_return_types", [18]) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "missing_return_types", lines: [18, 655] }],
+			new Set([298, 299, 300, 301, 302, 318]),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("FP: finding with NO recoverable line does NOT escalate when edit data is present (fail-closed)", () => {
+		// A file-level / line-less finding cannot be attributed to the edited
+		// lines, so the agent is not provably responsible. The old gate failed
+		// OPEN here (escalated); the sharpened gate fails closed.
+		const session = makeSession({ warnings_issued: priorRecord("code_clones", [655]) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "code_clones" }], // no line, no lines[]
+			new Set([298, 299, 300]),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("FP: multi-line finding where EVERY line is far from the edit does NOT escalate", () => {
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional", [248]) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "magic_literal_in_conditional", lines: [248, 254, 277, 300] }],
+			new Set([700, 701, 702]),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("TP preserved: a finding on a line the edit ADDED still escalates (lines[] near edit)", () => {
+		// The agent edited line 252 and a finding sits on line 254 (within ±3),
+		// so the agent IS responsible — the persistent nag must still fire.
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional", [254]) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "magic_literal_in_conditional", lines: [254] }],
+			new Set([252]),
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].name).toBe("persistent_warning_escalation");
+	});
+});
+
+// ===========================================
+// 5b. checkPersistentWarningEscalation via runBehavioralChecks — the production
+// integration path. In production, finding line numbers reach the escalation
+// only through each CheckResultEntry's `detail` block (the `line` field is
+// almost never populated by the inline/quality checks). These tests pin that
+// the detail-line recovery + attribution gate together suppress the observed
+// FP end-to-end.
+// ===========================================
+
+describe("runBehavioralChecks — persistent escalation attribution (detail-line path)", () => {
+	function priorRecord(checkName: string): Map<string, import("../types.js").WarningRecord> {
+		return new Map([
+			[
+				`src/foo.ts::${checkName}`,
+				{
+					check_name: checkName,
+					issue_count: 1,
+					first_issued_at: 1,
+					last_issued_at: 1,
+					resolved: false,
+				},
+			],
+		]);
+	}
+
+	function findingWithDetail(name: string, detail: string): CheckResultEntry {
+		return {
+			source: "quality",
+			name,
+			severity: "warning",
+			message: `${name} fired`,
+			file: "src/foo.ts",
+			detail,
+			determinism: "heuristic",
+		};
+	}
+
+	it("FP: pre-existing finding whose detail lines are FAR from the edit does NOT escalate", () => {
+		const session = makeSession({
+			warnings_issued: priorRecord("missing_return_types"),
+			tdd_cycles: new Map(), // no TDD interference
+		});
+		// Detail block in the harness's canonical `  L<n>: ...` format.
+		const detail = "  L18: export function captureGitBaseline(cwd: string): {\n  L655: helper()";
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[findingWithDetail("missing_return_types", detail)],
+			undefined,
+			undefined,
+			new Set([298, 299, 300]), // edit touched an unrelated region
+		);
+		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
+	});
+
+	it("FP: finding whose detail carries NO line prefix does NOT escalate (fail-closed)", () => {
+		const session = makeSession({ warnings_issued: priorRecord("export_surface") });
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[findingWithDetail("export_surface", "exported a new symbol with no companions")],
+			undefined,
+			undefined,
+			new Set([298, 299, 300]),
+		);
+		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
+	});
+
+	it("TP preserved: a finding whose detail line is NEAR the edit still escalates", () => {
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional") });
+		const detail = "  L254: if (cycle.state === 2) return;";
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[findingWithDetail("magic_literal_in_conditional", detail)],
+			undefined,
+			undefined,
+			new Set([252, 253, 254, 255]), // edit landed on the finding's line
+		);
+		const esc = out.filter((r) => r.name === "persistent_warning_escalation");
+		expect(esc).toHaveLength(1);
 	});
 });
 
