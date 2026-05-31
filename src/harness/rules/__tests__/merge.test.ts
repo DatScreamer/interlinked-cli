@@ -77,6 +77,26 @@ describe("mergeTeamRules", () => {
 		mergeTeamRules(config, { enabled: false });
 		expect(config.enabled).toBe(false);
 	});
+
+	it("does NOT let committed team config widen write scope via linked_projects", () => {
+		// Security invariant: linked_projects feeds the repo-confinement
+		// allowlist (extra writable roots), so it must never be settable from
+		// git-committed team config — a malicious PR adding
+		// `linked_projects: ["/"]` would hand every developer's agent the whole
+		// filesystem. Only mergeLocalOverrides honors it (the user's own machine).
+		const config = mkBaseConfig();
+		mergeTeamRules(config, { linked_projects: ["/"] });
+		expect(config.linked_projects).toEqual([]);
+	});
+
+	it("team config can enable grep_acceleration substitution", () => {
+		// Regression: the flag pre-tool-pipeline reads
+		// (grep_acceleration.substitution_enabled) was dropped by both merge
+		// functions, so the documented re-enable path was a silent no-op.
+		const config = mkBaseConfig();
+		mergeTeamRules(config, { grep_acceleration: { substitution_enabled: true } });
+		expect(config.grep_acceleration?.substitution_enabled).toBe(true);
+	});
 });
 
 describe("mergeLocalOverrides", () => {
@@ -179,5 +199,26 @@ describe("mergeLocalOverrides", () => {
 		});
 		const merged = config.content_scanner?.disabled_labels ?? [];
 		expect(merged.sort()).toEqual(["private_address", "private_url"]);
+	});
+
+	it("local overrides can declare linked_projects (multi-repo write scope)", () => {
+		const config = mkBaseConfig();
+		mergeLocalOverrides(config, { linked_projects: ["../interlinked-cloud"] });
+		expect(config.linked_projects).toEqual(["../interlinked-cloud"]);
+	});
+
+	it("leaves linked_projects at its default when the local override omits it", () => {
+		// The passthrough is guarded by `if (local.linked_projects)`; an
+		// unconditional assignment would clobber the default [] to undefined and
+		// break the `rules.linked_projects || []` call site in pre-tool.ts.
+		const config = mkBaseConfig();
+		mergeLocalOverrides(config, { disabled_rules: ["x"] });
+		expect(config.linked_projects).toEqual([]);
+	});
+
+	it("local override can enable grep_acceleration substitution (personal re-enable path)", () => {
+		const config = mkBaseConfig();
+		mergeLocalOverrides(config, { grep_acceleration: { substitution_enabled: true } });
+		expect(config.grep_acceleration?.substitution_enabled).toBe(true);
 	});
 });
