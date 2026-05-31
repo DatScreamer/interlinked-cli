@@ -290,12 +290,26 @@ export class SessionTracker {
 				clearAcknowledgedChecksForFile(session, filePath);
 			}
 			// Sequence-detector input population (§3.5 / §3.18 / §3.21).
-			// Best-effort, success-only — feeds add_then_revert_loop and
-			// magic_literal_cross_file_proliferation. Lives next to the
-			// write-tracking block so the same outcome gate, file_path
-			// resolution, and tool_name classifier already in scope drive
-			// it; detectors silently no-op when the maps are empty.
-			if (isSequenceWriteOperation(event.tool_name)) {
+			// Feeds add_then_revert_loop and magic_literal_cross_file_proliferation.
+			// Lives next to the write-tracking block so the same outcome gate,
+			// file_path resolution, and tool_name classifier already in scope
+			// drive it; detectors silently no-op when the maps are empty.
+			//
+			// Post-tool-use only, success-only. The §3.21 add-then-revert
+			// detector reasons about *content states the file actually passed
+			// through*. A PreToolUse Edit event is an INTENDED edit that may be
+			// blocked (tsc overlay, reservation conflict, guard) and never land
+			// — recording it would count a state the file never reached. It
+			// also double-counts: every successful edit fires both a PreToolUse
+			// (outcome undefined) and a PostToolUse (outcome "success") event,
+			// so recording on both inflated each file's history with a phantom
+			// duplicate. The FP that motivated this gate: a blocked edit leaves
+			// the file unchanged, the agent retries successfully, and the
+			// blocked attempt got counted as a prior content state — firing
+			// "cycled back N times" on clean forward progress with zero reverts.
+			// PostToolUse is the only point where the chunk reflects content
+			// that genuinely reached disk.
+			if (isSequenceWriteOperation(event.tool_name) && isPostToolUseEvent(event)) {
 				const seqWriteSucceeded =
 					event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
 				if (seqWriteSucceeded) {
@@ -690,6 +704,20 @@ const TRIVIAL_NUMBER_HI = 256;
 const HTTP_STATUS_LO = 100;
 const HTTP_STATUS_HI = 599;
 
+/** True for post-tool-use events across the supported runners (Claude Code
+ *  "PostToolUse"/"PostToolUseFailure", Gemini CLI "AfterTool"). The §3.21
+ *  add-then-revert population gate uses this to skip PreToolUse Edit events,
+ *  which represent INTENDED edits that may be blocked and never land on disk.
+ *  Mirrors `isPostToolUse` in server-tool-helpers.ts; kept local so
+ *  session-state has no dependency on the server module. */
+function isPostToolUseEvent(event: HarnessEvent): boolean {
+	return (
+		event.hook_event === "PostToolUse" ||
+		event.hook_event === "AfterTool" ||
+		event.hook_event === "PostToolUseFailure"
+	);
+}
+
 /** Tools whose successful invocation produces a content chunk we feed to
  *  the §3.21 / §3.18 sequence detectors. Superset of `isWriteOperation`
  *  because that one excludes MultiEdit (no `file_path`/`content` pair on
@@ -742,7 +770,15 @@ function extractWriteChunks(event: HarnessEvent): string[] {
  *  raw chunk; `range.end` is the chunk's line-count (the spec's
  *  simplification: Write/Edit don't expose precise line ranges, so we treat
  *  each edit as touching its full new content). Drops the oldest entry on
- *  overflow so the buffer stays bounded. */
+ *  overflow so the buffer stays bounded.
+ *
+ *  No-op suppression: if the new chunk hashes identically to the file's
+ *  immediately-preceding recorded chunk, the edit re-applied content the file
+ *  already held — not a state transition. Skipping it keeps the §3.21
+ *  add-then-revert detector's history a sequence of *distinct* states, so the
+ *  detector counts only genuine A→B→A oscillation rather than consecutive
+ *  re-applies of the same content (idempotent writes, no-op edits). An
+ *  A→B→A pattern is unaffected: the trailing A differs from the preceding B. */
 function recordRecentLineEdit(
 	session: SessionTrajectory,
 	filePath: string,
@@ -750,19 +786,20 @@ function recordRecentLineEdit(
 ): void {
 	if (!session.recent_line_edits) session.recent_line_edits = new Map();
 	const lines = chunk.split("\n").length;
-	const entry = {
-		range: { start: 0, end: lines },
-		content_hash: createHash("sha256").update(chunk).digest("hex"),
-		at_step: session.tool_call_count,
-	};
+	const contentHash = createHash("sha256").update(chunk).digest("hex");
 	const existing = session.recent_line_edits.get(filePath);
 	if (existing) {
-		existing.push(entry);
+		// Drop a re-apply of the exact same content as the last recorded edit.
+		const last = existing[existing.length - 1];
+		if (last && last.content_hash === contentHash) return;
+		existing.push({ range: { start: 0, end: lines }, content_hash: contentHash, at_step: session.tool_call_count });
 		while (existing.length > RECENT_LINE_EDITS_PER_FILE_CAP) {
 			existing.shift();
 		}
 	} else {
-		session.recent_line_edits.set(filePath, [entry]);
+		session.recent_line_edits.set(filePath, [
+			{ range: { start: 0, end: lines }, content_hash: contentHash, at_step: session.tool_call_count },
+		]);
 	}
 }
 

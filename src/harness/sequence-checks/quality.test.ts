@@ -494,6 +494,94 @@ describe("add_then_revert_loop", () => {
 		session.recent_line_edits = undefined;
 		expect(addThenRevertLoop.fn(session, lastEvent)).toEqual([]);
 	});
+
+	// --- FALSE-POSITIVE regression: blocked-then-retry is not a revert ---
+	// The observed FP: an Edit is BLOCKED by the tsc overlay (file unchanged),
+	// the agent retries and succeeds. The blocked attempt left the file in the
+	// SAME content state — no distinct intervening B — so this must NOT count
+	// as add-then-revert thrashing. After the fix the cycle requires a genuine
+	// A→B→A oscillation (distinct intervening state). A legacy / hydrated
+	// buffer polluted by the old dual-record path can still hold same-hash
+	// runs; the detector must stay silent on them.
+
+	it("does NOT fire when the same hash repeats with NO distinct intervening state (blocked-retry padding)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		// hash-A at 0, 1, 2 — the agent kept trying to apply the SAME content
+		// (blocked, retried, succeeded). No B was ever reached. Zero reverts.
+		session.recent_line_edits = new Map([
+			[
+				"src/a.ts",
+				[
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 1 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 2 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 3 },
+				],
+			],
+		]);
+		expect(addThenRevertLoop.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("does NOT fire when the gap between two A's is filled only with more A's (index gap, no distinct B)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		// Positions of hash-A are 0 and 3 (an index gap > 1), but everything in
+		// between is ALSO hash-A — the file never moved to a different state, so
+		// it is not a revert. The old `hasNonConsecutiveGap` would have fired
+		// here; the distinct-intervening rule correctly stays silent.
+		session.recent_line_edits = new Map([
+			[
+				"src/a.ts",
+				[
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 1 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 2 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 3 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 4 },
+				],
+			],
+		]);
+		expect(addThenRevertLoop.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("does NOT fire on clean forward progress A→B→C→D (each state distinct, no return)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		// Pure forward progress: four distinct content states, no hash repeats.
+		// This is the shape of a successful refactor after a blocked first try.
+		session.recent_line_edits = new Map([
+			[
+				"src/a.ts",
+				[
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 1 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-B", at_step: 2 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-C", at_step: 3 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-D", at_step: 4 },
+				],
+			],
+		]);
+		expect(addThenRevertLoop.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("STILL fires on a genuine A→B→A oscillation (true positive preserved)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		session.recent_line_edits = new Map([
+			[
+				"src/a.ts",
+				[
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 1 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-B", at_step: 2 },
+					{ range: { start: 1, end: 5 }, content_hash: "hash-A", at_step: 3 },
+				],
+			],
+		]);
+		const matches = addThenRevertLoop.fn(session, lastEvent);
+		expect(matches.length).toBe(1);
+	});
 });
 
 describe("unused_helper_introduced", () => {

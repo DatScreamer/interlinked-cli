@@ -347,27 +347,49 @@ function indexHashPositions(
 }
 
 /** True iff at least one gap between adjacent positions is greater than
- *  one — i.e., the hash was not just consecutively re-applied but actually
- *  cycled back after the agent moved away from it. */
-function hasNonConsecutiveGap(positions: ReadonlyArray<number>): boolean {
+ *  one AND that gap contains a genuinely DIFFERENT content state — i.e., the
+ *  file moved away to some other content `B` (B ≠ the candidate hash) and then
+ *  came back. A bare index gap is not enough: a buffer like `[A, A', A]` where
+ *  `A'` is the same hash padded by a non-recorded no-op would index as a gap
+ *  without a real intervening state. Requiring a distinct intervening hash is
+ *  the literal definition of A→B→A oscillation and is what keeps blocked /
+ *  no-op / re-applied edits (which never reach a distinct state) from
+ *  advancing the cycle counter.
+ *
+ *  `edits[k].content_hash === hash` for any k strictly between two same-hash
+ *  positions does NOT count as a distinct state — that's still the candidate
+ *  content, so the run is consecutive-with-padding, not a revert. */
+function hasDistinctIntervening(
+	positions: ReadonlyArray<number>,
+	hash: string,
+	edits: ReadonlyArray<{ content_hash: string } | undefined>,
+): boolean {
 	for (let i = 1; i < positions.length; i++) {
 		const a = positions[i - 1];
 		const b = positions[i];
 		if (a === undefined || b === undefined) continue;
-		if (b - a > 1) return true;
+		if (b - a <= 1) continue;
+		// Scan the open interval (a, b) for any entry whose hash differs from
+		// the candidate — that is the genuine intervening state `B`.
+		for (let k = a + 1; k < b; k++) {
+			const entry = edits[k];
+			if (entry && entry.content_hash !== hash) return true;
+		}
 	}
 	return false;
 }
 
 /** Returns the first cycling (hash, positions) pair found in the index, or
- *  null if no hash satisfies the threshold-and-non-consecutive rule. One
- *  finding per file is enough; we don't pile on per-hash. */
+ *  null if no hash satisfies the threshold AND has a distinct intervening
+ *  content state (a real A→B→A oscillation). One finding per file is enough;
+ *  we don't pile on per-hash. */
 function findCyclingHash(
 	hashIndex: ReadonlyMap<string, number[]>,
+	edits: ReadonlyArray<{ content_hash: string } | undefined>,
 ): { hash: string; positions: number[] } | null {
 	for (const [hash, positions] of hashIndex) {
 		if (positions.length < REVERT_LOOP_HASH_THRESHOLD) continue;
-		if (!hasNonConsecutiveGap(positions)) continue;
+		if (!hasDistinctIntervening(positions, hash, edits)) continue;
 		return { hash, positions };
 	}
 	return null;
@@ -375,9 +397,20 @@ function findCyclingHash(
 
 /**
  * Fires at PreToolUse when any file's recent line-edit history contains the
- * same `content_hash` 2+ times non-consecutively, signaling the agent has
- * cycled a line range through prior content (classic AI thrashing). Reads
+ * same `content_hash` 2+ times with a genuinely different intervening content
+ * state (a real A→B→A oscillation), signaling the agent has cycled a line
+ * range through prior content (classic AI thrashing). Reads
  * `trajectory.recent_line_edits` — does NOT populate.
+ *
+ * Precision contract (2026-05): a blocked edit (PreToolUse rejected by the
+ * tsc overlay / a reservation / a guard) leaves the file unchanged. The agent
+ * then retries successfully. That blocked attempt is NOT a content state the
+ * file ever reached, so it must not count as a revert. Two layers enforce
+ * this: (1) `session-state.recordRecentLineEdit` records only successful
+ * PostToolUse writes and drops no-op re-applies, so blocked / intended edits
+ * never enter the history; (2) this detector requires a distinct intervening
+ * state, so even a legacy / hydrated buffer polluted by the old dual-record
+ * (Pre + Post) path cannot fire without a real B between the two A's.
  */
 export const addThenRevertLoop: SequenceDetector = {
 	id: "add_then_revert_loop",
@@ -394,7 +427,7 @@ export const addThenRevertLoop: SequenceDetector = {
 		for (const [file, edits] of recent) {
 			if (edits.length < REVERT_LOOP_HASH_THRESHOLD) continue;
 			const hashIndex = indexHashPositions(edits);
-			const cycle = findCyclingHash(hashIndex);
+			const cycle = findCyclingHash(hashIndex, edits);
 			if (!cycle) continue;
 			matches.push({
 				prior_event_count: cycle.positions.length,
