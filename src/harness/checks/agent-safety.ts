@@ -552,17 +552,24 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		"function",
 	]);
 
-	// Self-describing enum-like identifiers inside `case "X":` labels. The
-	// literal IS the name — renaming to `const BASH = "bash"; case BASH:` is
-	// pure noise. Matches: single lowercase words, optionally joined by `_`
-	// or `-`, no leading digit, e.g. `bash`, `hook_decision`, `kebab-case`.
-	// This covers shell names, HTTP methods (after lowercase), log levels,
-	// filesystem ops, event kinds, etc. An additional allowlist below catches
-	// multi-word/mixed-case values that wouldn't match the heuristic.
-	const ENUM_LIKE_CASE_LABEL = /^[a-z][a-z0-9_-]*$/;
-	const SELF_DESCRIBING_CASE_ALLOWLIST = new Set([
-		// Multi-word or namespaced values that still read as their own name.
-		// Single lowercase words already flow through ENUM_LIKE_CASE_LABEL.
+	// Self-describing identifier-like string literals. The literal IS the name
+	// — hoisting it to a constant (`const CODEX = "codex"; x === CODEX`) is pure
+	// noise, because the string token already reads as its own intent. Matches a
+	// single contiguous token: word chars / `_` / `-` / `.`, no whitespace, no
+	// sentence structure. Covers shell names (`bash`), runner ids (`codex`),
+	// tool names (`apply_patch`), event kinds (`session_end`), enum members
+	// (`fulfilled`, `pre-commit`), namespaced ids (`mcp__foo`), dotted paths,
+	// SCREAMING_CASE constants (`SESSION_END`), and camelCase. It deliberately
+	// does NOT match opaque phrases with spaces/punctuation
+	// (`"Order fulfilled successfully"`) — those carry no self-documenting
+	// token and stay flagged. Applies to BOTH `=== "..."` comparisons and
+	// `case "...":` labels: the value of this check is opaque NUMERIC codes
+	// (`status === 2`) and opaque string phrases, not readable string tokens.
+	const SELF_DESCRIBING_TOKEN = /^[A-Za-z][\w.-]*$/;
+	const SELF_DESCRIBING_ALLOWLIST = new Set([
+		// HTTP methods are all-caps and already flow through the token regex,
+		// but kept explicit so the intent is documented and future
+		// multi-token additions have a home.
 		"GET",
 		"POST",
 		"PUT",
@@ -576,22 +583,26 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		const n = Number(raw);
 		return Number.isFinite(n) && Math.abs(n) > 1;
 	}
-	function isMagicString(raw: string): boolean {
-		return !TRIVIAL_STRINGS.has(raw);
+	// A string literal is self-describing (NOT magic) when it is a single
+	// readable identifier-like token. Trivial keywords (`true`/`false`/
+	// `null`/`undefined`) are already excluded upstream; here we additionally
+	// spare any contiguous token. Opaque phrases (spaces, sentence text) and
+	// genuinely cryptic short codes that aren't identifier-shaped still fire.
+	function isSelfDescribingToken(raw: string): boolean {
+		return SELF_DESCRIBING_TOKEN.test(raw) || SELF_DESCRIBING_ALLOWLIST.has(raw);
 	}
-	// Case-label literals that are self-describing enum-like tokens are
-	// skipped — the name is already the value. Applies ONLY in case-label
-	// context, not to `if (x === "bash")` where a variable gives context and
-	// the literal could still be obscure.
-	function isSelfDescribingCaseLabel(raw: string): boolean {
-		return ENUM_LIKE_CASE_LABEL.test(raw) || SELF_DESCRIBING_CASE_ALLOWLIST.has(raw);
+	function isMagicString(raw: string): boolean {
+		if (TRIVIAL_STRINGS.has(raw)) return false;
+		// Readable identifier-like tokens ARE the intent — not magic.
+		if (isSelfDescribingToken(raw)) return false;
+		return true;
 	}
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = strippedLines[i];
 
-		// `if (x === 2)` / `x !== "fulfilled"`
+		// `if (x === 2)` / `x !== "Order fulfilled successfully"`
 		const eqMatch = NUM_CMP.exec(line);
 		if (eqMatch) {
 			const [, num, dq, sq] = eqMatch;
@@ -615,15 +626,10 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 			}
 		}
 
-		// `case 2:` / `case "fulfilled":`
+		// `case 2:` / `case "Order fulfilled successfully":`
 		const caseMatch = CASE_CMP.exec(line);
 		if (caseMatch) {
 			const [, num, dq, sq] = caseMatch;
-			const strLiteral = dq ?? sq;
-			// Skip enum-like case labels — they're self-describing.
-			if (strLiteral !== undefined && isSelfDescribingCaseLabel(strLiteral)) {
-				continue;
-			}
 			const hit =
 				(num !== undefined && isMagicNumber(num)) ||
 				(dq !== undefined && isMagicString(dq)) ||

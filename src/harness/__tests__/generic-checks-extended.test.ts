@@ -932,8 +932,17 @@ describe("checkMagicLiteralInConditional", () => {
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 
-	it('flags `if (s === "fulfilled")` with magic string', () => {
+	it('does NOT flag `if (s === "fulfilled")` — readable identifier-like token is self-describing', () => {
+		// Refinement 2026-05-29: a single readable token IS its own intent.
+		// `"fulfilled"` reads as a status name; hoisting it to a constant is
+		// noise. Numeric codes and opaque phrases still fire (cases below).
 		const code = 'function check(s: string) {\n    if (s === "fulfilled") return;\n}';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('flags `if (msg === "Order fulfilled successfully")` — opaque phrase, no self-documenting token', () => {
+		const code =
+			'function check(msg: string) {\n    if (msg === "Order fulfilled successfully") return;\n}';
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 
@@ -1062,10 +1071,61 @@ describe("checkMagicLiteralInConditional", () => {
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 
-	it('documents: `if (mode === "bash")` IS still flagged — fix is case-label-only', () => {
-		// Intentional: the `===` path keeps its behavior. A future refinement
-		// could broaden this, but the current task scope is case-label noise.
+	it('does NOT flag `if (mode === "bash")` — self-describing token in the `===` path too', () => {
+		// Refinement 2026-05-29: the self-describing-token exemption now applies
+		// to `===` / `!==` comparisons, not just `case` labels. `"bash"` reads
+		// as its own intent regardless of whether it sits in a switch or an if.
 		const code = 'if (mode === "bash") return run();';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	// --- FALSE-POSITIVE regression: the exact self-documenting comparisons
+	// observed this session. Readable string tokens ARE the intent; the
+	// check's value is opaque NUMERIC codes and opaque string phrases.
+
+	it('does NOT flag `if (event.client_runner === "codex")` (runner id token)', () => {
+		const code = 'if (event.client_runner === "codex") return handleCodex();';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('does NOT flag `if (toolName === "apply_patch")` (tool name token)', () => {
+		const code = 'if (toolName === "apply_patch") return applyPatch();';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('does NOT flag `if (e.event_type === "session_end")` (event kind token)', () => {
+		const code = 'if (e.event_type === "session_end") return finalize();';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('does NOT flag `if (tool_outcome !== "interrupted")` (outcome token, !== path)', () => {
+		const code = 'if (event.tool_outcome !== "interrupted") record();';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('does NOT flag SCREAMING_CASE / dotted / namespaced tokens', () => {
+		const cases = [
+			'if (kind === "SESSION_END") return;',
+			'if (name === "mcp__interlinked__status") return;',
+			'if (path === "config.local.json") return;',
+		];
+		for (const code of cases) {
+			expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+		}
+	});
+
+	it("STILL flags `if (status === 2)` — opaque numeric code is the real signal", () => {
+		const code = "if (status === 2) return done();";
+		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
+	});
+
+	it("STILL flags `if (n !== 42)` — opaque numeric code (!== path)", () => {
+		const code = "if (n !== 42) return;";
+		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
+	});
+
+	it('STILL flags `if (s === "the quick brown fox")` — opaque phrase with spaces', () => {
+		const code = 'if (s === "the quick brown fox") return;';
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 });

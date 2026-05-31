@@ -161,8 +161,15 @@ describe("checkMagicLiteralInConditional", () => {
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 
-	it('flags `if (s === "fulfilled")` with magic string', () => {
+	it('does NOT flag `if (s === "fulfilled")` — readable identifier-like token is self-describing', () => {
+		// Refinement 2026-05-29: a single readable token IS its own intent.
+		// Opaque phrases and numeric codes still fire (see below + extended suite).
 		const code = 'function check(s: string) {\n    if (s === "fulfilled") return;\n}';
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('flags `if (msg === "Order was fulfilled")` — opaque phrase with spaces still fires', () => {
+		const code = 'function check(msg: string) {\n    if (msg === "Order was fulfilled") return;\n}';
 		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
 	});
 
@@ -230,12 +237,19 @@ describe("checkMagicLiteralInConditional", () => {
 		}
 	});
 
-	it('still flags `=== "string"` when there is no `typeof`', () => {
-		// The exemption is gated on the line containing `typeof`. A bare
-		// string compare like `mode === "string"` is exactly the kind of
-		// stringly-typed conditional the check is meant to catch.
+	it('does NOT flag `=== "string"` — single readable token is self-describing (no typeof needed)', () => {
+		// Refinement 2026-05-29: `"string"` is a readable identifier-like token,
+		// so it is exempt independent of the `typeof` narrowing path. The
+		// remaining signal is opaque numeric codes / phrases.
 		const code = 'if (mode === "string") return;';
-		expect(checkMagicLiteralInConditional(code, "x.ts").length).toBe(1);
+		expect(checkMagicLiteralInConditional(code, "x.ts")).toEqual([]);
+	});
+
+	it('STILL flags `=== 7` and `=== "multi word phrase"` — opaque numeric / phrase', () => {
+		expect(checkMagicLiteralInConditional("if (n === 7) return;", "x.ts").length).toBe(1);
+		expect(
+			checkMagicLiteralInConditional('if (s === "multi word phrase") return;', "x.ts").length,
+		).toBe(1);
 	});
 
 	it('does NOT flag short strings like `=== "x"`', () => {
