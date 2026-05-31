@@ -29,6 +29,8 @@ Lane says *what kind* of thing a find is. Surface says *which product it lands i
 | 2–3 | `Guardrails` | paid fast cloud — sub-second blocking gate (P2 deterministic, P3 + classifier) | designed | lane 5, sync: blocking policy / classifier |
 | 4–5 | `Agent CI` | paid slow cloud — async deep scans (P4 LLM review, P5 + Sandboxes) | designed | lane 5, async: deep review, fan-out scans |
 
+The two cloud surfaces are **Cloudflare-backed**: the classifier runs on Workers AI (JSON-mode structured output) behind AI Gateway (multi-provider failover + automatic caching + Guardrails/DLP); execution sandboxes are Cloudflare Sandboxes (GA 2026-04-13, VM-isolated). So a lane-5 find resolves to a **specific primitive** — say which (a Workers AI model? an AI Gateway feature? a Sandbox?), not just "the cloud." See `reference_cloudflare_ai_substrate.md`.
+
 Phases 6–7 (escalation wiring, enterprise tier) are cross-cutting plumbing and packaging — not separate intake surfaces. Every find lands in one of the three products above.
 
 Rules of thumb:
@@ -92,6 +94,14 @@ the source if needed — marketing language can hide LLM calls inside DP-shaped 
 restrictive than MIT/Apache (FSL/BUSL/AGPL/custom). License only blocks lanes 3
 (code-borrow) and 5 (paid reuse); patterns and invoke-as-subprocess are always fine.>
 
+## 3b. Role in its native architecture — and does it transfer?
+<What role does this play where it comes from: the security **boundary**, a
+**convenience** layer, an **escalation**, an **oracle**? Does that role survive
+transplant into our topology? A find that is safe-as-X at home (e.g. an LLM gate
+backstopped by a sandbox) can be unsafe-as-X here (no local sandbox → the same
+gate must become escalation-only / tighten-only). Name the native role and the
+role it must take in our stack. N/A for prose patterns with no architectural role.>
+
 ## 4. Substrate vs. surface
 <What's the underlying capability vs. the user-facing application? Could the
 substrate be borrowed (or invoked) without the surface? N/A for prose sources.>
@@ -102,12 +112,16 @@ substrate be borrowed (or invoked) without the surface? N/A for prose sources.>
 pattern (→ memory + RFC), cloud-only fodder (→ Guardrails / Agent CI), or skip.>
 
 ## 6. Dependency & displacement
-<Two questions, one line each.
+<Three questions, one line each.
 - **Deps:** does adopting this add a runtime dependency? If yes, can it be invoked
   as a subprocess instead of imported? "No new dep" is the answer to beat.
 - **Displacement:** does it overlap or replace something we already have
   (`project-graph.ts`, `trigram-index.ts`, an existing check)? Name it. This is
-  internal overlap with our own code — not competitor/market analysis, which stays out.>
+  internal overlap with our own code — not competitor/market analysis, which stays out.
+- **Equivalence (capability-by-capability):** for each load-bearing capability — not
+  just the headline — name our existing equivalent and its status: **shipped /
+  designed / absent**. "We already ship this" is the most common and most useful
+  verdict; half of evaluating a mature competitor is finding what *not* to rebuild.>
 
 ## 7. Smallest spike
 <≤1 day of work. What would you build to test viability? If "smallest spike" is
@@ -129,7 +143,9 @@ here in prose and set §9 to RFC / memory note — there is no surface row for i
 
 ## 9. Artifact
 <PR | RFC | memory note | cloud-roadmap entry | skip. Decide this *after* §8 — the
-artifact follows from where and when the find lands.>
+artifact follows from where and when the find lands. Verdicts may be **compound** —
+"adopt the intent-axis, reject the auto-approve." Name the carve-out; a mature find
+is rarely all-or-nothing.>
 
 ## Notes
 <Anything else worth recording — quotes from the README, surprising findings,
@@ -142,7 +158,7 @@ INTAKE.md edit if they recur.>
 
 ## Output discipline
 
-- One file per project, kebab-case slug: `codewiki.md`, `cline-rules.md`, `cursor-tab-prediction.md`.
+- One file per project, kebab-case slug: `codewiki.md`, `narsil-mcp.md`, `echo-rl.md`.
 - Commit it. The corpus matters; you'll re-grep this in six months.
 - If your understanding changes after talking to an AI or reading more, **update the file** in place — don't re-evaluate from scratch and don't open a second file for the same project.
 - Resist scope creep *in the per-project file*. The template is intentionally one page. Don't add "competitive analysis" or "market positioning" sections — those go elsewhere. (This rubric itself can grow when a real new dimension is missing — that is why §6 and §8 exist — but an individual intake stays one page.)

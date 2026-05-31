@@ -97,6 +97,7 @@ Memory note (this file) + half-day Spike (error classifier) when prioritized + K
 - **`CursorBench` is mentioned but not published.** Reference for the day interlinked or its sibling server want a comparable internal eval suite — but not borrowable.
 - **Naming convergence:** Cursor uses "harness" in our exact sense. Public-facing now, no longer internal jargon.
 - **Multi-agent claim aligns with `project_vision_multiagent.md`** — orchestration in the harness, not in any single agent. Logged not actioned; doesn't shift the existing memory.
+- **Sibling intake:** `cursor-classifier.md` (2026-05-29) deep-dives Cursor's Auto-review classifier + run-mode (allowlist → sandbox → LLM gate, the intent-alignment axis, `autoRun` steering, the GHSA allowlist-bypass). This file is the harness *shape*; that one is the *classifier mechanism*. Keep cross-linked, don't merge.
 
 ## Methodology notes
 
