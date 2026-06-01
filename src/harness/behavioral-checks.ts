@@ -569,12 +569,15 @@ export function checkTppLeapfrog(session: SessionTrajectory): CheckResultEntry[]
  * Commit gate: flag production files edited this session without a matching
  * test-file edit. Fires on `git commit` detection.
  *
- * Suppression rule: a single source file may be covered by multiple test
+ * Suppression rules: a single source file may be covered by multiple test
  * files (e.g. ubs-language-specific.ts has tests in
- * __tests__/ubs-hardcoded-localhost.test.ts AND others). If ANY test file
- * edited in this session imports / references this source by basename, the
- * "no test was updated" framing is a false positive — tests WERE updated,
- * just not under the conventional name.
+ * __tests__/ubs-hardcoded-localhost.test.ts AND others). The "no test was
+ * updated" framing is a false positive — tests WERE updated, just not under
+ * the conventional name — when ANY test edited this session either
+ *   (a) imports / references this source by basename, OR
+ *   (b) references a symbol this source EXPORTS (barrel / differently-named
+ *       coverage — the test exercises the public API without the source
+ *       basename in its import path).
  */
 export function checkProdDeltaWithoutTestDelta(session: SessionTrajectory): CheckResultEntry[] {
 	const results: CheckResultEntry[] = [];
@@ -584,6 +587,11 @@ export function checkProdDeltaWithoutTestDelta(session: SessionTrajectory): Chec
 		const testFile = findTestFilePath(file);
 		if (!testFile || session.files_written.has(testFile)) continue;
 		if (anyEditedTestReferencesSource(editedTestFiles, file)) continue;
+		// Barrel / differently-named coverage: an edited test that references a
+		// symbol this source EXPORTS exercises it even without the source
+		// basename in an import path (pre-tool.ts ← evaluator-files.test.ts via
+		// the evaluator barrel + the `evaluatePreToolUse` symbol).
+		if (anyEditedTestUsesSourceExports(editedTestFiles, file)) continue;
 
 		results.push({
 			source: "structural",
@@ -612,6 +620,53 @@ function anyEditedTestReferencesSource(testFiles: string[], sourceFile: string):
 		} catch {
 			// intentional: best-effort read; an unreadable test file just means
 			// we can't confirm it covers this source — fall through.
+		}
+	}
+	return false;
+}
+
+/** Top-level exported symbol names of a source file (best-effort regex, no
+ *  AST): `export function/const/class/let/var/type/interface/enum NAME`,
+ *  `export default function NAME`, and re-export lists `export { a, b as c }`
+ *  (the exported alias `c` is what a consumer references). */
+function exportedSymbolsOf(sourceFile: string): string[] {
+	let content: string;
+	try {
+		content = readFileSync(sourceFile, "utf-8");
+	} catch {
+		return [];
+	}
+	const names = new Set<string>();
+	const declRe =
+		/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|class|let|var|type|interface|enum)\s+([A-Za-z_$][\w$]*)/g;
+	for (const m of content.matchAll(declRe)) names.add(m[1]);
+	const listRe = /\bexport\s*\{([^}]*)\}/g;
+	for (const m of content.matchAll(listRe)) {
+		for (const part of m[1].split(",")) {
+			const exported = part.trim().split(/\s+as\s+/).pop()?.trim();
+			if (exported && /^[A-Za-z_$][\w$]*$/.test(exported)) names.add(exported);
+		}
+	}
+	return [...names];
+}
+
+/** True when an edited test references a symbol EXPORTED by the source file —
+ *  i.e. the test exercises the source's public API even though it imports it
+ *  via a barrel or a differently-named path (so `anyEditedTestReferencesSource`'s
+ *  import-path basename match misses it). Canonical case: `evaluator-files.test.ts`
+ *  references `evaluatePreToolUse`, which `pre-tool.ts` exports and the
+ *  `evaluator.ts` barrel re-exports — tests WERE updated, just not under the
+ *  sibling name. Symbols shorter than 4 chars are ignored so a generic
+ *  `id` / `run` export can't over-suppress on an incidental token match. */
+function anyEditedTestUsesSourceExports(testFiles: string[], sourceFile: string): boolean {
+	const symbols = exportedSymbolsOf(sourceFile).filter((s) => s.length >= 4);
+	if (symbols.length === 0) return false;
+	const re = new RegExp(`\\b(?:${symbols.map(escapeRe).join("|")})\\b`);
+	for (const testFile of testFiles) {
+		try {
+			if (re.test(readFileSync(testFile, "utf-8"))) return true;
+		} catch {
+			// best-effort: an unreadable test file just can't confirm coverage.
 		}
 	}
 	return false;

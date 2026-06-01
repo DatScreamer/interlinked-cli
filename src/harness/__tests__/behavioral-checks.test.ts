@@ -555,6 +555,38 @@ describe("checkProdDeltaWithoutTestDelta", () => {
 		const session = makeSession({ files_written: new Set([testFile]) });
 		expect(checkProdDeltaWithoutTestDelta(session)).toEqual([]);
 	});
+
+	it("suppresses when an edited test references a symbol the source EXPORTS (barrel coverage)", () => {
+		// The prod file is exercised by a test that imports it via a BARREL: the
+		// edited test carries the source's exported symbol (`evaluateThing`) but
+		// NOT the source basename in its import path, so the basename match misses
+		// it. This is the pre-tool.ts ← evaluator-files.test.ts (via the evaluator
+		// barrel + `evaluatePreToolUse`) false positive.
+		const prodFile = join(dir, "thing.ts");
+		const siblingTest = join(dir, "thing.test.ts"); // exists → the check proceeds
+		const barrelTest = join(dir, "feature.test.ts"); // the test we actually edited
+		writeFileSync(prodFile, "export function evaluateThing() {\n\treturn 1;\n}\n");
+		writeFileSync(siblingTest, "it('placeholder', () => {});\n");
+		writeFileSync(
+			barrelTest,
+			"import { evaluateThing } from './barrel.js';\nit('covers it', () => {\n\tevaluateThing();\n});\n",
+		);
+		const session = makeSession({ files_written: new Set([prodFile, barrelTest]) });
+		expect(checkProdDeltaWithoutTestDelta(session)).toEqual([]);
+	});
+
+	it("still flags when the edited test references neither the basename nor an export", () => {
+		const prodFile = join(dir, "widget.ts");
+		const siblingTest = join(dir, "widget.test.ts");
+		const unrelatedTest = join(dir, "unrelated.test.ts");
+		writeFileSync(prodFile, "export function renderWidget() {\n\treturn 1;\n}\n");
+		writeFileSync(siblingTest, "it('placeholder', () => {});\n");
+		writeFileSync(unrelatedTest, "it('something else', () => {\n\texpect(1).toBe(1);\n});\n");
+		const session = makeSession({ files_written: new Set([prodFile, unrelatedTest]) });
+		const results = checkProdDeltaWithoutTestDelta(session);
+		expect(results.length).toBe(1);
+		expect(results[0].name).toBe("prod_delta_no_test_delta");
+	});
 });
 
 // ===========================================
