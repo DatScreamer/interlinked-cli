@@ -18,11 +18,11 @@ This is a deterministic join over two append-only logs — no LLM in the loop, c
 
 ## What it *depends on* (the unmade decision this surfaces)
 
-Both logs must exist **durably and joinably on a settled state substrate** — and that substrate decision is still open: **local append-only JSONL** vs **cloud DO-SQLite** vs **mirrored**. The join can't be built durably until that's decided, because:
+Both logs must exist **durably and joinably on a settled state substrate** — that decision is now homed, with a recommended call (JSONL-canonical + a derived rebuildable index), in **`state-substrate-decision.md`**, where this join is named as the first consumer that *triggers* the index. The join can't be built durably until that lands, because:
 - a per-session JSONL that's GC'd at session end can't support a cross-session correlation;
 - the join *is* a query, and queries want an indexed store (the DO-SQLite case) far more than a JSONL scan once the corpus is large.
 
-So this doc has an explicit upstream dependency: **the durable trajectory/finding substrate** (`maximal-local-enforcement-roadmap.md` → "Adjacent work"; receipt ledger Phase 0.3 + finding history Phase 0.4). The join is one of the first real *consumers* that decision needs to serve.
+So this doc's explicit upstream dependency is the **state-substrate decision** (`state-substrate-decision.md` — the JSONL-vs-index call, which also unblocks the durable trajectory/finding ledger, receipt ledger Phase 0.3, and finding history Phase 0.4). The join is one of the first real *consumers* that decision must serve.
 
 ## Acceptance bar (borrowed from §18, adapted)
 

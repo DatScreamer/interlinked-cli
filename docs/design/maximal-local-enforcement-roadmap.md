@@ -86,6 +86,8 @@ This roadmap is deliberately scoped to *local deterministic checks*; keeping tha
 - **Graph-prediction protocol** (`docs/design/graph-prediction-protocol.md`) — a PreToolUse awareness gate, local and deterministic-adjacent, **already shipping in shadow mode**. A near sibling of #5/#6 (buildable-now local gates); tracked separately only because it's prediction-based, not purely deterministic. Promote it on the same dogfood discipline as everything here.
 - **The validation join — the prerequisite for promoting *any* predictive gate.** Before graph-prediction (or any predictive signal) may *block*, the §18-RFC logic requires proving **prediction accuracy actually predicts defects** — the join between predicted outcome and observed defect. Now homed in **`docs/design/predictive-gate-validation-join.md`** (a precondition spec with an acceptance bar + a named substrate dependency, not a backlog paragraph). It gates #9's predictive scoping and graph-prediction's promotion alike, and is itself blocked on the durable-substrate decision.
 
+**The shared blocker under two of these** — the durable substrate *and* the validation join — is the **state-substrate decision** (local-JSONL vs cloud-DO-SQLite vs mirrored), now named once with a recommended call in **`docs/design/state-substrate-decision.md`**. It's the deeper keystone: a *decision*, not a doc, that several unbuilt items wait on — given the same name-once treatment as the coverage map so it gets *made*, not footnoted in three places.
+
 ## Sequencing
 
 1. **Now:** cut the full coverage baseline → unblocks #2 and #3.
