@@ -140,6 +140,25 @@ export function installHooks(opts: InstallOptions): InstallResult {
 		if (removed > 0) orphansCleaned.push(prior.settings_path);
 	}
 
+	// Cross-scope stale cleanup: a historical user-scope install may predate
+	// the manifest, or may have been created by a different installer path. If
+	// the current run installs project/local hooks, a matching user-scope hook
+	// for the same project will be merged by runners like Claude Code and fire
+	// in addition to the project hook. Remove this project's user-scope entries
+	// from the same runner settings file, sparing other projects' hooks.
+	if (scope !== SCOPE_USER) {
+		const verdict = makePurgeVerdict(SCOPE_USER, opts.cwd);
+		for (const adapter of selected) {
+			const userFragment = adapter.renderSettingsFragment(binaryAbs, SCOPE_USER);
+			const userTarget = resolveSettingsPath(opts.cwd, userFragment.path);
+			if (newFiles.has(userTarget)) continue;
+			const removed = cleanProjectOwnedHooks(userTarget, verdict, dryRun);
+			if (removed > 0 && !orphansCleaned.includes(userTarget)) {
+				orphansCleaned.push(userTarget);
+			}
+		}
+	}
+
 	// Non-clobbering manifest: keep prior entries for runners this run did not
 	// touch, then add this run's entries. The previous code overwrote the whole
 	// manifest with only the latest run — orphaning every other runner's

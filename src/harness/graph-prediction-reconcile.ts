@@ -81,9 +81,21 @@ export type SeverityTrigger =
 export type Severity = "low" | "medium" | "high" | typeof FULL_ABSTENTION;
 export type Decision = "reveal_and_allow" | "ack_required";
 
+/** Reused empty set for callers that supply no `unavailable` set — the
+ *  Supermodel-shard path, where every section is answerable. */
+const EMPTY_UNAVAILABLE: ReadonlySet<keyof PerSectionScore> = new Set<keyof PerSectionScore>();
+
 export interface ReconcileInputs {
 	prediction: ParsedGraphPrediction;
 	oracle: SupermodelGraph;
+	/** Sections the oracle backend cannot answer (the internal regex graph
+	 *  has no call edges, no domain clustering, no transitive BFS). EXCLUDED
+	 *  from scoring — not scored as empty-set. Scoring an unanswerable section
+	 *  as "[]" both rewards an agent for sharing the oracle's blindness
+	 *  (predict nothing → recall 1.0) and penalizes one for seeing past it
+	 *  (predict real callers the oracle lacks → precision 0.0). Mirrors the
+	 *  existing `if (!oracle.impact) return` skip in scoreScalarSections. */
+	unavailable?: ReadonlySet<keyof PerSectionScore>;
 }
 
 export interface SeverityResult {
@@ -259,15 +271,22 @@ interface ScoreAccumulator {
 	weightedTotal: number;
 	weightSum: number;
 	listScores: Map<keyof PerSectionScore, ListSectionScore>;
+	/** Sections the oracle backend cannot answer — excluded from scoring.
+	 *  Carried on the accumulator (the shared scoring context) so the scorers
+	 *  keep a 3-arg signature. See ReconcileInputs.unavailable. */
+	unavailable: ReadonlySet<keyof PerSectionScore>;
 }
 
-function newScoreAccumulator(): ScoreAccumulator {
+function newScoreAccumulator(
+	unavailable: ReadonlySet<keyof PerSectionScore> = EMPTY_UNAVAILABLE,
+): ScoreAccumulator {
 	return {
 		perSectionScore: {},
 		missSet: {},
 		weightedTotal: 0,
 		weightSum: 0,
 		listScores: new Map(),
+		unavailable,
 	};
 }
 
@@ -327,6 +346,12 @@ function scoreListSections(
 		},
 	];
 	for (const cfg of listSections) {
+		// Sections the backend cannot answer are EXCLUDED, not scored as empty.
+		// An unanswerable section scored as "[]" rewards shared blindness and
+		// penalizes seeing past it — see ReconcileInputs.unavailable. Leaving
+		// the key out of acc.listScores also disables its severity trigger,
+		// which guards on `listScores.get(key)` being present.
+		if (acc.unavailable.has(cfg.key)) continue;
 		const s = scoreListSection(cfg.predicted, cfg.oracleSet);
 		acc.listScores.set(cfg.key, s);
 		recordSection({ acc, key: cfg.key, score: s.score, miss: s.missDetail });
@@ -339,15 +364,21 @@ function scoreScalarSections(
 	acc: ScoreAccumulator,
 ): void {
 	if (!oracle.impact) return;
-	const direct = scoreCount(prediction.impact?.direct ?? UNKNOWN_SENTINEL, oracle.impact.direct);
-	recordSection({ acc, key: "impact.direct", score: direct.score, miss: direct.missDetail });
-	const trans = scoreCount(
-		prediction.impact?.transitive ?? UNKNOWN_SENTINEL,
-		oracle.impact.transitive,
-	);
-	recordSection({ acc, key: "impact.transitive", score: trans.score, miss: trans.missDetail });
-	const risk = scoreRisk(prediction.impact?.risk ?? UNKNOWN_SENTINEL, oracle.impact.risk);
-	recordSection({ acc, key: "impact.risk", score: risk.score, miss: risk.missDetail });
+	if (!acc.unavailable.has("impact.direct")) {
+		const direct = scoreCount(prediction.impact?.direct ?? UNKNOWN_SENTINEL, oracle.impact.direct);
+		recordSection({ acc, key: "impact.direct", score: direct.score, miss: direct.missDetail });
+	}
+	if (!acc.unavailable.has("impact.transitive")) {
+		const trans = scoreCount(
+			prediction.impact?.transitive ?? UNKNOWN_SENTINEL,
+			oracle.impact.transitive,
+		);
+		recordSection({ acc, key: "impact.transitive", score: trans.score, miss: trans.missDetail });
+	}
+	if (!acc.unavailable.has("impact.risk")) {
+		const risk = scoreRisk(prediction.impact?.risk ?? UNKNOWN_SENTINEL, oracle.impact.risk);
+		recordSection({ acc, key: "impact.risk", score: risk.score, miss: risk.missDetail });
+	}
 }
 
 function collectSeverityTriggers(
@@ -410,7 +441,7 @@ function collectSeverityTriggers(
 
 export function reconcile(inputs: ReconcileInputs): SeverityResult {
 	const { prediction, oracle } = inputs;
-	const acc = newScoreAccumulator();
+	const acc = newScoreAccumulator(inputs.unavailable ?? EMPTY_UNAVAILABLE);
 	scoreListSections(prediction, oracle, acc);
 	scoreScalarSections(prediction, oracle, acc);
 

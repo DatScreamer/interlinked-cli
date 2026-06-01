@@ -1051,7 +1051,7 @@ export function evaluatePreToolUse(
 	{
 		const mode = readGraphPredictionMode(sharedConfig ?? null);
 		const cwd = event.cwd || process.cwd();
-		const result = driveGraphPrediction({ event, cwd, mode });
+		const result = driveGraphPrediction({ event, cwd, mode, graph });
 		if (result?.decision === "block") {
 			return {
 				decision: "block",

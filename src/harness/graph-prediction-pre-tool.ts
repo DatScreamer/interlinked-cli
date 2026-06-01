@@ -52,7 +52,9 @@ import {
 import { reconcile, type SeverityResult } from "./graph-prediction-reconcile.js";
 import { isFileWrite } from "./evaluator/tool-classifiers.js";
 import { extractAllEditedFilePaths } from "./server-tool-helpers.js";
-import { loadGraphForFile, type SupermodelGraph } from "./supermodel-graph.js";
+import type { SupermodelGraph } from "./supermodel-graph.js";
+import { buildPredictionOracle } from "./dependency-view.js";
+import type { ProjectGraph } from "./project-graph.js";
 import type { HarnessEvent } from "./types.js";
 
 export type GraphPredictionMode = "shadow" | "soft_gate" | "enforced";
@@ -68,6 +70,11 @@ export interface DriveArgs {
 	event: HarnessEvent;
 	cwd: string;
 	mode: GraphPredictionMode;
+	/** The harness's in-memory ProjectGraph, threaded from the PreToolUse
+	 *  evaluator. Lets the reconciler fall back to the internal dependency
+	 *  oracle when no fresh Supermodel shard exists. Optional: when absent,
+	 *  only shard-backed (Case E-fresh) targets get an oracle. */
+	graph?: ProjectGraph;
 }
 
 export interface DriveResult {
@@ -79,7 +86,7 @@ export interface DriveResult {
 }
 
 export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
-	const { event, cwd, mode } = args;
+	const { event, cwd, mode, graph } = args;
 
 	// Enforced-mode "Option A" shard-read tracking. The Read tool itself is
 	// NOT a file write — handle it before the isFileWrite() gate so reads
@@ -190,7 +197,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 	}
 
 	// All E-fresh files have predictions — reconcile each.
-	const reconciled = reconcileEachTarget(cwd, eFreshTargets, predictionsByPath);
+	const reconciled = reconcileEachTarget(cwd, eFreshTargets, predictionsByPath, graph);
 	const reconciledAt = event.timestamp || new Date().toISOString();
 	for (const r of reconciled) {
 		const prediction = predictionsByPath.get(r.classification.sourcePath);
@@ -595,15 +602,25 @@ function reconcileEachTarget(
 	cwd: string,
 	targets: CaseResult[],
 	predictionsByPath: Map<string, ParsedGraphPrediction>,
+	graph?: ProjectGraph,
 ): ReconciledTarget[] {
 	const out: ReconciledTarget[] = [];
 	for (const target of targets) {
 		const prediction = predictionsByPath.get(target.sourcePath);
 		if (!prediction) continue;
-		const oracle = loadGraphForFile(target.sourcePath, cwd);
-		if (!oracle) continue;
-		const severity = reconcile({ prediction, oracle });
-		out.push({ classification: target, severity, oracle });
+		// Resolve the oracle through the same freshness gate the impact path
+		// uses: a fresh Supermodel shard when present, else the always-available
+		// internal graph (with calls/domains/transitive marked unavailable so
+		// the reconciler excludes rather than mis-scores them). On a fresh shard
+		// this is byte-identical to the old loadGraphForFile path.
+		const resolved = buildPredictionOracle(target.sourcePath, cwd, graph);
+		if (!resolved) continue;
+		const severity = reconcile({
+			prediction,
+			oracle: resolved.oracle,
+			unavailable: resolved.unavailable,
+		});
+		out.push({ classification: target, severity, oracle: resolved.oracle });
 	}
 	return out;
 }

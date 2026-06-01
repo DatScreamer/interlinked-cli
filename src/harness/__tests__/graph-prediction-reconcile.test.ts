@@ -20,6 +20,7 @@ import {
 } from "../graph-prediction-reconcile.js";
 import type { SupermodelGraph } from "../supermodel-graph.js";
 import type { ParsedGraphPrediction } from "../graph-prediction-parser.js";
+import type { PerSectionScore } from "../graph-prediction-cache.js";
 
 function oracle(overrides: Partial<SupermodelGraph> = {}): SupermodelGraph {
 	return {
@@ -511,5 +512,90 @@ describe("reconcile — return type contract", () => {
 		expect(typeof r.weighted_avg).toBe("number");
 		expect(typeof r.high_impact_oracle).toBe("boolean");
 		expect(typeof r.miss_set).toBe("object");
+	});
+});
+
+describe("reconcile — unavailable sections (internal / thin oracle)", () => {
+	// The internal regex graph cannot answer call edges, domains, or a real
+	// transitive count. Those sections are marked unavailable so the
+	// reconciler EXCLUDES them rather than scoring an unanswerable section as
+	// empty-set — which would reward shared blindness and penalize seeing past
+	// the oracle. Mirrors dependency-view's INTERNAL_UNAVAILABLE.
+	const INTERNAL_UNAVAILABLE: ReadonlySet<keyof PerSectionScore> = new Set([
+		"calls.callers",
+		"calls.callees",
+		"impact.domains",
+		"impact.transitive",
+	]);
+
+	// An internal-graph-shaped oracle: no call edges, no domains, transitive
+	// equals direct.
+	const internalOracle = (): SupermodelGraph =>
+		oracle({
+			calls: null,
+			impact: { risk: "MEDIUM", domains: [], direct: 5, transitive: 5, affects: ["src/index.ts"] },
+		});
+
+	it("excludes unanswerable sections from per_section_score entirely", () => {
+		const r = reconcile({
+			prediction: pred(),
+			oracle: internalOracle(),
+			unavailable: INTERNAL_UNAVAILABLE,
+		});
+		expect(r.per_section_score["calls.callers"]).toBeUndefined();
+		expect(r.per_section_score["calls.callees"]).toBeUndefined();
+		expect(r.per_section_score["impact.domains"]).toBeUndefined();
+		expect(r.per_section_score["impact.transitive"]).toBeUndefined();
+		// Answerable sections are still scored.
+		expect(r.per_section_score["deps.imported_by"]).toBeDefined();
+		expect(r.per_section_score["impact.direct"]).toBeDefined();
+		expect(r.per_section_score["impact.risk"]).toBeDefined();
+	});
+
+	it("does NOT penalize an agent for predicting callers the oracle cannot see", () => {
+		// Confidently names real callers; the internal oracle has none. Without
+		// the exclusion this scores precision 0 → 0.0 and could drag severity.
+		const r = reconcile({
+			prediction: pred({ calls: { callers: ["foo ← bar", "baz ← qux"], callees: [] } }),
+			oracle: internalOracle(),
+			unavailable: INTERNAL_UNAVAILABLE,
+		});
+		expect(r.per_section_score["calls.callers"]).toBeUndefined();
+		expect(r.triggers).not.toContain("callers_recall_low");
+	});
+
+	it("does NOT reward an agent for sharing the oracle's blindness", () => {
+		// Predicts no callers; the internal oracle also has none. Without the
+		// exclusion, empty-vs-empty scores a free 1.0.
+		const r = reconcile({
+			prediction: pred({ calls: { callers: [], callees: [] } }),
+			oracle: internalOracle(),
+			unavailable: INTERNAL_UNAVAILABLE,
+		});
+		expect(r.per_section_score["calls.callers"]).toBeUndefined();
+	});
+
+	it("still scores call/domain sections when the oracle CAN answer them", () => {
+		// No `unavailable` set → full Supermodel-shard behaviour, unchanged.
+		const r = reconcile(baseInputs());
+		expect(r.per_section_score["calls.callers"]).toBeDefined();
+		expect(r.per_section_score["impact.domains"]).toBeDefined();
+	});
+
+	it("still flags a hub the agent underestimated, using only answerable sections", () => {
+		// The coarse danger signal survives on a thin oracle: risk is derived
+		// from fan-in, which the regex graph knows. Agent says LOW; hub is HIGH.
+		const r = reconcile({
+			prediction: pred({
+				impact: { risk: "low", domains: [], direct: 1, transitive: 1, affects: [] },
+			}),
+			oracle: oracle({
+				calls: null,
+				impact: { risk: "HIGH", domains: [], direct: 8, transitive: 8, affects: [] },
+			}),
+			unavailable: INTERNAL_UNAVAILABLE,
+		});
+		expect(r.triggers).toContain("risk_underestimated_low_to_high");
+		expect(r.severity).toBe("high");
 	});
 });

@@ -207,4 +207,32 @@ describe("installer idempotency — project + user scope", () => {
 		expect(interlinkedEntryCount(claudeSettings(projectDir))).toBe(0);
 		expect(interlinkedEntryCount(claudeSettings(homeDir))).toBeGreaterThan(0);
 	});
+
+	it("project-scope install clears stale same-project user hooks not in the manifest", () => {
+		const staleAdapterCommand =
+			`if test -f '${projectBinary()}' ; then ` +
+			`node '${projectBinary()}' --runner 'claude-code' --event 'UserPromptSubmit' ; fi`;
+		const staleLegacyCommand =
+			`if test -f '${join(projectDir, ".interlinked", "hooks", "interlinked-activity.mjs")}' ; then ` +
+			`node '${join(projectDir, ".interlinked", "hooks", "interlinked-activity.mjs")}' --runner 'claude-code' --event 'UserPromptSubmit' ; fi`;
+		mkdirSync(join(homeDir, ".claude"), { recursive: true });
+		writeFileSync(
+			claudeSettings(homeDir),
+			JSON.stringify({
+				hooks: {
+					UserPromptSubmit: [
+						{ matcher: "", hooks: [{ type: "command", command: staleAdapterCommand }] },
+						{ matcher: "", hooks: [{ type: "command", command: staleLegacyCommand }] },
+					],
+				},
+			}),
+		);
+
+		const result = installHooks({ cwd: projectDir, binaryPath: projectBinary(), runners: CLAUDE });
+
+		expect(result.orphans_cleaned).toContain(claudeSettings(homeDir));
+		expect(interlinkedEntryCount(claudeSettings(homeDir))).toBe(0);
+		expect(interlinkedEntryCount(claudeSettings(projectDir))).toBeGreaterThan(0);
+		expect(maxInterlinkedPerEvent(claudeSettings(projectDir))).toBe(1);
+	});
 });

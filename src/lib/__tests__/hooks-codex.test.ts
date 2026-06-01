@@ -32,6 +32,8 @@ describe("hook script generation", () => {
 		expect(generatedScript).toContain("realtime-retry.jsonl");
 		expect(generatedScript).toContain("sync-errors.jsonl");
 		expect(generatedScript).toContain("flushRealtimeRetry");
+		expect(generatedScript).toContain("REALTIME_RETRY_MAX_PER_HOOK");
+		expect(generatedScript).toContain("REALTIME_POST_TIMEOUT_MS");
 	});
 
 	it("captures PermissionRequest event with tool and suggestions", () => {

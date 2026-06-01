@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+	buildPredictionOracle,
 	type DependencyView,
 	InternalDependencyView,
 	resolveDependencyView,
@@ -389,5 +390,80 @@ describe("InternalDependencyView — matches ProjectGraph", () => {
 		});
 		expect(view.classifyModule(leafPath)).toBe("leaf");
 		void graph;
+	});
+});
+
+// -------------------------------------------
+// buildPredictionOracle — graph-prediction oracle (backend + shape)
+// -------------------------------------------
+
+describe("buildPredictionOracle — backend selection + unavailable sections", () => {
+	/** A repo with `hub.ts` imported by N dep files, no shard. */
+	function makeInternalRepo(dependentCount: number): { cwd: string; hubPath: string } {
+		const cwd = makeTmpDir();
+		const srcDir = join(cwd, "src");
+		mkdirSync(srcDir);
+		const hubPath = join(srcDir, "hub.ts");
+		writeFileSync(hubPath, "export const shared = 1;\n");
+		for (let i = 0; i < dependentCount; i++) {
+			writeFileSync(
+				join(srcDir, `dep${i}.ts`),
+				`import { shared } from "./hub.js";\nexport const u${i} = shared;\n`,
+			);
+		}
+		return { cwd, hubPath };
+	}
+
+	it("returns the full Supermodel oracle (no unavailable sections) on a fresh shard", () => {
+		const { cwd, sourcePath } = makeSupermodelRepo({ freshness: "fresh" });
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		const resolved = buildPredictionOracle(sourcePath, cwd, graph);
+		expect(resolved).not.toBeNull();
+		expect(resolved?.source).toBe("supermodel");
+		expect(resolved?.unavailable.size).toBe(0);
+		// HIGH_RISK_SHARD carries a [calls] section — the shard answers it.
+		expect(resolved?.oracle.calls).not.toBeNull();
+	});
+
+	it("selects the internal backend and marks unanswerable sections unavailable", () => {
+		const { cwd, hubPath } = makeInternalRepo(3);
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		const resolved = buildPredictionOracle(hubPath, cwd, graph);
+		expect(resolved?.source).toBe("internal");
+		expect([...(resolved?.unavailable ?? [])].sort()).toEqual([
+			"calls.callees",
+			"calls.callers",
+			"impact.domains",
+			"impact.transitive",
+		]);
+	});
+
+	it("populates answerable sections from the ProjectGraph (3 importers, no calls)", () => {
+		const { cwd, hubPath } = makeInternalRepo(3);
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		const o = buildPredictionOracle(hubPath, cwd, graph)?.oracle;
+		expect(o?.calls).toBeNull();
+		expect(o?.deps?.importedBy).toHaveLength(3);
+		expect(o?.impact?.direct).toBe(3);
+		expect(o?.impact?.domains).toEqual([]);
+		// No reverse BFS in the internal view → transitive equals direct.
+		expect(o?.impact?.transitive).toBe(o?.impact?.direct);
+	});
+
+	it("returns null for a file that does not exist (greenfield)", () => {
+		const { cwd } = makeSupermodelRepo({ freshness: "fresh" });
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		const missing = join(cwd, "src", "does-not-exist.ts");
+		expect(buildPredictionOracle(missing, cwd, graph)).toBeNull();
+	});
+
+	it("returns null when no ProjectGraph is supplied and there is no fresh shard", () => {
+		const { cwd, hubPath } = makeInternalRepo(1);
+		// No graph arg → internal backend unavailable → null (shard-only).
+		expect(buildPredictionOracle(hubPath, cwd)).toBeNull();
 	});
 });

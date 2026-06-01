@@ -134,6 +134,16 @@ describe("buildHookScript", () => {
 		expect(out).toContain("scrubPayload(ev)");
 	});
 
+	it("bounds legacy realtime network work on the hook hot path", () => {
+		const out = buildHookScript("v");
+		expect(out).toContain("const REALTIME_POST_TIMEOUT_MS = 500");
+		expect(out).toContain("const REALTIME_RETRY_TIMEOUT_MS = 250");
+		expect(out).toContain("const REALTIME_RETRY_MAX_PER_HOOK = 3");
+		expect(out).toContain("fetchWithTimeout(serverUrl + \"/api/hooks/activity\"");
+		expect(out).toContain("REALTIME_RETRY_MAX_PER_HOOK");
+		expect(out).not.toContain("setTimeout(() => controller.abort(), 3000)");
+	});
+
 	it("generated .mjs parses as valid JavaScript (end-to-end syntactic check)", () => {
 		// Pipe the script into `node --check` with ESM input-type so a broken
 		// chunk (extra `\\`, unterminated string, mis-escaped backtick)

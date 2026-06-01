@@ -734,6 +734,23 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
 // file by ~100 bytes/event for every realtime POST that fails — the
 // real production observation was 3 GB on a single workspace.
 const SYNC_ERRORS_MAX_BYTES = 10 * 1024 * 1024;
+// Realtime sync is observability, not the safety path. Keep network work
+// tightly bounded inside hook processes so slash commands and tool gates do
+// not wait behind a slow or unreachable server.
+const REALTIME_POST_TIMEOUT_MS = 500;
+const REALTIME_RETRY_TIMEOUT_MS = 250;
+const REALTIME_RETRY_MAX_PER_HOOK = 3;
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 function rotateSyncErrorsIfNeeded() {
     try {
         if (!existsSync(SYNC_ERRORS_PATH)) return;
@@ -778,23 +795,25 @@ async function flushRealtimeRetry(serverUrl, authHeader) {
         if (lines.length === 0) return;
 
         const remaining = [];
+        let attempted = 0;
         for (const line of lines) {
+            if (attempted >= REALTIME_RETRY_MAX_PER_HOOK) {
+                remaining.push(line);
+                continue;
+            }
             let payload = null;
             try { payload = JSON.parse(line); } catch (_err) { void 0; /* intentional: no-op */ }
             if (!payload) continue;
+            attempted++;
             try {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 3000);
-                const res = await fetch(serverUrl + "/api/hooks/activity", {
+                const res = await fetchWithTimeout(serverUrl + "/api/hooks/activity", {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                         ...(authHeader ? { Authorization: authHeader } : {}),
                     },
-                    signal: controller.signal,
                     body: JSON.stringify(payload),
-                });
-                clearTimeout(timeout);
+                }, REALTIME_RETRY_TIMEOUT_MS);
                 if (!res.ok) {
                     remaining.push(line);
                     appendSyncError("realtime_retry_http", "status " + res.status);

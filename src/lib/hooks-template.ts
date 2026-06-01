@@ -1082,20 +1082,15 @@ ${PROVIDER_RESPONSES_CHUNK}
         scrubPayload(realtimePayload);
 
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 3000);
-
-            const res = await fetch(serverUrl + "/api/hooks/activity", {
+            const res = await fetchWithTimeout(serverUrl + "/api/hooks/activity", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                     ...(authHeader ? { Authorization: authHeader } : {}),
                 },
-                signal: controller.signal,
                 body: JSON.stringify(realtimePayload),
-            });
+            }, REALTIME_POST_TIMEOUT_MS);
 
-            clearTimeout(timeout);
             if (!res.ok) {
                 const transient = res.status === 429 || res.status >= 500;
                 appendSyncError("realtime_post_http", "status " + res.status);

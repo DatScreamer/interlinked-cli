@@ -24,10 +24,13 @@
 // queries. This file is purely additive; when `source === "internal"`
 // every consumer behaves byte-identically to the pre-seam code.
 
+import { existsSync } from "node:fs";
+
 import {
 	classifyCase,
 	type GraphPredictionCase,
 } from "./graph-prediction-classifier.js";
+import type { PerSectionScore } from "./graph-prediction-cache.js";
 import type { ProjectGraph } from "./project-graph.js";
 import { loadGraphForFile, type SupermodelGraph } from "./supermodel-graph.js";
 import type { ModuleRole } from "./types.js";
@@ -232,4 +235,104 @@ export function resolveDependencyView(
 		return new InternalDependencyView(graph);
 	}
 	return new SupermodelDependencyView(shard);
+}
+
+// ===========================================
+// Prediction oracle (graph-prediction protocol)
+// ===========================================
+// The prediction reconciler compares the agent's prediction against the
+// full {deps, calls, impact} oracle shape — richer than the narrow
+// `DependencyView` above (which only carries dependents / blast-radius /
+// callers, for the impact-warning path). `buildPredictionOracle` reuses the
+// SAME backend choice (`classifyCase`'s freshness gate) but emits that full
+// shape plus an `unavailable` set naming the sections the chosen backend
+// cannot answer, so the reconciler can EXCLUDE them rather than mis-score.
+
+/** Sections the internal regex graph cannot answer. Marked unavailable so
+ *  the reconciler excludes them — scoring an unanswerable section as `[]`
+ *  both rewards an agent for sharing the graph's blindness (predict nothing
+ *  → recall 1.0) and penalizes one for seeing past it (predict real callers
+ *  the graph lacks → precision 0.0). */
+const INTERNAL_UNAVAILABLE: ReadonlySet<keyof PerSectionScore> = new Set<keyof PerSectionScore>([
+	"calls.callers",
+	"calls.callees",
+	"impact.domains",
+	"impact.transitive",
+]);
+
+/** A fresh Supermodel shard answers every section. */
+const NO_UNAVAILABLE: ReadonlySet<keyof PerSectionScore> = new Set<keyof PerSectionScore>();
+
+/** A graph-prediction oracle: the full comparison shape, the sections the
+ *  backend could not answer, and which backend produced it. */
+export interface PredictionOracle {
+	oracle: SupermodelGraph;
+	unavailable: ReadonlySet<keyof PerSectionScore>;
+	source: "supermodel" | "internal";
+}
+
+/** Map the internal graph's module role to a coarse risk tier. Fan-in IS
+ *  something the regex graph knows deterministically, so "is this a hub"
+ *  is an honest, answerable signal even without Supermodel's risk model. */
+function roleToRisk(role: ModuleRole): "HIGH" | "MEDIUM" | "LOW" {
+	if (role === "hub" || role === "root") return "HIGH";
+	if (role === "internal") return "MEDIUM";
+	return "LOW";
+}
+
+/** Synthesize a prediction oracle from the internal regex `ProjectGraph`.
+ *  Populates deps (imports + importedBy) and the answerable part of impact
+ *  (risk-from-role, direct fan-in, affects); leaves `calls` null and marks
+ *  calls/domains/transitive unavailable (the graph has no call edges, no
+ *  domain clustering, and no reverse-graph BFS — transitive equals direct). */
+function internalPredictionOracle(sourcePath: string, graph: ProjectGraph): PredictionOracle {
+	const importers = graph.getDependents(sourcePath);
+	const imports = graph.getDependencies(sourcePath).map((e) => e.specifier);
+	const direct = importers.length;
+	const oracle: SupermodelGraph = {
+		shardPath: "",
+		sourcePath,
+		deps: { imports, importedBy: importers },
+		calls: null,
+		impact: {
+			risk: roleToRisk(graph.classifyModule(sourcePath)),
+			domains: [],
+			direct,
+			transitive: direct,
+			affects: importers,
+		},
+	};
+	return { oracle, unavailable: INTERNAL_UNAVAILABLE, source: "internal" };
+}
+
+/**
+ * Resolve the graph-prediction oracle for `file`, choosing the backend the
+ * same way `resolveDependencyView` does (reusing `classifyCase`'s freshness
+ * gate so there is no second staleness heuristic to drift):
+ *
+ *  - Case E-fresh → the loaded Supermodel shard, all sections available.
+ *  - existing source, no/stale shard, and a `graph` was supplied → the
+ *    internal regex graph, with calls/domains/transitive unavailable.
+ *  - new/greenfield/unknown source, no `graph`, or a classify failure → null
+ *    (nothing to reconcile against).
+ */
+export function buildPredictionOracle(
+	file: string,
+	cwd: string,
+	graph?: ProjectGraph,
+): PredictionOracle | null {
+	let result: ReturnType<typeof classifyCase>;
+	try {
+		result = classifyCase(file, cwd);
+	} catch {
+		return null;
+	}
+	if (result.case === TRUSTWORTHY_SHARD_CASE) {
+		const shard = loadGraphForFile(result.sourcePath);
+		if (shard) return { oracle: shard, unavailable: NO_UNAVAILABLE, source: "supermodel" };
+		// Fresh per classifyCase but failed to load — fall through to internal.
+	}
+	if (!graph) return null;
+	if (!existsSync(result.sourcePath)) return null;
+	return internalPredictionOracle(result.sourcePath, graph);
 }
