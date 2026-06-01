@@ -21,6 +21,11 @@
         "approved_at": "2026-05-28T13:06:03.114Z",
         "approved_by": "qcody",
         "reason": "Cloud Worker unit tests"
+      },
+      "@vitest/coverage-v8": {
+        "approved_at": "2026-06-01T16:25:26.684Z",
+        "approved_by": "qcody",
+        "reason": "vitest v8 coverage provider — keystone for CRAP + coverage ratchet (local-first test-quality enforcement)"
       }
     },
     "pypi": {},

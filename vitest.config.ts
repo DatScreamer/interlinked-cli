@@ -57,5 +57,34 @@ export default defineConfig({
                 maxForks: process.env.CI ? 1 : undefined,
             },
         },
+        // Coverage — opt-in via `--coverage` / `npm run test:coverage`; the
+        // default `vitest run` stays uninstrumented and fast. The v8 provider
+        // emits BOTH json (coverage-final.json → per-function, feeds CRAP via
+        // file-checks-agent-safety.ts) and json-summary (coverage-summary.json
+        // → per-file, feeds the coverage ratchet). reportsDirectory matches the
+        // paths the harness readers already resolve. Keystone for the
+        // local-first test-quality enforcement stack.
+        coverage: {
+            provider: "v8",
+            // Scope strictly to our source. A custom `exclude` REPLACES vitest's
+            // default exclude (which drops node_modules), so without an explicit
+            // `include` the v8 provider instruments all of node_modules
+            // (~3.6M statements, 16k files). `include` bounds it to src.
+            include: ["src/**"],
+            reporter: ["text-summary", "json", "json-summary"],
+            reportsDirectory: "coverage",
+            exclude: [
+                "node_modules/**",
+                "coverage/**",
+                "**/*.test.ts",
+                "**/__tests__/**",
+                "**/__fixtures__/**",
+                "**/*.d.ts",
+                "**/*.config.ts",
+                "dist/**",
+                "bench/**",
+                "scripts/**",
+            ],
+        },
     },
 });

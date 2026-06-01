@@ -69,6 +69,7 @@
         "typecheck:stable": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
         "bench": "vitest bench --run bench/",
         "docs": "node --import tsx scripts/generate-docs.ts",
         "docs:check": "node scripts/check-docs.mjs",
@@ -90,6 +91,7 @@
     "devDependencies": {
         "@biomejs/biome": "2.4.13",
         "@types/node": "20.19.33",
+        "@vitest/coverage-v8": "^3.2.4",
         "fast-check": "4.7.0",
         "tsup": "8.5.1",
         "tsx": "4.21.0",
