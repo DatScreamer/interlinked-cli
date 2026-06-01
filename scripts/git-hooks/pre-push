@@ -72,7 +72,26 @@ if [ "$should_run" -eq 0 ]; then
 fi
 
 if [ "$docs_only" -eq 1 ]; then
-	echo "[pre-push] Push is Markdown-only — skipping typecheck + tests (CI still runs)."
+	# A Markdown-only push skips the expensive, code-dependent gate
+	# (typecheck + tests) but STILL validates the generated doc markers:
+	# docs:check is ~3s and code-independent, and a docs-only push can still
+	# hand-edit a `<!-- gen:* -->` counter to a wrong value (the exact drift
+	# class — landing/README rule count vs source — this gate exists for).
+	# Letting that through to CI is the gap we are closing here.
+	echo "[pre-push] Push is Markdown-only — skipping typecheck + tests, validating doc markers only (CI still runs)."
+	set +e
+	npm run docs:check
+	docs_status=$?
+	set -e
+	if [ "$docs_status" -ne 0 ]; then
+		echo ""
+		echo "❌ pre-push: docs:check failed (exit $docs_status) on a Markdown-only push."
+		echo "   A docs-only push still must not hand-edit a gen-marker to a wrong value."
+		echo "   Run 'npm run docs:build' to regenerate, then re-push."
+		echo "   Bypass: git push --no-verify (use sparingly — same risk as red CI)."
+		exit 1
+	fi
+	echo "[pre-push] ✓ doc markers OK — pushing"
 	exit 0
 fi
 
