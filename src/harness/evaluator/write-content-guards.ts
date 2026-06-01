@@ -80,12 +80,15 @@ interface TscBlockingFinding {
 }
 
 /** Build the human-readable block reason for a tsc diff-overlay failure.
- *  When the failing tool is `Edit` AND every blocking finding is a
- *  "cannot find name" error, append a strong nudge to switch to MultiEdit:
- *  that is the canonical signature of a coordinated refactor where dependent
- *  edits must land together. When the tool is already MultiEdit, no nudge —
- *  the agent used the right primitive and the failure is a real type bug.
- *  Exported for unit tests. */
+ *  When the failing tool is a single-edit primitive AND every blocking finding
+ *  is a "cannot find name" error, append coordinated-refactor guidance: the
+ *  missing symbols live in sibling edits that must land together. The guidance
+ *  leads with the always-available technique — sequence the edits through an
+ *  intermediate that still compiles — and mentions a transactional multi-edit
+ *  primitive only as an optional faster path, since not every runner exposes
+ *  one (MultiEdit is absent in some toolsets). When the tool is already a batch
+ *  primitive, no nudge — the agent used the right primitive and the failure is
+ *  a real type bug. Exported for unit tests. */
 export function buildTscDiffOverlayBlockReason(
 	toolName: string,
 	blocking: ReadonlyArray<TscBlockingFinding>,
@@ -104,12 +107,12 @@ export function buildTscDiffOverlayBlockReason(
 	);
 	if (allMissingSymbols) {
 		return (
-			`${head} All blocking errors are 'cannot find name' — this is the signature of a coordinated refactor where the missing symbols are defined in sibling edits. ` +
-			"Switch to MultiEdit so the dependent edits land as one transactional unit; the overlay then runs once against the final projected content instead of each intermediate state."
+			`${head} All blocking errors are 'cannot find name' — the signature of a coordinated refactor whose missing symbols live in sibling edits that haven't landed yet. ` +
+			"Land the dependent edits together so the overlay only sees a compiling state: sequence them through an intermediate that still compiles (add the new import / declaration ALONGSIDE the old, switch the usages, then drop the old), or apply them as one batch if your toolset has a transactional multi-edit primitive."
 		);
 	}
 	return (
-		`${head} If this is a coordinated refactor (multiple symbols moving together), MultiEdit applies the whole change as one transactional unit (single overlay check on the final content).`
+		`${head} If this is a coordinated refactor (multiple symbols moving together), land the dependent edits as one unit — sequence them through an intermediate that still compiles, or use a transactional multi-edit primitive if your toolset exposes one — so the overlay checks only the final content.`
 	);
 }
 

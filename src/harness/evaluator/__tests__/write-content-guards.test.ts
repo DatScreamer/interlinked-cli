@@ -599,7 +599,7 @@ describe("evaluateWriteContentGuards — content-quality false-positive fixes", 
 	});
 });
 
-describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
+describe("buildTscDiffOverlayBlockReason — coordinated-refactor guidance", () => {
 	const FILE = "/repo/src/foo.ts";
 	const ts2304 = (line: number, name: string) => ({
 		ruleId: "TS2304",
@@ -620,7 +620,7 @@ describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
 		message: "Type 'string' is not assignable to type 'number'.",
 	});
 
-	it("Edit + all TS2304 → strong MultiEdit nudge with refactor framing", () => {
+	it("Edit + all TS2304 → strong refactor guidance with refactor framing", () => {
 		const reason = buildTscDiffOverlayBlockReason(
 			"Edit",
 			[ts2304(10, "FOO"), ts2304(20, "BAR"), ts2304(30, "BAZ")],
@@ -630,16 +630,18 @@ describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
 		expect(reason).toMatch(/3 new type error\(s\)/);
 		expect(reason).toMatch(/All blocking errors are 'cannot find name'/);
 		expect(reason).toMatch(/coordinated refactor/);
-		expect(reason).toMatch(/Switch to MultiEdit/);
+		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
+		expect(reason).toMatch(/transactional multi-edit primitive/);
 	});
 
-	it("Edit + all TS2552 → strong MultiEdit nudge (did-you-mean variant)", () => {
+	it("Edit + all TS2552 → strong refactor guidance (did-you-mean variant)", () => {
 		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2552(15, "Handler")], FILE);
 		expect(reason).toMatch(/All blocking errors are 'cannot find name'/);
-		expect(reason).toMatch(/Switch to MultiEdit/);
+		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
+		expect(reason).toMatch(/transactional multi-edit primitive/);
 	});
 
-	it("Edit + mixed missing-symbol and other type errors → soft MultiEdit hint", () => {
+	it("Edit + mixed missing-symbol and other type errors → soft refactor hint", () => {
 		const reason = buildTscDiffOverlayBlockReason(
 			"Edit",
 			[ts2304(10, "FOO"), ts2322(20)],
@@ -647,16 +649,18 @@ describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
 		);
 		expect(reason).not.toMatch(/All blocking errors are 'cannot find name'/);
 		expect(reason).toMatch(/coordinated refactor/);
-		expect(reason).toMatch(/MultiEdit applies the whole change as one transactional unit/);
+		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
+		expect(reason).toMatch(/transactional multi-edit primitive if your toolset exposes one/);
 	});
 
-	it("Edit + zero missing-symbol errors → soft MultiEdit hint", () => {
+	it("Edit + zero missing-symbol errors → soft refactor hint", () => {
 		const reason = buildTscDiffOverlayBlockReason("Edit", [ts2322(10), ts2322(20)], FILE);
 		expect(reason).not.toMatch(/All blocking errors are 'cannot find name'/);
-		expect(reason).toMatch(/MultiEdit applies the whole change as one transactional unit/);
+		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
+		expect(reason).toMatch(/transactional multi-edit primitive if your toolset exposes one/);
 	});
 
-	it("MultiEdit + all TS2304 → no MultiEdit nudge (agent already used the right primitive)", () => {
+	it("MultiEdit + all TS2304 → no refactor guidance (agent already used the right primitive)", () => {
 		const reason = buildTscDiffOverlayBlockReason("MultiEdit", [ts2304(10, "FOO")], FILE);
 		expect(reason).toMatch(/BLOCKED by tsc diff-overlay/);
 		expect(reason).not.toMatch(/MultiEdit/);
@@ -684,6 +688,7 @@ describe("buildTscDiffOverlayBlockReason — MultiEdit nudge", () => {
 
 	it("Write tool with TS2304 still gets the nudge (Write also splices a single edit)", () => {
 		const reason = buildTscDiffOverlayBlockReason("Write", [ts2304(10, "FOO")], FILE);
-		expect(reason).toMatch(/Switch to MultiEdit/);
+		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
+		expect(reason).toMatch(/transactional multi-edit primitive/);
 	});
 });
