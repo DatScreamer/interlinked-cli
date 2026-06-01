@@ -229,6 +229,41 @@ describe("evaluatePreToolUse — file & network guards", () => {
 				result.warnings?.some((w) => w.includes("disconnected") || w.includes("9999")),
 			).toBeFalsy();
 		});
+
+		it("does NOT fire on a git commit whose MESSAGE mentions curl + /mcp (command-position FP)", () => {
+			// The real FP: committing a message that describes this very guard.
+			// The curl / `/mcp` tokens live in a quoted string or heredoc body,
+			// not in command position, so neither the mcp-direct nudge nor the
+			// port-keyed disconnection detector may fire. extractScannableText
+			// blanks quoted / comment / heredoc spans before the guards test.
+			const quoted = makeEvent({
+				tool_input: {
+					command: `git commit -m "guard: never curl http://localhost:8787/mcp directly"`,
+				},
+			});
+			const quotedResult = evaluatePreToolUse(quoted, rules, session, reservations, cohort);
+			expect(quotedResult.decision).toBe("allow");
+			expect(quotedResult.warnings?.some((w) => w.includes("mcp-direct"))).toBeFalsy();
+			expect(quotedResult.warnings?.some((w) => w.includes("disconnected"))).toBeFalsy();
+
+			const heredoc = makeEvent({
+				tool_input: {
+					command:
+						"git commit -F - <<'MSG'\nfix: scope curl-to-MCP to /mcp paths\n\nA curl to /mcp must not fire here.\nMSG",
+				},
+			});
+			const heredocResult = evaluatePreToolUse(heredoc, rules, session, reservations, cohort);
+			expect(heredocResult.warnings?.some((w) => w.includes("mcp-direct"))).toBeFalsy();
+			expect(heredocResult.warnings?.some((w) => w.includes("disconnected"))).toBeFalsy();
+		});
+
+		it("still fires on a REAL executed curl to an /mcp endpoint (not a regression)", () => {
+			const event = makeEvent({
+				tool_input: { command: "curl http://localhost:8787/mcp" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.warnings?.some((w) => w.includes("mcp-direct"))).toBe(true);
+		});
 	});
 
 	// ===========================================

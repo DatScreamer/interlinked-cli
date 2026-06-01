@@ -88,6 +88,7 @@ import { evaluatePackageInstall } from "./package-install-guard.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
+import { extractScannableText } from "./spans.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import {
@@ -746,9 +747,19 @@ export function evaluatePreToolUse(
 	// (our own cloud governor), :3000/:5173/:4321 are generic dev servers. Curling
 	// `/health` or `/governor/evaluate` on those is normal dev work, not a
 	// dropped MCP connection. The precise /mcp-route guard below complements this.
-	const targetsMcpPath = /\/(?:mcp|sse|messages?)\b/i.test((toolInput.command as string) || "");
+	//
+	// Both curl-to-MCP checks classify the command's EXECUTED spans only. A
+	// `curl .../mcp` that lives inside a heredoc body or a quoted string — e.g.
+	// a `git commit` message describing this very guard — is not an executed
+	// request and must not fire. extractScannableText blanks quoted / comment /
+	// heredoc spans, leaving executed text intact, so command-position is what
+	// we test. (FP class: a commit message that merely mentions curl + /mcp.)
+	const mcpScanCommand = isBash(toolName)
+		? extractScannableText((toolInput.command as string) || "")
+		: "";
+	const targetsMcpPath = /\/(?:mcp|sse|messages?)\b/i.test(mcpScanCommand);
 	if (isBash(toolName) && rules.curl_mcp_detection?.enabled && session && targetsMcpPath) {
-		const cmd = (toolInput.command as string) || "";
+		const cmd = mcpScanCommand;
 		for (const port of rules.curl_mcp_detection.localhost_ports) {
 			// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 			const pattern = new RegExp(
@@ -771,9 +782,11 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// GUARD: curl to /mcp routes — agent should use MCP directly
+	// GUARD: curl to /mcp routes — agent should use MCP directly. Same
+	// executed-span scoping as the detection block above (mcpScanCommand), so
+	// a commit message or heredoc that mentions `curl .../mcp` does not fire.
 	if (isBash(toolName)) {
-		const cmd = (toolInput.command as string) || "";
+		const cmd = mcpScanCommand;
 		if (/\b(curl|wget|fetch)\b/.test(cmd) && /\/mcp\b/i.test(cmd)) {
 			warnings.push(
 				"[interlinked:mcp-direct] You're curling an /mcp endpoint directly. " +
