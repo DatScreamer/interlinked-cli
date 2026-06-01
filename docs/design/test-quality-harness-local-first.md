@@ -113,7 +113,7 @@ Three terms:
 
 ### 2.3 CRAP
 
-`complexity × (1 − coverage)²`, per function. Free once coverage exists. Encodes "high complexity + low coverage = high risk." Rides whatever coverage cadence you choose.
+`comp² × (1 − cov)³ + comp`, per function — the canonical Crap4J metric (Savoia & Evans, 2007), matching `src/harness/checks/crap.ts::crapScore`. Free once coverage exists. Plain-language: *high complexity + low coverage = high risk; well-tested or simple code scores low* — the `(1 − cov)³` factor zeroes the squared term at full coverage, so a fully-covered function scores just `comp`. Crap4J's native threshold is CRAP > 30. Rides whatever coverage cadence you choose.
 
 ### 2.4 Property Tests in Lane A's Cost Model — Bob Martin's Concern
 
