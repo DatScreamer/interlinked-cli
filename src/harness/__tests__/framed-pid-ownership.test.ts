@@ -52,8 +52,11 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		expect(endIdx).toBeGreaterThan(startIdx);
 
 		const body = SERVER_TS.slice(startIdx, endIdx);
-		// Legacy removal stays.
-		expect(body).toContain("rmSync(PID_PATH)");
+		// Legacy removal stays — now via the dedup'd `removeFileIfExists` helper
+		// (server decomposition ce71204), or a bare `rmSync`. Either form removes
+		// the legacy PID; the assertion stays implementation-tolerant so a
+		// behavior-preserving refactor doesn't false-fail this safety regression.
+		expect(body).toMatch(/(?:rmSync|removeFileIfExists)\(PID_PATH\)/);
 		// Framed removal must be gone — it's owned by session-daemon.handle.stop().
 		expect(body).not.toContain("FRAMED_PATHS.pid");
 	});
