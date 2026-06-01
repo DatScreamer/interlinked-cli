@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	checkDuplicateTestNames,
@@ -88,6 +89,46 @@ describe("outer", () => {
 `;
 		const matches = checkDuplicateTestNames(code, TEST);
 		expect(matches.length).toBe(1);
+	});
+});
+
+describe("checkDuplicateTestNames — comment / string / data-file FP regression", () => {
+	it("does not read it() examples inside a line comment as declarations", () => {
+		const code = `describe("d", () => {\n\t// docs: it("x") then again it("x")\n\tit("real", () => {});\n});`;
+		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
+	});
+
+	it("does not read it() examples inside a block comment as declarations", () => {
+		const code = `describe("d", () => {\n\t/* it("y"); it("y"); */\n\tit("real", () => {});\n});`;
+		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
+	});
+
+	it("does not read it() inside a string-literal fixture as a declaration", () => {
+		// The behavioral-checks.test.ts case: writeFileSync(f, "it('x')") test data.
+		const code = [
+			`describe("d", () => {`,
+			`\twriteFileSync(a, "it('x', () => {});");`,
+			`\twriteFileSync(b, "it('x', () => {});");`,
+			`\tit("real", () => {});`,
+			`});`,
+		].join("\n");
+		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
+	});
+
+	it("still flags a genuine duplicate in real code (no over-suppression)", () => {
+		const code = `describe("d", () => {\n\tit("dup", () => {});\n\tit("dup", () => {});\n});`;
+		expect(checkDuplicateTestNames(code, TEST)).toHaveLength(1);
+	});
+
+	it("does not run on a content-scan-exempt source path (strict gate, not broad)", () => {
+		// An absolute path under the package's own /harness/checks/ tree is
+		// isTestFile-true (content-scan exemption) but isStrictTestFile-false, so a
+		// test-hygiene check must skip it — the duplicate_test_names FP on
+		// verification-stop-checks.ts.
+		const code = `it("dup", () => {});\nit("dup", () => {});`;
+		expect(checkDuplicateTestNames(code, resolve("src/harness/checks/some-detector.ts"))).toEqual(
+			[],
+		);
 	});
 });
 

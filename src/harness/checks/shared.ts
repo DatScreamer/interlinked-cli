@@ -140,7 +140,59 @@ export function __setPackageRootForTesting(root: string | null | undefined): voi
  * source happens to live under `harness/rules/` or `harness/check-registry/`
  * does NOT inherit the exemption.
  */
-export function isTestFile(filePath: string): boolean {
+/** interlinked-cli's OWN detector / data source files, where dangerous-looking
+ *  or test-like patterns appear AS DATA (regex catalogs, rule descriptions,
+ *  secret-shaped example strings, the STUB_PATTERNS regexes). Scoped to the
+ *  package's own root (resolved once via `resolveInterlinkedCliPackageRoot`) so
+ *  a user repo with its own `harness/rules/` directory is unaffected.
+ *  Fail-closed: when the resolver returns null, the exemption never fires.
+ *
+ *  Content scans gate `if (isTestFile) return []`, so routing these files
+ *  through the broad `isTestFile` makes those scans skip them. But test-hygiene
+ *  checks gate the OPPOSITE way (`if (!isStrictTestFile) return []`), so they
+ *  must NOT see these as test files — that conflation is what made
+ *  `duplicate_test_names` fire on the `it.skip(` examples inside
+ *  verification-stop-checks.ts. Hence the strict/broad split. */
+function isHarnessInternalDataFile(filePath: string): boolean {
+	const normalized = filePath.replace(/\\/g, "/");
+	const pkgRoot = resolveInterlinkedCliPackageRoot();
+	if (!pkgRoot || !normalized.startsWith(`${pkgRoot.replace(/\\/g, "/")}/`)) {
+		return false;
+	}
+	return (
+		normalized.includes("/harness/rules/") ||
+		normalized.includes("/harness/check-registry/") ||
+		normalized.includes("/harness/check-metadata") ||
+		// The whole checks/ tree is detector implementations: each file holds
+		// the very patterns it detects (test-card numbers, fake-data strings,
+		// chmod/SQL/ReDoS examples) AS DATA, so the regex-driven content-quality
+		// scans only ever false-positive on them. Covers shared.ts (home of
+		// this very exemption) too.
+		normalized.includes("/harness/checks/") ||
+		normalized.includes("/harness/evaluator/write-content-guards.") ||
+		// signatures.ts holds the very PI rule descriptions (e.g. the
+		// `sig-pi-system-override` text) that the daemon's content scan flags.
+		normalized.includes("/harness/signatures.") ||
+		// secret-detection.ts is the secret detector itself — its regex literals
+		// and example-key references are secret-shaped strings AS DATA.
+		normalized.includes("/harness/quality-checks/secret-detection.") ||
+		// verification-stop-checks.ts defines STUB_PATTERNS — regexes that hold
+		// "TODO" / "FIXME" / "not implemented" / "stub" as detection DATA, plus
+		// `it.skip(` / `test.skip(` example strings in comments.
+		normalized.includes("/harness/verification-stop-checks.") ||
+		// guards-inline.ts is the inline-fallback guard TEMPLATE: its body is the
+		// generated hook script and holds chmod/rm/kill regexes as DATA.
+		normalized.includes("/hook-template-chunks/guards-inline.")
+	);
+}
+
+/** STRICT test-file detection — directory + filename conventions ONLY, no
+ *  harness-internal-data exemption. Use this when a check should run *only* on
+ *  genuine test files (every test-hygiene / test-quality check). The broad
+ *  `isTestFile` additionally returns true for interlinked-cli's own data files
+ *  so content scans skip them — but that exemption must NOT make a test-hygiene
+ *  check fire on a data file. */
+export function isStrictTestFile(filePath: string): boolean {
 	const normalized = filePath.replace(/\\/g, "/");
 
 	// Directory-based detection
@@ -148,49 +200,6 @@ export function isTestFile(filePath: string): boolean {
 		normalized.includes("/__tests__/") ||
 		normalized.includes("/tests/") ||
 		normalized.includes("/src/test/")
-	) {
-		return true;
-	}
-
-	// Harness internals where dangerous-looking patterns appear as data.
-	// Scoped to interlinked-cli's own package root (resolved once via
-	// `resolveInterlinkedCliPackageRoot`) so a user repo that happens to
-	// have its own `harness/rules/` or `harness/check-registry/` directory
-	// doesn't get its checks silently disabled. Fail-closed: when the
-	// resolver returns null, the exemption never fires.
-	const pkgRoot = resolveInterlinkedCliPackageRoot();
-	if (
-		pkgRoot &&
-		normalized.startsWith(`${pkgRoot.replace(/\\/g, "/")}/`) &&
-		(normalized.includes("/harness/rules/") ||
-			normalized.includes("/harness/check-registry/") ||
-			normalized.includes("/harness/check-metadata") ||
-			// The whole checks/ tree is detector implementations: each file
-			// holds the very patterns it detects (test-card numbers, fake-data
-			// strings, chmod/SQL/ReDoS examples) AS DATA, so the regex-driven
-			// content-quality scans only ever false-positive on them. This
-			// subsumes the former per-file ubs-language-specific / demo-data
-			// entries and covers shared.ts (home of this very exemption).
-			normalized.includes("/harness/checks/") ||
-			normalized.includes("/harness/evaluator/write-content-guards.") ||
-			// signatures.ts holds the very PI rule descriptions (e.g. the
-			// `sig-pi-system-override` description text) that the daemon's
-			// content scan flags. Without this exemption every edit to the
-			// rule catalog gets blocked by its own rules.
-			normalized.includes("/harness/signatures.") ||
-			// secret-detection.ts is the secret detector itself — its regex
-			// literals and example-key references are secret-shaped strings
-			// AS DATA, so secrets_in_source only false-positives on it.
-			normalized.includes("/harness/quality-checks/secret-detection.") ||
-			// verification-stop-checks.ts defines STUB_PATTERNS — regexes that
-			// hold the literal text "TODO" / "FIXME" / "not implemented" /
-			// "stub" as detection DATA, which the stub and task-marker scans
-			// then flag as findings on the file itself.
-			normalized.includes("/harness/verification-stop-checks.") ||
-			// guards-inline.ts is the inline-fallback guard TEMPLATE: its body
-			// is the generated hook script and holds chmod/rm/kill regexes as
-			// DATA, so content-quality scans (chmod 777, ReDoS) only FP on it.
-			normalized.includes("/hook-template-chunks/guards-inline."))
 	) {
 		return true;
 	}
@@ -216,6 +225,16 @@ export function isTestFile(filePath: string): boolean {
 	if (fileName.startsWith("test_") && fileName.endsWith(".swift")) return true;
 
 	return false;
+}
+
+/** BROAD test-or-exempt predicate — BEHAVIOR-PRESERVING vs the pre-split
+ *  `isTestFile`. True for genuine test files AND for interlinked-cli's own
+ *  data / detector files. Content scans gate `if (isTestFile) return []` on
+ *  this so they skip both. Checks that must run ONLY on genuine test files use
+ *  `isStrictTestFile` instead, so the data-file exemption can't make them
+ *  fire (the `duplicate_test_names`-on-`verification-stop-checks` FP). */
+export function isTestFile(filePath: string): boolean {
+	return isStrictTestFile(filePath) || isHarnessInternalDataFile(filePath);
 }
 
 /**

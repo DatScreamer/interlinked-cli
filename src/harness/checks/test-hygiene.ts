@@ -7,7 +7,7 @@
 import {
 	getExtension,
 	type InlineMatch,
-	isTestFile,
+	isStrictTestFile,
 	JS_TS_EXTS,
 	stripComments,
 	stripCommentsAndStrings,
@@ -15,6 +15,24 @@ import {
 
 const TEST_BLOCK_INTRO_RE =
 	/\b(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*\(\s*(["'`])([^"'`]*)\1/g;
+
+/** Length-preserving code mask for checkDuplicateTestNames: blanks TS comments
+ *  AND string-literal interiors with spaces, keeping every offset aligned with
+ *  the original `content`. stripComments is length-preserving but KEEPS strings;
+ *  stripStrings blanks strings but COLLAPSES them (`"dup"` → `""`), which shifts
+ *  every downstream offset. We need both blanked AND offset-stable so a regex
+ *  match on the raw content can be asked "is this `it(` real code, or does it
+ *  live inside a comment / string literal?" — the latter is the
+ *  duplicate_test_names FP (doc examples like `it.skip(`, and test fixtures like
+ *  `writeFileSync(f, "it('x')")`). */
+function codeOnlyMask(content: string): string {
+	let mask = stripComments(content);
+	const blank = (m: string) => " ".repeat(m.length);
+	mask = mask.replace(/"(?:[^"\\]|\\.)*"/g, blank);
+	mask = mask.replace(/'(?:[^'\\]|\\.)*'/g, blank);
+	mask = mask.replace(/`(?:[^`\\]|\\.)*`/g, blank);
+	return mask;
+}
 
 // ==========================================================================
 // 1. Duplicate test names within a file
@@ -143,11 +161,12 @@ function innermostDescribeAt(
 /** Public API — flags duplicate `it()` / `test()` names within the SAME
  *  enclosing `describe()` scope. Sibling describes can reuse a test name. */
 export function checkDuplicateTestNames(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const stripped = stripCommentsAndStrings(content);
 	const describeRanges = findDescribeRanges(content, stripped);
+	const codeMask = codeOnlyMask(content);
 
 	// Scope key: bodyStart of the enclosing describe, or "" for file-root.
 	// Per-scope `seen` map gives us "same name in the same describe" while
@@ -156,15 +175,22 @@ export function checkDuplicateTestNames(content: string, filePath: string): Inli
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 10;
 
+	// Match declarations on RAW content — the test name is a string literal we
+	// must read intact — but skip any `it(` whose opener is blanked in the
+	// length-preserving codeMask, i.e. it lives inside a comment or a string.
 	TEST_BLOCK_INTRO_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = TEST_BLOCK_INTRO_RE.exec(content);
 	while (m !== null) {
+		const offset = m.index;
+		if (codeMask[offset] === " ") {
+			m = TEST_BLOCK_INTRO_RE.exec(content);
+			continue;
+		}
 		const name = m[2].trim();
 		if (name.length === 0) {
 			m = TEST_BLOCK_INTRO_RE.exec(content);
 			continue;
 		}
-		const offset = m.index;
 		const enclosing = innermostDescribeAt(offset, describeRanges);
 		const scopeKey = enclosing ? String(enclosing.bodyStart) : "";
 		const lineIdx = (content.slice(0, offset).match(/\n/g) || []).length;
@@ -207,7 +233,7 @@ const TMP_PATH_RE = /(?:^|[/\\])(?:tmp|__fixtures__|fixtures|tmp\/|\.tmp|os\.tmp
 
 /** Public API — flags real-network/FS calls in test files. */
 export function checkRealIoInTests(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const stripped = stripCommentsAndStrings(content);
@@ -263,7 +289,7 @@ const MOCK_SETUP_LINE_RE =
 
 /** Public API — flags Date.now / Math.random in test code without mocking. */
 export function checkTestNondeterminism(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const stripped = stripCommentsAndStrings(content);
@@ -304,7 +330,7 @@ export function checkHardcodedTimeoutInTests(
 	content: string,
 	filePath: string,
 ): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const stripped = stripCommentsAndStrings(content);
@@ -337,7 +363,7 @@ export function checkHardcodedTimeoutInTests(
 
 /** Public API — flags test files that don't import their SUT. */
 export function checkTestMissingSutImport(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
 	if (!JS_TS_EXTS.has(ext)) return [];
 
@@ -376,7 +402,7 @@ const SUT_MOCK_RE = /\b(?:vi|jest)\s*\.\s*mock\s*\(\s*["']([^"']+)["']/g;
 
 /** Public API — flags mocks of the SUT inside its own test file. */
 export function checkMockingTheSutSelf(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const norm = filePath.replace(/\\/g, "/");
@@ -444,7 +470,7 @@ export function checkTestSubprocessDefaultTimeout(
 	content: string,
 	filePath: string,
 ): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 	// The check only makes sense when child_process is in play at all — a cheap
 	// pre-filter that skips the brace-matching scan for the common case.
@@ -749,7 +775,7 @@ function hasImportedAssertHelperCall(body: string, helpers: Set<string>): boolea
 
 /** Public API — flags it()/test() blocks that assert only mock interactions. */
 export function checkMockOnlyTest(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const stripped = stripCommentsAndStrings(content);
@@ -924,7 +950,7 @@ function blankNonExecutingTestCalls(content: string, maskedContent: string): str
 
 /** Public API — flags test files whose every case asserts only success. */
 export function checkHappyPathOnlyTest(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
+	if (!isStrictTestFile(filePath)) return [];
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	// Count cases and collect their names from the original content — the
