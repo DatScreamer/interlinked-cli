@@ -10,6 +10,13 @@ import { join } from "node:path";
 import { resolveConfig, updateLocalConfig } from "./config.js";
 import type { JsonObject } from "./json-types.js";
 
+/**
+ * Timeout for OAuth control-plane HTTP calls (token refresh, code exchange,
+ * dynamic client registration), in milliseconds. Bounds a slow or hung
+ * auth-server so the request handle can't leak indefinitely.
+ */
+const OAUTH_REQUEST_TIMEOUT_MS = 30000;
+
 // ===========================================
 // Token Resolution (multi-source)
 // ===========================================
@@ -101,6 +108,7 @@ async function refreshAccessToken(options: {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body,
+		signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS),
 	});
 	if (!response.ok) {
 		const errorText = await response.text();
@@ -308,6 +316,7 @@ export async function performLogin(serverUrl: string): Promise<LoginResult> {
 			client_id: clientInfo.client_id,
 			code_verifier: codeVerifier,
 		}),
+		signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS),
 	});
 
 	if (!tokenRes.ok) {
@@ -370,6 +379,7 @@ async function registerClient(
 			response_types: ["code"],
 			token_endpoint_auth_method: "none",
 		}),
+		signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS),
 	});
 
 	if (!res.ok) {

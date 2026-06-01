@@ -7,7 +7,11 @@
 import { type ActivityEvent, formatActivitySummary, parseDuration } from "../lib/activity-utils.js";
 import { getClient } from "../lib/api-client.js";
 import { c, divider, header, indent, shortTimestamp } from "../lib/formatter.js";
-import { mergeAndDedup, readLocalActivity } from "../lib/local-activity.js";
+import {
+	type EventAttribution,
+	mergeAndDedup,
+	readLocalActivity,
+} from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 
 interface TimelineEvent {
@@ -16,6 +20,7 @@ interface TimelineEvent {
 	type: "activity";
 	summary: string;
 	detail?: string;
+	attribution?: EventAttribution;
 }
 
 export async function explainCommand(opts: {
@@ -83,6 +88,7 @@ export async function explainCommand(opts: {
 				detail: opts.full
 					? `${e.event_type || ""} | ${e.tool_name || ""} | ${e.tool_input_summary || ""}`
 					: undefined,
+				attribution: e.attribution,
 			});
 		}
 
@@ -130,23 +136,20 @@ export async function explainCommand(opts: {
 				}
 
 				// Attribution summary (if any events have it)
-				const eventsWithAttribution = agentFiltered.filter((e) => {
-					const ae = e as {
-						attribution?: { agent_lines?: number; human_lines?: number };
-					};
-					return (
-						ae.attribution && (ae.attribution.agent_lines || ae.attribution.human_lines)
-					);
-				});
+				const eventsWithAttribution = agentFiltered.filter(
+					(e) =>
+						e.attribution &&
+						(e.attribution.agent_lines || e.attribution.human_lines),
+				);
 				if (eventsWithAttribution.length > 0) {
-					const totalAgent = eventsWithAttribution.reduce((sum, e) => {
-						const ae = e as { attribution?: { agent_lines?: number } };
-						return sum + (ae.attribution?.agent_lines || 0);
-					}, 0);
-					const totalHuman = eventsWithAttribution.reduce((sum, e) => {
-						const ae = e as { attribution?: { human_lines?: number } };
-						return sum + (ae.attribution?.human_lines || 0);
-					}, 0);
+					const totalAgent = eventsWithAttribution.reduce(
+						(sum, e) => sum + (e.attribution?.agent_lines || 0),
+						0,
+					);
+					const totalHuman = eventsWithAttribution.reduce(
+						(sum, e) => sum + (e.attribution?.human_lines || 0),
+						0,
+					);
 					const total = totalAgent + totalHuman;
 					if (total > 0) {
 						const pct = Math.round((totalAgent / total) * 100);

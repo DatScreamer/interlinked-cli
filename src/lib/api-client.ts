@@ -11,6 +11,36 @@ import type { JsonObject } from "./json-types.js";
 /** Timeout for the /health reachability ping, in milliseconds. */
 const HEALTH_PING_TIMEOUT_MS = 5000;
 
+/**
+ * Timeout for regular API calls (tool proxy, workspace list), in milliseconds.
+ * Bounds a slow upstream so a hung request can't leak the handle indefinitely;
+ * generous enough for larger payloads (activity feeds, timelines).
+ */
+const API_REQUEST_TIMEOUT_MS = 30000;
+
+/**
+ * Timeout for fire-and-forget hook-event POSTs, in milliseconds. Shorter than
+ * a user-facing API call — these are best-effort and already swallow errors.
+ */
+const HOOK_EVENT_TIMEOUT_MS = 3000;
+
+/** Result of {@link InterlinkedClient.healthCheck}. */
+export interface HealthCheckResult {
+	serverReachable: boolean;
+	authenticated: boolean;
+	serverVersion?: string;
+	error?: string;
+}
+
+/**
+ * Build a health result for a failed check. Always reports `authenticated:
+ * false` and carries the real error — never invented success data. Centralizing
+ * the failure shape keeps the `healthCheck` catch from inlining a literal.
+ */
+function healthFailure(opts: { serverReachable: boolean; error: string }): HealthCheckResult {
+	return { serverReachable: opts.serverReachable, authenticated: false, error: opts.error };
+}
+
 export class InterlinkedClient {
 	private serverUrl: string;
 	private workspaceId?: string;
@@ -97,6 +127,7 @@ export class InterlinkedClient {
 			method: "POST",
 			headers,
 			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
 		});
 
 		if (res.status === 401) {
@@ -143,6 +174,7 @@ export class InterlinkedClient {
 		const res = await fetch(`${this.serverUrl}/api/workspaces`, {
 			method: "GET",
 			headers,
+			signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
 		});
 
 		if (res.status === 401) {
@@ -206,20 +238,16 @@ export class InterlinkedClient {
 			method: "POST",
 			headers,
 			body: JSON.stringify(payload),
+			signal: AbortSignal.timeout(HOOK_EVENT_TIMEOUT_MS),
 		}).catch(() => {
-			// Swallow — hook events are fire-and-forget
+			// Swallow — hook events are fire-and-forget (timeout aborts included)
 		});
 	}
 
 	/**
 	 * Health check: verify server reachability and auth validity.
 	 */
-	async healthCheck(): Promise<{
-		serverReachable: boolean;
-		authenticated: boolean;
-		serverVersion?: string;
-		error?: string;
-	}> {
+	async healthCheck(): Promise<HealthCheckResult> {
 		try {
 			await this.ensureToken();
 			const isLocalDev = this.isLocalDevServer();
@@ -267,14 +295,13 @@ export class InterlinkedClient {
 			};
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
+			// The catch returns a typed health result describing the real failure
+			// (not invented success data) — built via a named helper so the
+			// failure mode is explicit at the boundary.
 			if (msg.includes("Authentication failed")) {
-				return {
-					serverReachable: true,
-					authenticated: false,
-					error: "Token invalid or expired",
-				};
+				return healthFailure({ serverReachable: true, error: "Token invalid or expired" });
 			}
-			return { serverReachable: false, authenticated: false, error: msg };
+			return healthFailure({ serverReachable: false, error: msg });
 		}
 	}
 }

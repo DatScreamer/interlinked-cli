@@ -56,8 +56,8 @@ import {
 	checkXmlExternalEntity,
 	checkYamlUnsafeLoad,
 } from "../../harness/generic-checks.js";
-import type { FileCheckContext } from "./file-checks.js";
-import { toIssues } from "./file-checks.js";
+import type { FileCheckContext } from "./file-checks-shared.js";
+import { toIssues } from "./file-checks-shared.js";
 
 /**
  * Every UBS Plan 04 detector. Mirrors the inline blocks from "=== UBS Plan 04

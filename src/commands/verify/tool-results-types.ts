@@ -538,9 +538,12 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 
 /** Public API — consumed by verify submodules. Build an empty result set. */
 export function emptyResults(): CodeQualityResults {
-	const r = {} as CodeQualityResults;
-	for (const key of CQ_RESULT_KEYS) {
-		r[key] = [];
-	}
+	// `CodeQualityResults` is structurally a `Record<keyof CodeQualityResults,
+	// CodeQualityIssue[]>` — every bucket is a `CodeQualityIssue[]`. Building
+	// the record from the canonical key list lets TS verify completeness
+	// instead of trusting a `{} as CodeQualityResults` smuggling cast.
+	const r: Record<keyof CodeQualityResults, CodeQualityIssue[]> = Object.fromEntries(
+		CQ_RESULT_KEYS.map((key) => [key, [] as CodeQualityIssue[]]),
+	) as Record<keyof CodeQualityResults, CodeQualityIssue[]>;
 	return r;
 }

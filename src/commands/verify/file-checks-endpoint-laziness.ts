@@ -45,8 +45,8 @@ import {
 	checkUnionWidenedWithString,
 	checkUntestableTimeInSource,
 } from "../../harness/generic-checks.js";
-import type { FileCheckContext } from "./file-checks.js";
-import { toIssues } from "./file-checks.js";
+import type { FileCheckContext } from "./file-checks-shared.js";
+import { toIssues } from "./file-checks-shared.js";
 
 /**
  * Endpoint-security pack, agent-laziness batch, test-hygiene batch, cross-file

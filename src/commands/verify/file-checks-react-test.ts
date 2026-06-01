@@ -56,8 +56,8 @@ import {
 	checkTautologicalAssertion,
 	checkTestWithoutDescription,
 } from "../../harness/taste-checks.js";
-import type { FileCheckContext } from "./file-checks.js";
-import { toIssues } from "./file-checks.js";
+import type { FileCheckContext } from "./file-checks-shared.js";
+import { toIssues } from "./file-checks-shared.js";
 
 /**
  * React-hooks / DOM detectors, the coding-agent feedback pack, PII detection,

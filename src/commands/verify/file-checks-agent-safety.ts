@@ -70,8 +70,8 @@ import {
 	coverageForFile,
 	loadCoverageFinal,
 } from "../../harness/coverage-final-reader.js";
-import type { FileCheckContext } from "./file-checks.js";
-import { toIssues } from "./file-checks.js";
+import type { FileCheckContext } from "./file-checks-shared.js";
+import { toIssues } from "./file-checks-shared.js";
 
 /**
  * CRAP (Change Risk Anti-Patterns) — complexity × coverage composite.

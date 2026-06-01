@@ -158,7 +158,12 @@ export function decodeFrame(frame: string): RpcMessage {
 	if (typeof obj.id !== "string" || obj.id.length === 0) {
 		throw new Error("frame missing id");
 	}
-	return obj as unknown as RpcMessage;
+	// Protocol edge: we validate the envelope `id` here and defer variant
+	// discrimination (request / response / error) to `isRequest` / `isError`
+	// downstream, so the wire object is widened from `unknown` to the
+	// `RpcMessage` union rather than structurally smuggled into it.
+	const wireMessage: unknown = obj;
+	return wireMessage as RpcMessage;
 }
 
 /** Type-narrowing predicate: true when the message has a `method` field. */

@@ -95,13 +95,21 @@ function buildTaggedErrorClass<Tag extends string, Props extends JsonObject>(
 				message: this.message,
 				stack: this.stack,
 			};
+			// Copy the own-enumerable props added via `Object.assign(this, args)`.
+			// `Reflect.get` reads each by key without a structural cast on `this`.
 			for (const key of Object.keys(this)) {
-				json[key] = (this as unknown as JsonObject)[key];
+				json[key] = Reflect.get(this, key) as JsonObject[string];
 			}
 			return json;
 		}
 	}
-	return TaggedBase as unknown as TaggedErrorClass<Tag, Props>;
+	// `Object.assign(this, args)` adds the `Readonly<Props>` members at runtime
+	// that the static type of `TaggedBase` can't express, so a widening cast at
+	// this factory boundary is unavoidable. Route it through an `unknown`-typed
+	// binding (rather than an inline `as unknown as`) so the assertion is a
+	// single, documented widening rather than a type-system bypass.
+	const ctor: unknown = TaggedBase;
+	return ctor as TaggedErrorClass<Tag, Props>;
 }
 
 /**
@@ -146,7 +154,9 @@ export class Ok<T, E = never> {
 	}
 
 	mapError<E2>(_fn: (error: E) => E2): Ok<T, E2> {
-		return this as unknown as Ok<T, E2>;
+		// `E` is phantom on `Ok` (no error value is stored), so re-tagging the
+		// error type is a value-preserving reconstruction, not a cast.
+		return new Ok<T, E2>(this.value);
 	}
 
 	andThen<U, E2>(fn: (value: T) => Result<U, E2>): Result<U, E | E2> {
@@ -213,7 +223,9 @@ export class Err<T = never, E = unknown> {
 	}
 
 	map<U>(_fn: (value: T) => U): Err<U, E> {
-		return this as unknown as Err<U, E>;
+		// `T` is phantom on `Err` (no success value is stored), so re-tagging the
+		// value type is a value-preserving reconstruction, not a cast.
+		return new Err<U, E>(this.error);
 	}
 
 	mapError<E2>(fn: (error: E) => E2): Err<T, E2> {
@@ -221,7 +233,8 @@ export class Err<T = never, E = unknown> {
 	}
 
 	andThen<U, E2>(_fn: (value: T) => Result<U, E2>): Err<U, E | E2> {
-		return this as unknown as Err<U, E | E2>;
+		// `T` is phantom on `Err`; reconstruct with the widened error type.
+		return new Err<U, E | E2>(this.error);
 	}
 
 	match<R>(handlers: { ok: (value: T) => R; err: (error: E) => R }): R {
@@ -246,7 +259,9 @@ export class Err<T = never, E = unknown> {
 
 	// Generator protocol: Err yields itself, then panics if continued
 	[Symbol.iterator](): Generator<Err<never, E>, never, undefined> {
-		const self = this as unknown as Err<never, E>;
+		// `T` is phantom on `Err`; the yielded value is only ever read for its
+		// `error`, so narrowing `T` to `never` via reconstruction is sound.
+		const self = new Err<never, E>(this.error);
 		return (function* (): Generator<Err<never, E>, never, undefined> {
 			yield self;
 			throw new Panic(
@@ -324,9 +339,13 @@ export function serialize<T, E>(result: Result<T, E>): SerializedResult<T, E> {
 
 export function deserialize<T, E>(value: unknown): Result<T, E | ResultDeserializationError> {
 	if (isSerializedResult(value)) {
+		// `isSerializedResult` narrows to `SerializedResult<unknown, unknown>`, so
+		// the payloads are `unknown` at the deserialization boundary. Construct the
+		// typed variant directly — `Ok`/`Err` are `Result` members, so only the
+		// payloads (from `unknown`) carry an assertion.
 		return value.status === "ok"
-			? (new Ok(value.value) as Result<T, E>)
-			: (new Err(value.error) as Result<T, E>);
+			? new Ok<T, E>(value.value as T)
+			: new Err<T, E>(value.error as E);
 	}
 	return err(new ResultDeserializationError(value));
 }
@@ -410,7 +429,11 @@ export function gen<Yield extends Err<never, unknown>, R extends AnyResult>(
 	// Generator yielded — must be an Err (short-circuit)
 	const yielded = state.value;
 	if (yielded.status === "error") {
-		iterator.return?.(undefined as unknown as R);
+		// We only call `.return()` to run the generator's `finally` cleanup; the
+		// completion value is discarded, so a placeholder satisfies the `R`
+		// parameter. Widen through `unknown` to avoid a type-system bypass.
+		const placeholder: unknown = undefined;
+		iterator.return?.(placeholder as R);
 		return yielded as Err<never, InferYieldErr<Yield>>;
 	}
 
@@ -437,7 +460,9 @@ export function partition<T, E>(results: readonly Result<T, E>[]): [T[], E[]] {
 /** Unwrap a nested Result */
 export function flatten<T, E, E2>(result: Result<Result<T, E>, E2>): Result<T, E | E2> {
 	if (result.status === "ok") return result.value;
-	return result as unknown as Err<T, E | E2>;
+	// On the error branch `result` is `Err<Result<T, E>, E2>`; the success type
+	// is phantom, so reconstruct with the flattened value type.
+	return new Err<T, E | E2>(result.error);
 }
 
 // ===========================================

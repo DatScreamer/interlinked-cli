@@ -540,6 +540,14 @@ const TIMEOUT_OR_SIGNAL_RE = /\b(?:signal|timeout|AbortSignal|AbortController)\b
 // `: Request` typed parameter — that string essentially never appears inside a
 // fetch() function call.
 const FETCH_HANDLER_DECL_RE = /(?:^|\s|,)\(?\s*(?:async\s+)?fetch\s*\(\s*\w+\s*:\s*Request\b/;
+// Member-access `<receiver>.fetch(` where the receiver is NOT a global-namespace
+// alias. The global `fetch` is invoked bare; member calls like
+// `env.ASSETS.fetch(request)` (Cloudflare service / static-asset / Durable-Object
+// bindings) and `stub.fetch(req)` dispatch through the runtime's binding plumbing,
+// which doesn't accept a per-call `AbortSignal`/timeout the way `globalThis.fetch`
+// does. We still flag the namespaced globals (`globalThis`/`self`/`window`/`global`).
+const FETCH_GLOBAL_NS = /\b(?:globalThis|self|window|global)$/;
+const FETCH_MEMBER_RECEIVER_RE = /([\w$.]+)\.fetch\s*\(/;
 
 const FETCH_CONTEXT_LINES = 10;
 
@@ -547,6 +555,21 @@ function fetchHasTimeoutInWindow(strippedLines: string[], startIdx: number): boo
 	const end = Math.min(strippedLines.length, startIdx + FETCH_CONTEXT_LINES + 1);
 	const window = strippedLines.slice(startIdx, end).join("\n");
 	return TIMEOUT_OR_SIGNAL_RE.test(window);
+}
+
+/**
+ * True when the `fetch(` on this line is a member call on a runtime binding
+ * (`env.ASSETS.fetch(...)`, a service-binding stub, a Durable-Object stub) rather
+ * than the global `fetch`. Those dispatch through Workers binding plumbing and
+ * don't take a per-call `AbortSignal`/timeout, so flagging them is a false
+ * positive. Namespaced globals (`globalThis.fetch` etc.) are NOT treated as
+ * bindings — they still need a timeout.
+ */
+function isBindingFetchCall(line: string): boolean {
+	const m = FETCH_MEMBER_RECEIVER_RE.exec(line);
+	if (!m) return false;
+	const receiver = m[1];
+	return !FETCH_GLOBAL_NS.test(receiver);
 }
 
 /** Public API — flags fetch / axios calls without an abort signal or timeout. */
@@ -568,6 +591,9 @@ export function checkFetchWithoutTimeout(content: string, filePath: string): Inl
 		// method declaration on the default ExportedHandler is invoked by the
 		// runtime, not a `fetch()` call we'd want to add a timeout to.
 		if (isFetch && FETCH_HANDLER_DECL_RE.test(strippedLines[i])) continue;
+		// Skip runtime binding member calls (`env.ASSETS.fetch(request)`, service /
+		// DO stubs) — they don't accept a per-call AbortSignal/timeout.
+		if (isFetch && isBindingFetchCall(strippedLines[i])) continue;
 		if (fetchHasTimeoutInWindow(strippedLines, i)) continue;
 		const label = isFetch ? "fetch()" : "axios call";
 		matches.push({

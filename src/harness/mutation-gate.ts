@@ -140,8 +140,11 @@ interface StrykerFileEntry {
 function normalizeMutationReport(raw: unknown): MutationReport {
 	const report: MutationReport = { files: {} };
 	if (!raw || typeof raw !== "object" || !("files" in raw)) return report;
-	const files = (raw as { files?: Record<string, StrykerFileEntry | undefined> }).files;
-	if (!files) return report;
+	// After the `"files" in raw` guard, `raw.files` is typed `unknown` — the
+	// Stryker report shape is a deserialization boundary, so the assertion is
+	// from `unknown` (an explicit widening), not a structural smuggle.
+	const files = raw.files as Record<string, StrykerFileEntry | undefined> | undefined;
+	if (!files || typeof files !== "object") return report;
 
 	for (const [path, entry] of Object.entries(files)) {
 		if (!entry) continue;

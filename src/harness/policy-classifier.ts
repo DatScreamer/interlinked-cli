@@ -407,6 +407,19 @@ function parseClaudeCodeOutput(output: string): PolicyClassification {
  * Call the classifier via HTTP to an inference provider (Groq, HuggingFace, Anthropic, etc.).
  * Requires an API key in the environment.
  */
+/**
+ * Build the fail-open classification used when the classifier HTTP call cannot
+ * produce a verdict. The classifier is shadow-mode and deliberately fails open
+ * (allow) with no circuit breaker, but the failure must be VISIBLE — so this
+ * logs loudly to stderr rather than silently substituting a benign-looking
+ * result. The `confidence: 0` + explicit `reasoning` already mark the verdict
+ * as a non-answer for downstream consumers.
+ */
+function failOpenClassification(reason: string): PolicyClassification {
+	console.warn(`[interlinked:policy-classifier] fail-open: ${reason}`);
+	return { label: "allow", confidence: 0, reasoning: reason };
+}
+
 async function callViaHttp(
 	evidence: string,
 	apiKey: string,
@@ -455,11 +468,7 @@ async function callViaHttp(
 
 		if (!response.ok) {
 			sessionState.consecutive_failures++;
-			return {
-				label: "allow",
-				confidence: 0,
-				reasoning: `Classifier HTTP error: ${response.status}`,
-			};
+			return failOpenClassification(`Classifier HTTP error: ${response.status}`);
 		}
 
 		const data = (await response.json()) as JsonObject;
@@ -468,9 +477,10 @@ async function callViaHttp(
 			: parseOpenAIResponse(data);
 		sessionState.consecutive_failures = 0;
 		return classification;
-	} catch {
+	} catch (err) {
 		sessionState.consecutive_failures++;
-		return { label: "allow", confidence: 0, reasoning: "Classifier call failed" };
+		const detail = err instanceof Error ? err.message : String(err);
+		return failOpenClassification(`Classifier call failed: ${detail}`);
 	} finally {
 		clearTimeout(timer);
 	}

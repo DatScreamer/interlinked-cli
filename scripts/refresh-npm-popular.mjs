@@ -30,6 +30,10 @@ const FILE_PATH = resolve(
 	"src/harness/checks/data/npm-popular-packages.json",
 );
 
+/** Per-request timeout for the npm registry fetch, in milliseconds. Bounds a
+ *  slow upstream so a hung request can't stall the whole refresh run. */
+const FETCH_TIMEOUT_MS = 10000;
+
 function parseArgs(argv) {
 	const out = { pruneBelow: null, concurrency: 6 };
 	for (const arg of argv) {
@@ -53,7 +57,7 @@ Options:
 
 async function fetchWeeklyDownloads(name) {
 	const url = `https://api.npmjs.org/downloads/point/last-week/${encodeURIComponent(name)}`;
-	const res = await fetch(url);
+	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (res.status === 404) return 0;
 	if (!res.ok) throw new Error(`HTTP ${res.status} for ${name}`);
 	const data = await res.json();

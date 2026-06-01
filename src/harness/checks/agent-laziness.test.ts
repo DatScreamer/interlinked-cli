@@ -500,6 +500,25 @@ await fetch(url, {
 		expect(matches).toHaveLength(1);
 		expect(matches[0].text).toContain("fetch()");
 	});
+
+	it("does not fire on a Cloudflare binding member call (env.ASSETS.fetch)", () => {
+		// `env.ASSETS.fetch(request)` dispatches through the static-asset binding,
+		// which does not accept a per-call AbortSignal/timeout.
+		const code = `return env.ASSETS.fetch(request);`;
+		expect(checkFetchWithoutTimeout(code, TS)).toEqual([]);
+	});
+
+	it("does not fire on a service/DO binding stub member call (stub.fetch)", () => {
+		const code = `const res = await stub.fetch(req);`;
+		expect(checkFetchWithoutTimeout(code, TS)).toEqual([]);
+	});
+
+	it("still fires on namespaced-global fetch (globalThis/self/window)", () => {
+		// These ARE the global fetch — they take a timeout and must be flagged.
+		expect(checkFetchWithoutTimeout(`await globalThis.fetch(url);`, TS).length).toBe(1);
+		expect(checkFetchWithoutTimeout(`await self.fetch(url);`, TS).length).toBe(1);
+		expect(checkFetchWithoutTimeout(`await window.fetch(url);`, TS).length).toBe(1);
+	});
 });
 
 describe("checkUnboundedPromiseAll", () => {

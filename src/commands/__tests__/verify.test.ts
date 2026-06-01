@@ -200,7 +200,6 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"comment_claims_throws_doesnt",
 				"comment_claims_validation_missing",
 				"catch_and_log",
-				"circular_imports",
 				"code_clones",
 				"complexity",
 				"conditional_in_test",
@@ -247,9 +246,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"ubs_time_format_locale_dep",
 				"unvalidated_json_boundary",
 				// Batch 1: agent-laziness — advisory (heuristic)
-				"fetch_without_timeout",
 				"sync_io_on_hot_path",
-				"type_smuggling",
 				"unbounded_promise_all",
 				"union_widened_with_string",
 				// 139-repo audit additions: structural cleanup + boundary
@@ -265,8 +262,6 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"empty_body_handler",
 				"listener_pairing",
 				"schema_type_drift",
-				// Batch 8: demo-data — advisory (heuristic)
-				"silent_demo_fallback",
 				// CUDA inline checks — advisory (heuristic)
 				"cuda_kernel_launch_unchecked",
 				"cuda_printf_in_device_code",

@@ -122,10 +122,6 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// consumed by external packages. Advisory until we can honor package.json
 	// `exports` maps + skip project-root `index.*` files properly.
 	"dead_exports",
-	// Circular imports: DFS walk from the edited file — cheap on typical
-	// modules but pathologically slow on tightly-connected graph hubs.
-	// Advisory until we can cache the walk across edits.
-	"circular_imports",
 	// Lifecycle cleanup: heuristic class-body scan. Real memory-leak signal,
 	// but FPs on legitimate patterns (single-shot setTimeout that doesn't
 	// need cleanup, delegated cleanup through super.dispose()). Advisory
@@ -271,11 +267,6 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// 6-line scan window picks up unrelated type expressions. Promote when the
 	// detection can consult tsc's resolved type instead of regex.
 	"union_widened_with_string",
-	// fetch_without_timeout: window-based heuristic — looks 10 lines ahead for
-	// `signal:` / `timeout:`. Misses options-via-spread (`{ ...defaults }`), and
-	// FPs on short-lived test-server fetches. Promote after we wire a
-	// project-config exemption for known internal hosts.
-	"fetch_without_timeout",
 	// unbounded_promise_all: line-local heuristic. Can't see whether `<ident>` is
 	// bounded by a literal a few lines above. Real signal but moderate FP rate;
 	// the suggested fix (p-limit) is right even when the input is bounded.
@@ -284,14 +275,6 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// utility files that happen to declare a function named `get*` for a
 	// non-HTTP purpose. Promote when scope can consult an actual route map.
 	"sync_io_on_hot_path",
-	// type_smuggling: TypeScript compiler-API check that flags `as T` casts
-	// where source and target have no structural overlap (assignability fails
-	// both directions). Advisory: structural-shape overlap heuristic has
-	// moderate FP rate on generic constraint boundaries, union/intersection
-	// edges, and any cast where the source type fell back to `any` because
-	// upstream dependency resolution was incomplete in the single-file
-	// program. Ratchet once dogfood signal supports promotion.
-	"type_smuggling",
 	// === Batch 5 cross-file — advisory (heuristic) ===
 	// empty_body_handler: name-based heuristic over handler-shaped names; FPs
 	// on framework router stubs that legitimately delegate to a registry.
@@ -303,12 +286,6 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// schema_type_drift: same-file pattern match; FPs on intentionally-narrow
 	// types derived from a wider schema (e.g., `Pick<UserSchema, "id">`).
 	"schema_type_drift",
-	// === Batch 8 demo-data — advisory (heuristic) ===
-	// silent_demo_fallback: structural detection of try/catch with literal
-	// fallback. The fallback is sometimes legitimate (cached default values
-	// for offline mode); promote when the detector can distinguish demo
-	// fixtures from real defaults.
-	"silent_demo_fallback",
 	// === CUDA inline checks — advisory (heuristic) ===
 	// cuda_kernel_launch_unchecked: every kernel launch should be paired with
 	// `cudaGetLastError()`, but single-regex can't see "followed by"; we fire

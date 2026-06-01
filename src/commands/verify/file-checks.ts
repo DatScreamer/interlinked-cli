@@ -42,9 +42,17 @@ import { JS_TS_EXTS } from "./advisory.js";
 import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
 import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
 import { runReactAndTasteChecks } from "./file-checks-react-test.js";
+import { toIssues } from "./file-checks-shared.js";
+import type { FileCheckContext, PiiOpts } from "./file-checks-shared.js";
 import { runUbsChecks } from "./file-checks-ubs.js";
 import { collectSuppressionFindings } from "./suppressions.js";
 import type { CodeQualityIssue, CodeQualityResults } from "./tool-results-types.js";
+
+// Re-exported for the `file-checks-<group>.test.ts` files, which import these
+// names from `./file-checks.js`. The definitions now live in
+// `./file-checks-shared.js` to break the file-checks ↔ group-file cycle.
+export { toIssues };
+export type { FileCheckContext, PiiOpts };
 
 const JSON_EXT = ".json";
 const TS_EXT = ".ts";
@@ -52,19 +60,6 @@ const TSX_EXT = ".tsx";
 const DTS_SUFFIX = ".d.ts";
 const ANY_KIND = "any";
 const JSON_PARSE_ERR_SLICE = 150;
-
-/**
- * Public API — consumed by the `file-checks-<group>.ts` helpers.
- *
- * Convert `InlineMatch[]` from generic-checks into `CodeQualityIssue[]`.
- */
-export function toIssues(
-	check: string,
-	file: string,
-	matches: Array<{ line: number; text: string }>,
-): CodeQualityIssue[] {
-	return matches.map((m) => ({ check, file, line: m.line, message: m.text }));
-}
 
 interface MockDriftArgs {
 	mocks: ReturnType<typeof extractMockDefinitions>;
@@ -99,23 +94,6 @@ function collectMockDriftFindings(args: MockDriftArgs): void {
 			});
 		}
 	}
-}
-
-/** Public API — consumed by the `file-checks-<group>.ts` helpers. */
-export type PiiOpts = Parameters<typeof import("../../harness/generic-checks.js").checkPiiInSource>[2];
-
-/**
- * Public API — shared context threaded through every per-group helper. Bundles
- * the per-file locals the stateless detectors need (resolved path, content,
- * cwd for cross-file checks, the result accumulator, PII options).
- */
-export interface FileCheckContext {
-	file: string;
-	content: string;
-	relPath: string;
-	cwd: string;
-	r: CodeQualityResults;
-	piiOpts: PiiOpts;
 }
 
 interface RunFileChecksArgs {
