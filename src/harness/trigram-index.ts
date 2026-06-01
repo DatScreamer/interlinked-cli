@@ -22,271 +22,53 @@
 //   - Skip oversized files (configurable, default 1MB)
 //   - Filter "stop trigrams" that appear in > 40% of files (useless for filtering)
 //   - Dirty layer for in-memory updates without full rebuild
+//
+// Primitives (encoding, extraction, binary detection, skip rules, on-disk
+// format constants, bit helpers) live in ./trigram-primitives.ts. Git-based
+// file discovery lives in ./trigram-git.ts. This file holds the TrigramIndex
+// class — build/query/dirty-layer/serialization — that composes them.
 
-import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { getChangedFilesSince, getHeadCommit, getTrackedFiles } from "./trigram-git.js";
 import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { join, relative, resolve } from "node:path";
+	binarySearchU32,
+	DEFAULT_MAX_FILE_SIZE,
+	DEFAULT_STOP_THRESHOLD,
+	EARLY_TERMINATION_THRESHOLD,
+	extractTrigrams,
+	extractTrigramsWithMasks,
+	FLAG_LOWERCASE,
+	FLAG_MASKS,
+	fnv1a,
+	type IndexBuildOptions,
+	type IndexStats,
+	INDEX_DIR_NAME,
+	isBinaryContent,
+	LEGACY_INDEX_FILE_NAME,
+	LOOKUP_FILE_NAME,
+	MAGIC_LOOKUP,
+	META_FILE_NAME,
+	nextCharBit,
+	popcount8,
+	type PostingList,
+	POSTINGS_FILE_NAME,
+	shouldSkipFile,
+	VERSION,
+} from "./trigram-primitives.js";
 
-// ===========================================
-// Constants
-// ===========================================
-
-const MAGIC_LOOKUP = 0x54524c4b; // "TRLK"
-const VERSION = 2;
-const FLAG_LOWERCASE = 1;
-const FLAG_MASKS = 2;
-const DEFAULT_MAX_FILE_SIZE = 1_048_576; // 1MB
-const DEFAULT_STOP_THRESHOLD = 0.4; // 40% of files
-const EARLY_TERMINATION_THRESHOLD = 20;
-const INDEX_DIR_NAME = "index";
-const LOOKUP_FILE_NAME = "trigram.lookup";
-const POSTINGS_FILE_NAME = "trigram.postings";
-const LEGACY_INDEX_FILE_NAME = "trigram.bin";
-const META_FILE_NAME = "meta.json";
-
-// Files that are never worth indexing (lock files, minified, source maps)
-const SKIP_BASENAMES = new Set([
-	"package-lock.json",
-	"yarn.lock",
-	"pnpm-lock.yaml",
-	"bun.lockb",
-	"Cargo.lock",
-	"Gemfile.lock",
-	"poetry.lock",
-	"composer.lock",
-	"go.sum",
-]);
-
-const SKIP_EXTENSIONS = new Set([".min.js", ".min.css", ".map", ".wasm", ".pb", ".pyc"]);
-
-// ===========================================
-// Hash Functions
-// ===========================================
-
-/** FNV-1a hash of a packed trigram (for on-disk lookup table sorting) */
-function fnv1a(packed: number): number {
-	let hash = 0x811c9dc5;
-	hash ^= (packed >> 16) & 0xff;
-	hash = Math.imul(hash, 0x01000193);
-	hash ^= (packed >> 8) & 0xff;
-	hash = Math.imul(hash, 0x01000193);
-	hash ^= packed & 0xff;
-	hash = Math.imul(hash, 0x01000193);
-	return hash >>> 0;
-}
-
-/** Bloom filter bit for a character code (golden ratio hash, top 3 bits → 0..7) */
-function nextCharBit(charCode: number): number {
-	return 1 << ((Math.imul(charCode, 0x9e3779b9) >>> 29) & 7);
-}
-
-// ===========================================
-// Trigram Encoding
-// ===========================================
-
-/** Pack 3 ASCII char codes into a uint32: (c0 << 16) | (c1 << 8) | c2 */
-export function packTrigram(c0: number, c1: number, c2: number): number {
-	return ((c0 & 0xff) << 16) | ((c1 & 0xff) << 8) | (c2 & 0xff);
-}
-
-/** Unpack a uint32 trigram into 3 char codes */
-export function unpackTrigram(packed: number): [number, number, number] {
-	return [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
-}
-
-/** Convert a packed trigram to a human-readable string */
-export function trigramToString(packed: number): string {
-	const [a, b, c] = unpackTrigram(packed);
-	return String.fromCharCode(a, b, c);
-}
-
-// ===========================================
-// Trigram Extraction
-// ===========================================
-
-/**
- * Extract all unique lowercase trigrams from a string.
- * Returns a Set of packed uint32 trigram values.
- */
-export function extractTrigrams(content: string): Set<number> {
-	const trigrams = new Set<number>();
-	const len = content.length;
-	if (len < 3) return trigrams;
-
-	// Pre-lowercase the entire content for consistent extraction
-	const lower = content.toLowerCase();
-
-	for (let i = 0; i <= len - 3; i++) {
-		const c0 = lower.charCodeAt(i);
-		const c1 = lower.charCodeAt(i + 1);
-		const c2 = lower.charCodeAt(i + 2);
-
-		// Skip trigrams containing control characters (except tab=9, newline=10, CR=13)
-		if (isControlChar(c0) || isControlChar(c1) || isControlChar(c2)) continue;
-
-		// Skip non-ASCII trigrams — code search is overwhelmingly ASCII,
-		// and clamping (& 0xFF) produces collisions (e.g., CJK chars map
-		// to the same byte as Latin-1 chars). Skipping is safe: the index
-		// returns more candidates (conservative), never fewer.
-		if (c0 > 0x7f || c1 > 0x7f || c2 > 0x7f) continue;
-
-		trigrams.add(packTrigram(c0, c1, c2));
-	}
-
-	return trigrams;
-}
-
-/**
- * Extract all unique lowercase trigrams with position and next-char masks.
- * Returns a Map: packed trigram → { locMask, nextMask }.
- * Used during build() to populate enhanced posting lists.
- */
-function extractTrigramsWithMasks(
-	content: string,
-): Map<number, { locMask: number; nextMask: number }> {
-	const result = new Map<number, { locMask: number; nextMask: number }>();
-	const len = content.length;
-	if (len < 3) return result;
-
-	const lower = content.toLowerCase();
-
-	for (let i = 0; i <= len - 3; i++) {
-		const c0 = lower.charCodeAt(i);
-		const c1 = lower.charCodeAt(i + 1);
-		const c2 = lower.charCodeAt(i + 2);
-
-		if (isControlChar(c0) || isControlChar(c1) || isControlChar(c2)) continue;
-		if (c0 > 0x7f || c1 > 0x7f || c2 > 0x7f) continue;
-
-		const packed = packTrigram(c0, c1, c2);
-		const locBit = 1 << (i & 7); // position mod 8
-
-		// Next character bloom bit
-		let nBit = 0;
-		if (i + 3 < len) {
-			const nc = lower.charCodeAt(i + 3);
-			if (nc <= 0x7f && !isControlChar(nc)) {
-				nBit = nextCharBit(nc);
-			}
-		}
-
-		const existing = result.get(packed);
-		if (existing) {
-			existing.locMask |= locBit;
-			existing.nextMask |= nBit;
-		} else {
-			result.set(packed, { locMask: locBit, nextMask: nBit });
-		}
-	}
-
-	return result;
-}
-
-export function isControlChar(code: number): boolean {
-	return code < 0x09 || (code > 0x0d && code < 0x20);
-}
-
-/**
- * Detect binary content by checking for null bytes in the first 8KB.
- */
-export function isBinaryContent(content: string | Buffer): boolean {
-	const check = typeof content === "string" ? content.slice(0, 8192) : content.subarray(0, 8192);
-	if (typeof check === "string") {
-		for (let i = 0; i < check.length; i++) {
-			if (check.charCodeAt(i) === 0) return true;
-		}
-	} else {
-		for (let i = 0; i < check.length; i++) {
-			if (check[i] === 0) return true;
-		}
-	}
-	return false;
-}
-
-/** Check if a filename should be skipped based on name/extension */
-export function shouldSkipFile(filePath: string): boolean {
-	const base = filePath.split("/").pop() || "";
-	if (SKIP_BASENAMES.has(base)) return true;
-	for (const ext of SKIP_EXTENSIONS) {
-		if (base.endsWith(ext)) return true;
-	}
-	return false;
-}
-
-// ===========================================
-// Types
-// ===========================================
-
-interface IndexBuildOptions {
-	/** Working directory (default: process.cwd()) */
-	cwd?: string;
-	/** Maximum file size to index in bytes (default: 1MB) */
-	maxFileSize?: number;
-	/** Trigrams in more than this fraction of files are stop trigrams (default: 0.4) */
-	stopThreshold?: number;
-	/** Progress callback: (indexed: number, total: number) => void */
-	onProgress?: (indexed: number, total: number) => void;
-}
-
-interface IndexStats {
-	fileCount: number;
-	trigramCount: number;
-	stopTrigramCount: number;
-	baseCommit: string;
-	indexSizeBytes: number;
-	builtAt: string;
-	/** Breakdown: lookup file size */
-	lookupSizeBytes?: number;
-	/** Breakdown: postings file size */
-	postingsSizeBytes?: number;
-	/** Average locMask bits set per posting entry */
-	avgLocMaskBits?: number;
-	/** Average nextMask bits set per posting entry */
-	avgNextMaskBits?: number;
-}
-
-/** A posting list with probabilistic masks for adjacency verification */
-export interface PostingList {
-	/** Sorted array of file IDs containing this trigram */
-	fileIds: Uint32Array;
-	/** Per-entry bloom filter of positions (mod 8) where trigram appears */
-	locMasks: Uint8Array;
-	/** Per-entry bloom filter of characters following the trigram */
-	nextMasks: Uint8Array;
-}
-
-// ===========================================
-// Binary Search Helper
-// ===========================================
-
-/** Binary search in a sorted Uint32Array. Returns index or -1. */
-function binarySearchU32(arr: Uint32Array, target: number): number {
-	let lo = 0;
-	let hi = arr.length - 1;
-	while (lo <= hi) {
-		const mid = (lo + hi) >>> 1;
-		const val = arr[mid];
-		if (val < target) lo = mid + 1;
-		else if (val > target) hi = mid - 1;
-		else return mid;
-	}
-	return -1;
-}
-
-/** Count the number of set bits in a byte */
-function popcount8(v: number): number {
-	let n = v & 0xff;
-	n = n - ((n >> 1) & 0x55);
-	n = (n & 0x33) + ((n >> 2) & 0x33);
-	return (n + (n >> 4)) & 0x0f;
-}
+// Re-export the primitives so existing importers of ./trigram-index.js keep
+// working unchanged (public API is preserved across the decomposition).
+export {
+	extractTrigrams,
+	isBinaryContent,
+	isControlChar,
+	packTrigram,
+	type PostingList,
+	shouldSkipFile,
+	trigramToString,
+	unpackTrigram,
+} from "./trigram-primitives.js";
 
 // ===========================================
 // TrigramIndex Class
@@ -852,19 +634,10 @@ export class TrigramIndex {
 		const currentCommit = getHeadCommit(this.cwd);
 		if (currentCommit === this.baseCommit) return 0;
 
-		let changedFiles: string[];
-		try {
-			const diff = execSync(`git diff --name-only ${this.baseCommit}..HEAD`, {
-				cwd: this.cwd,
-				encoding: "utf-8",
-				timeout: 10_000,
-			}).trim();
-			changedFiles = diff ? diff.split("\n").filter(Boolean) : [];
-		} catch {
-			// If diff fails (e.g., base commit no longer exists), return 0
-			// A full rebuild would be needed
-			return 0;
-		}
+		// If diff fails (e.g., base commit no longer exists), return 0 —
+		// a full rebuild would be needed.
+		const changedFiles = getChangedFilesSince(this.cwd, this.baseCommit);
+		if (changedFiles === null) return 0;
 
 		let updated = 0;
 		for (const relPath of changedFiles) {
@@ -1213,85 +986,5 @@ export class TrigramIndex {
 			avgLocMaskBits: totalPostings > 0 ? totalLocBits / totalPostings : 0,
 			avgNextMaskBits: totalPostings > 0 ? totalNextBits / totalPostings : 0,
 		};
-	}
-}
-
-// ===========================================
-// Git Helpers
-// ===========================================
-
-/** Get list of tracked files via `git ls-files`. Falls back to filesystem walk. */
-function getTrackedFiles(cwd: string): string[] {
-	try {
-		const output = execSync("git ls-files -z", {
-			cwd,
-			encoding: "buffer",
-			timeout: 30_000,
-			maxBuffer: 50 * 1024 * 1024, // 50MB for large repos
-		});
-		// Split on null bytes, filter empty
-		const tracked = output
-			.toString("utf-8")
-			.split("\0")
-			.filter((f) => f.length > 0);
-
-		// Also include gitignored .interlinked/hooks/ files — these are generated
-		// by `interlinked enable` and should be searchable (e.g. the hook script).
-		try {
-			const extra = execSync("git ls-files -z --others -- .interlinked/hooks/", {
-				cwd,
-				encoding: "buffer",
-				timeout: 5_000,
-				maxBuffer: 1 * 1024 * 1024,
-			});
-			const untracked = extra
-				.toString("utf-8")
-				.split("\0")
-				.filter((f) => f.length > 0);
-			if (untracked.length > 0) {
-				tracked.push(...untracked);
-			}
-		} catch (err) {
-			void err; /* intentional: non-fatal — hooks dir may not exist */
-		}
-
-		return tracked;
-	} catch {
-		// Fallback: walk filesystem (limited to 2 levels for safety)
-		return walkDir(cwd, cwd, 0, 5);
-	}
-}
-
-/** Simple recursive directory walk (fallback when git is unavailable) */
-function walkDir(dir: string, root: string, depth: number, maxDepth: number): string[] {
-	if (depth > maxDepth) return [];
-	const results: string[] = [];
-	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
-		for (const entry of entries) {
-			if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-			const full = join(dir, entry.name);
-			if (entry.isDirectory()) {
-				results.push(...walkDir(full, root, depth + 1, maxDepth));
-			} else if (entry.isFile()) {
-				results.push(relative(root, full));
-			}
-		}
-	} catch (err) {
-		void err; /* intentional: permission errors etc. just return what we've found */
-	}
-	return results;
-}
-
-/** Get the current HEAD commit hash */
-function getHeadCommit(cwd: string): string {
-	try {
-		return execSync("git rev-parse HEAD", {
-			cwd,
-			encoding: "utf-8",
-			timeout: 5_000,
-		}).trim();
-	} catch {
-		return "unknown";
 	}
 }

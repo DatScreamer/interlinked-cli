@@ -4,11 +4,14 @@
 // representative happy-path input.
 
 import { describe, expect, it } from "vitest";
+import type { HarnessEvent, PreEditBaseline } from "../types.js";
 import { resolveDependencyAuditCommand } from "./dependency-audit.js";
+import { runInlineCheckBlock } from "./inline-block.js";
 import { TOOL_CHECK_INSTRUCTIONS } from "./instructions.js";
 import { checkLockfileDrift, LOCKFILE_MAP } from "./lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./package-json.js";
 import { ProjectWideSweepState } from "./project-wide.js";
+import { runRatchetComparison } from "./ratchet-comparison.js";
 import {
 	countAsAnyCasts,
 	countNonNullAssertions,
@@ -17,6 +20,8 @@ import {
 import { containsSecrets } from "./secret-detection.js";
 import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
 import { classifyTestFailure, isLikelyTestFile } from "./test-classifier.js";
+import { runToolCheckLoop } from "./tool-check-loop.js";
+import { classifyDeterminism, formatQualityWarnings } from "./warning-formatter.js";
 
 describe("quality-checks submodules (smoke)", () => {
 	it("secret-detection finds known token formats", () => {
@@ -92,5 +97,228 @@ describe("quality-checks submodules (smoke)", () => {
 
 	it("instructions map has typescript entry", () => {
 		expect(TOOL_CHECK_INSTRUCTIONS.typescript).toContain("Fix the type errors");
+	});
+});
+
+// --- warning-formatter (classifyDeterminism + formatQualityWarnings) ---
+describe("warning-formatter", () => {
+	it("classifyDeterminism tags proven tools, heuristic patterns, unknown null", () => {
+		expect(classifyDeterminism("typescript")).toBe("proven");
+		expect(classifyDeterminism("perf_strlen_loop")).toBe("heuristic");
+		expect(classifyDeterminism("totally_unregistered_check_xyz")).toBeNull();
+	});
+
+	it("formatQualityWarnings prefixes the id, tag, detail, and instruction", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "typescript", severity: "error", message: "boom", detail: "  L1: x" },
+		]);
+		const lines = out.split("\n");
+		expect(lines[0]).toBe("[interlinked:typescript] [proven] boom");
+		expect(lines[1]).toBe("  L1: x");
+		expect(lines[2]).toMatch(/^→ /);
+	});
+
+	it("formatQualityWarnings omits the tag for unknown ids", () => {
+		const [out] = formatQualityWarnings([
+			{ name: "totally_unregistered_check_xyz", severity: "warning", message: "x" },
+		]);
+		expect(out).toBe("[interlinked:totally_unregistered_check_xyz] x");
+	});
+});
+
+// --- ratchet-comparison (guard + per-metric regression warnings) ---
+describe("ratchet-comparison", () => {
+	const baseline = (over: Partial<PreEditBaseline> = {}): PreEditBaseline => ({
+		missingReturnTypes: new Set(),
+		complexFunctions: new Set(),
+		capturedAt: 0,
+		suppressionCount: 0,
+		asAnyCastCount: 0,
+		nonNullAssertionCount: 0,
+		...over,
+	});
+
+	it("no-ops when diff-aware is enabled (only fires when explicitly OFF)", () => {
+		const out = runRatchetComparison({
+			absPath: "/a/f.ts",
+			postContent: "const x = y as any; const z = w as any;",
+			baseline: baseline(),
+			cwd: "/a",
+			diffAwareEnabled: true,
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("no-ops when no baseline is supplied", () => {
+		const out = runRatchetComparison({
+			absPath: "/a/f.ts",
+			postContent: "const x = y as any;",
+			baseline: undefined,
+			cwd: "/a",
+			diffAwareEnabled: false,
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("flags an `as any` increase against the baseline", () => {
+		const out = runRatchetComparison({
+			absPath: "/a/f.ts",
+			postContent: "const x = y as any; const z = w as any;",
+			baseline: baseline({ asAnyCastCount: 0 }),
+			cwd: "/a",
+			diffAwareEnabled: false,
+		});
+		expect(out.map((r) => r.name)).toContain("as_any_ratchet");
+	});
+
+	it("does not flag when the count holds steady", () => {
+		const out = runRatchetComparison({
+			absPath: "/a/f.ts",
+			postContent: "const x = y as any;",
+			baseline: baseline({ asAnyCastCount: 1 }),
+			cwd: "/a",
+			diffAwareEnabled: false,
+		});
+		expect(out).toEqual([]);
+	});
+});
+
+// --- inline-block (generic content checks operating on a content snapshot) ---
+describe("inline-block", () => {
+	const event: HarnessEvent = {
+		hook_event: "PostToolUse",
+		session_id: "t",
+		agent_source: "claude",
+		tool_name: "Edit",
+		timestamp: "2026-06-01T00:00:00Z",
+	};
+
+	it("flags an empty file", () => {
+		const out = runInlineCheckBlock({
+			event,
+			filePath: "src/x.ts",
+			absFilePath: "/a/src/x.ts",
+			fileContent: "",
+			cwd: "/a",
+			diffAware: undefined,
+			baseline: undefined,
+			filePriority: undefined,
+		});
+		expect(out.some((r) => r.name === "empty_file")).toBe(true);
+	});
+
+	it("flags binary content as an error and skips other checks", () => {
+		const out = runInlineCheckBlock({
+			event,
+			filePath: "src/x.ts",
+			absFilePath: "/a/src/x.ts",
+			fileContent: "abc def",
+			cwd: "/a",
+			diffAware: undefined,
+			baseline: undefined,
+			filePriority: undefined,
+		});
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ name: "binary_content", severity: "error" });
+	});
+
+	it("returns no findings for clean, non-empty content", () => {
+		const out = runInlineCheckBlock({
+			event,
+			filePath: "src/x.md",
+			absFilePath: "/a/src/x.md",
+			fileContent: "# Title\n\nSome prose with no code issues.\n",
+			cwd: "/a",
+			diffAware: undefined,
+			baseline: undefined,
+			filePriority: undefined,
+		});
+		expect(out.some((r) => r.name === "binary_content" || r.name === "empty_file")).toBe(false);
+	});
+});
+
+// --- tool-check-loop (config-driven per-check dispatch) ---
+describe("tool-check-loop", () => {
+	const baseEvent: HarnessEvent = {
+		hook_event: "PostToolUse",
+		session_id: "t",
+		agent_source: "claude",
+		tool_name: "Write",
+		timestamp: "2026-06-01T00:00:00Z",
+	};
+
+	it("returns no findings when the checks map is empty", async () => {
+		const out = await runToolCheckLoop({
+			event: { ...baseEvent, tool_input: { file_path: "src/x.ts", content: "ok" } },
+			checks: {},
+			cwd: "/a",
+			filePath: "src/x.ts",
+			absForTestCheck: "/a/src/x.ts",
+			testCheckBaseName: "x",
+			getSharedContent: () => "const ok = 1;",
+			getAfterRefs: () => [],
+			tscFilterFile: undefined,
+			baseline: undefined,
+			outToolMetrics: undefined,
+			editedFileInRepo: undefined,
+			onCheckBoundary: undefined,
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("runs the inline secrets_in_source branch on event content", async () => {
+		const secret = `AKIA${"J7QX2M9FD3KP1WZ8"}`;
+		const out = await runToolCheckLoop({
+			event: {
+				...baseEvent,
+				tool_input: { file_path: "src/cfg.ts", content: `const k = '${secret}';` },
+			},
+			checks: {
+				secrets_in_source: {
+					enabled: true,
+					file_types: [".ts"],
+					timeout_ms: 1000,
+					severity: "warning",
+				},
+			},
+			cwd: "/a",
+			filePath: "src/cfg.ts",
+			absForTestCheck: "/a/src/cfg.ts",
+			testCheckBaseName: "cfg",
+			getSharedContent: () => `const k = '${secret}';`,
+			getAfterRefs: () => [],
+			tscFilterFile: undefined,
+			baseline: undefined,
+			outToolMetrics: undefined,
+			editedFileInRepo: undefined,
+			onCheckBoundary: undefined,
+		});
+		expect(out.some((r) => r.name === "secrets_in_source")).toBe(true);
+	});
+
+	it("skips a disabled check", async () => {
+		const out = await runToolCheckLoop({
+			event: { ...baseEvent, tool_input: { file_path: "src/x.ts", content: "x" } },
+			checks: {
+				secrets_in_source: {
+					enabled: false,
+					file_types: [".ts"],
+					timeout_ms: 1000,
+					severity: "warning",
+				},
+			},
+			cwd: "/a",
+			filePath: "src/x.ts",
+			absForTestCheck: "/a/src/x.ts",
+			testCheckBaseName: "x",
+			getSharedContent: () => "x",
+			getAfterRefs: () => [],
+			tscFilterFile: undefined,
+			baseline: undefined,
+			outToolMetrics: undefined,
+			editedFileInRepo: undefined,
+			onCheckBoundary: undefined,
+		});
+		expect(out).toEqual([]);
 	});
 });

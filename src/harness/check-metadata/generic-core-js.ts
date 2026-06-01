@@ -1,0 +1,210 @@
+// Metadata fragment: core JS/TS correctness — async/promise hygiene, error
+// handling, type safety, module-import shape, eval/XSS sinks, package.json /
+// tsconfig invariants, and base test / web hygiene. Composed into
+// GENERIC_CHECK_META in ./generic.ts.
+
+import type { CheckMeta } from "./types.js";
+
+export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
+	// Error severity — pattern-exact checks
+	misused_promises: {
+		name: "Misused Promises",
+		description: "Detects floating promises and missing await",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	floating_promises: {
+		name: "Floating Promises",
+		description:
+			"Detects async calls at statement position without await, return, void, assignment, or .catch()/.finally() handling",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	broad_object_types: {
+		name: "Broad Object Types",
+		description:
+			"Detects Record<K, any>, { [k: string]: any } index signatures, and bare Function / object type annotations",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	magic_literal_in_conditional: {
+		name: "Magic Literal in Conditional",
+		description:
+			"Detects if/switch branches comparing against a bare numeric or string literal instead of a named constant or enum",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	promise_reject_non_error: {
+		name: "Promise.reject with non-Error",
+		description:
+			"Detects Promise.reject() called with a string/number/boolean/null/undefined literal instead of an Error instance",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	lossy_error_rethrow: {
+		name: "Lossy Error Rethrow",
+		description:
+			"Detects catch (e) { throw new Error('...') } without { cause: e } — the new Error drops the original stack trace and breaks error.cause-chain inspection",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	import_from_own_barrel: {
+		name: "Import From Own Barrel",
+		description:
+			"Detects a non-barrel source file importing from its own-directory barrel ('./index', './', or the file's own published package name) — forms latent module-init cycles and defeats tree-shaking. Effect-TS lessons port.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	error_dispatch_by_instanceof: {
+		name: "Error Dispatch by instanceof",
+		description:
+			"Detects `e instanceof <BuiltinError>` inside a catch block — fragile across realm boundaries (iframes, workers, vm contexts). Prefer tag/code/name dispatch. Effect-TS lessons port.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	silent_promise_catch: {
+		name: "Silent Promise Catch",
+		description:
+			"Detects .catch(() => {}), .catch(() => undefined / null / void 0), and .catch(function () {}) — swallowed rejections silently mask bugs (e.g. the optimistic-grant rollback bug class in src/harness/reservations.ts).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	unvalidated_json_boundary: {
+		name: "Unvalidated JSON Boundary",
+		description:
+			"Detects JSON.parse/.json() results reaching property access without passing through a schema parser (zod, valibot, ajv, yup, io-ts)",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	dead_exports: {
+		name: "Dead Exports",
+		description:
+			"Detects named exports that no other file in the project imports — inflates the apparent public surface",
+		tier: 3,
+		determinism: "partially_deterministic",
+	},
+	circular_imports: {
+		name: "Circular Imports",
+		description:
+			"Detects import cycles involving the edited file (A → B → C → A) — unclear module boundaries and runtime undefined-at-import-time bugs",
+		tier: 3,
+		determinism: "partially_deterministic",
+	},
+	lifecycle_cleanup: {
+		name: "Lifecycle Cleanup",
+		description:
+			"Detects classes with dispose/destroy/close methods that register setInterval/setTimeout/addEventListener without the paired cleanup",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	default_export: {
+		name: "Default Export Hygiene",
+		description:
+			"Flags anonymous default exports or default exports whose symbol name does not match the filename",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	code_clones: {
+		name: "Code Clones (DRY)",
+		description:
+			"Jaccard-similarity clone detector (modeled on Uncle Bob's dry4* tools) — flags functions >=82% token-shingle-similar to another function in the same file or a sibling file",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	async_promise_executor: {
+		name: "Async Promise Executor",
+		description: "Detects async functions passed to Promise constructor",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	self_import: {
+		name: "Self Import",
+		description: "Detects a module importing itself",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	eval_usage: {
+		name: "Eval Usage",
+		description: "Detects use of eval() and Function()",
+		tier: 1,
+		determinism: "fully_deterministic",
+		asi: "ASI05",
+	},
+	inner_html: {
+		name: "innerHTML Usage",
+		description: "Detects direct innerHTML assignment (XSS risk)",
+		tier: 1,
+		determinism: "fully_deterministic",
+		asi: "ASI05",
+	},
+	nan_comparison: {
+		name: "NaN Comparison",
+		description: "Detects direct comparison with NaN",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	unsafe_optional_chaining: {
+		name: "Unsafe Optional Chaining",
+		description: "Detects unsafe optional chaining patterns",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	throw_literal: {
+		name: "Throw Literal",
+		description: "Detects throwing string literals instead of Error objects",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	dangerously_set_inner_html: {
+		name: "dangerouslySetInnerHTML",
+		description: "Detects React dangerouslySetInnerHTML usage",
+		tier: 1,
+		determinism: "fully_deterministic",
+		asi: "ASI05",
+	},
+	package_json_publish_invariants: {
+		name: "Package JSON Publish Invariants",
+		description:
+			"Detects edits to a publishable package.json that silently drop publish-critical fields (name, version, license, repository, main, types, exports, bin, files, publishConfig, scripts.prepublishOnly, etc.)",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	package_json_script_paths: {
+		name: "Package JSON Script Paths",
+		description:
+			"Detects package.json scripts that reference files which don't exist on disk (node ./X.mjs, tsc -p X.json, --config X). Catches the CI failure where a manifest declares a script path the file tree doesn't have.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	tsconfig_strictness: {
+		name: "tsconfig Strictness",
+		description:
+			"Detects tsconfig*.json files missing high-leverage strictness flags not covered by `strict: true` (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride, noImplicitReturns, noFallthroughCasesInSwitch). Walks the `extends` chain so a flag set in a base tsconfig counts as present.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	disabled_tests: {
+		name: "Disabled Tests",
+		description: "Detects skipped tests (it.skip, xit, xdescribe)",
+		tier: 2,
+		determinism: "fully_deterministic",
+	},
+	snapshot_overuse: {
+		name: "Snapshot Overuse",
+		description: "Detects excessive snapshot testing",
+		tier: 2,
+		determinism: "fully_deterministic",
+	},
+	test_importing_test: {
+		name: "Test Importing Test",
+		description: "Detects test files importing from other test files",
+		tier: 2,
+		determinism: "fully_deterministic",
+	},
+	target_blank_no_rel: {
+		name: "Target Blank No Rel",
+		description: 'Detects target="_blank" without rel="noopener"',
+		tier: 2,
+		determinism: "fully_deterministic",
+	},
+};

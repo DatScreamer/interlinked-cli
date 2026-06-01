@@ -383,25 +383,13 @@ describe("SessionTracker.recordEvent — literal_occurrences population", () => 
 	});
 });
 
-describe("extractNonTrivialLiterals — unit tests for the literal scanner", () => {
-	it("returns string literals ≥8 chars", () => {
+// The full `extractNonTrivialLiterals` rule-set unit suite moved to
+// session-literals.test.ts alongside its new home module. One smoke assertion
+// stays here to pin that the session-state.js barrel still re-exports it for
+// back-compat (many consumers import it from this module).
+describe("extractNonTrivialLiterals — re-export from session-state barrel", () => {
+	it("is re-exported and applies the documented rule set", () => {
 		expect(extractNonTrivialLiterals('const x = "abcdefghij";')).toContain("abcdefghij");
-	});
-
-	it("skips short string literals (<8 chars)", () => {
-		expect(extractNonTrivialLiterals('const x = "abc";')).not.toContain("abc");
-	});
-
-	it("returns numbers ≥3 digits outside boring and HTTP-status ranges", () => {
-		expect(extractNonTrivialLiterals("const x = 12345;")).toContain("12345");
-	});
-
-	it("skips HTTP status codes (200/404/500)", () => {
 		expect(extractNonTrivialLiterals("status === 200")).not.toContain("200");
-		expect(extractNonTrivialLiterals("status === 404")).not.toContain("404");
-	});
-
-	it("skips boring numbers (≤256)", () => {
-		expect(extractNonTrivialLiterals("const x = 256;")).not.toContain("256");
 	});
 });

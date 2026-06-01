@@ -16,6 +16,19 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..");
 
 // Paths relative to cli/src/
 const QUALITY_CHECKS_PATH = resolve(CLI_ROOT, "harness/quality-checks.ts");
+// `quality-checks.ts` was decomposed into `harness/quality-checks/` to stay
+// under the file-size cap: the config-driven tool-check loop, the inline-check
+// block (which holds the `buildAgentSafetyChecks` call + the `check*` imports
+// from generic-checks), the ratchet comparison, and the warning formatter now
+// live in these siblings. They must be concatenated for the regex extraction to
+// continue seeing `buildAgentSafetyChecks` and the generic-checks imports.
+const QUALITY_CHECKS_SUBMODULE_DIR = resolve(CLI_ROOT, "harness/quality-checks");
+const QUALITY_CHECKS_SUBMODULES = [
+	"tool-check-loop.ts",
+	"inline-block.ts",
+	"ratchet-comparison.ts",
+	"warning-formatter.ts",
+];
 const CHECK_REGISTRY_DIR = resolve(CLI_ROOT, "harness/check-registry");
 const VERIFY_PATH = resolve(CLI_ROOT, "commands/verify.ts");
 // `verify.ts` was split across `commands/verify/` during the 2026-04 refactor.
@@ -24,9 +37,25 @@ const VERIFY_PATH = resolve(CLI_ROOT, "commands/verify.ts");
 const VERIFY_SUBMODULE_DIR = resolve(CLI_ROOT, "commands/verify");
 const VERIFY_SUBMODULES = [
 	"file-checks.ts",
+	// `file-checks.ts` was itself decomposed into per-group helper modules to
+	// stay under the file-size cap; the `toIssues(...)` call sites now live in
+	// these siblings, so they must be concatenated for the regex extraction to
+	// continue seeing every wired check.
+	"file-checks-agent-safety.ts",
+	"file-checks-react-test.ts",
+	"file-checks-ubs.ts",
+	"file-checks-endpoint-laziness.ts",
 	"tool-results.ts",
 	"tool-results-types.ts",
 	"section-table.ts",
+	// `section-table.ts` was decomposed into per-group fragment files to stay
+	// under the file-size cap; the `key: "..."` SectionSpec literals now live in
+	// these siblings, so they must be concatenated for the regex extraction to
+	// continue seeing every streaming section.
+	"section-table-core.ts",
+	"section-table-agent-safety.ts",
+	"section-table-ubs.ts",
+	"section-table-batches.ts",
 	"output-json.ts",
 	"streaming-output.ts",
 	"suggestions.ts",
@@ -37,6 +66,21 @@ function readFullVerifySource(): string {
 	const top = readFileSync(VERIFY_PATH, "utf-8");
 	const subs = VERIFY_SUBMODULES.map((f) =>
 		readFileSync(resolve(VERIFY_SUBMODULE_DIR, f), "utf-8"),
+	);
+	return [top, ...subs].join("\n");
+}
+
+/**
+ * Read the concatenation of `quality-checks.ts` and the per-phase submodules it
+ * was decomposed into. Mirrors `readFullVerifySource` — the regex extraction
+ * needs the orchestrator plus its siblings so `buildAgentSafetyChecks` and the
+ * `check*` generic-checks imports are visible even though they now live in
+ * `quality-checks/inline-block.ts` rather than the orchestrator.
+ */
+function readFullQualityChecksSource(): string {
+	const top = readFileSync(QUALITY_CHECKS_PATH, "utf-8");
+	const subs = QUALITY_CHECKS_SUBMODULES.map((f) =>
+		readFileSync(resolve(QUALITY_CHECKS_SUBMODULE_DIR, f), "utf-8"),
 	);
 	return [top, ...subs].join("\n");
 }
@@ -265,7 +309,7 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 // ===========================================
 
 describe("check pipeline parity: verify ↔ PostToolUse", () => {
-	const qualitySource = readFileSync(QUALITY_CHECKS_PATH, "utf-8");
+	const qualitySource = readFullQualityChecksSource();
 	const registrySource = readRegistrySources();
 	const verifySource = readFullVerifySource();
 

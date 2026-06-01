@@ -1,0 +1,192 @@
+// ===========================================
+// Observability-log registrars — append-only state inspection: recurrence
+// aggregation, trajectory snapshots/replay, the hash-chained audit log,
+// captured agent plans, and cloud-governor verdicts. All read-only views
+// over locally-recorded JSONL streams.
+// ===========================================
+
+import { type Command, type OptionValues } from "commander";
+
+export function registerObservabilityLogCommands(program: Command): void {
+	// ===========================================
+	// recurrence — surface repeating agent behaviors (Lopopolo "garbage-
+	// collect AI slop" + Bitar "structurally impossible" framing). Three
+	// kinds: harness_caught (already enforced, ratchet candidate),
+	// harness_missed (slipped past, scaffold a rule), codebase_existing
+	// (pre-existing replications, cleanup PR candidate).
+	// ===========================================
+	const recCmd = program
+		.command("recurrence")
+		.description("Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)");
+
+	recCmd
+		.command("list")
+		.description("Show aggregated recurrence rows (top by count, newest tiebreak)")
+		.option("--kind <kind>", "Filter by kind (harness_caught | harness_missed | codebase_existing | tool_failure)")
+		.option("--top <n>", "Limit to top N rows by count")
+		.option("--since <duration>", "Only include events at-or-after (e.g. 7d, 12h, ISO timestamp)")
+		.option("--agent-source <name>", "Filter by agent_source (claude/copilot/codex/gemini/cursor)")
+		.option("--check-id <id>", "Filter by check_id")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { recurrenceListCommand } = await import("../commands/recurrence.js");
+			await recurrenceListCommand(opts);
+		});
+
+	recCmd
+		.command("detail <signature>")
+		.description("List every event for one recurrence signature")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (signature: string, opts: OptionValues) => {
+			const { recurrenceDetailCommand } = await import("../commands/recurrence.js");
+			await recurrenceDetailCommand(signature, opts);
+		});
+
+	recCmd
+		.command("flag <signature>")
+		.description("Record a harness_missed event — pattern observed without a rule firing")
+		.option("--message <text>", "Human-readable detail")
+		.option("--check-id <id>", "Check id this should have caught (if known)")
+		.option("--file <path>", "File where the pattern was seen")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (signature: string, opts: OptionValues) => {
+			const { recurrenceFlagCommand } = await import("../commands/recurrence.js");
+			await recurrenceFlagCommand(signature, opts);
+		});
+
+	recCmd
+		.command("scan")
+		.description("Walk the working tree, run inline detectors, optionally record codebase_existing events")
+		.option("--root <dir...>", "Subdirectories to scan (default: src)")
+		.option("--record", "Append codebase_existing events (default: dry run)")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { recurrenceScanCommand } = await import("../commands/recurrence.js");
+			await recurrenceScanCommand(opts);
+		});
+
+	recCmd
+		.command("propose <signature>")
+		.description("Print the suggested action for a recurrence (ratchet / scaffold_rule / cleanup_pr)")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (signature: string, opts: OptionValues) => {
+			const { recurrenceProposeCommand } = await import("../commands/recurrence.js");
+			await recurrenceProposeCommand(signature, opts);
+		});
+
+	// ===========================================
+	// interlinked trajectory — inspect session trajectory state and replay
+	// recorded event streams through the sequence-detector framework. See
+	// docs/design/trajectory-detectors-implementation-plan.md §2.3.
+	// ===========================================
+	const trajCmd = program
+		.command("trajectory")
+		.description("Inspect trajectory snapshots; replay recorded event streams through sequence detectors");
+
+	trajCmd
+		.command("list")
+		.description("Enumerate trajectory snapshots in .interlinked/sessions/")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { trajectoryListCommand } = await import("../commands/trajectory.js");
+			await trajectoryListCommand(opts);
+		});
+
+	trajCmd
+		.command("show")
+		.description("Show one trajectory snapshot (latest by default)")
+		.option("--session <id>", "Specific session_id to show")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { trajectoryShowCommand } = await import("../commands/trajectory.js");
+			await trajectoryShowCommand(opts);
+		});
+
+	trajCmd
+		.command("replay <file>")
+		.description("Replay a JSONL event stream through the sequence-detector framework")
+		.option("--check <id>", "Restrict to a single detector id")
+		.option("--phase <phase>", "Restrict to one phase: pre_block | pre_warn | stop")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (file: string, opts: OptionValues) => {
+			const { trajectoryReplayCommand } = await import("../commands/trajectory.js");
+			await trajectoryReplayCommand({ ...opts, file });
+		});
+
+	// ===========================================
+	// interlinked audit — verify the hash-chained guard-decision log.
+	// Borrowed from Microsoft Agent Governance Toolkit's audit.mjs pattern;
+	// maps to OWASP ASI11 "Agent Untraceability". See docs/design/
+	// agt-cloud-tier-adoptions.md for the broader framing.
+	// ===========================================
+	const auditCmd = program
+		.command("audit")
+		.description("Verify tamper-evidence of the guard-decision audit chain in activity.jsonl");
+
+	auditCmd
+		.command("verify")
+		.description("Walk the hash chain forward, report the first integrity failure (OWASP ASI11)")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { auditVerifyCommand } = await import("../commands/audit.js");
+			await auditVerifyCommand(opts);
+		});
+
+	// ===========================================
+	// plan — show agent-emitted plans captured at PreToolUse / UserPromptSubmit.
+	// Data capture only (no evaluation); see src/harness/plan-capture.ts.
+	// ===========================================
+	const planCmd = program
+		.command("plan")
+		.description("Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts");
+
+	planCmd
+		.command("list", { isDefault: true })
+		.description("Show the 20 most recent CapturedPlans (newest first)")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { planListCommand } = await import("../commands/plan.js");
+			await planListCommand(opts);
+		});
+
+	planCmd
+		.command("show <session_id>")
+		.description("Pretty-print the most recent captured plan for a session")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (sessionId: string, opts: OptionValues) => {
+			const { planShowCommand } = await import("../commands/plan.js");
+			await planShowCommand(sessionId, opts);
+		});
+
+	const cloudCmd = program
+		.command("cloud")
+		.description("Inspect the cloud governor (reads cloud_governor from config.local.json)");
+
+	cloudCmd
+		.command("recent")
+		.description("Show recent events + verdicts recorded by the cloud governor")
+		.option("--limit <n>", "How many events to show (default 20, max 200)", "20")
+		.option("--json", "Machine-readable output")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.action(async (opts: { limit?: string; json?: boolean; cwd?: string }) => {
+			const parsedLimit = Number.parseInt(opts.limit ?? "20", 10);
+			const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
+			const { cloudRecentCommand } = await import("../commands/cloud.js");
+			await cloudRecentCommand({
+				cwd: opts.cwd || process.cwd(),
+				limit,
+				json: opts.json,
+			});
+		});
+}

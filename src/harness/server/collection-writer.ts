@@ -1,0 +1,74 @@
+// ===========================================
+// Collection v1 record writer
+// ===========================================
+// Extracted from server.ts. Maps a `HarnessEvent` to the `JsonObject` shape
+// the collection builder expects, builds a `collection.v1` record, and
+// appends it. Fire-and-forget — never blocks the pipeline. Only called for
+// tool events (pre/post).
+//
+// `mapEventToCollectionInput` is a pure transformation, split out so the
+// mapping logic has a single source of truth (the collection-record test
+// previously re-implemented it verbatim and drifted as a result).
+
+import { buildCollectionRecord } from "../../lib/collection/builder.js";
+import { appendCollection } from "../../lib/collection/writer.js";
+import type { JsonObject } from "../../lib/json-types.js";
+import type { HarnessEvent } from "../types.js";
+
+/** Map a `HarnessEvent` to the `JsonObject` the collection builder consumes.
+ *  Pure — derives `event_type` from `hook_event`, detects the client runner
+ *  from `agent_source`, and falls back to `fallbackCwd` when the event omits
+ *  its own `cwd`. */
+export function mapEventToCollectionInput(
+	event: HarnessEvent,
+	fallbackCwd: string,
+): JsonObject {
+	// Derive event_type from hook_event
+	let eventType: string;
+	if (event.hook_event === "PreToolUse" || event.hook_event === "BeforeTool") {
+		eventType = "tool_use_start";
+	} else if (event.hook_event === "PostToolUseFailure") {
+		eventType = "tool_use_error";
+	} else {
+		// PostToolUse / AfterTool
+		eventType = "tool_use";
+	}
+
+	// Detect client_runner from agent_source for non-Claude providers
+	let clientRunner: string | undefined;
+	let cursorVersion: string | undefined;
+	const src = event.agent_source ?? "";
+	if (src.includes("codex")) clientRunner = "codex";
+	else if (src.includes("copilot")) clientRunner = "copilot";
+	else if (src.includes("cursor")) cursorVersion = "1";
+
+	return {
+		event_type: eventType,
+		ts: event.timestamp,
+		hook_event: event.hook_event,
+		session: event.session_id,
+		tool_name: event.tool_name ?? "",
+		tool_input: event.tool_input ?? {},
+		tool_response: event.tool_response as JsonObject | undefined,
+		tool_use_id: event.tool_use_id,
+		cwd: event.cwd ?? fallbackCwd,
+		tool_response_sha256: event.tool_response_sha256,
+		...(clientRunner ? { client_runner: clientRunner } : {}),
+		...(cursorVersion ? { cursor_version: cursorVersion } : {}),
+	};
+}
+
+/** Build and append a `collection.v1` record for a tool event. Best-effort:
+ *  any failure (mapping, build, or write) is swallowed so the pipeline never
+ *  breaks on collection I/O. */
+export function writeCollectionRecord(event: HarnessEvent, fallbackCwd: string): void {
+	try {
+		const mapped = mapEventToCollectionInput(event, fallbackCwd);
+		const record = buildCollectionRecord(mapped);
+		if (record) {
+			appendCollection(record, event.cwd ?? fallbackCwd);
+		}
+	} catch {
+		// collection is best-effort — never break the pipeline
+	}
+}

@@ -3,38 +3,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	collectAncestorPids,
 	harnessStartCommand,
 	harnessStatusCommand,
 	isHarnessRunning,
-	readActiveHarnessPid,
 	reapOrphanHarnesses,
 } from "./harness.js";
 
 // Thin import-level tests: assert every exported command function is
 // callable. Deep behavioral coverage requires mocking fs / network /
 // subprocess, tracked separately. The import itself catches missing
-// exports, syntax errors, and cyclic import failures.
+// exports, syntax errors, and cyclic import failures. The process/orphan
+// utilities now live in `harness-process.ts` (re-exported here for API
+// parity); their dedicated tests are in `harness-process.test.ts`.
 
 describe("harness command module", () => {
-	it("exports isHarnessRunning as a function", () => {
-		expect(typeof isHarnessRunning).toBe("function");
-	});
-
 	it("exports harnessStartCommand as a function", () => {
 		expect(typeof harnessStartCommand).toBe("function");
 	});
 
-	it("exports reapOrphanHarnesses as a function", () => {
+	it("re-exports isHarnessRunning from harness-process for API parity", () => {
+		expect(typeof isHarnessRunning).toBe("function");
+	});
+
+	it("re-exports reapOrphanHarnesses from harness-process for API parity", () => {
 		expect(typeof reapOrphanHarnesses).toBe("function");
-	});
-
-	it("exports collectAncestorPids as a function", () => {
-		expect(typeof collectAncestorPids).toBe("function");
-	});
-
-	it("exports readActiveHarnessPid as a function", () => {
-		expect(typeof readActiveHarnessPid).toBe("function");
 	});
 });
 

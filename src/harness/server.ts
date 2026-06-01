@@ -15,15 +15,7 @@
 // servers, and process lifecycle. `processEvent` builds a `ServerRuntime`
 // context once and delegates each event branch to the extracted pipelines.
 
-import { execSync } from "node:child_process";
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	rmSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -33,22 +25,22 @@ import {
 	defaultStripAuditLogPath,
 	describeReason as describeMalformedReason,
 } from "../lib/settings-validator.js";
-import { AsyncFindingQueue } from "./async-finding-queue.js";
 import { createAsyncAnalysisManager } from "./async-analysis.js";
+import { AsyncFindingQueue } from "./async-finding-queue.js";
 import {
 	type AutoCoordinationState,
 	DEFAULT_AUTO_COORDINATION_CONFIG,
 } from "./auto-coordinate.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
+import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { CohortManager } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner } from "./content-scanner/types.js";
-import { PROTOCOL_VERSION } from "./daemon-protocol.js";
 import { ErrorHistory } from "./error-history.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { type FilePriority } from "./file-priority.js";
-import { FileContentCache, findRipgrep } from "./grep-accelerator.js";
+import { FileContentCache } from "./grep-accelerator.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { createLearnedRulesStore } from "./learned-rules.js";
 import { toLegacyHarnessEvent } from "./legacy-client.js";
@@ -66,16 +58,38 @@ import { ProjectWideSweepState } from "./quality-checks.js";
 import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
-import { createServerBridge, type ServerBridge } from "./server-bridge.js";
+import {
+	parseProtocolMode,
+	resolveIdleTimeoutMs,
+	stringArg,
+} from "./server/cli-args.js";
+import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
+import { buildLatencyRecord } from "./server/latency-record.js";
+import { handleLifecycleEvent } from "./server/lifecycle-events.js";
+import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
+import { runPreToolPipeline } from "./server/pre-tool-pipeline.js";
+import {
+	buildStartupMessage,
+	recordProtocolEvent as bumpProtocolEvent,
+	computeClassifierStatusLine,
+	createProtocolStatus,
+	formatScannerStatusLine,
+	type HarnessProtocolMode,
+	type ProtocolStatusFile,
+	writeProtocolStatus as persistProtocolStatus,
+} from "./server/protocol-status.js";
 import {
 	getGraphForFile as resolveGraphForFile,
 	type ServerRuntime,
 } from "./server/runtime-context.js";
-import { handleLifecycleEvent } from "./server/lifecycle-events.js";
-import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
-import { runPreToolPipeline } from "./server/pre-tool-pipeline.js";
-import { isBashTsc, tryTsgoRewrite } from "./server-tsgo-bash.js";
-import { forwardCloudPreToolUse } from "./cloud-forward.js";
+import { LineFramer } from "./server/socket-framing.js";
+import {
+	cleanupSocket as cleanupSocketAt,
+	ensureDirectory,
+	removeFileIfExists,
+} from "./server/socket-lifecycle.js";
+import { createStatusWriters } from "./server/status-writers.js";
+import { createServerBridge, type ServerBridge } from "./server-bridge.js";
 import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import { daemonPathsFor } from "./session-paths.js";
@@ -86,8 +100,6 @@ import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, PreEditBaseline } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
-import { buildCollectionRecord } from "../lib/collection/builder.js";
-import { appendCollection } from "../lib/collection/writer.js";
 
 // ===========================================
 // CLI Arguments
@@ -105,12 +117,6 @@ const { values: args } = parseArgs({
 	},
 	strict: false,
 });
-
-// Narrow parseArgs values — they return `string | true | undefined` for string options.
-// `true` occurs when flag is passed without a value (e.g., --socket without =path).
-function stringArg(val: string | boolean | undefined): string | undefined {
-	return typeof val === "string" ? val : undefined;
-}
 
 const CWD = stringArg(args.cwd) || process.cwd();
 const INTERLINKED_DIR = join(CWD, ".interlinked");
@@ -158,11 +164,7 @@ function _earlyShutdown(): void {
 	_shutdownPending = true;
 	// Best-effort artifact cleanup so the next startup doesn't see a stale
 	// pid file from a daemon that was killed mid-init.
-	try {
-		if (existsSync(PID_PATH)) rmSync(PID_PATH);
-	} catch (cleanupErr) {
-		void cleanupErr; /* intentional: pid file may not have been written yet */
-	}
+	removeFileIfExists(PID_PATH);
 	// Hard exit after a short window if the real shutdown never wires up.
 	// 1500 ms covers cold-cache module init (~1s on this repo) but stays
 	// tight enough that the user perceives the shutdown as snappy. Forced
@@ -176,12 +178,7 @@ function _earlyShutdown(): void {
 process.on("SIGTERM", _earlyShutdown);
 process.on("SIGINT", _earlyShutdown);
 
-type HarnessProtocolMode = "raw" | "framed" | "dual";
-function parseProtocolMode(raw: string | undefined): HarnessProtocolMode {
-	if (raw === "raw" || raw === "framed" || raw === "dual") return raw;
-	return "dual";
-}
-const PROTOCOL_MODE = parseProtocolMode(stringArg(args.protocol));
+const PROTOCOL_MODE: HarnessProtocolMode = parseProtocolMode(stringArg(args.protocol));
 const RUN_RAW_SOCKET = PROTOCOL_MODE !== "framed";
 const RUN_FRAMED_SOCKET = PROTOCOL_MODE !== "raw";
 const FRAMED_SESSION_ID = stringArg(args["session-id"]) || process.env.INTERLINKED_SESSION_ID || "default";
@@ -193,9 +190,10 @@ const FRAMED_PATHS = daemonPathsFor(CWD, FRAMED_SESSION_ID);
 // `interlinked harness clean` command, not by an idle timer.
 // Set `--idle-timeout <ms>` to opt back into auto-shutdown if you want it.
 const IDLE_TIMEOUT_DEFAULT_MS = 0;
-const _rawIdleArg = stringArg(args["idle-timeout"]);
-const IDLE_TIMEOUT_MS =
-	_rawIdleArg !== undefined ? Number(_rawIdleArg) : IDLE_TIMEOUT_DEFAULT_MS;
+const IDLE_TIMEOUT_MS = resolveIdleTimeoutMs(
+	stringArg(args["idle-timeout"]),
+	IDLE_TIMEOUT_DEFAULT_MS,
+);
 const VERBOSE = args.verbose;
 
 /** Milliseconds in one minute — for converting IDLE_TIMEOUT_MS into a human-readable log line. */
@@ -208,6 +206,17 @@ const MS_PER_MINUTE = 60_000;
 let rules: GuardRulesConfig = loadRules(CWD);
 const cohort = new CohortManager();
 const sessions = new SessionTracker();
+
+// --- Statusline status-file writers ---
+// One-line marker files the bash statusline polls (classifier readiness,
+// content-scanner lifecycle, pending-review count). Constructed early so the
+// content-scanner block below can write its initial status. See
+// `server/status-writers.ts`.
+const {
+	writeClassifierStatus,
+	writeScannerStatus,
+	writeReviewPendingMarker,
+} = createStatusWriters(INTERLINKED_DIR);
 
 // --- Async-deferred finding queue ---
 // Holds findings computed off the hook critical path (slow checks);
@@ -353,36 +362,13 @@ let idleTimer: ReturnType<typeof setTimeout>;
 let connectionCount = 0;
 let _totalEventsProcessed = 0;
 
-interface ProtocolStatusFile {
-	protocol: HarnessProtocolMode;
-	protocol_version: typeof PROTOCOL_VERSION;
-	started_at: string;
-	raw_socket_path: string | null;
-	framed_socket_path: string | null;
-	framed_session_id: string | null;
-	last_raw_event_at: string | null;
-	last_framed_event_at: string | null;
-	raw_event_count: number;
-	framed_event_count: number;
-	framed_error_count: number;
-	framed_timeout_count: number;
-}
-
 const PROTOCOL_STATUS_PATH = join(INTERLINKED_DIR, "harness-protocol.json");
-const protocolStatus: ProtocolStatusFile = {
+const protocolStatus: ProtocolStatusFile = createProtocolStatus({
 	protocol: PROTOCOL_MODE,
-	protocol_version: PROTOCOL_VERSION,
-	started_at: new Date().toISOString(),
-	raw_socket_path: RUN_RAW_SOCKET ? SOCKET_PATH : null,
-	framed_socket_path: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
-	framed_session_id: RUN_FRAMED_SOCKET ? FRAMED_SESSION_ID : null,
-	last_raw_event_at: null,
-	last_framed_event_at: null,
-	raw_event_count: 0,
-	framed_event_count: 0,
-	framed_error_count: 0,
-	framed_timeout_count: 0,
-};
+	rawSocketPath: RUN_RAW_SOCKET ? SOCKET_PATH : null,
+	framedSocketPath: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
+	framedSessionId: RUN_FRAMED_SOCKET ? FRAMED_SESSION_ID : null,
+});
 
 // ===========================================
 // Logging
@@ -398,50 +384,9 @@ function logAlways(msg: string): void {
 	console.error(`[interlinked-harness] ${msg}`);
 }
 
-// ===========================================
-// Classifier Status (read by statusline script)
-// ===========================================
-
-const CLASSIFIER_STATUS_PATH = join(INTERLINKED_DIR, "classifier.status");
-
-function writeClassifierStatus(status: string): void {
-	try {
-		writeFileSync(CLASSIFIER_STATUS_PATH, status);
-	} catch (e) {
-		void e;
-	}
-}
-
-// ===========================================
-// Content Scanner Status (read by statusline script)
-// ===========================================
-// Parallels CLASSIFIER_STATUS_PATH. One-line states consumed by the bash
-// statusline: disabled / starting / ready:<pid> / dormant / down:<reason>.
-
-const SCANNER_STATUS_PATH = join(INTERLINKED_DIR, "content-scanner.status");
-/** Mirror file written next to the status. Holds the count of unresolved
- *  review files so the bash statusline can render `🔒 review:N` without
- *  scanning the pending dir on every render. Empty/absent means zero. */
-const SCANNER_REVIEW_PENDING_PATH = join(INTERLINKED_DIR, "scanner", "review-pending");
-
-function writeScannerStatus(status: string): void {
-	try {
-		writeFileSync(SCANNER_STATUS_PATH, status);
-	} catch (e) {
-		void e;
-	}
-}
-
-/** Persist the count of pending reviews as a single line for the
- *  statusline. Best-effort: failure to write only loses the indicator,
- *  which is recoverable on the next call. */
-function writeReviewPendingMarker(count: number): void {
-	try {
-		writeFileSync(SCANNER_REVIEW_PENDING_PATH, `${count}\n`);
-	} catch (e) {
-		void e;
-	}
-}
+// Statusline status-file writers (writeClassifierStatus / writeScannerStatus /
+// writeReviewPendingMarker) are constructed in the State section above via
+// `createStatusWriters(INTERLINKED_DIR)` — see `server/status-writers.ts`.
 
 /**
  * Refresh `.interlinked/statusline.snapshot` and `.interlinked/loaded-rules.md`.
@@ -462,27 +407,6 @@ function refreshStatuslineSnapshot(): void {
 		serverBridgeConnected: serverBridge !== null,
 		daemonPid: process.pid,
 	});
-}
-
-/** Collapse a `ScannerStatus` into the one-line shell-grepable format. */
-function formatScannerStatusLine(s: {
-	state: string;
-	pid?: number;
-	detail?: string;
-}): string {
-	switch (s.state) {
-		case "ready":
-			return `ready:${s.pid ?? "?"}`;
-		case "dormant":
-			return "dormant";
-		case "starting":
-		case "idle":
-			return "starting";
-		case "disabled":
-			return `down:${s.detail ?? "unknown"}`;
-		default:
-			return s.state;
-	}
 }
 
 // ===========================================
@@ -562,52 +486,11 @@ function syncRuntimeOut(): void {
 // Collection v1 record writer
 // ===========================================
 
-/** Map a HarnessEvent to the JsonObject shape the collection builder expects,
- *  build a collection.v1 record, and append it. Fire-and-forget — never
- *  blocks the pipeline. Only called for tool events (pre/post). */
+/** Build and append a collection.v1 record for a tool event, binding the
+ *  daemon CWD as the fallback. Mapping + I/O live in
+ *  `server/collection-writer.ts`; this wrapper keeps the call sites terse. */
 function writeCollectionRecord(event: HarnessEvent): void {
-	try {
-		// Derive event_type from hook_event
-		let eventType: string;
-		if (event.hook_event === "PreToolUse" || event.hook_event === "BeforeTool") {
-			eventType = "tool_use_start";
-		} else if (event.hook_event === "PostToolUseFailure") {
-			eventType = "tool_use_error";
-		} else {
-			// PostToolUse / AfterTool
-			eventType = "tool_use";
-		}
-
-		// Detect client_runner from agent_source for non-Claude providers
-		let clientRunner: string | undefined;
-		let cursorVersion: string | undefined;
-		const src = event.agent_source ?? "";
-		if (src.includes("codex")) clientRunner = "codex";
-		else if (src.includes("copilot")) clientRunner = "copilot";
-		else if (src.includes("cursor")) cursorVersion = "1";
-
-		const mapped: JsonObject = {
-			event_type: eventType,
-			ts: event.timestamp,
-			hook_event: event.hook_event,
-			session: event.session_id,
-			tool_name: event.tool_name ?? "",
-			tool_input: event.tool_input ?? {},
-			tool_response: event.tool_response as JsonObject | undefined,
-			tool_use_id: event.tool_use_id,
-			cwd: event.cwd ?? CWD,
-			tool_response_sha256: event.tool_response_sha256,
-			...(clientRunner ? { client_runner: clientRunner } : {}),
-			...(cursorVersion ? { cursor_version: cursorVersion } : {}),
-		};
-
-		const record = buildCollectionRecord(mapped);
-		if (record) {
-			appendCollection(record, event.cwd ?? CWD);
-		}
-	} catch {
-		// collection is best-effort — never break the pipeline
-	}
+	appendCollectionRecord(event, CWD);
 }
 
 // ===========================================
@@ -706,18 +589,7 @@ async function evaluateEventLine(
 		const decision = await processEvent(line);
 		recordProtocolEvent(protocol);
 		try {
-			const evt: JsonObject = JSON.parse(line);
-			appendLatencyLog(INTERLINKED_DIR, {
-				hook_event: typeof evt.hook_event === "string" ? evt.hook_event : null,
-				tool_name: typeof evt.tool_name === "string" ? evt.tool_name : null,
-				session_id: typeof evt.session_id === "string" ? evt.session_id : null,
-				agent_source: typeof evt.agent_source === "string" ? evt.agent_source : null,
-				decision: decision.decision,
-				checks_ran: decision.checks_ran ?? null,
-				checks_timing_ms: decision.checks_timing_ms ?? null,
-				tool_breakdown: decision.tool_breakdown ?? null,
-				phase_breakdown: decision.phase_breakdown ?? null,
-			});
+			appendLatencyLog(INTERLINKED_DIR, buildLatencyRecord(line, decision));
 		} catch (e) {
 			void e;
 		}
@@ -757,45 +629,23 @@ async function evaluateUnifiedViaRuntime(event: UnifiedHookEvent): Promise<Harne
 }
 
 function recordProtocolEvent(protocol: "raw" | "framed"): void {
-	const now = new Date().toISOString();
-	if (protocol === "raw") {
-		protocolStatus.raw_event_count++;
-		protocolStatus.last_raw_event_at = now;
-	} else {
-		protocolStatus.framed_event_count++;
-		protocolStatus.last_framed_event_at = now;
-	}
+	bumpProtocolEvent(protocolStatus, protocol);
 	writeProtocolStatus();
 }
 
 function writeProtocolStatus(): void {
-	try {
-		ensureDirectory(PROTOCOL_STATUS_PATH);
-		writeFileSync(PROTOCOL_STATUS_PATH, `${JSON.stringify(protocolStatus, null, 2)}\n`);
-	} catch (e) {
-		void e;
-	}
+	persistProtocolStatus(PROTOCOL_STATUS_PATH, protocolStatus);
 }
 
 // ===========================================
 // Server Setup
 // ===========================================
-
-function ensureDirectory(path: string): void {
-	const dir = dirname(path);
-	if (!existsSync(dir)) {
-		mkdirSync(dir, { recursive: true });
-	}
-}
+// `ensureDirectory` / `cleanupSocketAt` are imported from
+// `server/socket-lifecycle.ts`; the local `cleanupSocket()` wrapper binds the
+// default raw-socket path so the zero-arg call sites stay terse.
 
 function cleanupSocket(path: string = SOCKET_PATH): void {
-	try {
-		if (existsSync(path)) {
-			unlinkSync(path);
-		}
-	} catch (e) {
-		void e;
-	}
+	cleanupSocketAt(path);
 }
 
 function writePidFile(): void {
@@ -812,13 +662,7 @@ function removePidFile(): void {
 	// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
 	// is removed by `session-daemon.handle.stop()` (session-daemon.ts:167-169)
 	// — the side that wrote it owns the lifecycle, so we don't touch it here.
-	try {
-		if (existsSync(PID_PATH)) {
-			rmSync(PID_PATH);
-		}
-	} catch (e) {
-		void e;
-	}
+	removeFileIfExists(PID_PATH);
 }
 
 let socketServer: ReturnType<typeof createServer> | null = null;
@@ -930,23 +774,20 @@ function createRawSocketServer(): ReturnType<typeof createServer> {
 		openRawClients.add(sock);
 		log(`Connection opened (total: ${connectionCount})`);
 
-		let buffer = "";
+		// Newline-delimited JSON framing (may receive multiple events in one
+		// chunk, or an event split across chunks). The framer owns the
+		// buffer; each complete line is evaluated sequentially in arrival
+		// order and answered with its own write — same as the prior inline loop.
+		const framer = new LineFramer();
 
 		sock.on("data", async (data: Buffer) => {
-			buffer += data.toString("utf-8");
-			// Handle newline-delimited JSON (may receive multiple events in one chunk)
-			let newlineIdx = buffer.indexOf("\n");
-			while (newlineIdx !== -1) {
-				const line = buffer.slice(0, newlineIdx);
-				buffer = buffer.slice(newlineIdx + 1);
-				if (!line.trim()) continue;
+			for (const line of framer.push(data.toString("utf-8"))) {
 				const decision = await evaluateEventLine(line, "raw");
 				try {
 					sock.write(`${JSON.stringify(decision)}\n`);
 				} catch (e) {
 					void e;
 				}
-				newlineIdx = buffer.indexOf("\n");
 			}
 		});
 
@@ -960,17 +801,6 @@ function createRawSocketServer(): ReturnType<typeof createServer> {
 			log(`Socket error: ${err.message}`);
 		});
 	});
-}
-
-function buildStartupMessage(): string {
-	const sockets: string[] = [];
-	if (RUN_RAW_SOCKET) sockets.push(`raw ${SOCKET_PATH}`);
-	if (RUN_FRAMED_SOCKET) sockets.push(`framed ${FRAMED_PATHS.socket}`);
-	return (
-		`Harness started (${PROTOCOL_MODE}) on ${sockets.join(", ")} ` +
-		`(PID ${process.pid}, ${rules.rules.length} rules` +
-		`${IDLE_TIMEOUT_MS ? `, idle timeout ${IDLE_TIMEOUT_MS / MS_PER_MINUTE}min` : ""})`
-	);
 }
 
 // ===========================================
@@ -1005,15 +835,7 @@ const unwatchRules = watchRulesFiles(CWD, (newRules) => {
 	rules = newRules;
 	serverRuntime.rules = rules;
 	// Update classifier status on config reload
-	if (rules.policy_classifier?.enabled) {
-		const p = rules.policy_classifier;
-		const hasKey = p.provider === "claude_code" || !!resolveApiKey(p.api_key_env);
-		writeClassifierStatus(
-			hasKey ? `${p.provider}:${p.model}:ready` : `${p.provider}:${p.model}:no_key`,
-		);
-	} else {
-		writeClassifierStatus("disabled");
-	}
+	writeClassifierStatus(computeClassifierStatusLine(rules));
 	// Update scanner status on config reload. If the user toggled off via
 	// `interlinked scanner off`, the flag flips here; scan paths already
 	// short-circuit on rules.content_scanner?.enabled so no further scans run.
@@ -1147,18 +969,25 @@ if (RUN_RAW_SOCKET) {
 
 writeProtocolStatus();
 
-logAlways(buildStartupMessage());
+logAlways(
+	buildStartupMessage({
+		protocol: PROTOCOL_MODE,
+		rawSocketPath: RUN_RAW_SOCKET ? SOCKET_PATH : null,
+		framedSocketPath: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
+		pid: process.pid,
+		ruleCount: rules.rules.length,
+		idleTimeoutMs: IDLE_TIMEOUT_MS,
+		msPerMinute: MS_PER_MINUTE,
+	}),
+);
 
 // Write initial classifier status for statusline
+writeClassifierStatus(computeClassifierStatusLine(rules));
 if (rules.policy_classifier?.enabled) {
-	const provider = rules.policy_classifier.provider;
-	const model = rules.policy_classifier.model;
+	const { provider, model } = rules.policy_classifier;
 	const hasKey =
 		provider === "claude_code" || !!resolveApiKey(rules.policy_classifier.api_key_env);
-	writeClassifierStatus(hasKey ? `${provider}:${model}:ready` : `${provider}:${model}:no_key`);
 	log(`Policy classifier: ${provider}/${model} (${hasKey ? "ready" : "no API key"})`);
-} else {
-	writeClassifierStatus("disabled");
 }
 
 // server.ts is a process entry point (shebang above) — it has no public

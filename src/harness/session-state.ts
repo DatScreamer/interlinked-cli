@@ -2,103 +2,70 @@
 // Session State — Per-session trajectory tracking
 // ===========================================
 
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
-
-/** Timeout for the SessionStart git-baseline snapshot. Both `git rev-parse HEAD`
- *  and `git status --porcelain` should complete in milliseconds on a normal
- *  repo; the timeout is defensive against hung git (lock contention, NFS, etc.). */
-const GIT_BASELINE_TIMEOUT_MS = 2000;
-
-/** Capture the git working-tree state at session start: HEAD sha + porcelain-
- *  classified sets of modified/staged/untracked paths. Tolerates non-git dirs
- *  (returns empty baseline). Cached for the lifetime of the session — never
- *  re-snapshotted. Exported for direct testing. */
-export function captureGitBaseline(cwd: string): {
-	modified: Set<string>;
-	staged: Set<string>;
-	untracked: Set<string>;
-	head_sha: string;
-} {
-	const empty = {
-		modified: new Set<string>(),
-		staged: new Set<string>(),
-		untracked: new Set<string>(),
-		head_sha: "",
-	};
-	let headSha = "";
-	try {
-		headSha = execFileSync("git", ["rev-parse", "HEAD"], {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: GIT_BASELINE_TIMEOUT_MS,
-		}).trim();
-	} catch {
-		headSha = "";
-	}
-
-	let porcelain = "";
-	try {
-		porcelain = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: GIT_BASELINE_TIMEOUT_MS,
-		});
-	} catch {
-		return empty;
-	}
-
-	const modified = new Set<string>();
-	const staged = new Set<string>();
-	const untracked = new Set<string>();
-	const entries = porcelain.split("\0").filter((e) => e.length > 0);
-	for (let i = 0; i < entries.length; i++) {
-		const raw = entries[i];
-		if (raw.length < 3) continue;
-		const indexStatus = raw[0];
-		const worktreeStatus = raw[1];
-		const path = raw.slice(3);
-		if (indexStatus === "R" || indexStatus === "C") {
-			i++; // skip the old-path entry of a rename/copy
-		}
-		if (indexStatus === "?" && worktreeStatus === "?") {
-			untracked.add(path);
-			continue;
-		}
-		if (indexStatus === "!" && worktreeStatus === "!") continue;
-		if (indexStatus !== " " && indexStatus !== "?" && indexStatus !== "!") {
-			staged.add(path);
-		}
-		if (worktreeStatus !== " " && worktreeStatus !== "?" && worktreeStatus !== "!") {
-			modified.add(path);
-		}
-	}
-	return { modified, staged, untracked, head_sha: headSha };
-}
-
 import type { JsonObject } from "../lib/json-types.js";
-import type {
-	CapturedPlan,
-	PlanSource,
-	PlanStep,
-	PlanStepStatus,
-} from "./types/plan.js";
-import type {
-	ActiveSkillRecord,
-	AssertionCounts,
-	FailedFileEntry,
-	HarnessEvent,
-	PendingCompletion,
-	SensitivityLevel,
-	SessionTrajectory,
-	TaintProvenance,
-	TaintSource,
-	TddCycle,
-	WarningRecord,
-} from "./types.js";
+// `captureGitBaseline` lives in its own module (session-git-baseline.ts) to
+// keep this file under the per-file line cap; re-exported below so existing
+// `from "./session-state.js"` importers keep working unchanged.
+import { captureGitBaseline } from "./session-git-baseline.js";
+export { captureGitBaseline } from "./session-git-baseline.js";
+// Sequence-detector input population (recent_line_edits / literal_occurrences)
+// lives in session-literals.ts (a line-cap split). recordEvent drives the four
+// helpers below; the full set is re-exported for existing importers.
+import {
+	extractWriteChunks,
+	isPostToolUseEvent,
+	isSequenceWriteOperation,
+	recordLiteralOccurrences,
+	recordRecentLineEdit,
+} from "./session-literals.js";
+export {
+	extractNonTrivialLiterals,
+	extractWriteChunks,
+	isPostToolUseEvent,
+	isSequenceWriteOperation,
+	recordLiteralOccurrences,
+	recordRecentLineEdit,
+} from "./session-literals.js";
+// Active-skill markers live in session-skills.ts (a line-cap split). recordEvent
+// drives gcExpiredSkills; the full set + SkillEnterArgs are re-exported below.
+import { gcExpiredSkills } from "./session-skills.js";
+export {
+	gcExpiredSkills,
+	getActiveSkills,
+	recordSkillEnter,
+	recordSkillLeave,
+} from "./session-skills.js";
+export type { SkillEnterArgs } from "./session-skills.js";
+// Snapshot serialize/hydrate coercion helpers live in session-snapshot-codec.ts
+// (also a line-cap split). They are internal to serialize()/hydrate() and were
+// never part of this module's public API, so they are imported, not re-exported.
+import {
+	readActiveSkills,
+	readAssertionCountsMap,
+	readBoolean,
+	readCapturedPlan,
+	readConsecutivePattern,
+	readFailedFiles,
+	readGitSessionBaseline,
+	readNumber,
+	readNumberArray,
+	readNumberMap,
+	readNumberRecord,
+	readPendingCompletions,
+	readSensitivity,
+	readString,
+	readStringArray,
+	readStringMap,
+	readStringSet,
+	readStubsIntroduced,
+	readTaintSources,
+	readTddCycles,
+	readTestRuns,
+	readWarnings,
+	serializeCapturedPlan,
+} from "./session-snapshot-codec.js";
+import type { HarnessEvent, SessionTrajectory } from "./types.js";
 import {
 	classifyBrowserToolName,
 	classifyVerificationCommand,
@@ -109,17 +76,6 @@ import {
  *  refuses snapshots from a higher version (newer harness wrote it) and
  *  best-effort upgrades older shapes. */
 export const SESSION_SNAPSHOT_SCHEMA_VERSION = 1;
-
-const SENSITIVITY_LEVELS: ReadonlySet<SensitivityLevel> = new Set([
-	"Public",
-	"Internal",
-	"Confidential",
-	"HighlyConfidential",
-]);
-
-const DEFAULT_SKILL_TTL_MS = 30 * 60 * 1000;
-const MAX_SKILL_TTL_MS = 4 * 60 * 60 * 1000;
-const MIN_SKILL_TTL_MS = 60 * 1000;
 
 /** Phase 1 Channel 5 (rollback feasibility) provenance check. Returns true
  *  iff the session has a successful write to this exact file in its trajectory.
@@ -671,477 +627,6 @@ function isBashTool(toolName: string | undefined): boolean {
 }
 
 // ===========================================
-// Sequence-detector input population
-// ===========================================
-// Populates `session.recent_line_edits`, `session.literal_occurrences` from
-// successful Write / Edit / MultiEdit events so the §3.21 add-then-revert
-// and §3.18 magic-literal-cross-file detectors have non-empty input.
-// Best-effort: bounded ring buffer + per-edit literal cap so a runaway
-// agent can't blow the trajectory's memory footprint. The detectors read
-// these maps directly; recent_user_urls is populated separately from
-// `lifecycle-events.ts::handleUserPromptSubmit`.
-
-/** Per-file ring buffer ceiling for `recent_line_edits`. The §3.21
- *  detector only needs enough history to detect non-consecutive re-appearance
- *  of a content hash; 20 entries comfortably covers a thrashing loop. */
-const RECENT_LINE_EDITS_PER_FILE_CAP = 20;
-
-/** Max distinct literals extracted from a single edit. Bounds the work the
- *  literal scanner does per-event so a one-shot blob-write can't pin the
- *  CPU or memory-balloon the session trajectory. */
-const LITERAL_OCCURRENCES_PER_EDIT_CAP = 50;
-
-/** Lower-edge of the boring-number range. -1, 0, 1, 2, ... 256 — the
- *  range every codebase uses for status flags / array sizes / bit shifts;
- *  excluding them keeps the cross-file detector targeting *meaningful*
- *  literals. Matches the spec literal range. */
-const TRIVIAL_NUMBER_LO = -1;
-const TRIVIAL_NUMBER_HI = 256;
-
-/** HTTP status-code window. 100..599 are response codes spread across
- *  effectively every web codebase; treating them as magic constants
- *  would drown the detector. */
-const HTTP_STATUS_LO = 100;
-const HTTP_STATUS_HI = 599;
-
-/** True for post-tool-use events across the supported runners (Claude Code
- *  "PostToolUse"/"PostToolUseFailure", Gemini CLI "AfterTool"). The §3.21
- *  add-then-revert population gate uses this to skip PreToolUse Edit events,
- *  which represent INTENDED edits that may be blocked and never land on disk.
- *  Mirrors `isPostToolUse` in server-tool-helpers.ts; kept local so
- *  session-state has no dependency on the server module. */
-function isPostToolUseEvent(event: HarnessEvent): boolean {
-	return (
-		event.hook_event === "PostToolUse" ||
-		event.hook_event === "AfterTool" ||
-		event.hook_event === "PostToolUseFailure"
-	);
-}
-
-/** Tools whose successful invocation produces a content chunk we feed to
- *  the §3.21 / §3.18 sequence detectors. Superset of `isWriteOperation`
- *  because that one excludes MultiEdit (no `file_path`/`content` pair on
- *  the top-level input) but the sequence-input scanner *does* unpack the
- *  per-edit `new_string`. Read-only — every other tool short-circuits. */
-function isSequenceWriteOperation(toolName: string | undefined): boolean {
-	if (!toolName) return false;
-	return [
-		"Write",
-		"Edit",
-		"WriteFile",
-		"EditFile",
-		"write_file",
-		"edit_file",
-		"MultiEdit",
-		"NotebookEdit",
-	].includes(toolName);
-}
-
-/** Shape of a single MultiEdit edit entry's `new_string` slot. */
-interface MultiEditEntry {
-	new_string?: unknown;
-}
-
-/** Extract every content chunk this event introduced. Write → one chunk
- *  from `tool_input.content`; Edit → `tool_input.new_string`; MultiEdit →
- *  one chunk per `tool_input.edits[i].new_string`. Returns [] when none of
- *  the recognized fields is present, so the call site can iterate without
- *  guard logic. */
-function extractWriteChunks(event: HarnessEvent): string[] {
-	const input = event.tool_input ?? {};
-	const chunks: string[] = [];
-	const content = input.content;
-	if (typeof content === "string") chunks.push(content);
-	const newString = input.new_string;
-	if (typeof newString === "string") chunks.push(newString);
-	const edits = input.edits;
-	if (Array.isArray(edits)) {
-		for (const e of edits) {
-			if (e && typeof e === "object") {
-				const ns = (e as MultiEditEntry).new_string;
-				if (typeof ns === "string") chunks.push(ns);
-			}
-		}
-	}
-	return chunks;
-}
-
-/** Push one ring-buffer entry for the file. content_hash is sha256 over the
- *  raw chunk; `range.end` is the chunk's line-count (the spec's
- *  simplification: Write/Edit don't expose precise line ranges, so we treat
- *  each edit as touching its full new content). Drops the oldest entry on
- *  overflow so the buffer stays bounded.
- *
- *  No-op suppression: if the new chunk hashes identically to the file's
- *  immediately-preceding recorded chunk, the edit re-applied content the file
- *  already held — not a state transition. Skipping it keeps the §3.21
- *  add-then-revert detector's history a sequence of *distinct* states, so the
- *  detector counts only genuine A→B→A oscillation rather than consecutive
- *  re-applies of the same content (idempotent writes, no-op edits). An
- *  A→B→A pattern is unaffected: the trailing A differs from the preceding B. */
-function recordRecentLineEdit(
-	session: SessionTrajectory,
-	filePath: string,
-	chunk: string,
-): void {
-	if (!session.recent_line_edits) session.recent_line_edits = new Map();
-	const lines = chunk.split("\n").length;
-	const contentHash = createHash("sha256").update(chunk).digest("hex");
-	const existing = session.recent_line_edits.get(filePath);
-	if (existing) {
-		// Drop a re-apply of the exact same content as the last recorded edit.
-		const last = existing[existing.length - 1];
-		if (last && last.content_hash === contentHash) return;
-		existing.push({ range: { start: 0, end: lines }, content_hash: contentHash, at_step: session.tool_call_count });
-		while (existing.length > RECENT_LINE_EDITS_PER_FILE_CAP) {
-			existing.shift();
-		}
-	} else {
-		session.recent_line_edits.set(filePath, [
-			{ range: { start: 0, end: lines }, content_hash: contentHash, at_step: session.tool_call_count },
-		]);
-	}
-}
-
-/** Scan the chunk for non-trivial literals and add this file's path to
- *  each literal's occurrence set. Per-event count is capped to keep a
- *  large generated blob from creating thousands of map entries. */
-function recordLiteralOccurrences(
-	session: SessionTrajectory,
-	filePath: string,
-	chunk: string,
-): void {
-	if (!session.literal_occurrences) session.literal_occurrences = new Map();
-	let count = 0;
-	for (const literal of extractNonTrivialLiterals(chunk)) {
-		if (count >= LITERAL_OCCURRENCES_PER_EDIT_CAP) break;
-		const hash = createHash("sha256").update(literal).digest("hex");
-		const existing = session.literal_occurrences.get(hash);
-		if (existing) {
-			existing.add(filePath);
-		} else {
-			session.literal_occurrences.set(hash, new Set([filePath]));
-		}
-		count++;
-	}
-}
-
-/** Yield every literal worth tracking. String literals ≥8 chars (skips
- *  short tokens like punctuation strings) and integer literals outside
- *  the boring -1..256 range AND outside the HTTP status 100..599 window.
- *  Pure, dependency-free — exported only for the dedicated unit tests
- *  that pin the rule set. */
-export function extractNonTrivialLiterals(chunk: string): string[] {
-	const out: string[] = [];
-	// String literals: capture the delimiter, then anything that isn't a
-	// matching delimiter or newline. 8..200 char body bounds.
-	const stringRe = /(["'`])((?:(?!\1)[^\n]){8,200})\1/g;
-	let m: RegExpExecArray | null;
-	m = stringRe.exec(chunk);
-	while (m !== null) {
-		const body = m[2];
-		if (body !== undefined) out.push(body);
-		m = stringRe.exec(chunk);
-	}
-	// Integer literals (3+ digits) outside the boring and HTTP-status ranges.
-	const numberRe = /\b(\d{3,})\b/g;
-	let n: RegExpExecArray | null;
-	n = numberRe.exec(chunk);
-	while (n !== null) {
-		const raw = n[1];
-		if (raw !== undefined) {
-			const value = Number.parseInt(raw, 10);
-			const trivial = value >= TRIVIAL_NUMBER_LO && value <= TRIVIAL_NUMBER_HI;
-			const httpStatus = value >= HTTP_STATUS_LO && value <= HTTP_STATUS_HI;
-			if (!trivial && !httpStatus) out.push(raw);
-		}
-		n = numberRe.exec(chunk);
-	}
-	return out;
-}
-
-// ===========================================
-// Snapshot hydration helpers
-// ===========================================
-// Defensive coercion for fields read off `<id>.live.json`. We never trust
-// the on-disk shape: a file from an older harness version, a half-written
-// snapshot, or a hand-edited file should never crash the daemon — it should
-// resolve to the same default `recordEvent` would use for a fresh session.
-
-function readString(v: unknown): string | null {
-	return typeof v === "string" && v.length > 0 ? v : null;
-}
-
-function readNumber(v: unknown, fallback: number): number {
-	return typeof v === "number" && Number.isFinite(v) ? v : fallback;
-}
-
-function readBoolean(v: unknown): boolean {
-	return v === true;
-}
-
-function readStringSet(v: unknown): Set<string> {
-	if (!Array.isArray(v)) return new Set();
-	const out = new Set<string>();
-	for (const item of v) {
-		if (typeof item === "string") out.add(item);
-	}
-	return out;
-}
-
-function readStringArray(v: unknown): string[] {
-	if (!Array.isArray(v)) return [];
-	return v.filter((x): x is string => typeof x === "string");
-}
-
-function readNumberArray(v: unknown): number[] {
-	if (!Array.isArray(v)) return [];
-	return v.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
-}
-
-function readStubsIntroduced(
-	v: unknown,
-): Array<{ file: string; kind: string; snippet: string }> {
-	if (!Array.isArray(v)) return [];
-	const out: Array<{ file: string; kind: string; snippet: string }> = [];
-	for (const e of v) {
-		if (!e || typeof e !== "object") continue;
-		const r = e as Record<string, unknown>;
-		if (typeof r.file !== "string" || typeof r.kind !== "string" || typeof r.snippet !== "string") {
-			continue;
-		}
-		out.push({ file: r.file, kind: r.kind, snippet: r.snippet });
-	}
-	return out;
-}
-
-function readStringMap(v: unknown): Map<string, string> {
-	const out = new Map<string, string>();
-	if (!isPlainObject(v)) return out;
-	for (const [k, val] of Object.entries(v)) {
-		if (typeof val === "string") out.set(k, val);
-	}
-	return out;
-}
-
-function readNumberMap(v: unknown): Map<string, number> {
-	const out = new Map<string, number>();
-	if (!isPlainObject(v)) return out;
-	for (const [k, val] of Object.entries(v)) {
-		if (typeof val === "number" && Number.isFinite(val)) out.set(k, val);
-	}
-	return out;
-}
-
-function readNumberRecord(v: unknown): Record<number, number> {
-	const out: Record<number, number> = {};
-	if (!isPlainObject(v)) return out;
-	for (const [k, val] of Object.entries(v)) {
-		const port = Number.parseInt(k, 10);
-		if (Number.isFinite(port) && typeof val === "number" && Number.isFinite(val)) {
-			out[port] = val;
-		}
-	}
-	return out;
-}
-
-function readSensitivity(v: unknown): SensitivityLevel {
-	if (typeof v === "string" && SENSITIVITY_LEVELS.has(v as SensitivityLevel)) {
-		return v as SensitivityLevel;
-	}
-	return "Public";
-}
-
-function readConsecutivePattern(v: unknown): { pattern: string; count: number } | null {
-	if (!isPlainObject(v)) return null;
-	const pattern = readString(v.pattern);
-	const count = readNumber(v.count, 0);
-	return pattern ? { pattern, count } : null;
-}
-
-const TAINT_PROVENANCE_VALUES: ReadonlySet<TaintProvenance> = new Set<TaintProvenance>([
-	"fetched_external",
-	"mcp_remote",
-	"document_content",
-	"user_provided",
-	"local_read",
-]);
-
-/** Coerce an unknown to a TaintProvenance, defaulting to "local_read" for
- *  older snapshots (pre-provenance field) and any malformed value. */
-function readProvenance(v: unknown): TaintProvenance {
-	if (typeof v === "string" && TAINT_PROVENANCE_VALUES.has(v as TaintProvenance)) {
-		return v as TaintProvenance;
-	}
-	return "local_read";
-}
-
-function readTaintSources(v: unknown): TaintSource[] {
-	if (!Array.isArray(v)) return [];
-	const out: TaintSource[] = [];
-	for (const item of v) {
-		if (!isPlainObject(item)) continue;
-		const file = readString(item.file);
-		if (!file) continue;
-		out.push({
-			file,
-			level: readSensitivity(item.level),
-			at_step: readNumber(item.at_step, 0),
-			provenance: readProvenance(item.provenance),
-		});
-	}
-	return out;
-}
-
-function readFailedFiles(v: unknown): Map<string, FailedFileEntry> {
-	const out = new Map<string, FailedFileEntry>();
-	if (!isPlainObject(v)) return out;
-	for (const [file, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		out.set(file, {
-			failure_count: readNumber(raw.failure_count, 0),
-			checks: readStringArray(raw.checks),
-			recorded_at: readString(raw.recorded_at) ?? new Date().toISOString(),
-			tool_call_count: readNumber(raw.tool_call_count, 0),
-		});
-	}
-	return out;
-}
-
-function readPendingCompletions(v: unknown): Map<string, PendingCompletion> {
-	const out = new Map<string, PendingCompletion>();
-	if (!isPlainObject(v)) return out;
-	for (const [key, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		const sourceFile = readString(raw.source_file);
-		if (!sourceFile) continue;
-		out.set(key, {
-			source_file: sourceFile,
-			affected_files: readStringArray(raw.affected_files),
-			resolved_files: readStringSet(raw.resolved_files),
-			recorded_at_tool_call: readNumber(raw.recorded_at_tool_call, 0),
-			description: readString(raw.description) ?? "",
-		});
-	}
-	return out;
-}
-
-function readWarnings(v: unknown): Map<string, WarningRecord> {
-	const out = new Map<string, WarningRecord>();
-	if (!isPlainObject(v)) return out;
-	for (const [key, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		const checkName = readString(raw.check_name);
-		if (!checkName) continue;
-		out.set(key, {
-			check_name: checkName,
-			issue_count: readNumber(raw.issue_count, 0),
-			first_issued_at: readNumber(raw.first_issued_at, 0),
-			last_issued_at: readNumber(raw.last_issued_at, 0),
-			resolved: readBoolean(raw.resolved),
-		});
-	}
-	return out;
-}
-
-const TDD_STATES = new Set(["no_test", "red", "green", "regression"]);
-
-function readTddCycles(v: unknown): Map<string, TddCycle> {
-	const out = new Map<string, TddCycle>();
-	if (!isPlainObject(v)) return out;
-	for (const [key, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		const sourceFile = readString(raw.source_file);
-		if (!sourceFile) continue;
-		const stateStr = typeof raw.state === "string" ? raw.state : "no_test";
-		const state = (TDD_STATES.has(stateStr) ? stateStr : "no_test") as TddCycle["state"];
-		const prevStr = typeof raw.previous_state === "string" ? raw.previous_state : undefined;
-		const previous_state =
-			prevStr && TDD_STATES.has(prevStr) ? (prevStr as TddCycle["state"]) : undefined;
-		out.set(key, {
-			source_file: sourceFile,
-			test_file: typeof raw.test_file === "string" ? raw.test_file : null,
-			state,
-			test_written_at: typeof raw.test_written_at === "number" ? raw.test_written_at : undefined,
-			red_at: typeof raw.red_at === "number" ? raw.red_at : undefined,
-			green_at: typeof raw.green_at === "number" ? raw.green_at : undefined,
-			impl_edits_before_test: readNumber(raw.impl_edits_before_test, 0),
-			previous_state,
-		});
-	}
-	return out;
-}
-
-function readTestRuns(
-	v: unknown,
-): Map<string, { status: "pass" | "fail"; at_step: number }> {
-	const out = new Map<string, { status: "pass" | "fail"; at_step: number }>();
-	if (!isPlainObject(v)) return out;
-	for (const [file, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		const status = raw.status === "pass" || raw.status === "fail" ? raw.status : null;
-		if (!status) continue;
-		out.set(file, { status, at_step: readNumber(raw.at_step, 0) });
-	}
-	return out;
-}
-
-function readAssertionCountsMap(v: unknown): Map<string, AssertionCounts> {
-	const out = new Map<string, AssertionCounts>();
-	if (!isPlainObject(v)) return out;
-	for (const [file, raw] of Object.entries(v)) {
-		if (!isPlainObject(raw)) continue;
-		out.set(file, {
-			blocks: readNumber(raw.blocks, 0),
-			assertions: readNumber(raw.assertions, 0),
-		});
-	}
-	return out;
-}
-
-function readGitSessionBaseline(v: unknown):
-	| {
-			modified: Set<string>;
-			staged: Set<string>;
-			untracked: Set<string>;
-			head_sha: string;
-		}
-	| undefined {
-	if (!isPlainObject(v)) return undefined;
-	return {
-		head_sha: readString(v.head_sha) ?? "",
-		modified: readStringSet(v.modified),
-		staged: readStringSet(v.staged),
-		untracked: readStringSet(v.untracked),
-	};
-}
-
-function readActiveSkills(v: unknown): Map<string, ActiveSkillRecord> | undefined {
-	if (!isPlainObject(v)) return undefined;
-	const entries = Object.entries(v);
-	if (entries.length === 0) return undefined;
-	const out = new Map<string, ActiveSkillRecord>();
-	for (const [name, raw] of entries) {
-		if (!isPlainObject(raw)) continue;
-		const recordName = readString(raw.name) ?? name;
-		const source = raw.source === "cli" || raw.source === "hook" || raw.source === "manual"
-			? raw.source
-			: "cli";
-		out.set(name, {
-			name: recordName,
-			entered_at: readNumber(raw.entered_at, 0),
-			expires_at: readNumber(raw.expires_at, 0),
-			source,
-		});
-	}
-	return out;
-}
-
-function isPlainObject(v: unknown): v is JsonObject {
-	return v != null && typeof v === "object" && !Array.isArray(v);
-}
-
-// ===========================================
 // Session-Ack Suppression Helpers
 // ===========================================
 
@@ -1159,7 +644,7 @@ function ackKey(filePath: string, checkName: string): string {
  * the warning (unless the file is edited again).
  */
 export function acknowledgeChecks(
-	session: import("./types.js").SessionTrajectory,
+	session: SessionTrajectory,
 	filePath: string,
 	checkNames: string[],
 ): void {
@@ -1172,7 +657,7 @@ export function acknowledgeChecks(
  * Check whether a file+check pair has already been acknowledged this session.
  */
 export function isAcknowledged(
-	session: import("./types.js").SessionTrajectory,
+	session: SessionTrajectory,
 	filePath: string,
 	checkName: string,
 ): boolean {
@@ -1184,7 +669,7 @@ export function isAcknowledged(
  * is edited again — a new edit may introduce genuinely different issues.
  */
 function clearAcknowledgedChecksForFile(
-	session: import("./types.js").SessionTrajectory,
+	session: SessionTrajectory,
 	filePath: string,
 ): void {
 	const prefix = `${filePath}::`;
@@ -1193,146 +678,4 @@ function clearAcknowledgedChecksForFile(
 			session.acknowledged_checks.delete(key);
 		}
 	}
-}
-
-// ===========================================
-// Active-Skill Markers
-// ===========================================
-// Per-session markers populated by `interlinked skill enter <name>` and
-// agent-native skill-lifecycle hooks. Read by the active_when predicate
-// evaluator to scope distilled rules. See harness-active-when-scoping.md.
-
-export interface SkillEnterArgs {
-	name: string;
-	/** Override default TTL (30 min). Clamped to [60s, 4h]. */
-	ttl_seconds?: number;
-	/** "cli" = explicit `interlinked skill enter`; "hook" = agent-native event; "manual" = enable-side toggle. */
-	source?: ActiveSkillRecord["source"];
-}
-
-/** Record that a skill is now active for this session. Replaces any existing
- *  marker for the same name (re-entering refreshes the TTL). */
-export function recordSkillEnter(
-	session: SessionTrajectory,
-	args: SkillEnterArgs,
-): ActiveSkillRecord {
-	if (!session.active_skills) session.active_skills = new Map();
-	const requestedSec = args.ttl_seconds ?? DEFAULT_SKILL_TTL_MS / 1000;
-	const ttlMs = Math.min(MAX_SKILL_TTL_MS, Math.max(MIN_SKILL_TTL_MS, requestedSec * 1000));
-	const now = Date.now();
-	const record: ActiveSkillRecord = {
-		name: args.name,
-		entered_at: now,
-		expires_at: now + ttlMs,
-		source: args.source ?? "cli",
-	};
-	session.active_skills.set(args.name, record);
-	return record;
-}
-
-/** Remove a skill marker. Returns true if a marker existed. */
-export function recordSkillLeave(session: SessionTrajectory, name: string): boolean {
-	if (!session.active_skills) return false;
-	return session.active_skills.delete(name);
-}
-
-/** Drop expired markers in-place. Called on every event so stale markers
- *  don't leak past their TTL even if no `skill_leave` arrived. */
-export function gcExpiredSkills(session: SessionTrajectory): number {
-	if (!session.active_skills || session.active_skills.size === 0) return 0;
-	const now = Date.now();
-	let removed = 0;
-	for (const [name, record] of session.active_skills) {
-		if (record.expires_at <= now) {
-			session.active_skills.delete(name);
-			removed++;
-		}
-	}
-	return removed;
-}
-
-/** Snapshot of currently-active skills (post-GC) for read-only consumers. */
-export function getActiveSkills(session: SessionTrajectory): ActiveSkillRecord[] {
-	gcExpiredSkills(session);
-	if (!session.active_skills) return [];
-	return [...session.active_skills.values()];
-}
-
-// ===========================================
-// Declared-plan serialize / hydrate
-// ===========================================
-// `session.declared_plan` is the latest `CapturedPlan` produced by
-// plan-capture.ts. Round-trip support so a daemon restart doesn't drop
-// the most-recent plan — item #6 (plan-drift) reads this field at Stop.
-
-const PLAN_SOURCES: ReadonlySet<PlanSource> = new Set([
-	"TaskCreate",
-	"ExitPlanMode",
-	"structured_userprompt",
-]);
-
-const PLAN_STEP_STATUSES: ReadonlySet<PlanStepStatus> = new Set([
-	"pending",
-	"executed",
-	"skipped",
-]);
-
-/** Convert a CapturedPlan to a JSON-safe object. The plan shape is
- *  already plain JSON (no Maps, Sets, dates), so this is a deep copy
- *  that documents the shape in one place. */
-function serializeCapturedPlan(plan: CapturedPlan): JsonObject {
-	return {
-		session_id: plan.session_id,
-		agent_name: plan.agent_name,
-		created_at_iso: plan.created_at_iso,
-		created_at_step: plan.created_at_step,
-		source: plan.source,
-		steps: plan.steps.map((s) => ({
-			intent: s.intent,
-			tool_hint: s.tool_hint ?? null,
-			target_hint: s.target_hint ?? null,
-			status: s.status,
-		})),
-	};
-}
-
-/** Defensive read of the serialized plan. Returns undefined for null,
- *  missing, or malformed shapes so older snapshots (predating this
- *  field) hydrate cleanly. Unknown step statuses default to "pending";
- *  unknown sources default to "TaskCreate" so we never crash. */
-function readCapturedPlan(v: unknown): CapturedPlan | undefined {
-	if (!isPlainObject(v)) return undefined;
-	const sessionId = readString(v.session_id);
-	const agentName = readString(v.agent_name);
-	const createdAtIso = readString(v.created_at_iso);
-	if (!sessionId || !agentName || !createdAtIso) return undefined;
-	const sourceRaw = typeof v.source === "string" ? v.source : "";
-	const source = PLAN_SOURCES.has(sourceRaw as PlanSource)
-		? (sourceRaw as PlanSource)
-		: "TaskCreate";
-	const stepsRaw = Array.isArray(v.steps) ? v.steps : [];
-	const steps: PlanStep[] = [];
-	for (const raw of stepsRaw) {
-		if (!isPlainObject(raw)) continue;
-		const intent = readString(raw.intent);
-		if (!intent) continue;
-		const statusRaw = typeof raw.status === "string" ? raw.status : "pending";
-		const status = PLAN_STEP_STATUSES.has(statusRaw as PlanStepStatus)
-			? (statusRaw as PlanStepStatus)
-			: "pending";
-		const step: PlanStep = { intent, status };
-		const toolHint = readString(raw.tool_hint);
-		if (toolHint) step.tool_hint = toolHint;
-		const targetHint = readString(raw.target_hint);
-		if (targetHint) step.target_hint = targetHint;
-		steps.push(step);
-	}
-	return {
-		session_id: sessionId,
-		agent_name: agentName,
-		created_at_iso: createdAtIso,
-		created_at_step: readNumber(v.created_at_step, 0),
-		source,
-		steps,
-	};
 }
