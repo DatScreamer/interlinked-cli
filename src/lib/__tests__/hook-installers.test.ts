@@ -1,432 +1,57 @@
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	CLAUDE_HOOK_EVENTS,
 	CODEX_HOOK_EVENTS,
 	COPILOT_HOOK_EVENTS,
 	CURSOR_HOOK_EVENTS,
 	GEMINI_HOOK_EVENTS,
-	installAllClaudeHooks,
-	installCodexHooks,
 	installCopilotHooks,
-	installCursorHooks,
-	installGeminiHooks,
-	uninstallCodexHooks,
-	uninstallCopilotHooks,
-	uninstallCursorHooks,
-	uninstallGeminiHooks,
 } from "../hook-installers.js";
 
-describe("hook event lists", () => {
-	it("claude event list includes PostToolUse and SessionStart", () => {
+// The per-client install/uninstall behaviour is tested directly against each
+// SUT in `hook-installers-<client>.test.ts`. This file pins the *barrel*: the
+// `hook-installers.ts` re-export surface that `hooks.ts` (and other importers)
+// consume must keep resolving every public symbol through the barrel after the
+// per-client decomposition.
+
+describe("hook-installers barrel — re-export surface", () => {
+	it("re-exports every client event list through the barrel", () => {
+		// Each list resolves through `../hook-installers.js`, not the sibling
+		// module directly — proving the barrel forwards them.
 		expect(CLAUDE_HOOK_EVENTS).toContain("SessionStart");
 		expect(CLAUDE_HOOK_EVENTS).toContain("PostToolUse");
-		// PostToolUseFailure is intentionally omitted (see comment on CLAUDE_HOOK_EVENTS).
+		// PostToolUseFailure is intentionally omitted (see CLAUDE_HOOK_EVENTS).
 		expect(CLAUDE_HOOK_EVENTS).not.toContain("PostToolUseFailure");
-	});
 
-	it("copilot event list uses camelCase naming", () => {
 		expect(COPILOT_HOOK_EVENTS).toContain("sessionStart");
 		expect(COPILOT_HOOK_EVENTS).toContain("postToolUse");
-	});
 
-	it("gemini event list includes BeforeTool/AfterTool", () => {
 		expect(GEMINI_HOOK_EVENTS).toContain("BeforeTool");
 		expect(GEMINI_HOOK_EVENTS).toContain("AfterTool");
-	});
 
-	it("codex event list uses Claude-compatible PascalCase names", () => {
-		// Codex CLI shipped its hook contract using Claude Code's
-		// vocabulary, so we keep PascalCase event names. PermissionRequest
-		// is its own event type, separate from PreToolUse.
 		expect(CODEX_HOOK_EVENTS).toContain("SessionStart");
 		expect(CODEX_HOOK_EVENTS).toContain("UserPromptSubmit");
 		expect(CODEX_HOOK_EVENTS).toContain("PreToolUse");
 		expect(CODEX_HOOK_EVENTS).toContain("PostToolUse");
 		expect(CODEX_HOOK_EVENTS).toContain("PermissionRequest");
 		expect(CODEX_HOOK_EVENTS).toContain("Stop");
-	});
 
-	it("cursor event list includes both MCP naming variants", () => {
 		expect(CURSOR_HOOK_EVENTS).toContain("beforeMCPExecution");
 		expect(CURSOR_HOOK_EVENTS).toContain("beforeMcpToolExecution");
 	});
-});
 
-describe("installCopilotHooks / uninstallCopilotHooks", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "copilot-hooks-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("writes .github/hooks/hooks.json with Copilot event entries", () => {
-		installCopilotHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const hooksPath = join(tmp, ".github", "hooks", "hooks.json");
-		expect(existsSync(hooksPath)).toBe(true);
-
-		const content = readFileSync(hooksPath, "utf-8");
-		expect(content).toContain('"sessionStart"');
-		expect(content).toContain('"postToolUse"');
-		expect(content).toContain("interlinked-activity");
-		expect(content).toContain("INTERLINKED_CLIENT");
-	});
-
-	it("removes interlinked entries and deletes file when no hooks remain", () => {
-		installCopilotHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const changed = uninstallCopilotHooks(tmp);
-		expect(changed).toBe(true);
-
-		const hooksPath = join(tmp, ".github", "hooks", "hooks.json");
-		expect(existsSync(hooksPath)).toBe(false);
-	});
-
-	it("uninstall is a no-op when file is missing", () => {
-		expect(uninstallCopilotHooks(tmp)).toBe(false);
-	});
-});
-
-describe("installGeminiHooks / uninstallGeminiHooks", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "gemini-hooks-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("writes .gemini/settings.json with Gemini event entries", () => {
-		installGeminiHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const settingsPath = join(tmp, ".gemini", "settings.json");
-		expect(existsSync(settingsPath)).toBe(true);
-
-		const content = readFileSync(settingsPath, "utf-8");
-		expect(content).toContain('"BeforeTool"');
-		expect(content).toContain('"AfterTool"');
-		expect(content).toContain("interlinked-activity");
-	});
-
-	it("registers AfterTool with empty matcher (all-tool capture)", () => {
-		installGeminiHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const settings = JSON.parse(
-			readFileSync(join(tmp, ".gemini", "settings.json"), "utf-8"),
-		);
-		// Per-tool matcher is empty — every tool's result is captured;
-		// the .mjs hook fast-paths non-mutation tools internally.
-		const afterTool = settings.hooks?.AfterTool;
-		expect(Array.isArray(afterTool)).toBe(true);
-		expect(afterTool[0].matcher).toBe("");
-	});
-
-	it("removes interlinked entries on uninstall", () => {
-		installGeminiHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const changed = uninstallGeminiHooks(tmp);
-		expect(changed).toBe(true);
-
-		const content = readFileSync(join(tmp, ".gemini", "settings.json"), "utf-8");
-		expect(content).not.toContain("interlinked-activity");
-	});
-});
-
-describe("installCodexHooks / uninstallCodexHooks", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "codex-hooks-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("writes .codex/hooks.json with all six PascalCase events", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const hooksPath = join(tmp, ".codex", "hooks.json");
-		expect(existsSync(hooksPath)).toBe(true);
-
-		const content = readFileSync(hooksPath, "utf-8");
-		for (const ev of CODEX_HOOK_EVENTS) {
-			expect(content).toContain(`"${ev}"`);
+	it("re-exports a working install function (Copilot smoke test through barrel)", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "barrel-smoke-"));
+		try {
+			installCopilotHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+			const content = readFileSync(join(tmp, ".github", "hooks", "hooks.json"), "utf-8");
+			expect(content).toContain("interlinked-activity");
+			expect(content).toContain("INTERLINKED_CLIENT");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
 		}
-	});
-
-	it("tags installed commands with INTERLINKED_CLIENT=codex", () => {
-		// Codex's hook payload mirrors Claude's so the .mjs needs an
-		// out-of-band signal to know which client it's serving — that
-		// signal is the env prefix on the installed command.
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const content = readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8");
-		expect(content).toContain('INTERLINKED_CLIENT=\\"codex\\"');
-		expect(content).toContain('INTERLINKED_RUNNER=\\"codex\\"');
-	});
-
-	it("walks up from subdirectories to find the hook script", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const content = readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8");
-		expect(content).toContain('HOOK_DIR=\\"$PWD\\"');
-		expect(content).toContain('dirname \\"$HOOK_DIR\\"');
-		expect(content).toContain('.interlinked/hooks/interlinked-activity.mjs');
-	});
-
-	it("registers PostToolUse with empty matcher (all-tool capture)", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const hooks = JSON.parse(
-			readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8"),
-		);
-		// Per-tool matcher is empty — every tool's result is captured;
-		// the .mjs hook fast-paths non-mutation tools internally so the
-		// harness round-trip only happens for Edit/Write/MultiEdit/apply_patch.
-		const postToolUse = hooks.hooks?.PostToolUse;
-		expect(Array.isArray(postToolUse)).toBe(true);
-		// Some Codex builds emit a flat object instead of {matcher, hooks}.
-		// Both shapes are acceptable as long as the matcher is empty.
-		const reg = postToolUse[0];
-		const matcher = "matcher" in reg ? reg.matcher : "";
-		expect(matcher).toBe("");
-	});
-
-	it("creates .codex/config.toml with canonical `hooks = true` when absent", () => {
-		// Codex requires the feature flag in `[features]` for hooks to
-		// fire. The installer writes the canonical `hooks = true` key
-		// idempotently. Legacy `codex_hooks` is still recognized by Codex
-		// but emits a deprecation warning — see codex-feature-flag.ts.
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		expect(existsSync(tomlPath)).toBe(true);
-		const toml = readFileSync(tomlPath, "utf-8");
-		expect(toml).toMatch(/\[features\]/);
-		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
-		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
-	});
-
-	it("migrates legacy `codex_hooks = true` to canonical `hooks = true` in place", () => {
-		// Codex deprecated `codex_hooks` in favor of `hooks`. We rewrite
-		// existing legacy entries on every install so the deprecation
-		// warning silently goes away after the next `interlinked enable`.
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = "# user-managed\n[features]\ncodex_hooks = true\nfoo = 42\n";
-		const fs = require("node:fs");
-		fs.mkdirSync(join(tmp, ".codex"), { recursive: true });
-		fs.writeFileSync(tomlPath, existing);
-
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const toml = readFileSync(tomlPath, "utf-8");
-		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
-		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
-		expect(toml).toContain("foo = 42");
-	});
-
-	it("appends [features] block with canonical `hooks` key when none exists", () => {
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = "[model]\nname = \"synthetic-model-v5\"\n";
-		const fs = require("node:fs");
-		fs.mkdirSync(join(tmp, ".codex"), { recursive: true });
-		fs.writeFileSync(tomlPath, existing);
-
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const toml = readFileSync(tomlPath, "utf-8");
-		expect(toml).toContain("[model]");
-		expect(toml).toMatch(/(?<![\w$])hooks\s*=\s*true/);
-		expect(toml).not.toMatch(/\bcodex_hooks\s*=\s*true/);
-	});
-
-	it("reuses an existing [features] block when installing Codex hooks", () => {
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing =
-			"[model]\nname = \"synthetic-model-v5\"\n\n[features]\nfoo = true\n[profiles.default]\napproval_policy = \"never\"\n";
-		const fs = require("node:fs");
-		fs.mkdirSync(join(tmp, ".codex"), { recursive: true });
-		fs.writeFileSync(tomlPath, existing);
-
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const toml = readFileSync(tomlPath, "utf-8");
-		expect((toml.match(/\[features\]/g) || []).length).toBe(1);
-		expect(toml).toContain("[features]\nfoo = true\nhooks = true\n[profiles.default]");
-	});
-
-	it("does not rewrite .codex/hooks.json when rerun with identical settings", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const hooksPath = join(tmp, ".codex", "hooks.json");
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		const sentinel = new Date("2001-01-01T00:00:00.000Z");
-		utimesSync(hooksPath, sentinel, sentinel);
-		utimesSync(tomlPath, sentinel, sentinel);
-
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		expect(statSync(hooksPath).mtimeMs).toBe(sentinel.getTime());
-		expect(statSync(tomlPath).mtimeMs).toBe(sentinel.getTime());
-	});
-
-	it("removes Codex interlinked entries on uninstall", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const changed = uninstallCodexHooks(tmp);
-		expect(changed).toBe(true);
-
-		// cleanJsonHookFile preserves the file but strips our entries —
-		// so the file still exists, just without any reference to us.
-		const hooksPath = join(tmp, ".codex", "hooks.json");
-		const content = readFileSync(hooksPath, "utf-8");
-		expect(content).not.toContain("interlinked-activity");
-	});
-
-	it("uninstall leaves config.toml untouched (avoid clobbering user config)", () => {
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const tomlBefore = readFileSync(join(tmp, ".codex", "config.toml"), "utf-8");
-		uninstallCodexHooks(tmp);
-		const tomlAfter = readFileSync(join(tmp, ".codex", "config.toml"), "utf-8");
-		expect(tomlAfter).toBe(tomlBefore);
-	});
-
-	it("Codex uninstall is a no-op when file is missing", () => {
-		expect(uninstallCodexHooks(tmp)).toBe(false);
-	});
-});
-
-describe("installCursorHooks / uninstallCursorHooks", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "cursor-hooks-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("writes both Cursor MCP hook event variants", () => {
-		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const hooksPath = join(tmp, ".cursor", "hooks.json");
-		expect(existsSync(hooksPath)).toBe(true);
-		const content = readFileSync(hooksPath, "utf-8");
-		expect(content).toContain('"beforeMCPExecution"');
-		expect(content).toContain('"beforeMcpToolExecution"');
-	});
-
-	it("removes Interlinked entries and deletes hooks.json when empty", () => {
-		installCursorHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		expect(uninstallCursorHooks(tmp)).toBe(true);
-		expect(existsSync(join(tmp, ".cursor", "hooks.json"))).toBe(false);
-	});
-});
-
-// ===========================================
-// Matcher Reconciliation — Step 1 of collection layer
-// ===========================================
-// installHookEntry must update stale PostToolUse matchers to "" (all-tool
-// capture) when re-running installation. Without this, non-edit tools
-// (Read, Bash, Grep, WebFetch) never reach the hook at PostToolUse.
-
-describe("matcher reconciliation — Claude Code", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "matcher-reconcile-"));
-		execSync("git init", { cwd: tmp, stdio: "ignore" });
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("rewrites stale PostToolUse matcher from Edit|Write|MultiEdit to empty", () => {
-		const settingsDir = join(tmp, ".claude");
-		mkdirSync(settingsDir, { recursive: true });
-		const staleMatcher = "Edit|Write|MultiEdit";
-		const staleSettings = {
-			hooks: {
-				PostToolUse: [
-					{
-						matcher: staleMatcher,
-						hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
-					},
-				],
-			},
-		};
-		writeFileSync(join(settingsDir, "settings.json"), JSON.stringify(staleSettings, null, 2));
-
-		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-
-		const updated = JSON.parse(readFileSync(join(settingsDir, "settings.json"), "utf-8"));
-		const postToolUse = updated.hooks.PostToolUse;
-		expect(Array.isArray(postToolUse)).toBe(true);
-		expect(postToolUse).toHaveLength(1);
-		expect(postToolUse[0].matcher).toBe("");
-	});
-
-	it("leaves PreToolUse matcher as empty (no scoped restriction)", () => {
-		const settingsDir = join(tmp, ".claude");
-		mkdirSync(settingsDir, { recursive: true });
-		writeFileSync(
-			join(settingsDir, "settings.json"),
-			JSON.stringify({
-				hooks: {
-					PreToolUse: [
-						{
-							matcher: "",
-							hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
-						},
-					],
-				},
-			}),
-		);
-
-		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-
-		const updated = JSON.parse(readFileSync(join(settingsDir, "settings.json"), "utf-8"));
-		expect(updated.hooks.PreToolUse[0].matcher).toBe("");
-	});
-
-	it("does not regress PostToolUse matcher back to mutation-only", () => {
-		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const first = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
-		expect(first.hooks.PostToolUse[0].matcher).toBe("");
-
-		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-		const second = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
-		expect(second.hooks.PostToolUse[0].matcher).toBe("");
-	});
-});
-
-describe("matcher reconciliation — Codex", () => {
-	let tmp: string;
-
-	beforeEach(() => {
-		tmp = mkdtempSync(join(tmpdir(), "matcher-reconcile-codex-"));
-	});
-
-	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true });
-	});
-
-	it("rewrites stale Codex PostToolUse matcher to empty", () => {
-		const codexDir = join(tmp, ".codex");
-		mkdirSync(codexDir, { recursive: true });
-		const staleHooks = {
-			hooks: {
-				PostToolUse: [
-					{
-						matcher: "Edit|Write|MultiEdit|apply_patch",
-						hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
-					},
-				],
-			},
-		};
-		writeFileSync(join(codexDir, "hooks.json"), JSON.stringify(staleHooks, null, 2));
-
-		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
-
-		const updated = JSON.parse(readFileSync(join(codexDir, "hooks.json"), "utf-8"));
-		const postToolUse = updated.hooks.PostToolUse;
-		expect(Array.isArray(postToolUse)).toBe(true);
-		expect(postToolUse[0].matcher).toBe("");
 	});
 });

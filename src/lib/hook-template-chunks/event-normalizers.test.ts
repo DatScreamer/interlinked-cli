@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { CLAUDE_NORMALIZERS } from "./event-normalizers-claude.js";
+import { COPILOT_NORMALIZERS } from "./event-normalizers-copilot.js";
+import { CURSOR_NORMALIZERS } from "./event-normalizers-cursor.js";
+import { GEMINI_NORMALIZERS } from "./event-normalizers-gemini.js";
 import { EVENT_NORMALIZERS_CHUNK } from "./event-normalizers.js";
 
 // This file is a template-literal chunk that becomes runtime JavaScript in
@@ -215,5 +220,66 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 		]) {
 			expect(EVENT_NORMALIZERS_CHUNK).toContain(`event_type: "${canonical}"`);
 		}
+	});
+});
+
+// The chunk was split out of one 1115-line template literal into four
+// per-client sibling files (claude / gemini / copilot / cursor) to stay under
+// the per-file line cap. The split MUST be byte-identical: this string is
+// concatenated verbatim into the generated `.mjs` hook, so a single drifted
+// character (whitespace, escape, ordering) corrupts the emitted runtime
+// script. These tests pin the composed value so any future edit that changes
+// the bytes shows up as a failing assertion in the diff.
+describe("EVENT_NORMALIZERS_CHUNK — byte-identical composition", () => {
+	// SHA-256 + length of the pre-split single-literal value. Captured at split
+	// time. Do NOT update these casually: if a sub-chunk edit changes them, it
+	// changed the emitted hook bytes — confirm that was intended.
+	const PINNED_LENGTH = 50217;
+	const PINNED_SHA256 =
+		"775ebc884fa41205be9dadfd9d21ae7334a6221684fb4ae596b56e3f51de5138";
+
+	it("composes exactly from the four per-client sub-chunks (direct join)", () => {
+		const composed =
+			CLAUDE_NORMALIZERS +
+			GEMINI_NORMALIZERS +
+			COPILOT_NORMALIZERS +
+			CURSOR_NORMALIZERS;
+		expect(EVENT_NORMALIZERS_CHUNK).toBe(composed);
+	});
+
+	it("matches the pinned pre-split length and SHA-256", () => {
+		expect(EVENT_NORMALIZERS_CHUNK.length).toBe(PINNED_LENGTH);
+		const sha = createHash("sha256")
+			.update(EVENT_NORMALIZERS_CHUNK, "utf8")
+			.digest("hex");
+		expect(sha).toBe(PINNED_SHA256);
+	});
+
+	it("each sub-chunk opens on its own section marker", () => {
+		// Structural invariant: the split points fall exactly on the `// --- X ---`
+		// markers, so the seams never bisect a function body or an escape sequence.
+		expect(CLAUDE_NORMALIZERS.startsWith("// --- Client Normalizers ---")).toBe(
+			true,
+		);
+		expect(GEMINI_NORMALIZERS.startsWith("// --- Gemini ---")).toBe(true);
+		expect(COPILOT_NORMALIZERS.startsWith("// --- Copilot ---")).toBe(true);
+		expect(CURSOR_NORMALIZERS.startsWith("// --- Cursor IDE ---")).toBe(true);
+		// Each marker appears exactly once in the composed chunk — proves no
+		// section was duplicated or dropped during the join.
+		for (const marker of [
+			"// --- Gemini ---",
+			"// --- Copilot ---",
+			"// --- Cursor IDE ---",
+		]) {
+			expect(EVENT_NORMALIZERS_CHUNK.split(marker).length - 1).toBe(1);
+		}
+	});
+
+	it("keeps each client's entry point in its own sub-chunk", () => {
+		expect(CLAUDE_NORMALIZERS).toContain("function normalizeClaudeEvent(");
+		expect(CLAUDE_NORMALIZERS).toContain("function normalizeCodexEvent(");
+		expect(GEMINI_NORMALIZERS).toContain("function normalizeGeminiEvent(");
+		expect(COPILOT_NORMALIZERS).toContain("function normalizeCopilotEvent(");
+		expect(CURSOR_NORMALIZERS).toContain("function normalizeCursorEvent(");
 	});
 });
