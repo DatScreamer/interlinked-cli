@@ -470,3 +470,71 @@ function countMatchingFiles(
 	);
 	return absolutes.length + dedupedRelatives.length;
 }
+
+// ---------------------------------------------------------------------------
+// Doc-fact drift (gen-marker) — Stop nudge
+// ---------------------------------------------------------------------------
+// The landing page and README embed `<!-- gen:* -->` counters (built-in rule
+// count, runner list, mode names) that scripts/extract-doc-facts.mjs computes
+// from source. Editing one of those source files without regenerating the docs
+// drifts the counters — a failure CI's docs:check (and the pre-push gate)
+// catch, but only at push time, after a whole session of edits. This Stop
+// nudge surfaces it the moment the session ends instead. (The 113→116 rule
+// count that landed red is the canonical instance.)
+//
+// The matched set mirrors extract-doc-facts.mjs's extract*() inputs that
+// produce a COUNT or LIST — the values that silently drift:
+//   - src/harness/rules/builtin-rules-*.ts → builtin_rule_count
+//   - src/lib/hooks.ts                     → runner_count / runners_inline
+//   - src/harness/modes.ts                 → mode_names_*
+// package.json (node-min) is deliberately excluded: it changes rarely and is
+// edited for many unrelated reasons, so including it would over-fire.
+const DOC_FACT_SOURCE_RE =
+	/(?:^|\/)(?:src\/harness\/rules\/builtin-rules-[\w-]+\.ts|src\/lib\/hooks\.ts|src\/harness\/modes\.ts)$/;
+
+/** Public predicate — a source file the doc-fact extractor reads to compute a
+ *  gen-marker counter. Editing one can drift the landing/README counters. */
+export function isDocFactSourceFile(filePath: string): boolean {
+	return DOC_FACT_SOURCE_RE.test(filePath);
+}
+
+/** Public — count distinct doc-fact source files written this session. */
+export function countDocFactSourcesEdited(filesWritten: ReadonlySet<string>): number {
+	return countMatchingFiles(filesWritten, isDocFactSourceFile);
+}
+
+/** Commands that regenerate or validate the gen-markers. Seeing one in the
+ *  session's command history means the agent already reconciled the docs, so
+ *  the nudge would be noise. `interlinked verify` aggregates docs:check. */
+const DOCS_REGEN_CMD_RE = /\bdocs:(?:build|check)\b|\bcheck-docs(?:\.mjs)?\b|\binterlinked\s+verify\b/;
+
+export interface FormatDocMarkerDriftOpts {
+	/** Distinct doc-fact source files written this session. */
+	docSourcesEdited: number;
+	/** Shell commands run this session (to suppress once docs were regenerated). */
+	commandsRun: ReadonlyArray<string>;
+}
+
+/**
+ * Public — Stop-time nudge when a gen-marker SOURCE file (a built-in rule
+ * family, the runner registry, or the modes type) was edited this session but
+ * no `docs:build` / `docs:check` / `interlinked verify` was run. Those edits
+ * drift the `<!-- gen:* -->` counters on the landing page and README, which
+ * CI's docs:check and the pre-push gate block on. Firing here turns a
+ * push-time / CI-only signal into an in-session one.
+ *
+ * Returns null when no doc-fact source was edited, or when the docs were
+ * already regenerated / validated this session.
+ */
+export function formatDocMarkerDriftWarning(opts: FormatDocMarkerDriftOpts): string | null {
+	if (opts.docSourcesEdited === 0) return null;
+	if (opts.commandsRun.some((c) => DOCS_REGEN_CMD_RE.test(c))) return null;
+	return (
+		`[interlinked:verify-before-stop] Stopping with ${opts.docSourcesEdited} edit(s) to a ` +
+		"doc-fact source (a built-in rule family, the runner registry, or the modes type) and no " +
+		"`docs:build` / `docs:check` run this session. These files feed the generated " +
+		"`<!-- gen:* -->` counters on the landing page and README; CI's docs:check (and the pre-push " +
+		"gate) block on drift. Run `npm run docs:build && npm run docs:check` before pushing — a stale " +
+		"rule count is otherwise a CI-only signal that lands red on main."
+	);
+}

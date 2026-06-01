@@ -58,8 +58,10 @@ import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import {
 	countCodeFilesEdited,
+	countDocFactSourcesEdited,
 	countUiFilesEdited,
 	formatBisectNotResetWarning,
+	formatDocMarkerDriftWarning,
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
@@ -647,6 +649,7 @@ function buildVerificationStopWarnings(
 	pushIfNotNull(warnings, checkTddRegression(ctx, session));
 	pushIfNotNull(warnings, checkBisectNotReset(ctx, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
+	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
 	return warnings;
 }
 
@@ -785,6 +788,22 @@ function checkDeadOnArrival(
 	const warning = formatDeadOnArrivalWarning(doaHits, cwd);
 	if (warning === null) return null;
 	ctx.log(`Verify-before-stop: dead-on-arrival (${doaHits.length})`);
+	return warning;
+}
+
+/** Doc-fact drift — a gen-marker source (a built-in rule family, the runner
+ *  registry, or the modes type) was edited this session but docs:build /
+ *  docs:check / `interlinked verify` wasn't run, so the landing/README
+ *  `<!-- gen:* -->` counters may have drifted. CI's docs:check and the
+ *  pre-push gate block on this; surface it at Stop instead of at push. */
+function checkDocMarkerDrift(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+	const docSourcesEdited = countDocFactSourcesEdited(session.files_written);
+	const warning = formatDocMarkerDriftWarning({
+		docSourcesEdited,
+		commandsRun: session.commands_run,
+	});
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: doc-marker-drift (${docSourcesEdited} source files)`);
 	return warning;
 }
 

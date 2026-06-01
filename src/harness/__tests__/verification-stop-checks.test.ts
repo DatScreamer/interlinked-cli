@@ -3,14 +3,17 @@ import {
 	classifyBrowserToolName,
 	classifyVerificationCommand,
 	countCodeFilesEdited,
+	countDocFactSourcesEdited,
 	countUiFilesEdited,
 	formatBisectNotResetWarning,
+	formatDocMarkerDriftWarning,
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
 	isCodeFile,
+	isDocFactSourceFile,
 	isUiFile,
 	scanForStubs,
 	STUB_INTRODUCED_CAP,
@@ -499,5 +502,92 @@ describe("formatBisectNotResetWarning", () => {
 			commandsRun: ["git bisect start", "git bisect reset", "git bisect start"],
 		});
 		expect(msg).not.toBeNull();
+	});
+});
+
+describe("isDocFactSourceFile / countDocFactSourcesEdited", () => {
+	it("matches the gen-marker source files (rule families, runner registry, modes)", () => {
+		expect(isDocFactSourceFile("src/harness/rules/builtin-rules-database.ts")).toBe(true);
+		expect(isDocFactSourceFile("src/harness/rules/builtin-rules-processes.ts")).toBe(true);
+		expect(isDocFactSourceFile("src/lib/hooks.ts")).toBe(true);
+		expect(isDocFactSourceFile("src/harness/modes.ts")).toBe(true);
+	});
+
+	it("matches an absolute path to a rule family (files_written stores the abs form)", () => {
+		expect(
+			isDocFactSourceFile("/Users/me/interlinked-cli/src/harness/rules/builtin-rules-railway.ts"),
+		).toBe(true);
+	});
+
+	it("does NOT match unrelated source, test mirrors, or package.json", () => {
+		// Plain source that feeds no gen-marker counter.
+		expect(isDocFactSourceFile("src/harness/evaluator/pre-tool.ts")).toBe(false);
+		// A test file beside the rules — editing it cannot change the rule count.
+		expect(isDocFactSourceFile("src/harness/rules/__tests__/merge.test.ts")).toBe(false);
+		// package.json (node-min) is deliberately excluded — it over-fires.
+		expect(isDocFactSourceFile("package.json")).toBe(false);
+		// Substring, not path-anchored: `(?:^|/)` requires start-or-slash before src.
+		expect(isDocFactSourceFile("notsrc/harness/modes.ts")).toBe(false);
+	});
+
+	it("counts distinct doc-fact sources, deduping raw + absolute forms", () => {
+		const set = new Set([
+			"src/harness/rules/builtin-rules-database.ts",
+			"/abs/proj/src/harness/rules/builtin-rules-database.ts",
+			"src/lib/hooks.ts",
+			"src/harness/evaluator/pre-tool.ts", // not a doc-fact source
+		]);
+		expect(countDocFactSourcesEdited(set)).toBe(2);
+	});
+
+	it("returns 0 when no doc-fact source was edited", () => {
+		expect(countDocFactSourcesEdited(new Set(["src/foo.ts", "README.md"]))).toBe(0);
+	});
+});
+
+describe("formatDocMarkerDriftWarning", () => {
+	it("returns null when no doc-fact source was edited", () => {
+		expect(formatDocMarkerDriftWarning({ docSourcesEdited: 0, commandsRun: [] })).toBeNull();
+	});
+
+	it("warns when a rule family was edited and docs were not regenerated", () => {
+		const msg = formatDocMarkerDriftWarning({
+			docSourcesEdited: 1,
+			commandsRun: ["npm test", "git add -A"],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/1 edit\(s\)/);
+		expect(msg).toMatch(/docs:build/);
+		expect(msg).toMatch(/gen:/);
+	});
+
+	it("suppresses once docs:build ran this session", () => {
+		expect(
+			formatDocMarkerDriftWarning({ docSourcesEdited: 2, commandsRun: ["npm run docs:build"] }),
+		).toBeNull();
+	});
+
+	it("suppresses once docs:check ran this session", () => {
+		expect(
+			formatDocMarkerDriftWarning({ docSourcesEdited: 2, commandsRun: ["npm run docs:check"] }),
+		).toBeNull();
+	});
+
+	it("suppresses when `interlinked verify` ran (it aggregates docs:check)", () => {
+		expect(
+			formatDocMarkerDriftWarning({
+				docSourcesEdited: 1,
+				commandsRun: ["interlinked verify --json"],
+			}),
+		).toBeNull();
+	});
+
+	it("suppresses on a direct check-docs.mjs invocation", () => {
+		expect(
+			formatDocMarkerDriftWarning({
+				docSourcesEdited: 1,
+				commandsRun: ["node scripts/check-docs.mjs --build"],
+			}),
+		).toBeNull();
 	});
 });
