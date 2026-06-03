@@ -532,7 +532,7 @@ describe("builtin-npm-publish-requires-tests-pass (temporal rule)", () => {
 	// `decision: "allow"`. See the rule's inline rationale comment for
 	// the trade-off.
 
-	function warningsFromRule(result: { warnings?: string[] }, ruleReason: string): boolean {
+	function warningsFromRule(result: { warnings?: string[] | undefined }, ruleReason: string): boolean {
 		return !!result.warnings?.some((w) => w.includes(ruleReason));
 	}
 

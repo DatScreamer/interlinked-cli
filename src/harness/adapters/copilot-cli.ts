@@ -33,7 +33,7 @@ const PHASE_MAP: Record<string, UnifiedPhase> = {
 };
 
 export interface CopilotCliAdapterOptions {
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): RunnerAdapter {
@@ -75,7 +75,11 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 		},
 
 		classifyToolClass(toolName, toolInput) {
-			return classifyFromToolName(toolName, toolInput, { overrides: opts.overrides });
+			return classifyFromToolName(
+				toolName,
+				toolInput,
+				opts.overrides ? { overrides: opts.overrides } : {},
+			);
 		},
 
 		renderSettingsFragment(binaryPath, _scope): SettingsFragment {
@@ -144,7 +148,11 @@ function buildCopilotAction(
 	if (eventName === "preToolUse" || eventName === "postToolUse") {
 		const toolNameRaw = readString(raw.toolName) ?? readString(raw.tool_name) ?? "unknown";
 		const toolInput = (raw.toolInput ?? raw.tool_input ?? {}) as unknown;
-		const tool_class: ToolClass = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+		const tool_class: ToolClass = classifyFromToolName(
+			toolNameRaw,
+			toolInput,
+			overrides ? { overrides } : {},
+		);
 		const base = {
 			kind: "tool_call" as const,
 			tool_name: toolNameRaw.toLowerCase(),

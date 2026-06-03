@@ -47,13 +47,13 @@ function localToActivity(e: {
 	return {
 		agent_name: e.agent,
 		event_type: e.type,
-		tool_name: e.tool || undefined,
-		tool_input_summary: e.summary || undefined,
+		tool_name: e.tool ?? null,
+		tool_input_summary: e.summary ?? null,
 		occurred_at: e.ts,
 		ts: e.ts,
-		tokens: e.tokens,
-		duration_ms: e.duration_ms,
-		files_modified: e.files_modified,
+		...(e.tokens !== undefined ? { tokens: e.tokens } : {}),
+		...(e.duration_ms !== undefined ? { duration_ms: e.duration_ms } : {}),
+		...(e.files_modified !== undefined ? { files_modified: e.files_modified } : {}),
 		_source: "local",
 	};
 }
@@ -80,8 +80,8 @@ export async function activityCommand(opts: {
 		const [localResult, serverResult] = await Promise.allSettled([
 			Promise.resolve(
 				readLocalActivity({
-					since: sinceTs,
-					agent: opts.agent,
+					...(sinceTs !== undefined ? { since: sinceTs } : {}),
+					...(opts.agent !== undefined ? { agent: opts.agent } : {}),
 					limit: limit * 2, // Fetch extra for merge dedup
 				}).map(localToActivity),
 			),

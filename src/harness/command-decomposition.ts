@@ -146,12 +146,12 @@ export type MatchRuleFn = (
 
 export interface CompoundEvalResult {
 	decision: "allow" | "block";
-	reason?: string;
+	reason?: string | undefined;
 	warnings: string[];
-	updated_input?: JsonObject;
-	rule_id?: string;
-	severity?: "critical" | "high" | "medium" | "low";
-	category?: string;
+	updated_input?: JsonObject | undefined;
+	rule_id?: string | undefined;
+	severity?: "critical" | "high" | "medium" | "low" | undefined;
+	category?: string | undefined;
 }
 
 /**

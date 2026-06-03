@@ -186,7 +186,7 @@ export function registerObservabilityLogCommands(program: Command): void {
 			await cloudRecentCommand({
 				cwd: opts.cwd || process.cwd(),
 				limit,
-				json: opts.json,
+				...(opts.json !== undefined ? { json: opts.json } : {}),
 			});
 		});
 }

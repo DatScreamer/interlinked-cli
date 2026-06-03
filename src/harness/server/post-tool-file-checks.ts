@@ -307,6 +307,15 @@ export async function runPerFileChecks(
 
 				for (const result of structuralResults) {
 					if (result.severity === "error" || result.severity === "warning") {
+						const editOldString = checkEvent.tool_input?.old_string as
+							| string
+							| undefined;
+						const editNewString = checkEvent.tool_input?.new_string as
+							| string
+							| undefined;
+						const editContent = checkEvent.tool_input?.content as
+							| string
+							| undefined;
 						const diffContext = ErrorHistory.buildErrorContext({
 							file: relPath,
 							fileRole,
@@ -314,13 +323,9 @@ export async function runPerFileChecks(
 							dependencyCount,
 							exports: currentExports,
 							result,
-							oldString: checkEvent.tool_input?.old_string as
-								| string
-								| undefined,
-							newString: checkEvent.tool_input?.new_string as
-								| string
-								| undefined,
-							content: checkEvent.tool_input?.content as string | undefined,
+							...(editOldString !== undefined ? { oldString: editOldString } : {}),
+							...(editNewString !== undefined ? { newString: editNewString } : {}),
+							...(editContent !== undefined ? { content: editContent } : {}),
 						});
 						// Estimate line number from old_string position
 						let lineStart: number | undefined;
@@ -346,7 +351,7 @@ export async function runPerFileChecks(
 							result,
 							diffContext,
 							{
-								line_start: lineStart,
+								...(lineStart !== undefined ? { line_start: lineStart } : {}),
 								co_edited_files: [...session.files_written]
 									.map((f) => fileGraph.toRelative(f))
 									.filter((f) => f !== relPath),
@@ -363,15 +368,18 @@ export async function runPerFileChecks(
 			// Record fix in error history
 			if (rules.error_memory?.enabled) {
 				const relPath = fileGraph.toRelative(editedFilePath);
+				const queryOldString = checkEvent.tool_input?.old_string as string | undefined;
+				const queryNewString = checkEvent.tool_input?.new_string as string | undefined;
+				const queryContent = checkEvent.tool_input?.content as string | undefined;
 				const fixContext = ErrorHistory.buildQueryContext({
 					file: relPath,
 					fileRole: fileGraph.classifyModule(editedFilePath),
 					dependentCount: fileGraph.getDependents(editedFilePath).length,
 					dependencyCount: fileGraph.getDependencies(editedFilePath).length,
 					exports: fileGraph.getExports(editedFilePath).map((e) => e.name),
-					oldString: checkEvent.tool_input?.old_string as string | undefined,
-					newString: checkEvent.tool_input?.new_string as string | undefined,
-					content: checkEvent.tool_input?.content as string | undefined,
+					...(queryOldString !== undefined ? { oldString: queryOldString } : {}),
+					...(queryNewString !== undefined ? { newString: queryNewString } : {}),
+					...(queryContent !== undefined ? { content: queryContent } : {}),
 				});
 				ctx.errorHistory.recordFix(relPath, fixContext);
 			}
@@ -492,8 +500,8 @@ export async function runPerFileChecks(
 			CWD,
 			{
 				...qualityOpts,
-				baseline: currentBaseline,
-				diffAware: rules.diff_aware,
+				...(currentBaseline !== undefined ? { baseline: currentBaseline } : {}),
+				...(rules.diff_aware !== undefined ? { diffAware: rules.diff_aware } : {}),
 				outToolMetrics: postToolMetrics,
 				// Mythos Phase 4: recency-weighted check depth.
 				// Cold files skip heuristic detectors at PostToolUse.
@@ -717,8 +725,8 @@ export async function runPerFileChecks(
 				const rawScored = scoreFindings(allFindings, {
 					filePath: editedFilePath!,
 					session,
-					editStartLine,
-					editEndLine,
+					...(editStartLine !== undefined ? { editStartLine } : {}),
+					...(editEndLine !== undefined ? { editEndLine } : {}),
 					inlineSuppressions: inlineSup,
 					fileSuppressions: fileSup,
 					limit: rules.suggestion_limit ?? 3,
@@ -940,7 +948,7 @@ export async function runPerFileChecks(
 	if (session && editedFilePath && allCheckResults.length > 0) {
 		const warningEvidence = allCheckResults
 			.filter((r) => r.severity === "warning" || r.severity === "error")
-			.map((r) => ({ name: r.name, line: r.line }));
+			.map((r) => ({ name: r.name, ...(r.line !== undefined ? { line: r.line } : {}) }));
 		if (warningEvidence.length > 0) {
 			recordWarningsIssued(session, editedFilePath, warningEvidence);
 		}

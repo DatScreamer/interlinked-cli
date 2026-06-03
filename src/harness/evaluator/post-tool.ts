@@ -10,24 +10,24 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
+import {
+	classifyBashCommandProvenance,
+	recordBashTaintSource,
+} from "../bash-provenance.js";
 import type { CohortManager } from "../cohort.js";
 import { formatMidSessionBackstop, isDocFile } from "../commit-cadence.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import { recordDeliveryForShadow } from "../event-dedup.js";
 import { checkPhantomDependencies, checkTyposquatDependencies } from "../generic-checks.js";
 import { countLines, isCappableFile, maxLinesFor } from "../large-file-policy.js";
-import type { ReservationManager } from "../reservations.js";
-import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
-import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
-import { scanForStubs, STUB_INTRODUCED_CAP } from "../verification-stop-checks.js";
-import {
-	classifyBashCommandProvenance,
-	recordBashTaintSource,
-} from "../bash-provenance.js";
 import {
 	DEFAULT_EGRESS_FILTER_CONFIG,
 	filterOutputEgress,
 } from "../output-egress-filter.js";
+import type { ReservationManager } from "../reservations.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
+import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
 import {
 	classifyFileSensitivity,
 	ratchetSensitivity,
@@ -39,6 +39,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { STUB_INTRODUCED_CAP, scanForStubs } from "../verification-stop-checks.js";
 import {
 	globMatch,
 	isBash,
@@ -611,7 +612,7 @@ function recordStubsIntroduced(
 	if (Array.isArray(edits)) {
 		for (const e of edits) {
 			if (e && typeof e === "object") {
-				const ns = (e as Record<string, unknown>).new_string;
+				const ns = (e as JsonObject).new_string;
 				if (typeof ns === "string") pushMatches(ns);
 			}
 		}

@@ -63,19 +63,19 @@ export type FeatureNode = { [key: string]: boolean | FeatureNode };
 
 export interface ServerEntry {
 	server_url: string;
-	mcp_prefix?: string;
-	workspace_id?: string;
+	mcp_prefix?: string | undefined;
+	workspace_id?: string | undefined;
 }
 
 export interface LocalConfig {
-	agent_name?: string;
-	mcp_prefix?: string;
-	workspace_id?: string;
-	access_token?: string;
-	refresh_token?: string;
-	token_expires_at?: string;
-	oauth_client_id?: string;
-	agent_handle?: string;
+	agent_name?: string | undefined;
+	mcp_prefix?: string | undefined;
+	workspace_id?: string | undefined;
+	access_token?: string | undefined;
+	refresh_token?: string | undefined;
+	token_expires_at?: string | undefined;
+	oauth_client_id?: string | undefined;
+	agent_handle?: string | undefined;
 	/** Key into `servers` map. Defaults to "production". */
 	active_server?: string;
 	servers?: Record<string, ServerEntry>;
@@ -95,16 +95,16 @@ export interface LocalConfig {
 
 export interface ResolvedConfig {
 	server_url: string;
-	workspace_id?: string;
-	default_workspace_key?: string;
-	agent_name?: string;
-	mcp_prefix?: string;
-	access_token?: string;
-	refresh_token?: string;
-	token_expires_at?: string;
-	oauth_client_id?: string;
-	agent_handle?: string;
-	default_project?: string;
+	workspace_id?: string | undefined;
+	default_workspace_key?: string | undefined;
+	agent_name?: string | undefined;
+	mcp_prefix?: string | undefined;
+	access_token?: string | undefined;
+	refresh_token?: string | undefined;
+	token_expires_at?: string | undefined;
+	oauth_client_id?: string | undefined;
+	agent_handle?: string | undefined;
+	default_project?: string | undefined;
 	sync_mode: string;
 }
 

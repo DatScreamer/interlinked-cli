@@ -73,9 +73,9 @@ const A3_SECURITY_CONTEXT =
 const MULTI_EDIT_REFACTOR_TSC_CODES = new Set(["TS2304", "TS2552"]);
 
 interface TscBlockingFinding {
-	ruleId?: string;
+	ruleId?: string | undefined;
 	line: number;
-	column?: number;
+	column?: number | undefined;
 	message: string;
 }
 
@@ -121,7 +121,7 @@ export function buildTscDiffOverlayBlockReason(
  *  carrying warnings and an optional pending escalation update. */
 export type WriteContentGuardsResult =
 	| { kind: "block"; decision: HarnessDecision }
-	| { kind: "ok"; warnings: string[]; escalation?: EscalationRequest };
+	| { kind: "ok"; warnings: string[]; escalation?: EscalationRequest | undefined };
 
 export interface WriteContentGuardsArgs {
 	toolName: string;

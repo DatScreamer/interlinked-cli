@@ -388,7 +388,7 @@ interface MatchOptions {
 	caseInsensitive: boolean;
 	outputMode: string | undefined;
 	maxOutputLines: number;
-	contentCache?: FileContentCache;
+	contentCache?: FileContentCache | undefined;
 }
 
 function matchInProcess(opts: MatchOptions): RipgrepResult | null {

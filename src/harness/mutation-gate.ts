@@ -30,10 +30,10 @@ export interface FileMutationStats {
 	/** Mutants that escaped — tests passed against the mutated code. Bad. */
 	survived: number;
 	/** Mutants the framework couldn't evaluate (runtime error, timeout). */
-	timeout?: number;
-	no_coverage?: number;
-	compile_error?: number;
-	runtime_error?: number;
+	timeout?: number | undefined;
+	no_coverage?: number | undefined;
+	compile_error?: number | undefined;
+	runtime_error?: number | undefined;
 }
 
 export interface MutationReport {

@@ -117,8 +117,8 @@ export function parseInterlinkedTrailers(message: string): Record<string, string
 }
 
 export interface ProjectIdentity {
-	workspaceKey?: string;
-	projectKey?: string;
+	workspaceKey?: string | undefined;
+	projectKey?: string | undefined;
 }
 
 /**

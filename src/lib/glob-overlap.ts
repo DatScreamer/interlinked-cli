@@ -25,6 +25,7 @@ export function patternsOverlap(pattern1: string, pattern2: string, ignoreCase =
 	for (let i = 0; i < minLen; i++) {
 		const part1 = p1Parts[i];
 		const part2 = p2Parts[i];
+		if (part1 === undefined || part2 === undefined) continue;
 
 		// ** matches any number of directories
 		if (part1 === "**" || part2 === "**") {

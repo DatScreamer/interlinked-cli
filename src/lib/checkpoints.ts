@@ -24,9 +24,9 @@ export interface Checkpoint {
 	base_commit: string;
 	trigger: "manual" | "session_start" | "session_end" | "task_complete" | "periodic";
 	files_changed: string[];
-	stash_ref?: string;
+	stash_ref?: string | undefined;
 	restorable: boolean;
-	metadata?: JsonObject;
+	metadata?: JsonObject | undefined;
 }
 
 interface CreateCheckpointOpts {
@@ -41,7 +41,7 @@ interface CreateCheckpointOpts {
 interface RewindResult {
 	success: boolean;
 	files_restored: string[];
-	warning?: string;
+	warning?: string | undefined;
 }
 
 interface CompareResult {

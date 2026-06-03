@@ -140,7 +140,7 @@ function findAll(content: string, filePath: string): TypeErasureFinding[] {
 export function evaluateTypeErasureOverlay(
 	filePath: string,
 	postContent: string,
-	options?: { preContent?: string },
+	options?: { preContent?: string | undefined },
 ): TypeErasureOverlayResult {
 	if (!JS_TS_EXT.test(filePath)) return { newFindings: [], applicable: false };
 

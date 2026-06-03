@@ -138,8 +138,8 @@ export function getAutoCoordState(
 /** Build a one-line summary of the tool being invoked — used in guard-event
  *  reports and log lines. Capped at 200 chars for commands/URLs. */
 export function summarizeToolInput(event: {
-	tool_name?: string;
-	tool_input?: JsonObject;
+	tool_name?: string | undefined;
+	tool_input?: JsonObject | undefined;
 }): string {
 	if (!event.tool_input) return event.tool_name || "";
 	const input = event.tool_input;

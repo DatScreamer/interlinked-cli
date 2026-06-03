@@ -50,8 +50,15 @@ export function output(
 		case "full":
 			console.log(renderers.full ? renderers.full() : renderers.normal());
 			break;
-		default:
+		case "normal":
 			console.log(renderers.normal());
+			break;
+		default: {
+			// Exhaustiveness guard: adding a new OutputMode without a matching
+			// case above turns this assignment into a compile error.
+			const _exhaustive: never = mode;
+			throw new Error(`unhandled output mode: ${String(_exhaustive)}`);
+		}
 	}
 }
 

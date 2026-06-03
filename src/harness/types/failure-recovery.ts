@@ -23,17 +23,17 @@ export interface ToolFailureEvent {
 	session_id: string;
 	agent_source: AgentSource;
 	tool_name: string;
-	tool_input?: JsonObject;
-	tool_use_id?: string;
-	cwd?: string;
+	tool_input?: JsonObject | undefined;
+	tool_use_id?: string | undefined;
+	cwd?: string | undefined;
 	timestamp: string;
 	/** Canonical diagnostic text. Populated from the most-specific provider field. */
-	error_message?: string;
-	exit_code?: number;
-	stderr?: string;
-	stdout?: string;
+	error_message?: string | undefined;
+	exit_code?: number | undefined;
+	stderr?: string | undefined;
+	stdout?: string | undefined;
 	/** Set when Cursor's dedicated postToolUseFailure delivered the event. */
-	is_interrupt?: boolean;
+	is_interrupt?: boolean | undefined;
 }
 
 /** Local-tier triage rule. Pattern → classification. */
@@ -98,21 +98,21 @@ export interface FailureRecord {
 	session_id: string;
 	agent_source: AgentSource;
 	tool_name: string;
-	tool_input?: JsonObject;
-	tool_use_id?: string;
-	cwd?: string;
+	tool_input?: JsonObject | undefined;
+	tool_use_id?: string | undefined;
+	cwd?: string | undefined;
 	timestamp: string;
 	signature: string;
-	error_message?: string;
-	exit_code?: number;
-	stderr?: string;
-	stdout?: string;
-	triage?: TriageResult;
+	error_message?: string | undefined;
+	exit_code?: number | undefined;
+	stderr?: string | undefined;
+	stdout?: string | undefined;
+	triage?: TriageResult | undefined;
 	recurrence?: {
 		count: number;
 		distinct_sessions: number;
-	};
-	recovery?: string;
-	explanation?: string;
-	rollback?: RollbackAssessment;
+	} | undefined;
+	recovery?: string | undefined;
+	explanation?: string | undefined;
+	rollback?: RollbackAssessment | undefined;
 }

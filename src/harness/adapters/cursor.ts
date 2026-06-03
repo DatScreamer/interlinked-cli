@@ -120,7 +120,7 @@ const PHASE_MAP: Record<string, UnifiedPhase> = {
 };
 
 export interface CursorAdapterOptions {
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 export function createCursorAdapter(opts: CursorAdapterOptions = {}): RunnerAdapter {
@@ -157,7 +157,11 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): RunnerAdap
 		},
 
 		classifyToolClass(toolName, toolInput) {
-			return classifyFromToolName(toolName, toolInput, { overrides: opts.overrides });
+			return classifyFromToolName(
+				toolName,
+				toolInput,
+				opts.overrides ? { overrides: opts.overrides } : {},
+			);
 		},
 
 		renderSettingsFragment(binaryPath, scope): SettingsFragment {
@@ -370,7 +374,11 @@ function buildCursorAction(
 				void parseErr;
 			}
 		}
-		const tool_class: ToolClass = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+		const tool_class: ToolClass = classifyFromToolName(
+			toolNameRaw,
+			toolInput,
+			overrides ? { overrides } : {},
+		);
 		return {
 			kind: "tool_call",
 			tool_name: toolNameRaw.toLowerCase(),
@@ -394,7 +402,11 @@ function buildCursorAction(
 	) {
 		const toolNameRaw = readString(raw.tool_name) ?? "unknown";
 		const toolInput: unknown = raw.tool_input ?? {};
-		const tool_class: ToolClass = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+		const tool_class: ToolClass = classifyFromToolName(
+			toolNameRaw,
+			toolInput,
+			overrides ? { overrides } : {},
+		);
 		return {
 			kind: "tool_call",
 			tool_name: toolNameRaw.toLowerCase(),

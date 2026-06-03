@@ -24,14 +24,15 @@ import {
 	parsePipRequirementLine,
 } from "../harness/evaluator/manifest-edit-guard.js";
 import {
-	addToAllowlist,
 	type Allowlist,
+	addToAllowlist,
 	hashLockfile,
 	isPackageAllowed,
 	loadAllowlist,
 	saveAllowlist,
 } from "../harness/package-allowlist.js";
 import type { Ecosystem } from "../harness/package-install-parser.js";
+import type { JsonObject } from "../lib/json-types.js";
 
 const ECOSYSTEMS: readonly Ecosystem[] = ["npm", "pypi", "cargo", "rubygems", "go"];
 
@@ -69,8 +70,8 @@ export function addAllowlistCommand(
 	}
 	addToAllowlist(opts.cwd, ecosystem, pkg, {
 		approved_by: opts.by,
-		reason: opts.reason,
-		version_range: opts.versionRange,
+		...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+		...(opts.versionRange !== undefined ? { version_range: opts.versionRange } : {}),
 	});
 	process.stdout.write(`approved: ${ecosystem}:${pkg} (by ${opts.by})\n`);
 }
@@ -196,7 +197,7 @@ export function snapshotAllowlistCommand(opts: SnapshotOpts): void {
 			sha256: sha,
 			approved_at: new Date().toISOString(),
 			approved_by: opts.by,
-			reason: opts.reason,
+			...(opts.reason !== undefined ? { reason: opts.reason } : {}),
 		};
 		taken.push(name);
 	}
@@ -256,9 +257,9 @@ function reportUnapproved(
 function checkPackageJson(cwd: string, al: Allowlist, issues: string[]): void {
 	const content = readIfPresent(join(cwd, "package.json"));
 	if (content === null) return;
-	let parsed: Record<string, unknown>;
+	let parsed: JsonObject;
 	try {
-		parsed = JSON.parse(content) as Record<string, unknown>;
+		parsed = JSON.parse(content) as JsonObject;
 	} catch {
 		issues.push(`  could not parse package.json (JSON error)`);
 		return;
@@ -271,7 +272,7 @@ function checkPackageJson(cwd: string, al: Allowlist, issues: string[]): void {
 	]) {
 		const m = parsed[field];
 		if (!m || typeof m !== "object") continue;
-		for (const name of Object.keys(m as Record<string, unknown>)) {
+		for (const name of Object.keys(m as JsonObject)) {
 			reportUnapproved(al, "npm", name, issues);
 		}
 	}

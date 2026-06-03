@@ -127,8 +127,8 @@ export function computeClassifierStatusLine(rules: GuardRulesConfig): string {
  *  `ready:<pid>` / `dormant` / `starting` / `down:<reason>`. */
 export function formatScannerStatusLine(s: {
 	state: string;
-	pid?: number;
-	detail?: string;
+	pid?: number | undefined;
+	detail?: string | undefined;
 }): string {
 	switch (s.state) {
 		case "ready":

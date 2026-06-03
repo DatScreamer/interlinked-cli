@@ -173,11 +173,13 @@ function applyPersistedSuppressions(r: CodeQualityResults, interlinkedDir: strin
 export function runCodeQualityChecks(files: string[], cwd: string): CodeQualityResults {
 	const r = emptyResults();
 
-	// Load PII config from shared config (if available)
+	// Load PII config from shared config (if available). Build with conditional
+	// spreads so absent keys stay absent rather than being set to `undefined`
+	// — `PiiOpts` (derived from checkPiiInSource) is exact-optional.
 	const sharedConfig = readSharedConfig(cwd);
 	const piiOpts = {
-		optIn: sharedConfig?.pii_opt_in,
-		customPatterns: sharedConfig?.pii_patterns,
+		...(sharedConfig?.pii_opt_in ? { optIn: sharedConfig.pii_opt_in } : {}),
+		...(sharedConfig?.pii_patterns ? { customPatterns: sharedConfig.pii_patterns } : {}),
 	};
 
 	// Project-level data needed for cross-file checks

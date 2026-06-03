@@ -23,6 +23,7 @@
 
 import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import type { HarnessDecision } from "../types.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
@@ -87,7 +88,7 @@ const PHASE_MAP: Record<string, UnifiedPhase> = {
 };
 
 export interface CodexAdapterOptions {
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 export function createCodexAdapter(opts: CodexAdapterOptions = {}): RunnerAdapter {
@@ -100,7 +101,11 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): RunnerAdapte
 		parseHookInput: (nativeJson, nativeEventName) =>
 			codexParseHookInput(nativeJson, nativeEventName, opts.overrides),
 		classifyToolClass: (toolName, toolInput) =>
-			classifyFromToolName(toolName, toolInput, { overrides: opts.overrides }),
+			classifyFromToolName(
+				toolName,
+				toolInput,
+				opts.overrides ? { overrides: opts.overrides } : {},
+			),
 		renderSettingsFragment: codexRenderSettingsFragment,
 		encodeDecision: codexEncodeDecision,
 		postInstall: codexPostInstall,
@@ -179,16 +184,7 @@ function codexRenderSettingsFragment(binaryPath: string, scope: string): Setting
 	return { path, fragment: { hooks }, mergeStrategy: "array-append" };
 }
 
-function codexEncodeDecision(
-	decision: {
-		decision: string;
-		reason?: string;
-		warnings?: string[];
-		additional_context?: string;
-		resolved_targets?: import("../types.js").ResolvedTarget[];
-	},
-	event: UnifiedHookEvent,
-): AdapterOutput {
+function codexEncodeDecision(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput {
 	const isPermissionRequest = event.runner_native_event === EVT_PERMISSION_REQUEST;
 	if (decision.decision === DECISION_BLOCK || decision.decision === DECISION_ASK) {
 		// Codex doesn't document an "ask" primitive on PreToolUse; surface
@@ -205,11 +201,7 @@ function codexEncodeDecision(
 }
 
 function encodeCodexBlock(
-	decision: {
-		reason?: string;
-		warnings?: string[];
-		resolved_targets?: import("../types.js").ResolvedTarget[];
-	},
+	decision: Pick<HarnessDecision, "reason" | "warnings" | "resolved_targets">,
 	isPermissionRequest: boolean,
 ): AdapterOutput {
 	// Append resolved targets to the deny reason. When ask→deny collapses
@@ -232,7 +224,7 @@ function encodeCodexBlock(
 }
 
 function encodeCodexAllow(
-	decision: { warnings?: string[]; additional_context?: string },
+	decision: Pick<HarnessDecision, "warnings" | "additional_context">,
 	isPermissionRequest: boolean,
 ): AdapterOutput {
 	const warningsTail = (decision.warnings ?? []).join("\n");
@@ -272,7 +264,11 @@ function buildToolCallAction(
 ): UnifiedHookEvent["action"] {
 	const toolNameRaw = readString(raw.tool_name) ?? "unknown";
 	const toolInput = readToolInput(raw);
-	const tool_class = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+	const tool_class = classifyFromToolName(
+		toolNameRaw,
+		toolInput,
+		overrides ? { overrides } : {},
+	);
 	const base = {
 		kind: "tool_call" as const,
 		tool_name: toolNameRaw,

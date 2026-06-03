@@ -12,7 +12,7 @@ import { createGeminiCliAdapter } from "./gemini-cli.js";
 import type { RunnerAdapter } from "./types.js";
 
 export interface AdapterRegistryOptions {
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 /** Build the full set of adapters, sharing classifier overrides. */

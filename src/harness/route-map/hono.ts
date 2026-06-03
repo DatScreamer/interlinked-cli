@@ -41,7 +41,8 @@ function findHonoInstances(content: string): Set<string> {
 	const names = new Set<string>();
 	HONO_INSTANCE_DECL_RE.lastIndex = 0;
 	for (let m = HONO_INSTANCE_DECL_RE.exec(content); m !== null; m = HONO_INSTANCE_DECL_RE.exec(content)) {
-		names.add(m[1]);
+		const name = m[1];
+		if (name !== undefined) names.add(name);
 	}
 	return names;
 }
@@ -54,9 +55,11 @@ export function extractEndpoints(filePath: string, content: string): Endpoint[] 
 	METHOD_RE.lastIndex = 0;
 	for (let m = METHOD_RE.exec(content); m !== null; m = METHOD_RE.exec(content)) {
 		const receiver = m[1];
-		if (!RECEIVER_NAME_RE.test(receiver) && !honoInstances.has(receiver)) continue;
-		const verb = m[2].toUpperCase();
+		const verbRaw = m[2];
 		const path = m[3];
+		if (receiver === undefined || verbRaw === undefined || path === undefined) continue;
+		if (!RECEIVER_NAME_RE.test(receiver) && !honoInstances.has(receiver)) continue;
+		const verb = verbRaw.toUpperCase();
 		// `m.index` points at the leading `[^.\w]` char (often a newline), so we
 		// adjust to the start of the receiver name before computing the line —
 		// otherwise routes on line N report as N−1, defeating the comment-skip.

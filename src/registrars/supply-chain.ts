@@ -42,9 +42,11 @@ export function registerSupplyChainCommands(program: Command): void {
 					addAllowlistCommand(ecosystem, pkg, {
 						cwd: opts.cwd || process.cwd(),
 						by: opts.by,
-						reason: opts.reason,
-						versionRange: opts.versionRange,
-						force: opts.force,
+						...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+						...(opts.versionRange !== undefined
+							? { versionRange: opts.versionRange }
+							: {}),
+						...(opts.force !== undefined ? { force: opts.force } : {}),
 					});
 				} catch (err) {
 					process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -72,8 +74,8 @@ export function registerSupplyChainCommands(program: Command): void {
 			const { listAllowlistCommand } = await import("../commands/allowlist.js");
 			listAllowlistCommand({
 				cwd: opts.cwd || process.cwd(),
-				ecosystem: opts.ecosystem,
-				json: opts.json,
+				...(opts.ecosystem !== undefined ? { ecosystem: opts.ecosystem } : {}),
+				...(opts.json !== undefined ? { json: opts.json } : {}),
 			});
 		});
 
@@ -94,8 +96,8 @@ export function registerSupplyChainCommands(program: Command): void {
 				snapshotAllowlistCommand({
 					cwd: opts.cwd || process.cwd(),
 					by: opts.by,
-					reason: opts.reason,
-					lockfile: opts.lockfile,
+					...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+					...(opts.lockfile !== undefined ? { lockfile: opts.lockfile } : {}),
 				});
 			},
 		);

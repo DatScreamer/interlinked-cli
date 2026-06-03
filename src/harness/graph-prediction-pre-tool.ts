@@ -74,15 +74,15 @@ export interface DriveArgs {
 	 *  evaluator. Lets the reconciler fall back to the internal dependency
 	 *  oracle when no fresh Supermodel shard exists. Optional: when absent,
 	 *  only shard-backed (Case E-fresh) targets get an oracle. */
-	graph?: ProjectGraph;
+	graph?: ProjectGraph | undefined;
 }
 
 export interface DriveResult {
 	decision: "block" | "allow";
-	reason?: string;
-	additional_context?: string;
-	observation?: { file_path: string; case: GraphPredictionCase };
-	severity?: SeverityResult;
+	reason?: string | undefined;
+	additional_context?: string | undefined;
+	observation?: { file_path: string; case: GraphPredictionCase } | undefined;
+	severity?: SeverityResult | undefined;
 }
 
 export function driveGraphPrediction(args: DriveArgs): DriveResult | null {

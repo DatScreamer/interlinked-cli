@@ -100,7 +100,7 @@ export interface FindClonesInput {
 	 */
 	candidates: FunctionShingles[];
 	/** Similarity cutoff; defaults to {@link DEFAULT_SIMILARITY_THRESHOLD}. */
-	threshold?: number;
+	threshold?: number | undefined;
 }
 
 // ==================================================================

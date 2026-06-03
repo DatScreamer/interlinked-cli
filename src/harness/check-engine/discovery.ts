@@ -213,7 +213,7 @@ function findConfig(startDir: string, configFiles: string[]): boolean {
 }
 
 /** Try running a version command and extract the version string. */
-function tryBinary(bin: ToolBinarySpec): { available: boolean; version?: string } {
+function tryBinary(bin: ToolBinarySpec): { available: boolean; version?: string | undefined } {
 	try {
 		const result = spawnSync(bin.versionCmd[0], bin.versionCmd.slice(1), {
 			timeout: 5_000,
@@ -231,7 +231,7 @@ function tryBinary(bin: ToolBinarySpec): { available: boolean; version?: string 
 }
 
 /** Check if a tool binary is available, trying fallback if primary fails. */
-function checkBinary(spec: ToolSpec): { available: boolean; version?: string } {
+function checkBinary(spec: ToolSpec): { available: boolean; version?: string | undefined } {
 	const primary = tryBinary(spec);
 	if (primary.available) return primary;
 	if (spec.fallback) return tryBinary(spec.fallback);

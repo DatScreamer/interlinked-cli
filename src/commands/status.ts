@@ -42,7 +42,7 @@ interface ServerStatus {
 	reachable: boolean;
 	authenticated: boolean;
 	workspaceName: string | null;
-	error?: string;
+	error?: string | undefined;
 }
 
 interface StatusData {
@@ -257,8 +257,8 @@ function renderNormal(data: StatusData): string {
 			const agent = e.agent || c.dim("-");
 			const summary = formatActivitySummary({
 				event_type: e.type,
-				tool_name: e.tool,
-				tool_input_summary: e.summary,
+				tool_name: e.tool ?? null,
+				tool_input_summary: e.summary ?? null,
 			});
 			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${c.dim(summary)}`);
 		}
@@ -440,8 +440,8 @@ function renderFull(data: StatusData): string {
 			const agent = e.agent || c.dim("-");
 			const summary = formatActivitySummary({
 				event_type: e.type,
-				tool_name: e.tool,
-				tool_input_summary: e.summary,
+				tool_name: e.tool ?? null,
+				tool_input_summary: e.summary ?? null,
 			});
 			const detail = e.tool ? c.dim(` [${e.tool}]`) : "";
 			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${summary}${detail}`);

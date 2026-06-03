@@ -93,7 +93,7 @@ export function registerQualityCommands(program: Command): void {
 		)
 		.action(async (target: string | undefined, opts: OptionValues) => {
 			const { verifyCommand } = await import("../commands/verify.js");
-			await verifyCommand({ ...opts, target });
+			await verifyCommand({ ...opts, ...(target !== undefined ? { target } : {}) });
 		});
 
 	// `interlinked write` routes Bash-mediated file writes through the full

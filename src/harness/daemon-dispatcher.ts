@@ -43,7 +43,7 @@ export interface DispatcherState {
 	/** Optional production runtime bridge. When present, hook RPCs go through
 	 *  the same HarnessEvent evaluator used by the raw socket path so lifecycle
 	 *  side effects, latency hooks, reservations, and scanner state stay shared. */
-	evaluateHook?(event: UnifiedHookEvent): Promise<HarnessDecision>;
+	evaluateHook?: ((event: UnifiedHookEvent) => Promise<HarnessDecision>) | undefined;
 	/** Called from the `daemon.shutdown` RPC. */
 	shutdown(reason?: string): void;
 }

@@ -39,9 +39,9 @@ export interface CheckResult {
 	severity: "error" | "warning" | "info";
 	file: string; // relative path from projectRoot
 	line: number; // 0 if unknown
-	column?: number;
+	column?: number | undefined;
 	message: string;
-	ruleId?: string; // e.g. "TS2345", "lint/suspicious/noDoubleEquals"
+	ruleId?: string | undefined; // e.g. "TS2345", "lint/suspicious/noDoubleEquals"
 }
 
 /** Controls WHAT gets checked. */
@@ -70,8 +70,8 @@ export interface CheckOptions {
 export interface ToolAvailability {
 	id: ToolId;
 	available: boolean;
-	version?: string;
-	reason?: string; // why unavailable (e.g. "not installed", "no config file")
+	version?: string | undefined;
+	reason?: string | undefined; // why unavailable (e.g. "not installed", "no config file")
 }
 
 /** Full report from a check run. */

@@ -84,10 +84,10 @@ export interface HarnessEvent {
 	agent_name?: string;
 
 	// Tool context (PreToolUse / PostToolUse)
-	tool_name?: string;
-	tool_input?: JsonObject;
+	tool_name?: string | undefined;
+	tool_input?: JsonObject | undefined;
 	tool_response?: unknown;
-	tool_use_id?: string;
+	tool_use_id?: string | undefined;
 	files_modified?: string[];
 
 	// Canonical post-event outcome fields — populated by `deriveToolOutcome`

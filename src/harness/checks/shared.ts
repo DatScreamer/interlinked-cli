@@ -30,8 +30,10 @@ export const JS_TS_ALL_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".c
 export function collectFunctionSignature(lines: string[], startIdx: number): string {
 	let sig = "";
 	for (let i = startIdx; i < Math.min(startIdx + 20, lines.length); i++) {
-		sig += ` ${lines[i]}`;
-		if (lines[i].includes("{") || lines[i].includes("=>")) break;
+		const line = lines[i];
+		if (line === undefined) break;
+		sig += ` ${line}`;
+		if (line.includes("{") || line.includes("=>")) break;
 	}
 	return sig;
 }
@@ -399,7 +401,7 @@ function hasOnlyTypeLevelTopLevelStatements(code: string): boolean {
 
 function skipWhitespace(code: string, offset: number): number {
 	let i = offset;
-	while (i < code.length && /\s/.test(code[i])) i++;
+	while (i < code.length && /\s/.test(code[i] ?? "")) i++;
 	return i;
 }
 
@@ -634,6 +636,7 @@ export function findEnclosingScope(content: string, line: number): string | null
 	// reporting the closest enclosing name is good enough for triage.
 	for (let i = targetIdx; i >= 0; i--) {
 		const candidate = lines[i];
+		if (candidate === undefined) continue;
 		const name = matchScopeDeclaration(candidate);
 		if (name && !SCOPE_KEYWORD_BLACKLIST.has(name)) {
 			return name;
@@ -645,7 +648,7 @@ export function findEnclosingScope(content: string, line: number): string | null
 function matchScopeDeclaration(line: string): string | null {
 	for (const re of SCOPE_DECLARATION_RES) {
 		const m = re.exec(line);
-		if (m) return m[1];
+		if (m) return m[1] ?? null;
 	}
 	return null;
 }
@@ -705,6 +708,7 @@ export function stripComments(content: string): string {
 
 	for (let i = 0; i < lines.length; i++) {
 		let line = lines[i];
+		if (line === undefined) continue;
 
 		if (inBlockComment) {
 			const endIdx = line.indexOf("*/");
@@ -771,6 +775,7 @@ export function stripStrings(content: string): string {
 	let templateDepth = 0; // Track nested template literal depth
 	for (let i = 0; i < lines.length; i++) {
 		let line = lines[i];
+		if (line === undefined) continue;
 
 		// Inside a multi-line template literal: blank the line, track backticks
 		if (templateDepth > 0) {
@@ -828,10 +833,13 @@ export function scanLinesStripped(
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= maxMatches) break;
-		if (pattern.test(strippedLines[i])) {
+		const strippedLine = strippedLines[i];
+		const originalLine = originalLines[i];
+		if (strippedLine === undefined || originalLine === undefined) continue;
+		if (pattern.test(strippedLine)) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: originalLine.trim().slice(0, 150),
 			});
 		}
 	}

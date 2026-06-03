@@ -53,9 +53,11 @@ export function extractEndpoints(filePath: string, content: string): Endpoint[] 
 	METHOD_RE.lastIndex = 0;
 	for (let m = METHOD_RE.exec(content); m !== null; m = METHOD_RE.exec(content)) {
 		const receiver = m[1];
-		if (!RECEIVER_NAME_RE.test(receiver)) continue;
-		const verb = m[2].toUpperCase();
+		const verbRaw = m[2];
 		const path = m[3];
+		if (receiver === undefined || verbRaw === undefined || path === undefined) continue;
+		if (!RECEIVER_NAME_RE.test(receiver)) continue;
+		const verb = verbRaw.toUpperCase();
 		const receiverOffset = m.index + (m[0].indexOf(receiver) >= 0 ? m[0].indexOf(receiver) : 0);
 		const line = lineNumberAt(content, receiverOffset);
 		const lineText = lines[line - 1] ?? "";

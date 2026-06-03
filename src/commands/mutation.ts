@@ -71,7 +71,7 @@ export async function mutationCheckCommand(opts: MutationCheckOptions): Promise<
 		const result = compareMutation(report, baseline, {
 			config: { ...policy.mutation_gate, min_score: minScore },
 			repoRoot: cwd,
-			changedFiles,
+			...(changedFiles !== undefined ? { changedFiles } : {}),
 		});
 
 		output(mode, buildJsonPayload(reportPath, result, minScore), {

@@ -20,8 +20,9 @@ export function extractEndpoints(filePath: string, content: string): Endpoint[] 
 	TOOL_RE.lastIndex = 0;
 	for (let m = TOOL_RE.exec(content); m !== null; m = TOOL_RE.exec(content)) {
 		const receiver = m[1];
-		if (!TOOL_RECEIVER_RE.test(receiver)) continue;
 		const toolName = m[2];
+		if (receiver === undefined || toolName === undefined) continue;
+		if (!TOOL_RECEIVER_RE.test(receiver)) continue;
 		const receiverOffset = m.index + (m[0].indexOf(receiver) >= 0 ? m[0].indexOf(receiver) : 0);
 		const line = lineNumberAt(content, receiverOffset);
 		const lineText = lines[line - 1] ?? "";

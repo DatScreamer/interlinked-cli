@@ -66,7 +66,7 @@ export interface PolicyClassification {
 	/** One-sentence reasoning */
 	reasoning: string;
 	/** Which policy was violated (if any) */
-	policy_id?: string;
+	policy_id?: string | undefined;
 }
 
 /** Structured evidence envelope sent to the classifier (redacted, no raw content) */
@@ -91,12 +91,12 @@ export interface PolicyEvidence {
 	errors_this_session: number;
 
 	// Intent scope (if assigned)
-	intent_goal?: string;
-	intent_file_patterns?: string[];
+	intent_goal?: string | undefined;
+	intent_file_patterns?: string[] | undefined;
 
 	// Injection context
 	injection_detected_in_session: boolean;
-	steps_since_injection?: number;
+	steps_since_injection?: number | undefined;
 
 	// Active policies to evaluate
 	policies: PolicyRule[];

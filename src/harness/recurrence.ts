@@ -33,31 +33,31 @@ export type OutcomeSignal =
 export interface RecurrenceEvent {
 	ts: string;
 	kind: RecurrenceKind;
-	check_id?: string;
-	agent_source?: string;
-	session_id?: string;
-	file?: string;
-	message?: string;
-	signature?: string;
+	check_id?: string | undefined;
+	agent_source?: string | undefined;
+	session_id?: string | undefined;
+	file?: string | undefined;
+	message?: string | undefined;
+	signature?: string | undefined;
 	/** Phase the originating check declared. Optional for backwards compat
 	 *  with rows written before Phase 1 of the rollout. */
-	phase?: RecurrencePhase;
+	phase?: RecurrencePhase | undefined;
 	/** Severity at the originating check. Optional for backwards compat. */
-	severity?: RecurrenceSeverity;
+	severity?: RecurrenceSeverity | undefined;
 	/** Set on `outcome_marker` rows; identifies what happened to the fire. */
-	outcome_signal?: OutcomeSignal;
+	outcome_signal?: OutcomeSignal | undefined;
 	/** Free-text one-liner explaining the outcome (e.g., the suppression
 	 *  directive text + justification). */
-	outcome_reason?: string;
+	outcome_reason?: string | undefined;
 	/** Set on `outcome_marker` rows; the `ts` of the original fire being
 	 *  marked. Lets the aggregator pair markers to fires deterministically. */
-	fire_ts?: string;
+	fire_ts?: string | undefined;
 }
 
 export interface Recurrence {
 	kind: RecurrenceKind;
 	signature: string;
-	check_id?: string;
+	check_id?: string | undefined;
 	count: number;
 	first_seen: string;
 	last_seen: string;
@@ -125,7 +125,7 @@ export function aggregateRecurrences(
 		{
 			kind: RecurrenceKind;
 			signature: string;
-			check_id?: string;
+			check_id?: string | undefined;
 			count: number;
 			first_seen: string;
 			last_seen: string;
@@ -296,11 +296,11 @@ export function recordHarnessCaught(opts: {
 	agent_source: string;
 	session_id: string;
 	file: string;
-	message?: string;
-	cwd?: string;
-	ts?: string;
-	phase?: RecurrencePhase;
-	severity?: RecurrenceSeverity;
+	message?: string | undefined;
+	cwd?: string | undefined;
+	ts?: string | undefined;
+	phase?: RecurrencePhase | undefined;
+	severity?: RecurrenceSeverity | undefined;
 }): void {
 	try {
 		recordRecurrenceEvent(
@@ -336,10 +336,10 @@ export function recordToolFailure(opts: {
 	signature: string;
 	agent_source: string;
 	session_id: string;
-	file?: string;
-	message?: string;
-	cwd?: string;
-	ts?: string;
+	file?: string | undefined;
+	message?: string | undefined;
+	cwd?: string | undefined;
+	ts?: string | undefined;
 }): void {
 	try {
 		recordRecurrenceEvent(
@@ -375,10 +375,10 @@ export function markOutcome(opts: {
 	file: string;
 	session_id: string;
 	signal: OutcomeSignal;
-	reason?: string;
-	fire_ts?: string;
-	cwd?: string;
-	ts?: string;
+	reason?: string | undefined;
+	fire_ts?: string | undefined;
+	cwd?: string | undefined;
+	ts?: string | undefined;
 }): void {
 	try {
 		recordRecurrenceEvent(
@@ -407,11 +407,11 @@ export function markOutcome(opts: {
  *  lands here, calling this function once per detected pattern. */
 export function recordHarnessMissed(opts: {
 	signature: string;
-	check_id?: string;
-	file?: string;
-	message?: string;
-	cwd?: string;
-	ts?: string;
+	check_id?: string | undefined;
+	file?: string | undefined;
+	message?: string | undefined;
+	cwd?: string | undefined;
+	ts?: string | undefined;
 }): void {
 	recordRecurrenceEvent(
 		{

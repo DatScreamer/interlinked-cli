@@ -62,7 +62,7 @@ export interface GateFailure {
 	/** 1-based line number (0 if unknown). */
 	line: number;
 	/** 1-based column number (optional). */
-	column?: number;
+	column?: number | undefined;
 	/** Human-readable description of the problem. */
 	message: string;
 	/** error = transaction-killer; warning = informational only (not a blocker). */

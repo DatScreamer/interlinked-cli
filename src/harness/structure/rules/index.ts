@@ -30,7 +30,7 @@ export interface StructureRuleContext {
 	graph: ArtifactGraph;
 	config: StructureConfig;
 	changedFiles: string[];
-	repoRoot?: string;
+	repoRoot?: string | undefined;
 }
 
 function isRuleContext(x: StructureRuleContext | ArtifactGraph): x is StructureRuleContext {

@@ -225,7 +225,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
 	// Initialize config
 	initConfig({ serverUrl, agentName }, cwd);
-	updateLocalConfig({ sync_mode: syncMode as LocalConfig["sync_mode"] }, cwd);
+	updateLocalConfig({ sync_mode: syncMode as NonNullable<LocalConfig["sync_mode"]> }, cwd);
 
 	if (!isJson) {
 		console.log(`   ${c.green("✓")} Config written to .interlinked/`);
@@ -311,7 +311,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		const token = resolveAuthToken();
 		const client = new InterlinkedClient({
 			serverUrl,
-			token: token || undefined,
+			...(token ? { token } : {}),
 		});
 		await client.callTool("health_check");
 		serverReachable = true;

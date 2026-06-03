@@ -111,7 +111,7 @@ describe("commit-cadence — PostToolUse integration", () => {
 			doc_globs: rules.commit_cadence?.doc_globs ?? [],
 		};
 
-		const decisions: Array<{ warnings?: string[] }> = [];
+		const decisions: Array<{ warnings?: string[] | undefined }> = [];
 		for (const f of ["a.ts", "b.ts", "c.ts", "d.ts"]) {
 			decisions.push(
 				evaluatePostToolUse(
@@ -145,7 +145,7 @@ describe("commit-cadence — PostToolUse integration", () => {
 			doc_globs: rules.commit_cadence?.doc_globs ?? [],
 		};
 
-		const decisions: Array<{ warnings?: string[] }> = [];
+		const decisions: Array<{ warnings?: string[] | undefined }> = [];
 		for (const f of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"]) {
 			decisions.push(
 				evaluatePostToolUse(
@@ -187,7 +187,7 @@ describe("commit-cadence — PostToolUse integration", () => {
 		expect(session.mid_session_nudge_emitted).toBe(false);
 
 		// Second burst — fires again.
-		const after: Array<{ warnings?: string[] }> = [];
+		const after: Array<{ warnings?: string[] | undefined }> = [];
 		for (const f of ["d.ts", "e.ts", "f.ts"]) {
 			after.push(
 				evaluatePostToolUse(

@@ -3,6 +3,7 @@
 // Interlinked Harness — Guard Rule & Active-When Scoping Types
 // ===========================================
 
+import type { JsonObject } from "../../lib/json-types.js";
 import type { AgentRole, AgentSource } from "./events.js";
 
 // ===========================================
@@ -66,15 +67,15 @@ export interface GuardRule {
 	/** Human-readable reason shown to the agent */
 	reason: string;
 	/** Suggested alternative action */
-	suggestion?: string;
+	suggestion?: string | undefined;
 	/** Severity for logging and dashboard display */
 	severity: "critical" | "high" | "medium" | "low";
 	/** Category for documentation grouping */
-	category?: string;
+	category?: string | undefined;
 	/** Agent roles this rule applies to (omit or empty = all roles) */
-	applies_to_roles?: AgentRole[];
+	applies_to_roles?: AgentRole[] | undefined;
 	/** Input rewrite function key — used when action is "rewrite" */
-	rewrite?: InputRewrite;
+	rewrite?: InputRewrite | undefined;
 	/**
 	 * Keyword tokens that, when ANY of them appear in the wrapper-normalized
 	 * command, gate evaluation of this rule. Empty/missing list = "always
@@ -83,27 +84,27 @@ export interface GuardRule {
 	 * `evaluator/keyword-quick-reject.ts`. Tokens are matched
 	 * case-insensitively against shell-tokenized command text.
 	 */
-	keywords?: string[];
+	keywords?: string[] | undefined;
 	/**
 	 * Optional ISO 8601 expiry timestamp. If set and in the past at rule-load
 	 * time, the rule is silently dropped from the loaded set. Used for
 	 * temporary rules ("block X until 2026-06-01") so they don't linger as
 	 * forgotten allowlist entries.
 	 */
-	expires_at?: string;
+	expires_at?: string | undefined;
 	/**
 	 * Optional duration after which the rule expires, expressed as e.g.
 	 * "30d", "12h", "1w". Loader resolves to a concrete `expires_at` at the
 	 * moment the rule is first loaded. Convenience for human-authored configs.
 	 */
-	expires_after?: string;
+	expires_after?: string | undefined;
 	/**
 	 * Optional runtime scope condition. When present, the rule is dormant
 	 * unless every listed axis holds (skill active, TDD phase matches,
 	 * recent command in window, etc.). See `ActiveWhen` and
 	 * docs/design/harness-active-when-scoping.md.
 	 */
-	active_when?: ActiveWhen;
+	active_when?: ActiveWhen | undefined;
 	/**
 	 * Optional file-extension allowlist. When set, the rule only fires if the
 	 * tool input's `file_path` (or `path`) field has an extension in this
@@ -114,7 +115,7 @@ export interface GuardRule {
 	 * tolerant of leading dot ('.py' and 'py' both work). Undefined =
 	 * unrestricted (the existing default).
 	 */
-	file_extensions?: string[];
+	file_extensions?: string[] | undefined;
 	/**
 	 * Optional externality-tier allowlist. When set, the rule only fires if
 	 * `classifyToolExternality(tool_name, tool_input)` (see
@@ -125,20 +126,20 @@ export interface GuardRule {
 	 * regex over every network verb. Undefined = unrestricted (preserves
 	 * existing fire-on-all behaviour).
 	 */
-	tool_externality?: ToolExternality[];
+	tool_externality?: ToolExternality[] | undefined;
 	/**
 	 * Temporal precondition. After content patterns match, evaluated against
 	 * the live `SessionTrajectory`. Rule fires only when predicate is NOT
 	 * satisfied (the required earlier action is missing). Pure read; see
 	 * `src/harness/evaluator/temporal-matching.ts`.
 	 */
-	requires_prior?: TemporalPredicate;
+	requires_prior?: TemporalPredicate | undefined;
 	/**
 	 * Temporal anti-precondition. After content patterns match, evaluated
 	 * against the live `SessionTrajectory`. Rule fires only when predicate
 	 * IS satisfied (the forbidden earlier action is present). Pure read.
 	 */
-	forbids_after?: TemporalPredicate;
+	forbids_after?: TemporalPredicate | undefined;
 }
 
 /**
@@ -244,7 +245,7 @@ export interface AfterCommandSpec {
 
 export interface SessionPredicateSpec {
 	name: string;
-	args?: Record<string, unknown>;
+	args?: JsonObject;
 }
 
 /** Per-session record of an active skill marker. Garbage-collected on every session event. */

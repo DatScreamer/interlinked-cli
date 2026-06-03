@@ -15,12 +15,12 @@ export async function rewindCommand(
 	if (opts?.list || !checkpointId) {
 		// Shorthand for checkpoint list
 		const { checkpointListCommand } = await import("./checkpoint.js");
-		return checkpointListCommand({ json: opts?.json });
+		return checkpointListCommand(opts?.json !== undefined ? { json: opts.json } : {});
 	}
 
 	try {
 		const result = rewindToCheckpoint(checkpointId, {
-			force: opts?.force,
+			...(opts?.force !== undefined ? { force: opts.force } : {}),
 		});
 
 		output(mode, result, {

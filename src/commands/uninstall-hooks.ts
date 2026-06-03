@@ -26,7 +26,7 @@ export async function uninstallHooksCommand(options: UninstallHooksOptions): Pro
 	const runners = parseRunners(options.runner);
 	const result = uninstallHooks({
 		cwd,
-		runners: runners.length === 0 ? undefined : runners,
+		...(runners.length === 0 ? {} : { runners }),
 		dryRun: options.dryRun === true,
 	});
 

@@ -53,7 +53,7 @@ const PHASE_MAP: Record<string, UnifiedPhase> = {
 
 export interface ClaudeCodeAdapterOptions {
 	/** Pre-loaded classifier overrides; adapter does not read disk itself. */
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): RunnerAdapter {
@@ -103,7 +103,11 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 		},
 
 		classifyToolClass(toolName, toolInput) {
-			return classifyFromToolName(toolName, toolInput, { overrides: opts.overrides });
+			return classifyFromToolName(
+				toolName,
+				toolInput,
+				opts.overrides ? { overrides: opts.overrides } : {},
+			);
 		},
 
 		renderSettingsFragment(binaryPath, scope): SettingsFragment {
@@ -217,7 +221,11 @@ function buildToolCallAction(
 	const tool_name_raw = readString(raw.tool_name) ?? "unknown";
 	const tool_name = normalizeToolName(tool_name_raw);
 	const tool_input = (raw.tool_input as unknown) ?? {};
-	const tool_class: ToolClass = classifyFromToolName(tool_name_raw, tool_input, { overrides });
+	const tool_class: ToolClass = classifyFromToolName(
+		tool_name_raw,
+		tool_input,
+		overrides ? { overrides } : {},
+	);
 	const base = {
 		kind: "tool_call" as const,
 		tool_name,

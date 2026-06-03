@@ -23,7 +23,7 @@ const PHASE_MAP: Record<string, UnifiedPhase> = {
 };
 
 export interface GeminiCliAdapterOptions {
-	overrides?: ClassifierOverrides;
+	overrides?: ClassifierOverrides | undefined;
 }
 
 export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): RunnerAdapter {
@@ -61,7 +61,11 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 		},
 
 		classifyToolClass(toolName, toolInput) {
-			return classifyFromToolName(toolName, toolInput, { overrides: opts.overrides });
+			return classifyFromToolName(
+				toolName,
+				toolInput,
+				opts.overrides ? { overrides: opts.overrides } : {},
+			);
 		},
 
 		renderSettingsFragment(binaryPath, scope): SettingsFragment {
@@ -115,7 +119,11 @@ function buildGeminiAction(
 	if (eventName === "BeforeTool" || eventName === "AfterTool") {
 		const toolNameRaw = readString(raw.tool_name) ?? readString(raw.toolName) ?? "unknown";
 		const toolInput = (raw.tool_input ?? raw.toolInput ?? raw.arguments ?? {}) as unknown;
-		const tool_class: ToolClass = classifyFromToolName(toolNameRaw, toolInput, { overrides });
+		const tool_class: ToolClass = classifyFromToolName(
+			toolNameRaw,
+			toolInput,
+			overrides ? { overrides } : {},
+		);
 		const base = {
 			kind: "tool_call" as const,
 			tool_name: toolNameRaw.toLowerCase(),

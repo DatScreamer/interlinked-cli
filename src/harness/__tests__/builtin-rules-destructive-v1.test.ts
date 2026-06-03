@@ -100,7 +100,7 @@ describe("Plan 02 — destructive command rules (v1)", () => {
 		session = makeSession();
 	});
 
-	function decide(command: string): { decision: string; rule_id?: string } {
+	function decide(command: string): { decision: string; rule_id?: string | undefined } {
 		const event = makeEvent({ tool_input: { command } });
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 		return { decision: String(result.decision), rule_id: result.rule_id };

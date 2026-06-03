@@ -24,6 +24,7 @@ export function parseExports(content: string): ExportedSymbol[] {
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
+		if (line === undefined) continue;
 		const trimmed = line.trim();
 
 		// Track block comments
@@ -66,7 +67,7 @@ export function parseExports(content: string): ExportedSymbol[] {
 
 		// export type { Foo, Bar } from '...' or export type { Foo, Bar }
 		const typeReExport = trimmed.match(/^export\s+type\s+\{([^}]+)\}/);
-		if (typeReExport) {
+		if (typeReExport?.[1] !== undefined) {
 			const names = typeReExport[1]
 				.split(",")
 				.map((n) =>
@@ -85,7 +86,7 @@ export function parseExports(content: string): ExportedSymbol[] {
 
 		// export { foo, bar as baz } or export { foo } from '...'
 		const namedReExport = trimmed.match(/^export\s+\{([^}]+)\}/);
-		if (namedReExport) {
+		if (namedReExport?.[1] !== undefined) {
 			const names = namedReExport[1]
 				.split(",")
 				.map((n) =>
@@ -113,7 +114,7 @@ export function parseExports(content: string): ExportedSymbol[] {
 		if (/^export\s+\*\s/.test(trimmed)) {
 			const nsMatch = trimmed.match(/^export\s+\*\s+as\s+(\w+)/);
 			exports.push({
-				name: nsMatch ? nsMatch[1] : "*",
+				name: nsMatch?.[1] ?? "*",
 				kind: "namespace",
 				isTypeOnly: false,
 				line: lineNum,
@@ -150,21 +151,21 @@ export function parseExports(content: string): ExportedSymbol[] {
 
 		// export async function name(
 		const asyncFn = trimmed.match(/^export\s+async\s+function\s+(\w+)/);
-		if (asyncFn) {
+		if (asyncFn?.[1] !== undefined) {
 			exports.push({ name: asyncFn[1], kind: "function", isTypeOnly: false, line: lineNum });
 			continue;
 		}
 
 		// export function name(
 		const fn = trimmed.match(/^export\s+function\s+(\w+)/);
-		if (fn) {
+		if (fn?.[1] !== undefined) {
 			exports.push({ name: fn[1], kind: "function", isTypeOnly: false, line: lineNum });
 			continue;
 		}
 
 		// export const/let/var name
 		const variable = trimmed.match(/^export\s+(const|let|var)\s+(\w+)/);
-		if (variable) {
+		if (variable?.[2] !== undefined) {
 			exports.push({
 				name: variable[2],
 				kind: variable[1] as "const" | "let" | "var",

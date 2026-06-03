@@ -11,7 +11,7 @@ import type { HarnessDecision, HarnessEvent } from "./types.js";
 interface CloudGovernorSettings {
 	enabled: boolean;
 	url: string;
-	timeout_ms?: number;
+	timeout_ms?: number | undefined;
 }
 
 let cachedConfig: CloudGovernorSettings | null = null;
@@ -75,7 +75,15 @@ export async function forwardCloudPreToolUse(
 	// off (fail-open to the local decision).
 	const token = resolveAuthToken(cwd);
 	if (!token) return localDecision;
-	const cloudVerdict = await evaluateRemote(event, { ...config, bearer_token: token });
+	// `timeout_ms` is conditionally spread so an absent value is omitted rather
+	// than passed as `undefined` (exactOptionalPropertyTypes: the consumer's
+	// `timeout_ms?: number` does not accept an explicit `undefined`).
+	const cloudVerdict = await evaluateRemote(event, {
+		enabled: config.enabled,
+		url: config.url,
+		...(config.timeout_ms !== undefined ? { timeout_ms: config.timeout_ms } : {}),
+		bearer_token: token,
+	});
 	return mergeCloudVerdict(localDecision, cloudVerdict);
 }
 

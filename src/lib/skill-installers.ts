@@ -174,6 +174,10 @@ function swapFrontmatterDescription(content: string, newDescription: string): st
 
 	while (i < lines.length) {
 		const line = lines[i];
+		if (line === undefined) {
+			i += 1;
+			continue;
+		}
 		if (!replaced && /^description\s*:/.test(line)) {
 			out.push(`description: ${quoted}`);
 			replaced = true;
@@ -187,6 +191,7 @@ function swapFrontmatterDescription(content: string, newDescription: string): st
 			if (isBlockScalar) {
 				while (i < lines.length) {
 					const next = lines[i];
+					if (next === undefined) break;
 					if (next.length === 0 || /^\s/.test(next)) {
 						i += 1;
 						continue;

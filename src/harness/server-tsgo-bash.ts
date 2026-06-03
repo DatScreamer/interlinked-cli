@@ -36,7 +36,10 @@ export function _resetTsgoAvailabilityCache(): void {
 
 /** Check if this is a Bash tool call that runs tsc for type-checking (safe
  *  for tsgo). Skips flags tsgo doesn't support (build, watch, etc.). */
-export function isBashTsc(event: { tool_name?: string; tool_input?: JsonObject }): boolean {
+export function isBashTsc(event: {
+	tool_name?: string | undefined;
+	tool_input?: JsonObject | undefined;
+}): boolean {
 	if (event.tool_name !== "Bash") return false;
 	const cmd = ((event.tool_input?.command as string) || "").trim();
 	if (/\btsgo\b/.test(cmd)) return false; // already using tsgo
@@ -58,7 +61,7 @@ export function isBashTsc(event: { tool_name?: string; tool_input?: JsonObject }
 /** Rewrite a tsc command to tsgo and run it via block-and-answer. Returns a
  *  `block` decision carrying the output, or null to fall through to tsc. */
 export function tryTsgoRewrite(
-	event: { tool_input?: JsonObject },
+	event: { tool_input?: JsonObject | undefined },
 	cwd: string,
 	log: (msg: string) => void,
 ): { decision: "block"; reason: string } | null {

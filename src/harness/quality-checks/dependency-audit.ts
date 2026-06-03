@@ -22,9 +22,9 @@ export interface ResolvedAuditCommand {
 
 export interface ResolveOptions {
 	/** Defaults to true. Set false to skip osv-scanner even when installed. */
-	useOsvScanner?: boolean;
+	useOsvScanner?: boolean | undefined;
 	/** When osv-scanner is picked, pass --offline (requires pre-downloaded DB). */
-	offline?: boolean;
+	offline?: boolean | undefined;
 }
 
 let osvScannerAvailable: boolean | null = null;

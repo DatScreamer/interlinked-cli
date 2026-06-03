@@ -93,7 +93,7 @@ export interface PostScanResult {
 	warnings: string[];
 	findings: ScanFinding[];
 	/** New sensitivity level, or `undefined` if no ratchet occurred. */
-	ratcheted_to?: SensitivityLevel;
+	ratcheted_to?: SensitivityLevel | undefined;
 }
 
 /** Options bag for `runPostToolScan`. Bundled because there were already

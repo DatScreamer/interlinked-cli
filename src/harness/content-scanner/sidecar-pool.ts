@@ -26,7 +26,7 @@ export interface SidecarPoolOptions {
 	/** Extra CLI args appended to `[script_path]` for every child. Forwarded
 	 *  unchanged to each SidecarManager — every pool child runs with identical
 	 *  startup config. */
-	script_args?: readonly string[];
+	script_args?: readonly string[] | undefined;
 	startup_timeout_ms: number;
 	scan_timeout_ms: number;
 	idle_shutdown_ms: number;
@@ -34,10 +34,10 @@ export interface SidecarPoolOptions {
 	/** Number of sidecar children. 1 behaves identically to SidecarManager
 	 *  (minimal overhead: one round-robin counter). Default in callers is 3. */
 	pool_size: number;
-	spawn?: SpawnFn;
-	stderrSink?: (chunk: string) => void;
+	spawn?: SpawnFn | undefined;
+	stderrSink?: ((chunk: string) => void) | undefined;
 	/** Fired when the AGGREGATE pool status changes (not per-child). */
-	onStatusChange?: (status: SidecarStatus) => void;
+	onStatusChange?: ((status: SidecarStatus) => void) | undefined;
 }
 
 /** Priority order for aggregate state collapse: higher priority wins.

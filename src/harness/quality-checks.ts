@@ -71,7 +71,7 @@ export interface QualityCheckOptions {
 	/** When set, filter tsc output to only errors mentioning this file path */
 	tscFilterFile?: string;
 	/** Pre-edit baseline for diff-aware filtering (suppresses pre-existing findings) */
-	baseline?: PreEditBaseline;
+	baseline?: PreEditBaseline | undefined;
 	/** Diff-aware config from guard rules */
 	diffAware?: DiffAwareConfig;
 	/** Phase A.7: out-parameter — when present, runQualityChecks pushes one

@@ -108,13 +108,13 @@ export interface PreEditBaseline {
 	 * Consumed by filterToRisers() in the PostToolUse CRAP block.
 	 * Optional — absent when coverage data is unavailable (fail-open).
 	 */
-	crapScores?: Map<string, Map<string, number>>;
+	crapScores?: Map<string, Map<string, number>> | undefined;
 	/**
 	 * Code-clone similarity pairs captured before the edit.
 	 * Consumed by the PostToolUse code_clones block so old duplication in a
 	 * touched file is not reported as a new agent warning.
 	 */
-	dryCloneBaseline?: import("../checks/dry-baseline.js").DryBaseline;
+	dryCloneBaseline?: import("../checks/dry-baseline.js").DryBaseline | undefined;
 	/** When this baseline was captured */
 	capturedAt: number;
 	/** Count of suppression directives (@ts-expect-error, @ts-expect-error, eslint-disable, biome-ignore) */
@@ -144,7 +144,7 @@ export interface PreEditBaseline {
 	 *  calls in this file). The discovered_primitive_ratchet check
 	 *  compares the post-edit counts and warns on any increase. Optional
 	 *  — older direct test callers continue to fail open. */
-	discoveredPrimitiveViolations?: Record<string, number>;
+	discoveredPrimitiveViolations?: Record<string, number> | undefined;
 }
 
 export interface GuardRulesConfig {
@@ -213,7 +213,7 @@ export interface GuardRulesConfig {
 	/** LLM policy classifier for ambiguous PreToolUse cases */
 	policy_classifier?: ClassifierConfig;
 	/** ML content scanner (OpenAI privacy-filter etc.) for PreToolUse diff/command/egress content + PostToolUse Read/Grep taint */
-	content_scanner?: import("../content-scanner/types.js").ContentScannerConfig;
+	content_scanner?: import("../content-scanner/types.js").ContentScannerConfig | undefined;
 	/** Auto-coordination: periodic read-only check-in with MCP server */
 	auto_coordination?: import("../auto-coordinate.js").AutoCoordinationConfig;
 	/** Project-wide checks: periodic cross-file tsc/biome sweep */
@@ -433,14 +433,14 @@ export interface ErrorRecord {
 	/** Context: diff, surrounding code, file role */
 	diff_context: string;
 	/** Files affected by the error */
-	affected_files?: string[];
+	affected_files?: string[] | undefined;
 	/** The subsequent edit that fixed the issue (populated retroactively) */
-	fix_context?: string;
+	fix_context?: string | undefined;
 	/** Line range where the error occurred (for region-level tracking) */
-	line_start?: number;
-	line_end?: number;
+	line_start?: number | undefined;
+	line_end?: number | undefined;
 	/** Other files edited in the same session when this error occurred */
-	co_edited_files?: string[];
+	co_edited_files?: string[] | undefined;
 	/** Tool call sequence leading up to this error (last 15 calls) */
-	pre_error_sequence?: string[];
+	pre_error_sequence?: string[] | undefined;
 }

@@ -16,6 +16,7 @@
 
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { spawn as nodeSpawn } from "node:child_process";
+import type { JsonObject } from "../../lib/json-types.js";
 
 // ===========================================
 // Types
@@ -31,18 +32,18 @@ export interface SidecarSpan {
 
 export interface SidecarResponse {
 	ok: boolean;
-	error?: string;
-	spans?: SidecarSpan[];
-	redacted_text?: string;
+	error?: string | undefined;
+	spans?: SidecarSpan[] | undefined;
+	redacted_text?: string | undefined;
 }
 
 export interface SidecarRequest {
 	op: "ping" | "scan" | "shutdown";
-	text?: string;
+	text?: string | undefined;
 	/** Optional per-call AbortSignal — resolves with error on abort. */
-	signal?: AbortSignal;
+	signal?: AbortSignal | undefined;
 	/** Override the default timeout. When unset, uses scan_timeout_ms (or startup_timeout_ms on the first call). */
-	timeout_ms?: number;
+	timeout_ms?: number | undefined;
 }
 
 /** Subset of `child_process.spawn` shape needed by the manager — supports DI for tests. */
@@ -64,11 +65,11 @@ export type SidecarLifecycleState = "idle" | "spawning" | "ready" | "dormant" | 
 
 export interface SidecarStatus {
 	state: SidecarLifecycleState;
-	pid?: number;
+	pid?: number | undefined;
 	/** Number of spawn attempts during the current crash/error sequence. Resets to 0 on success. */
 	restartCount: number;
 	/** One-line detail suitable for logs / statusline (never contains scanned text). */
-	detail?: string;
+	detail?: string | undefined;
 	/** ISO timestamp of the last transition into `state`. */
 	sinceIso: string;
 }
@@ -80,17 +81,17 @@ export interface SidecarManagerOptions {
 	 *  configuration that the sidecar needs at startup (e.g.,
 	 *  `--viterbi-calibration-path /path/to/calibration.json`) without changing
 	 *  the JSONL request protocol. Empty / omitted = no extra args. */
-	script_args?: readonly string[];
+	script_args?: readonly string[] | undefined;
 	startup_timeout_ms: number;
 	scan_timeout_ms: number;
 	idle_shutdown_ms: number;
 	max_restarts: number;
 	/** Test hook — defaults to `node:child_process.spawn`. */
-	spawn?: SpawnFn;
+	spawn?: SpawnFn | undefined;
 	/** Test hook — defaults to writing to `process.stderr`. */
-	stderrSink?: (chunk: string) => void;
+	stderrSink?: ((chunk: string) => void) | undefined;
 	/** Fired on every status transition. Best-effort; callback errors are swallowed. */
-	onStatusChange?: (status: SidecarStatus) => void;
+	onStatusChange?: ((status: SidecarStatus) => void) | undefined;
 }
 
 type PendingEntry = {
@@ -106,7 +107,7 @@ function failResponse(error: string): SidecarResponse {
 }
 
 /** Type predicate that narrows `unknown` to a plain object (but not `null`). */
-function isRecord(x: unknown): x is Record<string, unknown> {
+function isRecord(x: unknown): x is JsonObject {
 	return x !== null && typeof x === "object";
 }
 
@@ -180,7 +181,7 @@ export class SidecarManager {
 		const timeoutMs =
 			req.timeout_ms ?? (this.booted ? this.opts.scan_timeout_ms : this.opts.startup_timeout_ms);
 
-		const payload: Record<string, unknown> = { id, op: req.op };
+		const payload: JsonObject = { id, op: req.op };
 		if (req.text !== undefined) payload.text = req.text;
 
 		return new Promise<SidecarResponse>((resolve) => {

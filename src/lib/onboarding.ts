@@ -18,10 +18,10 @@ export interface RemoteOnboardingResult {
 		| "server_unavailable"
 		| "bootstrap_failed";
 	agentName?: string;
-	agentHandle?: string;
+	agentHandle?: string | undefined;
 	isNewAgent?: boolean;
 	reclaimedAgent?: boolean;
-	workspaceName?: string;
+	workspaceName?: string | undefined;
 	error?: string;
 }
 

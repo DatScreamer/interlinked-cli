@@ -196,7 +196,7 @@ export interface ScanFinding {
 	/** The matched substring. Internal use only — NOT surfaced to the agent. */
 	text: string;
 	/** Confidence 0..1 when the provider supplies it. OPF local omits this. */
-	score?: number;
+	score?: number | undefined;
 	/** Echoes the originating ScanRequest.source so findings can be grouped by tool field. */
 	source: string;
 }
@@ -207,7 +207,7 @@ export interface ScanRequest {
 	/** Logical origin of the text (e.g., "Write.content", "Bash.command"). */
 	source: string;
 	/** Honors caller-side deadlines so hook response stays within budget. */
-	signal?: AbortSignal;
+	signal?: AbortSignal | undefined;
 }
 
 /**
@@ -226,9 +226,9 @@ export type ScannerState = "idle" | "starting" | "ready" | "dormant" | "disabled
 export interface ScannerStatus {
 	state: ScannerState;
 	/** Populated for backends that run an OS process (local sidecar). */
-	pid?: number;
+	pid?: number | undefined;
 	/** Short human-readable context ("exceeded max_restarts", "child exited (code=1)"). */
-	detail?: string;
+	detail?: string | undefined;
 	/** ISO timestamp of the last transition into `state`. */
 	sinceIso: string;
 }
@@ -250,9 +250,9 @@ export interface ContentScanner {
 	 * backends that don't model lifecycle (e.g., stateless HTTP) may omit this.
 	 * The harness uses it to write `.interlinked/content-scanner.status`.
 	 */
-	onStatusChange?(cb: (status: ScannerStatus) => void): void;
+	onStatusChange?: ((cb: (status: ScannerStatus) => void) => void) | undefined;
 	/** Read the current lifecycle snapshot. Optional for the same reason. */
-	getStatus?(): ScannerStatus;
+	getStatus?: (() => ScannerStatus) | undefined;
 }
 
 /**

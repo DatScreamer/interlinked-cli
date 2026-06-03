@@ -19,8 +19,8 @@ interface TimelineEvent {
 	agent: string;
 	type: "activity";
 	summary: string;
-	detail?: string;
-	attribution?: EventAttribution;
+	detail?: string | undefined;
+	attribution?: EventAttribution | undefined;
 }
 
 export async function explainCommand(opts: {
@@ -69,8 +69,8 @@ export async function explainCommand(opts: {
 		const normalizedLocal: ActivityEvent[] = localEvents.map((e) => ({
 			agent_name: e.agent,
 			event_type: e.type,
-			tool_name: e.tool || undefined,
-			tool_input_summary: e.summary || undefined,
+			tool_name: e.tool ?? null,
+			tool_input_summary: e.summary ?? null,
 			occurred_at: e.ts,
 		}));
 

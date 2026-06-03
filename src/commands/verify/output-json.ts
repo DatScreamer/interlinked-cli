@@ -53,7 +53,7 @@ interface OutputJsonArgs {
 	decisionSurface?: DecisionSurfaceReport;
 	lockfileMultiplicity?: LockfileMultiplicityResult;
 	decisionSurfaceRatchet?: DecisionSurfaceRatchetResult;
-	structureSection?: JsonObject;
+	structureSection?: JsonObject | undefined;
 }
 
 /**

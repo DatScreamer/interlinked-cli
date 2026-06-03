@@ -18,15 +18,15 @@ import type { Ecosystem, PackageSpec } from "./package-install-parser.js";
 export interface AllowlistEntry {
 	approved_at: string;
 	approved_by: string;
-	reason?: string;
-	version_range?: string;
+	reason?: string | undefined;
+	version_range?: string | undefined;
 }
 
 export interface LockfileSnapshot {
 	sha256: string;
 	approved_at: string;
 	approved_by: string;
-	reason?: string;
+	reason?: string | undefined;
 }
 
 export interface Allowlist {

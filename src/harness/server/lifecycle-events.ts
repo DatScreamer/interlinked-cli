@@ -478,7 +478,11 @@ function handleSkillEnter(
 	const targetSessions = event.session_id ? [session] : sessions.getAll();
 	let count = 0;
 	for (const target of targetSessions) {
-		recordSkillEnter(target, { name, ttl_seconds: ttl, source });
+		recordSkillEnter(target, {
+			name,
+			...(ttl !== undefined ? { ttl_seconds: ttl } : {}),
+			source,
+		});
 		count++;
 	}
 	log(`SkillEnter: ${name} (${source}, ${count} session${count === 1 ? "" : "s"})`);
@@ -589,11 +593,12 @@ function buildCommitCadenceNudge(
 	const nonDocCount = session.non_doc_files_edited_since_commit?.size ?? 0;
 	const docCount = session.doc_files_edited_since_commit ?? 0;
 	const tokens = readSessionTokens(event.transcript_path);
+	const cumulativeTokens = tokens?.total;
 	const nudge = formatStopNudge({
 		uncommittedNonDocCount: nonDocCount,
 		docFilesExcluded: docCount,
 		threshold: cadenceCfg.stop_threshold,
-		cumulativeTokens: tokens?.total,
+		...(cumulativeTokens !== undefined ? { cumulativeTokens } : {}),
 		tokenBandLow: cadenceCfg.token_band_low,
 		tokenBandHigh: cadenceCfg.token_band_high,
 	});

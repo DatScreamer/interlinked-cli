@@ -29,10 +29,10 @@ interface GitContextResult {
 	} | null;
 	trailers: Record<string, string>;
 	server?: {
-		checkpoint?: string;
-		agent?: string;
-		trailers?: string[];
-		error?: string;
+		checkpoint?: string | undefined;
+		agent?: string | undefined;
+		trailers?: string[] | undefined;
+		error?: string | undefined;
 	};
 }
 

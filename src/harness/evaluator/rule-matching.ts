@@ -83,15 +83,15 @@ export interface MatchRuleContext {
 	command: string;
 	toolInput: JsonObject;
 	rule: GuardRule;
-	extraExceptions?: Record<string, string[]>;
+	extraExceptions?: Record<string, string[]> | undefined;
 	/** Tool name from the hook event. Required when the rule declares
 	 *  `tool_externality`; otherwise unused. */
-	toolName?: string;
+	toolName?: string | undefined;
 	/** Live session trajectory — required when the rule declares
 	 *  `requires_prior` / `forbids_after`. Optional so callers without
 	 *  a session in scope (compound-command decomposer) keep working;
 	 *  rules with temporal predicates fall through to allow there. */
-	session?: SessionTrajectory;
+	session?: SessionTrajectory | undefined;
 }
 
 /** Return values from {@link evaluatePatterns}: either the rule's patterns

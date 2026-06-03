@@ -201,17 +201,17 @@ interface SyncState {
 export interface SyncDiagnostics {
 	pending_realtime_retry: number;
 	sync_error_count: number;
-	last_sync_success_at?: string;
-	last_sync_error_at?: string;
-	last_sync_error?: string;
+	last_sync_success_at?: string | undefined;
+	last_sync_error_at?: string | undefined;
+	last_sync_error?: string | undefined;
 }
 
 export interface LocalStats {
 	total_events: number;
 	file_size_bytes: number;
 	pending_sync: number;
-	oldest_event?: string;
-	newest_event?: string;
+	oldest_event?: string | undefined;
+	newest_event?: string | undefined;
 }
 
 // ===========================================
@@ -269,11 +269,11 @@ export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): vo
  * Read and filter local activity events from the JSONL log.
  */
 export function readLocalActivity(opts?: {
-	since?: number; // ms cutoff timestamp
-	agent?: string;
-	limit?: number;
-	type?: string;
-	cwd?: string;
+	since?: number | undefined; // ms cutoff timestamp
+	agent?: string | undefined;
+	limit?: number | undefined;
+	type?: string | undefined;
+	cwd?: string | undefined;
 }): LocalActivityEvent[] {
 	const path = getActivityPath(opts?.cwd);
 	if (!existsSync(path)) return [];

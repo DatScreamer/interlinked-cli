@@ -48,7 +48,7 @@ export const SHELL_META = /[;|&`$(){}!<>'"\\#\n\r]/;
  */
 export function cloneRepo(
 	url: string,
-	opts: { branch?: string },
+	opts: { branch?: string | undefined },
 ): { dir: string; elapsed_ms: number } {
 	if (SHELL_META.test(url)) {
 		throw new Error(`Refusing to clone — URL contains shell metacharacters: ${url}`);

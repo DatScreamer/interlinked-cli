@@ -20,7 +20,7 @@ interface TraceSpan {
 	span_id: string;
 	name: string;
 	timestamp: string;
-	duration_ms?: number;
+	duration_ms?: number | undefined;
 	attributes: JsonObject;
 }
 

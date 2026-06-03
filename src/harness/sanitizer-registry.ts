@@ -97,7 +97,7 @@ export interface SanitizerEntry {
 	/** "global" (default) or a module specifier (e.g. "marked"). */
 	scope: string;
 	/** Human-readable note from the JSON — for tooling, not matching. */
-	description?: string;
+	description?: string | undefined;
 	/** Compiled regex — derived from `pattern` + `kind`. */
 	compiled: RegExp;
 }

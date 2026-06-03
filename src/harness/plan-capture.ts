@@ -34,6 +34,7 @@
 import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { JsonObject } from "../lib/json-types.js";
 import { sanitizeSessionId } from "./session-paths.js";
 import type {
 	CapturedPlan,
@@ -70,7 +71,7 @@ export async function maybeCaptureFromPreToolUse(opts: {
 	session: SessionTrajectory;
 	cwd: string;
 	enabled: boolean;
-	log?: (msg: string) => void;
+	log?: ((msg: string) => void) | undefined;
 }): Promise<CapturedPlan | null> {
 	const { event, session, cwd, enabled, log } = opts;
 	if (!enabled) return null;
@@ -101,7 +102,7 @@ export async function maybeCaptureFromUserPromptSubmit(opts: {
 	cwd: string;
 	enabled: boolean;
 	parseUserPrompt: boolean;
-	log?: (msg: string) => void;
+	log?: ((msg: string) => void) | undefined;
 }): Promise<CapturedPlan | null> {
 	const { event, session, cwd, enabled, parseUserPrompt, log } = opts;
 	if (!enabled || !parseUserPrompt) return null;
@@ -135,7 +136,7 @@ export function parseTaskCreate(
 	for (const raw of tasks) {
 		if (steps.length >= MAX_STEPS_PER_PLAN) break;
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-		const rec = raw as Record<string, unknown>;
+		const rec = raw as JsonObject;
 		const content = typeof rec.content === "string" ? rec.content : null;
 		if (!content) continue;
 		const intent = content.trim().slice(0, MAX_INTENT_CHARS);
@@ -357,7 +358,7 @@ export function planLogPath(cwd: string, sessionId: string): string {
 export async function appendCapturedPlan(opts: {
 	plan: CapturedPlan;
 	cwd: string;
-	log?: (msg: string) => void;
+	log?: ((msg: string) => void) | undefined;
 }): Promise<boolean> {
 	const { plan, cwd, log } = opts;
 	const path = planLogPath(cwd, plan.session_id);
@@ -400,7 +401,7 @@ async function persistAndMirror(opts: {
 	plan: CapturedPlan;
 	session: SessionTrajectory;
 	cwd: string;
-	log?: (msg: string) => void;
+	log?: ((msg: string) => void) | undefined;
 }): Promise<CapturedPlan> {
 	const { plan, session, cwd, log } = opts;
 	session.declared_plan = plan;

@@ -60,7 +60,7 @@ export interface ComputeCrapInput {
 	threshold: number;
 	staleTolerance: StaleTolerance;
 	/** Hook paths pass `3`; verify passes `undefined` for the full hotspot list. */
-	maxFindings?: number;
+	maxFindings?: number | undefined;
 }
 
 // ==================================================================

@@ -94,7 +94,7 @@ function isExpired(expiresAtIso?: string): boolean {
 async function refreshAccessToken(options: {
 	serverUrl: string;
 	refreshToken: string;
-	clientId?: string;
+	clientId?: string | undefined;
 }): Promise<LoginResult> {
 	const body = new URLSearchParams({
 		grant_type: "refresh_token",
@@ -250,9 +250,9 @@ function parseExpiryValue(value: string | number | undefined): Date | null {
 
 interface LoginResult {
 	access_token: string;
-	refresh_token?: string;
-	expires_in?: number;
-	client_id?: string;
+	refresh_token?: string | undefined;
+	expires_in?: number | undefined;
+	client_id?: string | undefined;
 }
 
 /**

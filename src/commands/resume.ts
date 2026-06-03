@@ -21,7 +21,7 @@ export async function resumeCommand(
 		let targetId = checkpointId;
 		if (!targetId) {
 			const recent = listCheckpoints({
-				agent: opts?.agent,
+				...(opts?.agent !== undefined ? { agent: opts.agent } : {}),
 				limit: 1,
 			});
 			if (recent.length === 0) {

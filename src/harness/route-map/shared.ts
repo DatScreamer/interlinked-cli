@@ -106,14 +106,17 @@ export function findHandlerSymbol(
 
 	if (language === LANG_PYTHON) {
 		for (let i = idx; i < Math.min(lines.length, idx + 10); i++) {
-			const m = /^\s*(?:async\s+)?def\s+(\w+)\s*\(/.exec(lines[i]);
-			if (m) return m[1];
+			const lineText = lines[i];
+			if (lineText === undefined) continue;
+			const m = /^\s*(?:async\s+)?def\s+(\w+)\s*\(/.exec(lineText);
+			if (m?.[1] !== undefined) return m[1];
 		}
 		// Fall through if forward scan found nothing.
 	}
 
 	for (let i = idx; i >= Math.max(0, idx - lookback); i--) {
 		const line = lines[i];
+		if (line === undefined) continue;
 		let m = /^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)/.exec(line);
 		if (m) return m[1];
 		m = /^\s*export\s+(?:async\s+)?function\s+(\w+)/.exec(line);
@@ -139,9 +142,9 @@ export function makeEndpoint(opts: {
 	method: string;
 	path: string;
 	file: string;
-	line?: number;
-	handler_symbol?: string;
-	declared_params?: ParamSpec[];
+	line?: number | undefined;
+	handler_symbol?: string | undefined;
+	declared_params?: ParamSpec[] | undefined;
 }): Endpoint {
 	return {
 		framework: opts.framework,

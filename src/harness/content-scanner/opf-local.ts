@@ -22,14 +22,16 @@ import type {
 export interface SidecarLike {
 	send(req: {
 		op: "ping" | "scan" | "shutdown";
-		text?: string;
-		signal?: AbortSignal;
-		timeout_ms?: number;
+		text?: string | undefined;
+		signal?: AbortSignal | undefined;
+		timeout_ms?: number | undefined;
 	}): Promise<{
 		ok: boolean;
-		error?: string;
-		spans?: Array<{ label: string; start: number; end: number; text: string; score?: number }>;
-		redacted_text?: string;
+		error?: string | undefined;
+		spans?:
+			| Array<{ label: string; start: number; end: number; text: string; score?: number }>
+			| undefined;
+		redacted_text?: string | undefined;
 	}>;
 	shutdown(): Promise<void>;
 	/** Optional — only real `SidecarManager` exposes lifecycle; test fakes don't have to. */

@@ -28,8 +28,8 @@ const HOOK_EVENT_TIMEOUT_MS = 3000;
 export interface HealthCheckResult {
 	serverReachable: boolean;
 	authenticated: boolean;
-	serverVersion?: string;
-	error?: string;
+	serverVersion?: string | undefined;
+	error?: string | undefined;
 }
 
 /**
@@ -43,11 +43,15 @@ function healthFailure(opts: { serverReachable: boolean; error: string }): Healt
 
 export class InterlinkedClient {
 	private serverUrl: string;
-	private workspaceId?: string;
+	private workspaceId?: string | undefined;
 	private token: string | null;
 	private readonly usesExplicitToken: boolean;
 
-	constructor(options?: { serverUrl?: string; workspaceId?: string; token?: string }) {
+	constructor(options?: {
+		serverUrl?: string | undefined;
+		workspaceId?: string | undefined;
+		token?: string | undefined;
+	}) {
 		const config = resolveConfig();
 		this.serverUrl = options?.serverUrl || config.server_url;
 		this.workspaceId = options?.workspaceId || config.workspace_id;
@@ -312,9 +316,9 @@ export class InterlinkedClient {
 let _sharedClient: InterlinkedClient | null = null;
 
 export function getClient(options?: {
-	serverUrl?: string;
-	workspaceId?: string;
-	token?: string;
+	serverUrl?: string | undefined;
+	workspaceId?: string | undefined;
+	token?: string | undefined;
 }): InterlinkedClient {
 	if (options) {
 		return new InterlinkedClient(options);

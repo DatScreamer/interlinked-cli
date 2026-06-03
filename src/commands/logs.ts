@@ -68,13 +68,14 @@ function formatEvent(event: LogEvent, raw: boolean): string {
 	const type = eventTypeColor(event.type);
 	const tool = event.tool ? c.dim(event.tool) : "";
 
+	const tokens = event.tokens as { input?: number; output?: number } | undefined;
 	const summary = formatActivitySummary({
 		agent_name: event.agent,
 		event_type: event.type,
-		tool_name: event.tool,
-		tool_input_summary: event.summary,
+		tool_name: event.tool ?? null,
+		tool_input_summary: event.summary ?? null,
 		ts: event.ts,
-		tokens: event.tokens as { input?: number; output?: number } | undefined,
+		...(tokens !== undefined ? { tokens } : {}),
 	});
 
 	const dur = event.duration_ms ? c.dim(` ${event.duration_ms}ms`) : "";
@@ -210,9 +211,9 @@ export async function logsCommand(opts: LogsOptions): Promise<void> {
 
 	// Read from local JSONL (already reads newest-first)
 	let events = readLocalActivity({
-		since: sinceTs,
-		agent: opts.agent,
-		type: opts.type,
+		...(sinceTs !== undefined ? { since: sinceTs } : {}),
+		...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+		...(opts.type !== undefined ? { type: opts.type } : {}),
 		limit: opts.tool ? limit * 5 : limit, // Over-fetch if we need to filter by tool
 		cwd,
 	});

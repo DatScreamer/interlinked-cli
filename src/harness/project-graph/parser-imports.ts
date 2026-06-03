@@ -118,17 +118,20 @@ export function parseImports(content: string, fromFile: string): Omit<ImportEdge
 			/^import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/,
 		);
 		if (namedImport) {
-			const symbols = namedImport[1]
+			const rawSymbols = namedImport[1];
+			const specifier = namedImport[2];
+			if (rawSymbols === undefined || specifier === undefined) continue;
+			const symbols = rawSymbols
 				.split(",")
 				.map((s) =>
 					s
 						.trim()
 						.replace(/^type\s+/, "")
 						.split(/\s+as\s+/)[0]
-						.trim(),
+						?.trim(),
 				)
-				.filter(Boolean);
-			imports.push({ fromFile, specifier: namedImport[2], symbols, isTypeOnly });
+				.filter((s): s is string => Boolean(s));
+			imports.push({ fromFile, specifier, symbols, isTypeOnly });
 			continue;
 		}
 

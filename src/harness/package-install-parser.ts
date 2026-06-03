@@ -20,7 +20,7 @@ export type InstallAction =
 	| "noop";
 
 export type PackageSpec =
-	| { kind: "registry"; name: string; version?: string }
+	| { kind: "registry"; name: string; version?: string | undefined }
 	| { kind: "git_url"; url: string }
 	| { kind: "tarball_url"; url: string }
 	| { kind: "local_path"; path: string }
@@ -33,8 +33,8 @@ export interface InstallCommand {
 	packages: PackageSpec[];
 	fromLockfile: boolean;
 	fromManifest: boolean;
-	manifestFile?: string;
-	customRegistry?: string;
+	manifestFile?: string | undefined;
+	customRegistry?: string | undefined;
 	notes: string[];
 	/** Relative-or-absolute cwd this command runs in, when shifted from
 	 *  the script's cwd by a preceding `cd <path>` segment in the same

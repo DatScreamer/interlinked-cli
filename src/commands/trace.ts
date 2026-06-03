@@ -19,8 +19,8 @@ export async function traceExportCommand(opts: {
 	try {
 		const format = (opts.format === "jsonl" ? "jsonl" : "json") as "json" | "jsonl";
 		const traceData = exportTrace({
-			since: opts.since,
-			agent: opts.agent,
+			...(opts.since !== undefined ? { since: opts.since } : {}),
+			...(opts.agent !== undefined ? { agent: opts.agent } : {}),
 			format,
 		});
 

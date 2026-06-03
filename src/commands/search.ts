@@ -19,10 +19,10 @@ import { getOutputMode, output, outputError } from "../lib/output.js";
 interface SearchMatch {
 	file: string;
 	line: number;
-	column?: number;
+	column?: number | undefined;
 	text: string;
-	context_before?: string[];
-	context_after?: string[];
+	context_before?: string[] | undefined;
+	context_after?: string[] | undefined;
 }
 
 interface SearchResult {
@@ -107,7 +107,7 @@ function hasRipgrep(): boolean {
 function searchWithRipgrep(
 	query: string,
 	dir: string,
-	opts: { limit: number; glob?: string; type?: string; context: number },
+	opts: { limit: number; glob?: string | undefined; type?: string | undefined; context: number },
 ): SearchResult {
 	const start = performance.now();
 	const args = [
@@ -254,7 +254,7 @@ function sliceContextWindow(
 function searchWithNative(
 	query: string,
 	dir: string,
-	opts: { limit: number; glob?: string; context: number },
+	opts: { limit: number; glob?: string | undefined; context: number },
 ): SearchResult {
 	const start = performance.now();
 	const matches: SearchMatch[] = [];

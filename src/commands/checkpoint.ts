@@ -90,9 +90,9 @@ export function checkpointListCommand(opts: {
 		const limit = opts.limit ? Number.parseInt(opts.limit, 10) : undefined;
 
 		const checkpoints = listCheckpoints({
-			agent: opts.agent,
-			since: sinceMs,
-			limit,
+			...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+			...(sinceMs !== undefined ? { since: sinceMs } : {}),
+			...(limit !== undefined ? { limit } : {}),
 		});
 
 		output(mode, checkpoints, {
@@ -209,8 +209,8 @@ export function checkpointPruneCommand(opts: {
 
 	try {
 		const removed = pruneCheckpoints({
-			older_than_days: opts.olderThan ? Number.parseInt(opts.olderThan, 10) : undefined,
-			keep_latest: opts.keepLatest ? Number.parseInt(opts.keepLatest, 10) : undefined,
+			...(opts.olderThan ? { older_than_days: Number.parseInt(opts.olderThan, 10) } : {}),
+			...(opts.keepLatest ? { keep_latest: Number.parseInt(opts.keepLatest, 10) } : {}),
 		});
 
 		output(

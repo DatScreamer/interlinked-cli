@@ -96,7 +96,7 @@ export interface SessionTrajectory {
 	 * call sites that don't care about scope can omit it; the evaluator treats
 	 * undefined identically to an empty map. See harness-active-when-scoping.md.
 	 */
-	active_skills?: Map<string, ActiveSkillRecord>;
+	active_skills?: Map<string, ActiveSkillRecord> | undefined;
 	/** Tool names that have already received a silent-failure warning this session (dedup). */
 	silent_failure_warned: Set<string>;
 	/** Tool names that have already received a context-bloat warning this session (dedup). */
@@ -169,7 +169,7 @@ export interface SessionTrajectory {
 	 * Tier 2 cloud Plan/Policy Approver and the local plan-drift Stop
 	 * nudge (item #6) read this field.
 	 */
-	declared_plan?: import("./plan.js").CapturedPlan;
+	declared_plan?: import("./plan.js").CapturedPlan | undefined;
 	/**
 	 * Git working-tree snapshot captured at the first event of the session.
 	 * Used by the `git-session-scope-gate` PreToolUse Bash check to
@@ -186,7 +186,7 @@ export interface SessionTrajectory {
 		staged: Set<string>;
 		untracked: Set<string>;
 		head_sha: string;
-	};
+	} | undefined;
 	/**
 	 * Per-file ring buffer of recent line edits. Consumed by
 	 * `add_then_revert_loop` (sequence-checks §3.21) to detect content-hash
@@ -203,7 +203,7 @@ export interface SessionTrajectory {
 			content_hash: string;
 			at_step: number;
 		}>
-	>;
+	> | undefined;
 	/**
 	 * Session-scoped mapping from literal hash to the set of files where
 	 * the literal was introduced this session. Consumed by
@@ -212,7 +212,7 @@ export interface SessionTrajectory {
 	 * `magic_literal_in_conditional` check can't see. Optional for
 	 * hydration safety.
 	 */
-	literal_occurrences?: Map<string, Set<string>>;
+	literal_occurrences?: Map<string, Set<string>> | undefined;
 	/**
 	 * URLs / hostnames extracted from UserPromptSubmit events this session.
 	 * Consumed by `network_after_user_input_url_match` (sequence-checks
@@ -239,15 +239,15 @@ export interface TddCycle {
 	/** Current state of the TDD cycle */
 	state: TddCycleState;
 	/** tool_call_count when the test file was first written/edited this session */
-	test_written_at?: number;
+	test_written_at?: number | undefined;
 	/** tool_call_count when tests first failed (entered RED) */
-	red_at?: number;
+	red_at?: number | undefined;
 	/** tool_call_count when tests first passed after being red (entered GREEN) */
-	green_at?: number;
+	green_at?: number | undefined;
 	/** Number of impl edits before any test interaction (writing test or running test) */
 	impl_edits_before_test: number;
 	/** Previous state — used to detect transitions (e.g., green→red = regression) */
-	previous_state?: TddCycleState;
+	previous_state?: TddCycleState | undefined;
 }
 
 /** Record of a warning issued to the agent for a specific file + check */
@@ -272,7 +272,7 @@ export interface WarningRecord {
 	 * like export_surface"; absent means "legacy record predating this
 	 * field". Both are treated as fall-back-to-issue_count-only.
 	 */
-	last_lines?: number[];
+	last_lines?: number[] | undefined;
 	/**
 	 * Whether a persistent-warning escalation has been emitted for this
 	 * record. Rate-limit: at most one escalation per (file, check) per
@@ -363,8 +363,8 @@ export type EndpointFramework =
 export interface AuthChainEntry {
 	name: string;
 	kind: "middleware" | "depends" | "matcher";
-	file?: string;
-	line?: number;
+	file?: string | undefined;
+	line?: number | undefined;
 }
 
 /**
@@ -395,11 +395,11 @@ export interface Endpoint {
 	/** URL path pattern (or MCP tool name when `framework === "mcp"`). */
 	path: string;
 	/** Nearest-preceding handler symbol — best-effort heuristic, may be undefined. */
-	handler_symbol?: string;
+	handler_symbol?: string | undefined;
 	/** Absolute path of the file containing the route definition. */
 	file: string;
 	/** Line number (1-indexed) of the route-registration site. */
-	line?: number;
+	line?: number | undefined;
 	/** Auth middleware / Depends / matcher entries upstream of this handler. */
 	auth_chain: AuthChainEntry[];
 	/** Declared path/query/body/header params for this endpoint. */
@@ -418,7 +418,7 @@ export type RouteInfo = {
 	path: string;
 	/** Back-compat alias for `Endpoint.file`. */
 	handler_file: string;
-	line?: number;
+	line?: number | undefined;
 };
 
 // ===========================================

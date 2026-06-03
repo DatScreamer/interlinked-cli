@@ -24,7 +24,7 @@ interface Conflict {
 	file: string;
 	reservation_pattern: string;
 	reserved_by: string;
-	expires_at?: string;
+	expires_at?: string | undefined;
 }
 
 interface GuardCheckResult {
@@ -32,7 +32,7 @@ interface GuardCheckResult {
 	clean: boolean;
 	mode: string;
 	cached: boolean;
-	cache_age_seconds?: number;
+	cache_age_seconds?: number | undefined;
 	files_checked: number;
 }
 
@@ -40,7 +40,7 @@ interface Reservation {
 	agent_name: string;
 	/** Server returns path_pattern; we normalize to this field */
 	path_pattern: string;
-	expires_at?: string;
+	expires_at?: string | undefined;
 }
 
 // ===========================================

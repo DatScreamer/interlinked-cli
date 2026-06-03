@@ -18,14 +18,18 @@ export function parseTscOutput(output: string): CheckResult[] {
 		// File-level errors: "file(line,col): error TSxxxx: message"
 		const fileMatch = line.match(/^(.+?)\((\d+),(\d+)\):\s*error\s+(TS\d+):\s*(.+)/);
 		if (fileMatch) {
+			const [, file, lineNo, col, code, msg] = fileMatch;
+			if (file === undefined || lineNo === undefined || col === undefined || code === undefined) {
+				continue;
+			}
 			results.push({
 				tool: "tsc",
 				severity: "error",
-				file: fileMatch[1],
-				line: Number.parseInt(fileMatch[2], 10),
-				column: Number.parseInt(fileMatch[3], 10),
-				message: `${fileMatch[4]}: ${fileMatch[5]}`,
-				ruleId: fileMatch[4],
+				file,
+				line: Number.parseInt(lineNo, 10),
+				column: Number.parseInt(col, 10),
+				message: `${code}: ${msg ?? ""}`,
+				ruleId: code,
 			});
 			continue;
 		}
@@ -33,13 +37,15 @@ export function parseTscOutput(output: string): CheckResult[] {
 		// e.g. "error TS2688: Cannot find type definition file for 'node'."
 		const projectMatch = line.match(/^error\s+(TS\d+):\s*(.+)/);
 		if (projectMatch) {
+			const [, code, msg] = projectMatch;
+			if (code === undefined) continue;
 			results.push({
 				tool: "tsc",
 				severity: "error",
 				file: "tsconfig.json",
 				line: 0,
-				message: `${projectMatch[1]}: ${projectMatch[2]}`,
-				ruleId: projectMatch[1],
+				message: `${code}: ${msg ?? ""}`,
+				ruleId: code,
 			});
 		}
 	}
@@ -56,14 +62,18 @@ export function parseBiomeOutput(output: string): CheckResult[] {
 	for (const line of output.split("\n")) {
 		const match = line.match(/^(.+?):(\d+):(\d+)\s+(lint\S+|format)\s/);
 		if (match) {
+			const [, file, lineNo, col, rule] = match;
+			if (file === undefined || lineNo === undefined || col === undefined || rule === undefined) {
+				continue;
+			}
 			results.push({
 				tool: "biome",
 				severity: "warning",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
-				message: match[4],
-				ruleId: match[4],
+				file,
+				line: Number.parseInt(lineNo, 10),
+				column: Number.parseInt(col, 10),
+				message: rule,
+				ruleId: rule,
 			});
 		}
 	}
@@ -80,14 +90,18 @@ export function parseEslintOutput(output: string): CheckResult[] {
 	for (const line of output.split("\n")) {
 		const match = line.match(/^(.+?):(\d+):(\d+):\s+(.+)/);
 		if (match) {
-			const msg = match[4].trim();
+			const [, file, lineNo, col, rawMsg] = match;
+			if (file === undefined || lineNo === undefined || col === undefined || rawMsg === undefined) {
+				continue;
+			}
+			const msg = rawMsg.trim();
 			const ruleMatch = msg.match(/\[(.+)\]$/);
 			results.push({
 				tool: "eslint",
 				severity: "warning",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
+				file,
+				line: Number.parseInt(lineNo, 10),
+				column: Number.parseInt(col, 10),
 				message: msg,
 				ruleId: ruleMatch?.[1],
 			});

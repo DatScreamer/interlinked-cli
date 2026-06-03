@@ -220,9 +220,9 @@ function editedLineWithinRadius(
 export interface EscalationFinding {
 	name: string;
 	/** Single finding line (legacy single-slot callers / tests). */
-	line?: number;
+	line?: number | undefined;
 	/** All lines this check fired on, recovered from the `detail` block. */
-	lines?: number[];
+	lines?: number[] | undefined;
 }
 
 export function checkPersistentWarningEscalation(

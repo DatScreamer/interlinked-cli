@@ -28,13 +28,13 @@ import { installEnforceSkill } from "../lib/skill-installers.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 
 interface EnableOptions {
-	server?: string;
-	agent?: string;
-	clients?: string;
-	syncMode?: string;
-	dataDir?: string;
-	dryRun?: boolean;
-	structure?: string;
+	server?: string | undefined;
+	agent?: string | undefined;
+	clients?: string | undefined;
+	syncMode?: string | undefined;
+	dataDir?: string | undefined;
+	dryRun?: boolean | undefined;
+	structure?: string | undefined;
 }
 
 const VALID_SYNC_MODES = ["realtime", "local", "manual"] as const;
@@ -163,7 +163,7 @@ function maybeMigrateLegacyConfig(cwd: string): void {
 
 function ensureConfigPresent(cwd: string, serverFlag: string | undefined): void {
 	if (!isConfigured(cwd)) {
-		initConfig({ serverUrl: serverFlag }, cwd);
+		initConfig(serverFlag ? { serverUrl: serverFlag } : {}, cwd);
 		console.log(`\n${c.green("Created")} .interlinked/config.json`);
 		return;
 	}

@@ -101,6 +101,7 @@ function loadBatchManifest(manifestPath: string): GateInputEntry[] {
 	} catch (err) {
 		throw new Error(
 			`Could not read batch manifest: ${err instanceof Error ? err.message : String(err)}`,
+			{ cause: err },
 		);
 	}
 	let parsed: unknown;
@@ -109,6 +110,7 @@ function loadBatchManifest(manifestPath: string): GateInputEntry[] {
 	} catch (err) {
 		throw new Error(
 			`Batch manifest is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+			{ cause: err },
 		);
 	}
 	if (!parsed || typeof parsed !== "object") {
@@ -211,7 +213,7 @@ function toJsonPayload(result: GateResult): {
 		tool: string;
 		code: string;
 		line: number;
-		column?: number;
+		column?: number | undefined;
 		message: string;
 		severity: GateFailure["severity"];
 	}>;

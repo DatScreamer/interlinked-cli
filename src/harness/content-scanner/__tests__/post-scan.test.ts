@@ -70,7 +70,6 @@ function makeRules(scanner: ContentScannerConfig | undefined): GuardRulesConfig 
 		required_tools: [],
 		strict_skips: false,
 		skip_allowlist: [],
-		project_wide_checks: {} as GuardRulesConfig["project_wide_checks"],
 		content_scanner: scanner,
 	};
 }

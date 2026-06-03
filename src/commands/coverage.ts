@@ -62,7 +62,7 @@ export async function coverageCheckCommand(opts: CoverageCheckOptions): Promise<
 		const result = compareCoverage(summary, baseline, {
 			config: policy.coverage_ratchet,
 			repoRoot: cwd,
-			changedFiles,
+			...(changedFiles !== undefined ? { changedFiles } : {}),
 		});
 
 		output(mode, buildJsonPayload(reportPath, result), {

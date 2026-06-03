@@ -170,9 +170,9 @@ export async function recurrenceFlagCommand(
 	}
 	recordHarnessMissed({
 		signature,
-		check_id: opts.checkId,
-		file: opts.file,
-		message: opts.message,
+		...(opts.checkId !== undefined ? { check_id: opts.checkId } : {}),
+		...(opts.file !== undefined ? { file: opts.file } : {}),
+		...(opts.message !== undefined ? { message: opts.message } : {}),
 		cwd: opts.cwd ?? process.cwd(),
 	});
 	if (opts.json) {
@@ -185,7 +185,7 @@ export async function recurrenceFlagCommand(
 export async function recurrenceScanCommand(opts: ScanOpts): Promise<void> {
 	const findings = scanCodebaseForRecurrences({
 		cwd: opts.cwd ?? process.cwd(),
-		roots: opts.root,
+		...(opts.root !== undefined ? { roots: opts.root } : {}),
 		recordEvents: opts.record === true,
 	});
 	if (opts.json) {

@@ -51,7 +51,7 @@ export type TaintGuardsResult =
 	| { kind: "block"; decision: HarnessDecision }
 	| { kind: "ask"; decision: HarnessDecision }
 	| { kind: "allow-readonly"; decision: HarnessDecision }
-	| { kind: "ok"; warnings: string[]; escalation?: EscalationRequest };
+	| { kind: "ok"; warnings: string[]; escalation?: EscalationRequest | undefined };
 
 /** Untrusted provenance values — taint sources from these origins gate the
  *  external-action confirmation. Local code reads and document reads of
@@ -146,7 +146,7 @@ function flattenToolInputToString(toolInput: JsonObject): string {
 			return;
 		}
 		if (typeof v === "object") {
-			for (const e of Object.values(v as Record<string, unknown>)) walk(e);
+			for (const e of Object.values(v as JsonObject)) walk(e);
 		}
 	};
 	walk(toolInput);

@@ -311,7 +311,7 @@ export async function checkCommand(opts: {
 		const scope = { projectRoot: cwd, mode: "project" as const };
 		process.stderr.write("  running external tools...\n");
 		engineReport = engine.runChecks(scope, {
-			tools: engineToolFilter,
+			...(engineToolFilter !== undefined ? { tools: engineToolFilter } : {}),
 			timeoutMs: 30_000,
 		});
 	}

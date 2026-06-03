@@ -41,7 +41,7 @@ export function getActiveSkipChecks(): Set<string> {
 
 interface StreamCqSectionArgs {
 	label: string;
-	skipId?: string;
+	skipId?: string | undefined;
 	issues: CodeQualityIssue[];
 	noun: string;
 	passLabel: string;
@@ -158,7 +158,13 @@ export function runToolWithSpinner<T>(args: RunToolWithSpinnerArgs<T>): Promise<
 			frame++;
 		}, 80);
 
-		const proc = spawn(cmd[0], cmd.slice(1), {
+		const bin = cmd[0];
+		if (bin === undefined) {
+			clearInterval(spinner);
+			resolvePromise({ items: [], elapsedMs: `${((Date.now() - start) / 1000).toFixed(1)}s` });
+			return;
+		}
+		const proc = spawn(bin, cmd.slice(1), {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
@@ -207,7 +213,12 @@ export function runToolSilent<T>(args: RunToolArgs<T>): Promise<ToolRun<T>> {
 	const { cmd, cwd, timeoutMs, parseOutput } = args;
 	return new Promise((resolvePromise) => {
 		const start = Date.now();
-		const proc = spawn(cmd[0], cmd.slice(1), {
+		const bin = cmd[0];
+		if (bin === undefined) {
+			resolvePromise({ items: [], elapsedMs: `${((Date.now() - start) / 1000).toFixed(1)}s` });
+			return;
+		}
+		const proc = spawn(bin, cmd.slice(1), {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 		});

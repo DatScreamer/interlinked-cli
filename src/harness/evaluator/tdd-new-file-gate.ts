@@ -58,9 +58,9 @@ const EXEMPT_DIRECTIVE_SCAN_BYTES = 400;
 
 export interface TddNewFileGateArgs {
 	filePath: string;
-	cwd?: string;
+	cwd?: string | undefined;
 	session: SessionTrajectory | undefined;
-	content?: string;
+	content?: string | undefined;
 	testFirstMode: "nudge" | "warn" | "enforce" | undefined;
 }
 

@@ -29,19 +29,19 @@ interface AttachOptions {
 
 interface AttachResult {
 	server_url: string;
-	workspace_id?: string;
-	default_workspace_key?: string;
-	default_project?: string;
-	agent_name?: string;
+	workspace_id?: string | undefined;
+	default_workspace_key?: string | undefined;
+	default_project?: string | undefined;
+	agent_name?: string | undefined;
 	remote: {
 		status: "linked" | "skipped" | "failed";
-		reason?: string;
-		agent_name?: string;
-		agent_handle?: string;
-		workspace_name?: string;
-		is_new_agent?: boolean;
-		reclaimed_agent?: boolean;
-		error?: string;
+		reason?: string | undefined;
+		agent_name?: string | undefined;
+		agent_handle?: string | undefined;
+		workspace_name?: string | undefined;
+		is_new_agent?: boolean | undefined;
+		reclaimed_agent?: boolean | undefined;
+		error?: string | undefined;
 	};
 }
 
@@ -108,7 +108,10 @@ function buildRemoteStatusLines(remote: RemoteOnboardingResult, result: AttachRe
 	return lines;
 }
 
-function applyDefaultContext(opts: { workspaceKey?: string; project?: string }): void {
+function applyDefaultContext(opts: {
+	workspaceKey?: string | undefined;
+	project?: string | undefined;
+}): void {
 	if (!opts.workspaceKey && !opts.project) {
 		return;
 	}
@@ -169,7 +172,9 @@ export async function attachCommand(opts: AttachOptions): Promise<void> {
 			updateLocalConfig({ agent_name: opts.agent.trim() });
 		}
 
-		const remote = await ensureRemoteOnboarding({ serverUrl: opts.server });
+		const remote = await ensureRemoteOnboarding(
+			opts.server !== undefined ? { serverUrl: opts.server } : {},
+		);
 		const resolved = resolveConfig();
 
 		const result: AttachResult = {

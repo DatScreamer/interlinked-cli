@@ -150,7 +150,7 @@ export interface CaseClassifyOptions {
 	/** Planned content of the file being written (Write's `tool_input.content`
 	 *  or first new_string of an Edit). Used to distinguish Case B (imports
 	 *  declared) from Case C (greenfield). */
-	toolInputContent?: string;
+	toolInputContent?: string | undefined;
 }
 
 export function classifyCase(

@@ -60,16 +60,16 @@ export interface HookEntryOptions {
 	/** Repo root to discover the daemon socket under. Defaults to cwd. */
 	cwd?: string;
 	/** Explicit runner id (overrides env detection). */
-	runner?: RunnerId;
+	runner?: RunnerId | undefined;
 	/** Explicit socket path (overrides discovery). */
-	socketPath?: string;
+	socketPath?: string | undefined;
 	/** Hard timeout for the daemon call. Defaults to 2s. */
 	timeout_ms?: number;
 }
 
 export interface HookEntryResult {
-	stdout?: string;
-	stderr?: string;
+	stdout?: string | undefined;
+	stderr?: string | undefined;
 	exit_code: number;
 	/** True if the hook fell back to cold evaluation. */
 	fell_back: boolean;

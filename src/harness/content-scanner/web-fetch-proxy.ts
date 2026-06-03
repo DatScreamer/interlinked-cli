@@ -278,8 +278,13 @@ export type SsrfRejectionReason =
 export class SsrfBlockedError extends Error {
 	readonly reason: SsrfRejectionReason;
 	readonly url: string;
-	constructor(reason: SsrfRejectionReason, url: string, detail: string) {
-		super(`SSRF guard blocked WebFetch (${reason}): ${detail}`);
+	constructor(
+		reason: SsrfRejectionReason,
+		url: string,
+		detail: string,
+		options?: { cause?: unknown },
+	) {
+		super(`SSRF guard blocked WebFetch (${reason}): ${detail}`, options);
 		this.reason = reason;
 		this.url = url;
 		this.name = "SsrfBlockedError";
@@ -360,8 +365,10 @@ export async function assertSafeFetchTarget(
 	let parsed: URL;
 	try {
 		parsed = new URL(rawUrl);
-	} catch (_err) {
-		throw new SsrfBlockedError("invalid_url", rawUrl, "URL parse failed");
+	} catch (err) {
+		throw new SsrfBlockedError("invalid_url", rawUrl, "URL parse failed", {
+			cause: err,
+		});
 	}
 	if (!ALLOWED_FETCH_SCHEMES.has(parsed.protocol)) {
 		throw new SsrfBlockedError(
@@ -400,6 +407,7 @@ export async function assertSafeFetchTarget(
 			"hostname_resolution_failed",
 			rawUrl,
 			`DNS lookup of ${bareHost} failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ cause: err },
 		);
 	}
 	if (addresses.length === 0) {
@@ -435,7 +443,7 @@ export async function assertSafeFetchTarget(
 
 interface PinnedFetchResponse {
 	status: number;
-	location?: string;
+	location?: string | undefined;
 	body: string;
 }
 

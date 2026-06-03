@@ -51,13 +51,13 @@ export interface ToolCallAction {
 	/** Post-phase only */
 	tool_response?: unknown;
 	/** Post-phase only */
-	tool_error?: string;
+	tool_error?: string | undefined;
 }
 
 export interface ShellCommandAction {
 	kind: "shell_command";
 	command: string;
-	cwd?: string;
+	cwd?: string | undefined;
 	tool_class: ToolClass;
 }
 
@@ -105,10 +105,12 @@ export type UnifiedAction =
 export interface UnifiedHookContext {
 	cwd: string;
 	/** git top-level if detectable */
-	workspace_root?: string;
-	git_head?: string;
-	branch?: string;
-	agent?: { id?: string; handle?: string; role?: string };
+	workspace_root?: string | undefined;
+	git_head?: string | undefined;
+	branch?: string | undefined;
+	agent?:
+		| { id?: string | undefined; handle?: string | undefined; role?: string | undefined }
+		| undefined;
 }
 
 export interface UnifiedHookEvent {
@@ -118,18 +120,18 @@ export interface UnifiedHookEvent {
 	/** Stable across a single CLI session. */
 	session_id: string;
 	/** For causality; set by adapters when a pre/post pair is emitted. */
-	parent_event_id?: string;
+	parent_event_id?: string | undefined;
 	/** The runner's own id for the tool invocation, when it supplies one
 	 *  (Claude Code's `tool_use_id`). Stable across the PreToolUse/PostToolUse
 	 *  pair and across duplicate hook deliveries of the same call — so it is
 	 *  the key for de-duplicating redundant deliveries. Absent on non-tool
 	 *  events and for runners that don't supply one. */
-	tool_use_id?: string;
+	tool_use_id?: string | undefined;
 	/** ISO 8601, ms precision. */
 	ts: string;
 
 	runner: RunnerId;
-	runner_version?: string;
+	runner_version?: string | undefined;
 	/** The runner's own event name (e.g., "PreToolUse"). Preserved for forensics. */
 	runner_native_event: string;
 

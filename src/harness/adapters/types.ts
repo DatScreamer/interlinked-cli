@@ -25,9 +25,9 @@ export interface SettingsFragment {
 
 export interface AdapterOutput {
 	/** What the adapter writes to stdout. Format is runner-specific. */
-	stdout?: string;
+	stdout?: string | undefined;
 	/** What the adapter writes to stderr. `warnings[]` always land here. */
-	stderr?: string;
+	stderr?: string | undefined;
 	/** Process exit code the adapter requests (0 = allow, 2 = deny on most runners). */
 	exit_code: number;
 }

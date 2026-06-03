@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { getDataDir } from "./config.js";
+import type { JsonObject } from "./json-types.js";
 
 export const GENESIS_HASH = "0".repeat(64);
 // Record types that participate in the hash chain. Originally guard_* only;
@@ -57,7 +58,7 @@ export interface AuditVerifyResult {
 	first_bad_index?: number;
 	first_bad_reason?: string;
 	first_bad_line_number?: number;
-	last_hash?: string;
+	last_hash?: string | undefined;
 }
 
 /**
@@ -68,7 +69,7 @@ export interface AuditVerifyResult {
 export function canonicalJson(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	const obj = value as Record<string, unknown>;
+	const obj = value as JsonObject;
 	const keys = Object.keys(obj).sort();
 	return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
 }
