@@ -24,6 +24,8 @@
 // project file imports this module but the project's root layout doesn't
 // also render `<DemoBanner />` (provided in the JSX-flavored sibling).
 
+import type { JsonObject } from "../json-types.js";
+
 export interface DemoDataOptions {
 	/** One-line reason the data is fake. Surfaced in the UI banner. */
 	reason?: string;
@@ -34,7 +36,7 @@ export interface DemoDataOptions {
 export interface DemoEntry {
 	key: string;
 	reason: string;
-	ticket?: string;
+	ticket?: string | undefined;
 	registeredAt: number;
 }
 
@@ -57,7 +59,7 @@ function announceOnce(key: string, reason: string): void {
 		console.warn(msg);
 	}
 	if (typeof globalThis !== "undefined") {
-		const target = globalThis as Record<string, unknown>;
+		const target = globalThis as JsonObject;
 		const list = (target.__INTERLINKED_DEMO__ as DemoEntry[] | undefined) ?? [];
 		list.push({ key, reason, registeredAt: Date.now() });
 		target.__INTERLINKED_DEMO__ = list;
@@ -74,7 +76,7 @@ function notifyListeners(): void {
 		try {
 			listener(summary);
 		} catch {
-			// listener errors must not break the wrapper
+			// non-fatal: a listener error must not break the wrapper
 		}
 	}
 }
@@ -130,7 +132,7 @@ export function __resetDemoRegistry(): void {
 	LISTENERS.clear();
 	ANNOUNCED.clear();
 	if (typeof globalThis !== "undefined") {
-		(globalThis as Record<string, unknown>).__INTERLINKED_DEMO__ = [];
+		(globalThis as JsonObject).__INTERLINKED_DEMO__ = [];
 	}
 	if (typeof document !== "undefined" && document.body) {
 		delete document.body.dataset.demo;

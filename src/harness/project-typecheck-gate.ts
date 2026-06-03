@@ -52,7 +52,7 @@ export function resolveTypecheckCommand(cwd: string): ResolvedTypecheckCommand |
 		try {
 			pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
 		} catch {
-			// Malformed package.json — fall through and check tsconfig directly.
+			// non-fatal: malformed package.json — fall through and check tsconfig directly.
 		}
 	}
 	if (pkg?.scripts?.["typecheck:stable"]) {

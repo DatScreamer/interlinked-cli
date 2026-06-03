@@ -99,7 +99,12 @@ function extractModes() {
 // Node minimum version — package.json#engines.node
 // ---------------------------------------------------------------------
 function extractNodeMin() {
-	const pkg = JSON.parse(read("package.json"));
+	let pkg;
+	try {
+		pkg = JSON.parse(read("package.json"));
+	} catch (err) {
+		throw new Error(`package.json is not valid JSON: ${err.message}`, { cause: err });
+	}
 	const raw = pkg.engines?.node;
 	if (!raw) return null;
 	const m = raw.match(/(\d+)/);

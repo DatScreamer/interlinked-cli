@@ -199,7 +199,7 @@ function sendSkillEvent(event: JsonObject): Promise<JsonObject | null> {
 			try {
 				sock.destroy();
 			} catch {
-				/* socket already gone */
+				/* non-fatal: the socket is already gone */
 			}
 			resolve(null);
 		}, SOCKET_TIMEOUT_MS);

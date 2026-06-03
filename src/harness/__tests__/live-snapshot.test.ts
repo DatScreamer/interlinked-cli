@@ -8,7 +8,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_LIVE_TTL_MS,
 	deleteLiveSnapshot,
@@ -107,13 +107,21 @@ describe("deleteLiveSnapshot", () => {
 	});
 
 	it("is idempotent on a missing snapshot", () => {
-		// Should not throw.
-		deleteLiveSnapshot(tmpDir, "missing");
-		expect(true).toBe(true);
+		expect(() => deleteLiveSnapshot(tmpDir, "missing")).not.toThrow();
 	});
 });
 
 describe("sweepStaleLiveSnapshots", () => {
+	// Freeze the clock so the relative-time backdating below (and the SUT's own
+	// `Date.now()` cutoff) read from one deterministic reference instead of the
+	// wall clock — no flake near the TTL boundary.
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("removes only files older than the TTL", () => {
 		writeLiveSnapshot(tmpDir, "fresh", { session_id: "fresh" });
 		writeLiveSnapshot(tmpDir, "stale", { session_id: "stale" });

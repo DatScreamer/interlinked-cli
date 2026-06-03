@@ -208,7 +208,11 @@ function loadFacts() {
 	const json = execFileSync("node", [join(ROOT, "scripts/extract-doc-facts.mjs")], {
 		encoding: "utf8",
 	});
-	return JSON.parse(json);
+	try {
+		return JSON.parse(json);
+	} catch (err) {
+		throw new Error(`extract-doc-facts.mjs produced invalid JSON: ${err.message}`, { cause: err });
+	}
 }
 
 function loadReceipts() {

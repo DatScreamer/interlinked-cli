@@ -126,7 +126,7 @@ export function explainFailure(
 		try {
 			return tmpl.template(buildContext(event));
 		} catch {
-			// Fall through to label fallback rather than crashing the channel.
+			// non-fatal: fall through to the label fallback rather than crashing the channel.
 		}
 	}
 	const fallback = FALLBACK_BY_LABEL[triage.label];

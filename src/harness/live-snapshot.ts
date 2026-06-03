@@ -83,7 +83,7 @@ export function writeLiveSnapshot(
 		try {
 			if (existsSync(tmp)) rmSync(tmp, { force: true });
 		} catch {
-			/* secondary cleanup failure — already in error path */
+			/* cleanup only — secondary failure, already in the error path */
 		}
 		return { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
 	}
@@ -115,7 +115,7 @@ export function deleteLiveSnapshot(cwd: string, sessionId: string): void {
 	try {
 		if (existsSync(target)) rmSync(target, { force: true });
 	} catch {
-		/* swallow — caller can't act on cleanup failures */
+		/* cleanup only — caller can't act on a delete failure */
 	}
 }
 
@@ -159,7 +159,7 @@ export function sweepStaleLiveSnapshots(
 				removed.push(path);
 			}
 		} catch {
-			/* skip — file may have been removed concurrently */
+			/* cleanup only — file may have been removed concurrently */
 		}
 	}
 	return { scanned, removed };

@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { JsonObject } from "../lib/json-types.js";
 
 export interface RegistrySource {
 	/** Path relative to cwd. */
@@ -61,7 +62,15 @@ export function loadRegistryParityConfig(cwd: string): RegistryParityConfig | nu
 	const path = join(cwd, REGISTRY_PARITY_CONFIG_PATH);
 	if (!existsSync(path)) return null;
 	const raw = readFileSync(path, "utf-8");
-	const parsed: unknown = JSON.parse(raw);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (err) {
+		throw new Error(
+			`registry-parity config at ${path} is not valid JSON: ${(err as Error).message}`,
+			{ cause: err },
+		);
+	}
 	return validateConfig(parsed);
 }
 
@@ -91,7 +100,7 @@ function validateSource(value: unknown, ctx: string): RegistrySource {
 	};
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
+function isObject(v: unknown): v is JsonObject {
 	return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 

@@ -211,8 +211,8 @@ export function suggestRecovery(
 		try {
 			return suggestion.template(ctx);
 		} catch {
-			// Template threw on a context shape it didn't expect — fall through
-			// to the by-label fallback rather than crashing the channel.
+			// non-fatal: the template threw on a context shape it didn't expect —
+			// fall through to the by-label fallback rather than crashing the channel.
 		}
 	}
 	const fallback = FALLBACK_BY_LABEL[triage.label];

@@ -175,8 +175,9 @@ export function evaluateFileDumpGuard(args: FileDumpGuardArgs): FileDumpGuardRes
 					aggregateNewlines += (content.match(/\n/g) || []).length;
 					catLineCountKnown = true;
 				} catch {
-					// readFileSync failure leaves catLineCountKnown unchanged;
-					// the resulting `lines = Infinity` is the conservative fallback.
+					// non-fatal: a readFileSync failure leaves catLineCountKnown
+					// unchanged; the resulting `lines = Infinity` is the conservative
+					// (block-favoring) fallback.
 				}
 			}
 		} catch {

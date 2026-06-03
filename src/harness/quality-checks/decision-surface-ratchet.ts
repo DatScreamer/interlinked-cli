@@ -143,7 +143,7 @@ function resolveBaselineRef(
 			const mergeBase = runGit(["merge-base", "HEAD", ref], cwd).trim();
 			if (mergeBase) return ref;
 		} catch {
-			/* try next candidate */
+			/* best-effort: ref doesn't exist here, try the next candidate base */
 		}
 	}
 	return null;

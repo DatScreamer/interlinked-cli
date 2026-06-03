@@ -102,7 +102,7 @@ function loadTranscript(sessionId) {
 		try {
 			entries.push(JSON.parse(line));
 		} catch {
-			// skip malformed lines
+			// best-effort: skip malformed JSONL lines, keep the rest
 		}
 	}
 	return entries;

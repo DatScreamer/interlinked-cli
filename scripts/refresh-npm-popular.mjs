@@ -97,7 +97,12 @@ function comparePackages(a, b) {
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	const raw = await readFile(FILE_PATH, "utf-8");
-	const json = JSON.parse(raw);
+	let json;
+	try {
+		json = JSON.parse(raw);
+	} catch (err) {
+		throw new Error(`Malformed ${FILE_PATH}: ${err.message}`, { cause: err });
+	}
 	if (!Array.isArray(json.packages)) {
 		throw new Error(`Malformed file: missing packages array`);
 	}
