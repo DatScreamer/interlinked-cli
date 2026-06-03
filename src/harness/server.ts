@@ -31,6 +31,7 @@ import {
 	type AutoCoordinationState,
 	DEFAULT_AUTO_COORDINATION_CONFIG,
 } from "./auto-coordinate.js";
+import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { CohortManager } from "./cohort.js";
@@ -980,6 +981,9 @@ logAlways(
 		msPerMinute: MS_PER_MINUTE,
 	}),
 );
+
+const __staleWarn = stalenessWarning(runningBuildStaleness(import.meta.url));
+if (__staleWarn) logAlways(__staleWarn);
 
 // Write initial classifier status for statusline
 writeClassifierStatus(computeClassifierStatusLine(rules));

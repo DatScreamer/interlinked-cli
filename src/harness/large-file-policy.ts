@@ -25,14 +25,22 @@ import { isGeneratedFile } from "./checks/shared.js";
 /**
  * Default per-file line cap, used when no baseline file overrides it.
  *
- * Deliberately high. Line count is a coarse proxy for the real cost — agent
- * legibility and edit reliability — so the ENFORCED cap sits well above the
- * ~300-500 line aspirational module size: a gate that false-alarms gets
- * ignored. The fine-grained `complexity` / `cyclomatic` checks do the
- * nuanced "is this file actually bad" work. Ratchet this downward via
- * `max_lines` in the baseline file as the grandfather list shrinks.
+ * THE canonical cap. This constant and the committed baseline's `max_lines`
+ * (.interlinked/large-files-baseline.json) are the SAME number — a regression
+ * test in `large-file-policy.test.ts` pins them equal so the cap can never be
+ * two different values depending on whether a baseline loaded. `maxLinesFor`
+ * returns the baseline value when present and falls back to this constant when
+ * absent; keeping them equal means the fallback is never a *different* cap.
+ *
+ * Line count is a coarse proxy for the real cost — agent legibility and edit
+ * reliability — so the cap sits above the ~300-500 line aspirational module
+ * size: a gate that false-alarms gets ignored. The fine-grained `complexity` /
+ * `cyclomatic` checks do the nuanced "is this file actually bad" work. To
+ * ratchet the cap down (1000 → 800 → 500) as the grandfather list shrinks,
+ * change BOTH this constant and the baseline's `max_lines` together — the
+ * pinning test enforces it and the change shows up in one diff.
  */
-export const DEFAULT_MAX_LINES = 1500;
+export const DEFAULT_MAX_LINES = 1000;
 
 /** Repo-relative path of the baseline file. Module-private — callers go
  *  through `loadLargeFileBaseline` / `maxLinesFor`. */

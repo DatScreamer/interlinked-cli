@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,8 +17,18 @@ import {
 } from "../large-file-policy.js";
 
 describe("DEFAULT_MAX_LINES", () => {
-	it("is the 1500-line rollout cap", () => {
-		expect(DEFAULT_MAX_LINES).toBe(1500);
+	it("is the canonical 1000-line cap", () => {
+		expect(DEFAULT_MAX_LINES).toBe(1000);
+	});
+
+	// Single source of truth: the in-code default and the committed baseline's
+	// max_lines MUST be the same number, so the enforced cap is never two values
+	// depending on whether a baseline loaded. Ratcheting the cap means changing
+	// BOTH together; this test fails the moment they drift apart.
+	it("equals the committed baseline's max_lines (no drift)", () => {
+		const baselinePath = join(process.cwd(), ".interlinked", "large-files-baseline.json");
+		const committed = JSON.parse(readFileSync(baselinePath, "utf-8")) as { max_lines: number };
+		expect(committed.max_lines).toBe(DEFAULT_MAX_LINES);
 	});
 });
 

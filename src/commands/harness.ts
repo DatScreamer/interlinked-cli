@@ -6,6 +6,7 @@ import { execSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
+import { distStaleness, stalenessWarning } from "../harness/build-staleness.js";
 import { createDaemonClient } from "../harness/daemon-client.js";
 import type { DaemonHealth } from "../harness/daemon-protocol.js";
 import { discoverDaemons } from "../harness/session-paths.js";
@@ -503,6 +504,7 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 		const lastEventAt = readLastLatencyTimestamp(cwd);
 		const protocolStatus = readProtocolStatus(cwd);
 		const framedSockets = await readFramedSocketStatuses(cwd);
+		const staleness = distStaleness(cwd);
 
 		const result = {
 			running: processStatus.running,
@@ -525,6 +527,7 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 			rss_mb: rssMb,
 			mode: activeMode,
 			last_event_at: lastEventAt,
+			build_stale: staleness?.stale ?? false,
 		};
 
 		output(mode, result, {
@@ -576,6 +579,8 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 				if (rssMb !== null) {
 					lines.push(kvLine("RSS", `${rssMb} MB`));
 				}
+				const sw = stalenessWarning(staleness);
+				if (sw) lines.push(kvLine("Build", c.yellow(sw)));
 				if (activeMode !== null) {
 					lines.push(kvLine("Mode", activeMode));
 				}

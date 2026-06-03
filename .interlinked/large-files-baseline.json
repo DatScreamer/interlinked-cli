@@ -1,9 +1,8 @@
 {
   "version": 1,
   "max_lines": 1000,
-  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). `files` grandfathers offenders (repo-relative path -> recorded line count): a listed file may shrink or hold, but the harness blocks any edit that grows it and verify fails it. Ratcheted 1500 -> 1000 on 2026-06-01 after decomposing the over-cap modules (the 1000-line tranche). The three remaining entries are in-flight decompositions being split by concurrent agents; remove each entry once its file drops below max_lines. To tighten further (1000 -> 800 -> 500), lower `max_lines` as the list empties — the fine-grained complexity/cyclomatic checks do the sub-1000 'is this file actually bad' work. Policy: src/harness/large-file-policy.ts.",
+  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). `files` grandfathers offenders (repo-relative path -> recorded line count): a listed file may shrink or hold, but the harness blocks any edit that grows it and verify fails it. Ratcheted 1500 -> 1000 on 2026-06-01 after decomposing the over-cap modules (the 1000-line tranche). Remaining entries are in-flight decompositions; remove each entry once its file drops below max_lines (pre-tool.ts was split into pre-tool.ts + pre-tool-helpers.ts on 2026-06-02). To tighten further (1000 -> 800 -> 500), lower `max_lines` as the list empties — the fine-grained complexity/cyclomatic checks do the sub-1000 'is this file actually bad' work. Policy: src/harness/large-file-policy.ts.",
   "files": {
-    "src/harness/evaluator/pre-tool.ts": 1469,
     "src/lib/hook-template-chunks/session-state.ts": 1396,
     "src/lib/hooks-template.ts": 1246
   }

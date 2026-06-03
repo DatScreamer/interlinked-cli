@@ -50,10 +50,21 @@ The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/a
 
 ## Per-file line cap (`large-file-policy.ts`)
 
-Hand-written code modules are capped at **1500 lines** (`DEFAULT_MAX_LINES`).
+Hand-written code modules are capped at **1000 lines** (`DEFAULT_MAX_LINES`).
 `src/harness/large-file-policy.ts` is the single source of truth — the
 threshold, the `isCappableFile` predicate (generated / test / `.d.ts` /
-non-code files are exempt), the baseline loader, and the ratchet verdict.
+non-code files are exempt), the baseline loader, the one canonical line
+counter (`countLines`), and the ratchet verdict.
+
+**The cap is ONE number.** `DEFAULT_MAX_LINES` (code) and `max_lines` in
+`.interlinked/large-files-baseline.json` (config) are kept identical by a
+regression test in `large-file-policy.test.ts` (`DEFAULT_MAX_LINES === committed
+baseline.max_lines`). `maxLinesFor()` returns the baseline value when present
+and falls back to the constant when absent — keeping them equal means the
+fallback is never a *different* cap (the old footgun: a missing baseline
+silently raised the cap). All enforcement surfaces and tests derive from this
+constant; tests build fixtures as `DEFAULT_MAX_LINES ± n` rather than hardcoding,
+so ratcheting is a one-place change.
 
 Three enforcement surfaces, one policy:
 - **PreToolUse block** — `checkLargeFileLineCountWrite` (`pre-checks.ts`)
@@ -67,8 +78,9 @@ Three enforcement surfaces, one policy:
 The cap and the grandfather list live in `.interlinked/large-files-baseline.json`
 (committed — carved out of the `.interlinked/*` gitignore). A grandfathered
 file may shrink or hold but not grow; decompose it below `max_lines` to drop
-its entry. Ratchet `max_lines` down (1500 → 1200 → 1000) as the list empties —
-lowering the cap is a one-number edit to that file. The cap is a coarse proxy;
+its entry. Ratchet the cap down (1000 → 800 → 500) as the list empties by
+editing BOTH `max_lines` (baseline) and `DEFAULT_MAX_LINES` (code) together —
+the pinning test enforces they match, so it surfaces in one diff. The cap is a coarse proxy;
 the `complexity` / `cyclomatic` checks do the fine-grained "is this file bad"
 work, which is why the enforced line number sits well above the ~300–500-line
 aspirational module size.
