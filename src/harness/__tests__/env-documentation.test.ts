@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +46,23 @@ describe("env documentation parsing", () => {
 		expect(documented.has("OAUTH_KV")).toBe(true);
 		expect(documented.has("ATTACHMENTS")).toBe(true);
 		expect(documented.has("TOOL_MODE")).toBe(true);
+	});
+
+	it("discovers Wrangler bindings in an immediate subdirectory (e.g. landing/)", () => {
+		dir = mkdtempSync(join(tmpdir(), "env-docs-"));
+		mkdirSync(join(dir, "landing"));
+		writeFileSync(
+			join(dir, "landing", "wrangler.jsonc"),
+			['{ "assets": { "binding": "ASSETS" } }'].join("\n"),
+		);
+
+		const documented = parseEnvDocumentation(
+			dir,
+			{ existsSync, readFileSync, readdirSync },
+			join,
+		);
+
+		expect(documented.has("ASSETS")).toBe(true);
 	});
 
 	it("ignores standard shell env vars while keeping project-specific ones", () => {

@@ -60,6 +60,7 @@ export function checkSwiftForceUnwrap(content: string, filePath: string): Inline
 		if (matches.length >= 10) break;
 		const line = strippedLines[i];
 		const origLine = originalLines[i];
+		if (line === undefined || origLine === undefined) continue;
 
 		// Skip @IBOutlet lines — standard UIKit pattern uses implicitly unwrapped optionals
 		if (/@IBOutlet/.test(origLine)) continue;
@@ -483,32 +484,44 @@ export function extractEnvReferences(content: string, filePath: string): EnvRefe
 	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"].includes(ext)) return [];
 	if (isTestFile(filePath) || filePath.endsWith(".d.ts")) return [];
 
-	const stripped = stripComments(content);
-	const lines = stripped.split("\n");
+	// Dot-access reads (`process.env.X`, `env.X`, …) scan content with BOTH comments
+	// and string/template literals blanked — so an `env.KV` inside a detector's
+	// message string or a doc example isn't counted as a real reference (the
+	// `env.X` member form is especially prone to this in worker-binding prose).
+	// Bracket-access reads (`process.env["X"]`) need the quoted key intact, so they
+	// scan the comments-only-stripped content. Both transforms preserve line count.
+	const dotLines = stripCommentsAndStrings(content).split("\n");
+	const bracketLines = stripComments(content).split("\n");
 	const refs: EnvReference[] = [];
 
-	const patterns: Array<{ re: RegExp; source: string }> = [
+	const dotPatterns: Array<{ re: RegExp; source: string }> = [
 		{ re: /\bprocess\.env\.([A-Z][A-Z0-9_]+)\b/g, source: "process.env" },
-		{ re: /\bprocess\.env\["([A-Z][A-Z0-9_]+)"\]/g, source: "process.env" },
-		{ re: /\bprocess\.env\['([A-Z][A-Z0-9_]+)'\]/g, source: "process.env" },
 		{ re: /\bimport\.meta\.env\.([A-Z][A-Z0-9_]+)\b/g, source: "import.meta.env" },
 		{ re: /\bc\.env\.([A-Z][A-Z0-9_]+)\b/g, source: "c.env" },
 		{ re: /(?<![\w.])env\.([A-Z][A-Z0-9_]+)\b/g, source: "env.X" },
+	];
+	const bracketPatterns: Array<{ re: RegExp; source: string }> = [
+		{ re: /\bprocess\.env\["([A-Z][A-Z0-9_]+)"\]/g, source: "process.env" },
+		{ re: /\bprocess\.env\['([A-Z][A-Z0-9_]+)'\]/g, source: "process.env" },
 		{ re: /\bEnv\["([A-Z][A-Z0-9_]+)"\]/g, source: "Env[X]" },
 		{ re: /\bEnv\['([A-Z][A-Z0-9_]+)'\]/g, source: "Env[X]" },
 	];
 
-	for (let i = 0; i < lines.length; i++) {
-		for (const { re, source } of patterns) {
-			re.lastIndex = 0;
-			for (const m of lines[i].matchAll(re)) {
-				const name = m[1];
-				if (!SYSTEM_ENV_VARS.has(name)) {
-					refs.push({ name, line: i + 1, source });
+	const scan = (linesArr: string[], pats: Array<{ re: RegExp; source: string }>): void => {
+		for (let i = 0; i < linesArr.length; i++) {
+			for (const { re, source } of pats) {
+				re.lastIndex = 0;
+				for (const m of linesArr[i].matchAll(re)) {
+					const name = m[1];
+					if (!SYSTEM_ENV_VARS.has(name)) {
+						refs.push({ name, line: i + 1, source });
+					}
 				}
 			}
 		}
-	}
+	};
+	scan(dotLines, dotPatterns);
+	scan(bracketLines, bracketPatterns);
 
 	return refs;
 }
@@ -566,46 +579,63 @@ export function parseEnvDocumentation(
 		}
 	}
 
-	// wrangler.toml / wrangler.jsonc [vars]
-	for (const root of roots) {
-		for (const name of ["wrangler.toml", "wrangler.jsonc"]) {
-			const wranglerPath = join(root, name);
-			if (!existsSync(wranglerPath)) continue;
-			try {
-				const content = readFileSync(wranglerPath, "utf-8");
-				if (name.endsWith(".toml")) {
-					let inVars = false;
-					for (const line of content.split("\n")) {
-						const binding = line.match(
-							/^\s*(?:binding|name)\s*=\s*"([A-Z][A-Z0-9_]+)"/,
-						);
-						if (binding) documented.add(binding[1]);
-						if (/^\[vars\]/.test(line.trim())) {
-							inVars = true;
-							continue;
-						}
-						if (/^\[/.test(line.trim())) {
-							inVars = false;
-							continue;
-						}
-						if (inVars) {
-							const m = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/);
-							if (m) documented.add(m[1]);
-						}
+	// wrangler.toml / wrangler.jsonc [vars] + binding names. Parse one config file,
+	// adding any var keys / binding names it declares to `documented`.
+	const parseWranglerFile = (wranglerPath: string, isToml: boolean): void => {
+		if (!existsSync(wranglerPath)) return;
+		try {
+			const content = readFileSync(wranglerPath, "utf-8");
+			if (isToml) {
+				let inVars = false;
+				for (const line of content.split("\n")) {
+					const binding = line.match(/^\s*(?:binding|name)\s*=\s*"([A-Z][A-Z0-9_]+)"/);
+					if (binding) documented.add(binding[1]);
+					if (/^\[vars\]/.test(line.trim())) {
+						inVars = true;
+						continue;
 					}
-				} else {
-					// JSONC: look for keys that look like env vars
-					for (const line of content.split("\n")) {
-						const m = line.match(/"([A-Z][A-Z0-9_]+)"\s*:/);
+					if (/^\[/.test(line.trim())) {
+						inVars = false;
+						continue;
+					}
+					if (inVars) {
+						const m = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/);
 						if (m) documented.add(m[1]);
-						const binding = line.match(/"(?:binding|name)"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
-						if (binding) documented.add(binding[1]);
 					}
 				}
-			} catch {
-				/* intentional: unreadable Wrangler config should not break env discovery */
+			} else {
+				// JSONC: look for keys that look like env vars
+				for (const line of content.split("\n")) {
+					const m = line.match(/"([A-Z][A-Z0-9_]+)"\s*:/);
+					if (m) documented.add(m[1]);
+					const binding = line.match(/"(?:binding|name)"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
+					if (binding) documented.add(binding[1]);
+				}
 			}
+		} catch {
+			/* intentional: unreadable Wrangler config should not break env discovery */
 		}
+	};
+
+	// Ancestor dirs (monorepo root + walk upward), same as the env-docs scan.
+	for (const root of roots) {
+		parseWranglerFile(join(root, "wrangler.toml"), true);
+		parseWranglerFile(join(root, "wrangler.jsonc"), false);
+	}
+
+	// Immediate subdirectories of projectRoot. Worker bindings frequently live in
+	// a sibling sub-app (e.g. `landing/wrangler.jsonc`) that the upward ancestor
+	// walk never reaches. Bounded to one level deep; skip vendored / build / dot
+	// dirs so this stays a small, fixed-cost scan.
+	try {
+		for (const entry of readdirSync(projectRoot)) {
+			if (entry.startsWith(".") || entry === "node_modules" || entry === "dist") continue;
+			const subdir = join(projectRoot, entry);
+			parseWranglerFile(join(subdir, "wrangler.toml"), true);
+			parseWranglerFile(join(subdir, "wrangler.jsonc"), false);
+		}
+	} catch {
+		/* intentional: unreadable project root should not break env discovery */
 	}
 
 	// GitHub Actions workflows
