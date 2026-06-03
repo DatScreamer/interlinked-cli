@@ -29,6 +29,18 @@ describe("findSuppressionMatch", () => {
 	it("returns null for non-suppression lines", () => {
 		expect(findSuppressionMatch("const x = 1;", "const x = 1;")).toBeNull();
 	});
+
+	it("does not treat // noqa (JS comment) as a directive", () => {
+		// noqa is a Python/flake8 convention; a `// noqa` in TS is prose, e.g. a
+		// detector commenting on how it scans noqa ranges.
+		const line = "// noqa suppression range scan (Python checks)";
+		expect(findSuppressionMatch(line, line)).toBeNull();
+	});
+
+	it("flags bare # noqa (Python convention)", () => {
+		const line = "x = risky()  # noqa";
+		expect(findSuppressionMatch(line, line)).not.toBeNull();
+	});
 });
 
 describe("collectSuppressionFindings", () => {
@@ -46,5 +58,31 @@ describe("collectSuppressionFindings", () => {
 		expect(out.length).toBeGreaterThanOrEqual(1);
 		expect(out[0].file).toBe("fixture.ts");
 		expect(out[0].check).toBe("suppressions");
+	});
+
+	it("does not flag # noqa inside a JS/TS string fixture", () => {
+		// Python code samples live inside TS template-literal fixtures; `#` is not
+		// a comment in TS, so the directive there is data, not a suppression.
+		const content = "const code = `value = risky()  # noqa`;";
+		const out: CodeQualityIssue[] = [];
+		collectSuppressionFindings(content, "src/harness/checks/foo.test.ts", out);
+		expect(out.length).toBe(0);
+	});
+
+	it("flags a bare # noqa in a Python file (real directive there)", () => {
+		const out: CodeQualityIssue[] = [];
+		collectSuppressionFindings("x = risky()  # noqa\n", "scripts/foo.py", out);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("exempts files under a fixtures/ dir (deliberately-crafted bad samples)", () => {
+		const content = [`// ${["@ts", "nocheck"].join("-")}`, "const x = 1;"].join("\n");
+		const exempt: CodeQualityIssue[] = [];
+		collectSuppressionFindings(content, "src/harness/__tests__/fixtures/supermodel/high-risk.ts", exempt);
+		expect(exempt.length).toBe(0);
+		// Same content in real source is still flagged — the exemption is fixtures-only.
+		const real: CodeQualityIssue[] = [];
+		collectSuppressionFindings(content, "src/harness/risk.ts", real);
+		expect(real.length).toBeGreaterThanOrEqual(1);
 	});
 });

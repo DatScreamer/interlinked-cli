@@ -520,6 +520,34 @@ describe("checkDuplicateDescribe", () => {
 		const content = `${DESC}("foo", () => {}); ${DESC}("foo", () => {});`;
 		expect(checkDuplicateDescribe(content, "/src/foo.ts")).toEqual([]);
 	});
+
+	it("ignores describe() quoted inside a string fixture (detector-test FP)", () => {
+		// A detector's own test feeds describe(...) as sample code inside a string;
+		// the quoted occurrence must not count as a duplicate of the real suite.
+		const content = [
+			`${DESC}("real", () => {`,
+			`  const sample = '${DESC}("real", () => {})';`,
+			`  expect(sample).toContain("real");`,
+			`});`,
+		].join("\n");
+		expect(checkDuplicateDescribe(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("does not collide distinct titles that contain inner quotes", () => {
+		const content = [
+			`${DESC}("mirror: 'skip' entries carry a rationale", () => {});`,
+			`${DESC}("mirror: 'pre-push' entries appear", () => {});`,
+		].join("\n");
+		expect(checkDuplicateDescribe(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("still flags true duplicates whose titles contain inner quotes", () => {
+		const content = [
+			`${DESC}("handles 'edge' case", () => {});`,
+			`${DESC}("handles 'edge' case", () => {});`,
+		].join("\n");
+		expect(checkDuplicateDescribe(content, "/x/foo.test.ts").length).toBe(1);
+	});
 });
 
 // ===========================================
@@ -606,6 +634,59 @@ describe("FP: commented-out-code skips banner dividers", () => {
 		const content = ["// const x = compute();", "// const y = x + 1;", "// return y;"].join(
 			"\n",
 		);
+		expect(checkCommentedOutCode(content, "/src/foo.ts").length).toBeGreaterThan(0);
+	});
+
+	it("does not flag markdown bullet-list prose", () => {
+		const content = [
+			"//   - git stash drop|clear (irreversible, no reflog)",
+			"//   - secret_read_then_network_call (§3.1, pre_block)",
+			"//   - public symbol companions (env, config, docs)",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("does not flag prose with inline-code spans", () => {
+		const content = [
+			"// `verify` (no `=`) so the gate matches the spaced form",
+			"// the `value` (computed, cached) flows through here",
+			"// `foo` and `bar` are passed (a, b) downstream",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("does not flag angle-bracket placeholder docs", () => {
+		const content = ["//   tool=<tool name>", "//   file=<file path>", "//   mode=<your value>"].join(
+			"\n",
+		);
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("does not flag parenthetical English prose", () => {
+		const content = [
+			"// Protocol (one JSON object per line, both directions):",
+			"// event-specific fields (tool_input, tokens, prompt)",
+			"// the handler returns early (no body, nothing to do)",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("does not flag key=<value> schema-doc lines with commas in placeholders", () => {
+		const content = [
+			"//   tool=<tool name>",
+			"//   count=<number, warn only>",
+			"//   ms=<elapsed milliseconds, optional>",
+			"//   rule=<rule id, block only>",
+		].join("\n");
+		expect(checkCommentedOutCode(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("still flags commented code that uses generics (not a placeholder)", () => {
+		const content = [
+			"// const a: Map<string, number> = new Map();",
+			"// const b: Array<string> = [];",
+			"// return a.size + b.length;",
+		].join("\n");
 		expect(checkCommentedOutCode(content, "/src/foo.ts").length).toBeGreaterThan(0);
 	});
 

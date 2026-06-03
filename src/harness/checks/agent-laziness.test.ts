@@ -172,6 +172,19 @@ function c() { throw new Error("coming soon"); }
 			checkStubNotImplementedThrow(`throw new Error("not implemented");`, TEST),
 		).toEqual([]);
 	});
+
+	it("does not fire on the phrase inside a comment that documents the pattern", () => {
+		const code = [
+			'/** `throw new Error("not implemented")` and variants in non-test source. */',
+			"export function realThing() { return 1; }",
+		].join("\n");
+		expect(checkStubNotImplementedThrow(code, TS)).toEqual([]);
+	});
+
+	it("does not fire on the phrase inside a // line comment", () => {
+		const code = '// historically this threw new Error("not implemented") here\nconst x = 1;';
+		expect(checkStubNotImplementedThrow(code, TS)).toEqual([]);
+	});
 });
 
 describe("checkDeadBranchLiteral", () => {

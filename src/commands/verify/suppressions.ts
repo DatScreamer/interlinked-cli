@@ -58,7 +58,8 @@ function hasSuppressionRationale(trimmedLine: string, label: string): boolean {
 	return false;
 }
 
-const SUPPRESSION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+// `//` / `/*` directives — the JS/TS/C-family comment styles. Always scanned.
+const SLASH_SUPPRESSION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
 	sup("\\/\\/", ["@ts", "ignore"].join("-")),
 	sup("\\/\\/", ["@ts", "expect", "error"].join("-")),
 	sup("\\/\\/", ["@ts", "nocheck"].join("-")),
@@ -67,12 +68,39 @@ const SUPPRESSION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
 	sup("\\/\\/", ["biome", "ignore"].join("-")),
 	sup("\\/\\/", ["prettier", "ignore"].join("-")),
 	sup("\\/\\/", "noinspection"),
-	sup("\\/\\/", "noqa"),
+	sup("\\/\\/", "nolint"),
+];
+
+// `#`-comment directives (Python/Ruby/shell/YAML). Only meaningful where `#` is
+// the line-comment character. Applying these to JS/TS FP'd on Python code samples
+// embedded in string fixtures (a `const code = ...  # noqa` template) and on the
+// word appearing inside `//` prose — so collectSuppressionFindings only tests
+// them for #-comment files (see isHashCommentFile).
+const HASH_SUPPRESSION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+	sup("#", "noqa"),
 	sup("#", "type:\\s*ignore"),
 	sup("#", "nosec"),
 	sup("#", "nolint"),
-	sup("\\/\\/", "nolint"),
 ];
+
+const ALL_SUPPRESSION_PATTERNS = [...SLASH_SUPPRESSION_PATTERNS, ...HASH_SUPPRESSION_PATTERNS];
+
+const HASH_COMMENT_EXTS = new Set([
+	".py", ".pyi", ".rb", ".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".tf",
+	".pl", ".r", ".jl", ".ex", ".exs", ".nim", ".cr", ".rake", ".gemspec", ".coffee",
+]);
+const HASH_COMMENT_BASENAMES = new Set(["dockerfile", "makefile", "gemfile", "rakefile"]);
+
+/** True when `#` is the file's line-comment character — the only context where the
+ *  HASH_SUPPRESSION_PATTERNS are real directives rather than incidental text. */
+function isHashCommentFile(relPath: string): boolean {
+	const base = (relPath.toLowerCase().split("/").pop() ?? "").trim();
+	if (HASH_COMMENT_BASENAMES.has(base) || base.startsWith("dockerfile.") || base.endsWith(".mk")) {
+		return true;
+	}
+	const dot = base.lastIndexOf(".");
+	return dot >= 0 && HASH_COMMENT_EXTS.has(base.slice(dot));
+}
 
 /**
  * Public API — consumed by `tool-results.ts`.
@@ -80,9 +108,14 @@ const SUPPRESSION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
  * Return the first suppression pattern that matches `rawLine` AND lacks a
  * rationale on `trimmedLine`. Returns null when no bare suppression is present.
  */
-export function findSuppressionMatch(rawLine: string, trimmedLine: string): SuppressionMatch {
+export function findSuppressionMatch(
+	rawLine: string,
+	trimmedLine: string,
+	allowHashDirectives = true,
+): SuppressionMatch {
 	const searchableLine = stripStringLiterals(rawLine);
-	for (const { pattern, label } of SUPPRESSION_PATTERNS) {
+	const patterns = allowHashDirectives ? ALL_SUPPRESSION_PATTERNS : SLASH_SUPPRESSION_PATTERNS;
+	for (const { pattern, label } of patterns) {
 		if (!pattern.test(searchableLine)) continue;
 		if (hasSuppressionRationale(trimmedLine, label)) return null;
 		return { label };
@@ -105,11 +138,16 @@ export function collectSuppressionFindings(
 	relPath: string,
 	out: CodeQualityIssue[],
 ): void {
+	// Fixture files are deliberately-crafted test inputs — a `@ts-nocheck`'d
+	// type-unsafe sample is the point of the fixture, not unreviewed debt. Skip
+	// them so the suppressions gate stays meaningful for real source.
+	if (/(?:^|\/)(?:fixtures|__fixtures__)\//.test(relPath)) return;
+	const allowHash = isHashCommentFile(relPath);
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
 		const trimmed = lines[i].trim();
 		if (trimmed.startsWith("*") || trimmed.startsWith("/**")) continue;
-		const hit = findSuppressionMatch(lines[i], trimmed);
+		const hit = findSuppressionMatch(lines[i], trimmed, allowHash);
 		if (!hit) continue;
 		out.push({
 			check: "suppressions",

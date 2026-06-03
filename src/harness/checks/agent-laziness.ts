@@ -197,22 +197,27 @@ export function checkStubNotImplementedThrow(content: string, filePath: string):
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const matches: InlineMatch[] = [];
-	const lines = content.split("\n");
+	// Scan with comments blanked (length-preserving) so a `throw new Error("not
+	// implemented")` quoted inside a JSDoc/`//` comment that *describes* the stub
+	// pattern — as this check's own docs do — isn't mistaken for a real stub.
+	// Strings stay intact so a genuine stub's message is still captured.
+	const scan = stripComments(content);
+	const lines = scan.split("\n");
 	const MAX_MATCHES = 5;
 
 	NOT_IMPLEMENTED_MESSAGE_RE.lastIndex = 0;
-	let match: RegExpExecArray | null = NOT_IMPLEMENTED_MESSAGE_RE.exec(content);
+	let match: RegExpExecArray | null = NOT_IMPLEMENTED_MESSAGE_RE.exec(scan);
 	while (match !== null && matches.length < MAX_MATCHES) {
 		const message = match[1].trim();
 		if (NOT_IMPLEMENTED_PHRASES.test(message)) {
 			const offset = match.index;
-			const lineIdx = (content.slice(0, offset).match(/\n/g) || []).length;
+			const lineIdx = (scan.slice(0, offset).match(/\n/g) || []).length;
 			matches.push({
 				line: lineIdx + 1,
 				text: `stub throw new Error with placeholder message ("${message.slice(0, 60)}") — finish the implementation or delete the stub`,
 			});
 		}
-		match = NOT_IMPLEMENTED_MESSAGE_RE.exec(content);
+		match = NOT_IMPLEMENTED_MESSAGE_RE.exec(scan);
 	}
 
 	for (let i = 0; i < lines.length; i++) {

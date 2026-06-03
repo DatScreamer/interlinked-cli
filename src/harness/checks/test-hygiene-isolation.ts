@@ -29,8 +29,22 @@ const NETWORK_CALL_RE =
 	/\b(?:fetch|axios\s*\.\s*(?:get|post|put|patch|delete|request)|got|node-fetch|undici\.fetch|https?\.(?:request|get))\s*\(/;
 const HTTP_LITERAL_URL_RE = /["'`](https?:\/\/(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0))[^"'`]+)["'`]/;
 
+// Group 1 = the fs verb, group 2 = the path literal. Capturing the verb lets us
+// drop calls to a locally-defined helper of the same name (see FS_HELPER_DEF_RE).
 const FS_WRITE_RE =
-	/\b(?:writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|mkdirSync|mkdir|rmSync|unlinkSync)\s*\(\s*["'`]([^"'`]+)["'`]/;
+	/\b(writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|mkdirSync|mkdir|rmSync|unlinkSync)\s*\(\s*["'`]([^"'`]+)["'`]/;
+// Call token only (no path arg) — tested against the comment/string-stripped
+// line to confirm the write is REAL code and not a write quoted inside a string
+// fixture (e.g. a detector's own test feeding `writeFileSync("/etc/passwd")` as
+// sample data). The path itself is then read back from the original line.
+const FS_WRITE_CALL_RE =
+	/\b(?:writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|mkdirSync|mkdir|rmSync|unlinkSync)\s*\(/;
+// A test that defines its own `function writeFile(name)` / `const writeFile = …`
+// is almost always a tmpdir-scoped wrapper (`join(tmpDir, name)`); its bare-name
+// call sites pass a relative leaf, not a real path. Calls to such locally-defined
+// helpers are NOT raw node:fs I/O, so exclude those verb names for this file.
+const FS_HELPER_DEF_RE =
+	/\b(?:function|const|let|var)\s+(writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|mkdirSync|mkdir|rmSync|unlinkSync)\b/g;
 const TMP_PATH_RE = /(?:^|[/\\])(?:tmp|__fixtures__|fixtures|tmp\/|\.tmp|os\.tmpdir|tmpdir)/i;
 
 /** Public API — flags real-network/FS calls in test files. */
@@ -43,6 +57,12 @@ export function checkRealIoInTests(content: string, filePath: string): InlineMat
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 5;
+
+	// Names the file defines itself — calls to these are wrapper helpers, not
+	// raw node:fs writes. Scan the literal-stripped content so a verb mentioned
+	// inside a string/comment doesn't register as a definition.
+	const localFsHelpers = new Set<string>();
+	for (const m of stripped.matchAll(FS_HELPER_DEF_RE)) localFsHelpers.add(m[1]);
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
@@ -61,15 +81,22 @@ export function checkRealIoInTests(content: string, filePath: string): InlineMat
 			}
 		}
 
-		// FS write: only flag when the path literal isn't under a tmp / fixtures dir.
-		const fsMatch = FS_WRITE_RE.exec(original[i]);
-		if (fsMatch) {
-			const target = fsMatch[1];
-			if (!TMP_PATH_RE.test(target) && !target.startsWith("/tmp")) {
-				matches.push({
-					line: i + 1,
-					text: `test writes to real filesystem path "${target.slice(0, 80)}". Use os.tmpdir() / a __fixtures__ dir / a memfs mock.`,
-				});
+		// FS write: require the call to survive in the STRIPPED line (real code,
+		// not a write quoted inside a string fixture), then read the path literal
+		// from the original line. Only flag paths outside a tmp / fixtures dir.
+		if (FS_WRITE_CALL_RE.test(line)) {
+			const fsMatch = FS_WRITE_RE.exec(original[i]);
+			if (fsMatch) {
+				const verb = fsMatch[1];
+				const target = fsMatch[2];
+				const isMemberCall = original[i][fsMatch.index - 1] === ".";
+				const isLocalHelper = !isMemberCall && localFsHelpers.has(verb);
+				if (!isLocalHelper && !TMP_PATH_RE.test(target) && !target.startsWith("/tmp")) {
+					matches.push({
+						line: i + 1,
+						text: `test writes to real filesystem path "${target.slice(0, 80)}". Use os.tmpdir() / a __fixtures__ dir / a memfs mock.`,
+					});
+				}
 			}
 		}
 	}

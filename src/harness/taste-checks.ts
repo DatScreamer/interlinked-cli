@@ -6,263 +6,28 @@
 // Inline checks only — no cross-file analysis, no LLM inference.
 
 import { stripAllLiterals, stripComments } from "./strip-helpers.js";
+import {
+	findBlockEnd,
+	getExt,
+	type InlineMatch,
+	isCountableTestStart,
+	isJsTs,
+	isTestFile,
+	lineIdxForOffset,
+	push,
+	stripCommentsAndStrings,
+} from "./taste-checks-shared.js";
 
-interface InlineMatch {
-	line: number;
-	text: string;
-}
-
-// ===========================================
-// Local helpers
-// ===========================================
-
-function getExt(p: string): string {
-	const i = p.lastIndexOf(".");
-	return i === -1 ? "" : p.slice(i).toLowerCase();
-}
-
-function isTestFile(filePath: string): boolean {
-	const n = filePath.replace(/\\/g, "/");
-	if (n.includes("/__tests__/") || n.includes("/tests/") || n.includes("/src/test/")) return true;
-	const f = n.split("/").pop() || "";
-	if (/\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/.test(f)) return true;
-	if (f.startsWith("test_") && f.endsWith(".py")) return true;
-	if (f.endsWith("_test.py") || f.endsWith("_test.go")) return true;
-	if (/Tests?\.(java|swift)$/.test(f)) return true;
-	return false;
-}
-
-function isJsTs(filePath: string): boolean {
-	return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(getExt(filePath));
-}
-
-/**
- * Derives stripCommentsAndStrings from the shared pipeline. Uses the full
- * template + regex + comment + string strip, because some source files
- * contain regex literals with backticks inside them (e.g. a regex that
- * matches template literals). Without regex stripping, those backticks
- * are mis-interpreted as template delimiters and corrupt comment-tracker
- * state for the rest of the file — causing false-positive matches on
- * content that should have been blanked.
- */
-function stripCommentsAndStrings(content: string): string {
-	return stripAllLiterals(content);
-}
-
-/**
- * Find the closing brace that ends a test-function's callback body.
- *
- * Handles three `it`/`test` signatures:
- *   - `it("desc", () => { body })` — callback at arg 2
- *   - `it(\`tpl ${x}\`, () => { body })` — template title (interpolations
- *     are already blanked by stripTemplateLiterals)
- *   - `it("desc", { timeout: N }, async () => { body })` — options object
- *     at arg 2, callback at arg 3
- *
- * Strategy: skip over anything up to the FIRST `=>` or `function` keyword —
- * those mark the start of the callback. Then the next `{` is the callback
- * body, and we balance braces from there.
- */
-function findBlockEnd(strippedLines: string[], start: number): number {
-	const joined = strippedLines.slice(start).join("\n");
-	// Locate the callback marker: `=>` or `function(` (or `function<`/function<`).
-	// Use a search that ignores `=>` inside strings/templates — but since
-	// stripCommentsAndStrings already blanked those, matching here is safe.
-	const arrowIdx = joined.indexOf("=>");
-	const funcIdx = joined.search(/\bfunction\b/);
-	let markerIdx = -1;
-	if (arrowIdx >= 0 && funcIdx >= 0) markerIdx = Math.min(arrowIdx, funcIdx);
-	else markerIdx = arrowIdx >= 0 ? arrowIdx : funcIdx;
-	if (markerIdx < 0) {
-		// No callback — use legacy brace-counting from the start.
-		return legacyFindBlockEnd(strippedLines, start);
-	}
-	// Find the first `{` at or after the marker — that's the callback body.
-	const bodyOpenIdx = joined.indexOf("{", markerIdx);
-	if (bodyOpenIdx < 0) return strippedLines.length - 1;
-
-	// Walk from bodyOpenIdx balancing braces.
-	let depth = 0;
-	let opened = false;
-	for (let p = bodyOpenIdx; p < joined.length; p++) {
-		const ch = joined[p];
-		if (ch === "{") {
-			depth++;
-			opened = true;
-		} else if (ch === "}") {
-			depth--;
-			if (opened && depth === 0) {
-				// Convert absolute char index back to line index.
-				const charsBefore = joined.slice(0, p);
-				return start + (charsBefore.match(/\n/g) || []).length;
-			}
-		}
-	}
-	return strippedLines.length - 1;
-}
-
-/** Fallback brace-counting for test starts that have no `=>`/`function` marker. */
-function legacyFindBlockEnd(strippedLines: string[], start: number): number {
-	let depth = 0;
-	let opened = false;
-	for (let i = start; i < strippedLines.length; i++) {
-		for (const ch of strippedLines[i]) {
-			if (ch === "{") {
-				depth++;
-				opened = true;
-			} else if (ch === "}") {
-				depth--;
-				if (opened && depth === 0) return i;
-			}
-		}
-	}
-	return strippedLines.length - 1;
-}
-
-function push(
-	matches: InlineMatch[],
-	lineIdx: number,
-	originalLines: string[],
-	limit: number,
-): void {
-	if (matches.length >= limit) return;
-	matches.push({ line: lineIdx + 1, text: originalLines[lineIdx].trim().slice(0, 150) });
-}
-
-// ===========================================
-// 1. Assertion-Free Tests
-// Uncle Bob, "Mutation Testing" (2016) + FIRST principles
-// ===========================================
-
-const ASSERT_PATTERN =
-	/\b(expect|should)\s*\(|\bassert\b\s*(?:\.\s*[A-Za-z]+)?\s*\(|\.\s*(?:toBe|toEqual|toStrictEqual|toMatch|toMatchObject|toThrow|toThrowError|toHaveBeenCalled|toHaveBeenCalledWith|toHaveBeenCalledTimes|toContain|toContainEqual|toHaveLength|toHaveProperty|toBeDefined|toBeUndefined|toBeNull|toBeTruthy|toBeFalsy|toBeInstanceOf|toBeGreaterThan|toBeLessThan|toBeCloseTo|toMatchSnapshot|toMatchInlineSnapshot|resolves|rejects)\b|\bchai\.|\bsinon\.assert/;
-const TEST_BLOCK_START = /^\s*(it|test|should)(\.\w+)?\s*\(/;
-const TEST_NO_ASSERT_SKIP = /^\s*(it|test)\s*\.\s*(todo|skip|only)/;
-
-function isCountableTestStart(line: string): boolean {
-	if (!TEST_BLOCK_START.test(line)) return false;
-	return !TEST_NO_ASSERT_SKIP.test(line);
-}
-
-function isAssertionFreeBody(body: string): boolean {
-	if (!body.includes("{")) return false;
-	return !ASSERT_PATTERN.test(body);
-}
-
-export function checkAssertionFreeTest(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
-	const stripped = stripCommentsAndStrings(content);
-	const lines = content.split("\n");
-	const sLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
-	let i = 0;
-	while (i < sLines.length && matches.length < 10) {
-		if (!isCountableTestStart(sLines[i])) {
-			i++;
-			continue;
-		}
-		const end = findBlockEnd(sLines, i);
-		const body = sLines.slice(i, end + 1).join("\n");
-		if (isAssertionFreeBody(body)) push(matches, i, lines, 10);
-		i = end + 1;
-	}
-	return matches;
-}
-
-// ===========================================
-// 2. Tautological Assertions
-// ===========================================
-
-const TAUTOLOGY_EXPECT =
-	/expect\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*\)\s*\.\s*(?:toBe|toEqual|toStrictEqual)\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*\)/g;
-const TAUTOLOGY_ASSERT =
-	/\bassert\s*\.\s*(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*,\s*([A-Za-z_$][\w$.[\]]*)\s*\)/g;
-
-function hasTautology(line: string): boolean {
-	for (const m of line.matchAll(TAUTOLOGY_EXPECT)) {
-		if (m[1] === m[2]) return true;
-	}
-	for (const m of line.matchAll(TAUTOLOGY_ASSERT)) {
-		if (m[1] === m[2]) return true;
-	}
-	return false;
-}
-
-export function checkTautologicalAssertion(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
-	const stripped = stripCommentsAndStrings(content);
-	const lines = content.split("\n");
-	const sLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
-	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		if (hasTautology(sLines[i])) push(matches, i, lines, 10);
-	}
-	return matches;
-}
-
-// ===========================================
-// 3. Mocking the System Under Test
-// Uncle Bob, "The Little Mocker" (2014)
-// ===========================================
-
-const MOCK_CALL_STATIC = /\b(?:vi|jest)\s*\.\s*(?:mock|doMock|setMock)\s*\(\s*["']([^"']+)["']/;
-
-function mockedPathEqualsSut(mockedPath: string, sut: string): boolean {
-	const tail = mockedPath.split("/").pop() || "";
-	const tailNoExt = tail.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
-	return tailNoExt === sut;
-}
-
-export function checkMockingTheSUT(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
-	const baseName = filePath.split(/[/\\]/).pop() || "";
-	const sut = baseName.replace(/\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
-	if (!sut || sut === baseName) return [];
-	const stripped = stripComments(content);
-	const lines = content.split("\n");
-	const sLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
-	for (let i = 0; i < sLines.length && matches.length < 5; i++) {
-		const m = MOCK_CALL_STATIC.exec(sLines[i]);
-		if (m && mockedPathEqualsSut(m[1], sut)) push(matches, i, lines, 5);
-	}
-	return matches;
-}
-
-// ===========================================
-// 4. Private-Member Access from Tests
-// Uncle Bob, "Test Contra-variance" (2017)
-// ===========================================
-
-const PRIVATE_TEST_ACCESS =
-	/\(\s*[A-Za-z_$][\w$]*\s+as\s+any\s*\)\s*\.|\(\s*[A-Za-z_$][\w$]*\s+as\s+unknown\s+as\s+|[A-Za-z_$][\w$]*\s*\[\s*["']_{2,}[^"']*["']\s*\]|\.\s*_{2,}[A-Za-z_$][\w$]*\s*[(=.]/;
-
-// Casts like `undefined as unknown as string` are plain type coercions — the
-// result isn't used to REACH INTO private members. Flag only when the `as
-// unknown as` form is followed by a member-access (`.`) or call (`(`) on
-// the cast result, which is the actual "reach past public API" pattern.
-const PRIVATE_ACCESS_POST = /\)\s*\.|\)\s*\[/;
-
-export function checkPrivateMemberTestAccess(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath) || !isJsTs(filePath)) return [];
-	const stripped = stripCommentsAndStrings(content);
-	const lines = content.split("\n");
-	const sLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
-	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		const line = sLines[i];
-		const m = PRIVATE_TEST_ACCESS.exec(line);
-		if (!m) continue;
-		// If the match was the `as unknown as` cast form, require it to be
-		// followed by `.` or `[` (accessor) to count as private-member access.
-		if (m[0].includes("as unknown as")) {
-			const after = line.slice((m.index ?? 0) + m[0].length);
-			if (!PRIVATE_ACCESS_POST.test(after)) continue;
-		}
-		push(matches, i, lines, 10);
-	}
-	return matches;
-}
+// The test-assertion family (checkAssertionFreeTest, checkTautologicalAssertion,
+// checkMockingTheSUT, checkPrivateMemberTestAccess) was extracted to keep this
+// barrel under the per-file line cap. Re-exported here so existing importers
+// keep importing from "./taste-checks.js" unchanged.
+export {
+	checkAssertionFreeTest,
+	checkMockingTheSUT,
+	checkPrivateMemberTestAccess,
+	checkTautologicalAssertion,
+} from "./taste-checks-test-assertions.js";
 
 // ===========================================
 // 5. Loop Nesting Depth ≥3
@@ -330,8 +95,9 @@ export function checkLoopNestingDepth(content: string, filePath: string): Inline
 	let pendingLoopLine: number | null = null;
 
 	for (let i = 0; i < sLines.length; i++) {
-		if (LOOP_HEADER.test(sLines[i])) pendingLoopLine = i;
-		const scan = scanBracesForLoop(sLines[i], braceDepth, loopStack, pendingLoopLine);
+		const sLine = sLines[i] ?? "";
+		if (LOOP_HEADER.test(sLine)) pendingLoopLine = i;
+		const scan = scanBracesForLoop(sLine, braceDepth, loopStack, pendingLoopLine);
 		braceDepth = scan.braceDepth;
 		if (scan.enteredLoopAt !== null) pendingLoopLine = null;
 		if (scan.flagAt !== null && matches.length < 5) {
@@ -379,9 +145,10 @@ export function checkDuplicateSwitchDiscriminant(content: string, filePath: stri
 	const seen = new Map<string, number>();
 
 	for (let i = 0; i < sLines.length && matches.length < 5; i++) {
-		for (const m of sLines[i].matchAll(SWITCH_DISC)) {
+		const sLine = sLines[i] ?? "";
+		for (const m of sLine.matchAll(SWITCH_DISC)) {
 			const disc = m[1];
-			if (!DISC_TAIL.test(disc)) continue;
+			if (disc === undefined || !DISC_TAIL.test(disc)) continue;
 			if (seen.has(disc)) {
 				push(matches, i, lines, 5);
 			} else {
@@ -434,14 +201,15 @@ export function checkHybridClass(content: string, filePath: string): InlineMatch
 	const matches: InlineMatch[] = [];
 	let i = 0;
 	while (i < sLines.length && matches.length < 5) {
-		if (!CLASS_DECL.test(sLines[i])) {
+		const sLine = sLines[i] ?? "";
+		if (!CLASS_DECL.test(sLine)) {
 			i++;
 			continue;
 		}
 		// Cloudflare DurableObject (and WorkerEntrypoint) base classes inherently
 		// combine state (SQLite via this.ctx.storage) and behavior (RPC methods)
 		// — that's the design center, not a hybrid-class smell.
-		if (/\bextends\s+(DurableObject|WorkerEntrypoint)\b/.test(sLines[i])) {
+		if (/\bextends\s+(DurableObject|WorkerEntrypoint)\b/.test(sLine)) {
 			const end = findBlockEnd(sLines, i);
 			i = end + 1;
 			continue;
@@ -467,7 +235,7 @@ export function checkFuzzyResponsibilityName(content: string, filePath: string):
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 5; i++) {
-		if (FUZZY_NAME.test(sLines[i])) push(matches, i, lines, 5);
+		if (FUZZY_NAME.test(sLines[i] ?? "")) push(matches, i, lines, 5);
 	}
 	return matches;
 }
@@ -485,11 +253,12 @@ export function checkLawOfDemeter(content: string, filePath: string): InlineMatc
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 5; i++) {
-		if (/^\s*(?:\/\/|\*|\/\*)/.test(lines[i])) continue; // comment line belt-and-braces
-		const m = TRAIN_WRECK.exec(sLines[i]);
-		if (!m) continue;
+		const sLine = sLines[i] ?? "";
+		if (/^\s*(?:\/\/|\*|\/\*)/.test(lines[i] ?? "")) continue; // comment line belt-and-braces
+		const m = TRAIN_WRECK.exec(sLine);
+		if (!m || m[0] === undefined) continue;
 		if (m[0].startsWith("import.meta.")) continue;
-		if (sLines[i].includes("Object.prototype.")) continue;
+		if (sLine.includes("Object.prototype.")) continue;
 		// Cloudflare Worker / DurableObject canonical access: `this.ctx.storage.sql.exec(...)`,
 		// `this.ctx.storage.put(...)`, `this.ctx.exports.facetName.method()`. The base
 		// class exposes this exact API shape — DO code can't and shouldn't flatten it.
@@ -517,7 +286,7 @@ export function checkFlagArgument(content: string, filePath: string): InlineMatc
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 8; i++) {
-		const line = sLines[i];
+		const line = sLines[i] ?? "";
 		if (/^\s*(return|const|let|var)\s+/.test(line)) continue;
 		if (FLAG_SAFE_BUILTINS.test(line)) continue;
 		if (FLAG_POSITIONAL.test(line) || FLAG_OBJECT.test(line)) push(matches, i, lines, 8);
@@ -537,8 +306,12 @@ export function checkFlagArgument(content: string, filePath: string): InlineMatc
 //   - line ending with `{`, `}`, or `;`
 //   - keyword-with-shape: `return X`, `if (`, `for (`, `while (`, `const X =`,
 //     `let X =`, `var X =`, `function X(`, or a call-with-args like `foo(a,`
+// Call-with-args is the loosest signal, so it requires NO space before `(`:
+// real code writes `foo(a, b)`, while English prose writes `fields (a, b)`
+// or `Protocol (one per line, both)`. Requiring the tight `ident(` form keeps
+// the heuristic catching commented-out calls without flagging parenthetical prose.
 const CODE_SHAPED =
-	/(?:=(?!=)|=>|[{};]\s*$|\breturn\s+\S|\b(?:if|for|while)\s*\(|\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=|\bfunction\s+[A-Za-z_$][\w$]*\s*\(|[A-Za-z_$][\w$]*\s*\([^)]*,)/;
+	/(?:=(?!=)|=>|[{};]\s*$|\breturn\s+\S|\b(?:if|for|while)\s*\(|\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=|\bfunction\s+[A-Za-z_$][\w$]*\s*\(|[A-Za-z_$][\w$]*\([^)]*,)/;
 const COMMENT_LINE = /^\s*(?:\/\/|#)\s*(.+)$/;
 /** Signals that a comment is prose describing behavior rather than
  *  commented-out code. Must be either:
@@ -567,7 +340,7 @@ function looksLikeBannerLine(body: string): boolean {
 	const trimmed = body.trim();
 	if (trimmed.length < 3) return false;
 	const firstChar = trimmed[0];
-	if (!"=-*#_~".includes(firstChar)) return false;
+	if (firstChar === undefined || !"=-*#_~".includes(firstChar)) return false;
 	let same = 0;
 	for (const c of trimmed) if (c === firstChar) same++;
 	return same / trimmed.length >= 0.8;
@@ -576,13 +349,24 @@ function looksLikeBannerLine(body: string): boolean {
 function looksLikeCommentedCode(line: string): boolean {
 	const m = COMMENT_LINE.exec(line);
 	if (!m) return false;
-	const body = m[1];
+	const body = m[1] ?? "";
 	if (/^\s*[A-Z]{2,}:/.test(body)) return false;
 	if (/^\s*\*/.test(body)) return false;
 	if (looksLikeBannerLine(body)) return false;
 	// Prose markers (em-dash, "or"/"and"/"when"/etc., "Match:", "E.g.") →
 	// this is explanatory comment, not commented-out code. Skip.
 	if (PROSE_MARKER.test(body)) return false;
+	// Markdown bullet-list items (`- foo`, `+ foo`, `• foo`) are prose, not code.
+	if (/^[-+•]\s/.test(body)) return false;
+	// Inline-code spans (`x`) mark documentation that *references* code — e.g.
+	// "`verify` (no `=`) so the gate matches" — not commented-out code.
+	if (/`[^`]+`/.test(body)) return false;
+	// Angle-bracket placeholder phrases (`<tool name>`, `<number, warn only>`) are
+	// a doc convention. Require the `<` to follow `=`, whitespace, `(`, or start —
+	// so a generic like `Map<string, number>`, whose `<` follows an identifier, is
+	// NOT treated as prose — and to contain an internal space (a phrase, not a
+	// single token), which the `key=<value>` schema-doc lines satisfy.
+	if (/(?:^|[=\s(])<[A-Za-z][^<>]*\s[^<>]*>/.test(body)) return false;
 	return CODE_SHAPED.test(body);
 }
 
@@ -593,7 +377,7 @@ export function checkCommentedOutCode(content: string, filePath: string): Inline
 	let runStart = -1;
 	let runLen = 0;
 	for (let i = 0; i < lines.length; i++) {
-		if (looksLikeCommentedCode(lines[i])) {
+		if (looksLikeCommentedCode(lines[i] ?? "")) {
 			if (runStart === -1) runStart = i;
 			runLen++;
 			continue;
@@ -860,10 +644,6 @@ function argCount(argsInner: string): number {
 	return splitTopLevelCommas(argsInner).length;
 }
 
-function lineIdxForOffset(stripped: string, offset: number): number {
-	return (stripped.slice(0, offset).match(/\n/g) || []).length;
-}
-
 // ===========================================
 // 19. Function Argument Count
 // Clean Code: keep argument count low (0–2 ideal, 3 max, 4+ warrants refactor).
@@ -973,19 +753,32 @@ export function checkDataClump(content: string, filePath: string): InlineMatch[]
 // Same `describe("x", ...)` string appears 2+ times in one file.
 // ===========================================
 
-const DESCRIBE_NAME = /\bdescribe\s*\(\s*["']([^"']+)["']/g;
+// One simple (ReDoS-free) alternative per quote style; the title is whichever of
+// groups 1-3 matched. Each negated class lets the title contain the OTHER quote —
+// e.g. `describe("mirror: 'skip' entries…")` — so two distinct titles aren't
+// truncated at an inner `'` into a false duplicate.
+const DESCRIBE_NAME = /\bdescribe\s*\(\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`)/g;
 
 export function checkDuplicateDescribe(content: string, filePath: string): InlineMatch[] {
 	if (!isTestFile(filePath)) return [];
-	const stripped = stripComments(content);
+	// Length-preserving blank of comments AND string/template/regex literals,
+	// used as a position oracle: a `describe(...)` token quoted inside a fixture
+	// string — e.g. a detector's own test feeding `'describe("x", () => {'` as
+	// sample code — must NOT be counted as a real suite. Titles are read from the
+	// original `content` so real describe names survive.
+	const oracle = stripCommentsAndStrings(content);
 	const lines = content.split("\n");
 	const matches: InlineMatch[] = [];
 	const seen = new Set<string>();
-	for (const m of stripped.matchAll(DESCRIBE_NAME)) {
+	for (const m of content.matchAll(DESCRIBE_NAME)) {
 		if (matches.length >= 5) break;
-		const name = m[1];
+		const idx = m.index ?? 0;
+		// The `d` of `describe` survives in `oracle` only when it is real code;
+		// inside a blanked literal/comment it becomes a space, so skip it.
+		if (oracle[idx] !== content[idx]) continue;
+		const name = m[1] ?? m[2] ?? m[3];
 		if (seen.has(name)) {
-			push(matches, lineIdxForOffset(stripped, m.index ?? 0), lines, 5);
+			push(matches, lineIdxForOffset(content, idx), lines, 5);
 		} else {
 			seen.add(name);
 		}

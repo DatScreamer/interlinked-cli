@@ -53,6 +53,31 @@ describe("checkRealIoInTests", () => {
 		const code = `const fixture = "await fetch('https://api.example.com/x');";`;
 		expect(checkRealIoInTests(code, TEST)).toEqual([]);
 	});
+
+	it("does not flag a writeFileSync that only appears inside a string literal", () => {
+		// A detector's own test embeds writeFileSync(...) as a string fixture to
+		// exercise the checker. The quoted write is sample data, not real I/O.
+		const code = `const sample = 'writeFileSync("/etc/passwd", data);';`;
+		expect(checkRealIoInTests(code, TEST)).toEqual([]);
+	});
+
+	it("does not flag a writeFileSync inside a template-literal fixture", () => {
+		const code = ["const code = `", `  writeFileSync("/etc/passwd", data);`, "`;"].join("\n");
+		expect(checkRealIoInTests(code, TEST)).toEqual([]);
+	});
+
+	it("does not flag calls to a locally-defined write helper (tmpdir wrapper)", () => {
+		const code = [
+			"function writeFile(name, bytes) { writeFileSync(join(dir, name), bytes); }",
+			`it("x", () => { const p = writeFile("foo.log", 100); expect(p).toBeTruthy(); });`,
+		].join("\n");
+		expect(checkRealIoInTests(code, TEST)).toEqual([]);
+	});
+
+	it("still flags a raw writeFileSync to a real relative path", () => {
+		const code = `it("x", () => { writeFileSync("out.txt", data); });`;
+		expect(checkRealIoInTests(code, TEST).length).toBe(1);
+	});
 });
 
 describe("checkTestNondeterminism", () => {
