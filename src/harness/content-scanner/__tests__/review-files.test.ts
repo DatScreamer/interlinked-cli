@@ -181,6 +181,7 @@ describe("listPendingReviews / countPendingReviews", () => {
 			findings: [],
 		});
 		// Force a different timestamp by sleeping briefly between writes.
+		// interlinked-ignore: hardcoded_timeout_in_tests — forces a distinct write timestamp between two reviews, not a flaky wait
 		await new Promise((r) => setTimeout(r, 10));
 		writeReview({
 			cwd,

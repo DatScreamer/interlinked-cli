@@ -38,6 +38,11 @@ import {
 	isCappableFile,
 	loadLargeFileBaseline,
 } from "../../harness/large-file-policy.js";
+import {
+	type InlineSuppressions,
+	isSuppressed,
+	scanInlineSuppressions,
+} from "../../harness/suppressions.js";
 import { JS_TS_EXTS } from "./advisory.js";
 import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
 import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
@@ -46,6 +51,7 @@ import { toIssues } from "./file-checks-shared.js";
 import type { FileCheckContext, PiiOpts } from "./file-checks-shared.js";
 import { runUbsChecks } from "./file-checks-ubs.js";
 import { collectSuppressionFindings } from "./suppressions.js";
+import { CQ_RESULT_KEYS } from "./tool-results-types.js";
 import type { CodeQualityIssue, CodeQualityResults } from "./tool-results-types.js";
 
 // Re-exported for the `file-checks-<group>.test.ts` files, which import these
@@ -111,8 +117,69 @@ interface RunFileChecksArgs {
  *
  * Run every per-file check against a single file. Mutates `r` in place.
  * Returns early for `.d.ts` files and for JSON files (after validating them).
+ *
+ * Inline `// interlinked-ignore: <check> — <reason>` comments are honored on
+ * the DEFAULT gate here (previously only the scored `--suggestions` path
+ * respected them). We snapshot every result bucket's length before running the
+ * per-file detectors, then drop any newly-added finding whose `(line, check)`
+ * pair is suppressed by an inline-ignore on that line. Tool-based findings
+ * (tsc/biome/etc.) are produced elsewhere and are untouched.
  */
 export function runPerFileChecks(args: RunFileChecksArgs): void {
+	const { content, r } = args;
+
+	// Snapshot bucket lengths so the post-pass only re-examines findings this
+	// file contributed — accumulated findings from earlier files are left alone.
+	// Production callers pass the full `emptyResults()` object; the `?? 0` guard
+	// only matters for partial test fixtures that omit some buckets.
+	const before = new Map<keyof CodeQualityResults, number>();
+	for (const key of CQ_RESULT_KEYS) before.set(key, r[key]?.length ?? 0);
+
+	collectPerFileFindings(args);
+
+	// Files with no ignore comments take a fast path: scanInlineSuppressions
+	// returns an empty map and we change nothing.
+	const inlineSuppressions = scanInlineSuppressions(content);
+	if (inlineSuppressions.size === 0) return;
+
+	dropInlineSuppressed(r, before, inlineSuppressions);
+}
+
+/**
+ * Drop the just-added inline-check findings (per bucket, from each bucket's
+ * pre-run length onward) whose `(line, check)` matches an inline-ignore comment.
+ * The check-name match is case-insensitive — `scanInlineSuppressions`
+ * lower-cases the names it parses, so we lower-case the finding's `check` too.
+ */
+function dropInlineSuppressed(
+	r: CodeQualityResults,
+	before: Map<keyof CodeQualityResults, number>,
+	inlineSuppressions: InlineSuppressions,
+): void {
+	const NO_FILE_SUPPRESSIONS = new Set<string>();
+	for (const key of CQ_RESULT_KEYS) {
+		const start = before.get(key) ?? 0;
+		const bucket = r[key];
+		// Defensive: production passes the full `emptyResults()`; a partial test
+		// fixture may omit a bucket entirely.
+		if (!bucket || bucket.length === start) continue; // nothing new for this file
+		const kept = bucket
+			.slice(start)
+			.filter(
+				(issue) =>
+					!isSuppressed(
+						issue.check.toLowerCase(),
+						issue.line,
+						inlineSuppressions,
+						NO_FILE_SUPPRESSIONS,
+					),
+			);
+		bucket.length = start;
+		bucket.push(...kept);
+	}
+}
+
+function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const { file, content, cwd, r, moduleExportsCache, allEnvRefs, piiOpts } = args;
 
 	const ext = extname(file).toLowerCase();

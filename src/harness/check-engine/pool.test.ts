@@ -19,6 +19,7 @@ describe("createLimiter", () => {
 		const task = async () => {
 			inFlight++;
 			maxInFlight = Math.max(maxInFlight, inFlight);
+			// interlinked-ignore: hardcoded_timeout_in_tests — simulated task duration to exercise the concurrency limiter
 			await new Promise((r) => setTimeout(r, 30));
 			inFlight--;
 			return inFlight;
@@ -42,6 +43,7 @@ describe("createLimiter", () => {
 		await Promise.all(
 			[1, 2, 3, 4].map((n) =>
 				limit(async () => {
+					// interlinked-ignore: hardcoded_timeout_in_tests — simulated task duration to exercise the concurrency limiter
 					await new Promise((r) => setTimeout(r, 10));
 					completionOrder.push(n);
 					return n;

@@ -577,6 +577,7 @@ describe("createAsyncAnalysisManager", () => {
 		// First submission starts immediately
 		mgr.submit("src/a.ts", async () => {
 			callCount++;
+			// interlinked-ignore: hardcoded_timeout_in_tests — simulated async-analysis task duration, not a flaky wait
 			await new Promise((r) => setTimeout(r, 50));
 			return [
 				{
@@ -631,6 +632,7 @@ describe("createAsyncAnalysisManager", () => {
 		expect(mgr.inProgress).toBe(false);
 
 		mgr.submit("x.ts", async () => {
+			// interlinked-ignore: hardcoded_timeout_in_tests — simulated async-analysis task duration, not a flaky wait
 			await new Promise((r) => setTimeout(r, 50));
 			return [];
 		});

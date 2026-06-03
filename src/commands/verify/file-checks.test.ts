@@ -3,6 +3,7 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_MAX_LINES } from "../../harness/large-file-policy.js";
 import { runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
@@ -202,9 +203,7 @@ describe("runPerFileChecks", () => {
 	});
 });
 
-describe("runPerFileChecks — large_files cap", () => {
-	const overCap = Array.from({ length: 1600 }, () => "const x = 1;").join("\n");
-	const underCap = Array.from({ length: 100 }, () => "const x = 1;").join("\n");
+describe("runPerFileChecks — inline-ignore on the default gate", () => {
 	const run = (file: string, content: string): CodeQualityResults => {
 		const r = emptyResults();
 		runPerFileChecks({
@@ -219,7 +218,72 @@ describe("runPerFileChecks — large_files cap", () => {
 		return r;
 	};
 
-	it("flags a hand-written code file over the 1500-line cap", () => {
+	// A hardcoded literal-ms wait inside a test body is a deterministic
+	// inline-check finding (`hardcoded_timeout_in_tests`). It is the vehicle
+	// for proving the default gate honors `// interlinked-ignore`.
+	const withoutIgnore = [
+		'it("waits", async () => {',
+		"  await new Promise((r) => setTimeout(r, 50));",
+		"});",
+		"",
+	].join("\n");
+	const withIgnore = [
+		'it("waits", async () => {',
+		"  // interlinked-ignore: hardcoded_timeout_in_tests — simulated task duration",
+		"  await new Promise((r) => setTimeout(r, 50));",
+		"});",
+		"",
+	].join("\n");
+
+	it("reports the inline finding when there is no ignore comment", () => {
+		const r = run("/tmp/foo.test.ts", withoutIgnore);
+		expect(r.hardcodedTimeoutInTests).toHaveLength(1);
+		expect(r.hardcodedTimeoutInTests[0].check).toBe("hardcoded_timeout_in_tests");
+	});
+
+	it("drops the inline finding when a matching // interlinked-ignore is present", () => {
+		const r = run("/tmp/foo.test.ts", withIgnore);
+		expect(r.hardcodedTimeoutInTests).toHaveLength(0);
+	});
+
+	it("matches the check name case-insensitively", () => {
+		const upperCased = withIgnore.replace(
+			"hardcoded_timeout_in_tests",
+			"HARDCODED_TIMEOUT_IN_TESTS",
+		);
+		const r = run("/tmp/foo.test.ts", upperCased);
+		expect(r.hardcodedTimeoutInTests).toHaveLength(0);
+	});
+
+	it("does not drop a finding when the ignore names a different check", () => {
+		const wrongCheck = withIgnore.replace(
+			"hardcoded_timeout_in_tests",
+			"some_other_check",
+		);
+		const r = run("/tmp/foo.test.ts", wrongCheck);
+		expect(r.hardcodedTimeoutInTests).toHaveLength(1);
+	});
+});
+
+describe("runPerFileChecks — large_files cap", () => {
+	// Relative to THE canonical cap (no baseline at /tmp → the default applies).
+	const overCap = Array.from({ length: DEFAULT_MAX_LINES + 600 }, () => "const x = 1;").join("\n");
+	const underCap = Array.from({ length: DEFAULT_MAX_LINES - 100 }, () => "const x = 1;").join("\n");
+	const run = (file: string, content: string): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags a hand-written code file over the cap", () => {
 		const r = run("/tmp/huge.ts", overCap);
 		expect(r.largeFiles).toHaveLength(1);
 		expect(r.largeFiles[0].check).toBe("large_files");
