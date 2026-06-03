@@ -11,17 +11,9 @@
 //
 // All 81 evaluator.test.ts cases exercise this function.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
-import { isFeatureEnabled, type SharedConfig } from "../../lib/config.js";
-import { getOrCreateEngine } from "../check-engine/index.js";
-import {
-	findDirtyDependents,
-	formatDirtyDependentWarning,
-	looksCoordinated,
-} from "../checks/dirty-dependent.js";
-import { isTestFile } from "../checks/shared.js";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import type { SharedConfig } from "../../lib/config.js";
 import type { CohortManager } from "../cohort.js";
 import {
 	applyRewrite,
@@ -34,11 +26,7 @@ import type { ContentScanRequest } from "../content-scanner/types.js";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import type { ErrorHistory } from "../error-history.js";
 import { recordDeliveryForShadow } from "../event-dedup.js";
-import { checkProjectSetup } from "../generic-checks.js";
-import {
-	driveGraphPrediction,
-	type GraphPredictionMode,
-} from "../graph-prediction-pre-tool.js";
+import { driveGraphPrediction } from "../graph-prediction-pre-tool.js";
 import {
 	DEFAULT_LOCKDOWN_CONFIG,
 	evaluateLockdown,
@@ -59,21 +47,17 @@ import {
 	detectBashCodeFileWrite,
 } from "../pre-checks.js";
 import type { ProjectGraph } from "../project-graph.js";
-import { containsSecrets as containsSecretsDetailed, findProjectRoot } from "../quality-checks.js";
 import type { ReservationManager } from "../reservations.js";
 import type { RouteMap } from "../route-map.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { SessionTracker } from "../session-state.js";
 import { getPreToolUseContext } from "../structural-checks.js";
-import { loadGraphForFile } from "../supermodel-graph.js";
 import { checkSupermodelShardWrite } from "../supermodel-shard-write-guard.js";
-import { createTrajectoryDetector, type TrajectoryEvent } from "../trajectory.js";
 import type {
 	EscalationRequest,
 	GuardRulesConfig,
 	HarnessDecision,
 	HarnessEvent,
-	QualityCheckConfig,
 	SessionTrajectory,
 } from "../types.js";
 import { evaluateActiveWhen } from "./active-when.js";
@@ -100,223 +84,35 @@ import {
 	isReadOperation,
 } from "./tool-classifiers.js";
 import { evaluateWriteContentGuards } from "./write-content-guards.js";
+import {
+	collectDirtyDependentWarning,
+	computeFullNewContent,
+	containsSecrets,
+	evaluateCurlMcpGuards,
+	evaluateExfilGuards,
+	evaluateMarkdownFirstCurlGuard,
+	evaluateReadGuards,
+	getPreToolUseDiagnostics,
+	getProjectSetupWarnings,
+	getSupermodelCallContext,
+	getSupermodelGraphWarning,
+	readGraphPredictionMode,
+	runTrajectoryDetector,
+} from "./pre-tool-helpers.js";
+
+// `resetProjectSetupWarningsCache` lives in pre-tool-helpers.ts (next to the
+// cache it invalidates) but is re-exported here because server.ts and
+// lifecycle-events.ts import it from this module — preserve that entry point.
+export { resetProjectSetupWarningsCache } from "./pre-tool-helpers.js";
 
 const DIAGNOSTIC_EXTENSIONS = /\.(tsx?|jsx?|mjs|cjs)$/;
 const SOFT_BLOCK_KEY_MAX = 120;
 const ESCALATION_TAIL_LENGTH = 10;
-const SECRETS_MIN_CHARS = 10;
 const STALE_BRANCH_CHECK_LIMIT = 3;
-const LARGE_READ_SIZE_MB = 10;
 const PERMISSION_PATTERN_THRESHOLD = 3;
 
 /** Files that have already had git blame injected this session (dedup per session ID) */
 const _blameInjectedFiles = new Map<string, Set<string>>();
-
-let _projectSetupChecked = false;
-let _projectSetupWarnings: string[] = [];
-
-function getProjectSetupWarnings(cwd: string): string[] {
-	if (_projectSetupChecked) return _projectSetupWarnings;
-	_projectSetupChecked = true;
-	const issues = checkProjectSetup(cwd);
-	if (issues.length === 0) return [];
-	_projectSetupWarnings = issues.map((i) => `[interlinked:setup] ${i.message}\n  fix: ${i.fix}`);
-	return _projectSetupWarnings;
-}
-
-/** Public — invalidate the project-setup-warning cache. Called by the
- *  SessionStart auto-strip after rewriting `.claude/settings*.json`, so
- *  the next PreToolUse re-reads the file and stops emitting warnings
- *  for entries that have just been stripped. Without this, the daemon
- *  would keep serving the stale warning text for the remainder of its
- *  process lifetime. */
-export function resetProjectSetupWarningsCache(): void {
-	_projectSetupChecked = false;
-	_projectSetupWarnings = [];
-}
-
-/** Boolean wrapper: delegates to quality-checks.ts signature scanner. */
-function containsSecrets(content: string): boolean {
-	if (!content || content.length < SECRETS_MIN_CHARS) return false;
-	return containsSecretsDetailed(content).length > 0;
-}
-
-/** Phase D.2 trajectory detector entry point. Per session: lazy-instantiates
- *  the detector when any trajectory feature flag is on, then calls observe()
- *  for the current event and filters findings to only the enabled patterns.
- *
- *  Returns the warning strings to push onto the PreToolUse decision's
- *  warnings array. Empty array when the detector is disabled, the event
- *  isn't a recognized hook, or no findings fired. */
-function runTrajectoryDetector(
-	event: HarnessEvent,
-	session: SessionTrajectory,
-	sharedConfig: SharedConfig | null,
-): string[] {
-	const enabledPatterns = new Set<import("../trajectory.js").TrajectoryFinding["pattern"]>();
-	if (isFeatureEnabled("harness.trajectory.tool_loop", sharedConfig)) {
-		enabledPatterns.add("tool_loop");
-	}
-	if (isFeatureEnabled("harness.trajectory.destructive_sequence", sharedConfig)) {
-		enabledPatterns.add("destructive_sequence");
-	}
-	if (isFeatureEnabled("harness.trajectory.unbackedoff_retry", sharedConfig)) {
-		enabledPatterns.add("unbackedoff_retry");
-	}
-	if (isFeatureEnabled("harness.trajectory.silent_stall", sharedConfig)) {
-		enabledPatterns.add("silent_stall");
-	}
-	if (enabledPatterns.size === 0) return [];
-
-	if (!session.trajectoryDetector) {
-		session.trajectoryDetector = createTrajectoryDetector();
-	}
-
-	const tsString = event.timestamp;
-	const tsMs = tsString ? Date.parse(tsString) : Number.NaN;
-	const trajectoryEvent: TrajectoryEvent = {
-		ts_ms: Number.isFinite(tsMs) ? tsMs : Date.now(),
-		hook_event:
-			event.hook_event === "PostToolUse" || event.hook_event === "PostToolUseFailure"
-				? event.hook_event
-				: "PreToolUse",
-		tool_name: event.tool_name || "",
-		tool_input: event.tool_input,
-	};
-
-	const findings = session.trajectoryDetector.observe(trajectoryEvent);
-	if (findings.length === 0) return [];
-
-	return findings
-		.filter((f) => enabledPatterns.has(f.pattern))
-		.map((f) => f.message);
-}
-
-/** Read the graph-prediction protocol mode from shared config. Defaults
- *  to "shadow" — telemetry-only, no challenge fires. Phase 4 of the
- *  rollout flips the default to "soft_gate" or "enforced". */
-function readGraphPredictionMode(config: SharedConfig | null): GraphPredictionMode {
-	const harness = config?.harness as Record<string, unknown> | undefined;
-	const block = harness?.graph_prediction as Record<string, unknown> | undefined;
-	const mode = block?.mode;
-	if (mode === "shadow" || mode === "soft_gate" || mode === "enforced") return mode;
-	return "shadow";
-}
-
-/** Read-only consumer of Supermodel-emitted `.graph.*` shards. Returns one
- *  warning string when a HIGH or MEDIUM impact section is present for the
- *  edited file; returns null on LOW, missing shards, parse failures, or any
- *  I/O error. The shard file IS the API — we never call Supermodel's service
- *  or generate shards ourselves. See `docs/integrations/supermodel.md`. */
-function getSupermodelGraphWarning(filePath: string, cwd?: string): string | null {
-	const graph = loadGraphForFile(filePath, cwd);
-	if (!graph || !graph.impact) return null;
-	const { risk, domains, direct, transitive, affects } = graph.impact;
-	if (risk === "LOW") return null;
-
-	const relPath = cwd
-		? relative(cwd, graph.sourcePath) || graph.sourcePath
-		: graph.sourcePath;
-
-	if (risk === "HIGH") {
-		const domainsClause =
-			domains.length > 0 ? ` across domains ${domains.join(" · ")}` : "";
-		const affectsClause =
-			affects.length > 0
-				? ` Affects: ${affects.slice(0, 5).join(" · ")}${affects.length > 5 ? " · …" : ""}.`
-				: "";
-		return (
-			`[interlinked:supermodel-graph] ${relPath}: ` +
-			`HIGH-risk edit per .graph shard: ${direct} dependent file(s), ${transitive} transitive${domainsClause}.` +
-			`${affectsClause} Confirm this is intentional.`
-		);
-	}
-
-	const domainsClause =
-		domains.length > 0 ? ` across ${domains.join(" · ")}` : "";
-	const affectsClause =
-		affects.length > 0
-			? ` Affects: ${affects.slice(0, 3).join(" · ")}${affects.length > 3 ? " · …" : ""}.`
-			: "";
-	return (
-		`[interlinked:supermodel-graph] ${relPath}: ` +
-		`${direct} dependent file(s)${domainsClause}.${affectsClause}`
-	);
-}
-
-/** Minimum external caller sites before the call-graph context line fires.
- *  A function with a single caller is under the noise floor — not a
- *  blast-radius signal worth a PreToolUse line. Tunable from telemetry; see
- *  `docs/plans/08-supermodel-graph-provider.md` §3a. */
-const SUPERMODEL_CALL_MIN_CALLERS = 2;
-/** Cap on functions listed in the call-graph context line. */
-const SUPERMODEL_CALL_FN_CAP = 5;
-
-/** Plan 08 §3a — read-only consumer of the `[calls]` section of a Supermodel
- *  `.graph.*` shard. Returns a function-level context line naming which
- *  functions defined in the edited file have external callers, ranked by
- *  caller count; null when the shard carries no `[calls]` section or has
- *  fewer than `SUPERMODEL_CALL_MIN_CALLERS` caller sites. The caller gates
- *  this behind a firing `[impact]` line, so plan 07's "LOW edits are silent"
- *  guarantee holds — no new noise surface on routine edits. */
-function getSupermodelCallContext(filePath: string, cwd?: string): string | null {
-	const graph = loadGraphForFile(filePath, cwd);
-	if (!graph?.calls) return null;
-	const { callers } = graph.calls;
-	if (callers.length < SUPERMODEL_CALL_MIN_CALLERS) return null;
-
-	// Group caller sites by the function they target — callers[].fn is
-	// defined in THIS file; a function with more caller sites is the
-	// higher-risk edit, so rank by count.
-	const byFn = new Map<string, number>();
-	for (const c of callers) {
-		byFn.set(c.fn, (byFn.get(c.fn) ?? 0) + 1);
-	}
-	const ranked = [...byFn.entries()].sort((a, b) => b[1] - a[1]);
-	const shown = ranked
-		.slice(0, SUPERMODEL_CALL_FN_CAP)
-		.map(([fn, n]) => `${fn} (${n} caller${n === 1 ? "" : "s"})`)
-		.join(", ");
-	const more =
-		ranked.length > SUPERMODEL_CALL_FN_CAP
-			? ` (+${ranked.length - SUPERMODEL_CALL_FN_CAP} more)`
-			: "";
-
-	const relPath = cwd
-		? relative(cwd, graph.sourcePath) || graph.sourcePath
-		: graph.sourcePath;
-	return (
-		`[interlinked:supermodel-graph] ${relPath}: call graph per .graph shard — ` +
-		`${callers.length} caller site(s) into ${byFn.size} function(s): ${shown}${more}. ` +
-		"Changing these signatures ripples to every caller."
-	);
-}
-
-/** Run tsc and biome against a target file BEFORE an edit, returning existing
- *  errors as context warnings. Delegates to the unified CheckEngine which
- *  handles mtime-based caching internally. */
-function getPreToolUseDiagnostics(
-	filePath: string,
-	cwd: string,
-	qualityChecks: Record<string, QualityCheckConfig> | undefined,
-): string[] {
-	if (!filePath || !DIAGNOSTIC_EXTENSIONS.test(filePath) || !existsSync(filePath)) return [];
-	if (!qualityChecks) return [];
-	const checkCwd = findProjectRoot(filePath, cwd) || cwd;
-	const relPath = relative(checkCwd, filePath) || filePath;
-	const engine = getOrCreateEngine(checkCwd);
-	const results = engine.getDiagnostics(filePath);
-	if (results.length === 0) return [];
-	const diagnostics = results.slice(0, 10).map((r) => {
-		const prefix = r.tool === "biome" ? "biome: " : "";
-		return `${prefix}${r.file}(${r.line}): ${r.message}`;
-	});
-	return [
-		`[interlinked:diagnostics] ${relPath} has ${diagnostics.length} existing issue${diagnostics.length === 1 ? "" : "s"}:`,
-		...diagnostics.map((d) => `  ${d}`),
-		"→ Fix these while editing this file.",
-	];
-}
 
 /** Public API — consumed by server.ts via the root evaluator.ts re-export.
  *  This is the main PreToolUse decision entry point; every hook call runs
@@ -758,42 +554,15 @@ export function evaluatePreToolUse(
 		? extractScannableText((toolInput.command as string) || "")
 		: "";
 	const targetsMcpPath = /\/(?:mcp|sse|messages?)\b/i.test(mcpScanCommand);
-	if (isBash(toolName) && rules.curl_mcp_detection?.enabled && session && targetsMcpPath) {
-		const cmd = mcpScanCommand;
-		for (const port of rules.curl_mcp_detection.localhost_ports) {
-			// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
-			const pattern = new RegExp(
-				`(?:curl|wget|fetch).*(?:localhost|127\\.0\\.0\\.1):${port}`,
-				"i",
-			);
-			if (pattern.test(cmd)) {
-				const count = (session.curl_localhost_count[port] || 0) + 1;
-				session.curl_localhost_count[port] = count;
-				if (count >= rules.curl_mcp_detection.escalate_after) {
-					warnings.push(
-						`[interlinked:curl-mcp] MCP server may be disconnected. ${count} curl calls to localhost:${port} detected this session. Consider reconnecting your MCP server.`,
-					);
-				} else {
-					warnings.push(
-						`[interlinked] ${rules.curl_mcp_detection.message} (${count}/${rules.curl_mcp_detection.escalate_after})`,
-					);
-				}
-			}
-		}
-	}
-
-	// GUARD: curl to /mcp routes — agent should use MCP directly. Same
-	// executed-span scoping as the detection block above (mcpScanCommand), so
-	// a commit message or heredoc that mentions `curl .../mcp` does not fire.
 	if (isBash(toolName)) {
-		const cmd = mcpScanCommand;
-		if (/\b(curl|wget|fetch)\b/.test(cmd) && /\/mcp\b/i.test(cmd)) {
-			warnings.push(
-				"[interlinked:mcp-direct] You're curling an /mcp endpoint directly. " +
-					"MCP servers should be accessed via MCP tools, not HTTP. " +
-					"If the MCP server isn't connected, ask the user to re-configure and restart it.",
-			);
-		}
+		warnings.push(
+			...evaluateCurlMcpGuards({
+				mcpScanCommand,
+				targetsMcpPath,
+				curlMcpDetection: rules.curl_mcp_detection,
+				session,
+			}),
+		);
 	}
 
 	// GUARD: tail/head/cat output-budget enforcement (file-dump-guard).
@@ -810,77 +579,22 @@ export function evaluatePreToolUse(
 		}
 	}
 
-	// GUARD: Pipe-to-bash / remote code execution
+	// GUARD: Pipe-to-bash / remote code execution + curl-data exfiltration +
+	// dirty-dependent pre-commit + /tmp dropper-staging (delegated).
 	if (isBash(toolName)) {
 		const cmd = (toolInput.command as string) || "";
-
-		if (/\b(curl|wget)\b.*\|\s*(ba)?sh\b/i.test(cmd)) {
-			warnings.push(
-				"[interlinked] Warning: Piping remote content to shell is a security risk. Download first, inspect, then execute.",
-			);
-		}
-		if (/--no-verify\b/i.test(cmd)) {
-			warnings.push(
-				"[interlinked] Warning: --no-verify bypasses safety hooks. These hooks exist to prevent broken commits.",
-			);
-		}
-
-		// GUARD: dirty-dependent pre-commit check. When the agent runs
-		// `git commit`, walk staged files' transitive importers through the
-		// project graph; flag any importer that is dirty-but-unstaged. This
-		// catches the failure class that produced commit 7219b48 → red CI:
-		// production code committed alone while its consumer test stayed
-		// in the working tree, so tests passed locally and broke on the
-		// committed snapshot in CI.
-		if (/\bgit\s+commit\b/.test(cmd) && graph && event.cwd) {
-			const dd = collectDirtyDependentWarning(event.cwd, graph);
-			if (dd) warnings.push(dd);
-		}
-		if (
-			/\b(curl|wget)\b/i.test(cmd) &&
-			/https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(cmd) &&
-			!pendingEscalation
-		) {
-			pendingEscalation = {
-				trigger: "external_url",
-				summary: "Bash command contains curl/wget to external URL",
-				tool_name: toolName,
-				tool_input_redacted: { command: "[REDACTED — contains external URL]" },
-				sensitivity_level: session?.sensitivity_level || "Public",
-				step_number: session?.tool_call_count || 0,
-				recent_tool_sequence: session?.tool_sequence.slice(-ESCALATION_TAIL_LENGTH) || [],
-			};
-		}
-		if (
-			/\bcurl\b.*(-d|--data|--data-raw|--data-binary)\b.*https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(
-				cmd,
-			)
-		) {
-			warnings.push(
-				"[interlinked] Warning: Sending data to an external URL. Verify this is intentional and not exfiltrating sensitive data.",
-			);
-		}
-		if (/\b(env|printenv|set)\b.*\|\s*(curl|wget|nc|netcat)\b/i.test(cmd)) {
-			return {
-				decision: "block",
-				reason: "BLOCKED: Piping environment variables to a network tool is a data exfiltration risk.",
-				warnings,
-			};
-		}
-		if (/\b(pip|npm)\s+install\b.*(-i\b|--index-url|--registry)\b/i.test(cmd)) {
-			warnings.push(
-				"[interlinked] Warning: Installing packages from a custom registry. Verify this is a trusted source (dependency confusion risk).",
-			);
-		}
-		if (session) {
-			const tmpWritePattern = /\b(cat|echo|printf|tee)\b[\s\S]*>\s*\/tmp\//i;
-			const tmpExecPattern =
-				/\b(chmod\s+\+?[0-7]*x|bash|sh|python3?|node|ruby|perl|osascript)\s+\/tmp\//i;
-			if (tmpWritePattern.test(cmd) || tmpExecPattern.test(cmd)) {
-				warnings.push(
-					"[interlinked:supply-chain] Writing/executing scripts in /tmp/ — this matches the dropper staging pattern used in supply chain attacks (ref: axios@1.14.1 wrote AppleScript to /tmp/ then executed via osascript). Prefer writing scripts to the project directory.",
-				);
-			}
+		const exfilResult = evaluateExfilGuards({
+			cmd,
+			toolName,
+			session,
+			graph,
+			cwd: event.cwd,
+			pendingEscalation,
+		});
+		warnings.push(...exfilResult.warnings);
+		pendingEscalation = exfilResult.escalation;
+		if (exfilResult.block) {
+			return { ...exfilResult.block, warnings };
 		}
 	}
 
@@ -954,61 +668,17 @@ export function evaluatePreToolUse(
 	}
 	if (isBash(toolName)) {
 		const cmd = (toolInput.command as string) || "";
-		if (
-			/\b(curl|wget)\b/.test(cmd) &&
-			/https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(cmd) &&
-			!/Accept:\s*text\/markdown/i.test(cmd) &&
-			!/-H\s+["']Content-Type:\s*application\/json/i.test(cmd) &&
-			!/-X\s+(POST|PUT|PATCH|DELETE)\b/i.test(cmd) &&
-			!/--data\b|--data-raw\b|--data-binary\b|-d\s/i.test(cmd) &&
-			!/\s-[oO]\s/.test(cmd)
-		) {
-			warnings.push(
-				"[interlinked:markdown-first] curl/wget without Accept: text/markdown header. " +
-					'Add: -H "Accept: text/markdown" to get Cloudflare\'s Markdown for Agents format (~80% fewer tokens). ' +
-					"Response includes x-markdown-tokens header with estimated token count.",
-			);
-		}
+		warnings.push(...evaluateMarkdownFirstCurlGuard(cmd));
 	}
 
 	// GUARD: Read — block sensitive files, warn on oversized files
 	if (isReadOperation(toolName) && toolInput.file_path) {
 		const filePath = toolInput.file_path as string;
-		const readFileName = filePath.split("/").pop() || "";
-		const sensitiveFilePatterns = [
-			/^\.env($|\.)/,
-			/^credentials\.json$/,
-			/^service[_-]account.*\.json$/i,
-			/\.pem$/,
-			/\.key$/,
-			/\.p12$/,
-			/\.pfx$/,
-			/\.jks$/,
-		];
-		const sensitiveExceptions = [/\.env\.example$/, /\.env\.sample$/, /\.env\.template$/];
-		if (
-			sensitiveFilePatterns.some((p) => p.test(readFileName)) &&
-			!sensitiveExceptions.some((p) => p.test(readFileName))
-		) {
-			return {
-				decision: "block",
-				reason: `BLOCKED: ${readFileName} contains secrets or credentials. Agents should not read sensitive files — use environment variables or ask the user for specific values you need.`,
-				warnings,
-			};
+		const readResult = evaluateReadGuards(filePath);
+		if (readResult.block) {
+			return { ...readResult.block, warnings };
 		}
-		try {
-			if (existsSync(filePath)) {
-				const stat = statSync(filePath);
-				const sizeMB = stat.size / (1024 * 1024);
-				if (sizeMB > LARGE_READ_SIZE_MB) {
-					warnings.push(
-						`[interlinked] Warning: ${filePath} is ${sizeMB.toFixed(1)}MB. Reading large files consumes significant context. Consider reading specific line ranges.`,
-					);
-				}
-			}
-		} catch (_err) {
-			/* intentional: stat failure — let the tool handle the missing-file error */
-		}
+		warnings.push(...readResult.warnings);
 	}
 
 	// CONTEXT: Structural context injection
@@ -1320,150 +990,4 @@ export function evaluatePreToolUse(
 		_escalation: pendingEscalation,
 		_contentScan: pendingContentScan,
 	};
-}
-
-/** List `git diff` paths (relative to `cwd`) for either the index
- *  (`--cached`) or the working tree (no flag). Returns [] on any error
- *  (not a git repo, git not installed, etc.) so the dirty-dependent
- *  check fails open. */
-function listGitDiffPaths(cwd: string, cached: boolean): string[] {
-	try {
-		const args = ["diff", "--name-only"];
-		if (cached) args.push("--cached");
-		const out = execFileSync("git", args, {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: GIT_TIMEOUT_MS,
-		});
-		return out
-			.split("\n")
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-	} catch {
-		return [];
-	}
-}
-
-/** Shared timeout for the short-lived `git` invocations below. */
-const GIT_TIMEOUT_MS = 3000;
-
-/** Run `git diff <extraArgs>` in `cwd` and return its stdout. Returns ""
- *  on any failure so the dirty-dependent precision filter fails open. */
-function runGitDiff(cwd: string, extraArgs: readonly string[]): string {
-	try {
-		return execFileSync("git", ["diff", ...extraArgs], {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: GIT_TIMEOUT_MS,
-		});
-	} catch {
-		return "";
-	}
-}
-
-/** Dirty-dependent pre-commit warning entry point. Returns a formatted
- *  warning string when a staged file is import-graph related to an
- *  unstaged-dirty file (a dirty importer or a dirty dependency); null
- *  when the commit is self-contained or git/graph data is missing.
- *
- *  Path normalization: git emits paths relative to the repo root, but
- *  `ProjectGraph` operates on absolute paths. Convert everything to
- *  absolute up front so the BFS walk's visited set and `dirtySet`
- *  membership compare on the same basis; the output then relativizes
- *  for display. */
-function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): string | null {
-	const stagedRel = listGitDiffPaths(cwd, true);
-	if (stagedRel.length === 0) return null;
-	const dirtyRel = listGitDiffPaths(cwd, false);
-	if (dirtyRel.length === 0) return null;
-
-	const toAbs = (p: string): string => (isAbsolute(p) ? p : resolve(cwd, p));
-	const toRel = (p: string): string => relative(cwd, p) || p;
-	const stagedAbs = stagedRel.map(toAbs);
-	const dirtyAbs = dirtyRel.map(toAbs);
-
-	// Memoized `git diff` fetch, feeding the `isRelevant` precision filter.
-	// Keyed on the argv so the staged (`--cached`) and working-tree diffs
-	// of the same file stay distinct.
-	const diffCache = new Map<string, string>();
-	const diffOf = (gitArgs: readonly string[]): string => {
-		const key = gitArgs.join(" ");
-		const hit = diffCache.get(key);
-		if (hit !== undefined) return hit;
-		const text = runGitDiff(cwd, gitArgs);
-		diffCache.set(key, text);
-		return text;
-	};
-
-	const matches = findDirtyDependents({
-		stagedFiles: stagedAbs,
-		unstagedDirtyFiles: dirtyAbs,
-		getImporters: (file) => graph.getDependents(file),
-		getDependencies: (file) => graph.getDependencies(file).map((e) => e.toFile),
-		isTestFile: (file) => isTestFile(toRel(file)),
-		// Precision: drop a candidate when the dirty file's change and the
-		// staged change are not coordinated — the dirty file is dirty for an
-		// unrelated reason. `looksCoordinated` fails open, so an
-		// indeterminate diff keeps the warning.
-		isRelevant: (m) =>
-			looksCoordinated([
-				diffOf(["--cached", "--", toRel(m.staged)]),
-				diffOf(["--", toRel(m.dirtyFile)]),
-			]),
-	});
-	if (matches.length === 0) return null;
-
-	// Convert absolute paths back to repo-relative for the human-facing
-	// warning. The pair structure is preserved; only the display strings
-	// change.
-	const display = matches.map((m) => ({
-		...m,
-		staged: toRel(m.staged),
-		dirtyFile: toRel(m.dirtyFile),
-	}));
-	return formatDirtyDependentWarning({ matches: display });
-}
-
-/**
- * Compute the full post-write content of a file from a Write / Edit /
- * MultiEdit tool_input. Returns null when the operation's shape doesn't
- * map cleanly to a full content (apply_patch, NotebookEdit) — callers
- * skip the supply-chain manifest check on those paths.
- */
-function computeFullNewContent(
-	absPath: string,
-	toolInput: Record<string, unknown>,
-): string | null {
-	if (typeof toolInput.content === "string") return toolInput.content;
-	const readCurrent = (): string | null => {
-		if (!existsSync(absPath)) return "";
-		try {
-			return readFileSync(absPath, "utf-8");
-		} catch {
-			return null;
-		}
-	};
-	if (typeof toolInput.new_string === "string" && typeof toolInput.old_string === "string") {
-		const current = readCurrent();
-		if (current === null) return null;
-		return current.replace(toolInput.old_string, toolInput.new_string);
-	}
-	if (Array.isArray(toolInput.edits)) {
-		const current = readCurrent();
-		if (current === null) return null;
-		let result = current;
-		for (const edit of toolInput.edits as unknown[]) {
-			if (edit && typeof edit === "object") {
-				const oldS = (edit as Record<string, unknown>).old_string;
-				const newS = (edit as Record<string, unknown>).new_string;
-				if (typeof oldS === "string" && typeof newS === "string") {
-					result = result.replace(oldS, newS);
-				}
-			}
-		}
-		return result;
-	}
-	return null;
 }

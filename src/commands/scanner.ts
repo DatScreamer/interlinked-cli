@@ -27,9 +27,9 @@ import { createInterface } from "node:readline/promises";
 import {
 	listPendingReviews,
 	type PendingReviewSummary,
-	readReview,
 	type ReviewDecision,
 	type ReviewPayload,
+	readReview,
 	writeDecision,
 } from "../harness/content-scanner/review-files.js";
 import { getConfigDir } from "../lib/config.js";
@@ -77,8 +77,8 @@ interface AuditEntry {
 	action: AuditAction;
 	/** State transition for toggle actions (`from`/`to`). Omitted for
 	 *  review actions, which have no on/off semantic. */
-	from?: boolean;
-	to?: boolean;
+	from?: boolean | undefined;
+	to?: boolean | undefined;
 	actor: {
 		user: string;
 		host: string;
@@ -421,7 +421,7 @@ interface PickError {
 }
 
 function isPickError(v: unknown): v is PickError {
-	return typeof v === TYPEOF_OBJECT && v !== null && "error" in (v as object);
+	return typeof v === TYPEOF_OBJECT && v !== null && "error" in (v as JsonObject);
 }
 
 /** Pick a review by --key, otherwise return the first (newest) pending. */

@@ -41,18 +41,18 @@ import {
 	FLAG_LOWERCASE,
 	FLAG_MASKS,
 	fnv1a,
+	INDEX_DIR_NAME,
 	type IndexBuildOptions,
 	type IndexStats,
-	INDEX_DIR_NAME,
 	isBinaryContent,
 	LEGACY_INDEX_FILE_NAME,
 	LOOKUP_FILE_NAME,
 	MAGIC_LOOKUP,
 	META_FILE_NAME,
 	nextCharBit,
-	popcount8,
-	type PostingList,
 	POSTINGS_FILE_NAME,
+	type PostingList,
+	popcount8,
 	shouldSkipFile,
 	VERSION,
 } from "./trigram-primitives.js";
@@ -63,8 +63,8 @@ export {
 	extractTrigrams,
 	isBinaryContent,
 	isControlChar,
-	packTrigram,
 	type PostingList,
+	packTrigram,
 	shouldSkipFile,
 	trigramToString,
 	unpackTrigram,
@@ -263,8 +263,9 @@ export class TrigramIndex {
 			if (result === null) {
 				result = candidates;
 			} else {
-				// Intersect: keep only IDs in both sets
-				for (const id of result) {
+				// Intersect: keep only IDs in both sets. Snapshot first so the
+				// delete never mutates the Set we are iterating.
+				for (const id of [...result]) {
 					if (!candidates.has(id)) {
 						result.delete(id);
 					}

@@ -1,14 +1,17 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { appendCollection, getCollectionPath } from "../writer.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CollectionRecord } from "../types.js";
+import { appendCollection, getCollectionPath } from "../writer.js";
 
 vi.mock("node:fs");
 
 const mockFs = vi.mocked(fs);
 
-afterEach(() => vi.restoreAllMocks());
+// vitest 4: restoreAllMocks un-mocks automocked module exports (node:fs here),
+// so a later test's mockReturnValue would target the real fn. resetAllMocks
+// keeps the automock in place while clearing call history + implementations.
+afterEach(() => vi.resetAllMocks());
 
 function stubRecord(overrides: Partial<CollectionRecord> = {}): CollectionRecord {
 	return {

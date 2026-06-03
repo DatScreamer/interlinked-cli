@@ -20,6 +20,7 @@ import {
 } from "../harness/sequence-checks/index.js";
 import { SessionTracker } from "../harness/session-state.js";
 import type { HarnessEvent, SessionTrajectory } from "../harness/types.js";
+import type { JsonObject } from "../lib/json-types.js";
 
 interface CommonOpts {
 	cwd?: string;
@@ -149,7 +150,7 @@ function summarizeValue(v: unknown): string | null {
 	if (typeof v === "number" || typeof v === "boolean") return String(v);
 	if (Array.isArray(v)) return `[${v.length} item${v.length === 1 ? "" : "s"}]`;
 	if (typeof v === "object") {
-		const keys = Object.keys(v as Record<string, unknown>);
+		const keys = Object.keys(v as JsonObject);
 		return `{${keys.length} field${keys.length === 1 ? "" : "s"}}`;
 	}
 	return null;

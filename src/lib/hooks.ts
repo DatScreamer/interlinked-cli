@@ -50,8 +50,9 @@ import {
 	uninstallCursorHooks,
 	uninstallGeminiHooks,
 } from "./hook-installers.js";
-import { buildHookScript } from "./hooks-template.js";
 import { CLIENT_CLAUDE } from "./hook-types.js";
+import { buildHookScript } from "./hooks-template.js";
+import type { JsonObject } from "./json-types.js";
 import type { ClientName } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
@@ -469,9 +470,9 @@ interface HookManagerInfo {
 }
 
 interface PackageJsonShape {
-	devDependencies: Record<string, unknown>;
-	dependencies: Record<string, unknown>;
-	scripts: Record<string, unknown>;
+	devDependencies: JsonObject;
+	dependencies: JsonObject;
+	scripts: JsonObject;
 }
 
 const EMPTY_PACKAGE_JSON: PackageJsonShape = {
@@ -483,7 +484,7 @@ const EMPTY_PACKAGE_JSON: PackageJsonShape = {
 // Helpers for narrowing untrusted JSON. Kept off the bare `typeof x === "string"`
 // pattern that the harness flags as `magic_literal_in_conditional` — these
 // idioms match the project-wide style in `hook-installers.ts`.
-function isPlainObject(v: unknown): v is Record<string, unknown> {
+function isPlainObject(v: unknown): v is JsonObject {
 	return v instanceof Object && !Array.isArray(v);
 }
 

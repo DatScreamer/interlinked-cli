@@ -15,7 +15,7 @@
 //
 // Pure read commands — no harness socket round-trip, no daemon needed.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	CapturedPlan,
@@ -23,6 +23,7 @@ import type {
 	PlanStep,
 	PlanStepStatus,
 } from "../harness/types/plan.js";
+import type { JsonObject } from "../lib/json-types.js";
 
 interface CommonOpts {
 	cwd?: string;
@@ -209,7 +210,7 @@ function parsePlanLine(line: string): CapturedPlan | null {
 		return null;
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-	const rec = parsed as Record<string, unknown>;
+	const rec = parsed as JsonObject;
 	const session_id = readString(rec.session_id);
 	const agent_name = readString(rec.agent_name);
 	const created_at_iso = readString(rec.created_at_iso);
@@ -220,7 +221,7 @@ function parsePlanLine(line: string): CapturedPlan | null {
 	const steps: PlanStep[] = [];
 	for (const item of stepsRaw) {
 		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-		const r = item as Record<string, unknown>;
+		const r = item as JsonObject;
 		const intent = readString(r.intent);
 		if (!intent) continue;
 		const statusRaw = typeof r.status === "string" ? r.status : "pending";

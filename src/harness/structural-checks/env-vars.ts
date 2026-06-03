@@ -53,8 +53,9 @@ export function checkUndefinedEnvVars(
 			}
 			// If the edit doesn't introduce any env var references, skip entirely
 			if (editVars.size === 0) return [];
-			// Only check vars that appear in the edit
-			for (const v of usedVars) {
+			// Only check vars that appear in the edit. Snapshot the keys
+			// before deleting so we never mutate the Set mid-iteration.
+			for (const v of [...usedVars]) {
 				if (!editVars.has(v)) usedVars.delete(v);
 			}
 			if (usedVars.size === 0) return [];

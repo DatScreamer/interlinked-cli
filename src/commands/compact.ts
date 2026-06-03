@@ -24,7 +24,6 @@
 // writing the manifest is two small writes; if interrupted there, re-run
 // `interlinked compact` — it is idempotent on an already-compacted state.
 
-import type { Command, OptionValues } from "commander";
 import {
 	existsSync,
 	mkdirSync,
@@ -35,8 +34,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import type { Command, OptionValues } from "commander";
 import { getDataDir } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
+import type { JsonObject } from "../lib/json-types.js";
 
 /** Record types that participate in the audit hash chain (mirror audit-chain.ts). */
 const CHAINED_TYPES = new Set(["guard_block", "guard_warn", "guard_allow", "session_end"]);
@@ -161,7 +162,7 @@ export async function compactCommand(opts: OptionValues): Promise<void> {
 	const archiveDir = archiveDirPath(cwd);
 	const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
 
-	const emit = (data: Record<string, unknown>, human: string) => {
+	const emit = (data: JsonObject, human: string) => {
 		if (isJson) console.log(JSON.stringify(data, null, 2));
 		else console.log(human);
 	};
@@ -174,10 +175,10 @@ export async function compactCommand(opts: OptionValues): Promise<void> {
 	const fileSize = statSync(activityPath).size;
 
 	let syncedBytes = 0;
-	let syncState: Record<string, unknown> = {};
+	let syncState: JsonObject = {};
 	if (existsSync(syncStatePath)) {
 		try {
-			syncState = JSON.parse(readFileSync(syncStatePath, "utf-8")) as Record<string, unknown>;
+			syncState = JSON.parse(readFileSync(syncStatePath, "utf-8")) as JsonObject;
 			if (typeof syncState.synced_through_bytes === "number") {
 				syncedBytes = syncState.synced_through_bytes;
 			}

@@ -55,13 +55,13 @@ function seedReview(url: string, body: string, findings: ScanFinding[]): string 
 describe("scannerReviewCommand — no pending", () => {
 	it("reports zero pending reviews and exits cleanly in normal mode", async () => {
 		await scannerReviewCommand({});
-		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const allOutput = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
 		expect(allOutput).toMatch(/no pending reviews/i);
 	});
 
 	it("returns zero-pending payload in JSON mode", async () => {
 		await scannerReviewCommand({ json: true });
-		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const allOutput = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
 		const parsed = JSON.parse(allOutput);
 		expect(parsed).toMatchObject({ pending: 0, action: "none" });
 	});
@@ -170,7 +170,7 @@ describe("scannerReviewCommand — JSON output", () => {
 			[finding("private_email", "alice@example.com", 7)],
 		);
 		await scannerReviewCommand({ allow: true, json: true });
-		const allOutput = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		const allOutput = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
 		const parsed = JSON.parse(allOutput);
 		expect(parsed).toMatchObject({
 			action: "review_allow",
@@ -200,7 +200,7 @@ describe("scannerReviewCommand — JSON output", () => {
 
 		// Importantly: stdout (where the JSON document would land) was not
 		// polluted by the ANSI review UI.
-		const stdoutBody = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		const stdoutBody = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n");
 		expect(stdoutBody).not.toMatch(/Privacy Filter — Review/);
 
 		errSpy.mockRestore();

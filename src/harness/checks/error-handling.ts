@@ -7,7 +7,6 @@ import {
 	isTestFile,
 	JS_TS_ALL_EXTS,
 	stripComments,
-	stripCommentsAndStrings,
 } from "./shared.js";
 
 // ===========================================
@@ -207,6 +206,49 @@ export function checkErrorStringComparison(content: string, filePath: string): I
 }
 
 /**
+ * Blank the CONTENT of every '…' / "…" / `…` literal with spaces, preserving
+ * length and newlines so byte offsets stay aligned with the (comment-stripped)
+ * input. Delimiters are kept. Unlike `stripStrings`, which collapses each
+ * literal to a 2-char placeholder and so shifts every later offset, this keeps
+ * positions stable — the arg-window paren scan in `checkLossyErrorRethrow`
+ * indexes into it directly, and a `catch`/`throw`/`cause` token living inside a
+ * string literal is blanked so it can't masquerade as code. Apply to
+ * comment-stripped input. (Regex literals are not special-cased — matching the
+ * existing strip helpers' limitation; quotes in regexes are vanishingly rare in
+ * the catch/throw windows this check inspects.)
+ */
+function blankStringLiteralsPreserveLength(s: string): string {
+	const out = s.split("");
+	const n = s.length;
+	let i = 0;
+	while (i < n) {
+		const c = s[i];
+		if (c === '"' || c === "'" || c === "`") {
+			const quote = c;
+			i++; // keep the opening delimiter
+			while (i < n) {
+				const ch = s[i];
+				if (ch === "\\") {
+					if (s[i] !== "\n") out[i] = " ";
+					if (i + 1 < n && s[i + 1] !== "\n") out[i + 1] = " ";
+					i += 2;
+					continue;
+				}
+				if (ch === quote) {
+					i++; // keep the closing delimiter
+					break;
+				}
+				if (ch !== "\n") out[i] = " ";
+				i++;
+			}
+			continue;
+		}
+		i++;
+	}
+	return out.join("");
+}
+
+/**
  * Detect catch blocks that throw a fresh `new Error(...)` (or any `*Error`
  * subclass constructor) without forwarding the caught exception via the
  * ES2022 `{ cause: e }` option. Loses the original stack trace and breaks
@@ -234,11 +276,13 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 	const ext = getExtension(filePath);
 	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
 
-	// Comments-only strip preserves string positions for accurate line numbers,
-	// while string-strip is applied per-throw to the args window so a `cause:`
-	// substring inside a template literal can't false-skip the check.
-	const stripped = stripComments(content);
-	const blanked = stripCommentsAndStrings(content);
+	// Single length-preserving source: comments removed, then string CONTENTS
+	// blanked in place. Detection and the `{ cause }` arg-window check both run
+	// on `code` so (a) a `catch`/`throw` token inside a string literal can't
+	// masquerade as code, and (b) byte offsets stay aligned (stripStrings
+	// collapses literals and would shift the cause-window slice). Line numbers
+	// come from counting preserved newlines.
+	const code = blankStringLiteralsPreserveLength(stripComments(content));
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
@@ -246,7 +290,7 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 	const ERROR_CTOR_RE =
 		/\bthrow\s+new\s+(?:[A-Z][A-Za-z0-9_$]*Error|Error|TypeError|RangeError|SyntaxError|EvalError|URIError|AggregateError)\s*\(/g;
 
-	let openMatch: RegExpExecArray | null = catchOpenRe.exec(stripped);
+	let openMatch: RegExpExecArray | null = catchOpenRe.exec(code);
 	while (openMatch !== null) {
 		if (matches.length >= 10) break;
 		const catchVar = openMatch[1];
@@ -254,8 +298,8 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 
 		let depth = 1;
 		let closeIdx = -1;
-		for (let i = openIdx + 1; i < stripped.length; i++) {
-			const ch = stripped[i];
+		for (let i = openIdx + 1; i < code.length; i++) {
+			const ch = code[i];
 			if (ch === "{") depth++;
 			else if (ch === "}") {
 				depth--;
@@ -266,21 +310,21 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 			}
 		}
 		if (closeIdx < 0) {
-			openMatch = catchOpenRe.exec(stripped);
+			openMatch = catchOpenRe.exec(code);
 			continue;
 		}
 
 		const bodyStart = openIdx + 1;
 		ERROR_CTOR_RE.lastIndex = bodyStart;
-		let throwMatch: RegExpExecArray | null = ERROR_CTOR_RE.exec(stripped);
+		let throwMatch: RegExpExecArray | null = ERROR_CTOR_RE.exec(code);
 		while (throwMatch !== null && throwMatch.index < closeIdx) {
 			if (matches.length >= 10) break;
 
 			const argsStart = throwMatch.index + throwMatch[0].length;
 			let pdepth = 1;
 			let argsEnd = -1;
-			for (let i = argsStart; i < stripped.length && i < closeIdx; i++) {
-				const ch = stripped[i];
+			for (let i = argsStart; i < code.length && i < closeIdx; i++) {
+				const ch = code[i];
 				if (ch === "(") pdepth++;
 				else if (ch === ")") {
 					pdepth--;
@@ -292,19 +336,19 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 			}
 			if (argsEnd < 0) break;
 
-			const argsBlanked = blanked.slice(argsStart, argsEnd);
-			const preservesCause = /\bcause\s*[:,}]/.test(argsBlanked);
+			const argsWindow = code.slice(argsStart, argsEnd);
+			const preservesCause = /\bcause\s*[:,}]/.test(argsWindow);
 			if (!preservesCause) {
-				const lineNum = stripped.slice(0, throwMatch.index).split("\n").length;
+				const lineNum = code.slice(0, throwMatch.index).split("\n").length;
 				matches.push({
 					line: lineNum,
 					text: `throw new Error in catch(${catchVar}) without { cause: ${catchVar} } — original stack lost: ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 100)}`,
 				});
 			}
-			throwMatch = ERROR_CTOR_RE.exec(stripped);
+			throwMatch = ERROR_CTOR_RE.exec(code);
 		}
 
-		openMatch = catchOpenRe.exec(stripped);
+		openMatch = catchOpenRe.exec(code);
 	}
 
 	return matches;

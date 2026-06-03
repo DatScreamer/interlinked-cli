@@ -11,6 +11,7 @@
 import { execFileSync } from "node:child_process";
 import type { Command } from "commander";
 import { c } from "../lib/formatter.js";
+import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output } from "../lib/output.js";
 
 export interface CiRun {
@@ -26,7 +27,7 @@ export interface CiRun {
 
 export interface CiStatusFetcher {
 	available(): boolean;
-	listRuns(opts: { limit: number; branch?: string }): CiRun[];
+	listRuns(opts: { limit: number; branch?: string | undefined }): CiRun[];
 }
 
 const RUNS_FIELDS = [
@@ -50,7 +51,7 @@ export class GhCliFetcher implements CiStatusFetcher {
 		}
 	}
 
-	listRuns(opts: { limit: number; branch?: string }): CiRun[] {
+	listRuns(opts: { limit: number; branch?: string | undefined }): CiRun[] {
 		const args = [
 			"run",
 			"list",
@@ -78,7 +79,7 @@ export class GhCliFetcher implements CiStatusFetcher {
 
 function isCiRun(value: unknown): value is CiRun {
 	if (!value || typeof value !== "object") return false;
-	const v = value as Record<string, unknown>;
+	const v = value as JsonObject;
 	return (
 		typeof v.databaseId === "number" &&
 		typeof v.workflowName === "string" &&

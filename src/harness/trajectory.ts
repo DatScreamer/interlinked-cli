@@ -24,6 +24,8 @@
 // Findings surface as PreToolUse warnings (severity "warning"); the harness
 // never blocks on a trajectory finding — humans break loops, not the CLI.
 
+import type { JsonObject } from "../lib/json-types.js";
+
 // ===========================================
 // Public types
 // ===========================================
@@ -38,12 +40,12 @@ export interface TrajectoryEvent {
 	tool_name: string;
 	/** Full tool input as observed; the detector reads `command`/`file_path`
 	 *  out of it. May be omitted when not relevant. */
-	tool_input?: Record<string, unknown>;
+	tool_input?: JsonObject | undefined;
 	/** Decision returned for the previous evaluation, if known. Reserved for
 	 *  future use; current detectors do not consult it. */
-	decision?: "allow" | "block" | "ask";
+	decision?: "allow" | "block" | "ask" | undefined;
 	/** Whether the tool call succeeded (PostToolUse only). */
-	succeeded?: boolean;
+	succeeded?: boolean | undefined;
 }
 
 export interface TrajectoryFinding {
@@ -389,7 +391,7 @@ function detectSilentStall(buffer: TrajectoryEvent[]): TrajectoryFinding | null 
 /** Stringify the relevant fields of tool_input for similarity comparison.
  *  Pulls only the well-known agent-tool field names so we don't leak
  *  arbitrary state into the dedup key. */
-function normalizeInput(input: Record<string, unknown> | undefined): string {
+function normalizeInput(input: JsonObject | undefined): string {
 	if (!input) return "";
 	const fields: string[] = [];
 	for (const key of ["command", "file_path", "path", "url", "pattern", "old_string"]) {
@@ -402,7 +404,7 @@ function normalizeInput(input: Record<string, unknown> | undefined): string {
 }
 
 /** Extract a `command` string from tool_input, defensively. */
-function readCommand(input: Record<string, unknown> | undefined): string {
+function readCommand(input: JsonObject | undefined): string {
 	if (!input) return "";
 	const cmd = input.command;
 	return typeof cmd === "string" ? cmd : "";

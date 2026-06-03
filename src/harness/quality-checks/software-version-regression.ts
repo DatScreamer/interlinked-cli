@@ -8,6 +8,7 @@
 // agent verifies official sources instead of relying on remembered timelines.
 
 import { basename } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
 
 export interface SoftwareVersionReference {
 	anchor: string;
@@ -222,7 +223,7 @@ function collectPackageJsonRefs(content: string): SoftwareVersionReference[] {
 		return [];
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-	const obj = parsed as Record<string, unknown>;
+	const obj = parsed as JsonObject;
 	const refs: SoftwareVersionReference[] = [];
 
 	if (typeof obj.version === "string") {
@@ -239,7 +240,7 @@ function collectPackageJsonRefs(content: string): SoftwareVersionReference[] {
 	for (const section of PACKAGE_SECTIONS) {
 		const deps = obj[section];
 		if (!deps || typeof deps !== "object" || Array.isArray(deps)) continue;
-		for (const [name, version] of Object.entries(deps as Record<string, unknown>)) {
+		for (const [name, version] of Object.entries(deps as JsonObject)) {
 			if (typeof version !== "string") continue;
 			refs.push({
 				anchor: `package:${name}`,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkErrorDispatchByInstanceof } from "./error-handling.js";
+import { checkErrorDispatchByInstanceof, checkLossyErrorRethrow } from "./error-handling.js";
 
 const TS = "src/lib/foo.ts";
 
@@ -197,5 +197,107 @@ describe("checkErrorDispatchByInstanceof — negative cases (must NOT fire)", ()
 		].join("\n");
 		const out = checkErrorDispatchByInstanceof(code, TS);
 		expect(out).toEqual([]);
+	});
+});
+
+// ===========================================
+// checkLossyErrorRethrow
+// ===========================================
+
+describe("checkLossyErrorRethrow — positive cases", () => {
+	it("flags throw new Error in catch without cause", () => {
+		const code = [
+			"function g() {",
+			"  try { risky(); }",
+			"  catch (err) {",
+			'    throw new Error("wrapped: " + err.message);',
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkLossyErrorRethrow(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+		expect(out[0].text).toContain("without { cause: err }");
+	});
+
+	it("flags throw new TypeError with a template message but no cause", () => {
+		const code = [
+			"function g() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			"    throw new TypeError(`bad input: ${e}`);",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS).length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still fires when `cause` appears only inside the message string, not as an option", () => {
+		// `cause` inside the message must NOT count as preserving the cause —
+		// the string content is blanked before the option check.
+		const code = [
+			"function g() {",
+			"  try { risky(); }",
+			"  catch (err) {",
+			'    throw new Error("root cause: bad state");',
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS).length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("checkLossyErrorRethrow — negative cases (must NOT fire)", () => {
+	it("ignores throw with single-line { cause }", () => {
+		const code = [
+			"function g() {",
+			"  try { risky(); }",
+			"  catch (e) {",
+			'    throw new Error("wrapped", { cause: e });',
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
+	});
+
+	it("ignores throw with a MULTI-LINE { cause } after a string-heavy preamble", () => {
+		// Regression (trajectory.ts shape): stripStrings collapsed earlier
+		// literals and mis-sliced the cause window, falsely flagging this.
+		const code = [
+			"function g(target: { path: string }, raw: string) {",
+			'  console.log("loading");',
+			'  console.log("parsing the snapshot file now");',
+			"  try {",
+			"    JSON.parse(raw);",
+			"  } catch (err) {",
+			"    throw new Error(`snapshot ${target.path} is malformed`, {",
+			"      cause: err,",
+			"    });",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
+	});
+
+	it("ignores a catch/throw pattern that lives inside a string literal", () => {
+		// Regression (section-table-agent-safety.ts shape): the check's own
+		// description string must not be mistaken for code.
+		const code = [
+			"const SPEC = {",
+			'  noun: "catch (e) { throw new Error(...) } without { cause: e }",',
+			"};",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
+	});
+
+	it("ignores `throw err` rethrow by reference", () => {
+		const code = [
+			"function g() {",
+			"  try { risky(); }",
+			"  catch (err) {",
+			"    throw err;",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
 	});
 });

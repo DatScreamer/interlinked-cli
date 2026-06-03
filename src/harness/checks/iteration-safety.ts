@@ -70,6 +70,22 @@ function findMatchingBrace(s: string, openIdx: number): number {
 	return -1;
 }
 
+/** Matching ")" for the "(" at `openIdx`, or -1. Used to bound a forEach-style
+ * callback's body to within the call's own parens — see the call site. */
+function findMatchingParen(s: string, openIdx: number): number {
+	let depth = 0;
+	const end = Math.min(s.length, openIdx + MAX_BRACE_SCAN_CHARS);
+	for (let i = openIdx; i < end; i++) {
+		const c = s.charAt(i);
+		if (c === "(") {
+			depth++;
+		} else if (c === ")" && --depth === 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 function findBodyOpen(s: string, headerEnd: number): number {
 	const end = Math.min(s.length, headerEnd + MAX_HEADER_TO_BODY_CHARS);
 	const slice = s.slice(headerEnd, end);
@@ -99,7 +115,9 @@ export function checkIteratorInvalidation(content: string, filePath: string): In
 	const lines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
-	const candidates: { collection: string; headerIdx: number }[] = [];
+	// `callParenIdx` (foreach-style only) is the index of the method call's
+	// opening "(", used to bound the callback-body search — see the loop below.
+	const candidates: { collection: string; headerIdx: number; callParenIdx?: number }[] = [];
 
 	let m: RegExpExecArray | null;
 	const itHeader = new RegExp(ITERATOR_HEADER_RE.source, "g");
@@ -108,19 +126,31 @@ export function checkIteratorInvalidation(content: string, filePath: string): In
 	}
 	const fnHeader = new RegExp(FOREACH_HEADER_RE.source, "g");
 	while ((m = fnHeader.exec(stripped))) {
-		// Skip read-only callback methods entirely — find/some/every/findIndex
-		// don't return mutated collections, so flagging mutation in the
-		// callback is fine, but the `<name>.find(...)` itself isn't mutation.
-		// We still capture the receiver name as the iterated collection so
-		// the body scan finds mutations to the receiver.
-		candidates.push({ collection: m[1], headerIdx: m.index + m[0].length });
+		// Capture the receiver name as the iterated collection so the body scan
+		// finds mutations to it. `m[0]` ends with the call's "(", so its index
+		// is `headerIdx - 1`.
+		candidates.push({
+			collection: m[1],
+			headerIdx: m.index + m[0].length,
+			callParenIdx: m.index + m[0].length - 1,
+		});
 	}
 
 	const seen = new Set<number>();
-	for (const { collection, headerIdx } of candidates) {
+	for (const { collection, headerIdx, callParenIdx } of candidates) {
 		if (matches.length >= 10) break;
 		const bodyOpen = findBodyOpen(stripped, headerIdx);
 		if (bodyOpen < 0) continue;
+		// forEach-style: the body we care about is the callback's brace body,
+		// which must sit INSIDE the call's parens. An expression-arrow callback
+		// (e.g. `arr.some((e) => e.x === y)`) has no statement body; without
+		// this bound, findBodyOpen latches onto the next unrelated `{` block
+		// (the enclosing if/for) and reports mutations that aren't in the
+		// callback at all. Bounding to the call's `)` drops those FPs.
+		if (callParenIdx !== undefined) {
+			const callClose = findMatchingParen(stripped, callParenIdx);
+			if (callClose < 0 || bodyOpen > callClose) continue;
+		}
 		const bodyClose = findMatchingBrace(stripped, bodyOpen);
 		if (bodyClose < 0) continue;
 

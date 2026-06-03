@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 
 export interface ConfigLooseningFinding {
@@ -44,7 +45,7 @@ function get(obj: unknown, ...path: string[]): unknown {
 	let node: unknown = obj;
 	for (const segment of path) {
 		if (!node || typeof node !== "object") return undefined;
-		node = (node as Record<string, unknown>)[segment];
+		node = (node as JsonObject)[segment];
 	}
 	return node;
 }

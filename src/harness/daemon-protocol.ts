@@ -149,7 +149,9 @@ export function decodeFrame(frame: string): RpcMessage {
 	try {
 		parsed = JSON.parse(frame);
 	} catch (err) {
-		throw new Error(`invalid JSON frame: ${(err as Error).message}`);
+		throw new Error(`invalid JSON frame: ${(err as Error).message}`, {
+			cause: err,
+		});
 	}
 	if (parsed == null || typeof parsed !== "object") {
 		throw new Error("frame must be an object");

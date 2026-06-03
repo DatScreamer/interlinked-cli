@@ -15,6 +15,7 @@
 // `trust_remote_code=True` and is not served by the free HF Inference API.
 // Use the local sidecar for privacy-filter today.
 
+import type { JsonObject } from "../../lib/json-types.js";
 import type {
 	ContentScanner,
 	ContentScannerConfig,
@@ -160,7 +161,7 @@ function parseHfResponse(data: unknown): HfTokenClassificationEntity[] | undefin
 	const out: HfTokenClassificationEntity[] = [];
 	for (const item of data) {
 		if (!item || typeof item !== "object") continue;
-		const obj = item as Record<string, unknown>;
+		const obj = item as JsonObject;
 		if (
 			typeof obj.entity_group !== "string" ||
 			typeof obj.score !== "number" ||

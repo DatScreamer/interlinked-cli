@@ -77,14 +77,18 @@ describe("checkSilentPromiseSwallow", () => {
 		expect(out.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("flags .catch returning literal undefined / null / void 0", () => {
+	it("does NOT flag .catch returning an explicit fallback value (null / undefined / void 0)", () => {
+		// Graceful degradation: the rejection is converted to a sentinel the
+		// caller handles (e.g. `const x = await foo().catch(() => null)` then a
+		// null-check). Only an EMPTY body is a silent swallow. Regression for
+		// the resume.ts / api-client.ts server-context fallbacks.
 		const cases = [
 			"foo().catch(() => undefined);\n",
 			"foo().catch(_ => null);\n",
 			"foo().catch(() => void 0);\n",
 		];
 		for (const src of cases) {
-			expect(checkSilentPromiseSwallow(src, "src/x.ts").length).toBeGreaterThanOrEqual(1);
+			expect(checkSilentPromiseSwallow(src, "src/x.ts")).toEqual([]);
 		}
 	});
 

@@ -7,10 +7,10 @@
 // - Server presence detection
 // - Team rule sync
 
-import type { JsonObject } from "../lib/json-types.js";
-import { scrubEgressPayload } from "../lib/secrets.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { JsonObject } from "../lib/json-types.js";
+import { scrubEgressPayload } from "../lib/secrets.js";
 import type { CoordinationResponse } from "./auto-coordinate.js";
 import type { ServerApiClient, ServerReservation } from "./reservations.js";
 import type { SessionTrajectory } from "./types.js";
@@ -21,20 +21,20 @@ import type { SessionTrajectory } from "./types.js";
 
 interface ServerBridgeConfig {
 	serverUrl: string;
-	authToken?: string;
-	workspaceId?: string;
-	workspaceKey?: string;
-	projectKey?: string;
+	authToken?: string | undefined;
+	workspaceId?: string | undefined;
+	workspaceKey?: string | undefined;
+	projectKey?: string | undefined;
 	/** How often to refresh reservation cache (ms, default: 30s) */
-	refreshIntervalMs?: number;
+	refreshIntervalMs?: number | undefined;
 }
 
 interface GuardEventReport {
 	agent_name: string;
 	event_type: "guard_block" | "guard_warn" | "guard_alert";
-	rule_id?: string;
-	tool_name?: string;
-	tool_input_summary?: string;
+	rule_id?: string | undefined;
+	tool_name?: string | undefined;
+	tool_input_summary?: string | undefined;
 	decision: "block" | "warn";
 	reason: string;
 	occurred_at: string;
@@ -108,11 +108,11 @@ export class ServerBridge implements ServerApiClient {
 
 		// Flush guard events every 10 seconds
 		this.flushInterval = setInterval(() => {
-			this.flushGuardEvents().catch(() => {});
+			this.flushGuardEvents().catch(() => {/* best-effort: server sync is optional */});
 		}, 10_000);
 
 		// Initial health check
-		this.healthCheck().catch(() => {});
+		this.healthCheck().catch(() => {/* best-effort: server is optional */});
 	}
 
 	// ===========================================
@@ -188,11 +188,14 @@ export class ServerBridge implements ServerApiClient {
 			});
 			const reservations = result?.reservations;
 			if (!Array.isArray(reservations)) return [];
-			return reservations.map((r: JsonObject) => ({
-				agent_name: r.agent_name as string,
-				path_pattern: r.path_pattern as string,
-				expires_at: r.expires_at as string | undefined,
-			}));
+			return reservations.map((r: JsonObject) => {
+				const expires_at = r.expires_at as string | undefined;
+				return {
+					agent_name: r.agent_name as string,
+					path_pattern: r.path_pattern as string,
+					...(expires_at !== undefined ? { expires_at } : {}),
+				};
+			});
 		} catch {
 			return [];
 		}
@@ -208,7 +211,7 @@ export class ServerBridge implements ServerApiClient {
 
 		// If queue is large, flush immediately
 		if (this.guardEventQueue.length >= 10) {
-			this.flushGuardEvents().catch(() => {});
+			this.flushGuardEvents().catch(() => {/* best-effort: server sync is optional */});
 		}
 	}
 
@@ -353,7 +356,7 @@ export class ServerBridge implements ServerApiClient {
 			this.flushInterval = null;
 		}
 		// Final flush attempt
-		this.flushGuardEvents().catch(() => {});
+		this.flushGuardEvents().catch(() => {/* best-effort: server sync is optional */});
 	}
 }
 

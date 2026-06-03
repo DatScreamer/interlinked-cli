@@ -6,7 +6,7 @@ export default defineConfig({
         environment: "node",
         include: ["src/**/*.test.ts"],
         // Integration tests spawn real `npx biome` / `tsc` / CLI subprocesses.
-        // Under the worker-capped full-suite run (see `poolOptions` below) a
+        // Under the worker-capped full-suite run (see `maxWorkers` below) a
         // cold start can take tens of seconds, so vitest's 10s default
         // produced timeout flakes that reddened `CI=1 npm test`. A 30s floor
         // gives ~3x headroom; genuinely-heavier cases keep explicit per-test
@@ -40,8 +40,8 @@ export default defineConfig({
         // full parallelism (`undefined` lets vitest pick).
         //
         // Tracked symptom: CI run 25736848966 on commit 4d647ea (rerun
-        // passed without any code change). Both pools are capped because
-        // the project hasn't pinned `pool` — vitest could pick either.
+        // passed without any code change). The cap is pool-agnostic, so it
+        // holds whether vitest picks the threads or forks pool.
         //
         // 2026-05-19: the 2-worker cap was no longer enough after the
         // supply-chain allowlist tests landed (+~150 tests, ~7800 total).
@@ -49,14 +49,12 @@ export default defineConfig({
         // timeout despite all 7799 tests passing. Dropped to 1 worker in
         // CI to eliminate IPC contention entirely. Local dev keeps
         // unbounded parallelism via the `undefined` branch.
-        poolOptions: {
-            threads: {
-                maxThreads: process.env.CI ? 1 : undefined,
-            },
-            forks: {
-                maxForks: process.env.CI ? 1 : undefined,
-            },
-        },
+        //
+        // 2026-06-02: Vitest 4's pool rework removed `poolOptions` and
+        // unified the per-pool `{threads,forks}.max*` caps into one
+        // top-level `maxWorkers`. One number now bounds concurrency
+        // regardless of which pool vitest picks; `undefined` = vitest default.
+        maxWorkers: process.env.CI ? 1 : undefined,
         // Coverage — opt-in via `--coverage` / `npm run test:coverage`; the
         // default `vitest run` stays uninstrumented and fast. The v8 provider
         // emits BOTH json (coverage-final.json → per-function, feeds CRAP via

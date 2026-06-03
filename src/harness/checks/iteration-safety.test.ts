@@ -73,6 +73,21 @@ describe("checkIteratorInvalidation — positive cases", () => {
 		const out = checkIteratorInvalidation(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
 	});
+
+	it("flags receiver.push inside a brace-bodied .some() callback over the same receiver", () => {
+		// A brace-bodied callback genuinely mutating the iterated receiver is a
+		// real bug and must still fire after the expression-arrow FP fix.
+		const code = [
+			"function bug(items: number[]) {",
+			"  items.some((x) => {",
+			"    items.push(x);",
+			"    return false;",
+			"  });",
+			"}",
+		].join("\n");
+		const out = checkIteratorInvalidation(code, TS);
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
 });
 
 describe("checkIteratorInvalidation — negative cases (must NOT fire)", () => {
@@ -121,6 +136,43 @@ describe("checkIteratorInvalidation — negative cases (must NOT fire)", () => {
 			"function ok(arr: number[]) {",
 			"  for (const x of arr) {",
 			"    if (arr[0] === x) console.log('first');",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkIteratorInvalidation(code, TS)).toEqual([]);
+	});
+
+	it("ignores receiver.push in an if-block guarded by receiver.some() (expression-arrow callback)", () => {
+		// Regression (project-graph.ts shape): `result.some((e) => e.name === x)`
+		// is a brace-less callback; `result.push(exp)` lives in the ENCLOSING
+		// if-block, and the loops iterate DIFFERENT collections. Must not fire.
+		const code = [
+			"function build(starTargets: string[], direct: Exp[]) {",
+			"  const result = direct.filter((e) => e.name !== '*');",
+			"  for (const target of starTargets) {",
+			"    for (const exp of getExports(target)) {",
+			"      if (exp.name !== '*' && !result.some((e) => e.name === exp.name)) {",
+			"        result.push(exp);",
+			"      }",
+			"    }",
+			"  }",
+			"  return result;",
+			"}",
+		].join("\n");
+		expect(checkIteratorInvalidation(code, TS)).toEqual([]);
+	});
+
+	it("ignores receiver.push guarded by !receiver.some() with no enclosing loop", () => {
+		// Regression (hook-detection.ts shape): `managers.some(...)` is a
+		// brace-less callback used as a condition; the push is in a nested if,
+		// not a loop over `managers`.
+		const code = [
+			"function detect(managers: Mgr[]) {",
+			"  if (!managers.some((m) => m.name === 'lefthook')) {",
+			"    const pkg = readPkg();",
+			"    if (pkg && pkg.deps.lefthook) {",
+			"      managers.push({ name: 'lefthook' });",
+			"    }",
 			"  }",
 			"}",
 		].join("\n");

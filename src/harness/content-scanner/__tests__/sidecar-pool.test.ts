@@ -8,8 +8,8 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidecarPool } from "../sidecar-pool.js";
 import type { SidecarPoolOptions } from "../sidecar-pool.js";
+import { SidecarPool } from "../sidecar-pool.js";
 
 interface FakeChild extends EventEmitter {
 	stdin: PassThrough;
@@ -54,7 +54,10 @@ function makeFakeChild(pid = 1000): FakeChild {
 	return emitter;
 }
 
-function makePoolOpts(pool_size: number, spawn: ReturnType<typeof vi.fn>): SidecarPoolOptions {
+function makePoolOpts(
+	pool_size: number,
+	spawn: NonNullable<SidecarPoolOptions["spawn"]>,
+): SidecarPoolOptions {
 	return {
 		python_bin: "python3",
 		script_path: "/tmp/fake.py",

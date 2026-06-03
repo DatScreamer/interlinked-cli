@@ -81,7 +81,7 @@ export function readStubsIntroduced(
 	const out: Array<{ file: string; kind: string; snippet: string }> = [];
 	for (const e of v) {
 		if (!e || typeof e !== "object") continue;
-		const r = e as Record<string, unknown>;
+		const r = e as JsonObject;
 		if (typeof r.file !== "string" || typeof r.kind !== "string" || typeof r.snippet !== "string") {
 			continue;
 		}

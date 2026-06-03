@@ -6,8 +6,8 @@
 // newline-delimited HarnessEvent JSON, not the framed RPC envelope used by
 // session-daemon.ts.
 
-import { basename } from "node:path";
 import { createConnection, type Socket } from "node:net";
+import { basename } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
 import type { AgentSource, HarnessDecision, HarnessEvent } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
@@ -320,7 +320,7 @@ function copyString(
 	}
 }
 
-function compactJson(value: Record<string, unknown>): JsonObject {
+function compactJson(value: JsonObject): JsonObject {
 	const out: JsonObject = {};
 	for (const [key, item] of Object.entries(value)) {
 		if (item !== undefined) out[key] = item;

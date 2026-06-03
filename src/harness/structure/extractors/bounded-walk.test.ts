@@ -7,8 +7,8 @@ import {
 	createWalkBudget,
 	MAX_WALK_ENTRIES,
 	MAX_WALK_MS,
-	warnWalkTruncated,
 	type WalkBudget,
+	warnWalkTruncated,
 } from "./bounded-walk.js";
 import { runAllExtractors } from "./index.js";
 import { extract as moduleExtract } from "./module-extractor.js";
@@ -223,8 +223,8 @@ describe("bounded-walk integration — capped on a pathological tree", () => {
 	it("emits a stderr warning when the walk is truncated (never silent)", () => {
 		runAllExtractors(tmp);
 		expect(errSpy).toHaveBeenCalled();
-		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? ""));
-		expect(messages.some((m) => m.includes("hard cap"))).toBe(true);
+		const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? ""));
+		expect(messages.some((m: string) => m.includes("hard cap"))).toBe(true);
 	});
 });
 

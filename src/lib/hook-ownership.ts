@@ -10,6 +10,8 @@
 // marker and the adapter cleanup only knew its own command shape, so neither
 // install system could recognise — or remove — the other's entries.
 
+import type { JsonObject } from "./json-types.js";
+
 /** Substrings that uniquely identify an Interlinked hook invocation. The
  *  legacy `.mjs` hook references `interlinked-activity`; the adapter hook
  *  invokes `hook-entry.js` (bundled) or the `interlinked-hook` bin. */
@@ -22,7 +24,7 @@ export function isInterlinkedHookCommand(command: string): boolean {
 	return HOOK_COMMAND_MARKERS.some((marker) => command.includes(marker));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is JsonObject {
 	return value instanceof Object && !Array.isArray(value);
 }
 

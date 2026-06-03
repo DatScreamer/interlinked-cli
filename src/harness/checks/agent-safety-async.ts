@@ -190,9 +190,11 @@ export function checkAsyncPromiseExecutor(content: string, filePath: string): In
  * ServerBridge.reserveFile fix).
  *
  * Patterns flagged (single-line):
- *   .catch arrow with empty body, undefined/null/void 0 return, or
- *   .catch(function) with empty body. Inline body comments mark intent
- *   and exempt the line, matching checkSilentCatch behavior.
+ *   .catch arrow or .catch(function) with an EMPTY body. A handler that
+ *   returns an explicit value (`() => null` / `() => undefined` / a fallback)
+ *   is deliberate graceful degradation — the rejection becomes a sentinel the
+ *   caller handles — not a silent swallow, so it is exempt. Inline body
+ *   comments mark intent and exempt the line too, matching checkSilentCatch.
  */
 export function checkSilentPromiseSwallow(
 	content: string,
@@ -205,8 +207,12 @@ export function checkSilentPromiseSwallow(
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 
+	// Empty-body only. A handler returning an explicit value (null / undefined /
+	// void 0 / any fallback) is deliberate graceful degradation, not a silent
+	// swallow — see the docstring. Empty `{}` discards everything (the
+	// optimistic-grant-rollback bug class this check guards).
 	const arrowPattern =
-		/\.catch\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*(?:\{\s*\}|undefined|null|void\s+0)\s*\)/;
+		/\.catch\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{\s*\}\s*\)/;
 	const functionPattern =
 		/\.catch\s*\(\s*function\s*[A-Za-z_$\w]*\s*\([^)]*\)\s*\{\s*\}\s*\)/;
 	const intentCommentRe = /\.catch\s*\(.*(?:\/\/|\/\*)/;

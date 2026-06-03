@@ -39,7 +39,7 @@ export interface DestructiveCommandVerdict {
  */
 export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict | null {
 	// Blank out quoted/escaped/commented spans so a destructive verb that only
-	// appears as quoted DATA (e.g. `echo "reboot"`) is not mistaken for an
+	// appears as quoted DATA (e.g. 'echo "reboot"') is not mistaken for an
 	// executable verb.
 	function maskInlineQuotedShell(value: string): string {
 		const out: string[] = [];
@@ -89,7 +89,7 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	}
 
 	// Shutdown/reboot detection. Anchored to a command-start position and
-	// tolerant of wrapper chains (`sudo`, `env VAR=v`, `bash -c "..."`).
+	// tolerant of wrapper chains ('sudo', 'env VAR=v', 'bash -c "..."').
 	function matchesInlineShutdown(cmdValue: string): boolean {
 		const masked = maskInlineQuotedShell(cmdValue);
 		const directRe =
@@ -248,10 +248,11 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 			reason: "BLOCKED: git filter-branch/filter-repo rewrites entire repository history.",
 		};
 	}
-	// `git rebase` with an interactive flag. The flag match uses the
-	// `(?:\S+\s+)*` shape rather than a leading `\b` — `\b` before `-i`
-	// requires a word char immediately before the dash, so the old inline
-	// regex `\b(-i|--interactive)\b` never matched a space-preceded flag
+	// 'git rebase' with an interactive flag. The flag match uses the
+	// '(?:\S+\s+)*' shape rather than a leading word-boundary anchor — a
+	// word-boundary before '-i' requires a word char immediately before the
+	// dash, so the old inline regex (-i|--interactive) never matched a
+	// space-preceded flag
 	// (i.e. every real invocation). Fixed here, in the shared source.
 	if (/\bgit\s+rebase\s+(?:\S+\s+)*(?:-i|--interactive)\b/i.test(cmd)) {
 		return {
@@ -331,7 +332,7 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	}
 
 	// --- System-level ---
-	// Re-checks shutdown/reboot directly (the early `matchesInlineShutdown`
+	// Re-checks shutdown/reboot directly (the early matchesInlineShutdown
 	// gate also runs, before the data-only skip); kept so this ladder mirrors
 	// the harness rule at builtin-rules-processes.ts one-to-one.
 	if (

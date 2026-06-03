@@ -27,15 +27,16 @@
 //     emitted findings back into the dispatch path. This module only
 //     decides; it does not mutate dispatch output in place.
 
+import type { JsonObject } from "../lib/json-types.js";
+import type {
+	SequenceDetectorFamily,
+	SequenceFinding,
+} from "./sequence-checks/types.js";
 import type {
 	HarnessEvent,
 	SessionTrajectory,
 	TaintProvenance,
 } from "./types.js";
-import type {
-	SequenceDetectorFamily,
-	SequenceFinding,
-} from "./sequence-checks/types.js";
 
 // ============================================================
 // Configuration
@@ -114,7 +115,7 @@ function getCommand(toolInput: { command?: unknown } | undefined): string {
  *  scan the shallow surface. (Deep traversal is unnecessary: MCP tool
  *  schemas keep URLs at the top of the input object in practice.) */
 function inputContainsUrl(
-	toolInput: Record<string, unknown> | undefined,
+	toolInput: JsonObject | undefined,
 ): boolean {
 	if (!toolInput) return false;
 	for (const value of Object.values(toolInput)) {
@@ -136,7 +137,7 @@ function isExternalCommCandidate(candidate: Readonly<HarnessEvent>): boolean {
 		return NON_LOCALHOST_HTTP_URL.test(cmd);
 	}
 	if (MCP_TOOL_NAME.test(toolName)) {
-		return inputContainsUrl(candidate.tool_input as Record<string, unknown> | undefined);
+		return inputContainsUrl(candidate.tool_input as JsonObject | undefined);
 	}
 	return false;
 }
