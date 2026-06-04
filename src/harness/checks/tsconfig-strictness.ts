@@ -41,11 +41,21 @@ import type { InlineMatch } from "./shared.js";
 interface FlagSpec {
 	flag: string;
 	rationale: string;
+	/** Advisory flags are NOT emitted by the default gate (skipped in the loop
+	 *  below). Kept in this list so they stay documented and one edit from
+	 *  promotion — flip `advisory` off to gate on them again. */
+	advisory?: boolean;
 }
 
 const REQUIRED_STRICTNESS_FLAGS: readonly FlagSpec[] = [
 	{
 		flag: "noUncheckedIndexedAccess",
+		// ADVISORY (deferred): measured at ~2.6k errors repo-wide — ~43% in test
+		// files, and most of the rest provably-safe bounded-loop / tuple indexing.
+		// Only ~5% are Record/Map lookups (the genuine "missing key" bug class) and
+		// ~4% regex/split/pop. As a hard gate that's high-noise, low-signal; the
+		// right move is selective guarding on touched code, not a mass migration.
+		advisory: true,
 		rationale:
 			"array/object index access returns `T | undefined`, forcing you to handle the empty case",
 	},
@@ -216,9 +226,10 @@ function findCompilerOptionsLine(content: string): number {
  * Public API — consumed by the check registry (`entries-warnings.ts`) and
  * the verify file-checks dispatch (`commands/verify/file-checks.ts`).
  *
- * Returns one finding per missing strictness flag, in the order declared in
- * `REQUIRED_STRICTNESS_FLAGS`. Empty array means the tsconfig has all five
- * flags effectively enabled (either explicitly or via an `extends` chain).
+ * Returns one finding per missing GATED strictness flag, in declared order.
+ * Advisory flags (noUncheckedIndexedAccess) are skipped entirely. Empty array
+ * means the tsconfig has all gated flags effectively enabled (explicitly or via
+ * an `extends` chain).
  */
 export function checkTsconfigStrictness(content: string, filePath: string): InlineMatch[] {
 	if (!isTsconfigBasename(filePath)) return [];
@@ -249,6 +260,9 @@ export function checkTsconfigStrictness(content: string, filePath: string): Inli
 	const findings: InlineMatch[] = [];
 
 	for (const spec of REQUIRED_STRICTNESS_FLAGS) {
+		// Advisory flags (e.g. noUncheckedIndexedAccess) are documented in the list
+		// but never gated — skip them so the default verify gate doesn't demand them.
+		if (spec.advisory) continue;
 		// A flag is "enabled" only when its effective value is literal `true`.
 		// `strict: true` does NOT imply any of the five flags this check
 		// targets (see `STRICT_IMPLIES` above), so the umbrella never

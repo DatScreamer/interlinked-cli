@@ -5,13 +5,17 @@
 // Mocking fs here would hide the chain merge, which is the load-bearing
 // invariant for the "base sets the flag, derived inherits" negative case.
 //
+// noUncheckedIndexedAccess is ADVISORY (never gated) — these tests assert it is
+// skipped while the other four flags are still gated.
+//
 // Positive cases (check fires):
-//   1. tsconfig with `strict: true` but missing `noUncheckedIndexedAccess`.
-//   2. tsconfig missing 3+ of the target flags.
-//   3. tsconfig where the `extends` chain disables a previously-enabled flag.
+//   1. tsconfig with `strict: true` but missing a gated flag (exactOptionalPropertyTypes).
+//   2. tsconfig missing all gated flags.
+//   3. tsconfig where the `extends` chain disables a previously-enabled gated flag.
 //
 // Negative cases (check does NOT fire):
-//   1. tsconfig with all 5 flags explicitly `true`.
+//   1. tsconfig with all flags explicitly `true`.
+//   1b. tsconfig missing ONLY noUncheckedIndexedAccess (advisory).
 //   2. Root composite tsconfig with only `references: [...]` (no compilerOptions).
 //   3. tsconfig in `node_modules/` path.
 //   4. tsconfig where the base sets all 5 flags and the derived inherits them.
@@ -23,8 +27,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkTsconfigStrictness } from "../tsconfig-strictness.js";
 
-const ALL_FIVE_FLAGS = [
-	"noUncheckedIndexedAccess",
+// noUncheckedIndexedAccess is ADVISORY (never gated, see the check); these four
+// are the gated flags the default verify gate still demands.
+const GATED_FLAGS = [
 	"exactOptionalPropertyTypes",
 	"noImplicitOverride",
 	"noImplicitReturns",
@@ -45,38 +50,40 @@ describe("checkTsconfigStrictness — positive cases", () => {
 	});
 
 	// Case 1
-	it("flags missing noUncheckedIndexedAccess even when `strict: true` is set", () => {
+	it("flags a missing GATED flag (exactOptionalPropertyTypes) even when `strict: true` is set", () => {
 		const cfg = {
 			compilerOptions: {
 				strict: true,
-				exactOptionalPropertyTypes: true,
+				noUncheckedIndexedAccess: true,
 				noImplicitOverride: true,
 				noImplicitReturns: true,
 				noFallthroughCasesInSwitch: true,
-				// noUncheckedIndexedAccess deliberately omitted
+				// exactOptionalPropertyTypes deliberately omitted
 			},
 		};
 		writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg, null, 2), configPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("noUncheckedIndexedAccess");
+		expect(findings[0].text).toContain("exactOptionalPropertyTypes");
 		// Confirms the "Not covered by strict" framing is in the message.
 		expect(findings[0].text).toContain("Not covered by `strict: true`");
 	});
 
 	// Case 2
-	it("flags 3+ missing flags when tsconfig is only `strict: true` and nothing else", () => {
+	it("flags all GATED flags when tsconfig is only `strict: true` and nothing else", () => {
 		const cfg = { compilerOptions: { strict: true } };
 		writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg, null, 2), configPath);
-		// All 5 are missing because none of them is implied by `strict: true`.
-		expect(findings).toHaveLength(5);
+		// The 4 gated flags are missing; noUncheckedIndexedAccess is advisory (skipped).
+		expect(findings).toHaveLength(4);
 		const ids = findings.map((f) => f.text);
-		for (const flag of ALL_FIVE_FLAGS) {
+		for (const flag of GATED_FLAGS) {
 			expect(ids.some((t) => t.includes(`\`compilerOptions.${flag}\``))).toBe(true);
 		}
+		// The advisory flag must NOT be gated.
+		expect(ids.some((t) => t.includes("noUncheckedIndexedAccess"))).toBe(false);
 	});
 
 	// Case 3 — extends chain that re-disables a flag the base had set.
@@ -99,15 +106,15 @@ describe("checkTsconfigStrictness — positive cases", () => {
 		const derived = {
 			extends: "./tsconfig.base.json",
 			compilerOptions: {
-				// Derived explicitly disables one previously-enabled flag.
-				noUncheckedIndexedAccess: false,
+				// Derived explicitly disables one previously-enabled GATED flag.
+				exactOptionalPropertyTypes: false,
 			},
 		};
 		writeFileSync(configPath, JSON.stringify(derived, null, 2));
 
 		const findings = checkTsconfigStrictness(JSON.stringify(derived, null, 2), configPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("noUncheckedIndexedAccess");
+		expect(findings[0].text).toContain("exactOptionalPropertyTypes");
 	});
 });
 
@@ -138,6 +145,23 @@ describe("checkTsconfigStrictness — negative cases", () => {
 		};
 		writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 
+		const findings = checkTsconfigStrictness(JSON.stringify(cfg, null, 2), configPath);
+		expect(findings).toEqual([]);
+	});
+
+	// Case 1b — noUncheckedIndexedAccess is advisory: missing it alone must not fire.
+	it("does NOT gate on a missing noUncheckedIndexedAccess (advisory flag)", () => {
+		const cfg = {
+			compilerOptions: {
+				strict: true,
+				exactOptionalPropertyTypes: true,
+				noImplicitOverride: true,
+				noImplicitReturns: true,
+				noFallthroughCasesInSwitch: true,
+				// noUncheckedIndexedAccess omitted — advisory, must NOT produce a finding.
+			},
+		};
+		writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg, null, 2), configPath);
 		expect(findings).toEqual([]);
 	});
@@ -231,7 +255,7 @@ describe("checkTsconfigStrictness — negative cases", () => {
 		writeFileSync(variant, JSON.stringify(cfg));
 
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg), variant);
-		expect(findings).toHaveLength(5);
+		expect(findings).toHaveLength(4);
 	});
 });
 
@@ -264,9 +288,10 @@ describe("checkTsconfigStrictness — robustness", () => {
 		writeFileSync(configPath, empty);
 
 		const findings = checkTsconfigStrictness(empty, configPath);
-		// The detector reports all 5 missing because the merged object is empty
-		// and the file does NOT match the references-only project shape.
-		expect(findings).toHaveLength(5);
+		// The detector reports the 4 gated flags missing (noUncheckedIndexedAccess
+		// is advisory) because the merged object is empty and the file does NOT
+		// match the references-only project shape.
+		expect(findings).toHaveLength(4);
 	});
 
 	it("handles a broken extends path by treating the chain as ending at this file", () => {
