@@ -14,7 +14,7 @@
 //
 // The active cap and the grandfather list live in a checked-in JSON file,
 // `.interlinked/large-files-baseline.json`, so lowering the cap over time
-// (1500 -> 1200 -> 1000 as the grandfather list empties) is a one-number
+// (1500 -> 1200 -> 1000 -> 800 as the grandfather list empties) is a one-number
 // edit, not a code change.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -36,11 +36,11 @@ import { isGeneratedFile } from "./checks/shared.js";
  * reliability — so the cap sits above the ~300-500 line aspirational module
  * size: a gate that false-alarms gets ignored. The fine-grained `complexity` /
  * `cyclomatic` checks do the nuanced "is this file actually bad" work. To
- * ratchet the cap down (1000 → 800 → 500) as the grandfather list shrinks,
+ * ratchet the cap down (800 → 500 → …) as the grandfather list shrinks,
  * change BOTH this constant and the baseline's `max_lines` together — the
  * pinning test enforces it and the change shows up in one diff.
  */
-export const DEFAULT_MAX_LINES = 1000;
+export const DEFAULT_MAX_LINES = 800;
 
 /** Repo-relative path of the baseline file. Module-private — callers go
  *  through `loadLargeFileBaseline` / `maxLinesFor`. */
@@ -173,9 +173,32 @@ export function isTestOrSpecPath(filePath: string): boolean {
 }
 
 /**
+ * Content marker that exempts a file from the per-file line cap WITHOUT marking
+ * it `@generated` everywhere. For hand-maintained codegen-DATA modules whose
+ * bulk is a large template string or data table emitted verbatim into generated
+ * output (e.g. the `.mjs` hook-script chunks under `src/lib/hook-template-chunks/`
+ * and `src/lib/hooks-template.ts`): there the line count measures the size of
+ * the emitted artifact, not module complexity, so the cap is a false signal.
+ * Sharding such a file scatters one artifact across modules for no legibility
+ * win and adds byte-identical-output invariants — exempting it is the right call.
+ *
+ * Unlike `@generated` — which `isGeneratedFile` uses to suppress many OTHER
+ * checks — this marker is scoped to the line cap alone: tsc/lint/secrets/etc.
+ * still run on the file. Bounded scan: first 20 lines only (mirrors
+ * `isGeneratedFile`), so the marker must sit in the file header, never buried
+ * in the data body.
+ */
+const CODEGEN_DATA_MARKER = "@codegen-data";
+
+function hasCodegenDataMarker(content: string): boolean {
+	return content.split("\n", 20).join("\n").includes(CODEGEN_DATA_MARKER);
+}
+
+/**
  * Whether the per-file line cap applies to this file. True only for
  * hand-written code modules: generated files (by path or content marker),
- * `.d.ts` declarations, test/spec files, and non-code files are exempt.
+ * codegen-DATA modules (a `@codegen-data` header marker), `.d.ts`
+ * declarations, test/spec files, and non-code files are exempt.
  */
 export function isCappableFile(file: { filePath: string; content: string }): boolean {
 	const norm = file.filePath.replace(/\\/g, "/");
@@ -184,6 +207,7 @@ export function isCappableFile(file: { filePath: string; content: string }): boo
 	if (GENERATED_PATH_RE.test(norm)) return false;
 	if (isTestOrSpecPath(norm)) return false;
 	if (isGeneratedFile(file.content)) return false;
+	if (hasCodegenDataMarker(file.content)) return false;
 	return true;
 }
 

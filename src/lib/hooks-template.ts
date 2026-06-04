@@ -1,4 +1,4 @@
-// Auto-extracted from hooks.ts by the sweep refactor.
+// Auto-extracted from hooks.ts by the sweep refactor. @codegen-data: template DATA, exempt from the per-file line cap (see large-file-policy.ts).
 // The big template literal emitting `.interlinked/hooks/interlinked-activity.mjs`
 // was split out of hooks.ts to keep that file focused on install/uninstall logic.
 //

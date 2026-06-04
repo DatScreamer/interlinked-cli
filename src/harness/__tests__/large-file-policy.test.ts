@@ -17,8 +17,8 @@ import {
 } from "../large-file-policy.js";
 
 describe("DEFAULT_MAX_LINES", () => {
-	it("is the canonical 1000-line cap", () => {
-		expect(DEFAULT_MAX_LINES).toBe(1000);
+	it("is the canonical 800-line cap", () => {
+		expect(DEFAULT_MAX_LINES).toBe(800);
 	});
 
 	// Single source of truth: the in-code default and the committed baseline's
@@ -85,6 +85,20 @@ describe("isCappableFile", () => {
 	it("exempts files carrying a generated-content marker", () => {
 		const generated = "// @generated SignedSource<<abc123>>\nexport const x = 1;\n";
 		expect(isCappableFile({ filePath: "src/schema.ts", content: generated })).toBe(false);
+	});
+
+	it("exempts files carrying a @codegen-data header marker", () => {
+		// Codegen-DATA modules (large template strings emitted verbatim into
+		// generated output) are exempt from the line cap — scoped to the cap
+		// only, NOT a full @generated exemption (tsc/lint still run).
+		const codegenData =
+			"// foo-template.ts @codegen-data: template DATA, cap-exempt\nexport const X = `...`;\n";
+		expect(
+			isCappableFile({ filePath: "src/lib/foo-template.ts", content: codegenData }),
+		).toBe(false);
+		// Bounded scan: a marker buried past the 20-line header does NOT exempt.
+		const buried = `${"// pad\n".repeat(25)}// @codegen-data\nexport const X = 1;\n`;
+		expect(isCappableFile({ filePath: "src/lib/bar.ts", content: buried })).toBe(true);
 	});
 });
 

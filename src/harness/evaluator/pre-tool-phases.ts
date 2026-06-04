@@ -1,0 +1,261 @@
+// ===========================================
+// PreToolUse — later guard / context / escalation phases
+// ===========================================
+//
+// Extracted verbatim from `evaluatePreToolUse` (pre-tool.ts) to keep the
+// orchestrator under the per-file line cap. These cover the pre-checks tail
+// (self-kill / env-leak / line-cap / stale-branch / dirty-tree / large-file /
+// concurrent-edit) and the late escalation / permission-pattern / error-memory
+// phases. Helpers push into the shared `warnings` array by reference and either
+// return a `HarnessDecision` to short-circuit or mutate session state in place;
+// control-flow order is unchanged.
+
+import { getPatternWarnings } from "../pattern-detector.js";
+import {
+	checkConcurrentEdit,
+	checkDirtyWorkingTree,
+	checkEnvLeakToGit,
+	checkLargeFileLineCountWrite,
+	checkLargeFileWrite,
+	checkSelfKill,
+	checkStaleBranch,
+} from "../pre-checks.js";
+import type { ErrorHistory } from "../error-history.js";
+import type { ProjectGraph } from "../project-graph.js";
+import type { SessionTracker } from "../session-state.js";
+import type {
+	EscalationRequest,
+	GuardRulesConfig,
+	HarnessDecision,
+	HarnessEvent,
+	SessionTrajectory,
+} from "../types.js";
+import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
+import { estimateEditLine, isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
+
+const ESCALATION_TAIL_LENGTH = 10;
+const STALE_BRANCH_CHECK_LIMIT = 3;
+const PERMISSION_PATTERN_THRESHOLD = 3;
+
+/** The harness event's tool-input bag, normalized to a non-undefined object. */
+type ToolInput = NonNullable<HarnessEvent["tool_input"]>;
+
+/**
+ * PRE-CHECKS (head): self-kill + env-leak-to-git. Runs before the manifest
+ * guard in the original order. `warnings` mutated by reference. Returns a
+ * `HarnessDecision` to short-circuit, else `null`.
+ */
+export function evaluatePreChecksSelfKillEnv(
+	event: HarnessEvent,
+	toolName: string,
+	toolInput: ToolInput,
+	warnings: string[],
+): HarnessDecision | null {
+	const eventCwd = event.cwd || process.cwd();
+	if (isBash(toolName)) {
+		const command = (toolInput.command as string) || "";
+		if (command) {
+			const selfKillResult = checkSelfKill(command);
+			if (selfKillResult?.block) {
+				return {
+					decision: "block",
+					reason: selfKillResult.block,
+					rule_id: "self-kill-protection",
+					severity: "critical",
+					category: "process-killing",
+				};
+			}
+		}
+	}
+	if (isFileWrite(toolName)) {
+		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+		const content = (toolInput.content as string) || (toolInput.new_string as string);
+		if (filePath) {
+			const envResult = checkEnvLeakToGit(filePath, content, eventCwd);
+			if (envResult?.block) {
+				return {
+					decision: "block",
+					reason: envResult.block,
+					rule_id: "env-leak-to-git",
+					severity: "high",
+					category: "security",
+				};
+			}
+			if (envResult?.warning) warnings.push(envResult.warning);
+		}
+	}
+	return null;
+}
+
+/**
+ * PRE-CHECKS (tail): per-file line cap, stale-branch, dirty-tree, large-file,
+ * concurrent-edit. Runs after the manifest guard in the original order.
+ * Mirrors the original inline block exactly. `warnings` mutated by reference.
+ * Returns a `HarnessDecision` to short-circuit, else `null`.
+ */
+export function evaluatePreChecksTail(
+	event: HarnessEvent,
+	session: SessionTrajectory | undefined,
+	sessions: SessionTracker | undefined,
+	toolName: string,
+	toolInput: ToolInput,
+	warnings: string[],
+): HarnessDecision | null {
+	const eventCwd = event.cwd || process.cwd();
+	// GUARD: per-file line cap — block a Write/Edit that would grow a
+	// hand-written code file past the cap (see large-file-policy.ts).
+	if (isFileWrite(toolName)) {
+		const sizeBlock = checkLargeFileLineCountWrite(toolInput, eventCwd);
+		if (sizeBlock?.block) {
+			return {
+				decision: "block",
+				reason: sizeBlock.block,
+				rule_id: "large-file-cap",
+				severity: "medium",
+				category: "file-size",
+			};
+		}
+	}
+	if (session && session.tool_call_count <= STALE_BRANCH_CHECK_LIMIT) {
+		const staleResult = checkStaleBranch(eventCwd, event.session_id);
+		if (staleResult?.warning) warnings.push(staleResult.warning);
+	}
+	if (isBash(toolName)) {
+		const command = (toolInput.command as string) || "";
+		if (command) {
+			const dirtyResult = checkDirtyWorkingTree(command, eventCwd);
+			if (dirtyResult?.warning) warnings.push(dirtyResult.warning);
+		}
+	}
+	if (isFileWrite(toolName)) {
+		const content = (toolInput.content as string) || "";
+		const largeResult = checkLargeFileWrite(content);
+		if (largeResult?.warning) warnings.push(largeResult.warning);
+	}
+	if (isFileWrite(toolName) && sessions) {
+		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+		if (filePath) {
+			const concurrentResult = checkConcurrentEdit(
+				filePath,
+				event.session_id,
+				sessions.getAll(),
+			);
+			if (concurrentResult?.warning) warnings.push(concurrentResult.warning);
+		}
+	}
+	return null;
+}
+
+/**
+ * ESCALATION: post_injection_action — compute a pending escalation request
+ * when a state-changing tool runs after an injection was detected. Returns
+ * the new `EscalationRequest` (or the existing one unchanged). Mirrors the
+ * original inline guard, which only synthesizes when `!pendingEscalation`.
+ */
+export function computePostInjectionEscalation(
+	event: HarnessEvent,
+	session: SessionTrajectory | undefined,
+	toolName: string,
+	toolInput: ToolInput,
+	pendingEscalation: EscalationRequest | undefined,
+): EscalationRequest | undefined {
+	if (
+		session &&
+		session.injection_detected_steps.length > 0 &&
+		(isBash(toolName) || isFileWrite(toolName)) &&
+		!pendingEscalation
+	) {
+		const lastInjectionStep =
+			session.injection_detected_steps[session.injection_detected_steps.length - 1];
+		const stepsSince = session.tool_call_count - lastInjectionStep;
+		const filePath = (toolInput.file_path as string) || "";
+		return {
+			trigger: "post_injection_action",
+			summary: `State-changing tool (${toolName}) used ${stepsSince} steps after injection was detected at step ${lastInjectionStep}`,
+			tool_name: toolName,
+			tool_input_redacted: filePath ? { file_path: filePath } : { command: "[REDACTED]" },
+			sensitivity_level: session.sensitivity_level,
+			step_number: session.tool_call_count,
+			recent_tool_sequence: session.tool_sequence.slice(-ESCALATION_TAIL_LENGTH),
+		};
+	}
+	return pendingEscalation;
+}
+
+/**
+ * PERMISSION PATTERN DETECTION — tracks consecutive identical permission
+ * patterns and writes a settings allowlist entry once the threshold is hit.
+ * Mutates `session` and pushes to `warnings` (both by reference), exactly as
+ * the original inline block.
+ */
+export function evaluatePermissionPatternDetection(
+	session: SessionTrajectory | undefined,
+	toolName: string,
+	toolInput: ToolInput,
+	warnings: string[],
+): void {
+	if (session) {
+		const pattern = extractPermissionPattern(toolName, toolInput);
+		if (pattern && !session.suggested_permissions.has(pattern)) {
+			if (session.consecutive_pattern?.pattern === pattern) {
+				session.consecutive_pattern.count++;
+			} else {
+				session.consecutive_pattern = { pattern, count: 1 };
+			}
+			if (session.consecutive_pattern.count >= PERMISSION_PATTERN_THRESHOLD) {
+				session.suggested_permissions.add(pattern);
+				const added = addPermissionToSettings(pattern);
+				if (added) {
+					warnings.push(
+						`[interlinked:permissions] Added "${pattern}" to .claude/settings.json — you won't be prompted for this again.`,
+					);
+				}
+				session.consecutive_pattern = null;
+			}
+		} else if (pattern === null) {
+			session.consecutive_pattern = null;
+		}
+	}
+}
+
+/**
+ * CONTEXT: Error memory — cross-session history. Surfaces per-file error
+ * history and pattern warnings. Pushes to `warnings` by reference, identical
+ * to the original inline block.
+ */
+export function evaluateErrorMemory(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	session: SessionTrajectory | undefined,
+	graph: ProjectGraph | undefined,
+	errorHistory: ErrorHistory | undefined,
+	toolName: string,
+	toolInput: ToolInput,
+	warnings: string[],
+): void {
+	if (
+		errorHistory &&
+		rules.error_memory?.enabled &&
+		(isFileWrite(toolName) || isReadOperation(toolName))
+	) {
+		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+		if (filePath && graph) {
+			const relPath = graph.toRelative(filePath);
+			const historyWarning = errorHistory.getFileHistoryWarning(relPath);
+			if (historyWarning) warnings.push(historyWarning);
+			if (session) {
+				let editLine: number | undefined;
+				if (toolName === "Edit" && toolInput.old_string && filePath) {
+					editLine = estimateEditLine(filePath, toolInput.old_string as string);
+				}
+				const patternWarnings = getPatternWarnings(
+					errorHistory.getRecords(),
+					relPath,
+					session,
+					editLine,
+				);
+				warnings.push(...patternWarnings);
+			}
+		}
+	}
+}

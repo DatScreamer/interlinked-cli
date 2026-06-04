@@ -15,11 +15,9 @@
 // servers, and process lifecycle. `processEvent` builds a `ServerRuntime`
 // context once and delegates each event branch to the extracted pipelines.
 
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import type { JsonObject } from "../lib/json-types.js";
 import {
 	autoStripAllScopes,
 	defaultStripAuditLogPath,
@@ -33,7 +31,6 @@ import {
 } from "./auto-coordinate.js";
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
-import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { CohortManager } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
@@ -42,14 +39,8 @@ import { ErrorHistory } from "./error-history.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { type FilePriority } from "./file-priority.js";
 import { FileContentCache } from "./grep-accelerator.js";
-import { appendLatencyLog } from "./latency-log.js";
 import { createLearnedRulesStore } from "./learned-rules.js";
-import { toLegacyHarnessEvent } from "./legacy-client.js";
-import {
-	readLiveSnapshot,
-	sweepStaleLiveSnapshots,
-	writeLiveSnapshot,
-} from "./live-snapshot.js";
+import { sweepStaleLiveSnapshots } from "./live-snapshot.js";
 import {
 	type ClassifierSessionState,
 	resolveApiKey,
@@ -65,42 +56,31 @@ import {
 	stringArg,
 } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
-import { buildLatencyRecord } from "./server/latency-record.js";
-import { handleLifecycleEvent } from "./server/lifecycle-events.js";
-import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
-import { runPreToolPipeline } from "./server/pre-tool-pipeline.js";
 import {
 	buildStartupMessage,
-	recordProtocolEvent as bumpProtocolEvent,
 	computeClassifierStatusLine,
 	createProtocolStatus,
 	formatScannerStatusLine,
 	type HarnessProtocolMode,
 	type ProtocolStatusFile,
-	writeProtocolStatus as persistProtocolStatus,
 } from "./server/protocol-status.js";
 import {
 	getGraphForFile as resolveGraphForFile,
 	type ServerRuntime,
 } from "./server/runtime-context.js";
-import { LineFramer } from "./server/socket-framing.js";
-import {
-	cleanupSocket as cleanupSocketAt,
-	ensureDirectory,
-	removeFileIfExists,
-} from "./server/socket-lifecycle.js";
+import { ensureDirectory, removeFileIfExists } from "./server/socket-lifecycle.js";
 import { createStatusWriters } from "./server/status-writers.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
-import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
-import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
+import { createEventLoop } from "./server-event-loop.js";
+import { createSocketLifecycle } from "./server-socket-lifecycle.js";
+import { startSessionDaemon } from "./session-daemon.js";
 import { daemonPathsFor } from "./session-paths.js";
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
-import type { GuardRulesConfig, HarnessDecision, HarnessEvent, PreEditBaseline } from "./types.js";
-import type { UnifiedHookEvent } from "./unified-event.js";
+import type { GuardRulesConfig, HarnessEvent, PreEditBaseline } from "./types.js";
 
 // ===========================================
 // CLI Arguments
@@ -360,8 +340,6 @@ const reservations = new ReservationManager(
 	},
 );
 let idleTimer: ReturnType<typeof setTimeout>;
-let connectionCount = 0;
-let _totalEventsProcessed = 0;
 
 const PROTOCOL_STATUS_PATH = join(INTERLINKED_DIR, "harness-protocol.json");
 const protocolStatus: ProtocolStatusFile = createProtocolStatus({
@@ -497,312 +475,51 @@ function writeCollectionRecord(event: HarnessEvent): void {
 // ===========================================
 // Event Processing
 // ===========================================
-
-async function processEvent(rawData: string): Promise<HarnessDecision> {
-	let event: HarnessEvent;
-	try {
-		event = JSON.parse(rawData.trim());
-	} catch (cause) {
-		// SECURITY: Malformed events must NOT be allowed through.
-		// A broken payload could be a parser-differential attack or a
-		// corrupted hook script — either way, we cannot evaluate safety.
-		log(`Event parse failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-		return { decision: "block", reason: "Malformed event — cannot evaluate safety." };
-	}
-
-	_totalEventsProcessed++;
-	resetIdleTimer();
-
-	// Lazy hydrate: if the in-memory tracker has no entry for this session
-	// but disk has a `<id>.live.json` from a previous incarnation of this
-	// daemon, restore it before recordEvent so the upcoming event lands on
-	// continuous trajectory state (acknowledged checks, edit counts, fired
-	// reminders, TDD cycles, ...) instead of resetting to a fresh session.
-	if (event.session_id && !sessions.get(event.session_id)) {
-		const snap = readLiveSnapshot(CWD, event.session_id);
-		if (snap) {
-			const restored = sessions.hydrate(snap);
-			if (restored) {
-				log(
-					`Hydrated session ${event.session_id} from live snapshot ` +
-						`(${restored.tool_call_count} tool calls, ${restored.files_written.size} files written)`,
-				);
-			}
-		}
-	}
-
-	// Update session trajectory.
-	// Per-event durability: the snapshot write moved out of this function and
-	// runs from `evaluateEventLine` AFTER `processEvent` returns, so the
-	// snapshot reflects post-event mutations too — PostToolUse handlers
-	// updating `tdd_cycles`, `assertion_counts`, or `active_skills` would
-	// otherwise be lost on a daemon restart even though `recordEvent` mutated
-	// state that *was* captured. See `evaluateEventLine`'s try/finally.
-	const session = sessions.recordEvent(event);
-
-	syncRuntimeIn();
-	try {
-		// Lifecycle events (SessionStart / SessionEnd / Stop / Subagent* /
-		// Skill* / UserPromptSubmit): a non-null decision is an early return,
-		// null means fall through to the Pre/Post evaluation path.
-		const lifecycleDecision = await handleLifecycleEvent(serverRuntime, event, session);
-		if (lifecycleDecision) return lifecycleDecision;
-
-		// Evaluate based on hook type
-		if (isPreToolUse(event)) {
-			const local = await runPreToolPipeline(serverRuntime, event, session);
-			writeCollectionRecord(event);
-			return forwardCloudPreToolUse(event, local);
-		}
-
-		if (isPostToolUse(event)) {
-			const decision = await runPostToolPipeline(serverRuntime, event, session);
-			writeCollectionRecord(event);
-			return decision;
-		}
-
-		// Non-tool events (lifecycle, notifications, etc.) — always allow
-		return { decision: "allow" };
-	} finally {
-		syncRuntimeOut();
-	}
-}
+// The per-event pipeline (parse → hydrate/record session → lifecycle/Pre/Post
+// dispatch → snapshot + latency log) lives in `server-event-loop.ts`. It
+// closes over the `serverRuntime` context plus the module-scoped callbacks
+// below (idle-timer reset, runtime in/out sync, collection-record writer) and
+// the protocol-status object + path. `writeProtocolStatus` is returned so the
+// startup statements at the bottom of this file can serialize the status file.
 
 /** Deadline (in ms) to drain pending async analysis work before shutdown. */
 const ASYNC_ANALYSIS_DRAIN_TIMEOUT_MS = 5_000;
 
-async function evaluateEventLine(
-	line: string,
-	protocol: "raw" | "framed",
-): Promise<HarnessDecision> {
-	// Parse session_id once up-front so the durability finally block can run
-	// even when `processEvent` throws — the session was already created (or
-	// hydrated) by the time recordEvent ran, so a snapshot is safe to write.
-	let sessionIdForSnap: string | null = null;
-	try {
-		const parsed: JsonObject = JSON.parse(line);
-		if (typeof parsed.session_id === "string") sessionIdForSnap = parsed.session_id;
-	} catch (e) {
-		void e;
-	}
-
-	try {
-		const decision = await processEvent(line);
-		recordProtocolEvent(protocol);
-		try {
-			appendLatencyLog(INTERLINKED_DIR, buildLatencyRecord(line, decision));
-		} catch (e) {
-			void e;
-		}
-		return decision;
-	} finally {
-		// Per-event durability: write the live snapshot AFTER processEvent so
-		// the snapshot reflects every post-event state mutation — PostToolUse
-		// handlers updating `tdd_cycles`, `assertion_counts`, `active_skills`,
-		// etc. The earlier "snapshot right after recordEvent" placement lost
-		// those mutations on a daemon restart between events. Best-effort:
-		// write failures are logged but never block the decision return.
-		if (sessionIdForSnap) {
-			try {
-				const snap = sessions.serialize(sessionIdForSnap);
-				if (snap) {
-					const writeResult = writeLiveSnapshot(CWD, sessionIdForSnap, snap);
-					if (!writeResult.ok) {
-						log(`Live snapshot write failed (non-fatal): ${writeResult.error.message}`);
-					}
-				}
-			} catch (e) {
-				log(`Live snapshot write threw: ${e instanceof Error ? e.message : String(e)}`);
-			}
-		}
-	}
-}
-
-async function evaluateUnifiedViaRuntime(event: UnifiedHookEvent): Promise<HarnessDecision> {
-	try {
-		const legacyEvent = toLegacyHarnessEvent(event);
-		return await evaluateEventLine(JSON.stringify(legacyEvent), "framed");
-	} catch (err) {
-		protocolStatus.framed_error_count++;
-		writeProtocolStatus();
-		throw err;
-	}
-}
-
-function recordProtocolEvent(protocol: "raw" | "framed"): void {
-	bumpProtocolEvent(protocolStatus, protocol);
-	writeProtocolStatus();
-}
-
-function writeProtocolStatus(): void {
-	persistProtocolStatus(PROTOCOL_STATUS_PATH, protocolStatus);
-}
+const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = createEventLoop({
+	ctx: serverRuntime,
+	protocolStatus,
+	protocolStatusPath: PROTOCOL_STATUS_PATH,
+	resetIdleTimer,
+	syncRuntimeIn,
+	syncRuntimeOut,
+	writeCollectionRecord,
+});
 
 // ===========================================
 // Server Setup
 // ===========================================
-// `ensureDirectory` / `cleanupSocketAt` are imported from
-// `server/socket-lifecycle.ts`; the local `cleanupSocket()` wrapper binds the
-// default raw-socket path so the zero-arg call sites stay terse.
+// The socket binding, legacy pid file, raw-socket connection server, and the
+// graceful/forced shutdown path live in `server-socket-lifecycle.ts`. That
+// cluster closes over the live socket server, the framed-daemon handle, the
+// open-client set, the shutting-down flag, and the connection counter, so it
+// is built behind one factory here. The framed-daemon handle and the
+// rules/settings watcher disposers are bound after they are created, via
+// `setFramedDaemon` / `setUnwatchers`.
 
-function cleanupSocket(path: string = SOCKET_PATH): void {
-	cleanupSocketAt(path);
-}
-
-function writePidFile(): void {
-	// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
-	// is written exclusively by `startSessionDaemon()` (session-daemon.ts:136)
-	// AFTER its ownership check — writing it here too clobbers a sibling
-	// daemon's PID file before the session-daemon code can detect the
-	// existing owner, causing it to remove the live socket and rebind.
-	ensureDirectory(PID_PATH);
-	writeFileSync(PID_PATH, String(process.pid));
-}
-
-function removePidFile(): void {
-	// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
-	// is removed by `session-daemon.handle.stop()` (session-daemon.ts:167-169)
-	// — the side that wrote it owns the lifecycle, so we don't touch it here.
-	removeFileIfExists(PID_PATH);
-}
-
-let socketServer: ReturnType<typeof createServer> | null = null;
-let framedDaemon: SessionDaemonHandle | null = null;
-let shuttingDown = false;
-
-/** Tracks every open raw-socket client so shutdown can destroy them. Without
- *  this, `socketServer.close(callback)` waits for clients to disconnect on
- *  their own — which never happens for a hung .mjs hook — and SIGTERM appears
- *  to be ignored. The set is mutated by createRawSocketServer's connect/close
- *  handlers and emptied during shutdownAsync. */
-const openRawClients: Set<Socket> = new Set();
-
-/** Hard ceiling on graceful shutdown. If `shutdownAsync` doesn't reach
- *  `process.exit(0)` within this window, force-exit so a stuck connection or
- *  drain promise can't hold the daemon hostage and block restarts. */
-const SHUTDOWN_GRACE_MS = 3000;
-/** Per-step timeout for individual shutdown phases (framedDaemon.stop, etc.).
- *  Each phase races against this window; the SHUTDOWN_GRACE_MS umbrella
- *  catches anything that escapes both. */
-const SHUTDOWN_STEP_TIMEOUT_MS = 500;
-
-function shutdown(): void {
-	if (shuttingDown) return;
-	shuttingDown = true;
-	// Always-armed force-exit. Any path that hangs for more than 3 s — a
-	// pinned client connection, an async drain that never resolves, a third-
-	// party shutdown handler that throws — will fall through to this rather
-	// than leaving the daemon SIGTERM-deaf and forcing the user to SIGKILL.
-	const forceExit = setTimeout(() => {
-		try {
-			logAlways(`Graceful shutdown stalled after ${SHUTDOWN_GRACE_MS}ms — forcing exit`);
-		} catch (logErr) {
-			void logErr; /* intentional: logger may already be torn down */
-		}
-		try {
-			removePidFile();
-		} catch (rmErr) {
-			void rmErr; /* intentional: best-effort cleanup during forced exit */
-		}
-		try {
-			if (RUN_RAW_SOCKET) cleanupSocket();
-		} catch (sockErr) {
-			void sockErr; /* intentional: best-effort cleanup during forced exit */
-		}
-		process.exit(1);
-	}, SHUTDOWN_GRACE_MS);
-	forceExit.unref();
-	shutdownAsync().finally(() => clearTimeout(forceExit));
-}
-
-async function shutdownAsync(): Promise<void> {
-	logAlways("Shutting down...");
-	serverBridge?.shutdown();
-	reservations.shutdown();
-	// Fire-and-forget: the Python sidecar will be SIGKILLed by the SidecarManager
-	// after its own 1 s grace window; we don't block the exit on it here.
-	contentScanner?.shutdown().catch(() => {
-		// best-effort
+const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, setUnwatchers } =
+	createSocketLifecycle({
+		socketPath: SOCKET_PATH,
+		pidPath: PID_PATH,
+		runRawSocket: RUN_RAW_SOCKET,
+		asyncAnalysisDrainTimeoutMs: ASYNC_ANALYSIS_DRAIN_TIMEOUT_MS,
+		serverBridge,
+		reservations,
+		contentScanner,
+		asyncAnalysis,
+		evaluateEventLine,
+		log,
+		logAlways,
 	});
-	// Drain in-flight async analysis before exit (bounded by its own deadline).
-	await asyncAnalysis.drain(ASYNC_ANALYSIS_DRAIN_TIMEOUT_MS);
-	// Destroy open raw-socket clients BEFORE server.close(). Node's
-	// `server.close()` only stops accepting new connections; it waits forever
-	// for active ones to drain on their own. A hung .mjs hook (mid-RPC, parent
-	// exited) will pin the close indefinitely without this loop.
-	for (const sock of openRawClients) {
-		try {
-			sock.destroy();
-		} catch (destroyErr) {
-			void destroyErr; /* intentional: socket already torn down */
-		}
-	}
-	openRawClients.clear();
-	// Stop the framed daemon, but bound it: an in-flight RPC on a stuck
-	// client would otherwise hang stop() forever. 500 ms is generous —
-	// stop() destroys its own clients first, so close() should resolve
-	// in microseconds. The race + timeout is insurance, not the path.
-	if (framedDaemon) {
-		await Promise.race([
-			framedDaemon.stop("server_shutdown"),
-			new Promise<void>((resolve) => {
-				const t = setTimeout(resolve, SHUTDOWN_STEP_TIMEOUT_MS);
-				t.unref();
-			}),
-		]);
-	}
-	// Tell the raw server to stop accepting new connections, but DO NOT
-	// await server.close(callback). The callback only fires after every
-	// active connection drains on its own — and a malformed client (rare
-	// but real, observed in the wild) can keep that pending forever. We
-	// already destroyed openRawClients above; the OS will reclaim the
-	// listening socket on process exit regardless.
-	try {
-		socketServer?.close();
-	} catch (closeErr) {
-		void closeErr; /* intentional: close() can throw if the server is already closed */
-	}
-	if (RUN_RAW_SOCKET) cleanupSocket();
-	removePidFile();
-	unwatchRules();
-	unwatchSettings();
-	process.exit(0);
-}
-
-function createRawSocketServer(): ReturnType<typeof createServer> {
-	return createServer((sock: Socket) => {
-		connectionCount++;
-		openRawClients.add(sock);
-		log(`Connection opened (total: ${connectionCount})`);
-
-		// Newline-delimited JSON framing (may receive multiple events in one
-		// chunk, or an event split across chunks). The framer owns the
-		// buffer; each complete line is evaluated sequentially in arrival
-		// order and answered with its own write — same as the prior inline loop.
-		const framer = new LineFramer();
-
-		sock.on("data", async (data: Buffer) => {
-			for (const line of framer.push(data.toString("utf-8"))) {
-				const decision = await evaluateEventLine(line, "raw");
-				try {
-					sock.write(`${JSON.stringify(decision)}\n`);
-				} catch (e) {
-					void e;
-				}
-			}
-		});
-
-		sock.on("close", () => {
-			connectionCount--;
-			openRawClients.delete(sock);
-			log(`Connection closed (remaining: ${connectionCount})`);
-		});
-
-		sock.on("error", (err: Error) => {
-			log(`Socket error: ${err.message}`);
-		});
-	});
-}
 
 // ===========================================
 // Start Server
@@ -891,6 +608,13 @@ const unwatchSettings = watchSettingsFiles({
 	},
 });
 
+// Hand the watcher disposers to the lifecycle cluster so `shutdownAsync` can
+// stop the rules + settings watchers on teardown. Done immediately after both
+// watchers exist and before the real `shutdown()` is wired to process signals
+// below — matching the prior ordering where `shutdownAsync` closed over these
+// as module `const`s declared above the signal handlers.
+setUnwatchers(unwatchRules, unwatchSettings);
+
 // Periodically refresh the statusline snapshot so live counters
 // (reservations, index status, server-bridge connectivity) reflect
 // current state without depending on a triggering event.
@@ -941,31 +665,31 @@ process.on("SIGHUP", () => {
 const tsgoRunner = createTsgoRunner();
 
 if (RUN_FRAMED_SOCKET) {
-	framedDaemon = await startSessionDaemon({
-		paths: FRAMED_PATHS,
-		session_id: FRAMED_SESSION_ID,
-		idle_shutdown_ms: IDLE_TIMEOUT_MS,
-		state: {
-			tsgo: tsgoRunner,
-			getEvaluatorContext: () => ({
-				rules,
-				session: sessions.get(FRAMED_SESSION_ID),
-				reservations,
-				cohort,
-				graph: getGraphForFile(CWD),
-				sessions,
-				routeMap,
-				errorHistory,
-			}),
-			evaluateHook: evaluateUnifiedViaRuntime,
-		},
-	});
+	setFramedDaemon(
+		await startSessionDaemon({
+			paths: FRAMED_PATHS,
+			session_id: FRAMED_SESSION_ID,
+			idle_shutdown_ms: IDLE_TIMEOUT_MS,
+			state: {
+				tsgo: tsgoRunner,
+				getEvaluatorContext: () => ({
+					rules,
+					session: sessions.get(FRAMED_SESSION_ID),
+					reservations,
+					cohort,
+					graph: getGraphForFile(CWD),
+					sessions,
+					routeMap,
+					errorHistory,
+				}),
+				evaluateHook: evaluateUnifiedViaRuntime,
+			},
+		}),
+	);
 }
 
 if (RUN_RAW_SOCKET) {
-	const rawServer = createRawSocketServer();
-	socketServer = rawServer;
-	rawServer.listen(SOCKET_PATH);
+	startRawServer();
 }
 
 writeProtocolStatus();

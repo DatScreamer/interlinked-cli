@@ -50,11 +50,13 @@ The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/a
 
 ## Per-file line cap (`large-file-policy.ts`)
 
-Hand-written code modules are capped at **1000 lines** (`DEFAULT_MAX_LINES`).
+Hand-written code modules are capped at **800 lines** (`DEFAULT_MAX_LINES`;
+ratcheted 1000 → 800 on 2026-06-03 after decomposing the 14 modules then in the
+800–1000 band — each split into a re-exporting public entry + sibling helpers).
 `src/harness/large-file-policy.ts` is the single source of truth — the
-threshold, the `isCappableFile` predicate (generated / test / `.d.ts` /
-non-code files are exempt), the baseline loader, the one canonical line
-counter (`countLines`), and the ratchet verdict.
+threshold, the `isCappableFile` predicate (generated / `@codegen-data` /
+test / `.d.ts` / non-code files are exempt), the baseline loader, the one
+canonical line counter (`countLines`), and the ratchet verdict.
 
 **The cap is ONE number.** `DEFAULT_MAX_LINES` (code) and `max_lines` in
 `.interlinked/large-files-baseline.json` (config) are kept identical by a
@@ -76,11 +78,15 @@ Three enforcement surfaces, one policy:
 - **PostToolUse nudge** — the `[interlinked:file-size]` warning on write/read.
 
 The cap and the grandfather list live in `.interlinked/large-files-baseline.json`
-(committed — carved out of the `.interlinked/*` gitignore). A grandfathered
-file may shrink or hold but not grow; decompose it below `max_lines` to drop
-its entry. Ratchet the cap down (1000 → 800 → 500) as the list empties by
-editing BOTH `max_lines` (baseline) and `DEFAULT_MAX_LINES` (code) together —
-the pinning test enforces they match, so it surfaces in one diff. The cap is a coarse proxy;
+(committed — carved out of the `.interlinked/*` gitignore). The grandfather list
+(`files`) is currently empty: the two former entries (`hook-template-chunks/session-state.ts`,
+`hooks-template.ts`) are codegen DATA — the generated `.mjs` hook script carried
+as template strings — now exempt via a `@codegen-data` header marker (scoped to
+the line cap only; tsc/lint still run). A grandfathered file may shrink or hold
+but not grow; decompose it below `max_lines` to drop its entry. Ratchet the cap
+down (800 → 500) as the list stays empty by editing BOTH `max_lines` (baseline)
+and `DEFAULT_MAX_LINES` (code) together — the pinning test enforces they match,
+so it surfaces in one diff. The cap is a coarse proxy;
 the `complexity` / `cyclomatic` checks do the fine-grained "is this file bad"
 work, which is why the enforced line number sits well above the ~300–500-line
 aspirational module size.

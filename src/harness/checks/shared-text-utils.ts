@@ -1,0 +1,198 @@
+// Text utility helpers extracted from shared.ts — comment & string stripping.
+// Imported by shared.ts and re-exported; do not import this directly from
+// outside the checks/ package — consume via shared.ts instead.
+
+import type { InlineMatch } from "./shared.js";
+
+// ===========================================
+// Comment & String Stripping Helpers
+// ===========================================
+
+/**
+ * Strip comments from content, preserving line count and positions.
+ * Replaces comment content with spaces so that line numbers remain stable.
+ *
+ * Handles:
+ * - Single-line comments: `// ...` (JS/TS/Rust/Go/C/Java) and `# ...` (Python)
+ * - Multi-line comments: `/* ... *​/` (JS/TS/Rust/Go/C/Java)
+ * - Python docstrings on a single line: `""" ... """` and `''' ... '''`
+ */
+
+/**
+ * Index of the first `//` or `#` line-comment marker on `line` that is NOT
+ * inside a string literal, or -1 if there is none. `stripComments` runs
+ * before strings are stripped, so it must track string state itself —
+ * otherwise the `//` in a `"https://..."` URL literal reads as a comment and
+ * everything after it (including the string's own closing quote) is blanked,
+ * which then prevents `stripStrings` from recognising the literal at all.
+ * Regex literals are not tracked — a pre-existing limitation of this stripper.
+ */
+function firstUnquotedCommentIndex(line: string): number {
+	let quote: string | null = null;
+	for (let i = 0; i < line.length; i++) {
+		const ch = line[i];
+		if (quote !== null) {
+			if (ch === "\\" && i + 1 < line.length) {
+				i++; // skip the escaped character
+			} else if (ch === quote) {
+				quote = null;
+			}
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") {
+			quote = ch;
+			continue;
+		}
+		if (ch === "/" && line[i + 1] === "/") {
+			return i;
+		}
+		if (ch === "#") {
+			return i;
+		}
+	}
+	return -1;
+}
+
+export function stripComments(content: string): string {
+	const lines = content.split("\n");
+	let inBlockComment = false;
+
+	for (let i = 0; i < lines.length; i++) {
+		let line = lines[i];
+		if (line === undefined) continue;
+
+		if (inBlockComment) {
+			const endIdx = line.indexOf("*/");
+			if (endIdx === -1) {
+				// Entire line is inside a block comment — blank it
+				lines[i] = " ".repeat(line.length);
+				continue;
+			}
+			// Blank up to and including the closing */
+			const blanked = " ".repeat(endIdx + 2) + line.slice(endIdx + 2);
+			lines[i] = blanked;
+			line = blanked;
+			inBlockComment = false;
+		}
+
+		// Python single-line docstrings: """ ... """ or ''' ... '''
+		line = line.replace(/"""[^"]*"""/g, (m) => " ".repeat(m.length));
+		line = line.replace(/'''[^']*'''/g, (m) => " ".repeat(m.length));
+
+		// Handle /* ... */ that open and close on the same line (possibly multiple)
+		let searchFrom = 0;
+		while (searchFrom < line.length) {
+			const openIdx = line.indexOf("/*", searchFrom);
+			if (openIdx === -1) break;
+			const closeIdx = line.indexOf("*/", openIdx + 2);
+			if (closeIdx === -1) {
+				// Block comment opens and continues to next line(s)
+				line = line.slice(0, openIdx) + " ".repeat(line.length - openIdx);
+				inBlockComment = true;
+				break;
+			}
+			// Same-line block comment
+			const before = line.slice(0, openIdx);
+			const blanked = " ".repeat(closeIdx + 2 - openIdx);
+			const after = line.slice(closeIdx + 2);
+			line = before + blanked + after;
+			searchFrom = openIdx + blanked.length;
+		}
+
+		// Single-line comments: // (JS/TS/Rust/Go/C/Java) and # (Python).
+		// String-aware so the // inside a "https://..." URL literal — or a #
+		// inside any string — is not mistaken for a comment.
+		const commentStart = firstUnquotedCommentIndex(line);
+
+		if (commentStart !== -1) {
+			line = line.slice(0, commentStart) + " ".repeat(line.length - commentStart);
+		}
+
+		lines[i] = line;
+	}
+
+	return lines.join("\n");
+}
+
+/**
+ * Strip string literal content from content, preserving line count.
+ * Replaces the interior of string literals with empty content so that
+ * patterns inside strings do not trigger false positive matches.
+ *
+ * Handles: `"..."`, `'...'`, and `` `...` `` (single-line only).
+ */
+export function stripStrings(content: string): string {
+	const lines = content.split("\n");
+	let templateDepth = 0; // Track nested template literal depth
+	for (let i = 0; i < lines.length; i++) {
+		let line = lines[i];
+		if (line === undefined) continue;
+
+		// Inside a multi-line template literal: blank the line, track backticks
+		if (templateDepth > 0) {
+			for (let j = 0; j < line.length; j++) {
+				if (line[j] === "\\" && j + 1 < line.length) {
+					j++; // skip escaped char
+				} else if (line[j] === "`") {
+					templateDepth--;
+					if (templateDepth === 0) break;
+				}
+			}
+			lines[i] = "";
+			continue;
+		}
+
+		// Replace content inside double-quoted strings
+		line = line.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+		// Replace content inside single-quoted strings
+		line = line.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+		// Replace content inside backtick template strings (single-line only)
+		line = line.replace(/`(?:[^`\\]|\\.)*`/g, "``");
+
+		// Check for unclosed backticks (multi-line template literal opening).
+		// Count unescaped backticks remaining — odd count means one is unclosed.
+		const remaining = (line.match(/(?<!\\)`/g) || []).length;
+		if (remaining % 2 === 1) {
+			templateDepth = 1;
+		}
+
+		lines[i] = line;
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Strip both comments and strings from content.
+ * Comments are stripped first (so string-like content in comments is removed),
+ * then strings are stripped.
+ */
+export function stripCommentsAndStrings(content: string): string {
+	return stripStrings(stripComments(content));
+}
+
+/**
+ * Scan original lines but match against pre-stripped lines.
+ * Returns matches from the original content for display, but only
+ * where the stripped content matches the pattern.
+ */
+export function scanLinesStripped(
+	originalLines: string[],
+	strippedLines: string[],
+	pattern: RegExp,
+	maxMatches: number,
+): InlineMatch[] {
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < originalLines.length; i++) {
+		if (matches.length >= maxMatches) break;
+		const strippedLine = strippedLines[i];
+		const originalLine = originalLines[i];
+		if (strippedLine === undefined || originalLine === undefined) continue;
+		if (pattern.test(strippedLine)) {
+			matches.push({
+				line: i + 1,
+				text: originalLine.trim().slice(0, 150),
+			});
+		}
+	}
+	return matches;
+}

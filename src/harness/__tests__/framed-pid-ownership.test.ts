@@ -13,13 +13,17 @@
 // lifecycle is owned exclusively by `startSessionDaemon()` (write at
 // session-daemon.ts:136 after the ownership claim, removal at :167-169).
 // This test enforces that ownership boundary at the source level.
+//
+// NOTE: `writePidFile` / `removePidFile` were extracted from `server.ts` into
+// the `createSocketLifecycle` factory in `server-socket-lifecycle.ts` during the
+// per-file line-cap decomposition — this test reads them from their new home.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const SERVER_TS = readFileSync(
-	join(process.cwd(), "src", "harness", "server.ts"),
+const SOCKET_LIFECYCLE_TS = readFileSync(
+	join(process.cwd(), "src", "harness", "server-socket-lifecycle.ts"),
 	"utf-8",
 );
 const SESSION_DAEMON_TS = readFileSync(
@@ -28,16 +32,18 @@ const SESSION_DAEMON_TS = readFileSync(
 );
 
 describe("framed-PID file ownership (Plan 08 review fix)", () => {
-	it("writePidFile in server.ts does NOT write FRAMED_PATHS.pid", () => {
+	it("writePidFile (server-socket-lifecycle.ts) does NOT write FRAMED_PATHS.pid", () => {
 		// Find the writePidFile function body and confirm the framed write
 		// is gone. Limit the scan to the function body so unrelated
-		// occurrences elsewhere don't false-pass us.
-		const startIdx = SERVER_TS.indexOf("function writePidFile(): void {");
+		// occurrences elsewhere don't false-pass us. The closing-brace match is
+		// indentation-tolerant (the fn is nested in the createSocketLifecycle closure).
+		const startIdx = SOCKET_LIFECYCLE_TS.indexOf("function writePidFile(): void {");
 		expect(startIdx).toBeGreaterThan(0);
-		const endIdx = SERVER_TS.indexOf("\n}\n", startIdx);
-		expect(endIdx).toBeGreaterThan(startIdx);
+		const rest = SOCKET_LIFECYCLE_TS.slice(startIdx);
+		const endRel = rest.search(/\n\t*\}\n/);
+		expect(endRel).toBeGreaterThan(0);
 
-		const body = SERVER_TS.slice(startIdx, endIdx);
+		const body = rest.slice(0, endRel);
 		// The legacy write must still happen.
 		expect(body).toContain("writeFileSync(PID_PATH, String(process.pid))");
 		// The framed write must be gone.
@@ -45,13 +51,14 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		expect(body).not.toContain("writeFileSync(FRAMED_PATHS");
 	});
 
-	it("removePidFile in server.ts does NOT touch FRAMED_PATHS.pid", () => {
-		const startIdx = SERVER_TS.indexOf("function removePidFile(): void {");
+	it("removePidFile (server-socket-lifecycle.ts) does NOT touch FRAMED_PATHS.pid", () => {
+		const startIdx = SOCKET_LIFECYCLE_TS.indexOf("function removePidFile(): void {");
 		expect(startIdx).toBeGreaterThan(0);
-		const endIdx = SERVER_TS.indexOf("\n}\n", startIdx);
-		expect(endIdx).toBeGreaterThan(startIdx);
+		const rest = SOCKET_LIFECYCLE_TS.slice(startIdx);
+		const endRel = rest.search(/\n\t*\}\n/);
+		expect(endRel).toBeGreaterThan(0);
 
-		const body = SERVER_TS.slice(startIdx, endIdx);
+		const body = rest.slice(0, endRel);
 		// Legacy removal stays — now via the dedup'd `removeFileIfExists` helper
 		// (server decomposition ce71204), or a bare `rmSync`. Either form removes
 		// the legacy PID; the assertion stays implementation-tolerant so a

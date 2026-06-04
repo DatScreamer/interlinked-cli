@@ -1,4 +1,4 @@
-// Extracted from hooks-template.ts.
+// Extracted from hooks-template.ts. @codegen-data: template DATA, exempt from the per-file line cap (see large-file-policy.ts).
 // This is DATA — the body of the generated `.interlinked/hooks/interlinked-activity.mjs`.
 // Do not edit escape sequences (`\\b`, `\\s`, `\\n`, etc.) — they are the source form
 // for the runtime script. `\\n` in this file becomes `\n` in the emitted .mjs.

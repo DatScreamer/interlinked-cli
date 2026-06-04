@@ -1,0 +1,223 @@
+// ===========================================
+// PreToolUse — destructive-pattern rule loop + Bash-routed-write + compound
+// ===========================================
+//
+// Extracted verbatim from `evaluatePreToolUse` (pre-tool.ts) to keep the
+// orchestrator under the per-file line cap. Behavior is identical: the helper
+// pushes into the shared `warnings` array by reference and returns a
+// `HarnessDecision` to short-circuit (the orchestrator returns it immediately)
+// or `null` to continue. Control-flow order is preserved exactly.
+
+import type {
+	GuardRulesConfig,
+	HarnessDecision,
+	HarnessEvent,
+	SessionTrajectory,
+} from "../types.js";
+import {
+	applyRewrite,
+	evaluateCompoundCommand,
+	inferAgentRole,
+	ruleAppliesToRole,
+} from "../command-decomposition.js";
+import { detectBashCodeFileWrite } from "../pre-checks.js";
+import { evaluateActiveWhen } from "./active-when.js";
+import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
+import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
+import { isBash } from "./tool-classifiers.js";
+
+const SOFT_BLOCK_KEY_MAX = 120;
+
+/**
+ * GUARD: Destructive patterns — Bash, Write, Edit, all tools — plus the
+ * Bash-routed code-file write bypass and compound-command decomposition.
+ * Mirrors the original inline block (control flow unchanged). `warnings` is
+ * mutated by reference. Returns a `HarnessDecision` to short-circuit, else
+ * `null` to continue evaluation.
+ */
+export function evaluateDestructiveRules(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	session: SessionTrajectory | undefined,
+	warnings: string[],
+): HarnessDecision | null {
+	const toolName = event.tool_name || "";
+	const toolInput = event.tool_input || {};
+	const cmd = (toolInput.command as string) || "";
+	// Plan 01 §1.3 keyword-quick-reject — pre-filter rules against the
+	// command's tokenized words so platform-specific rules (`kubectl`,
+	// `terraform`, etc.) don't run their regex on every Bash call. Rules
+	// with no `keywords` field are always evaluated (preserves legacy
+	// behavior for existing rules until they're backfilled).
+	//
+	// Wrapper-normalization (Plan 01 §1.1) and span-classification
+	// (§1.2) are intentionally NOT globally applied in this matching
+	// path. The existing rule corpus contains:
+	//   • sudo-specific patterns (`\bsudo\s+rm\b`) that depend on
+	//     seeing the raw `sudo` prefix.
+	//   • SQL/argument-payload rules (`\bDROP\s+TABLE\b`) that need to
+	//     match the quoted argument of `psql -c "DROP TABLE x"`.
+	//   • Process-kill rules that NEGATE on quoted argument shape
+	//     (`pkill -f 'wrangler dev'` should allow but `pkill node`
+	//     should block).
+	// Globally projecting wrapper-stripped + scannable text breaks all
+	// three. The two modules remain available for explicit opt-in by
+	// new rules / Plan 02-03 entries that prefer the cleaner semantics.
+	const cmdTokens = cmd ? commandKeywordTokens(cmd) : new Set<string>();
+	const agentRole = inferAgentRole(event);
+	// Synthesize a richer match-input that exposes tool_name and
+	// agent_source as top-level fields so guard-rule patterns can
+	// match against them via `field: "tool_name"` / "agent_source"
+	// without callers having to mutate the agent's actual tool_input.
+	// Required by MCP destructive guards (mcp__*__delete*) and the
+	// Railway MCP family that pattern-match on tool name rather than
+	// command text.
+	const matchInput = {
+		...toolInput,
+		tool_name: toolName,
+		agent_source: event.agent_source,
+	};
+
+	for (const rule of rules.rules) {
+		if (!shouldEvaluateRule(rule, "PreToolUse", toolName)) continue;
+		if (!ruleAppliesToRole(rule, agentRole)) continue;
+		if (!evaluateActiveWhen(rule, session, event)) continue;
+		if (cmd && !shouldEvaluateByKeywords(rule, cmdTokens)) continue;
+		if (
+			!matchesRule({
+				command: cmd,
+				toolInput: matchInput,
+				rule,
+				extraExceptions: rules.extra_exceptions,
+				toolName,
+				session,
+			})
+		)
+			continue;
+
+		if (rule.action === "block") {
+			return {
+				decision: "block",
+				reason: formatReason(rule),
+				warnings,
+				rule_id: rule.id,
+				severity: rule.severity,
+				category: (rule as { category?: string }).category,
+			};
+		}
+		if (rule.action === "ask") {
+			// "ask" surfaces a per-call user prompt on agents that support
+			// it (Claude Code, Cursor). On agents that lack an ask primitive
+			// (Copilot, Codex, Gemini) the per-client encoders downgrade
+			// ask → deny so the user still sees the reason: the .mjs path
+			// goes through formatCopilotResponse / formatCodexResponse in
+			// hook-template-chunks/provider-responses.ts, and the adapter
+			// path goes through copilot-cli.encodeDecision /
+			// codex.encodeDecision / gemini-cli.encodeDecision. Both must
+			// stay in sync — if you add a new runner without an ask
+			// primitive, mirror the deny mapping in BOTH places or
+			// destructive rules will silently proceed on that runner.
+			return {
+				decision: "ask",
+				reason: formatAskReason(rule),
+				system_message: formatAskSystemMessage(rule, event),
+				warnings,
+				rule_id: rule.id,
+				severity: rule.severity,
+				category: (rule as { category?: string }).category,
+			};
+		}
+		if (rule.action === "soft_block") {
+			const softKey = `${rule.id}::${cmd.slice(0, SOFT_BLOCK_KEY_MAX)}`;
+			if (session?.soft_blocks.has(softKey)) {
+				warnings.push(`[interlinked] Warning (retry allowed): ${rule.reason}`);
+			} else {
+				if (session) session.soft_blocks.add(softKey);
+				return {
+					decision: "block",
+					reason: formatReason(rule),
+					warnings,
+					rule_id: rule.id,
+					severity: rule.severity,
+					category: (rule as { category?: string }).category,
+				};
+			}
+		}
+		if (rule.action === "rewrite" && rule.rewrite && cmd) {
+			const rewritten = applyRewrite(cmd, rule.rewrite);
+			if (rewritten !== cmd) {
+				warnings.push(`[interlinked:rewrite] Rewrote command per rule ${rule.id}`);
+				return {
+					decision: "allow",
+					warnings,
+					updated_input: { ...toolInput, command: rewritten },
+					rule_id: rule.id,
+				};
+			}
+		}
+		warnings.push(`[interlinked] Warning: ${rule.reason}`);
+	}
+
+		// GUARD: Bash-routed code-file writes (bypass content gate)
+		if (isBash(toolName) && cmd) {
+		const redirectHit = detectBashCodeFileWrite(cmd);
+		if (redirectHit) {
+			return {
+				decision: "block",
+				reason:
+					`BLOCKED: This Bash command writes to a tracked source file (${redirectHit.target}) ` +
+					`via ${redirectHit.mechanism}, which bypasses the content-quality gates that run on ` +
+					"the Write and Edit tools (pre_block registry, biome diff-overlay, tsc diff-overlay). " +
+					"For single-site edits, use the Write or Edit tool so the content is checked before " +
+					"it lands. For coordinated multi-site atomic edits (e.g. adding an import AND using " +
+					"it in the same landing — which would trip the diff-overlay if staged as two Edit " +
+					"calls), route through `interlinked write` (single-file) or `interlinked write " +
+					"--batch <manifest.json>` (multi-file atomic), or use the MultiEdit tool — each of " +
+					"these applies the same content-quality gate but treats your whole change as one " +
+					"transactional unit.",
+				warnings,
+				rule_id: "bash-code-file-write-bypass",
+				severity: "high",
+				category: "harness-integrity",
+			};
+		}
+	}
+
+	// Compound command decomposition: split && / || / ; and check each subcommand
+	if (isBash(toolName) && (cmd.includes("&&") || cmd.includes("||") || cmd.includes(";"))) {
+		const compoundResult = evaluateCompoundCommand(
+			cmd,
+			rules.rules,
+			rules.extra_exceptions,
+			(c, inp, rule, extras) =>
+				matchesRule({
+					command: c,
+					toolInput: inp,
+					rule,
+					extraExceptions: extras,
+					toolName,
+					session,
+				}),
+		);
+		if (compoundResult.decision === "block") {
+			return {
+				decision: "block",
+				reason: compoundResult.reason,
+				warnings: [...warnings, ...compoundResult.warnings],
+				rule_id: compoundResult.rule_id,
+				severity: compoundResult.severity,
+				category: compoundResult.category,
+			};
+		}
+		warnings.push(...compoundResult.warnings);
+		if (compoundResult.updated_input) {
+			return {
+				decision: "allow",
+				warnings,
+				updated_input: { ...toolInput, ...compoundResult.updated_input },
+			};
+		}
+	}
+
+	return null;
+}
