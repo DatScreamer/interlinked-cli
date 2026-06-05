@@ -6,7 +6,7 @@ import {
 	getExtension,
 	type InlineMatch,
 	isTestFile,
-	stripCommentsAndStrings,
+	stripForBraceScan,
 } from "./shared.js";
 
 // ===========================================
@@ -33,12 +33,12 @@ export function checkFunctionComplexity(content: string, filePath: string): Inli
 		// Strip strings/comments BEFORE counting braces. Without this, a string
 		// literal containing `{` (e.g. `slice.indexOf("{")`) increments the
 		// nesting depth and reports false-positive complexity warnings.
-		const strippedLines = stripCommentsAndStrings(content).split("\n");
+		const strippedLines = stripForBraceScan(content).split("\n");
 		checkComplexityBrace(lines, strippedLines, matches);
 	} else if (ext === ".py") {
 		checkComplexityPython(lines, matches);
 	} else if (ext === ".go" || ext === ".rs" || ext === ".swift") {
-		const strippedLines = stripCommentsAndStrings(content).split("\n");
+		const strippedLines = stripForBraceScan(content).split("\n");
 		checkComplexityBrace(lines, strippedLines, matches);
 	}
 

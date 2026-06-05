@@ -19,7 +19,7 @@ import {
 	getExtension,
 	isTestFile,
 	JS_TS_EXTS,
-	stripCommentsAndStrings,
+	stripForBraceScan,
 } from "./shared.js";
 
 // Extensions hoisted to module scope so the per-language dispatch reads as
@@ -57,7 +57,10 @@ export function computeCyclomaticComplexity(
 	if (isTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
 
-	const stripped = stripCommentsAndStrings(content);
+	// Brace-balanced strip: scope detection counts {/} on the stripped source,
+	// so a strip that unbalances braces (around template interpolations / regex)
+	// would make walkBraceBody run off the file. See stripForBraceScan.
+	const stripped = stripForBraceScan(content);
 	const lines = stripped.split("\n");
 
 	if (JS_TS_EXTS.has(ext)) return walkJsTs(lines);
@@ -134,6 +137,8 @@ function walkJsTs(lines: string[]): FunctionComplexityEntry[] {
 		if (braceLineIdx === -1) continue;
 
 		const walk = walkBraceBody(lines, braceLineIdx, countJsDecisions);
+		// Unbalanced strip → unreliable span + inflated count: skip, don't emit.
+		if (!walk.closed) continue;
 		entries.push({
 			name: funcName,
 			line: i + 1,
@@ -274,6 +279,8 @@ function walkGo(lines: string[]): FunctionComplexityEntry[] {
 		if (braceLineIdx === -1) continue;
 
 		const walk = walkBraceBody(lines, braceLineIdx, countGoDecisions);
+		// Unbalanced strip → unreliable span + inflated count: skip, don't emit.
+		if (!walk.closed) continue;
 		entries.push({
 			name: funcName,
 			line: i + 1,
@@ -321,6 +328,8 @@ function walkRust(lines: string[]): FunctionComplexityEntry[] {
 		if (braceLineIdx === -1) continue;
 
 		const walk = walkBraceBody(lines, braceLineIdx, countRustDecisions);
+		// Unbalanced strip → unreliable span + inflated count: skip, don't emit.
+		if (!walk.closed) continue;
 		entries.push({
 			name: funcName,
 			line: i + 1,
@@ -376,6 +385,16 @@ function findOpeningBrace(lines: string[], fromIdx: number): number {
 interface BraceWalkResult {
 	cyclomatic: number;
 	endLine: number;
+	/**
+	 * True when the body's braces balanced back to ≤0 before EOF. False means the
+	 * scan ran off the end of the file without closing — which happens when the
+	 * upstream strip left braces unbalanced (a stripper defect — see
+	 * `stripCommentsAndStrings`) or on genuinely malformed source. When false,
+	 * `endLine` collapses to the start line and `cyclomatic` over-counts every
+	 * decision point through EOF, so callers MUST discard the entry rather than
+	 * emit a wildly-wrong score (which then squares into CRAP).
+	 */
+	closed: boolean;
 }
 
 function walkBraceBody(
@@ -387,6 +406,7 @@ function walkBraceBody(
 	let bodyStarted = false;
 	let cyclomatic = 1;
 	let endLine = braceLineIdx;
+	let closed = false;
 
 	for (let j = braceLineIdx; j < lines.length; j++) {
 		const bodyLine = lines[j];
@@ -400,10 +420,11 @@ function walkBraceBody(
 		}
 		if (bodyStarted && depth <= 0) {
 			endLine = j;
+			closed = true;
 			break;
 		}
 		cyclomatic += countDecisions(bodyLine);
 	}
 
-	return { cyclomatic, endLine };
+	return { cyclomatic, endLine, closed };
 }

@@ -658,8 +658,9 @@ function matchScopeDeclaration(line: string): string | null {
 // Comment & String Stripping Helpers (delegated to shared-text-utils.ts)
 // ===========================================
 export {
-	stripComments,
-	stripStrings,
-	stripCommentsAndStrings,
 	scanLinesStripped,
+	stripComments,
+	stripCommentsAndStrings,
+	stripForBraceScan,
+	stripStrings,
 } from "./shared-text-utils.js";
