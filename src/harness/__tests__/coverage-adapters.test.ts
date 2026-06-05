@@ -60,6 +60,11 @@ describe("detectCoverageAdapters — positive (≥3 per language)", () => {
 		touch("tsconfig.json", "{}");
 		expect(ids(tmp)).toContain("javascript");
 	});
+
+	it("detects Rust from Cargo.toml", () => {
+		touch("Cargo.toml", "[package]\nname='x'\n");
+		expect(ids(tmp)).toContain("rust");
+	});
 });
 
 describe("detectCoverageAdapters — negative (no false positives across languages)", () => {
@@ -82,6 +87,11 @@ describe("detectCoverageAdapters — negative (no false positives across languag
 		touch("package.json", "{}");
 		expect(ids(tmp)).toEqual(["javascript"]);
 	});
+
+	it("detects ONLY Rust in a Rust-only project", () => {
+		touch("Cargo.toml", "[package]\nname='x'\n");
+		expect(ids(tmp)).toEqual(["rust"]);
+	});
 });
 
 describe("detectCoverageAdapter — single best guess + polyglot", () => {
@@ -94,6 +104,13 @@ describe("detectCoverageAdapter — single best guess + polyglot", () => {
 		touch("pyproject.toml", "[project]\nname='x'\n");
 		expect(ids(tmp)).toEqual(["javascript", "python"]);
 		expect(detectCoverageAdapter(tmp)?.id).toBe("javascript");
+	});
+
+	it("returns all three for a JS+Python+Rust root, in registry order", () => {
+		touch("package.json", "{}");
+		touch("pyproject.toml", "[project]\nname='x'\n");
+		touch("Cargo.toml", "[package]\nname='x'\n");
+		expect(ids(tmp)).toEqual(["javascript", "python", "rust"]);
 	});
 });
 
@@ -125,6 +142,16 @@ describe("adapter command shapes (wrap the native engine, emit canonical LCOV)",
 		expect(js.perTestLcovCommand).toBeNull();
 	});
 
+	it("Rust wraps cargo-llvm-cov and exports LCOV to the canonical path", () => {
+		const rust = coverageAdapterById("rust");
+		if (!rust) throw new Error("rust adapter missing");
+		expect(rust.lcovCommand).toContain("cargo llvm-cov");
+		expect(rust.lcovCommand).toContain("--lcov");
+		expect(rust.lcovCommand).toContain(CANONICAL_LCOV_PATH);
+		// LLVM source-based coverage has no single-flag per-test context.
+		expect(rust.perTestLcovCommand).toBeNull();
+	});
+
 	it("coverageAdapterById returns null for an unknown id", () => {
 		expect(coverageAdapterById("haskell")).toBeNull();
 	});
@@ -144,6 +171,15 @@ describe("coverageSetupGuidance", () => {
 		const guidance = coverageSetupGuidance(tmp);
 		expect(guidance).toContain("vitest");
 		expect(guidance).toContain("coverage lcov");
+		expect(guidance).toContain("cargo llvm-cov");
+	});
+
+	it("tailors guidance to Rust in a Cargo project", () => {
+		touch("Cargo.toml", "[package]\nname='x'\n");
+		const guidance = coverageSetupGuidance(tmp);
+		expect(guidance).toContain("cargo llvm-cov");
+		expect(guidance).not.toContain("vitest");
+		expect(guidance).not.toContain("coverage lcov");
 	});
 });
 
@@ -228,5 +264,76 @@ describe("Python coverage flows the same LCOV → canonical → ratchet spine", 
 		expect(lineFinding?.current_pct).toBe(50);
 		// app/util.py held at 100% → no finding for it.
 		expect(result.findings.some((f) => f.file === "app/util.py")).toBe(false);
+	});
+});
+
+// A THIRD language through the one parser — cargo-llvm-cov LCOV (`.rs` SF
+// paths). With the `.ts` (C0) and `.py` (Python) cases above, this is three
+// distinct engines (v8, coverage.py, LLVM source-based) flowing through the
+// identical parseLcov → canonical → compareCoverage spine, untouched.
+describe("Rust coverage flows the same LCOV → canonical → ratchet spine", () => {
+	// Realistic `cargo llvm-cov --lcov` output:
+	//   src/lib.rs — add() covered, divide() not → 2/4 lines, 1/2 fns, 0/2 branches
+	//   src/util.rs — fully covered → 1/1 lines
+	const RUST_LCOV = [
+		"SF:src/lib.rs",
+		"FN:1,add",
+		"FN:5,divide",
+		"FNDA:4,add",
+		"FNDA:0,divide",
+		"FNF:2",
+		"FNH:1",
+		"BRDA:5,0,0,-",
+		"BRDA:5,0,1,-",
+		"BRF:2",
+		"BRH:0",
+		"DA:1,4",
+		"DA:2,4",
+		"DA:5,0",
+		"DA:6,0",
+		"LF:4",
+		"LH:2",
+		"end_of_record",
+		"SF:src/util.rs",
+		"FN:1,clamp",
+		"FNDA:7,clamp",
+		"DA:1,7",
+		"LF:1",
+		"LH:1",
+		"end_of_record",
+		"",
+	].join("\n");
+
+	it("parses cargo-llvm-cov LCOV into canonical per-file metrics", () => {
+		const cov = parseLcov(RUST_LCOV);
+		const lib = cov.files.get("src/lib.rs");
+		if (!lib) throw new Error("missing src/lib.rs");
+		expect(lib.lines).toEqual({ covered: 2, total: 4, pct: 50 });
+		expect(lib.functions).toEqual({ covered: 1, total: 2, pct: 50 });
+		expect(lib.branches).toEqual({ covered: 0, total: 2, pct: 0 });
+		expect(cov.files.get("src/util.rs")?.lines.pct).toBe(100);
+	});
+
+	it("flags a per-file regression on a .rs file via the unchanged ratchet", () => {
+		const summary = canonicalToCoverageSummary(parseLcov(RUST_LCOV));
+		const baseline: CoverageBaseline = {
+			version: 1,
+			updated_at: new Date(0).toISOString(),
+			files: {
+				"src/lib.rs": { lines_pct: 100, branches_pct: 100 },
+				"src/util.rs": { lines_pct: 100, branches_pct: 100 },
+			},
+		};
+
+		const result = compareCoverage(summary, baseline, {
+			config: { enabled: true, per_file: true, allow_decrease_pct: 0 },
+			repoRoot: process.cwd(),
+		});
+
+		const lineFinding = result.findings.find(
+			(f) => f.file === "src/lib.rs" && f.metric === "lines",
+		);
+		expect(lineFinding?.current_pct).toBe(50);
+		expect(result.findings.some((f) => f.file === "src/util.rs")).toBe(false);
 	});
 });

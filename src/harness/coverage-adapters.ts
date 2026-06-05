@@ -116,12 +116,35 @@ const PYTHON_ADAPTER: CoverageAdapter = {
 };
 
 /**
- * Registry, in detection-precedence order. Adding Rust (`cargo llvm-cov
- * --lcov`), Go (`gocover-cobertura`/`go test -coverprofile` → lcov), and Java
- * (JaCoCo → genhtml) is a matter of appending an entry — the parser and ratchet
- * are untouched.
+ * Rust via cargo-llvm-cov. `cargo llvm-cov --lcov --output-path …` runs the
+ * test suite under LLVM source-based coverage and exports LCOV directly — the
+ * native engine wrapped, no reimplementation.
+ *
+ * LLVM source-based coverage has no single-flag per-test context (unlike
+ * coverage.py), so the per-test map falls back to the file-level dependency
+ * graph (plan P2) — hence `perTestLcovCommand: null`, same posture as JS.
  */
-export const COVERAGE_ADAPTERS: readonly CoverageAdapter[] = [JAVASCRIPT_ADAPTER, PYTHON_ADAPTER];
+const RUST_ADAPTER: CoverageAdapter = {
+	id: "rust",
+	language: "Rust",
+	engine: "cargo-llvm-cov (LLVM source-based coverage)",
+	markers: ["Cargo.toml"],
+	lcovCommand: "cargo llvm-cov --lcov --output-path coverage/lcov.info",
+	perTestLcovCommand: null,
+	reportRelPath: CANONICAL_LCOV_PATH,
+};
+
+/**
+ * Registry, in detection-precedence order. Each new language is one appended
+ * entry — JS (vitest/v8), Python (coverage.py), Rust (cargo-llvm-cov) ship;
+ * Go (`go test -coverprofile` → lcov) and Java (JaCoCo → genhtml) are the same
+ * shape. The parser and ratchet downstream are untouched by any addition.
+ */
+export const COVERAGE_ADAPTERS: readonly CoverageAdapter[] = [
+	JAVASCRIPT_ADAPTER,
+	PYTHON_ADAPTER,
+	RUST_ADAPTER,
+];
 
 // ===========================================
 // Detection

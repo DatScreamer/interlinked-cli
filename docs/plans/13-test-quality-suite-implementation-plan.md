@@ -67,21 +67,23 @@ Legend: ✅ done · 🟡 partial · ⬜ designed-not-built · ☁️ cloud-futur
   *project-level* verify section (advisory first, fail-open if no report): bucket+key in
   `verify/tool-results-types.ts`, a project-level runner, section in `section-table-core.ts`,
   `output-json.ts`, `advisory.ts`, + parity/advisory regression tests. → roadmap #3.
-- **C4 · Per-language adapters — 🟡 Python landed this session.** `coverage-adapters.ts`
+- **C4 · Per-language adapters — 🟡 JS + Python + Rust landed this session.** `coverage-adapters.ts`
   (pure: `CoverageAdapter` = detect markers + the LCOV-emitting command + report path; registry;
   `detectCoverageAdapter(s)` / `coverageAdapterById` / `coverageSetupGuidance`). **Python**
-  adapter wraps coverage.py (`coverage run -m pytest && coverage lcov -o coverage/lcov.info`)
-  with the native per-test map via pytest-cov `--cov-context=test` (the P2 keystone, forward-wired);
-  **JS/TS** adapter formalizes the existing vitest/v8 path. Wired into `coverage.ts`: the canonical
+  wraps coverage.py (`coverage run -m pytest && coverage lcov -o coverage/lcov.info`) with the
+  native per-test map via pytest-cov `--cov-context=test` (the P2 keystone, forward-wired);
+  **Rust** wraps cargo-llvm-cov (`cargo llvm-cov --lcov --output-path coverage/lcov.info`,
+  per-test map `null` — LLVM source-based coverage has no single-flag per-test context);
+  **JS/TS** formalizes the existing vitest/v8 path. Wired into `coverage.ts`: the canonical
   path is single-sourced (`CANONICAL_LCOV_PATH`) and the no-report message now prints
-  *language-detected* setup commands (Python-aware in a Python project). **The C4 proof is shipped:**
-  a coverage.py-shaped LCOV (`.py` `SF` paths, FN/FNDA/BRDA/DA) flows through the *same*
-  `parseLcov → canonical → compareCoverage` spine as the `.ts` path and fires a per-file regression —
-  two languages, one parser. 20 new adapter tests + 1 command test; typecheck/biome/tests green.
-  The adapter is a *reader/guidance* layer — it describes the command, doesn't yet *run* it
-  (generate-on-demand is the follow-up). **Next: Rust** (`cargo llvm-cov --lcov`), then Go/Java.
-  *(Note: `cross-language-check-coverage.md` covers inline regex *check* detectors — a different
-  concept from coverage *analysis* adapters; this work has no doc dependency on it.)*
+  *language-detected* setup commands (only the detected language's). **The C4 proof is shipped, ×3:**
+  coverage.py-shaped (`.py`) **and** cargo-llvm-cov-shaped (`.rs`) LCOV each flow through the *same*
+  `parseLcov → canonical → compareCoverage` spine as the `.ts` path and fire a per-file regression —
+  three engines (v8 / coverage.py / LLVM), one parser. 27 adapter tests + 1 command test;
+  typecheck/biome/tests green. The adapter is a *reader/guidance* layer — it describes the command,
+  doesn't yet *run* it (generate-on-demand is the follow-up). **Next: Go** (`go test -coverprofile`
+  → lcov), then **Java** (JaCoCo). *(Note: `cross-language-check-coverage.md` covers inline regex
+  *check* detectors — a different concept from coverage *analysis* adapters; no doc dependency.)*
 
 ## 2. Phase R — CRAP → gate
 
@@ -158,17 +160,18 @@ Legend: ✅ done · 🟡 partial · ⬜ designed-not-built · ☁️ cloud-futur
 | Shared unlock — predictive→gating | `docs/design/predictive-gate-validation-join.md` |
 | Shared unlock — durable joinable state | `docs/design/state-substrate-decision.md` |
 
-## 8. Current working-tree state (uncommitted, 2026-06-05)
+## 8. State (2026-06-05)
 
-- **Coverage spine (Phase C0): done + green.** `coverage-canonical.ts`, `coverage-lcov.ts`,
-  `__tests__/coverage-lcov.test.ts` (new); `coverage.ts`, `vitest.config.ts` (modified);
-  `.interlinked/coverage-baseline.json` re-cut (621 files).
-- **Per-language adapters (Phase C4): Python landed + green.** `coverage-adapters.ts`,
-  `__tests__/coverage-adapters.test.ts` (new); `coverage.ts` (adapter-aware no-report guidance +
-  `CANONICAL_LCOV_PATH`), `coverage.test.ts` (guidance assertion) (modified). 21 new tests; the
-  Python-LCOV-through-one-parser proof is the headline case.
-- **Design edits:** `harness-system-diagrams.md` (§3/§4a/§4b), `open-obligation-ledger.md` (#8 + Mutation §).
-- **Nothing committed.** Two self-contained green commit boundaries: the C0 coverage spine, and
-  the C4 Python adapter (each ships with its plan-doc update — bundle docs with code).
-- **Immediate next step:** Phase **C1** (denominator fix → re-cut), or extend C4 to **Rust**
-  (`cargo llvm-cov --lcov`) for a third language through the one parser. Both pick up from here.
+- **Committed on `main` (not pushed), 2 commits:**
+  1. `docs(harness):` the design-only edits — `harness-system-diagrams.md` (§3/§4a/§4b),
+     `open-obligation-ledger.md` (#8 + Mutation §).
+  2. `feat(coverage):` the C0 LCOV spine (`coverage-canonical.ts`, `coverage-lcov.ts` + test,
+     `vitest.config.ts` lcov reporter, `coverage.ts`) **+** the C4 adapter (`coverage-adapters.ts`
+     + test, `coverage.test.ts`) **+** this plan doc. Baseline re-cut through LCOV (621 files).
+- **C4 adapters shipped: JS + Python + Rust.** `coverage-adapters.ts` (pure detect+command+path
+  registry). The proof is demonstrated for three engines (v8 / coverage.py / LLVM source-based) —
+  `.ts`, `.py`, `.rs` LCOV all flow the one `parseLcov → canonical → compareCoverage` spine.
+  27 adapter tests + 1 command test; full suite green; `interlinked verify` 0 findings on touched files.
+- **Immediate next step:** Phase **C1** (denominator fix → re-cut baseline), **C3** (wire the ratchet
+  into `interlinked verify` as a project-level section — it's standalone today), or extend C4 to
+  **Go** (`go test -coverprofile` → lcov) for a fourth language. All pick up from here.
