@@ -41,10 +41,14 @@ checks (too late — the agent has moved on and the reminder loses its referent)
 | 5 | **Red-green TDD** — write the failing test first | test-suite red | the implementation edit turns it green |
 | 6 | **Manifest-then-reconcile** — add a dep to `package.json` | `manifest-edit-guard` blocks (unapproved dep) | the next step runs `allowlist snapshot` |
 | 7 | **Stub-then-fill** — scaffold `throw new Error("not implemented")` / `TODO` | stub detector / `verification-stop-checks` | subsequent edits fill the body |
+| 8 | **Surviving mutant** — a deliberate source change goes undetected by the covering tests | mutation gate (a survivor) | a later edit to the **test** (assert it), the **source** (remove dead/redundant code), **both** (refactor for observability + assert), or an **equivalent-mutant annotation** |
 
-Unifying property: **#1–5 and #7 are "wrongness as a static property of an
+Unifying property: **#1–5 and #7 are "wrongness as a *static* property of an
 incomplete tree" — reversible by a later edit.** #6 straddles: the manifest *edit*
 is reversible, but the *install* it implies is not — see "Deferrable vs never."
+**#8 (mutation) is the *dynamic* variant** — "wrongness" is a behavioral property
+of the (source, test) *pair*, reversible by editing *either* side, and uniquely
+*expensive/async to evaluate* (see "Mutation — the expensive/async obligation" below).
 
 ## The latent principle (it's half-built already)
 
@@ -147,6 +151,52 @@ records an obligation ("dep added; run `allowlist snapshot` before commit"); the
 *install* still hits the supply-chain block. This is exactly what the declarative
 `requires_prior` / `forbids_after` predicates express for known pairs — the ledger
 is the general runtime form of that idea.
+
+## Mutation — the expensive/async obligation
+
+Mutation testing is the obligation type that most needs this ledger, and the one
+that bends its rules. A surviving mutant (a deliberate source change the covering
+tests fail to catch) is **example #8** above — but unlike #1–7 it has two
+distinguishing properties.
+
+**It indicts the *(source, test) pair*, not one file — so discharge is four-way.**
+"Mutation tests the tests" is the common case, not the invariant. A survivor is
+resolved by editing the **test** (assert the behavior), the **source** (remove
+dead/redundant code no test *can* kill), **both** (refactor source so the behavior
+is observable, then assert), or **neither** — an **equivalent mutant** (semantically
+identical, unkillable) discharged by a justification annotation (the existing
+suppression-with-reason pattern). The harness reports the deterministic fact
+(mutant X survived at `foo.ts:42`, `>=`→`>`, covered by these tests); the agent
+diagnoses which — **present, not prescribe** (detection/decision split). The
+"edit the source" case means a survivor doubles as a **dead-code / over-complexity**
+signal — the same finding `complexity` / `crap` / `dead_exports` chase from the
+other side. The cluster (source + its covering tests) is bootstrapped for free from
+Stryker's `perTest` analysis; staleness is keyed on **both** the source and the
+test hashes, since either side can be the fix.
+
+**Its *evaluation* is async/expensive — the one documented exception to "stays
+synchronous."** Every other obligation discharges via a *cheap* re-run of its
+checker (`tsc`, import-resolution) — synchronous, per "Stays … synchronous" above.
+Mutation genuinely costs ~30–60s, so its finding is produced by a **debounced,
+bridged (Pre→Post), `--incremental`** cloud run (one in-flight run per cluster,
+coalesced; re-checks cost only the changed mutants). This is
+**async-because-genuinely-expensive, not async-to-dodge-the-latency-budget** — the
+distinction `feedback_posttooluse_stays_sync.md` draws. The ledger *bookkeeping*
+(record / discharge / escalate) stays deterministic and synchronous; only the
+finding's *production* is off-process.
+
+**Enforcement points** (full execution-mode detail in `harness-system-diagrams.md` §4a):
+- **PostToolUse** — report survivors as `additionalContext` (present-not-prescribe)
+  and record/refresh the cluster's obligation. Never hidden ("deadline, not suppression").
+- **Stop** — nag; on Claude/Codex/Gemini, *block-to-continue* if obligations are open
+  (a survivor is under-verification — the sanctioned Stop category,
+  `feedback_reluctance_to_push.md`). Copilot Stop can't block → advisory.
+- **commit** (the hard wall) — `git commit`'s PreToolUse runs all touched clusters'
+  mutation **synchronously in-band (~25s, fanned out, ∃-survivor early-exit)** and
+  **blocks the commit** if any obligation is open, full survivor list in the **block
+  reason** (a Pre-block fires no Post, so the reason must carry it — verified in §4a).
+  This is where the synchronous ~25s cloud block lives — relocated from per-edit to
+  the boundary where "done" is unambiguous.
 
 ## The intent layer (optional, Tier 2 — advisory only)
 
