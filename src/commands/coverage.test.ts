@@ -70,6 +70,17 @@ describe("coverageCheckCommand", () => {
 		expect(io.mocks().stderr).toContain("No coverage report found");
 	});
 
+	it("surfaces language-specific LCOV-generation guidance when no report exists", async () => {
+		// Mark the temp project as Python so the guidance is tailored to it.
+		writeFileSync(join(tmp, "pyproject.toml"), "[project]\nname='x'\n");
+		await coverageCheckCommand({ cwd: tmp });
+		const { stderr } = io.mocks();
+		expect(stderr).toContain("coverage lcov");
+		expect(stderr).toContain("--cov-context=test");
+		// JS guidance must not leak into a Python-only project.
+		expect(stderr).not.toContain("vitest");
+	});
+
 	it("accepts the current state as a new baseline when --update-baseline is set", async () => {
 		writeCoverageSummary(tmp, { "src/foo.ts": { lines: 80, branches: 60 } });
 		await coverageCheckCommand({ cwd: tmp, updateBaseline: true });

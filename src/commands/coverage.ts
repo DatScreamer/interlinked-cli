@@ -1,18 +1,23 @@
 // ===========================================
 // interlinked coverage — per-file coverage ratchet CLI
 // ===========================================
-// Thin wrapper around harness/coverage-ratchet.ts. Locates the coverage
-// summary (default: `coverage/coverage-summary.json`), loads the baseline
-// from .interlinked/coverage-baseline.json, runs compareCoverage, and
-// renders results. `--update-baseline` explicitly persists the new state;
-// without it, any per-file drop surfaces as a finding and exits non-zero.
+// Thin wrapper around harness/coverage-ratchet.ts. Locates a coverage report,
+// preferring `coverage/lcov.info` (the language-agnostic interchange path:
+// LCOV → canonical model → ratchet shape) and falling back to the istanbul/v8
+// `coverage-summary.json`. Loads the baseline from
+// .interlinked/coverage-baseline.json, runs compareCoverage, and renders
+// results. `--update-baseline` explicitly persists the new state; without it,
+// any per-file drop surfaces as a finding and exits non-zero.
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadCheckPolicy } from "../harness/check-policy.js";
+import { CANONICAL_LCOV_PATH, coverageSetupGuidance } from "../harness/coverage-adapters.js";
+import { canonicalToCoverageSummary, loadLcovFile } from "../harness/coverage-lcov.js";
 import {
 	type CoverageRatchetFinding,
 	type CoverageRatchetResult,
+	type CoverageSummary,
 	compareCoverage,
 	loadBaseline,
 	loadCoverageSummary,
@@ -22,7 +27,15 @@ import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 
-const DEFAULT_REPORT_PATHS = ["coverage/coverage-summary.json", "coverage/coverage-final.json"];
+const DEFAULT_REPORT_PATHS = [
+	// The canonical interchange path every coverage adapter emits to
+	// (coverage-adapters.ts); kept first so every language flows the one
+	// LCOV → canonical → ratchet path. The json-summary/final entries are the
+	// istanbul/v8 fallbacks for a JS run that hasn't emitted lcov.
+	CANONICAL_LCOV_PATH,
+	"coverage/coverage-summary.json",
+	"coverage/coverage-final.json",
+];
 
 interface CoverageCheckOptions {
 	report?: string;
@@ -43,13 +56,14 @@ export async function coverageCheckCommand(opts: CoverageCheckOptions): Promise<
 		if (!reportPath) {
 			outputError(
 				mode,
-				`No coverage report found. Expected one of:\n  ${DEFAULT_REPORT_PATHS.map((p) => `- ${p}`).join("\n  ")}\nRun your test suite with coverage first (e.g. \`npm test -- --coverage\`).`,
+				`No coverage report found. Expected one of:\n  ${DEFAULT_REPORT_PATHS.map((p) => `- ${p}`).join("\n  ")}\n\n` +
+					`Generate one — each command emits LCOV at the canonical path the ratchet reads:\n${coverageSetupGuidance(cwd)}`,
 			);
 			process.exitCode = 1;
 			return;
 		}
 
-		const summary = loadCoverageSummary(reportPath);
+		const summary = loadReport(reportPath, cwd);
 		if (!summary) {
 			outputError(mode, `Failed to parse coverage report at ${reportPath}`);
 			process.exitCode = 1;
@@ -138,6 +152,20 @@ export function coverageBaselineCommand(opts: { cwd?: string; json?: boolean }):
 // ===========================================
 // Helpers
 // ===========================================
+
+/**
+ * Load a coverage report into the ratchet's `CoverageSummary` shape, dispatching
+ * by format: `.info` → LCOV (the language-agnostic interchange path, via the
+ * canonical model); otherwise the istanbul/v8 json-summary. LCOV is preferred
+ * (see `DEFAULT_REPORT_PATHS`) so every language's coverage flows one path.
+ */
+function loadReport(reportPath: string, cwd: string): CoverageSummary | null {
+	if (reportPath.endsWith(".info")) {
+		const cov = loadLcovFile(reportPath, { cwd });
+		return cov ? canonicalToCoverageSummary(cov) : null;
+	}
+	return loadCoverageSummary(reportPath);
+}
 
 function resolveReportPath(cwd: string, explicit?: string): string | null {
 	if (explicit) {

@@ -69,7 +69,11 @@ export default defineConfig({
             // `include` the v8 provider instruments all of node_modules
             // (~3.6M statements, 16k files). `include` bounds it to src.
             include: ["src/**"],
-            reporter: ["text-summary", "json", "json-summary"],
+            // `lcov` (coverage/lcov.info) feeds the language-agnostic canonical
+            // coverage model (`coverage-lcov.ts` → `coverage-canonical.ts`): the
+            // same interchange format coverage.py / cargo-llvm-cov / gcov emit,
+            // so the ratchet + CRAP consume every language through one parser.
+            reporter: ["text-summary", "json", "json-summary", "lcov"],
             reportsDirectory: "coverage",
             exclude: [
                 "node_modules/**",
