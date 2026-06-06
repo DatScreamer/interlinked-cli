@@ -1,109 +1,1201 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// ===========================================
+// interlinked harness — behavioral coverage
+// ===========================================
+// Drives every branch of the five exported lifecycle command handlers in
+// ./harness.ts (start / stop / restart / status / test). The handlers compose
+// helpers from two sibling modules plus node:fs / node:child_process; every one
+// of those boundaries is mocked so each branch is scripted deterministically
+// with zero real process spawning, socket I/O, or signal delivery:
+//   - ./harness-process.js        → isHarnessRunning / reapOrphanHarnesses /
+//                                    getHarnessServerPath / dist-fresh / stderr-log
+//   - ./harness-status-helpers.js → parseHarnessProtocol / queryHarness /
+//                                    expectedSocketPaths / status readers
+//   - ../harness/build-staleness  → distStaleness / stalenessWarning
+//   - ../lib/formatter            → identity c.* + header/kvLine (assert raw text)
+//   - node:fs                     → existsSync / unlinkSync
+//   - node:child_process          → spawn (FakeChild EventEmitter)
+//   - process.kill                → spied; signal delivery scripted per test
+// We assert the real emitted strings (console.log / console.error), the JSON
+// shape under --json, process.exit / process.exitCode side-effects, and EVERY
+// branch (already-running, missing-server, daemon vs foreground, ready vs
+// crashed vs timed-out, SIGTERM→SIGKILL escalation, stale-file cleanup,
+// blocked-vs-allowed test decisions, and the --json / --short / --full modes).
+//
+// Fake timers make the handlers' `await new Promise(setTimeout(...))` poll
+// loops resolve instantly; each test that awaits a handler drives the clock
+// via a helper that races the handler against repeated timer flushes.
+
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// ---- hoisted mock fns -------------------------------------------------
+const mocks = vi.hoisted(() => ({
+	// node:fs
+	existsSync: vi.fn(),
+	unlinkSync: vi.fn(),
+	// node:child_process
+	spawn: vi.fn(),
+	// build-staleness
+	distStaleness: vi.fn(),
+	stalenessWarning: vi.fn(),
+	// harness-process
+	isHarnessRunning: vi.fn(),
+	reapOrphanHarnesses: vi.fn(),
+	ensureDistFresh: vi.fn(),
+	getHarnessServerPath: vi.fn(),
+	getSocketPath: vi.fn(),
+	getPidPath: vi.fn(),
+	openDaemonStderrLog: vi.fn(),
+	closeDaemonStderrLog: vi.fn(),
+	readDaemonStderrLog: vi.fn(),
+	// harness-status-helpers
+	parseHarnessProtocol: vi.fn(),
+	queryHarness: vi.fn(),
+	expectedSocketPaths: vi.fn(),
+	readActiveMode: vi.fn(),
+	readLastLatencyTimestamp: vi.fn(),
+	readProtocolStatus: vi.fn(),
+	readFramedSocketStatuses: vi.fn(),
+	readRssMb: vi.fn(),
+	getFramedSocketPath: vi.fn(),
+}));
+
+vi.mock("node:fs", () => ({
+	existsSync: mocks.existsSync,
+	unlinkSync: mocks.unlinkSync,
+}));
+
+vi.mock("node:child_process", () => ({
+	spawn: mocks.spawn,
+}));
+
+vi.mock("../harness/build-staleness.js", () => ({
+	distStaleness: mocks.distStaleness,
+	stalenessWarning: mocks.stalenessWarning,
+}));
+
+vi.mock("../lib/formatter.js", () => ({
+	c: {
+		bold: (s: string) => s,
+		dim: (s: string) => s,
+		red: (s: string) => s,
+		green: (s: string) => s,
+		yellow: (s: string) => s,
+		cyan: (s: string) => s,
+		blue: (s: string) => s,
+	},
+	header: (title: string) => `## ${title}`,
+	kvLine: (key: string, value: string) => `${key}: ${value}`,
+}));
+
+vi.mock("./harness-process.js", () => ({
+	isHarnessRunning: mocks.isHarnessRunning,
+	reapOrphanHarnesses: mocks.reapOrphanHarnesses,
+	ensureDistFresh: mocks.ensureDistFresh,
+	getHarnessServerPath: mocks.getHarnessServerPath,
+	getSocketPath: mocks.getSocketPath,
+	getPidPath: mocks.getPidPath,
+	getFramedSocketPath: mocks.getFramedSocketPath,
+	openDaemonStderrLog: mocks.openDaemonStderrLog,
+	closeDaemonStderrLog: mocks.closeDaemonStderrLog,
+	readDaemonStderrLog: mocks.readDaemonStderrLog,
+	// re-exported public surface (callable identities, unused by the handlers)
+	collectAncestorPids: vi.fn(),
+	readActiveHarnessPid: vi.fn(),
+}));
+
+vi.mock("./harness-status-helpers.js", () => ({
+	parseHarnessProtocol: mocks.parseHarnessProtocol,
+	queryHarness: mocks.queryHarness,
+	expectedSocketPaths: mocks.expectedSocketPaths,
+	readActiveMode: mocks.readActiveMode,
+	readLastLatencyTimestamp: mocks.readLastLatencyTimestamp,
+	readProtocolStatus: mocks.readProtocolStatus,
+	readFramedSocketStatuses: mocks.readFramedSocketStatuses,
+	readRssMb: mocks.readRssMb,
+}));
+
 import {
+	harnessRestartCommand,
 	harnessStartCommand,
 	harnessStatusCommand,
-	isHarnessRunning,
-	reapOrphanHarnesses,
+	harnessStopCommand,
+	harnessTestCommand,
 } from "./harness.js";
 
-// Thin import-level tests: assert every exported command function is
-// callable. Deep behavioral coverage requires mocking fs / network /
-// subprocess, tracked separately. The import itself catches missing
-// exports, syntax errors, and cyclic import failures. The process/orphan
-// utilities now live in `harness-process.ts` (re-exported here for API
-// parity); their dedicated tests are in `harness-process.test.ts`.
+// ---- fake child process ------------------------------------------------
+interface FakeChild extends EventEmitter {
+	pid: number;
+	unref: ReturnType<typeof vi.fn>;
+}
 
-describe("harness command module", () => {
-	it("exports harnessStartCommand as a function", () => {
-		expect(typeof harnessStartCommand).toBe("function");
+function createFakeChild(pid = 4321): FakeChild {
+	const child = new EventEmitter() as FakeChild;
+	child.pid = pid;
+	child.unref = vi.fn();
+	return child;
+}
+
+// ---- output capture ----------------------------------------------------
+let logs: string[];
+let errs: string[];
+let stderrChunks: string[];
+
+function logText(): string {
+	return logs.join("\n");
+}
+function errText(): string {
+	return errs.join("\n");
+}
+function stderrText(): string {
+	return stderrChunks.join("");
+}
+
+// ---- driving the clock through a handler's poll loops ------------------
+// Handlers `await new Promise(setTimeout(...))` inside `while` loops. With
+// fake timers those promises never resolve unless we advance the clock. We
+// run the handler and, in parallel, repeatedly flush pending timers until the
+// handler settles.
+async function runWithTimers(p: Promise<void>): Promise<void> {
+	let done = false;
+	const settled = p.then(
+		() => {
+			done = true;
+		},
+		(err: unknown) => {
+			done = true;
+			throw err;
+		},
+	);
+	// Yield once so the handler reaches its first await, then pump timers.
+	for (let i = 0; i < 5000 && !done; i++) {
+		// Flush any micro-tasks first, then advance fake time enough to fire
+		// the longest poll interval used by the handlers (500ms).
+		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(500);
+	}
+	await settled;
+}
+
+const SERVER = "/repo/dist/harness/server.js";
+const SOCK = "/repo/.interlinked/harness.sock";
+const PID = "/repo/.interlinked/harness.pid";
+
+beforeEach(() => {
+	for (const m of Object.values(mocks)) m.mockReset();
+	logs = [];
+	errs = [];
+	stderrChunks = [];
+	vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+		logs.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+	});
+	vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+		errs.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+	});
+	vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+		stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+		return true;
+	}) as typeof process.stderr.write);
+	vi.spyOn(process, "cwd").mockReturnValue("/repo");
+
+	// Sensible defaults the individual tests override as needed.
+	mocks.parseHarnessProtocol.mockImplementation((raw: string | undefined) =>
+		raw === "raw" || raw === "framed" || raw === "dual" ? raw : "dual",
+	);
+	mocks.getSocketPath.mockReturnValue(SOCK);
+	mocks.getPidPath.mockReturnValue(PID);
+	mocks.getHarnessServerPath.mockReturnValue(SERVER);
+	mocks.expectedSocketPaths.mockReturnValue([SOCK]);
+	mocks.reapOrphanHarnesses.mockReturnValue({ candidates: [], killed: [], dryRun: false });
+	mocks.openDaemonStderrLog.mockReturnValue({ fd: 7, path: "/repo/.interlinked/logs/daemon.log", startOffset: 0 });
+	mocks.readDaemonStderrLog.mockReturnValue("");
+	mocks.distStaleness.mockReturnValue(null);
+	mocks.stalenessWarning.mockReturnValue(null);
+	mocks.readActiveMode.mockReturnValue(null);
+	mocks.readLastLatencyTimestamp.mockReturnValue(null);
+	mocks.readProtocolStatus.mockReturnValue(null);
+	mocks.readFramedSocketStatuses.mockResolvedValue([]);
+	mocks.readRssMb.mockReturnValue(null);
+	mocks.queryHarness.mockResolvedValue(null);
+
+	vi.useFakeTimers();
+});
+
+afterEach(() => {
+	vi.runOnlyPendingTimers();
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	process.exitCode = 0;
+});
+
+// ===========================================================================
+// harnessStartCommand
+// ===========================================================================
+
+describe("harnessStartCommand", () => {
+	it("reports already-running and short-circuits (normal mode)", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 999 });
+		await runWithTimers(harnessStartCommand({}));
+		expect(logText()).toContain("Harness already running (PID 999)");
+		expect(mocks.spawn).not.toHaveBeenCalled();
+		expect(mocks.ensureDistFresh).not.toHaveBeenCalled();
 	});
 
-	it("re-exports isHarnessRunning from harness-process for API parity", () => {
-		expect(typeof isHarnessRunning).toBe("function");
+	it("reports already-running in JSON mode", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 42 });
+		await runWithTimers(harnessStartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; pid: number };
+		expect(parsed.status).toBe("already_running");
+		expect(parsed.pid).toBe(42);
 	});
 
-	it("re-exports reapOrphanHarnesses from harness-process for API parity", () => {
-		expect(typeof reapOrphanHarnesses).toBe("function");
+	it("errors when the server path resolves but the file is missing", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.getHarnessServerPath.mockReturnValue(SERVER);
+		mocks.existsSync.mockReturnValue(false); // server file absent
+		await runWithTimers(harnessStartCommand({}));
+		expect(errText()).toContain(`Harness server not found at ${SERVER}`);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("errors with the generic message when no server path resolves", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.getHarnessServerPath.mockReturnValue("");
+		mocks.existsSync.mockReturnValue(false);
+		await runWithTimers(harnessStartCommand({}));
+		expect(errText()).toContain("Harness server not found. Ensure interlinked-cli is installed");
+	});
+
+	it("daemonizes, polls until the socket appears, and reports started", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false }) // initial guard
+			.mockReturnValue({ running: true, pid: 1234 }); // after spawn
+		// server exists; socket exists immediately so the poll loop exits on
+		// its first iteration without awaiting a timer.
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		const child = createFakeChild(1234);
+		mocks.spawn.mockReturnValue(child);
+
+		await runWithTimers(harnessStartCommand({ daemon: true, verbose: true }));
+
+		expect(mocks.ensureDistFresh).toHaveBeenCalledOnce();
+		expect(mocks.reapOrphanHarnesses).toHaveBeenCalledWith("/repo");
+		expect(mocks.spawn).toHaveBeenCalledOnce();
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		expect(spawnArgs).toEqual(expect.arrayContaining(["--protocol", "dual", "--session-id", "default", "--verbose"]));
+		expect(spawnArgs.some((a) => a.startsWith("--max-old-space-size="))).toBe(true);
+		expect(child.unref).toHaveBeenCalledOnce();
+		expect(mocks.closeDaemonStderrLog).toHaveBeenCalledWith({ fd: 7, path: "/repo/.interlinked/logs/daemon.log", startOffset: 0 });
+		expect(logText()).toContain("Harness started (PID 1234)");
+	});
+
+	it("honors INTERLINKED_HARNESS_HEAP_MB override in the spawn args", async () => {
+		const prev = process.env.INTERLINKED_HARNESS_HEAP_MB;
+		process.env.INTERLINKED_HARNESS_HEAP_MB = "2048";
+		try {
+			mocks.isHarnessRunning
+				.mockReturnValueOnce({ running: false })
+				.mockReturnValue({ running: true, pid: 1 });
+			mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+			mocks.spawn.mockReturnValue(createFakeChild(1));
+			await runWithTimers(harnessStartCommand({ daemon: true }));
+			const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+			expect(spawnArgs[0]).toBe("--max-old-space-size=2048");
+		} finally {
+			if (prev === undefined) delete process.env.INTERLINKED_HARNESS_HEAP_MB;
+			else process.env.INTERLINKED_HARNESS_HEAP_MB = prev;
+		}
+	});
+
+	it("unlinks a stale raw socket before binding (non-framed protocol)", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 5 });
+		// server + stale socket both exist at start so the unlink branch fires.
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(5));
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(mocks.unlinkSync).toHaveBeenCalledWith(SOCK);
+	});
+
+	it("swallows an unlink error on the stale-socket cleanup path", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 6 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.unlinkSync.mockImplementation(() => {
+			throw new Error("EBUSY");
+		});
+		mocks.spawn.mockReturnValue(createFakeChild(6));
+		// Should not throw despite the unlink failure.
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(logText()).toContain("Harness started (PID 6)");
+	});
+
+	it("skips the raw-socket unlink for the framed protocol", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 7 });
+		mocks.expectedSocketPaths.mockReturnValue([SOCK]);
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(7));
+		await runWithTimers(harnessStartCommand({ daemon: true, protocol: "framed" }));
+		expect(mocks.unlinkSync).not.toHaveBeenCalled();
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		// framed is non-raw, so --session-id is appended
+		expect(spawnArgs).toEqual(expect.arrayContaining(["--protocol", "framed", "--session-id", "default"]));
+	});
+
+	it("omits --session-id for the raw protocol", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 8 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(8));
+		await runWithTimers(harnessStartCommand({ daemon: true, protocol: "raw", sessionId: "ignored" }));
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		expect(spawnArgs).not.toContain("--session-id");
+		expect(spawnArgs).toEqual(expect.arrayContaining(["--protocol", "raw"]));
+	});
+
+	it("reports a crash with captured stderr when the child exits before the socket appears", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		// server exists, socket never appears
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.readDaemonStderrLog.mockReturnValue("boom: module not found\n");
+		const child = createFakeChild();
+		mocks.spawn.mockReturnValue(child);
+		// Emit exit on the next macrotask so the poll loop observes childExited.
+		queueMicrotask(() => child.emit("exit", 1));
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(logText()).toContain("Failed to start harness");
+		expect(logText()).toContain("Error output:");
+		expect(logText()).toContain("boom: module not found");
+	});
+
+	it("reports a crash with no output when the child exits silently", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.readDaemonStderrLog.mockReturnValue("");
+		const child = createFakeChild();
+		mocks.spawn.mockReturnValue(child);
+		queueMicrotask(() => child.emit("exit", 0));
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(logText()).toContain("Process exited without output.");
+	});
+
+	it("daemon-start JSON failure payload when socket never appears and child never exits", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.spawn.mockReturnValue(createFakeChild());
+		await runWithTimers(harnessStartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; protocol: string };
+		expect(parsed.status).toBe("failed");
+		expect(parsed.protocol).toBe("dual");
+		// running-but-no-socket path emits the "foreground" hint
+		// (covered indirectly by the success/json assertions).
+	});
+
+	it("daemon-start JSON success payload when socket appears", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 77 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(77));
+		await runWithTimers(harnessStartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; pid: number; sockets: string[] };
+		expect(parsed.status).toBe("started");
+		expect(parsed.pid).toBe(77);
+		expect(parsed.sockets).toEqual([SOCK]);
+	});
+
+	it("falls back to child.pid when isHarnessRunning has no pid after start", async () => {
+		// running:false guard, then running:false again so resolvedPid uses child.pid
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(2468));
+		await runWithTimers(harnessStartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; pid: number };
+		// socket appeared → ready:true; pid falls back to child.pid (2468)
+		expect(parsed.status).toBe("started");
+		expect(parsed.pid).toBe(2468);
+	});
+
+	it("reports the running-but-no-socket hint in normal mode", async () => {
+		// guard false, then running:true but socket never exists → ready stays
+		// false, childExited stays false → the "Process is running" hint branch.
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 33 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.spawn.mockReturnValue(createFakeChild(33));
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(logText()).toContain("Process is running but socket not created");
+	});
+
+	it("foreground mode execs directly and wires the exit handler", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		const child = createFakeChild();
+		mocks.spawn.mockReturnValue(child);
+		const exitSpy = vi
+			.spyOn(process, "exit")
+			.mockImplementation((() => undefined) as unknown as typeof process.exit);
+		await runWithTimers(harnessStartCommand({ daemon: false }));
+		expect(logText()).toContain("Starting harness in foreground");
+		expect(mocks.spawn).toHaveBeenCalledWith(
+			process.execPath,
+			expect.any(Array),
+			expect.objectContaining({ stdio: "inherit", cwd: "/repo" }),
+		);
+		// exit handler maps a numeric code through; null/0 → 0
+		child.emit("exit", 5);
+		expect(exitSpy).toHaveBeenCalledWith(5);
+		child.emit("exit", null);
+		expect(exitSpy).toHaveBeenCalledWith(0);
+	});
+
+	it("foreground mode emits the JSON starting_foreground payload", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.spawn.mockReturnValue(createFakeChild());
+		vi.spyOn(process, "exit").mockImplementation((() => undefined) as unknown as typeof process.exit);
+		await runWithTimers(harnessStartCommand({ daemon: false, json: true }));
+		const parsed = JSON.parse(logText()) as { status: string };
+		expect(parsed.status).toBe("starting_foreground");
+	});
+
+	it("falls back to inherited stderr when the daemon log can't be opened", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 9 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		// openDaemonStderrLog returns null → `stderrLog?.fd ?? "ignore"` takes
+		// the nullish-coalescing right-hand path and stdio[2] becomes "ignore".
+		mocks.openDaemonStderrLog.mockReturnValue(null);
+		mocks.spawn.mockReturnValue(createFakeChild(9));
+		await runWithTimers(harnessStartCommand({ daemon: true }));
+		expect(mocks.spawn.mock.calls[0]?.[2]).toMatchObject({
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		expect(mocks.closeDaemonStderrLog).toHaveBeenCalledWith(null);
+	});
+
+	it("catches a thrown error and routes it to outputError", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw new Error("ps exploded");
+		});
+		await runWithTimers(harnessStartCommand({}));
+		expect(errText()).toContain("ps exploded");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stringifies a non-Error thrown value in the catch path", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw "raw string failure";
+		});
+		await runWithTimers(harnessStartCommand({ json: true }));
+		const parsed = JSON.parse(errText()) as { error: string };
+		expect(parsed.error).toBe("raw string failure");
 	});
 });
 
-describe("harnessStatusCommand — enriched signals", () => {
-	let workDir: string;
-	let previousCwd: string;
+// ===========================================================================
+// harnessStopCommand
+// ===========================================================================
 
-	beforeEach(() => {
-		workDir = join(
-			tmpdir(),
-			`harness-status-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-		);
-		mkdirSync(join(workDir, ".interlinked", "logs"), { recursive: true });
-		previousCwd = process.cwd();
-		process.chdir(workDir);
+describe("harnessStopCommand", () => {
+	it("reports not-running when no daemon is up (normal mode)", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		await runWithTimers(harnessStopCommand({}));
+		expect(logText()).toContain("Harness is not running.");
 	});
 
-	afterEach(() => {
-		process.chdir(previousCwd);
-		rmSync(workDir, { recursive: true, force: true });
-		vi.restoreAllMocks();
+	it("reports not-running when running:true but pid is absent", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true });
+		await runWithTimers(harnessStopCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string };
+		expect(parsed.status).toBe("not_running");
 	});
 
-	it("surfaces orphan_count, mode, and last_event_at in JSON output", async () => {
-		// Arrange: shared config with a non-default mode
-		writeFileSync(
-			join(workDir, ".interlinked", "config.json"),
-			JSON.stringify({ version: 1, server_url: "http://localhost:8787", mode: "ci" }),
-		);
-		// Latency log with two records — the most recent one's `ts` should win
-		writeFileSync(
-			join(workDir, ".interlinked", "logs", "latency.jsonl"),
-			[
-				JSON.stringify({ ts: "2026-04-01T00:00:00.000Z", hook_event: "PreToolUse" }),
-				JSON.stringify({ ts: "2026-04-27T08:00:00.000Z", hook_event: "PostToolUse" }),
-			].join("\n"),
-		);
-		writeFileSync(
-			join(workDir, ".interlinked", "harness-protocol.json"),
-			JSON.stringify({
-				protocol: "dual",
-				protocol_version: "1",
-				started_at: "2026-04-27T07:59:00.000Z",
-				raw_socket_path: join(workDir, ".interlinked", "harness.sock"),
-				framed_socket_path: join(workDir, ".interlinked", "harness-default.sock"),
-				framed_session_id: "default",
-				last_raw_event_at: "2026-04-27T08:00:00.000Z",
-				last_framed_event_at: "2026-04-27T08:00:01.000Z",
-				raw_event_count: 1,
-				framed_event_count: 2,
-				framed_error_count: 0,
-				framed_timeout_count: 0,
-			}),
-		);
+	it("SIGTERMs the daemon and reports stopped when it exits", async () => {
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 555 }) // initial
+			.mockReturnValue({ running: false }); // after wait
+		await runWithTimers(harnessStopCommand({}));
+		expect(killSpy).toHaveBeenCalledWith(555, "SIGTERM");
+		expect(logText()).toContain("Harness stopped (was PID 555)");
+	});
 
-		const captured: string[] = [];
-		const realLog = console.log;
-		console.log = (...args: unknown[]): void => {
-			captured.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+	it("reports still-running with a kill -9 hint when the daemon ignores SIGTERM", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 666 });
+		await runWithTimers(harnessStopCommand({}));
+		expect(logText()).toContain("Harness still running (PID 666)");
+		expect(logText()).toContain("kill -9 666");
+	});
+
+	it("emits the stopped JSON payload", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 777 })
+			.mockReturnValue({ running: false });
+		await runWithTimers(harnessStopCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; pid: number };
+		expect(parsed.status).toBe("stopped");
+		expect(parsed.pid).toBe(777);
+	});
+
+	it("emits the still_running JSON payload", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 888 });
+		await runWithTimers(harnessStopCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string };
+		expect(parsed.status).toBe("still_running");
+	});
+
+	it("routes a kill failure to outputError", async () => {
+		vi.spyOn(process, "kill").mockImplementation(() => {
+			throw new Error("EPERM");
+		});
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 1 });
+		await runWithTimers(harnessStopCommand({}));
+		expect(errText()).toContain("EPERM");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stringifies a non-Error thrown value in the catch path", async () => {
+		vi.spyOn(process, "kill").mockImplementation(() => {
+			throw "kill string failure";
+		});
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 1 });
+		await runWithTimers(harnessStopCommand({}));
+		expect(errText()).toContain("kill string failure");
+	});
+});
+
+// ===========================================================================
+// harnessRestartCommand
+// ===========================================================================
+
+describe("harnessRestartCommand", () => {
+	it("when nothing is running, skips the kill path and delegates to start (normal)", async () => {
+		// No daemon at any point. Subsequent start path: guard false, then
+		// running:true after spawn so it reports started.
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false }) // restart guard
+			.mockReturnValueOnce({ running: false }) // socket-cleanup liveness
+			.mockReturnValueOnce({ running: false }) // pid-cleanup liveness
+			.mockReturnValueOnce({ running: false }) // start guard
+			.mockReturnValue({ running: true, pid: 222 }); // post-spawn
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(222));
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).not.toHaveBeenCalled();
+		expect(logText()).toContain("Harness started (PID 222)");
+	});
+
+	it("SIGTERMs a running daemon, sees it exit, then delegates to start (normal)", async () => {
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 100 }) // restart guard
+			.mockReturnValueOnce({ running: false }) // SIGTERM wait loop: gone
+			.mockReturnValueOnce({ running: false }) // post-loop liveness check
+			.mockReturnValueOnce({ running: false }) // socket cleanup liveness
+			.mockReturnValueOnce({ running: false }) // pid cleanup liveness
+			.mockReturnValueOnce({ running: false }) // start guard
+			.mockReturnValue({ running: true, pid: 333 }); // post-spawn
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(333));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).toHaveBeenCalledWith(100, "SIGTERM");
+		expect(stderrText()).toContain("Stopped harness (was PID 100)");
+		expect(logText()).toContain("Harness started (PID 333)");
+	});
+
+	it("escalates to SIGKILL when SIGTERM is ignored, then succeeds", async () => {
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 200 }) // guard
+			// SIGTERM poll loop keeps seeing it alive until the deadline:
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 })
+			.mockReturnValueOnce({ running: true, pid: 200 }) // post-loop check → still alive → escalate
+			// SIGKILL wait loop: now gone
+			.mockReturnValue({ running: false });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(444));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).toHaveBeenCalledWith(200, "SIGTERM");
+		expect(killSpy).toHaveBeenCalledWith(200, "SIGKILL");
+		expect(stderrText()).toContain("escalating to SIGKILL");
+		expect(logText()).toContain("Harness started");
+	});
+
+	it("reports the survived-SIGKILL fatal error", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		// Always alive — both the SIGTERM loop and the SIGKILL loop never see exit.
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 300 });
+		await runWithTimers(harnessRestartCommand({}));
+		expect(errText()).toContain("survived SIGKILL");
+		expect(process.exitCode).toBe(1);
+		// Must not have reached the start path.
+		expect(mocks.spawn).not.toHaveBeenCalled();
+	});
+
+	it("tolerates a SIGTERM that throws (process died between check and signal)", async () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, sig) => {
+			if (sig === "SIGTERM") throw new Error("ESRCH");
+			return true;
+		});
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 400 }) // guard
+			.mockReturnValueOnce({ running: false }) // SIGTERM loop: already gone
+			.mockReturnValueOnce({ running: false }) // post-loop check
+			.mockReturnValueOnce({ running: false }) // socket cleanup
+			.mockReturnValueOnce({ running: false }) // pid cleanup
+			.mockReturnValueOnce({ running: false }) // start guard
+			.mockReturnValue({ running: true, pid: 555 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(555));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).toHaveBeenCalledWith(400, "SIGTERM");
+		expect(logText()).toContain("Harness started (PID 555)");
+	});
+
+	it("tolerates a SIGKILL that throws while escalating", async () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, sig) => {
+			if (sig === "SIGKILL") throw new Error("EPERM");
+			return true;
+		});
+		// guard alive; SIGTERM loop alive for a couple iterations; post-loop
+		// still alive → escalate (SIGKILL throws); SIGKILL loop then sees gone.
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 600 }) // guard
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // term loop iter
+			.mockReturnValueOnce({ running: true, pid: 600 }) // post-loop → escalate
+			.mockReturnValue({ running: false }); // kill loop → gone
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(700));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).toHaveBeenCalledWith(600, "SIGKILL");
+		expect(logText()).toContain("Harness started");
+	});
+
+	it("cleans up stale socket and pid files on the restart path", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false }) // guard
+			.mockReturnValueOnce({ running: false }) // socket cleanup liveness
+			.mockReturnValueOnce({ running: false }) // pid cleanup liveness
+			.mockReturnValueOnce({ running: false }) // start guard
+			.mockReturnValue({ running: true, pid: 11 });
+		// SERVER + SOCK + PID exist so both stale-file cleanup branches fire.
+		mocks.existsSync.mockImplementation((p: unknown) => {
+			const s = String(p);
+			return s === SERVER || s === SOCK || s === PID;
+		});
+		mocks.spawn.mockReturnValue(createFakeChild(11));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(mocks.unlinkSync).toHaveBeenCalledWith(SOCK);
+		expect(mocks.unlinkSync).toHaveBeenCalledWith(PID);
+	});
+
+	it("swallows unlink failures during stale-file cleanup", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 12 });
+		mocks.existsSync.mockImplementation((p: unknown) => {
+			const s = String(p);
+			return s === SERVER || s === SOCK || s === PID;
+		});
+		mocks.unlinkSync.mockImplementation(() => {
+			throw new Error("EBUSY");
+		});
+		mocks.spawn.mockReturnValue(createFakeChild(12));
+		await runWithTimers(harnessRestartCommand({}));
+		// Reached start despite both unlink throws.
+		expect(logText()).toContain("Harness started (PID 12)");
+	});
+
+	it("JSON mode emits a single combined restarted payload", async () => {
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 900 }) // guard
+			.mockReturnValueOnce({ running: false }) // term loop gone
+			.mockReturnValueOnce({ running: false }) // post-loop
+			.mockReturnValueOnce({ running: false }) // socket cleanup
+			.mockReturnValueOnce({ running: false }) // pid cleanup
+			.mockReturnValueOnce({ running: false }) // initial newStatus in json block
+			.mockReturnValue({ running: true, pid: 901 }); // re-polled → running
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(901));
+		await runWithTimers(harnessRestartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as {
+			status: string;
+			old_pid: number;
+			new_pid: number;
+			protocol: string;
+			sockets: string[];
 		};
-		try {
-			await harnessStatusCommand({ json: true });
-		} finally {
-			console.log = realLog;
-		}
-		const parsed = JSON.parse(captured.join("\n")) as {
+		expect(parsed.status).toBe("restarted");
+		expect(parsed.old_pid).toBe(900);
+		expect(parsed.new_pid).toBe(901);
+		expect(parsed.sockets).toEqual([SOCK]);
+		// JSON path spawns with no --max-old-space-size prefix (inline start).
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		expect(spawnArgs[0]).toBe(SERVER);
+	});
+
+	it("JSON mode emits an error payload when the server is missing", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.getHarnessServerPath.mockReturnValue("");
+		mocks.existsSync.mockReturnValue(false);
+		await runWithTimers(harnessRestartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; message: string };
+		expect(parsed.status).toBe("error");
+		expect(parsed.message).toBe("Harness server not found");
+		expect(mocks.spawn).not.toHaveBeenCalled();
+	});
+
+	it("JSON mode emits a failed payload when the new daemon never comes up", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		// server exists, socket never appears → poll loop times out, failed.
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER);
+		mocks.spawn.mockReturnValue(createFakeChild());
+		await runWithTimers(harnessRestartCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as { status: string; old_pid?: number };
+		expect(parsed.status).toBe("failed");
+		expect(parsed.old_pid).toBeUndefined();
+	});
+
+	it("JSON-mode restart includes verbose + session-id for non-raw protocol", async () => {
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 1212 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(1212));
+		await runWithTimers(harnessRestartCommand({ json: true, verbose: true, sessionId: "alpha", protocol: "framed" }));
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		expect(spawnArgs).toEqual(expect.arrayContaining(["--protocol", "framed", "--session-id", "alpha", "--verbose"]));
+	});
+
+	it("JSON mode escalates to SIGKILL silently (no stderr nudge) and uses raw protocol", async () => {
+		// JSON mode: the escalation runs before the json/non-json split, so the
+		// `if (mode === "normal")` guards take their false branch (no stderr
+		// writes). raw protocol also exercises the `protocol !== "raw"` false
+		// branch in the inline JSON start.
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		mocks.expectedSocketPaths.mockReturnValue([SOCK]);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: true, pid: 800 }) // guard
+			// SIGTERM poll loop stays alive to the deadline:
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 })
+			.mockReturnValueOnce({ running: true, pid: 800 }) // post-loop → escalate
+			.mockReturnValueOnce({ running: false }) // SIGKILL loop → gone
+			.mockReturnValueOnce({ running: false }) // socket cleanup liveness
+			.mockReturnValueOnce({ running: false }) // pid cleanup liveness
+			.mockReturnValueOnce({ running: false }) // initial newStatus in json block
+			.mockReturnValue({ running: true, pid: 801 }); // re-polled → running
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(801));
+		await runWithTimers(harnessRestartCommand({ json: true, protocol: "raw" }));
+		expect(killSpy).toHaveBeenCalledWith(800, "SIGKILL");
+		// No stderr nudges in JSON mode.
+		expect(stderrText()).toBe("");
+		const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+		expect(spawnArgs).toContain("raw");
+		expect(spawnArgs).not.toContain("--session-id");
+		const parsed = JSON.parse(logText()) as { status: string; old_pid: number; new_pid: number };
+		expect(parsed.status).toBe("restarted");
+		expect(parsed.old_pid).toBe(800);
+		expect(parsed.new_pid).toBe(801);
+	});
+
+	it("routes an unexpected throw to outputError", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw new Error("status blew up");
+		});
+		await runWithTimers(harnessRestartCommand({}));
+		expect(errText()).toContain("status blew up");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stringifies a non-Error thrown value in the catch path", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw "restart string failure";
+		});
+		await runWithTimers(harnessRestartCommand({}));
+		expect(errText()).toContain("restart string failure");
+	});
+});
+
+// ===========================================================================
+// harnessStatusCommand
+// ===========================================================================
+
+describe("harnessStatusCommand", () => {
+	it("renders the not-running normal report with the start hint", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockReturnValue(false); // no socket
+		await runWithTimers(harnessStatusCommand({}));
+		const out = logText();
+		expect(out).toContain("## Harness Status");
+		expect(out).toContain("Status: not running");
+		expect(out).toContain("Socket: not found");
+		expect(out).toContain("Start with: interlinked harness start");
+		expect(out).toContain("Orphans: 0");
+		// No socket → queryHarness must not be invoked.
+		expect(mocks.queryHarness).not.toHaveBeenCalled();
+	});
+
+	it("renders a fully-populated running report and queries the socket", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 4242 });
+		mocks.existsSync.mockReturnValue(true); // socket present
+		mocks.queryHarness.mockResolvedValue({ ok: true });
+		mocks.readRssMb.mockReturnValue(321);
+		mocks.readActiveMode.mockReturnValue("quality");
+		mocks.readLastLatencyTimestamp.mockReturnValue("2026-06-01T00:00:00Z");
+		mocks.reapOrphanHarnesses.mockReturnValue({
+			candidates: [{ pid: 1, ppid: 2, command: "node server" }],
+			killed: [],
+			dryRun: true,
+		});
+		mocks.stalenessWarning.mockReturnValue("dist is 3 commits behind");
+		mocks.distStaleness.mockReturnValue({ stale: true });
+		mocks.readProtocolStatus.mockReturnValue({
+			protocol: "dual",
+			protocol_version: "9",
+			started_at: "2026-06-01T00:00:00Z",
+			raw_socket_path: "/repo/.interlinked/harness.sock",
+			framed_socket_path: "/repo/.interlinked/harness-default.sock",
+			framed_session_id: "default",
+			last_raw_event_at: "2026-06-01T00:01:00Z",
+			last_framed_event_at: "2026-06-01T00:02:00Z",
+			raw_event_count: 3,
+			framed_event_count: 4,
+			framed_error_count: 1,
+			framed_timeout_count: 2,
+		});
+		mocks.readFramedSocketStatuses.mockResolvedValue([
+			{
+				session_id: "alpha",
+				pid: 11,
+				alive: true,
+				socket_path: "/repo/.interlinked/harness-alpha.sock",
+				health: { status: "ok", protocol_version: "9" } as unknown as never,
+				health_error: null,
+			},
+		]);
+
+		await runWithTimers(harnessStatusCommand({}));
+		const out = logText();
+		expect(mocks.queryHarness).toHaveBeenCalledOnce();
+		expect(out).toContain("Status: running (PID 4242)");
+		expect(out).toContain("Protocol: dual");
+		expect(out).toContain("Raw socket: /repo/.interlinked/harness.sock");
+		expect(out).toContain("Framed socket: /repo/.interlinked/harness-default.sock");
+		expect(out).toContain("Last raw event: 2026-06-01T00:01:00Z");
+		expect(out).toContain("Last framed event: 2026-06-01T00:02:00Z");
+		expect(out).toContain("Framed errors: 1 errors, 2 timeouts");
+		expect(out).toContain("Framed alpha: ok (9) — /repo/.interlinked/harness-alpha.sock");
+		expect(out).toContain("RSS: 321 MB");
+		expect(out).toContain("Build: dist is 3 commits behind");
+		expect(out).toContain("Mode: quality");
+		expect(out).toContain("Last event: 2026-06-01T00:00:00Z");
+		expect(out).toContain("Orphans: 1 (run 'interlinked harness reap' to inspect)");
+		// Running → no "Start with" hint.
+		expect(out).not.toContain("Start with: interlinked harness start");
+	});
+
+	it("renders a framed socket health-error / unknown fallback", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 1 });
+		mocks.existsSync.mockReturnValue(true);
+		mocks.readFramedSocketStatuses.mockResolvedValue([
+			{
+				session_id: "beta",
+				pid: null,
+				alive: false,
+				socket_path: "/repo/.interlinked/harness-beta.sock",
+				health: null,
+				health_error: "process not alive",
+			},
+			{
+				session_id: "gamma",
+				pid: null,
+				alive: false,
+				socket_path: "/repo/.interlinked/harness-gamma.sock",
+				health: null,
+				health_error: null, // → "unknown"
+			},
+		]);
+		await runWithTimers(harnessStatusCommand({}));
+		const out = logText();
+		expect(out).toContain("Framed beta: process not alive — /repo/.interlinked/harness-beta.sock");
+		expect(out).toContain("Framed gamma: unknown — /repo/.interlinked/harness-gamma.sock");
+	});
+
+	it("omits protocol-status sub-lines when their fields are absent", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 2 });
+		mocks.existsSync.mockReturnValue(true);
+		mocks.readProtocolStatus.mockReturnValue({
+			protocol: "raw",
+			protocol_version: "1",
+			started_at: "",
+			raw_socket_path: null,
+			framed_socket_path: null,
+			framed_session_id: null,
+			last_raw_event_at: null,
+			last_framed_event_at: null,
+			raw_event_count: 0,
+			framed_event_count: 0,
+			framed_error_count: 0,
+			framed_timeout_count: 0,
+		});
+		await runWithTimers(harnessStatusCommand({}));
+		const out = logText();
+		expect(out).toContain("Protocol: raw");
+		expect(out).not.toContain("Raw socket:");
+		expect(out).not.toContain("Framed socket:");
+		expect(out).not.toContain("Last raw event:");
+	});
+
+	it("emits the full JSON status payload", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 7 });
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({ ok: true });
+		mocks.readRssMb.mockReturnValue(120);
+		mocks.readProtocolStatus.mockReturnValue({
+			protocol: "framed",
+			protocol_version: "5",
+			started_at: "t",
+			raw_socket_path: null,
+			framed_socket_path: "/s",
+			framed_session_id: "default",
+			last_raw_event_at: "raw-ts",
+			last_framed_event_at: "framed-ts",
+			raw_event_count: 0,
+			framed_event_count: 0,
+			framed_error_count: 9,
+			framed_timeout_count: 8,
+		});
+		await runWithTimers(harnessStatusCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as {
 			running: boolean;
-			orphan_count: number;
-			mode: string | null;
-			last_event_at: string | null;
-			protocol_status: { protocol: string; framed_event_count: number } | null;
+			pid: number;
+			socket: boolean;
+			raw_socket: { health: string };
+			protocol_version: string;
+			last_raw_event_at: string | null;
+			framed_error_count: number | null;
+			rss_mb: number | null;
+			build_stale: boolean;
 		};
-		expect(parsed.running).toBe(false);
-		expect(parsed.mode).toBe("ci");
-		expect(parsed.last_event_at).toBe("2026-04-27T08:00:00.000Z");
-		expect(parsed.protocol_status?.protocol).toBe("dual");
-		expect(parsed.protocol_status?.framed_event_count).toBe(2);
-		expect(typeof parsed.orphan_count).toBe("number");
+		expect(parsed.running).toBe(true);
+		expect(parsed.pid).toBe(7);
+		expect(parsed.socket).toBe(true);
+		expect(parsed.raw_socket.health).toBe("legacy-raw");
+		expect(parsed.protocol_version).toBe("5");
+		expect(parsed.last_raw_event_at).toBe("raw-ts");
+		expect(parsed.framed_error_count).toBe(9);
+		expect(parsed.rss_mb).toBe(120);
+		expect(parsed.build_stale).toBe(false);
+	});
+
+	it("JSON status nulls out protocol fields and marks the raw socket missing", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: false });
+		mocks.existsSync.mockReturnValue(false);
+		await runWithTimers(harnessStatusCommand({ json: true }));
+		const parsed = JSON.parse(logText()) as {
+			raw_socket: { health: string };
+			protocol_version: string | null;
+			framed_error_count: number | null;
+			rss_mb: number | null;
+		};
+		expect(parsed.raw_socket.health).toBe("missing");
+		expect(parsed.protocol_version).toBeNull();
+		expect(parsed.framed_error_count).toBeNull();
+		expect(parsed.rss_mb).toBeNull();
+	});
+
+	it("does not read RSS when the daemon is running but pid is undefined", async () => {
+		mocks.isHarnessRunning.mockReturnValue({ running: true });
+		mocks.existsSync.mockReturnValue(true);
+		await runWithTimers(harnessStatusCommand({ json: true }));
+		expect(mocks.readRssMb).not.toHaveBeenCalled();
+		const parsed = JSON.parse(logText()) as { rss_mb: number | null };
+		expect(parsed.rss_mb).toBeNull();
+	});
+
+	it("routes a status throw to outputError", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw new Error("status read failed");
+		});
+		await runWithTimers(harnessStatusCommand({}));
+		expect(errText()).toContain("status read failed");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stringifies a non-Error thrown value in the catch path", async () => {
+		mocks.isHarnessRunning.mockImplementation(() => {
+			throw "status string failure";
+		});
+		await runWithTimers(harnessStatusCommand({}));
+		expect(errText()).toContain("status string failure");
+	});
+});
+
+// ===========================================================================
+// harnessTestCommand
+// ===========================================================================
+
+describe("harnessTestCommand", () => {
+	it("reports harness-not-running when no socket exists (normal mode)", async () => {
+		mocks.existsSync.mockReturnValue(false);
+		await runWithTimers(harnessTestCommand("rm -rf /", {}));
+		expect(logText()).toContain("Harness not running. Start with: interlinked harness start");
+		expect(mocks.queryHarness).not.toHaveBeenCalled();
+	});
+
+	it("reports harness-not-running in JSON when the decision is null", async () => {
+		mocks.existsSync.mockReturnValue(true); // socket exists
+		mocks.queryHarness.mockResolvedValue(null); // but no response
+		await runWithTimers(harnessTestCommand("ls", { json: true }));
+		const parsed = JSON.parse(logText()) as { error: string };
+		expect(parsed.error).toBe("Harness not running");
+	});
+
+	it("renders an ALLOWED decision and leaves exitCode at 0 (default tool=Bash)", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({ decision: "allow" });
+		await runWithTimers(harnessTestCommand("ls -la", {}));
+		const out = logText();
+		expect(out).toContain("ALLOWED");
+		expect(out).toContain("Bash:");
+		expect(out).toContain("ls -la");
+		expect(process.exitCode).toBe(0);
+		// default tool is Bash → tool_input carries `command`
+		const event = mocks.queryHarness.mock.calls[0]?.[1] as { tool_name: string; tool_input: { command?: string } };
+		expect(event.tool_name).toBe("Bash");
+		expect(event.tool_input.command).toBe("ls -la");
+	});
+
+	it("renders a BLOCKED decision with reason + warnings and sets exitCode=1", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({
+			decision: "block",
+			reason: "destructive command",
+			warnings: ["consider a dry run", "this is irreversible"],
+		});
+		await runWithTimers(harnessTestCommand("rm -rf /", {}));
+		const out = logText();
+		expect(out).toContain("BLOCKED");
+		expect(out).toContain("destructive command");
+		expect(out).toContain("consider a dry run");
+		expect(out).toContain("this is irreversible");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("uses file_path tool_input for a non-shell tool", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({ decision: "allow" });
+		await runWithTimers(harnessTestCommand("/etc/passwd", { tool: "Read" }));
+		const event = mocks.queryHarness.mock.calls[0]?.[1] as { tool_name: string; tool_input: { file_path?: string } };
+		expect(event.tool_name).toBe("Read");
+		expect(event.tool_input.file_path).toBe("/etc/passwd");
+	});
+
+	it("treats Shell like Bash for tool_input shaping", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({ decision: "allow" });
+		await runWithTimers(harnessTestCommand("echo hi", { tool: "Shell" }));
+		const event = mocks.queryHarness.mock.calls[0]?.[1] as { tool_input: { command?: string } };
+		expect(event.tool_input.command).toBe("echo hi");
+	});
+
+	it("emits the raw decision object in JSON mode", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockResolvedValue({ decision: "block", reason: "nope" });
+		await runWithTimers(harnessTestCommand("danger", { json: true }));
+		const parsed = JSON.parse(logText()) as { decision: string; reason: string };
+		expect(parsed.decision).toBe("block");
+		expect(parsed.reason).toBe("nope");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("renders an allowed decision with no reason and non-array warnings (skips both inner branches)", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		// warnings present but not an array → the Array.isArray guard is false
+		mocks.queryHarness.mockResolvedValue({ decision: "allow", warnings: "not-an-array" });
+		await runWithTimers(harnessTestCommand("ls", {}));
+		const out = logText();
+		expect(out).toContain("ALLOWED");
+		// no reason line, no warning lines beyond the headline
+		expect(out.split("\n").filter((l) => l.includes("consider")).length).toBe(0);
+	});
+
+	it("routes a thrown error to outputError", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockRejectedValue(new Error("socket connect failed"));
+		await runWithTimers(harnessTestCommand("ls", {}));
+		expect(errText()).toContain("socket connect failed");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("stringifies a non-Error thrown value in the catch path", async () => {
+		mocks.existsSync.mockReturnValue(true);
+		mocks.queryHarness.mockRejectedValue("test string failure");
+		await runWithTimers(harnessTestCommand("ls", {}));
+		expect(errText()).toContain("test string failure");
 	});
 });
