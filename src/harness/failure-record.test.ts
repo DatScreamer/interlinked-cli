@@ -52,8 +52,8 @@ function baseRecord(overrides: Partial<FailureRecord> = {}): FailureRecord {
 beforeEach(() => {
 	vi.clearAllMocks();
 	// Restore the default deterministic fill (clearAllMocks wipes the impl).
-	randomFillSyncMock.mockImplementation((buf: Uint8Array) => {
-		buf.fill(0);
+	randomFillSyncMock.mockImplementation((buf) => {
+		(buf as Uint8Array).fill(0);
 		return buf;
 	});
 });
@@ -142,8 +142,8 @@ describe("mintFailureId", () => {
 	it("preserves the low nibble of byte 6 and low 6 bits of byte 8 from randomness", () => {
 		// Fill every byte with 0xff so the masks are observable:
 		// byte6 -> (0xff & 0x0f)|0x70 = 0x7f ; byte8 -> (0xff & 0x3f)|0x80 = 0xbf.
-		randomFillSyncMock.mockImplementationOnce((buf: Uint8Array) => {
-			buf.fill(0xff);
+		randomFillSyncMock.mockImplementationOnce((buf) => {
+			(buf as Uint8Array).fill(0xff);
 			return buf;
 		});
 		const id = mintFailureId(0);

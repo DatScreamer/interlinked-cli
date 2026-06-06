@@ -507,7 +507,7 @@ describe("buildVerificationStopWarnings", () => {
 		const ctx = makeCtx({ cwd: "/ctx-cwd", rules: vscRules({ warn_fixture_leaks: true }) });
 		mFormatFixtureLeakWarning.mockReturnValue(null);
 
-		buildVerificationStopWarnings(ctx, makeEvent({ cwd: undefined }), makeSession());
+		buildVerificationStopWarnings(ctx, makeEvent({}), makeSession());
 
 		expect(mDetectFixtureLeaks).toHaveBeenCalledWith("/ctx-cwd");
 	});
@@ -580,7 +580,7 @@ describe("buildVerificationStopWarnings", () => {
 		const ctx = makeCtx({ cwd: "/ctx-doa", rules: vscRules() });
 		mFormatDeadOnArrivalWarning.mockReturnValue(null);
 
-		buildVerificationStopWarnings(ctx, makeEvent({ cwd: undefined }), makeSession());
+		buildVerificationStopWarnings(ctx, makeEvent({}), makeSession());
 
 		expect(mDetectDeadOnArrival).toHaveBeenCalledWith(expect.any(Set), "/ctx-doa");
 	});

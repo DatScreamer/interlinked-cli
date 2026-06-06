@@ -494,7 +494,7 @@ describe("ErrorHistory.buildErrorContext", () => {
 			dependentCount: 0,
 			dependencyCount: 0,
 			exports: [], // exports.length === 0
-			result: result({ affectedFiles: undefined }), // undefined → Affected omitted
+			result: result({}), // undefined → Affected omitted
 		});
 		expect(out).not.toContain("Exports:");
 		expect(out).not.toContain("Affected:");
