@@ -47,6 +47,7 @@ import {
 } from "./policy-classifier.js";
 import { ProjectGraph } from "./project-graph.js";
 import { ProjectWideSweepState } from "./quality-checks.js";
+import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
 import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
@@ -311,6 +312,22 @@ setTimeout(() => {
 	}
 	refreshStatuslineSnapshot();
 }, 0);
+
+// --- Strict cyclomatic gate capability ---
+// The PreToolUse cyclomatic block + CRAP scoring need the AST pass (the optional
+// `typescript` dep, now in optionalDependencies so a normal install has it).
+// `--omit=optional` or a stripped install drops it, degrading the gate to the
+// less-accurate regex walker. The fail-open in complexity-write-guard would hide
+// that, so surface it loudly here (stderr, not verbose-gated) — never silent.
+if (astComplexityAvailable()) {
+	log("Cyclomatic gate: AST-accurate (typescript resolved)");
+} else {
+	console.error(
+		"[interlinked] WARNING: `typescript` is not resolvable — the strict cyclomatic " +
+			"PreToolUse gate and CRAP scoring fell back to the less-accurate regex walker. " +
+			"Reinstall without `--omit=optional` to restore AST-accurate enforcement.",
+	);
+}
 
 // --- Structure graph cache (persists across PostToolUse calls) ---
 // Avoids rebuilding the full artifact graph on every file edit.

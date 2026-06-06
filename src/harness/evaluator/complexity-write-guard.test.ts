@@ -11,6 +11,14 @@ function fnWith(name: string, branches: number): string {
 	return `${s}\treturn r;\n}\n`;
 }
 
+/** An anonymous arrow callback (named "(callback)" by the AST pass) with
+ *  `branches` if-statements → cyclomatic ≈ branches + 1. */
+function anonFnWith(branches: number): string {
+	let body = "\tlet r = 0;\n";
+	for (let i = 0; i < branches; i++) body += `\tif (a === ${i}) r += ${i};\n`;
+	return `export const wired = register((a: number): number => {\n${body}\treturn r;\n});\n`;
+}
+
 let tmp: string;
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "cyc-guard-"));
@@ -73,6 +81,53 @@ describe("checkFunctionComplexityWrite", () => {
 	it("exempts test files via the cappable-file exemption", () => {
 		const out = checkFunctionComplexityWrite(
 			{ file_path: join(tmp, "x.test.ts"), content: fnWith("t", 40) },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	// --- F3: identity-free over-cap multiset comparison ---
+	// The previous name-keyed-max logic dropped anonymous callbacks and collapsed
+	// same-named functions, so both repros below were ALLOWED before the fix.
+
+	it("blocks a NEW anonymous callback over the cap (was dropped by name-keying)", () => {
+		const out = checkFunctionComplexityWrite(
+			{ file_path: join(tmp, "anon.ts"), content: anonFnWith(40) },
+			tmp,
+		);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("anonymous");
+	});
+
+	it("blocks shuffling complexity between same-named functions", () => {
+		const file = join(tmp, "shuffle.ts");
+		// before: two run()s at ~31 and ~6 → over-cap profile [31]
+		writeFileSync(file, fnWith("run", 30) + fnWith("run", 5));
+		// after: ~30 and ~27 → over-cap profile [30, 27]; a NEW over-cap value (27)
+		// appears even though the max dropped 31→30. Name-keyed-max saw only run→30
+		// vs run→31 (a reduction) and allowed it.
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("run", 29) + fnWith("run", 26) },
+			tmp,
+		);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("run");
+	});
+
+	it("allows splitting one over-cap function into several under-cap ones", () => {
+		const file = join(tmp, "split.ts");
+		writeFileSync(file, fnWith("big", 40)); // [41] — over cap
+		const after = fnWith("a", 8) + fnWith("b", 8) + fnWith("c", 8); // all under cap
+		const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("allows adding a new UNDER-cap function alongside an existing over-cap one", () => {
+		const file = join(tmp, "coexist.ts");
+		writeFileSync(file, fnWith("legacy", 40)); // [41] — already over cap, untouched
+		// Whole-file rewrite that holds `legacy` and adds a small helper.
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("legacy", 40) + fnWith("helper", 5) },
 			tmp,
 		);
 		expect(out).toBeNull();

@@ -86,7 +86,8 @@
         "commander": "12.1.0"
     },
     "optionalDependencies": {
-        "@typescript/native-preview": "7.0.0-dev.20260421.2"
+        "@typescript/native-preview": "7.0.0-dev.20260421.2",
+        "typescript": "5.9.3"
     },
     "devDependencies": {
         "@biomejs/biome": "2.4.13",
@@ -95,7 +96,6 @@
         "fast-check": "4.7.0",
         "tsup": "8.5.1",
         "tsx": "4.21.0",
-        "typescript": "5.9.3",
         "vitest": "4.1.8"
     }
 }

@@ -91,23 +91,24 @@ function projectContent(
 	return null; // apply_patch / unknown shape — fail open
 }
 
-/** name → max cyclomatic among NAMED implementation functions, or null when the
- *  AST pass is unavailable (typescript missing). */
-function namedComplexity(content: string, filePath: string): Map<string, number> | null {
-	const fns = computeCyclomaticAst(content, filePath);
-	if (!fns) return null;
-	const map = new Map<string, number>();
-	for (const fn of fns) {
-		if (fn.name === ANON_FN) continue;
-		map.set(fn.name, Math.max(map.get(fn.name) ?? 0, fn.cyclomatic));
-	}
-	return map;
-}
-
 /**
  * Block a Write/Edit that introduces or worsens an over-cap function. Returns
  * null (allow) for non-JS/TS, exempt files, missing AST support, or when the
  * edit only holds/reduces complexity.
+ *
+ * The decision is IDENTITY-FREE. Function names are unreliable as comparison
+ * keys: anonymous callbacks all share "(callback)", same-named methods /
+ * overloads / nested defs collide, and renames or moves break name matching.
+ * (Name-keyed-max comparison let a new 40-branch anonymous callback through, and
+ * let one `run()` go 6→27 as long as another `run()` dropped 31→30.) Instead we
+ * compare the sorted-descending MULTISET of OVER-CAP complexities before vs
+ * after: the post-edit profile may not be worse than the pre-edit profile at any
+ * rank — `post[i] > (pre[i] ?? cap)` is a violation. This blocks (a) a new
+ * over-cap function (named OR anonymous), (b) raising any function past the cap,
+ * and (c) shuffling complexity between same-named functions, while still
+ * allowing a decompose that splits one over-cap function into several under-cap
+ * ones (the post over-cap list shrinks). Names feed the message only, never the
+ * decision.
  */
 export function checkFunctionComplexityWrite(
 	toolInput: JsonObject,
@@ -122,18 +123,48 @@ export function checkFunctionComplexityWrite(
 
 	if (!isCappableFile({ filePath, content: projected.after })) return null;
 
-	const afterFns = namedComplexity(projected.after, filePath);
+	// computeCyclomaticAst counts every function-like node (incl. anonymous
+	// callbacks) as its own unit — they MUST all be considered. Returns null
+	// when the AST pass is unavailable (typescript missing) → fail open.
+	const afterFns = computeCyclomaticAst(projected.after, filePath);
 	if (!afterFns) return null; // AST unavailable → fail open (no FP-blocking)
-	const beforeFns = namedComplexity(projected.before, filePath) ?? new Map<string, number>();
+	const beforeFns = computeCyclomaticAst(projected.before, filePath) ?? [];
 
 	const cap = DEFAULT_MAX_CYCLOMATIC;
+	const afterOver = afterFns
+		.filter((f) => f.cyclomatic > cap)
+		.sort((a, b) => b.cyclomatic - a.cyclomatic);
+	if (afterOver.length === 0) return null;
+
+	const beforeOverVals = beforeFns
+		.filter((f) => f.cyclomatic > cap)
+		.map((f) => f.cyclomatic)
+		.sort((a, b) => b - a);
+
+	// Best-effort per-name lookup of the pre-edit complexity — phrasing only
+	// ("raised from N"), never the block decision.
+	const beforeByName = new Map<string, number>();
+	for (const f of beforeFns) {
+		if (f.name === ANON_FN) continue;
+		beforeByName.set(f.name, Math.max(beforeByName.get(f.name) ?? 0, f.cyclomatic));
+	}
+
 	const violations: string[] = [];
-	for (const [name, cyc] of afterFns) {
-		if (cyc <= cap) continue;
-		const beforeCyc = beforeFns.get(name) ?? -1;
-		if (beforeCyc >= cyc) continue; // held or reduced — refactor-down is allowed
-		const how = beforeCyc < 0 ? "new" : `raised from ${beforeCyc}`;
-		violations.push(`${name} (cyclomatic ${cyc}, ${how})`);
+	for (let i = 0; i < afterOver.length; i++) {
+		const post = afterOver[i];
+		// A missing pre value at this rank means there were fewer over-cap
+		// functions before — the cap is the implicit baseline, so any over-cap
+		// value at this rank is a worsening.
+		const baseline = beforeOverVals[i] ?? cap;
+		if (post.cyclomatic <= baseline) continue; // this rank held or reduced
+		const prior = post.name === ANON_FN ? undefined : beforeByName.get(post.name);
+		const how =
+			prior !== undefined && prior < post.cyclomatic
+				? `raised from ${prior}`
+				: post.name === ANON_FN
+					? "new anonymous function over cap"
+					: "new over-cap function";
+		violations.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
 	}
 	if (violations.length === 0) return null;
 

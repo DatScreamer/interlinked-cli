@@ -10,13 +10,16 @@
 // matching the canonical definition (increments for if / loops / catch / case /
 // conditional / `&&` `||` `??`).
 //
-// `typescript` is an OPTIONAL dependency. interlinked-cli ships with one runtime
-// dep (commander); typescript is a devDep, present in dev/CI and any install
-// that has it, absent in a minimal global install. We load it SYNCHRONOUSLY via
-// createRequire (so `computeCyclomaticComplexity` stays sync) and return `null`
-// when it's missing — callers then fall back to the regex walker. The
-// self-contained hook script never imports this. The type-only `import type`
-// is erased at build, so it adds no runtime dependency.
+// `typescript` is declared in `optionalDependencies` (alongside the tsgo
+// native-preview), so a normal `npm install` pulls it into a PUBLISHED install —
+// the strict cyclomatic gate and CRAP scoring are AST-accurate in production,
+// not just dev/CI. It is absent only under `--omit=optional` / `--no-optional`
+// or a hand-stripped install; there `loadTs` returns null, callers fall back to
+// the (less accurate) regex walker, and `astComplexityAvailable()` reports false
+// so the degradation is surfaced (e.g. `interlinked harness status`) rather than
+// silent. We load it SYNCHRONOUSLY via createRequire (so
+// `computeCyclomaticComplexity` stays sync). The self-contained hook script never
+// imports this; the type-only `import type` is erased at build.
 
 import { createRequire } from "node:module";
 import { extname } from "node:path";
