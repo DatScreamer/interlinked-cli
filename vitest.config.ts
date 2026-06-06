@@ -68,7 +68,9 @@ export default defineConfig({
             // default exclude (which drops node_modules), so without an explicit
             // `include` the v8 provider instruments all of node_modules
             // (~3.6M statements, 16k files). `include` bounds it to src.
-            include: ["src/**"],
+            // Scope to TS sources only. `src/**` also pulls in .md/.py/.json
+            // sidecars, which v8's instrumenter can't parse (the C2 PARSE_ERROR).
+            include: ["src/**/*.ts", "src/**/*.tsx"],
             // `lcov` (coverage/lcov.info) feeds the language-agnostic canonical
             // coverage model (`coverage-lcov.ts` → `coverage-canonical.ts`): the
             // same interchange format coverage.py / cargo-llvm-cov / gcov emit,
