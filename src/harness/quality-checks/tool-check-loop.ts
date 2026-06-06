@@ -8,6 +8,12 @@
 // event-loop yields, and the onCheckBoundary / outToolMetrics instrumentation
 // are preserved exactly — this is the PostToolUse pipeline, so behavior must
 // not drift.
+//
+// Each named check branch is a standalone handler returning the findings it
+// produced, or `null` to signal "skip the rest of this iteration" — the exact
+// equivalent of the original inline `continue`, which skipped the trailing
+// onCheckBoundary(`inline_<name>`). A handler returning an array (even empty)
+// falls through to the boundary, matching a branch that ran to completion.
 
 import { spawnSync } from "node:child_process";
 import { extname, isAbsolute, resolve, sep } from "node:path";
@@ -75,23 +81,431 @@ export interface ToolCheckLoopContext {
 }
 
 /**
+ * A per-check handler. Returns the findings it produced (possibly empty), or
+ * `null` to skip the trailing per-check boundary — the structural equivalent
+ * of the original inline `continue`.
+ */
+type NamedCheckHandler = (
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+) => QualityCheckResult[] | null;
+
+/** secrets_in_source — inline content scan of the edit payload. */
+function runSecretsCheck(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Skip test files (synthetic fixture secrets) and the harness's
+	// own security-pattern definitions (secret-shaped strings as
+	// data) — both yield only false positives on a per-edit scan.
+	// `isTestFile` bundles both exemptions; its harness-internals
+	// block is scoped to interlinked-cli's own package. gitleaks in
+	// `interlinked verify` stays the repo-wide backstop.
+	if (isTestFile(ctx.absForTestCheck)) return null;
+	// Inline check — examine file content from the event
+	const content =
+		(ctx.event.tool_input?.content as string) ||
+		(ctx.event.tool_input?.new_string as string) ||
+		"";
+	if (content) {
+		const found = containsSecrets(content);
+		if (found.length > 0) {
+			return [
+				{
+					name,
+					severity: check.severity,
+					message: `Secrets detected in ${ctx.filePath}: ${found.length} pattern(s) matched`,
+					file: ctx.filePath,
+				},
+			];
+		}
+	}
+	return [];
+}
+
+/** strong_typing — scan the whole file for `any`/`unknown`. */
+function runStrongTypingCheck(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Skip test files — tests legitimately use casts for edge case testing
+	const fileBase = ctx.filePath.replace(/\.[^.]+$/, "");
+	if (fileBase.endsWith(".test") || fileBase.endsWith(".spec")) return null;
+
+	// Inline check — scan the ENTIRE file content for `any`/`unknown`.
+	// Uses the shared content snapshot to avoid re-reading the file.
+	const content = ctx.getSharedContent();
+	if (content === null) return [];
+	// 139-repo audit: generator output (OpenAPI, protoc,
+	// @generated) routinely uses `any` extensively by
+	// design. Supermodel's sdk/DefaultApi.ts produced 290
+	// FPs in one file. The fix is to change generator
+	// config, not the file.
+	if (isGeneratedFile(content)) return null;
+	const anyMatches = findAnyTypes(content);
+	if (anyMatches.length === 0) return [];
+	const anyCount = anyMatches.filter((m) => m.kind === "any").length;
+	const unknownCount = anyMatches.filter((m) => m.kind === "unknown").length;
+	const parts: string[] = [];
+	if (anyCount > 0) parts.push(`${anyCount} \`any\``);
+	if (unknownCount > 0) parts.push(`${unknownCount} \`unknown\``);
+	const shown = anyMatches.slice(0, 8);
+	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
+	const overflow =
+		anyMatches.length > 8 ? `\n  ... and ${anyMatches.length - 8} more` : "";
+	return [
+		{
+			name,
+			severity: check.severity,
+			message: `${parts.join(" + ")} type(s) in ${ctx.filePath} — prefer strong types (interfaces, generics, branded types)`,
+			file: ctx.filePath,
+			detail: detail + overflow,
+		},
+	];
+}
+
+/** dependency_audit — SCA over edited package/lock files. */
+function runDependencyAudit(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// SCA: run dependency audit when package/lock files are edited.
+	// Detects known CVEs in project dependencies.
+	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
+	const fileName = ctx.filePath.split("/").pop() || "";
+	const resolved = resolveDependencyAuditCommand(fileName, {
+		useOsvScanner: check.use_osv_scanner,
+		offline: check.offline,
+	});
+	if (!resolved) return null;
+
+	const auditResult = spawnSync(resolved.cmd[0], resolved.cmd.slice(1), {
+		shell: false,
+		timeout: check.timeout_ms,
+		cwd: checkCwd,
+		encoding: "utf-8",
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+
+	if (auditResult.error && (auditResult.error as NodeJS.ErrnoException).code === "ENOENT") {
+		return null; // Audit tool not installed — skip silently
+	}
+
+	// Every supported tool exits non-zero when vulnerabilities are found.
+	// status=0 means clean; status=null means timeout (treat as skip).
+	if (auditResult.status === 0 || auditResult.status === null) return null;
+
+	const stdout = (auditResult.stdout || "").trim();
+	let detail = "";
+	if (resolved.parser === "osv-scanner") {
+		const summary = parseOsvScannerJson(stdout);
+		if (!summary) return null; // non-zero exit but no parsable vulns — skip
+		detail = summary.detail;
+	} else if (resolved.parser === "npm-audit") {
+		const summary = parseNpmAuditJson(stdout);
+		detail = summary?.detail ?? "";
+	} else {
+		// pip-audit / cargo-audit / govulncheck: surface raw stderr tail.
+		// Structured parsing for these lives behind osv-scanner — if a
+		// user opts out of it, we degrade gracefully rather than parse
+		// four more bespoke JSON shapes here.
+		detail =
+			(auditResult.stderr || "").split("\n").slice(0, 5).join("\n") ||
+			"vulnerabilities found";
+	}
+
+	return [
+		{
+			name,
+			severity: check.severity,
+			message: `Dependency vulnerabilities found after editing ${ctx.filePath}`,
+			file: ctx.filePath,
+			detail: detail || `Run \`${resolved.cmd[0]}\` for details (parser: ${resolved.parser})`,
+		},
+	];
+}
+
+/** inline_language_checks — data-driven per-language inline pattern checks. */
+function runInlineLanguageChecksBranch(
+	ctx: ToolCheckLoopContext,
+	_name: string,
+	_check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Data-driven per-language inline pattern checks. Reads the
+	// inline_checks array declared in the file's LanguageProfile
+	// and runs each regex after a language-aware comment + string
+	// stripping pass. Replaces what was previously dead config.
+	const profile = getProfileForFile(ctx.filePath);
+	if (!profile || profile.inline_checks.length === 0) return null;
+	const content = ctx.getSharedContent();
+	if (content === null) return null;
+	const findings = runInlineLanguageChecks(ctx.filePath, content, profile);
+	return findings.map((f) => ({
+		name: f.name,
+		severity: f.severity,
+		message: f.message,
+		file: f.file,
+		detail: f.detail,
+	}));
+}
+
+/** affected_tests — dispatch per-language test invocation. */
+function runAffectedTests(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Dispatch per-language test invocation. Dispatchers own their own
+	// runner shape and scoping (file-level, package-level, or
+	// project-wide).
+	const absPath = isAbsolute(ctx.filePath) ? ctx.filePath : resolve(ctx.cwd, ctx.filePath);
+	const extForTests = extname(absPath);
+	const baseForTests = absPath.slice(absPath.lastIndexOf(sep) + 1, -extForTests.length || undefined);
+	const profile = getProfileForFile(ctx.filePath);
+	if (!profile) return null;
+	if (isLikelyTestFile(baseForTests, absPath)) return null;
+
+	const dispatcher = TEST_DISPATCHERS[profile.id];
+	if (!dispatcher) return null;
+
+	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
+	const dispatched = dispatcher({
+		filePath: ctx.filePath,
+		absPath,
+		profile,
+		checkCwd,
+		timeoutMs: check.timeout_ms,
+		severity: check.severity,
+		checkName: name,
+	});
+	return dispatched.map((r) => ({
+		name: r.name,
+		severity: r.severity,
+		message: r.message,
+		file: r.file,
+		detail: r.detail,
+	}));
+}
+
+/** lockfile_drift — detect stale or missing lockfile after manifest edit. */
+function runLockfileDriftCheck(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Inline check — detect stale or missing lockfile after manifest edit
+	const absPath = isAbsolute(ctx.filePath) ? ctx.filePath : resolve(ctx.cwd, ctx.filePath);
+	const drift = checkLockfileDrift(absPath);
+	if (!drift.drifted) return [];
+	const msg =
+		drift.reason === "missing"
+			? `No lockfile found for ${drift.manifest}. Run the package manager's install command to generate one.`
+			: `${drift.lockfile} is stale — ${drift.manifest} was modified but the lockfile was not regenerated.`;
+	return [
+		{
+			name,
+			severity: check.severity,
+			message: msg,
+			file: ctx.filePath,
+			detail:
+				drift.reason === "stale"
+					? `Run \`npm install\`, \`yarn install\`, \`cargo generate-lockfile\`, or the appropriate lock command to update ${drift.lockfile}.`
+					: `Expected one of: ${(LOCKFILE_MAP[drift.manifest] || []).join(", ")}`,
+		},
+	];
+}
+
+/** package_json_consistency — detect duplicate deps and invalid semver. */
+function runPackageJsonConsistencyCheck(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	// Inline check — detect duplicate deps and invalid semver
+	const content = ctx.getSharedContent();
+	if (content === null) return [];
+	const issues = checkPackageJsonConsistency(content);
+	if (issues.length === 0) return [];
+	const dupes = issues.filter((i) => i.kind === "duplicate");
+	const badVer = issues.filter((i) => i.kind === "invalid_semver");
+	const parts: string[] = [];
+	if (dupes.length > 0) parts.push(`${dupes.length} duplicate(s)`);
+	if (badVer.length > 0) parts.push(`${badVer.length} invalid version(s)`);
+	const detail = issues
+		.slice(0, 10)
+		.map((i) => `  ${i.detail}`)
+		.join("\n");
+	const overflow = issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : "";
+	return [
+		{
+			name,
+			severity: check.severity,
+			message: `package.json consistency: ${parts.join(", ")} in ${ctx.filePath}`,
+			file: ctx.filePath,
+			detail: detail + overflow,
+		},
+	];
+}
+
+/** software_version_regression + freshness_sensitive_reference — both names
+ *  share one before/after reference diff; the `name` selects which finding(s)
+ *  to emit. */
+function runSoftwareVersionChecks(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] | null {
+	const postContent = ctx.getSharedContent();
+	if (postContent === null) return null;
+	// Prefer the PreToolUse baseline (full before-file). When it is
+	// absent (e.g. harness restarted between pre/post, or no pre
+	// snapshot), reconstruct the full before-file by reverting the
+	// edit — replace new_string back with old_string in the post
+	// content. Collecting refs from the bare old_string snippet
+	// alone is wrong: every pre-existing reference outside the
+	// edited region would be absent from beforeRefs and so look
+	// "newly introduced", firing freshness warnings on untouched
+	// content whose line numbers merely shifted.
+	let beforeRefs = ctx.baseline?.softwareVersions;
+	if (!beforeRefs) {
+		const oldStr = ctx.event.tool_input?.old_string;
+		const newStr = ctx.event.tool_input?.new_string;
+		if (typeof oldStr === "string" && typeof newStr === "string") {
+			const reverted = postContent.includes(newStr)
+				? postContent.replace(newStr, oldStr)
+				: postContent;
+			beforeRefs = collectSoftwareVersionReferences(reverted, ctx.filePath);
+		} else if (typeof oldStr === "string") {
+			beforeRefs = collectSoftwareVersionReferences(oldStr, ctx.filePath);
+		} else {
+			beforeRefs = [];
+		}
+	}
+	// getAfterRefs memoizes — the second check on the same Edit
+	// reuses the first check's full-file regex sweep.
+	const afterRefs = ctx.getAfterRefs(postContent);
+	const regressions = detectSoftwareVersionRegressions(beforeRefs, afterRefs);
+	const regressionAfterKeys = new Set(
+		regressions.map((r) => `${r.after.anchor}\0${r.after.version}`),
+	);
+	const freshnessConcerns = detectSoftwareVersionFreshnessConcerns(beforeRefs, afterRefs).filter(
+		(c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`),
+	);
+	const out: QualityCheckResult[] = [];
+	if (name === "software_version_regression" && regressions.length > 0) {
+		out.push({
+			name,
+			severity: check.severity,
+			message:
+				`PostToolUse attention required in ${ctx.filePath}: ` +
+				`${regressions.length} possible software version regression(s). ` +
+				"This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.",
+			file: ctx.filePath,
+			detail: formatSoftwareVersionRegressionDetail(regressions),
+		});
+	}
+	if (name === "freshness_sensitive_reference" && freshnessConcerns.length > 0) {
+		out.push({
+			name,
+			severity: check.severity,
+			message:
+				`${freshnessConcerns.length} freshness-sensitive software reference(s) introduced in ${ctx.filePath}. ` +
+				"Verify against official source material before relying on remembered model/API/version names.",
+			file: ctx.filePath,
+			detail: formatSoftwareVersionFreshnessDetail(freshnessConcerns),
+		});
+	}
+	return out;
+}
+
+/** Fallback for any `check.command`-based subprocess tool — delegates to the
+ *  unified check engine. Async because the engine runs out-of-process. */
+async function runCommandCheck(
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): Promise<QualityCheckResult[] | null> {
+	// Delegate to the unified check engine for subprocess-based tools.
+	const toolId = configNameToToolId(name);
+	if (!toolId || toolId === "dep-audit") return null;
+
+	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
+	const engine = getOrCreateEngine(checkCwd);
+
+	const filterToFile = ctx.tscFilterFile ? true : name !== "typescript"; // tsc runs project-wide unless smart-tsc filtering
+	const targetFile =
+		ctx.tscFilterFile && name === "typescript"
+			? resolve(checkCwd, ctx.tscFilterFile)
+			: ctx.filePath;
+
+	const engineReport = await engine.runChecksAsync(
+		{
+			projectRoot: checkCwd,
+			mode: "file",
+			targetFile,
+			filterToFile,
+		},
+		{ tools: [toolId], timeoutMs: check.timeout_ms },
+	);
+
+	if (ctx.outToolMetrics) {
+		for (const m of engineReport.metrics) {
+			ctx.outToolMetrics.push({
+				tool: m.tool,
+				ms: m.elapsedMs,
+				finding_count: m.findingCount,
+			});
+		}
+	}
+
+	if (engineReport.results.length === 0) return [];
+	const output = engineReport.results
+		.slice(0, 15)
+		.map((r) => `${r.file}(${r.line}): ${r.message}`)
+		.join("\n");
+	const overflow =
+		engineReport.results.length > 15 ? `\n... (${engineReport.results.length - 15} more)` : "";
+
+	return [
+		{
+			name,
+			severity: check.severity,
+			message: `${name} found issues in ${ctx.filePath}`,
+			file: ctx.filePath,
+			detail: output + overflow,
+		},
+	];
+}
+
+/** name → handler. Two names (software_version_regression,
+ *  freshness_sensitive_reference) share one handler that selects by name. */
+const NAMED_CHECK_HANDLERS: Record<string, NamedCheckHandler> = {
+	secrets_in_source: runSecretsCheck,
+	strong_typing: runStrongTypingCheck,
+	dependency_audit: runDependencyAudit,
+	inline_language_checks: runInlineLanguageChecksBranch,
+	affected_tests: runAffectedTests,
+	lockfile_drift: runLockfileDriftCheck,
+	package_json_consistency: runPackageJsonConsistencyCheck,
+	software_version_regression: runSoftwareVersionChecks,
+	freshness_sensitive_reference: runSoftwareVersionChecks,
+};
+
+/**
  * Run the config-driven per-check loop and return the findings in push order.
  * Mirrors the original inline loop: same branches, same skip guards, same
- * yields and instrumentation hooks.
+ * yields and instrumentation hooks. Per-check bodies live in the
+ * NAMED_CHECK_HANDLERS map (and runCommandCheck for the `command` fallback);
+ * a handler returning `null` reproduces the original inline `continue` that
+ * skipped the trailing onCheckBoundary.
  */
 export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<QualityCheckResult[]> {
 	const results: QualityCheckResult[] = [];
-	const {
-		event,
-		checks,
-		cwd,
-		filePath,
-		absForTestCheck,
-		testCheckBaseName,
-		getSharedContent,
-		getAfterRefs,
-		onCheckBoundary,
-	} = ctx;
+	const { checks, filePath, absForTestCheck, testCheckBaseName, onCheckBoundary } = ctx;
 
 	for (const [name, check] of Object.entries(checks)) {
 		if (!check.enabled) continue;
@@ -116,7 +530,7 @@ export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<Quali
 
 		// Skip subprocess / tree-walking `command`-based checks (tsc, biome,
 		// semgrep, gitleaks) when the edited file is outside the harness's
-		// own project. The `check.command` branch below resolves a project
+		// own project. The `command` fallback below resolves a project
 		// root and runs the check engine project-wide; for a foreign file
 		// `findProjectRoot` falls back to `cwd`, which would run THIS
 		// project's tooling against an unrelated file (wrong result) and
@@ -126,346 +540,19 @@ export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<Quali
 		if (ctx.editedFileInRepo === false && check.command) continue;
 
 		try {
-			if (name === "secrets_in_source") {
-				// Skip test files (synthetic fixture secrets) and the harness's
-				// own security-pattern definitions (secret-shaped strings as
-				// data) — both yield only false positives on a per-edit scan.
-				// `isTestFile` bundles both exemptions; its harness-internals
-				// block is scoped to interlinked-cli's own package. gitleaks in
-				// `interlinked verify` stays the repo-wide backstop.
-				if (isTestFile(absForTestCheck)) continue;
-				// Inline check — examine file content from the event
-				const content =
-					(event.tool_input?.content as string) ||
-					(event.tool_input?.new_string as string) ||
-					"";
-				if (content) {
-					const found = containsSecrets(content);
-					if (found.length > 0) {
-						results.push({
-							name,
-							severity: check.severity,
-							message: `Secrets detected in ${filePath}: ${found.length} pattern(s) matched`,
-							file: filePath,
-						});
-					}
-				}
-			} else if (name === "strong_typing") {
-				// Skip test files — tests legitimately use casts for edge case testing
-				const fileBase = filePath.replace(/\.[^.]+$/, "");
-				if (fileBase.endsWith(".test") || fileBase.endsWith(".spec")) continue;
-
-				// Inline check — scan the ENTIRE file content for `any`/`unknown`.
-				// Uses the shared content snapshot to avoid re-reading the file.
-				const content = getSharedContent();
-				if (content !== null) {
-					// 139-repo audit: generator output (OpenAPI, protoc,
-					// @generated) routinely uses `any` extensively by
-					// design. Supermodel's sdk/DefaultApi.ts produced 290
-					// FPs in one file. The fix is to change generator
-					// config, not the file.
-					if (isGeneratedFile(content)) continue;
-					const anyMatches = findAnyTypes(content);
-					if (anyMatches.length > 0) {
-						const anyCount = anyMatches.filter((m) => m.kind === "any").length;
-						const unknownCount = anyMatches.filter(
-							(m) => m.kind === "unknown",
-						).length;
-						const parts: string[] = [];
-						if (anyCount > 0) parts.push(`${anyCount} \`any\``);
-						if (unknownCount > 0) parts.push(`${unknownCount} \`unknown\``);
-						const shown = anyMatches.slice(0, 8);
-						const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-						const overflow =
-							anyMatches.length > 8
-								? `\n  ... and ${anyMatches.length - 8} more`
-								: "";
-						results.push({
-							name,
-							severity: check.severity,
-							message: `${parts.join(" + ")} type(s) in ${filePath} — prefer strong types (interfaces, generics, branded types)`,
-							file: filePath,
-							detail: detail + overflow,
-						});
-					}
-				}
-			} else if (name === "dependency_audit") {
-				// SCA: run dependency audit when package/lock files are edited.
-				// Detects known CVEs in project dependencies.
-				const checkCwd = findProjectRoot(filePath, cwd) || cwd;
-				const fileName = filePath.split("/").pop() || "";
-				const resolved = resolveDependencyAuditCommand(fileName, {
-					useOsvScanner: check.use_osv_scanner,
-					offline: check.offline,
-				});
-				if (!resolved) continue;
-
-				const auditResult = spawnSync(resolved.cmd[0], resolved.cmd.slice(1), {
-					shell: false,
-					timeout: check.timeout_ms,
-					cwd: checkCwd,
-					encoding: "utf-8",
-					stdio: ["pipe", "pipe", "pipe"],
-				});
-
-				if (
-					auditResult.error &&
-					(auditResult.error as NodeJS.ErrnoException).code === "ENOENT"
-				) {
-					continue; // Audit tool not installed — skip silently
-				}
-
-				// Every supported tool exits non-zero when vulnerabilities are found.
-				// status=0 means clean; status=null means timeout (treat as skip).
-				if (auditResult.status === 0 || auditResult.status === null) continue;
-
-				const stdout = (auditResult.stdout || "").trim();
-				let detail = "";
-				if (resolved.parser === "osv-scanner") {
-					const summary = parseOsvScannerJson(stdout);
-					if (!summary) continue; // non-zero exit but no parsable vulns — skip
-					detail = summary.detail;
-				} else if (resolved.parser === "npm-audit") {
-					const summary = parseNpmAuditJson(stdout);
-					detail = summary?.detail ?? "";
-				} else {
-					// pip-audit / cargo-audit / govulncheck: surface raw stderr tail.
-					// Structured parsing for these lives behind osv-scanner — if a
-					// user opts out of it, we degrade gracefully rather than parse
-					// four more bespoke JSON shapes here.
-					detail =
-						(auditResult.stderr || "").split("\n").slice(0, 5).join("\n") ||
-						"vulnerabilities found";
-				}
-
-				results.push({
-					name,
-					severity: check.severity,
-					message: `Dependency vulnerabilities found after editing ${filePath}`,
-					file: filePath,
-					detail:
-						detail ||
-						`Run \`${resolved.cmd[0]}\` for details (parser: ${resolved.parser})`,
-				});
-			} else if (name === "inline_language_checks") {
-				// Data-driven per-language inline pattern checks. Reads the
-				// inline_checks array declared in the file's LanguageProfile
-				// and runs each regex after a language-aware comment + string
-				// stripping pass. Replaces what was previously dead config.
-				const profile = getProfileForFile(filePath);
-				if (!profile || profile.inline_checks.length === 0) continue;
-				const content = getSharedContent();
-				if (content === null) continue;
-				const findings = runInlineLanguageChecks(filePath, content, profile);
-				for (const f of findings) {
-					results.push({
-						name: f.name,
-						severity: f.severity,
-						message: f.message,
-						file: f.file,
-						detail: f.detail,
-					});
-				}
-			} else if (name === "affected_tests") {
-				// Dispatch per-language test invocation. Dispatchers own their own
-				// runner shape and scoping (file-level, package-level, or
-				// project-wide).
-				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				const extForTests = extname(absPath);
-				const baseForTests = absPath.slice(
-					absPath.lastIndexOf(sep) + 1,
-					-extForTests.length || undefined,
-				);
-				const profile = getProfileForFile(filePath);
-				if (!profile) continue;
-				if (isLikelyTestFile(baseForTests, absPath)) continue;
-
-				const dispatcher = TEST_DISPATCHERS[profile.id];
-				if (!dispatcher) continue;
-
-				const checkCwd = findProjectRoot(filePath, cwd) || cwd;
-				const dispatched = dispatcher({
-					filePath,
-					absPath,
-					profile,
-					checkCwd,
-					timeoutMs: check.timeout_ms,
-					severity: check.severity,
-					checkName: name,
-				});
-				for (const r of dispatched) {
-					results.push({
-						name: r.name,
-						severity: r.severity,
-						message: r.message,
-						file: r.file,
-						detail: r.detail,
-					});
-				}
-			} else if (name === "lockfile_drift") {
-				// Inline check — detect stale or missing lockfile after manifest edit
-				const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-				const drift = checkLockfileDrift(absPath);
-				if (drift.drifted) {
-					const msg =
-						drift.reason === "missing"
-							? `No lockfile found for ${drift.manifest}. Run the package manager's install command to generate one.`
-							: `${drift.lockfile} is stale — ${drift.manifest} was modified but the lockfile was not regenerated.`;
-					results.push({
-						name,
-						severity: check.severity,
-						message: msg,
-						file: filePath,
-						detail:
-							drift.reason === "stale"
-								? `Run \`npm install\`, \`yarn install\`, \`cargo generate-lockfile\`, or the appropriate lock command to update ${drift.lockfile}.`
-								: `Expected one of: ${(LOCKFILE_MAP[drift.manifest] || []).join(", ")}`,
-					});
-				}
-			} else if (name === "package_json_consistency") {
-				// Inline check — detect duplicate deps and invalid semver
-				const content = getSharedContent();
-				if (content !== null) {
-					const issues = checkPackageJsonConsistency(content);
-					if (issues.length > 0) {
-						const dupes = issues.filter((i) => i.kind === "duplicate");
-						const badVer = issues.filter((i) => i.kind === "invalid_semver");
-						const parts: string[] = [];
-						if (dupes.length > 0) parts.push(`${dupes.length} duplicate(s)`);
-						if (badVer.length > 0)
-							parts.push(`${badVer.length} invalid version(s)`);
-						const detail = issues
-							.slice(0, 10)
-							.map((i) => `  ${i.detail}`)
-							.join("\n");
-						const overflow =
-							issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : "";
-						results.push({
-							name,
-							severity: check.severity,
-							message: `package.json consistency: ${parts.join(", ")} in ${filePath}`,
-							file: filePath,
-							detail: detail + overflow,
-						});
-					}
-				}
-			} else if (
-				name === "software_version_regression" ||
-				name === "freshness_sensitive_reference"
-			) {
-				const postContent = getSharedContent();
-				if (postContent === null) continue;
-				// Prefer the PreToolUse baseline (full before-file). When it is
-				// absent (e.g. harness restarted between pre/post, or no pre
-				// snapshot), reconstruct the full before-file by reverting the
-				// edit — replace new_string back with old_string in the post
-				// content. Collecting refs from the bare old_string snippet
-				// alone is wrong: every pre-existing reference outside the
-				// edited region would be absent from beforeRefs and so look
-				// "newly introduced", firing freshness warnings on untouched
-				// content whose line numbers merely shifted.
-				let beforeRefs = ctx.baseline?.softwareVersions;
-				if (!beforeRefs) {
-					const oldStr = event.tool_input?.old_string;
-					const newStr = event.tool_input?.new_string;
-					if (typeof oldStr === "string" && typeof newStr === "string") {
-						const reverted = postContent.includes(newStr)
-							? postContent.replace(newStr, oldStr)
-							: postContent;
-						beforeRefs = collectSoftwareVersionReferences(reverted, filePath);
-					} else if (typeof oldStr === "string") {
-						beforeRefs = collectSoftwareVersionReferences(oldStr, filePath);
-					} else {
-						beforeRefs = [];
-					}
-				}
-				// getAfterRefs memoizes — the second check on the same Edit
-				// reuses the first check's full-file regex sweep.
-				const afterRefs = getAfterRefs(postContent);
-				const regressions = detectSoftwareVersionRegressions(beforeRefs, afterRefs);
-				const regressionAfterKeys = new Set(
-					regressions.map((r) => `${r.after.anchor}\0${r.after.version}`),
-				);
-				const freshnessConcerns = detectSoftwareVersionFreshnessConcerns(
-					beforeRefs,
-					afterRefs,
-				).filter((c) => !regressionAfterKeys.has(`${c.ref.anchor}\0${c.ref.version}`));
-				if (name === "software_version_regression" && regressions.length > 0) {
-					results.push({
-						name,
-						severity: check.severity,
-						message:
-							`PostToolUse attention required in ${filePath}: ` +
-							`${regressions.length} possible software version regression(s). ` +
-							"This often means the agent may be relying on stale remembered software names or versions instead of the current or intended source of truth.",
-						file: filePath,
-						detail: formatSoftwareVersionRegressionDetail(regressions),
-					});
-				}
-				if (name === "freshness_sensitive_reference" && freshnessConcerns.length > 0) {
-					results.push({
-						name,
-						severity: check.severity,
-						message:
-							`${freshnessConcerns.length} freshness-sensitive software reference(s) introduced in ${filePath}. ` +
-							"Verify against official source material before relying on remembered model/API/version names.",
-						file: filePath,
-						detail: formatSoftwareVersionFreshnessDetail(freshnessConcerns),
-					});
-				}
+			const handler = NAMED_CHECK_HANDLERS[name];
+			let outcome: QualityCheckResult[] | null;
+			if (handler) {
+				outcome = handler(ctx, name, check);
 			} else if (check.command) {
-				// Delegate to the unified check engine for subprocess-based tools.
-				const toolId = configNameToToolId(name);
-				if (!toolId || toolId === "dep-audit") continue;
-
-				const checkCwd = findProjectRoot(filePath, cwd) || cwd;
-				const engine = getOrCreateEngine(checkCwd);
-
-				const filterToFile = ctx.tscFilterFile ? true : name !== "typescript"; // tsc runs project-wide unless smart-tsc filtering
-				const targetFile =
-					ctx.tscFilterFile && name === "typescript"
-						? resolve(checkCwd, ctx.tscFilterFile)
-						: filePath;
-
-				const engineReport = await engine.runChecksAsync(
-					{
-						projectRoot: checkCwd,
-						mode: "file",
-						targetFile,
-						filterToFile,
-					},
-					{ tools: [toolId], timeoutMs: check.timeout_ms },
-				);
-
-				if (ctx.outToolMetrics) {
-					for (const m of engineReport.metrics) {
-						ctx.outToolMetrics.push({
-							tool: m.tool,
-							ms: m.elapsedMs,
-							finding_count: m.findingCount,
-						});
-					}
-				}
-
-				if (engineReport.results.length > 0) {
-					const output = engineReport.results
-						.slice(0, 15)
-						.map((r) => `${r.file}(${r.line}): ${r.message}`)
-						.join("\n");
-					const overflow =
-						engineReport.results.length > 15
-							? `\n... (${engineReport.results.length - 15} more)`
-							: "";
-
-					results.push({
-						name,
-						severity: check.severity,
-						message: `${name} found issues in ${filePath}`,
-						file: filePath,
-						detail: output + overflow,
-					});
-				}
+				outcome = await runCommandCheck(ctx, name, check);
+			} else {
+				outcome = [];
 			}
+			// `null` reproduces the original inline `continue`: skip the
+			// per-check boundary below. An array (even empty) falls through.
+			if (outcome === null) continue;
+			results.push(...outcome);
 		} catch (err) {
 			// Timeout or crash — skip this check, don't block agent
 			const msg = err instanceof Error ? err.message : String(err);
