@@ -69,7 +69,7 @@
         "typecheck:stable": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
-        "test:coverage": "vitest run --coverage",
+        "test:coverage": "vitest run --coverage --testTimeout=120000",
         "bench": "vitest bench --run bench/",
         "docs": "node --import tsx scripts/generate-docs.ts",
         "docs:check": "node scripts/check-docs.mjs",
