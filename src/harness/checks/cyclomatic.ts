@@ -15,6 +15,7 @@
 // so CRAP surfaces as complexity-only for languages without a coverage reader.
 // The PreToolUse budget line still works — it just drops the `cov=N%` term.
 
+import { computeCyclomaticAst } from "./cyclomatic-ast.js";
 import {
 	getExtension,
 	isTestFile,
@@ -57,13 +58,20 @@ export function computeCyclomaticComplexity(
 	if (isTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
 
-	// Brace-balanced strip: scope detection counts {/} on the stripped source,
-	// so a strip that unbalances braces (around template interpolations / regex)
-	// would make walkBraceBody run off the file. See stripForBraceScan.
-	const stripped = stripForBraceScan(content);
-	const lines = stripped.split("\n");
+	if (JS_TS_EXTS.has(ext)) {
+		// Prefer the AST pass: per-function scope (inline closures counted as
+		// their own units, not rolled into the parent) + `??`, validated to match
+		// a real TS AST exactly. Falls back to the regex walker only when the
+		// optional `typescript` dep is absent (minimal installs).
+		const ast = computeCyclomaticAst(content, filePath);
+		if (ast) return ast;
+		return walkJsTs(stripForBraceScan(content).split("\n"));
+	}
 
-	if (JS_TS_EXTS.has(ext)) return walkJsTs(lines);
+	// Non-JS/TS: the regex walker on brace-balanced source. A strip that
+	// unbalanced braces would make walkBraceBody run off the file — see
+	// stripForBraceScan.
+	const lines = stripForBraceScan(content).split("\n");
 	if (ext === PYTHON_EXT) return walkPython(lines);
 	if (ext === GO_EXT) return walkGo(lines);
 	if (ext === RUST_EXT) return walkRust(lines);

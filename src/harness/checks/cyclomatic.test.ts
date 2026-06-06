@@ -73,10 +73,23 @@ describe("computeCyclomaticComplexity", () => {
 		expect(entries[0].cyclomatic).toBe(2);
 	});
 
-	it("excludes `??` (nullish coalescing) and `?.` (optional chaining) from ternary count", () => {
+	it("counts `??` (nullish coalescing) as a branch, but not `?.` (optional chaining)", () => {
+		// `??` is a genuine decision point (canonical cyclomatic counts it — the
+		// AST pass fixed the old regex walker that silently dropped it). `?.` is
+		// not a branch, so it adds nothing.
 		const entries = computeCyclomaticComplexity(
 			`function foo(x: { v?: number } | null) {
 				return x?.v ?? 0;
+			}`,
+			"src/foo.ts",
+		);
+		expect(entries[0].cyclomatic).toBe(2); // base 1 + one `??`
+	});
+
+	it("does not count `?.` optional chaining on its own", () => {
+		const entries = computeCyclomaticComplexity(
+			`function foo(x: { v?: number } | null) {
+				return x?.v;
 			}`,
 			"src/foo.ts",
 		);
