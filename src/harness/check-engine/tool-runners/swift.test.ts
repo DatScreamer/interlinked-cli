@@ -150,7 +150,7 @@ describe("runSwiftLint (sync)", () => {
 
 	it("omits --path in project mode", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ stdout: "" }));
-		runSwiftLint(input(fileScope({ mode: "project", targetFile: undefined })));
+		runSwiftLint(input(fileScope({ mode: "project" })));
 		const args = spawnSyncMock.mock.calls[0]?.[1] as string[];
 		expect(args).toEqual(["lint", "--quiet", "--reporter", "json"]);
 		expect(args).not.toContain("--path");
@@ -330,7 +330,7 @@ describe("runSwiftLintAsync", () => {
 
 	it("omits --path in project mode", async () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 0, stdout: "" }));
-		await runSwiftLintAsync(input(fileScope({ mode: "project", targetFile: undefined })));
+		await runSwiftLintAsync(input(fileScope({ mode: "project" })));
 		const args = runProcessAsyncMock.mock.calls[0]?.[1] as string[];
 		expect(args).toEqual(["lint", "--quiet", "--reporter", "json"]);
 	});

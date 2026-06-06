@@ -51,7 +51,7 @@ describe("CohortManager.agentJoined", () => {
 	it("derives a name from source + session-id slice when agent_name is absent", () => {
 		const c = new CohortManager();
 		// `${source}-${sid.slice(0,8)}` => "claude-" + first 8 chars of session_id.
-		const agent = c.agentJoined(ev({ agent_name: undefined, session_id: "0123456789abcdef" }));
+		const agent = c.agentJoined(ev({ session_id: "0123456789abcdef" }));
 		expect(agent.name).toBe("claude-01234567");
 		expect(c.hasAgent("claude-01234567")).toBe(true);
 	});
@@ -60,7 +60,7 @@ describe("CohortManager.agentJoined", () => {
 		const c = new CohortManager();
 		// Date.now() is pinned, so the synthetic suffix is deterministic.
 		const suffix = Date.now().toString(36);
-		const agent = c.agentJoined(ev({ session_id: "", agent_name: undefined }));
+		const agent = c.agentJoined(ev({ session_id: "" }));
 
 		// name = `${source}-${sid.slice(0,8)}` where sid = `unknown-${suffix}`.
 		const expectedSid = `unknown-${suffix}`;
@@ -152,7 +152,7 @@ describe("CohortManager.subagentJoined", () => {
 	it("falls back to tool_input.subagent_id when agent_name is absent", () => {
 		const c = new CohortManager();
 		const sub = c.subagentJoined(
-			ev({ agent_name: undefined, tool_input: { subagent_id: "sid-123" } }),
+			ev({ tool_input: { subagent_id: "sid-123" } }),
 		);
 		expect(sub.name).toBe("sid-123");
 	});
@@ -160,7 +160,7 @@ describe("CohortManager.subagentJoined", () => {
 	it("falls back to tool_input.agent_id when name and subagent_id are absent", () => {
 		const c = new CohortManager();
 		const sub = c.subagentJoined(
-			ev({ agent_name: undefined, tool_input: { agent_id: "aid-456" } }),
+			ev({ tool_input: { agent_id: "aid-456" } }),
 		);
 		expect(sub.name).toBe("aid-456");
 	});
@@ -168,7 +168,7 @@ describe("CohortManager.subagentJoined", () => {
 	it("falls back to a sub-<session-slice> name when no id is provided at all", () => {
 		const c = new CohortManager();
 		const sub = c.subagentJoined(
-			ev({ agent_name: undefined, tool_input: {}, session_id: "abcdefgh-ignored" }),
+			ev({ tool_input: {}, session_id: "abcdefgh-ignored" }),
 		);
 		expect(sub.name).toBe("sub-abcdefgh");
 	});
@@ -176,7 +176,7 @@ describe("CohortManager.subagentJoined", () => {
 	it("falls back to sub-<session-slice> when tool_input itself is undefined", () => {
 		const c = new CohortManager();
 		const sub = c.subagentJoined(
-			ev({ agent_name: undefined, tool_input: undefined, session_id: "zyxwvuts-rest" }),
+			ev({ session_id: "zyxwvuts-rest" }),
 		);
 		// Exercises the `?.` short-circuit on every tool_input access.
 		expect(sub.name).toBe("sub-zyxwvuts");
@@ -230,14 +230,14 @@ describe("CohortManager.subagentLeft", () => {
 	it("resolves the name via subagent_id when agent_name is absent", () => {
 		const c = new CohortManager();
 		c.subagentJoined(ev({ agent_name: "sid-x", tool_input: {} }));
-		c.subagentLeft(ev({ agent_name: undefined, tool_input: { subagent_id: "sid-x" } }));
+		c.subagentLeft(ev({ tool_input: { subagent_id: "sid-x" } }));
 		expect(c.getAgent("sid-x")?.status).toBe("idle");
 	});
 
 	it("resolves the name via agent_id when name and subagent_id are absent", () => {
 		const c = new CohortManager();
 		c.subagentJoined(ev({ agent_name: "aid-y", tool_input: {} }));
-		c.subagentLeft(ev({ agent_name: undefined, tool_input: { agent_id: "aid-y" } }));
+		c.subagentLeft(ev({ tool_input: { agent_id: "aid-y" } }));
 		expect(c.getAgent("aid-y")?.status).toBe("idle");
 	});
 
@@ -245,7 +245,7 @@ describe("CohortManager.subagentLeft", () => {
 		const c = new CohortManager();
 		c.subagentJoined(ev({ agent_name: "present", tool_input: {} }));
 		// name resolves to undefined => `if (name)` is false => nothing happens.
-		c.subagentLeft(ev({ agent_name: undefined, tool_input: {} }));
+		c.subagentLeft(ev({ tool_input: {} }));
 		expect(c.getAgent("present")?.status).toBe("active");
 	});
 
@@ -260,7 +260,7 @@ describe("CohortManager.subagentLeft", () => {
 		const c = new CohortManager();
 		c.subagentJoined(ev({ agent_name: "present", tool_input: {} }));
 		// agent_name undefined + tool_input undefined => name undefined => no-op.
-		c.subagentLeft(ev({ agent_name: undefined, tool_input: undefined }));
+		c.subagentLeft(ev({}));
 		expect(c.getAgent("present")?.status).toBe("active");
 	});
 });
@@ -461,7 +461,7 @@ describe("CohortManager.findByEvent (via public methods)", () => {
 	it("falls back to session_id match when agent_name is set but unregistered", () => {
 		const c = new CohortManager();
 		// Register under a derived name (no agent_name), so the map has no "wrong-name" key.
-		const a = c.agentJoined(ev({ agent_name: undefined, session_id: "find-me" }));
+		const a = c.agentJoined(ev({ session_id: "find-me" }));
 		// agent_name present but not in map => loop falls through to session_id.
 		c.recordActivity(
 			ev({ agent_name: "wrong-name", session_id: "find-me", timestamp: "2026-06-06T16:00:00.000Z" }),
@@ -471,9 +471,9 @@ describe("CohortManager.findByEvent (via public methods)", () => {
 
 	it("falls back to session_id match when agent_name is absent", () => {
 		const c = new CohortManager();
-		const a = c.agentJoined(ev({ agent_name: undefined, session_id: "sid-only" }));
+		const a = c.agentJoined(ev({ session_id: "sid-only" }));
 		c.recordActivity(
-			ev({ agent_name: undefined, session_id: "sid-only", timestamp: "2026-06-06T17:00:00.000Z" }),
+			ev({ session_id: "sid-only", timestamp: "2026-06-06T17:00:00.000Z" }),
 		);
 		expect(c.getAgent(a.name)?.last_event_at).toBe("2026-06-06T17:00:00.000Z");
 	});

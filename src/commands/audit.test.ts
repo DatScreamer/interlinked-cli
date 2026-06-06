@@ -293,7 +293,6 @@ describe("auditVerifyCommand — human output, tampered chain", () => {
 			baseResult({
 				valid: false,
 				first_bad_index: 3,
-				first_bad_line_number: undefined,
 				first_bad_reason: "previousHash mismatch",
 			}),
 		);
@@ -317,7 +316,6 @@ describe("auditVerifyCommand — human output, tampered chain", () => {
 				valid: false,
 				guard_events: 40,
 				chained_events: 40,
-				first_bad_reason: undefined,
 			}),
 		);
 
