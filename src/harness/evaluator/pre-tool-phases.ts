@@ -10,6 +10,7 @@
 // return a `HarnessDecision` to short-circuit or mutate session state in place;
 // control-flow order is unchanged.
 
+import type { ErrorHistory } from "../error-history.js";
 import { getPatternWarnings } from "../pattern-detector.js";
 import {
 	checkConcurrentEdit,
@@ -20,7 +21,6 @@ import {
 	checkSelfKill,
 	checkStaleBranch,
 } from "../pre-checks.js";
-import type { ErrorHistory } from "../error-history.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { SessionTracker } from "../session-state.js";
 import type {
@@ -30,6 +30,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { estimateEditLine, isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
 
@@ -113,6 +114,19 @@ export function evaluatePreChecksTail(
 				rule_id: "large-file-cap",
 				severity: "medium",
 				category: "file-size",
+			};
+		}
+		// GUARD: per-function cyclomatic cap — block a Write/Edit that introduces
+		// or worsens an over-cap function (delta semantics, no override). See
+		// complexity-write-guard.ts.
+		const complexityBlock = checkFunctionComplexityWrite(toolInput, eventCwd);
+		if (complexityBlock?.block) {
+			return {
+				decision: "block",
+				reason: complexityBlock.block,
+				rule_id: "cyclomatic-cap",
+				severity: "medium",
+				category: "complexity",
 			};
 		}
 	}
