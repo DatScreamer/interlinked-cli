@@ -219,6 +219,23 @@ export function registerQualityCommands(program: Command): void {
 		});
 
 	// ===========================================
+	// Metrics — whole-codebase test-quality scan
+	// ===========================================
+	program
+		.command("metrics")
+		.description(
+			"Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--top <n>", "Number of CRAP hotspots to show (default: 25)")
+		.option("--json", "Machine-readable output (full per-file + per-function)")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues) => {
+			const { metricsCommand } = await import("../commands/metrics.js");
+			await metricsCommand(opts);
+		});
+
+	// ===========================================
 	// Mutation ratchet — per-file mutation-score gate
 	// ===========================================
 	const mutationCmd = program

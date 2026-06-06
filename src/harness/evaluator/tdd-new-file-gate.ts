@@ -214,8 +214,10 @@ function toAbsolute(filePath: string, cwd: string | undefined): string {
 	return resolve(cwd || process.cwd(), filePath);
 }
 
-/** The ordered list of companion test paths we look for. First hit wins. */
-function companionTestCandidates(srcAbs: string): string[] {
+/** The ordered list of companion test paths we look for. First hit wins.
+ *  Exported as the single source of truth for "where a file's companion test
+ *  lives" — consumed by the new-file gate here and the `metrics` scan. */
+export function companionTestCandidates(srcAbs: string): string[] {
 	const dir = dirname(srcAbs);
 	const ext = extname(srcAbs);
 	const base = basename(srcAbs, ext);
