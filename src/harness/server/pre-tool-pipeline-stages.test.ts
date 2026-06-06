@@ -721,6 +721,37 @@ describe("captureDiffAwareBaseline", () => {
 		}
 	});
 
+	// --- F2: apply_patch carries no top-level file_path; resolve from the body ---
+
+	it("captures a baseline for an apply_patch target file (no top-level file_path)", () => {
+		const ctx = makeCtx();
+		const patch = "*** Begin Patch\n*** Update File: src/x.ts\n@@\n-a\n+b\n*** End Patch";
+		captureDiffAwareBaseline(
+			ctx,
+			ev({ tool_name: "apply_patch", tool_input: { command: patch } }),
+			"",
+		);
+		expect([...ctx.preEditBaselines.keys()]).toEqual(["/repo/src/x.ts"]);
+	});
+
+	it("captures baselines for every file in a multi-file apply_patch", () => {
+		const ctx = makeCtx();
+		const patch =
+			"*** Begin Patch\n" +
+			"*** Update File: src/x.ts\n@@\n-a\n+b\n" +
+			"*** Update File: src/y.ts\n@@\n-c\n+d\n" +
+			"*** End Patch";
+		captureDiffAwareBaseline(
+			ctx,
+			ev({ tool_name: "apply_patch", tool_input: { command: patch } }),
+			"",
+		);
+		expect([...ctx.preEditBaselines.keys()].sort()).toEqual([
+			"/repo/src/x.ts",
+			"/repo/src/y.ts",
+		]);
+	});
+
 	it("populates the baseline from the per-content counters (sentinels flow through)", () => {
 		const ctx = makeCtx();
 		vi.mocked(checkMissingReturnTypes).mockReturnValue([

@@ -132,4 +132,64 @@ describe("checkFunctionComplexityWrite", () => {
 		);
 		expect(out).toBeNull();
 	});
+
+	// --- F2: Codex apply_patch no longer bypasses the gate ---
+
+	/** Build an apply_patch "Add File" payload from full file content. */
+	function applyPatchAdd(path: string, content: string): { command: string } {
+		const body = content
+			.split("\n")
+			.map((l) => `+${l}`)
+			.join("\n");
+		return { command: `*** Begin Patch\n*** Add File: ${path}\n${body}\n*** End Patch` };
+	}
+
+	it("blocks an apply_patch Add File introducing an over-cap function", () => {
+		const out = checkFunctionComplexityWrite(
+			applyPatchAdd(join(tmp, "gen.ts"), fnWith("genned", 40)),
+			tmp,
+		);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("gen.ts");
+	});
+
+	it("allows an apply_patch Add File with only under-cap functions", () => {
+		const out = checkFunctionComplexityWrite(
+			applyPatchAdd(join(tmp, "okgen.ts"), fnWith("okfn", 5)),
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("blocks an apply_patch Update File that raises a function past the cap", () => {
+		const file = join(tmp, "grow.ts");
+		writeFileSync(file, fnWith("grow", 5)); // grow ~6, under cap; last `if` is a===4
+		let added = "";
+		for (let i = 0; i < 40; i++) added += `+\tif (a === ${100 + i}) r += ${i};\n`;
+		const patch =
+			"*** Begin Patch\n" +
+			`*** Update File: ${file}\n` +
+			"@@\n" +
+			" \tif (a === 4) r += 4;\n" + // context (space + tab + line)
+			added +
+			" \treturn r;\n" + // context
+			"*** End Patch";
+		const out = checkFunctionComplexityWrite({ command: patch }, tmp);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("grow");
+	});
+
+	it("fails open on an apply_patch whose context cannot be matched", () => {
+		const file = join(tmp, "nomatch.ts");
+		writeFileSync(file, fnWith("nm", 5));
+		const patch =
+			"*** Begin Patch\n" +
+			`*** Update File: ${file}\n` +
+			"@@\n" +
+			" nonexistent context line\n" +
+			"-foo\n" +
+			"+bar\n" +
+			"*** End Patch";
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
 });

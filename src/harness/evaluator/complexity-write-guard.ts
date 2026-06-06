@@ -1,9 +1,9 @@
 // ===========================================
 // PreToolUse gate — per-function cyclomatic cap (strict, no override)
 // ===========================================
-// Blocks a Write/Edit/MultiEdit that would push a function's cyclomatic
-// complexity past the cap. DELTA semantics, mirroring the line-cap gate
-// (`checkLargeFileLineCountWrite`): an edit that holds or reduces an
+// Blocks a Write/Edit/MultiEdit/apply_patch that would push a function's
+// cyclomatic complexity past the cap. DELTA semantics, mirroring the line-cap
+// gate (`checkLargeFileLineCountWrite`): an edit that holds or reduces an
 // already-complex function is always allowed — the refactor-down path — so the
 // on-disk before-state is the implicit ratchet baseline. Only a NEW over-cap
 // function, or RAISING an existing function past the cap, is blocked.
@@ -14,12 +14,20 @@
 //
 // Because a no-override block has no relief valve for a false positive, it runs
 // ONLY when the AST pass is available (the optional `typescript` dep, present in
-// dev/CI). Without it the gate fails open — a heuristic count would risk
-// FP-blocking legitimate code with no recourse.
+// dev/CI and shipped via optionalDependencies). Without it the gate fails open —
+// a heuristic count would risk FP-blocking legitimate code with no recourse.
+// Codex/Copilot `apply_patch` payloads are reconstructed to post-edit content
+// via the conservative V4A applier (fail-open on any uncertainty), so they no
+// longer bypass the gate by carrying their edit in the patch body.
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import {
+	looksLikeApplyPatch,
+	parseApplyPatchSections,
+	reconstructAfterContent,
+} from "../apply-patch-content.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { isCappableFile } from "../large-file-policy.js";
 
@@ -88,13 +96,13 @@ function projectContent(
 		}
 		return { before, after };
 	}
-	return null; // apply_patch / unknown shape — fail open
+	return null; // unknown shape — fail open (apply_patch is handled separately)
 }
 
 /**
- * Block a Write/Edit that introduces or worsens an over-cap function. Returns
- * null (allow) for non-JS/TS, exempt files, missing AST support, or when the
- * edit only holds/reduces complexity.
+ * Over-cap complexity violations for ONE file's before→after content. Returns an
+ * array of human-readable violation strings (empty = no violation), or `null`
+ * when the AST pass is unavailable (typescript missing) → caller fails open.
  *
  * The decision is IDENTITY-FREE. Function names are unreliable as comparison
  * keys: anonymous callbacks all share "(callback)", same-named methods /
@@ -107,34 +115,18 @@ function projectContent(
  * over-cap function (named OR anonymous), (b) raising any function past the cap,
  * and (c) shuffling complexity between same-named functions, while still
  * allowing a decompose that splits one over-cap function into several under-cap
- * ones (the post over-cap list shrinks). Names feed the message only, never the
- * decision.
+ * ones. Names feed the message only, never the decision.
  */
-export function checkFunctionComplexityWrite(
-	toolInput: JsonObject,
-	cwd: string,
-): ComplexityWriteBlock | null {
-	const filePath = resolveFilePath(toolInput);
-	if (!filePath || !JS_TS_RE.test(filePath)) return null;
-
-	const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-	const projected = projectContent(toolInput, abs);
-	if (!projected) return null;
-
-	if (!isCappableFile({ filePath, content: projected.after })) return null;
-
-	// computeCyclomaticAst counts every function-like node (incl. anonymous
-	// callbacks) as its own unit — they MUST all be considered. Returns null
-	// when the AST pass is unavailable (typescript missing) → fail open.
-	const afterFns = computeCyclomaticAst(projected.after, filePath);
+function complexityViolations(before: string, after: string, filePath: string): string[] | null {
+	const afterFns = computeCyclomaticAst(after, filePath);
 	if (!afterFns) return null; // AST unavailable → fail open (no FP-blocking)
-	const beforeFns = computeCyclomaticAst(projected.before, filePath) ?? [];
+	const beforeFns = computeCyclomaticAst(before, filePath) ?? [];
 
 	const cap = DEFAULT_MAX_CYCLOMATIC;
 	const afterOver = afterFns
 		.filter((f) => f.cyclomatic > cap)
 		.sort((a, b) => b.cyclomatic - a.cyclomatic);
-	if (afterOver.length === 0) return null;
+	if (afterOver.length === 0) return [];
 
 	const beforeOverVals = beforeFns
 		.filter((f) => f.cyclomatic > cap)
@@ -166,8 +158,12 @@ export function checkFunctionComplexityWrite(
 					: "new over-cap function";
 		violations.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
 	}
-	if (violations.length === 0) return null;
+	return violations;
+}
 
+/** The shared block payload for a set of violation strings. */
+function buildBlock(violations: string[]): ComplexityWriteBlock {
+	const cap = DEFAULT_MAX_CYCLOMATIC;
 	return {
 		block:
 			`[interlinked:cyclomatic] BLOCKED: this edit pushes ${violations.length} function(s) ` +
@@ -177,4 +173,69 @@ export function checkFunctionComplexityWrite(
 			"Editing an already-complex function is allowed as long as you don't make it worse — " +
 			"there is no suppression; the cap is enforced.",
 	};
+}
+
+/** Raw apply_patch payload across the runner-specific keys (matches the hook-side
+ *  normalizer's `command || patch || content || _raw_patch`). */
+function extractPatchRaw(toolInput: JsonObject): string {
+	return (
+		(typeof toolInput.command === "string" && toolInput.command) ||
+		(typeof toolInput.patch === "string" && toolInput.patch) ||
+		(typeof toolInput._raw_patch === "string" && toolInput._raw_patch) ||
+		(typeof toolInput.content === "string" && toolInput.content) ||
+		""
+	);
+}
+
+/**
+ * apply_patch path: reconstruct each section's post-edit content and run the
+ * same over-cap comparison per file. Fails open per-file when the applier can't
+ * confidently reconstruct (so a misparse never false-blocks), and entirely when
+ * the AST pass is unavailable.
+ */
+function checkApplyPatchComplexity(
+	toolInput: JsonObject,
+	cwd: string,
+): ComplexityWriteBlock | null {
+	const raw = extractPatchRaw(toolInput);
+	if (!raw || !looksLikeApplyPatch(raw)) return null;
+
+	const violations: string[] = [];
+	for (const section of parseApplyPatchSections(raw)) {
+		if (!JS_TS_RE.test(section.path)) continue;
+		const abs = isAbsolute(section.path) ? section.path : resolve(cwd, section.path);
+		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
+		const after = reconstructAfterContent(section, before);
+		if (after === null) continue; // can't reconstruct confidently → fail open for this file
+		if (!isCappableFile({ filePath: section.path, content: after })) continue;
+		const fileViolations = complexityViolations(before, after, section.path);
+		if (fileViolations === null) return null; // AST unavailable → fail open entirely
+		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
+	}
+	if (violations.length === 0) return null;
+	return buildBlock(violations);
+}
+
+/**
+ * Block a Write/Edit/MultiEdit/apply_patch that introduces or worsens an
+ * over-cap function. Returns null (allow) for non-JS/TS, exempt files, missing
+ * AST support, or when the edit only holds/reduces complexity.
+ */
+export function checkFunctionComplexityWrite(
+	toolInput: JsonObject,
+	cwd: string,
+): ComplexityWriteBlock | null {
+	const filePath = resolveFilePath(toolInput);
+	if (filePath) {
+		if (!JS_TS_RE.test(filePath)) return null;
+		const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+		const projected = projectContent(toolInput, abs);
+		if (!projected) return null;
+		if (!isCappableFile({ filePath, content: projected.after })) return null;
+		const violations = complexityViolations(projected.before, projected.after, filePath);
+		if (violations === null || violations.length === 0) return null;
+		return buildBlock(violations);
+	}
+	// No explicit file_path → may be an apply_patch payload (multi-file).
+	return checkApplyPatchComplexity(toolInput, cwd);
 }

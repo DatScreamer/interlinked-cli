@@ -33,6 +33,7 @@ import { coverageForFile, loadCoverageFinal } from "../coverage-final-reader.js"
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "../discovered-primitives.js";
 import { checkFunctionComplexity, checkMissingReturnTypes } from "../generic-checks.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "../project-typecheck-gate.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import {
 	collectSoftwareVersionReferences,
 	countAsAnyCasts,
@@ -234,20 +235,27 @@ export function captureDiffAwareBaseline(
 ): void {
 	const { rules } = ctx;
 	const CWD = ctx.cwd;
-	if (rules.diff_aware?.enabled !== false && filePath) {
-		const toolName = event.tool_name || "";
-		const isFileWrite = [
-			"Write",
-			"Edit",
-			"Update",
-			"WriteFile",
-			"EditFile",
-			"write_file",
-			"edit_file",
-		].includes(toolName);
+	if (rules.diff_aware?.enabled === false) return;
+	const toolName = event.tool_name || "";
+	const isFileWrite = [
+		"Write",
+		"Edit",
+		"Update",
+		"WriteFile",
+		"EditFile",
+		"write_file",
+		"edit_file",
+		"apply_patch",
+	].includes(toolName);
+	if (!isFileWrite) return;
 
-		const baselineFilePath = isAbsolute(filePath) ? filePath : resolve(CWD, filePath);
-		if (isFileWrite && existsSync(baselineFilePath)) {
+	// apply_patch carries no top-level file_path — resolve every target file
+	// from the patch body so each gets a pre-edit baseline. Codex multi-file
+	// edits were previously skipped entirely (no CRAP/complexity baseline).
+	const targetPaths = filePath ? [filePath] : extractAllEditedFilePaths(event);
+	for (const target of targetPaths) {
+		const baselineFilePath = isAbsolute(target) ? target : resolve(CWD, target);
+		if (existsSync(baselineFilePath)) {
 			try {
 				const preContent = readFileSync(baselineFilePath, "utf-8");
 				const missingRT = checkMissingReturnTypes(preContent, baselineFilePath);
