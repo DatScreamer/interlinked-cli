@@ -86,6 +86,13 @@ export default defineConfig({
                 "dist/**",
                 "bench/**",
                 "scripts/**",
+                // C1 denominator fix: drop non-logic so coverage/CRAP measure
+                // real code. Conservative — only codegen DATA, graph shards, and
+                // the commander entry wiring. Commands/types stay IN scope (the
+                // coverage goal targets every logic file, including them).
+                "src/lib/hook-template-chunks/**", // @codegen-data: .mjs hook template strings
+                "**/*.graph.ts", // Supermodel graph-shard data
+                "src/index.ts", // commander entry-point wiring
             ],
         },
     },
