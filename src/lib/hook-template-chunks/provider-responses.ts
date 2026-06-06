@@ -35,7 +35,15 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             }};
         }
         if (responseType === "pre_block") {
-            return { decision: "block", reason: data.reason };
+            // PreToolUse deny lives in hookSpecificOutput.permissionDecision —
+            // root {decision:"block"} is rejected for PreToolUse ("(root):
+            // Invalid input"), silently failing to block. (post_block below
+            // keeps root {decision:"block"}, which IS valid for PostToolUse.)
+            return { hookSpecificOutput: {
+                hookEventName: preEventEcho,
+                permissionDecision: "deny",
+                permissionDecisionReason: data.reason,
+            }};
         }
         if (responseType === "pre_ask") {
             // Surface Claude Code's permission prompt so the user confirms

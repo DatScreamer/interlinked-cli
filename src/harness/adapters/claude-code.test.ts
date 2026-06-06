@@ -149,13 +149,36 @@ describe("Claude Code encodeDecision", () => {
 			hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "fyi" },
 		});
 	});
-	it("block — emits decision: deny", () => {
+	it("PreToolUse block — emits permissionDecision: deny in hookSpecificOutput (NOT root decision:deny)", () => {
+		// Root {decision:"deny"} is invalid for PreToolUse ("(root): Invalid
+		// input") and silently fails to block — deny must live in
+		// hookSpecificOutput.permissionDecision.
 		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, baseEvent);
-		expect(JSON.parse(out.stdout as string)).toEqual({ decision: "deny", reason: "no" });
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "no",
+			},
+		});
 	});
-	it("ask — emits decision: ask", () => {
+	it("PostToolUse block — emits root decision: block (valid for PostToolUse)", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Read", tool_input: {} },
+			"PostToolUse",
+		);
+		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, postEvent);
+		expect(JSON.parse(out.stdout as string)).toEqual({ decision: "block", reason: "no" });
+	});
+	it("PreToolUse ask — emits permissionDecision: ask in hookSpecificOutput", () => {
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, baseEvent);
-		expect(JSON.parse(out.stdout as string)).toEqual({ decision: "ask", reason: "confirm?" });
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "ask",
+				permissionDecisionReason: "confirm?",
+			},
+		});
 	});
 	it("routes warnings to stderr", () => {
 		const out = adapter.encodeDecision(

@@ -127,12 +127,37 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 
 		encodeDecision(decision, event): AdapterOutput {
 			const stderr = (decision.warnings ?? []).join("\n");
+			const isPre = event?.phase === "pre-tool";
+			// Claude Code rejects hookSpecificOutput without a hookEventName that
+			// matches the incoming event. Echo the runner's native event; fall
+			// back by phase if absent.
+			const hookEventName =
+				event?.runner_native_event ?? (isPre ? "PreToolUse" : "PostToolUse");
+
 			if (decision.decision === "block") {
+				const reason = decision.reason ?? "Blocked by interlinked harness";
+				if (isPre) {
+					// PreToolUse: a deny MUST be carried in
+					// hookSpecificOutput.permissionDecision. Root-level
+					// {decision:"deny"} is NOT valid for PreToolUse — Claude Code
+					// rejects it ("(root): Invalid input") and the block is
+					// silently dropped, so the tool runs anyway. (PostToolUse, by
+					// contrast, uses root {decision:"block"} — handled below.)
+					return {
+						stdout: JSON.stringify({
+							hookSpecificOutput: {
+								hookEventName,
+								permissionDecision: "deny",
+								permissionDecisionReason: reason,
+							},
+						}),
+						stderr: stderr || undefined,
+						exit_code: 0,
+					};
+				}
+				// PostToolUse: root-level {decision:"block"} is the valid shape.
 				return {
-					stdout: JSON.stringify({
-						decision: "deny",
-						reason: decision.reason ?? "Blocked by interlinked harness",
-					}),
+					stdout: JSON.stringify({ decision: "block", reason }),
 					stderr: stderr || undefined,
 					exit_code: 0,
 				};
@@ -147,10 +172,16 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 					decision.reason ?? "Confirmation required",
 					decision.resolved_targets,
 				);
+				// `ask` is a PreToolUse-only permission outcome and, like deny,
+				// lives in hookSpecificOutput.permissionDecision — root
+				// {decision:"ask"} is invalid.
 				return {
 					stdout: JSON.stringify({
-						decision: "ask",
-						reason,
+						hookSpecificOutput: {
+							hookEventName,
+							permissionDecision: "ask",
+							permissionDecisionReason: reason,
+						},
 					}),
 					stderr: stderr || undefined,
 					exit_code: 0,
@@ -167,14 +198,8 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 			// double-display.
 			const contextParts: string[] = [];
 			if (decision.additional_context) contextParts.push(decision.additional_context);
-			if (event?.phase === "pre-tool" && stderr) contextParts.push(stderr);
+			if (isPre && stderr) contextParts.push(stderr);
 			if (contextParts.length > 0) {
-				// Claude Code rejects hookSpecificOutput without hookEventName
-				// ("Hook returned incorrect event name"). Echo the runner's
-				// native event verbatim; fall back by phase if absent.
-				const hookEventName =
-					event?.runner_native_event ??
-					(event?.phase === "pre-tool" ? "PreToolUse" : "PostToolUse");
 				return {
 					stdout: JSON.stringify({
 						hookSpecificOutput: {

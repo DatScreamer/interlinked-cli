@@ -242,19 +242,27 @@ describe("claude-code adapter — ask reason includes Targets section", () => {
 			{ decision: "ask", reason: "POTENTIALLY DESTRUCTIVE: rm", resolved_targets: TARGETS_TWO_FILES },
 			event,
 		);
-		const parsed = JSON.parse(out.stdout as string) as { decision: string; reason: string };
-		expect(parsed.decision).toBe("ask");
-		expect(parsed.reason).toContain("POTENTIALLY DESTRUCTIVE: rm");
-		expect(parsed.reason).toContain("Targets:");
-		expect(parsed.reason).toContain("• file: src/legacy.ts");
-		expect(parsed.reason).toContain("• file: docs/old.md");
+		// PreToolUse ask lives in hookSpecificOutput.permissionDecision(Reason),
+		// not root {decision,reason} (invalid for PreToolUse).
+		const parsed = JSON.parse(out.stdout as string) as {
+			hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+		};
+		const hso = parsed.hookSpecificOutput;
+		expect(hso.permissionDecision).toBe("ask");
+		expect(hso.permissionDecisionReason).toContain("POTENTIALLY DESTRUCTIVE: rm");
+		expect(hso.permissionDecisionReason).toContain("Targets:");
+		expect(hso.permissionDecisionReason).toContain("• file: src/legacy.ts");
+		expect(hso.permissionDecisionReason).toContain("• file: docs/old.md");
 	});
 
 	it("ask without resolved_targets renders unchanged from baseline", () => {
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
 		expect(JSON.parse(out.stdout as string)).toEqual({
-			decision: "ask",
-			reason: "confirm?",
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "ask",
+				permissionDecisionReason: "confirm?",
+			},
 		});
 	});
 });
