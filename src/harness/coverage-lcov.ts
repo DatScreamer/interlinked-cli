@@ -34,6 +34,7 @@ import {
 	metric,
 } from "./coverage-canonical.js";
 import type { CoverageSummary } from "./coverage-ratchet.js";
+import type { FunctionCoverage, PerFileCoverage } from "./coverage-final-reader.js";
 
 export interface ParseLcovOptions {
 	/** Absolute repo root; absolute `SF` paths are normalized relative to it. */
@@ -210,4 +211,47 @@ export function canonicalToCoverageSummary(cov: CanonicalCoverage): CoverageSumm
 		};
 	}
 	return out;
+}
+
+/**
+ * Bridge one LCOV file record into the per-function `PerFileCoverage` shape CRAP
+ * scoring consumes — the cross-language equivalent of the istanbul
+ * `coverage-final.json` reader. LCOV records per-LINE hits (`DA`) and per-
+ * function entry hits (`FNDA`) but NOT per-function statement coverage, so each
+ * function's coverage is derived by intersecting the line-hit map with the
+ * function's source range (supplied from the AST complexity pass): covered =
+ * lines in `[line, endLine]` with hits > 0, over the lines in that range LCOV
+ * recorded at all. This mirrors istanbul's `computeStatementPct` at line
+ * granularity, letting any LCOV-emitting engine (coverage.py, cargo-llvm-cov,
+ * gcov, vitest's lcov reporter) feed `interlinked metrics` CRAP — not just the
+ * istanbul JSON reporter.
+ */
+export function perFileCoverageFromCanonical(
+	canonicalFile: CanonicalFileCoverage,
+	rel: string,
+	mtime: number,
+	fnRanges: ReadonlyArray<{ name: string; line: number; endLine: number }>,
+): PerFileCoverage {
+	const lineHits = canonicalFile.lineHits;
+	const fnEntryHits = new Map<number, number>();
+	for (const fn of canonicalFile.perFunction) fnEntryHits.set(fn.line, fn.hits);
+
+	const functions: FunctionCoverage[] = fnRanges.map((fn) => {
+		let total = 0;
+		let covered = 0;
+		for (let ln = fn.line; ln <= fn.endLine; ln++) {
+			const hits = lineHits.get(ln);
+			if (hits === undefined) continue;
+			total++;
+			if (hits > 0) covered++;
+		}
+		return {
+			name: fn.name,
+			line: fn.line,
+			endLine: fn.endLine,
+			hits: fnEntryHits.get(fn.line) ?? (covered > 0 ? 1 : 0),
+			statement_pct: total > 0 ? (covered / total) * 100 : 0,
+		};
+	});
+	return { filePath: rel, mtime, functions };
 }

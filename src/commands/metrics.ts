@@ -8,17 +8,30 @@
 // (file discovery, the AST complexity pass, the per-function coverage reader,
 // the CRAP scorer, the companion-path helper) rather than recomputing anything.
 //
-// Coverage is OPTIONAL: when `coverage/coverage-final.json` is absent the scan
+// Coverage is OPTIONAL and language-agnostic: it loads istanbul
+// `coverage-final.json` when present, else the canonical LCOV spine
+// (`coverage/lcov.info`) the per-language adapters emit (coverage.py,
+// cargo-llvm-cov, vitest's lcov reporter, …). When neither exists the scan
 // still reports complexity + companion presence and marks coverage/CRAP as
 // unavailable (fail-open, never throws).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { CANONICAL_LCOV_PATH } from "../harness/coverage-adapters.js";
 import { computeCrapForFile } from "../harness/checks/crap.js";
 import { computeCyclomaticComplexity } from "../harness/checks/cyclomatic.js";
-import { computeCyclomaticAst } from "../harness/checks/cyclomatic-ast.js";
-import { coverageForFile, loadCoverageFinal } from "../harness/coverage-final-reader.js";
+import { astComplexityAvailable, computeCyclomaticAst } from "../harness/checks/cyclomatic-ast.js";
+import {
+	coverageForFile,
+	loadCoverageFinal,
+	type PerFileCoverage,
+} from "../harness/coverage-final-reader.js";
 import { type CoverageSummary, loadCoverageSummary } from "../harness/coverage-ratchet.js";
+import {
+	canonicalToCoverageSummary,
+	loadLcovFile,
+	perFileCoverageFromCanonical,
+} from "../harness/coverage-lcov.js";
 import {
 	companionTestCandidates,
 	isTddExemptPath,
@@ -33,6 +46,10 @@ import { discoverFiles } from "./verify/file-discovery.js";
 const CYCLOMATIC_REVIEW = 15;
 const CYCLOMATIC_BAD = 25;
 const CRAP_GATE = 30;
+
+/** Source extensions the AST/regex complexity pass + coverage adapters cover. */
+const ANALYZABLE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/;
+const TEST_EXT_RE = /\.(test|spec)\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/;
 
 interface FnMetric {
 	file: string;
@@ -69,20 +86,21 @@ interface MetricsOptions {
 }
 
 /**
- * `.ts`/`.tsx` files we actually analyze — scoped to `src/` (matching the
- * coverage `include`, so coverage/CRAP are meaningful) and excluding tests,
- * fixtures, and declaration files.
+ * Analyzable when the extension is a supported source language, it is not a
+ * test / declaration / fixture file, AND it is in scope: either under `src/`
+ * (the JS coverage-include convention) or present in the loaded coverage report
+ * (so a non-TS language whose sources live outside `src/` — e.g. a Python
+ * package — still appears once its LCOV report is generated).
  */
-function isAnalyzableSource(rel: string): boolean {
-	if (!rel.startsWith("src/")) return false;
-	if (!/\.tsx?$/.test(rel)) return false;
+function isAnalyzableSource(rel: string, covered: ReadonlySet<string>): boolean {
+	if (!ANALYZABLE_EXT_RE.test(rel)) return false;
 	if (/\.d\.ts$/.test(rel)) return false;
-	if (/\.(test|spec)\.tsx?$/.test(rel)) return false;
-	if (/(^|\/)(__tests__|__fixtures__)\//.test(rel)) return false;
-	return true;
+	if (TEST_EXT_RE.test(rel)) return false;
+	if (/(^|\/)(__tests__|__fixtures__|tests|test)\//.test(rel)) return false;
+	return rel.startsWith("src/") || covered.has(rel);
 }
 
-/** Per-file line coverage % from the istanbul summary, matched by suffix. */
+/** Per-file line coverage % from an istanbul/LCOV summary, matched by suffix. */
 function linePctFor(summary: CoverageSummary | null, rel: string): number | null {
 	if (!summary) return null;
 	for (const [key, entry] of Object.entries(summary)) {
@@ -93,8 +111,66 @@ function linePctFor(summary: CoverageSummary | null, rel: string): number | null
 	return null;
 }
 
+type FnRange = { name: string; line: number; endLine: number };
+
+/**
+ * Unified, language-agnostic coverage accessor. Prefers istanbul
+ * `coverage-final.json` (per-statement, JS/TS); falls back to the canonical
+ * LCOV spine, deriving per-function coverage from line hits + the supplied AST
+ * ranges. `available === false` when neither report exists.
+ */
+interface MetricsCoverage {
+	available: boolean;
+	source: "istanbul" | "lcov" | null;
+	/** Files the report knows about, repo-relative — drives non-`src/` inclusion. */
+	fileSet: ReadonlySet<string>;
+	perFile(rel: string, fnRanges: FnRange[], mtime: number): PerFileCoverage | undefined;
+	linePct(rel: string): number | null;
+}
+
+function loadMetricsCoverage(cwd: string): MetricsCoverage {
+	const finalCov = loadCoverageFinal(join(cwd, "coverage", "coverage-final.json"), cwd);
+	if (finalCov) {
+		const summary = loadCoverageSummary(join(cwd, "coverage", "coverage-summary.json"));
+		return {
+			available: true,
+			source: "istanbul",
+			fileSet: new Set(finalCov.keys()),
+			perFile: (rel) => coverageForFile(finalCov, rel),
+			linePct: (rel) => linePctFor(summary, rel),
+		};
+	}
+	const lcov = loadLcovFile(join(cwd, CANONICAL_LCOV_PATH), { cwd });
+	if (lcov) {
+		const summary = canonicalToCoverageSummary(lcov);
+		return {
+			available: true,
+			source: "lcov",
+			fileSet: new Set(lcov.files.keys()),
+			perFile: (rel, fnRanges, mtime) => {
+				const cf = lcov.files.get(rel);
+				return cf ? perFileCoverageFromCanonical(cf, rel, mtime, fnRanges) : undefined;
+			},
+			linePct: (rel) => linePctFor(summary, rel),
+		};
+	}
+	return {
+		available: false,
+		source: null,
+		fileSet: new Set(),
+		perFile: () => undefined,
+		linePct: () => null,
+	};
+}
+
 interface MetricsReport {
-	scope: { files: number; functions: number; coverageAvailable: boolean };
+	scope: {
+		files: number;
+		functions: number;
+		coverageAvailable: boolean;
+		coverageSource: "istanbul" | "lcov" | null;
+		astComplexityAvailable: boolean;
+	};
 	gates: {
 		functionsOverCrap: number;
 		functionsCyclomaticReview: number;
@@ -112,14 +188,13 @@ interface MetricsReport {
 }
 
 function buildReport(cwd: string, topN: number): MetricsReport {
+	const cov = loadMetricsCoverage(cwd);
 	// discoverFiles returns absolute paths — normalize to repo-relative for
 	// coverage lookup, companion paths, and display.
 	const sourceFiles = discoverFiles(cwd)
 		.map((f) => relative(cwd, f).replace(/\\/g, "/"))
-		.filter(isAnalyzableSource)
+		.filter((rel) => isAnalyzableSource(rel, cov.fileSet))
 		.sort();
-	const finalCov = loadCoverageFinal(join(cwd, "coverage", "coverage-final.json"), cwd);
-	const summary = loadCoverageSummary(join(cwd, "coverage", "coverage-summary.json"));
 
 	const fns: FnMetric[] = [];
 	const files: FileMetric[] = [];
@@ -139,8 +214,8 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		// content-quality scans, not measurement, and would hide the harness's
 		// own checks/ tree. Fall back to the guarded walker only sans typescript.
 		const comps = computeCyclomaticAst(content, abs) ?? computeCyclomaticComplexity(content, abs);
-		const perFile = finalCov ? coverageForFile(finalCov, rel) : undefined;
-		if (finalCov && !perFile) filesNoCoverage++;
+		const perFile = cov.perFile(rel, comps, statSync(abs).mtimeMs);
+		if (cov.available && !perFile) filesNoCoverage++;
 
 		const fileFns: FnMetric[] = perFile
 			? computeCrapForFile({
@@ -177,7 +252,7 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		files.push({
 			file: rel,
 			functions: fileFns.length,
-			linePct: linePctFor(summary, rel),
+			linePct: cov.linePct(rel),
 			maxCyclomatic: fileFns.reduce((m, f) => Math.max(m, f.cyclomatic), 0),
 			maxCrap: perFile ? fileFns.reduce((m, f) => Math.max(m, f.crap ?? 0), 0) : null,
 			companion,
@@ -186,7 +261,10 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 	}
 
 	const cycSorted = fns.map((f) => f.cyclomatic).sort((a, b) => a - b);
-	const crapVals = fns.map((f) => f.crap).filter((x): x is number => x !== null).sort((a, b) => a - b);
+	const crapVals = fns
+		.map((f) => f.crap)
+		.filter((x): x is number => x !== null)
+		.sort((a, b) => a - b);
 
 	const hotspots = [...fns]
 		.filter((f) => f.crap !== null)
@@ -194,7 +272,13 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		.slice(0, topN);
 
 	return {
-		scope: { files: files.length, functions: fns.length, coverageAvailable: finalCov !== null },
+		scope: {
+			files: files.length,
+			functions: fns.length,
+			coverageAvailable: cov.available,
+			coverageSource: cov.source,
+			astComplexityAvailable: astComplexityAvailable(),
+		},
 		gates: {
 			functionsOverCrap: crapVals.filter((x) => x >= CRAP_GATE).length,
 			functionsCyclomaticReview: fns.filter(
@@ -249,9 +333,18 @@ function renderNormal(r: MetricsReport): string {
 	lines.push(header("Test-Quality Metrics"));
 	lines.push(kvLine("Source files", String(r.scope.files)));
 	lines.push(kvLine("Functions", String(r.scope.functions)));
-	lines.push(
-		kvLine("Coverage", r.scope.coverageAvailable ? c.green("present") : c.yellow("absent (CRAP/coverage unavailable — run `npm run test:coverage`)")),
-	);
+	const covLabel = r.scope.coverageAvailable
+		? c.green(`present (${r.scope.coverageSource})`)
+		: c.yellow("absent (CRAP/coverage unavailable — run `npm run test:coverage`)");
+	lines.push(kvLine("Coverage", covLabel));
+	if (!r.scope.astComplexityAvailable) {
+		lines.push(
+			kvLine(
+				"Complexity",
+				c.yellow("regex fallback — `typescript` not resolvable; install it for AST-accurate metrics"),
+			),
+		);
+	}
 	lines.push("");
 	lines.push(c.bold("  Gates"));
 	lines.push(kvLine("  CRAP ≥ 30", gateStr(r.gates.functionsOverCrap), 22));

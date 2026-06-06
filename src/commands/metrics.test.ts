@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CrapFinding } from "../harness/checks/crap.js";
 import type { FunctionComplexityEntry } from "../harness/checks/cyclomatic.js";
+import type { CanonicalCoverage } from "../harness/coverage-canonical.js";
 import type { PerFileCoverage } from "../harness/coverage-final-reader.js";
 import type { CoverageSummary } from "../harness/coverage-ratchet.js";
 
@@ -26,6 +27,11 @@ const m = vi.hoisted(() => ({
 	coverageForFile:
 		vi.fn<(c: Map<string, PerFileCoverage>, rel: string) => PerFileCoverage | undefined>(),
 	loadCoverageSummary: vi.fn<(p: string) => CoverageSummary | null>(),
+	loadLcovFile: vi.fn<(p: string, opts?: unknown) => CanonicalCoverage | null>(),
+	canonicalToCoverageSummary: vi.fn<(cov: CanonicalCoverage) => CoverageSummary>(),
+	perFileCoverageFromCanonical:
+		vi.fn<(cf: unknown, rel: string, mtime: number, fns: unknown) => PerFileCoverage>(),
+	astComplexityAvailable: vi.fn<() => boolean>(),
 	computeCrapForFile: vi.fn<() => CrapFinding[]>(),
 	companionTestCandidates: vi.fn<(srcAbs: string) => string[]>(),
 	isTddExemptPath: vi.fn<(p: string) => boolean>(),
@@ -42,6 +48,7 @@ vi.mock("node:fs", () => ({
 vi.mock("./verify/file-discovery.js", () => ({ discoverFiles: m.discoverFiles }));
 vi.mock("../harness/checks/cyclomatic-ast.js", () => ({
 	computeCyclomaticAst: m.computeCyclomaticAst,
+	astComplexityAvailable: m.astComplexityAvailable,
 }));
 vi.mock("../harness/checks/cyclomatic.js", () => ({
 	computeCyclomaticComplexity: m.computeCyclomaticComplexity,
@@ -52,6 +59,14 @@ vi.mock("../harness/coverage-final-reader.js", () => ({
 }));
 vi.mock("../harness/coverage-ratchet.js", () => ({
 	loadCoverageSummary: m.loadCoverageSummary,
+}));
+vi.mock("../harness/coverage-lcov.js", () => ({
+	loadLcovFile: m.loadLcovFile,
+	canonicalToCoverageSummary: m.canonicalToCoverageSummary,
+	perFileCoverageFromCanonical: m.perFileCoverageFromCanonical,
+}));
+vi.mock("../harness/coverage-adapters.js", () => ({
+	CANONICAL_LCOV_PATH: "coverage/lcov.info",
 }));
 vi.mock("../harness/checks/crap.js", () => ({ computeCrapForFile: m.computeCrapForFile }));
 vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
@@ -79,6 +94,14 @@ beforeEach(() => {
 	m.loadCoverageFinal.mockReturnValue(null);
 	m.coverageForFile.mockReturnValue(undefined);
 	m.loadCoverageSummary.mockReturnValue(null);
+	m.loadLcovFile.mockReturnValue(null);
+	m.canonicalToCoverageSummary.mockReturnValue({});
+	m.perFileCoverageFromCanonical.mockImplementation((_cf, rel) => ({
+		filePath: rel,
+		mtime: 1000,
+		functions: [],
+	}));
+	m.astComplexityAvailable.mockReturnValue(true);
 	m.computeCrapForFile.mockReturnValue([]);
 	m.companionTestCandidates.mockReturnValue([]);
 	m.isTddExemptPath.mockReturnValue(false);
@@ -115,7 +138,13 @@ function perFile(rel: string): PerFileCoverage {
 }
 
 interface JsonReport {
-	scope: { files: number; functions: number; coverageAvailable: boolean };
+	scope: {
+		files: number;
+		functions: number;
+		coverageAvailable: boolean;
+		coverageSource: "istanbul" | "lcov" | null;
+		astComplexityAvailable: boolean;
+	};
 	gates: {
 		functionsOverCrap: number;
 		functionsCyclomaticReview: number;
@@ -141,12 +170,14 @@ function lastJson(): JsonReport {
 }
 
 describe("metricsCommand — file selection (isAnalyzableSource)", () => {
-	it("keeps only analyzable src/*.ts|tsx and drops every excluded shape", async () => {
+	it("keeps analyzable source languages under src/ and drops every excluded shape", async () => {
 		m.discoverFiles.mockReturnValue([
 			abs("src/keep.ts"),
 			abs("src/keep.tsx"),
-			abs("lib/outside.ts"), // not under src/
-			abs("src/skip.js"), // not .ts/.tsx
+			abs("src/keep.js"), // JS is analyzable
+			abs("src/keep.py"), // Python is analyzable
+			abs("lib/outside.ts"), // not under src/, not covered → dropped
+			abs("src/notes.md"), // not a source language
 			abs("src/types.d.ts"), // declaration
 			abs("src/a.test.ts"), // test
 			abs("src/a.spec.tsx"), // spec
@@ -155,15 +186,40 @@ describe("metricsCommand — file selection (isAnalyzableSource)", () => {
 		]);
 		await metricsCommand({ cwd: CWD, json: true });
 		const r = lastJson();
-		expect(r.files.map((f) => f.file)).toEqual(["src/keep.ts", "src/keep.tsx"]);
-		expect(r.scope.files).toBe(2);
+		expect(r.files.map((f) => f.file)).toEqual([
+			"src/keep.js",
+			"src/keep.py",
+			"src/keep.ts",
+			"src/keep.tsx",
+		]);
+		expect(r.scope.files).toBe(4);
+	});
+
+	it("includes a non-src file that appears in the coverage report (F4 multi-language)", async () => {
+		// A Python package outside src/ — admitted because LCOV reports it.
+		m.loadLcovFile.mockReturnValue({
+			files: new Map([["pkg/calc.py", {} as never]]),
+			source: "lcov",
+		} as unknown as CanonicalCoverage);
+		m.discoverFiles.mockReturnValue([abs("pkg/calc.py"), abs("scripts/build.ts")]);
+		await metricsCommand({ cwd: CWD, json: true });
+		const r = lastJson();
+		// calc.py admitted via the coverage fileSet; build.ts (not src/, not covered) dropped.
+		expect(r.files.map((f) => f.file)).toEqual(["pkg/calc.py"]);
+		expect(r.scope.coverageSource).toBe("lcov");
 	});
 
 	it("reports an empty scope when nothing is analyzable", async () => {
 		m.discoverFiles.mockReturnValue([abs("src/a.test.ts"), abs("docs/x.md")]);
 		await metricsCommand({ cwd: CWD, json: true });
 		const r = lastJson();
-		expect(r.scope).toEqual({ files: 0, functions: 0, coverageAvailable: false });
+		expect(r.scope).toEqual({
+			files: 0,
+			functions: 0,
+			coverageAvailable: false,
+			coverageSource: null,
+			astComplexityAvailable: true,
+		});
 		expect(r.hotspots).toEqual([]);
 		expect(r.distributions.cyclomatic).toEqual({
 			"≤5": 0,
@@ -506,5 +562,60 @@ describe("metricsCommand — cwd resolution default", () => {
 		await metricsCommand({ json: true });
 		expect(m.discoverFiles).toHaveBeenCalledWith(process.cwd());
 		expect(lastJson().scope.files).toBe(0);
+	});
+});
+
+describe("metricsCommand — LCOV coverage source (F4)", () => {
+	function withLcov(): void {
+		m.loadCoverageFinal.mockReturnValue(null); // istanbul absent → LCOV is the source
+		m.loadLcovFile.mockReturnValue({
+			files: new Map([["src/a.ts", {} as never]]),
+			source: "lcov",
+		} as unknown as CanonicalCoverage);
+		m.canonicalToCoverageSummary.mockReturnValue({
+			"src/a.ts": { lines: { pct: 60 }, branches: { pct: 0 } },
+		});
+		m.perFileCoverageFromCanonical.mockReturnValue(perFile("src/a.ts"));
+		m.computeCyclomaticAst.mockReturnValue([comp({ cyclomatic: 12 })]);
+		m.computeCrapForFile.mockReturnValue([
+			crap({ crap_score: 40, coverage_pct: 20, complexity: 12 }),
+		]);
+		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+	}
+
+	it("reports coverage from the canonical LCOV spine when istanbul JSON is absent", async () => {
+		withLcov();
+		await metricsCommand({ cwd: CWD, json: true });
+		const r = lastJson();
+		expect(r.scope.coverageAvailable).toBe(true);
+		expect(r.scope.coverageSource).toBe("lcov");
+		expect(m.perFileCoverageFromCanonical).toHaveBeenCalled();
+		// CRAP is computed via the LCOV-derived per-function coverage.
+		expect(r.files[0].maxCrap).toBe(40);
+		expect(r.gates.functionsOverCrap).toBe(1);
+		expect(r.files[0].linePct).toBe(60);
+	});
+
+	it("prefers istanbul over LCOV when both exist (LCOV not consulted)", async () => {
+		m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+		m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+		m.computeCyclomaticAst.mockReturnValue([comp()]);
+		m.computeCrapForFile.mockReturnValue([crap()]);
+		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+		await metricsCommand({ cwd: CWD, json: true });
+		expect(lastJson().scope.coverageSource).toBe("istanbul");
+		expect(m.loadLcovFile).not.toHaveBeenCalled();
+	});
+
+	it("surfaces the regex-fallback warning when the AST pass is unavailable", async () => {
+		m.astComplexityAvailable.mockReturnValue(false);
+		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+		m.computeCyclomaticAst.mockReturnValue(null);
+		m.computeCyclomaticComplexity.mockReturnValue([comp()]);
+		await metricsCommand({ cwd: CWD });
+		expect(logged).toContain("regex fallback");
+		logged = "";
+		await metricsCommand({ cwd: CWD, json: true });
+		expect(lastJson().scope.astComplexityAvailable).toBe(false);
 	});
 });

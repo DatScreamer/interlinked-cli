@@ -3,6 +3,7 @@ import {
 	canonicalToCoverageSummary,
 	loadLcovFile,
 	parseLcov,
+	perFileCoverageFromCanonical,
 } from "../coverage-lcov.js";
 import { type CoverageBaseline, compareCoverage } from "../coverage-ratchet.js";
 
@@ -195,5 +196,34 @@ describe("end-to-end spine: LCOV → canonical → ratchet", () => {
 		expect(lineFinding?.baseline_pct).toBe(100);
 		expect(lineFinding?.current_pct).toBe(80);
 		expect(result.stats.files_decreased).toBe(1);
+	});
+});
+
+describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () => {
+	it("derives per-function statement_pct from line hits intersected with AST ranges", () => {
+		// foo spans lines 1-4; lines 1,2,4 ran, line 3 did not → 3/4 = 75%.
+		const lcov = "SF:src/foo.ts\nFN:1,foo\nFNDA:5,foo\nDA:1,5\nDA:2,5\nDA:3,0\nDA:4,5\nend_of_record\n";
+		const canonical = parseLcov(lcov, { cwd: "/repo" });
+		const cf = canonical.files.get("src/foo.ts");
+		if (!cf) throw new Error("expected an LCOV record for src/foo.ts");
+		const perFile = perFileCoverageFromCanonical(cf, "src/foo.ts", 123, [
+			{ name: "foo", line: 1, endLine: 4 },
+		]);
+		expect(perFile.filePath).toBe("src/foo.ts");
+		expect(perFile.functions).toHaveLength(1);
+		expect(perFile.functions[0].statement_pct).toBe(75);
+		expect(perFile.functions[0].hits).toBe(5); // from FNDA
+	});
+
+	it("yields 0% (and 0 hits) for a function whose range LCOV never recorded", () => {
+		const lcov = "SF:src/foo.ts\nDA:1,5\nend_of_record\n";
+		const canonical = parseLcov(lcov, { cwd: "/repo" });
+		const cf = canonical.files.get("src/foo.ts");
+		if (!cf) throw new Error("expected an LCOV record for src/foo.ts");
+		const perFile = perFileCoverageFromCanonical(cf, "src/foo.ts", 1, [
+			{ name: "ghost", line: 50, endLine: 60 },
+		]);
+		expect(perFile.functions[0].statement_pct).toBe(0);
+		expect(perFile.functions[0].hits).toBe(0);
 	});
 });
