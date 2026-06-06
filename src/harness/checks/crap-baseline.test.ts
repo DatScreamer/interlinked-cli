@@ -169,6 +169,25 @@ describe("filterToRisers", () => {
 		// post-rename CRAP, not silently inherit the old identity.
 		expect(filterToRisers(findings, baseline)).toHaveLength(1);
 	});
+
+	// --- F6: line-drift tolerance (was exact name@line → false "new function") ---
+
+	it("tolerates line drift: an unchanged function shifted down is NOT a false riser", () => {
+		// Pre-edit foo@10, score 100. The edit inserts 30 lines above, so foo is
+		// now at line 40 with the SAME score. Exact name@line keying would miss
+		// (foo@40 != foo@10), call it a brand-new function, and fire a false riser.
+		const baseline = new Map([["src/a.ts", new Map([["foo@10", 100]])]]);
+		const findings = [mkFinding({ file: "src/a.ts", fn: "foo", line: 40, score: 100 })];
+		expect(filterToRisers(findings, baseline)).toEqual([]);
+	});
+
+	it("tolerates line drift but still flags a genuine score rise", () => {
+		const baseline = new Map([["src/a.ts", new Map([["foo@10", 100]])]]);
+		const findings = [mkFinding({ file: "src/a.ts", fn: "foo", line: 40, score: 150 })];
+		const risers = filterToRisers(findings, baseline);
+		expect(risers).toHaveLength(1);
+		expect(risers[0].crap_score).toBe(150);
+	});
 });
 
 // ==================================================================

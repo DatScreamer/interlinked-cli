@@ -105,10 +105,40 @@ export function filterToRisers(
 	return current.filter((finding) => {
 		const fileMap = baseline.get(finding.file);
 		if (!fileMap) return true; // no baseline for this file → keep (new file)
-		const priorScore = fileMap.get(baselineKey(finding.function, finding.line));
-		if (priorScore === undefined) return true; // new function → keep
-		return finding.crap_score > priorScore; // risen score → keep
+		const prior = priorScoreFor(fileMap, finding.function, finding.line);
+		if (prior === undefined) return true; // genuinely new function → keep
+		return finding.crap_score > prior; // risen score → keep
 	});
+}
+
+/**
+ * Look up a function's pre-edit score with LINE-DRIFT tolerance. Exact
+ * `name@line` first (fast path, no drift); otherwise the same-named baseline
+ * entry at the NEAREST line — inserting or deleting lines above a function
+ * shifts its line but not its identity, so an exact-line key would mis-classify
+ * an unchanged function as "new" and fire a false riser. Only when the name is
+ * absent from the baseline entirely is it a genuinely new function (`undefined`).
+ * Same-named functions (overloads, nested defs) are disambiguated by proximity.
+ */
+function priorScoreFor(
+	fileMap: Map<string, number>,
+	fnName: string,
+	line: number,
+): number | undefined {
+	const exact = fileMap.get(baselineKey(fnName, line));
+	if (exact !== undefined) return exact;
+	let bestScore: number | undefined;
+	let bestDelta = Number.POSITIVE_INFINITY;
+	for (const [key, score] of fileMap) {
+		const parsed = parseBaselineKey(key);
+		if (parsed.name !== fnName) continue;
+		const delta = Math.abs(parsed.line - line);
+		if (delta < bestDelta) {
+			bestDelta = delta;
+			bestScore = score;
+		}
+	}
+	return bestScore;
 }
 
 /** Input bundle for {@link computeCrapRisers}. */
@@ -124,15 +154,26 @@ export interface CrapRisersInput {
 }
 
 /**
- * PostToolUse "coverage-hole alarm": per-function CRAP that ROSE versus the
- * pre-edit snapshot. Loads current coverage, scores the post-edit content with
- * the SAME complexity function the snapshot used (so the before/after
- * comparison is apples-to-apples), and returns only the risers.
+ * PostToolUse "coverage-hole alarm": per-function CRAP that is high AND
+ * attributable to THIS edit relative to the pre-edit snapshot. Loads the
+ * last-known coverage (the static `coverage-final.json` — NOT re-measured here;
+ * a per-edit coverage run is deliberately too expensive), scores the post-edit
+ * content with the SAME complexity function the snapshot used, and returns only
+ * the risers (new functions, or functions whose CRAP rose vs the snapshot).
+ *
+ * IMPORTANT — what this can and cannot observe: the pre-edit snapshot and this
+ * post-edit pass BOTH read the same coverage file, so a true coverage DROP (a
+ * test that stopped exercising a branch) is INVISIBLE here until coverage is
+ * re-run. Combined with the PreToolUse complexity block (#15), the observable
+ * signal is a NEW or freshly-added complex function whose last-known coverage is
+ * low — a coverage HOLE on newly-written complexity, not a coverage drop. (The
+ * fail-open complexity paths — apply_patch, the missing-AST fallback — can also
+ * let a genuine rise through; those are the other way a riser appears.) A real
+ * coverage drop on existing code surfaces later via `interlinked metrics` after
+ * the next coverage run.
  *
  * Returns `[]` (fail-open) when coverage is unavailable — CRAP needs coverage.
- * Because PreToolUse already blocks complexity rises (#15), a riser here is
- * almost always a coverage DROP on complex code: a test that stopped exercising
- * those branches. Present-not-prescribe: the caller surfaces it as advice.
+ * Present-not-prescribe: the caller surfaces it as advice.
  */
 export function computeCrapRisers(input: CrapRisersInput): CrapFinding[] {
 	const covCache = loadCoverageFinal(join(input.cwd, "coverage", "coverage-final.json"), input.cwd);
@@ -170,4 +211,12 @@ export function computeCrapRisers(input: CrapRisersInput): CrapFinding[] {
  */
 function baselineKey(fnName: string, line: number): string {
 	return `${fnName}@${line}`;
+}
+
+/** Inverse of {@link baselineKey} — split on the LAST "@" so a function name
+ *  that itself contains "@" (rare) still round-trips. */
+function parseBaselineKey(key: string): { name: string; line: number } {
+	const at = key.lastIndexOf("@");
+	if (at < 0) return { name: key, line: 0 };
+	return { name: key.slice(0, at), line: Number(key.slice(at + 1)) || 0 };
 }
