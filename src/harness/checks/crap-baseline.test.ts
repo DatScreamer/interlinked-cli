@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
 import type { CrapFinding } from "./crap.js";
-import { filterToRisers, snapshotCrap } from "./crap-baseline.js";
+import { computeCrapRisers, filterToRisers, snapshotCrap } from "./crap-baseline.js";
 
 // ==================================================================
 // Helpers
@@ -168,5 +168,23 @@ describe("filterToRisers", () => {
 		// if the score dropped. Acceptable behaviour: agents should see the
 		// post-rename CRAP, not silently inherit the old identity.
 		expect(filterToRisers(findings, baseline)).toHaveLength(1);
+	});
+});
+
+// ==================================================================
+// computeCrapRisers (coverage-hole alarm)
+// ==================================================================
+
+describe("computeCrapRisers", () => {
+	it("fails open (returns []) when no coverage report exists", () => {
+		// No coverage/ dir under the cwd → loadCoverageFinal returns null →
+		// CRAP can't be scored, so the alarm stays silent rather than throwing.
+		const risers = computeCrapRisers({
+			content: "export function f(): number {\n\treturn 1;\n}\n",
+			absFilePath: "/nonexistent-interlinked/repo/src/f.ts",
+			cwd: "/nonexistent-interlinked/repo",
+			baseline: new Map(),
+		});
+		expect(risers).toEqual([]);
 	});
 });

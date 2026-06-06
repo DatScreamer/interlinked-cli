@@ -8,6 +8,7 @@
 // identical to the original inline section.
 
 import { buildAgentSafetyChecks } from "../check-registry/index.js";
+import { computeCrapRisers } from "../checks/crap-baseline.js";
 import { filterToRisers as filterDryToRisers } from "../checks/dry-baseline.js";
 import { checkCodeCloneFindings, formatCodeCloneFinding } from "../checks/dry-check.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "../file-priority.js";
@@ -163,6 +164,36 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 					file: filePath,
 					detail: detail + overflow,
 				});
+			}
+
+			// 6b. CRAP risers — coverage-hole alarm (present-not-prescribe).
+			// Diff-aware via the pre-edit CRAP snapshot. Complexity rises are
+			// blocked at PreToolUse (#15), so a function whose CRAP ROSE here is
+			// almost always a coverage DROP on complex code.
+			if (ctx.baseline?.crapScores && ctx.diffAware?.enabled !== false) {
+				const risers = computeCrapRisers({
+					content: fileContent,
+					absFilePath,
+					cwd,
+					baseline: ctx.baseline.crapScores,
+				});
+				if (risers.length > 0) {
+					const shown = risers.slice(0, 5);
+					const detail = shown
+						.map(
+							(f) =>
+								`  ${f.function}: CRAP ${f.crap_score.toFixed(0)} (cyc ${f.complexity}, cov ${f.coverage_pct.toFixed(0)}%)`,
+						)
+						.join("\n");
+					const overflow = risers.length > 5 ? `\n  ... and ${risers.length - 5} more` : "";
+					results.push({
+						name: "crap",
+						severity: "warning",
+						message: `${risers.length} function(s) with risen CRAP in ${filePath} — complex code that lost coverage`,
+						file: filePath,
+						detail: `${detail}${overflow}\n→ restore a test exercising these branches, or simplify the function.`,
+					});
+				}
 			}
 
 			// 7. Export ripple — now handled by impact-analysis.ts PostToolUse hook.

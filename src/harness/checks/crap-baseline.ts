@@ -10,9 +10,14 @@
 // the same way the existing complexity check only flags newly-introduced
 // complexity.
 
-import type { PerFileCoverage } from "../coverage-final-reader.js";
-import type { CrapFinding } from "./crap.js";
-import { computeCrap } from "./crap.js";
+import { statSync } from "node:fs";
+import { join, relative } from "node:path";
+import {
+	coverageForFile,
+	loadCoverageFinal,
+	type PerFileCoverage,
+} from "../coverage-final-reader.js";
+import { type CrapFinding, computeCrap, computeCrapForFile } from "./crap.js";
 import { computeCyclomaticComplexity } from "./cyclomatic.js";
 
 // ==================================================================
@@ -104,6 +109,53 @@ export function filterToRisers(
 		if (priorScore === undefined) return true; // new function → keep
 		return finding.crap_score > priorScore; // risen score → keep
 	});
+}
+
+/** Input bundle for {@link computeCrapRisers}. */
+export interface CrapRisersInput {
+	/** Post-edit file content. */
+	content: string;
+	/** Absolute path of the edited file. */
+	absFilePath: string;
+	/** Repo root. */
+	cwd: string;
+	/** The pre-edit CRAP snapshot (`PreEditBaseline.crapScores`). */
+	baseline: CrapBaseline;
+}
+
+/**
+ * PostToolUse "coverage-hole alarm": per-function CRAP that ROSE versus the
+ * pre-edit snapshot. Loads current coverage, scores the post-edit content with
+ * the SAME complexity function the snapshot used (so the before/after
+ * comparison is apples-to-apples), and returns only the risers.
+ *
+ * Returns `[]` (fail-open) when coverage is unavailable — CRAP needs coverage.
+ * Because PreToolUse already blocks complexity rises (#15), a riser here is
+ * almost always a coverage DROP on complex code: a test that stopped exercising
+ * those branches. Present-not-prescribe: the caller surfaces it as advice.
+ */
+export function computeCrapRisers(input: CrapRisersInput): CrapFinding[] {
+	const covCache = loadCoverageFinal(join(input.cwd, "coverage", "coverage-final.json"), input.cwd);
+	if (!covCache) return [];
+	const rel = relative(input.cwd, input.absFilePath).replace(/\\/g, "/");
+	const perFile = coverageForFile(covCache, rel);
+	if (!perFile) return [];
+
+	let fileMtime = 0;
+	try {
+		fileMtime = statSync(input.absFilePath).mtimeMs;
+	} catch {
+		/* best-effort — staleTolerance:"include" doesn't depend on it */
+	}
+	const current = computeCrapForFile({
+		complexities: computeCyclomaticComplexity(input.content, input.absFilePath),
+		perFile,
+		filePath: rel,
+		fileMtime,
+		threshold: 30,
+		staleTolerance: "include",
+	});
+	return filterToRisers(current, input.baseline);
 }
 
 // ==================================================================
