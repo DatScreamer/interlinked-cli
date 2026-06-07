@@ -182,9 +182,7 @@ function renderGuidance(data: StatusData): string[] {
 	}
 
 	if (data.isLocalServer && data.serverStatus.reachable && !data.serverStatus.authenticated) {
-		lines.push(
-			c.dim("  Local server detected: auth is optional on localhost."),
-		);
+		lines.push(c.dim("  Local server detected: auth is optional on localhost."));
 		lines.push(c.dim("  If you still see auth issues, run: interlinked doctor --fix"));
 	}
 
@@ -211,6 +209,92 @@ function renderGuidance(data: StatusData): string[] {
 		);
 	}
 
+	return lines;
+}
+
+/** Server section — identical shape in normal + full modes. */
+function renderServerSection(data: StatusData): string[] {
+	const lines: string[] = [];
+	lines.push(header("Server"));
+	lines.push(kvLine("URL", data.config.server_url));
+	if (data.serverStatus.reachable) {
+		lines.push(kvLine("Status", c.green("reachable")));
+		lines.push(
+			kvLine(
+				"Auth",
+				data.serverStatus.authenticated
+					? c.green("authenticated")
+					: c.yellow("not authenticated"),
+			),
+		);
+		if (data.serverStatus.workspaceName) {
+			lines.push(kvLine("Workspace", data.serverStatus.workspaceName));
+		}
+		lines.push(kvLine("workspace_key", data.config.default_workspace_key || "main"));
+		lines.push(kvLine("project_key", data.config.default_project || "main"));
+	} else {
+		lines.push(kvLine("Status", c.dim("unreachable")));
+		if (data.serverStatus.error) {
+			lines.push(kvLine("Error", c.dim(data.serverStatus.error)));
+		}
+	}
+	return lines;
+}
+
+/** Sync Status section core — shared by normal + full modes. */
+function renderSyncStatus(data: StatusData): string[] {
+	const lines: string[] = [];
+	lines.push(header("Sync Status"));
+	lines.push(kvLine("Total events", String(data.localStats.total_events)));
+	lines.push(kvLine("Log size", formatBytes(data.localStats.file_size_bytes)));
+	if (data.localStats.pending_sync > 0) {
+		lines.push(kvLine("Unsynced", c.yellow(`${data.localStats.pending_sync} events`)));
+	} else {
+		lines.push(kvLine("Unsynced", c.green("0")));
+	}
+	lines.push(
+		kvLine("Realtime retry buffer", String(data.syncDiagnostics.pending_realtime_retry)),
+	);
+	lines.push(kvLine("Sync errors", String(data.syncDiagnostics.sync_error_count)));
+	if (data.syncDiagnostics.last_sync_success_at) {
+		lines.push(kvLine("Last sync success", data.syncDiagnostics.last_sync_success_at));
+	}
+	if (data.syncDiagnostics.last_sync_error_at) {
+		lines.push(kvLine("Last sync error", data.syncDiagnostics.last_sync_error_at));
+	}
+	if (data.syncDiagnostics.last_sync_error) {
+		lines.push(
+			kvLine("Last sync error msg", truncate(data.syncDiagnostics.last_sync_error, 120)),
+		);
+	}
+	return lines;
+}
+
+/**
+ * Recent Activity event list. `withToolDetail` appends a `[tool]` suffix and
+ * leaves the summary un-dimmed (full mode); otherwise the summary is dimmed
+ * with no suffix (normal mode).
+ */
+function renderActivityEvents(
+	events: LocalActivityEvent[],
+	withToolDetail: boolean,
+): string[] {
+	const lines: string[] = [];
+	for (const e of events) {
+		const ts = shortTimestamp(e.ts);
+		const agent = e.agent || c.dim("-");
+		const summary = formatActivitySummary({
+			event_type: e.type,
+			tool_name: e.tool ?? null,
+			tool_input_summary: e.summary ?? null,
+		});
+		if (withToolDetail) {
+			const detail = e.tool ? c.dim(` [${e.tool}]`) : "";
+			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${summary}${detail}`);
+		} else {
+			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${c.dim(summary)}`);
+		}
+	}
 	return lines;
 }
 
@@ -252,67 +336,14 @@ function renderNormal(data: StatusData): string {
 	if (data.recentActivity.length === 0) {
 		lines.push(c.dim("  No recent activity"));
 	} else {
-		for (const e of data.recentActivity) {
-			const ts = shortTimestamp(e.ts);
-			const agent = e.agent || c.dim("-");
-			const summary = formatActivitySummary({
-				event_type: e.type,
-				tool_name: e.tool ?? null,
-				tool_input_summary: e.summary ?? null,
-			});
-			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${c.dim(summary)}`);
-		}
+		lines.push(...renderActivityEvents(data.recentActivity, false));
 	}
 
 	// Sync Status section
-	lines.push(header("Sync Status"));
-	lines.push(kvLine("Total events", String(data.localStats.total_events)));
-	lines.push(kvLine("Log size", formatBytes(data.localStats.file_size_bytes)));
-	if (data.localStats.pending_sync > 0) {
-		lines.push(kvLine("Unsynced", c.yellow(`${data.localStats.pending_sync} events`)));
-	} else {
-		lines.push(kvLine("Unsynced", c.green("0")));
-	}
-	lines.push(
-		kvLine("Realtime retry buffer", String(data.syncDiagnostics.pending_realtime_retry)),
-	);
-	lines.push(kvLine("Sync errors", String(data.syncDiagnostics.sync_error_count)));
-	if (data.syncDiagnostics.last_sync_success_at) {
-		lines.push(kvLine("Last sync success", data.syncDiagnostics.last_sync_success_at));
-	}
-	if (data.syncDiagnostics.last_sync_error_at) {
-		lines.push(kvLine("Last sync error", data.syncDiagnostics.last_sync_error_at));
-	}
-	if (data.syncDiagnostics.last_sync_error) {
-		lines.push(
-			kvLine("Last sync error msg", truncate(data.syncDiagnostics.last_sync_error, 120)),
-		);
-	}
+	lines.push(...renderSyncStatus(data));
 
 	// Server section
-	lines.push(header("Server"));
-	lines.push(kvLine("URL", data.config.server_url));
-	if (data.serverStatus.reachable) {
-		lines.push(kvLine("Status", c.green("reachable")));
-		lines.push(
-			kvLine(
-				"Auth",
-				data.serverStatus.authenticated
-					? c.green("authenticated")
-					: c.yellow("not authenticated"),
-			),
-		);
-		if (data.serverStatus.workspaceName) {
-			lines.push(kvLine("Workspace", data.serverStatus.workspaceName));
-		}
-		lines.push(kvLine("workspace_key", data.config.default_workspace_key || "main"));
-		lines.push(kvLine("project_key", data.config.default_project || "main"));
-	} else {
-		lines.push(kvLine("Status", c.dim("unreachable")));
-		if (data.serverStatus.error) {
-			lines.push(kvLine("Error", c.dim(data.serverStatus.error)));
-		}
-	}
+	lines.push(...renderServerSection(data));
 
 	const guidance = renderGuidance(data);
 	if (guidance.length > 0) {
@@ -323,95 +354,106 @@ function renderNormal(data: StatusData): string {
 	return lines.join("\n");
 }
 
-function renderFull(data: StatusData): string {
+/** Running token-total accumulator shape used by `sumSessionTokens`. */
+interface TokenTotals {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_creation: number;
+}
+
+/** Per-session "Files touched" block (full mode), with 20-row truncation. */
+function renderSessionFiles(s: SessionState): string[] {
+	if (s.files_touched.length === 0) return [];
 	const lines: string[] = [];
-
-	// Sessions section — full detail with files and tools
-	lines.push(header("Sessions"));
-	if (data.localSessions.length === 0) {
-		lines.push(c.dim("  No sessions recorded"));
-	} else {
-		const sessionRows = data.localSessions.map((s) => [
-			s.agent,
-			badge(s.phase === "ACTIVE" ? "active" : "offline"),
-			String(s.tool_count),
-			String(s.error_count),
-			relativeTime(s.last_event_at),
-		]);
-		lines.push(table(["Agent", "Phase", "Tools", "Errors", "Last Event"], sessionRows));
-
-		// Per-session detail
-		for (const s of data.localSessions) {
-			lines.push("");
-			lines.push(`  ${c.bold(s.agent)} (${s.session_id})`);
-			lines.push(`    Started: ${s.started_at}`);
-
-			// Files touched
-			if (s.files_touched.length > 0) {
-				lines.push(`    Files touched (${s.files_touched.length}):`);
-				for (const f of s.files_touched.slice(0, 20)) {
-					lines.push(`      ${c.dim(f)}`);
-				}
-				if (s.files_touched.length > 20) {
-					lines.push(c.dim(`      ... and ${s.files_touched.length - 20} more`));
-				}
-			}
-
-			// Tools used breakdown
-			const toolEntries = Object.entries(s.tools_used).sort((a, b) => b[1] - a[1]);
-			if (toolEntries.length > 0) {
-				lines.push("    Tools used:");
-				for (const [tool, count] of toolEntries) {
-					lines.push(`      ${tool}: ${count}`);
-				}
-			}
-
-			// Token usage (v2)
-			if (s.tokens_total && (s.tokens_total.input || s.tokens_total.output)) {
-				const evtSuffix = s.token_events ? ` across ${s.token_events} events` : "";
-				lines.push(
-					`    Token usage: ${formatTokens(s.tokens_total)} (${estimateCost(s.tokens_total)})${evtSuffix}`,
-				);
-			}
-
-			// Subagent breakdown (v2)
-			if (s.subagents && Object.keys(s.subagents).length > 0) {
-				lines.push("    Subagents:");
-				for (const [name, sa] of Object.entries(s.subagents)) {
-					const tokStr = sa.tokens
-						? ` (${sa.tokens.input || 0} in / ${sa.tokens.output || 0} out)`
-						: "";
-					lines.push(
-						`      ${name}: ${sa.tool_count} tools, ${sa.files_touched.length} files${tokStr}`,
-					);
-				}
-			}
-
-			// Code activity (v3)
-			if (s.by_agent && Object.keys(s.by_agent).length > 0) {
-				lines.push("    Code activity:");
-				for (const [name, contrib] of Object.entries(s.by_agent)) {
-					lines.push(
-						`      ${name}: +${contrib.total_added}/-${contrib.total_removed} (${contrib.edit_count} edits, ${contrib.files_touched.length} files)`,
-					);
-				}
-			}
-			if (s.commits && s.commits.length > 0) {
-				lines.push(`    Commits attributed: ${s.commits.length}`);
-				for (const cm of s.commits.slice(0, 5)) {
-					lines.push(
-						`      ${cm.commit_hash.slice(0, 7)}: ${cm.message || "(no message)"}`,
-					);
-				}
-				if (s.commits.length > 5) {
-					lines.push(c.dim(`      ... and ${s.commits.length - 5} more`));
-				}
-			}
-		}
+	lines.push(`    Files touched (${s.files_touched.length}):`);
+	for (const f of s.files_touched.slice(0, 20)) {
+		lines.push(`      ${c.dim(f)}`);
 	}
+	if (s.files_touched.length > 20) {
+		lines.push(c.dim(`      ... and ${s.files_touched.length - 20} more`));
+	}
+	return lines;
+}
 
-	// Token Usage summary across all sessions
-	const allTokens = data.localSessions.reduce(
+/** Per-session "Tools used" breakdown (full mode), sorted by descending count. */
+function renderSessionTools(s: SessionState): string[] {
+	const toolEntries = Object.entries(s.tools_used).sort((a, b) => b[1] - a[1]);
+	if (toolEntries.length === 0) return [];
+	const lines: string[] = ["    Tools used:"];
+	for (const [tool, count] of toolEntries) {
+		lines.push(`      ${tool}: ${count}`);
+	}
+	return lines;
+}
+
+/** Per-session token-usage line (full mode, v2). */
+function renderSessionTokens(s: SessionState): string[] {
+	if (!s.tokens_total || !(s.tokens_total.input || s.tokens_total.output)) return [];
+	const evtSuffix = s.token_events ? ` across ${s.token_events} events` : "";
+	return [
+		`    Token usage: ${formatTokens(s.tokens_total)} (${estimateCost(s.tokens_total)})${evtSuffix}`,
+	];
+}
+
+/** Per-session subagent breakdown (full mode, v2). */
+function renderSessionSubagents(s: SessionState): string[] {
+	if (!s.subagents || Object.keys(s.subagents).length === 0) return [];
+	const lines: string[] = ["    Subagents:"];
+	for (const [name, sa] of Object.entries(s.subagents)) {
+		const tokStr = sa.tokens
+			? ` (${sa.tokens.input || 0} in / ${sa.tokens.output || 0} out)`
+			: "";
+		lines.push(
+			`      ${name}: ${sa.tool_count} tools, ${sa.files_touched.length} files${tokStr}`,
+		);
+	}
+	return lines;
+}
+
+/** Per-session code-activity breakdown (full mode, v3). */
+function renderSessionCodeActivity(s: SessionState): string[] {
+	if (!s.by_agent || Object.keys(s.by_agent).length === 0) return [];
+	const lines: string[] = ["    Code activity:"];
+	for (const [name, contrib] of Object.entries(s.by_agent)) {
+		lines.push(
+			`      ${name}: +${contrib.total_added}/-${contrib.total_removed} (${contrib.edit_count} edits, ${contrib.files_touched.length} files)`,
+		);
+	}
+	return lines;
+}
+
+/** Per-session attributed-commit list (full mode, v3), with 5-row truncation. */
+function renderSessionCommits(s: SessionState): string[] {
+	if (!s.commits || s.commits.length === 0) return [];
+	const lines: string[] = [`    Commits attributed: ${s.commits.length}`];
+	for (const cm of s.commits.slice(0, 5)) {
+		lines.push(`      ${cm.commit_hash.slice(0, 7)}: ${cm.message || "(no message)"}`);
+	}
+	if (s.commits.length > 5) {
+		lines.push(c.dim(`      ... and ${s.commits.length - 5} more`));
+	}
+	return lines;
+}
+
+/** Full per-session detail block: header line, files, tools, tokens, subagents, code activity, commits. */
+function renderSessionDetail(s: SessionState): string[] {
+	const lines: string[] = [];
+	lines.push("");
+	lines.push(`  ${c.bold(s.agent)} (${s.session_id})`);
+	lines.push(`    Started: ${s.started_at}`);
+	lines.push(...renderSessionFiles(s));
+	lines.push(...renderSessionTools(s));
+	lines.push(...renderSessionTokens(s));
+	lines.push(...renderSessionSubagents(s));
+	lines.push(...renderSessionCodeActivity(s));
+	lines.push(...renderSessionCommits(s));
+	return lines;
+}
+
+/** Sum token totals across all sessions (full-mode aggregate summary). */
+function sumSessionTokens(sessions: SessionState[]): TokenTotals {
+	return sessions.reduce<TokenTotals>(
 		(acc, s) => {
 			if (s.tokens_total) {
 				acc.input += s.tokens_total.input || 0;
@@ -423,55 +465,66 @@ function renderFull(data: StatusData): string {
 		},
 		{ input: 0, output: 0, cache_read: 0, cache_creation: 0 },
 	);
-	if (allTokens.input > 0 || allTokens.output > 0) {
-		lines.push(header("Token Usage"));
-		lines.push(kvLine("Total", formatTokens(allTokens)));
-		lines.push(kvLine("Est. cost", estimateCost(allTokens)));
-	}
+}
 
-	// Full activity (all recent, not just 10)
-	lines.push(header("Recent Activity"));
+/** Full-mode Sessions section: summary table plus one detail block per session. */
+function renderFullSessions(data: StatusData): string[] {
+	const lines: string[] = [header("Sessions")];
+	if (data.localSessions.length === 0) {
+		lines.push(c.dim("  No sessions recorded"));
+		return lines;
+	}
+	const sessionRows = data.localSessions.map((s) => [
+		s.agent,
+		badge(s.phase === "ACTIVE" ? "active" : "offline"),
+		String(s.tool_count),
+		String(s.error_count),
+		relativeTime(s.last_event_at),
+	]);
+	lines.push(table(["Agent", "Phase", "Tools", "Errors", "Last Event"], sessionRows));
+	for (const s of data.localSessions) {
+		lines.push(...renderSessionDetail(s));
+	}
+	return lines;
+}
+
+/** Full-mode aggregate Token Usage summary across all sessions (omitted when zero). */
+function renderTokenSummary(data: StatusData): string[] {
+	const allTokens = sumSessionTokens(data.localSessions);
+	if (!(allTokens.input > 0 || allTokens.output > 0)) return [];
+	return [
+		header("Token Usage"),
+		kvLine("Total", formatTokens(allTokens)),
+		kvLine("Est. cost", estimateCost(allTokens)),
+	];
+}
+
+/** Full-mode Recent Activity section (up to 50 events, with per-event tool detail). */
+function renderFullActivity(): string[] {
+	const lines: string[] = [header("Recent Activity")];
 	const allActivity = readLocalActivity({ limit: 50 });
 	if (allActivity.length === 0) {
 		lines.push(c.dim("  No recent activity"));
-	} else {
-		for (const e of allActivity) {
-			const ts = shortTimestamp(e.ts);
-			const agent = e.agent || c.dim("-");
-			const summary = formatActivitySummary({
-				event_type: e.type,
-				tool_name: e.tool ?? null,
-				tool_input_summary: e.summary ?? null,
-			});
-			const detail = e.tool ? c.dim(` [${e.tool}]`) : "";
-			lines.push(`  ${c.dim(ts)}  ${agent.padEnd(16)} ${summary}${detail}`);
-		}
+		return lines;
 	}
+	lines.push(...renderActivityEvents(allActivity, true));
+	return lines;
+}
 
-	// Sync Status section
-	lines.push(header("Sync Status"));
-	lines.push(kvLine("Total events", String(data.localStats.total_events)));
-	lines.push(kvLine("Log size", formatBytes(data.localStats.file_size_bytes)));
-	if (data.localStats.pending_sync > 0) {
-		lines.push(kvLine("Unsynced", c.yellow(`${data.localStats.pending_sync} events`)));
-	} else {
-		lines.push(kvLine("Unsynced", c.green("0")));
-	}
-	lines.push(
-		kvLine("Realtime retry buffer", String(data.syncDiagnostics.pending_realtime_retry)),
-	);
-	lines.push(kvLine("Sync errors", String(data.syncDiagnostics.sync_error_count)));
-	if (data.syncDiagnostics.last_sync_success_at) {
-		lines.push(kvLine("Last sync success", data.syncDiagnostics.last_sync_success_at));
-	}
-	if (data.syncDiagnostics.last_sync_error_at) {
-		lines.push(kvLine("Last sync error", data.syncDiagnostics.last_sync_error_at));
-	}
-	if (data.syncDiagnostics.last_sync_error) {
-		lines.push(
-			kvLine("Last sync error msg", truncate(data.syncDiagnostics.last_sync_error, 120)),
-		);
-	}
+function renderFull(data: StatusData): string {
+	const lines: string[] = [];
+
+	// Sessions section — full detail with files and tools
+	lines.push(...renderFullSessions(data));
+
+	// Token Usage summary across all sessions
+	lines.push(...renderTokenSummary(data));
+
+	// Full activity (all recent, not just 10)
+	lines.push(...renderFullActivity());
+
+	// Sync Status section — shared core plus full-mode oldest/newest event lines.
+	lines.push(...renderSyncStatus(data));
 	if (data.localStats.oldest_event) {
 		lines.push(kvLine("Oldest event", data.localStats.oldest_event));
 	}
@@ -480,29 +533,7 @@ function renderFull(data: StatusData): string {
 	}
 
 	// Server section
-	lines.push(header("Server"));
-	lines.push(kvLine("URL", data.config.server_url));
-	if (data.serverStatus.reachable) {
-		lines.push(kvLine("Status", c.green("reachable")));
-		lines.push(
-			kvLine(
-				"Auth",
-				data.serverStatus.authenticated
-					? c.green("authenticated")
-					: c.yellow("not authenticated"),
-			),
-		);
-		if (data.serverStatus.workspaceName) {
-			lines.push(kvLine("Workspace", data.serverStatus.workspaceName));
-		}
-		lines.push(kvLine("workspace_key", data.config.default_workspace_key || "main"));
-		lines.push(kvLine("project_key", data.config.default_project || "main"));
-	} else {
-		lines.push(kvLine("Status", c.dim("unreachable")));
-		if (data.serverStatus.error) {
-			lines.push(kvLine("Error", c.dim(data.serverStatus.error)));
-		}
-	}
+	lines.push(...renderServerSection(data));
 
 	const guidance = renderGuidance(data);
 	if (guidance.length > 0) {
