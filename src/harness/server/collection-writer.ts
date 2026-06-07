@@ -55,6 +55,7 @@ export function mapEventToCollectionInput(
 		tool_response_sha256: event.tool_response_sha256,
 		...(clientRunner ? { client_runner: clientRunner } : {}),
 		...(cursorVersion ? { cursor_version: cursorVersion } : {}),
+		...(event.agent_name ? { agent_name: event.agent_name } : {}),
 	};
 }
 

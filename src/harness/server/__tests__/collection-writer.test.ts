@@ -108,6 +108,13 @@ describe("mapEventToCollectionInput — field carryover and cwd fallback", () =>
 		expect(m.tool_name).toBe("");
 		expect(m.tool_input).toEqual({});
 	});
+
+	it("carries agent_name through for multi-agent attribution, omitting it when absent", () => {
+		expect(
+			mapEventToCollectionInput(harnessEvent({ agent_name: "alice" }), "/repo").agent_name,
+		).toBe("alice");
+		expect("agent_name" in mapEventToCollectionInput(harnessEvent({}), "/repo")).toBe(false);
+	});
 });
 
 describe("writeCollectionRecord — end-to-end append", () => {
@@ -126,6 +133,7 @@ describe("writeCollectionRecord — end-to-end append", () => {
 			tool_input: { command: "ls" },
 			tool_response: { stdout: "x", stderr: "", exitCode: 0 },
 			cwd: dir,
+			agent_name: "agent-7",
 		});
 		writeCollectionRecord(event, "/unused-fallback");
 		const path = getCollectionPath(dir);
@@ -135,6 +143,7 @@ describe("writeCollectionRecord — end-to-end append", () => {
 		const rec = JSON.parse(lines[0]);
 		expect(rec.schema).toBe("collection.v1");
 		expect(rec.provider_tool).toBe("Bash");
+		expect(rec.agent_name).toBe("agent-7");
 	});
 
 	it("does not throw and writes nothing for a lifecycle event", () => {

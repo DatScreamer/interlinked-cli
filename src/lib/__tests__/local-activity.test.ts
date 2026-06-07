@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -174,5 +174,82 @@ describe("mergeAndDedup", () => {
 		);
 		expect(merged[0].agent).toBe("b");
 		expect(merged[1].agent).toBe("a");
+	});
+});
+
+describe("readLocalActivity — canonical collection.jsonl source", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-coll-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function writeCollection(records: object[]): void {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "collection.jsonl"),
+			`${records.map((r) => JSON.stringify(r)).join("\n")}\n`,
+		);
+	}
+
+	function rec(over: Record<string, unknown> = {}): Record<string, unknown> {
+		return {
+			schema: "collection.v1",
+			kind: "tool_event",
+			ts: "2026-06-06T10:00:00.000Z",
+			session_id: "s1",
+			agent_name: "alice",
+			provider: "claude-code",
+			phase: "post",
+			provider_tool: "Bash",
+			cwd: "/repo",
+			action: { command: "ls -la" },
+			...over,
+		};
+	}
+
+	it("projects a collection.v1 record onto the v5 display shape", () => {
+		writeCollection([rec()]);
+		const events = readLocalActivity({ cwd: tmp });
+		expect(events.length).toBe(1);
+		expect(events[0].agent).toBe("alice");
+		expect(events[0].type).toBe("tool_use");
+		expect(events[0].tool).toBe("Bash");
+		expect(events[0].summary).toBe("ls -la");
+		expect(events[0].session).toBe("s1");
+	});
+
+	it("falls back to provider when agent_name is null and maps pre-phase to tool_use_start", () => {
+		writeCollection([
+			rec({ agent_name: null, provider: "codex", phase: "pre", provider_tool: "Read", action: { path: "/a.ts" } }),
+		]);
+		const events = readLocalActivity({ cwd: tmp });
+		expect(events[0].agent).toBe("codex");
+		expect(events[0].type).toBe("tool_use_start");
+		expect(events[0].summary).toBe("/a.ts");
+	});
+
+	it("collection.jsonl takes precedence over a legacy activity.jsonl", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({ ts: "2026-06-06T09:00:00.000Z", agent: "from-activity", type: "tool_use" })}\n`,
+		);
+		writeCollection([rec({ agent_name: "from-collection" })]);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["from-collection"]);
+	});
+
+	it("applies agent / type / limit filters on the collection source", () => {
+		writeCollection([
+			rec({ ts: "2026-06-06T10:00:00.000Z", agent_name: "a", phase: "post", provider_tool: "Bash" }),
+			rec({ ts: "2026-06-06T10:00:01.000Z", agent_name: "b", phase: "pre", provider_tool: "Read", action: { path: "p" } }),
+		]);
+		expect(readLocalActivity({ cwd: tmp, agent: "a" }).map((e) => e.agent)).toEqual(["a"]);
+		expect(readLocalActivity({ cwd: tmp, type: "tool_use_start" }).map((e) => e.tool)).toEqual([
+			"Read",
+		]);
+		expect(readLocalActivity({ cwd: tmp, limit: 1 }).length).toBe(1);
 	});
 });

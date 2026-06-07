@@ -411,6 +411,7 @@ export function buildCollectionRecord(event: JsonObject): CollectionRecord | nul
 		kind: "tool_event",
 		ts: String(event.ts || ""),
 		session_id: resolveSessionId(event),
+		agent_name: strField(event, "agent_name", "agent"),
 		turn_id: strField(event, "turn_id"),
 		tool_use_id: strField(event, "tool_use_id"),
 		provider: detectProvider(event),

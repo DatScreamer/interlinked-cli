@@ -20,7 +20,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildCollectionRecord } from "./collection/builder.js";
-import { appendCollection } from "./collection/writer.js";
+import type { CollectionAction, CollectionRecord } from "./collection/types.js";
+import { appendCollection, getCollectionPath } from "./collection/writer.js";
 import { getDataDir } from "./config.js";
 import type { JsonObject } from "./json-types.js";
 
@@ -286,6 +287,11 @@ export function readLocalActivity(opts?: {
 	type?: string | undefined;
 	cwd?: string | undefined;
 }): LocalActivityEvent[] {
+	// Canonical source is collection.jsonl; fall back to the legacy activity.jsonl
+	// only when it is absent (older installs / the daemon never ran).
+	if (existsSync(getCollectionPath(opts?.cwd ?? process.cwd()))) {
+		return readCollectionActivity(opts);
+	}
 	const path = getActivityPath(opts?.cwd);
 	if (!existsSync(path)) return [];
 
@@ -316,6 +322,84 @@ export function readLocalActivity(opts?: {
 		}
 	}
 
+	return events;
+}
+
+// ===========================================
+// Collection-stream reader (canonical source)
+// ===========================================
+// Projects collection.v1 records onto the legacy v5 display shape so the CLI
+// reader commands consume the canonical collection.jsonl directly. Inverse of
+// the daemon's activity-writer mapping (server/activity-writer.ts).
+
+/** Best human label for a collection action: command / path / pattern / url. */
+function summarizeAction(action: CollectionAction | null): string | null {
+	if (!action) return null;
+	const a = action as {
+		command?: unknown;
+		path?: unknown;
+		pattern?: unknown;
+		url?: unknown;
+		task?: unknown;
+		tool?: unknown;
+	};
+	const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+	return (
+		str(a.command) ??
+		str(a.path) ??
+		str(a.pattern) ??
+		str(a.url) ??
+		str(a.task) ??
+		str(a.tool) ??
+		null
+	);
+}
+
+/** Project one collection.v1 record to a v5 LocalActivityEvent. */
+function collectionToActivity(rec: CollectionRecord): LocalActivityEvent {
+	const isPre = rec.phase === "pre";
+	const ev: LocalActivityEvent = {
+		schema_version: 5,
+		ts: rec.ts,
+		agent: rec.agent_name ?? rec.provider ?? "unknown",
+		type: isPre ? "tool_use_start" : "tool_use",
+		tool: rec.provider_tool,
+		summary: summarizeAction(rec.action),
+		session: rec.session_id,
+		hook: isPre ? "PreToolUse" : "PostToolUse",
+	};
+	if (rec.cwd) ev.cwd = rec.cwd;
+	if (rec.tool_use_id) ev.tool_use_id = rec.tool_use_id;
+	return ev;
+}
+
+/** Read recent tool activity from collection.jsonl, projected to the v5 display
+ *  shape, applying the same since/agent/type/limit filters as readLocalActivity.
+ *  Newest-first (mirrors readRecentLines order). */
+function readCollectionActivity(opts?: {
+	since?: number | undefined;
+	agent?: string | undefined;
+	limit?: number | undefined;
+	type?: string | undefined;
+	cwd?: string | undefined;
+}): LocalActivityEvent[] {
+	const path = getCollectionPath(opts?.cwd ?? process.cwd());
+	if (!existsSync(path)) return [];
+	const limit = opts?.limit && opts.limit > 0 ? opts.limit : undefined;
+	const scanLineBudget = limit ? Math.max(limit * 20, 500) : 10000;
+	const events: LocalActivityEvent[] = [];
+	for (const line of readRecentLines(path, scanLineBudget)) {
+		try {
+			const ev = collectionToActivity(JSON.parse(line) as CollectionRecord);
+			if (opts?.since && new Date(ev.ts).getTime() < opts.since) break;
+			if (opts?.agent && ev.agent !== opts.agent) continue;
+			if (opts?.type && ev.type !== opts.type) continue;
+			events.push(ev);
+			if (limit && events.length >= limit) break;
+		} catch {
+			continue;
+		}
+	}
 	return events;
 }
 

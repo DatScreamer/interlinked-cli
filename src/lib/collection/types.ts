@@ -245,6 +245,10 @@ export interface CollectionRecord {
 	kind: "tool_event";
 	ts: string;
 	session_id: string | null;
+	/** Resolved agent name for multi-agent attribution (from config / MCP
+	 *  registration). Null when only the provider is known — e.g. a historical
+	 *  record written before this field existed. */
+	agent_name: string | null;
 	turn_id: string | null;
 	tool_use_id: string | null;
 	provider: string;

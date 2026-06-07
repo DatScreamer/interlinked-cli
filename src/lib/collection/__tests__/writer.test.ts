@@ -19,6 +19,7 @@ function stubRecord(overrides: Partial<CollectionRecord> = {}): CollectionRecord
 		kind: "tool_event",
 		ts: "2026-05-19T12:00:00.000Z",
 		session_id: "sess-1",
+		agent_name: null,
 		turn_id: null,
 		tool_use_id: "tu-1",
 		provider: "claude-code",
