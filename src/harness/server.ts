@@ -56,6 +56,7 @@ import {
 	resolveIdleTimeoutMs,
 	stringArg,
 } from "./server/cli-args.js";
+import { writeActivityRecord } from "./server/activity-writer.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import {
 	buildStartupMessage,
@@ -482,11 +483,13 @@ function syncRuntimeOut(): void {
 // Collection v1 record writer
 // ===========================================
 
-/** Build and append a collection.v1 record for a tool event, binding the
- *  daemon CWD as the fallback. Mapping + I/O live in
- *  `server/collection-writer.ts`; this wrapper keeps the call sites terse. */
+/** Record a tool event to both local streams, binding the daemon CWD as the
+ *  fallback: the canonical collection.v1 record (server/collection-writer.ts)
+ *  and the legacy v5 activity.jsonl mirror (server/activity-writer.ts) that the
+ *  CLI reader commands still consume. Both are best-effort and never throw. */
 function writeCollectionRecord(event: HarnessEvent): void {
 	appendCollectionRecord(event, CWD);
+	writeActivityRecord(event, CWD);
 }
 
 // ===========================================

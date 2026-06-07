@@ -246,7 +246,13 @@ function getSyncErrorsPath(cwd: string = process.cwd()): string {
  * Append a single activity event to the local JSONL log.
  * Synchronous (~0.1ms) — safe to call from hook scripts.
  */
-export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): void {
+/**
+ * Append a single activity event to activity.jsonl ONLY — no collection.jsonl
+ * mirror. Used by the daemon's legacy-stream dual-write, which writes the
+ * canonical collection.jsonl via its own path (server/collection-writer.ts) and
+ * must not double-write it here.
+ */
+export function appendActivityRecordOnly(event: LocalActivityEvent, cwd?: string): void {
 	const resolvedCwd = cwd || process.cwd();
 	const activityPath = getActivityPath(resolvedCwd);
 	const dir = dirname(activityPath);
@@ -254,6 +260,11 @@ export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): vo
 		mkdirSync(dir, { recursive: true });
 	}
 	appendFileSync(activityPath, `${JSON.stringify(event)}\n`);
+}
+
+export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): void {
+	const resolvedCwd = cwd || process.cwd();
+	appendActivityRecordOnly(event, resolvedCwd);
 
 	const collectionRecord = buildCollectionRecord({ ...event });
 	if (collectionRecord) {
