@@ -34,6 +34,7 @@ vi.mock("../verification-stop-checks.js", () => ({
 	formatStubsIntroducedWarning: vi.fn(),
 	formatTddRegressionWarning: vi.fn(),
 	formatUiNotInteractedWarning: vi.fn(),
+	formatUnresolvedRedWarning: vi.fn(),
 	formatUnverifiedCodeWarning: vi.fn(),
 	formatVerifyNotRunWarning: vi.fn(),
 }));
@@ -54,6 +55,7 @@ import {
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
+	formatUnresolvedRedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
 } from "../verification-stop-checks.js";
@@ -78,6 +80,7 @@ const mFormatBisectNotResetWarning = vi.mocked(formatBisectNotResetWarning);
 const mFormatDocMarkerDriftWarning = vi.mocked(formatDocMarkerDriftWarning);
 const mFormatStubsIntroducedWarning = vi.mocked(formatStubsIntroducedWarning);
 const mFormatTddRegressionWarning = vi.mocked(formatTddRegressionWarning);
+const mFormatUnresolvedRedWarning = vi.mocked(formatUnresolvedRedWarning);
 const mFormatUiNotInteractedWarning = vi.mocked(formatUiNotInteractedWarning);
 const mFormatUnverifiedCodeWarning = vi.mocked(formatUnverifiedCodeWarning);
 const mFormatVerifyNotRunWarning = vi.mocked(formatVerifyNotRunWarning);
@@ -143,6 +146,7 @@ beforeEach(() => {
 	mFormatDocMarkerDriftWarning.mockReturnValue(null);
 	mFormatStubsIntroducedWarning.mockReturnValue(null);
 	mFormatTddRegressionWarning.mockReturnValue(null);
+	mFormatUnresolvedRedWarning.mockReturnValue(null);
 	mFormatUiNotInteractedWarning.mockReturnValue(null);
 	mFormatUnverifiedCodeWarning.mockReturnValue(null);
 	mFormatVerifyNotRunWarning.mockReturnValue(null);
@@ -347,6 +351,7 @@ describe("buildVerificationStopWarnings", () => {
 				warn_ui_not_interacted: false,
 				warn_stubs_introduced: false,
 				warn_fixture_leaks: false,
+				warn_unresolved_red: false,
 				...over,
 			},
 		};
@@ -382,6 +387,8 @@ describe("buildVerificationStopWarnings", () => {
 		expect(mFormatUiNotInteractedWarning).not.toHaveBeenCalled();
 		expect(mFormatStubsIntroducedWarning).not.toHaveBeenCalled();
 		expect(mFormatFixtureLeakWarning).not.toHaveBeenCalled();
+		// warn_unresolved_red defaults off in vscRules → its formatter must not run.
+		expect(mFormatUnresolvedRedWarning).not.toHaveBeenCalled();
 		// Always-on checks still run.
 		expect(mFormatTddRegressionWarning).toHaveBeenCalled();
 		expect(mFormatBisectNotResetWarning).toHaveBeenCalled();
@@ -635,6 +642,91 @@ describe("buildVerificationStopWarnings", () => {
 		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
 
 		// Order matches the pushIfNotNull call sequence in the source.
+		// warn_unresolved_red is off (vscRules default) so it's absent here.
 		expect(out).toEqual(["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9"]);
+	});
+
+	// --- warn_unresolved_red gated wrapper (checkUnresolvedRed) -------------
+
+	it("does not invoke the unresolved-red formatter when the flag is off", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: false }) });
+		const session = makeSession({
+			observed_checks: new Map([["typecheck", { kind: "typecheck", status: "red" }]]),
+		});
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+		expect(mFormatUnresolvedRedWarning).not.toHaveBeenCalled();
+		expect(out).toEqual([]);
+	});
+
+	it("forwards a red observed-check (kind + detail) when the flag is on (+logs)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const session = makeSession({
+			observed_checks: new Map([
+				["typecheck", { kind: "typecheck", status: "red", detail: "tsc --noEmit" }],
+				["lint", { kind: "lint", status: "green" }],
+			]),
+		});
+		mFormatUnresolvedRedWarning.mockReturnValue("UNRESOLVED-RED");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(out).toContain("UNRESOLVED-RED");
+		// Only the red check is forwarded; the green one is filtered out.
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({
+			redChecks: [{ kind: "typecheck", detail: "tsc --noEmit" }],
+			redTests: [],
+		});
+		expect(logLines.some((l) => l.includes("unresolved-red (1 checks, 0 tests)"))).toBe(true);
+	});
+
+	it("forwards a stayed-red TDD cycle but EXCLUDES regression-state cycles", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const tdd = new Map<string, unknown>([
+			// stayed-red: state red, never went green → forwarded.
+			["a", { state: "red", source_file: "/a.ts", red_at: 5 }],
+			// regression (green→red): owned by checkTddRegression → excluded.
+			["b", { state: "regression", source_file: "/b.ts", red_at: 7, green_at: 3 }],
+		]);
+		mFormatUnresolvedRedWarning.mockReturnValue("UNRESOLVED-RED");
+
+		buildVerificationStopWarnings(ctx, makeEvent(), makeSession({ tdd_cycles: tdd }));
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({
+			redChecks: [],
+			redTests: [{ sourceFile: "/a.ts" }],
+		});
+	});
+
+	it("EXCLUDES a red cycle whose red was later cleared by a green (green_at >= red_at)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const tdd = new Map<string, unknown>([
+			// red_at 4 then green_at 9 cleared it — must NOT be forwarded.
+			["a", { state: "red", source_file: "/a.ts", red_at: 4, green_at: 9 }],
+		]);
+		mFormatUnresolvedRedWarning.mockReturnValue(null);
+
+		buildVerificationStopWarnings(ctx, makeEvent(), makeSession({ tdd_cycles: tdd }));
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({ redChecks: [], redTests: [] });
+	});
+
+	it("does not push / log when the unresolved-red formatter returns null", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		mFormatUnresolvedRedWarning.mockReturnValue(null);
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).toEqual([]);
+		expect(logLines.some((l) => l.includes("unresolved-red"))).toBe(false);
+	});
+
+	it("tolerates an absent observed_checks map (defaults to empty)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const session = makeSession({ observed_checks: undefined });
+		mFormatUnresolvedRedWarning.mockReturnValue(null);
+
+		buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({ redChecks: [], redTests: [] });
 	});
 });

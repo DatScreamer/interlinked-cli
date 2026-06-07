@@ -364,6 +364,127 @@ describe("test-run tracking", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 3b. Observed-check outcome tracking (trackVerificationOutcome)
+// ---------------------------------------------------------------------------
+// classifyVerificationCommand is the REAL module here (not mocked), so these
+// assertions exercise the genuine red/green/neither classification and the
+// last-status-wins map write. `tool_call_count` comes from makeSession (3).
+describe("observed-check outcome tracking", () => {
+	function obsSession(partial: Record<string, unknown> = {}): SessionTrajectory {
+		return makeSession({ observed_checks: new Map(), ...partial });
+	}
+
+	it("records typecheck=red when a tsc --noEmit Bash command fails (tool_outcome error)", async () => {
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		const entry = session.observed_checks?.get("typecheck");
+		expect(entry?.status).toBe("red");
+		expect(entry?.kind).toBe("typecheck");
+		expect(entry?.red_at).toBe(3);
+		expect(entry?.detail).toContain("tsc --noEmit");
+	});
+
+	it("records red from a dedicated PostToolUseFailure even without tool_outcome", async () => {
+		const session = obsSession();
+		const event = ev({
+			hook_event: "PostToolUseFailure",
+			tool_name: "Bash",
+			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.get("typecheck")?.status).toBe("red");
+	});
+
+	it("flips a prior red to green when a later tsc run succeeds (last-status-wins)", async () => {
+		const session = obsSession({
+			observed_checks: new Map([["typecheck", { kind: "typecheck", status: "red", red_at: 1 }]]),
+		});
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "success",
+			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		const entry = session.observed_checks?.get("typecheck");
+		expect(entry?.status).toBe("green");
+		expect(entry?.green_at).toBe(3);
+		// Prior red_at is preserved for audit.
+		expect(entry?.red_at).toBe(1);
+	});
+
+	it("treats tool_outcome interrupted as NEITHER — leaves a prior red untouched", async () => {
+		const session = obsSession({
+			observed_checks: new Map([["typecheck", { kind: "typecheck", status: "red", red_at: 1 }]]),
+		});
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "interrupted",
+			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		const entry = session.observed_checks?.get("typecheck");
+		// Unchanged: still red, still red_at 1 (no green_at written).
+		expect(entry?.status).toBe("red");
+		expect(entry?.red_at).toBe(1);
+		expect(entry?.green_at).toBeUndefined();
+	});
+
+	it("records nothing for a local non-verification Bash command", async () => {
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "ls -la" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.size).toBe(0);
+	});
+
+	it("does NOT count a folded tool_outcome=error as green (the trackTestRun latent-bug case)", async () => {
+		// A regular PostToolUse (not PostToolUseFailure) carrying a folded
+		// tool_outcome === "error". trackTestRun's hook_event-only rule would
+		// mis-mark this passed; trackVerificationOutcome's outcome-first rule
+		// correctly records red.
+		const session = obsSession();
+		const event = ev({
+			hook_event: "PostToolUse",
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "biome check ." },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.get("lint")?.status).toBe("red");
+	});
+
+	it("body-scans only when tool_outcome is absent: nonzero exit_code → red", async () => {
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			exit_code: 2,
+			tool_input: { command: "go build ./..." },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.get("build")?.status).toBe("red");
+	});
+
+	it("records nothing when tool_outcome is absent and no failure marker is present (neither)", async () => {
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			exit_code: 0,
+			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.size).toBe(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // 4. Failure-recovery channels
 // ---------------------------------------------------------------------------
 

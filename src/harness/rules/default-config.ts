@@ -369,7 +369,7 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 	},
 	verification_stop_checks: {
 		// Default-on: stderr-only Stop / SessionEnd reflection nudges, never
-		// block. Four independent axes:
+		// block. Six independent axes:
 		//   - warn_unverified_code: code edits with no tsc/test/lint/build
 		//     observed this session (signals captured at PreToolUse).
 		//   - warn_verify_not_run: code edits where individual tools ran but
@@ -386,15 +386,20 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		//   - warn_fixture_leaks: untracked src/**/_*.ts-shaped files whose
 		//     basename appears in a writeFixture()/setupFixture()/createFixture()
 		//     call in a tracked test file — the afterAll cleanup didn't run.
+		//   - warn_unresolved_red: a check/test OBSERVED red this session
+		//     (tsc/build/lint from observed_checks, plus stayed-red TDD
+		//     cycles) that never went green again. Reflection only — the
+		//     wording grants the legitimate "meant to leave it red" case.
 		// Flip per-kind to false in `.interlinked/guard-rules.local.json` to
 		// disable individual checks; flip the master `enabled` to silence
-		// all five.
+		// all six.
 		enabled: true,
 		warn_unverified_code: true,
 		warn_verify_not_run: true,
 		warn_ui_not_interacted: true,
 		warn_stubs_introduced: true,
 		warn_fixture_leaks: true,
+		warn_unresolved_red: true,
 	},
 	content_scanner: {
 		// Off by default — local runtime needs `pip install opf`; users opt in via

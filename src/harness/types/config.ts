@@ -266,7 +266,7 @@ export interface GitSessionScopeGateConfig {
 	mode: "ask" | "block" | "off";
 }
 
-/** Verification-before-stop nudge configuration. Five independent
+/** Verification-before-stop nudge configuration. Six independent
  *  Stop / SessionEnd warnings, all stderr-only, all opt-out per-kind:
  *    - warn_unverified_code:   code-file edits with no tsc/test/lint/build
  *    - warn_verify_not_run:    code edits with partial verification —
@@ -281,7 +281,12 @@ export interface GitSessionScopeGateConfig {
  *    - warn_fixture_leaks:     untracked src/**\/_*.ts-shaped files whose
  *                              basename appears in a writeFixture()-shaped
  *                              call in a test — afterAll cleanup didn't run
- *  Master `enabled` switch gates all five together. */
+ *    - warn_unresolved_red:    a check/test OBSERVED red this session that
+ *                              never went green again (non-test tsc/build/lint
+ *                              from observed_checks, plus stayed-red TDD
+ *                              cycles; the green→red regression case is
+ *                              handled by the always-on tdd-regression nudge).
+ *  Master `enabled` switch gates all six together. */
 export interface VerificationStopChecksConfig {
 	enabled: boolean;
 	warn_unverified_code: boolean;
@@ -289,6 +294,7 @@ export interface VerificationStopChecksConfig {
 	warn_ui_not_interacted: boolean;
 	warn_stubs_introduced: boolean;
 	warn_fixture_leaks: boolean;
+	warn_unresolved_red: boolean;
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /

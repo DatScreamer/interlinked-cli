@@ -29,7 +29,14 @@ import {
 	formatBloatWarning,
 	formatSilentFailureWarning,
 } from "../tool-result-checks.js";
-import type { CheckResultEntry, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
+import type {
+	CheckResultEntry,
+	HarnessDecision,
+	HarnessEvent,
+	ObservedCheck,
+	SessionTrajectory,
+} from "../types.js";
+import { classifyVerificationCommand } from "../verification-stop-checks.js";
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
@@ -131,6 +138,85 @@ function trackTestRun(event: HarnessEvent, session: SessionTrajectory, cwd: stri
 		at_step: session.tool_call_count,
 	});
 	recordTestRunCycle(session, testRunFile, passed);
+}
+
+/** Narrow a Bash command to a non-test verification-check kind
+ *  (typecheck / build / lint), or null. Reuses the shared
+ *  `classifyVerificationCommand` classifier and intentionally drops
+ *  `test` (covered by the TDD cycle), `dev-server` / `browser` (not
+ *  pass/fail signals), and `verify-suite` (its own aggregate axis, not
+ *  one of the three red/green check kinds). */
+function observedCheckKindFor(cmd: string): ObservedCheck["kind"] | null {
+	const signal = classifyVerificationCommand(cmd);
+	if (signal === "typecheck" || signal === "build" || signal === "lint") return signal;
+	return null;
+}
+
+/** Classify a completed PostToolUse outcome into red / green / neither for
+ *  the observed-check tracker.
+ *
+ *  tool_outcome-FIRST (deliberately NOT trackTestRun's
+ *  `passed = hook_event !== "PostToolUseFailure"`, which mis-counts a folded
+ *  `tool_outcome === "error"` on a regular PostToolUse as passed):
+ *   - `interrupted`            → "neither" (a cancelled run proves nothing).
+ *   - `success`                → "green".
+ *   - `error` / PostToolUseFailure → "red".
+ *   - outcome absent (undefined) → conservative body scan: red ONLY on a
+ *     definitive failure marker (nonzero exit_code or non-empty
+ *     error_message); otherwise "neither". Never flips green from a body
+ *     scan — absence of an error marker is not proof of success. */
+function classifyObservedOutcome(event: HarnessEvent): "red" | "green" | "neither" {
+	if (event.tool_outcome === "interrupted") return "neither";
+	if (event.tool_outcome === "success") return "green";
+	if (event.tool_outcome === "error" || event.hook_event === "PostToolUseFailure") return "red";
+	// tool_outcome undefined and not a dedicated failure event — body-scan
+	// fallback, applied only because tool_outcome !== "success" here.
+	const exitFailed = typeof event.exit_code === "number" && event.exit_code !== 0;
+	const errMsg = typeof event.error_message === "string" && event.error_message.trim().length > 0;
+	return exitFailed || errMsg ? "red" : "neither";
+}
+
+/** Apply a red/green outcome to one observed-check entry (last-status-wins).
+ *  Green clears a prior red; a later red after a green re-reds it. Optional
+ *  `*_at` / `detail` fields are set only when present (exactOptionalPropertyTypes). */
+function applyObservedOutcome(
+	session: SessionTrajectory,
+	kind: ObservedCheck["kind"],
+	outcome: "red" | "green",
+	step: number,
+	detail: string,
+): void {
+	if (!session.observed_checks) session.observed_checks = new Map();
+	const prev = session.observed_checks.get(kind);
+	const entry: ObservedCheck = { kind, status: outcome };
+	if (outcome === "red") {
+		entry.red_at = step;
+		if (prev?.green_at !== undefined) entry.green_at = prev.green_at;
+	} else {
+		entry.green_at = step;
+		if (prev?.red_at !== undefined) entry.red_at = prev.red_at;
+	}
+	if (detail) entry.detail = detail;
+	session.observed_checks.set(kind, entry);
+}
+
+/**
+ * Observed-check outcome tracking: when the completed tool was a non-test
+ * verification command (tsc / build / lint), record whether it went red or
+ * green so the Stop `unresolved-red` nudge can fire on a check that ended the
+ * session red. The non-test analogue of {@link trackTestRun}. Interrupted
+ * runs (and unmarked commands with no failure signal) record nothing.
+ */
+function trackVerificationOutcome(event: HarnessEvent, session: SessionTrajectory): void {
+	if (!session) return;
+	const cmd = (event.tool_input?.command as string) || "";
+	if (!cmd) return;
+	const kind = observedCheckKindFor(cmd);
+	if (!kind) return;
+	const outcome = classifyObservedOutcome(event);
+	if (outcome === "neither") return;
+	const detail = cmd.length > 80 ? `${cmd.slice(0, 77)}...` : cmd;
+	applyObservedOutcome(session, kind, outcome, session.tool_call_count, detail);
 }
 
 /**
@@ -431,6 +517,10 @@ export async function runPostToolPipeline(
 
 	// --- Test run tracking: detect test runner commands and record pass/fail ---
 	trackTestRun(event, session, CWD);
+
+	// --- Observed-check outcome tracking: tsc/build/lint red/green for the
+	// Stop unresolved-red nudge (non-test analogue of trackTestRun). ---
+	trackVerificationOutcome(event, session);
 
 	const postDecision = evaluatePostToolUse(event, rules, session, ctx.reservations, ctx.cohort);
 

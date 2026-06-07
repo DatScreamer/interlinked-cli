@@ -24,6 +24,7 @@ import {
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
+	formatUnresolvedRedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
 } from "../verification-stop-checks.js";
@@ -33,6 +34,16 @@ import type { ServerRuntime } from "./runtime-context.js";
  *  and is now red again." Extracted constant so the conditional reads as
  *  intent, not a magic string. */
 const TDD_CYCLE_REGRESSION = "regression";
+
+/** TDD-cycle state value for a test that failed and has not (yet) gone
+ *  green — the "stayed red" case the unresolved-red nudge surfaces.
+ *  Distinct from `regression` (green→red), which `checkTddRegression`
+ *  owns, so the two nudges never double-fire on the same cycle. */
+const TDD_CYCLE_RED = "red";
+
+/** Observed-check status value for a non-test check (tsc/build/lint) that
+ *  ended the session red. */
+const OBSERVED_CHECK_RED = "red";
 
 /** Commit-cadence Stop nudge — encourage bundling uncommitted code-file
  *  edits into commits before ending. Doc/plan files are excluded.
@@ -67,12 +78,12 @@ export function buildCommitCadenceNudge(
 	return nudge;
 }
 
-/** Verification-before-stop nudges — eight independent reflection
- *  warnings keyed off `verification_observed`, `stubs_introduced`,
- *  `tdd_cycles`, `commands_run`, and `files_written` session fields.
- *  All stderr-only; none block. See docs/external-pulse/failproofai.md
- *  §"smarter Stop hooks" for the design rationale and
- *  docs/design/stop-event-checks.md for the tier-2/3 backlog. */
+/** Verification-before-stop nudges — ten independent reflection
+ *  warnings keyed off `verification_observed`, `observed_checks`,
+ *  `stubs_introduced`, `tdd_cycles`, `commands_run`, and `files_written`
+ *  session fields. All stderr-only; none block. See
+ *  docs/external-pulse/failproofai.md §"smarter Stop hooks" for the design
+ *  rationale and docs/design/stop-event-checks.md for the tier-2/3 backlog. */
 export function buildVerificationStopWarnings(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -109,6 +120,10 @@ export function buildVerificationStopWarnings(
 		vsc.warn_fixture_leaks ? checkFixtureLeaks(ctx, event) : null,
 	);
 	pushIfNotNull(warnings, checkTddRegression(ctx, session));
+	pushIfNotNull(
+		warnings,
+		vsc.warn_unresolved_red ? checkUnresolvedRed(ctx, session) : null,
+	);
 	pushIfNotNull(warnings, checkBisectNotReset(ctx, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
 	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
@@ -221,6 +236,43 @@ function checkTddRegression(ctx: ServerRuntime, session: SessionTrajectory): str
 	const warning = formatTddRegressionWarning({ regressions: tddRegressions });
 	if (warning === null) return null;
 	ctx.log(`Verify-before-stop: tdd-regression (${tddRegressions.length})`);
+	return warning;
+}
+
+/** A TDD cycle that ended the session in the stayed-red case: state `red`
+ *  (NOT `regression` — that's `checkTddRegression`'s) and the red has not
+ *  been cleared by a later green (`green_at` absent, or it predates the
+ *  current `red_at`). */
+function isStayedRedCycle(cycle: {
+	state: string;
+	red_at?: number | undefined;
+	green_at?: number | undefined;
+}): boolean {
+	if (cycle.state !== TDD_CYCLE_RED) return false;
+	return cycle.green_at === undefined || cycle.green_at < (cycle.red_at ?? 0);
+}
+
+/** Unresolved-red reflection nudge — a check or test went red this session
+ *  and the session ended without it going green again. redChecks come from
+ *  `observed_checks` (non-test tsc/build/lint); redTests are stayed-red TDD
+ *  cycles (the green→red regression case is excluded — `checkTddRegression`
+ *  covers it). Reflection only; never blocks. */
+function checkUnresolvedRed(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+	const redChecks: Array<{ kind: string; detail?: string | undefined }> = [];
+	for (const observed of (session.observed_checks ?? new Map()).values()) {
+		if (observed.status === OBSERVED_CHECK_RED) {
+			redChecks.push({ kind: observed.kind, detail: observed.detail });
+		}
+	}
+	const redTests: Array<{ sourceFile: string }> = [];
+	for (const cycle of session.tdd_cycles.values()) {
+		if (isStayedRedCycle(cycle)) redTests.push({ sourceFile: cycle.source_file });
+	}
+	const warning = formatUnresolvedRedWarning({ redChecks, redTests });
+	if (warning === null) return null;
+	ctx.log(
+		`Verify-before-stop: unresolved-red (${redChecks.length} checks, ${redTests.length} tests)`,
+	);
 	return warning;
 }
 

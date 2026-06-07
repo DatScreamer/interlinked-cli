@@ -398,6 +398,58 @@ export function formatTddRegressionWarning(opts: {
 	);
 }
 
+export interface FormatUnresolvedRedOpts {
+	/** Non-test checks (typecheck/build/lint) observed red and never cleared
+	 *  to green this session. `detail` is an optional command snippet. */
+	redChecks: ReadonlyArray<{ kind: string; detail?: string | undefined }>;
+	/** Source files whose tests went red this session and stayed red (the
+	 *  stayed-red case — the green→red `regression` case is handled
+	 *  separately by `formatTddRegressionWarning`). */
+	redTests: ReadonlyArray<{ sourceFile: string }>;
+	maxShown?: number;
+}
+
+/**
+ * Public — Stop-time reflection nudge when the session OBSERVED a check or
+ * test go red and ended without it going green again. Two inputs:
+ *   - `redChecks`: non-test verification (tsc / build / lint) that failed
+ *     and was never seen passing afterward (from `observed_checks`).
+ *   - `redTests`: TDD cycles still in the `red` state at Stop — a test that
+ *     failed and never went green (NOT the green→red regression, which the
+ *     companion `formatTddRegressionWarning` already covers).
+ *
+ * Returns null when BOTH lists are empty. Lists up to `maxShown` (default 5)
+ * entries combined, with an "...and N more" suffix.
+ *
+ * Deliberately reflective, never a block: the wording explicitly grants the
+ * legitimate "you may have meant to leave it red" case (a known-failing test
+ * left red on purpose, an in-progress refactor). It is a stderr nudge — a
+ * reminder to confirm the red was intentional, not a demand to fix it.
+ */
+export function formatUnresolvedRedWarning(opts: FormatUnresolvedRedOpts): string | null {
+	const total = opts.redChecks.length + opts.redTests.length;
+	if (total === 0) return null;
+	const max = opts.maxShown ?? 5;
+	const items: string[] = [];
+	for (const c of opts.redChecks) {
+		items.push(c.detail ? `${c.kind} (${c.detail})` : c.kind);
+	}
+	for (const t of opts.redTests) {
+		items.push(`test: ${basename(t.sourceFile)}`);
+	}
+	const shown = items.slice(0, max);
+	const lines = shown.map((s) => `  - ${s}`);
+	const more = items.length > max ? `\n  ...and ${items.length - max} more` : "";
+	return (
+		`[interlinked:verify-before-stop] Stopping with ${total} check/test that went red ` +
+		"this session and never went green again:\n" +
+		`${lines.join("\n")}${more}\n` +
+		"If you meant to leave it red — a known-failing test, an in-progress refactor, a " +
+		"deliberately-pending check — that's fine; this is just a reminder to confirm the red " +
+		"was intentional. Otherwise, re-run it and get it green before stopping."
+	);
+}
+
 /** A `git bisect` sub-command that puts the repo INTO bisect state (or keeps
  *  it there). `reset` is deliberately excluded — it is the exit. */
 const BISECT_OP_RE = /\bgit\s+bisect\s+(?:start|good|bad|new|old|skip|run)\b/;

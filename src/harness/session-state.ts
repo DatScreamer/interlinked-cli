@@ -52,6 +52,7 @@ import {
 	readNumberArray,
 	readNumberMap,
 	readNumberRecord,
+	readObservedChecks,
 	readPendingCompletions,
 	readSensitivity,
 	readString,
@@ -167,6 +168,16 @@ export class SessionTracker {
 		}
 		for (const [file, cycle] of from.tdd_cycles) {
 			if (!to.tdd_cycles.has(file)) to.tdd_cycles.set(file, { ...cycle });
+		}
+
+		// observed_checks: gap-fill like tdd_cycles. A red/green the parent
+		// already tracks for a check kind is newer than the subagent's, so
+		// never overwrite it. Lazily allocate the parent's map on first use.
+		if (from.observed_checks && from.observed_checks.size > 0) {
+			if (!to.observed_checks) to.observed_checks = new Map();
+			for (const [kind, observed] of from.observed_checks) {
+				if (!to.observed_checks.has(kind)) to.observed_checks.set(kind, { ...observed });
+			}
 		}
 
 		appendStubsCapped(from, to);
@@ -288,6 +299,9 @@ export class SessionTracker {
 				[...s.assertion_counts.entries()].map(([k, v]) => [k, { ...v }]),
 			),
 			verification_observed: s.verification_observed ? [...s.verification_observed] : [],
+			observed_checks: s.observed_checks
+				? Object.fromEntries([...s.observed_checks.entries()].map(([k, v]) => [k, { ...v }]))
+				: {},
 			stubs_introduced: s.stubs_introduced ? s.stubs_introduced.map((e) => ({ ...e })) : [],
 			declared_plan: s.declared_plan ? serializeCapturedPlan(s.declared_plan) : null,
 			git_session_baseline: s.git_session_baseline
@@ -371,6 +385,7 @@ export class SessionTracker {
 			stop_nudge_emitted: readBoolean(snapshot.stop_nudge_emitted),
 			assertion_counts: readAssertionCountsMap(snapshot.assertion_counts),
 			verification_observed: readStringSet(snapshot.verification_observed),
+			observed_checks: readObservedChecks(snapshot.observed_checks),
 			stubs_introduced: readStubsIntroduced(snapshot.stubs_introduced),
 			declared_plan: readCapturedPlan(snapshot.declared_plan),
 			git_session_baseline: readGitSessionBaseline(snapshot.git_session_baseline),
@@ -467,6 +482,7 @@ function createFreshSession(event: HarnessEvent, sessionId: string): SessionTraj
 		stop_nudge_emitted: false,
 		assertion_counts: new Map(),
 		verification_observed: new Set(),
+		observed_checks: new Map(),
 		stubs_introduced: [],
 		git_session_baseline: captureGitBaseline(event.cwd ?? process.cwd()),
 	};

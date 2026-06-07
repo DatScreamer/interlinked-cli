@@ -104,6 +104,7 @@ export type {
 // --- session trajectory + TDD cycle ---
 export type {
 	AssertionCounts,
+	ObservedCheck,
 	SessionTrajectory,
 	TddCycleState,
 	TddCycle,

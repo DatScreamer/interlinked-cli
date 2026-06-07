@@ -20,6 +20,7 @@ import type {
 	ActiveSkillRecord,
 	AssertionCounts,
 	FailedFileEntry,
+	ObservedCheck,
 	PendingCompletion,
 	SensitivityLevel,
 	TaintProvenance,
@@ -243,6 +244,38 @@ export function readTddCycles(v: unknown): Map<string, TddCycle> {
 			impl_edits_before_test: readNumber(raw.impl_edits_before_test, 0),
 			previous_state,
 		});
+	}
+	return out;
+}
+
+const OBSERVED_CHECK_KINDS = new Set(["typecheck", "build", "lint"]);
+const OBSERVED_CHECK_STATUSES = new Set(["red", "green"]);
+
+/** Defensive read of `session.observed_checks`. Mirrors {@link readTddCycles}:
+ *  validate the `kind` / `status` enums, coerce the optional step counters,
+ *  and drop any entry whose kind/status is unknown. Optional `*_at` / `detail`
+ *  fields are omitted (not set to undefined) to respect
+ *  exactOptionalPropertyTypes. Returns an empty Map for non-object input so a
+ *  snapshot predating this field hydrates cleanly. */
+export function readObservedChecks(v: unknown): Map<string, ObservedCheck> {
+	const out = new Map<string, ObservedCheck>();
+	if (!isPlainObject(v)) return out;
+	for (const [key, raw] of Object.entries(v)) {
+		if (!isPlainObject(raw)) continue;
+		const kindStr = typeof raw.kind === "string" ? raw.kind : "";
+		const statusStr = typeof raw.status === "string" ? raw.status : "";
+		if (!OBSERVED_CHECK_KINDS.has(kindStr) || !OBSERVED_CHECK_STATUSES.has(statusStr)) continue;
+		const entry: ObservedCheck = {
+			kind: kindStr as ObservedCheck["kind"],
+			status: statusStr as ObservedCheck["status"],
+		};
+		if (typeof raw.red_at === "number" && Number.isFinite(raw.red_at)) entry.red_at = raw.red_at;
+		if (typeof raw.green_at === "number" && Number.isFinite(raw.green_at)) {
+			entry.green_at = raw.green_at;
+		}
+		const detail = readString(raw.detail);
+		if (detail) entry.detail = detail;
+		out.set(key, entry);
 	}
 	return out;
 }

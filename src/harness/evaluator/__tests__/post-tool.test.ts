@@ -1244,6 +1244,7 @@ describe("stub-introduced capture (verification-before-stop signal)", () => {
 			warn_ui_not_interacted: true,
 			warn_stubs_introduced: false,
 			warn_fixture_leaks: true,
+			warn_unresolved_red: false,
 		};
 		const session = makeSession();
 		runPostTool(

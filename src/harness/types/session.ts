@@ -149,6 +149,20 @@ export interface SessionTrajectory {
 	 */
 	verification_observed?: Set<string>;
 	/**
+	 * Observed-outcome tracking for non-test verification commands
+	 * (typecheck / build / lint), keyed by check kind. Distinct from
+	 * `verification_observed` (which records intent — "the agent ran a
+	 * typechecker") — this records the *result* — "the typechecker went
+	 * red and never went green again." Populated by
+	 * `trackVerificationOutcome` in `server/post-tool-pipeline.ts` from a
+	 * completed Bash PostToolUse; read at Stop by the `unresolved-red`
+	 * reflection nudge (the non-test analogue of the TDD stayed-red /
+	 * regression nudges, which cover test reds). Optional so hand-built
+	 * test fixtures and older snapshots hydrate cleanly. See
+	 * `verification-stop-checks.ts::formatUnresolvedRedWarning`.
+	 */
+	observed_checks?: Map<string, ObservedCheck>;
+	/**
 	 * Verification-before-stop tracking. Stubs / TODOs / disabled tests /
 	 * not-implemented throws introduced via Write/Edit `content` /
 	 * `new_string` this session. Populated by the post-tool evaluator's
@@ -221,6 +235,36 @@ export interface SessionTrajectory {
 	 * UserPromptSubmit in `lifecycle-events.ts`. Optional for hydration safety.
 	 */
 	recent_user_urls?: Set<string>;
+}
+
+// ===========================================
+// Observed verification-check outcomes
+// ===========================================
+
+/**
+ * Last observed red/green outcome of one non-test verification check
+ * (typecheck / build / lint) this session. The non-test analogue of
+ * {@link TddCycle} (which tracks the test red/green cycle). Stored in
+ * `SessionTrajectory.observed_checks` keyed by `kind`; read at Stop by
+ * `formatUnresolvedRedWarning` to nudge when a check went red and the
+ * session ended without it going green.
+ *
+ * `last-status-wins`: a later green clears a prior red (sets `status:
+ * "green"`, records `green_at`); a later red after a green re-reds it.
+ * All `*_at` step counters and `detail` are optional and omitted (per
+ * exactOptionalPropertyTypes) when absent.
+ */
+export interface ObservedCheck {
+	/** Which non-test verification axis this entry tracks. */
+	kind: "typecheck" | "build" | "lint";
+	/** Last observed outcome: `red` (failed) or `green` (passed). */
+	status: "red" | "green";
+	/** tool_call_count when the check most recently went red. */
+	red_at?: number;
+	/** tool_call_count when the check most recently went green. */
+	green_at?: number;
+	/** Short human-readable detail (the command, truncated) for logs. */
+	detail?: string;
 }
 
 // ===========================================

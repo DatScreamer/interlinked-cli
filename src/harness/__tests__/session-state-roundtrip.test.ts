@@ -255,4 +255,56 @@ describe("SessionTracker round-trip", () => {
 		expect(restored?.assertion_counts).toBeInstanceOf(Map);
 		expect(restored?.assertion_counts.size).toBe(0);
 	});
+
+	it("preserves observed_checks (incl. optional *_at / detail) across serialize/hydrate (#16)", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) {
+			session.observed_checks = new Map([
+				["typecheck", { kind: "typecheck", status: "red", red_at: 4, detail: "tsc --noEmit" }],
+				["lint", { kind: "lint", status: "green", green_at: 9, red_at: 2 }],
+			]);
+		}
+
+		const snap = writer.serialize("rtt-session");
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+
+		expect(restored?.observed_checks?.size).toBe(2);
+		expect(restored?.observed_checks?.get("typecheck")).toEqual({
+			kind: "typecheck",
+			status: "red",
+			red_at: 4,
+			detail: "tsc --noEmit",
+		});
+		expect(restored?.observed_checks?.get("lint")).toEqual({
+			kind: "lint",
+			status: "green",
+			green_at: 9,
+			red_at: 2,
+		});
+	});
+
+	it("hydrates missing observed_checks to an empty Map and drops malformed entries (#16)", () => {
+		const reader = new SessionTracker();
+		// Older snapshot: no observed_checks at all.
+		const old = reader.hydrate({ session_id: "old-obs" });
+		expect(old?.observed_checks).toBeInstanceOf(Map);
+		expect(old?.observed_checks?.size).toBe(0);
+
+		// Malformed entries (unknown kind / status, non-object) are dropped;
+		// only the valid one survives.
+		const mixed = reader.hydrate({
+			session_id: "mixed-obs",
+			observed_checks: {
+				typecheck: { kind: "typecheck", status: "red", red_at: 1 },
+				bogusKind: { kind: "coverage", status: "red" },
+				bogusStatus: { kind: "lint", status: "yellow" },
+				notAnObject: 42,
+			},
+		});
+		expect(mixed?.observed_checks?.size).toBe(1);
+		expect(mixed?.observed_checks?.get("typecheck")?.status).toBe("red");
+	});
 });

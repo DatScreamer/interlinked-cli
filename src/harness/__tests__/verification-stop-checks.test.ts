@@ -10,6 +10,7 @@ import {
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
 	formatUiNotInteractedWarning,
+	formatUnresolvedRedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
 	isCodeFile,
@@ -589,5 +590,83 @@ describe("formatDocMarkerDriftWarning", () => {
 				commandsRun: ["node scripts/check-docs.mjs --build"],
 			}),
 		).toBeNull();
+	});
+});
+
+describe("formatUnresolvedRedWarning", () => {
+	// Negative: both lists empty. This is also the shape the lifecycle wrapper
+	// produces for a red-then-green check (cleared) and a regression-only
+	// session (filtered to checkTddRegression), so it covers those cases.
+	it("returns null when both lists are empty", () => {
+		expect(formatUnresolvedRedWarning({ redChecks: [], redTests: [] })).toBeNull();
+	});
+
+	it("fires for a red non-test check (typecheck) and names the kind + detail", () => {
+		const msg = formatUnresolvedRedWarning({
+			redChecks: [{ kind: "typecheck", detail: "tsc --noEmit" }],
+			redTests: [],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("[interlinked:verify-before-stop]");
+		expect(msg).toContain("typecheck");
+		expect(msg).toContain("tsc --noEmit");
+		expect(msg).toMatch(/1 check\/test that went red/);
+	});
+
+	it("fires for a red check with no detail (kind only, no empty parens)", () => {
+		const msg = formatUnresolvedRedWarning({ redChecks: [{ kind: "build" }], redTests: [] });
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("- build");
+		expect(msg).not.toContain("build ()");
+	});
+
+	it("fires for a stayed-red test, listing it by basename with a test: prefix", () => {
+		const msg = formatUnresolvedRedWarning({
+			redChecks: [],
+			redTests: [{ sourceFile: "/repo/src/foo.ts" }],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("test: foo.ts");
+		expect(msg).not.toContain("/repo/src/");
+	});
+
+	it("combines red checks and red tests into one total", () => {
+		const msg = formatUnresolvedRedWarning({
+			redChecks: [{ kind: "lint" }],
+			redTests: [{ sourceFile: "/a/bar.ts" }],
+		});
+		expect(msg).toMatch(/2 check\/test that went red/);
+		expect(msg).toContain("- lint");
+		expect(msg).toContain("test: bar.ts");
+	});
+
+	it("grants the deliberately-left-red case in its wording (reflection, not a block)", () => {
+		const msg = formatUnresolvedRedWarning({ redChecks: [{ kind: "typecheck" }], redTests: [] });
+		expect(msg).toMatch(/meant to leave it red/i);
+		expect(msg).toMatch(/intentional/i);
+		expect(msg).not.toMatch(/\bBLOCKED\b/);
+	});
+
+	it("caps the list at maxShown and appends an ...and N more suffix", () => {
+		const redChecks = [{ kind: "typecheck" }, { kind: "build" }, { kind: "lint" }];
+		const redTests = [
+			{ sourceFile: "/a/t1.ts" },
+			{ sourceFile: "/a/t2.ts" },
+			{ sourceFile: "/a/t3.ts" },
+		];
+		const msg = formatUnresolvedRedWarning({ redChecks, redTests, maxShown: 2 });
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/6 check\/test that went red/);
+		expect(msg).toContain("...and 4 more");
+	});
+
+	it("omits the ...and N more suffix when at or under maxShown", () => {
+		const msg = formatUnresolvedRedWarning({
+			redChecks: [{ kind: "lint" }],
+			redTests: [{ sourceFile: "/a/x.ts" }],
+			maxShown: 5,
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).not.toContain("more");
 	});
 });
