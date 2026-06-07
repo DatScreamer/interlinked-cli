@@ -2,12 +2,13 @@
 // file-checks unit tests
 // ===========================================
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MAX_LINES } from "../../harness/large-file-policy.js";
-import { runPerFileChecks } from "./file-checks.js";
+import { resetUntestedFilesBaselineCache } from "../../harness/tested-file-policy.js";
+import { resetUntestedCoverageCache, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
 function makeEmptyResults(): CodeQualityResults {
@@ -302,6 +303,69 @@ describe("runPerFileChecks — large_files cap", () => {
 
 	it("does not flag an over-cap generated file (exempt)", () => {
 		expect(run("/tmp/huge.ts", `// @generated\n${overCap}`).largeFiles).toHaveLength(0);
+	});
+});
+
+describe("runPerFileChecks — untested_files ratchet", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "interlinked-fc-untested-"));
+		mkdirSync(join(dir, "src"), { recursive: true });
+		// No coverage/ dir and no baseline file here → coverage is null and there
+		// is no grandfathering, so a companion-less testable source file is
+		// untested. Reset both per-cwd memos so this fresh tmp cwd is read clean.
+		resetUntestedFilesBaselineCache();
+		resetUntestedCoverageCache();
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+		resetUntestedFilesBaselineCache();
+		resetUntestedCoverageCache();
+	});
+
+	const run = (relFile: string): CodeQualityResults => {
+		const abs = join(dir, relFile);
+		writeFileSync(abs, "export const x = 1;\n");
+		const r = emptyResults();
+		runPerFileChecks({
+			file: abs,
+			content: "export const x = 1;\n",
+			cwd: dir,
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags a non-grandfathered uncovered source file with no companion", () => {
+		const r = run("src/lonely.ts");
+		expect(r.untestedFiles).toHaveLength(1);
+		expect(r.untestedFiles[0].check).toBe("untested_files");
+		expect(r.untestedFiles[0].file).toContain("lonely.ts");
+	});
+
+	it("does NOT flag a grandfathered file listed in the baseline", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(dir, ".interlinked", "untested-files-baseline.json"),
+			JSON.stringify({ version: 1, min_coverage_pct: 60, files: ["src/lonely.ts"] }),
+		);
+		resetUntestedFilesBaselineCache();
+		expect(run("src/lonely.ts").untestedFiles).toHaveLength(0);
+	});
+
+	it("does NOT flag a file that has a companion test", () => {
+		// Pre-create the sibling test so the companion axis passes.
+		writeFileSync(join(dir, "src", "withtest.test.ts"), "import './withtest.js';\n");
+		expect(run("src/withtest.ts").untestedFiles).toHaveLength(0);
+	});
+
+	it("does NOT flag a test file itself (exempt extension/path)", () => {
+		expect(run("src/foo.test.ts").untestedFiles).toHaveLength(0);
 	});
 });
 

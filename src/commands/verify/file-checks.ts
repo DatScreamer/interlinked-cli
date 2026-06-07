@@ -39,6 +39,13 @@ import {
 	loadLargeFileBaseline,
 } from "../../harness/large-file-policy.js";
 import {
+	evaluateTestedFile,
+	hasCompanionTest,
+	isTestableSourceFile,
+	loadUntestedFilesBaseline,
+} from "../../harness/tested-file-policy.js";
+import { loadMetricsCoverage, type MetricsCoverage } from "../metrics.js";
+import {
 	type InlineSuppressions,
 	isSuppressed,
 	scanInlineSuppressions,
@@ -200,6 +207,58 @@ function collectLargeFileFinding(file: string, content: string, cwd: string, rel
 }
 
 /**
+ * Per-cwd memo for the coverage accessor. `loadMetricsCoverage` parses the
+ * istanbul/LCOV report; the per-file battery calls `collectUntestedFileFinding`
+ * hundreds of times in one verify run, so we load the accessor once per cwd
+ * (mirrors `loadLargeFileBaseline`'s cwd-keyed cache). Process-lifetime; tests
+ * reset via `resetUntestedCoverageCache()`.
+ */
+let untestedCoverageCache = new Map<string, MetricsCoverage>();
+
+function coverageFor(cwd: string): MetricsCoverage {
+	const cached = untestedCoverageCache.get(cwd);
+	if (cached) return cached;
+	const cov = loadMetricsCoverage(cwd);
+	untestedCoverageCache.set(cwd, cov);
+	return cov;
+}
+
+/** Clear the memoized per-cwd coverage accessor (test seam). */
+export function resetUntestedCoverageCache(): void {
+	untestedCoverageCache = new Map();
+}
+
+/**
+ * Source files with NEITHER a companion test NOR coverage at/above the
+ * threshold — the every-file-tested ratchet (default gate, report-only tier,
+ * same as `large_files`). Current offenders are grandfathered in
+ * `.interlinked/untested-files-baseline.json`; the list may shrink but a new
+ * untested file fails immediately. See harness/tested-file-policy.ts.
+ */
+function collectUntestedFileFinding(file: string, cwd: string, relPath: string, r: CodeQualityResults): void {
+	const rel = relPath.replace(/\\/g, "/");
+	if (!isTestableSourceFile(rel)) return;
+	const baseline = loadUntestedFilesBaseline(cwd);
+	const verdict = evaluateTestedFile({
+		input: {
+			relPath: rel,
+			hasCompanion: hasCompanionTest(file, cwd),
+			coveragePct: coverageFor(cwd).linePct(rel),
+		},
+		baseline,
+	});
+	if (!verdict.untested || verdict.grandfathered) return;
+	r.untestedFiles.push({
+		check: "untested_files",
+		file: relPath,
+		line: 0,
+		message:
+			"no companion test and line coverage below threshold — add a sibling " +
+			"*.test file or cover it from an existing suite.",
+	});
+}
+
+/**
  * JSON-file handling: parse-validity finding + tsconfig strictness. Returns
  * `true` when the file was a `.json` (caller must then short-circuit the rest
  * of the per-file battery, preserving the original early-return semantics).
@@ -267,6 +326,7 @@ function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const isDts = file.endsWith(DTS_SUFFIX);
 
 	collectLargeFileFinding(file, content, cwd, relPath, r);
+	collectUntestedFileFinding(file, cwd, relPath, r);
 
 	if (collectJsonFindings(file, content, ext, relPath, r)) return;
 

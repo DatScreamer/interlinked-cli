@@ -129,6 +129,7 @@ docs/plans/*/
 !.interlinked/structure.json
 !.interlinked/registry-parity.json
 !.interlinked/large-files-baseline.json
+!.interlinked/untested-files-baseline.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json

@@ -31,6 +31,13 @@ export interface CodeQualityResults {
 	strongTyping: CodeQualityIssue[];
 	suppressions: CodeQualityIssue[];
 	largeFiles: CodeQualityIssue[];
+	/**
+	 * Source files with NEITHER a companion test NOR line coverage at/above the
+	 * threshold — the every-file-tested ratchet (`untested_files`). Current
+	 * offenders are grandfathered in `.interlinked/untested-files-baseline.json`;
+	 * see harness/tested-file-policy.ts. Default gate, report-only tier.
+	 */
+	untestedFiles: CodeQualityIssue[];
 	jsonValidity: CodeQualityIssue[];
 	phantomImports: CodeQualityIssue[];
 	consoleStatements: CodeQualityIssue[];
@@ -334,6 +341,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"strongTyping",
 	"suppressions",
 	"largeFiles",
+	"untestedFiles",
 	"jsonValidity",
 	"phantomImports",
 	"consoleStatements",

@@ -100,8 +100,14 @@ function isAnalyzableSource(rel: string, covered: ReadonlySet<string>): boolean 
 	return rel.startsWith("src/") || covered.has(rel);
 }
 
-/** Per-file line coverage % from an istanbul/LCOV summary, matched by suffix. */
-function linePctFor(summary: CoverageSummary | null, rel: string): number | null {
+/**
+ * Per-file line coverage % from an istanbul/LCOV summary, matched by suffix.
+ *
+ * Exported so the every-file-tested gate (`tested-file-policy.ts` via
+ * `loadMetricsCoverage`) reuses the SAME suffix-matching lookup the metrics
+ * command uses — one definition of "what is this file's line coverage".
+ */
+export function linePctFor(summary: CoverageSummary | null, rel: string): number | null {
 	if (!summary) return null;
 	for (const [key, entry] of Object.entries(summary)) {
 		if (key === "total" || !entry) continue;
@@ -119,7 +125,7 @@ type FnRange = { name: string; line: number; endLine: number };
  * LCOV spine, deriving per-function coverage from line hits + the supplied AST
  * ranges. `available === false` when neither report exists.
  */
-interface MetricsCoverage {
+export interface MetricsCoverage {
 	available: boolean;
 	source: "istanbul" | "lcov" | null;
 	/** Files the report knows about, repo-relative — drives non-`src/` inclusion. */
@@ -128,7 +134,13 @@ interface MetricsCoverage {
 	linePct(rel: string): number | null;
 }
 
-function loadMetricsCoverage(cwd: string): MetricsCoverage {
+/**
+ * Public API — consumed by `metrics` (here) and the every-file-tested gate
+ * (`harness/tested-file-policy.ts`). Single-sources the istanbul→LCOV coverage
+ * fallback so the gate's coverage axis and the metrics command never disagree
+ * about a file's line-coverage percentage.
+ */
+export function loadMetricsCoverage(cwd: string): MetricsCoverage {
 	const finalCov = loadCoverageFinal(join(cwd, "coverage", "coverage-final.json"), cwd);
 	if (finalCov) {
 		const summary = loadCoverageSummary(join(cwd, "coverage", "coverage-summary.json"));

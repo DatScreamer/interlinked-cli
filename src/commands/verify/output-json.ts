@@ -159,6 +159,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		strong_typing: summarizeWithDetails(cq.strongTyping),
 		suppressions: summarizeWithDetails(cq.suppressions),
 		large_files: summarizeWithDetails(cq.largeFiles),
+		untested_files: summarizeWithDetails(cq.untestedFiles),
 		json_validity: summarizeWithDetails(cq.jsonValidity),
 		phantom_imports: summarizeWithDetails(cq.phantomImports),
 		console_statements: summarize(cq.consoleStatements),

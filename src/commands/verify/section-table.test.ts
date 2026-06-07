@@ -24,6 +24,7 @@ const EXPECTED_KEY_ORDER = [
 	"defaultExport",
 	"codeClones",
 	"largeFiles",
+	"untestedFiles",
 	"strongTyping",
 	"suppressions",
 	"consoleStatements",

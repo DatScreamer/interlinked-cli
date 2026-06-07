@@ -76,6 +76,17 @@ export const coreSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		// Explicit skipId: the every-file-tested ratchet is DEFAULT-GATE, keyed by
+		// id (not normalized label) in streaming-output's skip set. NOT in
+		// DEFAULT_ADVISORY_SKIPS — it runs on every verify, like large_files.
+		label: "untested files",
+		key: "untestedFiles",
+		skipId: "untested_files",
+		noun: "source files with no companion test and coverage below threshold",
+		passLabel: "all source files tested (companion or coverage)",
+		color: "33",
+	},
+	{
 		label: "strong typing",
 		key: "strongTyping",
 		noun: "any/unknown-type usages",
