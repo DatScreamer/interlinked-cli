@@ -136,9 +136,20 @@ describe("registerActivityCommands — structure", () => {
 		expect(trace.commands.map((c) => c.name()).sort()).toEqual(["export", "import"].sort());
 	});
 
-	it("each registered command carries a non-empty description", () => {
+	it("each registered command carries a meaningfully descriptive description", () => {
+		// A single space (or one stray char) passes a bare `.length > 0` check,
+		// so assert each description is an actual human-readable phrase: at least
+		// two whitespace-separated word tokens, each a run of >=2 alphabetic
+		// characters, and a substantive trimmed length. This is wording-agnostic
+		// (no exact-string coupling) yet rejects blank / placeholder values.
 		for (const cmd of build().commands) {
-			expect(cmd.description().length).toBeGreaterThan(0);
+			const desc = cmd.description().trim();
+			expect(desc.length).toBeGreaterThanOrEqual(8);
+			const wordTokens = desc.split(/\s+/).filter((tok) => /[A-Za-z]{2,}/.test(tok));
+			expect(
+				wordTokens.length,
+				`"${cmd.name()}" description should read as a phrase: ${JSON.stringify(desc)}`,
+			).toBeGreaterThanOrEqual(2);
 		}
 	});
 

@@ -90,12 +90,28 @@ async function importWithStubbedInstaller(
 }
 
 describe("install-hooks command", () => {
-	it("installs for the claude-code runner and writes the settings file", async () => {
+	it("installs for the claude-code runner and writes a settings file wiring the hook binary", async () => {
 		const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		await installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-binary" });
 		spy.mockRestore();
-		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(true);
+		const settingsPath = join(tmp, ".claude", "settings.json");
+		expect(existsSync(settingsPath)).toBe(true);
 		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(true);
+
+		// Read the file back and assert the WRITTEN content actually wires the
+		// hook — a bare existsSync would pass on an empty `{}`. The claude-code
+		// adapter registers a `command`-type hook per native event whose shell
+		// line invokes the supplied binary with the runner tag.
+		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks?: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>>;
+		};
+		const preToolUse = settings.hooks?.PreToolUse;
+		expect(Array.isArray(preToolUse)).toBe(true);
+		const command = preToolUse?.[0]?.hooks?.[0]?.command ?? "";
+		expect(preToolUse?.[0]?.hooks?.[0]?.type).toBe("command");
+		expect(command).toContain("/usr/bin/ih-binary");
+		expect(command).toContain("--runner 'claude-code'");
+		expect(command).toContain("--event 'PreToolUse'");
 	});
 
 	it("installs all runners when runner='all'", async () => {

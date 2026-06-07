@@ -95,12 +95,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("sendCommand — exports", () => {
-	it("exports sendCommand as a function", () => {
-		expect(typeof sendCommand).toBe("function");
-	});
-});
-
 describe("sendCommand — authentication gate", () => {
 	it("blocks when unauthenticated against a remote server", async () => {
 		mockIsAuthenticated.mockReturnValue(false);

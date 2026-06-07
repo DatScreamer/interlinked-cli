@@ -689,28 +689,3 @@ describe("evaluateUnified — budget timeout race", () => {
 		expect(decision).toEqual({ decision: "block", reason: "fast" });
 	});
 });
-
-describe("telemetry callback contract", () => {
-	it("accepts the three telemetry kinds", () => {
-		const events: UnifiedEvaluatorTelemetry[] = [
-			{
-				kind: "budget_exceeded",
-				event_id: "e1",
-				tool_class: "modify",
-				budget_ms: 800,
-				elapsed_ms: 900,
-			},
-			{ kind: "check_filtered", event_id: "e1", tool_class: "modify", filtered_count: 3 },
-			{
-				kind: "evaluated",
-				event_id: "e1",
-				tool_class: "modify",
-				elapsed_ms: 42,
-				decision: "allow",
-			},
-		];
-		const sink = vi.fn();
-		for (const e of events) sink(e);
-		expect(sink).toHaveBeenCalledTimes(3);
-	});
-});
