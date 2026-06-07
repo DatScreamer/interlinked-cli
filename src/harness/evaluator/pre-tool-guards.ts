@@ -143,14 +143,29 @@ export function evaluateGitScopeGate(
 	return null;
 }
 
-/** GUARD: Protected files. */
+/**
+ * GUARD: Protected files.
+ *
+ * Gate must admit BOTH read and write tools, then let the per-rule
+ * `operations` list (via `evaluateProtectedFiles` → `normalizeToolToOp`)
+ * decide. `protected_files` rules are not write-only: the default config
+ * marks `**​/*.pem` / `**​/*.key` with `operations: ["Write","Edit","Read"]`
+ * to block private-key *reads* (exfiltration), so the gate must reach the
+ * guard on `Read` too.
+ *
+ * `isFileOperation` alone OMITS MultiEdit / NotebookEdit — the write-skip
+ * hole (BUG 2): a MultiEdit / NotebookEdit to a protected path silently
+ * bypassed the blanket block. Union with `isFileWrite` (which adds exactly
+ * those two write-family tools) closes the hole without dropping any read
+ * tool, so read-protection is preserved.
+ */
 export function evaluateProtectedFilesGuard(
 	toolName: string,
 	toolInput: ToolInput,
 	rules: GuardRulesConfig,
 	warnings: string[],
 ): HarnessDecision | null {
-	if (isFileOperation(toolName)) {
+	if (isFileOperation(toolName) || isFileWrite(toolName)) {
 		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (filePath) {
 			const content = (toolInput.content as string) || (toolInput.new_string as string) || "";

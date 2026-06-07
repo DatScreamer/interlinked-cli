@@ -89,6 +89,13 @@ export function evaluatePostToolUse(
 	warnings.push(...collectEditNearMissWarning(event));
 	warnings.push(...collectCommitCadenceWarning(event, rules, session));
 	recordStubsIntroduced(event, rules, session);
+	// Side-effecting only (no warning): tag the session's taint_sources when a
+	// Bash command web-fetched attacker-controllable content (gh/glab/curl/...),
+	// mirroring the WebFetch `fetched_external` provenance the output-scan path
+	// records via ratchetSensitivity. Runs here, after recordEvent has already
+	// bumped tool_call_count, so the synthesized source carries the correct
+	// at_step. Independent of output_scanning — gated on taint_tracking only.
+	recordBashProvenanceIfFetching(event, rules, session);
 
 	return {
 		decision: "allow",
@@ -125,7 +132,12 @@ function collectFileReminders(
 ): string[] {
 	const warnings: string[] = [];
 	const toolName = event.tool_name || "";
-	if (!isFileOperation(toolName) || !rules.file_reminders?.length) return warnings;
+	// Union of the read+write tool sets: isFileOperation carries the read tools (a
+	// reminder can be about a file the agent just READ), isFileWrite adds
+	// MultiEdit/NotebookEdit. Neither alone is a superset (see the protected-files
+	// guard) — gating on isFileWrite alone silently dropped read-triggered reminders.
+	if ((!isFileOperation(toolName) && !isFileWrite(toolName)) || !rules.file_reminders?.length)
+		return warnings;
 	const rawPath =
 		(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
 	if (!rawPath) return warnings;

@@ -509,6 +509,79 @@ describe("evaluateProtectedFilesGuard", () => {
 		expect(d?.warnings).toEqual(["w"]);
 	});
 
+	// Regression (BUG 2, security): the guard gated on `isFileOperation`
+	// alone, which OMITS MultiEdit / NotebookEdit, so those two write-family
+	// tools slipped a write to a protected path past the blanket block. The
+	// gate now unions `isFileWrite` in (it adds exactly those two), so the
+	// write reaches `evaluateProtectedFiles`. `normalizeToolToOp` maps
+	// MultiEdit → "Edit" and NotebookEdit → "Write", both in the rule's
+	// `operations: ["Write", "Edit"]`.
+	it("blocks a MultiEdit to a protected glob (was skipped under isFileOperation)", () => {
+		const d = evaluateProtectedFilesGuard(
+			"MultiEdit",
+			{
+				file_path: "config/app.secret",
+				edits: [{ old_string: "a", new_string: "b" }],
+			},
+			protectedRules(),
+			["w"],
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toMatch(/read-only/);
+		expect(d?.warnings).toEqual(["w"]);
+	});
+
+	it("blocks a NotebookEdit to a protected glob (was skipped under isFileOperation)", () => {
+		const d = evaluateProtectedFilesGuard(
+			"NotebookEdit",
+			{ file_path: "notebooks/keys.secret", new_source: "secret = 1" },
+			protectedRules(),
+			["w"],
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toMatch(/read-only/);
+		expect(d?.warnings).toEqual(["w"]);
+	});
+
+	it("does NOT block a Read when the rule's operations exclude Read", () => {
+		// `operations: ["Write","Edit"]` does not list "Read", so a Read of a
+		// matching path falls through to null. (The gate admits the Read; the
+		// per-rule operations list — via normalizeToolToOp — declines it.)
+		expect(
+			evaluateProtectedFilesGuard(
+				"Read",
+				{ file_path: "config/app.secret" },
+				protectedRules(),
+				[],
+			),
+		).toBeNull();
+	});
+
+	it("STILL blocks a Read when the rule's operations include Read (no read-protection regression)", () => {
+		// The default config protects **/*.pem / **/*.key with
+		// operations:["Write","Edit","Read"] to stop private-key exfiltration.
+		// Switching the gate to write-only would silently drop this; the union
+		// gate preserves it. A read-listed rule must keep blocking reads.
+		const readProtected = makeRules({
+			protected_files: [
+				{
+					glob: "**/*.pem",
+					operations: ["Write", "Edit", "Read"],
+					reason: "Private key files should not be accessed by agents",
+				} as unknown as GuardRulesConfig["protected_files"][number],
+			],
+		});
+		const d = evaluateProtectedFilesGuard(
+			"Read",
+			{ file_path: "certs/server.pem" },
+			readProtected,
+			["w"],
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toMatch(/Private key/);
+		expect(d?.warnings).toEqual(["w"]);
+	});
+
 	it("returns null for a non-file-operation tool", () => {
 		expect(
 			evaluateProtectedFilesGuard(
