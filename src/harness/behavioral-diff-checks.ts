@@ -296,13 +296,19 @@ export function checkConventionalCommitCoherence(
 	if (files.length === 0) return [];
 
 	const allDiffs = files.map((f) => ({ file: f, diff: getStagedDiff(f) }));
+	// Only files with a non-empty staged diff belong to THIS commit. session
+	// .files_written also includes files written earlier in the session and
+	// committed separately; using it directly false-fires (e.g. test:/docs: on
+	// prod files that are not part of this commit).
+	const stagedFiles = allDiffs.filter((d) => d.diff).map((d) => d.file);
+	if (stagedFiles.length === 0) return [];
 
 	switch (message.type) {
 		case "fix": {
 			// Every touched file's added lines should be more than just
 			// comments / imports / test-only.
 			const allCommentOrWs = allDiffs.every((d) => !d.diff || diffIsCommentOrWhitespaceOnly(d.diff));
-			const onlyTests = files.every((f) => !isProdSource(f) || isTestPath(f));
+			const onlyTests = stagedFiles.every((f) => !isProdSource(f) || isTestPath(f));
 			if (allCommentOrWs) {
 				results.push({
 					source: "structural",
@@ -341,7 +347,7 @@ export function checkConventionalCommitCoherence(
 			break;
 		}
 		case "test": {
-			const touchesProd = files.some((f) => isProdSource(f));
+			const touchesProd = stagedFiles.some((f) => isProdSource(f));
 			if (touchesProd) {
 				results.push({
 					source: "structural",
@@ -355,7 +361,7 @@ export function checkConventionalCommitCoherence(
 			break;
 		}
 		case "docs": {
-			const touchesNonDocs = files.some((f) => !isDocsPath(f) && PROD_EXTS.has(extname(f)));
+			const touchesNonDocs = stagedFiles.some((f) => !isDocsPath(f) && PROD_EXTS.has(extname(f)));
 			if (touchesNonDocs) {
 				results.push({
 					source: "structural",

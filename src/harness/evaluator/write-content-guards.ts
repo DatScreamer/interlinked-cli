@@ -663,15 +663,18 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 	}
 	// Warn on console.log left in production code (not test files)
 	if (!/\.(test|spec)\.\w+$/.test(filePath)) {
-		const consoleLogs = (content.match(/\bconsole\.(log|debug|info)\b/g) || []).length;
+		const consoleLogs = (codeOnly.match(/\bconsole\.(log|debug|info)\b/g) || []).length;
 		if (consoleLogs > 2) {
 			warnings.push(
 				`[interlinked:content-quality] ${consoleLogs} console.log statements in ${filePath}. Remove debug logging before committing.`,
 			);
 		}
 	}
-	// Warn on unresolved task markers (to-do, fix-me, etc.) in new code
-	const taskMarkerPattern = /\b(TO(?:DO)|FIX(?:ME)|HA(?:CK)|X(?:XX))\b/g;
+	// Warn on unresolved task markers (to-do, fix-me, etc.) left in COMMENTS.
+	// Require a comment lead-in (// or /* or jsdoc *) so the marker vocabulary
+	// inside string literals (e.g. "TICKET-XXX") and a detector's own
+	// /TODO|FIXME/ regex is not miscounted — a recurring FP on check modules.
+	const taskMarkerPattern = /(?:\/\/|\/\*|\*)[^\n]*?\b(?:TODO|FIXME|HACK|XXX)\b/g;
 	const taskMarkers = (content.match(taskMarkerPattern) || []).length;
 	if (taskMarkers > 0) {
 		warnings.push(
@@ -710,7 +713,7 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 	// A4: Floating promises — async-named calls without await/void/return/.then/.catch
 	const floatingPromisePattern =
 		/^\s*(?!.*\b(await|void|return)\b)(?!.*\.(then|catch|finally)\s*\().*\b\w*(Async|async)\w*\s*\(/gm;
-	const floatingMatches = content.match(floatingPromisePattern);
+	const floatingMatches = codeOnly.match(floatingPromisePattern);
 	if (floatingMatches && floatingMatches.length > 0) {
 		warnings.push(
 			`[interlinked:content-quality] ${floatingMatches.length} potential floating promise(s) in ${filePath}. Add await, void, or .catch() to handle rejections.`,

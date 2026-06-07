@@ -503,6 +503,33 @@ describe("evaluateWriteContentGuards — content-quality false-positive fixes", 
 		expect(hits[0]).toMatch(/security-sensitive/);
 	});
 
+	// console.log / floating-promise vocabulary inside comments + strings, and
+	// task-marker vocabulary inside strings/regexes, is not executing code — the
+	// recurring FP on detector modules that literally describe these patterns.
+	it("does NOT flag console.log / floating-promise patterns in comments or strings, nor markers in strings", () => {
+		const content = [
+			"// debug examples: console.log(a); console.log(b); console.log(c) — all commented",
+			'const help = "see TICKET-XXX; call loadAsync() and fetchAsync() later";',
+			"export const x = 1;",
+		].join("\n");
+		expect(contentQualityWarnings("doc.ts", content, "console.log")).toEqual([]);
+		expect(contentQualityWarnings("doc.ts", content, "task marker")).toEqual([]);
+		expect(contentQualityWarnings("doc.ts", content, "floating promise")).toEqual([]);
+	});
+
+	it("still flags real console.log debug code (>2) and a real // TODO comment", () => {
+		const content = [
+			"export function f(): void {",
+			"  console.log(1);",
+			"  console.log(2);",
+			"  console.log(3);",
+			"  // TODO: finish this",
+			"}",
+		].join("\n");
+		expect(contentQualityWarnings("real.ts", content, "console.log").length).toBe(1);
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
 	it("flags Math.random() feeding a camelCase `sessionId`", () => {
 		const content = [
 			"export function newSession(): string {",

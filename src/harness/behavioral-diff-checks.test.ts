@@ -291,6 +291,20 @@ describe("checkConventionalCommitCoherence", () => {
 		expect(results.length).toBe(1);
 	});
 
+	it("does NOT flag test: for a prod file written earlier but not staged in this commit", () => {
+		// prod.ts was written this session but committed earlier; only the test
+		// file is staged now. The check must reason over the STAGED diff, not the
+		// whole session.files_written, or it false-fires "test: touches prod".
+		commitInitial("prod.ts", `export function a() { return 1; }\n`);
+		commitInitial("bar.test.ts", `it("a", () => {});\n`);
+		stageEdit("bar.test.ts", `it("a", () => {});\nit("b", () => {});\n`);
+		const results = checkConventionalCommitCoherence(
+			makeSession(["prod.ts", "bar.test.ts"]),
+			{ type: "test", subject: "add b" },
+		);
+		expect(results).toEqual([]);
+	});
+
 	it("returns empty when no message", () => {
 		expect(checkConventionalCommitCoherence(makeSession([]), null)).toEqual([]);
 	});
