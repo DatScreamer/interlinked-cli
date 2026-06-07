@@ -53,9 +53,12 @@ function fail(opts: { json?: boolean }, message: string): never {
 	process.exit(1);
 }
 
-export async function updateCommand(opts: { json?: boolean; force?: boolean }): Promise<void> {
-	let cliRoot = resolveCliRoot();
+type UpdateOpts = { json?: boolean; force?: boolean };
+type ResolvedRoots = { cliRoot: string; repoRoot: string; managedCheckout: boolean };
 
+/** Locate the source checkout to update, bootstrapping a managed clone if needed. */
+function resolveRoots(opts: UpdateOpts): ResolvedRoots {
+	let cliRoot = resolveCliRoot();
 	let repoRoot = cliRoot ? resolveSourceRepoRoot(cliRoot) : null;
 	let managedCheckout = false;
 	if (!repoRoot) {
@@ -63,11 +66,15 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 		cliRoot = repoRoot;
 		managedCheckout = true;
 	}
-
 	if (!cliRoot) {
 		fail(opts, "Cannot resolve CLI install location");
 	}
+	return { cliRoot, repoRoot, managedCheckout };
+}
 
+/** Self-update header: machine envelope in JSON mode, human chrome otherwise. */
+function printUpdateHeader(opts: UpdateOpts, roots: ResolvedRoots): void {
+	const { cliRoot, repoRoot, managedCheckout } = roots;
 	if (opts.json) {
 		console.log(
 			JSON.stringify({
@@ -78,79 +85,89 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 				updating: true,
 			}),
 		);
-	} else {
-		console.log(`${c.bold("Interlinked CLI — Self-Update")}`);
-		console.log(c.dim("────────────────────────────────────────"));
-		console.log(`${c.dim("CLI root:")}  ${cliRoot}`);
-		console.log(`${c.dim("Repo root:")} ${repoRoot}`);
-		if (managedCheckout) console.log(`${c.dim("Repo URL:")}  ${INTERLINKED_CLI_REPO_URL}`);
-		console.log();
+		return;
 	}
+	console.log(`${c.bold("Interlinked CLI — Self-Update")}`);
+	console.log(c.dim("────────────────────────────────────────"));
+	console.log(`${c.dim("CLI root:")}  ${cliRoot}`);
+	console.log(`${c.dim("Repo root:")} ${repoRoot}`);
+	if (managedCheckout) console.log(`${c.dim("Repo URL:")}  ${INTERLINKED_CLI_REPO_URL}`);
+	console.log();
+}
 
-	// Step 1: Check for git changes
-	const isGitRepo = existsSync(join(repoRoot, ".git"));
-	let pulled = false;
+/** Warn (human-only) that a dirty tree blocks the pull without --force. */
+function warnDirtyTreeSkippingPull(opts: UpdateOpts): void {
+	if (opts.json) return;
+	console.log(`${c.yellow("Warning:")} Working tree has uncommitted changes.`);
+	console.log(c.dim("Use --force to pull anyway, or commit/stash first."));
+	console.log();
+	console.log(c.dim("Skipping git pull — rebuilding from current source."));
+}
 
-	if (isGitRepo) {
-		try {
-			const status = run("git status --porcelain", repoRoot);
-			const branch = run("git rev-parse --abbrev-ref HEAD", repoRoot);
-			const beforeSha = run("git rev-parse --short HEAD", repoRoot);
-
-			if (!opts.json) {
-				console.log(`${c.dim("Branch:")} ${branch} (${beforeSha})`);
-			}
-
-			if (status && !opts.force) {
-				if (!opts.json) {
-					console.log(`${c.yellow("Warning:")} Working tree has uncommitted changes.`);
-					console.log(c.dim("Use --force to pull anyway, or commit/stash first."));
-					console.log();
-					console.log(c.dim("Skipping git pull — rebuilding from current source."));
-				}
+/** Run `git pull --ff-only`, reporting the sha delta. Returns whether HEAD moved. */
+function attemptGitPull(opts: UpdateOpts, repoRoot: string, beforeSha: string): boolean {
+	if (!opts.json) process.stdout.write("Pulling latest... ");
+	try {
+		run("git pull --ff-only", repoRoot);
+		const afterSha = run("git rev-parse --short HEAD", repoRoot);
+		const pulled = beforeSha !== afterSha;
+		if (!opts.json) {
+			if (pulled) {
+				console.log(`${c.green("updated")} ${beforeSha} → ${afterSha}`);
 			} else {
-				if (!opts.json) process.stdout.write("Pulling latest... ");
-				try {
-					run("git pull --ff-only", repoRoot);
-					const afterSha = run("git rev-parse --short HEAD", repoRoot);
-					pulled = beforeSha !== afterSha;
-					if (!opts.json) {
-						if (pulled) {
-							console.log(`${c.green("updated")} ${beforeSha} → ${afterSha}`);
-						} else {
-							console.log(c.green("already up to date"));
-						}
-					}
-				} catch {
-					if (!opts.json) {
-						console.log(
-							c.yellow("skipped (pull failed — rebuilding from current source)"),
-						);
-					}
-				}
+				console.log(c.green("already up to date"));
 			}
-		} catch {
-			if (!opts.json)
-				console.log(c.dim("Git not available — rebuilding from current source."));
 		}
+		return pulled;
+	} catch {
+		if (!opts.json) {
+			console.log(c.yellow("skipped (pull failed — rebuilding from current source)"));
+		}
+		return false;
 	}
+}
 
-	// Step 2: Install dependencies if needed
+/** Step 1: pull latest when the repo is a clean (or --force) git checkout. */
+function runGitPull(opts: UpdateOpts, repoRoot: string): boolean {
+	if (!existsSync(join(repoRoot, ".git"))) return false;
+	try {
+		const status = run("git status --porcelain", repoRoot);
+		const branch = run("git rev-parse --abbrev-ref HEAD", repoRoot);
+		const beforeSha = run("git rev-parse --short HEAD", repoRoot);
+
+		if (!opts.json) {
+			console.log(`${c.dim("Branch:")} ${branch} (${beforeSha})`);
+		}
+
+		if (status && !opts.force) {
+			warnDirtyTreeSkippingPull(opts);
+			return false;
+		}
+		return attemptGitPull(opts, repoRoot, beforeSha);
+	} catch {
+		if (!opts.json) console.log(c.dim("Git not available — rebuilding from current source."));
+		return false;
+	}
+}
+
+/** Step 2: install dependencies when HEAD moved or node_modules is missing. */
+function installDependencies(opts: UpdateOpts, cliRoot: string, pulled: boolean): void {
 	const nodeModules = join(cliRoot, "node_modules");
-	if (pulled || !existsSync(nodeModules)) {
-		if (!opts.json) process.stdout.write("Installing dependencies... ");
-		try {
-			const installCmd = existsSync(join(cliRoot, "package-lock.json"))
-				? "npm ci --no-audit --no-fund"
-				: "npm install --no-audit --no-fund";
-			run(installCmd, cliRoot);
-			if (!opts.json) console.log(c.green("done"));
-		} catch {
-			if (!opts.json) console.log(c.yellow("skipped (install failed)"));
-		}
+	if (!pulled && existsSync(nodeModules)) return;
+	if (!opts.json) process.stdout.write("Installing dependencies... ");
+	try {
+		const installCmd = existsSync(join(cliRoot, "package-lock.json"))
+			? "npm ci --no-audit --no-fund"
+			: "npm install --no-audit --no-fund";
+		run(installCmd, cliRoot);
+		if (!opts.json) console.log(c.green("done"));
+	} catch {
+		if (!opts.json) console.log(c.yellow("skipped (install failed)"));
 	}
+}
 
-	// Step 3: Build
+/** Step 3: rebuild the CLI. Exits non-zero on build failure (never returns). */
+function buildCli(opts: UpdateOpts, cliRoot: string): void {
 	if (!opts.json) process.stdout.write("Building... ");
 	try {
 		run("npm run build", cliRoot);
@@ -164,58 +181,91 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 		}
 		process.exit(1);
 	}
+}
 
-	// Step 4: Link managed source checkouts so future `interlinked` invocations
-	// use the freshly-built GitHub checkout.
-	let linked = false;
-	if (managedCheckout) {
-		if (!opts.json) process.stdout.write("Linking CLI binaries... ");
-		try {
-			run("npm link", cliRoot);
-			linked = true;
-			if (!opts.json) console.log(c.green("done"));
-		} catch (err) {
-			if (opts.json) {
-				console.log(JSON.stringify({ success: false, error: "npm link failed" }));
-			} else {
-				console.log(c.red("failed"));
-				console.error(String(err));
-			}
-			process.exit(1);
+/**
+ * Step 4: `npm link` managed checkouts so future invocations use the fresh build.
+ * Returns whether linking occurred; exits non-zero if the link fails.
+ */
+function linkManagedCheckout(opts: UpdateOpts, cliRoot: string, managedCheckout: boolean): boolean {
+	if (!managedCheckout) return false;
+	if (!opts.json) process.stdout.write("Linking CLI binaries... ");
+	try {
+		run("npm link", cliRoot);
+		if (!opts.json) console.log(c.green("done"));
+		return true;
+	} catch (err) {
+		if (opts.json) {
+			console.log(JSON.stringify({ success: false, error: "npm link failed" }));
+		} else {
+			console.log(c.red("failed"));
+			console.error(String(err));
 		}
+		process.exit(1);
 	}
+}
 
-	// Step 5: Regenerate hook script in current directory (if .interlinked/ exists)
+/** Step 5: regenerate the hook script in the current dir when .interlinked/ exists. */
+async function regenerateHookScript(opts: UpdateOpts): Promise<void> {
 	const cwd = process.cwd();
-	const interlinkedDir = join(cwd, ".interlinked");
-	if (existsSync(interlinkedDir)) {
-		if (!opts.json) process.stdout.write("Regenerating hook script... ");
-		try {
-			const { writeHookScript } = await import("../lib/hooks.js");
-			writeHookScript(cwd);
-			if (!opts.json) console.log(c.green("done"));
-		} catch {
-			if (!opts.json) console.log(c.yellow("skipped (hook regeneration failed)"));
-		}
+	if (!existsSync(join(cwd, ".interlinked"))) return;
+	if (!opts.json) process.stdout.write("Regenerating hook script... ");
+	try {
+		const { writeHookScript } = await import("../lib/hooks.js");
+		writeHookScript(cwd);
+		if (!opts.json) console.log(c.green("done"));
+	} catch {
+		if (!opts.json) console.log(c.yellow("skipped (hook regeneration failed)"));
 	}
+}
 
-	// Step 6: Show new version
-	const newVersion = getInstalledVersion(cliRoot);
+/** Step 6: emit the final version envelope (JSON) or human "Updated to…" line. */
+function printUpdateResult(
+	opts: UpdateOpts,
+	roots: ResolvedRoots,
+	state: { pulled: boolean; linked: boolean },
+): void {
+	const newVersion = getInstalledVersion(roots.cliRoot);
 	if (opts.json) {
 		console.log(
 			JSON.stringify({
 				success: true,
 				version: newVersion,
-				pulled,
-				linked,
-				managed_checkout: managedCheckout,
-				repo_root: repoRoot,
+				pulled: state.pulled,
+				linked: state.linked,
+				managed_checkout: roots.managedCheckout,
+				repo_root: roots.repoRoot,
 			}),
 		);
 	} else {
 		console.log();
 		console.log(`${c.green("Updated")} to Interlinked CLI v${newVersion}`);
 	}
+}
+
+export async function updateCommand(opts: { json?: boolean; force?: boolean }): Promise<void> {
+	const roots = resolveRoots(opts);
+
+	printUpdateHeader(opts, roots);
+
+	// Step 1: Check for git changes.
+	const pulled = runGitPull(opts, roots.repoRoot);
+
+	// Step 2: Install dependencies if needed.
+	installDependencies(opts, roots.cliRoot, pulled);
+
+	// Step 3: Build.
+	buildCli(opts, roots.cliRoot);
+
+	// Step 4: Link managed source checkouts so future `interlinked` invocations
+	// use the freshly-built GitHub checkout.
+	const linked = linkManagedCheckout(opts, roots.cliRoot, roots.managedCheckout);
+
+	// Step 5: Regenerate hook script in current directory (if .interlinked/ exists).
+	await regenerateHookScript(opts);
+
+	// Step 6: Show new version.
+	printUpdateResult(opts, roots, { pulled, linked });
 }
 
 function getInstalledVersion(cliRoot: string): string {

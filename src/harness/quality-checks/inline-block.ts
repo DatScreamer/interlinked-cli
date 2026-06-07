@@ -45,7 +45,7 @@ export interface InlineBlockContext {
  */
 export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 	const results: QualityCheckResult[] = [];
-	const { event, filePath, absFilePath, fileContent, cwd } = ctx;
+	const { filePath, fileContent } = ctx;
 
 	try {
 		// 1. Binary content — error, skip all other inline checks
@@ -67,134 +67,20 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 				});
 			}
 
-			// 4. Missing return type annotations (TS/TSX only)
-			// Diff-aware: only report findings not in the pre-edit baseline
-			let missingReturnTypes = checkMissingReturnTypes(fileContent, absFilePath);
-			if (
-				ctx.diffAware?.enabled !== false &&
-				ctx.diffAware?.missing_return_types !== "off" &&
-				ctx.baseline?.missingReturnTypes
-			) {
-				const baseline = ctx.baseline?.missingReturnTypes;
-				if (baseline) {
-					missingReturnTypes = missingReturnTypes.filter(
-						(m) => !baseline.has(m.text),
-					);
-				}
-			}
-			if (missingReturnTypes.length > 0) {
-				const shown = missingReturnTypes.slice(0, 5);
-				const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-				const overflow =
-					missingReturnTypes.length > 5
-						? `\n  ... and ${missingReturnTypes.length - 5} more`
-						: "";
-				results.push({
-					name: "missing_return_types",
-					severity: "warning",
-					message: `${missingReturnTypes.length} exported function(s) without return type annotations in ${filePath}`,
-					file: filePath,
-					detail: detail + overflow,
-				});
-			}
+			// 4. Missing return type annotations (TS/TSX only), diff-aware.
+			results.push(...checkMissingReturnTypesBlock(ctx));
 
-			// 5. Test file existence
-			// Diff-aware: only fire on new file creation (Write tool), not edits to existing files
-			const isNewFile =
-				ctx.diffAware?.enabled !== false &&
-				ctx.diffAware?.no_test_file !== "off" &&
-				event.tool_name != null &&
-				!["Write", "WriteFile", "write_file"].includes(event.tool_name);
-			if (!isNewFile) {
-				// Pass file content so the check can short-circuit on
-				// generator-emitted files (OpenAPI, protoc, @generated)
-				// that never have test siblings by design.
-				const noTestFile = checkTestFileExists(absFilePath, fileContent);
-				if (noTestFile.length > 0) {
-					results.push({
-						name: "no_test_file",
-						severity: "warning",
-						message: `No test file found for ${filePath}`,
-						file: filePath,
-						detail: noTestFile[0].text,
-					});
-				}
-			}
+			// 5. Test file existence (fires on edits, not new-file Writes).
+			results.push(...checkTestFileBlock(ctx));
 
-			// 6. Function complexity
-			// Diff-aware: only report complex functions introduced by this edit
-			let complexFns = checkFunctionComplexity(fileContent, absFilePath);
-			if (ctx.diffAware?.enabled !== false && ctx.diffAware?.complexity !== "off") {
-				let filtered = false;
-
-				// Strategy 1: Edit-region intersection (Edit tool with old_string/new_string)
-				if (event.tool_input?.old_string) {
-					const newStr = (event.tool_input.new_string as string) || "";
-					const oldStr = event.tool_input.old_string as string;
-					// Post-edit file has new_string, not old_string — use new_string for lookup
-					const lookupStr = newStr || oldStr;
-					const idx = fileContent.indexOf(lookupStr);
-					if (idx >= 0) {
-						const editStartLine = fileContent.slice(0, idx).split("\n").length;
-						const oldLines = oldStr.split("\n").length;
-						const newLines = newStr.split("\n").length;
-						const editEndLine = editStartLine + Math.max(oldLines, newLines);
-						complexFns = complexFns.filter(
-							(m) => m.line >= editStartLine - 5 && m.line <= editEndLine + 50,
-						);
-						filtered = true;
-					}
-				}
-
-				// Strategy 2: Baseline subtraction (fallback, or Bash edits without old_string)
-				const complexBaseline = ctx.baseline?.complexFunctions;
-				if (!filtered && complexBaseline) {
-					complexFns = complexFns.filter((m) => !complexBaseline.has(m.text));
-				}
-			}
-			if (complexFns.length > 0) {
-				const shown = complexFns.slice(0, 5);
-				const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-				const overflow =
-					complexFns.length > 5 ? `\n  ... and ${complexFns.length - 5} more` : "";
-				results.push({
-					name: "complexity",
-					severity: "warning",
-					message: `${complexFns.length} complex function(s) in ${filePath}`,
-					file: filePath,
-					detail: detail + overflow,
-				});
-			}
+			// 6. Function complexity, diff-aware.
+			results.push(...checkComplexityBlock(ctx));
 
 			// 6b. CRAP risers — coverage-hole alarm (present-not-prescribe).
 			// Diff-aware via the pre-edit CRAP snapshot. Complexity rises are
 			// blocked at PreToolUse (#15), so a function whose CRAP ROSE here is
 			// almost always a coverage DROP on complex code.
-			if (ctx.baseline?.crapScores && ctx.diffAware?.enabled !== false) {
-				const risers = computeCrapRisers({
-					content: fileContent,
-					absFilePath,
-					cwd,
-					baseline: ctx.baseline.crapScores,
-				});
-				if (risers.length > 0) {
-					const shown = risers.slice(0, 5);
-					const detail = shown
-						.map(
-							(f) =>
-								`  ${f.function}: CRAP ${f.crap_score.toFixed(0)} (cyc ${f.complexity}, cov ${f.coverage_pct.toFixed(0)}%)`,
-						)
-						.join("\n");
-					const overflow = risers.length > 5 ? `\n  ... and ${risers.length - 5} more` : "";
-					results.push({
-						name: "crap",
-						severity: "warning",
-						message: `${risers.length} function(s) with risen CRAP in ${filePath} — complex code that lost coverage`,
-						file: filePath,
-						detail: `${detail}${overflow}\n→ restore a test exercising these branches, or simplify the function.`,
-					});
-				}
-			}
+			results.push(...checkCrapRisersBlock(ctx));
 
 			// 7. Export ripple — now handled by impact-analysis.ts PostToolUse hook.
 
@@ -202,46 +88,7 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 			// Derived from the declarative CHECK_REGISTRY — see check-registry/.
 			// Only run phase="post" here; pre_block/pre_warn entries fire in
 			// evaluator.ts at PreToolUse and are authoritative for their phase.
-			//
-			// Mythos Phase 4 recency gate: when filePriority is provided AND
-			// this file is "cold" (>180 days unchanged in git), drop the
-			// heuristic detectors and keep only fully-deterministic ones.
-			// New/untracked files always pass the gate (fail-OPEN).
-			const coldFileMode =
-				ctx.filePriority !== undefined &&
-				!shouldRunAdvisoryChecks(filePath, ctx.filePriority);
-			const agentSafetyChecks = buildAgentSafetyChecks(
-				fileContent,
-				absFilePath,
-				"post",
-				undefined,
-				coldFileMode,
-			);
-
-			for (const check of agentSafetyChecks) {
-				const matches =
-					check.name === "code_clones" &&
-					ctx.diffAware?.enabled !== false &&
-					ctx.baseline?.dryCloneBaseline
-						? filterDryToRisers(
-								checkCodeCloneFindings(fileContent, absFilePath),
-								ctx.baseline.dryCloneBaseline,
-							).map(formatCodeCloneFinding(absFilePath))
-						: check.fn();
-				if (matches.length > 0) {
-					const shown = matches.slice(0, 5);
-					const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-					const overflow =
-						matches.length > 5 ? `\n  ... and ${matches.length - 5} more` : "";
-					results.push({
-						name: check.name,
-						severity: check.severity,
-						message: `${matches.length} ${check.name.replace(/_/g, " ")} issue(s) in ${filePath}`,
-						file: filePath,
-						detail: detail + overflow,
-					});
-				}
-			}
+			results.push(...checkAgentSafetyBlock(ctx));
 
 			// 8b. Library-footgun registry (Mythos Phase 5). Deterministic
 			// per-library checks that detect known API anti-patterns
@@ -249,32 +96,7 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 			// — the fix instruction comes from the registry entry so
 			// the agent sees both WHAT fired and HOW to fix it. Per-
 			// library opt-out via `.interlinked/disabled-libraries.json`.
-			const disabledLibs = loadDisabledLibraries(cwd);
-			const footgunFindings = runFootgunChecks(fileContent, filePath, disabledLibs);
-			if (footgunFindings.length > 0) {
-				const byId = new Map<string, typeof footgunFindings>();
-				for (const f of footgunFindings) {
-					const bucket = byId.get(f.id) || [];
-					bucket.push(f);
-					byId.set(f.id, bucket);
-				}
-				for (const [id, bucket] of byId) {
-					const first = bucket[0];
-					const shown = bucket.slice(0, 5);
-					const detail = `${shown
-						.map((f) => `  L${f.match.line}: ${f.match.text}`)
-						.join("\n")}\n→ ${first.fixInstruction}`;
-					const overflow =
-						bucket.length > 5 ? `\n  ... and ${bucket.length - 5} more` : "";
-					results.push({
-						name: id,
-						severity: "warning",
-						message: `${bucket.length} ${first.name} issue(s) in ${filePath} [${first.library}]`,
-						file: filePath,
-						detail: detail + overflow,
-					});
-				}
-			}
+			results.push(...checkFootgunBlock(ctx));
 
 			// Non-deterministic regex heuristics (generic_inline, silent_catch, sync_io_in_async,
 			// perf_*, language-specific) have been moved to the scored suggestion pipeline
@@ -286,4 +108,239 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 	}
 
 	return results;
+}
+
+// ---------------------------------------------------------------------------
+// Internal per-check helpers. Each owns one numbered inline check, takes the
+// read-only context, and returns the finding(s) it produces (in push order).
+// Extracted from runInlineCheckBlock to keep that function a thin sequencer;
+// behavior and ordering are identical to the original inline section.
+// ---------------------------------------------------------------------------
+
+/** Section 4: missing return type annotations (TS/TSX), diff-aware. */
+function checkMissingReturnTypesBlock(
+	ctx: InlineBlockContext,
+): QualityCheckResult[] {
+	const { filePath, absFilePath, fileContent } = ctx;
+	let missingReturnTypes = checkMissingReturnTypes(fileContent, absFilePath);
+	if (
+		ctx.diffAware?.enabled !== false &&
+		ctx.diffAware?.missing_return_types !== "off" &&
+		ctx.baseline?.missingReturnTypes
+	) {
+		const baseline = ctx.baseline?.missingReturnTypes;
+		if (baseline) {
+			missingReturnTypes = missingReturnTypes.filter((m) => !baseline.has(m.text));
+		}
+	}
+	if (missingReturnTypes.length === 0) return [];
+	const shown = missingReturnTypes.slice(0, 5);
+	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
+	const overflow =
+		missingReturnTypes.length > 5
+			? `\n  ... and ${missingReturnTypes.length - 5} more`
+			: "";
+	return [
+		{
+			name: "missing_return_types",
+			severity: "warning",
+			message: `${missingReturnTypes.length} exported function(s) without return type annotations in ${filePath}`,
+			file: filePath,
+			detail: detail + overflow,
+		},
+	];
+}
+
+/** Section 5: test-file existence (fires on edits, not new-file Writes). */
+function checkTestFileBlock(ctx: InlineBlockContext): QualityCheckResult[] {
+	const { event, filePath, absFilePath, fileContent } = ctx;
+	const isNewFile =
+		ctx.diffAware?.enabled !== false &&
+		ctx.diffAware?.no_test_file !== "off" &&
+		event.tool_name != null &&
+		!["Write", "WriteFile", "write_file"].includes(event.tool_name);
+	if (isNewFile) return [];
+	// Pass file content so the check can short-circuit on generator-emitted
+	// files (OpenAPI, protoc, @generated) that never have test siblings.
+	const noTestFile = checkTestFileExists(absFilePath, fileContent);
+	if (noTestFile.length === 0) return [];
+	return [
+		{
+			name: "no_test_file",
+			severity: "warning",
+			message: `No test file found for ${filePath}`,
+			file: filePath,
+			detail: noTestFile[0].text,
+		},
+	];
+}
+
+/** Section 6: function complexity, diff-aware (edit-region or baseline). */
+function checkComplexityBlock(ctx: InlineBlockContext): QualityCheckResult[] {
+	const { event, filePath, absFilePath, fileContent } = ctx;
+	let complexFns = checkFunctionComplexity(fileContent, absFilePath);
+	if (ctx.diffAware?.enabled !== false && ctx.diffAware?.complexity !== "off") {
+		complexFns = filterComplexFnsToEdit(complexFns, event, fileContent, ctx);
+	}
+	if (complexFns.length === 0) return [];
+	const shown = complexFns.slice(0, 5);
+	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
+	const overflow =
+		complexFns.length > 5 ? `\n  ... and ${complexFns.length - 5} more` : "";
+	return [
+		{
+			name: "complexity",
+			severity: "warning",
+			message: `${complexFns.length} complex function(s) in ${filePath}`,
+			file: filePath,
+			detail: detail + overflow,
+		},
+	];
+}
+
+/**
+ * Diff-aware narrowing for section 6: keep only complex functions introduced
+ * by this edit. Strategy 1 (Edit tool with old_string/new_string) intersects
+ * the edit region; Strategy 2 subtracts the pre-edit baseline.
+ */
+function filterComplexFnsToEdit(
+	complexFns: ReturnType<typeof checkFunctionComplexity>,
+	event: HarnessEvent,
+	fileContent: string,
+	ctx: InlineBlockContext,
+): ReturnType<typeof checkFunctionComplexity> {
+	let filtered = false;
+	let result = complexFns;
+	// Strategy 1: Edit-region intersection (Edit tool with old_string/new_string)
+	if (event.tool_input?.old_string) {
+		const newStr = (event.tool_input.new_string as string) || "";
+		const oldStr = event.tool_input.old_string as string;
+		// Post-edit file has new_string, not old_string — use new_string for lookup
+		const lookupStr = newStr || oldStr;
+		const idx = fileContent.indexOf(lookupStr);
+		if (idx >= 0) {
+			const editStartLine = fileContent.slice(0, idx).split("\n").length;
+			const oldLines = oldStr.split("\n").length;
+			const newLines = newStr.split("\n").length;
+			const editEndLine = editStartLine + Math.max(oldLines, newLines);
+			result = result.filter(
+				(m) => m.line >= editStartLine - 5 && m.line <= editEndLine + 50,
+			);
+			filtered = true;
+		}
+	}
+
+	// Strategy 2: Baseline subtraction (fallback, or Bash edits without old_string)
+	const complexBaseline = ctx.baseline?.complexFunctions;
+	if (!filtered && complexBaseline) {
+		result = result.filter((m) => !complexBaseline.has(m.text));
+	}
+	return result;
+}
+
+/** Section 6b: CRAP risers — coverage-hole alarm, diff-aware. */
+function checkCrapRisersBlock(ctx: InlineBlockContext): QualityCheckResult[] {
+	const { filePath, absFilePath, fileContent, cwd } = ctx;
+	if (!ctx.baseline?.crapScores || ctx.diffAware?.enabled === false) return [];
+	const risers = computeCrapRisers({
+		content: fileContent,
+		absFilePath,
+		cwd,
+		baseline: ctx.baseline.crapScores,
+	});
+	if (risers.length === 0) return [];
+	const shown = risers.slice(0, 5);
+	const detail = shown
+		.map(
+			(f) =>
+				`  ${f.function}: CRAP ${f.crap_score.toFixed(0)} (cyc ${f.complexity}, cov ${f.coverage_pct.toFixed(0)}%)`,
+		)
+		.join("\n");
+	const overflow = risers.length > 5 ? `\n  ... and ${risers.length - 5} more` : "";
+	return [
+		{
+			name: "crap",
+			severity: "warning",
+			message: `${risers.length} function(s) with risen CRAP in ${filePath} — complex code that lost coverage`,
+			file: filePath,
+			detail: `${detail}${overflow}\n→ restore a test exercising these branches, or simplify the function.`,
+		},
+	];
+}
+
+/** Section 8: agent-safety checks (post phase), with cold-file gate. */
+function checkAgentSafetyBlock(ctx: InlineBlockContext): QualityCheckResult[] {
+	const { filePath, absFilePath, fileContent } = ctx;
+	// Mythos Phase 4 recency gate: when filePriority is provided AND this file
+	// is "cold" (>180 days unchanged in git), drop the heuristic detectors and
+	// keep only fully-deterministic ones. New/untracked files always pass the
+	// gate (fail-OPEN).
+	const coldFileMode =
+		ctx.filePriority !== undefined &&
+		!shouldRunAdvisoryChecks(filePath, ctx.filePriority);
+	const agentSafetyChecks = buildAgentSafetyChecks(
+		fileContent,
+		absFilePath,
+		"post",
+		undefined,
+		coldFileMode,
+	);
+
+	const out: QualityCheckResult[] = [];
+	for (const check of agentSafetyChecks) {
+		const matches =
+			check.name === "code_clones" &&
+			ctx.diffAware?.enabled !== false &&
+			ctx.baseline?.dryCloneBaseline
+				? filterDryToRisers(
+						checkCodeCloneFindings(fileContent, absFilePath),
+						ctx.baseline.dryCloneBaseline,
+					).map(formatCodeCloneFinding(absFilePath))
+				: check.fn();
+		if (matches.length > 0) {
+			const shown = matches.slice(0, 5);
+			const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
+			const overflow =
+				matches.length > 5 ? `\n  ... and ${matches.length - 5} more` : "";
+			out.push({
+				name: check.name,
+				severity: check.severity,
+				message: `${matches.length} ${check.name.replace(/_/g, " ")} issue(s) in ${filePath}`,
+				file: filePath,
+				detail: detail + overflow,
+			});
+		}
+	}
+	return out;
+}
+
+/** Section 8b: library-footgun registry, grouped by check id. */
+function checkFootgunBlock(ctx: InlineBlockContext): QualityCheckResult[] {
+	const { filePath, fileContent, cwd } = ctx;
+	const disabledLibs = loadDisabledLibraries(cwd);
+	const footgunFindings = runFootgunChecks(fileContent, filePath, disabledLibs);
+	if (footgunFindings.length === 0) return [];
+	const byId = new Map<string, typeof footgunFindings>();
+	for (const f of footgunFindings) {
+		const bucket = byId.get(f.id) || [];
+		bucket.push(f);
+		byId.set(f.id, bucket);
+	}
+	const out: QualityCheckResult[] = [];
+	for (const [id, bucket] of byId) {
+		const first = bucket[0];
+		const shown = bucket.slice(0, 5);
+		const detail = `${shown
+			.map((f) => `  L${f.match.line}: ${f.match.text}`)
+			.join("\n")}\n→ ${first.fixInstruction}`;
+		const overflow = bucket.length > 5 ? `\n  ... and ${bucket.length - 5} more` : "";
+		out.push({
+			name: id,
+			severity: "warning",
+			message: `${bucket.length} ${first.name} issue(s) in ${filePath} [${first.library}]`,
+			file: filePath,
+			detail: detail + overflow,
+		});
+	}
+	return out;
 }

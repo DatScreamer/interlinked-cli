@@ -32,115 +32,173 @@
  * behave like opaque string content.
  */
 export function stripTemplateLiterals(content: string): string {
-	const out: string[] = [];
+	const s: TplStripState = {
+		out: [],
+		inTpl: false,
+		interpDepth: 0,
+		inLineComment: false,
+		inBlockComment: false,
+		inString: null,
+	};
 	let i = 0;
-	let inTpl = false;
-	let interpDepth = 0;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
 
 	while (i < content.length) {
 		const ch = content[i];
 		const next = content[i + 1];
 
-		if (inLineComment) {
-			out.push(ch);
-			if (ch === "\n") inLineComment = false;
-			i++;
-			continue;
-		}
-		if (inBlockComment) {
-			out.push(ch);
-			if (ch === "*" && next === "/") {
-				out.push(next);
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			i++;
-			continue;
-		}
-		if (inString) {
+		if (s.inLineComment) {
+			i = handleTplLineComment(ch, i, s);
+		} else if (s.inBlockComment) {
+			i = handleTplBlockComment(ch, next, i, s);
+		} else if (s.inString) {
 			// Pass string content through untouched so comment/template
 			// markers inside strings (e.g. "@types/*", "foo`bar") don't
 			// corrupt state tracking for later lines.
-			if (ch === "\\" && i + 1 < content.length) {
-				out.push(ch, next);
-				i += 2;
-				continue;
-			}
-			out.push(ch);
-			if (ch === inString) inString = null;
-			i++;
-			continue;
+			i = handleTplString(content, ch, next, i, s);
+		} else if (!s.inTpl) {
+			i = handleTplOutsideTemplate(ch, next, i, s);
+		} else if (s.interpDepth === 0) {
+			i = handleTplBody(content, ch, next, i, s);
+		} else {
+			// Inside `${...}` — track brace depth to know when the
+			// interpolation ends; the content and braces are blanked so
+			// downstream brace-counting sees the interpolation as opaque.
+			i = handleTplInterpolation(ch, i, s);
 		}
-
-		if (inTpl && interpDepth === 0 && ch === "\\" && i + 1 < content.length) {
-			// Escape inside template body — blank both chars.
-			out.push(" ", " ");
-			i += 2;
-			continue;
-		}
-
-		if (!inTpl) {
-			if (ch === "/" && next === "/") {
-				inLineComment = true;
-				out.push(ch, next);
-				i += 2;
-				continue;
-			}
-			if (ch === "/" && next === "*") {
-				inBlockComment = true;
-				out.push(ch, next);
-				i += 2;
-				continue;
-			}
-			if (ch === '"' || ch === "'") {
-				inString = ch;
-				out.push(ch);
-				i++;
-				continue;
-			}
-			out.push(ch);
-			if (ch === "`") inTpl = true;
-			i++;
-			continue;
-		}
-
-		if (interpDepth === 0) {
-			if (ch === "`") {
-				out.push("`");
-				inTpl = false;
-			} else if (ch === "$" && next === "{") {
-				// Enter interpolation — blank the `${` itself
-				out.push(" ", " ");
-				interpDepth = 1;
-				i++;
-			} else {
-				out.push(ch === "\n" ? "\n" : " ");
-			}
-			i++;
-			continue;
-		}
-
-		// Inside `${...}` — track brace depth to know when interpolation
-		// ends, but blank the content (and the braces themselves) so
-		// downstream brace-counting sees the interpolation as opaque.
-		if (ch === "{") interpDepth++;
-		else if (ch === "}") {
-			interpDepth--;
-			if (interpDepth === 0) {
-				out.push(" ");
-				i++;
-				continue;
-			}
-		}
-		out.push(ch === "\n" ? "\n" : " ");
-		i++;
 	}
 
-	return out.join("");
+	return s.out.join("");
+}
+
+/**
+ * Loop-carried state for {@link stripTemplateLiterals}. All keys are always
+ * present; `inString` is a union including `null` so it is never absent.
+ * Each per-state handler below mutates this in place and returns the index to
+ * resume scanning from — mirroring the original single-loop `continue`s exactly.
+ */
+interface TplStripState {
+	out: string[];
+	inTpl: boolean;
+	interpDepth: number;
+	inLineComment: boolean;
+	inBlockComment: boolean;
+	inString: '"' | "'" | null;
+}
+
+/** Inside a `//` line comment: copy verbatim, exit on newline. */
+function handleTplLineComment(ch: string, i: number, s: TplStripState): number {
+	s.out.push(ch);
+	if (ch === "\n") s.inLineComment = false;
+	return i + 1;
+}
+
+/** Inside a `/*` block comment: copy verbatim, exit on the closing delimiter. */
+function handleTplBlockComment(ch: string, next: string, i: number, s: TplStripState): number {
+	s.out.push(ch);
+	if (ch === "*" && next === "/") {
+		s.out.push(next);
+		s.inBlockComment = false;
+		return i + 2;
+	}
+	return i + 1;
+}
+
+/**
+ * Inside a string literal: pass content through untouched so comment/template
+ * markers inside strings don't corrupt state tracking for later lines.
+ */
+function handleTplString(
+	content: string,
+	ch: string,
+	next: string,
+	i: number,
+	s: TplStripState,
+): number {
+	if (ch === "\\" && i + 1 < content.length) {
+		s.out.push(ch, next);
+		return i + 2;
+	}
+	s.out.push(ch);
+	if (ch === s.inString) s.inString = null;
+	return i + 1;
+}
+
+/**
+ * Outside any template: detect comment openers / string openers / a backtick
+ * that begins a template. Everything else is copied verbatim.
+ */
+function handleTplOutsideTemplate(
+	ch: string,
+	next: string,
+	i: number,
+	s: TplStripState,
+): number {
+	if (ch === "/" && next === "/") {
+		s.inLineComment = true;
+		s.out.push(ch, next);
+		return i + 2;
+	}
+	if (ch === "/" && next === "*") {
+		s.inBlockComment = true;
+		s.out.push(ch, next);
+		return i + 2;
+	}
+	if (ch === '"' || ch === "'") {
+		s.inString = ch;
+		s.out.push(ch);
+		return i + 1;
+	}
+	s.out.push(ch);
+	if (ch === "`") s.inTpl = true;
+	return i + 1;
+}
+
+/**
+ * Inside a template body (`interpDepth === 0`): blank the body to spaces while
+ * preserving backticks and newlines. A leading escape blanks both chars; a
+ * `${` opens an interpolation (the `${` itself is blanked).
+ */
+function handleTplBody(
+	content: string,
+	ch: string,
+	next: string,
+	i: number,
+	s: TplStripState,
+): number {
+	if (ch === "\\" && i + 1 < content.length) {
+		// Escape inside template body — blank both chars.
+		s.out.push(" ", " ");
+		return i + 2;
+	}
+	if (ch === "`") {
+		s.out.push("`");
+		s.inTpl = false;
+	} else if (ch === "$" && next === "{") {
+		// Enter interpolation — blank the `${` itself.
+		s.out.push(" ", " ");
+		s.interpDepth = 1;
+		return i + 2;
+	} else {
+		s.out.push(ch === "\n" ? "\n" : " ");
+	}
+	return i + 1;
+}
+
+/**
+ * Inside a `${...}` interpolation: track brace depth to find the end, but blank
+ * the content (and the braces) so downstream brace-counting sees it as opaque.
+ */
+function handleTplInterpolation(ch: string, i: number, s: TplStripState): number {
+	if (ch === "{") s.interpDepth++;
+	else if (ch === "}") {
+		s.interpDepth--;
+		if (s.interpDepth === 0) {
+			s.out.push(" ");
+			return i + 1;
+		}
+	}
+	s.out.push(ch === "\n" ? "\n" : " ");
+	return i + 1;
 }
 
 /**

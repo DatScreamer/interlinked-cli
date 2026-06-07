@@ -214,6 +214,241 @@ function isRegexStart(prevChar: string, content: string, slashIdx: number): bool
 }
 
 /**
+ * One step of {@link stripForBraceScan}. Each handler advances the cursor `i`
+ * past the chars it consumes (blanking them) and returns the next cursor plus
+ * the next `prevChar`. `stack` is mutated in place (push/pop) and the active
+ * frame's mutable fields (`brace`/`cls`/`expr`) are updated on the object, so
+ * those propagate without being threaded through the return value.
+ */
+type ScanStep = { i: number; prevChar: string };
+
+type BlankFn = (idx: number) => void;
+
+/** Consume one char inside a `"`/`'` string literal frame. */
+function stepStr(
+	content: string,
+	n: number,
+	i: number,
+	top: Extract<ScanFrame, { k: "str" }>,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	const c = content[i] ?? "";
+	if (c === "\\") {
+		blank(i);
+		if (i + 1 < n) blank(i + 1);
+		return { i: i + 2, prevChar };
+	}
+	if (c === "\n") {
+		stack.pop(); // unterminated string — bail rather than swallow the file
+		return { i: i + 1, prevChar };
+	}
+	blank(i);
+	if (c === top.quote) {
+		stack.pop();
+		return { i: i + 1, prevChar: "v" }; // a value just ended → following `/` is division
+	}
+	return { i: i + 1, prevChar };
+}
+
+/** Consume one char inside a `/* … *​/` block-comment frame. */
+function stepBlock(
+	content: string,
+	i: number,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	const c = content[i] ?? "";
+	const c2 = content[i + 1] ?? "";
+	if (c === "*" && c2 === "/") {
+		blank(i);
+		blank(i + 1);
+		stack.pop();
+		return { i: i + 2, prevChar };
+	}
+	blank(i);
+	return { i: i + 1, prevChar };
+}
+
+/** Consume one char inside a regex-literal frame. */
+function stepRegex(
+	content: string,
+	i: number,
+	top: Extract<ScanFrame, { k: "regex" }>,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	const c = content[i] ?? "";
+	if (c === "\\") {
+		blank(i);
+		if (i + 1 < content.length) blank(i + 1);
+		return { i: i + 2, prevChar };
+	}
+	if (c === "\n") {
+		stack.pop(); // unterminated regex — bail
+		return { i: i + 1, prevChar };
+	}
+	if (c === "[") top.cls = true;
+	else if (c === "]") top.cls = false;
+	const closing = c === "/" && !top.cls;
+	blank(i);
+	if (closing) {
+		stack.pop();
+		return { i: i + 1, prevChar: "v" };
+	}
+	return { i: i + 1, prevChar };
+}
+
+/** Consume one char inside a template-literal frame (outside `${…}`). */
+function stepTmpl(
+	content: string,
+	n: number,
+	i: number,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	const c = content[i] ?? "";
+	const c2 = i + 1 < n ? (content[i + 1] ?? "") : "";
+	if (c === "\\") {
+		blank(i);
+		if (i + 1 < n) blank(i + 1);
+		return { i: i + 2, prevChar };
+	}
+	if (c === "`") {
+		blank(i);
+		stack.pop();
+		return { i: i + 1, prevChar: "v" };
+	}
+	if (c === "$" && c2 === "{") {
+		// Drop `${` and (later) the matching `}` so the interpolation's net brace
+		// contribution is zero; keep the expression between.
+		blank(i);
+		blank(i + 1);
+		stack.push({ k: "code", brace: 0, expr: true });
+		return { i: i + 2, prevChar };
+	}
+	blank(i);
+	return { i: i + 1, prevChar };
+}
+
+/**
+ * In a `code` frame, handle the char if it OPENS a comment / string / template /
+ * regex frame (pushing that frame). Returns the step, or `null` when the char is
+ * not a frame opener and brace/whitespace handling should run instead.
+ */
+function stepCodeOpener(
+	content: string,
+	n: number,
+	i: number,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep | null {
+	const c = content[i] ?? "";
+	const c2 = i + 1 < n ? (content[i + 1] ?? "") : "";
+	if (c === "/" && c2 === "/") {
+		let j = i;
+		while (j < n && content[j] !== "\n") {
+			blank(j);
+			j += 1;
+		}
+		return { i: j, prevChar };
+	}
+	if (c === "/" && c2 === "*") {
+		blank(i);
+		blank(i + 1);
+		stack.push({ k: "block" });
+		return { i: i + 2, prevChar };
+	}
+	if (c === '"' || c === "'") {
+		blank(i);
+		stack.push({ k: "str", quote: c });
+		return { i: i + 1, prevChar };
+	}
+	if (c === "`") {
+		blank(i);
+		stack.push({ k: "tmpl" });
+		return { i: i + 1, prevChar };
+	}
+	if (c === "/" && isRegexStart(prevChar, content, i)) {
+		blank(i);
+		stack.push({ k: "regex", cls: false });
+		return { i: i + 1, prevChar };
+	}
+	return null;
+}
+
+/** In a `code` frame, handle `{` / `}` brace tracking and the plain-char tail. */
+function stepCodeBrace(
+	content: string,
+	i: number,
+	top: Extract<ScanFrame, { k: "code" }>,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	const c = content[i] ?? "";
+	if (c === "{") {
+		top.brace += 1;
+		return { i: i + 1, prevChar: "{" };
+	}
+	if (c === "}") {
+		if (top.expr && top.brace === 0) {
+			blank(i); // closes the `${…}` interpolation
+			stack.pop();
+			return { i: i + 1, prevChar: "v" };
+		}
+		top.brace -= 1;
+		return { i: i + 1, prevChar: "}" };
+	}
+	return { i: i + 1, prevChar: /\s/.test(c) ? prevChar : c };
+}
+
+/** Consume one char in a `code` frame (top-level or inside a `${…}` expr). */
+function stepCode(
+	content: string,
+	n: number,
+	i: number,
+	top: Extract<ScanFrame, { k: "code" }>,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	return (
+		stepCodeOpener(content, n, i, stack, prevChar, blank) ??
+		stepCodeBrace(content, i, top, stack, prevChar, blank)
+	);
+}
+
+/** Dispatch one scan step to the handler for the active frame kind. */
+function stepScan(
+	content: string,
+	n: number,
+	i: number,
+	top: ScanFrame,
+	stack: ScanFrame[],
+	prevChar: string,
+	blank: BlankFn,
+): ScanStep {
+	switch (top.k) {
+		case "str":
+			return stepStr(content, n, i, top, stack, prevChar, blank);
+		case "block":
+			return stepBlock(content, i, stack, prevChar, blank);
+		case "regex":
+			return stepRegex(content, i, top, stack, prevChar, blank);
+		case "tmpl":
+			return stepTmpl(content, n, i, stack, prevChar, blank);
+		default:
+			return stepCode(content, n, i, top, stack, prevChar, blank);
+	}
+}
+
+/**
  * Brace-balanced strip for SCOPE / COMPLEXITY analysis (`cyclomatic.ts`,
  * `complexity.ts`). Replaces comment / string / template-text / regex
  * characters with spaces (newlines kept, so line + column positions stay
@@ -235,155 +470,14 @@ export function stripForBraceScan(content: string): string {
 		if (ch !== "\n" && ch !== "\r") out[idx] = " ";
 	};
 	const stack: ScanFrame[] = [{ k: "code", brace: 0, expr: false }];
-	let prevChar = ""; // last significant (non-whitespace) code char
 
 	let i = 0;
+	let prevChar = ""; // last significant (non-whitespace) code char
 	while (i < n) {
 		const top = stack[stack.length - 1] as ScanFrame;
-		const c = content[i] ?? "";
-		const c2 = i + 1 < n ? (content[i + 1] ?? "") : "";
-
-		switch (top.k) {
-			case "str": {
-				if (c === "\\") {
-					blank(i);
-					if (i + 1 < n) blank(i + 1);
-					i += 2;
-					break;
-				}
-				if (c === "\n") {
-					stack.pop(); // unterminated string — bail rather than swallow the file
-					i += 1;
-					break;
-				}
-				blank(i);
-				if (c === top.quote) {
-					stack.pop();
-					prevChar = "v"; // a value just ended → a following `/` is division
-				}
-				i += 1;
-				break;
-			}
-			case "block": {
-				if (c === "*" && c2 === "/") {
-					blank(i);
-					blank(i + 1);
-					i += 2;
-					stack.pop();
-					break;
-				}
-				blank(i);
-				i += 1;
-				break;
-			}
-			case "regex": {
-				if (c === "\\") {
-					blank(i);
-					if (i + 1 < n) blank(i + 1);
-					i += 2;
-					break;
-				}
-				if (c === "\n") {
-					stack.pop(); // unterminated regex — bail
-					i += 1;
-					break;
-				}
-				if (c === "[") top.cls = true;
-				else if (c === "]") top.cls = false;
-				const closing = c === "/" && !top.cls;
-				blank(i);
-				i += 1;
-				if (closing) {
-					stack.pop();
-					prevChar = "v";
-				}
-				break;
-			}
-			case "tmpl": {
-				if (c === "\\") {
-					blank(i);
-					if (i + 1 < n) blank(i + 1);
-					i += 2;
-					break;
-				}
-				if (c === "`") {
-					blank(i);
-					i += 1;
-					stack.pop();
-					prevChar = "v";
-					break;
-				}
-				if (c === "$" && c2 === "{") {
-					// Drop `${` and (later) the matching `}` so the interpolation's
-					// net brace contribution is zero; keep the expression between.
-					blank(i);
-					blank(i + 1);
-					i += 2;
-					stack.push({ k: "code", brace: 0, expr: true });
-					break;
-				}
-				blank(i);
-				i += 1;
-				break;
-			}
-			default: {
-				// code (top-level or inside a `${…}` expression)
-				if (c === "/" && c2 === "/") {
-					while (i < n && content[i] !== "\n") {
-						blank(i);
-						i += 1;
-					}
-					break;
-				}
-				if (c === "/" && c2 === "*") {
-					blank(i);
-					blank(i + 1);
-					i += 2;
-					stack.push({ k: "block" });
-					break;
-				}
-				if (c === '"' || c === "'") {
-					blank(i);
-					i += 1;
-					stack.push({ k: "str", quote: c });
-					break;
-				}
-				if (c === "`") {
-					blank(i);
-					i += 1;
-					stack.push({ k: "tmpl" });
-					break;
-				}
-				if (c === "/" && isRegexStart(prevChar, content, i)) {
-					blank(i);
-					i += 1;
-					stack.push({ k: "regex", cls: false });
-					break;
-				}
-				if (c === "{") {
-					top.brace += 1;
-					prevChar = "{";
-					i += 1;
-					break;
-				}
-				if (c === "}") {
-					if (top.expr && top.brace === 0) {
-						blank(i); // closes the `${…}` interpolation
-						i += 1;
-						stack.pop();
-						prevChar = "v";
-						break;
-					}
-					top.brace -= 1;
-					prevChar = "}";
-					i += 1;
-					break;
-				}
-				if (!/\s/.test(c)) prevChar = c;
-				i += 1;
-				break;
-			}
-		}
+		const step = stepScan(content, n, i, top, stack, prevChar, blank);
+		i = step.i;
+		prevChar = step.prevChar;
 	}
 	return out.join("");
 }

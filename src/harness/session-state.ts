@@ -102,209 +102,36 @@ export class SessionTracker {
 	}
 
 	recordEvent(event: HarnessEvent): SessionTrajectory {
-		// Defensive: some event shapes arrive without a session_id (e.g., certain
-		// SessionStart variants, malformed probes). Synthesize a fallback id
-		// instead of crashing — a dropped session trajectory is better than a
-		// dead harness that fails open on the next PreToolUse scan.
-		const sessionId = event.session_id || `unknown-${Date.now().toString(36)}`;
-		let session = this.sessions.get(sessionId);
-
-		if (!session) {
-			session = {
-				session_id: sessionId,
-				agent_name: event.agent_name || `session-${sessionId.slice(0, 8)}`,
-				started_at: event.timestamp,
-				tool_call_count: 0,
-				error_count: 0,
-				files_read: new Set(),
-				files_written: new Set(),
-				commands_run: [],
-				curl_localhost_count: {},
-				mcp_tools_used: 0,
-				local_tools_used: 0,
-				file_write_times: new Map(),
-				failed_files: new Map(),
-				pending_completions: new Map(),
-				file_read_at: new Map(),
-				tool_sequence: [],
-				sensitivity_level: "Public",
-				taint_sources: [],
-				step_limit: Number.POSITIVE_INFINITY,
-				consecutive_pattern: null,
-				suggested_permissions: new Set(),
-				acknowledged_checks: new Set(),
-				fired_reminders: new Set(),
-				soft_blocks: new Set(),
-				injection_detected_steps: [],
-				pii_detected_steps: [],
-				last_coordination_at: 0,
-				last_coordination_ts: Date.now(),
-				test_runs: new Map(),
-				file_edit_counts: new Map(),
-				warnings_issued: new Map(),
-				tdd_cycles: new Map(),
-				consecutive_tool_failures: new Map(),
-				silent_failure_warned: new Set(),
-				bloat_warned: new Set(),
-				active_skills: new Map(),
-				non_doc_files_edited_since_commit: new Set(),
-				doc_files_edited_since_commit: 0,
-				mid_session_nudge_emitted: false,
-				stop_nudge_emitted: false,
-				assertion_counts: new Map(),
-				verification_observed: new Set(),
-				stubs_introduced: [],
-				git_session_baseline: captureGitBaseline(event.cwd ?? process.cwd()),
-			};
-			this.sessions.set(event.session_id, session);
-		}
+		const session = this.getOrCreateSession(event);
 
 		// Update agent name if resolved later (e.g., after register_agent)
 		if (event.agent_name && session.agent_name.startsWith("session-")) {
 			session.agent_name = event.agent_name;
 		}
 
-		// Track tool calls
-		if (event.tool_name) {
-			session.tool_call_count++;
-
-			// Classify as MCP or local tool
-			if (event.tool_name.startsWith("mcp__")) {
-				session.mcp_tools_used++;
-			} else {
-				session.local_tools_used++;
-			}
-
-			// Track tool sequence for pattern detection
-			const target = extractToolTarget(event);
-			session.tool_sequence.push(`${event.tool_name}:${target}`);
-			if (session.tool_sequence.length > 20) {
-				session.tool_sequence = session.tool_sequence.slice(-20);
-			}
-
-			// Verification-before-stop: record browser-MCP interactions as
-			// a UI verification signal. Bash-command verification signals are
-			// captured below in the command-tracking block.
-			const browserKind = classifyBrowserToolName(event.tool_name);
-			if (browserKind) {
-				if (!session.verification_observed) session.verification_observed = new Set();
-				session.verification_observed.add(browserKind);
-			}
-		}
-
-		// Track errors. Outcome-gated, not event-name-gated: Claude/Codex/
-		// Gemini/Copilot fold tool failures into the regular Post* event
-		// carrying tool_outcome === "error", and Cursor's dedicated
-		// postToolUseFailure also produces tool_outcome === "error" via the
-		// attachOutcome call in the normalizer. The previous event-name gates
-		// were inverted for folded failures — error_count never bumped, and
-		// consecutive_tool_failures was *cleared* by the very events that
-		// should have incremented it. Phase 1 channels (recurrence, triage,
-		// recovery) read these counters to make decisions.
-		if (event.tool_outcome === "error") {
-			session.error_count++;
-			if (event.tool_name) {
-				const prev = session.consecutive_tool_failures.get(event.tool_name) || 0;
-				session.consecutive_tool_failures.set(event.tool_name, prev + 1);
-			}
-		} else if (event.tool_outcome === "success" && event.tool_name) {
-			// A successful invocation of this tool resets the consecutive counter.
-			session.consecutive_tool_failures.delete(event.tool_name);
-		}
-
-		// Track file operations. Provenance gate (Channel 5 rollback feasibility)
-		// requires that files_written contains only paths we actually wrote
-		// successfully — gating on tool_outcome === "success" prevents a failed
-		// Edit attempt from being attributed to us. Path normalization stores
-		// BOTH the raw form (preserves existing `.has(rawPath)` consumers in
-		// structural-checks / behavioral-checks / suggestion-scorer) AND the
-		// resolved absolute form (lets the new Channel 5 provenance check do
-		// `.has(resolve(cwd, p))` reliably regardless of input shape).
-		const filePath = event.tool_input?.file_path as string | undefined;
-		const eventCwd = event.cwd ?? process.cwd();
-		if (filePath && event.tool_name) {
-			const absPath = resolvePath(eventCwd, filePath);
-			if (isReadOperation(event.tool_name)) {
-				session.files_read.add(filePath);
-				if (absPath !== filePath) session.files_read.add(absPath);
-				session.file_read_at.set(filePath, session.tool_call_count);
-			}
-			if (isWriteOperation(event.tool_name)) {
-				const writeSucceeded = event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
-				if (writeSucceeded) {
-					session.files_written.add(filePath);
-					if (absPath !== filePath) session.files_written.add(absPath);
-					session.file_write_times.set(filePath, event.timestamp);
-					session.file_edit_counts.set(
-						filePath,
-						(session.file_edit_counts.get(filePath) || 0) + 1,
-					);
-				}
-				// Clear acknowledged checks for this file — a new edit (even
-				// a failed one) may introduce genuinely different issues on
-				// the next attempt.
-				clearAcknowledgedChecksForFile(session, filePath);
-			}
-			// Sequence-detector input population (§3.5 / §3.18 / §3.21).
-			// Feeds add_then_revert_loop and magic_literal_cross_file_proliferation.
-			// Lives next to the write-tracking block so the same outcome gate,
-			// file_path resolution, and tool_name classifier already in scope
-			// drive it; detectors silently no-op when the maps are empty.
-			//
-			// Post-tool-use only, success-only. The §3.21 add-then-revert
-			// detector reasons about *content states the file actually passed
-			// through*. A PreToolUse Edit event is an INTENDED edit that may be
-			// blocked (tsc overlay, reservation conflict, guard) and never land
-			// — recording it would count a state the file never reached. It
-			// also double-counts: every successful edit fires both a PreToolUse
-			// (outcome undefined) and a PostToolUse (outcome "success") event,
-			// so recording on both inflated each file's history with a phantom
-			// duplicate. The FP that motivated this gate: a blocked edit leaves
-			// the file unchanged, the agent retries successfully, and the
-			// blocked attempt got counted as a prior content state — firing
-			// "cycled back N times" on clean forward progress with zero reverts.
-			// PostToolUse is the only point where the chunk reflects content
-			// that genuinely reached disk.
-			if (isSequenceWriteOperation(event.tool_name) && isPostToolUseEvent(event)) {
-				const seqWriteSucceeded =
-					event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
-				if (seqWriteSucceeded) {
-					for (const chunk of extractWriteChunks(event)) {
-						recordRecentLineEdit(session, filePath, chunk);
-						recordLiteralOccurrences(session, filePath, chunk);
-					}
-				}
-			}
-
-			// Resolve pending completions when agent reads/edits affected files
-			for (const [, completion] of session.pending_completions) {
-				if (completion.affected_files.includes(filePath)) {
-					completion.resolved_files.add(filePath);
-				}
-			}
-		}
-
-		// Track commands
-		const command = event.tool_input?.command as string | undefined;
-		if (command && isBashTool(event.tool_name)) {
-			session.commands_run.push(command.length > 200 ? command.slice(0, 200) : command);
-			if (session.commands_run.length > 100) {
-				session.commands_run = session.commands_run.slice(-100);
-			}
-
-			// Verification-before-stop: classify the command for verification
-			// signals (typecheck / test / lint / build / dev-server) and record
-			// the first matching kind. We track *intent to verify* — a failed
-			// `bun test` still counts because the agent did engage the verifier.
-			const cmdKind = classifyVerificationCommand(command);
-			if (cmdKind) {
-				if (!session.verification_observed) session.verification_observed = new Set();
-				session.verification_observed.add(cmdKind);
-			}
-		}
+		trackToolCall(session, event);
+		trackErrorOutcome(session, event);
+		trackFileOperations(session, event);
+		trackCommand(session, event);
 
 		gcExpiredSkills(session);
 
+		return session;
+	}
+
+	/**
+	 * Look up the session for this event, creating (and registering) a fresh
+	 * trajectory on first sight. Defensive: events without a session_id (some
+	 * SessionStart variants, malformed probes) get a synthesized fallback id
+	 * rather than crashing — a dropped trajectory beats a dead harness that
+	 * fails open on the next PreToolUse scan.
+	 */
+	private getOrCreateSession(event: HarnessEvent): SessionTrajectory {
+		const sessionId = event.session_id || `unknown-${Date.now().toString(36)}`;
+		const existing = this.sessions.get(sessionId);
+		if (existing) return existing;
+		const session = createFreshSession(event, sessionId);
+		this.sessions.set(sessionId, session);
 		return session;
 	}
 
@@ -331,10 +158,7 @@ export class SessionTracker {
 		const to = this.sessions.get(toSessionId);
 		if (!from || !to) return false;
 
-		if (from.verification_observed && from.verification_observed.size > 0) {
-			if (!to.verification_observed) to.verification_observed = new Set();
-			for (const sig of from.verification_observed) to.verification_observed.add(sig);
-		}
+		mergeVerificationObserved(from, to);
 
 		// Gap-fill only: a run/cycle the parent already tracks for a file is
 		// newer than the subagent's, so never overwrite it.
@@ -345,13 +169,7 @@ export class SessionTracker {
 			if (!to.tdd_cycles.has(file)) to.tdd_cycles.set(file, { ...cycle });
 		}
 
-		if (from.stubs_introduced && from.stubs_introduced.length > 0) {
-			if (!to.stubs_introduced) to.stubs_introduced = [];
-			for (const stub of from.stubs_introduced) {
-				if (to.stubs_introduced.length >= STUB_INTRODUCED_CAP) break;
-				to.stubs_introduced.push({ ...stub });
-			}
-		}
+		appendStubsCapped(from, to);
 		return true;
 	}
 
@@ -572,6 +390,261 @@ export class SessionTracker {
 		return this.getAll().filter(
 			(s) => s.tool_call_count > 0 && new Date(s.started_at).getTime() < cutoff,
 		);
+	}
+}
+
+/**
+ * Set-union the subagent's verification_observed signals into the parent.
+ * Extracted from rollUpVerificationSignals to keep that orchestrator thin;
+ * lazily allocates the parent's set on first use.
+ */
+function mergeVerificationObserved(from: SessionTrajectory, to: SessionTrajectory): void {
+	if (!from.verification_observed || from.verification_observed.size === 0) return;
+	if (!to.verification_observed) to.verification_observed = new Set();
+	for (const sig of from.verification_observed) to.verification_observed.add(sig);
+}
+
+/**
+ * Append the subagent's introduced stubs onto the parent, honoring the global
+ * STUB_INTRODUCED_CAP. Extracted from rollUpVerificationSignals; lazily
+ * allocates the parent's array on first use.
+ */
+function appendStubsCapped(from: SessionTrajectory, to: SessionTrajectory): void {
+	if (!from.stubs_introduced || from.stubs_introduced.length === 0) return;
+	if (!to.stubs_introduced) to.stubs_introduced = [];
+	for (const stub of from.stubs_introduced) {
+		if (to.stubs_introduced.length >= STUB_INTRODUCED_CAP) break;
+		to.stubs_introduced.push({ ...stub });
+	}
+}
+
+/**
+ * Build a fresh SessionTrajectory for a not-yet-seen session id. Split out of
+ * recordEvent so the orchestrator stays a thin dispatcher; the object literal
+ * carries no decision logic beyond its two coalescing defaults.
+ */
+function createFreshSession(event: HarnessEvent, sessionId: string): SessionTrajectory {
+	return {
+		session_id: sessionId,
+		agent_name: event.agent_name || `session-${sessionId.slice(0, 8)}`,
+		started_at: event.timestamp,
+		tool_call_count: 0,
+		error_count: 0,
+		files_read: new Set(),
+		files_written: new Set(),
+		commands_run: [],
+		curl_localhost_count: {},
+		mcp_tools_used: 0,
+		local_tools_used: 0,
+		file_write_times: new Map(),
+		failed_files: new Map(),
+		pending_completions: new Map(),
+		file_read_at: new Map(),
+		tool_sequence: [],
+		sensitivity_level: "Public",
+		taint_sources: [],
+		step_limit: Number.POSITIVE_INFINITY,
+		consecutive_pattern: null,
+		suggested_permissions: new Set(),
+		acknowledged_checks: new Set(),
+		fired_reminders: new Set(),
+		soft_blocks: new Set(),
+		injection_detected_steps: [],
+		pii_detected_steps: [],
+		last_coordination_at: 0,
+		last_coordination_ts: Date.now(),
+		test_runs: new Map(),
+		file_edit_counts: new Map(),
+		warnings_issued: new Map(),
+		tdd_cycles: new Map(),
+		consecutive_tool_failures: new Map(),
+		silent_failure_warned: new Set(),
+		bloat_warned: new Set(),
+		active_skills: new Map(),
+		non_doc_files_edited_since_commit: new Set(),
+		doc_files_edited_since_commit: 0,
+		mid_session_nudge_emitted: false,
+		stop_nudge_emitted: false,
+		assertion_counts: new Map(),
+		verification_observed: new Set(),
+		stubs_introduced: [],
+		git_session_baseline: captureGitBaseline(event.cwd ?? process.cwd()),
+	};
+}
+
+/**
+ * Per-tool-call bookkeeping: total/MCP/local counts, the bounded tool sequence
+ * used for pattern detection, and browser-MCP UI-verification signals. No-op
+ * when the event carries no tool_name.
+ */
+function trackToolCall(session: SessionTrajectory, event: HarnessEvent): void {
+	if (!event.tool_name) return;
+	session.tool_call_count++;
+
+	// Classify as MCP or local tool
+	if (event.tool_name.startsWith("mcp__")) {
+		session.mcp_tools_used++;
+	} else {
+		session.local_tools_used++;
+	}
+
+	// Track tool sequence for pattern detection
+	const target = extractToolTarget(event);
+	session.tool_sequence.push(`${event.tool_name}:${target}`);
+	if (session.tool_sequence.length > 20) {
+		session.tool_sequence = session.tool_sequence.slice(-20);
+	}
+
+	// Verification-before-stop: record browser-MCP interactions as a UI
+	// verification signal. Bash-command verification signals are captured in
+	// trackCommand.
+	const browserKind = classifyBrowserToolName(event.tool_name);
+	if (browserKind) {
+		if (!session.verification_observed) session.verification_observed = new Set();
+		session.verification_observed.add(browserKind);
+	}
+}
+
+/**
+ * Outcome-gated error/recovery counters. Increments error_count and the
+ * per-tool consecutive-failure counter on `error`; a `success` for a tool
+ * resets that tool's counter.
+ *
+ * Outcome-gated, not event-name-gated: Claude/Codex/Gemini/Copilot fold tool
+ * failures into the regular Post* event carrying tool_outcome === "error", and
+ * Cursor's dedicated postToolUseFailure also produces tool_outcome === "error"
+ * via the attachOutcome call in the normalizer. The previous event-name gates
+ * were inverted for folded failures — error_count never bumped, and
+ * consecutive_tool_failures was *cleared* by the very events that should have
+ * incremented it. Phase 1 channels (recurrence, triage, recovery) read these
+ * counters to make decisions.
+ */
+function trackErrorOutcome(session: SessionTrajectory, event: HarnessEvent): void {
+	if (event.tool_outcome === "error") {
+		session.error_count++;
+		if (event.tool_name) {
+			const prev = session.consecutive_tool_failures.get(event.tool_name) || 0;
+			session.consecutive_tool_failures.set(event.tool_name, prev + 1);
+		}
+	} else if (event.tool_outcome === "success" && event.tool_name) {
+		// A successful invocation of this tool resets the consecutive counter.
+		session.consecutive_tool_failures.delete(event.tool_name);
+	}
+}
+
+/**
+ * Read/write file-tracking for one event. Provenance gate (Channel 5 rollback
+ * feasibility) requires files_written contain only paths we actually wrote
+ * successfully — gating on a non-error/non-interrupted outcome prevents a
+ * failed Edit attempt from being attributed to us. Path normalization stores
+ * BOTH the raw form (preserves existing `.has(rawPath)` consumers in
+ * structural-checks / behavioral-checks / suggestion-scorer) AND the resolved
+ * absolute form (lets the Channel 5 provenance check do `.has(resolve(cwd, p))`
+ * reliably regardless of input shape). Any write (even a failed one) clears
+ * acknowledged checks for the file. Assumes a file_path and tool_name present.
+ */
+function trackReadWrite(
+	session: SessionTrajectory,
+	event: HarnessEvent,
+	filePath: string,
+	absPath: string,
+): void {
+	const toolName = event.tool_name;
+	if (isReadOperation(toolName)) {
+		session.files_read.add(filePath);
+		if (absPath !== filePath) session.files_read.add(absPath);
+		session.file_read_at.set(filePath, session.tool_call_count);
+	}
+	if (isWriteOperation(toolName)) {
+		const writeSucceeded = event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
+		if (writeSucceeded) {
+			session.files_written.add(filePath);
+			if (absPath !== filePath) session.files_written.add(absPath);
+			session.file_write_times.set(filePath, event.timestamp);
+			session.file_edit_counts.set(filePath, (session.file_edit_counts.get(filePath) || 0) + 1);
+		}
+		// Clear acknowledged checks for this file — a new edit (even a failed
+		// one) may introduce genuinely different issues on the next attempt.
+		clearAcknowledgedChecksForFile(session, filePath);
+	}
+}
+
+/**
+ * Sequence-detector input population (§3.5 / §3.18 / §3.21). Feeds
+ * add_then_revert_loop and magic_literal_cross_file_proliferation; detectors
+ * silently no-op when the maps are empty.
+ *
+ * Post-tool-use only, success-only. The §3.21 add-then-revert detector reasons
+ * about *content states the file actually passed through*. A PreToolUse Edit
+ * event is an INTENDED edit that may be blocked (tsc overlay, reservation
+ * conflict, guard) and never land — recording it would count a state the file
+ * never reached. It also double-counts: every successful edit fires both a
+ * PreToolUse (outcome undefined) and a PostToolUse (outcome "success") event,
+ * so recording on both inflated each file's history with a phantom duplicate.
+ * The FP that motivated this gate: a blocked edit leaves the file unchanged,
+ * the agent retries successfully, and the blocked attempt got counted as a
+ * prior content state — firing "cycled back N times" on clean forward progress
+ * with zero reverts. PostToolUse is the only point where the chunk reflects
+ * content that genuinely reached disk.
+ */
+function recordSequenceInputs(
+	session: SessionTrajectory,
+	event: HarnessEvent,
+	filePath: string,
+): void {
+	if (!isSequenceWriteOperation(event.tool_name) || !isPostToolUseEvent(event)) return;
+	const seqWriteSucceeded =
+		event.tool_outcome !== "error" && event.tool_outcome !== "interrupted";
+	if (!seqWriteSucceeded) return;
+	for (const chunk of extractWriteChunks(event)) {
+		recordRecentLineEdit(session, filePath, chunk);
+		recordLiteralOccurrences(session, filePath, chunk);
+	}
+}
+
+/** Resolve pending completions when the agent reads/edits an affected file. */
+function resolvePendingCompletions(session: SessionTrajectory, filePath: string): void {
+	for (const [, completion] of session.pending_completions) {
+		if (completion.affected_files.includes(filePath)) {
+			completion.resolved_files.add(filePath);
+		}
+	}
+}
+
+/**
+ * File-operation tracking for one event: read/write state, sequence-detector
+ * inputs, and pending-completion resolution. No-op unless the event carries
+ * both a file_path and a tool_name.
+ */
+function trackFileOperations(session: SessionTrajectory, event: HarnessEvent): void {
+	const filePath = event.tool_input?.file_path as string | undefined;
+	if (!filePath || !event.tool_name) return;
+	const eventCwd = event.cwd ?? process.cwd();
+	const absPath = resolvePath(eventCwd, filePath);
+	trackReadWrite(session, event, filePath, absPath);
+	recordSequenceInputs(session, event, filePath);
+	resolvePendingCompletions(session, filePath);
+}
+
+/**
+ * Command tracking for Bash-family tools: append to the bounded commands_run
+ * ring and record the first matching verification-intent signal (typecheck /
+ * test / lint / build / dev-server). We track *intent to verify* — a failed
+ * `bun test` still counts because the agent did engage the verifier. No-op for
+ * non-Bash tools or an absent command.
+ */
+function trackCommand(session: SessionTrajectory, event: HarnessEvent): void {
+	const command = event.tool_input?.command as string | undefined;
+	if (!command || !isBashTool(event.tool_name)) return;
+	session.commands_run.push(command.length > 200 ? command.slice(0, 200) : command);
+	if (session.commands_run.length > 100) {
+		session.commands_run = session.commands_run.slice(-100);
+	}
+
+	const cmdKind = classifyVerificationCommand(command);
+	if (cmdKind) {
+		if (!session.verification_observed) session.verification_observed = new Set();
+		session.verification_observed.add(cmdKind);
 	}
 }
 

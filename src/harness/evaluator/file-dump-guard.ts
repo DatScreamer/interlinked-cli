@@ -105,44 +105,15 @@ export function evaluateFileDumpGuard(args: FileDumpGuardArgs): FileDumpGuardRes
 	// total output is unbounded and not in the tool-result budget, so skip
 	// the remaining size/line-count checks entirely.
 	if (verb === "tail" && hasFollowFlag(tokens)) {
-		const trailingAmp = /(?:^|[^&])&\s*$/.test(command);
-		const nohup = /^\s*nohup\s+/.test(command);
-		if (!trailingAmp && !nohup) {
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						"BLOCKED: `tail -f` in the foreground will hang the tool call indefinitely. " +
-						"Run it in the background (`tail -f ... &`), use the runner's background flag, " +
-						"or use the Monitor tool for streaming output.",
-					rule_id: "builtin-tail-follow-foreground",
-					severity: "high",
-					category: "command-shape",
-				},
-			};
-		}
-		return { kind: "allow" };
+		return followBlockResult(command) ?? { kind: "allow" };
 	}
 
 	// 2. Output redirection → bypass size/line-count checks; the bytes go
 	// to disk, not the tool result.
 	if (hasOutputRedirect(command)) return { kind: "allow" };
 
-	// 3. Detect a filter anywhere downstream in the pipeline.
-	let hasFilter = false;
-	for (const seg of segments.slice(1)) {
-		const t = (seg.trim().match(/^([\w.-]+)/) || [])[1];
-		if (t && FILTER_COMMANDS.has(stripPathPrefix(t))) {
-			hasFilter = true;
-			break;
-		}
-	}
-
-	// 4. Byte-bounded slice (-c N) on head/tail caps output regardless of
-	// whether the agent piped to anything; treat as filter-equivalent.
-	const cFlag = parseCountFlag(tokens, "-c");
-	if (cFlag !== null && (verb === "head" || verb === "tail")) hasFilter = true;
+	// 3-4. Detect a filter (downstream filter command, or head/tail `-c` slice).
+	const hasFilter = hasDownstreamFilter(segments, tokens, verb);
 
 	// 5. Extract requested line count and file path args.
 	const requestedLines = parseCountFlag(tokens, "-n");
@@ -152,87 +123,178 @@ export function evaluateFileDumpGuard(args: FileDumpGuardArgs): FileDumpGuardRes
 	// substitution, stdin), be permissive — don't risk false positives.
 	if (filePaths.length === 0) return { kind: "allow" };
 
-	// 7. Stat the file args. For `cat` without `-n`, also count newlines so
-	// a small file isn't blocked just for the verb. We block if ANY file
-	// exceeds the size threshold.
-	let largestBytes = 0;
-	let largestPath = "";
-	let aggregateNewlines = 0;
-	let catLineCountKnown = false;
+	// 7. Stat the file args and resolve the effective line count.
+	const summary = statDumpFiles(filePaths, cwd, verb, requestedLines);
+	const lines = resolveDumpLines(requestedLines, verb, summary);
+
+	// 8. Verdict: filtered (soft ceiling) vs. unfiltered (size/line blocks).
+	return hasFilter ? filteredVerdict(verb, lines) : unfilteredVerdict(verb, summary, lines);
+}
+
+/** Stat summary across the resolved file-path args of a dump command. */
+interface DumpStatSummary {
+	largestBytes: number;
+	largestPath: string;
+	aggregateNewlines: number;
+	catLineCountKnown: boolean;
+}
+
+/**
+ * Foreground-`tail -f` block decision. Returns a block result when the command
+ * follows a file without backgrounding it (`&`) or `nohup`; otherwise `null`
+ * (background follow is unbounded streaming, intentionally not size-checked).
+ * Only meaningful when `verb === "tail"` and a follow flag is present.
+ */
+function followBlockResult(command: string): FileDumpGuardResult | null {
+	const trailingAmp = /(?:^|[^&])&\s*$/.test(command);
+	const nohup = /^\s*nohup\s+/.test(command);
+	if (trailingAmp || nohup) return null;
+	return {
+		kind: "block",
+		decision: {
+			decision: "block",
+			reason:
+				"BLOCKED: `tail -f` in the foreground will hang the tool call indefinitely. " +
+				"Run it in the background (`tail -f ... &`), use the runner's background flag, " +
+				"or use the Monitor tool for streaming output.",
+			rule_id: "builtin-tail-follow-foreground",
+			severity: "high",
+			category: "command-shape",
+		},
+	};
+}
+
+/**
+ * True when output is effectively bounded: a recognized filter command appears
+ * downstream in the pipeline, OR the verb is head/tail with a `-c N` byte slice
+ * (byte-bounded output, treated as filter-equivalent).
+ */
+function hasDownstreamFilter(segments: string[], tokens: string[], verb: string): boolean {
+	for (const seg of segments.slice(1)) {
+		const t = (seg.trim().match(/^([\w.-]+)/) || [])[1];
+		if (t && FILTER_COMMANDS.has(stripPathPrefix(t))) return true;
+	}
+	const cFlag = parseCountFlag(tokens, "-c");
+	return cFlag !== null && (verb === "head" || verb === "tail");
+}
+
+/**
+ * Stats every resolved file path, returning the largest file's size/path plus
+ * (for `cat` without `-n` on small files) an aggregate newline count so a small
+ * file isn't blocked just for the verb. Stat/read errors are swallowed
+ * (best-effort) — a read failure leaves `catLineCountKnown` false, which the
+ * caller treats as the conservative (block-favoring) unknown line count.
+ */
+function statDumpFiles(
+	filePaths: string[],
+	cwd: string,
+	verb: string,
+	requestedLines: number | null,
+): DumpStatSummary {
+	const summary: DumpStatSummary = {
+		largestBytes: 0,
+		largestPath: "",
+		aggregateNewlines: 0,
+		catLineCountKnown: false,
+	};
 	for (const fp of filePaths) {
 		const abs = isAbsolute(fp) ? fp : resolve(cwd, fp);
 		try {
 			if (!existsSync(abs)) continue;
 			const stat = statSync(abs);
 			if (!stat.isFile()) continue;
-			if (stat.size > largestBytes) {
-				largestBytes = stat.size;
-				largestPath = fp;
+			if (stat.size > summary.largestBytes) {
+				summary.largestBytes = stat.size;
+				summary.largestPath = fp;
 			}
-			if (verb === "cat" && requestedLines === null && stat.size <= FILE_SIZE_BLOCK_BYTES) {
-				try {
-					const content = readFileSync(abs, "utf8");
-					aggregateNewlines += (content.match(/\n/g) || []).length;
-					catLineCountKnown = true;
-				} catch {
-					// non-fatal: a readFileSync failure leaves catLineCountKnown
-					// unchanged; the resulting `lines = Infinity` is the conservative
-					// (block-favoring) fallback.
-				}
-			}
+			countCatNewlines(abs, verb, requestedLines, stat.size, summary);
 		} catch {
 			// Best-effort; stat errors must not break the guard.
 		}
 	}
+	return summary;
+}
 
-	let lines: number;
-	if (requestedLines !== null) {
-		lines = requestedLines;
-	} else if (verb === "cat") {
-		lines = catLineCountKnown ? aggregateNewlines : Infinity;
-	} else {
-		lines = 10;
+/**
+ * For `cat` with no `-n` on a sub-threshold file, reads it and accumulates its
+ * newline count into `summary`. No-op for other verbs / large files. A read
+ * failure is non-fatal: `catLineCountKnown` is left as-is (Infinity fallback).
+ */
+function countCatNewlines(
+	abs: string,
+	verb: string,
+	requestedLines: number | null,
+	size: number,
+	summary: DumpStatSummary,
+): void {
+	if (verb !== "cat" || requestedLines !== null || size > FILE_SIZE_BLOCK_BYTES) return;
+	try {
+		const content = readFileSync(abs, "utf8");
+		summary.aggregateNewlines += (content.match(/\n/g) || []).length;
+		summary.catLineCountKnown = true;
+	} catch {
+		// non-fatal: leaves catLineCountKnown unchanged → Infinity fallback (block-favoring).
 	}
+}
 
-	if (!hasFilter) {
-		if (largestBytes > FILE_SIZE_BLOCK_BYTES) {
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						`BLOCKED: \`${verb}\` on ${largestPath} (${formatBytes(largestBytes)}) without a downstream filter ` +
-						`would dump a large payload into the tool result. Pipe through one of: ` +
-						`jq | grep | rg | awk | sed | head | wc | cut | sort | uniq. ` +
-						`If you need the raw bytes on disk, redirect: \`${verb} ... > /tmp/sample\`. ` +
-						`To check the file first, run \`wc -l ${largestPath}\`.`,
-					rule_id: "builtin-file-dump-large-file",
-					severity: "high",
-					category: "command-shape",
-				},
-			};
-		}
-		if (lines > NO_FILTER_MAX_LINES) {
-			const linesDesc = lines === Infinity ? "an entire file" : `${lines} lines`;
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						`BLOCKED: \`${verb}\` requesting ${linesDesc} without a downstream filter caps out the tool-result budget. ` +
-						`Cap at ${NO_FILTER_MAX_LINES} lines, or narrow with a filter (jq / grep / awk / head). ` +
-						`If you really need the raw bytes, redirect: \`${verb} ... > /tmp/sample\`.`,
-					rule_id: "builtin-file-dump-too-many-lines",
-					severity: "high",
-					category: "command-shape",
-				},
-			};
-		}
-		return { kind: "allow" };
+/**
+ * Resolves the effective requested line count. Explicit `-n N` wins; for `cat`
+ * without `-n` we use the counted newlines when known, else `Infinity`
+ * (conservative); every other verb defaults to 10.
+ */
+function resolveDumpLines(requestedLines: number | null, verb: string, summary: DumpStatSummary): number {
+	if (requestedLines !== null) return requestedLines;
+	if (verb === "cat") return summary.catLineCountKnown ? summary.aggregateNewlines : Infinity;
+	return 10;
+}
+
+/**
+ * Verdict when NO filter is present: block on a too-large file, then on a
+ * too-high line count, else allow.
+ */
+function unfilteredVerdict(verb: string, summary: DumpStatSummary, lines: number): FileDumpGuardResult {
+	if (summary.largestBytes > FILE_SIZE_BLOCK_BYTES) {
+		return {
+			kind: "block",
+			decision: {
+				decision: "block",
+				reason:
+					`BLOCKED: \`${verb}\` on ${summary.largestPath} (${formatBytes(summary.largestBytes)}) without a downstream filter ` +
+					`would dump a large payload into the tool result. Pipe through one of: ` +
+					`jq | grep | rg | awk | sed | head | wc | cut | sort | uniq. ` +
+					`If you need the raw bytes on disk, redirect: \`${verb} ... > /tmp/sample\`. ` +
+					`To check the file first, run \`wc -l ${summary.largestPath}\`.`,
+				rule_id: "builtin-file-dump-large-file",
+				severity: "high",
+				category: "command-shape",
+			},
+		};
 	}
+	if (lines > NO_FILTER_MAX_LINES) {
+		const linesDesc = lines === Infinity ? "an entire file" : `${lines} lines`;
+		return {
+			kind: "block",
+			decision: {
+				decision: "block",
+				reason:
+					`BLOCKED: \`${verb}\` requesting ${linesDesc} without a downstream filter caps out the tool-result budget. ` +
+					`Cap at ${NO_FILTER_MAX_LINES} lines, or narrow with a filter (jq / grep / awk / head). ` +
+					`If you really need the raw bytes, redirect: \`${verb} ... > /tmp/sample\`.`,
+				rule_id: "builtin-file-dump-too-many-lines",
+				severity: "high",
+				category: "command-shape",
+			},
+		};
+	}
+	return { kind: "allow" };
+}
 
-	// With a filter: soft ceiling. The filter bounds output in practice but
-	// 1000+ lines is still worth flagging.
+/**
+ * Verdict when a filter IS present: a soft warning past the line-count ceiling,
+ * else allow. The filter bounds output in practice but 1000+ lines is still
+ * worth flagging.
+ */
+function filteredVerdict(verb: string, lines: number): FileDumpGuardResult {
 	if (lines !== Infinity && lines > WITH_FILTER_SOFT_CEILING) {
 		return {
 			kind: "warn",
@@ -241,7 +303,6 @@ export function evaluateFileDumpGuard(args: FileDumpGuardArgs): FileDumpGuardRes
 				`If the filter is selective the output stays small, but tighten the line count if you can.`,
 		};
 	}
-
 	return { kind: "allow" };
 }
 
@@ -380,6 +441,38 @@ function hasOutputRedirect(command: string): boolean {
 	return false;
 }
 
+/** Parses an optional `+`-prefixed leading integer from `s`, else `null`. */
+function parseLeadingInt(s: string): number | null {
+	const m = s.match(/^\+?(\d+)\b/);
+	return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Reads the numeric value a flag carries at token index `i`, in any of the
+ * supported shapes for `flag` (the short `-n`/`-c` or long `--lines`/`--bytes`):
+ * `flag N` (separate token), `flag=N`, and — for the short form only — the
+ * combined `flagN` (`-n50`). Returns the parsed count, or `null` if this token
+ * doesn't carry `flag`'s value (signalled by the caller continuing the scan).
+ */
+function flagCountAt(tokens: string[], i: number, flag: string, allowCombined: boolean): number | null {
+	const t = tokens[i];
+	if (t === flag) {
+		const next = tokens[i + 1];
+		return next === undefined ? null : parseLeadingInt(next);
+	}
+	if (t.startsWith(`${flag}=`)) return parseLeadingInt(t.slice(flag.length + 1));
+	if (allowCombined && t.length > flag.length && t.startsWith(flag) && /^\+?\d/.test(t[flag.length])) {
+		return parseLeadingInt(t.slice(flag.length));
+	}
+	return null;
+}
+
+/** True when `t` carries a value for `flag` in any supported shape. */
+function tokenMatchesFlag(t: string, flag: string, allowCombined: boolean): boolean {
+	if (t === flag || t.startsWith(`${flag}=`)) return true;
+	return allowCombined && t.length > flag.length && t.startsWith(flag) && /^\+?\d/.test(t[flag.length]);
+}
+
 /**
  * Parses a numeric flag (`-n N`, `-n+N`, `-nN`, `--lines=N`) out of the token
  * stream. Returns the integer count or `null` if not present / not parseable.
@@ -388,30 +481,11 @@ function parseCountFlag(tokens: string[], shortFlag: "-n" | "-c"): number | null
 	const longFlag = shortFlag === "-n" ? "--lines" : "--bytes";
 	for (let i = 1; i < tokens.length; i++) {
 		const t = tokens[i];
-		if (t === shortFlag) {
-			const next = tokens[i + 1];
-			if (next === undefined) return null;
-			const m = next.match(/^\+?(\d+)\b/);
-			return m ? parseInt(m[1], 10) : null;
+		if (tokenMatchesFlag(t, shortFlag, /* allowCombined */ true)) {
+			return flagCountAt(tokens, i, shortFlag, true);
 		}
-		if (t.startsWith(`${shortFlag}=`)) {
-			const m = t.slice(shortFlag.length + 1).match(/^\+?(\d+)\b/);
-			return m ? parseInt(m[1], 10) : null;
-		}
-		// Combined: `-n50`, `-n+50`
-		if (t.startsWith(shortFlag) && t.length > shortFlag.length && /^\+?\d/.test(t[shortFlag.length])) {
-			const m = t.slice(shortFlag.length).match(/^\+?(\d+)\b/);
-			return m ? parseInt(m[1], 10) : null;
-		}
-		if (t.startsWith(`${longFlag}=`)) {
-			const m = t.slice(longFlag.length + 1).match(/^\+?(\d+)\b/);
-			return m ? parseInt(m[1], 10) : null;
-		}
-		if (t === longFlag) {
-			const next = tokens[i + 1];
-			if (next === undefined) return null;
-			const m = next.match(/^\+?(\d+)\b/);
-			return m ? parseInt(m[1], 10) : null;
+		if (tokenMatchesFlag(t, longFlag, /* allowCombined */ false)) {
+			return flagCountAt(tokens, i, longFlag, false);
 		}
 	}
 	return null;

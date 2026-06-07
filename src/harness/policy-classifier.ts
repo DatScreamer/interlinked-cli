@@ -75,8 +75,12 @@ If the evidence is insufficient to determine compliance, respond with {"complian
 // Action Classification
 // ===========================================
 
-/** Classify a bash command into a safe action label (no raw commands leak) */
-function classifyAction(toolName: string, toolInput: JsonObject): string {
+/**
+ * Map a recognized tool name to its action label, or undefined when the tool
+ * is not a known file/search operation (callers then fall back to command
+ * classification). Pure name dispatch — no command inspection.
+ */
+function classifyToolName(toolName: string): string | undefined {
 	if (
 		toolName === "Write" ||
 		toolName === "WriteFile" ||
@@ -104,8 +108,15 @@ function classifyAction(toolName: string, toolInput: JsonObject): string {
 	if (toolName === "Glob" || toolName === "Grep") {
 		return "file_search";
 	}
+	return undefined;
+}
 
-	const cmd = String(toolInput.command || "");
+/**
+ * Classify a bash command string into a safe action label. An empty command
+ * yields "unknown"; an unrecognized non-empty command yields "bash_other".
+ * No raw command text leaks — only the category label is returned.
+ */
+function classifyCommand(cmd: string): string {
 	if (!cmd) return "unknown";
 
 	// Network commands
@@ -135,6 +146,13 @@ function classifyAction(toolName: string, toolInput: JsonObject): string {
 	if (/\b(ls|find|fd)\b/i.test(cmd)) return "file_list";
 
 	return "bash_other";
+}
+
+/** Classify a tool call into a safe action label (no raw commands leak) */
+function classifyAction(toolName: string, toolInput: JsonObject): string {
+	const byTool = classifyToolName(toolName);
+	if (byTool) return byTool;
+	return classifyCommand(String(toolInput.command || ""));
 }
 
 /** Build a redacted target summary (no raw URLs, commands, or content) */

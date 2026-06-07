@@ -42,32 +42,118 @@ interface PropagationTarget {
 // Main Entry Point
 // ===========================================
 
+/** Pre-computed path context shared by every category helper. */
+interface PropagationCtx {
+	/** Absolute path of the file that was edited. */
+	editedFile: string;
+	/** Repo root the scan is relative to. */
+	cwd: string;
+	/** `relative(cwd, editedFile)`. */
+	rel: string;
+	/** `basename(editedFile)`. */
+	name: string;
+	/** `extname(editedFile)`. */
+	ext: string;
+	/** `dirname(editedFile)`. */
+	dir: string;
+	/** `basename(editedFile, ext)`. */
+	nameNoExt: string;
+}
+
 /**
  * Given a file that was just edited, find other files that may need updating.
  * Returns propagation targets with reasons. Pure filesystem scan, no graph needed.
+ *
+ * Thin orchestrator: each propagation category lives in its own internal helper
+ * (`docReadme`, `schemaCompanions`, … `genDts`) that takes the shared
+ * `PropagationCtx` and returns the targets it found.
  */
 export function findPropagationTargets(editedFile: string, cwd: string): PropagationTarget[] {
-	const targets: PropagationTarget[] = [];
-	const rel = relative(cwd, editedFile);
-	const name = basename(editedFile);
 	const ext = extname(editedFile);
-	const dir = dirname(editedFile);
-	const nameNoExt = basename(editedFile, ext);
+	const ctx: PropagationCtx = {
+		editedFile,
+		cwd,
+		rel: relative(cwd, editedFile),
+		name: basename(editedFile),
+		ext,
+		dir: dirname(editedFile),
+		nameNoExt: basename(editedFile, ext),
+	};
+	const targets: PropagationTarget[] = [];
 
-	// ═══════════════════════════════════════
 	// 1. DOCUMENTATION
-	// ═══════════════════════════════════════
+	targets.push(...docReadme(ctx));
+	targets.push(...docChangelog(ctx));
+	targets.push(...docDocsDir(ctx));
+	targets.push(...docClaudeMd(ctx));
 
-	// README files in same directory or parent
+	// 2. SCHEMA / TYPES
+	targets.push(...schemaCompanions(ctx));
+	targets.push(...schemaMigrations(ctx));
+	targets.push(...schemaOpenApi(ctx));
+
+	// 3. TESTS
+	targets.push(...testFixturesSnapshots(ctx));
+
+	// 4. CONFIGURATION
+	targets.push(...configCli(ctx));
+	targets.push(...configEnv(ctx));
+	targets.push(...configGuardRules(ctx));
+
+	// 5. CONTRACTS (API / MCP / Webhooks)
+	targets.push(...contractToolRegistry(ctx));
+	targets.push(...contractEndpointDocs(ctx));
+
+	// 6. DEPENDENCIES
+	targets.push(...depLockFiles(ctx));
+
+	// 7. GENERATED FILES
+	targets.push(...genBarrelIndex(ctx));
+	targets.push(...genDts(ctx));
+
+	return targets;
+}
+
+// ===========================================
+// Category helpers (internal) — one cohesive propagation category each.
+// ===========================================
+
+/** 7. GENERATED — barrel index.ts that re-exports the edited module. */
+function genBarrelIndex(c: PropagationCtx): PropagationTarget[] {
+	const indexFile = join(c.dir, "index.ts");
+	if (!(existsSync(indexFile) && indexFile !== c.editedFile && !isTestFile(c.name))) {
+		return [];
+	}
+	try {
+		const indexContent = readFileSync(indexFile, "utf-8");
+		if (indexContent.includes(`./${c.nameNoExt}`)) {
+			return [
+				{
+					file: indexFile,
+					reason: `Barrel export in index.ts re-exports from ${c.rel} — update if exports changed`,
+					category: "generated",
+					confidence: "medium",
+				},
+			];
+		}
+	} catch (e) {
+		void e;
+	}
+	return [];
+}
+
+/** 1. DOCUMENTATION — README in same dir / parent / root (one hit per name). */
+function docReadme(c: PropagationCtx): PropagationTarget[] {
+	const targets: PropagationTarget[] = [];
 	for (const readmeName of ["README.md", "readme.md", "README.rst", "README"]) {
-		const sameDir = join(dir, readmeName);
-		const parentDir = join(dirname(dir), readmeName);
-		const rootDir = join(cwd, readmeName);
+		const sameDir = join(c.dir, readmeName);
+		const parentDir = join(dirname(c.dir), readmeName);
+		const rootDir = join(c.cwd, readmeName);
 		for (const candidate of [sameDir, parentDir, rootDir]) {
-			if (existsSync(candidate) && candidate !== editedFile) {
+			if (existsSync(candidate) && candidate !== c.editedFile) {
 				targets.push({
 					file: candidate,
-					reason: `README may reference ${rel} — update if API, usage, or behavior changed`,
+					reason: `README may reference ${c.rel} — update if API, usage, or behavior changed`,
 					category: "documentation",
 					confidence: "low",
 				});
@@ -75,55 +161,66 @@ export function findPropagationTargets(editedFile: string, cwd: string): Propaga
 			}
 		}
 	}
+	return targets;
+}
 
-	// CHANGELOG
+/** 1. DOCUMENTATION — first matching CHANGELOG at repo root. */
+function docChangelog(c: PropagationCtx): PropagationTarget[] {
 	for (const changelogName of ["CHANGELOG.md", "changelog.md", "CHANGES.md", "HISTORY.md"]) {
-		const changelog = join(cwd, changelogName);
+		const changelog = join(c.cwd, changelogName);
 		if (existsSync(changelog)) {
-			targets.push({
-				file: changelog,
-				reason: `CHANGELOG should document this change to ${rel}`,
-				category: "documentation",
-				confidence: "low",
-			});
-			break;
+			return [
+				{
+					file: changelog,
+					reason: `CHANGELOG should document this change to ${c.rel}`,
+					category: "documentation",
+					confidence: "low",
+				},
+			];
 		}
 	}
+	return [];
+}
 
-	// Docs directory — look for docs that mention this file/module
-	const docsDir = join(cwd, "docs");
-	if (existsSync(docsDir)) {
-		try {
-			const docFiles = findFilesRecursive(docsDir, [".md", ".mdx", ".rst", ".txt"], 3);
-			for (const docFile of docFiles) {
-				try {
-					const content = readFileSync(docFile, "utf-8");
-					if (content.includes(nameNoExt) || content.includes(rel)) {
-						targets.push({
-							file: docFile,
-							reason: `Documentation references "${nameNoExt}" — verify it's still accurate`,
-							category: "documentation",
-							confidence: "medium",
-						});
-					}
-				} catch (e) {
-					void e;
+/** 1. DOCUMENTATION — docs/ files that mention the module name or rel path. */
+function docDocsDir(c: PropagationCtx): PropagationTarget[] {
+	const docsDir = join(c.cwd, "docs");
+	if (!existsSync(docsDir)) return [];
+	const targets: PropagationTarget[] = [];
+	try {
+		const docFiles = findFilesRecursive(docsDir, [".md", ".mdx", ".rst", ".txt"], 3);
+		for (const docFile of docFiles) {
+			try {
+				const content = readFileSync(docFile, "utf-8");
+				if (content.includes(c.nameNoExt) || content.includes(c.rel)) {
+					targets.push({
+						file: docFile,
+						reason: `Documentation references "${c.nameNoExt}" — verify it's still accurate`,
+						category: "documentation",
+						confidence: "medium",
+					});
 				}
+			} catch (e) {
+				void e;
 			}
-		} catch (e) {
-			void e;
 		}
+	} catch (e) {
+		void e;
 	}
+	return targets;
+}
 
-	// CLAUDE.md — project instructions may reference changed files
-	for (const claudeMd of [join(cwd, "CLAUDE.md"), join(dir, "CLAUDE.md")]) {
+/** 1. DOCUMENTATION — CLAUDE.md (root + same dir) that references the file. */
+function docClaudeMd(c: PropagationCtx): PropagationTarget[] {
+	const targets: PropagationTarget[] = [];
+	for (const claudeMd of [join(c.cwd, "CLAUDE.md"), join(c.dir, "CLAUDE.md")]) {
 		if (existsSync(claudeMd)) {
 			try {
 				const content = readFileSync(claudeMd, "utf-8");
-				if (content.includes(nameNoExt) || content.includes(rel)) {
+				if (content.includes(c.nameNoExt) || content.includes(c.rel)) {
 					targets.push({
 						file: claudeMd,
-						reason: `CLAUDE.md references "${nameNoExt}" — update if behavior or API changed`,
+						reason: `CLAUDE.md references "${c.nameNoExt}" — update if behavior or API changed`,
 						category: "documentation",
 						confidence: "high",
 					});
@@ -133,42 +230,55 @@ export function findPropagationTargets(editedFile: string, cwd: string): Propaga
 			}
 		}
 	}
+	return targets;
+}
 
-	// ═══════════════════════════════════════
-	// 2. SCHEMA / TYPES
-	// ═══════════════════════════════════════
-
-	// If editing a types file, check for Zod schemas or JSON schemas that mirror it
-	if (name.includes("types") || name.includes("schema") || name.includes("interface")) {
-		// Look for companion schema files
-		for (const suffix of [".schema.ts", ".schema.json", ".zod.ts"]) {
-			const schemaFile = join(dir, `${nameNoExt}${suffix}`);
-			if (existsSync(schemaFile) && schemaFile !== editedFile) {
-				targets.push({
-					file: schemaFile,
-					reason: `Schema file may need to mirror changes in ${rel}`,
-					category: "schema",
-					confidence: "high",
-				});
-			}
-		}
+/** 2. SCHEMA — companion schema files mirroring a types/schema/interface file. */
+function schemaCompanions(c: PropagationCtx): PropagationTarget[] {
+	if (
+		!(c.name.includes("types") || c.name.includes("schema") || c.name.includes("interface"))
+	) {
+		return [];
 	}
-
-	// If editing a schema/types file, check for migration files
-	if (name.includes("schema") || name.includes("migration")) {
-		const migrationsDir = join(dir, "migrations");
-		if (!existsSync(migrationsDir)) {
-			// No migrations dir yet — might need one
+	const targets: PropagationTarget[] = [];
+	for (const suffix of [".schema.ts", ".schema.json", ".zod.ts"]) {
+		const schemaFile = join(c.dir, `${c.nameNoExt}${suffix}`);
+		if (existsSync(schemaFile) && schemaFile !== c.editedFile) {
 			targets.push({
-				file: join(dir, "migrations/"),
-				reason: `Schema change in ${rel} may require a new migration`,
+				file: schemaFile,
+				reason: `Schema file may need to mirror changes in ${c.rel}`,
 				category: "schema",
-				confidence: "medium",
+				confidence: "high",
 			});
 		}
 	}
+	return targets;
+}
 
-	// OpenAPI / Swagger specs
+/** 2. SCHEMA — suggest a migrations dir when a schema/migration file lacks one. */
+function schemaMigrations(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.name.includes("schema") || c.name.includes("migration"))) return [];
+	const migrationsDir = join(c.dir, "migrations");
+	if (existsSync(migrationsDir)) return [];
+	return [
+		{
+			file: join(c.dir, "migrations/"),
+			reason: `Schema change in ${c.rel} may require a new migration`,
+			category: "schema",
+			confidence: "medium",
+		},
+	];
+}
+
+/** 2. SCHEMA — OpenAPI / Swagger specs when editing a handler/route/api file. */
+function schemaOpenApi(c: PropagationCtx): PropagationTarget[] {
+	const isApiEdit =
+		c.rel.includes("handler") ||
+		c.rel.includes("route") ||
+		c.rel.includes("api") ||
+		c.rel.includes("endpoint");
+	if (!isApiEdit) return [];
+	const targets: PropagationTarget[] = [];
 	for (const specName of [
 		"openapi.yaml",
 		"openapi.json",
@@ -176,225 +286,33 @@ export function findPropagationTargets(editedFile: string, cwd: string): Propaga
 		"swagger.json",
 		"api.yaml",
 	]) {
-		const specFile = join(cwd, specName);
+		const specFile = join(c.cwd, specName);
 		if (existsSync(specFile)) {
-			// Only flag if editing handler/route files
-			if (
-				rel.includes("handler") ||
-				rel.includes("route") ||
-				rel.includes("api") ||
-				rel.includes("endpoint")
-			) {
-				targets.push({
-					file: specFile,
-					reason: `API spec may need updating after changes to ${rel}`,
-					category: "schema",
-					confidence: "medium",
-				});
-			}
-		}
-	}
-
-	// ═══════════════════════════════════════
-	// 3. TESTS
-	// ═══════════════════════════════════════
-
-	// This largely overlaps with test_proximity, but adds fixture/snapshot awareness
-	if (!isTestFile(name)) {
-		// Test fixtures
-		const fixturesDir = join(dir, "__fixtures__");
-		if (existsSync(fixturesDir)) {
-			try {
-				const fixtures = readdirSync(fixturesDir).filter((f) => f.includes(nameNoExt));
-				for (const fixture of fixtures) {
-					targets.push({
-						file: join(fixturesDir, fixture),
-						reason: `Test fixture for ${rel} may need updating`,
-						category: "test",
-						confidence: "medium",
-					});
-				}
-			} catch (e) {
-				void e;
-			}
-		}
-
-		// Snapshot files
-		const snapshotsDir = join(dir, "__snapshots__");
-		if (existsSync(snapshotsDir)) {
-			try {
-				const snaps = readdirSync(snapshotsDir).filter((f) => f.includes(nameNoExt));
-				for (const snap of snaps) {
-					targets.push({
-						file: join(snapshotsDir, snap),
-						reason: `Snapshot for ${rel} is likely stale — run tests to update`,
-						category: "test",
-						confidence: "high",
-					});
-				}
-			} catch (e) {
-				void e;
-			}
-		}
-	}
-
-	// ═══════════════════════════════════════
-	// 4. CONFIGURATION
-	// ═══════════════════════════════════════
-
-	// If editing CLI entry point or command files, check help text and completions
-	if (rel.includes("commands/") || rel.includes("index.ts") || name.includes("cli")) {
-		// Shell completions
-		for (const compFile of [
-			"completions.ts",
-			"completions.sh",
-			"completions.zsh",
-			"completions.fish",
-		]) {
-			const comp = join(dirname(editedFile), compFile);
-			if (existsSync(comp) && comp !== editedFile) {
-				targets.push({
-					file: comp,
-					reason: `Shell completions may need updating after CLI changes in ${rel}`,
-					category: "config",
-					confidence: "medium",
-				});
-			}
-		}
-
-		// Package.json bin entries
-		const pkgJson = join(cwd, "package.json");
-		if (existsSync(pkgJson)) {
 			targets.push({
-				file: pkgJson,
-				reason: `Check package.json bin/scripts after CLI changes in ${rel}`,
-				category: "config",
-				confidence: "low",
-			});
-		}
-
-		// F2: CLI help text sync — check if README documents CLI commands
-		for (const readmeName of ["README.md", "readme.md"]) {
-			const readmeFile = join(cwd, readmeName);
-			if (existsSync(readmeFile) && readmeFile !== editedFile) {
-				try {
-					const content = readFileSync(readmeFile, "utf-8");
-					// Check if README has a commands/usage section
-					if (/#{1,3}\s*(commands?|usage|cli|getting started)/i.test(content)) {
-						targets.push({
-							file: readmeFile,
-							reason: `README CLI documentation may need updating after command changes in ${rel}`,
-							category: "documentation",
-							confidence: "medium",
-						});
-					}
-				} catch (e) {
-					void e;
-				}
-			}
-		}
-	}
-
-	// If editing config-related files, check env documentation
-	if (name.includes("config") || name.includes("env") || name.includes("settings")) {
-		// .env.example
-		for (const envExample of [".env.example", ".env.sample", ".env.template"]) {
-			const envFile = join(cwd, envExample);
-			if (existsSync(envFile)) {
-				targets.push({
-					file: envFile,
-					reason: `Environment template may need updating after config changes in ${rel}`,
-					category: "config",
-					confidence: "medium",
-				});
-			}
-		}
-	}
-
-	// If editing guard rules or harness config
-	if (name === "guard-rules.json" || name.includes("rules-loader")) {
-		const claudeMd = join(cwd, "CLAUDE.md");
-		if (existsSync(claudeMd)) {
-			targets.push({
-				file: claudeMd,
-				reason: "CLAUDE.md documents guard rules — update if behavior changed",
-				category: "documentation",
-				confidence: "high",
-			});
-		}
-	}
-
-	// ═══════════════════════════════════════
-	// 5. CONTRACTS (API / MCP / Webhooks)
-	// ═══════════════════════════════════════
-
-	// If editing tool handler, check tool registry entry
-	if (rel.includes("tools/handlers/") || rel.includes("tool-registry/entries/")) {
-		// Look for tool registry index
-		const registryIndex = join(cwd, "src", "tool-registry", "index.ts");
-		if (existsSync(registryIndex) && registryIndex !== editedFile) {
-			targets.push({
-				file: registryIndex,
-				reason: `Tool registry may need updating after handler changes in ${rel}`,
-				category: "contract",
+				file: specFile,
+				reason: `API spec may need updating after changes to ${c.rel}`,
+				category: "schema",
 				confidence: "medium",
 			});
 		}
 	}
+	return targets;
+}
 
-	// If editing worker/router, check MCP endpoint docs
-	if (name === "worker.ts" || name.includes("router") || name.includes("handler")) {
-		const claudeMd = join(cwd, "CLAUDE.md");
-		if (existsSync(claudeMd)) {
-			try {
-				const content = readFileSync(claudeMd, "utf-8");
-				if (content.includes("API Endpoints") || content.includes("Endpoint")) {
-					targets.push({
-						file: claudeMd,
-						reason: `CLAUDE.md API endpoint table may need updating after route changes in ${rel}`,
-						category: "contract",
-						confidence: "medium",
-					});
-				}
-			} catch (e) {
-				void e;
-			}
-		}
-	}
+/** 3. TESTS — fixture and snapshot files matching the module name. */
+function testFixturesSnapshots(c: PropagationCtx): PropagationTarget[] {
+	if (isTestFile(c.name)) return [];
+	const targets: PropagationTarget[] = [];
 
-	// ═══════════════════════════════════════
-	// 6. DEPENDENCIES
-	// ═══════════════════════════════════════
-
-	// If editing package.json, remind about lock file
-	if (name === "package.json") {
-		for (const lockFile of ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]) {
-			const lock = join(dirname(editedFile), lockFile);
-			if (existsSync(lock)) {
-				targets.push({
-					file: lock,
-					reason: "Lock file should be regenerated after package.json changes (run install)",
-					category: "dependency",
-					confidence: "high",
-				});
-			}
-		}
-	}
-
-	// ═══════════════════════════════════════
-	// 7. GENERATED FILES
-	// ═══════════════════════════════════════
-
-	// If editing a source file, check for barrel/index re-exports
-	const indexFile = join(dir, "index.ts");
-	if (existsSync(indexFile) && indexFile !== editedFile && !isTestFile(name)) {
+	const fixturesDir = join(c.dir, "__fixtures__");
+	if (existsSync(fixturesDir)) {
 		try {
-			const indexContent = readFileSync(indexFile, "utf-8");
-			if (indexContent.includes(`./${nameNoExt}`)) {
+			const fixtures = readdirSync(fixturesDir).filter((f) => f.includes(c.nameNoExt));
+			for (const fixture of fixtures) {
 				targets.push({
-					file: indexFile,
-					reason: `Barrel export in index.ts re-exports from ${rel} — update if exports changed`,
-					category: "generated",
+					file: join(fixturesDir, fixture),
+					reason: `Test fixture for ${c.rel} may need updating`,
+					category: "test",
 					confidence: "medium",
 				});
 			}
@@ -403,20 +321,195 @@ export function findPropagationTargets(editedFile: string, cwd: string): Propaga
 		}
 	}
 
-	// If editing types, check for generated type declarations
-	if (ext === ".ts" || ext === ".tsx") {
-		const dtsFile = join(dir, `${nameNoExt}.d.ts`);
-		if (existsSync(dtsFile)) {
+	const snapshotsDir = join(c.dir, "__snapshots__");
+	if (existsSync(snapshotsDir)) {
+		try {
+			const snaps = readdirSync(snapshotsDir).filter((f) => f.includes(c.nameNoExt));
+			for (const snap of snaps) {
+				targets.push({
+					file: join(snapshotsDir, snap),
+					reason: `Snapshot for ${c.rel} is likely stale — run tests to update`,
+					category: "test",
+					confidence: "high",
+				});
+			}
+		} catch (e) {
+			void e;
+		}
+	}
+	return targets;
+}
+
+/** 4. CONFIGURATION — README usage section for a CLI/commands file. */
+function configCliReadme(c: PropagationCtx): PropagationTarget[] {
+	const targets: PropagationTarget[] = [];
+	for (const readmeName of ["README.md", "readme.md"]) {
+		const readmeFile = join(c.cwd, readmeName);
+		if (existsSync(readmeFile) && readmeFile !== c.editedFile) {
+			try {
+				const content = readFileSync(readmeFile, "utf-8");
+				if (/#{1,3}\s*(commands?|usage|cli|getting started)/i.test(content)) {
+					targets.push({
+						file: readmeFile,
+						reason: `README CLI documentation may need updating after command changes in ${c.rel}`,
+						category: "documentation",
+						confidence: "medium",
+					});
+				}
+			} catch (e) {
+				void e;
+			}
+		}
+	}
+	return targets;
+}
+
+/** 4. CONFIGURATION — CLI block: completions, package.json, README usage. */
+function configCli(c: PropagationCtx): PropagationTarget[] {
+	const isCliEdit =
+		c.rel.includes("commands/") || c.rel.includes("index.ts") || c.name.includes("cli");
+	if (!isCliEdit) return [];
+	const targets: PropagationTarget[] = [];
+
+	for (const compFile of [
+		"completions.ts",
+		"completions.sh",
+		"completions.zsh",
+		"completions.fish",
+	]) {
+		const comp = join(dirname(c.editedFile), compFile);
+		if (existsSync(comp) && comp !== c.editedFile) {
 			targets.push({
-				file: dtsFile,
-				reason: `Type declaration file may be stale after changes to ${rel}`,
-				category: "generated",
+				file: comp,
+				reason: `Shell completions may need updating after CLI changes in ${c.rel}`,
+				category: "config",
 				confidence: "medium",
 			});
 		}
 	}
 
+	const pkgJson = join(c.cwd, "package.json");
+	if (existsSync(pkgJson)) {
+		targets.push({
+			file: pkgJson,
+			reason: `Check package.json bin/scripts after CLI changes in ${c.rel}`,
+			category: "config",
+			confidence: "low",
+		});
+	}
+
+	targets.push(...configCliReadme(c));
 	return targets;
+}
+
+/** 4. CONFIGURATION — env templates for a config/env/settings file. */
+function configEnv(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.name.includes("config") || c.name.includes("env") || c.name.includes("settings"))) {
+		return [];
+	}
+	const targets: PropagationTarget[] = [];
+	for (const envExample of [".env.example", ".env.sample", ".env.template"]) {
+		const envFile = join(c.cwd, envExample);
+		if (existsSync(envFile)) {
+			targets.push({
+				file: envFile,
+				reason: `Environment template may need updating after config changes in ${c.rel}`,
+				category: "config",
+				confidence: "medium",
+			});
+		}
+	}
+	return targets;
+}
+
+/** 4. CONFIGURATION — CLAUDE.md when editing guard rules / rules-loader. */
+function configGuardRules(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.name === "guard-rules.json" || c.name.includes("rules-loader"))) return [];
+	const claudeMd = join(c.cwd, "CLAUDE.md");
+	if (!existsSync(claudeMd)) return [];
+	return [
+		{
+			file: claudeMd,
+			reason: "CLAUDE.md documents guard rules — update if behavior changed",
+			category: "documentation",
+			confidence: "high",
+		},
+	];
+}
+
+/** 5. CONTRACTS — tool registry index when editing a tool handler/entry. */
+function contractToolRegistry(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.rel.includes("tools/handlers/") || c.rel.includes("tool-registry/entries/"))) {
+		return [];
+	}
+	const registryIndex = join(c.cwd, "src", "tool-registry", "index.ts");
+	if (!(existsSync(registryIndex) && registryIndex !== c.editedFile)) return [];
+	return [
+		{
+			file: registryIndex,
+			reason: `Tool registry may need updating after handler changes in ${c.rel}`,
+			category: "contract",
+			confidence: "medium",
+		},
+	];
+}
+
+/** 5. CONTRACTS — CLAUDE.md endpoint table when editing worker/router/handler. */
+function contractEndpointDocs(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.name === "worker.ts" || c.name.includes("router") || c.name.includes("handler"))) {
+		return [];
+	}
+	const claudeMd = join(c.cwd, "CLAUDE.md");
+	if (!existsSync(claudeMd)) return [];
+	try {
+		const content = readFileSync(claudeMd, "utf-8");
+		if (content.includes("API Endpoints") || content.includes("Endpoint")) {
+			return [
+				{
+					file: claudeMd,
+					reason: `CLAUDE.md API endpoint table may need updating after route changes in ${c.rel}`,
+					category: "contract",
+					confidence: "medium",
+				},
+			];
+		}
+	} catch (e) {
+		void e;
+	}
+	return [];
+}
+
+/** 6. DEPENDENCIES — lock files when editing package.json. */
+function depLockFiles(c: PropagationCtx): PropagationTarget[] {
+	if (c.name !== "package.json") return [];
+	const targets: PropagationTarget[] = [];
+	for (const lockFile of ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]) {
+		const lock = join(dirname(c.editedFile), lockFile);
+		if (existsSync(lock)) {
+			targets.push({
+				file: lock,
+				reason: "Lock file should be regenerated after package.json changes (run install)",
+				category: "dependency",
+				confidence: "high",
+			});
+		}
+	}
+	return targets;
+}
+
+/** 7. GENERATED — sibling .d.ts declaration for a .ts/.tsx source. */
+function genDts(c: PropagationCtx): PropagationTarget[] {
+	if (!(c.ext === ".ts" || c.ext === ".tsx")) return [];
+	const dtsFile = join(c.dir, `${c.nameNoExt}.d.ts`);
+	if (!existsSync(dtsFile)) return [];
+	return [
+		{
+			file: dtsFile,
+			reason: `Type declaration file may be stale after changes to ${c.rel}`,
+			category: "generated",
+			confidence: "medium",
+		},
+	];
 }
 
 // ===========================================

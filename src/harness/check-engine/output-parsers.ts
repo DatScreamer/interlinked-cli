@@ -250,6 +250,80 @@ export function parseDocsCheckOutput(output: string): CheckResult[] {
 //   2. vulnerabilities[].severity[].score if it's a bare numeric string
 //   3. fall back to "low" bucket when no numeric score is available
 
+type OsvPackage = {
+	vulnerabilities?: Array<{ id?: string; severity?: Array<{ score?: string }> }>;
+	groups?: Array<{ ids?: string[]; max_severity?: string }>;
+};
+
+type OsvRoot = { results?: Array<{ packages?: OsvPackage[] }> };
+
+/** Running tally across all osv packages: per-bucket counts + the first 5 ids seen. */
+type OsvTally = {
+	critical: number;
+	high: number;
+	moderate: number;
+	low: number;
+	topIds: string[];
+};
+
+/** vuln-id → best numeric CVSS score extractable from that vuln's `severity[]`. */
+function buildVulnScoreMap(pkg: OsvPackage): Map<string, number> {
+	const vulnScore = new Map<string, number>();
+	for (const v of pkg.vulnerabilities ?? []) {
+		if (!v.id) continue;
+		const score = extractNumericScore(v.severity);
+		if (score !== null) vulnScore.set(v.id, score);
+	}
+	return vulnScore;
+}
+
+/**
+ * Resolve one group's CVSS score: prefer `max_severity` (osv-scanner v2, covers
+ * aliases), else the max numeric score among its member vuln ids. `null` when none.
+ */
+function resolveGroupScore(
+	group: { ids?: string[]; max_severity?: string },
+	vulnScore: Map<string, number>,
+): number | null {
+	let score: number | null = null;
+	if (group.max_severity) {
+		const n = Number.parseFloat(group.max_severity);
+		if (!Number.isNaN(n)) score = n;
+	}
+	if (score === null) {
+		for (const id of group.ids ?? []) {
+			const s = vulnScore.get(id);
+			if (s !== undefined && (score === null || s > score)) score = s;
+		}
+	}
+	return score;
+}
+
+/** Fold one package's groups into the running tally (mutates `tally`). */
+function tallyPackage(pkg: OsvPackage, tally: OsvTally): void {
+	const vulnScore = buildVulnScoreMap(pkg);
+	for (const g of pkg.groups ?? []) {
+		const ids = g.ids ?? [];
+		const bucket = cvssToBucket(resolveGroupScore(g, vulnScore));
+		if (bucket === "critical") tally.critical++;
+		else if (bucket === "high") tally.high++;
+		else if (bucket === "moderate") tally.moderate++;
+		else tally.low++;
+		if (tally.topIds.length < 5 && ids[0]) tally.topIds.push(ids[0]);
+	}
+}
+
+/** Render the `detail` string from a tally's bucket counts + sampled ids. */
+function formatOsvDetail(tally: OsvTally): string {
+	const counts: string[] = [];
+	if (tally.critical) counts.push(`${tally.critical} critical`);
+	if (tally.high) counts.push(`${tally.high} high`);
+	if (tally.moderate) counts.push(`${tally.moderate} moderate`);
+	if (tally.low) counts.push(`${tally.low} low`);
+	const joined = counts.join(", ");
+	return tally.topIds.length > 0 ? `${joined} — ${tally.topIds.join(", ")}` : joined;
+}
+
 export function parseOsvScannerJson(output: string): AuditResult | null {
 	let parsed: unknown;
 	try {
@@ -257,66 +331,29 @@ export function parseOsvScannerJson(output: string): AuditResult | null {
 	} catch {
 		return null;
 	}
-	const root = parsed as {
-		results?: Array<{
-			packages?: Array<{
-				vulnerabilities?: Array<{ id?: string; severity?: Array<{ score?: string }> }>;
-				groups?: Array<{ ids?: string[]; max_severity?: string }>;
-			}>;
-		}>;
-	};
+	const root = parsed as OsvRoot;
 	if (!root || !Array.isArray(root.results)) return null;
 
-	let critical = 0;
-	let high = 0;
-	let moderate = 0;
-	let low = 0;
-	const topIds: string[] = [];
-
+	const tally: OsvTally = { critical: 0, high: 0, moderate: 0, low: 0, topIds: [] };
 	for (const result of root.results) {
 		for (const pkg of result.packages ?? []) {
-			// Build a map of vuln-id → best numeric score we can extract.
-			const vulnScore = new Map<string, number>();
-			for (const v of pkg.vulnerabilities ?? []) {
-				if (!v.id) continue;
-				const score = extractNumericScore(v.severity);
-				if (score !== null) vulnScore.set(v.id, score);
-			}
-			// Prefer group-level max_severity when present (covers aliases).
-			for (const g of pkg.groups ?? []) {
-				const ids = g.ids ?? [];
-				let score: number | null = null;
-				if (g.max_severity) {
-					const n = Number.parseFloat(g.max_severity);
-					if (!Number.isNaN(n)) score = n;
-				}
-				if (score === null) {
-					for (const id of ids) {
-						const s = vulnScore.get(id);
-						if (s !== undefined && (score === null || s > score)) score = s;
-					}
-				}
-				const bucket = cvssToBucket(score);
-				if (bucket === "critical") critical++;
-				else if (bucket === "high") high++;
-				else if (bucket === "moderate") moderate++;
-				else low++;
-				if (topIds.length < 5 && ids[0]) topIds.push(ids[0]);
-			}
+			tallyPackage(pkg, tally);
 		}
 	}
 
+	const { critical, high, moderate, low } = tally;
 	const total = critical + high + moderate + low;
 	if (total === 0) return null;
 
-	const counts: string[] = [];
-	if (critical) counts.push(`${critical} critical`);
-	if (high) counts.push(`${high} high`);
-	if (moderate) counts.push(`${moderate} moderate`);
-	if (low) counts.push(`${low} low`);
-	const detail = topIds.length > 0 ? `${counts.join(", ")} — ${topIds.join(", ")}` : counts.join(", ");
-
-	return { tool: "osv-scanner", total, critical, high, moderate, low, detail };
+	return {
+		tool: "osv-scanner",
+		total,
+		critical,
+		high,
+		moderate,
+		low,
+		detail: formatOsvDetail(tally),
+	};
 }
 
 function extractNumericScore(severity?: Array<{ score?: string }>): number | null {

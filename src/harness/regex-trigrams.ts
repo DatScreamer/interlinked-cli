@@ -138,7 +138,10 @@ export function decomposePattern(
 	const literalSegments: string[] = [];
 
 	for (const seg of segments) {
-		const effective = caseInsensitive ? seg.toLowerCase() : seg.toLowerCase();
+		// Segments are always lowercased here regardless of `caseInsensitive`:
+		// the trigram index is itself lowercase, so a case-sensitive search still
+		// queries with lowercase trigrams (then verifies case against real files).
+		const effective = seg.toLowerCase();
 		if (effective.length >= 3) {
 			literalSegments.push(effective);
 			for (const tri of extractTrigrams(effective)) {
@@ -163,6 +166,89 @@ export function decomposePattern(
 // ===========================================
 
 /**
+ * Cursor state threaded through the per-construct handlers below: the literal
+ * run accumulated so far (`current`) and the next index to read (`i`).
+ * Handlers mutate `segments` in place and return the advanced state.
+ */
+interface ScanState {
+	current: string;
+	i: number;
+}
+
+/**
+ * Handle a `\`-escape at `i`. A literal escape (`\.`, `\n`, …) extends the
+ * current run; a non-literal escape (`\d`, `\w`, …) flushes it. A trailing lone
+ * `\` is kept as a literal backslash. Advances past the escape.
+ */
+function handleEscape(pattern: string, i: number, current: string, segments: string[]): ScanState {
+	const len = pattern.length;
+	if (i + 1 >= len) {
+		return { current: current + "\\", i: i + 1 };
+	}
+	const literal = resolveEscape(pattern[i + 1]);
+	if (literal !== null) {
+		return { current: current + literal, i: i + 2 };
+	}
+	// Non-literal escape (\d, \w, \s, \b, etc.) — flush.
+	flushSegment(current, segments);
+	return { current: "", i: i + 2 };
+}
+
+/**
+ * Handle a `*` / `+` / `?` quantifier at `i`: the preceding character is now
+ * variable, so drop it and flush the run before it. Skips a trailing lazy /
+ * possessive modifier (`*?`, `+?`, `??`, `*+`).
+ */
+function handleQuantifier(pattern: string, i: number, current: string, segments: string[]): ScanState {
+	if (current.length > 0) {
+		flushSegment(current.slice(0, -1), segments);
+	}
+	let next = i + 1;
+	if (next < pattern.length && (pattern[next] === "?" || pattern[next] === "+")) next++;
+	return { current: "", i: next };
+}
+
+/**
+ * Handle a `{…}` repetition at `i`: the preceding element is variable, so drop
+ * it and flush the run before it. Skips to past `}` and any trailing lazy `?`.
+ */
+function handleRepeat(pattern: string, i: number, current: string, segments: string[]): ScanState {
+	const len = pattern.length;
+	if (current.length > 0) {
+		flushSegment(current.slice(0, -1), segments);
+	}
+	let next = i;
+	while (next < len && pattern[next] !== "}") next++;
+	if (next < len) next++; // skip '}'
+	if (next < len && pattern[next] === "?") next++; // lazy modifier
+	return { current: "", i: next };
+}
+
+/**
+ * Handle a `(` group at `i`. An alternation group is skipped wholesale (the
+ * trigram-level intersection for top-level alternation is done by
+ * decomposePattern). A non-alternation group either contributes its inner
+ * literal segments (capturing / `?:`) or is skipped (lookaround / unknown
+ * modifier). Returns the index just past the group.
+ */
+function handleGroup(pattern: string, i: number, segments: string[]): number {
+	const groupEnd = findGroupEnd(pattern, i);
+	const groupContent = pattern.slice(i + 1, groupEnd);
+
+	if (groupContent.includes("|")) {
+		// Alternation inside a group — cannot extract required literals here.
+		return groupEnd + 1;
+	}
+
+	const parsed = classifyGroupPrefix(groupContent);
+	if (parsed.kind === "skip") {
+		return groupEnd + 1;
+	}
+	segments.push(...extractLiteralSegments(parsed.inner));
+	return groupEnd + 1;
+}
+
+/**
  * Walk a regex pattern and extract literal segments that must appear
  * in any match. Returns an array of literal strings.
  */
@@ -177,24 +263,12 @@ function extractLiteralSegments(pattern: string): string[] {
 
 		switch (ch) {
 			// Escape sequences — next char is literal (mostly)
-			case "\\":
-				if (i + 1 < len) {
-					const next = pattern[i + 1];
-					const literal = resolveEscape(next);
-					if (literal !== null) {
-						current += literal;
-						i += 2;
-					} else {
-						// Non-literal escape (\d, \w, \s, \b, etc.) — flush
-						flushSegment(current, segments);
-						current = "";
-						i += 2;
-					}
-				} else {
-					current += "\\";
-					i++;
-				}
+			case "\\": {
+				const st = handleEscape(pattern, i, current, segments);
+				current = st.current;
+				i = st.i;
 				break;
+			}
 
 			// Wildcards — flush current literal
 			case ".":
@@ -204,77 +278,37 @@ function extractLiteralSegments(pattern: string): string[] {
 				break;
 
 			// Character classes — not a fixed literal, flush
-			case "[": {
+			case "[":
 				flushSegment(current, segments);
 				current = "";
-				// Skip to closing bracket
-				i = skipCharClass(pattern, i);
+				i = skipCharClass(pattern, i); // skip to past closing bracket
 				break;
-			}
 
 			// Quantifiers — the preceding char/group is variable
 			case "*":
 			case "+":
-			case "?":
-				// Remove the last char from current (it's now variable)
-				if (current.length > 0) {
-					const beforeQuantifier = current.slice(0, -1);
-					flushSegment(beforeQuantifier, segments);
-					current = "";
-				}
-				i++;
-				// Skip lazy/possessive modifier
-				if (i < len && (pattern[i] === "?" || pattern[i] === "+")) i++;
-				break;
-
-			// Repetition — preceding element is variable
-			case "{":
-				if (current.length > 0) {
-					const beforeRepeat = current.slice(0, -1);
-					flushSegment(beforeRepeat, segments);
-					current = "";
-				}
-				// Skip to closing brace
-				while (i < len && pattern[i] !== "}") i++;
-				if (i < len) i++; // skip '}'
-				// Skip lazy modifier
-				if (i < len && pattern[i] === "?") i++;
-				break;
-
-			// Groups — for simplicity, treat as a break in the literal chain
-			// (proper handling would recurse into the group, but alternation
-			// within groups makes it complex)
-			case "(": {
-				flushSegment(current, segments);
-				current = "";
-				// Check if this group contains alternation
-				const groupEnd = findGroupEnd(pattern, i);
-				const groupContent = pattern.slice(i + 1, groupEnd);
-
-				if (groupContent.includes("|")) {
-					// Alternation inside a group — skip the group's contents.
-					// The trigram-level intersection for alternation is handled
-					// by decomposePattern at the top level. Here we just can't
-					// extract required literals from an alternation group.
-					i = groupEnd + 1;
-				} else {
-					// Non-alternation group — strip group markers and recurse.
-					// For zero-width assertions (lookahead/lookbehind) and any
-					// unknown group modifier, skip the group entirely — its
-					// contents do not contribute to the trigram literal set.
-					const parsed = classifyGroupPrefix(groupContent);
-					if (parsed.kind === "skip") {
-						i = groupEnd + 1;
-						break;
-					}
-					const inner = parsed.inner;
-
-					const innerSegments = extractLiteralSegments(inner);
-					segments.push(...innerSegments);
-					i = groupEnd + 1;
-				}
+			case "?": {
+				const st = handleQuantifier(pattern, i, current, segments);
+				current = st.current;
+				i = st.i;
 				break;
 			}
+
+			// Repetition — preceding element is variable
+			case "{": {
+				const st = handleRepeat(pattern, i, current, segments);
+				current = st.current;
+				i = st.i;
+				break;
+			}
+
+			// Groups — recurse into capturing / non-capturing bodies; skip
+			// alternation groups and lookarounds (see handleGroup).
+			case "(":
+				flushSegment(current, segments);
+				current = "";
+				i = handleGroup(pattern, i, segments);
+				break;
 
 			// Alternation at top level — handled by decomposePattern, just stop here
 			case "|":
@@ -302,62 +336,56 @@ function extractLiteralSegments(pattern: string): string[] {
 }
 
 /**
+ * Escaped special regex characters whose literal value is the character itself
+ * (`\.` → `.`, `\\` → `\`, etc.). Membership-only; the value is `ch`.
+ */
+const SELF_LITERAL_ESCAPES = new Set([
+	".",
+	"*",
+	"+",
+	"?",
+	"[",
+	"]",
+	"(",
+	")",
+	"{",
+	"}",
+	"|",
+	"^",
+	"$",
+	"\\",
+	"/",
+	"-",
+]);
+
+/** Named escape sequences that map to a concrete control character. */
+const NAMED_LITERAL_ESCAPES = new Map<string, string>([
+	["n", "\n"],
+	["t", "\t"],
+	["r", "\r"],
+	["f", "\f"],
+	["v", "\v"],
+	["0", "\0"],
+]);
+
+/**
+ * Non-literal escapes (character classes / assertions: `\d`, `\w`, `\s`, `\b`,
+ * `\A`, `\Z`, `\z`, and their uppercase negations). These do not contribute a
+ * fixed literal, so `resolveEscape` returns null for them.
+ */
+const NON_LITERAL_ESCAPES = new Set(["d", "D", "w", "W", "s", "S", "b", "B", "A", "Z", "z"]);
+
+/**
  * Resolve a regex escape character to its literal value.
  * Returns null for non-literal escapes (\d, \w, \s, \b, etc.).
  */
 function resolveEscape(ch: string): string | null {
-	switch (ch) {
-		// Literal escapes of special regex characters
-		case ".":
-		case "*":
-		case "+":
-		case "?":
-		case "[":
-		case "]":
-		case "(":
-		case ")":
-		case "{":
-		case "}":
-		case "|":
-		case "^":
-		case "$":
-		case "\\":
-		case "/":
-		case "-":
-			return ch;
-
-		// Common escape sequences with literal values
-		case "n":
-			return "\n";
-		case "t":
-			return "\t";
-		case "r":
-			return "\r";
-		case "f":
-			return "\f";
-		case "v":
-			return "\v";
-		case "0":
-			return "\0";
-
-		// Non-literal escapes (character classes, assertions)
-		case "d":
-		case "D":
-		case "w":
-		case "W":
-		case "s":
-		case "S":
-		case "b":
-		case "B":
-		case "A":
-		case "Z":
-		case "z":
-			return null;
-
-		// Unknown escape — treat as literal (rg/pcre behavior)
-		default:
-			return ch;
-	}
+	if (SELF_LITERAL_ESCAPES.has(ch)) return ch;
+	const named = NAMED_LITERAL_ESCAPES.get(ch);
+	if (named !== undefined) return named;
+	if (NON_LITERAL_ESCAPES.has(ch)) return null;
+	// Unknown escape — treat as literal (rg/pcre behavior)
+	return ch;
 }
 
 /** Skip past a character class [...], handling nested escapes */
@@ -494,6 +522,26 @@ function classifyGrepFlag(tok: string): SafeGrepFlag | "unsafe" {
 	}
 }
 
+/**
+ * Characters that, when seen unquoted, mark a pipeline / compound command:
+ * pipes, separators, redirects, command substitution, and grouping. Used by
+ * `hasUnquotedShellOperator`.
+ */
+const SHELL_OPERATOR_CHARS = new Set([
+	"|",
+	";",
+	"&",
+	">",
+	"<",
+	"$",
+	"`",
+	"(",
+	")",
+	"{",
+	"}",
+	"\n",
+]);
+
 /** True when `argsStr` contains a shell operator OUTSIDE quotes — i.e. the
  *  command is a pipeline or compound command (`rg … | …`, `rg … && …`,
  *  `$(…)`, backticks, brace/paren groups). The accelerator can only answer the
@@ -526,24 +574,58 @@ function hasUnquotedShellOperator(argsStr: string): boolean {
 			i++; // escaped char is literal
 			continue;
 		}
-		if (
-			ch === "|" ||
-			ch === ";" ||
-			ch === "&" ||
-			ch === ">" ||
-			ch === "<" ||
-			ch === "$" ||
-			ch === "`" ||
-			ch === "(" ||
-			ch === ")" ||
-			ch === "{" ||
-			ch === "}" ||
-			ch === "\n"
-		) {
+		if (SHELL_OPERATOR_CHARS.has(ch)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+/**
+ * Apply a safe-classified flag `tok` to `result`. For `-e` the pattern is the
+ * next token (`tokens[i + 1]`), so the consumed index and a pattern-from-flag
+ * marker are returned. Returns "decline" for an unmodeled flag or a dangling
+ * `-e`; the caller then falls through to native.
+ */
+function applyGrepFlag(
+	tok: string,
+	tokens: string[],
+	i: number,
+	result: ParsedGrepCommand,
+): { i: number; patternFromFlag: boolean } | "decline" {
+	const cls = classifyGrepFlag(tok);
+	if (cls === "unsafe") return "decline";
+	if (cls === "ignore_case") result.caseInsensitive = true;
+	else if (cls === "case_sensitive") result.caseInsensitive = false;
+	else if (cls === "fixed_strings") result.isRegex = false;
+	else {
+		// `-e PATTERN` — the next token is the pattern.
+		if (i + 1 >= tokens.length) return "decline";
+		result.pattern = tokens[i + 1];
+		return { i: i + 1, patternFromFlag: true };
+	}
+	return { i, patternFromFlag: false };
+}
+
+/**
+ * Resolve pattern + optional path from the collected positionals, mutating
+ * `result`. Returns false to decline: too many paths, the wrong positional
+ * count, or an empty pattern.
+ */
+function assignGrepPositionals(
+	result: ParsedGrepCommand,
+	positionals: string[],
+	patternFromFlag: boolean,
+): boolean {
+	if (patternFromFlag) {
+		if (positionals.length > 1) return false;
+		if (positionals.length === 1) result.path = positionals[0];
+	} else {
+		if (positionals.length === 0 || positionals.length > 2) return false;
+		result.pattern = positionals[0];
+		if (positionals.length === 2) result.path = positionals[1];
+	}
+	return Boolean(result.pattern);
 }
 
 /**
@@ -592,41 +674,54 @@ export function parseGrepCommand(command: string): ParsedGrepCommand | null {
 		}
 
 		if (!endOfFlags && tok.length > 1 && tok.startsWith("-")) {
-			const cls = classifyGrepFlag(tok);
-			if (cls === "unsafe") return null; // any unmodeled flag → native
-			if (cls === "ignore_case") {
-				result.caseInsensitive = true;
-			} else if (cls === "case_sensitive") {
-				result.caseInsensitive = false;
-			} else if (cls === "fixed_strings") {
-				result.isRegex = false;
-			} else if (cls === "regexp") {
-				// `-e PATTERN` — the next token is the pattern.
-				if (i + 1 >= tokens.length) return null;
-				result.pattern = tokens[++i];
-				patternFromFlag = true;
-			}
+			const applied = applyGrepFlag(tok, tokens, i, result);
+			if (applied === "decline") return null;
+			i = applied.i;
+			if (applied.patternFromFlag) patternFromFlag = true;
 			continue;
 		}
 
 		positionals.push(tok);
 	}
 
-	// First positional is the pattern (unless `-e` supplied it); a single
-	// trailing positional is the search path. More than one path → decline
-	// (the candidate prefix filter models only one).
-	if (patternFromFlag) {
-		if (positionals.length > 1) return null;
-		if (positionals.length === 1) result.path = positionals[0];
-	} else {
-		if (positionals.length === 0 || positionals.length > 2) return null;
-		result.pattern = positionals[0];
-		if (positionals.length === 2) result.path = positionals[1];
-	}
-
-	if (!result.pattern) return null;
-	return result;
+	return assignGrepPositionals(result, positionals, patternFromFlag) ? result : null;
 }
+
+/** Result of consuming one character inside a quoted run. */
+interface QuoteStep {
+	current: string;
+	i: number;
+	closed: boolean;
+}
+
+/**
+ * Consume one character of a single-quoted run starting at `i`. Single quotes
+ * are literal except the closing `'`. Always advances one character.
+ */
+function consumeSingleQuoted(input: string, i: number, current: string): QuoteStep {
+	const ch = input[i];
+	if (ch === "'") return { current, i: i + 1, closed: true };
+	return { current: current + ch, i: i + 1, closed: false };
+}
+
+/**
+ * Consume one character of a double-quoted run starting at `i`. Honors
+ * backslash escapes and closes on `"`. Advances one or two characters.
+ */
+function consumeDoubleQuoted(input: string, i: number, current: string): QuoteStep {
+	const ch = input[i];
+	if (ch === '"') return { current, i: i + 1, closed: true };
+	if (ch === "\\" && i + 1 < input.length) {
+		return { current: current + input[i + 1], i: i + 2, closed: false };
+	}
+	return { current: current + ch, i: i + 1, closed: false };
+}
+
+/**
+ * Characters that terminate the tokenizer scan (shell operators). Matching one
+ * unquoted means the rest of the command is a separate invocation we don't model.
+ */
+const TOKENIZER_STOP_CHARS = new Set(["|", ";", "&", ">", "<"]);
 
 /**
  * Basic shell argument tokenizer.
@@ -638,75 +733,56 @@ function tokenizeShellArgs(input: string): string[] {
 	let i = 0;
 	let inSingle = false;
 	let inDouble = false;
+	const flush = (): void => {
+		if (current.length > 0) {
+			tokens.push(current);
+			current = "";
+		}
+	};
 
 	while (i < input.length) {
 		const ch = input[i];
 
 		if (inSingle) {
-			if (ch === "'") {
-				inSingle = false;
-			} else {
-				current += ch;
-			}
-			i++;
+			const st = consumeSingleQuoted(input, i, current);
+			current = st.current;
+			i = st.i;
+			if (st.closed) inSingle = false;
 			continue;
 		}
 
 		if (inDouble) {
-			if (ch === '"') {
-				inDouble = false;
-			} else if (ch === "\\" && i + 1 < input.length) {
-				current += input[i + 1];
-				i++;
-			} else {
-				current += ch;
-			}
-			i++;
+			const st = consumeDoubleQuoted(input, i, current);
+			current = st.current;
+			i = st.i;
+			if (st.closed) inDouble = false;
 			continue;
 		}
 
-		switch (ch) {
-			case "'":
-				inSingle = true;
+		if (ch === "'") {
+			inSingle = true;
+			i++;
+		} else if (ch === '"') {
+			inDouble = true;
+			i++;
+		} else if (ch === "\\") {
+			if (i + 1 < input.length) {
+				current += input[i + 1];
+				i += 2;
+			} else {
 				i++;
-				continue;
-			case '"':
-				inDouble = true;
-				i++;
-				continue;
-			case "\\":
-				if (i + 1 < input.length) {
-					current += input[i + 1];
-					i += 2;
-				} else {
-					i++;
-				}
-				continue;
-			case " ":
-			case "\t":
-				if (current.length > 0) {
-					tokens.push(current);
-					current = "";
-				}
-				i++;
-				continue;
-			case "|":
-			case ";":
-			case "&":
-			case ">":
-			case "<":
-				// Stop at shell operators
-				i = input.length;
-				continue;
-			default:
-				current += ch;
-				i++;
+			}
+		} else if (ch === " " || ch === "\t") {
+			flush();
+			i++;
+		} else if (TOKENIZER_STOP_CHARS.has(ch)) {
+			i = input.length; // stop at shell operators
+		} else {
+			current += ch;
+			i++;
 		}
 	}
 
-	if (current.length > 0) {
-		tokens.push(current);
-	}
-
+	flush();
 	return tokens;
 }

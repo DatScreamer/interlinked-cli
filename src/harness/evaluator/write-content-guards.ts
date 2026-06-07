@@ -205,127 +205,121 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// non-determinism. Apply the same path-based exemption already used by
 	// `collectContentQualityWarnings` so both code paths agree on these files.
 	const cwd = typeof event.cwd === "string" ? event.cwd : undefined;
-	if (
-		content.length > INJECTION_SCAN_MIN_CHARS &&
-		!isContentScanExempt(filePath, cwd)
-	) {
+	// Nested helper: scoped to this call's `warnings`/`escalation`. Returns a
+	// block decision (high-confidence hit) or null (skip / low-confidence hit,
+	// in which case it sets `escalation` and pushes a soft warning as a side
+	// effect on the captured locals).
+	function injectionGuard(): HarnessDecision | null {
+		if (content.length <= INJECTION_SCAN_MIN_CHARS || isContentScanExempt(filePath, cwd)) {
+			return null;
+		}
 		const injectionMatches = scanPromptInjection(content);
-		if (injectionMatches.length > 0) {
-			const highConfidence = injectionMatches.some(
-				(m) => m.severity === "critical" || m.severity === "high",
-			);
-			if (highConfidence) {
-				return {
-					kind: "block",
-					decision: {
-						decision: "block",
-						reason: `BLOCKED: Prompt injection pattern detected in content being written to ${filePath}: ${injectionMatches[0].description}. This content may compromise agent behavior.`,
-						warnings,
-						rule_id: "pretooluse-injection-scan",
-						severity: "critical",
-						category: "Security",
-					},
-				};
-			}
-			// Lower-confidence match — set escalation for classifier
-			escalation = {
-				trigger: "post_injection_action",
-				summary: `Partial prompt injection pattern detected in content for ${filePath}: ${injectionMatches[0].description}`,
-				tool_name: toolName,
-				tool_input_redacted: { file_path: filePath, content: "[REDACTED]" },
-				sensitivity_level: session?.sensitivity_level || "Public",
-				step_number: session?.tool_call_count || 0,
-				recent_tool_sequence: session?.tool_sequence.slice(-10) || [],
+		if (injectionMatches.length === 0) return null;
+		const highConfidence = injectionMatches.some(
+			(m) => m.severity === "critical" || m.severity === "high",
+		);
+		if (highConfidence) {
+			return {
+				decision: "block",
+				reason: `BLOCKED: Prompt injection pattern detected in content being written to ${filePath}: ${injectionMatches[0].description}. This content may compromise agent behavior.`,
+				warnings,
+				rule_id: "pretooluse-injection-scan",
+				severity: "critical",
+				category: "Security",
 			};
-			warnings.push(
-				`[interlinked:injection] Low-confidence injection pattern detected in ${filePath}: ${injectionMatches[0].description}`,
-			);
 		}
+		// Lower-confidence match — set escalation for classifier
+		escalation = {
+			trigger: "post_injection_action",
+			summary: `Partial prompt injection pattern detected in content for ${filePath}: ${injectionMatches[0].description}`,
+			tool_name: toolName,
+			tool_input_redacted: { file_path: filePath, content: "[REDACTED]" },
+			sensitivity_level: session?.sensitivity_level || "Public",
+			step_number: session?.tool_call_count || 0,
+			recent_tool_sequence: session?.tool_sequence.slice(-10) || [],
+		};
+		warnings.push(
+			`[interlinked:injection] Low-confidence injection pattern detected in ${filePath}: ${injectionMatches[0].description}`,
+		);
+		return null;
 	}
+	const injectionBlock = injectionGuard();
+	if (injectionBlock) return { kind: "block", decision: injectionBlock };
 
-	// Validate JSON files
-	let parsedJson: unknown;
-	if (filePath.endsWith(".json") && content.trim()) {
-		try {
-			parsedJson = JSON.parse(content);
-		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
-			warnings.push(
-				`[interlinked] Warning: Invalid JSON in ${filePath}: ${msg.slice(0, 100)}`,
-			);
-		}
-	}
-
-	// Claude Code settings: block writes that introduce malformed permission
-	// rules (mismatched parens / unbalanced quotes / empty / no Tool prefix).
-	// Claude Code's own /doctor skips these at load time, but the user is
-	// left with a noisy allowlist file. Catching it at write time keeps the
-	// file canonically clean regardless of source (agent edits, interlinked-cli
+	// Validate JSON files + Claude Code settings permission-rule integrity.
+	// On parse failure we push a soft warning; for a `.claude/settings(.local)
+	// .json` that parsed we block any write introducing a malformed permission
+	// rule (mismatched parens / unbalanced quotes / empty / no Tool prefix).
+	// Claude Code's own /doctor skips those at load time, but the user is left
+	// with a noisy allowlist file. Catching it at write time keeps the file
+	// canonically clean regardless of source (agent edits, interlinked-cli
 	// rewrites, or other tools — Claude Code's own "Always allow" UI doesn't
 	// route through tool calls so it can't be intercepted here; that path is
 	// covered by the verify-time scan in checkProjectSetup).
-	if (isClaudeSettingsFile(filePath) && parsedJson !== undefined) {
-		const malformed = findMalformedRulesIn(parsedJson);
-		if (malformed.length > 0) {
-			const first = malformed[0];
-			const others = malformed.length > 1 ? ` (and ${malformed.length - 1} more)` : "";
-			const suggestion = suggestRuleFix(first.rule, first.reason);
-			const suggestionClause =
-				suggestion !== null ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						`BLOCKED: Write to ${filePath} would add a malformed permission rule. ` +
-						`permissions.${first.bucket}[${first.index}] = ${JSON.stringify(first.rule)} ` +
-						`(${describeReason(first.reason)})${others}.${suggestionClause} ` +
-						"Claude Code's /doctor would skip this rule at load time. " +
-						"Fix the rule string (or remove it) before retrying.",
-					warnings,
-					rule_id: "permission-rule-syntax",
-					severity: "high",
-					category: "settings-integrity",
-				},
-			};
+	function jsonAndClaudeSettingsGuard(): HarnessDecision | null {
+		let parsedJson: unknown;
+		if (filePath.endsWith(".json") && content.trim()) {
+			try {
+				parsedJson = JSON.parse(content);
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				warnings.push(`[interlinked] Warning: Invalid JSON in ${filePath}: ${msg.slice(0, 100)}`);
+			}
 		}
-	}
-
-	// Detect path traversal (writing outside project directory)
-	if (filePath.includes("../") || filePath.startsWith("/etc/") || filePath.startsWith("/usr/")) {
+		if (!isClaudeSettingsFile(filePath) || parsedJson === undefined) return null;
+		const malformed = findMalformedRulesIn(parsedJson);
+		if (malformed.length === 0) return null;
+		const first = malformed[0];
+		const others = malformed.length > 1 ? ` (and ${malformed.length - 1} more)` : "";
+		const suggestion = suggestRuleFix(first.rule, first.reason);
+		const suggestionClause =
+			suggestion !== null ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
 		return {
-			kind: "block",
-			decision: {
+			decision: "block",
+			reason:
+				`BLOCKED: Write to ${filePath} would add a malformed permission rule. ` +
+				`permissions.${first.bucket}[${first.index}] = ${JSON.stringify(first.rule)} ` +
+				`(${describeReason(first.reason)})${others}.${suggestionClause} ` +
+				"Claude Code's /doctor would skip this rule at load time. " +
+				"Fix the rule string (or remove it) before retrying.",
+			warnings,
+			rule_id: "permission-rule-syntax",
+			severity: "high",
+			category: "settings-integrity",
+		};
+	}
+	const settingsBlock = jsonAndClaudeSettingsGuard();
+	if (settingsBlock) return { kind: "block", decision: settingsBlock };
+
+	// Cheap path/format guards that block unconditionally: path traversal /
+	// system-directory writes (../, /etc/, /usr/), binary-file extensions, and
+	// A1 merge-conflict markers (a guaranteed parse error).
+	function pathAndFormatGuard(): HarnessDecision | null {
+		if (filePath.includes("../") || filePath.startsWith("/etc/") || filePath.startsWith("/usr/")) {
+			return {
 				decision: "block",
 				reason: `BLOCKED: Writing to ${filePath} — path traversal or system directory write detected. Agents should only write within the project directory.`,
 				warnings,
-			},
-		};
-	}
-
-	// Binary file guard — block writing text content to binary file extensions
-	if (BINARY_FILE_EXTENSIONS.test(filePath)) {
-		return {
-			kind: "block",
-			decision: {
+			};
+		}
+		if (BINARY_FILE_EXTENSIONS.test(filePath)) {
+			return {
 				decision: "block",
 				reason: `BLOCKED: ${filePath} is a binary file. Text editing tools should not write to binary formats — use the appropriate tool or command instead.`,
 				warnings,
-			},
-		};
-	}
-
-	// A1: Merge conflict markers — guaranteed parse error, block immediately
-	if (MERGE_CONFLICT_MARKER.test(content)) {
-		return {
-			kind: "block",
-			decision: {
+			};
+		}
+		if (MERGE_CONFLICT_MARKER.test(content)) {
+			return {
 				decision: "block",
 				reason: `BLOCKED: Merge conflict markers detected in ${filePath}. Resolve the conflict before writing.`,
 				warnings,
-			},
-		};
+			};
+		}
+		return null;
 	}
+	const pathFormatBlock = pathAndFormatGuard();
+	if (pathFormatBlock) return { kind: "block", decision: pathFormatBlock };
 
 	// ─────────────────────────────────────────────
 	// PreToolUse registry gate — phase: "pre_block"
@@ -339,76 +333,71 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// are all severity=error (e.g. eval_usage, promise_reject_non_error)
 	// and STILL run regardless of diff_class, so a credential leaked into
 	// a comment / quoted string is still caught.
-	{
-		const preBlockChecks = buildAgentSafetyChecks(
-			content,
-			filePath,
-			"pre_block",
-			preEditContent,
-		);
+	function preBlockRegistryGuard(): HarnessDecision | null {
+		const preBlockChecks = buildAgentSafetyChecks(content, filePath, "pre_block", preEditContent);
 		void postEditContent; // reserved for future hunk-granular pre_block
 		const instructions = buildCheckInstructions();
 		for (const check of preBlockChecks) {
 			const matches = check.fn();
-			if (matches.length > 0) {
-				const lineList = matches.map((m) => `L${m.line}`).join(", ");
-				const instruction = instructions[check.name] || "";
-				return {
-					kind: "block",
-					decision: {
-						decision: "block",
-						reason:
-							`BLOCKED by pre-block rule [${check.name}]. ` +
-							`${filePath} contains ${matches.length} violation(s) at ${lineList}. ` +
-							"Fix ALL instances of this rule in this file before retrying your edit — " +
-							`not just the line you were changing.\n${instruction}`,
-						warnings,
-						rule_id: check.name,
-						severity: "high",
-						category: "pre-block",
-					},
-				};
-			}
+			if (matches.length === 0) continue;
+			const lineList = matches.map((m) => `L${m.line}`).join(", ");
+			const instruction = instructions[check.name] || "";
+			return {
+				decision: "block",
+				reason:
+					`BLOCKED by pre-block rule [${check.name}]. ` +
+					`${filePath} contains ${matches.length} violation(s) at ${lineList}. ` +
+					"Fix ALL instances of this rule in this file before retrying your edit — " +
+					`not just the line you were changing.\n${instruction}`,
+				warnings,
+				rule_id: check.name,
+				severity: "high",
+				category: "pre-block",
+			};
 		}
+		return null;
 	}
+	const preBlockDecision = preBlockRegistryGuard();
+	if (preBlockDecision) return { kind: "block", decision: preBlockDecision };
 
 	// ─────────────────────────────────────────────
 	// PreToolUse diff-overlay gate — biome (Phase 2a)
 	// ─────────────────────────────────────────────
-	if (rules.quality_checks?.biome_lint?.enabled !== false) {
+	function biomeDiffOverlayGuard(): HarnessDecision | null {
+		if (rules.quality_checks?.biome_lint?.enabled === false) return null;
 		const cwdForOverlay =
 			findProjectRoot(filePath, event.cwd || process.cwd()) || event.cwd || process.cwd();
 		const overlay = evaluateBiomeDiffOverlay(filePath, content, cwdForOverlay);
-		if (overlay.exceededBudget && overlay.newFindings.length > 0) {
-			const first = overlay.newFindings[0];
+		if (overlay.newFindings.length === 0) return null;
+		const first = overlay.newFindings[0];
+		if (overlay.exceededBudget) {
 			warnings.push(
 				`[interlinked:biome-overlay] ${overlay.newFindings.length} new biome finding(s) in ${filePath} from this edit (first: ${first.message} at L${first.line}). Overlay ${overlay.elapsedMs}ms exceeded 500ms budget — demoted to warning.`,
 			);
-		} else if (overlay.newFindings.length > 0) {
-			const first = overlay.newFindings[0];
-			const rest = overlay.newFindings.length - 1;
-			const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						`BLOCKED by biome diff-overlay: this edit introduces ${overlay.newFindings.length} new biome finding(s) in ${filePath}. ` +
-						`First: [${first.ruleId ?? "biome"}] L${first.line} — ${first.message}${restSummary}. ` +
-						"Fix the new issue(s) in your edit, or retry without introducing them.",
-					warnings,
-					rule_id: "biome-diff-overlay",
-					severity: "high",
-					category: "pre-block",
-				},
-			};
+			return null;
 		}
+		const rest = overlay.newFindings.length - 1;
+		const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
+		return {
+			decision: "block",
+			reason:
+				`BLOCKED by biome diff-overlay: this edit introduces ${overlay.newFindings.length} new biome finding(s) in ${filePath}. ` +
+				`First: [${first.ruleId ?? "biome"}] L${first.line} — ${first.message}${restSummary}. ` +
+				"Fix the new issue(s) in your edit, or retry without introducing them.",
+			warnings,
+			rule_id: "biome-diff-overlay",
+			severity: "high",
+			category: "pre-block",
+		};
 	}
+	const biomeDecision = biomeDiffOverlayGuard();
+	if (biomeDecision) return { kind: "block", decision: biomeDecision };
 
 	// ─────────────────────────────────────────────
 	// PreToolUse diff-overlay gate — tsc LanguageService (Phase 2b)
 	// ─────────────────────────────────────────────
-	if (rules.quality_checks?.typescript?.enabled !== false) {
+	function tscDiffOverlayGuard(): HarnessDecision | null {
+		if (rules.quality_checks?.typescript?.enabled === false) return null;
 		const cwdForTsc =
 			findProjectRoot(filePath, event.cwd || process.cwd()) || event.cwd || process.cwd();
 		const tscOverlay = evaluateTscDiffOverlay(filePath, content, cwdForTsc);
@@ -419,20 +408,18 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 				`[interlinked:tsc-overlay] ${filePath}:${f.line} — ${f.ruleId} ${f.message}. New in this edit (warn-only code).`,
 			);
 		}
-		if (blocking.length > 0) {
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason: buildTscDiffOverlayBlockReason(toolName, blocking, filePath),
-					warnings,
-					rule_id: "tsc-diff-overlay",
-					severity: "high",
-					category: "pre-block",
-				},
-			};
-		}
+		if (blocking.length === 0) return null;
+		return {
+			decision: "block",
+			reason: buildTscDiffOverlayBlockReason(toolName, blocking, filePath),
+			warnings,
+			rule_id: "tsc-diff-overlay",
+			severity: "high",
+			category: "pre-block",
+		};
 	}
+	const tscDecision = tscDiffOverlayGuard();
+	if (tscDecision) return { kind: "block", decision: tscDecision };
 
 	// ─────────────────────────────────────────────
 	// PreToolUse strict-typing diff overlay (gated, default off)
@@ -442,33 +429,32 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// and bare `: any` annotations. The post-edit `as_any_ratchet` warning
 	// stays in place when this flag is off; this gate moves the same metric
 	// to PreToolUse + hard-block when teams want stricter enforcement.
-	if (rules.quality_checks?.strict_typing_block?.enabled === true) {
+	function strictTypingOverlayGuard(): HarnessDecision | null {
+		if (rules.quality_checks?.strict_typing_block?.enabled !== true) return null;
 		const overlay = evaluateTypeErasureOverlay(filePath, content);
-		if (overlay.newFindings.length > 0) {
-			const first = overlay.newFindings[0];
-			const rest = overlay.newFindings.length - 1;
-			const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
-			const lineList = overlay.newFindings
-				.slice(0, 5)
-				.map((f) => `L${f.line}`)
-				.join(", ");
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason:
-						`BLOCKED by strict-typing pre-overlay: this edit introduces ${overlay.newFindings.length} new type-erasure pattern(s) in ${filePath} (${lineList}). ` +
-						`First: [${first.ruleId}] L${first.line} — ${first.message}${restSummary}. ` +
-						"Fix the pattern(s) in your edit, or retry without introducing them. " +
-						"Justification escapes are accepted: `// @ts-expect-error: <reason>` for suppression directives.",
-					warnings,
-					rule_id: STRICT_TYPING_RULE_ID,
-					severity: "high",
-					category: "pre-block",
-				},
-			};
-		}
+		if (overlay.newFindings.length === 0) return null;
+		const first = overlay.newFindings[0];
+		const rest = overlay.newFindings.length - 1;
+		const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
+		const lineList = overlay.newFindings
+			.slice(0, 5)
+			.map((f) => `L${f.line}`)
+			.join(", ");
+		return {
+			decision: "block",
+			reason:
+				`BLOCKED by strict-typing pre-overlay: this edit introduces ${overlay.newFindings.length} new type-erasure pattern(s) in ${filePath} (${lineList}). ` +
+				`First: [${first.ruleId}] L${first.line} — ${first.message}${restSummary}. ` +
+				"Fix the pattern(s) in your edit, or retry without introducing them. " +
+				"Justification escapes are accepted: `// @ts-expect-error: <reason>` for suppression directives.",
+			warnings,
+			rule_id: STRICT_TYPING_RULE_ID,
+			severity: "high",
+			category: "pre-block",
+		};
 	}
+	const strictTypingDecision = strictTypingOverlayGuard();
+	if (strictTypingDecision) return { kind: "block", decision: strictTypingDecision };
 
 	// ─────────────────────────────────────────────
 	// PreToolUse registry gate — phase: "pre_warn"
@@ -477,25 +463,20 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// Phase B.4 — pass `preEditContent` so the diff-classifier can skip
 	// warning-severity detectors on non-semantic edits (whitespace_only,
 	// comment_only). Saves a regex pass on every doc tweak / re-format.
-	{
-		const preWarnChecks = buildAgentSafetyChecks(
-			content,
-			filePath,
-			"pre_warn",
-			preEditContent,
-		);
+	function runPreWarnRegistry(): void {
+		const preWarnChecks = buildAgentSafetyChecks(content, filePath, "pre_warn", preEditContent);
 		const instructions = buildCheckInstructions();
 		for (const check of preWarnChecks) {
 			const matches = check.fn();
-			if (matches.length > 0) {
-				const lineList = matches.map((m) => `L${m.line}`).join(", ");
-				const instruction = instructions[check.name] || "";
-				warnings.push(
-					`[interlinked:${check.name}] ${filePath} has ${matches.length} violation(s) at ${lineList} — ${instruction}`,
-				);
-			}
+			if (matches.length === 0) continue;
+			const lineList = matches.map((m) => `L${m.line}`).join(", ");
+			const instruction = instructions[check.name] || "";
+			warnings.push(
+				`[interlinked:${check.name}] ${filePath} has ${matches.length} violation(s) at ${lineList} — ${instruction}`,
+			);
 		}
 	}
+	runPreWarnRegistry();
 
 	// Legacy TS/JS/MJS/CJS + cross-language content-quality regex heuristics.
 	warnings.push(...collectContentQualityWarnings(filePath, content, event.cwd));
@@ -564,10 +545,18 @@ function collectContentQualityWarnings(
 		warnings.push(...collectTsJsQualityWarnings(filePath, content));
 	}
 
-	// A7: Hardcoded non-localhost URLs (all file types).
-	// Path-based exemption already handled above. Dedicated constant/content
-	// modules (consts.ts, constants.ts) legitimately hold URLs as committed
-	// data, so they are exempt from this one check.
+	// Cross-language A7-A11 heuristics.
+	warnings.push(...collectUrlAndSqlWarnings(filePath, content));
+	warnings.push(...collectPermissionsRedosJsdocWarnings(filePath, content));
+
+	return warnings;
+}
+
+/** A7: hardcoded non-localhost URLs (all file types; dedicated constant/content
+ *  modules are exempt — they hold URLs as committed data) and A8: SQL-injection
+ *  template-literal interpolation in `.exec`/`.query`/`sql`` calls (TS/JS/PY). */
+function collectUrlAndSqlWarnings(filePath: string, content: string): string[] {
+	const warnings: string[] = [];
 	if (!isUrlDataFile(filePath)) {
 		const urlMatches = content.match(/https?:\/\/(?!localhost|127\.0\.0\.1)[^\s"'`>)}\]]+/g);
 		if (urlMatches && urlMatches.length > 3) {
@@ -576,20 +565,25 @@ function collectContentQualityWarnings(
 			);
 		}
 	}
-
-	// A8: SQL injection patterns — template literal interpolation in SQL
-	if (/\.(tsx?|jsx?|py)$/.test(filePath)) {
-		if (
-			/\.exec\s*\(\s*`[^`]*\$\{/.test(content) ||
+	if (
+		/\.(tsx?|jsx?|py)$/.test(filePath) &&
+		(/\.exec\s*\(\s*`[^`]*\$\{/.test(content) ||
 			/\.query\s*\(\s*`[^`]*\$\{/.test(content) ||
-			/\bsql\s*`[^`]*\$\{/.test(content)
-		) {
-			warnings.push(
-				`[interlinked:content-quality] Possible SQL injection in ${filePath}. Use parameterized queries instead of template literal interpolation.`,
-			);
-		}
+			/\bsql\s*`[^`]*\$\{/.test(content))
+	) {
+		warnings.push(
+			`[interlinked:content-quality] Possible SQL injection in ${filePath}. Use parameterized queries instead of template literal interpolation.`,
+		);
 	}
+	return warnings;
+}
 
+/** A9 overly-permissive CORS/chmod, A10 ReDoS nested quantifiers, and A11 JSDoc
+ *  premature-close ("*​/" inside a single-line JSDoc body). A10 is a coarse
+ *  shape-match by design; ReDoS-detector files carry such shapes as data (a
+ *  known-FP class accepted as the cost of broad coverage). */
+function collectPermissionsRedosJsdocWarnings(filePath: string, content: string): string[] {
+	const warnings: string[] = [];
 	// A9: Overly permissive CORS/chmod
 	if (
 		/Access-Control-Allow-Origin:\s*\*/.test(content) ||
@@ -604,22 +598,13 @@ function collectContentQualityWarnings(
 			`[interlinked:content-quality] chmod 777 / 0o777 in ${filePath}. Use more restrictive permissions.`,
 		);
 	}
-
-	// A10: Regex DoS — nested quantifiers. Fires on `(...)[+*]` in the raw
-	// content. The check is intentionally a coarse shape-match: the goal is
-	// to surface every nested-quantifier regex in user source so the agent
-	// considers backtracking complexity. Files designed to DETECT ReDoS (e.g.
-	// the validator at `src/harness/redos-validation.ts`) deliberately contain
-	// such shapes as pattern data; they are a known-FP class and accept the
-	// noise as the cost of broad coverage elsewhere.
+	// A10: Regex DoS — nested quantifiers
 	if (/\([^)]*[+*][^)]*\)[+*]/.test(content)) {
 		warnings.push(
 			`[interlinked:content-quality] Potential ReDoS pattern (nested quantifiers) in ${filePath}. Simplify the regex to avoid catastrophic backtracking.`,
 		);
 	}
-
 	// A11: JSDoc premature close — "*/" inside a single-line JSDoc body
-	// (e.g., glob "**/*.ext" where ** + / = * + */ terminates the comment early).
 	const singleLineJsdocRe = /\/\*\*(.+)\*\//g;
 	for (
 		let jsdocMatch = singleLineJsdocRe.exec(content);
@@ -634,23 +619,29 @@ function collectContentQualityWarnings(
 			break;
 		}
 	}
-
 	return warnings;
 }
 
-/** TS/JS-specific content-quality heuristics (A2-A6 plus the older as-any / console.log set). */
-function collectTsJsQualityWarnings(filePath: string, content: string): string[] {
-	const warnings: string[] = [];
-
-	// Warn on unsafe type assertions. Scan comment- and string-stripped
-	// content: a real `as any` / `as unknown` cast is always code, so the
-	// bare words inside a doc comment (e.g. "Count of `as any` casts") or a
-	// string literal are not assertions — counting those was a recurring FP
-	// on type-definition files that document the ratchet metrics.
+/** Comment- and string-stripped view of `content`, including the code inside
+ *  template-literal `${...}` interpolations. A real `as any` / `as unknown`
+ *  cast or `console.log` call is always code, so the bare words inside a doc
+ *  comment (e.g. "Count of `as any` casts") or a string literal are not the
+ *  pattern — counting those was a recurring FP on type-definition / detector
+ *  files that document the ratchet metrics. */
+function stripCommentsAndStrings(content: string): string {
 	const interpolationCode = extractTemplateInterpolationExpressions(content)
 		.map((expr) => stripAllLiterals(expr))
 		.join("\n");
-	const codeOnly = `${stripAllLiterals(content)}\n${interpolationCode}`;
+	return `${stripAllLiterals(content)}\n${interpolationCode}`;
+}
+
+/** as-any / as-unknown unsafe assertions + console.log debug logging. Both
+ *  scan the comment-/string-stripped `codeOnly` view so only real code counts. */
+function collectAssertionAndLogWarnings(
+	filePath: string,
+	codeOnly: string,
+): string[] {
+	const warnings: string[] = [];
 	const asAnyCount = (codeOnly.match(/\bas\s+any\b/g) || []).length;
 	const asUnknownCount = (codeOnly.match(/\bas\s+unknown\b/g) || []).length;
 	const parts: string[] = [];
@@ -661,7 +652,7 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			`[interlinked:content-quality] ${parts.join(" + ")} assertion(s) in ${filePath}. Prefer proper typing (interfaces, generics, branded types).`,
 		);
 	}
-	// Warn on console.log left in production code (not test files)
+	// console.log left in production code (not test files)
 	if (!/\.(test|spec)\.\w+$/.test(filePath)) {
 		const consoleLogs = (codeOnly.match(/\bconsole\.(log|debug|info)\b/g) || []).length;
 		if (consoleLogs > 2) {
@@ -670,10 +661,15 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			);
 		}
 	}
-	// Warn on unresolved task markers (to-do, fix-me, etc.) left in COMMENTS.
-	// Require a comment lead-in (// or /* or jsdoc *) so the marker vocabulary
-	// inside string literals (e.g. "TICKET-XXX") and a detector's own
-	// /TODO|FIXME/ regex is not miscounted — a recurring FP on check modules.
+	return warnings;
+}
+
+/** Unresolved task markers (in COMMENTS only), empty catch blocks, and A2
+ *  eval / new Function(). Task markers require a comment lead-in (// or /* or
+ *  jsdoc *) so the marker vocabulary inside string literals (e.g. "TICKET-XXX")
+ *  and a detector's own /TODO|FIXME/ regex is not miscounted. */
+function collectMarkerEvalWarnings(filePath: string, content: string): string[] {
+	const warnings: string[] = [];
 	const taskMarkerPattern = /(?:\/\/|\/\*|\*)[^\n]*?\b(?:TODO|FIXME|HACK|XXX)\b/g;
 	const taskMarkers = (content.match(taskMarkerPattern) || []).length;
 	if (taskMarkers > 0) {
@@ -681,7 +677,6 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			`[interlinked:content-quality] ${taskMarkers} unresolved task marker${taskMarkers > 1 ? "s" : ""} in ${filePath}. Resolve before committing or create a tracking issue.`,
 		);
 	}
-	// Warn on empty catch blocks
 	if (/catch\s*\([^)]*\)\s*\{\s*\}/.test(content)) {
 		warnings.push(
 			`[interlinked:content-quality] Empty catch block in ${filePath}. Silent error swallowing hides bugs — at minimum log the error.`,
@@ -693,23 +688,51 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			`[interlinked:content-quality] eval() or new Function() in ${filePath}. These enable code injection — use safer alternatives.`,
 		);
 	}
-	// A3: Math.random() feeding a security-sensitive value (predictable
-	// tokens). Scoped to the Math.random() line itself (plus the line above,
-	// for multi-line assignments): a whole-file scan fired on any file that
-	// merely contained "key"/"hash"/"auth" elsewhere — a React `key={}` prop
-	// or an A/B-test `pickVariant()` that uses Math.random() for bucketing,
-	// where crypto-grade randomness is genuinely unnecessary.
-	const a3Lines = content.split("\n");
-	for (let i = 0; i < a3Lines.length; i++) {
-		if (!/\bMath\.random\b/.test(a3Lines[i])) continue;
-		const ctx = (i > 0 ? `${a3Lines[i - 1]}\n` : "") + a3Lines[i];
+	return warnings;
+}
+
+/** A3: Math.random() feeding a security-sensitive value (predictable tokens).
+ *  Scoped to the Math.random() line itself (plus the line above, for multi-line
+ *  assignments): a whole-file scan fired on any file that merely contained
+ *  "key"/"hash"/"auth" elsewhere — a React `key={}` prop or an A/B-test
+ *  `pickVariant()` that uses Math.random() for bucketing, where crypto-grade
+ *  randomness is genuinely unnecessary. */
+function collectInsecureRandomWarning(filePath: string, content: string): string | null {
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		if (!/\bMath\.random\b/.test(lines[i])) continue;
+		const ctx = (i > 0 ? `${lines[i - 1]}\n` : "") + lines[i];
 		if (A3_SECURITY_CONTEXT.test(ctx)) {
-			warnings.push(
-				`[interlinked:content-quality] Math.random() used to derive a security-sensitive value in ${filePath} (line ${i + 1}). Use crypto.randomUUID() or crypto.getRandomValues() instead.`,
-			);
-			break;
+			return `[interlinked:content-quality] Math.random() used to derive a security-sensitive value in ${filePath} (line ${i + 1}). Use crypto.randomUUID() or crypto.getRandomValues() instead.`;
 		}
 	}
+	return null;
+}
+
+/** A5: the first JSON.parse() call not preceded (within 5 lines) by a `try {`. */
+function collectUnguardedJsonParseWarning(filePath: string, content: string): string | null {
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		if (!/\bJSON\.parse\s*\(/.test(lines[i])) continue;
+		const preceding = lines.slice(Math.max(0, i - 5), i + 1).join("\n");
+		if (!/\btry\s*\{/.test(preceding)) {
+			return `[interlinked:content-quality] JSON.parse() without try-catch at line ${i + 1} in ${filePath}. Wrap in try-catch to handle malformed input.`;
+		}
+	}
+	return null;
+}
+
+/** A3-A6 runtime-risk heuristics: insecure Math.random(), A4 floating promises
+ *  (async-named calls without await/void/return/.then/.catch), A5 unguarded
+ *  JSON.parse(), and A6 mixed import/require module systems. */
+function collectRuntimeRiskWarnings(
+	filePath: string,
+	content: string,
+	codeOnly: string,
+): string[] {
+	const warnings: string[] = [];
+	const insecureRandom = collectInsecureRandomWarning(filePath, content);
+	if (insecureRandom !== null) warnings.push(insecureRandom);
 	// A4: Floating promises — async-named calls without await/void/return/.then/.catch
 	const floatingPromisePattern =
 		/^\s*(?!.*\b(await|void|return)\b)(?!.*\.(then|catch|finally)\s*\().*\b\w*(Async|async)\w*\s*\(/gm;
@@ -719,30 +742,24 @@ function collectTsJsQualityWarnings(filePath: string, content: string): string[]
 			`[interlinked:content-quality] ${floatingMatches.length} potential floating promise(s) in ${filePath}. Add await, void, or .catch() to handle rejections.`,
 		);
 	}
-	// A5: JSON.parse without try-catch
-	const lines = content.split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		if (/\bJSON\.parse\s*\(/.test(lines[i])) {
-			// Check preceding 5 lines for try
-			const preceding = lines.slice(Math.max(0, i - 5), i + 1).join("\n");
-			if (!/\btry\s*\{/.test(preceding)) {
-				warnings.push(
-					`[interlinked:content-quality] JSON.parse() without try-catch at line ${i + 1} in ${filePath}. Wrap in try-catch to handle malformed input.`,
-				);
-				break; // One warning is enough
-			}
-		}
-	}
+	const unguardedParse = collectUnguardedJsonParseWarning(filePath, content);
+	if (unguardedParse !== null) warnings.push(unguardedParse);
 	// A6: Import/require mixing
-	if (!/\.cjs$/.test(filePath)) {
-		const hasImport = /\bimport\s+/.test(content);
-		const hasRequire = /\brequire\s*\(/.test(content);
-		if (hasImport && hasRequire) {
-			warnings.push(
-				`[interlinked:content-quality] Mixed import/require in ${filePath}. Use one module system consistently (prefer ES imports).`,
-			);
-		}
+	if (!/\.cjs$/.test(filePath) && /\bimport\s+/.test(content) && /\brequire\s*\(/.test(content)) {
+		warnings.push(
+			`[interlinked:content-quality] Mixed import/require in ${filePath}. Use one module system consistently (prefer ES imports).`,
+		);
 	}
-
 	return warnings;
+}
+
+/** TS/JS-specific content-quality heuristics (A2-A6 plus the older as-any /
+ *  console.log set). Thin orchestrator over the per-family collectors. */
+function collectTsJsQualityWarnings(filePath: string, content: string): string[] {
+	const codeOnly = stripCommentsAndStrings(content);
+	return [
+		...collectAssertionAndLogWarnings(filePath, codeOnly),
+		...collectMarkerEvalWarnings(filePath, content),
+		...collectRuntimeRiskWarnings(filePath, content, codeOnly),
+	];
 }

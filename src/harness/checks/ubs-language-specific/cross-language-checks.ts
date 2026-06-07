@@ -140,33 +140,33 @@ export function checkSqlEscapeHatchNonLiteral(
 	return matches;
 }
 
+// Source-code extensions where a hardcoded localhost is a real shipped-config
+// bug. The original detector had no extension gate and FP'd on docs (.md plan
+// files referencing the literal token), configuration manifests (.yaml/.toml
+// deploy configs that legitimately pin localhost for local dev), and JSONL log
+// lines. Restrict to these source types. Kept as a Set so the extension check
+// is a single membership test (no `||` chain) — keeping the orchestrator's
+// cyclomatic count low.
+const LOCALHOST_SOURCE_EXTS = new Set([
+	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+	".py", ".pyi",
+	".go", ".rs",
+	".java", ".kt", ".swift",
+	".rb", ".php",
+	".c", ".cc", ".cpp", ".cxx",
+	".h", ".hpp", ".hxx",
+]);
+
 /**
- * `ubs_hardcoded_localhost` — `localhost` / `127.0.0.1` baked into source
- * outside of test/config/example files. Often committed dev defaults that
- * break in deploy. pre_block / error.
- *
- * Distinct from `checks/supply-chain.ts:checkHardcodedLocalhost` (JS/TS
- * only, requires explicit port). This UBS variant is cross-language and
- * matches plain `localhost` / `127.0.0.1` outside known config/test paths.
+ * True when `filePath` is a source file whose committed localhost literals are
+ * worth flagging — a recognized source extension, not a test file, and not in
+ * an example/fixture/dev/config path. Extracted from
+ * `checkUbsHardcodedLocalhost` so its many `||`/`if` gates form their own
+ * function scope (keeps the orchestrator under the cyclomatic cap).
  */
-export function checkUbsHardcodedLocalhost(content: string, filePath: string): InlineMatch[] {
-	// Source-code extensions only. The original detector had no extension
-	// gate and FP'd on docs (.md plan files referencing the literal token),
-	// configuration manifests (.yaml/.toml deploy configs that legitimately
-	// pin localhost for local dev), and JSONL log lines. Restrict to file
-	// types where a hardcoded localhost is a real shipped-config bug.
-	const ext = getExtension(filePath);
-	const isSource =
-		ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx" ||
-		ext === ".mjs" || ext === ".cjs" ||
-		ext === ".py" || ext === ".pyi" ||
-		ext === ".go" || ext === ".rs" ||
-		ext === ".java" || ext === ".kt" || ext === ".swift" ||
-		ext === ".rb" || ext === ".php" ||
-		ext === ".c" || ext === ".cc" || ext === ".cpp" || ext === ".cxx" ||
-		ext === ".h" || ext === ".hpp" || ext === ".hxx";
-	if (!isSource) return [];
-	if (isTestFile(filePath)) return [];
+function isLocalhostScannableFile(filePath: string): boolean {
+	if (!LOCALHOST_SOURCE_EXTS.has(getExtension(filePath))) return false;
+	if (isTestFile(filePath)) return false;
 	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
 	// Match "example", "examples", "fixtures", "dev" as path segments — leading
 	// slash is optional so a top-level `examples/` directory is excluded too.
@@ -178,22 +178,27 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 		normalized.endsWith(".env") ||
 		normalized.endsWith(".env.example")
 	) {
-		return [];
+		return false;
 	}
+	return true;
+}
 
-	const originalLines = content.split("\n");
-	// Strip regex literals BEFORE comments so /…localhost…/ doesn't survive into
-	// the match pass — without this, the check FPs on its own implementation
-	// (this file + checks/supply-chain.ts both contain `/…localhost…/`).
-	const strippedLines = stripCommentsPreservingStrings(stripRegexLiterals(content)).split("\n");
-	const matches: InlineMatch[] = [];
-	// A real hardcoded-localhost bug is an ENDPOINT: a URL (`//localhost`), a
-	// host:port (`localhost:3000`), or a bare quoted host (`"localhost"`). Plain
-	// prose that merely mentions the word — e.g. a user-facing message like
-	// "auth is optional on localhost." — is not a config bug, so require an
-	// endpoint shape rather than matching the bare token.
-	const re =
-		/(?:\/\/|@)(?:localhost|127\.0\.0\.1)\b|\b(?:localhost|127\.0\.0\.1):\d|["'`](?:localhost|127\.0\.0\.1)["'`]/;
+// A real hardcoded-localhost bug is an ENDPOINT: a URL (`//localhost`), a
+// host:port (`localhost:3000`), or a bare quoted host (`"localhost"`). Plain
+// prose that merely mentions the word — e.g. a user-facing message like
+// "auth is optional on localhost." — is not a config bug, so require an
+// endpoint shape rather than matching the bare token.
+const LOCALHOST_ENDPOINT_RE =
+	/(?:\/\/|@)(?:localhost|127\.0\.0\.1)\b|\b(?:localhost|127\.0\.0\.1):\d|["'`](?:localhost|127\.0\.0\.1)["'`]/;
+
+/**
+ * Per-line exemptions for the localhost scan, run against the comment-stripped
+ * line. Returns true when a matched endpoint line is a legitimate pattern
+ * (metadata string, RegExp construction, configurable default, detection test)
+ * rather than a baked endpoint. Extracted so its `||` chain lives in its own
+ * scope.
+ */
+function isExemptStrippedLocalhostLine(strippedLine: string): boolean {
 	// Metadata-shape lines (description / label / noun / fix_instruction
 	// strings in registry & check-metadata files) legitimately contain the
 	// literal token because they describe the check itself. Skipping these
@@ -202,32 +207,11 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	const metadataAssignment =
 		/\b(?:label|noun|description|passLabel|fix_instruction|name|comment|summary|fix|msg|message)\s*[:=]\s*["'`]/;
 	// `new RegExp(...)` and `RegExp(...)` invocations are by construction
-	// pattern-matchers, not endpoint configs. The detector that finds
-	// curl-to-localhost calls in agent commands necessarily contains the
-	// literal "localhost" inside the regex source (template string passed
-	// to RegExp). Exempting RegExp constructors avoids the self-FP without
-	// missing real bugs — a real bug uses fetch("http://localhost:3000")
-	// or axios.get(...), not RegExp("...localhost...").
+	// pattern-matchers, not endpoint configs.
 	const regExpConstructor = /\bRegExp\s*\(/;
-	// Pattern-building exemption (narrowed). The previous blanket "any
-	// interpolated template containing localhost" rule was too broad: it
-	// hid real production endpoints like `fetch(\`http://localhost:${port}/api\`)`.
-	// Tightened to fire only when the template literal also carries a
-	// regex-shape signal (regex metacharacters or a pattern-named target):
-	//   - assigned/declared as `*_RE`, `*Re`, `*Pattern`, `*Regex`
-	//   - contains common regex metacharacters or escape sequences
-	//   - argument to a regex method: `.test(`, `.match(`, `.replace(`, `.exec(`, `.search(`
-	// Lines without those signals fall through to the matcher, so a real
-	// localhost URL inside an interpolated template (real bug) is flagged.
-	const localhostInsideTemplate = /`[^`]*\b(?:localhost|127\.0\.0\.1)\b[^`]*`/;
-	const looksLikeRegexPattern =
-		// eslint-disable-next-line no-template-curly-in-string -- regex source intentionally contains `${` as a literal metachar pattern, not a template placeholder
-		/(?:[A-Z][A-Za-z0-9_]*_RE\b|[A-Za-z][A-Za-z0-9_]*(?:Re|Pattern|Regex)\b\s*=)|\\(?:b|d|s|w|S|D|W|B|n|r|t)\b|\[\^?\\?[a-zA-Z0-9]|\(\?:|\.\s*(?:test|match|replace|exec|search)\s*\(/;
 	// A localhost literal that is a *configurable default* or a *detection
 	// test* is not a baked endpoint — it is exactly the shape this check's own
-	// fix_instruction endorses ("a clear default for local dev"). Without these
-	// exemptions the check FP'd on `interlinked enable`/`init`, where the CLI's
-	// documented localhost dev-server default is correct. Three legitimate forms:
+	// fix_instruction endorses ("a clear default for local dev").
 	//   1. fallback default after `||` / `??`  — `flag || "http://localhost:8787"`
 	const localhostAsDefault = /(?:\|\||\?\?)\s*["'`][^"'`]*(?:localhost|127\.0\.0\.1)/;
 	//   2. membership / equality test  — `url.includes("localhost")`, `h === "localhost"`
@@ -235,35 +219,80 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 		/(?:\.(?:includes|indexOf|startsWith|endsWith|search|match)\s*\(|[=!]==?)\s*["'`][^"'`]*(?:localhost|127\.0\.0\.1)/;
 	//   3. a default-/fallback-named declaration  — `const DEFAULT_SERVER = "...localhost"`
 	const localhostNamedDefault = /\b(?:const|let|var)\s+\w*(?:default|fallback)\w*\s*=/i;
+	return (
+		metadataAssignment.test(strippedLine) ||
+		regExpConstructor.test(strippedLine) ||
+		localhostAsDefault.test(strippedLine) ||
+		localhostAsTest.test(strippedLine) ||
+		localhostNamedDefault.test(strippedLine)
+	);
+}
+
+/**
+ * Pattern-building exemption keyed on the ORIGINAL (unstripped) line. The
+ * previous blanket "any interpolated template containing localhost" rule was
+ * too broad: it hid real production endpoints like
+ * `fetch(\`http://localhost:${port}/api\`)`. This fires only when the template
+ * literal also carries a regex-shape signal (regex metacharacters or a
+ * pattern-named target):
+ *   - assigned/declared as `*_RE`, `*Re`, `*Pattern`, `*Regex`
+ *   - contains common regex metacharacters or escape sequences
+ *   - argument to a regex method: `.test(`, `.match(`, `.replace(`, `.exec(`, `.search(`
+ * Lines without those signals fall through to the matcher, so a real localhost
+ * URL inside an interpolated template (real bug) is flagged.
+ */
+function isRegexPatternLocalhostLine(originalLine: string): boolean {
+	const localhostInsideTemplate = /`[^`]*\b(?:localhost|127\.0\.0\.1)\b[^`]*`/;
+	const looksLikeRegexPattern =
+		// eslint-disable-next-line no-template-curly-in-string -- regex source intentionally contains `${` as a literal metachar pattern, not a template placeholder
+		/(?:[A-Z][A-Za-z0-9_]*_RE\b|[A-Za-z][A-Za-z0-9_]*(?:Re|Pattern|Regex)\b\s*=)|\\(?:b|d|s|w|S|D|W|B|n|r|t)\b|\[\^?\\?[a-zA-Z0-9]|\(\?:|\.\s*(?:test|match|replace|exec|search)\s*\(/;
+	return localhostInsideTemplate.test(originalLine) && looksLikeRegexPattern.test(originalLine);
+}
+
+/**
+ * Multi-line RegExp guard: true when the nearest non-empty line before index
+ * `i` ends with an open `RegExp(` call — i.e. line `i` is its argument
+ * continuation, so a localhost literal there is regex source, not an endpoint.
+ * Extracted so the `while`/`&&` scan lives in its own scope.
+ */
+function isPrevLineRegExpOpen(strippedLines: string[], i: number): boolean {
+	let prev = i - 1;
+	while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
+	return prev >= 0 && /\bRegExp\s*\(\s*$/.test(strippedLines[prev]);
+}
+
+/**
+ * `ubs_hardcoded_localhost` — `localhost` / `127.0.0.1` baked into source
+ * outside of test/config/example files. Often committed dev defaults that
+ * break in deploy. pre_block / error.
+ *
+ * Distinct from `checks/supply-chain.ts:checkHardcodedLocalhost` (JS/TS
+ * only, requires explicit port). This UBS variant is cross-language and
+ * matches plain `localhost` / `127.0.0.1` outside known config/test paths.
+ */
+export function checkUbsHardcodedLocalhost(content: string, filePath: string): InlineMatch[] {
+	if (!isLocalhostScannableFile(filePath)) return [];
+
+	const originalLines = content.split("\n");
+	// Strip regex literals BEFORE comments so /…localhost…/ doesn't survive into
+	// the match pass — without this, the check FPs on its own implementation
+	// (this file + checks/supply-chain.ts both contain `/…localhost…/`).
+	const strippedLines = stripCommentsPreservingStrings(stripRegexLiterals(content)).split("\n");
+	const matches: InlineMatch[] = [];
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		if (metadataAssignment.test(strippedLines[i])) continue;
-		if (regExpConstructor.test(strippedLines[i])) continue;
-		// Configurable-default / detection-test shapes (see the three regexes
-		// above) are not baked endpoints — the override path already exists.
-		if (
-			localhostAsDefault.test(strippedLines[i]) ||
-			localhostAsTest.test(strippedLines[i]) ||
-			localhostNamedDefault.test(strippedLines[i])
-		) {
-			continue;
-		}
+		if (!LOCALHOST_ENDPOINT_RE.test(strippedLines[i])) continue;
+		// Metadata strings, RegExp constructors, configurable defaults, and
+		// detection tests are not baked endpoints (see helper).
+		if (isExemptStrippedLocalhostLine(strippedLines[i])) continue;
 		// Multi-line RegExp: the constructor is on one line and the literal
 		// argument is on the next. Skip when the previous non-empty line
 		// ends with `RegExp(` (its argument continuation).
-		let prev = i - 1;
-		while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
-		if (prev >= 0 && /\bRegExp\s*\(\s*$/.test(strippedLines[prev])) continue;
+		if (isPrevLineRegExpOpen(strippedLines, i)) continue;
 		// Narrowed template-literal exemption: only skip when there's a
 		// pattern-building signal alongside the interpolated localhost.
-		if (
-			localhostInsideTemplate.test(originalLines[i]) &&
-			looksLikeRegexPattern.test(originalLines[i])
-		) {
-			continue;
-		}
+		if (isRegexPatternLocalhostLine(originalLines[i])) continue;
 		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;

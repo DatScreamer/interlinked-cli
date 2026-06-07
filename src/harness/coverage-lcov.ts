@@ -79,6 +79,89 @@ function splitFirstComma(s: string): [string, string] {
 }
 
 /**
+ * Resolve the accumulator for an `SF` record, get-or-creating it in `accs`.
+ * Returns `null` for an empty path (caller leaves the current file unchanged),
+ * mirroring the original `if (!path) break` behavior.
+ */
+function resolveSfAcc(
+	accs: Map<string, FileAcc>,
+	rest: string,
+	cwd: string | undefined,
+): FileAcc | null {
+	const path = normalizeSourcePath(rest, cwd);
+	if (!path) return null;
+	let acc = accs.get(path);
+	if (!acc) {
+		acc = emptyAcc();
+		accs.set(path, acc);
+	}
+	return acc;
+}
+
+/** Apply a `DA:<line>,<hits>[,<checksum>]` record to the current accumulator. */
+function applyDaRecord(cur: FileAcc, rest: string): void {
+	const parts = rest.split(",");
+	const ln = Number.parseInt(parts[0] ?? "", 10);
+	const hits = Number.parseInt(parts[1] ?? "", 10);
+	if (!Number.isFinite(ln) || !Number.isFinite(hits)) return;
+	cur.lineHits.set(ln, (cur.lineHits.get(ln) ?? 0) + hits);
+}
+
+/** Apply an `FN:<line>,<name>` record (function start line). */
+function applyFnRecord(cur: FileAcc, rest: string): void {
+	const [lnStr, name] = splitFirstComma(rest);
+	const ln = Number.parseInt(lnStr, 10);
+	if (!name || !Number.isFinite(ln)) return;
+	cur.fnLine.set(name, ln);
+}
+
+/** Apply an `FNDA:<hits>,<name>` record (function entry hits). */
+function applyFndaRecord(cur: FileAcc, rest: string): void {
+	const [hitsStr, name] = splitFirstComma(rest);
+	const hits = Number.parseInt(hitsStr, 10);
+	if (!name || !Number.isFinite(hits)) return;
+	cur.fnHits.set(name, (cur.fnHits.get(name) ?? 0) + hits);
+}
+
+/** Apply a `BRDA:<line>,<block>,<branch>,<taken|->` record. */
+function applyBrdaRecord(cur: FileAcc, rest: string): void {
+	const parts = rest.split(",");
+	if (parts.length < 4) return;
+	const key = `${parts[0]}:${parts[1]}:${parts[2]}`;
+	const takenRaw = parts[3] ?? "-";
+	const taken = takenRaw === "-" ? 0 : Number.parseInt(takenRaw, 10);
+	if (!Number.isFinite(taken)) return;
+	cur.branchTaken.set(key, (cur.branchTaken.get(key) ?? 0) + taken);
+}
+
+/**
+ * Apply one already-tokenized detail record (`tag`/`rest`) to the in-progress
+ * file accumulator `cur`. Records that require a file but arrive before any `SF`
+ * (`cur === null`) are dropped, matching LCOV leniency. Summary tags
+ * (LF/LH/BRF/BRH/FNF/FNH/TN) and unknown tags are ignored — every metric is
+ * derived from the detail records instead.
+ */
+function applyDetailRecord(cur: FileAcc | null, tag: string, rest: string): void {
+	if (!cur) return;
+	switch (tag) {
+		case "DA":
+			applyDaRecord(cur, rest);
+			break;
+		case "FN":
+			applyFnRecord(cur, rest);
+			break;
+		case "FNDA":
+			applyFndaRecord(cur, rest);
+			break;
+		case "BRDA":
+			applyBrdaRecord(cur, rest);
+			break;
+		default:
+			break;
+	}
+}
+
+/**
  * Parse an LCOV string into canonical coverage. Pure — never throws on
  * arbitrary input (malformed lines are skipped).
  */
@@ -99,57 +182,12 @@ export function parseLcov(content: string, opts: ParseLcovOptions = {}): Canonic
 		const tag = line.slice(0, colon);
 		const rest = line.slice(colon + 1);
 
-		switch (tag) {
-			case "SF": {
-				const path = normalizeSourcePath(rest, cwd);
-				if (!path) break;
-				let acc = accs.get(path);
-				if (!acc) {
-					acc = emptyAcc();
-					accs.set(path, acc);
-				}
-				cur = acc;
-				break;
-			}
-			case "DA": {
-				if (!cur) break;
-				const parts = rest.split(",");
-				const ln = Number.parseInt(parts[0] ?? "", 10);
-				const hits = Number.parseInt(parts[1] ?? "", 10);
-				if (!Number.isFinite(ln) || !Number.isFinite(hits)) break;
-				cur.lineHits.set(ln, (cur.lineHits.get(ln) ?? 0) + hits);
-				break;
-			}
-			case "FN": {
-				if (!cur) break;
-				const [lnStr, name] = splitFirstComma(rest);
-				const ln = Number.parseInt(lnStr, 10);
-				if (!name || !Number.isFinite(ln)) break;
-				cur.fnLine.set(name, ln);
-				break;
-			}
-			case "FNDA": {
-				if (!cur) break;
-				const [hitsStr, name] = splitFirstComma(rest);
-				const hits = Number.parseInt(hitsStr, 10);
-				if (!name || !Number.isFinite(hits)) break;
-				cur.fnHits.set(name, (cur.fnHits.get(name) ?? 0) + hits);
-				break;
-			}
-			case "BRDA": {
-				if (!cur) break;
-				const parts = rest.split(",");
-				if (parts.length < 4) break;
-				const key = `${parts[0]}:${parts[1]}:${parts[2]}`;
-				const takenRaw = parts[3] ?? "-";
-				const taken = takenRaw === "-" ? 0 : Number.parseInt(takenRaw, 10);
-				if (!Number.isFinite(taken)) break;
-				cur.branchTaken.set(key, (cur.branchTaken.get(key) ?? 0) + taken);
-				break;
-			}
-			// LF/LH/BRF/BRH/FNF/FNH/TN intentionally ignored — derived from detail.
-			default:
-				break;
+		if (tag === "SF") {
+			// An empty/invalid path leaves the current file unchanged.
+			const acc = resolveSfAcc(accs, rest, cwd);
+			if (acc) cur = acc;
+		} else {
+			applyDetailRecord(cur, tag, rest);
 		}
 	}
 
