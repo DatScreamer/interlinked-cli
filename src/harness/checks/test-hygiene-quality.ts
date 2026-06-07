@@ -576,74 +576,105 @@ const NEGATIVE_NAME_RE =
 const DESCRIBE_NAME_RE =
 	/\bdescribe(?:\.(?:each|only|skip|skipIf|runIf))?\s*\(\s*(["'`])([^"'`]*)\1/g;
 
+type MaskMode = "code" | "line-comment" | "block-comment" | "single" | "double" | "template";
+
+/** One scan step's outcome: the mode for the next char, and whether a lookahead
+ *  char was already consumed (so the caller advances its index by one more). */
+interface MaskStep {
+	mode: MaskMode;
+	advanced: boolean;
+}
+
+/** Inside `// …`: blank everything until the newline, which ends the comment
+ *  (the newline itself stays, preserving offsets and line counts). */
+function maskLineCommentChar(chars: string[], i: number, ch: string): MaskStep {
+	if (ch === "\n") return { mode: "code", advanced: false };
+	chars[i] = " ";
+	return { mode: "line-comment", advanced: false };
+}
+
+/** Inside a block comment: blank the char (keeping newlines); on the closing
+ *  `*​/` blank both chars and return to code. `ch` is the original char at `i`. */
+function maskBlockCommentChar(chars: string[], i: number, ch: string, next: string | undefined): MaskStep {
+	chars[i] = ch === "\n" ? "\n" : " ";
+	if (ch === "*" && next === "/") {
+		chars[i + 1] = " ";
+		return { mode: "code", advanced: true };
+	}
+	return { mode: "block-comment", advanced: false };
+}
+
+/** True when `ch` closes the currently-open string literal of `mode`. */
+function closesStringMode(mode: MaskMode, ch: string): boolean {
+	if (mode === "single") return ch === "'";
+	if (mode === "double") return ch === '"';
+	return mode === "template" && ch === "`";
+}
+
+/** Inside a string literal: blank the char, honour a backslash escape (blank the
+ *  escaped char too), and close on the matching quote. `mode` is a string mode. */
+function maskStringChar(
+	chars: string[],
+	i: number,
+	ch: string,
+	next: string | undefined,
+	mode: MaskMode,
+): MaskStep {
+	chars[i] = ch === "\n" ? "\n" : " ";
+	if (ch === "\\") {
+		if (next === undefined) return { mode, advanced: false };
+		chars[i + 1] = next === "\n" ? "\n" : " ";
+		return { mode, advanced: true };
+	}
+	if (closesStringMode(mode, ch)) return { mode: "code", advanced: false };
+	return { mode, advanced: false };
+}
+
+/** In code mode: detect the start of a comment or string literal, blanking its
+ *  opener and returning the new mode. Plain code chars are left untouched. */
+function enterModeFromCode(
+	chars: string[],
+	i: number,
+	ch: string,
+	next: string | undefined,
+): MaskStep {
+	if (ch === "/" && (next === "/" || next === "*")) {
+		chars[i] = " ";
+		chars[i + 1] = " ";
+		return { mode: next === "/" ? "line-comment" : "block-comment", advanced: true };
+	}
+	if (ch === "'" || ch === '"' || ch === "`") {
+		chars[i] = " ";
+		const opened: MaskMode = ch === "'" ? "single" : ch === '"' ? "double" : "template";
+		return { mode: opened, advanced: false };
+	}
+	return { mode: "code", advanced: false };
+}
+
+/** Dispatch one character to the handler for the current `mode`. */
+function maskStep(
+	chars: string[],
+	i: number,
+	ch: string,
+	next: string | undefined,
+	mode: MaskMode,
+): MaskStep {
+	if (mode === "line-comment") return maskLineCommentChar(chars, i, ch);
+	if (mode === "block-comment") return maskBlockCommentChar(chars, i, ch, next);
+	if (mode === "single" || mode === "double" || mode === "template") {
+		return maskStringChar(chars, i, ch, next, mode);
+	}
+	return enterModeFromCode(chars, i, ch, next);
+}
+
 function maskCommentsAndStrings(content: string): string {
 	const chars = content.split("");
-	let mode: "code" | "line-comment" | "block-comment" | "single" | "double" | "template" = "code";
-
+	let mode: MaskMode = "code";
 	for (let i = 0; i < chars.length; i++) {
-		const ch = chars[i];
-		const next = chars[i + 1];
-
-		if (mode === "line-comment") {
-			if (ch === "\n") {
-				mode = "code";
-			} else {
-				chars[i] = " ";
-			}
-			continue;
-		}
-
-		if (mode === "block-comment") {
-			chars[i] = ch === "\n" ? "\n" : " ";
-			if (ch === "*" && next === "/") {
-				chars[i + 1] = " ";
-				i++;
-				mode = "code";
-			}
-			continue;
-		}
-
-		if (mode === "single" || mode === "double" || mode === "template") {
-			chars[i] = ch === "\n" ? "\n" : " ";
-			if (ch === "\\") {
-				if (next !== undefined) {
-					chars[i + 1] = next === "\n" ? "\n" : " ";
-					i++;
-				}
-				continue;
-			}
-			if (
-				(mode === "single" && ch === "'") ||
-				(mode === "double" && ch === '"') ||
-				(mode === "template" && ch === "`")
-			) {
-				mode = "code";
-			}
-			continue;
-		}
-
-		if (ch === "/" && next === "/") {
-			chars[i] = " ";
-			chars[i + 1] = " ";
-			i++;
-			mode = "line-comment";
-		} else if (ch === "/" && next === "*") {
-			chars[i] = " ";
-			chars[i + 1] = " ";
-			i++;
-			mode = "block-comment";
-		} else if (ch === "'") {
-			chars[i] = " ";
-			mode = "single";
-		} else if (ch === '"') {
-			chars[i] = " ";
-			mode = "double";
-		} else if (ch === "`") {
-			chars[i] = " ";
-			mode = "template";
-		}
+		const step = maskStep(chars, i, chars[i], chars[i + 1], mode);
+		mode = step.mode;
+		if (step.advanced) i++;
 	}
-
 	return chars.join("");
 }
 

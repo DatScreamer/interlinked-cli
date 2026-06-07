@@ -34,46 +34,39 @@ export function isNpmVerb(s: string): boolean {
 	return NPM_ADD_VERBS.has(s) || NPM_SYNC_VERBS.has(s) || NPM_REMOVE_VERBS.has(s);
 }
 
-export function parseNpmLike(
-	bin: string,
-	tokens: string[],
-	envVars: Record<string, string>,
-): InstallCommand | null {
-	// Drop pre-verb flags ("npm --prefix app install …") so the verb is at [0].
-	const trailing = dropPreVerbFlags(bin, tokens.slice(1), isNpmVerb);
-	const sub = trailing[0] || "";
-	const args = trailing.slice(1);
+// Decide the high-level action for an npm-family invocation, or null when the
+// verb isn't one we recognize as an install/sync/remove. `bareYarn` is true for
+// `yarn` with literally zero args (== `yarn install`); see parseNpmLike for why
+// we require exactly zero rather than "no recognized verb".
+function npmActionFor(sub: string, bareYarn: boolean): InstallAction | null {
+	if (bareYarn) return "sync";
+	if (NPM_SYNC_VERBS.has(sub)) return "sync";
+	if (NPM_ADD_VERBS.has(sub)) return "add";
+	if (NPM_REMOVE_VERBS.has(sub)) return "remove";
+	return null;
+}
 
-	let action: InstallAction;
-	// `yarn` with no args at all == `yarn install`. We require ZERO args (not
-	// "trailing produced nothing") because the latter happens when the user
-	// invoked a non-install yarn subcommand whose verb we don't recognize —
-	// e.g. `yarn workspaces foreach run build`. Treating that as `yarn install`
-	// would be a false positive.
-	if (bin === "yarn" && tokens.length === 1) {
-		action = "sync";
-	} else if (NPM_SYNC_VERBS.has(sub)) {
-		action = "sync";
-	} else if (NPM_ADD_VERBS.has(sub)) {
-		action = "add";
-	} else if (NPM_REMOVE_VERBS.has(sub)) {
-		action = "remove";
-	} else {
-		return null;
-	}
+interface NpmFlagScan {
+	positionals: string[];
+	customRegistry: string | undefined;
+	frozenLockfile: boolean;
+}
 
+const NPM_FLAG_TAKES_VALUE = new Set([
+	"--prefix",
+	"--cache",
+	"--user-agent",
+	"--workspace",
+	"-w",
+	"--save-prefix",
+]);
+
+// Walk the post-verb args of an npm-family command, separating positional package
+// specs from flags. Captures a custom --registry and any frozen/immutable flag.
+function scanNpmFlags(args: string[]): NpmFlagScan {
 	const positionals: string[] = [];
 	let customRegistry: string | undefined;
 	let frozenLockfile = false;
-	const notes: string[] = [];
-	const FLAG_TAKES_VALUE = new Set([
-		"--prefix",
-		"--cache",
-		"--user-agent",
-		"--workspace",
-		"-w",
-		"--save-prefix",
-	]);
 
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
@@ -87,25 +80,67 @@ export function parseNpmLike(
 			customRegistry = m[1];
 			continue;
 		}
-		if (
-			a === "--frozen-lockfile" ||
-			a === "--frozen" ||
-			a === "--prefer-offline" ||
-			a === "--immutable" ||
-			a === "--no-update"
-		) {
+		if (isNpmFrozenFlag(a)) {
 			frozenLockfile = true;
 			continue;
 		}
 		if (a.startsWith("-")) {
-			if (FLAG_TAKES_VALUE.has(a) && /^[^-]/.test(args[i + 1] || "")) i++;
+			if (NPM_FLAG_TAKES_VALUE.has(a) && /^[^-]/.test(args[i + 1] || "")) i++;
 			continue;
 		}
 		positionals.push(a);
 	}
 
+	return { positionals, customRegistry, frozenLockfile };
+}
+
+function isNpmFrozenFlag(a: string): boolean {
+	return (
+		a === "--frozen-lockfile" ||
+		a === "--frozen" ||
+		a === "--prefer-offline" ||
+		a === "--immutable" ||
+		a === "--no-update"
+	);
+}
+
+// Whether a `sync` action reads the lockfile, given the manager and whether any
+// positionals were present. `npm` always uses the lockfile on sync; pnpm only
+// when no positionals; an explicit frozen/immutable flag forces it for any.
+function npmSyncFromLockfile(
+	bin: string,
+	frozenLockfile: boolean,
+	noPositionals: boolean,
+): boolean {
+	if (bin === "npm") return true;
+	if (frozenLockfile) return true;
+	return bin === "pnpm" && noPositionals;
+}
+
+export function parseNpmLike(
+	bin: string,
+	tokens: string[],
+	envVars: Record<string, string>,
+): InstallCommand | null {
+	// Drop pre-verb flags ("npm --prefix app install …") so the verb is at [0].
+	const trailing = dropPreVerbFlags(bin, tokens.slice(1), isNpmVerb);
+	const sub = trailing[0] || "";
+	const args = trailing.slice(1);
+
+	// `yarn` with no args at all == `yarn install`. We require ZERO args (not
+	// "trailing produced nothing") because the latter happens when the user
+	// invoked a non-install yarn subcommand whose verb we don't recognize —
+	// e.g. `yarn workspaces foreach run build`. Treating that as `yarn install`
+	// would be a false positive.
+	const action = npmActionFor(sub, bin === "yarn" && tokens.length === 1);
+	if (action === null) return null;
+
+	const notes: string[] = [];
+	const scan = scanNpmFlags(args);
+	const positionals = scan.positionals;
+	const frozenLockfile = scan.frozenLockfile;
 	// Env-var registry override only fires when no inline --registry was given.
-	if (!customRegistry) customRegistry = envRegistryFor("npm", envVars);
+	const customRegistry = scan.customRegistry ?? envRegistryFor("npm", envVars);
 
 	if (action === "add" && positionals.length === 0) {
 		return {
@@ -120,13 +155,14 @@ export function parseNpmLike(
 		};
 	}
 
+	const isSync = action === "sync";
+	const noPositionals = positionals.length === 0;
 	const fromLockfile =
-		action === "sync" &&
-		(bin === "npm" || frozenLockfile || (bin === "pnpm" && positionals.length === 0));
-	const fromManifest = action === "sync" && positionals.length === 0;
+		isSync && npmSyncFromLockfile(bin, frozenLockfile, noPositionals);
+	const fromManifest = isSync && noPositionals;
 
 	const packages: PackageSpec[] = positionals.map(classifyNpmSpec);
-	if (action === "sync" && positionals.length > 0) {
+	if (isSync && !noPositionals) {
 		notes.push(`unexpected positional args to ${bin} ${sub}`);
 	}
 
@@ -181,48 +217,49 @@ function classifyNpmSpec(spec: string): PackageSpec {
 // ===========================================================
 // pip / pip3 / pipx
 // ===========================================================
-export function parsePip(
-	bin: string,
-	tokens: string[],
-	envVars: Record<string, string>,
-): InstallCommand | null {
-	const sub = tokens[1] || "";
-	const isPipxSubcommand =
-		bin === "pipx" && (sub === "install" || sub === "inject" || sub === "run");
-	if (sub !== "install" && !isPipxSubcommand) return null;
-	const args = tokens.slice(2);
+interface PipFlagScan {
+	positionals: string[];
+	customRegistry: string | undefined;
+	manifestFile: string | undefined;
+	fromConstraints: boolean;
+}
+
+// `-e` / `--editable` is intentionally NOT a value-consuming flag — its value IS
+// the spec, and dropping that value would let `pip install -e git+URL` slip past
+// the guard. We capture the next token as a positional spec in scanPipFlags.
+const PIP_FLAG_TAKES_VALUE = new Set([
+	"--target",
+	"-t",
+	"--prefix",
+	"--root",
+	"--src",
+	"--build",
+	"--cache-dir",
+	"--log",
+	"--proxy",
+	"--retries",
+	"--timeout",
+	"--exists-action",
+	"--trusted-host",
+	"--client-cert",
+	"--cert",
+	"--python",
+	"--find-links",
+	"-f",
+	"--platform",
+	"--python-version",
+	"--implementation",
+	"--abi",
+]);
+
+// Walk pip's post-`install` args, separating positional package specs from flags.
+// Captures a custom index URL, a -r/--requirement manifest file, and whether a
+// -c/--constraint was present. Editable (-e/--editable) targets are positionals.
+function scanPipFlags(args: string[]): PipFlagScan {
 	const positionals: string[] = [];
 	let customRegistry: string | undefined;
 	let manifestFile: string | undefined;
 	let fromConstraints = false;
-
-	// `-e` / `--editable` is intentionally NOT here — its value IS the spec,
-	// and dropping that value would let `pip install -e git+URL` slip past the
-	// guard. We handle the next token as a positional spec below.
-	const FLAG_TAKES_VALUE = new Set([
-		"--target",
-		"-t",
-		"--prefix",
-		"--root",
-		"--src",
-		"--build",
-		"--cache-dir",
-		"--log",
-		"--proxy",
-		"--retries",
-		"--timeout",
-		"--exists-action",
-		"--trusted-host",
-		"--client-cert",
-		"--cert",
-		"--python",
-		"--find-links",
-		"-f",
-		"--platform",
-		"--python-version",
-		"--implementation",
-		"--abi",
-	]);
 
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
@@ -251,13 +288,8 @@ export function parsePip(
 			i++;
 			continue;
 		}
-		// Editable: -e <spec> / --editable <spec> — the following token is the package.
-		if (a === "-e" || a === "--editable") {
-			const next = args[i + 1];
-			if (next && !next.startsWith("-")) {
-				positionals.push(next);
-				i++;
-			}
+		if (scanPipEditable(a, args[i + 1], positionals)) {
+			i++;
 			continue;
 		}
 		const meq = a.match(/^--editable=(.+)$/);
@@ -266,17 +298,58 @@ export function parsePip(
 			continue;
 		}
 		if (a.startsWith("-")) {
-			if (FLAG_TAKES_VALUE.has(a) && /^[^-]/.test(args[i + 1] || "")) i++;
+			if (pipFlagConsumesValue(a, args[i + 1])) i++;
 			continue;
 		}
 		positionals.push(a);
 	}
 
-	if (!customRegistry) customRegistry = envRegistryFor("pypi", envVars);
+	return { positionals, customRegistry, manifestFile, fromConstraints };
+}
+
+// True when a generic pip flag `a` takes a separate value token (and that token,
+// `next`, is present and isn't itself a flag) — so the scanner should skip it.
+function pipFlagConsumesValue(a: string, next: string | undefined): boolean {
+	return PIP_FLAG_TAKES_VALUE.has(a) && /^[^-]/.test(next || "");
+}
+
+// Handle `-e <spec>` / `--editable <spec>`: push the following token as a
+// positional when it's a real spec (not another flag / missing). Returns true
+// when `a` was the editable flag (so the caller advances past the consumed spec),
+// regardless of whether a spec followed.
+function scanPipEditable(
+	a: string,
+	next: string | undefined,
+	positionals: string[],
+): boolean {
+	if (a !== "-e" && a !== "--editable") return false;
+	if (next && !next.startsWith("-")) {
+		positionals.push(next);
+		return true;
+	}
+	return false;
+}
+
+export function parsePip(
+	bin: string,
+	tokens: string[],
+	envVars: Record<string, string>,
+): InstallCommand | null {
+	const sub = tokens[1] || "";
+	const isPipxSubcommand =
+		bin === "pipx" && (sub === "install" || sub === "inject" || sub === "run");
+	if (sub !== "install" && !isPipxSubcommand) return null;
+	const args = tokens.slice(2);
+
+	const scan = scanPipFlags(args);
+	const positionals = scan.positionals;
+	const manifestFile = scan.manifestFile;
+	const customRegistry = scan.customRegistry ?? envRegistryFor("pypi", envVars);
 
 	const packages: PackageSpec[] = positionals.map(classifyPipSpec);
-	let action: InstallAction = positionals.length > 0 ? "add" : "sync";
-	const fromManifest = !!manifestFile || (positionals.length === 0 && !fromConstraints);
+	const noPositionals = positionals.length === 0;
+	let action: InstallAction = noPositionals ? "sync" : "add";
+	const fromManifest = !!manifestFile || (noPositionals && !scan.fromConstraints);
 	if (bin === "pipx") action = "install_global";
 
 	return {

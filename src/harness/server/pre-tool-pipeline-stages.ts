@@ -109,10 +109,130 @@ export function runTddCommitGate(
 }
 
 /**
+ * Emit a `guard_block` report to the server bridge for a project-wide git-gate
+ * block, when a bridge is configured. Agent-name fallback chain matches the
+ * inlined call sites verbatim (event → session → ""). No-op without a bridge.
+ */
+function reportGitGateGuardBlock(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	reason: string,
+): void {
+	if (!ctx.serverBridge) return;
+	ctx.serverBridge.reportGuardEvent({
+		agent_name: event.agent_name || session?.agent_name || "",
+		event_type: "guard_block",
+		tool_name: event.tool_name,
+		tool_input_summary: summarizeToolInput(event),
+		decision: "block",
+		reason,
+		occurred_at: event.timestamp,
+	});
+}
+
+/**
+ * Project-wide typecheck tier of {@link runProjectWideGitGate}. Diff-UNaware —
+ * asserts the WHOLE project typechecks before allowing the git command. Appends
+ * warnings and, on errors, flips `preDecision` to block + reports a guard event.
+ * Verbatim extraction; mutates `preDecision` in place. `isCommit` selects the
+ * commit-vs-push wording.
+ */
+function applyProjectTypecheckGate(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	preDecision: HarnessDecision,
+	isCommit: boolean,
+): void {
+	const tcResults = checkProjectTypecheckClean(ctx.cwd);
+	const tcWarnings = tcResults.filter((r) => r.severity === "warning");
+	const tcErrors = tcResults.filter((r) => r.severity === "error");
+	if (tcWarnings.length > 0) {
+		const warnings = preDecision.warnings || [];
+		for (const w of tcWarnings) {
+			warnings.push(`[interlinked:${w.name}] ${w.message}`);
+		}
+		preDecision.warnings = warnings;
+	}
+	if (tcErrors.length > 0) {
+		preDecision.decision = "block";
+		const action = isCommit ? "commit" : "push";
+		const errLines = tcErrors
+			.slice(0, 10)
+			.map((e) => `  - ${e.message}`)
+			.join("\n");
+		const tail =
+			tcErrors.length > 10 ? `\n  ... and ${tcErrors.length - 10} more` : "";
+		preDecision.reason =
+			`BLOCKED: Project typecheck failed (${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}) — CI will fail on this ${action}. ` +
+			"Pre-existing errors in untouched files DO count: every commit must build clean. Fix these first:\n" +
+			errLines +
+			tail +
+			"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
+			"INTERLINKED_SKIP_PROJECT_TYPECHECK=1 git ...";
+		reportGitGateGuardBlock(
+			ctx,
+			event,
+			session,
+			`project_typecheck_clean: ${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}`,
+		);
+	}
+}
+
+/**
+ * Push-only second tier of {@link runProjectWideGitGate}: the full project test
+ * suite. Typecheck-clean is necessary but not sufficient (tsc-clean commits have
+ * shipped stale test assertions that turned CI red); tests are slow so this runs
+ * on PUSH only. Appends warnings and, on failures, blocks + reports a guard
+ * event. Verbatim extraction; mutates `preDecision` in place.
+ */
+function applyProjectTestGate(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	preDecision: HarnessDecision,
+): void {
+	const testResults = checkProjectTestsClean(ctx.cwd);
+	const testWarnings = testResults.filter((r) => r.severity === "warning");
+	const testErrors = testResults.filter((r) => r.severity === "error");
+	if (testWarnings.length > 0) {
+		const warnings = preDecision.warnings || [];
+		for (const w of testWarnings) {
+			warnings.push(`[interlinked:${w.name}] ${w.message}`);
+		}
+		preDecision.warnings = warnings;
+	}
+	if (testErrors.length > 0) {
+		preDecision.decision = "block";
+		const failLines = testErrors
+			.slice(0, 10)
+			.map((e) => `  - ${e.message}`)
+			.join("\n");
+		const tail =
+			testErrors.length > 10 ? `\n  ... and ${testErrors.length - 10} more` : "";
+		preDecision.reason =
+			`BLOCKED: Project tests failed (${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}) — CI will fail on this push. ` +
+			"Pre-existing test failures DO count: every push must build clean. Failing tests:\n" +
+			failLines +
+			tail +
+			"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
+			"INTERLINKED_SKIP_PROJECT_TESTS=1 git push ...";
+		reportGitGateGuardBlock(
+			ctx,
+			event,
+			session,
+			`project_tests_clean: ${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}`,
+		);
+	}
+}
+
+/**
  * Project-wide typecheck gate (commit + push) plus the push-only test tier.
  * Diff-UNaware — asserts the whole project typechecks / tests clean before
  * allowing `git commit` / `git push`. Mutates `preDecision` in place and may
- * report a guard block to the server bridge. Verbatim move.
+ * report a guard block to the server bridge. Thin orchestrator over
+ * {@link applyProjectTypecheckGate} and {@link applyProjectTestGate}.
  */
 export function runProjectWideGitGate(
 	ctx: ServerRuntime,
@@ -120,7 +240,6 @@ export function runProjectWideGitGate(
 	session: SessionTrajectory,
 	preDecision: HarnessDecision,
 ): void {
-	const CWD = ctx.cwd;
 	// --- Project-wide typecheck gate (commit + push) ---
 	// Diff-UNaware. Asserts the WHOLE project typechecks before
 	// allowing `git commit` or `git push`. Catches the failure
@@ -133,44 +252,7 @@ export function runProjectWideGitGate(
 		const isCommit = /\bgit\s+commit\b/.test(cmdStr);
 		const isPush = /\bgit\s+push\b/.test(cmdStr);
 		if (isCommit || isPush) {
-			const tcResults = checkProjectTypecheckClean(CWD);
-			const tcWarnings = tcResults.filter((r) => r.severity === "warning");
-			const tcErrors = tcResults.filter((r) => r.severity === "error");
-			if (tcWarnings.length > 0) {
-				const warnings = preDecision.warnings || [];
-				for (const w of tcWarnings) {
-					warnings.push(`[interlinked:${w.name}] ${w.message}`);
-				}
-				preDecision.warnings = warnings;
-			}
-			if (tcErrors.length > 0) {
-				preDecision.decision = "block";
-				const action = isCommit ? "commit" : "push";
-				const errLines = tcErrors
-					.slice(0, 10)
-					.map((e) => `  - ${e.message}`)
-					.join("\n");
-				const tail =
-					tcErrors.length > 10 ? `\n  ... and ${tcErrors.length - 10} more` : "";
-				preDecision.reason =
-					`BLOCKED: Project typecheck failed (${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}) — CI will fail on this ${action}. ` +
-					"Pre-existing errors in untouched files DO count: every commit must build clean. Fix these first:\n" +
-					errLines +
-					tail +
-					"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
-					"INTERLINKED_SKIP_PROJECT_TYPECHECK=1 git ...";
-				if (ctx.serverBridge) {
-					ctx.serverBridge.reportGuardEvent({
-						agent_name: event.agent_name || session?.agent_name || "",
-						event_type: "guard_block",
-						tool_name: event.tool_name,
-						tool_input_summary: summarizeToolInput(event),
-						decision: "block",
-						reason: `project_typecheck_clean: ${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}`,
-						occurred_at: event.timestamp,
-					});
-				}
-			}
+			applyProjectTypecheckGate(ctx, event, session, preDecision, isCommit);
 
 			// Push-only second tier: full test suite. Typecheck-clean
 			// is necessary but not sufficient — the codex-flag commit
@@ -179,45 +261,7 @@ export function runProjectWideGitGate(
 			// (~40s on this repo), so we only run them on PUSH, not
 			// on every commit. Bypass: INTERLINKED_SKIP_PROJECT_TESTS=1.
 			if (preDecision.decision === "allow" && isPush) {
-				const testResults = checkProjectTestsClean(CWD);
-				const testWarnings = testResults.filter((r) => r.severity === "warning");
-				const testErrors = testResults.filter((r) => r.severity === "error");
-				if (testWarnings.length > 0) {
-					const warnings = preDecision.warnings || [];
-					for (const w of testWarnings) {
-						warnings.push(`[interlinked:${w.name}] ${w.message}`);
-					}
-					preDecision.warnings = warnings;
-				}
-				if (testErrors.length > 0) {
-					preDecision.decision = "block";
-					const failLines = testErrors
-						.slice(0, 10)
-						.map((e) => `  - ${e.message}`)
-						.join("\n");
-					const tail =
-						testErrors.length > 10
-							? `\n  ... and ${testErrors.length - 10} more`
-							: "";
-					preDecision.reason =
-						`BLOCKED: Project tests failed (${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}) — CI will fail on this push. ` +
-						"Pre-existing test failures DO count: every push must build clean. Failing tests:\n" +
-						failLines +
-						tail +
-						"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
-						"INTERLINKED_SKIP_PROJECT_TESTS=1 git push ...";
-					if (ctx.serverBridge) {
-						ctx.serverBridge.reportGuardEvent({
-							agent_name: event.agent_name || session?.agent_name || "",
-							event_type: "guard_block",
-							tool_name: event.tool_name,
-							tool_input_summary: summarizeToolInput(event),
-							decision: "block",
-							reason: `project_tests_clean: ${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}`,
-							occurred_at: event.timestamp,
-						});
-					}
-				}
+				applyProjectTestGate(ctx, event, session, preDecision);
 			}
 		}
 	}

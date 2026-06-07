@@ -179,6 +179,86 @@ function dropInlineSuppressed(
 	}
 }
 
+/**
+ * Oversized written-code files — enforced cap (default gate). Generated,
+ * test, .d.ts and non-code files are exempt; files in the baseline are
+ * grandfathered up to their recorded size (a ratchet — they may shrink
+ * or hold but not grow). See harness/large-file-policy.ts.
+ */
+function collectLargeFileFinding(file: string, content: string, cwd: string, relPath: string, r: CodeQualityResults): void {
+	if (!isCappableFile({ filePath: file, content })) return;
+	const baseline = loadLargeFileBaseline(cwd);
+	const verdict = evaluateLargeFile({ relPath, lines: countLines(content), baseline });
+	if (!verdict.overCap || verdict.grandfathered) return;
+	const cap = baseline?.max_lines ?? DEFAULT_MAX_LINES;
+	r.largeFiles.push({
+		check: "large_files",
+		file: relPath,
+		line: 0,
+		message: `${verdict.lines} lines — over the ${cap}-line cap for hand-written code. Split into smaller, focused modules.`,
+	});
+}
+
+/**
+ * JSON-file handling: parse-validity finding + tsconfig strictness. Returns
+ * `true` when the file was a `.json` (caller must then short-circuit the rest
+ * of the per-file battery, preserving the original early-return semantics).
+ */
+function collectJsonFindings(file: string, content: string, ext: string, relPath: string, r: CodeQualityResults): boolean {
+	if (ext !== JSON_EXT) return false;
+	try {
+		JSON.parse(content);
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		r.jsonValidity.push({
+			check: "json_validity",
+			file: relPath,
+			line: 0,
+			message: msg.slice(0, JSON_PARSE_ERR_SLICE),
+		});
+	}
+	// tsconfig*.json strictness check — runs BEFORE the early return so
+	// tsconfig files surface in `interlinked verify` the same way they
+	// surface at PostToolUse. The detector handles its own basename
+	// filter (`tsconfig.json` / `tsconfig.*.json`) and node_modules skip
+	// internally, so we can call it unconditionally for any .json file.
+	r.tsconfigStrictness.push(
+		...toIssues("tsconfig_strictness", relPath, checkTsconfigStrictness(content, file)),
+	);
+	return true;
+}
+
+/** Strong typing — shared findAnyTypes (non-test, non-generated TS/TSX only). */
+function collectStrongTypingFindings(file: string, content: string, ext: string, relPath: string, r: CodeQualityResults): void {
+	const base = basename(file, ext);
+	const isTest = base.endsWith(".test") || base.endsWith(".spec") || file.includes("__tests__");
+	if (isTest || (ext !== TS_EXT && ext !== TSX_EXT) || isGeneratedFile(content)) return;
+	for (const m of findAnyTypes(content)) {
+		if (m.kind !== ANY_KIND) continue;
+		r.strongTyping.push({
+			check: "strong_typing",
+			file: relPath,
+			line: m.line,
+			message: m.text,
+		});
+	}
+}
+
+/** Phantom imports — relative/absolute specifiers that resolve to no file. */
+function collectPhantomImportFindings(file: string, content: string, relPath: string, r: CodeQualityResults): void {
+	for (const imp of parseImports(content, file)) {
+		if (!imp.specifier.startsWith(".") && !imp.specifier.startsWith("/")) continue;
+		if (imp.specifier.endsWith(JSON_EXT)) continue;
+		if (resolveImportPath(file, imp.specifier)) continue;
+		r.phantomImports.push({
+			check: "phantom_imports",
+			file: relPath,
+			line: 0,
+			message: `imports "${imp.specifier}" which does not resolve to any file`,
+		});
+	}
+}
+
 function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const { file, content, cwd, r, moduleExportsCache, allEnvRefs, piiOpts } = args;
 
@@ -186,65 +266,13 @@ function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const relPath = relative(cwd, file);
 	const isDts = file.endsWith(DTS_SUFFIX);
 
-	// Oversized written-code files — enforced cap (default gate). Generated,
-	// test, .d.ts and non-code files are exempt; files in the baseline are
-	// grandfathered up to their recorded size (a ratchet — they may shrink
-	// or hold but not grow). See harness/large-file-policy.ts.
-	if (isCappableFile({ filePath: file, content })) {
-		const baseline = loadLargeFileBaseline(cwd);
-		const verdict = evaluateLargeFile({ relPath, lines: countLines(content), baseline });
-		if (verdict.overCap && !verdict.grandfathered) {
-			const cap = baseline?.max_lines ?? DEFAULT_MAX_LINES;
-			r.largeFiles.push({
-				check: "large_files",
-				file: relPath,
-				line: 0,
-				message: `${verdict.lines} lines — over the ${cap}-line cap for hand-written code. Split into smaller, focused modules.`,
-			});
-		}
-	}
+	collectLargeFileFinding(file, content, cwd, relPath, r);
 
-	// JSON validity
-	if (ext === JSON_EXT) {
-		try {
-			JSON.parse(content);
-		} catch (err: unknown) {
-			const msg = err instanceof Error ? err.message : String(err);
-			r.jsonValidity.push({
-				check: "json_validity",
-				file: relPath,
-				line: 0,
-				message: msg.slice(0, JSON_PARSE_ERR_SLICE),
-			});
-		}
-		// tsconfig*.json strictness check — runs BEFORE the early return so
-		// tsconfig files surface in `interlinked verify` the same way they
-		// surface at PostToolUse. The detector handles its own basename
-		// filter (`tsconfig.json` / `tsconfig.*.json`) and node_modules skip
-		// internally, so we can call it unconditionally for any .json file.
-		r.tsconfigStrictness.push(
-			...toIssues("tsconfig_strictness", relPath, checkTsconfigStrictness(content, file)),
-		);
-		return;
-	}
+	if (collectJsonFindings(file, content, ext, relPath, r)) return;
 
 	if (isDts) return;
 
-	// Strong typing — shared findAnyTypes (non-test, non-generated only)
-	const base = basename(file, ext);
-	const isTest = base.endsWith(".test") || base.endsWith(".spec") || file.includes("__tests__");
-	if (!isTest && (ext === TS_EXT || ext === TSX_EXT) && !isGeneratedFile(content)) {
-		for (const m of findAnyTypes(content)) {
-			if (m.kind === ANY_KIND) {
-				r.strongTyping.push({
-					check: "strong_typing",
-					file: relPath,
-					line: m.line,
-					message: m.text,
-				});
-			}
-		}
-	}
+	collectStrongTypingFindings(file, content, ext, relPath, r);
 
 	r.consoleStatements.push(
 		...toIssues("console_statements", relPath, checkConsoleDebug(content, file)),
@@ -255,20 +283,8 @@ function collectPerFileFindings(args: RunFileChecksArgs): void {
 		collectSuppressionFindings(content, relPath, r.suppressions);
 	}
 
-	// Phantom imports
 	if (JS_TS_EXTS.has(ext)) {
-		for (const imp of parseImports(content, file)) {
-			if (!imp.specifier.startsWith(".") && !imp.specifier.startsWith("/")) continue;
-			if (imp.specifier.endsWith(JSON_EXT)) continue;
-			if (!resolveImportPath(file, imp.specifier)) {
-				r.phantomImports.push({
-					check: "phantom_imports",
-					file: relPath,
-					line: 0,
-					message: `imports "${imp.specifier}" which does not resolve to any file`,
-				});
-			}
-		}
+		collectPhantomImportFindings(file, content, relPath, r);
 	}
 
 	const testResult = checkTestRegressions(content, file);

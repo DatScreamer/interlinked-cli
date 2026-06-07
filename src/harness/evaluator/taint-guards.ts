@@ -33,6 +33,7 @@ import type {
 	HarnessDecision,
 	SessionTrajectory,
 	TaintProvenance,
+	TaintTrackingConfig,
 } from "../types.js";
 import { isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
 
@@ -190,6 +191,137 @@ export function checkProvenanceTaintToExternalAction(
 	return null;
 }
 
+/**
+ * Stage 1 — on a file read, ratchet session sensitivity to the file's level
+ * if higher, and push the escalation warning. Mutates `session` (via
+ * `ratchetSensitivity`) and appends to `warnings`. Side-effecting; returns void.
+ */
+function applySensitivityRatchet(
+	toolName: string,
+	toolInput: JsonObject,
+	taint: TaintTrackingConfig,
+	session: SessionTrajectory,
+	warnings: string[],
+): void {
+	if (!isReadOperation(toolName)) return;
+	const filePath = (toolInput.file_path as string) || "";
+	if (!filePath) return;
+	const fileSensitivity = classifyFileSensitivity(filePath, taint);
+	if (SENSITIVITY_ORDER[fileSensitivity] <= SENSITIVITY_ORDER[session.sensitivity_level]) {
+		return;
+	}
+	ratchetSensitivity(session, filePath, fileSensitivity, taint);
+	const blockStatus = shouldBlockNetwork(session, taint) ? "BLOCKED" : "monitored";
+	warnings.push(
+		`[interlinked:taint] Sensitivity escalated to ${fileSensitivity} after reading ${filePath}. Outbound network commands will be ${blockStatus}.`,
+	);
+}
+
+/**
+ * Stage 2 — hard block on outbound network commands while the session is
+ * tainted at/above the configured block threshold. Returns a terminal block
+ * result, or null to continue the guard chain.
+ */
+function checkTaintedNetworkBlock(
+	toolName: string,
+	toolInput: JsonObject,
+	taint: TaintTrackingConfig,
+	session: SessionTrajectory,
+	warnings: string[],
+): TaintGuardsResult | null {
+	if (!isBash(toolName) || !shouldBlockNetwork(session, taint)) return null;
+	const cmd = (toolInput.command as string) || "";
+	if (!isNetworkCommand(cmd)) return null;
+	return {
+		kind: "block",
+		decision: {
+			decision: "block",
+			reason: `BLOCKED: Outbound network command while session is tainted at ${session.sensitivity_level} level (tainted by: ${formatTaintSources(session)}). Sensitive data may be exfiltrated.`,
+			warnings,
+		},
+	};
+}
+
+/**
+ * Stage 4a — escalate `tainted_network_internal` when a network command runs
+ * at Internal sensitivity (Confidential+ is hard-blocked in stage 2). Returns
+ * the escalation request, or null when it does not apply.
+ */
+function buildTaintedNetworkInternalEscalation(
+	toolName: string,
+	toolInput: JsonObject,
+	taint: TaintTrackingConfig,
+	session: SessionTrajectory,
+): EscalationRequest | null {
+	if (!isBash(toolName) || shouldBlockNetwork(session, taint)) return null;
+	if (SENSITIVITY_ORDER[session.sensitivity_level] < SENSITIVITY_ORDER.Internal) return null;
+	const cmd = (toolInput.command as string) || "";
+	if (!isNetworkCommand(cmd)) return null;
+	return {
+		trigger: "tainted_network_internal",
+		summary: `Network command while session is tainted at ${session.sensitivity_level} level (tainted by: ${formatTaintSources(session)})`,
+		tool_name: toolName,
+		tool_input_redacted: { command: "[REDACTED — network command]" },
+		sensitivity_level: session.sensitivity_level,
+		step_number: session.tool_call_count,
+		recent_tool_sequence: session.tool_sequence.slice(-ESCALATION_TAIL_LENGTH),
+	};
+}
+
+/**
+ * Stage 5a — escalate `high_step_budget` when a state-changing tool runs past
+ * the high-water mark of the step budget. Returns the escalation request, or
+ * null when it does not apply.
+ */
+function buildHighStepBudgetEscalation(
+	toolName: string,
+	toolInput: JsonObject,
+	session: SessionTrajectory,
+): EscalationRequest | null {
+	const overThreshold =
+		session.step_limit !== Number.POSITIVE_INFINITY &&
+		session.tool_call_count > session.step_limit * HIGH_BUDGET_THRESHOLD;
+	if (!overThreshold) return null;
+	if (!isFileWrite(toolName) && !isBash(toolName)) return null;
+	const filePath = (toolInput.file_path as string) || "";
+	return {
+		trigger: "high_step_budget",
+		summary: `Agent at ${Math.round((session.tool_call_count / session.step_limit) * 100)}% of step budget (${session.tool_call_count}/${session.step_limit}) with state-changing tool`,
+		tool_name: toolName,
+		tool_input_redacted: filePath ? { file_path: filePath } : { command: "[REDACTED]" },
+		sensitivity_level: session.sensitivity_level,
+		step_number: session.tool_call_count,
+		recent_tool_sequence: session.tool_sequence.slice(-ESCALATION_TAIL_LENGTH),
+	};
+}
+
+/**
+ * Stage 6 — step-limit graceful degradation: read-only tools stay allowed
+ * (with a wrap-up warning) while mutations are blocked once the limit is
+ * exceeded. Returns a terminal result, or null when under the limit.
+ */
+function checkStepLimitDegradation(
+	toolName: string,
+	session: SessionTrajectory,
+	warnings: string[],
+): TaintGuardsResult | null {
+	if (!isStepLimitExceeded(session)) return null;
+	if (READ_ONLY_TOOLS_ON_BUDGET.has(toolName)) {
+		warnings.push(
+			`[interlinked:budget] Step limit (${session.step_limit}) exceeded — read-only mode. Mutations are blocked. Wrap up and commit.`,
+		);
+		return { kind: "allow-readonly", decision: { decision: "allow", warnings } };
+	}
+	return {
+		kind: "block",
+		decision: {
+			decision: "block",
+			reason: `BLOCKED: Step limit (${session.step_limit}) exceeded at ${session.sensitivity_level} sensitivity level. Read-only tools (Read, Glob, Grep) are still allowed.`,
+			warnings,
+		},
+	};
+}
+
 export interface TaintGuardsArgs {
 	toolName: string;
 	toolInput: JsonObject;
@@ -207,124 +339,52 @@ export function evaluateTaintGuards(args: TaintGuardsArgs): TaintGuardsResult {
 	const warnings: string[] = [];
 	let escalation = args.pendingEscalation;
 
-	if (!rules.taint_tracking) return { kind: "ok", warnings, escalation };
+	const taint = rules.taint_tracking;
+	if (!taint) return { kind: "ok", warnings, escalation };
 
-	// On file read, check sensitivity and ratchet.
-	if (isReadOperation(toolName)) {
-		const filePath = (toolInput.file_path as string) || "";
-		if (filePath) {
-			const fileSensitivity = classifyFileSensitivity(filePath, rules.taint_tracking);
-			if (SENSITIVITY_ORDER[fileSensitivity] > SENSITIVITY_ORDER[session.sensitivity_level]) {
-				ratchetSensitivity(session, filePath, fileSensitivity, rules.taint_tracking);
-				const blockStatus = shouldBlockNetwork(session, rules.taint_tracking)
-					? "BLOCKED"
-					: "monitored";
-				warnings.push(
-					`[interlinked:taint] Sensitivity escalated to ${fileSensitivity} after reading ${filePath}. Outbound network commands will be ${blockStatus}.`,
-				);
-			}
-		}
-	}
+	// Stage 1 — on file read, check sensitivity and ratchet (mutates session/warnings).
+	applySensitivityRatchet(toolName, toolInput, taint, session, warnings);
 
-	// Block network commands when tainted.
-	if (isBash(toolName) && shouldBlockNetwork(session, rules.taint_tracking)) {
-		const cmd = (toolInput.command as string) || "";
-		if (isNetworkCommand(cmd)) {
-			return {
-				kind: "block",
-				decision: {
-					decision: "block",
-					reason: `BLOCKED: Outbound network command while session is tainted at ${session.sensitivity_level} level (tainted by: ${formatTaintSources(session)}). Sensitive data may be exfiltrated.`,
-					warnings,
-				},
-			};
-		}
-	}
+	// Stage 2 — hard block on network commands when tainted.
+	const networkBlock = checkTaintedNetworkBlock(toolName, toolInput, taint, session, warnings);
+	if (networkBlock) return networkBlock;
 
-	// Provenance axis (orthogonal to sensitivity): if the current tool is
-	// an external-action tool and its input carries any reference to a
-	// taint source with untrusted provenance (fetched_external / mcp_remote),
-	// surface a confirmation prompt. The sensitivity-axis hard block above
-	// already catches Confidential+ exfiltration; this catches the case
-	// where Public-but-untrusted data flows outward.
+	// Stage 3 — provenance axis (orthogonal to sensitivity): an external-action
+	// tool whose input references a taint source with untrusted provenance
+	// (fetched_external / mcp_remote) gets a confirmation prompt. The
+	// sensitivity-axis hard block above already catches Confidential+
+	// exfiltration; this catches Public-but-untrusted data flowing outward.
 	const provenanceAskDecision = checkProvenanceTaintToExternalAction(
 		toolName,
 		toolInput,
 		session,
 	);
 	if (provenanceAskDecision) {
-		return {
-			kind: "ask",
-			decision: {
-				...provenanceAskDecision,
-				warnings,
-			},
-		};
+		return { kind: "ask", decision: { ...provenanceAskDecision, warnings } };
 	}
 
-	// ESCALATION: tainted_network_internal — network command at Internal sensitivity.
-	// Confidential+ is hard-blocked above; Internal is a judgment call for the classifier.
-	if (
-		isBash(toolName) &&
-		!shouldBlockNetwork(session, rules.taint_tracking) &&
-		SENSITIVITY_ORDER[session.sensitivity_level] >= SENSITIVITY_ORDER.Internal &&
-		!escalation
-	) {
-		const cmd = (toolInput.command as string) || "";
-		if (isNetworkCommand(cmd)) {
-			escalation = {
-				trigger: "tainted_network_internal",
-				summary: `Network command while session is tainted at ${session.sensitivity_level} level (tainted by: ${formatTaintSources(session)})`,
-				tool_name: toolName,
-				tool_input_redacted: { command: "[REDACTED — network command]" },
-				sensitivity_level: session.sensitivity_level,
-				step_number: session.tool_call_count,
-				recent_tool_sequence: session.tool_sequence.slice(-ESCALATION_TAIL_LENGTH),
-			};
-		}
+	// Stage 4 — ESCALATION tainted_network_internal: network command at Internal
+	// sensitivity. Confidential+ is hard-blocked above; Internal is a judgment
+	// call for the classifier. First escalation wins (precedence over stage 5).
+	if (!escalation) {
+		escalation =
+			buildTaintedNetworkInternalEscalation(toolName, toolInput, taint, session) ?? undefined;
 	}
 
-	// Step budget warnings (at 80% and 95%)
+	// Stage 5 — step budget warnings (at 80% and 95%).
 	const budgetWarning = getStepBudgetWarning(session);
 	if (budgetWarning) warnings.push(budgetWarning);
 
-	// ESCALATION: high_step_budget — approaching step limit with state-changing tool.
-	if (
-		session.step_limit !== Number.POSITIVE_INFINITY &&
-		session.tool_call_count > session.step_limit * HIGH_BUDGET_THRESHOLD &&
-		(isFileWrite(toolName) || isBash(toolName)) &&
-		!escalation
-	) {
-		const filePath = (toolInput.file_path as string) || "";
-		escalation = {
-			trigger: "high_step_budget",
-			summary: `Agent at ${Math.round((session.tool_call_count / session.step_limit) * 100)}% of step budget (${session.tool_call_count}/${session.step_limit}) with state-changing tool`,
-			tool_name: toolName,
-			tool_input_redacted: filePath ? { file_path: filePath } : { command: "[REDACTED]" },
-			sensitivity_level: session.sensitivity_level,
-			step_number: session.tool_call_count,
-			recent_tool_sequence: session.tool_sequence.slice(-ESCALATION_TAIL_LENGTH),
-		};
+	// Stage 5b — ESCALATION high_step_budget: approaching step limit with a
+	// state-changing tool (only if no escalation was raised in stage 4).
+	if (!escalation) {
+		escalation = buildHighStepBudgetEscalation(toolName, toolInput, session) ?? undefined;
 	}
 
-	// Step limit check — graceful degradation: block mutations but allow reads
-	// so the agent can investigate and hand off cleanly.
-	if (isStepLimitExceeded(session)) {
-		if (READ_ONLY_TOOLS_ON_BUDGET.has(toolName)) {
-			warnings.push(
-				`[interlinked:budget] Step limit (${session.step_limit}) exceeded — read-only mode. Mutations are blocked. Wrap up and commit.`,
-			);
-			return { kind: "allow-readonly", decision: { decision: "allow", warnings } };
-		}
-		return {
-			kind: "block",
-			decision: {
-				decision: "block",
-				reason: `BLOCKED: Step limit (${session.step_limit}) exceeded at ${session.sensitivity_level} sensitivity level. Read-only tools (Read, Glob, Grep) are still allowed.`,
-				warnings,
-			},
-		};
-	}
+	// Stage 6 — step limit check: graceful degradation (block mutations, allow
+	// reads) so the agent can investigate and hand off cleanly.
+	const stepLimitResult = checkStepLimitDegradation(toolName, session, warnings);
+	if (stepLimitResult) return stepLimitResult;
 
 	return { kind: "ok", warnings, escalation };
 }

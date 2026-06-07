@@ -23,6 +23,56 @@ import { isJsTsFile, isPyFile, MATCH_LIMIT } from "./_shared.js";
  * dedup (which keys on `(file, line, normalizedMessage)`) won't collapse
  * them — agents see two warnings for one issue.
  */
+/**
+ * Names initialized to a numeric literal anywhere in the file. `n += expr` on
+ * such a name is integer addition, not string building — skip it. Kills the FP
+ * on byte/count accumulators (e.g. `let total = 0; total += len`). Internal.
+ */
+function collectNumericVars(strippedLines: string[]): Set<string> {
+	const numericVars = new Set<string>();
+	for (const sl of strippedLines) {
+		for (const nm of sl.matchAll(/\b([A-Za-z_$]\w*)\s*=\s*-?\d/g)) {
+			numericVars.add(nm[1]);
+		}
+	}
+	return numericVars;
+}
+
+// Loop-carried state for the brace-tracked (JS/TS/Java) concat scan.
+interface BraceLoopState {
+	loopDepth: number;
+}
+
+/**
+ * Brace-tracked arm of `checkUbsStringConcatInLoop`: advances `state.loopDepth`
+ * for the current line and pushes a match when a string-building `+=` fires
+ * inside a loop. Internal helper; mutates `state` and `matches`.
+ */
+function scanBraceConcatLine(
+	line: string,
+	idx: number,
+	originalLines: string[],
+	numericVars: Set<string>,
+	state: BraceLoopState,
+	matches: InlineMatch[],
+): void {
+	const openCount = (line.match(/\{/g) || []).length;
+	const closeCount = (line.match(/\}/g) || []).length;
+
+	if (/\b(?:for|while)\b[^{]*\{/.test(line)) {
+		state.loopDepth++;
+	}
+	const concat =
+		state.loopDepth > 0 ? line.match(/\b([A-Za-z_$]\w*)\s*\+=\s*[A-Za-z_$"'`]/) : null;
+	if (concat && !numericVars.has(concat[1])) {
+		matches.push({ line: idx + 1, text: originalLines[idx].trim().slice(0, 150) });
+	}
+	// Roughly pop loop depth when braces close — heuristic only.
+	if (state.loopDepth > 0 && closeCount > openCount) {
+		state.loopDepth = Math.max(0, state.loopDepth - (closeCount - openCount));
+	}
+}
+
 export function checkUbsStringConcatInLoop(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	const supported = ext === ".java" || isJsTsFile(ext);
@@ -34,65 +84,12 @@ export function checkUbsStringConcatInLoop(content: string, filePath: string): I
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// Names initialized to a numeric literal anywhere in the file. `n += expr`
-	// on such a name is integer addition, not string building — skip it. Kills
-	// the FP on byte/count accumulators (e.g. `let total = 0; total += len`).
-	const numericVars = new Set<string>();
-	for (const sl of strippedLines) {
-		for (const nm of sl.matchAll(/\b([A-Za-z_$]\w*)\s*=\s*-?\d/g)) {
-			numericVars.add(nm[1]);
-		}
-	}
-
-	let loopDepth = 0;
-	let braceDepth = 0;
-	let inPyLoop = false;
-	let pyLoopIndent = -1;
+	const numericVars = collectNumericVars(strippedLines);
+	const state: BraceLoopState = { loopDepth: 0 };
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
-
-		// Python: track via leading-whitespace indent (no braces).
-		if (ext === ".py") {
-			const indent = line.search(/\S/);
-			if (inPyLoop && indent !== -1 && indent <= pyLoopIndent) {
-				inPyLoop = false;
-				pyLoopIndent = -1;
-			}
-			if (/^\s*(?:for\b|while\b)/.test(line)) {
-				inPyLoop = true;
-				pyLoopIndent = indent;
-			}
-			const pyConcat = line.match(/\b([A-Za-z_]\w*)\s*\+=\s*[A-Za-z_"'`]/);
-			if (
-				inPyLoop &&
-				indent > pyLoopIndent &&
-				pyConcat &&
-				!numericVars.has(pyConcat[1])
-			) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
-			}
-			continue;
-		}
-
-		// JS/TS/Java/Go: brace-tracked loop depth.
-		const openCount = (line.match(/\{/g) || []).length;
-		const closeCount = (line.match(/\}/g) || []).length;
-
-		if (/\b(?:for|while)\b[^{]*\{/.test(line)) {
-			loopDepth++;
-		}
-		const concat =
-			loopDepth > 0 ? line.match(/\b([A-Za-z_$]\w*)\s*\+=\s*[A-Za-z_$"'`]/) : null;
-		if (concat && !numericVars.has(concat[1])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
-		}
-		braceDepth += openCount - closeCount;
-		// Roughly pop loop depth when braces close — heuristic only.
-		if (loopDepth > 0 && closeCount > openCount) {
-			loopDepth = Math.max(0, loopDepth - (closeCount - openCount));
-		}
+		scanBraceConcatLine(strippedLines[i], i, originalLines, numericVars, state, matches);
 	}
 	return matches;
 }
@@ -225,6 +222,105 @@ export function checkMagicNumberNoConst(content: string, filePath: string): Inli
 	return matches;
 }
 
+// Shared body-line threshold for `ubs_large_function` (Python + C-family).
+const LARGE_FUNCTION_LINE_LIMIT = 80;
+
+/**
+ * Python arm of `checkLargeFunction`: scan for `def NAME(...)`, then count
+ * contiguous body lines at strictly greater indent. Internal helper.
+ */
+function scanPyLargeFunctions(
+	strippedLines: string[],
+	originalLines: string[],
+): InlineMatch[] {
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const m = strippedLines[i].match(/^(\s*)def\s+\w+\s*\(/);
+		if (!m) continue;
+		const headerIndent = m[1].length;
+		const bodyLines = countPyBodyLines(strippedLines, i, headerIndent);
+		if (bodyLines >= LARGE_FUNCTION_LINE_LIMIT) {
+			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		}
+	}
+	return matches;
+}
+
+/**
+ * Count contiguous Python body lines following a `def` at `startIdx`, counting
+ * blank lines and lines indented strictly deeper than `headerIndent`. Internal.
+ */
+function countPyBodyLines(
+	strippedLines: string[],
+	startIdx: number,
+	headerIndent: number,
+): number {
+	let bodyLines = 0;
+	for (let j = startIdx + 1; j < strippedLines.length; j++) {
+		const inner = strippedLines[j];
+		if (inner.trim() === "") {
+			bodyLines++;
+			continue;
+		}
+		const indent = inner.search(/\S/);
+		if (indent <= headerIndent) break;
+		bodyLines++;
+	}
+	return bodyLines;
+}
+
+/**
+ * C-family arm of `checkLargeFunction`: scan for function headers, then count
+ * lines until the matching `}`. Heuristic; no full parser. Internal helper.
+ */
+function scanCFamilyLargeFunctions(
+	strippedLines: string[],
+	originalLines: string[],
+): InlineMatch[] {
+	const headerRe = /\b(?:function\s+\w+|fn\s+\w+|func\s+\w+|\w+\s*=\s*\([^)]*\)\s*=>)/;
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= MATCH_LIMIT) break;
+		if (!headerRe.test(strippedLines[i])) continue;
+		const openIdx = findOpeningBrace(strippedLines, i);
+		if (openIdx === -1) continue;
+		const endIdx = findBraceBalanceEnd(strippedLines, openIdx);
+		if (endIdx === -1) continue;
+		const bodyLines = endIdx - openIdx;
+		if (bodyLines >= LARGE_FUNCTION_LINE_LIMIT) {
+			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		}
+	}
+	return matches;
+}
+
+/**
+ * Find the first line index containing `{` from `startIdx` within a 5-line
+ * lookahead window. Returns -1 if none. Internal helper.
+ */
+function findOpeningBrace(strippedLines: string[], startIdx: number): number {
+	for (let k = startIdx; k < Math.min(startIdx + 5, strippedLines.length); k++) {
+		if (strippedLines[k].includes("{")) return k;
+	}
+	return -1;
+}
+
+/**
+ * Walk forward from `openIdx`, counting braces until depth balances. Returns
+ * the line index that closes the block, or -1 if unbalanced. Internal helper.
+ */
+function findBraceBalanceEnd(strippedLines: string[], openIdx: number): number {
+	let depth = 0;
+	for (let k = openIdx; k < strippedLines.length; k++) {
+		const opens = (strippedLines[k].match(/\{/g) || []).length;
+		const closes = (strippedLines[k].match(/\}/g) || []).length;
+		depth += opens - closes;
+		if (depth === 0 && k > openIdx) return k;
+	}
+	return -1;
+}
+
 /**
  * `ubs_large_function` — function whose body spans 80+ lines. Heuristic; uses
  * brace-counting for C-family / `def` indent for Python. post / warning.
@@ -243,78 +339,14 @@ export function checkLargeFunction(content: string, filePath: string): InlineMat
 	if (!supported) return [];
 	if (isTestFile(filePath)) return [];
 
-	const LINE_LIMIT = 80;
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
 
-	if (isPyFile(ext)) {
-		// Python: scan for `def NAME(...)`, then count contiguous body lines
-		// at strictly greater indent.
-		for (let i = 0; i < strippedLines.length; i++) {
-			if (matches.length >= MATCH_LIMIT) break;
-			const m = strippedLines[i].match(/^(\s*)def\s+\w+\s*\(/);
-			if (!m) continue;
-			const headerIndent = m[1].length;
-			let bodyLines = 0;
-			for (let j = i + 1; j < strippedLines.length; j++) {
-				const inner = strippedLines[j];
-				if (inner.trim() === "") {
-					bodyLines++;
-					continue;
-				}
-				const indent = inner.search(/\S/);
-				if (indent <= headerIndent) break;
-				bodyLines++;
-			}
-			if (bodyLines >= LINE_LIMIT) {
-				matches.push({
-					line: i + 1,
-					text: originalLines[i].trim().slice(0, 150),
-				});
-			}
-		}
-		return matches;
-	}
-
-	// C-family: scan for `function NAME(`, `NAME(...) {`, etc., then count
-	// lines until the matching `}`. Heuristic; no full parser.
-	const headerRe = /\b(?:function\s+\w+|fn\s+\w+|func\s+\w+|\w+\s*=\s*\([^)]*\)\s*=>)/;
-	for (let i = 0; i < strippedLines.length; i++) {
-		if (matches.length >= MATCH_LIMIT) break;
-		if (!headerRe.test(strippedLines[i])) continue;
-		// Find the opening `{` from this line forward.
-		let openIdx = -1;
-		for (let k = i; k < Math.min(i + 5, strippedLines.length); k++) {
-			if (strippedLines[k].includes("{")) {
-				openIdx = k;
-				break;
-			}
-		}
-		if (openIdx === -1) continue;
-		// Walk forward, counting braces until we balance.
-		let depth = 0;
-		let endIdx = -1;
-		for (let k = openIdx; k < strippedLines.length; k++) {
-			const opens = (strippedLines[k].match(/\{/g) || []).length;
-			const closes = (strippedLines[k].match(/\}/g) || []).length;
-			depth += opens - closes;
-			if (depth === 0 && k > openIdx) {
-				endIdx = k;
-				break;
-			}
-		}
-		if (endIdx === -1) continue;
-		const bodyLines = endIdx - openIdx;
-		if (bodyLines >= LINE_LIMIT) {
-			matches.push({
-				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
-			});
-		}
-	}
-	return matches;
+	// Python uses indent-based scanning; everything else uses brace balancing.
+	return isPyFile(ext)
+		? scanPyLargeFunctions(strippedLines, originalLines)
+		: scanCFamilyLargeFunctions(strippedLines, originalLines);
 }
 
 /**

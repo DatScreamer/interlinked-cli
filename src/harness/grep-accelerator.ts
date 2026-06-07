@@ -139,6 +139,7 @@ export function checkGrepAcceleration(
 	config: GrepAcceleratorConfig = {},
 	contentCache?: FileContentCache,
 ): HarnessDecision | null {
+	void contentCache; // Disk reads are deliberate under the freshness gate (see executeMatch).
 	if (!index) return null;
 
 	const cfg = { ...DEFAULTS, ...config };
@@ -151,21 +152,9 @@ export function checkGrepAcceleration(
 
 	const { pattern, isRegex, caseInsensitive, path, glob, outputMode } = searchParams;
 
-	// --- Never-worse-than-native gates ---
-	// On ANY uncertainty, return null so the real rg/ugrep runs unchanged.
-	//   (1) Staleness: only substitute when the index is provably current with
-	//       disk (the daemon asserts this via cfg.indexFresh). A stale index
-	//       could omit a file that exists on disk and matches — a silent false
-	//       negative the agent could not detect. This is the completeness gate.
-	//   (2) Speed: only when the repo is large enough that the guaranteed win
-	//       exceeds index-lookup + rg-spawn overhead; below that a native full
-	//       scan is already fast, so substituting risks being *slower*.
-	//   (3) Output shape: a glob (-g) or a non-content output mode (-l/-c) would
-	//       change the file universe or the output format in ways the
-	//       substitution does not reproduce byte-for-byte.
-	if (!cfg.indexFresh) return null;
-	if (index.totalFiles < cfg.minFilesForAccel) return null;
-	if (glob || outputMode) return null;
+	// Never-worse-than-native gates: decline (run native rg/ugrep) on any
+	// uncertainty about staleness, repo size, or output shape.
+	if (!isAccelerationEligible(cfg, index, glob, outputMode)) return null;
 
 	// Decompose pattern into required trigrams
 	const decomposition = decomposePattern(pattern, isRegex, caseInsensitive);
@@ -174,7 +163,58 @@ export function checkGrepAcceleration(
 		return null;
 	}
 
-	// Query the index
+	const candidates = resolveCandidatePaths(index, decomposition, glob, path);
+
+	const totalFiles = index.totalFiles;
+	const ratio = totalFiles > 0 ? candidates.length / totalFiles : 1;
+	const selectivityPct = totalFiles > 0 ? (candidates.length / totalFiles) * 100 : 0;
+
+	// Decline on zero candidates, or hand back a broad-pattern warning.
+	const selectivity = selectivityDecision(candidates, totalFiles, ratio, selectivityPct, cfg);
+	if (!selectivity.proceed) return selectivity.decision;
+
+	const rgResult = executeMatch({
+		pattern,
+		candidates,
+		cwd: index.cwd,
+		isRegex,
+		caseInsensitive,
+		outputMode,
+		cfg,
+	});
+
+	return buildAcceleratedDecision(rgResult, pattern, candidates, totalFiles, selectivityPct);
+}
+
+/**
+ * Never-worse-than-native eligibility. Returns false (caller declines so native
+ * rg/ugrep runs) when the index isn't provably fresh, the repo is too small for
+ * the substitution to pay off, or the output shape (glob / -l / -c) can't be
+ * reproduced byte-for-byte.
+ */
+function isAccelerationEligible(
+	cfg: Required<GrepAcceleratorConfig>,
+	index: TrigramIndex,
+	glob: string | undefined,
+	outputMode: string | undefined,
+): boolean {
+	if (!cfg.indexFresh) return false;
+	if (index.totalFiles < cfg.minFilesForAccel) return false;
+	if (glob || outputMode) return false;
+	return true;
+}
+
+/**
+ * Query the index for candidates matching the decomposed pattern, then apply
+ * glob and path filters. Absolute path filters are resolved to relative (the
+ * index stores relative paths).
+ */
+function resolveCandidatePaths(
+	index: TrigramIndex,
+	decomposition: ReturnType<typeof decomposePattern>,
+	glob: string | undefined,
+	path: string | undefined,
+): string[] {
 	const candidateIds = index.query(
 		decomposition.requiredTrigrams,
 		decomposition.trigramSequences,
@@ -183,13 +223,10 @@ export function checkGrepAcceleration(
 		.map((id) => index.files[id] || getFilePath(index, id))
 		.filter((p): p is string => p !== undefined);
 
-	// Apply glob filter if specified
 	if (glob) {
 		candidates = candidates.filter((p) => matchGlob(p, glob));
 	}
 
-	// Apply path filter if specified.
-	// Resolve absolute paths to relative (index stores relative paths).
 	if (path && path !== ".") {
 		let relPath = path;
 		if (isAbsolute(path)) {
@@ -199,101 +236,105 @@ export function checkGrepAcceleration(
 		candidates = candidates.filter((p) => p === relPath || p.startsWith(pathPrefix));
 	}
 
-	const totalFiles = index.totalFiles;
-	const ratio = totalFiles > 0 ? candidates.length / totalFiles : 1;
+	return candidates;
+}
 
-	// Decision logic
-	const selectivityPct = totalFiles > 0 ? (candidates.length / totalFiles) * 100 : 0;
+/** Result of the selectivity gate: proceed to matching, or a terminal decision. */
+type SelectivityResult =
+	| { proceed: true }
+	| { proceed: false; decision: HarnessDecision | null };
 
+/**
+ * Gate the candidate set. Declines (null) on zero candidates — the index may be
+ * stale/incomplete or the decomposition lossy, so let native grep find matches.
+ * Returns an allow+warning decision when the candidate set is too broad to help.
+ */
+function selectivityDecision(
+	candidates: string[],
+	totalFiles: number,
+	ratio: number,
+	selectivityPct: number,
+	cfg: Required<GrepAcceleratorConfig>,
+): SelectivityResult {
 	if (candidates.length === 0) {
-		// No files contain all required trigrams according to the index.
-		// Fall through to normal grep instead of blocking — the index may be
-		// stale, incomplete (files above size limit, binary detection false
-		// positives), or the trigram decomposition may have been lossy.
-		// Safety over false negatives: let grep run and find real matches.
-		return null;
+		return { proceed: false, decision: null };
 	}
 
 	if (candidates.length > cfg.maxCandidates || ratio > cfg.maxCandidateRatio) {
-		// Too many candidates — index can't help enough, add context as warning
 		return {
-			decision: "allow",
-			warnings: [
-				`[interlinked:index] Pattern matches ${candidates.length}/${totalFiles} files (${(ratio * 100).toFixed(1)}%) — broad pattern, consider narrowing your search.`,
-			],
-			grep_stats: {
-				candidates: candidates.length,
-				total_files: totalFiles,
-				selectivity_pct: selectivityPct,
-				match_count: 0,
-				accelerated: false,
+			proceed: false,
+			decision: {
+				decision: "allow",
+				warnings: [
+					`[interlinked:index] Pattern matches ${candidates.length}/${totalFiles} files (${(ratio * 100).toFixed(1)}%) — broad pattern, consider narrowing your search.`,
+				],
+				grep_stats: {
+					candidates: candidates.length,
+					total_files: totalFiles,
+					selectivity_pct: selectivityPct,
+					match_count: 0,
+					accelerated: false,
+				},
 			},
 		};
 	}
 
-	// --- Match with native-identical semantics ---
-	// Fixed-string (-F) patterns: a JS substring scan is provably identical to
-	// `rg -F`, so the in-process matcher is used for small candidate sets to
-	// avoid a spawn. Regex patterns: ALWAYS use rg's real engine — JS RegExp and
-	// rg's regex dialect differ (POSIX classes, backreferences, Unicode), and
-	// only rg guarantees the same matches as the native command. The freshness
-	// gate above makes the candidate set a complete superset, so rg-on-candidates
-	// returns exactly what rg-on-the-whole-tree would.
-	let rgResult: RipgrepResult | null;
+	return { proceed: true };
+}
+
+interface ExecuteMatchOptions {
+	pattern: string;
+	candidates: string[];
+	cwd: string;
+	isRegex: boolean;
+	caseInsensitive: boolean;
+	outputMode: string | undefined;
+	cfg: Required<GrepAcceleratorConfig>;
+}
+
+/**
+ * Run the match with native-identical semantics. Fixed-string (-F) patterns use
+ * the in-process matcher for small candidate sets (a JS substring scan == `rg
+ * -F`), falling back to rg if JS regex compilation fails. Regex patterns ALWAYS
+ * use rg's real engine — only rg guarantees the same matches as the native cmd.
+ */
+function executeMatch(opts: ExecuteMatchOptions): RipgrepResult | null {
+	const { pattern, candidates, cwd, isRegex, caseInsensitive, outputMode, cfg } = opts;
 	if (!isRegex && candidates.length <= cfg.inProcessThreshold) {
-		rgResult = matchInProcess({
+		const inProcess = matchInProcess({
 			pattern,
 			candidates,
-			cwd: index.cwd,
+			cwd,
 			isRegex,
 			caseInsensitive,
 			outputMode,
 			maxOutputLines: cfg.maxOutputLines,
 			// Read disk, not the dirty-layer cache: under the freshness gate the
-			// working tree is clean so disk == index, and bypassing the cache
-			// closes the narrow edit-then-revert-within-TTL staleness window.
+			// working tree is clean so disk == index, closing the narrow
+			// edit-then-revert-within-TTL staleness window.
 			contentCache: undefined,
 		});
 		// Fall back to rg if JS regex compilation fails
-		if (rgResult === null) {
-			rgResult = runRipgrepOnCandidates(
-				pattern,
-				candidates,
-				index.cwd,
-				isRegex,
-				caseInsensitive,
-				outputMode,
-				cfg,
-			);
-		}
-	} else {
-		rgResult = runRipgrepOnCandidates(
-			pattern,
-			candidates,
-			index.cwd,
-			isRegex,
-			caseInsensitive,
-			outputMode,
-			cfg,
-		);
+		if (inProcess !== null) return inProcess;
 	}
+	return runRipgrepOnCandidates(pattern, candidates, cwd, isRegex, caseInsensitive, outputMode, cfg);
+}
 
-	if (rgResult === null) {
-		// ripgrep unavailable or errored — fall through to native.
-		return null;
-	}
-	if (rgResult.truncated) {
-		// Completeness: native rg/ugrep returns ALL matches. Rather than hand
-		// back a truncated answer, decline so the real command runs.
-		return null;
-	}
-	if (rgResult.matchCount === 0) {
-		// Zero matches: native rg/ugrep prints nothing (exit 1). Decline so the
-		// agent sees that empty result rather than a substituted "no matches"
-		// message — keeps the substitution neutral on empty results, and guards
-		// against a stale index that over-selected candidates which don't match.
-		return null;
-	}
+/**
+ * Validate the rg result and build the final block decision. Declines (null)
+ * when rg was unavailable/errored, the result was truncated (native returns ALL
+ * matches), or there were zero matches (native prints nothing on exit 1).
+ */
+function buildAcceleratedDecision(
+	rgResult: RipgrepResult | null,
+	pattern: string,
+	candidates: string[],
+	totalFiles: number,
+	selectivityPct: number,
+): HarnessDecision | null {
+	if (rgResult === null) return null;
+	if (rgResult.truncated) return null;
+	if (rgResult.matchCount === 0) return null;
 
 	return {
 		decision: "block",

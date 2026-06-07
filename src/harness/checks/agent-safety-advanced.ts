@@ -190,6 +190,42 @@ function isCloudflareWorkerHandler(content: string): boolean {
  *
  * Skips test files, non-JS/TS files.
  */
+// Forward brace-matcher: scanning `text` from `start` (already one char INSIDE
+// an opening brace, so depth begins at 1), return the index just past the
+// matching close and whether the braces balanced. Shared by the class-body and
+// lifecycle-method body scans in checkLifecycleCleanup.
+function matchBraceEnd(text: string, start: number): { end: number; balanced: boolean } {
+	let depth = 1;
+	let pos = start;
+	while (pos < text.length && depth > 0) {
+		const ch = text[pos];
+		if (ch === "{") depth++;
+		else if (ch === "}") depth--;
+		pos++;
+	}
+	return { end: pos, balanced: depth === 0 };
+}
+
+// Extract the bodies of any lifecycle methods (dispose/destroy/close/unmount/
+// stop) declared in `classBody`. Each returned string is the method body text
+// (including its closing brace), used to look for paired cleanup calls.
+function collectLifecycleBodies(classBody: string, names: string[]): string[] {
+	const bodies: string[] = [];
+	for (const name of names) {
+		// Method forms: `dispose() {`, `async dispose() {`, `dispose = () => {`.
+		const methodRegex = new RegExp(
+			`\\b(?:async\\s+|static\\s+|private\\s+|public\\s+|protected\\s+)*${name}\\s*(?:\\([^)]*\\)\\s*(?::[^{]+)?\\s*\\{|=\\s*(?:async\\s+)?\\([^)]*\\)\\s*=>\\s*\\{)`,
+			"g",
+		);
+		for (let mm = methodRegex.exec(classBody); mm !== null; mm = methodRegex.exec(classBody)) {
+			const start = mm.index + mm[0].length;
+			const { end, balanced } = matchBraceEnd(classBody, start);
+			if (balanced) bodies.push(classBody.slice(start, end));
+		}
+	}
+	return bodies;
+}
+
 export function checkLifecycleCleanup(content: string, filePath: string): InlineMatch[] {
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 	if (isTestFile(filePath)) return [];
@@ -220,47 +256,14 @@ export function checkLifecycleCleanup(content: string, filePath: string): Inline
 		if (matches.length >= 10) break;
 
 		const bodyStart = classMatch.index + classMatch[0].length;
-		// Find matching closing brace.
-		let depth = 1;
-		let bodyEnd = bodyStart;
-		while (bodyEnd < stripped.length && depth > 0) {
-			const ch = stripped[bodyEnd];
-			if (ch === "{") depth++;
-			else if (ch === "}") depth--;
-			bodyEnd++;
-		}
-		if (depth !== 0) continue; // unbalanced
+		const { end: bodyEnd, balanced } = matchBraceEnd(stripped, bodyStart);
+		if (!balanced) continue; // unbalanced
 
 		const classBody = stripped.slice(bodyStart, bodyEnd);
 
-		// Find lifecycle method bodies within the class.
-		const lifecycleBodies: string[] = [];
-		for (const name of LIFECYCLE_METHOD_NAMES) {
-			// Method forms: `dispose() {`, `async dispose() {`, `dispose = () => {`.
-			const methodRegex = new RegExp(
-				`\\b(?:async\\s+|static\\s+|private\\s+|public\\s+|protected\\s+)*${name}\\s*(?:\\([^)]*\\)\\s*(?::[^{]+)?\\s*\\{|=\\s*(?:async\\s+)?\\([^)]*\\)\\s*=>\\s*\\{)`,
-				"g",
-			);
-			for (
-				let mm = methodRegex.exec(classBody);
-				mm !== null;
-				mm = methodRegex.exec(classBody)
-			) {
-				const start = mm.index + mm[0].length;
-				let d = 1;
-				let end = start;
-				while (end < classBody.length && d > 0) {
-					const ch = classBody[end];
-					if (ch === "{") d++;
-					else if (ch === "}") d--;
-					end++;
-				}
-				if (d === 0) lifecycleBodies.push(classBody.slice(start, end));
-			}
-		}
-
 		// Only warn on classes that already have a lifecycle method — we can't
 		// claim every class must have one.
+		const lifecycleBodies = collectLifecycleBodies(classBody, LIFECYCLE_METHOD_NAMES);
 		if (lifecycleBodies.length === 0) continue;
 		const combinedCleanup = lifecycleBodies.join("\n");
 
@@ -402,6 +405,67 @@ export function checkCircularImports(
  *     treat ALL exports as used — the namespace reference could be indexing
  *     into any of them at runtime and we can't tell statically.
  */
+// Fast basename prefilter for checkDeadExports: does `importerContent` mention
+// our module under any import-specifier shape? Covers three shapes:
+//   (a) bare module name:           `'hooks'`      / `"hooks"`
+//   (b) bare with extension:        `'hooks.js'`   / `"hooks.js"`   / `.ts` variants
+//   (c) relative path ending there: `"./lib/hooks.js"`, `"../lib/hooks.js"`, etc.
+// Missing any shape silently drops a real importer and marks the symbol as dead.
+function importerMentionsModuleBase(importerContent: string, base: string): boolean {
+	return (
+		importerContent.includes(`'${base}'`) ||
+		importerContent.includes(`"${base}"`) ||
+		importerContent.includes(`'${base}.js'`) ||
+		importerContent.includes(`"${base}.js"`) ||
+		importerContent.includes(`'${base}.ts'`) ||
+		importerContent.includes(`"${base}.ts"`) ||
+		importerContent.includes(`/${base}'`) ||
+		importerContent.includes(`/${base}"`) ||
+		importerContent.includes(`/${base}.js'`) ||
+		importerContent.includes(`/${base}.js"`) ||
+		importerContent.includes(`/${base}.ts'`) ||
+		importerContent.includes(`/${base}.ts"`)
+	);
+}
+
+// Walk every candidate importer and aggregate the symbols imported from the file
+// at `absPath`. Returns `allUsed: true` when any importer uses a namespace import
+// (`import * as X`) — we can't tell statically which exports it touches, so all
+// are treated as used.
+function collectTargetedImportSymbols(
+	candidates: string[],
+	cwd: string,
+	base: string,
+	absPath: string,
+): { allUsed: boolean; symbols: Set<string> } {
+	const symbols = new Set<string>();
+	for (const importerRel of candidates) {
+		let importerContent: string;
+		try {
+			importerContent = readFileSync(join(cwd, importerRel), "utf-8");
+		} catch {
+			continue;
+		}
+		if (!importerMentionsModuleBase(importerContent, base)) continue;
+
+		const imports = parseImports(importerContent, join(cwd, importerRel));
+		for (const edge of imports) {
+			// Resolve the import specifier to see if it points at our file.
+			const resolved = resolveImportPath(join(cwd, importerRel), edge.specifier);
+			if (!resolved) continue;
+			if (resolve(resolved) !== absPath) continue;
+
+			// Namespace import (symbols has "*" or empty with star flag) — treat
+			// as "every export is used" and bail out early.
+			if (edge.symbols.length === 0 || edge.symbols.includes("*")) {
+				return { allUsed: true, symbols };
+			}
+			for (const s of edge.symbols) symbols.add(s);
+		}
+	}
+	return { allUsed: false, symbols };
+}
+
 export function checkDeadExports(content: string, filePath: string, cwd: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) return [];
@@ -425,56 +489,14 @@ export function checkDeadExports(content: string, filePath: string, cwd: string)
 	if (relFromRoot.startsWith("..")) return [];
 
 	// Collect every symbol any other file imports targeting our basename.
-	const importedSymbols = new Set<string>();
 	const candidates = getGitSourceFiles(cwd).filter((f) => f !== relFromRoot);
-
-	for (const importerRel of candidates) {
-		let importerContent: string;
-		try {
-			importerContent = readFileSync(join(cwd, importerRel), "utf-8");
-		} catch {
-			continue;
-		}
-		// Fast basename filter: skip files that don't reference our module name.
-		// Must cover three shapes of import specifier:
-		//   (a) bare module name:          `'hooks'`      / `"hooks"`
-		//   (b) bare with extension:       `'hooks.js'`   / `"hooks.js"`   / `.ts` variants
-		//   (c) relative path ending there: `"./lib/hooks.js"`, `"../lib/hooks.js"`, etc.
-		// Missing any shape silently drops a real importer and marks the symbol as
-		// dead. The previous filter had a typo (`"${base}.js'` — mismatched quotes)
-		// and did not include any path-with-extension patterns at all.
-		if (
-			!importerContent.includes(`'${base}'`) &&
-			!importerContent.includes(`"${base}"`) &&
-			!importerContent.includes(`'${base}.js'`) &&
-			!importerContent.includes(`"${base}.js"`) &&
-			!importerContent.includes(`'${base}.ts'`) &&
-			!importerContent.includes(`"${base}.ts"`) &&
-			!importerContent.includes(`/${base}'`) &&
-			!importerContent.includes(`/${base}"`) &&
-			!importerContent.includes(`/${base}.js'`) &&
-			!importerContent.includes(`/${base}.js"`) &&
-			!importerContent.includes(`/${base}.ts'`) &&
-			!importerContent.includes(`/${base}.ts"`)
-		) {
-			continue;
-		}
-
-		const imports = parseImports(importerContent, join(cwd, importerRel));
-		for (const edge of imports) {
-			// Resolve the import specifier to see if it points at our file.
-			const resolved = resolveImportPath(join(cwd, importerRel), edge.specifier);
-			if (!resolved) continue;
-			if (resolve(resolved) !== absPath) continue;
-
-			// Namespace import (symbols has "*" or empty with star flag) — treat
-			// as "every export is used" and bail out early.
-			if (edge.symbols.length === 0 || edge.symbols.includes("*")) {
-				return [];
-			}
-			for (const s of edge.symbols) importedSymbols.add(s);
-		}
-	}
+	const { allUsed, symbols: importedSymbols } = collectTargetedImportSymbols(
+		candidates,
+		cwd,
+		base,
+		absPath,
+	);
+	if (allUsed) return [];
 
 	const matches: InlineMatch[] = [];
 	for (const exp of exports) {
@@ -599,6 +621,53 @@ export function checkPromiseRejectNonError(content: string, filePath: string): I
  * Detect async functions that never use await.
  * The async keyword is unnecessary and misleading — it wraps the return in a Promise for no reason.
  */
+// Brace-track from line `start` (which opens a block somewhere on/after it) to
+// the line that closes it. Returns `bodyStarted: false` when no `{` was ever
+// seen; `bodyEnd` is the line index of the closing brace (or the last line).
+function findBlockEndByBrace(
+	lines: string[],
+	start: number,
+): { bodyStarted: boolean; bodyEnd: number } {
+	let braceDepth = 0;
+	let bodyStarted = false;
+	let bodyEnd = start;
+	for (let j = start; j < lines.length; j++) {
+		for (const ch of lines[j]) {
+			if (ch === "{") {
+				braceDepth++;
+				bodyStarted = true;
+			}
+			if (ch === "}") braceDepth--;
+		}
+		if (bodyStarted && braceDepth <= 0) {
+			bodyEnd = j;
+			break;
+		}
+	}
+	return { bodyStarted, bodyEnd };
+}
+
+// Decide whether an async function body is "fine as async" — i.e. should NOT be
+// flagged by checkRequireAwait. True when it awaits, is short enough to be a
+// trivial wrapper, or references promise machinery (.then/.catch/.finally,
+// Promise, or a short delegating `return fn(...)`).
+function asyncBodyIsAcceptable(
+	bodyText: string,
+	originalBodyText: string,
+	bodyLen: number,
+): boolean {
+	// Search both stripped and original body text for await — stripping can
+	// sometimes remove await inside template literals or complex expressions.
+	if (/\bawait\b/.test(bodyText) || /\bawait\b/.test(originalBodyText)) return true;
+	// Short functions (≤5 lines) — likely just wrapping/delegating.
+	if (bodyLen <= 5) return true;
+	// Bodies that reference promise-related patterns.
+	if (/\.(then|catch|finally)\s*\(/.test(bodyText)) return true;
+	if (/\bPromise\b/.test(bodyText) || /\bPromise\b/.test(originalBodyText)) return true;
+	if (/\breturn\s+\w+\s*\(/.test(bodyText) && bodyLen <= 10) return true;
+	return false;
+}
+
 export function checkRequireAwait(content: string, filePath: string): InlineMatch[] {
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 	if (isTestFile(filePath)) return [];
@@ -606,6 +675,9 @@ export function checkRequireAwait(content: string, filePath: string): InlineMatc
 	const strippedLines = stripped.split("\n");
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
+	// Skip MCP tool handlers — async is required by the McpServer callback interface.
+	const norm = filePath.replace(/\\/g, "/");
+	if (/\bservers?\b/.test(norm) || /\bscripts?\b/.test(norm)) return [];
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
@@ -618,43 +690,13 @@ export function checkRequireAwait(content: string, filePath: string): InlineMatc
 		const fnName = trimmed.match(/\basync\s+function\s+(\w+)/)?.[1] ?? "";
 		if (/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/.test(fnName)) continue;
 
-		// Skip MCP tool handlers — async is required by the McpServer callback interface
-		const norm = filePath.replace(/\\/g, "/");
-		if (/\bservers?\b/.test(norm) || /\bscripts?\b/.test(norm)) continue;
+		const { bodyStarted, bodyEnd } = findBlockEndByBrace(strippedLines, i);
+		if (!bodyStarted) continue;
 
-		// Find the function body by tracking brace depth
-		let braceDepth = 0;
-		let bodyStarted = false;
-		let bodyEnd = i;
-
-		for (let j = i; j < strippedLines.length; j++) {
-			for (const ch of strippedLines[j]) {
-				if (ch === "{") {
-					braceDepth++;
-					bodyStarted = true;
-				}
-				if (ch === "}") braceDepth--;
-			}
-			if (bodyStarted && braceDepth <= 0) {
-				bodyEnd = j;
-				break;
-			}
-		}
-
-		if (bodyStarted) {
-			// Search both stripped and original body text for await — stripping
-			// can sometimes remove await inside template literals or complex expressions
-			const bodyText = strippedLines.slice(i, bodyEnd + 1).join("\n");
-			const originalBodyText = originalLines.slice(i, bodyEnd + 1).join("\n");
-			if (/\bawait\b/.test(bodyText) || /\bawait\b/.test(originalBodyText)) continue;
-			// Skip short functions (≤5 lines) — likely just wrapping/delegating
-			if (bodyEnd - i <= 5) continue;
-			// Skip functions whose body references promise-related patterns
-			if (/\.(then|catch|finally)\s*\(/.test(bodyText)) continue;
-			if (/\bPromise\b/.test(bodyText) || /\bPromise\b/.test(originalBodyText)) continue;
-			if (/\breturn\s+\w+\s*\(/.test(bodyText) && bodyEnd - i <= 10) continue;
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
-		}
+		const bodyText = strippedLines.slice(i, bodyEnd + 1).join("\n");
+		const originalBodyText = originalLines.slice(i, bodyEnd + 1).join("\n");
+		if (asyncBodyIsAcceptable(bodyText, originalBodyText, bodyEnd - i)) continue;
+		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 	}
 	return matches;
 }

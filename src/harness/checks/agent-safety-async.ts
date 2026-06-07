@@ -34,6 +34,110 @@ export function checkMisusedPromises(content: string, filePath: string): InlineM
 	return matches;
 }
 
+// Always-async built-ins commonly forgotten at statement position.
+const BUILTIN_ASYNC_IDS = new Set(["fetch"]);
+
+// Keywords that, when they lead a statement, consume or redirect the value so
+// the promise cannot be floating.
+const STATEMENT_PREFIX_KEYWORDS =
+	/^(?:await|return|yield|void|throw|if|else|for|while|switch|case|default|try|catch|finally|do|break|continue|class|function|const|let|var|export|import|type|interface|enum|new|typeof|delete|async)\b/;
+
+/**
+ * Pass 1 of {@link checkFloatingPromises}: collect identifiers declared `async`
+ * in this file — top-level/generator functions, arrow/expression assignments,
+ * class methods (with access modifiers), and object-shorthand properties.
+ */
+function collectFloatingAsyncIds(strippedLines: string[]): Set<string> {
+	const asyncIds = new Set<string>();
+	for (const line of strippedLines) {
+		// `async function foo(` / `async function *foo(`
+		let m = line.match(/\basync\s+function\s*\*?\s+([A-Za-z_$][\w$]*)\s*\(/);
+		if (m) asyncIds.add(m[1]);
+		// `const foo = async (`, `let foo: Type = async <T>(`, etc.
+		m = line.match(
+			/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?\s*=\s*async\s*[(<]/,
+		);
+		if (m) asyncIds.add(m[1]);
+		// Class method: `  async foo(` with optional access modifiers / static.
+		m = line.match(
+			/^\s+(?:(?:public|private|protected|static|readonly|override|abstract)\s+)*async\s+([A-Za-z_$][\w$]*)\s*[(<]/,
+		);
+		if (m && m[1] !== "function") asyncIds.add(m[1]);
+		// Object shorthand property: `foo: async (`.
+		m = line.match(/\b([A-Za-z_$][\w$]*)\s*:\s*async\s*[(<]/);
+		if (m) asyncIds.add(m[1]);
+	}
+	return asyncIds;
+}
+
+/**
+ * Per-line skip predicate for {@link checkFloatingPromises} pass 2. Returns true
+ * when `trimmed` (the stripped, trimmed line at index `i`) is NOT a candidate
+ * floating-promise statement on syntactic grounds alone — independent of whether
+ * the call target is known-async. Under-detects rather than risk a false
+ * positive. Each branch's rationale matches the original inline comments.
+ */
+function shouldSkipFloatingLine(strippedLines: string[], i: number, trimmed: string): boolean {
+	// Must start with an identifier; rules out `})`, `.then(...)` chain
+	// continuation, `}` block closes, etc.
+	if (!/^[A-Za-z_$]/.test(trimmed)) return true;
+	if (STATEMENT_PREFIX_KEYWORDS.test(trimmed)) return true;
+
+	// Skip if previous non-blank line indicates we're inside an argument list or
+	// array literal — then our "statement-position" assumption is wrong. We
+	// deliberately DO NOT include `{` here: a trailing `{` is much more often a
+	// block opener (function/class/if/etc.) than a multi-line object literal, and
+	// treating blocks as arg lists would swallow every statement after a brace.
+	let prev = i - 1;
+	while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
+	if (prev >= 0 && /[([,]\s*$/.test(strippedLines[prev])) return true;
+
+	// Skip arrow-function concise-body return values. When the previous non-blank
+	// line ends with `=>`, this line is the single-expression body of an arrow
+	// function — its value is *returned*, not dropped. Example false-positive:
+	// `discovered.map((d) =>\n    probeHealth(d))`
+	if (prev >= 0 && /=>\s*$/.test(strippedLines[prev])) return true;
+
+	// Skip TypeScript interface / type method signatures. A line like
+	// `drain(timeoutMs?: number): Promise<void>;` inside an `interface` body
+	// syntactically looks like a call but is a DECLARATION — it doesn't execute
+	// at runtime. Giveaway: trailing `: Promise<…>;` / `: AsyncIterable<…>;`.
+	if (
+		/\)\s*:\s*(?:Promise|AsyncIterable|AsyncGenerator|AsyncIterator)\s*<[^>]*>\s*;\s*$/.test(
+			trimmed,
+		)
+	)
+		return true;
+
+	// Skip multi-line chain bodies: if next non-blank line starts with `.`, the
+	// chain's handler (if any) lives on a later line and we can't tell with
+	// regex. Under-detect by skipping.
+	let next = i + 1;
+	while (next < strippedLines.length && strippedLines[next].trim() === "") next++;
+	if (next < strippedLines.length && strippedLines[next].trim().startsWith(".")) return true;
+
+	return false;
+}
+
+/**
+ * Extract the leaf identifier of a statement-position call for
+ * {@link checkFloatingPromises}. Captures the leading call path (identifier,
+ * dotted, optional-chain, or bracketed) up to the opening paren, then reduces it
+ * to the final identifier for async-id lookup. Returns null when the line has no
+ * leading call or the leaf can't be isolated.
+ */
+function extractCallLeafId(trimmed: string): string | null {
+	const callMatch = trimmed.match(/^([\w$?.[\]]+)\s*\(/);
+	if (!callMatch) return null;
+	const callPath = callMatch[1];
+	const leafId = callPath
+		.replace(/\?\./g, ".")
+		.split(".")
+		.pop()
+		?.replace(/\[.*\]/g, "");
+	return leafId ?? null;
+}
+
 /**
  * Detect floating promises: calls to async-declared functions (or known promise-
  * returning globals like fetch) at statement position without await, return,
@@ -68,98 +172,19 @@ export function checkFloatingPromises(content: string, filePath: string): Inline
 	const strippedLines = stripped.split("\n");
 
 	// Pass 1: collect async identifiers declared in this file.
-	const asyncIds = new Set<string>();
-	for (const line of strippedLines) {
-		// `async function foo(` / `async function *foo(`
-		let m = line.match(/\basync\s+function\s*\*?\s+([A-Za-z_$][\w$]*)\s*\(/);
-		if (m) asyncIds.add(m[1]);
-		// `const foo = async (`, `let foo: Type = async <T>(`, etc.
-		m = line.match(
-			/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?\s*=\s*async\s*[(<]/,
-		);
-		if (m) asyncIds.add(m[1]);
-		// Class method: `  async foo(` with optional access modifiers / static.
-		m = line.match(
-			/^\s+(?:(?:public|private|protected|static|readonly|override|abstract)\s+)*async\s+([A-Za-z_$][\w$]*)\s*[(<]/,
-		);
-		if (m && m[1] !== "function") asyncIds.add(m[1]);
-		// Object shorthand property: `foo: async (`.
-		m = line.match(/\b([A-Za-z_$][\w$]*)\s*:\s*async\s*[(<]/);
-		if (m) asyncIds.add(m[1]);
-	}
+	const asyncIds = collectFloatingAsyncIds(strippedLines);
 
-	// Always-async built-ins commonly forgotten at statement position.
-	const BUILTIN_ASYNC_IDS = new Set(["fetch"]);
-
-	// Keywords that, when they lead a statement, consume or redirect the value
-	// so the promise cannot be floating.
-	const STATEMENT_PREFIX_KEYWORDS =
-		/^(?:await|return|yield|void|throw|if|else|for|while|switch|case|default|try|catch|finally|do|break|continue|class|function|const|let|var|export|import|type|interface|enum|new|typeof|delete|async)\b/;
-
+	// Pass 2: scan statement-position lines for bare calls to known-async ids.
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
-		const trimmed = line.trim();
+		const trimmed = strippedLines[i].trim();
 		if (!trimmed) continue;
+		if (shouldSkipFloatingLine(strippedLines, i, trimmed)) continue;
 
-		// Must start with an identifier; rules out `})`, `.then(...)` chain
-		// continuation, `}` block closes, etc.
-		if (!/^[A-Za-z_$]/.test(trimmed)) continue;
-		if (STATEMENT_PREFIX_KEYWORDS.test(trimmed)) continue;
-
-		// Skip if previous non-blank line indicates we're inside an argument
-		// list or array literal — then our "statement-position" assumption is
-		// wrong. We deliberately DO NOT include `{` here: a trailing `{` is
-		// much more often a block opener (function/class/if/etc.) than a
-		// multi-line object literal, and treating blocks as arg lists would
-		// swallow every statement that follows a brace.
-		let prev = i - 1;
-		while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
-		if (prev >= 0 && /[([,]\s*$/.test(strippedLines[prev])) continue;
-
-		// Skip arrow-function concise-body return values. When the previous
-		// non-blank line ends with `=>`, this line is the single-expression
-		// body of an arrow function — its value is *returned*, not dropped.
-		// Example false-positive: `discovered.map((d) =>\n    probeHealth(d))`
-		if (prev >= 0 && /=>\s*$/.test(strippedLines[prev])) continue;
-
-		// Skip TypeScript interface / type method signatures. A line like
-		// `drain(timeoutMs?: number): Promise<void>;` inside an `interface`
-		// body syntactically looks like a call but is a DECLARATION — it
-		// doesn't execute at runtime. Giveaway: trailing `: Promise<…>;` or
-		// `: AsyncIterable<…>;`, AND either a `?:` parameter marker or a
-		// trailing semicolon after the type annotation.
-		if (
-			/\)\s*:\s*(?:Promise|AsyncIterable|AsyncGenerator|AsyncIterator)\s*<[^>]*>\s*;\s*$/.test(
-				trimmed,
-			)
-		)
-			continue;
-
-		// Skip multi-line chain bodies: if next non-blank line starts with `.`,
-		// the chain's handler (if any) lives on a later line and we can't tell
-		// with regex. Under-detect by skipping.
-		let next = i + 1;
-		while (next < strippedLines.length && strippedLines[next].trim() === "") next++;
-		if (next < strippedLines.length && strippedLines[next].trim().startsWith(".")) continue;
-
-		// Capture the leading call path: identifier, dotted, optional-chain,
-		// or bracketed, up to the opening paren.
-		const callMatch = trimmed.match(/^([\w$?.[\]]+)\s*\(/);
-		if (!callMatch) continue;
-		const callPath = callMatch[1];
-
-		// Leaf identifier for async-id lookup.
-		const leafId = callPath
-			.replace(/\?\./g, ".")
-			.split(".")
-			.pop()
-			?.replace(/\[.*\]/g, "");
+		const leafId = extractCallLeafId(trimmed);
 		if (!leafId) continue;
-
-		const isKnownAsync = asyncIds.has(leafId) || BUILTIN_ASYNC_IDS.has(leafId);
-		if (!isKnownAsync) continue;
+		if (!asyncIds.has(leafId) && !BUILTIN_ASYNC_IDS.has(leafId)) continue;
 
 		// Already-handled chain: `.catch(` or `.finally(` anywhere on this line.
 		if (/\.catch\s*\(/.test(trimmed)) continue;

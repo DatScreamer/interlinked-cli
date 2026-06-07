@@ -113,62 +113,119 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 	}
 	const ancestorPids = collectAncestorPids();
 	const activePid = readActiveHarnessPid(cwd);
-	const candidates: OrphanCandidate[] = [];
-
-	// Extract the `--cwd <path>` argument the daemon was spawned with. Each
-	// harness binds to one workspace (see `harnessStartCommand`'s
-	// `args = [..., serverPath, "--cwd", cwd]` construction); reading that
-	// field tells us which repo the daemon serves. Returns null on a
-	// legacy/malformed cmdline so the caller can skip the candidate rather
-	// than risk reaping a daemon from another workspace.
-	const extractCwdArg = (cmdline: string): string | null => {
-		const tokens = cmdline.split(/\s+/);
-		// Scan every token: the `--cwd=<path>` equals form is self-contained and
-		// can legitimately be the LAST token, so the loop must reach the final
-		// index. The space form `--cwd <path>` reads tokens[i+1] — `undefined →
-		// null` past the end, which is correct (a valueless `--cwd` is malformed).
-		for (let i = 0; i < tokens.length; i++) {
-			if (tokens[i] === "--cwd") return tokens[i + 1] ?? null;
-			if (tokens[i]?.startsWith("--cwd=")) {
-				return tokens[i]?.slice("--cwd=".length) ?? null;
-			}
-		}
-		return null;
-	};
-
-	for (const line of ps.split("\n")) {
-		const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-		if (!m) continue;
-		const pid = Number.parseInt(m[1] as string, 10);
-		const ppid = Number.parseInt(m[2] as string, 10);
-		const cmd = m[3] as string;
-		if (Number.isNaN(pid) || pid === process.pid) continue;
-		if (!cmd.includes("node") && !cmd.includes("bun")) continue;
-		if (!cmd.includes("interlinked-cli/dist/harness/server")) continue;
-		// Scope by `--cwd`: a daemon spawned from a sibling repo has a
-		// different `--cwd` and must NOT be reaped from this workspace —
-		// doing so would silently disable hooks in the user's other open
-		// project. If `--cwd` is absent (legacy daemon, malformed cmdline)
-		// skip the candidate rather than risk a cross-workspace SIGTERM.
-		const candidateCwd = extractCwdArg(cmd);
-		if (candidateCwd === null || candidateCwd !== cwd) continue;
-		if (!killAll) {
-			// Default reap path: protect the active daemon + the shell/agent
-			// ancestor chain. `--all` (killAll) deliberately skips both so the
-			// user gets a clean slate.
-			if (ancestorPids.has(pid)) continue;
-			if (activePid !== null && pid === activePid) continue;
-		} else {
-			// Even in killAll mode, never SIGTERM our own ancestor process —
-			// that would kill the shell that just invoked us. The active
-			// daemon, however, is fair game.
-			if (ancestorPids.has(pid)) continue;
-		}
-		candidates.push({ pid, ppid, command: cmd });
-	}
+	const candidates = collectReapCandidates(ps, cwd, ancestorPids, activePid, killAll);
 	if (dryRun) {
 		return { candidates, killed: [], dryRun: true };
 	}
+	const killed = terminateCandidates(candidates);
+	// After everything dies, sweep the stale pid/sock files so the next
+	// `startSessionDaemon` doesn't see an "existing PID" left behind by a
+	// daemon that crashed without reaching its own removePidFile() call.
+	if (killed.length > 0) {
+		clearOrphanedPidFiles(cwd, killed);
+		process.stderr.write(
+			`[interlinked] Reaped ${killed.length} orphan harness daemon${killed.length === 1 ? "" : "s"}: ${killed.join(", ")}\n`,
+		);
+	}
+	return { candidates, killed, dryRun: false };
+}
+
+/**
+ * Extract the `--cwd <path>` argument the daemon was spawned with. Each harness
+ * binds to one workspace (see `harnessStartCommand`'s `args = [..., serverPath,
+ * "--cwd", cwd]` construction); reading that field tells us which repo the
+ * daemon serves. Returns null on a legacy/malformed cmdline so the caller can
+ * skip the candidate rather than risk reaping a daemon from another workspace.
+ */
+function extractCwdArg(cmdline: string): string | null {
+	const tokens = cmdline.split(/\s+/);
+	// Scan every token: the `--cwd=<path>` equals form is self-contained and can
+	// legitimately be the LAST token, so the loop must reach the final index. The
+	// space form `--cwd <path>` reads tokens[i+1] — `undefined → null` past the
+	// end, which is correct (a valueless `--cwd` is malformed).
+	for (let i = 0; i < tokens.length; i++) {
+		if (tokens[i] === "--cwd") return tokens[i + 1] ?? null;
+		if (tokens[i]?.startsWith("--cwd=")) {
+			return tokens[i]?.slice("--cwd=".length) ?? null;
+		}
+	}
+	return null;
+}
+
+/** Parse one `ps` row of the form `<pid> <ppid> <command>`. Returns null when
+ *  the line doesn't match (blank lines, header residue) or the pid is NaN. */
+function parsePsRow(line: string): OrphanCandidate | null {
+	const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+	if (!m) return null;
+	const pid = Number.parseInt(m[1] as string, 10);
+	const ppid = Number.parseInt(m[2] as string, 10);
+	const command = m[3] as string;
+	if (Number.isNaN(pid)) return null;
+	return { pid, ppid, command };
+}
+
+/**
+ * True when a parsed `ps` row is a reapable orphan harness for THIS workspace,
+ * after applying the self / non-harness / cross-cwd / ancestor / active-pid
+ * protections. The `killAll` flag drops the active-pid protection (but never the
+ * ancestor protection — that would kill the shell that invoked us).
+ */
+function isReapCandidate(
+	row: OrphanCandidate,
+	cwd: string,
+	ancestorPids: Set<number>,
+	activePid: number | null,
+	killAll: boolean,
+): boolean {
+	const { pid, command: cmd } = row;
+	if (pid === process.pid) return false;
+	if (!cmd.includes("node") && !cmd.includes("bun")) return false;
+	if (!cmd.includes("interlinked-cli/dist/harness/server")) return false;
+	// Scope by `--cwd`: a daemon spawned from a sibling repo has a different
+	// `--cwd` and must NOT be reaped from this workspace — doing so would silently
+	// disable hooks in the user's other open project. If `--cwd` is absent (legacy
+	// daemon, malformed cmdline) skip the candidate rather than risk a
+	// cross-workspace SIGTERM.
+	const candidateCwd = extractCwdArg(cmd);
+	if (candidateCwd === null || candidateCwd !== cwd) return false;
+	// Never SIGTERM our own ancestor chain — true in both default and killAll
+	// mode. killAll additionally treats the active daemon as fair game.
+	if (ancestorPids.has(pid)) return false;
+	if (!killAll && activePid !== null && pid === activePid) return false;
+	return true;
+}
+
+/**
+ * Walk the `ps` table and return the orphan harness daemons eligible for
+ * reaping in `cwd`. Pure filtering — no signalling, no fs writes — so the dry-run
+ * surface and the live reap share one selection rule.
+ */
+function collectReapCandidates(
+	ps: string,
+	cwd: string,
+	ancestorPids: Set<number>,
+	activePid: number | null,
+	killAll: boolean,
+): OrphanCandidate[] {
+	const candidates: OrphanCandidate[] = [];
+	for (const line of ps.split("\n")) {
+		const row = parsePsRow(line);
+		if (!row) continue;
+		if (isReapCandidate(row, cwd, ancestorPids, activePid, killAll)) {
+			candidates.push(row);
+		}
+	}
+	return candidates;
+}
+
+/**
+ * SIGTERM every candidate, wait under one shared deadline, then SIGKILL only the
+ * survivors and wait again. Returns the PIDs confirmed gone (an ESRCH at any
+ * signalling step counts as reaped; a permission error does not). Batching all
+ * signals before the first wait keeps N SIGTERM-deaf orphans from costing
+ * N × (TERM grace + KILL grace).
+ */
+function terminateCandidates(candidates: readonly OrphanCandidate[]): number[] {
 	const killed: number[] = [];
 	const killedSet = new Set<number>();
 	const markKilled = (pid: number): void => {
@@ -180,8 +237,8 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 	const termSent: OrphanCandidate[] = [];
 	for (const candidate of candidates) {
 		// Signal every candidate before waiting. With per-candidate waits, N
-		// SIGTERM-deaf orphans cost N * (TERM grace + KILL grace) and later
-		// daemons were not even signalled until earlier timeouts expired.
+		// SIGTERM-deaf orphans cost N * (TERM grace + KILL grace) and later daemons
+		// were not even signalled until earlier timeouts expired.
 		try {
 			process.kill(candidate.pid, "SIGTERM");
 			termSent.push(candidate);
@@ -191,9 +248,9 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 		}
 	}
 
-	// Verify all signalled processes under one shared deadline, then
-	// escalate only survivors. This preserves the "don't clear pid files
-	// unless the process is truly gone" contract without serial timeouts.
+	// Verify all signalled processes under one shared deadline, then escalate only
+	// survivors. This preserves the "don't clear pid files unless the process is
+	// truly gone" contract without serial timeouts.
 	const termSurvivors = waitForProcessesExit(
 		termSent.map((candidate) => candidate.pid),
 		REAP_GRACE_MS,
@@ -210,16 +267,7 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 		}
 	}
 	waitForProcessesExit(killSent, REAP_KILL_GRACE_MS, markKilled);
-	// After everything dies, sweep the stale pid/sock files so the next
-	// `startSessionDaemon` doesn't see an "existing PID" left behind by a
-	// daemon that crashed without reaching its own removePidFile() call.
-	if (killed.length > 0) {
-		clearOrphanedPidFiles(cwd, killed);
-		process.stderr.write(
-			`[interlinked] Reaped ${killed.length} orphan harness daemon${killed.length === 1 ? "" : "s"}: ${killed.join(", ")}\n`,
-		);
-	}
-	return { candidates, killed, dryRun: false };
+	return killed;
 }
 
 /** Grace window for the daemon to exit on SIGTERM before we escalate to

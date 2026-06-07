@@ -27,20 +27,10 @@ export function parseExports(content: string): ExportedSymbol[] {
 		if (line === undefined) continue;
 		const trimmed = line.trim();
 
-		// Track block comments
-		if (inBlockComment) {
-			if (trimmed.includes("*/")) {
-				inBlockComment = false;
-			}
-			continue;
-		}
-		if (trimmed.startsWith("/*")) {
-			if (!trimmed.includes("*/")) {
-				inBlockComment = true;
-			}
-			continue;
-		}
-		if (trimmed.startsWith("//")) continue;
+		// Track block / line comments (mutates inBlockComment via the verdict).
+		const comment = commentSkipVerdict(trimmed, inBlockComment);
+		inBlockComment = comment.nextInBlock;
+		if (comment.skip) continue;
 
 		// Handle multiline export { ... } statements
 		if (exportBuffer) {
@@ -65,152 +55,188 @@ export function parseExports(content: string): ExportedSymbol[] {
 
 		const lineNum = i + 1;
 
-		// export type { Foo, Bar } from '...' or export type { Foo, Bar }
-		const typeReExport = trimmed.match(/^export\s+type\s+\{([^}]+)\}/);
-		if (typeReExport?.[1] !== undefined) {
-			const names = typeReExport[1]
-				.split(",")
-				.map((n) =>
-					n
-						.trim()
-						.split(/\s+as\s+/)
-						.pop()!
-						.trim(),
-				)
-				.filter(Boolean);
-			for (const name of names) {
-				exports.push({ name, kind: "type", isTypeOnly: true, line: lineNum });
-			}
+		// Dispatch the single-line export forms through cohesive matchers.
+		const reExport = matchReExportOrStar(trimmed, lineNum);
+		if (reExport) {
+			exports.push(...reExport);
 			continue;
 		}
 
-		// export { foo, bar as baz } or export { foo } from '...'
-		const namedReExport = trimmed.match(/^export\s+\{([^}]+)\}/);
-		if (namedReExport?.[1] !== undefined) {
-			const names = namedReExport[1]
-				.split(",")
-				.map((n) =>
-					n
-						.trim()
-						.replace(/^type\s+/, "")
-						.split(/\s+as\s+/)
-						.pop()!
-						.trim(),
-				)
-				.filter(Boolean);
-			const isReExport = /from\s+['"]/.test(trimmed);
-			for (const name of names) {
-				exports.push({
-					name,
-					kind: isReExport ? "re-export" : "const",
-					isTypeOnly: false,
-					line: lineNum,
-				});
-			}
-			continue;
-		}
-
-		// export * from '...' or export * as ns from '...'
-		if (/^export\s+\*\s/.test(trimmed)) {
-			const nsMatch = trimmed.match(/^export\s+\*\s+as\s+(\w+)/);
-			exports.push({
-				name: nsMatch?.[1] ?? "*",
-				kind: "namespace",
-				isTypeOnly: false,
-				line: lineNum,
-			});
-			continue;
-		}
-
-		// export default class/function Name
-		const defaultClassFn = trimmed.match(/^export\s+default\s+(class|function)\s*(\w*)/);
-		if (defaultClassFn) {
-			exports.push({
-				name: "default",
-				kind: "default",
-				isTypeOnly: false,
-				line: lineNum,
-			});
-			// Also track the named identifier if present
-			if (defaultClassFn[2]) {
-				exports.push({
-					name: defaultClassFn[2],
-					kind: defaultClassFn[1] as "class" | "function",
-					isTypeOnly: false,
-					line: lineNum,
-				});
-			}
-			continue;
-		}
-
-		// export default <expression>
-		if (/^export\s+default\s/.test(trimmed)) {
-			exports.push({ name: "default", kind: "default", isTypeOnly: false, line: lineNum });
-			continue;
-		}
-
-		// export async function name(
-		const asyncFn = trimmed.match(/^export\s+async\s+function\s+(\w+)/);
-		if (asyncFn?.[1] !== undefined) {
-			exports.push({ name: asyncFn[1], kind: "function", isTypeOnly: false, line: lineNum });
-			continue;
-		}
-
-		// export function name(
-		const fn = trimmed.match(/^export\s+function\s+(\w+)/);
-		if (fn?.[1] !== undefined) {
-			exports.push({ name: fn[1], kind: "function", isTypeOnly: false, line: lineNum });
-			continue;
-		}
-
-		// export const/let/var name
-		const variable = trimmed.match(/^export\s+(const|let|var)\s+(\w+)/);
-		if (variable?.[2] !== undefined) {
-			exports.push({
-				name: variable[2],
-				kind: variable[1] as "const" | "let" | "var",
-				isTypeOnly: false,
-				line: lineNum,
-			});
-			continue;
-		}
-
-		// export class Name
-		const cls = trimmed.match(/^export\s+class\s+(\w+)/);
-		if (cls) {
-			exports.push({ name: cls[1], kind: "class", isTypeOnly: false, line: lineNum });
-			continue;
-		}
-
-		// export interface Name
-		const iface = trimmed.match(/^export\s+interface\s+(\w+)/);
-		if (iface) {
-			exports.push({ name: iface[1], kind: "interface", isTypeOnly: true, line: lineNum });
-			continue;
-		}
-
-		// export type Name =
-		const typeAlias = trimmed.match(/^export\s+type\s+(\w+)\s*[=<]/);
-		if (typeAlias) {
-			exports.push({ name: typeAlias[1], kind: "type", isTypeOnly: true, line: lineNum });
-			continue;
-		}
-
-		// export enum Name
-		const enm = trimmed.match(/^export\s+enum\s+(\w+)/);
-		if (enm) {
-			exports.push({ name: enm[1], kind: "enum", isTypeOnly: false, line: lineNum });
-			continue;
-		}
-
-		// export abstract class Name
-		const abstractCls = trimmed.match(/^export\s+abstract\s+class\s+(\w+)/);
-		if (abstractCls) {
-			exports.push({ name: abstractCls[1], kind: "class", isTypeOnly: false, line: lineNum });
+		const declaration = matchExportDeclaration(trimmed, lineNum);
+		if (declaration) {
+			exports.push(...declaration);
 		}
 	}
 
 	return exports;
+}
+
+/**
+ * Comment-skip decision for one trimmed source line.
+ *
+ * Internal helper for {@link parseExports}. The mutable `inBlockComment` flag
+ * stays in the orchestrator's loop; this returns whether to skip the line and
+ * what the flag should be on the next iteration. Returns `skip: true` for any
+ * comment line (in-block continuation, block start, or `//` line comment).
+ */
+function commentSkipVerdict(
+	trimmed: string,
+	inBlockComment: boolean,
+): { skip: boolean; nextInBlock: boolean } {
+	if (inBlockComment) {
+		// Inside a block comment — skip; exit the block on the closing `*/`.
+		return { skip: true, nextInBlock: !trimmed.includes("*/") };
+	}
+	if (trimmed.startsWith("/*")) {
+		// Block-comment start — skip; enter block only if it doesn't close inline.
+		return { skip: true, nextInBlock: !trimmed.includes("*/") };
+	}
+	if (trimmed.startsWith("//")) {
+		return { skip: true, nextInBlock: false };
+	}
+	return { skip: false, nextInBlock: false };
+}
+
+/**
+ * Match the brace / star re-export family on a single trimmed export line:
+ * `export type { ... }`, `export { ... }` (re-export or local), `export * ...`.
+ *
+ * Internal helper for {@link parseExports}. Returns the extracted symbols, or
+ * `null` when the line is not one of these forms (caller keeps dispatching).
+ */
+function matchReExportOrStar(trimmed: string, lineNum: number): ExportedSymbol[] | null {
+	// export type { Foo, Bar } from '...' or export type { Foo, Bar }
+	const typeReExport = trimmed.match(/^export\s+type\s+\{([^}]+)\}/);
+	if (typeReExport?.[1] !== undefined) {
+		const names = typeReExport[1]
+			.split(",")
+			.map((n) =>
+				n
+					.trim()
+					.split(/\s+as\s+/)
+					.pop()!
+					.trim(),
+			)
+			.filter(Boolean);
+		return names.map((name) => ({ name, kind: "type", isTypeOnly: true, line: lineNum }));
+	}
+
+	// export { foo, bar as baz } or export { foo } from '...'
+	const namedReExport = trimmed.match(/^export\s+\{([^}]+)\}/);
+	if (namedReExport?.[1] !== undefined) {
+		const names = namedReExport[1]
+			.split(",")
+			.map((n) =>
+				n
+					.trim()
+					.replace(/^type\s+/, "")
+					.split(/\s+as\s+/)
+					.pop()!
+					.trim(),
+			)
+			.filter(Boolean);
+		const isReExport = /from\s+['"]/.test(trimmed);
+		const kind: ExportedSymbol["kind"] = isReExport ? "re-export" : "const";
+		return names.map((name) => ({ name, kind, isTypeOnly: false, line: lineNum }));
+	}
+
+	// export * from '...' or export * as ns from '...'
+	if (/^export\s+\*\s/.test(trimmed)) {
+		const nsMatch = trimmed.match(/^export\s+\*\s+as\s+(\w+)/);
+		return [{ name: nsMatch?.[1] ?? "*", kind: "namespace", isTypeOnly: false, line: lineNum }];
+	}
+
+	return null;
+}
+
+/**
+ * Match a single-symbol export *declaration* on a trimmed line: default
+ * class/function/expression, (async) function, const/let/var, class, interface,
+ * type alias, enum, abstract class.
+ *
+ * Internal helper for {@link parseExports}. Returns the extracted symbols, or
+ * `null` when the line is not a recognised declaration form.
+ */
+function matchExportDeclaration(trimmed: string, lineNum: number): ExportedSymbol[] | null {
+	// export default class/function Name
+	const defaultClassFn = trimmed.match(/^export\s+default\s+(class|function)\s*(\w*)/);
+	if (defaultClassFn) {
+		const out: ExportedSymbol[] = [
+			{ name: "default", kind: "default", isTypeOnly: false, line: lineNum },
+		];
+		// Also track the named identifier if present
+		if (defaultClassFn[2]) {
+			out.push({
+				name: defaultClassFn[2],
+				kind: defaultClassFn[1] as "class" | "function",
+				isTypeOnly: false,
+				line: lineNum,
+			});
+		}
+		return out;
+	}
+
+	// export default <expression>
+	if (/^export\s+default\s/.test(trimmed)) {
+		return [{ name: "default", kind: "default", isTypeOnly: false, line: lineNum }];
+	}
+
+	// export async function name(
+	const asyncFn = trimmed.match(/^export\s+async\s+function\s+(\w+)/);
+	if (asyncFn?.[1] !== undefined) {
+		return [{ name: asyncFn[1], kind: "function", isTypeOnly: false, line: lineNum }];
+	}
+
+	// export function name(
+	const fn = trimmed.match(/^export\s+function\s+(\w+)/);
+	if (fn?.[1] !== undefined) {
+		return [{ name: fn[1], kind: "function", isTypeOnly: false, line: lineNum }];
+	}
+
+	// export const/let/var name
+	const variable = trimmed.match(/^export\s+(const|let|var)\s+(\w+)/);
+	if (variable?.[2] !== undefined) {
+		return [
+			{
+				name: variable[2],
+				kind: variable[1] as "const" | "let" | "var",
+				isTypeOnly: false,
+				line: lineNum,
+			},
+		];
+	}
+
+	// export class Name
+	const cls = trimmed.match(/^export\s+class\s+(\w+)/);
+	if (cls) {
+		return [{ name: cls[1], kind: "class", isTypeOnly: false, line: lineNum }];
+	}
+
+	// export interface Name
+	const iface = trimmed.match(/^export\s+interface\s+(\w+)/);
+	if (iface) {
+		return [{ name: iface[1], kind: "interface", isTypeOnly: true, line: lineNum }];
+	}
+
+	// export type Name =
+	const typeAlias = trimmed.match(/^export\s+type\s+(\w+)\s*[=<]/);
+	if (typeAlias) {
+		return [{ name: typeAlias[1], kind: "type", isTypeOnly: true, line: lineNum }];
+	}
+
+	// export enum Name
+	const enm = trimmed.match(/^export\s+enum\s+(\w+)/);
+	if (enm) {
+		return [{ name: enm[1], kind: "enum", isTypeOnly: false, line: lineNum }];
+	}
+
+	// export abstract class Name
+	const abstractCls = trimmed.match(/^export\s+abstract\s+class\s+(\w+)/);
+	if (abstractCls) {
+		return [{ name: abstractCls[1], kind: "class", isTypeOnly: false, line: lineNum }];
+	}
+
+	return null;
 }
 
 /**

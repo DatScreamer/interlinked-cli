@@ -72,6 +72,77 @@ export function checkNotImplementedStubs(content: string, filePath: string): Inl
 	return matches;
 }
 
+const EMPTY_FN_PATTERNS = [
+	/(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{/,
+	/(\w+)\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{/, // method syntax
+];
+
+/**
+ * From a single stripped line, return the function/method name if the line opens
+ * a function whose body is worth inspecting, or `null` to skip it. Skips
+ * intentional no-ops (`_`-prefixed, `noop`), abstract members, and constructors
+ * (often empty for DI). Pure helper for {@link checkEmptyFunctionBody}.
+ */
+function emptyFnCandidateName(line: string): string | null {
+	let funcName: string | null = null;
+	for (const pat of EMPTY_FN_PATTERNS) {
+		const m = line.match(pat);
+		if (m) {
+			funcName = m[1];
+			break;
+		}
+	}
+	if (!funcName) return null;
+	if (funcName.startsWith("_") || funcName === "noop" || funcName === "NOOP") return null;
+	if (/\babstract\b/.test(line)) return null;
+	if (funcName === "constructor") return null;
+	return funcName;
+}
+
+/**
+ * Collect the (stripped) body text of the function opening at `startIndex`,
+ * scanning forward up to 8 lines and tracking brace depth so it stops at the
+ * closing brace. Returns the trimmed body. Pure helper for
+ * {@link checkEmptyFunctionBody}.
+ */
+function collectEmptyFnBody(strippedLines: string[], startIndex: number): string {
+	let bodyContent = "";
+	let braceDepth = 0;
+	let started = false;
+	for (let j = startIndex; j < Math.min(startIndex + 8, strippedLines.length); j++) {
+		for (const ch of strippedLines[j]) {
+			if (ch === "{") {
+				started = true;
+				braceDepth++;
+			}
+			if (ch === "}") braceDepth--;
+		}
+		if (started && j > startIndex) {
+			bodyContent = `${bodyContent}${strippedLines[j].trim()}\n`;
+		}
+		if (started && braceDepth === 0) break;
+	}
+	return bodyContent.trim();
+}
+
+/**
+ * True when a collected function body is empty or a trivial stub return
+ * (`return;` / `return null;` / `return undefined;` as the only statement).
+ * Pure helper for {@link checkEmptyFunctionBody}.
+ */
+function isTrivialFnBody(bodyContent: string): boolean {
+	// Empty body: just whitespace or closing brace
+	if (bodyContent === "" || bodyContent === "}") return true;
+	// Trivial stub: only `return null;` or `return undefined;` or `return;`
+	const nonTrivialLines = bodyContent
+		.split("\n")
+		.filter((l) => l.trim().length > 0 && l.trim() !== "}").length;
+	return (
+		/^(return\s*(null|undefined)\s*;?\s*\}?|return\s*;\s*\}?)$/m.test(bodyContent) &&
+		nonTrivialLines <= 1
+	);
+}
+
 /**
  * Detect functions/methods with empty bodies or trivial stub returns.
  * An exported function that does nothing is dead weight pretending to be alive.
@@ -98,62 +169,15 @@ export function checkEmptyFunctionBody(content: string, filePath: string): Inlin
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	const funcPatterns = [
-		/(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{/,
-		/(\w+)\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{/, // method syntax
-	];
-
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = strippedLines[i].trim();
 
-		let funcName: string | null = null;
-		for (const pat of funcPatterns) {
-			const m = line.match(pat);
-			if (m) {
-				funcName = m[1];
-				break;
-			}
-		}
+		const funcName = emptyFnCandidateName(line);
 		if (!funcName) continue;
 
-		// Skip noop/_ prefixed (intentional no-ops)
-		if (funcName.startsWith("_") || funcName === "noop" || funcName === "NOOP") continue;
-		// Skip abstract/interface context
-		if (/\babstract\b/.test(line)) continue;
-		// Skip constructors (may intentionally be empty for DI)
-		if (funcName === "constructor") continue;
-
-		// Check if body is empty or trivial stub
-		// Collect the function body (up to 5 lines)
-		let bodyContent = "";
-		let braceDepth = 0;
-		let started = false;
-		for (let j = i; j < Math.min(i + 8, strippedLines.length); j++) {
-			for (const ch of strippedLines[j]) {
-				if (ch === "{") {
-					started = true;
-					braceDepth++;
-				}
-				if (ch === "}") braceDepth--;
-			}
-			if (started && j > i) {
-				bodyContent = `${bodyContent}${strippedLines[j].trim()}\n`;
-			}
-			if (started && braceDepth === 0) break;
-		}
-
-		bodyContent = bodyContent.trim();
-
-		// Empty body: just whitespace or closing brace
-		const isEmptyBody = bodyContent === "" || bodyContent === "}";
-		// Trivial stub: only `return null;` or `return undefined;` or `return;`
-		const isStubReturn =
-			/^(return\s*(null|undefined)\s*;?\s*\}?|return\s*;\s*\}?)$/m.test(bodyContent) &&
-			bodyContent.split("\n").filter((l) => l.trim().length > 0 && l.trim() !== "}").length <=
-				1;
-
-		if (isEmptyBody || isStubReturn) {
+		const bodyContent = collectEmptyFnBody(strippedLines, i);
+		if (isTrivialFnBody(bodyContent)) {
 			matches.push({
 				line: i + 1,
 				text: `[empty function body] ${originalLines[i].trim().slice(0, 120)}`,
@@ -162,6 +186,52 @@ export function checkEmptyFunctionBody(content: string, filePath: string): Inlin
 	}
 
 	return matches;
+}
+
+/**
+ * Count the non-trivial body lines of the function opening at `fnIndex`,
+ * scanning forward up to 8 lines and tracking brace depth. A blank line or a
+ * lone `}` does not count. Pure helper for {@link checkDeprecationNotice}.
+ */
+function countFnBodyLines(lines: string[], fnIndex: number): number {
+	let bodyLines = 0;
+	let braceDepth = 0;
+	let bodyStarted = false;
+	for (let k = fnIndex; k < Math.min(fnIndex + 8, lines.length); k++) {
+		for (const ch of lines[k]) {
+			if (ch === "{") {
+				bodyStarted = true;
+				braceDepth++;
+			}
+			if (ch === "}") braceDepth--;
+		}
+		if (bodyStarted && k > fnIndex) {
+			const trimmedBody = lines[k].trim();
+			if (trimmedBody.length > 0 && trimmedBody !== "}") bodyLines++;
+		}
+		if (bodyStarted && braceDepth === 0) break;
+	}
+	return bodyLines;
+}
+
+/**
+ * Starting just after a `@deprecated` line at `deprecatedIndex`, scan ahead (up
+ * to 5 lines) for the function it annotates. If found and its body is trivial
+ * (≤1 non-trivial line), return that function's trimmed source line; otherwise
+ * `null`. Pure helper for {@link checkDeprecationNotice}.
+ */
+function deprecatedTrivialFnLine(lines: string[], deprecatedIndex: number): string | null {
+	for (let j = deprecatedIndex + 1; j < Math.min(deprecatedIndex + 5, lines.length); j++) {
+		const nextLine = lines[j].trim();
+		if (/^(export\s+)?(async\s+)?function\s+\w+|^\w+\s*\(/.test(nextLine)) {
+			return countFnBodyLines(lines, j) <= 1 ? nextLine : null;
+		}
+		// Skip blank lines and other JSDoc lines
+		if (nextLine.length > 0 && !nextLine.startsWith("*") && !nextLine.startsWith("//")) {
+			return null;
+		}
+	}
+	return null;
 }
 
 /**
@@ -199,44 +269,55 @@ export function checkDeprecationNotice(content: string, filePath: string): Inlin
 
 		// Pattern 2: @deprecated JSDoc tag followed by an empty/stub function
 		if (/@deprecated/i.test(line)) {
-			// Scan ahead for the function and check if its body is empty/stub
-			for (let j = i + 1; j < Math.min(i + 5, originalLines.length); j++) {
-				const nextLine = originalLines[j].trim();
-				if (/^(export\s+)?(async\s+)?function\s+\w+|^\w+\s*\(/.test(nextLine)) {
-					// Found the function — check if body is trivial
-					let bodyLines = 0;
-					let braceDepth = 0;
-					let bodyStarted = false;
-					for (let k = j; k < Math.min(j + 8, originalLines.length); k++) {
-						for (const ch of originalLines[k]) {
-							if (ch === "{") {
-								bodyStarted = true;
-								braceDepth++;
-							}
-							if (ch === "}") braceDepth--;
-						}
-						if (bodyStarted && k > j) {
-							const trimmedBody = originalLines[k].trim();
-							if (trimmedBody.length > 0 && trimmedBody !== "}") bodyLines++;
-						}
-						if (bodyStarted && braceDepth === 0) break;
-					}
-					if (bodyLines <= 1) {
-						matches.push({
-							line: i + 1,
-							text: `[@deprecated on empty/stub function — just delete it] ${nextLine.slice(0, 100)}`,
-						});
-					}
-					break;
-				}
-				// Skip blank lines and other JSDoc lines
-				if (nextLine.length > 0 && !nextLine.startsWith("*") && !nextLine.startsWith("//"))
-					break;
+			const trivialFnLine = deprecatedTrivialFnLine(originalLines, i);
+			if (trivialFnLine !== null) {
+				matches.push({
+					line: i + 1,
+					text: `[@deprecated on empty/stub function — just delete it] ${trivialFnLine.slice(0, 100)}`,
+				});
 			}
 		}
 	}
 
 	return matches;
+}
+
+/**
+ * Collect the (stripped) body text of the test block opening at `startIndex`,
+ * scanning forward up to 10 lines and tracking brace depth (stops at the closing
+ * brace). Lines are space-joined. Pure helper for {@link checkOrphanedTestStub}.
+ */
+function collectTestBody(strippedLines: string[], startIndex: number): string {
+	let braceDepth = 0;
+	let bodyStarted = false;
+	let bodyContent = "";
+	for (let j = startIndex; j < Math.min(startIndex + 10, strippedLines.length); j++) {
+		for (const ch of strippedLines[j]) {
+			if (ch === "{") {
+				bodyStarted = true;
+				braceDepth++;
+			}
+			if (ch === "}") braceDepth--;
+		}
+		if (bodyStarted && j > startIndex) {
+			bodyContent = `${bodyContent}${strippedLines[j].trim()} `;
+		}
+		if (bodyStarted && braceDepth <= 0) break;
+	}
+	return bodyContent.trim();
+}
+
+/**
+ * True when a collected test body is empty or only closing punctuation /
+ * a bare `return`. Pure helper for {@link checkOrphanedTestStub}.
+ */
+function isEmptyTestBody(bodyContent: string): boolean {
+	return (
+		bodyContent === "" ||
+		bodyContent === "}" ||
+		bodyContent === "});" ||
+		/^(return\s*;?\s*)?[});\s]*$/.test(bodyContent)
+	);
 }
 
 /**
@@ -276,35 +357,8 @@ export function checkOrphanedTestStub(content: string, filePath: string): Inline
 		if (!testOpenPattern.test(line)) continue;
 		if (skipPattern.test(line) || xPattern.test(line)) continue;
 
-		// Collect the test body
-		let braceDepth = 0;
-		let bodyStarted = false;
-		let bodyContent = "";
-
-		for (let j = i; j < Math.min(i + 10, strippedLines.length); j++) {
-			for (const ch of strippedLines[j]) {
-				if (ch === "{") {
-					bodyStarted = true;
-					braceDepth++;
-				}
-				if (ch === "}") braceDepth--;
-			}
-			if (bodyStarted && j > i) {
-				bodyContent = `${bodyContent}${strippedLines[j].trim()} `;
-			}
-			if (bodyStarted && braceDepth <= 0) break;
-		}
-
-		bodyContent = bodyContent.trim();
-
-		// Check if body is empty or trivial
-		const isEmptyBody =
-			bodyContent === "" ||
-			bodyContent === "}" ||
-			bodyContent === "}" + ")" + ";" || // });
-			/^(return\s*;?\s*)?[});\s]*$/.test(bodyContent);
-
-		if (isEmptyBody) {
+		const bodyContent = collectTestBody(strippedLines, i);
+		if (isEmptyTestBody(bodyContent)) {
 			matches.push({
 				line: i + 1,
 				text: `[empty test body — delete the test or implement it] ${originalLines[i].trim().slice(0, 100)}`,

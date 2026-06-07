@@ -298,6 +298,137 @@ export function checkFlagArguments(content: string, filePath: string): InlineMat
 	return matches;
 }
 
+// Conventional name-pairs that are not orderable-by-mistake in practice.
+// Module-level so it is built once, not per call. Kept small on purpose — grow
+// it from real-world false positives, not speculation.
+const SAME_TYPED_NAME_ALLOWLIST = new Set([
+	"x",
+	"y",
+	"z",
+	"r",
+	"g",
+	"b",
+	"a", // alpha channel (RGBA)
+	"w",
+	"h",
+	"width",
+	"height",
+	"i",
+	"j",
+	"k",
+	"lat",
+	"lng",
+	"lon",
+	"long",
+	"latitude",
+	"longitude",
+	"min",
+	"max",
+]);
+
+// Top-level function declarations / arrow assignments must be exported to be
+// public. `function foo(...)` without `export` is internal-by-default in an ES
+// module. Module-level so it is built once.
+const EXPORTED_FUNCTION_PATTERNS: RegExp[] = [
+	// export function foo(...), export async function foo(...)
+	/^\s*export\s+(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(/,
+	// export default function foo(...)
+	/^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)?\s*(?:<[^>]*>)?\s*\(/,
+	// export const foo = (...) => ..., export const foo = async (...) => ...
+	/^\s*export\s+(?:const|let|var)\s+(\w+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s+)?\(/,
+];
+
+interface ExportedClassScope {
+	inExportedClass: boolean;
+	classBraceDepth: number;
+	openBraces: number;
+}
+
+/**
+ * Advance exported-class scope tracking by one source line. Detects the opening
+ * of an exported class, tallies brace depth on the (already stripped) line so
+ * brace literals in strings/comments don't drift the count, and closes the
+ * class scope when depth falls back to the class's opening level. Returns the
+ * updated scope — pure apart from the returned value.
+ */
+function trackExportedClassScope(line: string, prev: ExportedClassScope): ExportedClassScope {
+	let { inExportedClass, classBraceDepth, openBraces } = prev;
+	const trimmed = line.trim();
+	// Match `export class Foo`, `export default class Foo`, `export abstract class Foo`.
+	if (
+		!inExportedClass &&
+		/^\s*export\s+(?:default\s+)?(?:abstract\s+)?class\s+\w+/.test(trimmed)
+	) {
+		inExportedClass = true;
+		classBraceDepth = openBraces;
+	}
+	for (const ch of line) {
+		if (ch === "{") openBraces++;
+		else if (ch === "}") openBraces--;
+	}
+	if (inExportedClass && openBraces <= classBraceDepth) {
+		inExportedClass = false;
+		classBraceDepth = 0;
+	}
+	return { inExportedClass, classBraceDepth, openBraces };
+}
+
+/**
+ * Identify the public function/method name a signature line introduces, or
+ * `null` when the line is not a flagged surface. Three shapes count: exported
+ * top-level function / arrow assignment (via `EXPORTED_FUNCTION_PATTERNS`), and
+ * — only when inside an exported class — a public method (no
+ * `private`/`protected`/`#`, not a getter/setter/constructor, not a control-flow
+ * keyword with the same shape).
+ */
+function identifyPublicFunctionName(trimmed: string, inExportedClass: boolean): string | null {
+	for (const pat of EXPORTED_FUNCTION_PATTERNS) {
+		const m = trimmed.match(pat);
+		if (m) return m[1] ?? "<anonymous>";
+	}
+	if (!inExportedClass) return null;
+	// Method shape: `methodName(...)`, `public methodName(...)`, `async ...`,
+	// `static ...`. Class field arrow methods `name = (...) =>` count too.
+	const methodMatch = trimmed.match(
+		/^\s*(?:public\s+|static\s+|async\s+|readonly\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(/,
+	);
+	if (
+		methodMatch &&
+		!/^\s*(?:private|protected|#|get\s|set\s|constructor\b)/.test(trimmed) &&
+		// Avoid control-flow keywords with the same shape: `if (`, `while (`, etc.
+		!/^\s*(?:if|while|for|switch|return|throw|catch|else|do|try|new)\b/.test(trimmed) &&
+		methodMatch[1] !== "constructor"
+	) {
+		return methodMatch[1];
+	}
+	return null;
+}
+
+/**
+ * Scan a parsed parameter list for the first pair of adjacent same-typed
+ * primitives that is orderable-by-mistake, returning a description of the pair
+ * or `null` when none qualifies. Pairs where both names are in the allowlist
+ * (`x`/`y`, `min`/`max`, …) are exempt; `null`-typed params (rest, destructure,
+ * branded, union, array, generic) never pair.
+ */
+function findFirstSameTypedPair(
+	parsed: ParsedParam[],
+): { type: string; left: string; right: string } | null {
+	for (let p = 0; p < parsed.length - 1; p++) {
+		const left = parsed[p];
+		const right = parsed[p + 1];
+		if (!left || !right) continue;
+		if (left.type === null || right.type === null) continue;
+		if (left.type !== right.type) continue;
+		const leftLower = left.name.toLowerCase();
+		const rightLower = right.name.toLowerCase();
+		if (SAME_TYPED_NAME_ALLOWLIST.has(leftLower) && SAME_TYPED_NAME_ALLOWLIST.has(rightLower))
+			continue;
+		return { type: left.type, left: left.name, right: right.name };
+	}
+	return null;
+}
+
 /**
  * Detect exported / public-method signatures that take 2+ adjacent parameters
  * of the same primitive type (`string`, `number`, `boolean`). Callers can swap
@@ -340,88 +471,22 @@ export function checkSameTypedPrimitiveParams(
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// Top-level function declarations / arrow assignments must be exported to
-	// be public. `function foo(...)` without `export` is internal-by-default
-	// in an ES module.
-	const exportedFunctionPatterns: RegExp[] = [
-		// export function foo(...), export async function foo(...)
-		/^\s*export\s+(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(/,
-		// export default function foo(...)
-		/^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)?\s*(?:<[^>]*>)?\s*\(/,
-		// export const foo = (...) => ..., export const foo = async (...) => ...
-		/^\s*export\s+(?:const|let|var)\s+(\w+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s+)?\(/,
-	];
-
-	// Track whether we are inside an exported class so we can flag its public
-	// methods. Methods on non-exported classes don't have a public surface
-	// outside the module.
-	let inExportedClass = false;
-	let classBraceDepth = 0;
-	// Running brace depth so we can tell when an exported class block closes.
-	let openBraces = 0;
+	// Track exported-class scope so we can flag public methods. Methods on
+	// non-exported classes don't have a public surface outside the module.
+	let scope: ExportedClassScope = {
+		inExportedClass: false,
+		classBraceDepth: 0,
+		openBraces: 0,
+	};
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = lines[i];
-		const trimmed = line.trim();
+		const trimmed = lines[i].trim();
+		scope = trackExportedClassScope(lines[i], scope);
 
-		// Track exported-class scope. Match `export class Foo`, `export default class Foo`,
-		// `export abstract class Foo`.
-		if (
-			!inExportedClass &&
-			/^\s*export\s+(?:default\s+)?(?:abstract\s+)?class\s+\w+/.test(trimmed)
-		) {
-			inExportedClass = true;
-			classBraceDepth = openBraces;
-		}
-
-		// Update brace depth tally for class-scope tracking. (We do this on the
-		// stripped line so brace literals in strings / comments don't drift the
-		// count.)
-		for (const ch of line) {
-			if (ch === "{") openBraces++;
-			else if (ch === "}") openBraces--;
-		}
-		if (inExportedClass && openBraces <= classBraceDepth) {
-			inExportedClass = false;
-			classBraceDepth = 0;
-		}
-
-		// Identify the function signature start point. Three shapes flagged:
-		//   - exported top-level function / arrow assignment
-		//   - public method in an exported class (no `private` / `protected` /
-		//     no leading `#`, optional `public` keyword)
-		let funcName: string | null = null;
-		for (const pat of exportedFunctionPatterns) {
-			const m = trimmed.match(pat);
-			if (m) {
-				funcName = m[1] ?? "<anonymous>";
-				break;
-			}
-		}
-
-		if (!funcName && inExportedClass) {
-			// Method shape: `methodName(...)` or `public methodName(...)` or
-			// `async methodName(...)` or `static methodName(...)`. Class field
-			// arrow methods `name = (...) =>` count too. Avoid getters/setters
-			// (`get foo(`, `set foo(`) — they take 0 or 1 args by spec, no
-			// orderable-by-mistake risk. Skip `constructor` too — value-object
-			// holders are the canonical exception. Skip private (#name) and
-			// explicit `private`/`protected` modifiers.
-			const methodMatch = trimmed.match(
-				/^\s*(?:public\s+|static\s+|async\s+|readonly\s+)*(\w+)\s*(?:<[^>]*>)?\s*\(/,
-			);
-			if (
-				methodMatch &&
-				!/^\s*(?:private|protected|#|get\s|set\s|constructor\b)/.test(trimmed) &&
-				// Avoid matching control-flow keywords that have the same shape:
-				// `if (`, `while (`, `for (`, `switch (`, `return (`, `throw (`.
-				!/^\s*(?:if|while|for|switch|return|throw|catch|else|do|try|new)\b/.test(trimmed) &&
-				methodMatch[1] !== "constructor"
-			) {
-				funcName = methodMatch[1];
-			}
-		}
+		// Identify the function/method signature start point (exported top-level
+		// function/arrow, or a public method inside an exported class).
+		const funcName = identifyPublicFunctionName(trimmed, scope.inExportedClass);
 		if (!funcName) continue;
 
 		// Collect the full parameter list, balancing nested parens / brackets /
@@ -429,64 +494,14 @@ export function checkSameTypedPrimitiveParams(
 		const params = collectParamList(lines, i);
 		if (!params) continue;
 
-		// Walk the parameter list looking for two consecutive same-typed
-		// primitives. We only fire on adjacent pairs; orderable-by-mistake risk
-		// is highest when the swappable parameters sit next to each other in
-		// the call site.
-		const parsed = parseParamPrimitives(params);
-		// Allowlist of conventional name-pairs that are not orderable-by-mistake
-		// in practice. Build it once per call (cheap) — kept small on purpose;
-		// grow it from real-world false positives, not speculation.
-		const NAME_ALLOWLIST = new Set([
-			"x",
-			"y",
-			"z",
-			"r",
-			"g",
-			"b",
-			"a", // alpha channel (RGBA)
-			"w",
-			"h",
-			"width",
-			"height",
-			"i",
-			"j",
-			"k",
-			"lat",
-			"lng",
-			"lon",
-			"long",
-			"latitude",
-			"longitude",
-			"min",
-			"max",
-		]);
-
-		for (let p = 0; p < parsed.length - 1; p++) {
-			const left = parsed[p];
-			const right = parsed[p + 1];
-			if (!left || !right) continue;
-			// Only fire on matched, recognized primitive surface types. `null`
-			// means "we couldn't classify this as a flagged primitive" — rest
-			// params, destructured params, named-type / branded params,
-			// unions, arrays, generics. Two `null` types must not pair.
-			if (left.type === null || right.type === null) continue;
-			if (left.type !== right.type) continue;
-			// Skip when BOTH names are in the allowlist. One match is not
-			// enough — `transfer(x: string, userId: string)` is still orderable
-			// by mistake.
-			const leftLower = left.name.toLowerCase();
-			const rightLower = right.name.toLowerCase();
-			if (NAME_ALLOWLIST.has(leftLower) && NAME_ALLOWLIST.has(rightLower)) continue;
-			matches.push({
-				line: i + 1,
-				text: `[2 same-typed ${left.type} params (${left.name}, ${right.name}) → use branded types or a struct param] ${originalLines[i].trim().slice(0, 100)}`,
-			});
-			// One finding per signature is enough — don't double-report when a
-			// triple of `(a: string, b: string, c: string)` produces two
-			// adjacent pairs.
-			break;
-		}
+		// Find the first adjacent same-typed-primitive pair. One finding per
+		// signature is enough — don't double-report a `(a, b, c)` string triple.
+		const pair = findFirstSameTypedPair(parseParamPrimitives(params));
+		if (!pair) continue;
+		matches.push({
+			line: i + 1,
+			text: `[2 same-typed ${pair.type} params (${pair.left}, ${pair.right}) → use branded types or a struct param] ${originalLines[i].trim().slice(0, 100)}`,
+		});
 	}
 
 	return matches;

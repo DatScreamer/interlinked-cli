@@ -57,23 +57,91 @@ export function checkNestedTernaries(content: string, filePath: string): InlineM
 	return matches;
 }
 
+/**
+ * Route handlers / API endpoints: catch-log is the correct pattern since the
+ * framework owns the error response, so those files are exempt entirely. Matches
+ * either a `/routes|api|handlers|.../` path segment or a `.route|.handler|...`
+ * filename suffix on the normalized (forward-slash, lowercased) path.
+ */
+function isCatchLogExemptPath(filePath: string): boolean {
+	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+	return (
+		/\/(routes?|api|handlers?|endpoints?|middleware|webhooks?|actions?|pages?\/api)\//i.test(
+			normalized,
+		) || /\.(route|handler|controller|action|middleware)\.[jt]sx?$/i.test(normalized)
+	);
+}
+
+/** Outcome of scanning a catch block's body for the console-only shape. */
+type CatchBodyScan = {
+	hasConsole: boolean;
+	onlyConsole: boolean;
+	foundClose: boolean;
+	closeIdx: number;
+};
+
+/**
+ * Scan up to 8 lines from the catch block's opening brace at `braceStart`,
+ * tracking brace depth. Reports whether the body contains only `console.*`
+ * calls (plus blank/closing lines) and the index of the closing brace.
+ */
+function scanCatchBody(strippedLines: string[], braceStart: number): CatchBodyScan {
+	let onlyConsole = true;
+	let hasConsole = false;
+	let depth = 0;
+	let foundClose = false;
+	let closeIdx = -1;
+
+	for (let j = braceStart; j < Math.min(braceStart + 8, strippedLines.length); j++) {
+		for (const ch of strippedLines[j]) {
+			if (ch === "{") depth++;
+			if (ch === "}") depth--;
+		}
+		if (j > braceStart) {
+			const trimmed = strippedLines[j].trim();
+			if (trimmed === "}" || trimmed === "") {
+				// empty line or closing brace — fine
+			} else if (/^\s*console\.(log|error|warn|info|debug)\s*\(/.test(strippedLines[j])) {
+				hasConsole = true;
+			} else {
+				onlyConsole = false;
+				break;
+			}
+		}
+		if (depth <= 0 && j > braceStart) {
+			foundClose = true;
+			closeIdx = j;
+			break;
+		}
+	}
+
+	return { hasConsole, onlyConsole, foundClose, closeIdx };
+}
+
+/**
+ * After the catch block closes at `closeIdx`, does execution continue with any
+ * meaningful code (state updates, cleanup, return) within the next few lines? If
+ * so the error isn't silently swallowed and the catch-log shouldn't be flagged.
+ */
+function hasMeaningfulCodeAfterCatch(strippedLines: string[], closeIdx: number): boolean {
+	for (let j = closeIdx + 1; j < Math.min(closeIdx + 5, strippedLines.length); j++) {
+		const afterTrimmed = strippedLines[j].trim();
+		if (afterTrimmed && afterTrimmed !== "}" && afterTrimmed !== ");") {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Detect catch blocks that only log — error is silently swallowed. */
 export function checkCatchAndLog(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
 	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
 
-	// Route handlers / API endpoints: catch-log is the correct pattern since
-	// the framework handles the error response. Skip these files entirely.
-	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-	if (
-		/\/(routes?|api|handlers?|endpoints?|middleware|webhooks?|actions?|pages?\/api)\//i.test(
-			normalized,
-		) ||
-		/\.(route|handler|controller|action|middleware)\.[jt]sx?$/i.test(normalized)
-	) {
-		return [];
-	}
+	// Route handlers / API endpoints: catch-log is correct (framework owns the
+	// error response), so skip those files entirely.
+	if (isCatchLogExemptPath(filePath)) return [];
 
 	const stripped = stripComments(content);
 	const originalLines = content.split("\n");
@@ -93,48 +161,15 @@ export function checkCatchAndLog(content: string, filePath: string): InlineMatch
 		}
 		if (braceStart === -1) continue;
 
-		let onlyConsole = true;
-		let hasConsole = false;
-		let depth = 0;
-		let foundClose = false;
-		let closeIdx = -1;
-
-		for (let j = braceStart; j < Math.min(braceStart + 8, strippedLines.length); j++) {
-			for (const ch of strippedLines[j]) {
-				if (ch === "{") depth++;
-				if (ch === "}") depth--;
-			}
-			if (j > braceStart) {
-				const trimmed = strippedLines[j].trim();
-				if (trimmed === "}" || trimmed === "") {
-					// empty line or closing brace — fine
-				} else if (/^\s*console\.(log|error|warn|info|debug)\s*\(/.test(strippedLines[j])) {
-					hasConsole = true;
-				} else {
-					onlyConsole = false;
-					break;
-				}
-			}
-			if (depth <= 0 && j > braceStart) {
-				foundClose = true;
-				closeIdx = j;
-				break;
-			}
-		}
+		const { hasConsole, onlyConsole, foundClose, closeIdx } = scanCatchBody(
+			strippedLines,
+			braceStart,
+		);
 
 		if (hasConsole && onlyConsole && foundClose) {
-			// Check lines after the catch block: if execution continues with
-			// any meaningful code (state updates, cleanup, return, etc.),
-			// the error isn't being silently swallowed — don't flag it.
-			let hasCodeAfter = false;
-			for (let j = closeIdx + 1; j < Math.min(closeIdx + 5, strippedLines.length); j++) {
-				const afterTrimmed = strippedLines[j].trim();
-				if (afterTrimmed && afterTrimmed !== "}" && afterTrimmed !== ");") {
-					hasCodeAfter = true;
-					break;
-				}
-			}
-			if (hasCodeAfter) continue;
+			// If execution continues after the catch with meaningful code, the
+			// error isn't silently swallowed — don't flag it.
+			if (hasMeaningfulCodeAfterCatch(strippedLines, closeIdx)) continue;
 
 			matches.push({
 				line: i + 1,

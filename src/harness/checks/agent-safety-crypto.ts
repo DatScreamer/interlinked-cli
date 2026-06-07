@@ -163,6 +163,113 @@ export function checkWeakHash(content: string, filePath: string): InlineMatch[] 
 	return matches;
 }
 
+type WalkerDecl = { name: string; line: number };
+
+/**
+ * Find every function/method declaration in the strings-blanked source, as a
+ * `{ name, line }` list. Used by {@link checkRecursiveWalkerLstat} to seed the
+ * body scan. Internal helper — recognizes the three declaration shapes
+ * (`function f(`, `const f = (`/`function`, and class-method headers) while
+ * excluding control-flow keywords from the method form.
+ */
+function collectWalkerDecls(sLines: string[]): WalkerDecl[] {
+	const decls: WalkerDecl[] = [];
+	const declRe1 = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/;
+	const declRe2 =
+		/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\()/;
+	const declRe3 =
+		/^\s+(?:(?:public|private|protected|static|readonly|override|async)\s+)*(?!(?:if|for|while|switch|catch|do|with|return|new|typeof|throw|delete|void|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{\s*$/;
+	for (let i = 0; i < sLines.length; i++) {
+		const m1 = sLines[i].match(declRe1);
+		if (m1) {
+			decls.push({ name: m1[1], line: i });
+			continue;
+		}
+		const m2 = sLines[i].match(declRe2);
+		if (m2) {
+			decls.push({ name: m2[1], line: i });
+			continue;
+		}
+		const m3 = sLines[i].match(declRe3);
+		if (m3) decls.push({ name: m3[1], line: i });
+	}
+	return decls;
+}
+
+/**
+ * Locate the byte offset just inside the first `{` at or after `startLine`.
+ * Returns the absolute index of the brace, or -1 if no `{` is found before the
+ * end of file. `linePrefixLen[i]` is the cumulative byte length of lines `0..i-1`
+ * (each terminated by one `\n`), so the returned offset indexes into the joined
+ * `stripped` source. Internal helper for {@link checkRecursiveWalkerLstat}.
+ */
+function findWalkerBodyOpen(
+	sLines: string[],
+	linePrefixLen: number[],
+	startLine: number,
+): number {
+	for (let i = startLine; i < sLines.length; i++) {
+		const idx = sLines[i].indexOf("{");
+		if (idx !== -1) return linePrefixLen[i] + idx;
+	}
+	return -1;
+}
+
+/**
+ * Given the open-brace offset of a function body in `stripped`, find the
+ * matching close-brace offset via depth counting. Returns -1 if unbalanced.
+ * Internal helper for {@link checkRecursiveWalkerLstat}.
+ */
+function findWalkerBodyClose(stripped: string, bodyOpen: number): number {
+	let depth = 0;
+	for (let i = bodyOpen; i < stripped.length; i++) {
+		const c = stripped[i];
+		if (c === "{") depth++;
+		else if (c === "}") {
+			depth--;
+			if (depth === 0) return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Decide whether one declaration's body is an unsafe recursive walker and, if
+ * so, return the {@link InlineMatch} pointing at its `statSync(` call. Returns
+ * `null` when the body is balanced-but-safe or when any of the four conditions
+ * fails. Internal helper for {@link checkRecursiveWalkerLstat}; takes the
+ * pre-computed `stripped` source plus the body span so the orchestrator stays a
+ * thin loop.
+ */
+function walkerLstatMatch(
+	decl: WalkerDecl,
+	stripped: string,
+	oLines: string[],
+	sLines: string[],
+	linePrefixLen: number[],
+): InlineMatch | null {
+	const bodyOpen = findWalkerBodyOpen(sLines, linePrefixLen, decl.line);
+	if (bodyOpen < 0) return null;
+	const bodyClose = findWalkerBodyClose(stripped, bodyOpen);
+	if (bodyClose < 0) return null;
+	const body = stripped.slice(bodyOpen + 1, bodyClose);
+
+	if (!/\breaddirSync\s*\(/.test(body)) return null;
+	const selfRe = new RegExp("(?:\\bthis\\.)?\\b" + decl.name + "\\b\\s*\\(");
+	if (!selfRe.test(body)) return null;
+	if (!/\bstatSync\s*\(/.test(body)) return null;
+	if (/\blstatSync\s*\(/.test(body)) return null;
+
+	const sm = body.match(/\bstatSync\s*\(/);
+	if (!sm || sm.index === undefined) return null;
+	const absStat = bodyOpen + 1 + sm.index;
+	const lineNum = stripped.slice(0, absStat).split("\n").length;
+	return {
+		line: lineNum,
+		text: (oLines[lineNum - 1] ?? "").trim().slice(0, 150),
+	};
+}
+
 /**
  * Detect recursive directory walkers that gate recursion on `statSync(...)`
  * instead of `lstatSync(...)`. Without lstat, the walker follows symlinks —
@@ -192,71 +299,13 @@ export function checkRecursiveWalkerLstat(
 		linePrefixLen.push(linePrefixLen[linePrefixLen.length - 1] + ln.length + 1);
 	}
 
-	type Decl = { name: string; line: number };
-	const decls: Decl[] = [];
-	const declRe1 = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/;
-	const declRe2 =
-		/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\()/;
-	const declRe3 =
-		/^\s+(?:(?:public|private|protected|static|readonly|override|async)\s+)*(?!(?:if|for|while|switch|catch|do|with|return|new|typeof|throw|delete|void|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{\s*$/;
-	for (let i = 0; i < sLines.length; i++) {
-		const m1 = sLines[i].match(declRe1);
-		if (m1) {
-			decls.push({ name: m1[1], line: i });
-			continue;
-		}
-		const m2 = sLines[i].match(declRe2);
-		if (m2) {
-			decls.push({ name: m2[1], line: i });
-			continue;
-		}
-		const m3 = sLines[i].match(declRe3);
-		if (m3) decls.push({ name: m3[1], line: i });
-	}
+	const decls = collectWalkerDecls(sLines);
 
 	const matches: InlineMatch[] = [];
 	for (const d of decls) {
 		if (matches.length >= 10) break;
-		let bodyOpen = -1;
-		for (let i = d.line; i < sLines.length; i++) {
-			const idx = sLines[i].indexOf("{");
-			if (idx !== -1) {
-				bodyOpen = linePrefixLen[i] + idx;
-				break;
-			}
-		}
-		if (bodyOpen < 0) continue;
-
-		let depth = 0;
-		let bodyClose = -1;
-		for (let i = bodyOpen; i < stripped.length; i++) {
-			const c = stripped[i];
-			if (c === "{") depth++;
-			else if (c === "}") {
-				depth--;
-				if (depth === 0) {
-					bodyClose = i;
-					break;
-				}
-			}
-		}
-		if (bodyClose < 0) continue;
-		const body = stripped.slice(bodyOpen + 1, bodyClose);
-
-		if (!/\breaddirSync\s*\(/.test(body)) continue;
-		const selfRe = new RegExp("(?:\\bthis\\.)?\\b" + d.name + "\\b\\s*\\(");
-		if (!selfRe.test(body)) continue;
-		if (!/\bstatSync\s*\(/.test(body)) continue;
-		if (/\blstatSync\s*\(/.test(body)) continue;
-
-		const sm = body.match(/\bstatSync\s*\(/);
-		if (!sm || sm.index === undefined) continue;
-		const absStat = bodyOpen + 1 + sm.index;
-		const lineNum = stripped.slice(0, absStat).split("\n").length;
-		matches.push({
-			line: lineNum,
-			text: (oLines[lineNum - 1] ?? "").trim().slice(0, 150),
-		});
+		const m = walkerLstatMatch(d, stripped, oLines, sLines, linePrefixLen);
+		if (m) matches.push(m);
 	}
 	return matches;
 }

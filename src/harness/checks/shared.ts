@@ -414,51 +414,97 @@ function typeOnlyTopLevelModeAt(code: string, offset: number): TypeOnlyTopLevelM
 	return null;
 }
 
+/** Mutable bracket-nesting bookkeeping for a single top-level statement scan.
+ *  `interfaceSawBody` records whether the interface's `{ … }` body has opened
+ *  yet — used to distinguish `interface X {}` completion from a stray brace. */
+interface TypeOnlyScanState {
+	braceDepth: number;
+	bracketDepth: number;
+	parenDepth: number;
+	interfaceSawBody: boolean;
+}
+
+/** True when no bracket/brace/paren is currently open — i.e. we're back at the
+ *  statement's top level and a `;` or newline can legitimately terminate it. */
+function atTopLevelDepth(state: TypeOnlyScanState): boolean {
+	return state.braceDepth === 0 && state.bracketDepth === 0 && state.parenDepth === 0;
+}
+
+/** Advance the nesting depths for a single bracket-class character. Non-bracket
+ *  characters leave the state untouched. For `interface` mode, opening the first
+ *  `{` flips `interfaceSawBody` so the matching close can be recognized. */
+function updateTypeOnlyScanDepth(
+	state: TypeOnlyScanState,
+	ch: string | undefined,
+	mode: TypeOnlyTopLevelMode,
+): void {
+	if (ch === "{") {
+		state.braceDepth++;
+		if (mode === "interface") state.interfaceSawBody = true;
+	} else if (ch === "}") {
+		state.braceDepth = Math.max(0, state.braceDepth - 1);
+	} else if (ch === "[") {
+		state.bracketDepth++;
+	} else if (ch === "]") {
+		state.bracketDepth = Math.max(0, state.bracketDepth - 1);
+	} else if (ch === "(") {
+		state.parenDepth++;
+	} else if (ch === ")") {
+		state.parenDepth = Math.max(0, state.parenDepth - 1);
+	}
+}
+
+/**
+ * Decide whether the current character at index `i` ends the type-only
+ * statement, returning the index just past the statement (or `null` to keep
+ * scanning). Called AFTER `updateTypeOnlyScanDepth` has applied this character's
+ * depth change, so an interface's closing `}` is seen at `braceDepth === 0`.
+ */
+function typeOnlyStatementEndAt(
+	code: string,
+	i: number,
+	ch: string | undefined,
+	mode: TypeOnlyTopLevelMode,
+	state: TypeOnlyScanState,
+): number | null {
+	if (ch === "}" && mode === "interface" && state.interfaceSawBody && state.braceDepth === 0) {
+		return consumeOptionalSemicolon(code, i + 1);
+	}
+	if (ch === ";" && atTopLevelDepth(state)) {
+		return i + 1;
+	}
+	if (
+		ch === "\n" &&
+		mode !== "interface" &&
+		atTopLevelDepth(state) &&
+		canEndTypeOnlyStatementAtNewline(code, i, mode)
+	) {
+		return i + 1;
+	}
+	return null;
+}
+
 function findTypeOnlyStatementEnd(
 	code: string,
 	offset: number,
 	mode: TypeOnlyTopLevelMode,
 ): number | null {
-	let braceDepth = 0;
-	let bracketDepth = 0;
-	let parenDepth = 0;
-	let interfaceSawBody = false;
+	const state: TypeOnlyScanState = {
+		braceDepth: 0,
+		bracketDepth: 0,
+		parenDepth: 0,
+		interfaceSawBody: false,
+	};
 
 	for (let i = offset; i < code.length; i++) {
 		const ch = code[i];
-
-		if (ch === "{") {
-			braceDepth++;
-			if (mode === "interface") interfaceSawBody = true;
-		} else if (ch === "}") {
-			braceDepth = Math.max(0, braceDepth - 1);
-			if (mode === "interface" && interfaceSawBody && braceDepth === 0) {
-				return consumeOptionalSemicolon(code, i + 1);
-			}
-		} else if (ch === "[") {
-			bracketDepth++;
-		} else if (ch === "]") {
-			bracketDepth = Math.max(0, bracketDepth - 1);
-		} else if (ch === "(") {
-			parenDepth++;
-		} else if (ch === ")") {
-			parenDepth = Math.max(0, parenDepth - 1);
-		} else if (ch === ";" && braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) {
-			return i + 1;
-		} else if (
-			ch === "\n" &&
-			mode !== "interface" &&
-			braceDepth === 0 &&
-			bracketDepth === 0 &&
-			parenDepth === 0 &&
-			canEndTypeOnlyStatementAtNewline(code, i, mode)
-		) {
-			return i + 1;
-		}
+		updateTypeOnlyScanDepth(state, ch, mode);
+		const end = typeOnlyStatementEndAt(code, i, ch, mode, state);
+		if (end !== null) return end;
 	}
 
-	if (braceDepth !== 0 || bracketDepth !== 0 || parenDepth !== 0) return null;
-	if (mode === "interface" && !interfaceSawBody) return null;
+	if (!atTopLevelDepth(state)) return null;
+	if (mode === "interface" && !state.interfaceSawBody) return null;
 	return code.length;
 }
 
