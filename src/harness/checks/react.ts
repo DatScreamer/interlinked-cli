@@ -152,7 +152,34 @@ function isStaticStringConstant(content: string, name: string): boolean {
 	return false;
 }
 
-/** Detect direct DOM access in React components — use useRef instead. */
+const DOM_ACCESS_RE =
+	/\bdocument\.(getElementById|querySelector|querySelectorAll|getElementsBy)\s*\(/;
+// An effect hook whose callback opens a `{` block on the same line. We only
+// start tracking when a brace actually opens — `useEffect(fn, [])` (named
+// callback, no inline block) carries no body to exempt.
+const EFFECT_OPENER_RE = /\b(?:useEffect|useLayoutEffect)\s*\(/;
+// createPortal's second argument is legitimately a DOM node (the portal target).
+const CREATE_PORTAL_RE = /\bcreatePortal\s*\(/;
+
+/** Net `{` minus `}` on a single stripped line (strings/comments already blanked). */
+function netBraceDelta(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		else if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
+ * Detect direct DOM access in React components — use useRef instead.
+ *
+ * Refined (2026-06) to drop two legitimate React escape hatches that the
+ * blanket regex FP'd on: the `createPortal(...)` target-node argument, and DOM
+ * access inside a `useEffect` / `useLayoutEffect` callback (the sanctioned place
+ * to touch the DOM after render). Render-body and event-handler DOM access —
+ * the real "should be a ref" bug — still fires.
+ */
 export function checkDirectDomAccess(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
@@ -161,12 +188,40 @@ export function checkDirectDomAccess(content: string, filePath: string): InlineM
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
-	return scanLinesStripped(
-		originalLines,
-		strippedLines,
-		/\bdocument\.(getElementById|querySelector|querySelectorAll|getElementsBy)\s*\(/,
-		10,
-	);
+	const matches: InlineMatch[] = [];
+
+	// Brace depth of the innermost open effect-hook callback, or 0 when not
+	// inside one. Seeded when an effect opener line nets a positive brace delta.
+	let effectDepth = 0;
+
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const strippedLine = strippedLines[i];
+		const originalLine = originalLines[i];
+		if (strippedLine === undefined || originalLine === undefined) continue;
+
+		const inEffect = effectDepth > 0;
+		// Update depth for THIS line before deciding the next iteration's state.
+		// An effect opener seeds the depth from this line's net brace delta;
+		// otherwise carry the running depth forward.
+		if (effectDepth > 0) {
+			effectDepth += netBraceDelta(strippedLine);
+			if (effectDepth < 0) effectDepth = 0;
+		} else if (EFFECT_OPENER_RE.test(strippedLine)) {
+			const delta = netBraceDelta(strippedLine);
+			if (delta > 0) effectDepth = delta;
+		}
+
+		if (!DOM_ACCESS_RE.test(strippedLine)) continue;
+		// Exemptions: createPortal target node, or anywhere inside an effect
+		// callback (the opener line itself counts — `inEffect` is its pre-update
+		// state, so also check the same-line effect opener).
+		if (CREATE_PORTAL_RE.test(strippedLine)) continue;
+		if (inEffect || EFFECT_OPENER_RE.test(strippedLine)) continue;
+
+		matches.push({ line: i + 1, text: originalLine.trim().slice(0, 150) });
+	}
+	return matches;
 }
 
 /** Detect excessive inline object props causing unnecessary re-renders (3+). */

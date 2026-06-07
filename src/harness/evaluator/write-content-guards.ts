@@ -667,10 +667,20 @@ function collectAssertionAndLogWarnings(
 /** Unresolved task markers (in COMMENTS only), empty catch blocks, and A2
  *  eval / new Function(). Task markers require a comment lead-in (// or /* or
  *  jsdoc *) so the marker vocabulary inside string literals (e.g. "TICKET-XXX")
- *  and a detector's own /TODO|FIXME/ regex is not miscounted. */
+ *  and a detector's own /TODO|FIXME/ regex is not miscounted.
+ *
+ *  Refined (2026-06): a marker word mid-enumeration in a comment that DESCRIBES
+ *  marker detection (`* stub / TODO / disabled-test patterns`, `// scans for
+ *  TODO and FIXME markers`, `// the FIXME handler runs here`) is not a real
+ *  task marker. It now fires only when the marker is the FIRST content token of
+ *  the comment (lead-in + optional whitespace) OR is immediately followed by
+ *  `:` or `(` (the `// TODO:` / `/* FIXME(alice):` shapes). */
 function collectMarkerEvalWarnings(filePath: string, content: string): string[] {
 	const warnings: string[] = [];
-	const taskMarkerPattern = /(?:\/\/|\/\*|\*)[^\n]*?\b(?:TODO|FIXME|HACK|XXX)\b/g;
+	const taskMarkerPattern = new RegExp(
+		"(?:\\/\\/|\\/\\*|\\*)(?:\\s*(?:TODO|FIXME|HACK|XXX)\\b|[^\\n]*?\\b(?:TODO|FIXME|HACK|XXX)\\s*[:(])",
+		"g",
+	);
 	const taskMarkers = (content.match(taskMarkerPattern) || []).length;
 	if (taskMarkers > 0) {
 		warnings.push(

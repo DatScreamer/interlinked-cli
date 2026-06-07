@@ -255,8 +255,11 @@ export function checkEvalUsage(content: string, filePath: string): InlineMatch[]
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		const trimmed = strippedLines[i].trim();
-		// Direct eval
-		if (/\beval\s*\(/.test(trimmed)) {
+		// Direct eval — negative lookbehind `(?<![.\w])` so a member method
+		// named `eval` (`mathParser.eval(...)`, `vm.eval(...)`) or an
+		// identifier-suffixed call is not read as the global eval. Mirrors the
+		// sibling checkEvalInputTainted (js-security-checks.ts).
+		if (/(?<![.\w])eval\s*\(/.test(trimmed)) {
 			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 			continue;
 		}

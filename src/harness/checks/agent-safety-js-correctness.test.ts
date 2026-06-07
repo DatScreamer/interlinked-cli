@@ -130,6 +130,33 @@ describe("checkEvalUsage", () => {
 		const out = checkEvalUsage('setTimeout("doThing()", 100);\n', "src/x.ts");
 		expect(out.length).toBeGreaterThanOrEqual(1);
 	});
+
+	// FP regression: a member method named `eval` (`obj.eval(...)`) is not the
+	// global eval. The negative lookbehind `(?<![.\w])` (matching the sibling
+	// checkEvalInputTainted) must keep these from firing.
+	it("does NOT flag a member call `mathParser.eval(expr)`", () => {
+		expect(checkEvalUsage("const r = mathParser.eval(expr);\n", "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag `vm.eval(code)`", () => {
+		expect(checkEvalUsage("vm.eval(code);\n", "src/x.ts")).toEqual([]);
+	});
+
+	it("does NOT flag an identifier-suffixed `myEval(x)`", () => {
+		expect(checkEvalUsage("const y = myEval(x);\n", "src/x.ts")).toEqual([]);
+	});
+
+	it("still flags bare `eval(userInput)`", () => {
+		expect(checkEvalUsage("eval(userInput);\n", "src/x.ts").length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still flags `eval (x)` with a space before the paren", () => {
+		expect(checkEvalUsage("eval (x);\n", "src/x.ts").length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still flags a statement-leading global `eval(...)`", () => {
+		expect(checkEvalUsage("\teval(payload);\n", "src/x.ts").length).toBeGreaterThanOrEqual(1);
+	});
 });
 
 describe("checkInnerHtmlUsage", () => {

@@ -311,6 +311,80 @@ describe("checkDirectDomAccess", () => {
 		].join("\n");
 		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
 	});
+
+	// FP refinement (2026-06): createPortal's target node and DOM access inside
+	// useEffect/useLayoutEffect are the *correct* React escape hatches — they
+	// must not fire. Real bugs (render-body / event-handler DOM access that
+	// should be a ref) still fire.
+	test("does not fire on a createPortal target node", () => {
+		const code = [
+			"export function Modal({ children }) {",
+			'  return createPortal(children, document.getElementById("modal-root")!);',
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Modal.tsx")).toEqual([]);
+	});
+
+	test("does not fire inside a single-line useEffect callback", () => {
+		const code = [
+			"export function Comp() {",
+			'  useEffect(() => { const el = document.querySelector(".x"); }, []);',
+			"  return null;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("does not fire inside a multi-line useLayoutEffect callback", () => {
+		const code = [
+			"export function Comp() {",
+			"  useLayoutEffect(() => {",
+			'    const el = document.getElementById("x");',
+			"    el?.focus();",
+			"  }, []);",
+			"  return null;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("still fires on DOM access in the render body", () => {
+		const code = [
+			"export function Comp() {",
+			'  const el = document.getElementById("x");',
+			"  return <div>{el?.id}</div>;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx").length).toBeGreaterThan(0);
+	});
+
+	test("still fires on DOM access in an event handler (should use a ref)", () => {
+		const code = [
+			"export function Comp() {",
+			"  function onClick() {",
+			'    const el = document.querySelector(".target");',
+			"    el?.scrollIntoView();",
+			"  }",
+			"  return <button onClick={onClick}>go</button>;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx").length).toBeGreaterThan(0);
+	});
+
+	test("still fires after a useEffect block has closed", () => {
+		const code = [
+			"export function Comp() {",
+			"  useEffect(() => {",
+			"    doSetup();",
+			"  }, []);",
+			'  const stray = document.getElementById("x");',
+			"  return <div>{stray?.id}</div>;",
+			"}",
+		].join("\n");
+		const found = checkDirectDomAccess(code, "src/Comp.tsx");
+		expect(found.length).toBeGreaterThan(0);
+		expect(found.map((m) => m.line)).toContain(5);
+	});
 });
 
 describe("checkInlineObjectProps", () => {

@@ -46,8 +46,14 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 	const selectConcatPrefix = /\bSELECT\s*["'`]\s*[+,]/i;
 	// JS/Py/Go/Rust: `"…" + ident` or `` `…${expr}…` ``.
 	// Swift: `"…\(ident)…"` — Swift's string interpolation uses `\(expr)`.
+	//
+	// FP fix (2026-06): the concat token must be ADJACENT to the string
+	// delimiter (`["'`]\s*[+,]`) so a comma INSIDE the literal — a SQL column
+	// list like `"SELECT id, name FROM users"` — is not read as JS
+	// concatenation. The earlier `["'`].*[+,]` greedily spanned into the
+	// literal and FP'd on every multi-column SELECT.
 	const interpolation =
-		/["'`].*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`|"[^"]*\\\([^)]+\)/;
+		/["'`]\s*[+,]\s*[A-Za-z_$]\w*|`[^`]*\$\{[^}]*\}[^`]*`|"[^"]*\\\([^)]+\)/;
 
 	// Helicone audit (2026-05): the check was firing 66 times on
 	// `WHERE id = $1` style PARAMETERIZED queries — the `$N` placeholder

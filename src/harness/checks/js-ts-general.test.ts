@@ -334,6 +334,40 @@ describe("checkJsonParseUnsafe", () => {
 		expect(checkJsonParseUnsafe(code, TS)).toEqual([]);
 	});
 
+	// FP regression: Allman brace style puts `{` on its own line after `try`,
+	// so the same-line `/\btry\s*\{/` opener never fired and the wrapped
+	// JSON.parse looked unguarded.
+	it("does not flag JSON.parse inside an Allman-brace try block", () => {
+		const code = [
+			"try",
+			"{",
+			"  const data = JSON.parse(input);",
+			"}",
+			"catch (e)",
+			"{",
+			"  data = null;",
+			"}",
+		].join("\n");
+		expect(checkJsonParseUnsafe(code, TS)).toEqual([]);
+	});
+
+	it("still flags an unguarded JSON.parse after an Allman try block closes", () => {
+		const code = [
+			"try",
+			"{",
+			"  setup();",
+			"}",
+			"catch (e)",
+			"{",
+			"  recover();",
+			"}",
+			"const data = JSON.parse(raw);",
+		].join("\n");
+		const out = checkJsonParseUnsafe(code, TS);
+		expect(out).toHaveLength(1);
+		expect(out[0].line).toBe(9);
+	});
+
 	it("flags JSON.parse AFTER a try block has closed (tryDepth back to 0)", () => {
 		const code = [
 			"try {",

@@ -530,6 +530,60 @@ describe("evaluateWriteContentGuards — content-quality false-positive fixes", 
 		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
 	});
 
+	// FP regression: a marker word that appears mid-enumeration in a comment
+	// DESCRIBING marker detection is not an actual task marker. It must only
+	// fire when the marker is the first content token of the comment, or is
+	// immediately followed by `:` or `(`.
+	it("does NOT flag a marker word mid-enumeration in a description comment", () => {
+		const content = [
+			"/**",
+			" * Scans for stub / TODO / disabled-test patterns in the diff.",
+			" */",
+			"export const x = 1;",
+		].join("\n");
+		expect(contentQualityWarnings("doc.ts", content, "task marker")).toEqual([]);
+	});
+
+	it("does NOT flag prose mentioning TODO and FIXME markers", () => {
+		const content = '// scans for TODO and FIXME markers\nexport const y = 2;\n';
+		expect(contentQualityWarnings("doc.ts", content, "task marker")).toEqual([]);
+	});
+
+	it("does NOT flag a marker word used as a noun mid-sentence", () => {
+		const content = "// the FIXME handler runs here\nexport const z = 3;\n";
+		expect(contentQualityWarnings("doc.ts", content, "task marker")).toEqual([]);
+	});
+
+	it("still flags `// TODO: refactor` (colon form)", () => {
+		const content = "// TODO: refactor\nexport const a = 1;\n";
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
+	it("still flags `// TODO fix this` (marker as first token)", () => {
+		const content = "// TODO fix this\nexport const b = 1;\n";
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
+	it("still flags `/* FIXME(alice): broken */` (paren form)", () => {
+		const content = "/* FIXME(alice): broken */\nexport const c = 1;\n";
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
+	it("still flags `// HACK: workaround`", () => {
+		const content = "// HACK: workaround\nexport const d = 1;\n";
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
+	it("still flags a jsdoc `* TODO: ...` continuation line", () => {
+		const content = [
+			"/**",
+			" * TODO: wire this up",
+			" */",
+			"export const e = 1;",
+		].join("\n");
+		expect(contentQualityWarnings("real.ts", content, "task marker").length).toBe(1);
+	});
+
 	it("flags Math.random() feeding a camelCase `sessionId`", () => {
 		const content = [
 			"export function newSession(): string {",

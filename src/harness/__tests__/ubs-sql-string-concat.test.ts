@@ -38,6 +38,36 @@ describe("checkSqlStringConcat", () => {
 		expect(checkSqlStringConcat(code, "src/db.ts")).toEqual([]);
 	});
 
+	// FP regression: a comma INSIDE the SQL string literal (column list) must
+	// not be read as JS concatenation. The concat/interp token must be adjacent
+	// to the string DELIMITER, not buried in the literal.
+	it("does NOT flag a column list with a comma inside the literal", () => {
+		const code =
+			'const rows = await db.query("SELECT id, name FROM users");';
+		expect(checkSqlStringConcat(code, "src/db.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a multi-column SELECT with placeholder", () => {
+		const code = 'db.query("SELECT a, b, c FROM t WHERE x = ?", [x]);';
+		expect(checkSqlStringConcat(code, "src/db.ts")).toEqual([]);
+	});
+
+	it("does NOT flag aggregate columns with a comma in the literal", () => {
+		const code = 'const q = "SELECT COUNT(*), MAX(id) FROM t";';
+		expect(checkSqlStringConcat(code, "src/db.ts")).toEqual([]);
+	});
+
+	it("flags string-+ injection with quote adjacent to +", () => {
+		const code = 'const sql = "SELECT * FROM users WHERE id = " + userId;';
+		expect(checkSqlStringConcat(code, "src/db.ts").length).toBeGreaterThan(0);
+	});
+
+	it("flags split-literal injection: `'\" + name + \"'`", () => {
+		const code =
+			'const sql = "SELECT * FROM users WHERE name = \'" + name + "\'";';
+		expect(checkSqlStringConcat(code, "src/db.ts").length).toBeGreaterThan(0);
+	});
+
 	it("does NOT fire on `.md` documentation files", () => {
 		const code = "Example: `SELECT * FROM users WHERE id = ${id}`";
 		expect(checkSqlStringConcat(code, "docs/sql.md")).toEqual([]);

@@ -181,6 +181,16 @@ export function checkCatchAndLog(content: string, filePath: string): InlineMatch
 	return matches;
 }
 
+// try/catch openers and closers for the JSON.parse guard scan. Built from
+// string sources (rather than inline literals) so the patterns are reused and
+// named. `TRY_OPEN` matches K&R `try {` OR Allman bare `try` (brace next line).
+// `CATCH_CLOSE` matches K&R `} catch` (brace-prefixed) OR Allman bare `catch`
+// at line start; a dot-prefixed promise `.catch(` matches neither.
+const TRY_OPEN = new RegExp("\\btry\\s*\\{|^\\s*try\\s*$");
+const CATCH_CLOSE = new RegExp("(?:^\\s*|\\}\\s*)catch\\b");
+const JSON_PARSE = new RegExp("\\bJSON\\.parse\\s*\\(");
+const INLINE_TRY_PARSE_CATCH = new RegExp("\\btry\\s*\\{.*\\bJSON\\.parse\\b.*\\}\\s*catch\\b");
+
 /** Detect JSON.parse without try-catch — throws on malformed input. */
 export function checkJsonParseUnsafe(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
@@ -198,12 +208,12 @@ export function checkJsonParseUnsafe(content: string, filePath: string): InlineM
 		if (matches.length >= 10) break;
 		const line = strippedLines[i];
 
-		if (/\btry\s*\{/.test(line)) {
+		if (TRY_OPEN.test(line)) {
 			tryDepth++;
 		}
 
-		if (/\bJSON\.parse\s*\(/.test(line)) {
-			if (/\btry\s*\{.*\bJSON\.parse\b.*\}\s*catch\b/.test(line)) continue;
+		if (JSON_PARSE.test(line)) {
+			if (INLINE_TRY_PARSE_CATCH.test(line)) continue;
 			if (tryDepth <= 0) {
 				matches.push({
 					line: i + 1,
@@ -212,7 +222,7 @@ export function checkJsonParseUnsafe(content: string, filePath: string): InlineM
 			}
 		}
 
-		if (/\}\s*catch\b/.test(line)) {
+		if (CATCH_CLOSE.test(line)) {
 			if (tryDepth > 0) tryDepth--;
 		}
 	}
