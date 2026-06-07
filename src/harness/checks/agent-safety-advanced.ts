@@ -402,34 +402,6 @@ export function checkCircularImports(
  *     treat ALL exports as used — the namespace reference could be indexing
  *     into any of them at runtime and we can't tell statically.
  */
-// Extensions that may appear on import specifiers. Must stay aligned with the
-// file-extension gate at the top of `checkDeadExports`. Extension-less imports
-// (the bare-module case) are handled separately by the basename-only checks.
-const IMPORT_SPECIFIER_EXTENSIONS = ["js", "ts", "jsx", "tsx", "mjs", "cjs", "mts", "cts"];
-
-function importerReferencesBasename(importerContent: string, base: string): boolean {
-	// (a) bare module: `'hooks'` / `"hooks"`
-	if (importerContent.includes(`'${base}'`) || importerContent.includes(`"${base}"`)) {
-		return true;
-	}
-	// (b)/(c) bare or path-ending with extension: `'hooks.js'`, `"./lib/hooks.mjs"`, etc.
-	for (const ext of IMPORT_SPECIFIER_EXTENSIONS) {
-		if (
-			importerContent.includes(`'${base}.${ext}'`) ||
-			importerContent.includes(`"${base}.${ext}"`) ||
-			importerContent.includes(`/${base}.${ext}'`) ||
-			importerContent.includes(`/${base}.${ext}"`)
-		) {
-			return true;
-		}
-	}
-	// (c) extensionless relative path ending with the basename
-	if (importerContent.includes(`/${base}'`) || importerContent.includes(`/${base}"`)) {
-		return true;
-	}
-	return false;
-}
-
 export function checkDeadExports(content: string, filePath: string, cwd: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) return [];
@@ -704,10 +676,11 @@ export function checkAccumulatingSpread(content: string, filePath: string): Inli
 		if (/\.reduce\s*\(/.test(trimmed)) {
 			// Look at this line and the next few for spread of accumulator
 			const window = strippedLines.slice(i, Math.min(i + 5, strippedLines.length)).join(" ");
-			if (
-				/\.reduce\s*\([^)]*\{\s*\.\.\./.test(window) ||
-				/\.reduce\s*\([^)]*\[\s*\.\.\./.test(window)
-			) {
+			// Skip an optional arrow-fn parameter list `(acc, x) =>` between
+			// `.reduce(` and the spread. Without it, the `)` closing the param
+			// list stops `[^)]*` and the canonical accumulating form
+			// `reduce((acc, x) => [...acc, x], [])` is missed.
+			if (/\.reduce\s*\((?:\s*\([^)]*\)\s*=>)?[^)]*[\[{]\s*\.\.\./.test(window)) {
 				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
 			}
 		}

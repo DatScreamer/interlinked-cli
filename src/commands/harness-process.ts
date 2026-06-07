@@ -123,7 +123,11 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 	// than risk reaping a daemon from another workspace.
 	const extractCwdArg = (cmdline: string): string | null => {
 		const tokens = cmdline.split(/\s+/);
-		for (let i = 0; i < tokens.length - 1; i++) {
+		// Scan every token: the `--cwd=<path>` equals form is self-contained and
+		// can legitimately be the LAST token, so the loop must reach the final
+		// index. The space form `--cwd <path>` reads tokens[i+1] — `undefined →
+		// null` past the end, which is correct (a valueless `--cwd` is malformed).
+		for (let i = 0; i < tokens.length; i++) {
 			if (tokens[i] === "--cwd") return tokens[i + 1] ?? null;
 			if (tokens[i]?.startsWith("--cwd=")) {
 				return tokens[i]?.slice("--cwd=".length) ?? null;
