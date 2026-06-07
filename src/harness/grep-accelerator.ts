@@ -8,6 +8,14 @@
 // The agent sees formatted search results as the block reason — faster
 // and more targeted than a full-repo scan. Includes selectivity metadata
 // that helps the agent assess result quality.
+//
+// Scope note: the accelerator only ever handles *plain content searches*.
+// `isAccelerationEligible` declines (returns null → native rg/ugrep runs)
+// whenever a `glob` or non-default `output_mode` (-l / -c) is set, because
+// their output shape can't be reproduced byte-for-byte. `extractSearchParams`
+// still READS those fields and the gate still trips on them — that detection
+// is the contract. Past the gate they are provably falsy, so the in-process
+// and ripgrep paths below are content-mode only (`path:line:content`).
 
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -153,7 +161,8 @@ export function checkGrepAcceleration(
 	const { pattern, isRegex, caseInsensitive, path, glob, outputMode } = searchParams;
 
 	// Never-worse-than-native gates: decline (run native rg/ugrep) on any
-	// uncertainty about staleness, repo size, or output shape.
+	// uncertainty about staleness, repo size, or output shape. glob / outputMode
+	// are consumed HERE only — the gate is the whole reason they're extracted.
 	if (!isAccelerationEligible(cfg, index, glob, outputMode)) return null;
 
 	// Decompose pattern into required trigrams
@@ -163,7 +172,9 @@ export function checkGrepAcceleration(
 		return null;
 	}
 
-	const candidates = resolveCandidatePaths(index, decomposition, glob, path);
+	// Past the eligibility gate glob/outputMode are provably falsy, so the
+	// candidate resolver and matcher run in content mode only.
+	const candidates = resolveCandidatePaths(index, decomposition, path);
 
 	const totalFiles = index.totalFiles;
 	const ratio = totalFiles > 0 ? candidates.length / totalFiles : 1;
@@ -179,11 +190,10 @@ export function checkGrepAcceleration(
 		cwd: index.cwd,
 		isRegex,
 		caseInsensitive,
-		outputMode,
 		cfg,
 	});
 
-	return buildAcceleratedDecision(rgResult, pattern, candidates, totalFiles, selectivityPct);
+	return buildAcceleratedDecision(rgResult, candidates, totalFiles, selectivityPct);
 }
 
 /**
@@ -191,6 +201,10 @@ export function checkGrepAcceleration(
  * rg/ugrep runs) when the index isn't provably fresh, the repo is too small for
  * the substitution to pay off, or the output shape (glob / -l / -c) can't be
  * reproduced byte-for-byte.
+ *
+ * The glob/outputMode decline is load-bearing: it is the ONLY thing keeping the
+ * accelerator out of searches whose output shape it cannot reproduce. The
+ * downstream paths assume both are unset — do not remove this gate.
  */
 function isAccelerationEligible(
 	cfg: Required<GrepAcceleratorConfig>,
@@ -205,14 +219,14 @@ function isAccelerationEligible(
 }
 
 /**
- * Query the index for candidates matching the decomposed pattern, then apply
- * glob and path filters. Absolute path filters are resolved to relative (the
- * index stores relative paths).
+ * Query the index for candidates matching the decomposed pattern, then apply the
+ * path filter. Absolute path filters are resolved to relative (the index stores
+ * relative paths). Glob filtering lives upstream in the eligibility gate (a
+ * glob-bearing search declines), so there is no glob filter here.
  */
 function resolveCandidatePaths(
 	index: TrigramIndex,
 	decomposition: ReturnType<typeof decomposePattern>,
-	glob: string | undefined,
 	path: string | undefined,
 ): string[] {
 	const candidateIds = index.query(
@@ -222,10 +236,6 @@ function resolveCandidatePaths(
 	let candidates = [...candidateIds]
 		.map((id) => index.files[id] || getFilePath(index, id))
 		.filter((p): p is string => p !== undefined);
-
-	if (glob) {
-		candidates = candidates.filter((p) => matchGlob(p, glob));
-	}
 
 	if (path && path !== ".") {
 		let relPath = path;
@@ -288,7 +298,6 @@ interface ExecuteMatchOptions {
 	cwd: string;
 	isRegex: boolean;
 	caseInsensitive: boolean;
-	outputMode: string | undefined;
 	cfg: Required<GrepAcceleratorConfig>;
 }
 
@@ -299,25 +308,19 @@ interface ExecuteMatchOptions {
  * use rg's real engine — only rg guarantees the same matches as the native cmd.
  */
 function executeMatch(opts: ExecuteMatchOptions): RipgrepResult | null {
-	const { pattern, candidates, cwd, isRegex, caseInsensitive, outputMode, cfg } = opts;
+	const { pattern, candidates, cwd, isRegex, caseInsensitive, cfg } = opts;
 	if (!isRegex && candidates.length <= cfg.inProcessThreshold) {
 		const inProcess = matchInProcess({
 			pattern,
 			candidates,
 			cwd,
-			isRegex,
 			caseInsensitive,
-			outputMode,
 			maxOutputLines: cfg.maxOutputLines,
-			// Read disk, not the dirty-layer cache: under the freshness gate the
-			// working tree is clean so disk == index, closing the narrow
-			// edit-then-revert-within-TTL staleness window.
-			contentCache: undefined,
 		});
 		// Fall back to rg if JS regex compilation fails
 		if (inProcess !== null) return inProcess;
 	}
-	return runRipgrepOnCandidates(pattern, candidates, cwd, isRegex, caseInsensitive, outputMode, cfg);
+	return runRipgrepOnCandidates(pattern, candidates, cwd, isRegex, caseInsensitive, cfg);
 }
 
 /**
@@ -327,7 +330,6 @@ function executeMatch(opts: ExecuteMatchOptions): RipgrepResult | null {
  */
 function buildAcceleratedDecision(
 	rgResult: RipgrepResult | null,
-	pattern: string,
 	candidates: string[],
 	totalFiles: number,
 	selectivityPct: number,
@@ -338,14 +340,10 @@ function buildAcceleratedDecision(
 
 	return {
 		decision: "block",
-		reason: formatResults(
-			pattern,
-			rgResult.output,
-			rgResult.matchCount,
-			candidates.length,
-			totalFiles,
-			false,
-		),
+		// Non-zero, non-truncated content output → just the file-grouped body.
+		// (The match-count==0 / truncated headers that formatResults used to add
+		// are unreachable here — both are declined above.)
+		reason: compressGrepOutput(rgResult.output),
 		grep_stats: {
 			candidates: candidates.length,
 			total_files: totalFiles,
@@ -374,6 +372,9 @@ function extractSearchParams(toolName: string, toolInput: JsonObject): SearchPar
 	if (toolName === "Grep") {
 		const pattern = toolInput.pattern as string;
 		if (!pattern) return null;
+		// glob / output_mode are read so isAccelerationEligible can decline on
+		// them (output shape it can't reproduce). They are intentionally never
+		// threaded past that gate.
 		return {
 			pattern,
 			isRegex: true, // Claude Code's Grep uses regex
@@ -404,8 +405,13 @@ function extractSearchParams(toolName: string, toolInput: JsonObject): SearchPar
 
 const MAX_PATTERN_LENGTH = 1000;
 
-/** Compile a RegExp with length limit to mitigate ReDoS from agent-supplied patterns */
-function safeRegExp(source: string, flags: string): RegExp | null {
+/**
+ * Compile a RegExp with a length limit to mitigate ReDoS from agent-supplied
+ * patterns. Returns null for an over-length source or any source the engine
+ * rejects (so callers fall back to rg / decline rather than throw). Exported so
+ * the ReDoS-cap and compile-failure behavior can be unit-tested directly.
+ */
+export function safeRegExp(source: string, flags: string): RegExp | null {
 	if (source.length > MAX_PATTERN_LENGTH) return null;
 	try {
 		// Reason: this *is* the mitigation — length-capped above and wrapped
@@ -425,72 +431,47 @@ interface MatchOptions {
 	pattern: string;
 	candidates: string[];
 	cwd: string;
-	isRegex: boolean;
 	caseInsensitive: boolean;
-	outputMode: string | undefined;
 	maxOutputLines: number;
-	contentCache?: FileContentCache | undefined;
 }
 
+/**
+ * Content-mode in-process matcher for FIXED-STRING patterns: emits
+ * `relPath:lineNum:line` for every match, the same shape native
+ * `rg --with-filename --line-number` produces. `executeMatch` only routes here
+ * for non-regex searches on small candidate sets, so the pattern is always a
+ * literal (escaped to a regex) — there is no regex-passthrough or
+ * files_with_matches / count branch. Reads disk directly: under the freshness
+ * gate the working tree is clean so disk == index (the dirty-layer cache is
+ * deliberately bypassed, closing the edit-then-revert-within-TTL window).
+ */
 function matchInProcess(opts: MatchOptions): RipgrepResult | null {
-	const {
-		pattern,
-		candidates,
-		cwd,
-		isRegex,
-		caseInsensitive,
-		outputMode,
-		maxOutputLines,
-		contentCache,
-	} = opts;
+	const { pattern, candidates, cwd, caseInsensitive, maxOutputLines } = opts;
 	const flags = caseInsensitive ? "gi" : "g";
-	const source = isRegex ? pattern : escapeRegex(pattern);
-	const regex = safeRegExp(source, flags);
+	const regex = safeRegExp(escapeRegex(pattern), flags);
 	if (!regex) return null;
 
 	const lines: string[] = [];
 	let matchCount = 0;
-	const fileMatchCounts = new Map<string, number>();
 
 	for (const relPath of candidates) {
-		// Check content cache first (populated on PostToolUse file writes),
-		// avoiding redundant disk reads for files the agent just edited.
-		let content: string | null = contentCache?.get(relPath) ?? null;
-		if (content === null) {
-			try {
-				content = readFileSync(join(cwd, relPath), "utf-8");
-			} catch {
-				continue;
-			}
+		let content: string;
+		try {
+			content = readFileSync(join(cwd, relPath), "utf-8");
+		} catch {
+			continue;
 		}
 
 		const fileLines = content.split("\n");
-		let fileMatches = 0;
 		for (let lineNum = 0; lineNum < fileLines.length; lineNum++) {
 			regex.lastIndex = 0;
 			if (regex.test(fileLines[lineNum])) {
-				fileMatches++;
 				matchCount++;
-				if (outputMode === "files_with_matches") {
-					lines.push(relPath);
-					break; // one match per file
-				}
-				if (outputMode !== "count") {
-					// No per-file cap: the substitution must return the SAME matches
-					// as native rg. Completeness is enforced by the caller's
-					// truncation check (checkGrepAcceleration declines if exceeded).
-					lines.push(`${relPath}:${lineNum + 1}:${fileLines[lineNum]}`);
-				}
+				// No per-file cap: the substitution must return the SAME matches as
+				// native rg. Completeness is enforced by the caller's truncation
+				// check (buildAcceleratedDecision declines if exceeded).
+				lines.push(`${relPath}:${lineNum + 1}:${fileLines[lineNum]}`);
 			}
-		}
-		if (outputMode === "count" && fileMatches > 0) {
-			fileMatchCounts.set(relPath, fileMatches);
-		}
-	}
-
-	if (outputMode === "count") {
-		for (const [path, count] of fileMatchCounts) {
-			lines.push(`${path}:${count}`);
 		}
 	}
 
@@ -522,27 +503,23 @@ function runRipgrepOnCandidates(
 	cwd: string,
 	isRegex: boolean,
 	caseInsensitive: boolean,
-	outputMode: string | undefined,
 	cfg: Required<GrepAcceleratorConfig>,
 ): RipgrepResult | null {
 	// Find ripgrep binary
 	const rgPath = findRipgrep();
 	if (!rgPath) return null;
 
-	// Build rg arguments based on output mode
-	const args: string[] = ["--no-heading", "--color=never"];
-
-	if (outputMode === "files_with_matches") {
-		args.push("--files-with-matches");
-	} else if (outputMode === "count") {
-		args.push("--count");
-	} else {
-		// Default: content mode with line numbers, ALWAYS with the filename so a
-		// single-candidate result still emits `path:line:content` (rg omits the
-		// path for a lone file argument) — matching native recursive output. No
-		// per-file cap: completeness is enforced by the caller's truncation check.
-		args.push("--with-filename", "--line-number");
-	}
+	// Content mode only: with line numbers, ALWAYS with the filename so a
+	// single-candidate result still emits `path:line:content` (rg omits the path
+	// for a lone file argument) — matching native recursive output. glob / -l / -c
+	// searches never reach here (they decline at the eligibility gate). No per-file
+	// cap: completeness is enforced by the caller's truncation check.
+	const args: string[] = [
+		"--no-heading",
+		"--color=never",
+		"--with-filename",
+		"--line-number",
+	];
 
 	if (!isRegex) args.push("--fixed-strings");
 	if (caseInsensitive) args.push("--ignore-case");
@@ -591,36 +568,6 @@ function processRgOutput(output: string, maxLines: number): RipgrepResult {
 // Output Formatting
 // ===========================================
 
-function formatResults(
-	pattern: string,
-	output: string,
-	matchCount: number,
-	candidateCount: number,
-	totalFiles: number,
-	truncated: boolean,
-): string {
-	if (matchCount === 0) {
-		const selectivity = ((candidateCount / totalFiles) * 100).toFixed(2);
-		return [
-			`[interlinked:index] Searched ${candidateCount} candidate files (from ${totalFiles} total, ${selectivity}% selectivity)`,
-			`No matches for pattern: ${pattern}`,
-			`The index identified ${candidateCount} files that could contain the pattern, but ripgrep found no actual matches.`,
-		].join("\n");
-	}
-
-	// Compress output: group by file, show path once per file group.
-	// Saves ~40 chars per line × N lines when all results are in one file.
-	const compressed = compressGrepOutput(output);
-
-	const parts: string[] = [];
-	parts.push(compressed);
-	if (truncated) {
-		parts.push(`\n... (output truncated, ${matchCount} total matches)`);
-	}
-
-	return parts.join("\n");
-}
-
 /**
  * Compress rg-style output by grouping matches under file headers.
  *
@@ -637,59 +584,54 @@ function formatResults(
  *   src/other.ts
  *   5:export function qux()
  *
- * For files_with_matches / count modes (no colon-line format), returns as-is.
+ * For any non-content stream (no `path:line:` shape — e.g. an empty body or a
+ * lone path), returns the input unchanged. Exported so the grouping behavior can
+ * be unit-tested directly.
  */
-function compressGrepOutput(output: string): string {
+export function compressGrepOutput(output: string): string {
 	const lines = output.split("\n");
 
 	// Detect if this is content mode (path:line:content).
 	// files_with_matches and count modes don't have the triple-colon format.
 	// Sample at first non-empty line.
-	const sample = lines.find((l) => l.length > 0);
-	if (!sample) return output;
+	const firstNonEmpty = lines.findIndex((l) => l.length > 0);
+	if (firstNonEmpty === -1) return output; // all blank → nothing to group
 
 	// Content mode lines match: path:number:content
 	// We need at least two colons where the second segment is a number.
-	const contentMatch = sample.match(/^(.+?):(\d+):/);
-	if (!contentMatch) return output; // Not content mode, return as-is
+	// The per-line parse below uses the SAME prefix (`path:number:`) plus a
+	// trailing capture, so a line matches this detector iff it parses below —
+	// which is why the first non-empty line always opens a group and the loop
+	// never sees a non-parsing line before one exists.
+	if (!lines[firstNonEmpty].match(/^(.+?):(\d+):/)) return output; // not content mode
 
-	// Group lines by file path
-	const groups: Map<string, string[]> = new Map();
-	const groupOrder: string[] = [];
+	// One block of text per file, in first-seen order. A non-parsing line
+	// (separator, etc.) is appended verbatim to the current (always-open) block.
+	const blocks: { path: string; lines: string[] }[] = [];
+	const indexByPath = new Map<string, number>();
 
-	for (const line of lines) {
+	for (const line of lines.slice(firstNonEmpty)) {
 		if (!line) continue;
 		// Parse path:lineNum:rest — careful with paths containing colons (Windows, etc.)
 		const m = line.match(/^(.+?):(\d+):(.*)/);
 		if (!m) {
-			// Non-matching line (separator, etc.) — append to last group
-			const lastKey = groupOrder[groupOrder.length - 1];
-			if (lastKey) groups.get(lastKey)!.push(line);
+			// Non-parsing line: fold into the current block. The detector above
+			// guarantees the first iterated line parses, so a block always exists.
+			blocks[blocks.length - 1].lines.push(line);
 			continue;
 		}
 		const [, filePath, lineNum, content] = m;
-		if (!groups.has(filePath)) {
-			groups.set(filePath, []);
-			groupOrder.push(filePath);
+		let idx = indexByPath.get(filePath);
+		if (idx === undefined) {
+			idx = blocks.length;
+			indexByPath.set(filePath, idx);
+			blocks.push({ path: filePath, lines: [] });
 		}
-		groups.get(filePath)!.push(`${lineNum}:${content}`);
+		blocks[idx].lines.push(`${lineNum}:${content}`);
 	}
 
-	// If only one group, or compression doesn't save much, use grouped format
-	const parts: string[] = [];
-	for (const filePath of groupOrder) {
-		const fileLines = groups.get(filePath)!;
-		parts.push(filePath);
-		for (const fl of fileLines) {
-			parts.push(fl);
-		}
-		parts.push(""); // blank line between groups
-	}
-
-	// Remove trailing blank line
-	if (parts[parts.length - 1] === "") parts.pop();
-
-	return parts.join("\n");
+	// `path` header then its rows, blocks separated by a blank line.
+	return blocks.map((b) => [b.path, ...b.lines].join("\n")).join("\n\n");
 }
 
 // ===========================================
@@ -750,44 +692,4 @@ export function findRipgrep(): string | null {
 /** Reset cached rg path (for testing) */
 export function _resetRgPathCache(): void {
 	_rgPath = undefined;
-}
-
-/** Simple glob matching (supports *, **, ?) */
-function matchGlob(path: string, glob: string): boolean {
-	// Convert glob to regex
-	let pattern = "";
-	let i = 0;
-	while (i < glob.length) {
-		const ch = glob[i];
-		if (ch === "*") {
-			if (glob[i + 1] === "*") {
-				pattern += ".*";
-				i += 2;
-				if (glob[i] === "/") {
-					pattern += "\\/";
-					i++;
-				}
-			} else {
-				pattern += "[^/]*";
-				i++;
-			}
-		} else if (ch === "?") {
-			pattern += "[^/]";
-			i++;
-		} else if (ch === ".") {
-			pattern += "\\.";
-			i++;
-		} else {
-			pattern += ch;
-			i++;
-		}
-	}
-	try {
-		// Reason: `pattern` is assembled above by escaping glob metachars
-		// into bounded regex equivalents; anchored match over a file path.
-		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
-		return new RegExp(`^${pattern}$`).test(path);
-	} catch {
-		return true; // invalid glob = match everything
-	}
 }

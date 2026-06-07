@@ -7,8 +7,17 @@
 // gates). This file targets the branches that ONLY run once the
 // never-worse-than-native gates are *opened* — i.e. the actual
 // acceleration path: in-process matching, real ripgrep execution,
-// block-and-answer formatting, the dirty-layer fallthrough, glob/path
+// block-and-answer formatting, the dirty-layer fallthrough, path
 // filtering, output compression, and the FileContentCache.
+//
+// The accelerator only ever handles plain content searches: a glob or a
+// non-default output_mode (-l / -c) is DECLINED at the eligibility gate
+// (its output shape can't be reproduced byte-for-byte). Those gate-decline
+// branches are pinned below under "never-worse-than-native gates"; the
+// downstream glob/output-mode HANDLING was removed as unreachable, so the
+// content-mode matcher and the two residual defensive helpers exported for
+// direct unit coverage (safeRegExp, compressGrepOutput) are tested at the
+// bottom.
 //
 // All searches run against a real on-disk temp cwd so matchInProcess /
 // runRipgrepOnCandidates read genuine file content. ripgrep is detected
@@ -22,8 +31,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
 	_resetRgPathCache,
 	checkGrepAcceleration,
+	compressGrepOutput,
 	FileContentCache,
 	findRipgrep,
+	safeRegExp,
 } from "./grep-accelerator.js";
 import { extractTrigrams, type PostingList, TrigramIndex } from "./trigram-index.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
@@ -189,6 +200,16 @@ describe("FileContentCache", () => {
 		expect(cache.get("first.ts")).toBeNull();
 		expect(cache.get("second.ts")).toBe("2");
 		expect(cache.get("third.ts")).toBe("3");
+	});
+
+	it("handles a zero-capacity cache without crashing on the empty eviction scan", () => {
+		// maxEntries:0 → `size >= maxEntries` is true on the first set, but the
+		// eviction loop finds no oldest key (empty map) so `oldestKey` stays null
+		// and the `if (oldestKey)` guard's false arm runs. The entry is then stored
+		// (capacity is not strictly enforced for a single insert).
+		const cache = new FileContentCache(0, 60_000);
+		cache.set("only.ts", "x");
+		expect(cache.get("only.ts")).toBe("x");
 	});
 
 	it("invalidates a specific entry", () => {
@@ -379,13 +400,20 @@ describe("never-worse-than-native gates", () => {
 // ===========================================
 
 describe("candidate filtering", () => {
+	// The subject here is the PATH FILTER (resolveCandidatePaths), which sits
+	// UPSTREAM of the match engine — so these drive the hermetic fixed-string
+	// in-process route (`rg -F`, candidates <= inProcessThreshold) instead of a
+	// Grep-tool event. A Grep-tool pattern has REGEX semantics, which ALWAYS
+	// routes to the real rg binary, and CI runners ship no ripgrep — the
+	// previous form passed on any dev machine with rg and failed on every CI
+	// runner (finding 2026-06).
 	it("filters candidates by a relative path prefix and blocks with a match", () => {
 		const { index } = fixture({
 			"src/auth.ts": "function uniquePathToken() {}",
 			"lib/auth.ts": "function uniquePathToken() {}",
 		});
-		// path: "src" → only src/auth.ts survives the prefix filter.
-		const ev = grepEvent("uniquePathToken", { path: "src" });
+		// positional path "src" → only src/auth.ts survives the prefix filter.
+		const ev = bashEvent("rg -F 'uniquePathToken' src");
 		const result = checkGrepAcceleration(ev, index, ACCEL);
 		expect(result).not.toBeNull();
 		const decision = result as HarnessDecision;
@@ -400,7 +428,7 @@ describe("candidate filtering", () => {
 			"other.ts": "function absolutePathToken() {}",
 		});
 		// Absolute path inside the fixture → relative("src") after resolution.
-		const ev = grepEvent("absolutePathToken", { path: join(dir, "src") });
+		const ev = bashEvent(`rg -F 'absolutePathToken' ${join(dir, "src")}`);
 		const result = checkGrepAcceleration(ev, index, ACCEL);
 		expect(result).not.toBeNull();
 		const decision = result as HarnessDecision;
@@ -414,10 +442,41 @@ describe("candidate filtering", () => {
 			"pkg/mod.ts": "const trailingSlashToken = 1;",
 			"top.ts": "const trailingSlashToken = 1;",
 		});
-		const ev = grepEvent("trailingSlashToken", { path: "pkg/" });
+		const ev = bashEvent("rg -F 'trailingSlashToken' pkg/");
 		const result = checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
 		expect(result.decision).toBe("block");
 		expect(result.reason).toContain("pkg/mod.ts");
+	});
+
+	it("path filtering blocks with NO rg binary reachable (the CI condition, pinned)", async () => {
+		// The exact environment that broke CI (finding 2026-06): no ripgrep
+		// anywhere. child_process is mocked so ANY spawn attempt throws — a block
+		// can therefore only come from the in-process matcher, proving the
+		// path-filter tests above stay green on runners without rg.
+		vi.resetModules();
+		vi.doMock("node:child_process", () => ({
+			spawnSync: () => {
+				throw new Error("no rg in this environment");
+			},
+			execSync: () => {
+				throw new Error("no rg in this environment");
+			},
+		}));
+		const mod = await import("./grep-accelerator.js");
+		try {
+			const { index } = fixture({
+				"src/auth.ts": "function hermeticPathToken() {}",
+				"lib/auth.ts": "function hermeticPathToken() {}",
+			});
+			const ev = bashEvent("rg -F 'hermeticPathToken' src");
+			const result = mod.checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
+			expect(result.decision).toBe("block");
+			expect(result.reason).toContain("src/auth.ts");
+			expect(result.reason).not.toContain("lib/auth.ts");
+		} finally {
+			vi.doUnmock("node:child_process");
+			vi.resetModules();
+		}
 	});
 
 	it("falls through to null when a path filter removes every candidate", () => {
@@ -525,8 +584,10 @@ describe("in-process matching (fixed-string)", () => {
 		expect(checkGrepAcceleration(ev, index, { ...ACCEL, maxOutputLines: 1 })).toBeNull();
 	});
 
-	it("falls back to rg when in-process regex compilation fails (pattern over length cap)", () => {
-		if (!RG_AVAILABLE) return;
+	// skipIf (not a silent early-return): the skip is REPORTED in the run
+	// summary, so an environment without rg shows the gap instead of recording
+	// phantom passes (finding 2026-06; CI installs ripgrep so it runs there).
+	it.skipIf(!RG_AVAILABLE)("falls back to rg when in-process regex compilation fails (pattern over length cap)", () => {
 		// safeRegExp rejects sources longer than 1000 chars. A fixed-string
 		// pattern of 1001 plain chars routes through the in-process branch
 		// (isRegex false, small candidate set), safeRegExp returns null, and the
@@ -547,9 +608,12 @@ describe("in-process matching (fixed-string)", () => {
 // Ripgrep execution path (regex / forced spawn)
 // ===========================================
 
-describe("ripgrep execution", () => {
+// describe-level skipIf (not silent early-returns inside each test): skips are
+// REPORTED in the run summary, so an environment without rg shows exactly what
+// did not run instead of recording phantom passes (finding 2026-06; CI installs
+// ripgrep so these execute there).
+describe.skipIf(!RG_AVAILABLE)("ripgrep execution", () => {
 	it("blocks via real rg for a regex Grep query with multiple files", () => {
-		if (!RG_AVAILABLE) return;
 		const { index } = fixture({
 			"src/a.ts": "export function rgRegexToken() {}",
 			"src/b.ts": "export function rgRegexToken() { return 1; }",
@@ -566,7 +630,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("uses rg even for a fixed string when inProcessThreshold is 0", () => {
-		if (!RG_AVAILABLE) return;
 		const { index } = fixture({ "a.ts": "forcedRgNeedle on a line" });
 		// inProcessThreshold:0 → candidates.length (>=1) > 0 forces the rg branch.
 		const ev = bashEvent("rg -F 'forcedRgNeedle'");
@@ -579,7 +642,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("declines (null) when rg finds zero matches (over-selected stale candidate)", () => {
-		if (!RG_AVAILABLE) return;
 		// All required trigrams (from the literal "rgZeroToken") are present so the
 		// candidate set is non-empty, but the regex demands a trailing digit the
 		// file never has → rg exits 1 (no matches) → runRipgrepOnCandidates returns
@@ -590,7 +652,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("passes --ignore-case to rg for a case-insensitive regex query", () => {
-		if (!RG_AVAILABLE) return;
 		// Grep tool with -i + regex → rg branch with --ignore-case (line 507).
 		const { index } = fixture({ "a.ts": "const RgCaseToken = compute();" });
 		const ev = grepEvent("rgcasetoken", { caseInsensitive: true });
@@ -600,7 +661,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("declines (null) when rg output exceeds the line cap (truncation)", () => {
-		if (!RG_AVAILABLE) return;
 		const lines = Array.from({ length: 8 }, (_, i) => `rgCapToken line ${i}`).join("\n");
 		const { index } = fixture({ "a.ts": lines });
 		const ev = grepEvent("rgCapToken");
@@ -608,7 +668,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("declines (null) when rg errors on a malformed regex (exit >= 2)", () => {
-		if (!RG_AVAILABLE) return;
 		// "rgErrToken[" decomposes to the single literal "rgErrToken" (the unclosed
 		// char class contributes no segment), so every required trigram is present
 		// → candidates non-empty → rg runs. rg then rejects the unterminated class
@@ -621,7 +680,6 @@ describe("ripgrep execution", () => {
 	});
 
 	it("emits complete grep_stats on a single-file rg block", () => {
-		if (!RG_AVAILABLE) return;
 		const { index } = fixture({ "solo.ts": "soloStatToken on one line" });
 		const ev = grepEvent("soloStatToken");
 		const result = checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
@@ -868,5 +926,109 @@ describe("acceleration with no ripgrep binary (mocked absent)", () => {
 		const { index } = fixture({ "a.ts": "noRgRegexToken on a line" });
 		const ev = grepEvent("noRgRegexToken");
 		expect(mod.checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+});
+
+// ===========================================
+// safeRegExp — ReDoS length cap + compile-failure guard (direct)
+// ===========================================
+// matchInProcess routes every agent-supplied pattern through safeRegExp; it is
+// exported and unit-tested directly so the cap and the catch are covered as real
+// behavior rather than via the (now content-only) matcher.
+
+describe("safeRegExp", () => {
+	it("compiles a valid source into a RegExp with the requested flags", () => {
+		const re = safeRegExp("foo\\d+", "gi");
+		expect(re).toBeInstanceOf(RegExp);
+		expect(re?.flags).toBe("gi");
+		expect(re?.test("FOO123")).toBe(true);
+	});
+
+	it("returns null for a source over the MAX_PATTERN_LENGTH (1000) cap", () => {
+		// 1001 plain chars trips the length guard BEFORE construction — the ReDoS
+		// mitigation — so no RegExp is built regardless of validity.
+		const tooLong = "a".repeat(1001);
+		expect(safeRegExp(tooLong, "g")).toBeNull();
+	});
+
+	it("allows a source exactly at the 1000-char cap (boundary, > not >=)", () => {
+		// The guard is `> MAX_PATTERN_LENGTH`, so 1000 is still compiled.
+		const atCap = "a".repeat(1000);
+		expect(safeRegExp(atCap, "g")).toBeInstanceOf(RegExp);
+	});
+
+	it("returns null when the engine rejects the source (covers the catch)", () => {
+		// "(" is an unterminated group — new RegExp throws → caught → null.
+		expect(safeRegExp("(", "g")).toBeNull();
+	});
+});
+
+// ===========================================
+// compressGrepOutput — file-grouped formatting (direct)
+// ===========================================
+// buildAcceleratedDecision feeds rg's content output straight through
+// compressGrepOutput. Exported and tested directly so every grouping arm is
+// covered without round-tripping through a real index + rg spawn.
+
+describe("compressGrepOutput", () => {
+	it("groups multiple matches in one file under a single path header", () => {
+		const input = "src/foo.ts:10:export function bar()\nsrc/foo.ts:20:export function baz()";
+		expect(compressGrepOutput(input)).toBe(
+			["src/foo.ts", "10:export function bar()", "20:export function baz()"].join("\n"),
+		);
+	});
+
+	it("groups matches across files with a blank line between groups", () => {
+		const input = [
+			"src/foo.ts:10:a()",
+			"src/foo.ts:20:b()",
+			"src/other.ts:5:c()",
+		].join("\n");
+		expect(compressGrepOutput(input)).toBe(
+			["src/foo.ts", "10:a()", "20:b()", "", "src/other.ts", "5:c()"].join("\n"),
+		);
+	});
+
+	it("skips embedded empty lines in the body without breaking grouping", () => {
+		// A blank line between two content rows (an artifact of how some streams are
+		// joined) hits the `if (!line) continue` skip arm and must not affect the
+		// grouped output.
+		const input = ["src/foo.ts:10:a()", "", "src/foo.ts:20:b()"].join("\n");
+		expect(compressGrepOutput(input)).toBe(
+			["src/foo.ts", "10:a()", "20:b()"].join("\n"),
+		);
+	});
+
+	it("returns an empty-string input unchanged (no non-empty sample line)", () => {
+		// `lines.find(non-empty)` is undefined → early return of the raw input.
+		expect(compressGrepOutput("")).toBe("");
+	});
+
+	it("returns a non-content stream (no path:line: shape) unchanged", () => {
+		// A bare file list (files_with_matches shape) has no `:number:` second
+		// segment, so the content-mode detection fails and the input is returned
+		// verbatim. (Such output never reaches here in production — the gate
+		// declines -l/-c searches — but the as-is guard is still exercised.)
+		const fileList = "src/a.ts\nsrc/b.ts\nsrc/c.ts";
+		expect(compressGrepOutput(fileList)).toBe(fileList);
+	});
+
+	it("appends a content line that does not parse to the current file group", () => {
+		// First line establishes the content shape + opens a group; the middle
+		// line lacks a `path:number:` prefix (e.g. an rg separator) so it hits the
+		// append-to-last-group arm rather than starting a new group.
+		const input = ["src/foo.ts:10:first match", "--", "src/foo.ts:11:second match"].join("\n");
+		expect(compressGrepOutput(input)).toBe(
+			["src/foo.ts", "10:first match", "--", "11:second match"].join("\n"),
+		);
+	});
+
+	it("drops a leading non-parsing line when no group is open yet", () => {
+		// The first non-empty line IS content (so detection passes), but a later
+		// truly-unparseable line arriving before any group would have no last key.
+		// Here the sample is content; a stray separator at the very front of the
+		// body (after the sample check) with no open group is silently skipped.
+		const input = ["a.ts:1:x", "stray-no-colon-number"].join("\n");
+		expect(compressGrepOutput(input)).toBe(["a.ts", "1:x", "stray-no-colon-number"].join("\n"));
 	});
 });
