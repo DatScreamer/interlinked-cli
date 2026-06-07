@@ -4,7 +4,9 @@
 // (block-and-answer), stashes a review file for the human, or honours a
 // decision the human already made via `interlinked scanner review`.
 
+import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,8 +22,13 @@ import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types
 import {
 	assertSafeFetchTarget,
 	fetchAndScan,
+	fetchBody,
 	isBlockedAddress,
+	makePinnedLookup,
+	pinnedFetch,
+	type PinnedFetchResponse,
 	SsrfBlockedError,
+	type VettedTarget,
 } from "../web-fetch-proxy.js";
 
 let cwd: string;
@@ -915,5 +922,381 @@ describe("fetchAndScan — review file cannot be written", () => {
 		expect(pending.findingCount).toBe(1);
 		// Synthetic fallback: `<…review.json>` rather than a real on-disk path.
 		expect(pending.reviewPath).toMatch(/^<.*\.review\.json>$/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// pinnedFetch — real loopback socket. pinnedFetch does NOT call the SSRF
+// guard (its caller fetchBody does), so handing it a VettedTarget pinned to
+// 127.0.0.1 is safe and exercises the real node:http request/response path:
+// the lookup-pin callback, the response 'data'/'end' accumulation, the status
+// + Location-header extraction, and the req 'error' reject path. Every server
+// is torn down in afterEach so no socket leaks across tests.
+// ---------------------------------------------------------------------------
+describe("pinnedFetch — real loopback server", () => {
+	const servers: Server[] = [];
+
+	function startServer(
+		handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void,
+	): Promise<number> {
+		return new Promise((resolve) => {
+			const srv = createServer(handler);
+			servers.push(srv);
+			srv.listen(0, "127.0.0.1", () => {
+				const addr = srv.address() as AddressInfo;
+				resolve(addr.port);
+			});
+		});
+	}
+
+	function loopbackTarget(port: number, path = "/"): VettedTarget {
+		return {
+			url: new URL(`http://127.0.0.1:${port}${path}`),
+			vettedAddress: "127.0.0.1",
+			vettedFamily: 4,
+		};
+	}
+
+	afterEach(async () => {
+		await Promise.all(
+			servers.splice(0).map(
+				(srv) =>
+					new Promise<void>((resolve) => {
+						srv.close(() => resolve());
+					}),
+			),
+		);
+	});
+
+	it("returns the status and body for a 200 response", async () => {
+		const port = await startServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("loopback body");
+		});
+		const resp: PinnedFetchResponse = await pinnedFetch(loopbackTarget(port));
+		expect(resp.status).toBe(200);
+		expect(resp.body).toBe("loopback body");
+		// No redirect → no Location header captured.
+		expect(resp.location).toBeUndefined();
+	});
+
+	it("captures the Location header on a 3xx response", async () => {
+		const port = await startServer((_req, res) => {
+			res.statusCode = 302;
+			res.setHeader("Location", "https://example.com/elsewhere");
+			res.end("redirecting");
+		});
+		const resp = await pinnedFetch(loopbackTarget(port, "/go"));
+		expect(resp.status).toBe(302);
+		expect(resp.location).toBe("https://example.com/elsewhere");
+		expect(resp.body).toBe("redirecting");
+	});
+
+	it("reports a non-2xx status without throwing (the caller decides)", async () => {
+		// pinnedFetch itself never maps status to an error — it just hands the
+		// number back. fetchBody is what turns non-2xx into a throw.
+		const port = await startServer((_req, res) => {
+			res.statusCode = 503;
+			res.end("unavailable");
+		});
+		const resp = await pinnedFetch(loopbackTarget(port));
+		expect(resp.status).toBe(503);
+		expect(resp.body).toBe("unavailable");
+	});
+
+	it("accumulates a chunked body across multiple data events", async () => {
+		const port = await startServer((_req, res) => {
+			res.statusCode = 200;
+			res.write("part-one;");
+			res.write("part-two;");
+			res.end("part-three");
+		});
+		const resp = await pinnedFetch(loopbackTarget(port));
+		expect(resp.body).toBe("part-one;part-two;part-three");
+	});
+
+	it("rejects when the connection is refused (req 'error' path)", async () => {
+		// Bind a server, capture its port, then close it so the port has no
+		// listener. The pinned connect then fails with ECONNREFUSED, which
+		// surfaces through the `req.on('error', reject)` handler.
+		const port = await startServer((_req, res) => res.end("never reached"));
+		await new Promise<void>((resolve) => {
+			const srv = servers.pop();
+			if (!srv) {
+				resolve();
+				return;
+			}
+			srv.close(() => resolve());
+		});
+		await expect(pinnedFetch(loopbackTarget(port))).rejects.toBeInstanceOf(Error);
+	});
+
+	it("selects the https agent for an https: target (connect refused → error)", async () => {
+		// Drives the `isHttps ? httpsRequest : httpRequest` selection down the
+		// https branch. We point at a just-closed loopback port (explicit, so
+		// no privileged-port binding) — the TLS connect is refused before any
+		// handshake, surfacing through `req.on('error')`. Covers the https arm
+		// without needing a self-signed cert.
+		const port = await startServer((_req, res) => res.end("never"));
+		await new Promise<void>((resolve) => {
+			const srv = servers.pop();
+			if (!srv) {
+				resolve();
+				return;
+			}
+			srv.close(() => resolve());
+		});
+		// Hostname (not IP) URL pinned to a closed loopback port: mirrors
+		// production (servername = a real hostname for SNI) and avoids the
+		// RFC-6066 "ServerName to an IP" deprecation warning.
+		const target: VettedTarget = {
+			url: new URL(`https://https-pin.invalid:${port}/`),
+			vettedAddress: "127.0.0.1",
+			vettedFamily: 4,
+		};
+		await expect(pinnedFetch(target)).rejects.toBeInstanceOf(Error);
+	});
+
+	it("pins the connect to vettedAddress regardless of the URL hostname", async () => {
+		// The URL hostname is a name that does NOT resolve publicly, but the
+		// vetted address is loopback — the lookup-pin callback must make the
+		// socket land on 127.0.0.1 anyway (the DNS-rebinding fix). If the pin
+		// were ignored, this would fail to connect.
+		const port = await startServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("pinned-ok");
+		});
+		const target: VettedTarget = {
+			url: new URL(`http://pin-test.invalid:${port}/`),
+			vettedAddress: "127.0.0.1",
+			vettedFamily: 4,
+		};
+		const resp = await pinnedFetch(target);
+		expect(resp.body).toBe("pinned-ok");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// makePinnedLookup — the dual-shape DNS-pin callback. Real Node always calls
+// it with `{ all: true }` (covered by the pinnedFetch loopback tests via a
+// non-literal hostname), but the helper also handles the positional and the
+// two-argument `(hostname, callback)` forms for robustness. Those shapes can
+// only be reached by direct invocation, so they're unit-tested here. EVERY
+// shape must yield exactly the vetted address/family — the SSRF pin.
+// ---------------------------------------------------------------------------
+describe("makePinnedLookup — pins every shape to the vetted address", () => {
+	const target: VettedTarget = {
+		url: new URL("https://pinned.example/"),
+		vettedAddress: "203.0.113.42",
+		vettedFamily: 4,
+	};
+
+	it("returns the vetted address as a one-element array for the { all: true } form", () => {
+		const lookup = makePinnedLookup(target);
+		let received: { address: string; family: number }[] | undefined;
+		const cb = (_err: Error | null, addrs: { address: string; family: number }[]): void => {
+			received = addrs;
+		};
+		lookup("pinned.example", { all: true }, cb);
+		expect(received).toEqual([{ address: "203.0.113.42", family: 4 }]);
+	});
+
+	it("returns the vetted address positionally when all is not set", () => {
+		const lookup = makePinnedLookup(target);
+		let addr: string | undefined;
+		let fam: number | undefined;
+		const cb = (_err: Error | null, a: string, f: number): void => {
+			addr = a;
+			fam = f;
+		};
+		lookup("pinned.example", {}, cb);
+		expect(addr).toBe("203.0.113.42");
+		expect(fam).toBe(4);
+	});
+
+	it("normalises the two-argument (hostname, callback) form", () => {
+		// When Node omits the options object, the callback arrives as the second
+		// argument. The helper must still pin positionally (no `all` flag).
+		const lookup = makePinnedLookup(target);
+		let addr: string | undefined;
+		let fam: number | undefined;
+		const cb = (_err: Error | null, a: string, f: number): void => {
+			addr = a;
+			fam = f;
+		};
+		lookup("pinned.example", cb);
+		expect(addr).toBe("203.0.113.42");
+		expect(fam).toBe(4);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// fetchBody — the manual redirect-follow loop. Driven entirely through the
+// `deps` seam (stub `vet` + `fetchOne`) so there is NO real network or DNS:
+// we assert the loop's control flow (follow redirects, re-vet each hop, throw
+// on 3xx-without-Location, throw on non-2xx, return the 2xx body, throw after
+// MAX_REDIRECT_HOPS). The stub `vet` also lets us confirm each hop is
+// re-validated — the SSRF re-check per redirect is the security-load-bearing
+// invariant this loop exists to enforce.
+// ---------------------------------------------------------------------------
+describe("fetchBody — redirect-follow loop (stubbed seam)", () => {
+	function vettedFor(url: string): VettedTarget {
+		return { url: new URL(url), vettedAddress: "203.0.113.7", vettedFamily: 4 };
+	}
+
+	it("returns the body on a direct 2xx response", async () => {
+		const vetted: string[] = [];
+		const vet = async (u: string): Promise<VettedTarget> => {
+			vetted.push(u);
+			return vettedFor(u);
+		};
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 200,
+			body: "direct body",
+		});
+		const out = await fetchBody("https://public.example/", { vet, fetchOne });
+		expect(out).toBe("direct body");
+		// Exactly one hop vetted.
+		expect(vetted).toEqual(["https://public.example/"]);
+	});
+
+	it("follows a 3xx redirect, re-vetting each hop, then returns the final body", async () => {
+		const vetted: string[] = [];
+		const vet = async (u: string): Promise<VettedTarget> => {
+			vetted.push(u);
+			return vettedFor(u);
+		};
+		let call = 0;
+		const fetchOne = async (): Promise<PinnedFetchResponse> => {
+			call += 1;
+			if (call === 1) {
+				return { status: 302, location: "/next", body: "" };
+			}
+			return { status: 200, body: "after redirect" };
+		};
+		const out = await fetchBody("https://public.example/start", { vet, fetchOne });
+		expect(out).toBe("after redirect");
+		// Both the original and the resolved-relative redirect target were
+		// re-vetted — the per-hop SSRF re-check the loop guarantees.
+		expect(vetted).toEqual([
+			"https://public.example/start",
+			"https://public.example/next",
+		]);
+	});
+
+	it("resolves an absolute redirect Location against the loop URL", async () => {
+		const vetted: string[] = [];
+		const vet = async (u: string): Promise<VettedTarget> => {
+			vetted.push(u);
+			return vettedFor(u);
+		};
+		let call = 0;
+		const fetchOne = async (): Promise<PinnedFetchResponse> => {
+			call += 1;
+			return call === 1
+				? { status: 301, location: "https://other.example/landing", body: "" }
+				: { status: 200, body: "landed" };
+		};
+		const out = await fetchBody("https://public.example/", { vet, fetchOne });
+		expect(out).toBe("landed");
+		expect(vetted[1]).toBe("https://other.example/landing");
+	});
+
+	it("throws on a 3xx without a Location header", async () => {
+		const vet = async (u: string): Promise<VettedTarget> => vettedFor(u);
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 302,
+			body: "",
+		});
+		await expect(
+			fetchBody("https://public.example/", { vet, fetchOne }),
+		).rejects.toThrow(/redirect without Location/);
+	});
+
+	it("throws on a non-2xx, non-3xx status", async () => {
+		const vet = async (u: string): Promise<VettedTarget> => vettedFor(u);
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 404,
+			body: "missing",
+		});
+		await expect(
+			fetchBody("https://public.example/", { vet, fetchOne }),
+		).rejects.toThrow(/HTTP 404/);
+	});
+
+	it("throws on a sub-200 status (e.g. an unexpected 1xx)", async () => {
+		const vet = async (u: string): Promise<VettedTarget> => vettedFor(u);
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 100,
+			body: "",
+		});
+		await expect(
+			fetchBody("https://public.example/", { vet, fetchOne }),
+		).rejects.toThrow(/HTTP 100/);
+	});
+
+	it("throws after exceeding MAX_REDIRECT_HOPS of unending redirects", async () => {
+		const vetted: string[] = [];
+		const vet = async (u: string): Promise<VettedTarget> => {
+			vetted.push(u);
+			return vettedFor(u);
+		};
+		// Always redirect — the loop must bail after the hop budget rather than
+		// spin forever. The cap is 5 hops, so the loop runs hop=0..5 (6 vets)
+		// before the post-loop throw fires.
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 302,
+			location: "/loop",
+			body: "",
+		});
+		await expect(
+			fetchBody("https://public.example/", { vet, fetchOne }),
+		).rejects.toThrow(/exceeded 5 redirect hops/);
+		// hop = 0..MAX_REDIRECT_HOPS inclusive → 6 iterations vetted.
+		expect(vetted).toHaveLength(6);
+	});
+
+	it("propagates an SSRF rejection thrown by vet on a redirect hop", async () => {
+		// The first hop is public; the redirect target trips the (stubbed)
+		// SSRF guard. fetchBody must surface that rejection unchanged — the
+		// per-hop re-validation is exactly what blocks a public-URL-302-to-
+		// private-host bypass.
+		let call = 0;
+		const vet = async (u: string): Promise<VettedTarget> => {
+			call += 1;
+			if (call >= 2) {
+				throw new SsrfBlockedError("resolved_ip_blocked", u, "redirect to private host");
+			}
+			return vettedFor(u);
+		};
+		const fetchOne = async (): Promise<PinnedFetchResponse> => ({
+			status: 302,
+			location: "http://169.254.169.254/",
+			body: "",
+		});
+		await expect(
+			fetchBody("https://public.example/", { vet, fetchOne }),
+		).rejects.toBeInstanceOf(SsrfBlockedError);
+	});
+
+	it("uses the real SSRF guard and pinned fetcher when no deps are passed", async () => {
+		// Default-deps path: omit BOTH `vet` and `fetchOne` so fetchBody binds
+		// the real `assertSafeFetchTarget` + `pinnedFetch` defaults. A private
+		// target makes the real guard throw before any socket — proving the
+		// security guard is NOT bypassable via the deps seam, and exercising
+		// the `?? assertSafeFetchTarget` / `?? pinnedFetch` default branches.
+		await expect(fetchBody("http://127.0.0.1/")).rejects.toBeInstanceOf(SsrfBlockedError);
+	});
+
+	it("still enforces the real SSRF guard when only fetchOne is stubbed", async () => {
+		// Stubbing the fetcher must not let a private target through: `vet`
+		// still defaults to the real guard, which rejects before fetchOne runs.
+		const fetchOne = vi.fn(
+			async (): Promise<PinnedFetchResponse> => ({ status: 200, body: "unreached" }),
+		);
+		await expect(
+			fetchBody("http://169.254.169.254/latest/meta-data/", { fetchOne }),
+		).rejects.toBeInstanceOf(SsrfBlockedError);
+		expect(fetchOne).not.toHaveBeenCalled();
 	});
 });

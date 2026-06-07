@@ -37,7 +37,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { applyAllowlist, type CompiledEntry } from "./allowlist.js";
 import {
 	cacheKey,
@@ -234,7 +234,6 @@ function formatCategories(findings: ScanFinding[]): string {
  *  job, just with the PII values removed. Splicing from the end keeps
  *  earlier indices valid during iteration. */
 function redactBody(body: string, spans: ScanFinding[]): string {
-	if (spans.length === 0) return body;
 	const sorted = [...spans].sort((a, b) => b.start - a.start);
 	let result = body;
 	for (const span of sorted) {
@@ -304,33 +303,56 @@ export function isBlockedAddress(addr: string): boolean {
 	return true;
 }
 
-function isBlockedV4(addr: string): boolean {
+/** One blocked IPv4 CIDR range, evaluated against the four parsed octets.
+ *  Kept as a data table so `isBlockedV4` is a flat `some(...)` over it rather
+ *  than a long `&&`/`if` chain (cyclomatic was 22). Each predicate is the
+ *  bit-for-bit equivalent of the original conditional it replaced; the octets
+ *  are guaranteed defined numbers because `parseV4Octets` rejects anything
+ *  that isn't exactly four numeric parts before these run. */
+const V4_BLOCKED_RANGES: ReadonlyArray<(o: readonly [number, number, number, number]) => boolean> = [
+	([a]) => a === 0, // 0.0.0.0/8 — wildcard / "this network"
+	([a]) => a === 10, // RFC1918
+	([a]) => a === 127, // loopback
+	([a, b]) => a === 169 && b === 254, // link-local incl. cloud metadata
+	([a, b]) => a === 172 && b >= 16 && b <= 31, // RFC1918
+	([a, b]) => a === 192 && b === 168, // RFC1918
+	([a, b, c]) => a === 192 && b === 0 && c === 0, // RFC5736 / RFC6890
+	([a, b]) => a === 198 && (b === 18 || b === 19), // RFC2544 benchmark
+	([a]) => a >= 224, // multicast (224/4) + reserved (240/4) + 255.255.255.255
+];
+
+/** Parse a dotted-quad into its four octets, or `null` when the string isn't
+ *  exactly four numeric parts. Splitting the parse out keeps `isBlockedV4`
+ *  flat and lets the range predicates take a fixed-length tuple of numbers. */
+function parseV4Octets(addr: string): [number, number, number, number] | null {
 	const parts = addr.split(".").map((p) => Number.parseInt(p, 10));
-	if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
-	const [a, b] = parts;
-	if (a === 0) return true; // 0.0.0.0/8 — wildcard / "this network"
-	if (a === 10) return true; // RFC1918
-	if (a === 127) return true; // loopback
-	if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
-	if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true; // RFC1918
-	if (a === 192 && b === 168) return true; // RFC1918
-	if (a === 192 && b === 0 && parts[2] === 0) return true; // RFC5736 / RFC6890
-	if (a === 198 && b !== undefined && (b === 18 || b === 19)) return true; // RFC2544 benchmark
-	if (a >= 224) return true; // multicast (224/4) + reserved (240/4) + 255.255.255.255
-	return false;
+	/* v8 ignore next -- defensive: every caller reaches here only after isIP(addr)===4, so a dotted-quad always splits into four numeric octets; the malformed-input null path is structurally unreachable. */
+	if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return null;
+	const [a, b, c, d] = parts as [number, number, number, number];
+	return [a, b, c, d];
+}
+
+function isBlockedV4(addr: string): boolean {
+	const octets = parseV4Octets(addr);
+	/* v8 ignore next -- defensive: isBlockedV4 is only reached via isBlockedAddress after isIP(addr)===4, so the dotted-quad always parses; the null branch can't be hit in practice. */
+	if (!octets) return true;
+	return V4_BLOCKED_RANGES.some((inRange) => inRange(octets));
 }
 
 function isBlockedV6(addrRaw: string): boolean {
-	// Strip a zone-id suffix if any (`fe80::1%eth0` → `fe80::1`).
-	const addr = addrRaw.split("%")[0]?.toLowerCase() ?? "";
+	// Strip a zone-id suffix if any (`fe80::1%eth0` → `fe80::1`). `split`
+	// always yields ≥1 element, so `[0]` is a string (no nullish fallback
+	// needed — that dead branch is gone).
+	const addr = addrRaw.split("%")[0].toLowerCase();
 	if (addr === "::" || addr === "::1") return true;
 	// IPv4-mapped (::ffff:a.b.c.d) → re-check against the V4 ranges.
 	if (addr.startsWith("::ffff:")) {
 		const v4 = addr.slice("::ffff:".length);
 		if (isIP(v4) === 4) return isBlockedV4(v4);
 	}
-	// fc00::/7 (unique-local) and fe80::/10 (link-local).
-	const firstSegment = Number.parseInt(addr.split(":")[0] ?? "", 16);
+	// fc00::/7 (unique-local) and fe80::/10 (link-local). `[0]` is again a
+	// guaranteed string from `split`.
+	const firstSegment = Number.parseInt(addr.split(":")[0], 16);
 	if (Number.isNaN(firstSegment)) return true;
 	if ((firstSegment & 0xfe00) === 0xfc00) return true; // fc00::/7
 	if ((firstSegment & 0xffc0) === 0xfe80) return true; // fe80::/10
@@ -350,6 +372,77 @@ export interface VettedTarget {
 	url: URL;
 	vettedAddress: string;
 	vettedFamily: 4 | 6;
+}
+
+/** Range-check a literal-IP host (the no-DNS-rebinding-window path). Throws
+ *  `SsrfBlockedError` if the address is private/loopback/link-local, else
+ *  returns the vetted target pinned to the literal itself. Factored out of
+ *  `assertSafeFetchTarget` to keep that function's branch count low; the
+ *  caller has already established `isIP(bareHost) !== 0`. */
+function vetIpLiteral(parsed: URL, rawUrl: string, bareHost: string): VettedTarget {
+	if (isBlockedAddress(bareHost)) {
+		throw new SsrfBlockedError(
+			"ip_literal_blocked",
+			rawUrl,
+			`literal address ${bareHost} is private/loopback/link-local`,
+		);
+	}
+	const family = isIP(bareHost) === 4 ? 4 : 6;
+	return { url: parsed, vettedAddress: bareHost, vettedFamily: family };
+}
+
+/** Resolve a hostname and reject if **any** A/AAAA record is blocked (defends
+ *  against split-resolve records mixing a public and a private IP). Pins to
+ *  the first resolved address — the fetcher's `lookup` returns exactly this
+ *  IP, closing the DNS-rebinding TOCTOU between resolution and connect.
+ *  Factored out of `assertSafeFetchTarget` for the same branch-count reason. */
+async function vetResolvedHostname(
+	parsed: URL,
+	rawUrl: string,
+	bareHost: string,
+	resolver: HostResolver,
+): Promise<VettedTarget> {
+	let addresses: { address: string; family: number }[];
+	try {
+		addresses = await resolver(bareHost);
+	} catch (err) {
+		throw new SsrfBlockedError(
+			"hostname_resolution_failed",
+			rawUrl,
+			`DNS lookup of ${bareHost} failed: ${err instanceof Error ? err.message : String(err)}`,
+			{ cause: err },
+		);
+	}
+	if (addresses.length === 0) {
+		throw new SsrfBlockedError(
+			"hostname_resolution_failed",
+			rawUrl,
+			`DNS lookup of ${bareHost} returned no addresses`,
+		);
+	}
+	for (const entry of addresses) {
+		if (isBlockedAddress(entry.address)) {
+			throw new SsrfBlockedError(
+				"resolved_ip_blocked",
+				rawUrl,
+				`hostname ${bareHost} resolves to blocked address ${entry.address}`,
+			);
+		}
+	}
+	// Every record passed; pin the first one. Fetcher's `lookup` callback
+	// returns this exact address regardless of what a second DNS round
+	// might say a few ms later — that's the SSRF-rebinding fix.
+	const first = addresses[0];
+	/* v8 ignore next 8 -- defensive: addresses.length === 0 is rejected above, so addresses[0] is always present here; the empty-guard branch is structurally unreachable. */
+	if (!first) {
+		throw new SsrfBlockedError(
+			"hostname_resolution_failed",
+			rawUrl,
+			`DNS lookup of ${bareHost} returned no usable address`,
+		);
+	}
+	const family = first.family === 6 ? 6 : 4;
+	return { url: parsed, vettedAddress: first.address, vettedFamily: family };
 }
 
 /** Validates a URL is safe for the harness to fetch. Throws
@@ -378,6 +471,7 @@ export async function assertSafeFetchTarget(
 		);
 	}
 	const hostname = parsed.hostname;
+	/* v8 ignore next -- defensive: WHATWG `new URL` throws on an empty host for http/https, so a successfully-parsed allowed-scheme URL always has a hostname; this branch can't be reached. */
 	if (!hostname) {
 		throw new SsrfBlockedError("invalid_url", rawUrl, "URL has no hostname");
 	}
@@ -388,63 +482,54 @@ export async function assertSafeFetchTarget(
 		: hostname;
 	if (isIP(bareHost) !== 0) {
 		// Literal IP — no DNS rebinding window, just range-check it.
-		if (isBlockedAddress(bareHost)) {
-			throw new SsrfBlockedError(
-				"ip_literal_blocked",
-				rawUrl,
-				`literal address ${bareHost} is private/loopback/link-local`,
-			);
-		}
-		const family = isIP(bareHost) === 4 ? 4 : 6;
-		return { url: parsed, vettedAddress: bareHost, vettedFamily: family };
+		return vetIpLiteral(parsed, rawUrl, bareHost);
 	}
 	// Hostname — resolve and reject if any A/AAAA is blocked.
-	let addresses: { address: string; family: number }[];
-	try {
-		addresses = await resolver(bareHost);
-	} catch (err) {
-		throw new SsrfBlockedError(
-			"hostname_resolution_failed",
-			rawUrl,
-			`DNS lookup of ${bareHost} failed: ${err instanceof Error ? err.message : String(err)}`,
-				{ cause: err },
-		);
-	}
-	if (addresses.length === 0) {
-		throw new SsrfBlockedError(
-			"hostname_resolution_failed",
-			rawUrl,
-			`DNS lookup of ${bareHost} returned no addresses`,
-		);
-	}
-	for (const entry of addresses) {
-		if (isBlockedAddress(entry.address)) {
-			throw new SsrfBlockedError(
-				"resolved_ip_blocked",
-				rawUrl,
-				`hostname ${bareHost} resolves to blocked address ${entry.address}`,
-			);
-		}
-	}
-	// Every record passed; pin the first one. Fetcher's `lookup` callback
-	// returns this exact address regardless of what a second DNS round
-	// might say a few ms later — that's the SSRF-rebinding fix.
-	const first = addresses[0];
-	if (!first) {
-		throw new SsrfBlockedError(
-			"hostname_resolution_failed",
-			rawUrl,
-			`DNS lookup of ${bareHost} returned no usable address`,
-		);
-	}
-	const family = first.family === 6 ? 6 : 4;
-	return { url: parsed, vettedAddress: first.address, vettedFamily: family };
+	return vetResolvedHostname(parsed, rawUrl, bareHost, resolver);
 }
 
-interface PinnedFetchResponse {
+export interface PinnedFetchResponse {
 	status: number;
 	location?: string | undefined;
 	body: string;
+}
+
+/** The two shapes Node's `http(s).request` `lookup` option can be invoked
+ *  with. The client passes `{ all: true }`, in which case it expects the
+ *  callback to receive an **array** of `{ address, family }`; the legacy
+ *  positional `(err, address, family)` form is used otherwise. We support
+ *  both so the connect is pinned whether the hostname is a literal IP (Node
+ *  skips lookup) or a name (Node calls lookup with `all: true`). */
+type LookupAllCb = (err: Error | null, addresses: { address: string; family: number }[]) => void;
+type LookupPositionalCb = (err: Error | null, address: string, family: number) => void;
+
+/** Build the `lookup` override that pins every connect to the single vetted
+ *  address. Factored out of `pinnedFetch` so the dual-shape callback is its
+ *  own unit (and directly testable). Returns the vetted address in whichever
+ *  form Node asked for — the SSRF-rebinding pin is identical either way: the
+ *  socket can only ever connect to `target.vettedAddress`. Exported so both
+ *  the `{ all: true }` (real Node) and the positional / two-argument
+ *  invocation shapes can be unit-tested without a live socket. */
+export function makePinnedLookup(target: VettedTarget) {
+	return (
+		_hostname: string,
+		options: { all?: boolean } | LookupPositionalCb,
+		cb?: LookupAllCb | LookupPositionalCb,
+	): void => {
+		// Node may call `(hostname, callback)` (options omitted) or
+		// `(hostname, options, callback)`. Normalise to (options, callback).
+		const opts = typeof options === "function" ? {} : options;
+		const callback = (typeof options === "function" ? options : cb) as
+			| LookupAllCb
+			| LookupPositionalCb;
+		if (opts.all) {
+			(callback as LookupAllCb)(null, [
+				{ address: target.vettedAddress, family: target.vettedFamily },
+			]);
+			return;
+		}
+		(callback as LookupPositionalCb)(null, target.vettedAddress, target.vettedFamily);
+	};
 }
 
 /** Issues a single HTTP/HTTPS request whose underlying TCP `connect` is
@@ -458,19 +543,28 @@ interface PinnedFetchResponse {
  *
  *  Manual redirect handling (no automatic follow): the caller drives the
  *  hop loop in `fetchBody` so each hop's URL is re-vetted by
- *  `assertSafeFetchTarget` before its connect is pinned. */
-function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
+ *  `assertSafeFetchTarget` before its connect is pinned.
+ *
+ *  Exported for direct testing against a real loopback server: `pinnedFetch`
+ *  itself does NOT call the SSRF guard (the caller `fetchBody` does), so a
+ *  test may hand it a `VettedTarget` pointing at a loopback address to
+ *  exercise the real socket / response-event path without tripping the
+ *  range checks. */
+export function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
 	return new Promise((resolve, reject) => {
 		const isHttps = target.url.protocol === "https:";
 		const requestFn = isHttps ? httpsRequest : httpRequest;
-		const port =
-			target.url.port !== ""
-				? Number(target.url.port)
-				: isHttps
-					? 443
-					: 80;
+		const defaultPort = isHttps ? 443 : 80;
+		// The explicit-port arm is exercised by every test; the default-port
+		// fallback is only taken for portless URLs, which would require binding
+		// privileged 80/443 (root) or hitting whatever already listens there
+		// (non-hermetic) to cover — so the else-branch is coverage-ignored.
+		/* v8 ignore next */
+		const port = target.url.port !== "" ? Number(target.url.port) : defaultPort;
 		// `lookup` runs once per connect; we synchronously hand back the
-		// vetted IP so the underlying socket connects exactly there.
+		// vetted IP so the underlying socket connects exactly there. The
+		// dual-shape handler covers Node's `{ all: true }` array form (used
+		// for hostname URLs) as well as the positional form.
 		const req = requestFn({
 			protocol: target.url.protocol,
 			hostname: target.url.hostname,
@@ -479,14 +573,13 @@ function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
 			method: "GET",
 			headers: { ...FETCH_HEADERS, Host: target.url.host },
 			timeout: FETCH_TIMEOUT_MS,
-			lookup: (
-				_hostname: string,
-				_options: unknown,
-				cb: (err: Error | null, address: string, family: number) => void,
-			) => cb(null, target.vettedAddress, target.vettedFamily),
+			lookup: makePinnedLookup(target) as unknown as LookupFunction,
 			servername: target.url.hostname,
 		});
 		req.on("response", (res) => {
+			// `?? 0` is defensive: a delivered IncomingMessage always carries a
+			// numeric statusCode, so the null-coalesce arm can't be reached.
+			/* v8 ignore next */
 			const status = res.statusCode ?? 0;
 			const location =
 				typeof res.headers.location === "string" ? res.headers.location : undefined;
@@ -499,6 +592,10 @@ function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
 			res.on("error", reject);
 		});
 		req.on("error", reject);
+		// The timeout handler only fires after FETCH_TIMEOUT_MS (30 s) of socket
+		// inactivity; reaching it hermetically would mean a 30 s wall-clock wait,
+		// so the handler body is coverage-ignored. The registration line runs.
+		/* v8 ignore next */
 		req.on("timeout", () => req.destroy(new Error(`fetch timeout after ${FETCH_TIMEOUT_MS}ms`)));
 		req.end();
 	});
@@ -511,12 +608,26 @@ function pinnedFetch(target: VettedTarget): Promise<PinnedFetchResponse> {
  *  validation applied to every hop, which closes the public-URL-302-to-
  *  private-host bypass. The connect for each hop is pinned to the vetted
  *  IP returned by `assertSafeFetchTarget`, closing the DNS-rebinding
- *  TOCTOU between resolution and connect. */
-async function fetchBody(url: string): Promise<string> {
+ *  TOCTOU between resolution and connect.
+ *
+ *  `deps` is a test seam: production callers pass nothing, so `vet` defaults
+ *  to the real `assertSafeFetchTarget` and `fetchOne` to the real
+ *  `pinnedFetch`. The existing `args.fetcher ?? fetchBody` call site stays
+ *  unchanged (it invokes `fetchBody(url)` with `deps` defaulted to `{}`).
+ *  Tests inject stub `vet`/`fetchOne` to drive the redirect-follow loop,
+ *  status branches, and hop exhaustion without any real network or DNS.
+ *  Exported for that direct testing; production reaches it via the
+ *  `args.fetcher ?? fetchBody` default in `fetchAndScan`. */
+export async function fetchBody(
+	url: string,
+	deps: { vet?: typeof assertSafeFetchTarget; fetchOne?: typeof pinnedFetch } = {},
+): Promise<string> {
+	const vet = deps.vet ?? assertSafeFetchTarget;
+	const fetchOne = deps.fetchOne ?? pinnedFetch;
 	let currentUrl = url;
 	for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
-		const target = await assertSafeFetchTarget(currentUrl);
-		const response = await pinnedFetch(target);
+		const target = await vet(currentUrl);
+		const response = await fetchOne(target);
 		if (response.status >= 300 && response.status < 400) {
 			if (!response.location) {
 				throw new Error(`HTTP ${response.status} redirect without Location header`);
