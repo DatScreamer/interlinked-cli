@@ -10,14 +10,14 @@ Terminology:
 - **Interlinked MCP Server** = remote Worker/DO system used by server-backed commands.
 - **Interlinked CLI** = this package.
 
-Source of truth for the CLI is `QuentinCody/interlinked-cli`; current installs run from a linked source checkout. It has a single runtime dependency (`commander`) and zero external dependencies for formatting/output.
+Source of truth for the CLI is `QuentinCody/interlinked-cli`; current installs run from a linked source checkout. It has a single **required** runtime dependency (`commander`) and zero external dependencies for formatting/output. Two **optionalDependencies** (installed by default; the CLI's core hooks/activity work without them): `typescript` — the JS compiler API the AST-accurate cyclomatic/CRAP gate parses with (the `tsgo` native-port binary has **no importable JS API**, so it can't substitute; TS 7's replacement is an out-of-process gRPC API, stable ~7.1) — and `@typescript/native-preview` (`tsgo`), which accelerates `npm run typecheck`. When `typescript` is absent (`--omit=optional`), the complexity gate degrades to the regex walker and says so loudly (`astComplexityAvailable()`; daemon-startup warning).
 
 ## Commands
 
 ```bash
 npm run dev             # Run CLI directly via tsx (no build step)
 npm run build           # Build to dist/ via tsup (ESM)
-npm run typecheck       # TypeScript type checking (tsc --noEmit)
+npm run typecheck       # TypeScript type checking (tsgo --noEmit; native Go port)
 npm run test            # Run tests (vitest)
 npm run test:watch      # Watch mode tests
 ```
