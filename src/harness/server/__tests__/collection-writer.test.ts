@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getCollectionLiveness } from "../../../lib/collection/liveness.js";
 import { getCollectionPath } from "../../../lib/collection/writer.js";
 import type { HarnessEvent } from "../../types.js";
 import { mapEventToCollectionInput, writeCollectionRecord } from "../collection-writer.js";
@@ -148,5 +149,50 @@ describe("writeCollectionRecord — end-to-end append", () => {
 		expect(() =>
 			writeCollectionRecord(harnessEvent({ hook_event: "PreToolUse", cwd: dir }), dir),
 		).not.toThrow();
+	});
+});
+
+// The end-to-end "data collection is never silently broken" guard: a record
+// written by the real daemon path must read back through the liveness check as
+// a LIVE stream. If a future change breaks the write path (builder returns
+// null, writer throws, wrong path), this fails — instead of the stream going
+// stale unnoticed for days the way the legacy activity.jsonl did.
+describe("writeCollectionRecord → getCollectionLiveness — never-broken guard", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "collection-live-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("a daemon-written record makes the stream read as LIVE, and ages into idle/stale", () => {
+		// Pre-write: the exact state that went unnoticed for days.
+		expect(getCollectionLiveness(dir).status).toBe("missing");
+
+		const ts = "2026-06-01T12:00:00.000Z";
+		const recMs = Date.parse(ts);
+		writeCollectionRecord(
+			harnessEvent({
+				hook_event: "PostToolUse",
+				session_id: "live-sess",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				tool_response: { stdout: "x", stderr: "", exitCode: 0 },
+				cwd: dir,
+				timestamp: ts,
+			}),
+			dir,
+		);
+
+		// now = record ts + 5s → live (clock injected so the test is deterministic).
+		const live = getCollectionLiveness(dir, { now: recMs + 5_000 });
+		expect(live.status).toBe("live");
+		expect(live.lastRecordTs).not.toBeNull();
+		expect(live.sizeBytes).toBeGreaterThan(0);
+
+		// Age the same record forward relative to its own ts → idle, then stale.
+		expect(getCollectionLiveness(dir, { now: recMs + 10 * 60_000 }).status).toBe("idle");
+		expect(getCollectionLiveness(dir, { now: recMs + 48 * 3_600_000 }).status).toBe("stale");
 	});
 });

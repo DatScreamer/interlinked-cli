@@ -14,6 +14,7 @@ import {
 	migrateLegacyConfig,
 	resolveConfig,
 } from "../lib/config.js";
+import { type CollectionLiveness, getCollectionLiveness } from "../lib/collection/liveness.js";
 import { c, divider, header } from "../lib/formatter.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { getOutputMode, output } from "../lib/output.js";
@@ -75,6 +76,36 @@ function statusIcon(status: CheckStatus): string {
 			return c.red("[FAIL]");
 		case "warn":
 			return c.yellow("[warn]");
+	}
+}
+
+/** Build the data-collection check row from a liveness reading. Kept out of
+ *  `doctorCommand` so it adds no branches to that (already large) function. */
+function collectionLivenessCheck(live: CollectionLiveness): {
+	status: CheckStatus;
+	message: string;
+} {
+	const status: CheckStatus = live.status === "live" || live.status === "idle" ? "pass" : "warn";
+	switch (live.status) {
+		case "live":
+			return { status, message: `collection.jsonl flowing -- ${live.reason}` };
+		case "idle":
+			return { status, message: `collection.jsonl -- ${live.reason}` };
+		case "stale":
+			return {
+				status,
+				message: `collection.jsonl STALE -- ${live.reason}. Check 'interlinked harness status' + hook wiring ('interlinked enable').`,
+			};
+		case "missing":
+			return {
+				status,
+				message:
+					"No collection.jsonl yet -- start the daemon and run 'interlinked enable' to begin recording.",
+			};
+		case "empty":
+			return { status, message: "collection.jsonl is empty -- no tool events recorded yet." };
+		default:
+			return { status, message: `collection.jsonl unreadable -- ${live.reason}` };
 	}
 }
 
@@ -172,6 +203,13 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 			message: "Hook script not found -- run 'interlinked enable' to install",
 		});
 	}
+
+	// 4c. Data collection liveness — is the canonical collection.jsonl stream
+	// advancing? This is the guard the legacy activity.jsonl never had: a stream
+	// that silently stops recording (unwired hook, dead daemon, full disk) shows
+	// up here instead of being discovered days later.
+	const liveness = getCollectionLiveness(cwd);
+	results.push({ name: "Data collection", ...collectionLivenessCheck(liveness) });
 
 	// 4b. Hook script version check
 	if (existsSync(hookScriptPath)) {
