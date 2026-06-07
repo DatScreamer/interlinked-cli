@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { deriveSidecarScriptArgs, OpfLocalScanner, type SidecarLike } from "../opf-local.js";
-import type { ContentScannerConfig } from "../types.js";
+import type { SidecarStatus } from "../sidecar-manager.js";
+import type { ContentScannerConfig, ScannerStatus } from "../types.js";
 
 function makeConfig(): ContentScannerConfig {
 	return {
@@ -36,6 +37,20 @@ function makeFakeSidecar(): {
 	const send = vi.fn();
 	const shutdown = vi.fn().mockResolvedValue(undefined);
 	return { sidecar: { send, shutdown }, send, shutdown };
+}
+
+/** A fake sidecar that ALSO exposes `getStatus()` so the scanner seeds its
+ *  initial lifecycle snapshot from it (opf-local.ts line 106). */
+function makeStatefulFakeSidecar(status: SidecarStatus): {
+	sidecar: SidecarLike;
+	send: ReturnType<typeof vi.fn>;
+	shutdown: ReturnType<typeof vi.fn>;
+	getStatus: ReturnType<typeof vi.fn>;
+} {
+	const send = vi.fn();
+	const shutdown = vi.fn().mockResolvedValue(undefined);
+	const getStatus = vi.fn<() => SidecarStatus>(() => status);
+	return { sidecar: { send, shutdown, getStatus }, send, shutdown, getStatus };
 }
 
 describe("OpfLocalScanner", () => {
@@ -113,6 +128,222 @@ describe("OpfLocalScanner", () => {
 		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
 		await scanner.shutdown();
 		expect(shutdown).toHaveBeenCalledOnce();
+	});
+
+	it("writes a fail-open stderr line whose char count reflects the scanned text", async () => {
+		const { sidecar, send } = makeFakeSidecar();
+		send.mockResolvedValue({ ok: false, error: "timeout after 1500ms" });
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const writes: string[] = [];
+		const spy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation((chunk: string | Uint8Array): boolean => {
+				writes.push(String(chunk));
+				return true;
+			});
+		try {
+			const findings = await scanner.scan({
+				text: "abcdef", // 6 chars
+				source: "Bash.command",
+			});
+			expect(findings).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toContain("[interlinked:opf-local]");
+		expect(writes[0]).toContain("Bash.command");
+		expect(writes[0]).toContain("(6 chars)");
+		expect(writes[0]).toContain("timeout after 1500ms");
+	});
+
+	it("falls back to 'unknown' in the stderr line when the sidecar omits an error", async () => {
+		// ok:false with no `error` field exercises the `r.error ?? "unknown"`
+		// nullish-coalescing right arm — the sidecar failed but gave no reason.
+		const { sidecar, send } = makeFakeSidecar();
+		send.mockResolvedValue({ ok: false });
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const writes: string[] = [];
+		const spy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation((chunk: string | Uint8Array): boolean => {
+				writes.push(String(chunk));
+				return true;
+			});
+		try {
+			const findings = await scanner.scan({ text: "x", source: "Write.content" });
+			expect(findings).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toContain(": unknown");
+	});
+
+	it("propagates the per-span score when the sidecar provides one", async () => {
+		const { sidecar, send } = makeFakeSidecar();
+		send.mockResolvedValue({
+			ok: true,
+			spans: [{ label: "private_phone", start: 0, end: 12, text: "555-000-1234", score: 0.91 }],
+		});
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const findings = await scanner.scan({ text: "555-000-1234", source: "Bash.command" });
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toMatchObject({
+			label: "private_phone",
+			score: 0.91,
+			source: "Bash.command",
+		});
+	});
+});
+
+describe("OpfLocalScanner — lifecycle / status surface", () => {
+	it("starts in 'idle' when constructed with a fake sidecar that has no getStatus()", () => {
+		// The bare fake (no getStatus) leaves the constructor's default lastStatus
+		// in place; line 106's `sidecar?.getStatus` branch is NOT taken.
+		const { sidecar } = makeFakeSidecar();
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const status = scanner.getStatus();
+		expect(status.state).toBe("idle");
+		expect(typeof status.sinceIso).toBe("string");
+		expect(Number.isNaN(Date.parse(status.sinceIso))).toBe(false);
+	});
+
+	it("seeds its initial status from an injected sidecar's getStatus() (ready state passes through)", () => {
+		const { sidecar } = makeStatefulFakeSidecar({
+			state: "ready",
+			pid: 4242,
+			restartCount: 1,
+			detail: "child up",
+			sinceIso: "2026-01-01T00:00:00.000Z",
+		});
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		expect(scanner.getStatus()).toEqual({
+			state: "ready",
+			pid: 4242,
+			detail: "child up",
+			sinceIso: "2026-01-01T00:00:00.000Z",
+		});
+	});
+
+	it("projects the sidecar's 'spawning' state to the public 'starting' state", () => {
+		// projectStatus maps the internal `spawning` enum to the public `starting`
+		// (opf-local.ts line 43 cond-expr true arm).
+		const { sidecar } = makeStatefulFakeSidecar({
+			state: "spawning",
+			pid: 9001,
+			restartCount: 0,
+			sinceIso: "2026-02-02T00:00:00.000Z",
+		});
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const status = scanner.getStatus();
+		expect(status.state).toBe("starting");
+		expect(status.pid).toBe(9001);
+		// `restartCount` is internal-only; the projected snapshot must not carry it.
+		expect("restartCount" in status).toBe(false);
+	});
+
+	it("passes 'dormant' through unchanged (projectStatus else arm)", () => {
+		const { sidecar } = makeStatefulFakeSidecar({
+			state: "dormant",
+			restartCount: 2,
+			detail: "idle close",
+			sinceIso: "2026-03-03T00:00:00.000Z",
+		});
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		expect(scanner.getStatus().state).toBe("dormant");
+	});
+
+	it("onStatusChange fires the callback immediately with the current snapshot", () => {
+		const { sidecar } = makeStatefulFakeSidecar({
+			state: "ready",
+			pid: 7,
+			restartCount: 0,
+			sinceIso: "2026-04-04T00:00:00.000Z",
+		});
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const seen: ScannerStatus[] = [];
+		scanner.onStatusChange((s) => seen.push(s));
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({ state: "ready", pid: 7 });
+	});
+
+	it("swallows a throwing listener on the immediate onStatusChange fire", () => {
+		const { sidecar } = makeFakeSidecar();
+		const scanner = new OpfLocalScanner(makeConfig(), sidecar);
+		const good = vi.fn();
+		// The first listener throws on the immediate fire; the registration must
+		// not propagate it (opf-local.ts line 113-117 catch).
+		expect(() =>
+			scanner.onStatusChange(() => {
+				throw new Error("listener boom");
+			}),
+		).not.toThrow();
+		// A subsequently-registered well-behaved listener still gets its snapshot.
+		scanner.onStatusChange(good);
+		expect(good).toHaveBeenCalledTimes(1);
+	});
+
+	it("notifies registered listeners on a real status transition and survives one that throws", async () => {
+		// Drive a REAL SidecarManager (pool_size:1) so the constructor's
+		// poolOpts.onStatusChange handler is wired to an actual sidecar. No
+		// process is spawned: shutdown() flips status idle->disabled via
+		// setStatus()/fireStatus() without ever launching the child.
+		const cfg = makeConfig();
+		cfg.local.pool_size = 1;
+		const scanner = new OpfLocalScanner(cfg); // real SidecarManager, no inject
+
+		// Initial snapshot from the manager's constructor fire is "idle".
+		expect(scanner.getStatus().state).toBe("idle");
+
+		const transitions: ScannerStatus[] = [];
+		const order: string[] = [];
+		// First listener throws — its catch (line 91-94) must not stop the second.
+		scanner.onStatusChange(() => {
+			order.push("thrower");
+			throw new Error("transition boom");
+		});
+		scanner.onStatusChange((s) => {
+			order.push("recorder");
+			transitions.push(s);
+		});
+
+		await scanner.shutdown(); // idle -> disabled, fires poolOpts.onStatusChange
+
+		// The recorder saw both the immediate-fire snapshot AND the disabled one.
+		const states = transitions.map((t) => t.state);
+		expect(states).toContain("disabled");
+		expect(scanner.getStatus().state).toBe("disabled");
+		// Both listeners ran on the transition despite the first throwing.
+		expect(order.filter((o) => o === "thrower").length).toBeGreaterThanOrEqual(2);
+		expect(order.filter((o) => o === "recorder").length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("builds a real SidecarPool when pool_size > 1 without spawning a process", () => {
+		// Default config omits pool_size -> defaults to 3 -> SidecarPool branch
+		// (line 102 right arm, line 103). Pool construction fires an initial
+		// aggregate 'idle' through the scanner's poolOpts handler.
+		const scanner = new OpfLocalScanner(makeConfig()); // no injected sidecar
+		expect(scanner.getStatus().state).toBe("idle");
+	});
+
+	it("uses the bare SidecarManager when pool_size is exactly 1", () => {
+		// Degenerate pool — line 104 (SidecarManager branch).
+		const cfg = makeConfig();
+		cfg.local.pool_size = 1;
+		const scanner = new OpfLocalScanner(cfg);
+		expect(scanner.getStatus().state).toBe("idle");
+	});
+
+	it("forwards the viterbi calibration path into the real sidecar script args", async () => {
+		// Exercises deriveSidecarScriptArgs from inside the constructor on the
+		// real-pool path: a calibrated config must construct without throwing and
+		// remain idle (lazy-spawn) until first use.
+		const cfg = makeConfig();
+		cfg.local.viterbi_calibration_path = "/abs/high-precision.json";
+		const scanner = new OpfLocalScanner(cfg);
+		expect(scanner.getStatus().state).toBe("idle");
+		await scanner.shutdown();
 	});
 });
 

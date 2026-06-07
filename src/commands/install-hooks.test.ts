@@ -2,6 +2,26 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// `readSync(0, ...)` is the only line-reader install-hooks uses for the
+// interactive mode prompt. Mock it surgically (everything else in node:fs
+// stays real, so the tmpdir/manifest/settings file I/O below is genuine);
+// the default delegates to the real readSync so non-interactive tests are
+// untouched, and the interactive test sets its own implementation.
+const mockReadSync = vi.fn();
+vi.mock("node:fs", async (importOriginal) => {
+	const real = await importOriginal<typeof import("node:fs")>();
+	return {
+		...real,
+		readSync: (...args: Parameters<typeof real.readSync>): number => {
+			if (mockReadSync.getMockImplementation()) {
+				return mockReadSync(...args) as number;
+			}
+			return real.readSync(...args);
+		},
+	};
+});
+
 import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
 
 let tmp = "";
@@ -15,7 +35,59 @@ beforeEach(() => {
 afterEach(() => {
 	process.chdir(originalCwd);
 	rmSync(tmp, { recursive: true, force: true });
+	mockReadSync.mockReset();
+	vi.restoreAllMocks();
 });
+
+/** Capture everything written to process.stdout while `fn` runs. */
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+	let captured = "";
+	const spy = vi.spyOn(process.stdout, "write").mockImplementation(((
+		buf: string | Uint8Array,
+	) => {
+		captured += typeof buf === "string" ? buf : Buffer.from(buf).toString("utf-8");
+		return true;
+	}) as unknown as typeof process.stdout.write);
+	try {
+		await fn();
+	} finally {
+		spy.mockRestore();
+	}
+	return captured;
+}
+
+function setStdinTTY(value: boolean): void {
+	Object.defineProperty(process.stdin, "isTTY", { value, configurable: true });
+}
+
+/** Result shape `printHuman` consumes; mirror of installer.InstallResult. */
+interface StubInstallResult {
+	entries: Array<{ runner: string; settings_path: string; added_paths: string[] }>;
+	skipped: Array<{ runner: string; reason: string }>;
+	manifest_path: string;
+	purged: number;
+	foreign: number;
+	orphans_cleaned: string[];
+}
+
+/**
+ * Re-import the command with a stubbed `../harness/installer.js` so the
+ * return shape (skipped/purged/foreign/orphans + dry-run write suppression)
+ * is fully under test control. `vi.doMock` is not hoisted, so the static
+ * `installHooksCommand` import above keeps the real installer; only this
+ * dynamic import sees the stub.
+ */
+async function importWithStubbedInstaller(
+	result: StubInstallResult,
+): Promise<typeof import("./install-hooks.js")> {
+	vi.resetModules();
+	vi.doMock("../harness/installer.js", () => ({
+		installHooks: (): StubInstallResult => result,
+		manifestPath: (cwd: string): string => join(cwd, ".interlinked", "installer-manifest.json"),
+	}));
+	const mod = await import("./install-hooks.js");
+	return mod;
+}
 
 describe("install-hooks command", () => {
 	it("installs for the claude-code runner and writes the settings file", async () => {
@@ -148,5 +220,351 @@ describe("parseModeChoice", () => {
 	it("falls back to balanced on unknown input", () => {
 		expect(parseModeChoice("bogus")).toBe("balanced");
 		expect(parseModeChoice("99")).toBe("balanced");
+	});
+});
+
+describe("install-hooks — interactive mode prompt", () => {
+	it("prompts for mode in a TTY when no --mode flag, reads numeric choice", async () => {
+		setStdinTTY(true);
+		// "2" → second preset (strict) per the ALL_PRESETS ordering.
+		mockReadSync.mockImplementation((_fd: number, buf: Buffer): number => {
+			const s = "2\n";
+			buf.write(s, 0, "utf-8");
+			return Buffer.byteLength(s);
+		});
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-prompt" }),
+		);
+		setStdinTTY(false);
+		// The menu was rendered and the chosen mode was persisted + echoed.
+		expect(out).toContain("Pick an enforcement mode");
+		expect(out).toContain("balanced (default)");
+		expect(mockReadSync).toHaveBeenCalled();
+		const policy = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
+		) as { mode: string };
+		expect(policy.mode).toBe("strict");
+		expect(out).toContain("mode: strict");
+	});
+
+	it("prompts and accepts a mode name typed at the prompt", async () => {
+		setStdinTTY(true);
+		mockReadSync.mockImplementation((_fd: number, buf: Buffer): number => {
+			const s = "lenient\n";
+			buf.write(s, 0, "utf-8");
+			return Buffer.byteLength(s);
+		});
+		await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-prompt2" }),
+		);
+		setStdinTTY(false);
+		const policy = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
+		) as { mode: string };
+		expect(policy.mode).toBe("lenient");
+	});
+
+	it("prompt with empty input (just Enter) resolves to balanced", async () => {
+		setStdinTTY(true);
+		mockReadSync.mockImplementation((_fd: number, buf: Buffer): number => {
+			const s = "\n";
+			buf.write(s, 0, "utf-8");
+			return Buffer.byteLength(s);
+		});
+		await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-prompt3" }),
+		);
+		setStdinTTY(false);
+		const policy = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
+		) as { mode: string };
+		expect(policy.mode).toBe("balanced");
+	});
+
+	it("treats a readSync failure at the prompt as empty input → balanced", async () => {
+		setStdinTTY(true);
+		// readStdinLine swallows the throw and returns "" → parseModeChoice → balanced.
+		mockReadSync.mockImplementation((): number => {
+			throw new Error("no tty fd available");
+		});
+		await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-prompt4" }),
+		);
+		setStdinTTY(false);
+		const policy = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
+		) as { mode: string };
+		expect(policy.mode).toBe("balanced");
+	});
+
+	it("does NOT prompt when --json is set even in a TTY (defaults balanced)", async () => {
+		setStdinTTY(true);
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-nojson", json: true }),
+		);
+		setStdinTTY(false);
+		expect(out).not.toContain("Pick an enforcement mode");
+		expect(mockReadSync).not.toHaveBeenCalled();
+		const payload = JSON.parse(out) as { mode: string };
+		expect(payload.mode).toBe("balanced");
+	});
+});
+
+describe("install-hooks — binary path resolution fallback", () => {
+	it("resolves a hook binary path when --binary is omitted (non-dry-run writes a fallback)", async () => {
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", json: true }),
+		);
+		const payload = JSON.parse(out) as { ok: boolean; entries: unknown[] };
+		expect(payload.ok).toBe(true);
+		expect(payload.entries.length).toBe(1);
+		// resolveHookBinaryPath with writeFallback wrote the legacy hook script.
+		expect(existsSync(join(tmp, ".interlinked", "hooks"))).toBe(true);
+	});
+
+	it("resolves a hook binary path when --binary omitted under --dry-run (no fallback write)", async () => {
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "claude-code", dryRun: true, json: true }),
+		);
+		const payload = JSON.parse(out) as { ok: boolean; dry_run: boolean };
+		expect(payload.ok).toBe(true);
+		expect(payload.dry_run).toBe(true);
+		// dry-run path passes writeFallback:false → no settings file written.
+		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(false);
+	});
+});
+
+describe("install-hooks — scope parsing", () => {
+	it("accepts an explicit non-default scope (user) and reports it in JSON", async () => {
+		const out = await captureStdout(() =>
+			installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-scope",
+				scope: "user",
+				json: true,
+			}),
+		);
+		const payload = JSON.parse(out) as { ok: boolean; entries: Array<{ settings_path: string }> };
+		expect(payload.ok).toBe(true);
+		// user scope targets ~/.claude/settings.json, not the project tmp dir.
+		expect(payload.entries[0].settings_path).not.toContain(tmp);
+	});
+
+	it("warns and falls back to project on an unknown scope", async () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const out = await captureStdout(() =>
+			installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-badscope",
+				scope: "galaxy",
+				json: true,
+			}),
+		);
+		expect(stderrSpy).toHaveBeenCalledWith(
+			expect.stringContaining('unknown scope galaxy; using "project"'),
+		);
+		stderrSpy.mockRestore();
+		const payload = JSON.parse(out) as { entries: Array<{ settings_path: string }> };
+		// project scope lands inside the project tmp dir.
+		expect(payload.entries[0].settings_path).toContain(tmp);
+	});
+});
+
+describe("install-hooks — cloud config branches", () => {
+	it("warns and skips when --cloud names an unknown product (no cloud.json written)", async () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		await captureStdout(() =>
+			installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-badcloud",
+				cloud: "telemetry",
+			}),
+		);
+		expect(stderrSpy).toHaveBeenCalledWith(
+			expect.stringContaining("unknown cloud product telemetry"),
+		);
+		stderrSpy.mockRestore();
+		expect(existsSync(join(tmp, ".interlinked", "cloud.json"))).toBe(false);
+	});
+
+	it("writes the agent-ci portal url and a null token_source when --token-env omitted", async () => {
+		await captureStdout(() =>
+			installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-agentci",
+				cloud: "agent-ci",
+			}),
+		);
+		const cloud = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "cloud.json"), "utf-8"),
+		) as { product: string; portal_url: string; token_source: unknown };
+		expect(cloud.product).toBe("agent-ci");
+		expect(cloud.portal_url).toContain("agent-ci");
+		expect(cloud.token_source).toBeNull();
+	});
+
+	it("does not write cloud.json under --dry-run even with a valid product", async () => {
+		await captureStdout(() =>
+			installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-drycloud",
+				cloud: "guardrails",
+				dryRun: true,
+			}),
+		);
+		expect(existsSync(join(tmp, ".interlinked", "cloud.json"))).toBe(false);
+	});
+
+	it("creates the .interlinked dir before writing cloud.json when absent (stubbed installer)", async () => {
+		// Stub installHooks so the .interlinked dir is NOT pre-created by the
+		// manifest write — forcing writeCloudConfig down the mkdirSync branch.
+		const mod = await importWithStubbedInstaller({
+			entries: [],
+			skipped: [],
+			manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
+			purged: 0,
+			foreign: 0,
+			orphans_cleaned: [],
+		});
+		await captureStdout(() =>
+			mod.installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-mkdir",
+				cloud: "guardrails",
+			}),
+		);
+		vi.doUnmock("../harness/installer.js");
+		vi.resetModules();
+		expect(existsSync(join(tmp, ".interlinked", "cloud.json"))).toBe(true);
+		const cloud = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "cloud.json"), "utf-8"),
+		) as { product: string; portal_url: string };
+		expect(cloud.product).toBe("guardrails");
+		expect(cloud.portal_url).toContain("interlinked.dev/mcp");
+	});
+
+	it("writeCloudConfig itself mkdirs .interlinked when no prior step created it", async () => {
+		// The mkdir-when-absent branch in writeCloudConfig is shadowed in the
+		// normal flow: writeMode() runs between installHooks() and
+		// writeCloudConfig() and unconditionally creates .interlinked, so by
+		// the time writeCloudConfig checks, the dir already exists. To exercise
+		// the branch behaviorally we stub BOTH collaborators that would
+		// otherwise pre-create the dir: the installer (manifest write) AND
+		// writeMode (check-policy write). With neither having run, the dir is
+		// genuinely absent and writeCloudConfig must create it itself.
+		vi.resetModules();
+		vi.doMock("../harness/installer.js", () => ({
+			installHooks: (): StubInstallResult => ({
+				entries: [],
+				skipped: [],
+				manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
+				purged: 0,
+				foreign: 0,
+				orphans_cleaned: [],
+			}),
+			manifestPath: (cwd: string): string =>
+				join(cwd, ".interlinked", "installer-manifest.json"),
+		}));
+		const writeModeSpy = vi.fn();
+		vi.doMock("./mode.js", () => ({ writeMode: writeModeSpy }));
+		const mod = await import("./install-hooks.js");
+
+		// Sanity: the dir must not exist before the command runs, otherwise
+		// the branch under test would be entered on its `false` arm.
+		expect(existsSync(join(tmp, ".interlinked"))).toBe(false);
+
+		await captureStdout(() =>
+			mod.installHooksCommand({
+				runner: "claude-code",
+				binary: "/usr/bin/ih-mkdir-self",
+				cloud: "agent-ci",
+				tokenEnv: "CI_TOKEN",
+			}),
+		);
+		vi.doUnmock("../harness/installer.js");
+		vi.doUnmock("./mode.js");
+		vi.resetModules();
+
+		// writeMode was stubbed (so it did NOT create .interlinked) yet was
+		// still invoked by the command — proves the dir came from
+		// writeCloudConfig's own mkdir, not from the mode write.
+		expect(writeModeSpy).toHaveBeenCalledTimes(1);
+		// The stub left check-policy.json unwritten; only writeCloudConfig
+		// touched .interlinked. cloud.json proves the mkdir branch ran.
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "cloud.json"))).toBe(true);
+		const cloud = JSON.parse(
+			readFileSync(join(tmp, ".interlinked", "cloud.json"), "utf-8"),
+		) as { product: string; portal_url: string; token_source: { env: string } };
+		expect(cloud.product).toBe("agent-ci");
+		expect(cloud.portal_url).toContain("interlinked.dev/agent-ci");
+		expect(cloud.token_source.env).toBe("CI_TOKEN");
+	});
+});
+
+describe("install-hooks — human-readable accounting (printHuman)", () => {
+	it("renders dry-run verb, skipped, purged, orphans and foreign lines", async () => {
+		const mod = await importWithStubbedInstaller({
+			entries: [
+				{
+					runner: "claude-code",
+					settings_path: join(tmp, ".claude", "settings.json"),
+					added_paths: ["hooks.PreToolUse", "hooks.PostToolUse"],
+				},
+			],
+			skipped: [{ runner: "codex", reason: "malformed JSON at .codex/config.toml" }],
+			manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
+			purged: 3,
+			foreign: 2,
+			orphans_cleaned: [join(tmp, "old", "settings.json"), join(tmp, "older", "settings.json")],
+		});
+		const out = await captureStdout(() =>
+			mod.installHooksCommand({ runner: "all", binary: "/usr/bin/ih-human", dryRun: true }),
+		);
+		vi.doUnmock("../harness/installer.js");
+		vi.resetModules();
+
+		expect(out).toContain("would install hooks for 1 runner(s)");
+		expect(out).toContain("claude-code");
+		expect(out).toContain("(2 path(s))");
+		expect(out).toContain("codex");
+		expect(out).toContain("skipped: malformed JSON");
+		expect(out).toContain("purged 3 stale hook registration(s)");
+		expect(out).toContain("cleaned a prior install in 2 other file(s)");
+		expect(out).toContain("left 2 hook registration(s) owned by other projects");
+		expect(out).toContain("manifest:");
+		// dry-run suppresses the mode footer line.
+		expect(out).not.toContain("mode: ");
+	});
+
+	it("renders the installed verb and mode footer on a real (non-dry) install with clean accounting", async () => {
+		const mod = await importWithStubbedInstaller({
+			entries: [
+				{
+					runner: "claude-code",
+					settings_path: join(tmp, ".claude", "settings.json"),
+					added_paths: ["hooks.PreToolUse"],
+				},
+			],
+			skipped: [],
+			manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
+			purged: 0,
+			foreign: 0,
+			orphans_cleaned: [],
+		});
+		const out = await captureStdout(() =>
+			mod.installHooksCommand({ runner: "claude-code", binary: "/usr/bin/ih-clean" }),
+		);
+		vi.doUnmock("../harness/installer.js");
+		vi.resetModules();
+
+		expect(out).toContain("installed hooks for 1 runner(s)");
+		expect(out).toContain("(1 path(s))");
+		// Zero counts: none of the accounting lines fire.
+		expect(out).not.toContain("purged");
+		expect(out).not.toContain("cleaned a prior install");
+		expect(out).not.toContain("owned by other projects");
+		// Non-dry install emits the mode footer.
+		expect(out).toContain("mode: balanced  (change anytime: interlinked mode <name>)");
 	});
 });

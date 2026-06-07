@@ -57,6 +57,39 @@ function readGeneratedHook(): string | null {
 	return readFileSync(path, "utf-8");
 }
 
+/** Write an installer manifest so `detectActiveRunner` resolves a runner.
+ *  The manifest lives at `{cwd}/.interlinked/installer-manifest.json` (the
+ *  command reads it via `manifestPath(process.cwd())`, NOT via
+ *  INTERLINKED_HOME, so it must sit under the cwd's `.interlinked`). */
+function writeInstallerManifest(runners: string[]): void {
+	const path = join(workDir, ".interlinked", "installer-manifest.json");
+	writeFileSync(
+		path,
+		JSON.stringify({
+			schema_version: "1",
+			entries: runners.map((runner) => ({
+				runner,
+				scope: "project",
+				settings_path: ".some-runner/settings.json",
+				added_paths: ["hooks.PreToolUse[0]"],
+				binary_path: "/bin/interlinked-hook",
+				installed_at: "2026-01-01T00:00:00Z",
+			})),
+		}),
+	);
+}
+
+/** Write an installer manifest whose only entry has no usable runner field,
+ *  so `coerceManifestEntry` drops it and `readManifest` returns []. Exercises
+ *  the `entries.length > 0 ? ... : undefined` falsy arm in detectActiveRunner. */
+function writeEmptyInstallerManifest(): void {
+	const path = join(workDir, ".interlinked", "installer-manifest.json");
+	writeFileSync(
+		path,
+		JSON.stringify({ schema_version: "1", entries: [{ not_a_runner: true }] }),
+	);
+}
+
 interface CapturedStdio {
 	stdout: string;
 	stderr: string;
@@ -204,4 +237,248 @@ describe("harness mode — switch", () => {
 		// Mode unchanged — stays at quality
 		expect(config.mode).toBe("quality");
 	});
+
+	it("emits a JSON rejection object (ok:false) when --json is set on a bad mode", async () => {
+		const previousExitCode = process.exitCode;
+		const captured = await captureStdio(() =>
+			harnessModeCommand("totally_bogus", { json: true }),
+		);
+		const exitCode = process.exitCode;
+		process.exitCode = previousExitCode;
+		const parsed = JSON.parse(captured.stdout) as { ok: boolean; reason: string };
+		expect(parsed.ok).toBe(false);
+		expect(parsed.reason).toMatch(/unknown harness mode/i);
+		expect(parsed.reason).toContain("totally_bogus");
+		// JSON form prints to stdout, not stderr
+		expect(captured.stderr).toBe("");
+		expect(exitCode).toBe(1);
+	});
 });
+
+// ---------------------------------------------------------------------------
+// Human-readable (non-JSON) output paths — these are the lines that the
+// JSON-only tests above never reach.
+// ---------------------------------------------------------------------------
+describe("harness mode — show current (human-readable)", () => {
+	it("prints the current mode, its description, and the full mode menu", async () => {
+		writeSharedConfigFile({
+			version: 1,
+			server_url: "http://localhost:8787",
+			mode: "ci",
+		});
+		const captured = await captureStdio(() =>
+			harnessModeCommand(undefined, { json: false }),
+		);
+		// Header line names the active mode.
+		expect(captured.stdout).toContain("Current harness mode: ci");
+		// Menu lists all three operational tiers with their second budgets.
+		expect(captured.stdout).toContain("budget");
+		expect(captured.stdout).toContain("quality");
+		expect(captured.stdout).toContain("ci");
+		expect(captured.stdout).toContain("30 s");
+		expect(captured.stdout).toContain("50 s");
+		expect(captured.stdout).toContain("60 s");
+		// Footer tells the user how to switch.
+		expect(captured.stdout).toContain("Switch: interlinked harness mode <name>");
+		// Human-readable path never writes to stderr.
+		expect(captured.stderr).toBe("");
+	});
+});
+
+describe("harness mode — switch (human-readable)", () => {
+	it("prints the runner-hint confirmation line on a successful switch", async () => {
+		writeSharedConfigFile({
+			version: 1,
+			server_url: "http://localhost:8787",
+		});
+		const captured = await captureStdio(() =>
+			harnessModeCommand("quality", { json: false }),
+		);
+		// tierHintForMode for quality mentions the 50 s budget.
+		expect(captured.stdout).toContain("[interlinked] quality mode (50 s)");
+		// And the restart reminder always follows on the human path.
+		expect(captured.stdout).toContain(
+			"Restart the harness to pick up the new timeout: interlinked harness restart",
+		);
+		const config = readSharedConfig();
+		expect(config.mode).toBe("quality");
+	});
+
+	it("prints budget tier-hint wording when switching to budget", async () => {
+		const captured = await captureStdio(() =>
+			harnessModeCommand("budget", { json: false }),
+		);
+		expect(captured.stdout).toContain("[interlinked] budget mode (30 s)");
+	});
+
+	it("prints ci tier-hint wording when switching to ci", async () => {
+		const captured = await captureStdio(() =>
+			harnessModeCommand("ci", { json: false }),
+		);
+		expect(captured.stdout).toContain("[interlinked] ci mode (60 s)");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Runner-mismatch warning — exercised only when an installer manifest names a
+// runner whose timeout floor is tighter than the chosen tier.
+// ---------------------------------------------------------------------------
+describe("harness mode — runner-mismatch warning (Copilot CLI floor)", () => {
+	it("warns to stderr when a Copilot-CLI install switches to quality (human form)", async () => {
+		writeInstallerManifest(["copilot-cli"]);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("quality", { json: false }),
+		);
+		// The warning is routed to stderr (it's a soft nudge, not the result).
+		expect(captured.stderr).toContain("Copilot CLI's hook timeout floor is 30 s");
+		expect(captured.stderr).toContain("interlinked harness mode budget");
+		// stdout still carries the normal confirmation.
+		expect(captured.stdout).toContain("[interlinked] quality mode (50 s)");
+	});
+
+	it("surfaces the warning inside the JSON payload (warning key) for Copilot + ci", async () => {
+		writeInstallerManifest(["copilot-cli"]);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("ci", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as {
+			ok: boolean;
+			mode: string;
+			warning?: string;
+		};
+		expect(parsed.ok).toBe(true);
+		expect(parsed.mode).toBe("ci");
+		expect(parsed.warning).toBeDefined();
+		expect(parsed.warning).toContain("Copilot CLI's hook timeout floor");
+		// JSON path emits nothing to stderr.
+		expect(captured.stderr).toBe("");
+	});
+
+	it("emits NO warning when a Copilot-CLI install switches to budget", async () => {
+		writeInstallerManifest(["copilot-cli"]);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("budget", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { warning?: string };
+		// budget fits the 30 s floor — no mismatch, no warning key.
+		expect(parsed.warning).toBeUndefined();
+		expect(captured.stderr).toBe("");
+	});
+
+	it("emits NO warning for a non-Copilot runner on a non-budget tier", async () => {
+		// claude-code has a 60 s budget, so quality (50 s) is fine.
+		writeInstallerManifest(["claude-code"]);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("quality", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { warning?: string };
+		expect(parsed.warning).toBeUndefined();
+		expect(captured.stderr).toBe("");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Active-runner detection via the installer manifest. detectActiveRunner is
+// reached on both the show path (legacy-migration input) and the switch path
+// (mismatch input); these tests pin both arms of its entries.length ternary.
+// ---------------------------------------------------------------------------
+describe("harness mode — active-runner detection", () => {
+	it("migrates legacy `balanced` to `budget` when the manifest names copilot-cli", async () => {
+		// detectActiveRunner returns copilot-cli, so balanced → budget (not quality).
+		writeInstallerManifest(["copilot-cli"]);
+		writeSharedConfigFile({
+			version: 1,
+			server_url: "http://localhost:8787",
+			mode: "balanced",
+		});
+		const captured = await captureStdio(() =>
+			harnessModeCommand(undefined, { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { mode: string };
+		expect(parsed.mode).toBe("budget");
+	});
+
+	it("falls back to quality when the manifest has no usable runner entries", async () => {
+		// readManifest drops the malformed entry → entries.length === 0 →
+		// detectActiveRunner returns undefined → balanced migrates to quality.
+		writeEmptyInstallerManifest();
+		writeSharedConfigFile({
+			version: 1,
+			server_url: "http://localhost:8787",
+			mode: "balanced",
+		});
+		const captured = await captureStdio(() =>
+			harnessModeCommand(undefined, { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { mode: string };
+		expect(parsed.mode).toBe("quality");
+	});
+
+	it("uses the FIRST manifest entry's runner when several are present", async () => {
+		// entries[0] is copilot-cli → mismatch fires on a quality switch even
+		// though a later claude-code entry would not.
+		writeInstallerManifest(["copilot-cli", "claude-code"]);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("quality", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { warning?: string };
+		expect(parsed.warning).toBeDefined();
+		expect(parsed.warning).toContain("Copilot CLI");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// readSharedConfigSafe resilience — the switch path must not throw on a
+// corrupt or server_url-less config; it falls back to safe defaults and the
+// switch still persists.
+// ---------------------------------------------------------------------------
+describe("harness mode — config resilience on switch", () => {
+	it("recovers from a malformed (non-JSON) config.json and still writes the mode", async () => {
+		// readSharedConfigSafe's JSON.parse throws → catch returns defaults.
+		writeFileSync(
+			join(workDir, ".interlinked", "config.json"),
+			"{ this is not valid json ",
+		);
+		const captured = await captureStdio(() =>
+			harnessModeCommand("ci", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { ok: boolean; mode: string };
+		expect(parsed.ok).toBe(true);
+		expect(parsed.mode).toBe("ci");
+		const config = readSharedConfig();
+		// The rewrite repaired the file: valid JSON with the new mode + defaults.
+		expect(config.mode).toBe("ci");
+		expect(config.version).toBe(1);
+		expect(config.server_url).toBe("http://localhost:8787");
+	});
+
+	it("supplies the default server_url when the existing config omits it", async () => {
+		// Valid JSON but no server_url → readSharedConfigSafe fills the default.
+		writeSharedConfigFile({ version: 1, mode: "budget" });
+		const captured = await captureStdio(() =>
+			harnessModeCommand("ci", { json: true }),
+		);
+		const parsed = JSON.parse(captured.stdout) as { ok: boolean };
+		expect(parsed.ok).toBe(true);
+		const config = readSharedConfig();
+		expect(config.server_url).toBe("http://localhost:8787");
+		expect(config.mode).toBe("ci");
+	});
+
+	it("preserves unrelated pre-existing config fields across a switch", async () => {
+		writeSharedConfigFile({
+			version: 1,
+			server_url: "https://example.invalid:9999",
+			default_project: "synthetic-project",
+			mode: "quality",
+		});
+		await captureStdio(() => harnessModeCommand("budget", { json: true }));
+		const config = readSharedConfig();
+		expect(config.mode).toBe("budget");
+		// Custom server_url is retained (truthy, so the || fallback is skipped).
+		expect(config.server_url).toBe("https://example.invalid:9999");
+		// Other keys survive the spread.
+		expect(config.default_project).toBe("synthetic-project");
+	});
+});
+
