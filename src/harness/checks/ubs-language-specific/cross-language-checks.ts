@@ -187,7 +187,13 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 	// (this file + checks/supply-chain.ts both contain `/…localhost…/`).
 	const strippedLines = stripCommentsPreservingStrings(stripRegexLiterals(content)).split("\n");
 	const matches: InlineMatch[] = [];
-	const re = /\b(?:localhost|127\.0\.0\.1)\b/;
+	// A real hardcoded-localhost bug is an ENDPOINT: a URL (`//localhost`), a
+	// host:port (`localhost:3000`), or a bare quoted host (`"localhost"`). Plain
+	// prose that merely mentions the word — e.g. a user-facing message like
+	// "auth is optional on localhost." — is not a config bug, so require an
+	// endpoint shape rather than matching the bare token.
+	const re =
+		/(?:\/\/|@)(?:localhost|127\.0\.0\.1)\b|\b(?:localhost|127\.0\.0\.1):\d|["'`](?:localhost|127\.0\.0\.1)["'`]/;
 	// Metadata-shape lines (description / label / noun / fix_instruction
 	// strings in registry & check-metadata files) legitimately contain the
 	// literal token because they describe the check itself. Skipping these

@@ -137,4 +137,21 @@ describe("checkUbsHardcodedLocalhost", () => {
 		const matches = checkUbsHardcodedLocalhost(code, "src/lib/client.ts");
 		expect(matches.length).toBeGreaterThan(0);
 	});
+
+	it("does NOT fire on prose that merely mentions localhost (display string)", () => {
+		// A user-facing message is not an endpoint config. Regression for the
+		// status.ts "auth is optional on localhost." display line, which a bare
+		// token matcher flagged with no escape hatch.
+		const code = 'lines.push(c.dim("  Local server detected: auth is optional on localhost."));\n';
+		expect(checkUbsHardcodedLocalhost(code, "src/commands/status.ts")).toEqual([]);
+	});
+
+	it("STILL fires on a bare quoted host and a host:port endpoint", () => {
+		expect(checkUbsHardcodedLocalhost('const h = "localhost";', "src/lib/x.ts").length).toBeGreaterThan(
+			0,
+		);
+		expect(
+			checkUbsHardcodedLocalhost("const u = `http://localhost:9229`;", "src/lib/x.ts").length,
+		).toBeGreaterThan(0);
+	});
 });
