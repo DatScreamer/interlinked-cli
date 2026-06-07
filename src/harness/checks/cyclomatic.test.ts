@@ -275,6 +275,104 @@ describe("computeCyclomaticComplexity", () => {
 			expect(entries[0].name).toBe("fetch");
 			expect(entries[0].cyclomatic).toBe(2);
 		});
+
+		it("counts a single-line ternary expression (`x if cond else y`)", () => {
+			const entries = computeCyclomaticComplexity(
+				`def grade(x):
+    y = 1 if x else 0
+    return y
+`,
+				"src/foo.py",
+			);
+			// base 1 + ternary (meaningful `y =` before `if`) = 2
+			expect(entries[0].cyclomatic).toBe(2);
+		});
+
+		it("counts `case` labels in a structural-pattern `match`", () => {
+			// PY_CASE fires on each `case` arm of a 3.10+ `match` block.
+			const entries = computeCyclomaticComplexity(
+				`def classify(x):
+    match x:
+        case 0:
+            return "zero"
+        case 1:
+            return "one"
+    return "many"
+`,
+				"src/foo.py",
+			);
+			// base 1 + 2 `case` arms = 3
+			expect(entries[0].cyclomatic).toBe(3);
+		});
+
+		it("does not double-count a statement `if` as a ternary", () => {
+			const entries = computeCyclomaticComplexity(
+				`def gate(x):
+    if x:
+        return 1
+    return 0
+`,
+				"src/foo.py",
+			);
+			// base 1 + the statement `if` only (no text precedes `if`, so the
+			// ternary heuristic does not also fire) = 2
+			expect(entries[0].cyclomatic).toBe(2);
+		});
+
+		it("counts a statement `if` that also contains `else` exactly once", () => {
+			// A body line where the leading token is `if` and `else` appears later
+			// (e.g. a one-line conditional after stripping) matches the ternary
+			// regex, but the ternary heuristic must NOT add a second increment:
+			// there's no text before `if`, so it's a statement opener already
+			// counted, not an `a if c else b` expression. This pins the false arm
+			// of the "meaningful text before `if`" guard.
+			const entries = computeCyclomaticComplexity(
+				`def branchy(x):
+    if x else y
+    return 0
+`,
+				"src/foo.py",
+			);
+			// base 1 + the single statement `if` (ternary guard suppressed) = 2
+			expect(entries[0].cyclomatic).toBe(2);
+		});
+
+		it("ends the body at the first line dedented to/under the def indent", () => {
+			// `bar` is at module indent, so `foo`'s body stops before it: foo keeps
+			// only its own `if`, and a second independent entry is emitted for bar.
+			const entries = computeCyclomaticComplexity(
+				`def foo(x):
+    if x:
+        return 1
+def bar(y):
+    return y
+`,
+				"src/foo.py",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["foo", "bar"]);
+			expect(entries.find((e) => e.name === "foo")?.cyclomatic).toBe(2);
+			expect(entries.find((e) => e.name === "bar")?.cyclomatic).toBe(1);
+			// foo's body is lines 1-3; the dedent at line 4 (`def bar`) ends it.
+			expect(entries.find((e) => e.name === "foo")?.endLine).toBe(3);
+		});
+
+		it("skips blank lines inside the body without ending it", () => {
+			// The blank line between two indented statements must not terminate the
+			// body; the dedented `x = 1` at module level does.
+			const entries = computeCyclomaticComplexity(
+				`def foo(x):
+    a = x
+
+    if a:
+        return 1
+x = 1
+`,
+				"src/foo.py",
+			);
+			const foo = entries.find((e) => e.name === "foo");
+			expect(foo?.cyclomatic).toBe(2); // base 1 + the post-blank `if`
+			expect(foo?.endLine).toBe(5);
+		});
 	});
 
 	describe("Go", () => {
@@ -338,6 +436,27 @@ describe("computeCyclomaticComplexity", () => {
 			);
 			// 1 base + 1 if + 1 && + 1 ||
 			expect(entries[0].cyclomatic).toBe(4);
+		});
+
+		it("emits no entry when no opening brace is found within the lookahead", () => {
+			// The brace is pushed well past the 10-line scan window, so `func foo`
+			// is detected but discarded (no body span found).
+			const filler = Array.from({ length: 12 }, () => "\t// pad").join("\n");
+			const entries = computeCyclomaticComplexity(
+				`func foo(x int) int\n${filler}\n{\n\treturn x\n}`,
+				"src/foo.go",
+			);
+			expect(entries.find((e) => e.name === "foo")).toBeUndefined();
+		});
+
+		it("discards a func whose braces never close (unbalanced body)", () => {
+			const entries = computeCyclomaticComplexity(
+				`func foo() int {
+	x := 1
+	doThing(x)`,
+				"src/foo.go",
+			);
+			expect(entries).toHaveLength(0);
 		});
 	});
 
@@ -408,6 +527,37 @@ pub(crate) fn c() -> i32 { 0 }`,
 			);
 			// 1 base + 1 if + 1 && + 1 ||
 			expect(entries[0].cyclomatic).toBe(4);
+		});
+
+		it("does not count `?Sized`-style trait bounds as the `?` try operator", () => {
+			// RUST_TRY_OPERATOR excludes `?` followed by a letter/underscore, so the
+			// `?Sized` bound adds nothing; only base complexity remains.
+			const entries = computeCyclomaticComplexity(
+				`fn store<T: ?Sized>(_value: &T) -> bool {
+    true
+}`,
+				"src/foo.rs",
+			);
+			expect(entries[0].cyclomatic).toBe(1);
+		});
+
+		it("emits no entry when no opening brace is found within the lookahead", () => {
+			const filler = Array.from({ length: 12 }, () => "    // pad").join("\n");
+			const entries = computeCyclomaticComplexity(
+				`fn foo(x: i32) -> i32\n${filler}\n{\n    x\n}`,
+				"src/foo.rs",
+			);
+			expect(entries.find((e) => e.name === "foo")).toBeUndefined();
+		});
+
+		it("discards a fn whose braces never close (unbalanced body)", () => {
+			const entries = computeCyclomaticComplexity(
+				`fn foo() -> i32 {
+    let x = 1;
+    work(x);`,
+				"src/foo.rs",
+			);
+			expect(entries).toHaveLength(0);
 		});
 	});
 

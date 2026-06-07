@@ -2,7 +2,7 @@
 // Registry tests — backend factory + disabled-labels wrapper
 // ===========================================
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createScanner, wrapWithDisabledLabels } from "../registry.js";
 import type {
 	ContentScanner,
@@ -38,6 +38,16 @@ function makeConfig(overrides: Partial<ContentScannerConfig> = {}): ContentScann
 	};
 }
 
+/** A 200 JSON response in the HF token-classification shape, for stubbing the
+ *  global `fetch` that createScanner's HTTP backend reaches for (it has no DI
+ *  seam — only OpfHttpScanner's direct constructor does). */
+function jsonResponse(body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
 function makeFakeBackend(spans: ScanFinding[]): {
 	backend: ContentScanner;
 	scan: ReturnType<typeof vi.fn>;
@@ -59,6 +69,12 @@ function makeFakeBackend(spans: ScanFinding[]): {
 }
 
 describe("createScanner", () => {
+	afterEach(() => {
+		// Restore the real global fetch after any test that stubbed it, so a
+		// stubbed fetch can't leak into sibling tests running in this file.
+		vi.unstubAllGlobals();
+	});
+
 	it("returns undefined when content scanning is disabled", () => {
 		expect(createScanner(makeConfig({ enabled: false }))).toBeUndefined();
 	});
@@ -70,6 +86,95 @@ describe("createScanner", () => {
 			runtime: "made_up" as unknown as ContentScannerConfig["runtime"],
 		});
 		expect(createScanner(bad)).toBeUndefined();
+	});
+
+	it("builds the local sidecar backend for runtime 'local'", async () => {
+		// runtime: "local" routes through the OpfLocalScanner branch. The pool /
+		// SidecarManager spawn lazily, so constructing the scanner does NOT start
+		// a Python child — only .scan()/.ready() would. We assert on the static
+		// identity that distinguishes the backend, then shut it down (a no-op when
+		// nothing was ever spawned).
+		const scanner = createScanner(makeConfig({ runtime: "local" }));
+		expect(scanner).toBeDefined();
+		expect(scanner?.name).toBe("opf-local");
+		expect(scanner?.runtime).toBe("local");
+		await scanner?.shutdown();
+	});
+
+	it("builds the HF HTTP backend for runtime 'huggingface'", () => {
+		// runtime: "huggingface" routes through the OpfHttpScanner branch and
+		// names itself "hf:<model>". No network call happens at construction.
+		const scanner = createScanner(
+			makeConfig({
+				runtime: "huggingface",
+				huggingface: {
+					model: "vendor-model-v6",
+					api_key_env: "SYNTH_TOKEN_ENV",
+					timeout_ms: 4000,
+				},
+			}),
+		);
+		expect(scanner).toBeDefined();
+		expect(scanner?.name).toBe("hf:vendor-model-v6");
+		expect(scanner?.runtime).toBe("http");
+	});
+
+	it("builds the custom HTTP backend for runtime 'custom_http'", () => {
+		// runtime: "custom_http" also routes through OpfHttpScanner but names
+		// itself "http:<endpoint>".
+		const scanner = createScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: { endpoint: "https://synthetic.invalid/classify", timeout_ms: 4000 },
+			}),
+		);
+		expect(scanner).toBeDefined();
+		expect(scanner?.name).toBe("http:https://synthetic.invalid/classify");
+		expect(scanner?.runtime).toBe("http");
+	});
+
+	it("returns the bare backend (no wrapper) when disabled_labels is unset", async () => {
+		// disabled_labels unset → createScanner returns the backend verbatim
+		// (wrapWithDisabledLabels short-circuits). End-to-end behavioral proof
+		// via a real scan: findings pass through unfiltered.
+		const fetchFn = vi.fn<typeof fetch>(async () =>
+			jsonResponse([
+				{ entity_group: "private_email", score: 0.99, word: "x@y.com", start: 0, end: 7 },
+				{ entity_group: "private_url", score: 0.9, word: "src/foo.ts", start: 9, end: 19 },
+			]),
+		);
+		vi.stubGlobal("fetch", fetchFn);
+		const scanner = createScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: { endpoint: "https://synthetic.invalid/classify", timeout_ms: 4000 },
+			}),
+		);
+		const out = await scanner?.scan({ text: "x@y.com src/foo.ts", source: "Write.content" });
+		expect(out?.map((f) => f.label)).toEqual(["private_email", "private_url"]);
+		expect(fetchFn).toHaveBeenCalledOnce();
+	});
+
+	it("applies the disabled_labels wrapper end-to-end through createScanner", async () => {
+		// disabled_labels set → createScanner returns a wrapped backend. A real
+		// scan must drop the disabled category while keeping the rest, proving the
+		// factory wired the filter (registry.ts line: wrapWithDisabledLabels call).
+		const fetchFn = vi.fn<typeof fetch>(async () =>
+			jsonResponse([
+				{ entity_group: "private_email", score: 0.99, word: "x@y.com", start: 0, end: 7 },
+				{ entity_group: "private_url", score: 0.9, word: "src/foo.ts", start: 9, end: 19 },
+			]),
+		);
+		vi.stubGlobal("fetch", fetchFn);
+		const scanner = createScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: { endpoint: "https://synthetic.invalid/classify", timeout_ms: 4000 },
+				disabled_labels: ["private_url"],
+			}),
+		);
+		const out = await scanner?.scan({ text: "x@y.com src/foo.ts", source: "Write.content" });
+		expect(out?.map((f) => f.label)).toEqual(["private_email"]);
 	});
 });
 

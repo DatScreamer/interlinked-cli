@@ -2,7 +2,10 @@
 // file-checks unit tests
 // ===========================================
 
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_MAX_LINES } from "../../harness/large-file-policy.js";
 import { runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
@@ -299,5 +302,259 @@ describe("runPerFileChecks — large_files cap", () => {
 
 	it("does not flag an over-cap generated file (exempt)", () => {
 		expect(run("/tmp/huge.ts", `// @generated\n${overCap}`).largeFiles).toHaveLength(0);
+	});
+});
+
+describe("runPerFileChecks — strong_typing (any vs unknown)", () => {
+	const run = (file: string, content: string): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags an explicit `: any` annotation in a non-test .ts file", () => {
+		const r = run("/tmp/svc.ts", "export const a: any = 1;\n");
+		expect(r.strongTyping).toHaveLength(1);
+		expect(r.strongTyping[0].check).toBe("strong_typing");
+		expect(r.strongTyping[0].line).toBe(1);
+	});
+
+	it("skips `as unknown` (kind !== 'any') but still flags the `: any` on the next line", () => {
+		// findAnyTypes returns one `unknown` match and one `any` match; the
+		// detector's `if (m.kind !== ANY_KIND) continue` must drop the unknown
+		// one and keep only the `any`.
+		const content = ["const cast = value as unknown as Target;", "const loose: any = cast;", ""].join(
+			"\n",
+		);
+		const r = run("/tmp/svc.ts", content);
+		expect(r.strongTyping).toHaveLength(1);
+		expect(r.strongTyping[0].line).toBe(2);
+	});
+
+	it("does not run strong_typing on a .test.ts file (test exemption)", () => {
+		expect(run("/tmp/svc.test.ts", "const a: any = 1;\n").strongTyping).toHaveLength(0);
+	});
+
+	it("does not run strong_typing on a file under __tests__/ (path exemption)", () => {
+		expect(run("/tmp/__tests__/svc.ts", "const a: any = 1;\n").strongTyping).toHaveLength(0);
+	});
+
+	it("does not run strong_typing on a .spec.ts file (spec exemption)", () => {
+		expect(run("/tmp/svc.spec.ts", "const a: any = 1;\n").strongTyping).toHaveLength(0);
+	});
+
+	it("does not run strong_typing on a generated file (generated exemption)", () => {
+		expect(run("/tmp/svc.ts", "// @generated\nconst a: any = 1;\n").strongTyping).toHaveLength(0);
+	});
+
+	it("does not run strong_typing on a non-TS extension (.js)", () => {
+		// .js is not TS_EXT/TSX_EXT, so the strong-typing detector is skipped
+		// (the console/silent-catch checks still run on .js, but strongTyping
+		// stays empty).
+		expect(run("/tmp/svc.js", "const a: any = 1;\n").strongTyping).toHaveLength(0);
+	});
+});
+
+describe("runPerFileChecks — phantom_imports", () => {
+	const run = (file: string, content: string): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags a relative import that does not resolve to any file", () => {
+		// The importing file lives in a directory that does not exist, so the
+		// relative specifier cannot resolve — a phantom import.
+		const dir = "/tmp/interlinked-fc-phantom-nonexistent-xyz";
+		const r = run(join(dir, "x.ts"), 'import { y } from "./definitely-missing.js";\n');
+		expect(r.phantomImports).toHaveLength(1);
+		expect(r.phantomImports[0].check).toBe("phantom_imports");
+		expect(r.phantomImports[0].message).toContain("./definitely-missing.js");
+	});
+
+	it("ignores bare (node_modules) specifiers — neither '.' nor '/' prefixed", () => {
+		const dir = "/tmp/interlinked-fc-phantom-bare-xyz";
+		expect(run(join(dir, "x.ts"), 'import os from "node:os";\n').phantomImports).toHaveLength(0);
+	});
+
+	it("ignores relative .json imports (the .json skip branch)", () => {
+		const dir = "/tmp/interlinked-fc-phantom-json-xyz";
+		// Resolves to nothing, but the `.json` extension short-circuits before
+		// the resolve check, so no phantom finding is produced.
+		expect(run(join(dir, "x.ts"), 'import data from "./missing.json";\n').phantomImports).toHaveLength(
+			0,
+		);
+	});
+
+	it("treats an absolute ('/') specifier that does not resolve as phantom", () => {
+		const r = run(
+			"/tmp/interlinked-fc-phantom-abs-xyz/x.ts",
+			'import { z } from "/nonexistent-abs-interlinked-fc/mod.js";\n',
+		);
+		expect(r.phantomImports).toHaveLength(1);
+		expect(r.phantomImports[0].message).toContain("/nonexistent-abs-interlinked-fc/mod.js");
+	});
+
+	it("does not run phantom_imports on a non-JS/TS extension", () => {
+		// A .py file is not in JS_TS_EXTS, so the phantom-import pass is skipped
+		// entirely even though the specifier would not resolve.
+		expect(
+			run("/tmp/interlinked-fc-phantom-py-xyz/x.py", 'import { y } from "./missing.js";\n')
+				.phantomImports,
+		).toHaveLength(0);
+	});
+});
+
+describe("runPerFileChecks — test regressions and env-ref accumulation", () => {
+	const run = (
+		file: string,
+		content: string,
+		allEnvRefs: Map<string, Array<{ file: string; line: number }>>,
+	): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs,
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("records skipped tests via test_regressions", () => {
+		const r = run("/tmp/foo.test.ts", 'describe.skip("later", () => {});\n', new Map());
+		expect(r.testRegressions.length).toBeGreaterThan(0);
+		expect(r.testRegressions[0].check).toBe("test_regressions");
+	});
+
+	it("does not push test_regressions when there are no skipped tests", () => {
+		const r = run("/tmp/foo.test.ts", 'it("runs", () => { expect(1).toBe(1); });\n', new Map());
+		expect(r.testRegressions).toHaveLength(0);
+	});
+
+	it("accumulates env references into the shared map (first ref creates the entry)", () => {
+		const allEnvRefs = new Map<string, Array<{ file: string; line: number }>>();
+		run("/tmp/svc.ts", "const t = process.env.MY_SECRET_TOKEN;\n", allEnvRefs);
+		const entry = allEnvRefs.get("MY_SECRET_TOKEN");
+		expect(entry).toBeDefined();
+		expect(entry).toHaveLength(1);
+		expect(entry?.[0]).toMatchObject({ file: "svc.ts", line: 1 });
+	});
+
+	it("appends to an existing env-ref entry across two files (the `|| []` reuse path)", () => {
+		const allEnvRefs = new Map<string, Array<{ file: string; line: number }>>();
+		// Pre-seed the map so the second occurrence hits the existing-array
+		// branch of `allEnvRefs.get(ref.name) || []`.
+		run("/tmp/a.ts", "const x = process.env.SHARED_ENV_KEY;\n", allEnvRefs);
+		run("/tmp/b.ts", "const y = process.env.SHARED_ENV_KEY;\n", allEnvRefs);
+		const entry = allEnvRefs.get("SHARED_ENV_KEY");
+		expect(entry).toHaveLength(2);
+		expect(entry?.map((e) => e.file)).toEqual(["a.ts", "b.ts"]);
+	});
+});
+
+describe("runPerFileChecks — mock_drift against cached module exports", () => {
+	let dir: string;
+	let realModule: string;
+
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), "interlinked-fc-mockdrift-"));
+		realModule = join(dir, "real-module.ts");
+		// The real module exports `present` but NOT `ghost`.
+		writeFileSync(realModule, "export function present() {}\n", "utf-8");
+	});
+
+	afterAll(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const runMock = (
+		content: string,
+		moduleExportsCache: Map<string, string[]>,
+	): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file: join(dir, "subject.test.ts"),
+			content,
+			cwd: dir,
+			r,
+			moduleExportsCache,
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("flags a mocked name that the resolved module does not export", () => {
+		const cache = new Map<string, string[]>([[realModule, ["present"]]]);
+		const content = 'vi.mock("./real-module.js", () => ({ ghost: vi.fn() }));\n';
+		const r = runMock(content, cache);
+		expect(r.mockDrift).toHaveLength(1);
+		expect(r.mockDrift[0].check).toBe("mock_drift");
+		expect(r.mockDrift[0].message).toContain('mock references "ghost"');
+		expect(r.mockDrift[0].message).toContain("real-module.ts");
+	});
+
+	it("does not flag when every mocked name is a real export", () => {
+		const cache = new Map<string, string[]>([[realModule, ["present"]]]);
+		const content = 'vi.mock("./real-module.js", () => ({ present: vi.fn() }));\n';
+		expect(runMock(content, cache).mockDrift).toHaveLength(0);
+	});
+
+	it("skips mocks whose module path does not resolve to any file", () => {
+		const cache = new Map<string, string[]>([[realModule, ["present"]]]);
+		const content = 'vi.mock("./does-not-exist.js", () => ({ ghost: vi.fn() }));\n';
+		expect(runMock(content, cache).mockDrift).toHaveLength(0);
+	});
+
+	it("skips mocks whose resolved module is absent from the export cache", () => {
+		// Resolves to a real file, but the cache has no entry for it → the
+		// `if (!cachedExports) continue` branch fires.
+		const content = 'vi.mock("./real-module.js", () => ({ ghost: vi.fn() }));\n';
+		expect(runMock(content, new Map()).mockDrift).toHaveLength(0);
+	});
+
+	it("does not flag a relative import that DOES resolve as phantom (resolve-continue path)", () => {
+		// `subject.ts` sits next to the on-disk `real-module.ts`, so the
+		// `.js`→`.ts` specifier resolves and the phantom-import loop hits its
+		// `if (resolveImportPath(...)) continue` branch — no phantom finding,
+		// while a sibling unresolved import on the next line still fires.
+		const r = emptyResults();
+		runPerFileChecks({
+			file: join(dir, "subject.ts"),
+			content: [
+				'import { present } from "./real-module.js";',
+				'import { gone } from "./not-here.js";',
+				"export const used = present;",
+				"",
+			].join("\n"),
+			cwd: dir,
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		expect(r.phantomImports).toHaveLength(1);
+		expect(r.phantomImports[0].message).toContain("./not-here.js");
+		expect(r.phantomImports.some((p) => p.message.includes("./real-module.js"))).toBe(false);
 	});
 });

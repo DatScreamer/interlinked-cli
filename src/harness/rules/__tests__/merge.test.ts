@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
-import type { GuardRulesConfig } from "../../types.js";
+import type { GuardRulesConfig, QualityCheckConfig } from "../../types.js";
 import { DEFAULT_CONFIG } from "../default-config.js";
 import { mergeLocalOverrides, mergeTeamRules } from "../merge.js";
 
@@ -8,6 +8,18 @@ function mkBaseConfig() {
 	// Use the full default config (deep-cloned) as the starting shape so we
 	// satisfy all required fields without listing them inline in every test.
 	return JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as typeof DEFAULT_CONFIG;
+}
+
+/**
+ * Remove a property without triggering TS control-flow narrowing. A literal
+ * `delete obj.k` narrows `obj.k` to `undefined` for the rest of the block, so
+ * a subsequent read (after a merge call TS can't see mutates `obj`) collapses
+ * to `never`. `Reflect.deleteProperty` is opaque to the flow analyzer, so the
+ * property keeps its declared optional type and the "base lacks it" branches
+ * stay readable. Returns void; mutates in place.
+ */
+function clearProp<T extends object>(obj: T, key: keyof T): void {
+	Reflect.deleteProperty(obj, key);
 }
 
 describe("mergeTeamRules", () => {
@@ -96,6 +108,177 @@ describe("mergeTeamRules", () => {
 		const config = mkBaseConfig();
 		mergeTeamRules(config, { grep_acceleration: { substitution_enabled: true } });
 		expect(config.grep_acceleration?.substitution_enabled).toBe(true);
+	});
+
+	it("replaces the entire rules array from team config", () => {
+		const config = mkBaseConfig();
+		const before = config.rules.length;
+		const teamRule = {
+			id: "team-only",
+			name: "Team Only",
+			category: "destructive",
+			patterns: ["danger"],
+			action: "block",
+			severity: "high",
+			message: "team rule fired",
+		} as unknown as GuardRulesConfig["rules"][number];
+		mergeTeamRules(config, { rules: [teamRule] });
+		expect(config.rules).toHaveLength(1);
+		expect(config.rules).not.toHaveLength(before);
+		expect(config.rules[0].id).toBe("team-only");
+	});
+
+	it("does NOT clobber enabled when team.enabled is true (only false disables)", () => {
+		// The branch is `if (team.enabled === false)` — a `true` must be a no-op,
+		// not flip an already-disabled harness back on.
+		const config = mkBaseConfig();
+		config.enabled = false;
+		mergeTeamRules(config, { enabled: true });
+		expect(config.enabled).toBe(false);
+	});
+
+	it("replaces file_reminders wholesale from team config (not appended)", () => {
+		// mergeTeamRules assigns file_reminders directly (unlike the local merge,
+		// which appends). Two distinct code paths — pin the team one.
+		const config = mkBaseConfig();
+		config.file_reminders = [{ glob: "**/old", message: "old" }];
+		mergeTeamRules(config, {
+			file_reminders: [{ glob: "**/new", message: "new" }],
+		});
+		expect(config.file_reminders).toHaveLength(1);
+		expect(config.file_reminders[0].glob).toBe("**/new");
+	});
+
+	it("deep-merges curl_mcp_detection (Object.assign keeps untouched fields)", () => {
+		const config = mkBaseConfig();
+		const originalMessage = config.curl_mcp_detection.message;
+		mergeTeamRules(config, {
+			curl_mcp_detection: {
+				escalate_after: 99,
+			} as unknown as GuardRulesConfig["curl_mcp_detection"],
+		});
+		expect(config.curl_mcp_detection.escalate_after).toBe(99);
+		// Object.assign leaves the unspecified `message` field intact.
+		expect(config.curl_mcp_detection.message).toBe(originalMessage);
+	});
+
+	it("ignores a non-object quality-check override (null / primitive)", () => {
+		// Guard: `if (!teamCheck || typeof teamCheck !== "object") continue`.
+		// A malformed team entry must not throw and must leave the existing
+		// check untouched.
+		const config = mkBaseConfig();
+		const before = config.quality_checks.typescript.enabled;
+		mergeTeamRules(config, {
+			quality_checks: {
+				typescript: null as unknown as QualityCheckConfig,
+			},
+		});
+		expect(config.quality_checks.typescript.enabled).toBe(before);
+	});
+
+	it("skips an explicitly-undefined safe field rather than writing undefined", () => {
+		// Guard: `if (val !== undefined)`. Passing `{enabled: undefined}` for an
+		// existing check must NOT overwrite the real value with undefined.
+		const config = mkBaseConfig();
+		config.quality_checks.typescript.enabled = true;
+		mergeTeamRules(config, {
+			quality_checks: {
+				typescript: {
+					enabled: undefined,
+				} as unknown as QualityCheckConfig,
+			},
+		});
+		expect(config.quality_checks.typescript.enabled).toBe(true);
+	});
+
+	it("merges team error_memory via Object.assign", () => {
+		const config = mkBaseConfig();
+		mergeTeamRules(config, {
+			error_memory: { max_records: 42 } as unknown as GuardRulesConfig["error_memory"],
+		});
+		expect(config.error_memory.max_records).toBe(42);
+		// Untouched fields survive the assign.
+		expect(config.error_memory.enabled).toBe(mkBaseConfig().error_memory.enabled);
+	});
+
+	it("applies team project_specific protected paths", () => {
+		const config = mkBaseConfig();
+		mergeTeamRules(config, {
+			project_specific: { protected_paths: ["secrets/"], protected_reason: "infra" },
+		});
+		expect(config.project_specific?.protected_paths).toEqual(["secrets/"]);
+		expect(config.project_specific?.protected_reason).toBe("infra");
+	});
+
+	it("applies team policy_classifier config", () => {
+		const config = mkBaseConfig();
+		const classifier = {
+			enabled: true,
+			mode: "shadow",
+			provider: "groq",
+			endpoint: "https://example.com/v1",
+			api_key_env: "FAKE_KEY",
+			model: "vendor-model-v6",
+			timeout_ms: 3000,
+		} as unknown as NonNullable<GuardRulesConfig["policy_classifier"]>;
+		mergeTeamRules(config, { policy_classifier: classifier });
+		expect(config.policy_classifier?.enabled).toBe(true);
+		expect(config.policy_classifier?.model).toBe("vendor-model-v6");
+	});
+
+	it("applies team auto_coordination config", () => {
+		const config = mkBaseConfig();
+		const ac = {
+			enabled: true,
+			check_interval: 7,
+			min_interval_ms: 1,
+			max_interval_ms: 2,
+			timeout_ms: 100,
+			skip_tools: ["Read"],
+		} as unknown as NonNullable<GuardRulesConfig["auto_coordination"]>;
+		mergeTeamRules(config, { auto_coordination: ac });
+		expect(config.auto_coordination?.enabled).toBe(true);
+		expect(config.auto_coordination?.check_interval).toBe(7);
+	});
+
+	it("merges team project_wide_checks when config already has the block", () => {
+		const config = mkBaseConfig();
+		// DEFAULT_CONFIG ships project_wide_checks, so the `&& config.project_wide_checks`
+		// guard is satisfied and Object.assign runs.
+		assert(config.project_wide_checks, "fixture must ship project_wide_checks");
+		mergeTeamRules(config, {
+			project_wide_checks: {
+				edit_interval: 13,
+			} as unknown as NonNullable<GuardRulesConfig["project_wide_checks"]>,
+		});
+		expect(config.project_wide_checks?.edit_interval).toBe(13);
+		// Object.assign preserves the rest of the block.
+		expect(config.project_wide_checks?.enabled).toBe(
+			mkBaseConfig().project_wide_checks?.enabled,
+		);
+	});
+
+	it("does NOT create project_wide_checks when the base config lacks it", () => {
+		// Guard: `if (team.project_wide_checks && config.project_wide_checks)`.
+		// With the base block deleted, a team override must be dropped (no
+		// Object.assign onto undefined).
+		const config = mkBaseConfig();
+		clearProp(config, "project_wide_checks");
+		mergeTeamRules(config, {
+			project_wide_checks: {
+				edit_interval: 13,
+			} as unknown as NonNullable<GuardRulesConfig["project_wide_checks"]>,
+		});
+		expect(config.project_wide_checks).toBeUndefined();
+	});
+
+	it("is a no-op when team config is empty", () => {
+		// Every top-level `if` is false → nothing changes. Exercises the
+		// all-branches-skipped path cleanly.
+		const config = mkBaseConfig();
+		const snapshot = JSON.stringify(config);
+		mergeTeamRules(config, {});
+		expect(JSON.stringify(config)).toBe(snapshot);
 	});
 });
 
@@ -220,5 +403,323 @@ describe("mergeLocalOverrides", () => {
 		const config = mkBaseConfig();
 		mergeLocalOverrides(config, { grep_acceleration: { substitution_enabled: true } });
 		expect(config.grep_acceleration?.substitution_enabled).toBe(true);
+	});
+
+	it("local overrides can set extra_exceptions", () => {
+		const config = mkBaseConfig();
+		mergeLocalOverrides(config, {
+			extra_exceptions: { "builtin-rm-rf-root": ["rm -rf node_modules"] },
+		});
+		expect(config.extra_exceptions).toEqual({
+			"builtin-rm-rf-root": ["rm -rf node_modules"],
+		});
+	});
+
+	it("local overrides Object.assign onto an EXISTING quality check (preserves other fields)", () => {
+		// Branch: `if (config.quality_checks[key]) Object.assign(...)`. Only the
+		// supplied field changes; command and the rest survive.
+		const config = mkBaseConfig();
+		const originalCommand = config.quality_checks.typescript.command;
+		mergeLocalOverrides(config, {
+			quality_checks: {
+				typescript: { enabled: false } as unknown as QualityCheckConfig,
+			},
+		});
+		expect(config.quality_checks.typescript.enabled).toBe(false);
+		// Object.assign of a partial keeps the existing command.
+		expect(config.quality_checks.typescript.command).toBe(originalCommand);
+	});
+
+	it("local overrides can ADD a brand-new quality check (trusted scope)", () => {
+		// Branch: the `else` arm — `config.quality_checks[key] = check`. Unlike
+		// team config, locals may introduce wholly new checks with a command.
+		const config = mkBaseConfig();
+		expect(config.quality_checks.my_local_check).toBeUndefined();
+		const newCheck: QualityCheckConfig = {
+			enabled: true,
+			command: "my-local-linter",
+			file_types: [".ts"],
+			timeout_ms: 5000,
+			severity: "warning",
+		};
+		mergeLocalOverrides(config, { quality_checks: { my_local_check: newCheck } });
+		expect(config.quality_checks.my_local_check).toBeDefined();
+		expect(config.quality_checks.my_local_check?.command).toBe("my-local-linter");
+	});
+
+	it("local overrides merge project_wide_checks when the base has the block", () => {
+		const config = mkBaseConfig();
+		assert(config.project_wide_checks, "fixture must ship project_wide_checks");
+		mergeLocalOverrides(config, {
+			project_wide_checks: {
+				timeout_ms: 12345,
+			} as unknown as NonNullable<GuardRulesConfig["project_wide_checks"]>,
+		});
+		expect(config.project_wide_checks?.timeout_ms).toBe(12345);
+	});
+
+	it("local override drops project_wide_checks when the base config lacks it", () => {
+		// Guard: `if (local.project_wide_checks && config.project_wide_checks)`.
+		const config = mkBaseConfig();
+		clearProp(config, "project_wide_checks");
+		mergeLocalOverrides(config, {
+			project_wide_checks: {
+				timeout_ms: 12345,
+			} as unknown as NonNullable<GuardRulesConfig["project_wide_checks"]>,
+		});
+		expect(config.project_wide_checks).toBeUndefined();
+	});
+
+	it("local override deep-merges into an EXISTING content_scanner block", () => {
+		// Branch: `if (config.content_scanner) mergeContentScanner(...)`.
+		// DEFAULT_CONFIG ships content_scanner, so the deep-merge path runs.
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		expect(config.content_scanner.enabled).toBe(false);
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				enabled: true,
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.enabled).toBe(true);
+	});
+
+	it("local override assigns content_scanner wholesale when the base lacks it", () => {
+		// Branch: the `else` arm — `config.content_scanner = local.content_scanner`.
+		const config = mkBaseConfig();
+		clearProp(config, "content_scanner");
+		const fresh = {
+			enabled: true,
+			runtime: "huggingface",
+		} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>;
+		mergeLocalOverrides(config, { content_scanner: fresh });
+		expect(config.content_scanner).toBe(fresh);
+		expect(config.content_scanner?.runtime).toBe("huggingface");
+	});
+
+	it("local override merges structural_checks via Object.assign", () => {
+		const config = mkBaseConfig();
+		config.structural_checks.enabled = true;
+		mergeLocalOverrides(config, {
+			structural_checks: {
+				enabled: false,
+			} as unknown as GuardRulesConfig["structural_checks"],
+		});
+		expect(config.structural_checks.enabled).toBe(false);
+		// Object.assign keeps sibling fields.
+		expect(config.structural_checks.export_surface).toBe(
+			mkBaseConfig().structural_checks.export_surface,
+		);
+	});
+
+	it("local override merges plan_capture onto an existing block", () => {
+		// Branch: `if (config.plan_capture) Object.assign(...)`. DEFAULT_CONFIG
+		// omits plan_capture, so seed it first to hit the `if` arm.
+		const config = mkBaseConfig();
+		config.plan_capture = { enabled: false, parse_userprompt: false };
+		mergeLocalOverrides(config, {
+			plan_capture: { enabled: true } as unknown as NonNullable<
+				GuardRulesConfig["plan_capture"]
+			>,
+		});
+		expect(config.plan_capture?.enabled).toBe(true);
+		// parse_userprompt survives the partial assign.
+		expect(config.plan_capture?.parse_userprompt).toBe(false);
+	});
+
+	it("local override assigns plan_capture wholesale when the base lacks it", () => {
+		// Branch: the `else` arm. DEFAULT_CONFIG has no plan_capture by default.
+		const config = mkBaseConfig();
+		expect(config.plan_capture).toBeUndefined();
+		const pc = { enabled: true, parse_userprompt: true };
+		mergeLocalOverrides(config, { plan_capture: pc });
+		expect(config.plan_capture).toBe(pc);
+		expect(config.plan_capture?.enabled).toBe(true);
+	});
+
+	it("local override merges git_session_scope_gate onto an existing block", () => {
+		// Branch: `if (config.git_session_scope_gate) Object.assign(...)`.
+		const config = mkBaseConfig();
+		config.git_session_scope_gate = { enabled: false, mode: "off" };
+		mergeLocalOverrides(config, {
+			git_session_scope_gate: {
+				enabled: true,
+			} as unknown as NonNullable<GuardRulesConfig["git_session_scope_gate"]>,
+		});
+		expect(config.git_session_scope_gate?.enabled).toBe(true);
+		// mode survives the partial assign.
+		expect(config.git_session_scope_gate?.mode).toBe("off");
+	});
+
+	it("local override assigns git_session_scope_gate wholesale when the base lacks it", () => {
+		// Branch: the `else` arm. DEFAULT_CONFIG omits the gate by default.
+		const config = mkBaseConfig();
+		expect(config.git_session_scope_gate).toBeUndefined();
+		const gate = { enabled: true, mode: "ask" as const };
+		mergeLocalOverrides(config, { git_session_scope_gate: gate });
+		expect(config.git_session_scope_gate).toBe(gate);
+		expect(config.git_session_scope_gate?.mode).toBe("ask");
+	});
+
+	it("is a no-op when local config is empty", () => {
+		const config = mkBaseConfig();
+		const snapshot = JSON.stringify(config);
+		mergeLocalOverrides(config, {});
+		expect(JSON.stringify(config)).toBe(snapshot);
+	});
+});
+
+describe("mergeContentScanner (via mergeLocalOverrides deep-merge)", () => {
+	it("overrides the scalar top-level knobs (enabled/runtime/min_score/max_scan_bytes)", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				enabled: true,
+				runtime: "custom_http",
+				min_score: 0.75,
+				max_scan_bytes: 9999,
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		const cs = config.content_scanner;
+		expect(cs?.enabled).toBe(true);
+		expect(cs?.runtime).toBe("custom_http");
+		expect(cs?.min_score).toBe(0.75);
+		expect(cs?.max_scan_bytes).toBe(9999);
+	});
+
+	it("treats min_score: 0 as a real override (not skipped as falsy)", () => {
+		// Guard is `!== undefined`, NOT truthiness — 0 is a legitimate value.
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		config.content_scanner.min_score = 5;
+		mergeLocalOverrides(config, {
+			content_scanner: { min_score: 0 } as unknown as NonNullable<
+				GuardRulesConfig["content_scanner"]
+			>,
+		});
+		expect(config.content_scanner?.min_score).toBe(0);
+	});
+
+	it("deep-merges the nested `local` block (preserves untouched leaf knobs)", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		const defaultPythonBin = config.content_scanner.local.python_bin;
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				local: { pool_size: 1 },
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.local.pool_size).toBe(1);
+		// Object.assign keeps the rest of the local block intact.
+		expect(config.content_scanner?.local.python_bin).toBe(defaultPythonBin);
+	});
+
+	it("deep-merges the nested `huggingface` block", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		const defaultEnv = config.content_scanner.huggingface.api_key_env;
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				huggingface: { model: "vendor-model-v6" },
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.huggingface.model).toBe("vendor-model-v6");
+		expect(config.content_scanner?.huggingface.api_key_env).toBe(defaultEnv);
+	});
+
+	it("deep-merges the nested `custom_http` block", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				custom_http: { endpoint: "https://scanner.example.com/v1" },
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.custom_http.endpoint).toBe(
+			"https://scanner.example.com/v1",
+		);
+		// timeout_ms is untouched by the partial assign.
+		expect(config.content_scanner?.custom_http.timeout_ms).toBe(
+			mkBaseConfig().content_scanner?.custom_http.timeout_ms,
+		);
+	});
+
+	it("deep-merges the nested `scan_points` block", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				scan_points: { bash_command: false },
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.scan_points.bash_command).toBe(false);
+		// The other scan points keep their defaults.
+		expect(config.content_scanner?.scan_points.write_edit).toBe(true);
+	});
+
+	it("does NOT append when override.allowlist is an empty array (length-0 guard)", () => {
+		// Guard: `if (override.allowlist && override.allowlist.length > 0)`. An
+		// empty array must be a no-op, not wipe or grow the curated default list.
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		const before = config.content_scanner.allowlist?.length ?? 0;
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				allowlist: [],
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.allowlist?.length).toBe(before);
+	});
+
+	it("seeds allowlist from undefined when the base has none (?? fallback)", () => {
+		// Exercises the `target.allowlist ?? []` nullish branch — base list absent,
+		// local supplies one.
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		clearProp(config.content_scanner, "allowlist");
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				allowlist: [{ kind: "exact", pattern: "x", label: "private_email" }],
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.allowlist?.length).toBe(1);
+		expect(config.content_scanner?.allowlist?.[0]?.kind).toBe("exact");
+	});
+
+	it("does NOT append when override.disabled_labels is an empty array", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		config.content_scanner.disabled_labels = ["private_url"];
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				disabled_labels: [],
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.disabled_labels).toEqual(["private_url"]);
+	});
+
+	it("seeds disabled_labels from undefined when the base has none (?? fallback)", () => {
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		clearProp(config.content_scanner, "disabled_labels");
+		mergeLocalOverrides(config, {
+			content_scanner: {
+				disabled_labels: ["private_url"],
+			} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(config.content_scanner?.disabled_labels).toEqual(["private_url"]);
+	});
+
+	it("is a no-op deep-merge when the content_scanner override is empty", () => {
+		// Every leaf `if` in mergeContentScanner is false → the existing block is
+		// untouched. Confirms the all-skipped path doesn't throw or mutate.
+		const config = mkBaseConfig();
+		assert(config.content_scanner, "fixture must ship content_scanner");
+		const snapshot = JSON.stringify(config.content_scanner);
+		mergeLocalOverrides(config, {
+			content_scanner: {} as unknown as NonNullable<GuardRulesConfig["content_scanner"]>,
+		});
+		expect(JSON.stringify(config.content_scanner)).toBe(snapshot);
 	});
 });

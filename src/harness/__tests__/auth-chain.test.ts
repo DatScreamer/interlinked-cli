@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { detectAuthChain } from "../auth-chain.js";
+import type { EndpointFramework } from "../types/session.js";
 
 describe("detectAuthChain — express", () => {
 	it("picks up app.use(requireAuth) above the route", () => {
@@ -118,5 +119,98 @@ describe("detectAuthChain — nextjs", () => {
 		expect(detectAuthChain("nextjs", "/abs/route.ts", "export async function GET() {}", 1)).toEqual(
 			[],
 		);
+	});
+});
+
+describe("detectAuthChain — extraNames extension hook", () => {
+	// These cases drive nameLooksLikeAuth's `extraNames` fallback path
+	// (the Phase A1 sanitizer-registry `identity` bucket). A name that does
+	// NOT match AUTH_NAME_RE but DOES appear in extraNames must still count.
+
+	it("recognizes a project-specific identifier supplied via extraNames", () => {
+		// `gatekeeper` matches no auth token in the regex; only the extraNames
+		// loop can promote it. Express .use form.
+		const content = ["app.use(gatekeeper);", "app.get('/x', getX);"].join("\n");
+		const chain = detectAuthChain("express", "/abs/app.ts", content, 2, {
+			extraNames: ["gatekeeper"],
+		});
+		expect(chain.map((c) => c.name)).toEqual(["gatekeeper"]);
+		expect(chain[0].kind).toBe("middleware");
+		expect(chain[0].line).toBe(1);
+	});
+
+	it("matches extraNames case-insensitively", () => {
+		// Identifier `GateKeeper`, allow-list entry `gatekeeper` — the loop
+		// lower-cases both sides before comparing.
+		const content = ["app.use(GateKeeper);", "app.get('/x', getX);"].join("\n");
+		const chain = detectAuthChain("express", "/abs/app.ts", content, 2, {
+			extraNames: ["gatekeeper"],
+		});
+		expect(chain.map((c) => c.name)).toEqual(["GateKeeper"]);
+	});
+
+	it("does NOT promote an identifier absent from a non-empty extraNames list", () => {
+		// `gatekeeper` is not in the (non-empty) allow-list, and matches no
+		// regex token → loop runs to completion and returns false.
+		const content = ["app.use(gatekeeper);", "app.get('/x', getX);"].join("\n");
+		const chain = detectAuthChain("express", "/abs/app.ts", content, 2, {
+			extraNames: ["someOtherIdentity", "tenantGuard"],
+		});
+		expect(chain).toEqual([]);
+	});
+
+	it("treats an empty extraNames array as no extension (early-return path)", () => {
+		// Empty array hits the `extraNames.length === 0` short-circuit, so a
+		// non-regex name is rejected without entering the loop.
+		const content = ["app.use(gatekeeper);", "app.get('/x', getX);"].join("\n");
+		const chain = detectAuthChain("express", "/abs/app.ts", content, 2, {
+			extraNames: [],
+		});
+		expect(chain).toEqual([]);
+	});
+
+	it("still matches a regex-recognized name even when extraNames is provided", () => {
+		// `requireAuth` matches the regex directly; the extraNames branch is
+		// never consulted (regex short-circuits first).
+		const content = ["app.use(requireAuth);", "app.get('/x', getX);"].join("\n");
+		const chain = detectAuthChain("express", "/abs/app.ts", content, 2, {
+			extraNames: ["unrelated"],
+		});
+		expect(chain.map((c) => c.name)).toEqual(["requireAuth"]);
+	});
+
+	it("applies extraNames to the FastAPI Depends() scanner too", () => {
+		// extraNames is threaded into detectFastApiChain as well — a custom
+		// dependency name not matching the regex is promoted.
+		const content = [
+			"@app.get('/items')",
+			"def list_items(principal = Depends(tenant_principal)):",
+			"    return []",
+		].join("\n");
+		const chain = detectAuthChain("fastapi", "/abs/m.py", content, 1, {
+			extraNames: ["tenant_principal"],
+		});
+		expect(chain.map((c) => c.name)).toEqual(["tenant_principal"]);
+		expect(chain[0].kind).toBe("depends");
+	});
+});
+
+describe("detectAuthChain — frameworks with no in-file auth scan", () => {
+	// sveltekit / nuxt / mcp deliberately return [] (their auth model is not
+	// expressed as inline middleware/Depends the in-file scanner can read).
+	it.each(["sveltekit", "nuxt", "mcp"] as const)("returns [] for %s", (framework) => {
+		const content = ["export const load = () => ({});", "app.use(requireAuth);"].join("\n");
+		expect(detectAuthChain(framework, "/abs/file.ts", content, 2)).toEqual([]);
+	});
+});
+
+describe("detectAuthChain — defensive exhaustiveness fallback", () => {
+	it("returns [] for an unknown framework value (never-branch guard)", () => {
+		// The switch covers every member of EndpointFramework; the default
+		// arm is a compile-time exhaustiveness guard that only executes if the
+		// union grows without a matching case. Force it via a type escape to
+		// prove it fails closed (empty chain, no throw).
+		const bogus = "graphql-yoga" as unknown as EndpointFramework;
+		expect(detectAuthChain(bogus, "/abs/file.ts", "app.use(requireAuth);", 2)).toEqual([]);
 	});
 });
