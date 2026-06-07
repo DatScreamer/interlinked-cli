@@ -183,4 +183,320 @@ describe("OpfHttpScanner — custom_http runtime", () => {
 		expect(await scanner.ready()).toBe(false);
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
+
+	it("sends the Authorization header when custom_http.api_key_env resolves", async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () => okResponse([]));
+		const scanner = new OpfHttpScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: {
+					endpoint: "https://my-tgi.internal/scan",
+					api_key_env: "CUSTOM_TGI_TOKEN",
+					timeout_ms: 2000,
+				},
+			}),
+			{
+				fetchFn,
+				resolveEnv: (k) => (k === "CUSTOM_TGI_TOKEN" ? "custom-secret-123" : undefined),
+			},
+		);
+		await scanner.scan({ text: "x", source: "s" });
+		const init = fetchFn.mock.calls[0][1];
+		expect((init?.headers as Record<string, string>).Authorization).toBe(
+			"Bearer custom-secret-123",
+		);
+	});
+
+	it("exposes a name derived from the custom endpoint", () => {
+		const fetchFn = vi.fn<typeof fetch>();
+		const scanner = new OpfHttpScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: { endpoint: "https://my-tgi.internal/scan", timeout_ms: 2000 },
+			}),
+			{ fetchFn, resolveEnv: () => undefined },
+		);
+		expect(scanner.name).toBe("http:https://my-tgi.internal/scan");
+	});
+
+	it("names an empty custom endpoint <unset> rather than the empty string", () => {
+		const fetchFn = vi.fn<typeof fetch>();
+		const scanner = new OpfHttpScanner(
+			makeConfig({
+				runtime: "custom_http",
+				custom_http: { endpoint: "", timeout_ms: 2000 },
+			}),
+			{ fetchFn, resolveEnv: () => undefined },
+		);
+		expect(scanner.name).toBe("http:<unset>");
+	});
+});
+
+describe("OpfHttpScanner — ready() probe", () => {
+	it("returns true when the endpoint answers 2xx with a parseable array", async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () => okResponse([]));
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn,
+			resolveEnv: () => "tok",
+		});
+		expect(await scanner.ready()).toBe(true);
+		// The probe sends an empty input — auth + routing exercised, ~zero cost.
+		expect(fetchFn).toHaveBeenCalledOnce();
+		expect(fetchFn.mock.calls[0][1]?.body).toBe(JSON.stringify({ inputs: "" }));
+	});
+
+	it("returns false when the endpoint answers non-2xx", async () => {
+		const fetchFn = vi.fn<typeof fetch>(
+			async () => new Response("nope", { status: 500 }),
+		);
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn,
+			resolveEnv: () => "tok",
+		});
+		expect(await scanner.ready()).toBe(false);
+	});
+
+	it("returns false when a 2xx body is not a parseable array", async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () => okResponse({ error: "x" }));
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn,
+			resolveEnv: () => "tok",
+		});
+		expect(await scanner.ready()).toBe(false);
+	});
+});
+
+describe("OpfHttpScanner — disabled runtime (neither huggingface nor custom_http)", () => {
+	function disabledConfig(): ContentScannerConfig {
+		return makeConfig({ runtime: "local" });
+	}
+
+	it("reports a <disabled> name", () => {
+		const scanner = new OpfHttpScanner(disabledConfig(), {
+			fetchFn: vi.fn<typeof fetch>(),
+			resolveEnv: () => undefined,
+		});
+		expect(scanner.name).toBe("http:<disabled>");
+	});
+
+	it("scan() short-circuits to [] without ever calling fetch", async () => {
+		const fetchFn = vi.fn<typeof fetch>();
+		const scanner = new OpfHttpScanner(disabledConfig(), {
+			fetchFn,
+			resolveEnv: () => undefined,
+		});
+		const findings = await scanner.scan({ text: "a@b.com", source: "s" });
+		expect(findings).toEqual([]);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it("ready() returns false without calling fetch", async () => {
+		const fetchFn = vi.fn<typeof fetch>();
+		const scanner = new OpfHttpScanner(disabledConfig(), {
+			fetchFn,
+			resolveEnv: () => undefined,
+		});
+		expect(await scanner.ready()).toBe(false);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe("OpfHttpScanner — lifecycle", () => {
+	it("shutdown() resolves (stateless, nothing to clean up)", async () => {
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn: vi.fn<typeof fetch>(async () => okResponse([])),
+			resolveEnv: () => "tok",
+		});
+		await expect(scanner.shutdown()).resolves.toBeUndefined();
+	});
+
+	it("reports the http runtime tag", () => {
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn: vi.fn<typeof fetch>(),
+			resolveEnv: () => "tok",
+		});
+		expect(scanner.runtime).toBe("http");
+	});
+});
+
+describe("OpfHttpScanner — default DI seams (no test hooks supplied)", () => {
+	it("falls back to the global fetch when fetchFn is omitted", async () => {
+		const original = globalThis.fetch;
+		const stub = vi.fn<typeof fetch>(async () =>
+			okResponse([
+				{ entity_group: "secret", score: 0.9, word: "sk", start: 0, end: 2 },
+			]),
+		);
+		globalThis.fetch = stub;
+		try {
+			// No fetchFn in opts → constructor uses globalThis.fetch.
+			const scanner = new OpfHttpScanner(makeConfig(), {
+				resolveEnv: () => "tok",
+			});
+			const findings = await scanner.scan({ text: "sk", source: "s" });
+			expect(stub).toHaveBeenCalledOnce();
+			expect(findings).toEqual([
+				{ label: "secret", start: 0, end: 2, text: "sk", score: 0.9, source: "s" },
+			]);
+		} finally {
+			globalThis.fetch = original;
+		}
+	});
+
+	it("falls back to process.env when resolveEnv is omitted (var present)", async () => {
+		const varName = "OPF_HTTP_TEST_TOKEN_PRESENT";
+		const prior = process.env[varName];
+		process.env[varName] = "env-token-from-process";
+		const fetchFn = vi.fn<typeof fetch>(async () => okResponse([]));
+		try {
+			// No resolveEnv → defaultEnvResolver reads process.env[varName].
+			const scanner = new OpfHttpScanner(
+				makeConfig({
+					huggingface: {
+						model: "vendor-model-v6",
+						api_key_env: varName,
+						timeout_ms: 4000,
+					},
+				}),
+				{ fetchFn },
+			);
+			await scanner.scan({ text: "x", source: "s" });
+			const init = fetchFn.mock.calls[0][1];
+			expect((init?.headers as Record<string, string>).Authorization).toBe(
+				"Bearer env-token-from-process",
+			);
+		} finally {
+			if (prior === undefined) delete process.env[varName];
+			else process.env[varName] = prior;
+		}
+	});
+
+	it("defaultEnvResolver returns undefined for an empty api_key_env name (no Authorization header)", async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () => okResponse([]));
+		// Empty api_key_env exercises the `varName ? ... : undefined` false branch
+		// inside defaultEnvResolver without touching process.env at all.
+		const scanner = new OpfHttpScanner(
+			makeConfig({
+				huggingface: { model: "vendor-model-v6", api_key_env: "", timeout_ms: 4000 },
+			}),
+			{ fetchFn },
+		);
+		await scanner.scan({ text: "x", source: "s" });
+		const init = fetchFn.mock.calls[0][1];
+		expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
+	});
+});
+
+describe("OpfHttpScanner — caller AbortSignal is merged into the request", () => {
+	it("forwards an aborting caller signal through to the underlying fetch (AbortSignal.any path)", async () => {
+		// The injected fetch inspects the signal it actually receives, proving the
+		// caller's signal was merged in rather than dropped.
+		let observed: AbortSignal | undefined;
+		const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+			observed = init?.signal ?? undefined;
+			return okResponse([]);
+		});
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn,
+			resolveEnv: () => "tok",
+		});
+		const caller = new AbortController();
+		const findings = await scanner.scan({
+			text: "x",
+			source: "s",
+			signal: caller.signal,
+		});
+		expect(findings).toEqual([]);
+		expect(observed).toBeInstanceOf(AbortSignal);
+		expect(observed?.aborted).toBe(false);
+		// Aborting the caller after the request also flips the merged signal —
+		// confirms the merge wired the caller through, not just the timeout.
+		caller.abort();
+		expect(observed?.aborted).toBe(true);
+	});
+
+	it("an already-aborted caller signal surfaces as an aborted merged signal (fail-open to [])", async () => {
+		const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+			// Mimic a real fetch honoring the signal: reject when already aborted.
+			if (init?.signal?.aborted) {
+				throw new DOMException("Aborted", "AbortError");
+			}
+			return okResponse([
+				{ entity_group: "secret", score: 0.9, word: "sk", start: 0, end: 2 },
+			]);
+		});
+		const scanner = new OpfHttpScanner(makeConfig(), {
+			fetchFn,
+			resolveEnv: () => "tok",
+		});
+		const caller = new AbortController();
+		caller.abort();
+		const findings = await scanner.scan({
+			text: "sk",
+			source: "s",
+			signal: caller.signal,
+		});
+		// rawScan catches the abort error and fail-opens to undefined → [].
+		expect(findings).toEqual([]);
+	});
+
+	it("fires the timeout abort when fetch outlasts timeout_ms (fail-open to [])", async () => {
+		// fetch hangs until *its* signal aborts; the only thing that aborts it is
+		// the internal timeout firing controller.abort() after timeout_ms. So this
+		// drives the setTimeout callback and the timeout-driven fail-open path.
+		const fetchFn = vi.fn<typeof fetch>(
+			(_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const sig = init?.signal;
+					if (!sig) return; // never resolves → test would time out, signalling a bug
+					if (sig.aborted) {
+						reject(new DOMException("Aborted", "AbortError"));
+						return;
+					}
+					sig.addEventListener(
+						"abort",
+						() => reject(new DOMException("Aborted", "AbortError")),
+						{ once: true },
+					);
+				}),
+		);
+		const scanner = new OpfHttpScanner(
+			makeConfig({
+				huggingface: { model: "vendor-model-v6", api_key_env: "HF_TOKEN", timeout_ms: 5 },
+			}),
+			{ fetchFn, resolveEnv: () => "tok" },
+		);
+		const findings = await scanner.scan({ text: "x", source: "s" });
+		expect(findings).toEqual([]);
+		expect(fetchFn).toHaveBeenCalledOnce();
+		// The signal handed to fetch must have been aborted by the timeout.
+		expect(fetchFn.mock.calls[0][1]?.signal?.aborted).toBe(true);
+	});
+
+	it("merges via the hand-rolled fallback when AbortSignal.any is unavailable (older runtimes)", async () => {
+		const original = AbortSignal.any;
+		// Simulate a runtime without AbortSignal.any to drive the fallback listener
+		// branch (the `forward` closure + manual AbortController).
+		(AbortSignal as { any?: unknown }).any = undefined;
+		let observed: AbortSignal | undefined;
+		const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+			observed = init?.signal ?? undefined;
+			return okResponse([]);
+		});
+		try {
+			const scanner = new OpfHttpScanner(makeConfig(), {
+				fetchFn,
+				resolveEnv: () => "tok",
+			});
+			const caller = new AbortController();
+			await scanner.scan({ text: "x", source: "s", signal: caller.signal });
+			expect(observed).toBeInstanceOf(AbortSignal);
+			expect(observed?.aborted).toBe(false);
+			// Aborting the caller propagates through the fallback's `forward` listener.
+			caller.abort();
+			expect(observed?.aborted).toBe(true);
+		} finally {
+			(AbortSignal as { any?: typeof original }).any = original;
+		}
+	});
 });

@@ -18,7 +18,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	_resetRgPathCache,
 	checkGrepAcceleration,
@@ -208,10 +208,137 @@ describe("FileContentCache", () => {
 });
 
 // ===========================================
+// Top-level entry guards (null index / param extraction / tool routing)
+// ===========================================
+
+describe("checkGrepAcceleration entry guards", () => {
+	it("returns null immediately when the index is null", () => {
+		const ev = grepEvent("anyToken");
+		expect(checkGrepAcceleration(ev, null, ACCEL)).toBeNull();
+	});
+
+	it("returns null when a Grep event carries no pattern", () => {
+		const { index } = fixture({ "a.ts": "content here" });
+		// tool_input has no `pattern` key → extractSearchParams returns null
+		// → checkGrepAcceleration returns null (the !searchParams guard).
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "Grep",
+			tool_input: {},
+			timestamp: FIXED_TIMESTAMP,
+		};
+		expect(checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+
+	it("returns null for a tool that is neither Grep nor a shell variant", () => {
+		const { index } = fixture({ "a.ts": "content here" });
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "Read",
+			tool_input: { file_path: "a.ts" },
+			timestamp: FIXED_TIMESTAMP,
+		};
+		expect(checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+
+	it("tolerates a missing tool_name (defaults to empty → unknown tool → null)", () => {
+		const { index } = fixture({ "a.ts": "content here" });
+		// Omit tool_name and tool_input entirely: the `|| ""` / `|| {}` defaults
+		// run, extractSearchParams sees an empty tool name, and returns null.
+		const ev = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			timestamp: FIXED_TIMESTAMP,
+		} as unknown as HarnessEvent;
+		expect(checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+
+	it("routes a Shell-tool rg command through the bash parser and blocks", () => {
+		const { index } = fixture({ "a.ts": "shellToolNeedle on a line" });
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "Shell",
+			tool_input: { command: "rg -F 'shellToolNeedle'" },
+			timestamp: FIXED_TIMESTAMP,
+		};
+		const result = checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
+		expect(result.decision).toBe("block");
+		expect(result.reason).toContain("shellToolNeedle");
+	});
+
+	it("routes a lowercase shell-tool rg command through the bash parser", () => {
+		const { index } = fixture({ "a.ts": "lowerShellNeedle here" });
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "shell",
+			tool_input: { command: "rg -F 'lowerShellNeedle'" },
+			timestamp: FIXED_TIMESTAMP,
+		};
+		const result = checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
+		expect(result.decision).toBe("block");
+		expect(result.reason).toContain("lowerShellNeedle");
+	});
+
+	it("routes a run_command-tool rg command through the bash parser", () => {
+		const { index } = fixture({ "a.ts": "runCommandNeedle present" });
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "run_command",
+			tool_input: { command: "rg -F 'runCommandNeedle'" },
+			timestamp: FIXED_TIMESTAMP,
+		};
+		const result = checkGrepAcceleration(ev, index, ACCEL) as HarnessDecision;
+		expect(result.decision).toBe("block");
+		expect(result.reason).toContain("runCommandNeedle");
+	});
+
+	it("returns null for a shell variant whose command has no parseable grep", () => {
+		const { index } = fixture({ "a.ts": "content here" });
+		// run_command with an empty command → parseGrepCommand yields null.
+		const ev: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "test",
+			agent_source: "claude",
+			tool_name: "run_command",
+			tool_input: { command: "" },
+			timestamp: FIXED_TIMESTAMP,
+		};
+		expect(checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+});
+
+// ===========================================
 // Gate combinations (the second half of each && in the gate chain)
 // ===========================================
 
 describe("never-worse-than-native gates", () => {
+	it("declines (default config) because indexFresh is false", () => {
+		const { index } = fixture({ "a.ts": "freshGateToken here" });
+		// No ACCEL override: DEFAULTS.indexFresh === false → first gate trips.
+		const ev = grepEvent("freshGateToken");
+		expect(checkGrepAcceleration(ev, index, {})).toBeNull();
+	});
+
+	it("declines when the indexed file count is below minFilesForAccel", () => {
+		const { index } = fixture({ "a.ts": "sizeGateToken here" });
+		// Fresh, but minFilesForAccel raised above the (tiny) totalFiles → size gate.
+		const ev = grepEvent("sizeGateToken");
+		expect(
+			checkGrepAcceleration(ev, index, { indexFresh: true, minFilesForAccel: 1000 }),
+		).toBeNull();
+	});
+
 	it("declines when a glob is supplied (output-shape gate)", () => {
 		const { index } = fixture({ "a.ts": "uniqueidentifierforsearch here" });
 		const ev = grepEvent("uniqueidentifierforsearch", { glob: "*.ts" });
@@ -229,6 +356,21 @@ describe("never-worse-than-native gates", () => {
 		// `.+` is regex-only wildcard → hasLiterals false.
 		const ev = grepEvent(".+");
 		expect(checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
+	});
+
+	it("declines on an empty index without dividing by zero (totalFiles === 0)", () => {
+		// An index with zero indexed files. minFilesForAccel:0 lets it past the
+		// size gate (0 < 0 is false), so the ratio/selectivity computation runs
+		// with totalFiles === 0 — exercising the `: 1` / `: 0` cond-expr arms —
+		// then the empty candidate set drives the zero-candidates decline.
+		const { index } = fixture({});
+		expect(index.totalFiles).toBe(0);
+		const ev = grepEvent("anyTokenAtAll");
+		const result = checkGrepAcceleration(ev, index, {
+			indexFresh: true,
+			minFilesForAccel: 0,
+		});
+		expect(result).toBeNull();
 	});
 });
 
@@ -578,5 +720,153 @@ describe("findRipgrep", () => {
 		// On any given machine resolution is stable, so the value matches, but the
 		// reset forced the lookup to run again (cache-miss path re-executed).
 		expect(after).toBe(before);
+	});
+});
+
+// ===========================================
+// findRipgrep — discovery fallback branches (fs / child_process mocked)
+// ===========================================
+// On a normal dev box rg lives at a common path, so the existsSync loop returns
+// on the first iteration and the PATH-lookup fallback never runs. These tests
+// mock node:fs + node:child_process and load a *fresh* module instance via
+// vi.resetModules() + dynamic import, so the mocks apply only inside each test
+// and the statically-imported accelerator used everywhere else is untouched.
+
+describe("findRipgrep — fallback discovery (mocked fs/child_process)", () => {
+	afterEach(() => {
+		vi.resetModules();
+		vi.doUnmock("node:fs");
+		vi.doUnmock("node:child_process");
+	});
+
+	async function loadWith(opts: {
+		existsSync: (p: string) => boolean;
+		execSync?: (cmd: string) => string;
+	}): Promise<typeof import("./grep-accelerator.js")> {
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return { ...actual, existsSync: opts.existsSync };
+		});
+		vi.doMock("node:child_process", async () => {
+			const actual =
+				await vi.importActual<typeof import("node:child_process")>("node:child_process");
+			return {
+				...actual,
+				execSync:
+					opts.execSync ??
+					(() => {
+						throw new Error("no execSync stub");
+					}),
+			};
+		});
+		return import("./grep-accelerator.js");
+	}
+
+	it("falls back to PATH lookup when no common path exists and returns the resolved binary", async () => {
+		const mod = await loadWith({
+			existsSync: () => false, // every common path absent → loop exhausts
+			execSync: () => "/custom/bin/rg\n", // `which rg` result (trailing newline trimmed)
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBe("/custom/bin/rg");
+	});
+
+	it("rejects a multi-line PATH result (shell-function artifact) and returns null", async () => {
+		const mod = await loadWith({
+			existsSync: () => false,
+			// A which/command output spanning lines is treated as untrustworthy.
+			execSync: () => "rg () {\n  rg --color=auto\n}\n",
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBeNull();
+	});
+
+	it("rejects a PATH result containing the word 'function' and returns null", async () => {
+		const mod = await loadWith({
+			existsSync: () => false,
+			execSync: () => "rg is a function",
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBeNull();
+	});
+
+	it("returns null when the PATH lookup itself throws", async () => {
+		const mod = await loadWith({
+			existsSync: () => false,
+			execSync: () => {
+				throw new Error("which: command not found");
+			},
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBeNull();
+	});
+
+	it("continues past a common path whose existsSync throws, then resolves via PATH", async () => {
+		let calls = 0;
+		const mod = await loadWith({
+			existsSync: () => {
+				calls++;
+				throw new Error("EACCES"); // each common-path probe throws → caught, loop continues
+			},
+			execSync: () => "/recovered/rg",
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBe("/recovered/rg");
+		// All four common paths were probed (and each threw) before the PATH fallback.
+		expect(calls).toBe(4);
+	});
+
+	it("returns the first common path that exists without consulting PATH", async () => {
+		let execCalled = false;
+		const mod = await loadWith({
+			existsSync: (p: string) => p === "/opt/homebrew/bin/rg",
+			execSync: () => {
+				execCalled = true;
+				return "/should/not/be/used";
+			},
+		});
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBe("/opt/homebrew/bin/rg");
+		expect(execCalled).toBe(false);
+	});
+});
+
+// ===========================================
+// runRipgrepOnCandidates — declines when no rg binary is available
+// ===========================================
+
+describe("acceleration with no ripgrep binary (mocked absent)", () => {
+	afterEach(() => {
+		vi.resetModules();
+		vi.doUnmock("node:fs");
+		vi.doUnmock("node:child_process");
+	});
+
+	it("returns null when a regex search needs rg but the binary cannot be found", async () => {
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			// existsSync false everywhere EXCEPT real fixture files (so the index's
+			// own reads still work); rg's common-path probes all miss.
+			return {
+				...actual,
+				existsSync: (p: string) => (p.endsWith("/rg") ? false : actual.existsSync(p)),
+			};
+		});
+		vi.doMock("node:child_process", async () => {
+			const actual =
+				await vi.importActual<typeof import("node:child_process")>("node:child_process");
+			return { ...actual, execSync: () => "" }; // `which rg` finds nothing
+		});
+		const mod = await import("./grep-accelerator.js");
+		mod._resetRgPathCache();
+		expect(mod.findRipgrep()).toBeNull();
+
+		// A regex Grep query (isRegex:true) must use rg; with rg unavailable
+		// runRipgrepOnCandidates returns null → buildAcceleratedDecision → null.
+		const { index } = fixture({ "a.ts": "noRgRegexToken on a line" });
+		const ev = grepEvent("noRgRegexToken");
+		expect(mod.checkGrepAcceleration(ev, index, ACCEL)).toBeNull();
 	});
 });

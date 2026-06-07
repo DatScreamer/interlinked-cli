@@ -1,13 +1,19 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	appendActivityRecordOnly,
 	appendLocalActivity,
+	appendSyncError,
 	getLocalStats,
+	getSyncDiagnostics,
 	getUnsyncedEvents,
+	type LastSyncSummary,
+	type LocalActivityEvent,
 	mergeAndDedup,
 	readLocalActivity,
+	readLocalSessions,
 	readSyncState,
 	updateSyncState,
 } from "../local-activity.js";
@@ -15,6 +21,28 @@ import {
 // Tests run in isolated tmpdirs; we point the module's data directory
 // there by setting INTERLINKED_DATA_DIR before calling getDataDir-sensitive
 // APIs. appendLocalActivity + readLocalActivity accept an explicit cwd.
+//
+// getDataDir() honors INTERLINKED_DATA_DIR ABOVE the explicit cwd argument, so
+// the cwd-based isolation in this file is only correct when that env var is
+// unset. We clear it here and restore it afterward so a stray ambient value
+// (or a leak from a sibling suite) cannot redirect writes out of the tmpdir.
+const PREV_DATA_DIR = process.env.INTERLINKED_DATA_DIR;
+beforeEach(() => {
+	delete process.env.INTERLINKED_DATA_DIR;
+});
+afterEach(() => {
+	if (PREV_DATA_DIR === undefined) delete process.env.INTERLINKED_DATA_DIR;
+	else process.env.INTERLINKED_DATA_DIR = PREV_DATA_DIR;
+});
+
+const INTERLINKED = ".interlinked";
+
+/** Write a raw JSONL file under the tmpdir's .interlinked dir, bypassing the
+ *  collection mirror so the legacy activity.jsonl reader path is exercised. */
+function writeRaw(tmp: string, name: string, lines: string[]): void {
+	mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+	writeFileSync(join(tmp, INTERLINKED, name), lines.length ? `${lines.join("\n")}\n` : "");
+}
 
 describe("appendLocalActivity / readLocalActivity", () => {
 	let tmp: string;
@@ -251,5 +279,688 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 			"Read",
 		]);
 		expect(readLocalActivity({ cwd: tmp, limit: 1 }).length).toBe(1);
+	});
+
+	it("summarizes by path/pattern/url/task/tool precedence and yields null when empty", () => {
+		writeCollection([
+			rec({ phase: "pre", provider_tool: "Grep", action: { pattern: "needle" } }),
+			rec({ phase: "pre", provider_tool: "WebFetch", action: { url: "https://example.test" } }),
+			rec({ phase: "pre", provider_tool: "TaskCreate", action: { task: "ship it" } }),
+			rec({ phase: "pre", provider_tool: "Mystery", action: { tool: "fallback-tool" } }),
+			// action with no recognized label field -> summary null
+			rec({ phase: "pre", provider_tool: "Bare", action: { foo: "bar" } }),
+			// action entirely absent -> summarizeAction(null) -> null
+			rec({ phase: "pre", provider_tool: "NoAction", action: null }),
+		]);
+		// Newest-first read order mirrors file order reversed.
+		const summaries = readLocalActivity({ cwd: tmp }).map((e) => e.summary);
+		expect(summaries).toEqual([
+			null, // NoAction (action null)
+			null, // Bare (unrecognized field)
+			"fallback-tool",
+			"ship it",
+			"https://example.test",
+			"needle",
+		]);
+	});
+
+	it("carries cwd and tool_use_id through the collection projection when present", () => {
+		writeCollection([rec({ cwd: "/work/repo", tool_use_id: "tu-42" })]);
+		const ev = readLocalActivity({ cwd: tmp })[0];
+		expect(ev.cwd).toBe("/work/repo");
+		expect(ev.tool_use_id).toBe("tu-42");
+	});
+
+	it("omits cwd / tool_use_id when the collection record lacks them", () => {
+		writeCollection([rec({ cwd: undefined, tool_use_id: undefined })]);
+		const ev = readLocalActivity({ cwd: tmp })[0];
+		expect(ev.cwd).toBeUndefined();
+		expect(ev.tool_use_id).toBeUndefined();
+	});
+
+	it("falls back to 'unknown' agent when both agent_name and provider are absent", () => {
+		writeCollection([rec({ agent_name: null, provider: null })]);
+		expect(readLocalActivity({ cwd: tmp })[0].agent).toBe("unknown");
+	});
+
+	it("honors the since cutoff against collection timestamps (breaks on first older row)", () => {
+		// The reader scans newest-first (tail order), so the newest record must
+		// be physically LAST in the file. The older row, read after it, trips the
+		// since break and is excluded.
+		writeCollection([
+			rec({ ts: "2026-06-06T09:00:00.000Z", agent_name: "old" }),
+			rec({ ts: "2026-06-06T10:00:02.000Z", agent_name: "new" }),
+		]);
+		const cutoff = new Date("2026-06-06T10:00:00.000Z").getTime();
+		expect(readLocalActivity({ cwd: tmp, since: cutoff }).map((e) => e.agent)).toEqual(["new"]);
+	});
+
+	it("skips malformed collection lines without throwing", () => {
+		mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+		writeFileSync(
+			join(tmp, INTERLINKED, "collection.jsonl"),
+			`${JSON.stringify(rec({ agent_name: "good" }))}\n{not-json}\n`,
+		);
+		const events = readLocalActivity({ cwd: tmp });
+		expect(events.map((e) => e.agent)).toEqual(["good"]);
+	});
+
+	it("returns [] when collection.jsonl path resolves but the file is absent", () => {
+		// No collection file written at all -> existsSync false -> legacy path -> [].
+		expect(readLocalActivity({ cwd: tmp })).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Legacy activity.jsonl reader path (collection.jsonl absent)
+// ---------------------------------------------------------------------------
+describe("readLocalActivity — legacy activity.jsonl fallback", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-legacy-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function legacyLines(events: Partial<LocalActivityEvent>[]): void {
+		writeRaw(tmp, "activity.jsonl", events.map((e) => JSON.stringify(e)));
+	}
+
+	it("filters by agent on the legacy log", () => {
+		legacyLines([
+			{ ts: "2026-04-22T10:00:00Z", agent: "alice", type: "tool_use" },
+			{ ts: "2026-04-22T10:00:01Z", agent: "bob", type: "tool_use" },
+		]);
+		expect(readLocalActivity({ cwd: tmp, agent: "alice" }).map((e) => e.agent)).toEqual(["alice"]);
+	});
+
+	it("filters by type on the legacy log", () => {
+		legacyLines([
+			{ ts: "2026-04-22T10:00:00Z", agent: "a", type: "tool_use" },
+			{ ts: "2026-04-22T10:00:01Z", agent: "a", type: "session_start" },
+		]);
+		expect(readLocalActivity({ cwd: tmp, type: "session_start" }).map((e) => e.type)).toEqual([
+			"session_start",
+		]);
+	});
+
+	it("honors limit and the since cutoff on the legacy log", () => {
+		legacyLines([
+			{ ts: "2026-04-22T10:00:00Z", agent: "a", type: "x" },
+			{ ts: "2026-04-22T10:00:01Z", agent: "b", type: "x" },
+			{ ts: "2026-04-22T10:00:02Z", agent: "c", type: "x" },
+		]);
+		// Newest-first: limit 2 -> c, b
+		expect(readLocalActivity({ cwd: tmp, limit: 2 }).map((e) => e.agent)).toEqual(["c", "b"]);
+		// since cutoff drops the oldest; read stops at first older row
+		const cutoff = new Date("2026-04-22T10:00:01Z").getTime();
+		expect(readLocalActivity({ cwd: tmp, since: cutoff }).map((e) => e.agent)).toEqual(["c", "b"]);
+	});
+
+	it("skips malformed legacy lines and keeps valid ones", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "2026-04-22T10:00:00Z", agent: "ok", type: "x" }),
+			"{broken",
+		]);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["ok"]);
+	});
+
+	it("returns [] for an empty legacy file (zero-byte scan budget short-circuit)", () => {
+		writeRaw(tmp, "activity.jsonl", []);
+		expect(readLocalActivity({ cwd: tmp })).toEqual([]);
+	});
+
+	it("reads correctly across a 64KB chunk boundary (multi-chunk tail scan)", () => {
+		// Force readRecentLines into more than one 64KB read: each line ~70KB.
+		const big = "z".repeat(70 * 1024);
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "2026-04-22T10:00:00Z", agent: "first", type: "x", summary: big }),
+			JSON.stringify({ ts: "2026-04-22T10:00:01Z", agent: "second", type: "x", summary: big }),
+		]);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["second", "first"]);
+	});
+
+	it("tolerates a leading blank line within a chunk (carry shift fallback)", () => {
+		// File begins with a newline so the first split part is "" -> shift()||"".
+		mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+		writeFileSync(
+			join(tmp, INTERLINKED, "activity.jsonl"),
+			`\n${JSON.stringify({ ts: "2026-04-22T10:00:00Z", agent: "lead", type: "x" })}\n`,
+		);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["lead"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// readLocalSessions
+// ---------------------------------------------------------------------------
+describe("readLocalSessions", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-sessions-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns [] when the sessions directory does not exist", () => {
+		expect(readLocalSessions(tmp)).toEqual([]);
+	});
+
+	it("reads valid .json session files and skips non-json + malformed entries", () => {
+		const dir = join(tmp, INTERLINKED, "sessions");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "s1.json"),
+			JSON.stringify({
+				session_id: "s1",
+				agent: "alice",
+				phase: "ACTIVE",
+				started_at: "t0",
+				last_event_at: "t1",
+				tool_count: 3,
+				error_count: 0,
+				files_touched: ["a.ts"],
+				tools_used: { Read: 3 },
+			}),
+		);
+		writeFileSync(join(dir, "s2.json"), "{ not valid json");
+		writeFileSync(join(dir, "notes.txt"), "ignored, not a .json file");
+
+		const sessions = readLocalSessions(tmp);
+		expect(sessions.map((s) => s.session_id)).toEqual(["s1"]);
+		expect(sessions[0].tool_count).toBe(3);
+	});
+
+	it("uses process.cwd() when no cwd is passed (default-arg path)", () => {
+		// Exercises getSessionsDir()'s default-arg branch. We don't control the
+		// repo's own sessions dir, so we only assert it returns an array without
+		// throwing (every element, if any, must be an object).
+		const sessions = readLocalSessions();
+		expect(Array.isArray(sessions)).toBe(true);
+		for (const s of sessions) expect(typeof s).toBe("object");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Sync state: malformed JSON, summary persistence
+// ---------------------------------------------------------------------------
+describe("readSyncState / updateSyncState — edge cases", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-syncstate-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("resets to defaults when sync-state.json is malformed", () => {
+		writeRaw(tmp, "sync-state.json", ["{ corrupt"]);
+		const state = readSyncState(tmp);
+		expect(state.synced_through_bytes).toBe(0);
+		expect(state.last_sync_at).toBe("");
+	});
+
+	it("persists a last_summary alongside the cursor", () => {
+		const summary: LastSyncSummary = {
+			server_url: "https://sync.test",
+			workspace_id: "ws-1",
+			events_total: 10,
+			accepted: 9,
+			skipped: 1,
+			scrubbed: 0,
+			batches: 1,
+			by_type: { tool_use: 9 },
+			by_agent: { alice: 9 },
+			top_tools: [["Read", 5]],
+			sessions: 1,
+			time_range: { earliest: "t0", latest: "t9" },
+		};
+		updateSyncState(256, summary, tmp);
+		const raw = JSON.parse(readFileSync(join(tmp, INTERLINKED, "sync-state.json"), "utf-8"));
+		expect(raw.synced_through_bytes).toBe(256);
+		expect(raw.last_summary.accepted).toBe(9);
+		expect(raw.last_summary.server_url).toBe("https://sync.test");
+	});
+
+	it("creates the data directory on first updateSyncState when absent", () => {
+		const fresh = join(tmp, "nested", "deep");
+		updateSyncState(7, undefined, fresh);
+		expect(readSyncState(fresh).synced_through_bytes).toBe(7);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// appendSyncError + rotation
+// ---------------------------------------------------------------------------
+describe("appendSyncError — rotation and defaults", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-syncerr-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function errorsPath(): string {
+		return join(tmp, INTERLINKED, "sync-errors.jsonl");
+	}
+
+	it("appends a JSONL error row defaulting transient to false", () => {
+		appendSyncError({ stage: "batch_post", message: "boom", status: 500, batch: 2, attempt: 1 }, tmp);
+		const row = JSON.parse(readFileSync(errorsPath(), "utf-8").trim());
+		expect(row.stage).toBe("batch_post");
+		expect(row.message).toBe("boom");
+		expect(row.status).toBe(500);
+		expect(row.transient).toBe(false);
+		expect(typeof row.ts).toBe("string");
+	});
+
+	it("preserves an explicit transient flag", () => {
+		appendSyncError({ stage: "net", message: "timeout", transient: true }, tmp);
+		const row = JSON.parse(readFileSync(errorsPath(), "utf-8").trim());
+		expect(row.transient).toBe(true);
+	});
+
+	it("rotates the log to .1 once it crosses the 10MB cap", () => {
+		mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+		// Pre-seed a file just over the 10MB threshold so the next append rotates.
+		const oversized = `${"x".repeat(10 * 1024 * 1024 + 16)}\n`;
+		writeFileSync(errorsPath(), oversized);
+		appendSyncError({ stage: "s", message: "after-rotate" }, tmp);
+
+		// The oversized content moved to .1; the live file holds only the new row.
+		const archived = readFileSync(`${errorsPath()}.1`, "utf-8");
+		expect(archived.length).toBeGreaterThan(10 * 1024 * 1024);
+		const liveRows = readFileSync(errorsPath(), "utf-8").trim().split("\n");
+		expect(liveRows.length).toBe(1);
+		expect(JSON.parse(liveRows[0]).message).toBe("after-rotate");
+	});
+
+	it("overwrites a pre-existing .1 archive on the next rotation (single-generation retention)", () => {
+		mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+		// A stale archive already exists; rotation must unlink+replace it.
+		writeFileSync(`${errorsPath()}.1`, "STALE ARCHIVE CONTENT\n");
+		writeFileSync(errorsPath(), `${"y".repeat(10 * 1024 * 1024 + 16)}\n`);
+		appendSyncError({ stage: "s", message: "second-rotate" }, tmp);
+
+		const archived = readFileSync(`${errorsPath()}.1`, "utf-8");
+		expect(archived.startsWith("STALE")).toBe(false);
+		expect(archived.length).toBeGreaterThan(10 * 1024 * 1024);
+	});
+
+	it("does not rotate while under the cap", () => {
+		appendSyncError({ stage: "s", message: "one" }, tmp);
+		appendSyncError({ stage: "s", message: "two" }, tmp);
+		const rows = readFileSync(errorsPath(), "utf-8").trim().split("\n");
+		expect(rows.length).toBe(2);
+		// No archive created.
+		expect(() => statSync(`${errorsPath()}.1`)).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getUnsyncedEvents — offsets, limits, malformed rows
+// ---------------------------------------------------------------------------
+describe("getUnsyncedEvents — edge cases", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-unsynced-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns empty with offset 0 when no activity.jsonl exists", () => {
+		const res = getUnsyncedEvents(undefined, tmp);
+		expect(res.events).toEqual([]);
+		expect(res.newOffset).toBe(0);
+	});
+
+	it("returns empty and reports file size once the cursor is at/after EOF", () => {
+		appendLocalActivity({ ts: "t1", agent: "a", type: "tool_use" }, tmp);
+		const size = statSync(join(tmp, INTERLINKED, "activity.jsonl")).size;
+		updateSyncState(size, undefined, tmp);
+		const res = getUnsyncedEvents(undefined, tmp);
+		expect(res.events).toEqual([]);
+		expect(res.newOffset).toBe(size);
+	});
+
+	it("applies a limit and advances the offset by exactly the consumed bytes", () => {
+		const e1 = { ts: "t1", agent: "a", type: "x" };
+		const e2 = { ts: "t2", agent: "b", type: "y" };
+		const e3 = { ts: "t3", agent: "c", type: "z" };
+		writeRaw(tmp, "activity.jsonl", [JSON.stringify(e1), JSON.stringify(e2), JSON.stringify(e3)]);
+
+		const res = getUnsyncedEvents(2, tmp);
+		expect(res.events.map((e) => e.agent)).toEqual(["a", "b"]);
+		const consumed =
+			Buffer.byteLength(`${JSON.stringify(e1)}\n`) + Buffer.byteLength(`${JSON.stringify(e2)}\n`);
+		expect(res.newOffset).toBe(consumed);
+
+		// Advancing the cursor then re-reading yields the remaining event.
+		updateSyncState(res.newOffset, undefined, tmp);
+		const rest = getUnsyncedEvents(undefined, tmp);
+		expect(rest.events.map((e) => e.agent)).toEqual(["c"]);
+	});
+
+	it("skips a malformed line in the full read while still returning valid events", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "t1", agent: "a", type: "x" }),
+			"{bad json",
+			JSON.stringify({ ts: "t2", agent: "b", type: "y" }),
+		]);
+		const res = getUnsyncedEvents(undefined, tmp);
+		expect(res.events.map((e) => e.agent)).toEqual(["a", "b"]);
+	});
+
+	it("advances the offset past a malformed line inside a limited partial read", () => {
+		// First line is malformed; with limit=1 the partial loop must still count
+		// the bad line's bytes so the cursor never sticks (no infinite retry).
+		const bad = "{bad json";
+		const good = JSON.stringify({ ts: "t2", agent: "b", type: "y" });
+		writeRaw(tmp, "activity.jsonl", [bad, good, JSON.stringify({ ts: "t3", agent: "c", type: "z" })]);
+
+		const res = getUnsyncedEvents(1, tmp);
+		// Only one valid event fits the limit; it is the good row.
+		expect(res.events.map((e) => e.agent)).toEqual(["b"]);
+		// Offset must have advanced past BOTH the malformed line and the good line.
+		const consumed = Buffer.byteLength(`${bad}\n`) + Buffer.byteLength(`${good}\n`);
+		expect(res.newOffset).toBe(consumed);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getLocalStats — edge cases
+// ---------------------------------------------------------------------------
+describe("getLocalStats — edge cases", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-stats-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("reports timestamp range and a pending-sync estimate proportional to unsynced bytes", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "2026-04-22T10:00:00Z", agent: "a", type: "x" }),
+			JSON.stringify({ ts: "2026-04-22T10:00:01Z", agent: "b", type: "x" }),
+			JSON.stringify({ ts: "2026-04-22T10:00:02Z", agent: "c", type: "x" }),
+			JSON.stringify({ ts: "2026-04-22T10:00:03Z", agent: "d", type: "x" }),
+		]);
+		const stats = getLocalStats(tmp);
+		expect(stats.total_events).toBe(4);
+		expect(stats.oldest_event).toBe("2026-04-22T10:00:00Z");
+		expect(stats.newest_event).toBe("2026-04-22T10:00:03Z");
+		// Nothing synced yet -> the whole file is pending.
+		expect(stats.pending_sync).toBe(4);
+	});
+
+	it("scales the pending estimate down after the cursor advances", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "t0", agent: "a", type: "x" }),
+			JSON.stringify({ ts: "t1", agent: "b", type: "x" }),
+		]);
+		const full = statSync(join(tmp, INTERLINKED, "activity.jsonl")).size;
+		updateSyncState(Math.floor(full / 2), undefined, tmp);
+		const stats = getLocalStats(tmp);
+		// ~half the bytes pending -> ~1 of 2 events estimated pending.
+		expect(stats.pending_sync).toBe(1);
+	});
+
+	it("leaves timestamps undefined when the boundary lines are unparseable", () => {
+		writeRaw(tmp, "activity.jsonl", ["{not json", "also-not-json"]);
+		const stats = getLocalStats(tmp);
+		expect(stats.total_events).toBe(2);
+		expect(stats.oldest_event).toBeUndefined();
+		expect(stats.newest_event).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getSyncDiagnostics — branches not covered by the dedicated suite
+// ---------------------------------------------------------------------------
+describe("getSyncDiagnostics — additional branches", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-diag-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("reports zeros and undefined fields on a pristine data dir", () => {
+		const diag = getSyncDiagnostics(tmp);
+		expect(diag.pending_realtime_retry).toBe(0);
+		expect(diag.sync_error_count).toBe(0);
+		expect(diag.last_sync_success_at).toBeUndefined();
+		expect(diag.last_sync_error_at).toBeUndefined();
+		expect(diag.last_sync_error).toBeUndefined();
+	});
+
+	it("counts realtime-retry lines, ignoring blank rows", () => {
+		writeRaw(tmp, "realtime-retry.jsonl", [JSON.stringify({ id: 1 }), "", JSON.stringify({ id: 2 })]);
+		expect(getSyncDiagnostics(tmp).pending_realtime_retry).toBe(2);
+	});
+
+	it("keeps error_at/error undefined when the newest sync-error row is malformed", () => {
+		// Non-empty error file (so count>0) but the most-recent line cannot parse.
+		writeRaw(tmp, "sync-errors.jsonl", ["{corrupt-error-line"]);
+		const diag = getSyncDiagnostics(tmp);
+		expect(diag.sync_error_count).toBe(1);
+		expect(diag.last_sync_error_at).toBeUndefined();
+		expect(diag.last_sync_error).toBeUndefined();
+	});
+
+	it("treats an empty last_sync_at as 'never succeeded' (undefined)", () => {
+		// updateSyncState always stamps a time, so write the state file directly.
+		writeRaw(tmp, "sync-state.json", [JSON.stringify({ synced_through_bytes: 5, last_sync_at: "" })]);
+		expect(getSyncDiagnostics(tmp).last_sync_success_at).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// mergeAndDedup / dedupKey / getTimestamp — alternate field-name shapes
+// ---------------------------------------------------------------------------
+describe("mergeAndDedup — alternate timestamp and identity field names", () => {
+	it("dedups records that use agent_name / event_type / tool_name / occurred_at aliases", () => {
+		// Local and server describe the same action via the *alias* field set;
+		// they must collide in the same 2s bucket and the server copy must win.
+		const local = [
+			{
+				occurred_at: "2026-04-22T10:00:00Z",
+				agent_name: "alice",
+				event_type: "tool_use",
+				tool_name: "Read",
+				origin: "local",
+			},
+		];
+		const server = [
+			{
+				occurred_at: "2026-04-22T10:00:01Z",
+				agent_name: "alice",
+				event_type: "tool_use",
+				tool_name: "Read",
+				origin: "server",
+			},
+		];
+		const merged = mergeAndDedup(local, server);
+		expect(merged.length).toBe(1);
+		expect(merged[0].origin).toBe("server");
+	});
+
+	it("falls back through created_at and timestamp for ordering", () => {
+		const merged = mergeAndDedup<Record<string, unknown>>(
+			[{ created_at: "2026-04-22T10:00:00Z", agent: "a", type: "x", tool: "T1" }],
+			[{ timestamp: "2026-04-22T11:00:00Z", agent: "b", type: "y", tool: "T2" }],
+		);
+		// Newest-first ordering using the alias timestamps.
+		expect(merged[0].agent).toBe("b");
+		expect(merged[1].agent).toBe("a");
+	});
+
+	it("buckets records with no timestamp into bucket 0 and dedups them together", () => {
+		// Both timestamp-less with identical identity -> same key (...|0) -> 1 row.
+		const local = [{ agent: "a", type: "t", tool: "T", origin: "local" }];
+		const server = [{ agent: "a", type: "t", tool: "T", origin: "server" }];
+		const merged = mergeAndDedup(local, server);
+		expect(merged.length).toBe(1);
+		expect(merged[0].origin).toBe("server");
+	});
+
+	it("keeps two same-identity events in different 2s buckets as distinct rows", () => {
+		const local = [
+			{ ts: "2026-04-22T10:00:00Z", agent: "a", type: "t", tool: "T" },
+			{ ts: "2026-04-22T10:00:10Z", agent: "a", type: "t", tool: "T" },
+		];
+		expect(mergeAndDedup(local, []).length).toBe(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// appendLocalActivity — collection mirror behavior
+// ---------------------------------------------------------------------------
+describe("appendLocalActivity — collection mirror", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-mirror-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("mirrors a tool_use event into collection.jsonl alongside activity.jsonl", () => {
+		appendLocalActivity(
+			{
+				ts: "2026-04-22T10:00:00Z",
+				agent: "alice",
+				type: "tool_use",
+				tool: "Bash",
+				tool_input: { command: "ls" },
+			},
+			tmp,
+		);
+		const activity = readFileSync(join(tmp, INTERLINKED, "activity.jsonl"), "utf-8").trim();
+		expect(activity.split("\n").length).toBe(1);
+		const collection = readFileSync(join(tmp, INTERLINKED, "collection.jsonl"), "utf-8").trim();
+		const rec = JSON.parse(collection);
+		expect(rec.schema).toBe("collection.v1");
+		expect(rec.provider_tool).toBe("Bash");
+		expect(rec.tool_class).toBe("shell_exec");
+	});
+
+	it("does NOT write a collection mirror for a non-tool event", () => {
+		// A lifecycle event (not in TOOL_EVENT_TYPES) -> buildCollectionRecord null.
+		appendLocalActivity({ ts: "2026-04-22T10:00:00Z", agent: "alice", type: "session_start" }, tmp);
+		expect(readFileSync(join(tmp, INTERLINKED, "activity.jsonl"), "utf-8").trim().length).toBeGreaterThan(0);
+		// No collection file created for a non-tool event.
+		expect(() => readFileSync(join(tmp, INTERLINKED, "collection.jsonl"), "utf-8")).toThrow();
+	});
+
+	it("does NOT mirror guard telemetry into collection.jsonl", () => {
+		// guard_* records are local-only; buildCollectionRecord returns null.
+		appendLocalActivity(
+			{ ts: "2026-04-22T10:00:00Z", agent: "alice", type: "guard_block", tool: "Bash" },
+			tmp,
+		);
+		expect(readFileSync(join(tmp, INTERLINKED, "activity.jsonl"), "utf-8").trim().length).toBeGreaterThan(0);
+		expect(() => readFileSync(join(tmp, INTERLINKED, "collection.jsonl"), "utf-8")).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Default-arg (no explicit cwd) paths — isolated via chdir + INTERLINKED_DATA_DIR
+// ---------------------------------------------------------------------------
+describe("default cwd resolution", () => {
+	let tmp: string;
+	let prevCwd: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-defaultcwd-"));
+		prevCwd = process.cwd();
+		process.chdir(tmp);
+	});
+	afterEach(() => {
+		process.chdir(prevCwd);
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("appendLocalActivity / readLocalActivity default to process.cwd()", () => {
+		// No cwd argument -> the `cwd || process.cwd()` and `?? process.cwd()`
+		// fallbacks resolve to the tmpdir we chdir'd into.
+		appendLocalActivity({ ts: "2026-04-22T10:00:00Z", agent: "solo", type: "tool_use", tool: "Read" });
+		const events = readLocalActivity();
+		expect(events.map((e) => e.agent)).toEqual(["solo"]);
+		// The mirror landed under the cwd we switched to, not the repo root.
+		const rec = JSON.parse(
+			readFileSync(join(tmp, INTERLINKED, "collection.jsonl"), "utf-8").trim(),
+		);
+		expect(rec.provider_tool).toBe("Read");
+	});
+
+	it("readLocalActivity defaults to the legacy log under cwd when no collection exists", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "2026-04-22T10:00:00Z", agent: "legacy-default", type: "tool_use" }),
+		]);
+		expect(readLocalActivity().map((e) => e.agent)).toEqual(["legacy-default"]);
+	});
+
+	it("appendActivityRecordOnly writes to cwd-derived path and skips the collection mirror", () => {
+		// Direct call with no cwd exercises the `cwd || process.cwd()` fallback and
+		// the activity-only write path (no collection.jsonl side-effect).
+		appendActivityRecordOnly({
+			ts: "2026-04-22T10:00:00Z",
+			agent: "record-only",
+			type: "tool_use",
+			tool: "Bash",
+		});
+		const activity = readFileSync(join(tmp, INTERLINKED, "activity.jsonl"), "utf-8").trim();
+		expect(JSON.parse(activity).agent).toBe("record-only");
+		// activity-record-only must NOT create the collection mirror.
+		expect(() => readFileSync(join(tmp, INTERLINKED, "collection.jsonl"), "utf-8")).toThrow();
+	});
+
+	it("appendActivityRecordOnly creates the .interlinked directory when absent", () => {
+		// Fresh chdir'd tmpdir has no .interlinked yet -> mkdir recursive branch.
+		appendActivityRecordOnly({ ts: "t", agent: "mkdir-path", type: "tool_use" });
+		expect(readLocalActivity().map((e) => e.agent)).toEqual(["mkdir-path"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// dedupKey identity fallbacks + getLocalStats blank-line edge
+// ---------------------------------------------------------------------------
+describe("dedupKey identity '' fallbacks", () => {
+	it("collapses two records lacking every identity field into one bucket-0 key", () => {
+		// Neither agent/agent_name, type/event_type, nor tool/tool_name present and
+		// no timestamp -> key becomes "|||0" for both -> server wins, one row.
+		const merged = mergeAndDedup<Record<string, unknown>>(
+			[{ payload: "local" }],
+			[{ payload: "server" }],
+		);
+		expect(merged.length).toBe(1);
+		expect(merged[0].payload).toBe("server");
+	});
+});
+
+describe("getLocalStats — blank-line-only file", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-blank-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("estimates zero pending when the file has bytes but no non-blank lines", () => {
+		// A lone newline: nonzero file size, but filter(Boolean) yields no lines,
+		// so the pending estimate takes its lines.length === 0 -> 0 branch.
+		mkdirSync(join(tmp, INTERLINKED), { recursive: true });
+		writeFileSync(join(tmp, INTERLINKED, "activity.jsonl"), "\n");
+		const stats = getLocalStats(tmp);
+		expect(stats.total_events).toBe(0);
+		expect(stats.file_size_bytes).toBeGreaterThan(0);
+		expect(stats.pending_sync).toBe(0);
 	});
 });
