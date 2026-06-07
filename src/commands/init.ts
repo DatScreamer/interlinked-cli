@@ -114,73 +114,82 @@ function suggestAgentName(detectedClients: ClientName[]): string {
 	return `${user}-${client}`;
 }
 
-export async function initCommand(options: InitOptions): Promise<void> {
-	const cwd = process.cwd();
-	const dryRun = options["dry-run"] || false;
-	const isJson = options.json || false;
-	const autoConfirm = options.yes || !isInteractiveTty();
+type OnboardingResult = Awaited<ReturnType<typeof ensureRemoteOnboarding>>;
+type HarnessStatus = ReturnType<typeof isHarnessRunning>;
 
-	if (!isJson) {
-		console.log(c.bold("Interlinked CLI — Quick Setup"));
-		console.log(c.dim("═".repeat(40)));
-		console.log("");
-	}
+interface DetectedClientInfo {
+	name: ClientName;
+	exists: boolean;
+}
 
-	// Step 1: Auto-detect clients
-	const allClients = detectClients(cwd);
-	const detectedClients = allClients.filter((c) => c.exists);
-	const detectedNames = detectedClients.map((c) => c.name);
+/** Step 0: print the human banner (suppressed in json mode). */
+function printBanner(isJson: boolean): void {
+	if (isJson) return;
+	console.log(c.bold("Interlinked CLI — Quick Setup"));
+	console.log(c.dim("═".repeat(40)));
+	console.log("");
+}
 
-	if (!isJson) {
-		console.log(`${c.bold("1.")} Detecting AI clients...`);
-		if (detectedClients.length > 0) {
-			for (const client of detectedClients) {
-				console.log(`   ${c.green("✓")} ${client.name}`);
-			}
-		} else {
-			console.log(
-				`   ${c.dim("No AI client directories found. Hooks will be installed when clients are set up.")}`,
-			);
+/** Step 1: report detected AI clients (suppressed in json mode). */
+function printDetectedClients(detectedClients: DetectedClientInfo[], isJson: boolean): void {
+	if (isJson) return;
+	console.log(`${c.bold("1.")} Detecting AI clients...`);
+	if (detectedClients.length > 0) {
+		for (const client of detectedClients) {
+			console.log(`   ${c.green("✓")} ${client.name}`);
 		}
-		console.log("");
-	}
-
-	// Step 2: Detect git context
-	const projectName = deriveProjectFromGit(cwd);
-	const projectRoot = findProjectRoot(cwd);
-
-	if (!isJson) {
-		console.log(`${c.bold("2.")} Detecting project context...`);
-		if (projectName) {
-			console.log(`   ${c.green("✓")} Git project: ${c.cyan(projectName)}`);
-		} else {
-			console.log(`   ${c.dim("No git repository detected.")}`);
-		}
-		if (projectRoot) {
-			console.log(`   ${c.dim(`Root: ${projectRoot}`)}`);
-		}
-		console.log("");
-	}
-
-	// Step 3: Determine server
-	let serverUrl = options.server || process.env.INTERLINKED_SERVER_URL;
-	if (!serverUrl) {
-		const localHealthy = await isServerReachable(DEFAULT_LOCAL_SERVER);
-		serverUrl = localHealthy ? DEFAULT_LOCAL_SERVER : DEFAULT_REMOTE_SERVER;
-	}
-
-	if (!isJson) {
-		console.log(`${c.bold("3.")} Server: ${c.cyan(serverUrl)}`);
+	} else {
 		console.log(
-			`   ${isLocalServer(serverUrl) ? c.dim("(local dev server)") : c.dim("(production)")}`,
+			`   ${c.dim("No AI client directories found. Hooks will be installed when clients are set up.")}`,
 		);
-		console.log("");
 	}
+	console.log("");
+}
 
-	// Step 4: Agent name
+/** Step 2: report git/project context (suppressed in json mode). */
+function printProjectContext(
+	projectName: string | null,
+	projectRoot: string | null,
+	isJson: boolean,
+): void {
+	if (isJson) return;
+	console.log(`${c.bold("2.")} Detecting project context...`);
+	if (projectName) {
+		console.log(`   ${c.green("✓")} Git project: ${c.cyan(projectName)}`);
+	} else {
+		console.log(`   ${c.dim("No git repository detected.")}`);
+	}
+	if (projectRoot) {
+		console.log(`   ${c.dim(`Root: ${projectRoot}`)}`);
+	}
+	console.log("");
+}
+
+/** Step 3: resolve the target server URL (flag → env → reachability probe). */
+async function resolveServerUrl(options: InitOptions): Promise<string> {
+	const explicit = options.server || process.env.INTERLINKED_SERVER_URL;
+	if (explicit) return explicit;
+	const localHealthy = await isServerReachable(DEFAULT_LOCAL_SERVER);
+	return localHealthy ? DEFAULT_LOCAL_SERVER : DEFAULT_REMOTE_SERVER;
+}
+
+/** Step 3 (output): report the resolved server (suppressed in json mode). */
+function printServer(serverUrl: string, isJson: boolean): void {
+	if (isJson) return;
+	console.log(`${c.bold("3.")} Server: ${c.cyan(serverUrl)}`);
+	console.log(`   ${isLocalServer(serverUrl) ? c.dim("(local dev server)") : c.dim("(production)")}`);
+	console.log("");
+}
+
+/** Step 4: resolve the agent name, prompting interactively when appropriate. */
+async function resolveAgentName(
+	options: InitOptions,
+	detectedNames: ClientName[],
+	autoConfirm: boolean,
+	isJson: boolean,
+): Promise<string> {
 	let agentName = options.agent || suggestAgentName(detectedNames);
 
-	// Interactive prompt for agent name if TTY and not auto-confirmed
 	if (isInteractiveTty() && !autoConfirm && !options.agent) {
 		const rl = createInterface({ input, output });
 		try {
@@ -194,36 +203,49 @@ export async function initCommand(options: InitOptions): Promise<void> {
 	}
 
 	if (!isJson) console.log("");
+	return agentName;
+}
 
-	// Step 5: Sync mode
-	const syncMode = options["sync-mode"] || "realtime";
-
-	if (dryRun) {
-		if (isJson) {
-			console.log(
-				JSON.stringify({
-					dry_run: true,
-					server_url: serverUrl,
-					agent_name: agentName,
-					project: projectName,
-					sync_mode: syncMode,
-					detected_clients: detectedNames,
-					hook_version: HOOK_SCRIPT_VERSION,
-				}),
-			);
-		} else {
-			console.log(c.bold("Dry run — no changes made."));
-			console.log(c.dim("Would install hooks, configure, and authenticate."));
-		}
-		return;
+/** Dry-run early exit: emit the planned configuration and stop. */
+function emitDryRun(
+	serverUrl: string,
+	agentName: string,
+	projectName: string | null,
+	syncMode: string,
+	detectedNames: ClientName[],
+	isJson: boolean,
+): void {
+	if (isJson) {
+		console.log(
+			JSON.stringify({
+				dry_run: true,
+				server_url: serverUrl,
+				agent_name: agentName,
+				project: projectName,
+				sync_mode: syncMode,
+				detected_clients: detectedNames,
+				hook_version: HOOK_SCRIPT_VERSION,
+			}),
+		);
+	} else {
+		console.log(c.bold("Dry run — no changes made."));
+		console.log(c.dim("Would install hooks, configure, and authenticate."));
 	}
+}
 
-	// Step 6: Install hooks and config
+/** Step 5: write config + hook script and install hooks for detected clients. */
+function installConfigAndHooks(
+	cwd: string,
+	serverUrl: string,
+	agentName: string,
+	syncMode: string,
+	detectedNames: ClientName[],
+	isJson: boolean,
+): void {
 	if (!isJson) {
 		console.log(`${c.bold("5.")} Installing...`);
 	}
 
-	// Initialize config
 	initConfig({ serverUrl, agentName }, cwd);
 	updateLocalConfig({ sync_mode: syncMode as NonNullable<LocalConfig["sync_mode"]> }, cwd);
 
@@ -238,7 +260,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		console.log(`   ${c.green("✓")} Hook script v${HOOK_SCRIPT_VERSION}`);
 	}
 
-	// Install hooks for detected clients
 	if (detectedNames.length > 0) {
 		const results = installAllHooks(cwd, detectedNames);
 		for (const r of results) {
@@ -250,8 +271,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		}
 	}
 	if (!isJson) console.log("");
+}
 
-	// Step 7: Authentication
+/** Step 6: authenticate against a remote server when not already authed. */
+async function authenticate(serverUrl: string, isJson: boolean): Promise<void> {
 	const hasAuth = !!resolveAuthToken();
 	const envToken = process.env.INTERLINKED_TOKEN || process.env.INTERLINKED_ACCESS_TOKEN;
 
@@ -263,49 +286,48 @@ export async function initCommand(options: InitOptions): Promise<void> {
 			await loginCommand({ server: serverUrl, token: envToken });
 		} else if (isInteractiveTty()) {
 			await loginCommand({ server: serverUrl });
-		} else {
-			if (!isJson) {
-				console.log(
-					`   ${c.yellow("Skipped")} — no TTY. Set INTERLINKED_TOKEN or run: interlinked login`,
-				);
-			}
+		} else if (!isJson) {
+			console.log(
+				`   ${c.yellow("Skipped")} — no TTY. Set INTERLINKED_TOKEN or run: interlinked login`,
+			);
 		}
 	} else if (!isJson) {
 		console.log(`${c.bold("6.")} Auth: ${c.green("already authenticated")}`);
 	}
 	if (!isJson) console.log("");
+}
 
-	// Step 8: Remote onboarding (register agent on server)
+/** Step 7: register the agent on the server and report the outcome. */
+async function runOnboarding(
+	serverUrl: string,
+	agentName: string,
+	isJson: boolean,
+): Promise<OnboardingResult> {
 	if (!isJson) {
 		console.log(`${c.bold("7.")} Connecting to workspace...`);
 	}
 
 	const onboarding = await ensureRemoteOnboarding({ serverUrl });
+	if (isJson) return onboarding;
+
 	if (onboarding.status === "linked") {
-		if (!isJson) {
-			const tag = onboarding.isNewAgent ? "registered" : "reconnected";
-			console.log(
-				`   ${c.green("✓")} Agent ${c.cyan(onboarding.agentName || agentName)} ${tag}`,
-			);
-			if (onboarding.workspaceName) {
-				console.log(`   ${c.dim(`Workspace: ${onboarding.workspaceName}`)}`);
-			}
+		const tag = onboarding.isNewAgent ? "registered" : "reconnected";
+		console.log(`   ${c.green("✓")} Agent ${c.cyan(onboarding.agentName || agentName)} ${tag}`);
+		if (onboarding.workspaceName) {
+			console.log(`   ${c.dim(`Workspace: ${onboarding.workspaceName}`)}`);
 		}
 	} else if (onboarding.status === "skipped") {
-		if (!isJson) {
-			console.log(
-				`   ${c.dim(`Remote onboarding skipped: ${onboarding.reason || "unknown"}`)}`,
-			);
-		}
+		console.log(`   ${c.dim(`Remote onboarding skipped: ${onboarding.reason || "unknown"}`)}`);
 	} else {
-		if (!isJson) {
-			console.log(`   ${c.yellow("!")} Remote onboarding: ${onboarding.error || "failed"}`);
-		}
+		console.log(`   ${c.yellow("!")} Remote onboarding: ${onboarding.error || "failed"}`);
 	}
+	return onboarding;
+}
 
-	// Step 9: Verification — health check
-	let serverReachable = false;
-	let onlineAgents = 0;
+/** Step 9: best-effort health check returning reachability + online-agent count. */
+async function checkServerHealth(
+	serverUrl: string,
+): Promise<{ serverReachable: boolean; onlineAgents: number }> {
 	try {
 		const { InterlinkedClient } = await import("../lib/api-client.js");
 		const token = resolveAuthToken();
@@ -314,9 +336,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 			...(token ? { token } : {}),
 		});
 		await client.callTool("health_check");
-		serverReachable = true;
 
-		// Try to get online agent count
+		let onlineAgents = 0;
 		try {
 			const result = await client.callTool<{ agents?: { name: string }[] }>(
 				"list_online_agents",
@@ -326,14 +347,50 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		} catch (_) {
 			/* intentional: list_online_agents is best-effort during init */
 		}
+		return { serverReachable: true, onlineAgents };
 	} catch (_) {
 		/* intentional: init-time workspace check is best-effort, proceed without context */
+		return { serverReachable: false, onlineAgents: 0 };
 	}
+}
 
-	// Step 8: Harness setup
-	let harnessStarted = false;
-	const harnessStatus = isHarnessRunning(cwd);
+/** Resolve whether to start the harness, prompting on an interactive TTY. */
+async function shouldStartHarness(autoConfirm: boolean): Promise<boolean> {
+	if (autoConfirm) return true;
+	if (!isInteractiveTty()) return false;
+	const rl = createInterface({ input, output });
+	try {
+		const answer = await rl.question("   Start harness server for guard evaluation? [Y/n] ");
+		return !answer.trim() || answer.trim().toLowerCase() !== "n";
+	} finally {
+		rl.close();
+	}
+}
 
+/** Start the harness daemon and report the post-start status. */
+async function startHarness(cwd: string, isJson: boolean): Promise<boolean> {
+	const harnessInitOpts = { daemon: true, json: true };
+	await harnessStartCommand(harnessInitOpts);
+	const afterStart = isHarnessRunning(cwd);
+	if (!isJson) {
+		if (afterStart.running) {
+			console.log(`   ${c.green("✓")} Harness started (PID ${afterStart.pid})`);
+		} else {
+			console.log(
+				`   ${c.yellow("!")} Failed to start harness. Run: interlinked harness start --verbose`,
+			);
+		}
+	}
+	return afterStart.running;
+}
+
+/** Step 8: ensure the harness is running, returning whether it ended up started. */
+async function setupHarness(
+	cwd: string,
+	harnessStatus: HarnessStatus,
+	autoConfirm: boolean,
+	isJson: boolean,
+): Promise<boolean> {
 	if (!isJson) {
 		console.log("");
 		console.log(`${c.bold("8.")} Harness setup...`);
@@ -343,83 +400,146 @@ export async function initCommand(options: InitOptions): Promise<void> {
 		if (!isJson) {
 			console.log(`   ${c.green("✓")} Harness already running (PID ${harnessStatus.pid})`);
 		}
-		harnessStarted = true;
-	} else {
-		let shouldStart = autoConfirm;
-		if (!shouldStart && isInteractiveTty()) {
-			const rl = createInterface({ input, output });
-			try {
-				const answer = await rl.question(
-					"   Start harness server for guard evaluation? [Y/n] ",
-				);
-				shouldStart = !answer.trim() || answer.trim().toLowerCase() !== "n";
-			} finally {
-				rl.close();
-			}
-		}
-		if (shouldStart) {
-			const harnessInitOpts = { daemon: true, json: true };
-			await harnessStartCommand(harnessInitOpts);
-			const afterStart = isHarnessRunning(cwd);
-			harnessStarted = afterStart.running;
-			if (!isJson) {
-				if (afterStart.running) {
-					console.log(`   ${c.green("✓")} Harness started (PID ${afterStart.pid})`);
-				} else {
-					console.log(
-						`   ${c.yellow("!")} Failed to start harness. Run: interlinked harness start --verbose`,
-					);
-				}
-			}
-		} else if (!isJson) {
-			console.log(`   ${c.dim("Skipped — start later with: interlinked harness start")}`);
-		}
+		return true;
 	}
+
+	const start = await shouldStartHarness(autoConfirm);
+	if (start) return startHarness(cwd, isJson);
 
 	if (!isJson) {
-		console.log("");
-		console.log(c.dim("═".repeat(40)));
+		console.log(`   ${c.dim("Skipped — start later with: interlinked harness start")}`);
+	}
+	return false;
+}
 
-		if (serverReachable) {
-			const agentLabel =
-				onlineAgents > 0
-					? `${onlineAgents} agent${onlineAgents !== 1 ? "s" : ""} online`
-					: "";
-			console.log(
-				c.green(
-					`\nReady! Connected to ${isLocalServer(serverUrl) ? "local server" : "production"} as ${c.cyan(agentName)}.`,
-				) + (agentLabel ? ` ${c.dim(agentLabel)}` : ""),
-			);
-		} else {
-			console.log(
-				`${c.green("\nSetup complete.")} ${c.yellow("Server not reachable — hooks will buffer locally.")}`,
-			);
-		}
+/** Final human summary: the "Ready!" line plus next-step hints. */
+function printSummary(
+	serverUrl: string,
+	agentName: string,
+	serverReachable: boolean,
+	onlineAgents: number,
+	harnessStarted: boolean,
+): void {
+	console.log("");
+	console.log(c.dim("═".repeat(40)));
 
-		console.log(`\n${c.bold("Next steps:")}`);
-		if (!harnessStarted) {
-			console.log(
-				`  interlinked harness start    ${c.dim("— Start guard evaluation server")}`,
-			);
-		}
-		console.log(`  interlinked status          ${c.dim("— Dashboard")}`);
-		console.log(`  interlinked context          ${c.dim("— Show effective config")}`);
-		console.log(`  interlinked inbox            ${c.dim("— Check messages")}`);
-		console.log(`  interlinked tasks list       ${c.dim("— View tasks")}`);
-		console.log(`  interlinked doctor           ${c.dim("— Diagnose issues")}`);
+	if (serverReachable) {
+		const agentLabel =
+			onlineAgents > 0 ? `${onlineAgents} agent${onlineAgents !== 1 ? "s" : ""} online` : "";
+		console.log(
+			c.green(
+				`\nReady! Connected to ${isLocalServer(serverUrl) ? "local server" : "production"} as ${c.cyan(agentName)}.`,
+			) + (agentLabel ? ` ${c.dim(agentLabel)}` : ""),
+		);
 	} else {
 		console.log(
-			JSON.stringify({
-				status: "complete",
-				server_url: serverUrl,
-				agent_name: agentName,
-				project: projectName,
-				sync_mode: syncMode,
-				detected_clients: detectedNames,
-				server_reachable: serverReachable,
-				online_agents: onlineAgents,
-				onboarding: onboarding.status,
-			}),
+			`${c.green("\nSetup complete.")} ${c.yellow("Server not reachable — hooks will buffer locally.")}`,
 		);
 	}
+
+	console.log(`\n${c.bold("Next steps:")}`);
+	if (!harnessStarted) {
+		console.log(`  interlinked harness start    ${c.dim("— Start guard evaluation server")}`);
+	}
+	console.log(`  interlinked status          ${c.dim("— Dashboard")}`);
+	console.log(`  interlinked context          ${c.dim("— Show effective config")}`);
+	console.log(`  interlinked inbox            ${c.dim("— Check messages")}`);
+	console.log(`  interlinked tasks list       ${c.dim("— View tasks")}`);
+	console.log(`  interlinked doctor           ${c.dim("— Diagnose issues")}`);
+}
+
+/** Final completion summary, dispatching between human and json output. */
+function printCompletion(
+	serverUrl: string,
+	agentName: string,
+	projectName: string | null,
+	syncMode: string,
+	detectedNames: ClientName[],
+	serverReachable: boolean,
+	onlineAgents: number,
+	onboarding: OnboardingResult,
+	harnessStarted: boolean,
+	isJson: boolean,
+): void {
+	if (!isJson) {
+		printSummary(serverUrl, agentName, serverReachable, onlineAgents, harnessStarted);
+		return;
+	}
+	console.log(
+		JSON.stringify({
+			status: "complete",
+			server_url: serverUrl,
+			agent_name: agentName,
+			project: projectName,
+			sync_mode: syncMode,
+			detected_clients: detectedNames,
+			server_reachable: serverReachable,
+			online_agents: onlineAgents,
+			onboarding: onboarding.status,
+		}),
+	);
+}
+
+export async function initCommand(options: InitOptions): Promise<void> {
+	const cwd = process.cwd();
+	const dryRun = options["dry-run"] || false;
+	const isJson = options.json || false;
+	const autoConfirm = options.yes || !isInteractiveTty();
+
+	printBanner(isJson);
+
+	// Step 1: Auto-detect clients
+	const detectedClients = detectClients(cwd).filter((client) => client.exists);
+	const detectedNames = detectedClients.map((client) => client.name);
+	printDetectedClients(detectedClients, isJson);
+
+	// Step 2: Detect git context
+	const projectName = deriveProjectFromGit(cwd);
+	const projectRoot = findProjectRoot(cwd);
+	printProjectContext(projectName, projectRoot, isJson);
+
+	// Step 3: Determine server
+	const serverUrl = await resolveServerUrl(options);
+	printServer(serverUrl, isJson);
+
+	// Step 4: Agent name
+	const agentName = await resolveAgentName(options, detectedNames, autoConfirm, isJson);
+
+	// Step 5: Sync mode
+	const syncMode = options["sync-mode"] || "realtime";
+
+	if (dryRun) {
+		emitDryRun(serverUrl, agentName, projectName, syncMode, detectedNames, isJson);
+		return;
+	}
+
+	// Step 6: Install hooks and config
+	installConfigAndHooks(cwd, serverUrl, agentName, syncMode, detectedNames, isJson);
+
+	// Step 7: Authentication
+	await authenticate(serverUrl, isJson);
+
+	// Step 8: Remote onboarding (register agent on server)
+	const onboarding = await runOnboarding(serverUrl, agentName, isJson);
+
+	// Step 9: Verification — health check
+	const { serverReachable, onlineAgents } = await checkServerHealth(serverUrl);
+
+	// Step 10: Harness setup
+	const harnessStatus = isHarnessRunning(cwd);
+	const harnessStarted = await setupHarness(cwd, harnessStatus, autoConfirm, isJson);
+
+	// Final summary / completion payload
+	printCompletion(
+		serverUrl,
+		agentName,
+		projectName,
+		syncMode,
+		detectedNames,
+		serverReachable,
+		onlineAgents,
+		onboarding,
+		harnessStarted,
+		isJson,
+	);
 }

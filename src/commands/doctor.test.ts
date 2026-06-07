@@ -169,6 +169,22 @@ vi.mock("../harness/rules/modes.js", () => ({
 }));
 
 vi.mock("../lib/api-client.js", () => ({ getClient: mockGetClient }));
+// Healthy default so the "Data collection" check (added with b65c449) passes;
+// the liveness logic itself is covered in collection/liveness.test.ts. Without
+// this, getCollectionLiveness reads the mocked fs, finds no collection.jsonl,
+// and emits a "missing" warning that broke the zero-warnings assertions.
+vi.mock("../lib/collection/liveness.js", () => ({
+	getCollectionLiveness: () => ({
+		status: "live",
+		path: ".interlinked/collection.jsonl",
+		exists: true,
+		sizeBytes: 100,
+		mtimeMs: 0,
+		lastRecordTs: "2026-06-07T00:00:00.000Z",
+		lastRecordAgeMs: 0,
+		reason: "last record 0s ago",
+	}),
+}));
 
 // Resolved by mockGetConfigDir/etc.; pinned so path strings are predictable.
 const CWD = "/repo";
