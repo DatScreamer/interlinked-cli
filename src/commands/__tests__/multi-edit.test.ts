@@ -24,7 +24,7 @@
 // — the fixtures are written inside cli/src/lib/ so biome/tsc config scope
 // picks them up.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { clearTscOverlayCache } from "../../harness/check-engine/tool-runners/tsc-overlay.js";
@@ -352,21 +352,24 @@ describe("isTscFindingBlocking (re-exported)", () => {
 //   4. Module-level `beforeAll` sweep — wipes stale fixtures from a
 //      prior crashed run before the current run starts writing.
 
+// NB: for this file CLI_ROOT IS the repo root (three levels up from
+// `src/commands/__tests__`), which is the `projectRoot` the gate is called with.
 const CLI_ROOT = resolve(import.meta.dirname, "../..", "..");
-const FIXTURE_DIR = resolve(CLI_ROOT, "src", "lib");
-
-// Filenames the suite is allowed to sweep at startup. Anchored as a Set so
-// the stale-fixture sweep can't accidentally wipe a hand-written `_*.ts`
-// module that happens to live in src/lib/. Add to this when a new fixture
-// is introduced.
-const KNOWN_FIXTURE_BASENAMES: ReadonlySet<string> = new Set([
-	"_multi_edit_case_a.ts",
-	"_multi_edit_case_b.ts",
-	"_multi_edit_gate_fail.ts",
-	"_gate_inline_fixture.ts",
-	"_multi_edit_plumbing_a.ts",
-	"_multi_edit_plumbing_b.ts",
-]);
+// Integration fixtures live in a UNIQUE per-process `mkdtempSync` dir, so no two
+// test files (or parallel runs) ever write the same path — the parallel-safety
+// invariant. This was the originally-confirmed culprit: the prior fixed
+// `src/lib/` path raced sibling overlay tests under `--file-parallelism`, so a
+// concurrent run observed half-written fixtures and the gate flipped ok/findings.
+// The dir is rooted under CLI_ROOT (the repo root here; not os.tmpdir()) because
+// the gate's biome branch needs the fixture under projectRoot: the check-engine
+// rewrites overlay findings to a projectRoot-relative path then filters to that
+// file, so a fixture OUTSIDE projectRoot is silently dropped to zero findings
+// (and GATE_REJECTED would never fire). Under projectRoot, biome (config from
+// `cwd: projectRoot`) and tsc (tsconfig found by walking up; strict /
+// exactOptionalPropertyTypes applied to the overlaid file) exercise the real
+// toolchains. Sitting at the repo root keeps these fixtures off the strip-brace
+// corpus walk (which only descends `src/`).
+const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_multi_edit_fixtures-"));
 
 // Module-level registry. `writeFixture` adds, `rmFixture` removes on
 // successful (or ENOENT) cleanup. The process-exit handler iterates
@@ -378,7 +381,7 @@ function fixturePath(name: string): string {
 }
 
 function writeFixture(name: string, content: string): string {
-	mkdirSync(FIXTURE_DIR, { recursive: true });
+	// FIXTURE_DIR already exists (mkdtempSync created it at module load).
 	const p = fixturePath(name);
 	writeFileSync(p, content, "utf-8");
 	registeredFixtures.add(p);
@@ -403,57 +406,43 @@ function rmFixture(p: string): void {
 }
 
 // Synchronous backstop — fires even if the vitest worker is hard-killed
-// or a sibling describe's afterAll throws. Uses `force: true` so a missing
-// file doesn't propagate as an exit-handler error.
+// or a sibling describe's afterAll throws. Removes the whole private tmp dir
+// (recursive + force) so neither stray fixtures nor the empty dir leak.
 process.on("exit", () => {
-	for (const p of registeredFixtures) {
-		try {
-			rmSync(p, { force: true });
-		} catch {
-			// intentional: process is exiting; nothing useful to do.
-		}
+	try {
+		rmSync(FIXTURE_DIR, { recursive: true, force: true });
+	} catch {
+		// intentional: process is exiting; nothing useful to do.
 	}
 });
 
-// Pre-suite sweep: any stale fixture left by a prior crashed run gets
-// removed before the current suite writes its own copy. Constrained to
-// KNOWN_FIXTURE_BASENAMES so a legitimate `_*.ts` module never gets
-// touched.
-beforeAll(() => {
-	for (const name of KNOWN_FIXTURE_BASENAMES) {
-		const stale = resolve(FIXTURE_DIR, name);
-		try {
-			rmSync(stale, { force: true });
-		} catch {
-			// intentional: best-effort sweep.
-		}
-	}
-});
-
-// Post-suite belt: per-describe afterAll covers the happy path; this
-// catches anything that slipped (a thrown rmFixture, a path mismatch
-// between the describe's `let fixturePathAbs` and what writeFixture
-// actually returned, etc.).
+// Post-suite belt: per-describe afterAll covers the happy path; this removes
+// the whole private tmp dir in one shot, catching anything that slipped (a
+// thrown rmFixture, a path mismatch between a describe's `let fixturePathAbs`
+// and what writeFixture actually returned, etc.). No pre-suite stale-fixture
+// sweep is needed: mkdtempSync gives this run a unique dir, so a prior crashed
+// run can never have left fixtures here.
 afterAll(() => {
-	for (const p of [...registeredFixtures]) {
-		try {
-			rmSync(p, { force: true });
-			registeredFixtures.delete(p);
-		} catch (err) {
-			console.error(
-				`[multi-edit.test] post-suite cleanup failed for ${p}: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
+	try {
+		rmSync(FIXTURE_DIR, { recursive: true, force: true });
+		registeredFixtures.clear();
+	} catch (err) {
+		console.error(
+			`[multi-edit.test] post-suite cleanup failed for ${FIXTURE_DIR}: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 });
 
 // ───────────────────────────────────────────────
 // Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY
 // ───────────────────────────────────────────────
-// An import + a use-site in a typed Record. Serial Edits trip biome
-// (noUnusedImports after the import alone) AND tsc (TS2304 when the
-// registry entry references identifiers not yet imported). MultiEdit lands
-// both atomically.
+// Three const declarations + a use-site in an exhaustive typed Record.
+// Serial Edits trip tsc: edit 2 alone references identifiers not yet declared
+// (TS2304) and edit 1 alone widens ClientName so the Record is missing its
+// `gemini` member (TS2741). Only the composed content type-checks. MultiEdit
+// lands all three atomically. (The fixture is fully self-contained — no
+// external module import — so it resolves identically from its private tmp
+// dir; the real tsc overlay still runs against the CLI's strict tsconfig.)
 
 describe("Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY", () => {
 	const FIXTURE = "_multi_edit_case_a.ts";
@@ -468,7 +457,7 @@ describe("Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY", () => {
 		"\tuninstall: (root: string) => void;",
 		"}",
 		"",
-		'import { buildHookScript } from "./hooks-template.js";',
+		"// __INSTALLER_HELPERS__",
 		"",
 		"export const CLIENT_INSTALL_REGISTRY: Record<ClientName, ClientInstallEntry> = {",
 		"\tclaude: {",
@@ -484,13 +473,12 @@ describe("Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY", () => {
 		"\t// Future clients:",
 		"};",
 		"",
-		"export { buildHookScript };",
-		"",
 	].join("\n");
 
 	beforeAll(() => {
-		// buildHookScript exists in cli/src/lib/hooks-template.ts so the
-		// initial fixture type-checks cleanly under the CLI's tsconfig.
+		// Self-contained fixture — type-checks cleanly under the CLI's tsconfig
+		// with no external module dependency, so it resolves the same from any
+		// directory (including the private tmp dir).
 		fixturePathAbs = writeFixture(FIXTURE, INITIAL_CONTENT);
 		clearTscOverlayCache(CLI_ROOT);
 	});
@@ -500,22 +488,21 @@ describe("Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY", () => {
 		clearTscOverlayCache(CLI_ROOT);
 	});
 
-	it("round-trip: adding gemini import + registry entry lands together via multi-edit", () => {
+	it("round-trip: adding gemini helpers + registry entry lands together via multi-edit", () => {
 		// Simulate the design-doc's Case A edit: edit 0 injects three
 		// const helpers (stand-ins for imports from the design-doc's
 		// ./hook-installers.js — we inline so the fixture doesn't
 		// require an external module). Edit 1 widens ClientName. Edit 2
 		// adds the gemini entry using identifiers declared by edit 0.
-		// Each edit in isolation is a net-new tsc or biome error; the
-		// gate only sees the final composed content.
+		// Each edit in isolation is a net-new tsc error; the gate only
+		// sees the final composed content.
 		const edits: EditPair[] = [
 			{
-				old_string: 'import { buildHookScript } from "./hooks-template.js";',
+				old_string: "// __INSTALLER_HELPERS__",
 				new_string: [
 					'const GEMINI_HOOK_EVENTS = ["PreToolUse"] as const;',
 					"const installGeminiHooks = (_: string) => {};",
 					"const uninstallGeminiHooks = (_: string) => {};",
-					'import { buildHookScript } from "./hooks-template.js";',
 				].join("\n"),
 			},
 			{

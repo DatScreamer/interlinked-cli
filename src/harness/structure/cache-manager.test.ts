@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	clearCache,
 	computeManifestHash,
@@ -87,7 +88,15 @@ function makeAdoptionReport(): AdoptionReport {
 // Test setup
 // -------------------------------------------
 
-const TEST_CWD = join(process.cwd(), `.test-cache-manager-${process.pid}`);
+// Private per-process tmp root. Parallel-safety: the prior `TEST_CWD` lived in
+// the repo tree (`process.cwd()/.test-cache-manager-<pid>`); under
+// `--file-parallelism` a stray dir there can surface in `git status` / trip the
+// fixture-leak detector if a worker is killed before afterEach runs. A mkdtemp
+// root under os.tmpdir() is process-unique, off the repo tree, and removed
+// wholesale in afterAll. TEST_CWD is just a `cwd` arg the cache-manager joins
+// `.interlinked/structure-cache` onto, so any directory works.
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "interlinked-cache-manager-"));
+const TEST_CWD = join(TMP_ROOT, "cwd");
 
 beforeEach(() => {
 	mkdirSync(TEST_CWD, { recursive: true });
@@ -96,6 +105,14 @@ beforeEach(() => {
 afterEach(() => {
 	if (existsSync(TEST_CWD)) {
 		rmSync(TEST_CWD, { recursive: true, force: true });
+	}
+});
+
+afterAll(() => {
+	try {
+		rmSync(TMP_ROOT, { recursive: true, force: true });
+	} catch {
+		// intentional: best-effort cleanup of the per-process tmp root.
 	}
 });
 

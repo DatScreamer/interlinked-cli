@@ -13,7 +13,7 @@
 // pre-existing findings) are already covered by `diff-overlay.test.ts`
 // and `tsc-overlay.test.ts`.
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,11 +70,26 @@ import {
 	readOnDiskOrUndefined,
 } from "../content-gate.js";
 
+// NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
+// `src/harness/__tests__`), and that is exactly the `projectRoot` the gate is
+// called with — biome/tsc config is found by walking UP from there to the repo
+// root. (It is NOT the repo root; don't "fix" it.)
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
-// Fixture files live inside a dedicated subdir under src/lib so biome/tsc
-// configs cover them. A unique subdir avoids collision with other tests
-// (diff-overlay.test.ts) that write sibling fixtures at the same time.
-const FIXTURE_DIR = resolve(CLI_ROOT, "lib/_content_gate_fixtures");
+// Fixture files live in a UNIQUE per-process `mkdtempSync` dir, so no two test
+// files (or parallel runs) ever write the same path — the parallel-safety
+// invariant (the prior fixed `<CLI_ROOT>/lib/_content_gate_fixtures` path raced
+// sibling overlay tests under `--file-parallelism`, flipping the gate's ok
+// flag). The dir is rooted under CLI_ROOT (not os.tmpdir()) because the biome
+// branch of the gate needs it there: the check-engine rewrites overlay findings
+// to a projectRoot-relative path then filters to that file, so a fixture
+// OUTSIDE projectRoot is silently dropped to zero findings. Under projectRoot,
+// (a) tsc finds tsconfig.json by walking up and applies
+// strict/exactOptionalPropertyTypes to the overlaid file, and (b) biome
+// resolves biome.json from `cwd: projectRoot`. The `_…fixtures-` name is
+// skipped by the strip-brace corpus walk. The fixtures are not `*.test.ts` and
+// not in a `__tests__/` dir, so the registry detectors (pre_block / pre_warn)
+// still run on them.
+const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_content_gate_fixtures-"));
 const CLEAN_FIXTURE = resolve(FIXTURE_DIR, "_gate_clean.ts");
 const BIOME_FIXTURE = resolve(FIXTURE_DIR, "_gate_biome.ts");
 const MIXED_FIXTURE_OK = resolve(FIXTURE_DIR, "_gate_mixed_ok.ts");
@@ -120,9 +135,8 @@ export async function ping(): Promise<void> {
 // Fixture lifecycle. `beforeAll` primes biome once — cold `npx biome` is
 // slow, so a throwaway run stabilises timing for the real assertions.
 // `beforeEach` then re-materialises all four fixtures before every test:
-// the dir is untracked and lives under src/lib, so across a long full-suite
-// run a concurrent test's working-tree cleanup can delete it out from under
-// a later `describe` block. Per-test rewrites keep every case hermetic.
+// the dir is a private per-process tmp dir, so per-test rewrites keep every
+// case hermetic (and resilient if a case mutates a fixture in place).
 beforeAll(() => {
 	mkdirSync(FIXTURE_DIR, { recursive: true });
 	writeFileSync(CLEAN_FIXTURE, CLEAN_CONTENT);

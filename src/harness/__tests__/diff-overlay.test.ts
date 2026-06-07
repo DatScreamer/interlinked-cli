@@ -2,14 +2,28 @@
 // These actually invoke biome via `npx biome check`, so each case takes
 // ~100-300ms. Acceptable for ~5 tests total.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { evaluateBiomeDiffOverlay } from "../diff-overlay.js";
 
+// NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
+// `src/harness/__tests__`), and that is exactly the `projectRoot` the overlay is
+// called with — biome/tsc config is found by walking UP from there to the repo
+// root. (It is NOT the repo root; don't "fix" it.)
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
-// Use a fixture path inside src/ so biome's config scope includes it.
-const FIXTURE_DIR = resolve(CLI_ROOT, "lib");
+// Fixtures live in a UNIQUE per-process `mkdtempSync` dir, so no two test files
+// (or parallel runs) ever write the same path — the parallel-safety invariant
+// (the prior fixed `<CLI_ROOT>/lib` path raced sibling overlay tests under
+// `--file-parallelism`, flipping findings to empty). The dir is rooted under
+// CLI_ROOT (not os.tmpdir()) for a hard toolchain reason: the check-engine
+// rewrites biome overlay findings to a path RELATIVE to projectRoot and then
+// filters to that file (index.ts getBiomeDiagnosticsForOverlay). A fixture
+// OUTSIDE projectRoot yields a `../…`-laden relative path the filter drops →
+// silent zero findings. Rooting under CLI_ROOT (== projectRoot) makes the
+// rewrite+filter agree, and biome.json / tsconfig still resolve up-tree. The
+// `_…fixtures-` name is skipped by the strip-brace corpus walk.
+const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_diff_overlay_fixtures-"));
 const FIXTURE_FILE = resolve(FIXTURE_DIR, "_overlay_fixture.ts");
 
 const CLEAN_CONTENT = `// overlay test fixture
@@ -20,7 +34,7 @@ export function identity<T>(x: T): T {
 
 describe("evaluateBiomeDiffOverlay", () => {
 	beforeAll(() => {
-		mkdirSync(FIXTURE_DIR, { recursive: true });
+		// FIXTURE_DIR already exists (mkdtempSync created it at module load).
 		writeFileSync(FIXTURE_FILE, CLEAN_CONTENT);
 		// Warm biome — under parallel test load, npx biome's cold-start can
 		// exceed the 500ms overlay budget on the first call, which surfaces
@@ -31,7 +45,7 @@ describe("evaluateBiomeDiffOverlay", () => {
 
 	afterAll(() => {
 		try {
-			rmSync(FIXTURE_FILE);
+			rmSync(FIXTURE_DIR, { recursive: true, force: true });
 		} catch {
 			// intentional: best-effort cleanup
 		}
@@ -65,7 +79,7 @@ describe("evaluateBiomeDiffOverlay", () => {
 	});
 
 	it("returns empty when the target file doesn't exist on disk (new file)", () => {
-		const nonExistent = resolve(CLI_ROOT, "lib", "_does_not_exist_overlay.ts");
+		const nonExistent = resolve(FIXTURE_DIR, "_does_not_exist_overlay.ts");
 		const result = evaluateBiomeDiffOverlay(nonExistent, "export const x = 1;\n", CLI_ROOT);
 		// No "before" state → can't call any finding "new".
 		expect(result.newFindings).toEqual([]);

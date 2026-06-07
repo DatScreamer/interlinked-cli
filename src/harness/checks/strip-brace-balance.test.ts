@@ -82,16 +82,41 @@ describe("stripForBraceScan — preserves structural brace balance (targeted)", 
 // braces. Valid TS has balanced structural braces, so any imbalance in the
 // stripped output is a stripper defect. Pure string ops over ~600 files — fast.
 describe("stripForBraceScan — corpus invariant", () => {
+	// Defensive skip for transient test fixtures. The overlay / multi-edit
+	// integration tests write their fixtures into a UNIQUE per-process
+	// `mkdtempSync` dir under src/lib/ whose name starts with `_` and contains
+	// `fixture(s)` (e.g. `src/lib/_diff_overlay_fixtures-AbC123/`), plus the
+	// biome overlay drops `*.overlay-<pid>-<ts>.ts` temp files there. Those
+	// dirs/files are created and torn down mid-run; under `--file-parallelism`
+	// this corpus walk can observe one while it's half-written. Skipping any
+	// `_*fixture*` entry (file OR dir) and any `*.overlay-*` temp file keeps the
+	// walk from flaking on a partial (possibly brace-unbalanced) snapshot.
+	// Hand-written modules never combine a leading `_` with `fixture`, so
+	// legitimate source (`config.ts`, `_internal.ts`, …) is untouched.
+	function isTransientFixtureName(entry: string): boolean {
+		return (entry.startsWith("_") && entry.includes("fixture")) || entry.includes(".overlay-");
+	}
+
 	function collectTsFiles(dir: string, out: string[]): void {
 		for (const entry of readdirSync(dir)) {
 			const p = join(dir, entry);
 			const st = statSync(p);
 			if (st.isDirectory()) {
-				if (entry === "__tests__" || entry === "__fixtures__" || entry === "node_modules") {
+				if (
+					entry === "__tests__" ||
+					entry === "__fixtures__" ||
+					entry === "node_modules" ||
+					isTransientFixtureName(entry)
+				) {
 					continue;
 				}
 				collectTsFiles(p, out);
-			} else if (entry.endsWith(".ts") && !entry.endsWith(".d.ts") && !entry.endsWith(".test.ts")) {
+			} else if (
+				entry.endsWith(".ts") &&
+				!entry.endsWith(".d.ts") &&
+				!entry.endsWith(".test.ts") &&
+				!isTransientFixtureName(entry)
+			) {
 				out.push(p);
 			}
 		}

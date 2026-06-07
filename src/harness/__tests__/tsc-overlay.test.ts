@@ -2,14 +2,25 @@
 // These spin up the TypeScript LanguageService, so the first test is slow
 // (~1-3s warmup). Subsequent tests reuse the cached LS and run in ~50ms.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { clearTscOverlayCache } from "../check-engine/tool-runners/tsc-overlay.js";
 import { evaluateTscDiffOverlay, isTscFindingBlocking } from "../diff-overlay.js";
 
+// NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
+// `src/harness/__tests__`), and that is exactly the `projectRoot` the overlay is
+// called with — tsconfig is found by walking UP from there to the repo root.
+// (It is NOT the repo root; don't "fix" it.)
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
-const FIXTURE_DIR = resolve(CLI_ROOT, "lib");
+// Fixtures live in a UNIQUE per-process `mkdtempSync` dir, so no two test files
+// (or parallel runs) ever write the same path — the parallel-safety invariant.
+// The dir is rooted under CLI_ROOT (not os.tmpdir()) so tsconfig resolves
+// up-tree; the tsc LanguageService applies strict / exactOptionalPropertyTypes
+// to the overlaid file (overlay-only files outside `rootDir: src` get correct
+// diagnostics with no TS6059 error). The `_…fixtures-` name is skipped by the
+// strip-brace corpus walk.
+const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_tsc_overlay_fixtures-"));
 const FIXTURE_FILE = resolve(FIXTURE_DIR, "_tsc_overlay_fixture.ts");
 
 // A trivially clean starting file — matters that it's clean under the CLI's
@@ -22,7 +33,7 @@ export function identity<T>(x: T): T {
 
 describe("evaluateTscDiffOverlay", () => {
 	beforeAll(() => {
-		mkdirSync(FIXTURE_DIR, { recursive: true });
+		// FIXTURE_DIR already exists (mkdtempSync created it at module load).
 		writeFileSync(FIXTURE_FILE, CLEAN_CONTENT);
 		// Ensure a fresh LS for the test file's mtime
 		clearTscOverlayCache(CLI_ROOT);
@@ -30,7 +41,7 @@ describe("evaluateTscDiffOverlay", () => {
 
 	afterAll(() => {
 		try {
-			rmSync(FIXTURE_FILE);
+			rmSync(FIXTURE_DIR, { recursive: true, force: true });
 		} catch {
 			// intentional: best-effort cleanup
 		}
@@ -76,7 +87,7 @@ describe("evaluateTscDiffOverlay", () => {
 	});
 
 	it("returns empty when the target file doesn't exist on disk (new file)", () => {
-		const nonExistent = resolve(CLI_ROOT, "lib", "_does_not_exist_tsc.ts");
+		const nonExistent = resolve(FIXTURE_DIR, "_does_not_exist_tsc.ts");
 		const result = evaluateTscDiffOverlay(
 			nonExistent,
 			"export const x: number = 1;\n",

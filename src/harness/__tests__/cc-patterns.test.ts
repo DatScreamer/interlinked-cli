@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAsyncAnalysisManager } from "../async-analysis.js";
 import {
 	applyRewrite,
@@ -14,6 +15,21 @@ import {
 import { createLearnedRulesStore } from "../learned-rules.js";
 import { buildTurnEndSummary, detectTurnPatterns, formatTurnEndWarnings } from "../turn-end.js";
 import type { CheckResultEntry, GuardRule, HarnessEvent, SessionTrajectory } from "../types.js";
+
+// Private per-process tmp root for the on-disk store tests below
+// (learned-rules + async-analysis). Parallel-safety: the prior fixed paths
+// under `process.cwd()/tmp/...` were shared across every parallel test file,
+// so concurrent runs raced each other's rmSync/mkdirSync. A mkdtempSync root
+// is unique to this process and never collides. Removed wholesale in afterAll.
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "interlinked-cc-patterns-"));
+
+afterAll(() => {
+	try {
+		rmSync(TMP_ROOT, { recursive: true, force: true });
+	} catch {
+		// intentional: best-effort cleanup of the per-process tmp root.
+	}
+});
 
 // ===========================================
 // Helpers
@@ -472,7 +488,7 @@ describe("formatTurnEndWarnings", () => {
 // ===========================================
 
 describe("createLearnedRulesStore", () => {
-	const tmpDir = join(process.cwd(), "tmp", "test-learned-rules");
+	const tmpDir = join(TMP_ROOT, "test-learned-rules");
 
 	beforeEach(() => {
 		if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
@@ -525,7 +541,7 @@ describe("createLearnedRulesStore", () => {
 // ===========================================
 
 describe("createAsyncAnalysisManager", () => {
-	const tmpDir = join(process.cwd(), "tmp", "test-async-analysis");
+	const tmpDir = join(TMP_ROOT, "test-async-analysis");
 
 	beforeEach(() => {
 		if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
