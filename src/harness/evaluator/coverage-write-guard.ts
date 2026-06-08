@@ -33,6 +33,9 @@
 // via `CoverageWriteDeps` so the unit tests stub them and NO real suite runs.
 
 import { extname } from "node:path";
+import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
+import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
+import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
 import {
 	type CoverageObligation,
 	readFileCoverageBaseline,
@@ -41,15 +44,18 @@ import {
 	updateRuntimeEstimateMs,
 	writeFileCoverageBaseline,
 } from "../coverage-obligation-ledger.js";
-import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
 import { type CreateCoverageOverlayFn, createCoverageOverlay } from "../coverage-overlay.js";
 import {
 	type CoverageLanguage,
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
-import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
-import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
+import { selectAffectedTests } from "../coverage-test-selector.js";
+import type { DependencyView } from "../dependency-view.js";
+import { isCappableFile } from "../large-file-policy.js";
+import { resolveProposedContent } from "../overlay-content.js";
+import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
+import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import {
 	type CrapInput,
 	type CyclomaticAnalyzer,
@@ -57,12 +63,6 @@ import {
 	decideCrap,
 	hasPerLineData,
 } from "./coverage-crap-decision.js";
-import type { DependencyView } from "../dependency-view.js";
-import { selectAffectedTests } from "../coverage-test-selector.js";
-import { isCappableFile } from "../large-file-policy.js";
-import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
-import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
-import { resolveProposedContent } from "../overlay-content.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
 // `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
@@ -367,13 +367,31 @@ function decideFromCoverage(
 	return null;
 }
 
-/** Loud-degrade: warn on stderr, then allow (return null). Fail-open. */
-function loudDegrade(relPath: string, why: string): null {
-	process.stderr.write(
+/**
+ * Build an ALLOW decision that carries a single agent-visible coverage warning,
+ * and ALSO mirror that exact line to the daemon's stderr (belt and suspenders:
+ * the daemon log keeps a record even where the runner doesn't surface allow-time
+ * warnings). The `[interlinked:coverage]` prefix is what the agent sees — the
+ * Claude Code adapter routes an allow-decision's `warnings` into
+ * `hookSpecificOutput.additionalContext` at PreToolUse, so this text reaches the
+ * model on the same turn. Fail-open: the decision is `allow`, never a block.
+ */
+function allowWithCoverageWarning(warning: string): HarnessDecision {
+	process.stderr.write(`${warning}\n`);
+	return { decision: "allow", warnings: [warning] };
+}
+
+/**
+ * Loud-degrade: ALLOW (fail-open) but emit an AGENT-VISIBLE warning so a write
+ * that wasn't coverage-checked never passes silently. Returns an allow-decision
+ * carrying the `[interlinked:coverage]` warning (not bare null), which the
+ * pipeline propagates to the agent. The daemon-stderr line is kept too.
+ */
+function loudDegrade(relPath: string, why: string): HarnessDecision {
+	return allowWithCoverageWarning(
 		`[interlinked:coverage] WARNING: per-edit coverage gate degraded for ${relPath} ` +
-			`(${why}) — allowing the edit (fail-open). Coverage is NOT enforced for this write.\n`,
+			`(${why}) — allowing the edit (fail-open). This edit was NOT coverage-checked.`,
 	);
-	return null;
 }
 
 /**
@@ -381,18 +399,22 @@ function loudDegrade(relPath: string, why: string): null {
  * not establish a result" — no runner, an `ok:false` run, or a `testsPassed`/report
  * the runner could not produce. The single most common real cause is a MISSING
  * COVERAGE PROVIDER (`@vitest/coverage-v8` / `pytest-cov`), so we name it. Allows
- * the edit (fail-open — "can't measure" is not "deny") but NEVER silently: the
- * warning makes the un-enforced state visible so the operator installs the
- * provider. Returns null (allow).
+ * the edit (fail-open — "can't measure" is not "deny") but NEVER silently: it
+ * returns an allow-decision carrying an AGENT-VISIBLE warning (not bare null) so
+ * the operator is told to install the provider; the daemon-stderr line is kept too.
  */
-function loudRunnerUnavailable(relPath: string, language: CoverageLanguage, why: string): null {
+function loudRunnerUnavailable(
+	relPath: string,
+	language: CoverageLanguage,
+	why: string,
+): HarnessDecision {
 	const provider = language === "python" ? "pytest-cov" : "@vitest/coverage-v8";
-	process.stderr.write(
+	return allowWithCoverageWarning(
 		`[interlinked:coverage] WARNING: coverage/red-green/CRAP gate is ON for ${language} ` +
-			`but could not run for ${relPath} (${why}) — missing coverage provider ` +
-			`(e.g. ${provider})? NOT enforced this edit; install it to enforce.\n`,
+			`but could not run for ${relPath} (${why}) — install the coverage provider ` +
+			`(${provider} for js/ts, pytest-cov for python) to enforce; this edit was NOT ` +
+			"coverage-checked.",
 	);
-	return null;
 }
 
 /** Record a deferred coverage obligation and allow (budget exceeded). */

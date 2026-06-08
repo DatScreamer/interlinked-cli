@@ -172,12 +172,15 @@ function blockForCrap(relPath: string, worst: CrapViolation): HarnessDecision {
  * The CRAP block for the edited file, or null when no touched function is over the
  * threshold. Runs only when a cyclomatic analyzer is available — an unavailable
  * analyzer fail-opens via the injected `onDegrade` (the guard's loud-degrade),
- * like the coverage block on an unmeasured suite. Cyclomatic is parsed from the
- * proposed content; only functions the edit ADDED or TOUCHED are scored.
+ * like the coverage block on an unmeasured suite. `onDegrade` returns the
+ * fail-open decision (an ALLOW carrying an agent-visible warning), which this
+ * propagates so the "CRAP gate ON but couldn't run" state is never silent.
+ * Cyclomatic is parsed from the proposed content; only functions the edit ADDED or
+ * TOUCHED are scored.
  */
 export function decideCrap(
 	input: CrapInput,
-	onDegrade: (relPath: string, why: string) => null,
+	onDegrade: (relPath: string, why: string) => HarnessDecision,
 ): HarnessDecision | null {
 	if (!input.analyzer) {
 		return onDegrade(input.relPath, "no cyclomatic analyzer for CRAP — fail-open");

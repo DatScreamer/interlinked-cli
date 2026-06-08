@@ -96,6 +96,51 @@ describe("runCoverageWriteGate", () => {
 		expect(decision).toBeNull();
 		expect(mCheckCoverage).toHaveBeenCalledOnce();
 	});
+
+	it("PROPAGATES a fail-loud allow-decision's warning onto the running decision (not dropped)", async () => {
+		// The guard degraded (no coverage provider) → it returns ALLOW + a warning
+		// rather than a bare null. The gate must NOT drop it: it merges the warning
+		// onto preDecision (so it rides to the agent) and returns null to continue
+		// the pipeline. This is the regression pin against the silent-fail-open bug
+		// where `if (!coverageBlock) return null` discarded any non-block decision.
+		const COV_WARN = "[interlinked:coverage] WARNING: gate ON for ts but could not run — install @vitest/coverage-v8.";
+		mCheckCoverage.mockResolvedValue({ decision: "allow", warnings: [COV_WARN] });
+		const preDecision = allow();
+		const decision = await runCoverageWriteGate(ctxWith(true), ev({ tool_name: "Write" }), preDecision);
+		// Continues the pipeline (does not short-circuit on a non-block)…
+		expect(decision).toBeNull();
+		// …but the warning was merged onto the running decision the pipeline returns.
+		expect(preDecision.warnings).toEqual([COV_WARN]);
+	});
+
+	it("merges a fail-loud allow's warning AFTER any pre-existing warnings (order preserved)", async () => {
+		const COV_WARN = "[interlinked:coverage] WARNING: this edit was NOT coverage-checked.";
+		mCheckCoverage.mockResolvedValue({ decision: "allow", warnings: [COV_WARN] });
+		const preDecision = allow(["PRE"]);
+		const decision = await runCoverageWriteGate(ctxWith(true), ev({ tool_name: "Write" }), preDecision);
+		expect(decision).toBeNull();
+		expect(preDecision.warnings).toEqual(["PRE", COV_WARN]);
+	});
+
+	it("an allow-decision WITHOUT warnings is a clean continue (no spurious warning added)", async () => {
+		mCheckCoverage.mockResolvedValue({ decision: "allow" });
+		const preDecision = allow();
+		const decision = await runCoverageWriteGate(ctxWith(true), ev({ tool_name: "Write" }), preDecision);
+		expect(decision).toBeNull();
+		expect(preDecision.warnings).toBeUndefined();
+	});
+
+	it("a block carrying its OWN warnings keeps them, with pre-decision warnings first", async () => {
+		mCheckCoverage.mockResolvedValue({ decision: "block", reason: "R", warnings: ["COV-BLOCK"] });
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({ tool_name: "Write" }),
+			allow(["PRE"]),
+		);
+		expect(decision?.decision).toBe("block");
+		// Merge, not overwrite: the old code clobbered the block's own warnings.
+		expect(decision?.warnings).toEqual(["PRE", "COV-BLOCK"]);
+	});
 });
 
 describe("runCommitGate", () => {

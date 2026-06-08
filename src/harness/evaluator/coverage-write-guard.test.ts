@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PerFileCoverage } from "../coverage-final-reader.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import type { PerFileCoverage } from "../coverage-final-reader.js";
 import {
 	readFileCoverageBaseline,
 	readRuntimeEstimateMs,
@@ -11,13 +11,13 @@ import {
 	writeFileCoverageBaseline,
 } from "../coverage-obligation-ledger.js";
 import type { CoverageOverlay } from "../coverage-overlay.js";
-import type { CoverageRunResult, CoverageRunner } from "../coverage-runner.js";
+import type { CoverageRunner, CoverageRunResult } from "../coverage-runner.js";
 import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
-import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import { DEFAULT_CONFIG } from "../rules/default-config.js";
+import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import {
-	checkCoverageWrite,
 	type CoverageWriteDeps,
+	checkCoverageWrite,
 } from "./coverage-write-guard.js";
 
 let root: string;
@@ -455,7 +455,7 @@ describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
 		expect(decision).toBeNull();
 	});
 
-	it("ON + a FAILED coverage run (ok:false) → loud-degrade allow, never a red-bar block", async () => {
+	it("ON + a FAILED coverage run (ok:false) → fail-loud ALLOW with the warning, never a red-bar block", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
 			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom", testsPassed: null }),
@@ -465,7 +465,10 @@ describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
 			rules({ block_on_test_failure: true }),
 			deps(failing),
 		);
-		expect(decision).toBeNull();
+		// Allowed (a red bar fires only from a clean red run), but not silently.
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/could not run/);
+		expect(decision?.reason).toBeUndefined(); // not a red-bar block
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
@@ -705,10 +708,10 @@ describe("checkCoverageWrite — CRAP block (block_on_crap)", () => {
 		expect(decision?.reason).toMatch(/coverage 25%/);
 	});
 
-	it("ON + cyclomatic analyzer UNAVAILABLE (null) → fail-open (loud-degrade, no CRAP block)", async () => {
+	it("ON + cyclomatic analyzer UNAVAILABLE (null) → fail-open ALLOW with the warning, no CRAP block", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		// Covered function ⇒ coverage gate allows; analyzer returns null (typescript/
-		// radon absent) ⇒ CRAP fail-opens with a stderr warning.
+		// radon absent) ⇒ CRAP fail-opens with an agent-visible warning (not a block).
 		const result = coverageResult("src/a.ts", [
 			{ name: "big", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
 		]);
@@ -717,12 +720,15 @@ describe("checkCoverageWrite — CRAP block (block_on_crap)", () => {
 			rules({ block_on_crap: true }),
 			depsWithCyclomatic(stubRunner(result).runner, null),
 		);
-		expect(decision).toBeNull();
+		// Fail-open is ALLOW, but it is no longer silent: the warning is carried.
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/\[interlinked:coverage\]/);
+		expect(decision?.reason).toBeUndefined(); // not a block
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
 
-	it("ON + runner unavailable (ok:false) → fail-open, never a CRAP block", async () => {
+	it("ON + runner unavailable (ok:false) → fail-open ALLOW with the warning, never a CRAP block", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
 			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom", testsPassed: null }),
@@ -732,7 +738,8 @@ describe("checkCoverageWrite — CRAP block (block_on_crap)", () => {
 			rules({ block_on_crap: true }),
 			depsWithCyclomatic(failing, [fn("big", 1, 3, 10)]),
 		);
-		expect(decision).toBeNull();
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/could not run/);
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
@@ -978,12 +985,14 @@ describe("checkCoverageWrite — affected-test selection (scoped per-edit run)",
 
 // ---------------------------------------------------------------------------
 // Fail-LOUD: gate ON for a covered language but the runner could not establish
-// a result → ALLOW (can't-measure ≠ deny) but with a LOUD provider warning,
-// never a silent pass.
+// a result → ALLOW (can't-measure ≠ deny) but with an AGENT-VISIBLE provider
+// warning carried ON THE DECISION (allow + warnings), never a silent null. The
+// warning must reach the agent — asserting `decision.warnings` (not just stderr)
+// is the regression pin against silent fail-open.
 // ---------------------------------------------------------------------------
 
 describe("checkCoverageWrite — fail-loud when the runner cannot run", () => {
-	it("ok:false on a JS edit → ALLOW + a LOUD missing-provider warning (NOT a silent allow)", async () => {
+	it("ok:false on a JS edit → ALLOW carrying the agent-visible warning (NOT a silent null)", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
 			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "no report", testsPassed: null }),
@@ -993,19 +1002,25 @@ describe("checkCoverageWrite — fail-loud when the runner cannot run", () => {
 			rules(),
 			deps(failing),
 		);
-		expect(decision).toBeNull(); // allowed (fail-open)
-		// …but LOUDLY: the exact provider-warning text the operator must act on.
+		// Allowed (fail-open) but NOT silently: it is an allow-DECISION, not null.
+		expect(decision).not.toBeNull();
+		expect(decision?.decision).toBe("allow");
+		// The warning is carried on the decision so the pipeline forwards it to the
+		// agent — the exact provider text the operator must act on.
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/\[interlinked:coverage\]/);
+		expect(warning).toMatch(/coverage\/red-green\/CRAP gate is ON for ts/);
+		expect(warning).toMatch(/could not run/);
+		expect(warning).toMatch(/@vitest\/coverage-v8/);
+		expect(warning).toMatch(/pytest-cov/);
+		expect(warning).toMatch(/NOT.*coverage-checked/);
+		// Belt and suspenders: the daemon-stderr line is still emitted.
 		expect(errSpy).toHaveBeenCalled();
-		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
-		expect(text).toMatch(/coverage\/red-green\/CRAP gate is ON for ts/);
-		expect(text).toMatch(/could not run/);
-		expect(text).toMatch(/missing coverage provider/);
-		expect(text).toMatch(/@vitest\/coverage-v8/);
-		expect(text).toMatch(/NOT enforced this edit/);
+		expect(errSpy.mock.calls.map((c) => String(c[0])).join("")).toContain(warning);
 		errSpy.mockRestore();
 	});
 
-	it("no runner for a covered language → ALLOW + the LOUD warning", async () => {
+	it("no runner for a covered language → ALLOW carrying the warning (not null)", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const noRunnerDeps: CoverageWriteDeps = {
 			runnerFor: () => null, // gate ON, but the factory yields nothing
@@ -1018,14 +1033,15 @@ describe("checkCoverageWrite — fail-loud when the runner cannot run", () => {
 			rules(),
 			noRunnerDeps,
 		);
-		expect(decision).toBeNull();
-		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
-		expect(text).toMatch(/gate is ON for ts but could not run/);
-		expect(text).toMatch(/install it to enforce/);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/gate is ON for ts but could not run/);
+		expect(warning).toMatch(/to enforce/);
+		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
 
-	it("Python ok:false → the LOUD warning names pytest-cov (the python provider)", async () => {
+	it("Python ok:false → the agent-visible warning names pytest-cov (the python provider)", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
 			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "no report", testsPassed: null }),
@@ -1035,10 +1051,29 @@ describe("checkCoverageWrite — fail-loud when the runner cannot run", () => {
 			rules({ languages: ["js", "ts", "python"] }),
 			deps(failing),
 		);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/gate is ON for python/);
+		expect(warning).toMatch(/pytest-cov/);
+		expect(errSpy).toHaveBeenCalled();
+		errSpy.mockRestore();
+	});
+
+	it("a SUCCESSFUL covered run emits NO degrade/provider warning (no spurious noise)", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		// Green suite, the single function fully covered → clean allow.
+		const result = coverageResult("src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
+		]);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(stubRunner(result).runner),
+		);
+		// Clean pass = bare null (no decision, no warning): the gate ran and was happy.
 		expect(decision).toBeNull();
 		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
-		expect(text).toMatch(/gate is ON for python/);
-		expect(text).toMatch(/pytest-cov/);
+		expect(text).not.toMatch(/\[interlinked:coverage\]/);
 		errSpy.mockRestore();
 	});
 });
@@ -1075,7 +1110,7 @@ describe("checkCoverageWrite — a .py edit reaches the gate (python covered)", 
 });
 
 describe("checkCoverageWrite — loud-degrade", () => {
-	it("allows (returns null) and warns when the runner errors", async () => {
+	it("allows AND carries the agent-visible warning when the runner errors (not null)", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
 			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom", testsPassed: null }),
@@ -1085,12 +1120,13 @@ describe("checkCoverageWrite — loud-degrade", () => {
 			rules(),
 			deps(failing),
 		);
-		expect(decision).toBeNull();
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/\[interlinked:coverage\]/);
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
 
-	it("allows and warns when the overlay factory throws (never crashes the pipeline)", async () => {
+	it("allows with an agent-visible warning when the overlay factory throws (never crashes the pipeline)", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const throwingDeps: CoverageWriteDeps = {
 			runnerFor: () => stubRunner(coverageResult("src/a.ts", [])).runner,
@@ -1105,7 +1141,12 @@ describe("checkCoverageWrite — loud-degrade", () => {
 			rules(),
 			throwingDeps,
 		);
-		expect(decision).toBeNull();
+		// The outer try/catch loud-degrades — allow, but NOT silently.
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/\[interlinked:coverage\]/);
+		expect(warning).toMatch(/degraded/);
+		expect(warning).toMatch(/overlay failed/);
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});

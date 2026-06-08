@@ -19,7 +19,7 @@
 // a no-op for non-commit Bash, so an opted-in repo pays the commit cost only on
 // an actual `git commit`. Neither throws (each underlying check fails open).
 
-import { resolveDependencyView, type DependencyView } from "../dependency-view.js";
+import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
@@ -51,9 +51,22 @@ function depViewForEvent(ctx: ServerRuntime, event: HarnessEvent): DependencyVie
  * `evaluatePreToolUse` cheap checks. Runs only when the pre-decision is `allow`
  * (a block already short-circuited) and `rules.per_edit_coverage.enabled` is
  * true; `checkCoverageWrite` itself is a pure no-op otherwise, so a repo that
- * does not opt in pays zero cost. On a coverage block, returns a block decision
- * carrying any warnings already accumulated; else null (continue → allow). Never
- * throws (the guard fails open internally).
+ * does not opt in pays zero cost.
+ *
+ * The guard returns one of three shapes, each propagated to the agent:
+ *   - a `block` → returned (short-circuits the pipeline), merging any warnings
+ *     already accumulated on the running decision.
+ *   - an `allow` WITH warnings → the fail-LOUD degrade path (no coverage provider,
+ *     runner error, …). Its warning MUST reach the agent, so we MERGE it onto
+ *     `preDecision.warnings` and return null (continue the pipeline). The old code
+ *     `return null`-ed on any non-block and dropped these — the silent-fail-open
+ *     bug this fixes. Merging-and-continuing (vs returning the allow, which would
+ *     short-circuit) keeps every downstream pipeline phase running while still
+ *     surfacing the warning, since `preDecision` is what the pipeline returns and
+ *     an allow-decision's `warnings` ride to the agent via the adapter.
+ *   - `null` (clean / budget-deferred) → null (continue).
+ *
+ * Never throws (the guard fails open internally).
  */
 export async function runCoverageWriteGate(
 	ctx: ServerRuntime,
@@ -64,12 +77,29 @@ export async function runCoverageWriteGate(
 	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: default OFF
 	// Source the dependency view from the daemon's existing graph so the gate can
 	// select only the affected tests (fast → fits the per-edit budget → enforces).
-	const coverageBlock = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
-	if (!coverageBlock) return null;
-	if (preDecision.warnings && preDecision.warnings.length > 0) {
-		coverageBlock.warnings = preDecision.warnings;
+	const decision = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
+	if (!decision) return null;
+
+	if (decision.decision === "block") {
+		// Carry forward any warnings already on the running decision (e.g. the
+		// evaluator's) ahead of the block's own, if any.
+		decision.warnings = mergeWarnings(preDecision.warnings, decision.warnings);
+		return decision;
 	}
-	return coverageBlock;
+
+	// Fail-LOUD allow: don't drop the coverage warning. Merge it onto the running
+	// decision and continue — the pipeline returns `preDecision`, and an
+	// allow-decision's warnings reach the agent (Claude Code → additionalContext).
+	if (decision.warnings && decision.warnings.length > 0) {
+		preDecision.warnings = mergeWarnings(preDecision.warnings, decision.warnings);
+	}
+	return null;
+}
+
+/** Concatenate two optional warning lists, dropping empties; undefined when both empty. */
+function mergeWarnings(a: string[] | undefined, b: string[] | undefined): string[] | undefined {
+	const merged = [...(a ?? []), ...(b ?? [])];
+	return merged.length > 0 ? merged : undefined;
 }
 
 /**

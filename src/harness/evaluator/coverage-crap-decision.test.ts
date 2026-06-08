@@ -5,8 +5,9 @@
 // in isolation.
 
 import { describe, expect, it, vi } from "vitest";
-import type { PerFileCoverage } from "../coverage-final-reader.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import type { PerFileCoverage } from "../coverage-final-reader.js";
+import type { HarnessDecision } from "../types.js";
 import {
 	type CrapInput,
 	DEFAULT_CRAP_THRESHOLD,
@@ -33,10 +34,18 @@ function perLineCov(covered: number[], uncovered: number[]): PerFileCoverage {
 }
 
 /** A never-called degrade sink — asserts decideCrap did NOT fail open. */
-function failIfDegraded(): (relPath: string, why: string) => null {
+function failIfDegraded(): (relPath: string, why: string) => HarnessDecision {
 	return () => {
 		throw new Error("onDegrade should not have been called");
 	};
+}
+
+/** A degrade stub mirroring the guard's loud-degrade: ALLOW + an agent-visible warning. */
+function allowDegrade(): (relPath: string, why: string) => HarnessDecision {
+	return (relPath, why) => ({
+		decision: "allow",
+		warnings: [`[interlinked:coverage] WARNING: ${relPath} (${why})`],
+	});
 }
 
 const baseInput = (over: Partial<CrapInput>): CrapInput => ({
@@ -116,18 +125,22 @@ describe("decideCrap — per-line (coverage.py) shape", () => {
 });
 
 describe("decideCrap — fail-open", () => {
-	it("calls onDegrade (and returns its null) when the analyzer is null", () => {
-		const onDegrade = vi.fn((_relPath: string, _why: string): null => null);
+	it("calls onDegrade AND propagates its allow-decision when the analyzer is null", () => {
+		const onDegrade = vi.fn(allowDegrade());
 		const decision = decideCrap(baseInput({ analyzer: null }), onDegrade);
-		expect(decision).toBeNull();
+		// The degrade decision (allow + warning) is returned verbatim, not swallowed
+		// into a bare null — the silent-fail-open guard at the CRAP layer.
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/\[interlinked:coverage\]/);
 		expect(onDegrade).toHaveBeenCalledOnce();
 		expect(onDegrade.mock.calls[0]?.[1]).toMatch(/no cyclomatic analyzer/);
 	});
 
-	it("calls onDegrade when the analyzer returns null (typescript/radon unavailable)", () => {
-		const onDegrade = vi.fn((_relPath: string, _why: string): null => null);
+	it("calls onDegrade and propagates its allow-decision when the analyzer returns null", () => {
+		const onDegrade = vi.fn(allowDegrade());
 		const decision = decideCrap(baseInput({ analyzer: () => null }), onDegrade);
-		expect(decision).toBeNull();
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/\[interlinked:coverage\]/);
 		expect(onDegrade).toHaveBeenCalledOnce();
 		expect(onDegrade.mock.calls[0]?.[1]).toMatch(/unavailable/);
 	});
