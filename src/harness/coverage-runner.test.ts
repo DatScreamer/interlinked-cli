@@ -32,6 +32,16 @@ function okSpawnResult(): SpawnSyncReturns<string> {
 	};
 }
 
+/** A spawn result with a given exit status and optional captured output. */
+function spawnResultWith(
+	status: number | null,
+	streams: { stdout?: string; stderr?: string } = {},
+): SpawnSyncReturns<string> {
+	const stdout = streams.stdout ?? "";
+	const stderr = streams.stderr ?? "";
+	return { pid: 1, output: ["", stdout, stderr], stdout, stderr, status, signal: null };
+}
+
 /**
  * Build a stub spawn that (a) optionally sleeps `delayMs` to make `suiteMs`
  * measurable, (b) optionally writes a `coverage-final.json` into `coverageDir`,
@@ -255,6 +265,66 @@ describe("JsCoverageRunner", () => {
 });
 
 // ==================================================================
+// JsCoverageRunner — testsPassed surfacing (exit-code → pass/fail/null)
+// ==================================================================
+
+describe("JsCoverageRunner — testsPassed (red/green via exit code)", () => {
+	/** Run with a stub that emits a coverage report AND a chosen spawn result. */
+	async function runWithStatus(stub: SpawnSyncReturns<string>) {
+		const spawn: SpawnFn = () => {
+			writeReportFor(absSrc);
+			return stub;
+		};
+		return new JsCoverageRunner(spawn).run(baseOpts());
+	}
+
+	it("exit 0 → testsPassed:true (ok report, green suite), no failingTests", async () => {
+		const res = await runWithStatus(spawnResultWith(0));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBe(true);
+		expect(res.failingTests).toBeUndefined();
+	});
+
+	it("exit 1 → testsPassed:false even though the coverage report parsed (ok:true)", async () => {
+		const res = await runWithStatus(spawnResultWith(1));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBe(false);
+	});
+
+	it("exit >1 (runner error) → testsPassed:null (can't determine ⇒ fail-open)", async () => {
+		const res = await runWithStatus(spawnResultWith(2));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBeNull();
+	});
+
+	it("ENOENT (runner unavailable) → ok:false AND testsPassed:null", async () => {
+		const { spawn } = makeStubSpawn({
+			extra: { error: Object.assign(new Error("spawn vitest ENOENT"), { code: "ENOENT" }) },
+		});
+		const res = await new JsCoverageRunner(spawn).run(baseOpts());
+		expect(res.ok).toBe(false);
+		expect(res.testsPassed).toBeNull();
+	});
+
+	it("parses failing test names from vitest FAIL lines on a red run", async () => {
+		const stdout = [
+			" FAIL  src/a.test.ts > module > does the thing",
+			" FAIL  src/b.test.ts > other > second case",
+			"some unrelated line",
+		].join("\n");
+		const res = await runWithStatus(spawnResultWith(1, { stdout }));
+		expect(res.testsPassed).toBe(false);
+		expect(res.failingTests).toEqual(["does the thing", "second case"]);
+	});
+
+	it("never attaches failingTests on a green run, even if output has FAIL-like text", async () => {
+		const res = await runWithStatus(spawnResultWith(0, { stdout: "FAIL  noise > nope" }));
+		expect(res.testsPassed).toBe(true);
+		expect(res.failingTests).toBeUndefined();
+	});
+});
+
+// ==================================================================
 // PythonCoverageRunner — parses coverage.py coverage.json into PerFileCoverage
 // ==================================================================
 
@@ -371,6 +441,68 @@ describe("PythonCoverageRunner", () => {
 		expect(calls[0]?.args.join(" ")).toContain(
 			`--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`,
 		);
+	});
+});
+
+// ==================================================================
+// PythonCoverageRunner — testsPassed surfacing (exit-code → pass/fail/null)
+// ==================================================================
+
+describe("PythonCoverageRunner — testsPassed (red/green via exit code)", () => {
+	/** Run with a stub that emits a coverage.py report AND a chosen spawn result. */
+	async function runWithStatus(stub: SpawnSyncReturns<string>) {
+		const spawn: SpawnFn = () => {
+			writePyReportFor("src/foo.py", [1, 2], [3]);
+			return stub;
+		};
+		return new PythonCoverageRunner(spawn).run(baseOpts());
+	}
+
+	it("exit 0 → testsPassed:true (green suite)", async () => {
+		const res = await runWithStatus(spawnResultWith(0));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBe(true);
+	});
+
+	it("exit 1 → testsPassed:false (pytest test failures) with a parseable report", async () => {
+		const res = await runWithStatus(spawnResultWith(1));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBe(false);
+	});
+
+	it("exit 5 (no tests collected) → testsPassed:null (runner-level, not a red bar)", async () => {
+		const res = await runWithStatus(spawnResultWith(5));
+		expect(res.ok).toBe(true);
+		expect(res.testsPassed).toBeNull();
+	});
+
+	it("ENOENT (pytest unavailable) → ok:false AND testsPassed:null", async () => {
+		const { spawn } = makeStubSpawn({
+			extra: { error: Object.assign(new Error("spawn pytest ENOENT"), { code: "ENOENT" }) },
+		});
+		const res = await new PythonCoverageRunner(spawn).run(baseOpts());
+		expect(res.ok).toBe(false);
+		expect(res.testsPassed).toBeNull();
+	});
+
+	it("parses failing test ids from pytest FAILED summary lines on a red run", async () => {
+		const stdout = [
+			"FAILED tests/test_a.py::test_one - AssertionError",
+			"FAILED tests/test_b.py::TestX::test_two",
+			"passed garbage",
+		].join("\n");
+		const res = await runWithStatus(spawnResultWith(1, { stdout }));
+		expect(res.testsPassed).toBe(false);
+		expect(res.failingTests).toEqual([
+			"tests/test_a.py::test_one",
+			"tests/test_b.py::TestX::test_two",
+		]);
+	});
+
+	it("parses pytest default-verbosity '<nodeid> FAILED' lines too", async () => {
+		const stdout = "tests/test_a.py::test_one FAILED                 [ 50%]\n";
+		const res = await runWithStatus(spawnResultWith(1, { stdout }));
+		expect(res.failingTests).toEqual(["tests/test_a.py::test_one"]);
 	});
 });
 

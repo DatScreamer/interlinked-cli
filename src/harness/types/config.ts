@@ -289,6 +289,20 @@ export interface PerEditCoverageConfig {
 	budget_ms: number;
 	/** Languages the overlay coverage run covers. Default: ["js", "ts"]. */
 	languages: string[];
+	/**
+	 * Red-bar (per-edit TDD) enforcement. **Default: false (opt-in).** When true,
+	 * an edit whose overlay run leaves the test suite RED — i.e. the suite ran and
+	 * one or more tests FAILED (`CoverageRunResult.testsPassed === false`) — is
+	 * BLOCKED before the real write, naming the failing test(s). This is a HARDER
+	 * failure than a coverage gap, so it is checked BEFORE the uncovered-line /
+	 * coverage-drop decision. The agent satisfies it by writing code + the test
+	 * that keeps the suite green together in one MultiEdit; you cannot save a
+	 * transiently-red state. A runner that cannot establish pass/fail
+	 * (`testsPassed === null` — runner unavailable / errored) fail-opens exactly
+	 * as the coverage block does. When false (the default) the red-bar check is a
+	 * pure no-op and behavior is identical to the coverage-only gate.
+	 */
+	block_on_test_failure?: boolean;
 }
 
 /** Config for the PreToolUse Bash git-session-scope gate. See

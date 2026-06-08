@@ -8,6 +8,14 @@
 // CoverageRunner, and BLOCKS the edit (strict TDD) if it adds an uncovered
 // executable line or drops the file's coverage below its prior baseline.
 //
+// Red bar (per-edit TDD), opt-in via `per_edit_coverage.block_on_test_failure`:
+// the same overlay run also yields `testsPassed` (from the suite's exit code). A
+// FAILING suite is a harder failure than a coverage gap, so when that flag is on
+// AND the run came back RED (`testsPassed === false`) the edit is blocked BEFORE
+// the coverage decision, naming the failing test(s). `testsPassed === null`
+// (runner unavailable / errored) fail-opens, exactly like a failed coverage
+// measurement — a red bar can only ever fire from a clean, definitive red run.
+//
 // Three safety properties make this safe to ship:
 //   1. CONFIG-GATED, DEFAULT OFF. Runs only when `rules.per_edit_coverage.enabled`
 //      AND `mode === "block"`. A repo that does not opt in returns at the first
@@ -189,6 +197,34 @@ function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
 	};
 }
 
+/** Render the failing-test list for the red-bar reason, or a generic phrase. */
+function failingTestPhrase(failingTests: string[] | undefined): string {
+	if (!failingTests || failingTests.length === 0) return "one or more tests are failing";
+	const shown = failingTests.slice(0, 3);
+	const suffix = failingTests.length > shown.length ? ", …" : "";
+	return `failing test(s): ${shown.join(", ")}${suffix}`;
+}
+
+/**
+ * The red-bar (strict per-edit TDD) block: the overlay ran the suite and it came
+ * back RED (`testsPassed === false`). A failing suite is a harder failure than a
+ * coverage gap, so this fires BEFORE the uncovered-line / drop decision and names
+ * the failing test(s) so the fix is actionable.
+ */
+function blockForRedBar(relPath: string, failingTests: string[] | undefined): HarnessDecision {
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: your edit to ${relPath} leaves the test suite RED ` +
+			`— ${failingTestPhrase(failingTests)}. Fix it in THIS edit (use MultiEdit so the ` +
+			"overlay sees code + test together → suite green → allowed) before proceeding. " +
+			"Strict TDD: an edit may not save a transiently-red state.",
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
 /** The actionable block for a per-file coverage regression vs the baseline. */
 function blockForDrop(relPath: string, prior: number, now: number): HarnessDecision {
 	const pct = (n: number): string => `${Math.round(n * 100)}%`;
@@ -307,6 +343,12 @@ interface GateContext {
 	language: CoverageLanguage;
 	editedLines: Set<number> | undefined;
 	budgetMs: number;
+	/**
+	 * When true (`per_edit_coverage.block_on_test_failure`), an overlay run that
+	 * leaves the suite RED (`testsPassed === false`) blocks the edit before the
+	 * coverage decision. Default-absent ⇒ falsy ⇒ coverage-only behavior.
+	 */
+	blockOnTestFailure?: boolean;
 }
 
 /**
@@ -331,6 +373,15 @@ async function runOverlayAndDecide(
 		updateRuntimeEstimateMs(ctx.projectRoot, result.suiteMs, deps.clock);
 		if (!result.ok) return loudDegrade(ctx.relPath, result.error ?? "coverage run failed");
 
+		// Red bar before coverage: a FAILING suite is a harder failure than a
+		// coverage gap. Only when opted in (block_on_test_failure) AND the suite
+		// definitively came back red (testsPassed === false). `null` (couldn't
+		// determine) falls through to the coverage decision — fail-open on the
+		// pass/fail axis, exactly like the coverage block's runner-unavailable path.
+		if (ctx.blockOnTestFailure && result.testsPassed === false) {
+			return blockForRedBar(ctx.relPath, result.failingTests);
+		}
+
 		const cov = result.perFile.get(ctx.relPath);
 		if (!cov) {
 			return loudDegrade(ctx.relPath, "edited file absent from coverage report");
@@ -354,10 +405,11 @@ function editedRelPath(event: HarnessEvent, projectRoot: string): string | null 
 
 /**
  * PreToolUse coverage gate. Returns a `block` HarnessDecision when the proposed
- * edit adds an uncovered line or drops the file's coverage; otherwise null
- * (allow). A pure no-op — runner never invoked — when disabled, in warn mode,
- * or for a non-code / unsupported-language / test / non-cappable file. Never
- * throws (fail-open).
+ * edit (a) leaves the suite RED — only when `block_on_test_failure` is on, the
+ * red-bar check, which precedes coverage — or (b) adds an uncovered line / drops
+ * the file's coverage; otherwise null (allow). A pure no-op — runner never
+ * invoked — when disabled, in warn mode, or for a non-code / unsupported-language
+ * / test / non-cappable file. Never throws (fail-open).
  */
 export async function checkCoverageWrite(
 	event: HarnessEvent,
@@ -394,6 +446,7 @@ export async function checkCoverageWrite(
 			language,
 			editedLines,
 			budgetMs: cfg.budget_ms,
+			blockOnTestFailure: cfg.block_on_test_failure === true,
 		};
 		return await runOverlayAndDecide(ctx, event, deps);
 	} catch (err) {

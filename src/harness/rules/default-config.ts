@@ -526,5 +526,14 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		mode: "block",
 		budget_ms: 25_000,
 		languages: ["js", "ts"],
+		// Red-bar (per-edit strict TDD) enforcement — DEFAULT OFF, independent of
+		// `enabled`. When a repo turns this on (alongside enabled+block), every
+		// edit must keep ALL tests green: an overlay run that leaves the suite RED
+		// (a test failed) is refused before the real write, naming the failing
+		// test. Write code + the test that holds the suite green together in one
+		// MultiEdit — you cannot save a transiently-red state. Left false here so
+		// repos that don't opt in see ZERO behavior change (a red bar still
+		// fail-opens just as it does today, treated like "can't measure").
+		block_on_test_failure: false,
 	},
 };

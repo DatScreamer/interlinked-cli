@@ -12,6 +12,7 @@ import {
 import type { CoverageOverlay } from "../coverage-overlay.js";
 import type { CoverageRunResult, CoverageRunner } from "../coverage-runner.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
+import { DEFAULT_CONFIG } from "../rules/default-config.js";
 import {
 	checkCoverageWrite,
 	type CoverageWriteDeps,
@@ -55,15 +56,18 @@ function writeEvent(relPath: string, content: string): HarnessEvent {
 	};
 }
 
-/** A coverage result for the edited file with the given function rows. */
+/** A coverage result for the edited file with the given function rows. Defaults
+ *  to a GREEN suite (`testsPassed: true`) so the coverage-decision tests are
+ *  unaffected by the red-bar gate; red-bar tests pass an explicit override. */
 function coverageResult(
 	relPath: string,
 	functions: PerFileCoverage["functions"],
 	suiteMs = 1000,
+	overrides: Partial<CoverageRunResult> = {},
 ): CoverageRunResult {
 	const perFile = new Map<string, PerFileCoverage>();
 	perFile.set(relPath, { filePath: relPath, mtime: 0, functions });
-	return { suiteMs, perFile, ok: true };
+	return { suiteMs, perFile, ok: true, testsPassed: true, ...overrides };
 }
 
 /**
@@ -76,6 +80,7 @@ function pyCoverageResult(
 	covered: number[],
 	uncovered: number[],
 	suiteMs = 1000,
+	overrides: Partial<CoverageRunResult> = {},
 ): CoverageRunResult {
 	const perFile = new Map<string, PerFileCoverage>();
 	perFile.set(relPath, {
@@ -85,7 +90,7 @@ function pyCoverageResult(
 		coveredLines: new Set(covered),
 		uncoveredLines: new Set(uncovered),
 	});
-	return { suiteMs, perFile, ok: true };
+	return { suiteMs, perFile, ok: true, testsPassed: true, ...overrides };
 }
 
 /** A stub runner that records whether it ran and returns a fixed result. */
@@ -253,6 +258,191 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 	});
 });
 
+describe("default config — red-bar is OFF (zero behavior change unless opted in)", () => {
+	it("DEFAULT_CONFIG.per_edit_coverage.block_on_test_failure is false", () => {
+		expect(DEFAULT_CONFIG.per_edit_coverage?.block_on_test_failure).toBe(false);
+	});
+
+	it("the whole coverage feature is OFF by default (enabled === false)", () => {
+		// Doubly proves zero cost: the guard short-circuits before any runner.
+		expect(DEFAULT_CONFIG.per_edit_coverage?.enabled).toBe(false);
+	});
+
+	it("running the guard with the SHIPPED default config is a no-op (runner never called)", async () => {
+		const { runner, ran } = stubRunner(
+			coverageResult("src/a.ts", [], 1000, { testsPassed: false }),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			DEFAULT_CONFIG,
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(false);
+	});
+});
+
+describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
+	const GREEN_COVERED = (relPath: string): CoverageRunResult =>
+		coverageResult(relPath, [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]);
+
+	it("OFF (default): a RED suite does NOT block — fail-open, coverage-only behavior", async () => {
+		// testsPassed:false but block_on_test_failure unset → the red bar is inert.
+		// The single function is covered, so the coverage path also allows → null.
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			1000,
+			{ testsPassed: false, failingTests: ["t > boom"] },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(), // block_on_test_failure not set
+			deps(stubRunner(result).runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("OFF (explicit false): identical to unset — RED does not block", async () => {
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			1000,
+			{ testsPassed: false },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: false }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("ON + testsPassed:false → BLOCKS, naming the failing test", async () => {
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			1000,
+			{ testsPassed: false, failingTests: ["adds two numbers", "handles empty input"] },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: true }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/RED/);
+		expect(decision?.reason).toMatch(/adds two numbers/);
+		expect(decision?.reason).toMatch(/MultiEdit/);
+	});
+
+	it("ON + testsPassed:false with NO failingTests → still BLOCKS with a generic phrase", async () => {
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			1000,
+			{ testsPassed: false },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: true }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/one or more tests are failing/);
+	});
+
+	it("ON + testsPassed:true + covered → ALLOWS (green, no coverage gap)", async () => {
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: true }),
+			deps(stubRunner(GREEN_COVERED("src/a.ts")).runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("ON + testsPassed:true + UNCOVERED added line → coverage still BLOCKS (red bar doesn't mask it)", async () => {
+		// Green suite, but the edited function is uncovered → the coverage block
+		// fires. Proves the red-bar check doesn't swallow the coverage decision.
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "added", line: 1, endLine: 3, hits: 0, statement_pct: 0 }],
+			1000,
+			{ testsPassed: true },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function added() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: true }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		// The coverage (not red-bar) reason: it names the uncovered line, not "RED".
+		expect(decision?.reason).toMatch(/uncovered/i);
+		expect(decision?.reason).not.toMatch(/RED/);
+	});
+
+	it("ON + testsPassed:null (runner unavailable / indeterminate) → fail-open (no red-bar block)", async () => {
+		// testsPassed null on an ok report with a covered function → the red bar
+		// abstains (fail-open on pass/fail) and the coverage path allows.
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			1000,
+			{ testsPassed: null },
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ block_on_test_failure: true }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("ON + a FAILED coverage run (ok:false) → loud-degrade allow, never a red-bar block", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const failing: CoverageRunner = {
+			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom", testsPassed: null }),
+		};
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules({ block_on_test_failure: true }),
+			deps(failing),
+		);
+		expect(decision).toBeNull();
+		expect(errSpy).toHaveBeenCalled();
+		errSpy.mockRestore();
+	});
+
+	it("ON but per_edit_coverage disabled → pure no-op (runner never called, no red-bar)", async () => {
+		const { runner, ran } = stubRunner(
+			coverageResult("src/a.ts", [], 1000, { testsPassed: false }),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules({ enabled: false, block_on_test_failure: true }),
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(false);
+	});
+
+	it("ON + Python red suite → BLOCKS on the red bar (per-line shape, testsPassed:false)", async () => {
+		const PY_SRC = "def added():\n    return 1\n";
+		const result = pyCoverageResult("src/a.py", [1, 2], [], 1000, {
+			testsPassed: false,
+			failingTests: ["tests/test_a.py::test_added"],
+		});
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", PY_SRC),
+			rules({ languages: ["js", "ts", "python"], block_on_test_failure: true }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/RED/);
+		expect(decision?.reason).toMatch(/test_added/);
+	});
+});
+
 describe("checkCoverageWrite — Python per-line path (coverage.py shape)", () => {
 	// Python content: 5 lines so the Write's edited-line set is {1..5}.
 	const PY_SRC = "def added():\n    x = 1\n    y = 2\n    z = 3\n    return x + y + z\n";
@@ -343,7 +533,7 @@ describe("checkCoverageWrite — loud-degrade", () => {
 	it("allows (returns null) and warns when the runner errors", async () => {
 		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		const failing: CoverageRunner = {
-			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom" }),
+			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "boom", testsPassed: null }),
 		};
 		const decision = await checkCoverageWrite(
 			writeEvent("src/a.ts", "export const a = 1;\n"),

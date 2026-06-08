@@ -30,6 +30,13 @@
 //            present) — no AST function ranges, no LCOV detour. See
 //            PythonCoverageRunner.
 //
+// Beyond coverage, each runner also reports a `testsPassed` signal derived from
+// the suite's EXIT CODE (vitest/pytest both exit 1 on test failure, >1 on a
+// runner-level error). `ok` ("a coverage report parsed") and `testsPassed`
+// ("the tests passed") are orthogonal — a suite with failing tests can still
+// emit a coverage report. The per-edit red-bar gate
+// (`evaluator/coverage-write-guard.ts`) blocks on `testsPassed === false`.
+//
 // Errors never throw: a missing/failed runner, missing report, or unparseable
 // output all become `{ ok:false, error }` so a caller can degrade gracefully.
 
@@ -70,6 +77,27 @@ export interface CoverageRunResult {
 	ok: boolean;
 	/** Human-readable reason when `ok` is false. Absent on success. */
 	error?: string;
+	/**
+	 * Whether the suite's tests all passed — ORTHOGONAL to {@link ok} (which is
+	 * "did the runner produce a coverage report?"). The red-bar block reads this:
+	 *   - `true`  — the suite ran and every test passed (exit 0).
+	 *   - `false` — the suite ran but one or more tests FAILED (vitest/pytest
+	 *               exit 1). This is the RED state the red-bar gate blocks on.
+	 *   - `null`  — could not be determined: the runner did not launch (ENOENT),
+	 *               threw, or exited with a runner-level error code (vitest >1 /
+	 *               pytest >=2 — interrupted / internal error / usage / no tests
+	 *               collected). The red-bar gate fail-opens on `null`.
+	 * A coverage report can be emitted even when some tests fail, so `ok` may be
+	 * true while `testsPassed` is false.
+	 */
+	testsPassed: boolean | null;
+	/**
+	 * A few failing test names/ids for the block message, best-effort parsed from
+	 * the runner's stdout/stderr. Absent when none were found or `testsPassed` is
+	 * not `false`. Never load-bearing — the exit code is the source of truth for
+	 * pass/fail; these names are message sugar only.
+	 */
+	failingTests?: string[];
 }
 
 /**
@@ -99,6 +127,9 @@ export const COVERAGE_FINAL_FILENAME = "coverage-final.json";
 /** coverage.py JSON report filename the Python runner writes into `coverageDir`. */
 export const COVERAGE_PY_JSON_FILENAME = "coverage.json";
 
+/** Cap on failing-test names captured for a block message (sugar, not data). */
+const MAX_FAILING_TEST_NAMES = 5;
+
 // ===========================================
 // Shared spawn plumbing
 // ===========================================
@@ -116,6 +147,12 @@ interface SuiteRunOutcome {
 	suiteMs: number;
 	/** A reason string when the spawn failed/errored; null when it completed. */
 	error: string | null;
+	/**
+	 * The completed spawn result (exit status + captured stdout/stderr), or null
+	 * when the spawn never produced one (launch failure / thrown). Each runner
+	 * maps `status` → `testsPassed` per its own exit-code contract.
+	 */
+	result: SpawnSyncReturns<string> | null;
 }
 
 /**
@@ -123,11 +160,12 @@ interface SuiteRunOutcome {
  * a thrown spawn error, or an empty command all resolve to an `error` string. A
  * non-zero exit is NOT fatal on its own — coverage can still be emitted by a
  * suite with failing tests — so we only flag a hard launch error here and let
- * the caller decide based on whether a report materialized.
+ * the caller decide based on whether a report materialized and what the exit
+ * status was (the `result` is returned for that pass/fail interpretation).
  */
 function runSuite(spawn: SpawnFn, command: string[], opts: CoverageRunOpts): SuiteRunOutcome {
 	const [bin, ...args] = command;
-	if (!bin) return { suiteMs: 0, error: "empty test command" };
+	if (!bin) return { suiteMs: 0, error: "empty test command", result: null };
 	const timeout = opts.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 	const start = Date.now();
 	let result: SpawnSyncReturns<string>;
@@ -135,20 +173,64 @@ function runSuite(spawn: SpawnFn, command: string[], opts: CoverageRunOpts): Sui
 		result = spawn(bin, args, { cwd: opts.projectRoot, timeout, encoding: "utf-8" });
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		return { suiteMs: Date.now() - start, error: `spawn threw: ${reason}` };
+		return { suiteMs: Date.now() - start, error: `spawn threw: ${reason}`, result: null };
 	}
 	const suiteMs = Date.now() - start;
 	if (result.error) {
 		const code = (result.error as NodeJS.ErrnoException).code;
 		const hint = code === "ENOENT" ? `'${bin}' not found` : result.error.message;
-		return { suiteMs, error: `suite did not run: ${hint}` };
+		return { suiteMs, error: `suite did not run: ${hint}`, result: null };
 	}
-	return { suiteMs, error: null };
+	return { suiteMs, error: null, result };
 }
 
-/** Build the `{ ok:false }` result, attaching `error` only when present. */
+/**
+ * Build the `{ ok:false }` result. `testsPassed` is null — a runner that failed
+ * to produce a report could not establish a trustworthy pass/fail signal, so the
+ * red-bar gate fail-opens (never blocks on an unmeasured suite).
+ */
 function failure(suiteMs: number, error: string): CoverageRunResult {
-	return { suiteMs, perFile: new Map(), ok: false, error };
+	return { suiteMs, perFile: new Map(), ok: false, error, testsPassed: null };
+}
+
+/** Concatenate a spawn's stdout + stderr into one searchable text blob. */
+function spawnText(result: SpawnSyncReturns<string>): string {
+	return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+}
+
+/**
+ * Map a suite exit code to the orthogonal pass/fail signal, given the runner's
+ * "tests failed" code (1 for both vitest and pytest). Exit 0 → passed; the
+ * `failExit` code → failed; null status or any other non-zero (a runner-level
+ * error — vitest >1, pytest >=2) → null (couldn't determine ⇒ fail-open).
+ */
+function testsPassedFromStatus(status: number | null, failExit: number): boolean | null {
+	if (status === 0) return true;
+	if (status === failExit) return false;
+	return null;
+}
+
+/** Trim, de-dupe, and cap a parsed failing-test name list. */
+function dedupeCap(names: string[]): string[] {
+	const seen = new Set<string>();
+	for (const raw of names) {
+		const name = raw.trim();
+		if (name) seen.add(name);
+		if (seen.size >= MAX_FAILING_TEST_NAMES) break;
+	}
+	return [...seen];
+}
+
+/**
+ * Attach `failingTests` to a result only when the run is RED and at least one
+ * name was parsed. Keeps `failingTests` absent (per exactOptionalPropertyTypes)
+ * for green / indeterminate runs and for red runs with no parseable names.
+ */
+function withFailingTests(result: CoverageRunResult, names: string[]): CoverageRunResult {
+	if (result.testsPassed !== false) return result;
+	const capped = dedupeCap(names);
+	if (capped.length === 0) return result;
+	return { ...result, failingTests: capped };
 }
 
 // ===========================================
@@ -171,9 +253,31 @@ export function defaultJsTestCommand(coverageDir: string): string[] {
 }
 
 /**
+ * Best-effort parse of failing test names from vitest text output. vitest's
+ * default reporter prints failing cases as `FAIL  <file> > <suite> > <test>`
+ * (or `❯`/`×`-prefixed rows in some renderers). We take the ` > `-tail when
+ * present, else the trailing path/segment — purely message sugar; missing names
+ * never affect the pass/fail decision (the exit code owns that).
+ */
+function parseVitestFailingTests(text: string): string[] {
+	const names: string[] = [];
+	for (const line of text.split("\n")) {
+		const m = /^\s*(?:FAIL|×|✗|❯)\s+(.+?)\s*$/.exec(line);
+		if (!m) continue;
+		const label = m[1];
+		if (!label) continue;
+		const arrow = label.lastIndexOf(" > ");
+		names.push(arrow >= 0 ? label.slice(arrow + 3).trim() : label.trim());
+	}
+	return names;
+}
+
+/**
  * Runs the suite with `vitest run --coverage` (json reporter) and parses the
  * resulting `coverage-final.json` via the existing istanbul reader. The reader
  * already returns `Map<repoRelPath, PerFileCoverage>`, so no parsing lives here.
+ * Pass/fail comes from the exit code: 0 → passed, 1 → tests failed, >1 → a
+ * runner error (null ⇒ fail-open downstream).
  */
 export class JsCoverageRunner implements CoverageRunner {
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
@@ -181,7 +285,9 @@ export class JsCoverageRunner implements CoverageRunner {
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
 		const command = opts.testCommand ?? defaultJsTestCommand(opts.coverageDir);
 		const outcome = runSuite(this.spawn, command, opts);
-		if (outcome.error) return failure(outcome.suiteMs, outcome.error);
+		if (outcome.error || !outcome.result) {
+			return failure(outcome.suiteMs, outcome.error ?? "suite did not run");
+		}
 
 		const reportPath = join(opts.coverageDir, COVERAGE_FINAL_FILENAME);
 		const perFile = loadCoverageFinal(reportPath, opts.projectRoot);
@@ -191,7 +297,9 @@ export class JsCoverageRunner implements CoverageRunner {
 				`no parseable coverage at ${reportPath} — did the suite emit the json reporter?`,
 			);
 		}
-		return { suiteMs: outcome.suiteMs, perFile, ok: true };
+		const testsPassed = testsPassedFromStatus(outcome.result.status, 1);
+		const result: CoverageRunResult = { suiteMs: outcome.suiteMs, perFile, ok: true, testsPassed };
+		return withFailingTests(result, parseVitestFailingTests(spawnText(outcome.result)));
 	}
 }
 
@@ -282,13 +390,35 @@ function parseCoveragePyJson(
 }
 
 /**
+ * Best-effort parse of failing test ids from pytest text output. pytest prints
+ * each failure as `FAILED <nodeid>[ - <message>]` in its short-test-summary, and
+ * `<nodeid> ... FAILED` in default verbosity. We capture the nodeid in either
+ * shape — message sugar only; the exit code owns the pass/fail decision.
+ */
+function parsePytestFailingTests(text: string): string[] {
+	const names: string[] = [];
+	for (const line of text.split("\n")) {
+		const summary = /^FAILED\s+(\S+)/.exec(line);
+		if (summary?.[1]) {
+			names.push(summary[1]);
+			continue;
+		}
+		const inline = /^(\S+::\S+)\s+FAILED\b/.exec(line);
+		if (inline?.[1]) names.push(inline[1]);
+	}
+	return names;
+}
+
+/**
  * Python via `pytest --cov --cov-report=json:<dir>/coverage.json` (coverage.py).
  * Runs the suite (timing it), then parses the per-line `coverage.json` into the
  * `Map<repoRelPath, PerFileCoverage>` the interface returns — `executed_lines` →
  * `coveredLines`, `missing_lines` → `uncoveredLines`. The per-edit gate prefers
  * those per-line fields, so an uncovered added `.py` line blocks exactly as it
- * does for JS. Never throws: a launch failure, a missing report, or unparseable
- * JSON all become `{ ok:false, error }`.
+ * does for JS. Pass/fail comes from the exit code: 0 → passed, 1 → tests failed,
+ * >=2 (interrupted / internal error / usage / no tests) → null (fail-open).
+ * Never throws: a launch failure, a missing report, or unparseable JSON all
+ * become `{ ok:false, error }`.
  */
 export class PythonCoverageRunner implements CoverageRunner {
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
@@ -296,7 +426,9 @@ export class PythonCoverageRunner implements CoverageRunner {
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
 		const command = opts.testCommand ?? defaultPythonTestCommand(opts.coverageDir);
 		const outcome = runSuite(this.spawn, command, opts);
-		if (outcome.error) return failure(outcome.suiteMs, outcome.error);
+		if (outcome.error || !outcome.result) {
+			return failure(outcome.suiteMs, outcome.error ?? "suite did not run");
+		}
 
 		const reportPath = join(opts.coverageDir, COVERAGE_PY_JSON_FILENAME);
 		const perFile = parseCoveragePyJson(reportPath, opts.projectRoot);
@@ -307,7 +439,9 @@ export class PythonCoverageRunner implements CoverageRunner {
 					"pytest-cov (--cov --cov-report=json)?",
 			);
 		}
-		return { suiteMs: outcome.suiteMs, perFile, ok: true };
+		const testsPassed = testsPassedFromStatus(outcome.result.status, 1);
+		const result: CoverageRunResult = { suiteMs: outcome.suiteMs, perFile, ok: true, testsPassed };
+		return withFailingTests(result, parsePytestFailingTests(spawnText(outcome.result)));
 	}
 }
 
