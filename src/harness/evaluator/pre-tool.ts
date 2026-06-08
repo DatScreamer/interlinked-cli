@@ -89,6 +89,7 @@ import {
 	getProjectSetupWarnings,
 	getSupermodelCallContext,
 	getSupermodelGraphWarning,
+	isGraphPredictionEnabled,
 	readGraphPredictionMode,
 	runTrajectoryDetector,
 } from "./pre-tool-helpers.js";
@@ -468,6 +469,7 @@ function evaluateGraphPrediction(
 	warnings: string[],
 	ctx: PreToolCtx,
 ): HarnessDecision | null {
+	if (!isGraphPredictionEnabled(sharedConfig)) return null;
 	const mode = readGraphPredictionMode(sharedConfig);
 	const cwd = event.cwd || process.cwd();
 	const result = driveGraphPrediction({ event, cwd, mode, graph });

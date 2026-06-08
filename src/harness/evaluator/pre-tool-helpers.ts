@@ -134,6 +134,16 @@ export function readGraphPredictionMode(config: SharedConfig | null): GraphPredi
 	return "shadow";
 }
 
+/** Graph-prediction is OFF unless a repo opts in with
+ *  `harness.graph_prediction.enabled: true`. Disabled by default (user, 2026-06-08):
+ *  we no longer require a Supermodel `.graph` shard prediction before an edit. */
+export function isGraphPredictionEnabled(config: SharedConfig | null): boolean {
+	const block = (config?.harness as JsonObject | undefined)?.graph_prediction as
+		| JsonObject
+		| undefined;
+	return block?.enabled === true;
+}
+
 /** Read-only consumer of Supermodel-emitted `.graph.*` shards. Returns one
  *  warning string when a HIGH or MEDIUM impact section is present for the
  *  edited file; returns null on LOW, missing shards, parse failures, or any
