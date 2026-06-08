@@ -27,7 +27,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { clearTscOverlayCache } from "../../harness/check-engine/tool-runners/tsc-overlay.js";
 import {
 	applyEditsToBuffer,
 	countOccurrences,
@@ -434,6 +433,54 @@ afterAll(() => {
 });
 
 // ───────────────────────────────────────────────
+// Parallel-safety: warm the shared CLI_ROOT toolchain ONCE, up front.
+// ───────────────────────────────────────────────
+// The integration tests below run the REAL tsc LanguageService + `npx biome`
+// against `CLI_ROOT` (the repo root — its tsconfig `include: ["src"]` makes the
+// LS program span the whole multi-thousand-file `src/` tree). Building that
+// program cold is the expensive step (~1-3s warm, but UNBOUNDED under load):
+// when the full `npm run test:coverage` run saturates every core (702 files in
+// parallel, v8 instrumentation amplifying GC pauses), a cold warmup can balloon
+// past a single test's 20s budget. That is the race this file hit — not a
+// fixture-path collision (those are already isolated to a per-process mkdtemp
+// dir) but the cold LS build landing INSIDE a tight per-test timeout under
+// host-CPU contention. Symptom in the wild: Case A timed out at 20s, then on
+// retry a still-warming LS returned spurious `Cannot find`-class diagnostics
+// and the gate falsely rejected.
+//
+// Fix: pay the warmup exactly once here, in a module-level beforeAll covered by
+// the 30s hookTimeout (headroom the per-test 20s budget lacks), via the SAME
+// gate entry point the tests use. After this, the `CLI_ROOT` LanguageService
+// (and biome discovery) is cached on the module-level registries in
+// check-engine / tsc-overlay, so every integration `it()` does only fast
+// incremental analysis (~50-200ms) — stable well under 20s even at load avg 20+.
+// This mirrors `tsc-overlay.test.ts`, which warms once and never re-clears
+// between cases. Correspondingly, the per-describe `beforeAll` no longer calls
+// `clearTscOverlayCache(CLI_ROOT)` (that forced a redundant cold rebuild before
+// each describe — 4 full warmups per file run); the LS picks up each freshly
+// written fixture via its mtime-bump versioning, so no clear is needed for
+// correctness.
+const WARMUP_FIXTURE = "_multi_edit_warmup.ts";
+// Explicit 60s budget (vs. the global 30s hookTimeout): this one-time cold
+// build of the whole-`src/` TS program + biome discovery is exactly the
+// variable-cost operation we're lifting OUT of the per-test budgets, so it must
+// have the headroom the per-test 20s budget lacks. 60s matches the heavy-spawn
+// override the vitest config already documents for write.test.ts. Cost is paid
+// once and amortized across all 36 tests in this file.
+beforeAll(() => {
+	const p = writeFixture(WARMUP_FIXTURE, "export const _warm: number = 1;\n");
+	// Same path the integration tests exercise (tsc + biome diff-overlay),
+	// keyed by CLI_ROOT — populates both module-level caches in one shot. We
+	// don't assert on the result; this call exists only for its warmup side
+	// effect. A diff requires a content change vs. disk, so overlay slightly
+	// different content than what we wrote.
+	gateProposedContentInline([{ path: p, content: "export const _warm = 2;\n" }], {
+		projectRoot: CLI_ROOT,
+	});
+	rmFixture(p);
+}, 60_000);
+
+// ───────────────────────────────────────────────
 // Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY
 // ───────────────────────────────────────────────
 // Three const declarations + a use-site in an exhaustive typed Record.
@@ -478,14 +525,16 @@ describe("Integration — Case A: Gemini in CLIENT_INSTALL_REGISTRY", () => {
 	beforeAll(() => {
 		// Self-contained fixture — type-checks cleanly under the CLI's tsconfig
 		// with no external module dependency, so it resolves the same from any
-		// directory (including the private tmp dir).
+		// directory (including the private tmp dir). No clearTscOverlayCache:
+		// the module-level beforeAll already warmed the CLI_ROOT LS, and its
+		// mtime-bump versioning picks up this freshly-written fixture. Clearing
+		// here would force a redundant cold rebuild inside the per-test budget —
+		// the exact contention hazard the warmup removes.
 		fixturePathAbs = writeFixture(FIXTURE, INITIAL_CONTENT);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	afterAll(() => {
 		rmFixture(fixturePathAbs);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	it("round-trip: adding gemini helpers + registry entry lands together via multi-edit", () => {
@@ -565,13 +614,13 @@ describe("Integration — Case B: FROZEN_NOW constant + Date.now() replacements"
 	].join("\n");
 
 	beforeAll(() => {
+		// No clearTscOverlayCache — see Case A's beforeAll. The warmed CLI_ROOT
+		// LS persists across describes; the new fixture is picked up via mtime.
 		fixturePathAbs = writeFixture(FIXTURE, INITIAL_CONTENT);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	afterAll(() => {
 		rmFixture(fixturePathAbs);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	it("round-trip: FROZEN_NOW declaration + 4 replacements land together via multi-edit", () => {
@@ -633,13 +682,13 @@ describe("Integration — GATE_REJECTED: final content fails tsc, files untouche
 	].join("\n");
 
 	beforeAll(() => {
+		// No clearTscOverlayCache — see Case A's beforeAll. The warmed CLI_ROOT
+		// LS persists across describes; the new fixture is picked up via mtime.
 		fixturePathAbs = writeFixture(FIXTURE, INITIAL_CONTENT);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	afterAll(() => {
 		rmFixture(fixturePathAbs);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	it("rejects a manifest whose final content introduces a new TS error; file is unchanged", () => {
@@ -682,15 +731,15 @@ describe("gateProposedContentInline", () => {
 	let fixturePathAbs = "";
 
 	beforeAll(() => {
+		// No clearTscOverlayCache — see Case A's beforeAll. The warmed CLI_ROOT
+		// LS persists across describes; the new fixture is picked up via mtime.
 		fixturePathAbs = writeFixture(
 			FIXTURE,
 			"export function identity<T>(x: T): T {\n\treturn x;\n}\n",
 		);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 	afterAll(() => {
 		rmFixture(fixturePathAbs);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	it("returns empty when proposed content is identical to disk", () => {
@@ -724,14 +773,14 @@ describe("runMultiEdit plumbing", () => {
 	let pathB = "";
 
 	beforeAll(() => {
+		// No clearTscOverlayCache — see Case A's beforeAll. The warmed CLI_ROOT
+		// LS persists across describes; the new fixtures are picked up via mtime.
 		pathA = writeFixture(FIXTURE_A, A_INITIAL);
 		pathB = writeFixture(FIXTURE_B, B_INITIAL);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 	afterAll(() => {
 		rmFixture(pathA);
 		rmFixture(pathB);
-		clearTscOverlayCache(CLI_ROOT);
 	});
 
 	afterEach(() => {
