@@ -72,6 +72,13 @@ vi.mock("../evaluator/coverage-write-guard.js", () => ({
 	checkCoverageWrite: vi.fn(async (): Promise<HarnessDecision | null> => null),
 }));
 
+// The two coverage phase helpers were extracted to a sibling; mock it directly so
+// the pipeline wiring is asserted without driving the real overlay / suite / git.
+vi.mock("./pre-tool-coverage-gates.js", () => ({
+	runCoverageWriteGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
+	runCommitGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
+}));
+
 vi.mock("../grep-accelerator.js", () => ({
 	checkGrepAcceleration: vi.fn(() => null),
 	findRipgrep: vi.fn(() => "/usr/bin/rg"),
@@ -132,6 +139,7 @@ import { fetchAndScan } from "../content-scanner/web-fetch-proxy.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
+import { runCommitGate, runCoverageWriteGate } from "./pre-tool-coverage-gates.js";
 import { appendShadowLog, callClassifier } from "../policy-classifier.js";
 import { isBashTsc, tryTsgoRewrite } from "../server-tsgo-bash.js";
 import {
@@ -152,6 +160,8 @@ const mWritePendingPrompt = writePendingPrompt as unknown as Mock;
 const mFetchAndScan = fetchAndScan as unknown as Mock;
 const mEvaluate = evaluatePreToolUse as unknown as Mock;
 const mCheckCoverage = checkCoverageWrite as unknown as Mock;
+const mRunCoverageGate = runCoverageWriteGate as unknown as Mock;
+const mRunCommitGate = runCommitGate as unknown as Mock;
 const mExtractPattern = extractPermissionPattern as unknown as Mock;
 const mCheckGrep = checkGrepAcceleration as unknown as Mock;
 const mFindRg = findRipgrep as unknown as Mock;
@@ -279,6 +289,8 @@ beforeEach(() => {
 	// double-invocation tests below.
 	mEvaluate.mockImplementation((): HarnessDecision => ({ decision: "allow" }));
 	mCheckCoverage.mockResolvedValue(null);
+	mRunCoverageGate.mockResolvedValue(null);
+	mRunCommitGate.mockResolvedValue(null);
 	mExtractPattern.mockReturnValue(null);
 	mShouldCoordinate.mockReturnValue(false);
 	mApplyAllowlist.mockImplementation((findings: unknown[]) => ({
@@ -1708,84 +1720,80 @@ describe("tsgo acceleration", () => {
 // ---------------------------------------------------------------------------
 
 describe("per-edit coverage gate wiring", () => {
-	function coverageCtx(enabled: boolean): ServerRuntime {
-		return makeCtx({
-			rules: makeRules({
-				per_edit_coverage: enabled
-					? { enabled: true, mode: "block", budget_ms: 25_000, languages: ["js", "ts"] }
-					: { enabled: false, mode: "block", budget_ms: 25_000, languages: ["js", "ts"] },
-			}),
-		});
-	}
-
-	it("DEFAULT OFF is a pure no-op: the guard is never invoked when config is absent", async () => {
-		const decision = await runPreToolPipeline(
-			makeCtx(), // makeRules() has no per_edit_coverage
-			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
-			makeSession(),
-		);
-		expect(mCheckCoverage).not.toHaveBeenCalled();
-		expect(decision.decision).toBe("allow");
-	});
-
-	it("does not invoke the guard when per_edit_coverage.enabled is false", async () => {
-		await runPreToolPipeline(
-			coverageCtx(false),
-			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
-			makeSession(),
-		);
-		expect(mCheckCoverage).not.toHaveBeenCalled();
-	});
-
-	it("invokes the guard and returns its block when enabled and the guard blocks", async () => {
-		mCheckCoverage.mockResolvedValue({
+	it("invokes the extracted coverage gate and returns its block", async () => {
+		mRunCoverageGate.mockResolvedValue({
 			decision: "block",
 			reason: "[interlinked:coverage] BLOCKED: src/x.ts line 2 uncovered",
 			rule_id: "per-edit-coverage",
 		});
 		const decision = await runPreToolPipeline(
-			coverageCtx(true),
+			makeCtx(),
 			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
 			makeSession(),
 		);
-		expect(mCheckCoverage).toHaveBeenCalledOnce();
+		expect(mRunCoverageGate).toHaveBeenCalledOnce();
 		expect(decision.decision).toBe("block");
 		expect(decision.reason).toContain("[interlinked:coverage]");
 	});
 
-	it("merges preDecision warnings into the coverage block", async () => {
-		mEvaluate.mockReturnValue({ decision: "allow", warnings: ["PRE-W"] });
-		mCheckCoverage.mockResolvedValue({ decision: "block", reason: "R" });
+	it("continues to allow when the coverage gate returns null (falls through to tail stages)", async () => {
+		mRunCoverageGate.mockResolvedValue(null);
 		const decision = await runPreToolPipeline(
-			coverageCtx(true),
+			makeCtx(),
 			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
 			makeSession(),
 		);
-		expect(decision.warnings).toEqual(["PRE-W"]);
+		expect(mRunCoverageGate).toHaveBeenCalledOnce();
+		expect(decision.decision).toBe("allow");
+		expect(mCaptureBaseline).toHaveBeenCalledOnce();
 	});
 
-	it("continues to allow when the guard returns null (no regression found)", async () => {
-		mCheckCoverage.mockResolvedValue(null);
-		const decision = await runPreToolPipeline(
-			coverageCtx(true),
+	it("a coverage-gate block short-circuits before the commit gate runs", async () => {
+		mRunCoverageGate.mockResolvedValue({ decision: "block", reason: "cov" });
+		await runPreToolPipeline(
+			makeCtx(),
 			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
 			makeSession(),
 		);
-		expect(mCheckCoverage).toHaveBeenCalledOnce();
+		expect(mRunCommitGate).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 13c. Commit-time quality gate (config-gated, DEFAULT OFF)
+// ---------------------------------------------------------------------------
+
+describe("commit gate wiring", () => {
+	const commitEv = () =>
+		ev({ tool_name: "Bash", tool_input: { command: 'git commit -m "x"' } });
+
+	it("invokes the commit gate on the Bash path and returns its block", async () => {
+		mRunCommitGate.mockResolvedValue({
+			decision: "block",
+			reason: "[interlinked:commit-gate] BLOCKED: suite RED",
+			rule_id: "commit-gate",
+		});
+		const decision = await runPreToolPipeline(makeCtx(), commitEv(), makeSession());
+		expect(mRunCommitGate).toHaveBeenCalledOnce();
+		expect(decision.decision).toBe("block");
+		expect(decision.reason).toContain("[interlinked:commit-gate]");
+	});
+
+	it("continues to allow when the commit gate returns null (clean commit)", async () => {
+		mRunCommitGate.mockResolvedValue(null);
+		const decision = await runPreToolPipeline(makeCtx(), commitEv(), makeSession());
+		expect(mRunCommitGate).toHaveBeenCalledOnce();
 		expect(decision.decision).toBe("allow");
 		// Falls through to the unconditional tail stages.
 		expect(mCaptureBaseline).toHaveBeenCalledOnce();
 	});
 
-	it("does not invoke the guard when the pre-decision is already a block", async () => {
-		mEvaluate.mockReturnValue({ decision: "block", reason: "BLOCKED upstream" });
-		const decision = await runPreToolPipeline(
-			coverageCtx(true),
-			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
-			makeSession(),
-		);
-		expect(mCheckCoverage).not.toHaveBeenCalled();
-		expect(decision.reason).toBe("BLOCKED upstream");
+	it("the commit gate runs AFTER the coverage gate (both invoked on a clean allow)", async () => {
+		mRunCoverageGate.mockResolvedValue(null);
+		mRunCommitGate.mockResolvedValue(null);
+		await runPreToolPipeline(makeCtx(), commitEv(), makeSession());
+		expect(mRunCoverageGate).toHaveBeenCalledOnce();
+		expect(mRunCommitGate).toHaveBeenCalledOnce();
 	});
 });
 

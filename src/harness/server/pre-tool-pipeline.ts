@@ -28,7 +28,10 @@ import { buildAskReason, writePendingPrompt } from "../content-scanner/redact-pr
 import { countPendingReviews } from "../content-scanner/review-files.js";
 import type { ScanFinding } from "../content-scanner/types.js";
 import { fetchAndScan } from "../content-scanner/web-fetch-proxy.js";
-import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
+import {
+	runCommitGate,
+	runCoverageWriteGate as runCoverageWriteGateExtracted,
+} from "./pre-tool-coverage-gates.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
 import {
@@ -646,31 +649,6 @@ function runTsgoAcceleration(
 }
 
 /**
- * Per-edit coverage gate (config-gated, DEFAULT OFF). The expensive,
- * apply-before-disk overlay+suite check — placed AFTER the synchronous
- * `evaluatePreToolUse` cheap checks. Runs only when the pre-decision is `allow`
- * (a block already short-circuited) and `rules.per_edit_coverage.enabled` is
- * true; `checkCoverageWrite` itself is a pure no-op otherwise, so a repo that
- * does not opt in pays zero cost. On a coverage block, returns a block decision
- * carrying any warnings already accumulated; else null (continue → allow). Never
- * throws (the guard fails open internally).
- */
-async function runCoverageWriteGate(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	preDecision: HarnessDecision,
-): Promise<HarnessDecision | null> {
-	if (preDecision.decision !== "allow") return null;
-	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: default OFF
-	const coverageBlock = await checkCoverageWrite(event, ctx.rules);
-	if (!coverageBlock) return null;
-	if (preDecision.warnings && preDecision.warnings.length > 0) {
-		coverageBlock.warnings = preDecision.warnings;
-	}
-	return coverageBlock;
-}
-
-/**
  * Run the full PreToolUse pipeline for a tool-use event. Returns the final
  * `HarnessDecision` (allow / block / ask).
  */
@@ -714,8 +692,17 @@ export async function runPreToolPipeline(
 	// synchronous cheap checks; short-circuits the rest of the async pipeline on
 	// a coverage block. A no-op (returns null immediately) unless the repo opts
 	// in via `per_edit_coverage.enabled`.
-	const coverageDecision = await runCoverageWriteGate(ctx, event, preDecision);
+	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
 	if (coverageDecision) return coverageDecision;
+
+	// --- Commit-time quality gate (config-gated, DEFAULT OFF) ---
+	// The hard gate for repos whose suite is too big for per-edit enforcement:
+	// on a real `git commit` Bash call it runs the FULL suite + coverage on the
+	// working tree and blocks a red bar / uncovered changed line / CRAP-over /
+	// cyclomatic-over. A pure no-op (returns null immediately) for non-commit
+	// commands and unless the repo opts in via `per_edit_coverage.enabled`.
+	const commitDecision = await runCommitGate(ctx, event, preDecision);
+	if (commitDecision) return commitDecision;
 
 	// --- LLM Policy Classifier: escalation check (shadow mode) ---
 	await runClassifierEscalation(ctx, event, session, preDecision);
