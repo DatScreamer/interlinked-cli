@@ -38,26 +38,127 @@ describe("DEFAULT_MIN_COVERAGE_PCT", () => {
 });
 
 describe("isTestableSourceFile", () => {
+	// A module body with genuine runtime logic — the default for the path-axis
+	// cases below, so only the path/extension gate is exercised.
+	const LOGIC = "export function f(x: number): number {\n\tif (x > 0) return x;\n\treturn 0;\n}\n";
+
 	it("flags hand-written source modules across adapter languages", () => {
-		expect(isTestableSourceFile("src/harness/server.ts")).toBe(true);
-		expect(isTestableSourceFile("src/lib/config.ts")).toBe(true);
-		expect(isTestableSourceFile("pkg/handler.go")).toBe(true);
-		expect(isTestableSourceFile("app/main.py")).toBe(true);
-		expect(isTestableSourceFile("crate/src/lib.rs")).toBe(true);
+		expect(isTestableSourceFile({ filePath: "src/harness/server.ts", content: LOGIC })).toBe(true);
+		expect(isTestableSourceFile({ filePath: "src/lib/config.ts", content: LOGIC })).toBe(true);
+		expect(isTestableSourceFile({ filePath: "pkg/handler.go", content: "func H() {}" })).toBe(true);
+		expect(isTestableSourceFile({ filePath: "app/main.py", content: "def m():\n\treturn 1" })).toBe(true);
+		expect(isTestableSourceFile({ filePath: "crate/src/lib.rs", content: "fn f() {}" })).toBe(true);
 	});
 
 	it("exempts test/spec files, declarations, and landing/static dirs", () => {
-		expect(isTestableSourceFile("src/foo.test.ts")).toBe(false);
-		expect(isTestableSourceFile("src/foo.spec.tsx")).toBe(false);
-		expect(isTestableSourceFile("src/harness/__tests__/evaluator.test.ts")).toBe(false);
-		expect(isTestableSourceFile("src/api.d.ts")).toBe(false);
-		expect(isTestableSourceFile("landing/index.ts")).toBe(false);
-		expect(isTestableSourceFile("scripts/build.ts")).toBe(false);
+		expect(isTestableSourceFile({ filePath: "src/foo.test.ts", content: LOGIC })).toBe(false);
+		expect(isTestableSourceFile({ filePath: "src/foo.spec.tsx", content: LOGIC })).toBe(false);
+		expect(
+			isTestableSourceFile({ filePath: "src/harness/__tests__/evaluator.test.ts", content: LOGIC }),
+		).toBe(false);
+		expect(isTestableSourceFile({ filePath: "src/api.d.ts", content: LOGIC })).toBe(false);
+		expect(isTestableSourceFile({ filePath: "landing/index.ts", content: LOGIC })).toBe(false);
+		expect(isTestableSourceFile({ filePath: "scripts/build.ts", content: LOGIC })).toBe(false);
 	});
 
 	it("exempts non-source extensions", () => {
-		expect(isTestableSourceFile("docs/guide.md")).toBe(false);
-		expect(isTestableSourceFile("config/data.json")).toBe(false);
+		expect(isTestableSourceFile({ filePath: "docs/guide.md", content: "# doc" })).toBe(false);
+		expect(isTestableSourceFile({ filePath: "config/data.json", content: "{}" })).toBe(false);
+	});
+
+	it("exempts benchmark sources (bench/ dir or *.bench.* infix)", () => {
+		expect(isTestableSourceFile({ filePath: "bench/_helpers/warm.ts", content: LOGIC })).toBe(false);
+		expect(
+			isTestableSourceFile({ filePath: "bench/evaluator-hot-path.bench.ts", content: LOGIC }),
+		).toBe(false);
+		// A `.bench.ts` infix outside a bench/ dir is exempt too.
+		expect(isTestableSourceFile({ filePath: "src/harness/foo.bench.ts", content: LOGIC })).toBe(false);
+	});
+
+	it("honors the // interlinked-tdd: exempt content directive", () => {
+		const content = `// interlinked-tdd: exempt — wiring only\n${LOGIC}`;
+		expect(isTestableSourceFile({ filePath: "src/harness/wiring.ts", content })).toBe(false);
+		// Without the directive the same logic file is testable.
+		expect(isTestableSourceFile({ filePath: "src/harness/wiring.ts", content: LOGIC })).toBe(true);
+	});
+
+	it("honors the @codegen-data header marker (template-string carriers)", () => {
+		const content = `// @codegen-data — emitted into the generated .mjs\nexport const CHUNK = \`some ${"$"}{template} body with the word function inside\`;\n`;
+		expect(isTestableSourceFile({ filePath: "src/lib/hook-template-chunks/x.ts", content })).toBe(
+			false,
+		);
+	});
+
+	it("exempts @generated files (no hand-written logic)", () => {
+		const content = `// @generated supermodel-sidecar — do not edit\n${LOGIC}`;
+		expect(isTestableSourceFile({ filePath: "src/harness/x.graph.ts", content })).toBe(false);
+	});
+
+	it("exempts a pure DATA / type-only module (no function-like logic)", () => {
+		// const data records + type/interface only — nothing behavioral to test.
+		const dataOnly = [
+			"import type { CheckMeta } from './types.js';",
+			"export type Sev = 'low' | 'high';",
+			"export interface Rule { id: string; sev: Sev }",
+			"export const META: Record<string, CheckMeta> = {",
+			"\tfoo: { name: 'Foo', description: 'detects if(!x) for-loops while scanning', tier: 1 },",
+			"\tbar: { name: 'Bar', description: 'returns nothing', tier: 2 },",
+			"};",
+			"export const RULES: Rule[] = [{ id: 'a', sev: 'high' }, { id: 'b', sev: 'low' }];",
+			"",
+		].join("\n");
+		expect(isTestableSourceFile({ filePath: "src/harness/check-metadata/x.ts", content: dataOnly })).toBe(
+			false,
+		);
+	});
+
+	it("does NOT exempt a module that mixes data with a real function", () => {
+		const mixed = [
+			"export const TABLE = [1, 2, 3];",
+			"export function pick(i: number): number {",
+			"\treturn TABLE[i] ?? 0;",
+			"}",
+			"",
+		].join("\n");
+		expect(isTestableSourceFile({ filePath: "src/harness/x.ts", content: mixed })).toBe(true);
+	});
+
+	it("does NOT exempt a const arrow function as data (arrow is logic)", () => {
+		const arrow = "export const add = (a: number, b: number): number => a + b;\n";
+		expect(isTestableSourceFile({ filePath: "src/harness/x.ts", content: arrow })).toBe(true);
+	});
+
+	it("does NOT treat an empty / side-effect-only module as data-only", () => {
+		// No declarations at all → not "data-only"; stays testable (conservative).
+		expect(isTestableSourceFile({ filePath: "src/harness/side-effect.ts", content: "import './x.js';\n" })).toBe(
+			true,
+		);
+	});
+});
+
+// Regression: the committed baseline must list ONLY files the corrected
+// predicate still considers testable. If a file became exempt (gained a
+// companion test, a `// interlinked-tdd: exempt` / `@codegen-data` marker, was
+// recognized as DATA-only, etc.) it must be REMOVED from the baseline, not left
+// as a grandfathered phantom. This pins the "no false positives in the
+// baseline" invariant the re-seed established.
+describe("committed baseline contains only genuinely-testable files", () => {
+	it("every baseline entry is still testable under the corrected predicate", () => {
+		const baselinePath = join(process.cwd(), ".interlinked", "untested-files-baseline.json");
+		const committed = JSON.parse(readFileSync(baselinePath, "utf-8")) as { files: string[] };
+		const exempt: string[] = [];
+		for (const rel of committed.files) {
+			let content: string;
+			try {
+				content = readFileSync(join(process.cwd(), rel), "utf-8");
+			} catch {
+				// A baseline entry pointing at a deleted file is its own problem,
+				// surfaced elsewhere; skip it here so this test stays focused.
+				continue;
+			}
+			if (!isTestableSourceFile({ filePath: rel, content })) exempt.push(rel);
+		}
+		expect(exempt).toEqual([]);
 	});
 });
 
@@ -154,6 +255,20 @@ describe("hasCompanionTest", () => {
 		mkdirSync(join(dir, "__tests__"), { recursive: true });
 		writeFileSync(join(dir, "__tests__", "svc.test.ts"), "import '../svc.js';\n");
 		expect(hasCompanionTest("svc.ts", dir)).toBe(true);
+	});
+
+	it("is true when a sibling *.coverage.test.ts exists (infixed companion)", () => {
+		// The repo convention `grep-accelerator.coverage.test.ts` — a
+		// supplementary coverage suite — must count as a companion.
+		writeFileSync(join(dir, "accel.ts"), "export const x = 1;\n");
+		writeFileSync(join(dir, "accel.coverage.test.ts"), "import './accel.js';\n");
+		expect(hasCompanionTest("accel.ts", dir)).toBe(true);
+	});
+
+	it("is true when a sibling *.fixtures.test.ts exists (infixed companion)", () => {
+		writeFileSync(join(dir, "svc2.ts"), "export const x = 1;\n");
+		writeFileSync(join(dir, "svc2.fixtures.test.ts"), "import './svc2.js';\n");
+		expect(hasCompanionTest("svc2.ts", dir)).toBe(true);
 	});
 
 	it("is false when no companion exists", () => {

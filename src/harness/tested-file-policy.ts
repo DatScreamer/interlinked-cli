@@ -23,10 +23,13 @@
 // `--all-checks` audit.
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
+import { isGeneratedFile } from "./checks/shared.js";
+import { stripCommentsAndStrings } from "./checks/shared-text-utils.js";
 import {
 	companionTestCandidates,
+	hasTddExemptDirective,
 	isTddExemptPath,
 } from "./evaluator/tdd-new-file-gate.js";
 
@@ -61,6 +64,15 @@ const UNTESTED_BASELINE_REL = ".interlinked/untested-files-baseline.json";
  * from `isTddExemptPath`; this regex is purely the language gate.
  */
 const TESTABLE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/;
+
+/**
+ * Benchmark sources — a `bench/` directory segment or a `.bench.<ext>` infix.
+ * Vitest benchmarks measure performance against the public API; they are not
+ * unit-test TARGETS themselves and own no companion-test convention, so the
+ * every-file-tested gate exempts them (parallels `isTddExemptPath`'s exclusion
+ * of `scripts/` and the test-path families, which don't cover `bench/`).
+ */
+const BENCH_PATH_RE = /(?:^|\/)bench\/|\.bench\.[cm]?[jt]sx?$/;
 
 /** Per-file coverage threshold config + grandfather list. */
 export interface UntestedFilesBaseline {
@@ -148,25 +160,125 @@ export function minCoverageFor(cwd: string): number {
 }
 
 /**
- * Whether the every-file-tested gate applies to this file. True only for
- * non-exempt source modules in a language we judge test exposure for. Path
- * exclusions (tests, fixtures, declarations, generated dirs, landing/web/site,
- * scripts, node_modules, .claude/.interlinked, config files) are delegated to
- * `isTddExemptPath` so the exempt set stays single-sourced with the TDD gate;
- * the extension gate widens beyond TS to all coverage-adapter languages.
+ * Content marker exempting a file from the every-file-tested gate without the
+ * blanket `@generated` semantics. Reused verbatim from `large-file-policy.ts`
+ * (same constant, same bounded header scan) so the two file-policy gates agree
+ * on what "codegen DATA" means. Covers the `src/lib/hook-template-chunks/*`
+ * modules whose bodies are template STRINGS spliced into the generated `.mjs`
+ * hook script: there is no hand-written runtime logic to test — the file is a
+ * data carrier for the emitted artifact.
  */
-export function isTestableSourceFile(filePath: string): boolean {
-	const norm = filePath.replace(/\\/g, "/");
+const CODEGEN_DATA_MARKER = "@codegen-data";
+
+/** Bounded header scan (first 20 lines), mirroring `isGeneratedFile` /
+ *  `large-file-policy.ts` — the marker must sit in the file header. */
+function hasCodegenDataMarker(content: string): boolean {
+	return content.split("\n", 20).join("\n").includes(CODEGEN_DATA_MARKER);
+}
+
+/**
+ * Logic tokens whose presence (outside comments/strings) means the module has
+ * executable behavior worth testing. `=>` and `function` cover function/arrow
+ * definitions; the control-flow keywords cover any executable body. A `new X()`
+ * or a bare call in a `const` initializer is deliberately NOT a logic token —
+ * those occur in pure-data initializers (`new RegExp(...)`, `new Set([...])`)
+ * and don't introduce a testable function. Verified against the TypeScript AST:
+ * every baseline module this predicate calls "data-only" has zero function-like
+ * AST nodes.
+ */
+const LOGIC_TOKEN_RE = /\b(?:function|return|if|for|while|switch|throw|try|catch|await|yield|do)\b|=>/;
+
+/** A module that actually declares something (a value or a type). Guards against
+ *  calling an empty / pure-side-effect file "data-only". */
+const DATA_DECLARATION_RE = /\b(?:const|enum|type|interface)\b/;
+
+/**
+ * Whether a TS module is a pure DATA / type-only module — exports only `const`
+ * data records/arrays/strings/regex and `type`/`interface`/`enum` declarations,
+ * with NO top-level function, arrow, method, or control-flow logic. Such a
+ * module has nothing behavioral to unit-test (tsc already validates the shapes);
+ * the check-metadata records, the built-in guard-rule arrays, and the like fall
+ * here. CONSERVATIVE: comments and string/template-literal bodies are stripped
+ * first (so the word "function" inside a `description:` string doesn't count),
+ * then ANY surviving logic token marks the module testable. A regex literal's
+ * body is NOT stripped, so a data module whose regex happens to contain a logic
+ * keyword reads as testable — the failure mode is "kept in the baseline", never
+ * "wrongly exempted". For those few, an explicit `// interlinked-tdd: exempt`
+ * marker is the documented escape hatch. TS-only by extension: `interface`/
+ * `type`/`const` aren't reliable data markers in Go/Rust/Python.
+ */
+function isDataOnlyModule(filePath: string, content: string): boolean {
+	if (!/\.(?:ts|tsx|mts|cts)$/i.test(filePath)) return false;
+	const code = stripCommentsAndStrings(content);
+	if (LOGIC_TOKEN_RE.test(code)) return false;
+	return DATA_DECLARATION_RE.test(code);
+}
+
+/**
+ * Whether the every-file-tested gate applies to this file. True only for
+ * hand-written source modules with genuinely testable runtime behavior.
+ *
+ * Exemptions, in order:
+ *   - extension gate: only the coverage-adapter languages (tsx?/jsx?/mjs/cjs/
+ *     py/rs/go); everything else (md/json/…) is out of scope.
+ *   - path exclusions (tests, fixtures, declarations, generated dirs,
+ *     landing/web/site, scripts, node_modules, .claude/.interlinked, config
+ *     files) — delegated to `isTddExemptPath` so the exempt set stays
+ *     single-sourced with the TDD gate.
+ *   - benchmark sources (`bench/`, `*.bench.*`) via `BENCH_PATH_RE` — perf
+ *     measurements, not unit-test targets.
+ *   - the `// interlinked-tdd: exempt` content directive (same convention the
+ *     TDD gate honors) — for genuinely-untestable surfaces the heuristics below
+ *     don't cleanly catch.
+ *   - the `@codegen-data` header marker (shared with `large-file-policy.ts`) —
+ *     codegen DATA modules (template-string carriers).
+ *   - `@generated` files (via `isGeneratedFile`) — no hand-written logic.
+ *   - pure DATA / type-only modules (`isDataOnlyModule`).
+ *
+ * Mirrors `large-file-policy.ts::isCappableFile`'s `{ filePath, content }`
+ * shape: the content-based exemptions need the file body.
+ */
+export function isTestableSourceFile(file: { filePath: string; content: string }): boolean {
+	const norm = file.filePath.replace(/\\/g, "/");
 	if (!TESTABLE_EXT_RE.test(norm)) return false;
 	if (isTddExemptPath(norm)) return false;
+	if (BENCH_PATH_RE.test(norm)) return false;
+	if (hasTddExemptDirective(file.content)) return false;
+	if (hasCodegenDataMarker(file.content)) return false;
+	if (isGeneratedFile(file.content)) return false;
+	if (isDataOnlyModule(norm, file.content)) return false;
 	return true;
 }
 
+/**
+ * Ordered companion-test paths checked for `srcAbs`. Extends the TDD gate's
+ * `companionTestCandidates` (`<base>.test`, `__tests__/<base>.test`, +`.spec`
+ * variants) with the repo's INFIXED companion conventions —
+ * `<base>.coverage.test` and `<base>.fixtures.test` (e.g.
+ * `grep-accelerator.coverage.test.ts`). Kept local to this module so the
+ * every-file-tested gate recognizes every companion shape actually in use
+ * without widening the TDD new-file gate's contract.
+ */
+function testedFileCompanions(srcAbs: string): string[] {
+	const base = companionTestCandidates(srcAbs);
+	const dir = dirname(srcAbs);
+	const ext = extname(srcAbs);
+	const stem = basename(srcAbs, ext);
+	const infixed: string[] = [];
+	for (const kind of ["test", "spec"] as const) {
+		for (const infix of ["coverage", "fixtures"] as const) {
+			infixed.push(join(dir, `${stem}.${infix}.${kind}${ext}`));
+			infixed.push(join(dir, "__tests__", `${stem}.${infix}.${kind}${ext}`));
+		}
+	}
+	return [...base, ...infixed];
+}
+
 /** Whether a companion test file exists on disk for `relPath`. `cwd` resolves
- *  the relative path to the absolute one `companionTestCandidates` requires. */
+ *  the relative path to the absolute one `testedFileCompanions` requires. */
 export function hasCompanionTest(relPath: string, cwd: string): boolean {
 	const abs = isAbsolute(relPath) ? relPath : resolve(cwd, relPath);
-	return companionTestCandidates(abs).some((candidate) => existsSync(candidate));
+	return testedFileCompanions(abs).some((candidate) => existsSync(candidate));
 }
 
 /** Verify-side verdict for a single file's test exposure. */

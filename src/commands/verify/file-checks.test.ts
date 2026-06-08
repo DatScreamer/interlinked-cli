@@ -325,13 +325,17 @@ describe("runPerFileChecks — untested_files ratchet", () => {
 		resetUntestedCoverageCache();
 	});
 
+	// Real runtime logic — `export const x = 1` alone is now a DATA-only module
+	// (exempt from the every-file-tested gate), so the fixture must carry a
+	// function for the ratchet path to apply.
+	const FIXTURE = "export function f(n: number): number {\n\tif (n > 0) return n;\n\treturn 0;\n}\n";
 	const run = (relFile: string): CodeQualityResults => {
 		const abs = join(dir, relFile);
-		writeFileSync(abs, "export const x = 1;\n");
+		writeFileSync(abs, FIXTURE);
 		const r = emptyResults();
 		runPerFileChecks({
 			file: abs,
-			content: "export const x = 1;\n",
+			content: FIXTURE,
 			cwd: dir,
 			r,
 			moduleExportsCache: new Map(),
@@ -366,6 +370,25 @@ describe("runPerFileChecks — untested_files ratchet", () => {
 
 	it("does NOT flag a test file itself (exempt extension/path)", () => {
 		expect(run("src/foo.test.ts").untestedFiles).toHaveLength(0);
+	});
+
+	it("does NOT flag a DATA-only module (no runtime logic to test)", () => {
+		const abs = join(dir, "src", "rules.ts");
+		const dataOnly =
+			"export const RULES = [{ id: 'a', sev: 'high' }, { id: 'b', sev: 'low' }];\n" +
+			"export type Sev = 'low' | 'high';\n";
+		writeFileSync(abs, dataOnly);
+		const r = emptyResults();
+		runPerFileChecks({
+			file: abs,
+			content: dataOnly,
+			cwd: dir,
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		expect(r.untestedFiles).toHaveLength(0);
 	});
 });
 

@@ -235,9 +235,15 @@ export function resetUntestedCoverageCache(): void {
  * `.interlinked/untested-files-baseline.json`; the list may shrink but a new
  * untested file fails immediately. See harness/tested-file-policy.ts.
  */
-function collectUntestedFileFinding(file: string, cwd: string, relPath: string, r: CodeQualityResults): void {
+function collectUntestedFileFinding(
+	file: string,
+	cwd: string,
+	relPath: string,
+	r: CodeQualityResults,
+	content: string,
+): void {
 	const rel = relPath.replace(/\\/g, "/");
-	if (!isTestableSourceFile(rel)) return;
+	if (!isTestableSourceFile({ filePath: rel, content })) return;
 	const baseline = loadUntestedFilesBaseline(cwd);
 	const verdict = evaluateTestedFile({
 		input: {
@@ -326,7 +332,7 @@ function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const isDts = file.endsWith(DTS_SUFFIX);
 
 	collectLargeFileFinding(file, content, cwd, relPath, r);
-	collectUntestedFileFinding(file, cwd, relPath, r);
+	collectUntestedFileFinding(file, cwd, relPath, r, content);
 
 	if (collectJsonFindings(file, content, ext, relPath, r)) return;
 

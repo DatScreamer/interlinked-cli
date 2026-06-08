@@ -1,3 +1,5 @@
+// @codegen-data — template-string carrier for the generated .mjs hook; no
+// hand-written runtime logic to unit-test (exempts the every-file-tested gate).
 // Extracted from event-normalizers.ts (decomposed for the 1500-line cap).
 // This is DATA — part of the body of the generated
 // `.interlinked/hooks/interlinked-activity.mjs`. Do NOT edit escape sequences
