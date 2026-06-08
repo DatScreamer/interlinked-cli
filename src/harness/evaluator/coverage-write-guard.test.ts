@@ -66,6 +66,28 @@ function coverageResult(
 	return { suiteMs, perFile, ok: true };
 }
 
+/**
+ * A coverage result carrying PER-LINE data (the coverage.py / Python shape):
+ * empty `functions`, populated `coveredLines` / `uncoveredLines`. The gate
+ * prefers the per-line fields whenever they are present.
+ */
+function pyCoverageResult(
+	relPath: string,
+	covered: number[],
+	uncovered: number[],
+	suiteMs = 1000,
+): CoverageRunResult {
+	const perFile = new Map<string, PerFileCoverage>();
+	perFile.set(relPath, {
+		filePath: relPath,
+		mtime: 0,
+		functions: [],
+		coveredLines: new Set(covered),
+		uncoveredLines: new Set(uncovered),
+	});
+	return { suiteMs, perFile, ok: true };
+}
+
 /** A stub runner that records whether it ran and returns a fixed result. */
 function stubRunner(result: CoverageRunResult): { runner: CoverageRunner; ran: () => boolean } {
 	let called = false;
@@ -228,6 +250,60 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 			deps(stubRunner(result).runner),
 		);
 		expect(readFileCoverageBaseline(root, "src/a.ts")).toBe(1);
+	});
+});
+
+describe("checkCoverageWrite — Python per-line path (coverage.py shape)", () => {
+	// Python content: 5 lines so the Write's edited-line set is {1..5}.
+	const PY_SRC = "def added():\n    x = 1\n    y = 2\n    z = 3\n    return x + y + z\n";
+
+	it("BLOCKS when an added .py line is uncovered (missing_lines), naming the line", async () => {
+		// Line 4 is executable but missing → uncovered on an edited line.
+		const result = pyCoverageResult("src/a.py", [1, 2, 3, 5], [4]);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", PY_SRC),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/uncovered/i);
+		expect(decision?.reason).toMatch(/line 4/);
+		expect(decision?.reason).toMatch(/MultiEdit/);
+	});
+
+	it("ALLOWS when every executable .py line is covered (zero uncovered lines)", async () => {
+		const result = pyCoverageResult("src/a.py", [1, 2, 3, 4, 5], []);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", PY_SRC),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("BLOCKS on a per-file coverage drop vs the prior baseline (uncovered off the edited lines)", async () => {
+		// Baseline fully covered; overlay reports an uncovered line (40) OUTSIDE the
+		// edited set {1..5}, so the added-line check passes and the BLOCK is the drop.
+		writeFileCoverageBaseline(root, "src/a.py", 1);
+		const result = pyCoverageResult("src/a.py", [1, 2, 3, 4, 5], [40]);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", PY_SRC),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/drop|decreas/i);
+	});
+
+	it("is a no-op when python is not in the configured languages (runner never called)", async () => {
+		const { runner, ran } = stubRunner(pyCoverageResult("src/a.py", [1], []));
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", PY_SRC),
+			rules(), // default languages: js, ts — no python
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(false);
 	});
 });
 

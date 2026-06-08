@@ -20,19 +20,22 @@
 //            `loadCoverageFinal` (coverage-final-reader.ts) already parses into
 //            the per-function `PerFileCoverage` shape. We point vitest at
 //            `coverageDir` and hand the file straight to that reader.
-//   Python → coverage.py's native `coverage.json` has no per-function ranges and
-//            there is no reader for it (the existing python adapter only emits an
-//            LCOV *command* string for `interlinked coverage`, and the LCOV→
-//            PerFileCoverage bridge in coverage-lcov.ts needs AST function ranges
-//            this scoped module must not compute). So the Python runner is a
-//            loud, honest stub that returns `ok:false` rather than silently
-//            passing — see PythonCoverageRunner.
+//   Python → coverage.py's native `coverage.json` is PER-LINE
+//            (`files["<path>"].executed_lines` / `missing_lines`), with no
+//            per-function ranges. The per-edit coverage BLOCK is itself
+//            per-line ("is line N this edit added uncovered?"), so the line
+//            data is exactly what it needs. The runner parses `executed_lines`/
+//            `missing_lines` straight into `PerFileCoverage.coveredLines` /
+//            `uncoveredLines` (the per-line fields the gate prefers when
+//            present) — no AST function ranges, no LCOV detour. See
+//            PythonCoverageRunner.
 //
 // Errors never throw: a missing/failed runner, missing report, or unparseable
 // output all become `{ ok:false, error }` so a caller can degrade gracefully.
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { loadCoverageFinal, type PerFileCoverage } from "./coverage-final-reader.js";
 
 // ===========================================
@@ -92,6 +95,9 @@ export const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 
 /** istanbul report filename vitest's `json` reporter writes into `coverageDir`. */
 export const COVERAGE_FINAL_FILENAME = "coverage-final.json";
+
+/** coverage.py JSON report filename the Python runner writes into `coverageDir`. */
+export const COVERAGE_PY_JSON_FILENAME = "coverage.json";
 
 // ===========================================
 // Shared spawn plumbing
@@ -190,38 +196,118 @@ export class JsCoverageRunner implements CoverageRunner {
 }
 
 // ===========================================
-// Python runner (honest stub)
+// Python runner (coverage.py)
 // ===========================================
 
 /**
- * Default Python suite command: pytest with coverage.py's JSON report. Recorded
- * so the wiring is in place for when a coverage.py-JSON → PerFileCoverage reader
- * lands; see {@link PythonCoverageRunner} for why it is not parsed yet.
+ * Default Python suite command: pytest under coverage.py's JSON report, written
+ * to `<coverageDir>/coverage.json` so the runner can find and parse it. Requires
+ * `pytest` + `pytest-cov` in the target environment.
  */
-export function defaultPythonTestCommand(): string[] {
-	return ["pytest", "--cov", "--cov-report=json"];
+export function defaultPythonTestCommand(coverageDir: string): string[] {
+	return ["pytest", "--cov", `--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`];
+}
+
+/** The coverage.py per-file entry we read — line lists only, the rest ignored. */
+interface CoveragePyFileEntry {
+	executed_lines?: unknown;
+	missing_lines?: unknown;
+}
+
+/** The coverage.py JSON top level — only `files` is read. */
+interface CoveragePyJson {
+	files?: Record<string, CoveragePyFileEntry>;
+}
+
+/** Coerce a coverage.py line array (`number[]`) into a Set, dropping non-ints. */
+function toLineSet(raw: unknown): Set<number> {
+	const set = new Set<number>();
+	if (!Array.isArray(raw)) return set;
+	for (const v of raw) {
+		if (typeof v === "number" && Number.isInteger(v) && v > 0) set.add(v);
+	}
+	return set;
 }
 
 /**
- * Python via `pytest --cov --cov-report=json`. Deliberately a STUB: coverage.py's
- * native `coverage.json` carries per-line, not per-function, data, and there is
- * no reader for it (the LCOV→PerFileCoverage bridge in coverage-lcov.ts needs AST
- * function ranges this scoped module must not compute). Rather than emit empty/
- * misleading per-function coverage — which would let an uncovered edit pass — it
- * runs the suite (so the command is exercised / timed) and returns `ok:false`
- * with an explicit "not yet wired" reason. The per-function reader is the next
- * step in the build order.
+ * Resolve a coverage.py file key to a repo-relative POSIX path, or null when it
+ * resolves outside `projectRoot`. coverage.py keys are usually project-relative
+ * but may be absolute; both resolve correctly against the root.
+ */
+function relForKey(key: string, projectRoot: string): string | null {
+	if (!key) return null;
+	const abs = isAbsolute(key) ? key : resolve(projectRoot, key);
+	const rel = relative(projectRoot, abs).replace(/\\/g, "/");
+	if (!rel || rel.startsWith("..")) return null;
+	return rel;
+}
+
+/**
+ * Parse coverage.py's `coverage.json` into `Map<repoRelPath, PerFileCoverage>`.
+ * Each entry carries per-line `coveredLines` / `uncoveredLines` (from
+ * `executed_lines` / `missing_lines`) and an empty `functions` list — coverage.py
+ * has no function ranges, and the per-edit gate reads the per-line fields for
+ * these. Returns null when the JSON is absent, unparseable, or has no `files`
+ * map — the runner turns that into `ok:false`.
+ */
+function parseCoveragePyJson(
+	reportPath: string,
+	projectRoot: string,
+): Map<string, PerFileCoverage> | null {
+	if (!existsSync(reportPath)) return null;
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(reportPath, "utf-8"));
+	} catch {
+		return null;
+	}
+	if (!raw || typeof raw !== "object") return null;
+	const files = (raw as CoveragePyJson).files;
+	if (!files || typeof files !== "object") return null;
+
+	const result = new Map<string, PerFileCoverage>();
+	for (const [key, entry] of Object.entries(files)) {
+		if (!entry || typeof entry !== "object") continue;
+		const rel = relForKey(key, projectRoot);
+		if (!rel) continue;
+		result.set(rel, {
+			filePath: rel,
+			mtime: 0,
+			functions: [],
+			coveredLines: toLineSet(entry.executed_lines),
+			uncoveredLines: toLineSet(entry.missing_lines),
+		});
+	}
+	return result;
+}
+
+/**
+ * Python via `pytest --cov --cov-report=json:<dir>/coverage.json` (coverage.py).
+ * Runs the suite (timing it), then parses the per-line `coverage.json` into the
+ * `Map<repoRelPath, PerFileCoverage>` the interface returns — `executed_lines` →
+ * `coveredLines`, `missing_lines` → `uncoveredLines`. The per-edit gate prefers
+ * those per-line fields, so an uncovered added `.py` line blocks exactly as it
+ * does for JS. Never throws: a launch failure, a missing report, or unparseable
+ * JSON all become `{ ok:false, error }`.
  */
 export class PythonCoverageRunner implements CoverageRunner {
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
 
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
-		const command = opts.testCommand ?? defaultPythonTestCommand();
+		const command = opts.testCommand ?? defaultPythonTestCommand(opts.coverageDir);
 		const outcome = runSuite(this.spawn, command, opts);
-		const why =
-			"python coverage parsing not yet wired: coverage.py json has no " +
-			"per-function ranges and no PerFileCoverage reader exists for it";
-		return failure(outcome.suiteMs, outcome.error ? `${outcome.error}; ${why}` : why);
+		if (outcome.error) return failure(outcome.suiteMs, outcome.error);
+
+		const reportPath = join(opts.coverageDir, COVERAGE_PY_JSON_FILENAME);
+		const perFile = parseCoveragePyJson(reportPath, opts.projectRoot);
+		if (!perFile) {
+			return failure(
+				outcome.suiteMs,
+				`no parseable coverage at ${reportPath} — did pytest run with ` +
+					"pytest-cov (--cov --cov-report=json)?",
+			);
+		}
+		return { suiteMs: outcome.suiteMs, perFile, ok: true };
 	}
 }
 
@@ -231,10 +317,9 @@ export class PythonCoverageRunner implements CoverageRunner {
 
 /**
  * The runner for a language, or `null` when unsupported. JS and TS share
- * {@link JsCoverageRunner} (vitest covers both). Python returns the honest stub
- * {@link PythonCoverageRunner} (non-null so callers can time the suite and see
- * the explicit "not yet wired" reason, never a silent pass). `spawn` is
- * forwarded so callers/tests can inject a stub.
+ * {@link JsCoverageRunner} (vitest covers both). Python returns the real
+ * {@link PythonCoverageRunner} (coverage.py JSON → per-line `PerFileCoverage`).
+ * `spawn` is forwarded so callers/tests can inject a stub.
  */
 export function coverageRunnerFor(
 	language: CoverageLanguage,

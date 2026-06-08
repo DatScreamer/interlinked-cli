@@ -51,6 +51,22 @@ export interface PerFileCoverage {
 	/** mtime of `coverage-final.json` when this entry was parsed. */
 	mtime: number;
 	functions: FunctionCoverage[];
+	/**
+	 * 1-based line numbers that executed at least once. Optional, and present
+	 * only for engines whose report is natively PER-LINE (coverage.py's
+	 * `executed_lines`). istanbul-derived JS coverage leaves this `undefined`
+	 * and is read through `functions` instead. When present, the per-edit
+	 * coverage gate prefers it because its decision ("is line N uncovered?")
+	 * is inherently per-line; see `evaluator/coverage-write-guard.ts`.
+	 */
+	coveredLines?: ReadonlySet<number>;
+	/**
+	 * 1-based line numbers that are executable but never executed (coverage.py's
+	 * `missing_lines`). Optional; populated alongside {@link coveredLines} by
+	 * per-line engines only. The presence of either field signals the per-line
+	 * decision path to the coverage gate.
+	 */
+	uncoveredLines?: ReadonlySet<number>;
 }
 
 // ==================================================================

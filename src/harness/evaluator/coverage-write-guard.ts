@@ -76,6 +76,9 @@ function languageForExt(ext: string): CoverageLanguage | null {
 		case ".mjs":
 		case ".cjs":
 			return "js";
+		case ".py":
+		case ".pyi":
+			return "python";
 		default:
 			return null;
 	}
@@ -92,6 +95,36 @@ function coveredFraction(cov: PerFileCoverage): number {
 	let sum = 0;
 	for (const fn of cov.functions) sum += fn.statement_pct;
 	return sum / cov.functions.length / 100;
+}
+
+/**
+ * The covered-line fraction from PER-LINE data (coverage.py): covered /
+ * (covered + uncovered). A file with no executable lines reports 1 (nothing to
+ * cover ⇒ no regression), matching the function-path convention.
+ */
+function coveredFractionByLine(covered: ReadonlySet<number>, uncovered: ReadonlySet<number>): number {
+	const total = covered.size + uncovered.size;
+	if (total === 0) return 1;
+	return covered.size / total;
+}
+
+/**
+ * The first executable line the edit ADDED that is uncovered, or null when none.
+ * When the edited-line set is known, only an added line counts (the line-precise
+ * strict-TDD invariant); when derivation failed (undefined), ANY uncovered line
+ * counts — an edit must not leave the file with an uncovered line. Lowest line
+ * number first, for a stable, actionable message.
+ */
+function uncoveredAddedLine(
+	uncovered: ReadonlySet<number>,
+	editedLines: Set<number> | undefined,
+): number | null {
+	let lowest: number | null = null;
+	for (const ln of uncovered) {
+		if (editedLines && !editedLines.has(ln)) continue;
+		if (lowest === null || ln < lowest) lowest = ln;
+	}
+	return lowest;
 }
 
 /** True when a function's body range intersects any edited line. */
@@ -137,6 +170,25 @@ function blockForUncovered(relPath: string, fn: FunctionCoverage): HarnessDecisi
 	};
 }
 
+/**
+ * The strict-TDD block for an uncovered added line known only by NUMBER (the
+ * per-line path; coverage.py gives no function name). Same actionable shape as
+ * {@link blockForUncovered} minus the function attribution.
+ */
+function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: ${relPath} line ${line} is executable but ` +
+			"uncovered by the test suite after this edit. Strict TDD: an edit must not add " +
+			"uncovered code. Add the test that exercises this code in the SAME edit (use " +
+			"MultiEdit so the overlay sees test + code together → covered → allowed), then retry.",
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
 /** The actionable block for a per-file coverage regression vs the baseline. */
 function blockForDrop(relPath: string, prior: number, now: number): HarnessDecision {
 	const pct = (n: number): string => `${Math.round(n * 100)}%`;
@@ -152,11 +204,51 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 	};
 }
 
+/** True when the runner reported native per-line coverage (coverage.py path). */
+function hasPerLineData(cov: PerFileCoverage): boolean {
+	return cov.uncoveredLines !== undefined || cov.coveredLines !== undefined;
+}
+
+/**
+ * The uncovered-added-line block and the now-fraction from PER-LINE data. Used
+ * for engines whose report is natively per-line (coverage.py). Returns the block
+ * for an uncovered added line, or the file's covered fraction when none.
+ */
+function decidePerLine(
+	relPath: string,
+	cov: PerFileCoverage,
+	editedLines: Set<number> | undefined,
+): { block: HarnessDecision } | { now: number } {
+	const covered = cov.coveredLines ?? new Set<number>();
+	const uncovered = cov.uncoveredLines ?? new Set<number>();
+	const line = uncoveredAddedLine(uncovered, editedLines);
+	if (line !== null) return { block: blockForUncoveredLine(relPath, line) };
+	return { now: coveredFractionByLine(covered, uncovered) };
+}
+
+/**
+ * The uncovered-added-line block and the now-fraction from PER-FUNCTION data
+ * (istanbul / JS). Behavior is unchanged from the original single-path gate.
+ */
+function decidePerFunction(
+	relPath: string,
+	cov: PerFileCoverage,
+	editedLines: Set<number> | undefined,
+): { block: HarnessDecision } | { now: number } {
+	const uncovered = uncoveredAddedFunction(cov, editedLines);
+	if (uncovered) return { block: blockForUncovered(relPath, uncovered) };
+	return { now: coveredFraction(cov) };
+}
+
 /**
  * Decide block-or-allow from the overlay's coverage of the edited file. Order:
  * uncovered-added-line first (the most actionable, line-specific message), then
  * the per-file drop vs baseline. On allow, refresh the baseline so it reflects
  * the last state the gate let through. Returns the block decision or null.
+ *
+ * One decision path, two coverage shapes: native per-line data (coverage.py) is
+ * preferred when present because the decision is inherently per-line; otherwise
+ * the per-function (istanbul / JS) path runs — identical to before this fork.
  */
 function decideFromCoverage(
 	projectRoot: string,
@@ -164,10 +256,12 @@ function decideFromCoverage(
 	cov: PerFileCoverage,
 	editedLines: Set<number> | undefined,
 ): HarnessDecision | null {
-	const uncovered = uncoveredAddedFunction(cov, editedLines);
-	if (uncovered) return blockForUncovered(relPath, uncovered);
+	const verdict = hasPerLineData(cov)
+		? decidePerLine(relPath, cov, editedLines)
+		: decidePerFunction(relPath, cov, editedLines);
+	if ("block" in verdict) return verdict.block;
 
-	const now = coveredFraction(cov);
+	const now = verdict.now;
 	const prior = readFileCoverageBaseline(projectRoot, relPath);
 	if (prior !== null && now < prior) return blockForDrop(relPath, prior, now);
 

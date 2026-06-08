@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { __resetCoverageFinalCache } from "./coverage-final-reader.js";
 import {
 	COVERAGE_FINAL_FILENAME,
+	COVERAGE_PY_JSON_FILENAME,
 	type CoverageRunOpts,
 	coverageRunnerFor,
 	defaultJsTestCommand,
@@ -108,6 +109,38 @@ afterEach(() => {
 function writeReportFor(absPath: string): void {
 	const json = istanbulFixture().replace(/__ABS__/g, absPath.replace(/\\/g, "\\\\"));
 	writeFileSync(join(coverageDir, COVERAGE_FINAL_FILENAME), json, "utf-8");
+}
+
+/**
+ * A coverage.py `coverage.json` for one project-relative file, with the given
+ * executed + missing line lists. The real shape coverage.py emits (per-line,
+ * no function ranges); keys are project-relative, as coverage.py writes them.
+ */
+function coveragePyFixture(relPath: string, executed: number[], missing: number[]): string {
+	return JSON.stringify({
+		meta: { version: "7.0.0", format: 3 },
+		files: {
+			[relPath]: {
+				executed_lines: executed,
+				missing_lines: missing,
+				summary: {
+					covered_lines: executed.length,
+					num_statements: executed.length + missing.length,
+					missing_lines: missing.length,
+				},
+			},
+		},
+		totals: {},
+	});
+}
+
+/** Write a coverage.py report into `coverageDir` for `relPath`. */
+function writePyReportFor(relPath: string, executed: number[], missing: number[]): void {
+	writeFileSync(
+		join(coverageDir, COVERAGE_PY_JSON_FILENAME),
+		coveragePyFixture(relPath, executed, missing),
+		"utf-8",
+	);
 }
 
 function baseOpts(): CoverageRunOpts {
@@ -222,33 +255,122 @@ describe("JsCoverageRunner", () => {
 });
 
 // ==================================================================
-// PythonCoverageRunner — honest stub, never silently passes
+// PythonCoverageRunner — parses coverage.py coverage.json into PerFileCoverage
 // ==================================================================
 
 describe("PythonCoverageRunner", () => {
-	it("returns ok:false with a 'not yet wired' reason even when the suite runs", async () => {
-		const { spawn, calls } = makeStubSpawn({});
+	it("parses executed_lines + missing_lines into per-line PerFileCoverage", async () => {
+		// Stub spawn writes a coverage.py report (covered lines 1,2; missing line 3).
+		const spawn: SpawnFn = () => {
+			writePyReportFor("src/foo.py", [1, 2], [3]);
+			return okSpawnResult();
+		};
 		const runner = new PythonCoverageRunner(spawn);
 		const res = await runner.run(baseOpts());
 
-		expect(res.ok).toBe(false);
-		expect(res.error).toMatch(/not yet wired/i);
-		expect(res.perFile.size).toBe(0);
-		// It DID exercise/time the suite command.
-		expect(calls[0]?.command).toBe("pytest");
-		expect(defaultPythonTestCommand()).toEqual(["pytest", "--cov", "--cov-report=json"]);
+		expect(res.ok).toBe(true);
+		expect(res.error).toBeUndefined();
+		const entry = res.perFile.get("src/foo.py");
+		expect(entry).toBeDefined();
+		// coverage.py has no function ranges → empty functions list.
+		expect(entry?.functions).toEqual([]);
+		expect([...(entry?.coveredLines ?? [])].sort((a, b) => a - b)).toEqual([1, 2]);
+		expect([...(entry?.uncoveredLines ?? [])]).toEqual([3]);
 	});
 
-	it("includes the spawn failure AND the not-yet-wired reason on ENOENT", async () => {
+	it("a fully-covered file has zero uncovered lines (block would allow)", async () => {
+		const spawn: SpawnFn = () => {
+			writePyReportFor("src/foo.py", [1, 2, 3], []);
+			return okSpawnResult();
+		};
+		const runner = new PythonCoverageRunner(spawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(true);
+		const entry = res.perFile.get("src/foo.py");
+		expect(entry?.uncoveredLines?.size).toBe(0);
+		expect([...(entry?.coveredLines ?? [])].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+	});
+
+	it("flags a file's missing_lines as uncovered (block would block that line)", async () => {
+		// Line 7 is executable but never executed — the per-edit gate keys on this.
+		const spawn: SpawnFn = () => {
+			writePyReportFor("src/foo.py", [5, 6], [7]);
+			return okSpawnResult();
+		};
+		const runner = new PythonCoverageRunner(spawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(true);
+		const entry = res.perFile.get("src/foo.py");
+		expect(entry?.uncoveredLines?.has(7)).toBe(true);
+		expect(entry?.coveredLines?.has(7)).toBe(false);
+	});
+
+	it("measures suiteMs as wall-clock (> 0 with an injected delay)", async () => {
+		const { spawn } = makeStubSpawn({ delayMs: 20 });
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writePyReportFor("src/foo.py", [1], []);
+			return r;
+		};
+		const runner = new PythonCoverageRunner(wrappingSpawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(true);
+		expect(res.suiteMs).toBeGreaterThan(0);
+	});
+
+	it("returns ok:false + error when the spawn fails (ENOENT)", async () => {
 		const { spawn } = makeStubSpawn({
-			extra: { error: Object.assign(new Error("nope"), { code: "ENOENT" }) },
+			extra: { error: Object.assign(new Error("spawn pytest ENOENT"), { code: "ENOENT" }) },
 		});
 		const runner = new PythonCoverageRunner(spawn);
 		const res = await runner.run(baseOpts());
 
 		expect(res.ok).toBe(false);
 		expect(res.error).toMatch(/not found|did not run/i);
-		expect(res.error).toMatch(/not yet wired/i);
+		expect(res.perFile.size).toBe(0);
+	});
+
+	it("returns ok:false + error when the report is missing", async () => {
+		// Spawn "succeeds" but writes nothing → no coverage.json.
+		const { spawn } = makeStubSpawn({ writeReport: false });
+		const runner = new PythonCoverageRunner(spawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/no parseable coverage/i);
+		expect(res.perFile.size).toBe(0);
+	});
+
+	it("returns ok:false when the report is present but unparseable JSON", async () => {
+		const spawn: SpawnFn = () => {
+			writeFileSync(join(coverageDir, COVERAGE_PY_JSON_FILENAME), "{ not json", "utf-8");
+			return okSpawnResult();
+		};
+		const runner = new PythonCoverageRunner(spawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/no parseable coverage/i);
+	});
+
+	it("uses the default pytest --cov-report=json command pointed at coverageDir", async () => {
+		const { spawn, calls } = makeStubSpawn({});
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writePyReportFor("src/foo.py", [1], []);
+			return r;
+		};
+		const runner = new PythonCoverageRunner(wrappingSpawn);
+		await runner.run(baseOpts());
+
+		expect(calls[0]?.command).toBe("pytest");
+		expect(calls[0]?.args).toEqual(defaultPythonTestCommand(coverageDir).slice(1));
+		expect(calls[0]?.args.join(" ")).toContain(
+			`--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`,
+		);
 	});
 });
 
@@ -262,7 +384,7 @@ describe("coverageRunnerFor", () => {
 		expect(coverageRunnerFor("ts")).toBeInstanceOf(JsCoverageRunner);
 	});
 
-	it("returns the PythonCoverageRunner stub for python", () => {
+	it("returns a PythonCoverageRunner for python", () => {
 		expect(coverageRunnerFor("python")).toBeInstanceOf(PythonCoverageRunner);
 	});
 
