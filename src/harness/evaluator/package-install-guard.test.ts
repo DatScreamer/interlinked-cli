@@ -360,6 +360,73 @@ describe("evaluatePackageInstall — effective cwd (P1.4)", () => {
 	});
 });
 
+describe("evaluatePackageInstall — harness-required dev tooling carve-out", () => {
+	// The coverage catch-22: the harness's own coverage/complexity gates require
+	// these providers, but they aren't on a fresh repo's allowlist. The carve-out
+	// treats an EXACT (ecosystem, name) match as allowlisted for the membership
+	// check ONLY — the pin gate and typosquat guard still apply. None of the
+	// names below are added to the workspace allowlist, proving the carve-out
+	// (not the allowlist) is what permits them.
+
+	// ----- ALLOWED: exact, pinned, in-ecosystem providers (≥4) -----
+	it.each([
+		"npm install @vitest/coverage-v8@4.0.18",
+		"npm install @vitest/coverage-istanbul@4.0.18",
+		"npm install vitest@2.1.0",
+		"pip install pytest-cov==5.0.0",
+		"pip install coverage==7.0.0",
+		"pip install pytest==8.0.0",
+		"pip install radon==6.0.1",
+	])("allows pinned harness tooling NOT on the allowlist: %s", (cmd) => {
+		expect(evalCmd(cmd).decision).toBe("allow");
+	});
+
+	// ----- BLOCKED: carve-out does not weaken the pin / scope / ecosystem gates (≥4) -----
+	it("still blocks unpinned harness tooling (pin gate applies first)", () => {
+		const r = evalCmd("npm install @vitest/coverage-v8");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unpinned-version");
+	});
+
+	it("still blocks a non-carved-out normal package", () => {
+		const r = evalCmd("npm install left-pad@1.0.0");
+		expect(r.decision).toBe("block");
+		expect(r.reason).toMatch(/left-pad/);
+		expect(r.rule_id).toBe("supply-chain-unapproved-package");
+	});
+
+	it("blocks a provider-lookalike typosquat (not an exact carve-out match)", () => {
+		// `@vitest/coverage-v8-malware` is not in the curated set, so it takes the
+		// normal allowlist path and is rejected as unapproved.
+		const r = evalCmd("npm install @vitest/coverage-v8-malware@1.0.0");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unapproved-package");
+	});
+
+	it("does NOT carve out a provider name in the wrong ecosystem", () => {
+		// `vitest` is npm tooling; under pypi it is not a member, so the normal
+		// allowlist path blocks it.
+		const r = evalCmd("pip install vitest==1.0.0");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unapproved-package");
+	});
+
+	it("does NOT carve out a near-miss of a provider name", () => {
+		// `@vitest/coverage-v9000` differs from the curated `@vitest/coverage-v8`,
+		// so it is not an exact match and falls through to the allowlist block.
+		const r = evalCmd("npm install @vitest/coverage-v9000@1.0.0");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unapproved-package");
+	});
+
+	it("does NOT carve out a git URL for a provider name", () => {
+		// URL specs are never registry kind → never members; URL gate still fires.
+		const r = evalCmd("npm install git+https://github.com/attacker/vitest");
+		expect(r.decision).toBe("block");
+		expect(r.reason).toMatch(/git/i);
+	});
+});
+
 describe("evaluatePackageInstall — compound", () => {
 	it("blocks the whole compound if any segment is unapproved", () => {
 		// Pin lodash so the block comes from `evil`'s allowlist miss, not the

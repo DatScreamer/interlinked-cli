@@ -14,6 +14,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { findTyposquatMatch } from "../checks/supply-chain.js";
 import {
 	type Allowlist,
 	hashLockfile,
@@ -23,6 +24,46 @@ import {
 import type { Ecosystem, InstallCommand, PackageSpec } from "../package-install-parser.js";
 import { pinnedVersionViolation } from "../package-install-parser.js";
 import type { HarnessDecision } from "../types.js";
+
+// Curated dev tooling the harness's OWN quality gates shell out to / require.
+//
+// The catch-22: the coverage and complexity gates mandate these providers
+// (`@vitest/coverage-v8` for JS coverage, `pytest-cov`/`coverage` for Python,
+// `radon` for Python cyclomatic), but the supply-chain gate would block their
+// install because they aren't yet on the project allowlist. Enforcing coverage
+// would then require fighting the very gate meant to protect you. To break the
+// loop, an EXACT name match here is treated as allowlisted for the
+// allowlist-membership check ONLY.
+//
+// This carve-out is deliberately narrow:
+//   - EXACT (ecosystem, name) match only — no prefix, no fuzzy, no scope-wide
+//     pass. A near-miss (`@vitest/coverage-v9000`) is NOT here, so it falls
+//     through to the normal allowlist + typosquat path and is blocked.
+//   - The exact-version PIN gate still applies (`@vitest/coverage-v8` unpinned
+//     is still blocked; only `@vitest/coverage-v8@4.0.18` is allowed).
+//   - `findTyposquatMatch` still runs — a lookalike of a provider name (in the
+//     bare-name space the heuristic covers) is still refused.
+// It NEVER relaxes the gate for anything outside this set.
+const HARNESS_REQUIRED_DEV_TOOLING: Partial<Record<Ecosystem, ReadonlySet<string>>> = {
+	npm: new Set(["@vitest/coverage-v8", "@vitest/coverage-istanbul", "vitest"]),
+	pypi: new Set(["pytest-cov", "coverage", "pytest", "radon"]),
+};
+
+/**
+ * True when `spec` is an EXACT-name match for harness-required dev tooling in
+ * `ecosystem` AND is not a typosquat of a known popular package. Exact-only:
+ * a registry spec whose name differs by even one char is not a member, so it
+ * stays on the normal allowlist path. Non-registry specs are never members.
+ */
+function isHarnessRequiredTooling(ecosystem: Ecosystem, spec: PackageSpec): boolean {
+	if (spec.kind !== "registry") return false;
+	if (!HARNESS_REQUIRED_DEV_TOOLING[ecosystem]?.has(spec.name)) return false;
+	// Defense in depth: a curated name that somehow also reads as a typosquat
+	// of a popular package is refused rather than waved through.
+	return findTyposquatMatch(spec.name) === null;
+}
+
+export { HARNESS_REQUIRED_DEV_TOOLING };
 
 interface ManifestSearchEntry {
 	manifest: string;
@@ -120,6 +161,12 @@ function positionalPackagesBlock(
 	for (const spec of cmd.packages) {
 		const pinBlock = pinViolationBlock(cmd, spec);
 		if (pinBlock) return pinBlock;
+		// Harness-required dev tooling (coverage/test/complexity providers) is
+		// treated as allowlisted for the membership check ONLY — see
+		// HARNESS_REQUIRED_DEV_TOOLING for why (the coverage catch-22). The pin
+		// gate above and the typosquat guard inside isHarnessRequiredTooling
+		// have already applied, so this is exact-name + pinned + non-typosquat.
+		if (isHarnessRequiredTooling(cmd.ecosystem, spec)) continue;
 		const dec = isPackageAllowed(allowlist, cmd.ecosystem, spec);
 		if (!dec.allowed) {
 			return block(

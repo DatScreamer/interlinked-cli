@@ -281,6 +281,12 @@ const KNOWN_LEGITIMATE_PACKAGES = new Set([
 	// Git / vcs
 	"simple-git", // git wrapper
 	"isomorphic-git", // Pure JS git
+	// Python test/coverage tooling (PyPI). These trip the npm-centric heuristic
+	// at distance ≤2 against npm names (e.g. pytest vs vitest) despite being
+	// canonical, hugely-popular Python packages. The supply-chain guard's
+	// HARNESS_REQUIRED_DEV_TOOLING carve-out also relies on these passing
+	// findTyposquatMatch.
+	"pytest", // canonical Python test runner (vs npm "vitest", dist 2)
 ]);
 
 // Merge in the side-loaded data file. The file is the refreshable surface;
