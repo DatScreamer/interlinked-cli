@@ -20,6 +20,7 @@ import {
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
 	formatBisectNotResetWarning,
+	formatDeferredCoverageWarning,
 	formatDocMarkerDriftWarning,
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
@@ -27,6 +28,7 @@ import {
 	formatUnresolvedRedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
+	readDeferredCoverageObligations,
 } from "../verification-stop-checks.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
@@ -78,10 +80,11 @@ export function buildCommitCadenceNudge(
 	return nudge;
 }
 
-/** Verification-before-stop nudges — ten independent reflection
+/** Verification-before-stop nudges — eleven independent reflection
  *  warnings keyed off `verification_observed`, `observed_checks`,
  *  `stubs_introduced`, `tdd_cycles`, `commands_run`, and `files_written`
- *  session fields. All stderr-only; none block. See
+ *  session fields, plus the deferred coverage-obligation ledger read by
+ *  `session_id`. All stderr-only; none block. See
  *  docs/external-pulse/failproofai.md §"smarter Stop hooks" for the design
  *  rationale and docs/design/stop-event-checks.md for the tier-2/3 backlog. */
 export function buildVerificationStopWarnings(
@@ -123,6 +126,10 @@ export function buildVerificationStopWarnings(
 	pushIfNotNull(
 		warnings,
 		vsc.warn_unresolved_red ? checkUnresolvedRed(ctx, session) : null,
+	);
+	pushIfNotNull(
+		warnings,
+		ctx.rules.per_edit_coverage?.enabled ? checkDeferredCoverage(ctx, session) : null,
 	);
 	pushIfNotNull(warnings, checkBisectNotReset(ctx, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
@@ -273,6 +280,24 @@ function checkUnresolvedRed(ctx: ServerRuntime, session: SessionTrajectory): str
 	ctx.log(
 		`Verify-before-stop: unresolved-red (${redChecks.length} checks, ${redTests.length} tests)`,
 	);
+	return warning;
+}
+
+/** Deferred-coverage reflection nudge — the session deferred one or more
+ *  per-edit coverage checks (the budget-gate path in coverage-write-guard.ts)
+ *  that were NEVER enforced; only the commit gate enforces them. Sibling of
+ *  `checkUnresolvedRed`: RED is "you saw it fail", deferred is "you never ran
+ *  it". The ledger is append-only with no resolution marker, so every row
+ *  recorded for THIS session counts as unmet (the formatter says so). Reads the
+ *  ledger by `session_id` so another session's obligations never leak in.
+ *  Gated by the caller on `per_edit_coverage.enabled` (the producer flag — no
+ *  obligations exist unless per-edit coverage is on). Reflection only; never
+ *  blocks. */
+function checkDeferredCoverage(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+	const obligations = readDeferredCoverageObligations(ctx.cwd, session.session_id);
+	const warning = formatDeferredCoverageWarning({ obligations });
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: deferred-coverage (${obligations.length} unmet)`);
 	return warning;
 }
 

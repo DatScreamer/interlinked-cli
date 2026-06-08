@@ -30,6 +30,7 @@ vi.mock("../verification-stop-checks.js", () => ({
 	countDocFactSourcesEdited: vi.fn(),
 	countUiFilesEdited: vi.fn(),
 	formatBisectNotResetWarning: vi.fn(),
+	formatDeferredCoverageWarning: vi.fn(),
 	formatDocMarkerDriftWarning: vi.fn(),
 	formatStubsIntroducedWarning: vi.fn(),
 	formatTddRegressionWarning: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../verification-stop-checks.js", () => ({
 	formatUnresolvedRedWarning: vi.fn(),
 	formatUnverifiedCodeWarning: vi.fn(),
 	formatVerifyNotRunWarning: vi.fn(),
+	readDeferredCoverageObligations: vi.fn(),
 }));
 
 import { formatStopNudge, readSessionTokens } from "../commit-cadence.js";
@@ -51,6 +53,7 @@ import {
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
 	formatBisectNotResetWarning,
+	formatDeferredCoverageWarning,
 	formatDocMarkerDriftWarning,
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
@@ -58,6 +61,7 @@ import {
 	formatUnresolvedRedWarning,
 	formatUnverifiedCodeWarning,
 	formatVerifyNotRunWarning,
+	readDeferredCoverageObligations,
 } from "../verification-stop-checks.js";
 import {
 	buildCommitCadenceNudge,
@@ -77,6 +81,8 @@ const mCountCodeFilesEdited = vi.mocked(countCodeFilesEdited);
 const mCountDocFactSourcesEdited = vi.mocked(countDocFactSourcesEdited);
 const mCountUiFilesEdited = vi.mocked(countUiFilesEdited);
 const mFormatBisectNotResetWarning = vi.mocked(formatBisectNotResetWarning);
+const mFormatDeferredCoverageWarning = vi.mocked(formatDeferredCoverageWarning);
+const mReadDeferredCoverageObligations = vi.mocked(readDeferredCoverageObligations);
 const mFormatDocMarkerDriftWarning = vi.mocked(formatDocMarkerDriftWarning);
 const mFormatStubsIntroducedWarning = vi.mocked(formatStubsIntroducedWarning);
 const mFormatTddRegressionWarning = vi.mocked(formatTddRegressionWarning);
@@ -143,6 +149,8 @@ beforeEach(() => {
 	mCountDocFactSourcesEdited.mockReturnValue(0);
 	mCountUiFilesEdited.mockReturnValue(0);
 	mFormatBisectNotResetWarning.mockReturnValue(null);
+	mReadDeferredCoverageObligations.mockReturnValue([]);
+	mFormatDeferredCoverageWarning.mockReturnValue(null);
 	mFormatDocMarkerDriftWarning.mockReturnValue(null);
 	mFormatStubsIntroducedWarning.mockReturnValue(null);
 	mFormatTddRegressionWarning.mockReturnValue(null);
@@ -389,6 +397,9 @@ describe("buildVerificationStopWarnings", () => {
 		expect(mFormatFixtureLeakWarning).not.toHaveBeenCalled();
 		// warn_unresolved_red defaults off in vscRules → its formatter must not run.
 		expect(mFormatUnresolvedRedWarning).not.toHaveBeenCalled();
+		// per_edit_coverage absent in vscRules → the deferred-coverage gate is off.
+		expect(mReadDeferredCoverageObligations).not.toHaveBeenCalled();
+		expect(mFormatDeferredCoverageWarning).not.toHaveBeenCalled();
 		// Always-on checks still run.
 		expect(mFormatTddRegressionWarning).toHaveBeenCalled();
 		expect(mFormatBisectNotResetWarning).toHaveBeenCalled();
@@ -728,5 +739,97 @@ describe("buildVerificationStopWarnings", () => {
 		buildVerificationStopWarnings(ctx, makeEvent(), session);
 
 		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({ redChecks: [], redTests: [] });
+	});
+
+	// --- per_edit_coverage-gated wrapper (checkDeferredCoverage) ------------
+
+	/** vscRules merged with a `per_edit_coverage` block so the deferred-coverage
+	 *  wrapper's gate can be toggled. The producer flag is `enabled`. */
+	function coverageRules(peEnabled: boolean, vscOver: Record<string, unknown> = {}) {
+		return {
+			...vscRules(vscOver),
+			per_edit_coverage: { enabled: peEnabled, mode: "block", budget_ms: 25_000, languages: [] },
+		};
+	}
+
+	it("does not read the ledger or invoke the formatter when per_edit_coverage is absent", () => {
+		// vscRules() has no per_edit_coverage block → gate off → no read, no call.
+		const ctx = makeCtx({ rules: vscRules() });
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+		expect(mReadDeferredCoverageObligations).not.toHaveBeenCalled();
+		expect(mFormatDeferredCoverageWarning).not.toHaveBeenCalled();
+		expect(out).toEqual([]);
+	});
+
+	it("does not read the ledger or invoke the formatter when per_edit_coverage.enabled is false", () => {
+		const ctx = makeCtx({ rules: coverageRules(false) });
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+		expect(mReadDeferredCoverageObligations).not.toHaveBeenCalled();
+		expect(mFormatDeferredCoverageWarning).not.toHaveBeenCalled();
+		expect(out).toEqual([]);
+	});
+
+	it("reads the ledger by ctx.cwd + session_id and includes the warning when it fires (+logs)", () => {
+		const ctx = makeCtx({ cwd: "/cov-root", rules: coverageRules(true) });
+		const session = makeSession({ session_id: "sess-7" });
+		const obligations = [
+			{ kind: "coverage", file: "src/a.ts", session_id: "sess-7" },
+			{ kind: "coverage", file: "src/b.ts", session_id: "sess-7" },
+		];
+		mReadDeferredCoverageObligations.mockReturnValue(obligations as never);
+		mFormatDeferredCoverageWarning.mockReturnValue("DEFERRED-COVERAGE");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(out).toContain("DEFERRED-COVERAGE");
+		// Read scoped to the daemon cwd and the session's own id.
+		expect(mReadDeferredCoverageObligations).toHaveBeenCalledWith("/cov-root", "sess-7");
+		expect(mFormatDeferredCoverageWarning).toHaveBeenCalledWith({ obligations });
+		expect(logLines.some((l) => l.includes("deferred-coverage (2 unmet)"))).toBe(true);
+	});
+
+	it("does not push / log when the deferred-coverage formatter returns null (no obligations)", () => {
+		const ctx = makeCtx({ rules: coverageRules(true) });
+		mReadDeferredCoverageObligations.mockReturnValue([]);
+		mFormatDeferredCoverageWarning.mockReturnValue(null);
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).toEqual([]);
+		expect(mFormatDeferredCoverageWarning).toHaveBeenCalledWith({ obligations: [] });
+		expect(logLines.some((l) => l.includes("deferred-coverage"))).toBe(false);
+	});
+
+	it("fires INDEPENDENTLY of the vsc warn flags — all warn_* off, coverage on still nudges", () => {
+		// Proves the deferred-coverage gate is per_edit_coverage.enabled, not a
+		// vsc warn flag: every warn_* is false here yet the nudge still appears.
+		const ctx = makeCtx({ rules: coverageRules(true) });
+		mReadDeferredCoverageObligations.mockReturnValue([
+			{ kind: "coverage", file: "src/a.ts", session_id: "s1" },
+		] as never);
+		mFormatDeferredCoverageWarning.mockReturnValue("DEFERRED-COVERAGE");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).toEqual(["DEFERRED-COVERAGE"]);
+	});
+
+	it("still fires the existing red nudge unchanged alongside the deferred-coverage nudge", () => {
+		// Regression guard: adding the deferred-coverage wrapper must not disturb
+		// the sibling unresolved-red nudge. Both on → both present, in source order
+		// (unresolved-red is pushed before deferred-coverage).
+		const ctx = makeCtx({ rules: coverageRules(true, { warn_unresolved_red: true }) });
+		const session = makeSession({
+			observed_checks: new Map([["typecheck", { kind: "typecheck", status: "red" }]]),
+		});
+		mFormatUnresolvedRedWarning.mockReturnValue("UNRESOLVED-RED");
+		mReadDeferredCoverageObligations.mockReturnValue([
+			{ kind: "coverage", file: "src/a.ts", session_id: "s1" },
+		] as never);
+		mFormatDeferredCoverageWarning.mockReturnValue("DEFERRED-COVERAGE");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(out).toEqual(["UNRESOLVED-RED", "DEFERRED-COVERAGE"]);
 	});
 });

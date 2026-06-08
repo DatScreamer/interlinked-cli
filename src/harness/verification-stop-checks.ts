@@ -14,11 +14,18 @@
 //
 // Signal capture happens at event time (session-state.ts records
 // verification_observed; evaluator/post-tool.ts records stubs_introduced
-// from tool_input). This file is purely the formatters + the
-// classification predicates the recorders need.
+// from tool_input). This file is mostly the formatters + the
+// classification predicates the recorders need. The one exception is the
+// deferred-coverage reader (`readDeferredCoverageObligations`), a small
+// total/never-throws JSONL read of the coverage-obligation ledger — the
+// same detector-plus-formatter split fixture-leak.ts uses (a detector that
+// touches the filesystem next to a pure formatter), kept here so the Stop
+// branch's gating in lifecycle-stop-warnings.ts can mock one module.
 
-import { basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { isDocFile } from "./commit-cadence.js";
+import type { CoverageObligation } from "./coverage-obligation-ledger.js";
 
 /** Verification signal kinds tracked across a session.
  *
@@ -447,6 +454,117 @@ export function formatUnresolvedRedWarning(opts: FormatUnresolvedRedOpts): strin
 		"If you meant to leave it red — a known-failing test, an in-progress refactor, a " +
 		"deliberately-pending check — that's fine; this is just a reminder to confirm the red " +
 		"was intentional. Otherwise, re-run it and get it green before stopping."
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Deferred-coverage obligations — Stop nudge
+// ---------------------------------------------------------------------------
+// The per-edit coverage gate (evaluator/coverage-write-guard.ts) defers instead
+// of running the suite when the rolling runtime estimate exceeds the budget; it
+// appends one obligation row per deferred edit to
+// `.interlinked/coverage-obligations.jsonl` (coverage-obligation-ledger.ts) and
+// allows. Those obligations are NEVER enforced per-edit — only the commit gate
+// enforces them. A session that ends with deferred obligations and no commit has
+// claimed-done coverage that nothing ever checked. This reader + formatter surface
+// that at Stop, as a reflection nudge (never a block), the sibling of the
+// observed-RED nudge (formatUnresolvedRedWarning): RED is "you saw it fail",
+// deferred-coverage is "you never even ran it".
+
+/** The obligations JSONL filename (mirrors coverage-obligation-ledger.ts's
+ *  `OBLIGATIONS_FILE`; that const is module-private there). */
+const OBLIGATIONS_FILE = "coverage-obligations.jsonl";
+
+/** Narrow an unknown parsed JSONL row to a deferred CoverageObligation for one
+ *  session. The fields we read at Stop are `kind`, `file`, and `session_id`;
+ *  the rest of the row is carried for callers but not required to be present. */
+function isCoverageObligationFor(value: unknown, sessionId: string): value is CoverageObligation {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	return (
+		row.kind === "coverage" &&
+		typeof row.file === "string" &&
+		row.session_id === sessionId
+	);
+}
+
+/**
+ * Public — read the deferred coverage obligations recorded for `sessionId` from
+ * `<projectRoot>/.interlinked/coverage-obligations.jsonl`. Total / never throws:
+ * a missing or malformed file (or torn line from a mid-write crash) reads as "no
+ * obligations". Rows are filtered to `kind === "coverage"` AND the given session.
+ *
+ * The ledger is append-only with NO resolution marker, so every row recorded
+ * this session is treated as UNMET — the gate never wrote "later satisfied". The
+ * Stop formatter says so explicitly ("never enforced"); the only place an
+ * obligation is discharged is the commit gate, which the nudge points at.
+ *
+ * Deduped by `file` (an edit deferred three times records three rows but is one
+ * file with unmet coverage) so the count and the listed files line up.
+ */
+export function readDeferredCoverageObligations(
+	projectRoot: string,
+	sessionId: string,
+): CoverageObligation[] {
+	const path = join(projectRoot, ".interlinked", OBLIGATIONS_FILE);
+	if (!existsSync(path)) return [];
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf-8");
+	} catch {
+		return []; // unreadable → treat as no obligations (the gate fails open)
+	}
+	const byFile = new Map<string, CoverageObligation>();
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const parsed: unknown = JSON.parse(line);
+			if (isCoverageObligationFor(parsed, sessionId) && !byFile.has(parsed.file)) {
+				byFile.set(parsed.file, parsed);
+			}
+		} catch {
+			// intentional: JSONL may be torn if a process died mid-write — skip bad lines.
+		}
+	}
+	return [...byFile.values()];
+}
+
+export interface FormatDeferredCoverageOpts {
+	/** The session's unmet deferred coverage obligations (already deduped by
+	 *  file by {@link readDeferredCoverageObligations}). */
+	obligations: ReadonlyArray<CoverageObligation>;
+	maxShown?: number;
+}
+
+/**
+ * Public — Stop-time reflection nudge when the session deferred one or more
+ * per-edit coverage checks (the budget-gate path) that were never enforced.
+ * Lists up to `maxShown` (default 5) files by basename, with an "...and N more"
+ * suffix. Returns null when there are no obligations.
+ *
+ * Sibling of {@link formatUnresolvedRedWarning}: that one fires on a check the
+ * agent OBSERVED go red; this one fires on a coverage check the agent never ran
+ * at all (deferred to the commit gate). Deliberately reflective, NEVER a block —
+ * the relief valve is real: running the suite + coverage, or committing (the
+ * commit gate enforces the obligations), both discharge it.
+ */
+export function formatDeferredCoverageWarning(opts: FormatDeferredCoverageOpts): string | null {
+	if (opts.obligations.length === 0) return null;
+	const max = opts.maxShown ?? 5;
+	const shown = opts.obligations.slice(0, max);
+	const lines = shown.map((o) => `  - ${basename(o.file)}`);
+	const more =
+		opts.obligations.length > max
+			? `\n  ...and ${opts.obligations.length - max} more`
+			: "";
+	return (
+		`[interlinked:verify-before-stop] Stopping with ${opts.obligations.length} deferred ` +
+		"coverage check(s) this session that were never enforced — the per-edit coverage gate " +
+		"deferred them (suite runtime over budget) and only the commit gate enforces them:\n" +
+		`${lines.join("\n")}${more}\n` +
+		"Run the suite + coverage to check these now, or commit (the commit gate enforces the " +
+		"deferred obligations), before claiming done. This is a reminder, not a block — a " +
+		"deferred check is unverified coverage, not a known failure."
 	);
 }
 

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { CoverageObligation } from "../coverage-obligation-ledger.js";
 import {
 	classifyBrowserToolName,
 	classifyVerificationCommand,
@@ -6,6 +10,7 @@ import {
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
 	formatBisectNotResetWarning,
+	formatDeferredCoverageWarning,
 	formatDocMarkerDriftWarning,
 	formatStubsIntroducedWarning,
 	formatTddRegressionWarning,
@@ -16,6 +21,7 @@ import {
 	isCodeFile,
 	isDocFactSourceFile,
 	isUiFile,
+	readDeferredCoverageObligations,
 	scanForStubs,
 	STUB_INTRODUCED_CAP,
 } from "../verification-stop-checks.js";
@@ -668,5 +674,160 @@ describe("formatUnresolvedRedWarning", () => {
 		});
 		expect(msg).not.toBeNull();
 		expect(msg).not.toContain("more");
+	});
+});
+
+// ===========================================================================
+// formatDeferredCoverageWarning (pure formatter)
+// ===========================================================================
+describe("formatDeferredCoverageWarning", () => {
+	function obligation(file: string): CoverageObligation {
+		return {
+			kind: "coverage",
+			file,
+			reason: "budget_exceeded",
+			estimated_suite_ms: 30_000,
+			budget_ms: 25_000,
+			session_id: "s1",
+			timestamp: "2026-06-07T00:00:00.000Z",
+		};
+	}
+
+	it("returns null when there are no obligations", () => {
+		expect(formatDeferredCoverageWarning({ obligations: [] })).toBeNull();
+	});
+
+	it("fires for a single deferred obligation, naming the file by basename", () => {
+		const msg = formatDeferredCoverageWarning({
+			obligations: [obligation("src/harness/foo.ts")],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("[interlinked:verify-before-stop]");
+		expect(msg).toContain("1 deferred coverage check(s)");
+		expect(msg).toContain("- foo.ts");
+		// Listed by basename only, not the full repo-relative path.
+		expect(msg).not.toContain("src/harness/foo.ts");
+	});
+
+	it("names the commit gate + run-the-suite relief valves and the 'never enforced' framing", () => {
+		const msg = formatDeferredCoverageWarning({
+			obligations: [obligation("a.ts")],
+		});
+		expect(msg).toContain("never enforced");
+		expect(msg).toMatch(/commit gate/i);
+		expect(msg).toMatch(/suite \+ coverage/i);
+	});
+
+	it("is reflection-only — no BLOCK / BLOCKED wording", () => {
+		const msg = formatDeferredCoverageWarning({
+			obligations: [obligation("a.ts"), obligation("b.ts")],
+		});
+		expect(msg).not.toBeNull();
+		// Reflection nudge, never a block (Stop is reflection-only).
+		expect(msg).not.toMatch(/\bBLOCK(?:ED)?\b/);
+		expect(msg).toMatch(/reminder, not a block/i);
+	});
+
+	it("caps the list at maxShown and appends an ...and N more suffix", () => {
+		const obligations = ["a.ts", "b.ts", "c.ts", "d.ts"].map(obligation);
+		const msg = formatDeferredCoverageWarning({ obligations, maxShown: 2 });
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("4 deferred coverage check(s)");
+		expect(msg).toContain("...and 2 more");
+		// Only the first two are listed.
+		expect(msg).toContain("- a.ts");
+		expect(msg).toContain("- b.ts");
+		expect(msg).not.toContain("- c.ts");
+	});
+
+	it("omits the ...and N more suffix when at or under maxShown", () => {
+		const msg = formatDeferredCoverageWarning({
+			obligations: [obligation("a.ts")],
+			maxShown: 5,
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).not.toContain("more");
+	});
+});
+
+// ===========================================================================
+// readDeferredCoverageObligations (total/never-throws JSONL reader)
+// ===========================================================================
+describe("readDeferredCoverageObligations", () => {
+	let root: string;
+
+	function row(over: Partial<CoverageObligation> & { session_id: string; file: string }): string {
+		const full: CoverageObligation = {
+			kind: "coverage",
+			reason: "budget_exceeded",
+			estimated_suite_ms: 30_000,
+			budget_ms: 25_000,
+			timestamp: "2026-06-07T00:00:00.000Z",
+			...over,
+		};
+		return JSON.stringify(full);
+	}
+
+	function writeLedger(lines: string[]): void {
+		const dir = join(root, ".interlinked");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "coverage-obligations.jsonl"), `${lines.join("\n")}\n`, "utf-8");
+	}
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "interlinked-defcov-"));
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("returns [] when the ledger file is absent (missing → no obligations)", () => {
+		expect(readDeferredCoverageObligations(root, "s1")).toEqual([]);
+	});
+
+	it("returns the obligations recorded for the requested session", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/a.ts" }),
+			row({ session_id: "s1", file: "src/b.ts" }),
+		]);
+		const out = readDeferredCoverageObligations(root, "s1");
+		expect(out.map((o) => o.file).sort()).toEqual(["src/a.ts", "src/b.ts"]);
+	});
+
+	it("excludes obligations from OTHER sessions (filter by session_id)", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/mine.ts" }),
+			row({ session_id: "other", file: "src/theirs.ts" }),
+		]);
+		const out = readDeferredCoverageObligations(root, "s1");
+		expect(out.map((o) => o.file)).toEqual(["src/mine.ts"]);
+	});
+
+	it("dedupes by file — the same file deferred 3x is one obligation", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/dup.ts" }),
+			row({ session_id: "s1", file: "src/dup.ts" }),
+			row({ session_id: "s1", file: "src/dup.ts" }),
+		]);
+		const out = readDeferredCoverageObligations(root, "s1");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.file).toBe("src/dup.ts");
+	});
+
+	it("skips non-coverage rows and torn/malformed JSONL lines without throwing", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/ok.ts" }),
+			'{"kind":"other","file":"src/x.ts","session_id":"s1"}', // wrong kind
+			"{not valid json", // torn mid-write line
+			"", // blank
+		]);
+		const out = readDeferredCoverageObligations(root, "s1");
+		expect(out.map((o) => o.file)).toEqual(["src/ok.ts"]);
+	});
+
+	it("returns [] when no row matches the session (all other-session)", () => {
+		writeLedger([row({ session_id: "other", file: "src/a.ts" })]);
+		expect(readDeferredCoverageObligations(root, "s1")).toEqual([]);
 	});
 });
