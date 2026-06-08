@@ -303,6 +303,29 @@ export interface PerEditCoverageConfig {
 	 * pure no-op and behavior is identical to the coverage-only gate.
 	 */
 	block_on_test_failure?: boolean;
+	/**
+	 * CRAP (Change Risk Anti-Patterns) per-edit enforcement. **Default: false
+	 * (opt-in).** CRAP(fn) = cyclomatic² · (1 − coverage)³ + cyclomatic — a
+	 * function is "CRAPpy" when it is BOTH complex AND under-covered. When true,
+	 * an edit that leaves any function it ADDED or TOUCHED with a CRAP score at or
+	 * above {@link crap_threshold} is BLOCKED before the real write, naming the
+	 * function + its CRAP / cyclomatic / coverage and advising "reduce complexity
+	 * or add coverage". Computed from the SAME apply-before-disk overlay run as the
+	 * coverage block (no second suite run), and checked AFTER the uncovered-added-
+	 * line / coverage-drop decision (a flat coverage gap is the more basic failure;
+	 * CRAP is the "complex AND under-covered" escalation). A runner that cannot
+	 * measure coverage (`ok:false`) or an unavailable cyclomatic analyzer fail-opens
+	 * exactly as the coverage block does. When false (the default) the CRAP check is
+	 * a pure no-op and behavior is identical to the coverage-only gate.
+	 */
+	block_on_crap?: boolean;
+	/**
+	 * CRAP score at/above which a touched function blocks the edit when
+	 * {@link block_on_crap} is on. **Default: 30** (the McCabe / SonarQube CRAP
+	 * cutoff — a cyclomatic-10 function at 0% coverage scores 110; the same
+	 * function fully covered scores 10). Ignored when `block_on_crap` is off.
+	 */
+	crap_threshold?: number;
 }
 
 /** Config for the PreToolUse Bash git-session-scope gate. See

@@ -48,13 +48,29 @@ import {
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
+import { computeCrap, crapScore } from "../checks/crap.js";
+import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
+import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
-/** Injectable seams so unit tests run with NO real suite / overlay. */
+/**
+ * A per-function cyclomatic counter for one language, used to compute CRAP from
+ * the overlay coverage. Returns `null` when the backing analyzer is unavailable
+ * (the loud "do not treat as simple" signal — typescript/radon absent), which
+ * the CRAP gate fail-opens on, exactly like the coverage block fail-opens on an
+ * unmeasured suite.
+ */
+export type CyclomaticAnalyzer = (
+	content: string,
+	filePath: string,
+) => FunctionComplexityEntry[] | null;
+
+/** Injectable seams so unit tests run with NO real suite / overlay / analyzer. */
 export interface CoverageWriteDeps {
 	/** Resolve a CoverageRunner for a language (default: the real factory). */
 	runnerFor: (language: CoverageLanguage) => CoverageRunner | null;
@@ -62,13 +78,34 @@ export interface CoverageWriteDeps {
 	createOverlay: CreateCoverageOverlayFn;
 	/** Wall clock — injected for deterministic estimate timestamps in tests. */
 	clock: () => number;
+	/**
+	 * The per-function cyclomatic analyzer for a language, or null to skip CRAP for
+	 * it. Default: the in-process TS AST for js/ts, radon for python — the same
+	 * analyzers the strict cyclomatic PreToolUse gate uses. Injected so the CRAP
+	 * tests supply a deterministic stub instead of spawning radon / loading TS.
+	 */
+	cyclomaticFor: (language: CoverageLanguage) => CyclomaticAnalyzer | null;
 }
 
-/** Production defaults — the real runner factory, overlay mirror, and clock. */
+/** The real cyclomatic analyzer for a coverage language, or null to skip CRAP. */
+function defaultCyclomaticFor(language: CoverageLanguage): CyclomaticAnalyzer | null {
+	switch (language) {
+		case "js":
+		case "ts":
+			return computeCyclomaticAst;
+		case "python":
+			return computeCyclomaticPython;
+		default:
+			return null;
+	}
+}
+
+/** Production defaults — the real runner factory, overlay mirror, clock, analyzer. */
 const DEFAULT_DEPS: CoverageWriteDeps = {
 	runnerFor: (language) => coverageRunnerFor(language),
 	createOverlay: createCoverageOverlay,
 	clock: Date.now,
+	cyclomaticFor: defaultCyclomaticFor,
 };
 
 /** Map a file extension to the coverage language, or null when unsupported. */
@@ -245,6 +282,175 @@ function hasPerLineData(cov: PerFileCoverage): boolean {
 	return cov.uncoveredLines !== undefined || cov.coveredLines !== undefined;
 }
 
+// ===========================================
+// CRAP (Change Risk Anti-Patterns) — the 4th per-edit block
+// ===========================================
+// CRAP(fn) = cyclomatic² · (1 − cov)³ + cyclomatic (the formula REUSED from
+// checks/crap.ts — never reimplemented here). A function blocks when it is BOTH
+// complex AND under-covered. This runs AFTER the uncovered-added-line / drop
+// decision: a flat coverage gap is the more basic failure; CRAP is the "complex
+// AND under-covered" escalation. Computed from the SAME overlay coverage run —
+// no second suite spawn. Cyclomatic comes from the per-language analyzer; the
+// coverage fraction from the overlay's per-function (JS/istanbul) or per-line
+// (Python/coverage.py) data, intersected with each function's body range.
+
+/** Default CRAP cutoff — the McCabe/SonarQube convention (cyclomatic-10 @ 0% = 110). */
+const DEFAULT_CRAP_THRESHOLD = 30;
+
+/** One CRAP violation for an edited function — drives the block message. */
+interface CrapViolation {
+	function: string;
+	line: number;
+	cyclomatic: number;
+	coverage_pct: number;
+	crap_score: number;
+}
+
+/** Inputs to the CRAP decision, all explicit so it needs no GateContext fields. */
+interface CrapInput {
+	relPath: string;
+	proposed: string;
+	cov: PerFileCoverage;
+	editedLines: Set<number> | undefined;
+	threshold: number;
+	analyzer: CyclomaticAnalyzer | null;
+}
+
+/**
+ * True when a complexity entry's body range intersects the edited lines, OR when
+ * the edited-line set is unavailable (derivation failed — fail-safe: every
+ * function counts, matching the coverage check's same-named invariant). The line-
+ * precise filter is what scopes CRAP to functions the edit ADDED or TOUCHED.
+ */
+function crapTouches(fn: FunctionComplexityEntry, editedLines: Set<number> | undefined): boolean {
+	if (!editedLines) return true;
+	for (let ln = fn.line; ln <= fn.endLine; ln++) {
+		if (editedLines.has(ln)) return true;
+	}
+	return false;
+}
+
+/** Count how many of [start,end] (inclusive) appear in `lines`. */
+function countInRange(lines: ReadonlySet<number>, start: number, end: number): number {
+	let n = 0;
+	for (const ln of lines) {
+		if (ln >= start && ln <= end) n++;
+	}
+	return n;
+}
+
+/**
+ * CRAP violations for the PER-FUNCTION (JS/istanbul) shape. Cyclomatic from the
+ * analyzer, coverage from `cov.functions` — matched + scored by the REUSED
+ * `computeCrap` (exact formula + ±3-line name/line matching). Only TOUCHED
+ * functions are fed in, so the result is already scoped to the edit.
+ */
+function crapViolationsPerFunction(
+	relPath: string,
+	complexities: FunctionComplexityEntry[],
+	cov: PerFileCoverage,
+	threshold: number,
+): CrapViolation[] {
+	const findings = computeCrap({
+		complexities,
+		coverage: cov.functions,
+		filePath: relPath,
+		fileMtime: 0,
+		coverageMtime: null, // never stale: this is THIS run's fresh overlay coverage
+		threshold,
+		staleTolerance: "include",
+	});
+	return findings.map((f) => ({
+		function: f.function,
+		line: f.line,
+		cyclomatic: f.complexity,
+		coverage_pct: f.coverage_pct,
+		crap_score: f.crap_score,
+	}));
+}
+
+/**
+ * CRAP violations for the PER-LINE (Python/coverage.py) shape. coverage.py has no
+ * function ranges, so the per-function fraction is the covered lines INSIDE each
+ * analyzer-reported function body range over its executable lines
+ * (covered + uncovered in range). A function with no executable lines in range is
+ * skipped (no measurable coverage ⇒ not a CRAP signal). Scores via the REUSED
+ * `crapScore`. Sorted worst-first for a stable message.
+ */
+function crapViolationsPerLine(
+	complexities: FunctionComplexityEntry[],
+	cov: PerFileCoverage,
+	threshold: number,
+): CrapViolation[] {
+	const covered = cov.coveredLines ?? new Set<number>();
+	const uncovered = cov.uncoveredLines ?? new Set<number>();
+	const violations: CrapViolation[] = [];
+	for (const fn of complexities) {
+		const inCovered = countInRange(covered, fn.line, fn.endLine);
+		const inUncovered = countInRange(uncovered, fn.line, fn.endLine);
+		const executable = inCovered + inUncovered;
+		if (executable === 0) continue; // no measurable lines → no CRAP signal
+		const covPct = (inCovered / executable) * 100;
+		const score = crapScore(fn.cyclomatic, covPct);
+		if (score < threshold) continue;
+		violations.push({
+			function: fn.name,
+			line: fn.line,
+			cyclomatic: fn.cyclomatic,
+			coverage_pct: covPct,
+			crap_score: score,
+		});
+	}
+	violations.sort((a, b) => b.crap_score - a.crap_score);
+	return violations;
+}
+
+/** The actionable CRAP block for the worst touched function (highest CRAP). */
+function blockForCrap(relPath: string, worst: CrapViolation): HarnessDecision {
+	const crap = Math.round(worst.crap_score);
+	const cov = Math.round(worst.coverage_pct);
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: this edit leaves \`${worst.function}\` ` +
+			`(${relPath} line ${worst.line}) with a CRAP score of ${crap} ` +
+			`(cyclomatic ${worst.cyclomatic}, coverage ${cov}%) — it is BOTH complex AND ` +
+			"under-covered. CRAP = cyclomatic² · (1 − coverage)³ + cyclomatic, checked after " +
+			"the coverage gate. Reduce complexity (decompose the function) OR add coverage " +
+			"(exercise its branches) in this edit (use MultiEdit so the overlay sees code + " +
+			"test together), then retry.",
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
+/**
+ * The CRAP block for the edited file, or null when no touched function is over
+ * the threshold. Runs only when a cyclomatic analyzer is available — an
+ * unavailable analyzer fail-opens (loud-degrade), like the coverage block on an
+ * unmeasured suite. Cyclomatic is parsed from the proposed content; only
+ * functions the edit ADDED or TOUCHED are scored.
+ */
+function decideCrap(input: CrapInput): HarnessDecision | null {
+	if (!input.analyzer) {
+		return loudDegrade(input.relPath, "no cyclomatic analyzer for CRAP — fail-open");
+	}
+	const all = input.analyzer(input.proposed, input.relPath);
+	if (all === null) {
+		return loudDegrade(input.relPath, "cyclomatic analyzer unavailable for CRAP — fail-open");
+	}
+	const touched = all.filter((fn) => crapTouches(fn, input.editedLines));
+	if (touched.length === 0) return null;
+
+	const violations = hasPerLineData(input.cov)
+		? crapViolationsPerLine(touched, input.cov, input.threshold)
+		: crapViolationsPerFunction(input.relPath, touched, input.cov, input.threshold);
+	const worst = violations[0];
+	if (!worst) return null;
+	return blockForCrap(input.relPath, worst);
+}
+
 /**
  * The uncovered-added-line block and the now-fraction from PER-LINE data. Used
  * for engines whose report is natively per-line (coverage.py). Returns the block
@@ -349,6 +555,14 @@ interface GateContext {
 	 * coverage decision. Default-absent ⇒ falsy ⇒ coverage-only behavior.
 	 */
 	blockOnTestFailure?: boolean;
+	/**
+	 * When true (`per_edit_coverage.block_on_crap`), a function the edit ADDED or
+	 * TOUCHED whose CRAP score reaches {@link crapThreshold} blocks the edit AFTER
+	 * the coverage decision. Default-absent ⇒ falsy ⇒ coverage-only behavior.
+	 */
+	blockOnCrap?: boolean;
+	/** CRAP score at/above which a touched function blocks. Absent ⇒ {@link DEFAULT_CRAP_THRESHOLD}. */
+	crapThreshold?: number;
 }
 
 /**
@@ -386,7 +600,24 @@ async function runOverlayAndDecide(
 		if (!cov) {
 			return loudDegrade(ctx.relPath, "edited file absent from coverage report");
 		}
-		return decideFromCoverage(ctx.projectRoot, ctx.relPath, cov, ctx.editedLines);
+		// Coverage decision first (uncovered-added-line / drop). A block here is the
+		// more basic failure; CRAP is the "complex AND under-covered" escalation.
+		const coverageDecision = decideFromCoverage(ctx.projectRoot, ctx.relPath, cov, ctx.editedLines);
+		if (coverageDecision) return coverageDecision;
+
+		// Coverage allowed → the 4th per-edit gate. Only when opted in
+		// (block_on_crap); uses the SAME overlay coverage just computed.
+		if (ctx.blockOnCrap) {
+			return decideCrap({
+				relPath: ctx.relPath,
+				proposed: ctx.proposed,
+				cov,
+				editedLines: ctx.editedLines,
+				threshold: ctx.crapThreshold ?? DEFAULT_CRAP_THRESHOLD,
+				analyzer: deps.cyclomaticFor(ctx.language),
+			});
+		}
+		return null;
 	} finally {
 		overlay.cleanup();
 	}
@@ -406,10 +637,13 @@ function editedRelPath(event: HarnessEvent, projectRoot: string): string | null 
 /**
  * PreToolUse coverage gate. Returns a `block` HarnessDecision when the proposed
  * edit (a) leaves the suite RED — only when `block_on_test_failure` is on, the
- * red-bar check, which precedes coverage — or (b) adds an uncovered line / drops
- * the file's coverage; otherwise null (allow). A pure no-op — runner never
- * invoked — when disabled, in warn mode, or for a non-code / unsupported-language
- * / test / non-cappable file. Never throws (fail-open).
+ * red-bar check, which precedes coverage — (b) adds an uncovered line / drops the
+ * file's coverage, or (c) leaves a TOUCHED function with a CRAP score ≥ the
+ * threshold — only when `block_on_crap` is on, the CRAP check, which FOLLOWS the
+ * coverage decision; otherwise null (allow). All three are computed from ONE
+ * overlay suite run. A pure no-op — runner never invoked — when disabled, in warn
+ * mode, or for a non-code / unsupported-language / test / non-cappable file. Never
+ * throws (fail-open).
  */
 export async function checkCoverageWrite(
 	event: HarnessEvent,
@@ -447,6 +681,8 @@ export async function checkCoverageWrite(
 			editedLines,
 			budgetMs: cfg.budget_ms,
 			blockOnTestFailure: cfg.block_on_test_failure === true,
+			blockOnCrap: cfg.block_on_crap === true,
+			crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
 		};
 		return await runOverlayAndDecide(ctx, event, deps);
 	} catch (err) {

@@ -535,5 +535,16 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// repos that don't opt in see ZERO behavior change (a red bar still
 		// fail-opens just as it does today, treated like "can't measure").
 		block_on_test_failure: false,
+		// CRAP (Change Risk Anti-Patterns) per-edit gate — DEFAULT OFF, independent
+		// of `enabled` / `block_on_test_failure`. The 4th per-edit block: a function
+		// the edit ADDED or TOUCHED whose CRAP score (cyclomatic² · (1−cov)³ +
+		// cyclomatic) reaches `crap_threshold` is refused before the real write —
+		// "this function is complex AND under-covered; reduce complexity or add
+		// coverage." Computed from the SAME overlay coverage run as the coverage
+		// block (no extra suite run) and checked AFTER the uncovered-added-line /
+		// drop decision. Left OFF here so repos that don't opt in see ZERO behavior
+		// change; a separate change flips all per-edit-coverage defaults ON together.
+		block_on_crap: false,
+		crap_threshold: 30,
 	},
 };
