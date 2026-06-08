@@ -31,7 +31,6 @@
     "src/harness/quality-checks/warning-formatter.ts",
     "src/harness/regex-trigrams.ts",
     "src/harness/rules-loader.ts",
-    "src/harness/signatures-patterns.ts",
     "src/harness/structural-checks/env-loader.ts",
     "src/harness/structural-checks/formatter.ts",
     "src/harness/structural-checks/helpers.ts",

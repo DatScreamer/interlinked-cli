@@ -1,3 +1,4 @@
+// interlinked-tdd: exempt — pure detection-pattern DATA (no testable logic)
 // ===========================================
 // Signature Pattern Tables
 // ===========================================

@@ -173,8 +173,14 @@ function isHarnessInternalDataFile(filePath: string): boolean {
 		// this very exemption) too.
 		normalized.includes("/harness/checks/") ||
 		normalized.includes("/harness/evaluator/write-content-guards.") ||
-		// signatures.ts holds the very PI rule descriptions (e.g. the
-		// `sig-pi-system-override` text) that the daemon's content scan flags.
+		// signatures.ts re-exports the rule tables; signatures-patterns.ts is
+		// where the PI regexes + descriptions actually live (e.g. the
+		// `/ignore (all )?(previous|prior|above) (instructions?...)/` literal
+		// and the `sig-pi-system-override` text). Both hold the very patterns
+		// the daemon's PI content scan matches AS DATA — editing
+		// signatures-patterns.ts would otherwise trip the scan on its own
+		// detection literals and block the write.
+		normalized.includes("/harness/signatures-patterns.") ||
 		normalized.includes("/harness/signatures.") ||
 		// secret-detection.ts is the secret detector itself — its regex literals
 		// and example-key references are secret-shaped strings AS DATA.
