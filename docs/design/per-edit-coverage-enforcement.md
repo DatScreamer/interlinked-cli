@@ -70,12 +70,30 @@ is why the block is correct: it never refuses an edit over a line that the full
 suite actually covers.
 
 ## Build order
-1. Python cyclomatic adapter + dispatch (immediate value on wardotapp).
-2. `CoverageRunner` abstraction + JS impl (dogfood on this TS repo).
-3. Apply-before-disk coverage overlay + block decision + budget-gate.
+1. Python cyclomatic adapter + dispatch (immediate value on wardotapp). ✅ done
+2. `CoverageRunner` abstraction + JS impl (dogfood on this TS repo). ✅ done
+3. Apply-before-disk coverage overlay + block decision + budget-gate. ✅ **done**
+   — `src/harness/coverage-overlay.ts` (mirror-under-projectRoot overlay;
+   realpath-resolves the overlay root so the coverage engine's symlink-resolved
+   paths key correctly — the macOS `/var`→`/private/var` gotcha would otherwise
+   drop every finding as out-of-tree), `src/harness/evaluator/coverage-write-guard.ts`
+   (`checkCoverageWrite`: gate → budget-gate → overlay+suite → block on an
+   uncovered added line or a per-file coverage drop vs the rolling baseline;
+   fail-open / loud-degrade on any runner/overlay error), and
+   `src/harness/coverage-obligation-ledger.ts` (rolling suite-runtime estimate +
+   per-file coverage baseline + `coverage-obligations.jsonl`). Wired into
+   `server/pre-tool-pipeline.ts` after the cheap checks, behind the config flag.
+   **Config-gated, DEFAULT OFF** (`per_edit_coverage` in `types/config.ts` +
+   `rules/default-config.ts`); a repo that does not opt in pays zero cost. The
+   block reason is strict-TDD ("line N uncovered — add its test in this edit via
+   MultiEdit"). Over-budget → record a deferred obligation + allow (commit-time
+   enforcement is step 5b).
 4. Python `coverage.py` runner impl.
-5. Commit-time defer (obligation ledger).
-6. Config + docs + tests (≥3 positive / ≥3 negative per component).
+5. Commit-time defer: (a) the obligation-RECORD half landed with step 3 (the
+   budget-gate appends to `coverage-obligations.jsonl`); (b) the commit-time
+   ENFORCEMENT that consumes those obligations is still pending.
+6. Config + docs + tests (≥3 positive / ≥3 negative per component) — landed with
+   step 3 for the coverage lane.
 
 This is the "apply-before-disk dual-lane PreToolUse" from
 `docs/design/test-category-adoption-from-the-wild.md` made concrete for the

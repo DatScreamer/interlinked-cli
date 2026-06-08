@@ -511,4 +511,20 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 			},
 		],
 	},
+	per_edit_coverage: {
+		// DEFAULT OFF — per-edit coverage is opt-in per repo. A repo that does
+		// not set this (or leaves `enabled: false`) pays ZERO cost: the guard
+		// short-circuits to allow before any suite run, so there is no behavior
+		// change. Repos with a fast suite opt in via
+		// `.interlinked/guard-rules.local.json`:
+		//   "per_edit_coverage": { "enabled": true }
+		// THIS repo (interlinked-cli, ~16k tests) must NOT enable it — the suite
+		// vastly exceeds the per-edit budget; the budget-gate would defer every
+		// edit to a commit-time obligation anyway. See
+		// docs/design/per-edit-coverage-enforcement.md.
+		enabled: false,
+		mode: "block",
+		budget_ms: 25_000,
+		languages: ["js", "ts"],
+	},
 };

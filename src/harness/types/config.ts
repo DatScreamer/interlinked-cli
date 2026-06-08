@@ -246,6 +246,10 @@ export interface GuardRulesConfig {
 	 *  check that asks before git add/commit/push touches files outside
 	 *  session.files_written ∪ pre-session baseline. */
 	git_session_scope_gate?: GitSessionScopeGateConfig;
+	/** Per-edit coverage enforcement (apply-before-disk overlay + budget-gate).
+	 *  DEFAULT OFF — opt-in per repo. See PerEditCoverageConfig and
+	 *  `evaluator/coverage-write-guard.ts`. */
+	per_edit_coverage?: PerEditCoverageConfig;
 }
 
 /** Plan-capture configuration. Master toggle + structured-userprompt parser
@@ -253,6 +257,38 @@ export interface GuardRulesConfig {
 export interface PlanCaptureConfig {
 	enabled: boolean;
 	parse_userprompt: boolean;
+}
+
+/**
+ * Per-edit coverage enforcement (apply-before-disk overlay + budget-gate). See
+ * `evaluator/coverage-write-guard.ts` and
+ * `docs/design/per-edit-coverage-enforcement.md`.
+ *
+ * **DEFAULT OFF (opt-in per repo).** When disabled the guard is a pure no-op —
+ * it returns before any suite run, so a repo that does not opt in pays zero
+ * cost and sees zero behavior change. Repos with a fast suite (e.g. wardotapp,
+ * ~1-2s) opt in; this repo (16k tests) deliberately does NOT.
+ */
+export interface PerEditCoverageConfig {
+	/** Master switch. Default: false. The guard short-circuits to allow when off. */
+	enabled: boolean;
+	/**
+	 * What a coverage regression does:
+	 *   - "block": refuse the edit before the real write (strict TDD).
+	 *   - "warn":  loaded-but-non-blocking (the guard returns allow even when it
+	 *     finds an uncovered added line; reserved for a future warn surface).
+	 * Only "block" runs the overlay+suite today; "warn" is a no-op gate.
+	 */
+	mode: "block" | "warn";
+	/**
+	 * Per-edit sync budget in ms. When the rolling suite-runtime estimate is at
+	 * or above this, the guard does NOT run the suite per-edit — it records a
+	 * deferred coverage obligation and allows (commit-time enforcement is a later
+	 * step). Default: 25_000 (the documented PreToolUse cloud-sync budget).
+	 */
+	budget_ms: number;
+	/** Languages the overlay coverage run covers. Default: ["js", "ts"]. */
+	languages: string[];
 }
 
 /** Config for the PreToolUse Bash git-session-scope gate. See

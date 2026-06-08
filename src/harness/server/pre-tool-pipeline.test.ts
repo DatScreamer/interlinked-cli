@@ -68,6 +68,10 @@ vi.mock("../evaluator.js", () => ({
 	extractPermissionPattern: vi.fn(() => null),
 }));
 
+vi.mock("../evaluator/coverage-write-guard.js", () => ({
+	checkCoverageWrite: vi.fn(async (): Promise<HarnessDecision | null> => null),
+}));
+
 vi.mock("../grep-accelerator.js", () => ({
 	checkGrepAcceleration: vi.fn(() => null),
 	findRipgrep: vi.fn(() => "/usr/bin/rg"),
@@ -126,6 +130,7 @@ import { decideFromFindings } from "../content-scanner/policy.js";
 import { buildAskReason, writePendingPrompt } from "../content-scanner/redact-preview.js";
 import { fetchAndScan } from "../content-scanner/web-fetch-proxy.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
+import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
 import { appendShadowLog, callClassifier } from "../policy-classifier.js";
 import { isBashTsc, tryTsgoRewrite } from "../server-tsgo-bash.js";
@@ -146,6 +151,7 @@ const mBuildAskReason = buildAskReason as unknown as Mock;
 const mWritePendingPrompt = writePendingPrompt as unknown as Mock;
 const mFetchAndScan = fetchAndScan as unknown as Mock;
 const mEvaluate = evaluatePreToolUse as unknown as Mock;
+const mCheckCoverage = checkCoverageWrite as unknown as Mock;
 const mExtractPattern = extractPermissionPattern as unknown as Mock;
 const mCheckGrep = checkGrepAcceleration as unknown as Mock;
 const mFindRg = findRipgrep as unknown as Mock;
@@ -272,6 +278,7 @@ beforeEach(() => {
 	// shared object reference would leak state across invocations in the
 	// double-invocation tests below.
 	mEvaluate.mockImplementation((): HarnessDecision => ({ decision: "allow" }));
+	mCheckCoverage.mockResolvedValue(null);
 	mExtractPattern.mockReturnValue(null);
 	mShouldCoordinate.mockReturnValue(false);
 	mApplyAllowlist.mockImplementation((findings: unknown[]) => ({
@@ -1693,6 +1700,92 @@ describe("tsgo acceleration", () => {
 			makeSession(),
 		);
 		expect(mTryTsgo).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 13b. Per-edit coverage gate (config-gated, DEFAULT OFF)
+// ---------------------------------------------------------------------------
+
+describe("per-edit coverage gate wiring", () => {
+	function coverageCtx(enabled: boolean): ServerRuntime {
+		return makeCtx({
+			rules: makeRules({
+				per_edit_coverage: enabled
+					? { enabled: true, mode: "block", budget_ms: 25_000, languages: ["js", "ts"] }
+					: { enabled: false, mode: "block", budget_ms: 25_000, languages: ["js", "ts"] },
+			}),
+		});
+	}
+
+	it("DEFAULT OFF is a pure no-op: the guard is never invoked when config is absent", async () => {
+		const decision = await runPreToolPipeline(
+			makeCtx(), // makeRules() has no per_edit_coverage
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(mCheckCoverage).not.toHaveBeenCalled();
+		expect(decision.decision).toBe("allow");
+	});
+
+	it("does not invoke the guard when per_edit_coverage.enabled is false", async () => {
+		await runPreToolPipeline(
+			coverageCtx(false),
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(mCheckCoverage).not.toHaveBeenCalled();
+	});
+
+	it("invokes the guard and returns its block when enabled and the guard blocks", async () => {
+		mCheckCoverage.mockResolvedValue({
+			decision: "block",
+			reason: "[interlinked:coverage] BLOCKED: src/x.ts line 2 uncovered",
+			rule_id: "per-edit-coverage",
+		});
+		const decision = await runPreToolPipeline(
+			coverageCtx(true),
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+		expect(decision.decision).toBe("block");
+		expect(decision.reason).toContain("[interlinked:coverage]");
+	});
+
+	it("merges preDecision warnings into the coverage block", async () => {
+		mEvaluate.mockReturnValue({ decision: "allow", warnings: ["PRE-W"] });
+		mCheckCoverage.mockResolvedValue({ decision: "block", reason: "R" });
+		const decision = await runPreToolPipeline(
+			coverageCtx(true),
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(decision.warnings).toEqual(["PRE-W"]);
+	});
+
+	it("continues to allow when the guard returns null (no regression found)", async () => {
+		mCheckCoverage.mockResolvedValue(null);
+		const decision = await runPreToolPipeline(
+			coverageCtx(true),
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+		expect(decision.decision).toBe("allow");
+		// Falls through to the unconditional tail stages.
+		expect(mCaptureBaseline).toHaveBeenCalledOnce();
+	});
+
+	it("does not invoke the guard when the pre-decision is already a block", async () => {
+		mEvaluate.mockReturnValue({ decision: "block", reason: "BLOCKED upstream" });
+		const decision = await runPreToolPipeline(
+			coverageCtx(true),
+			ev({ tool_name: "Write", tool_input: { file_path: "src/x.ts", content: "x" } }),
+			makeSession(),
+		);
+		expect(mCheckCoverage).not.toHaveBeenCalled();
+		expect(decision.reason).toBe("BLOCKED upstream");
 	});
 });
 
