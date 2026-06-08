@@ -63,6 +63,15 @@ export interface CoverageRunOpts {
 	 * uses its language default (e.g. JS → `vitest run --coverage …`).
 	 */
 	testCommand?: string[];
+	/**
+	 * Affected-test subset (repo-relative paths, resolved against {@link projectRoot}).
+	 * When NON-EMPTY, the runner scopes the suite to exactly these test files
+	 * (`vitest run <paths> …` / `pytest <paths> …`) — the fast per-edit path that
+	 * lets the overlay run fit the budget. When undefined or empty, the FULL suite
+	 * runs (unchanged). Ignored when an explicit {@link testCommand} is supplied —
+	 * the caller has taken full control of the argv. See coverage-test-selector.ts.
+	 */
+	selectedTests?: string[];
 	/** Per-run timeout in ms. Defaults to {@link DEFAULT_RUN_TIMEOUT_MS}. */
 	timeoutMs?: number;
 }
@@ -164,8 +173,14 @@ interface SuiteRunOutcome {
  * status was (the `result` is returned for that pass/fail interpretation).
  */
 function runSuite(spawn: SpawnFn, command: string[], opts: CoverageRunOpts): SuiteRunOutcome {
-	const [bin, ...args] = command;
-	if (!bin) return { suiteMs: 0, error: "empty test command", result: null };
+	const [rawBin, ...args] = command;
+	if (!rawBin) return { suiteMs: 0, error: "empty test command", result: null };
+	// Resolve a bare bin (e.g. "vitest") to the project's local node_modules/.bin —
+	// it is not on PATH. The apply-before-disk overlay symlinks node_modules, so it
+	// resolves there too; bins not under node_modules/.bin (e.g. pytest) fall back
+	// to PATH unchanged. This is what makes the coverage run actually launch.
+	const localBin = `${opts.projectRoot}/node_modules/.bin/${rawBin}`;
+	const bin = !rawBin.includes("/") && existsSync(localBin) ? localBin : rawBin;
 	const timeout = opts.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 	const start = Date.now();
 	let result: SpawnSyncReturns<string>;
@@ -241,13 +256,21 @@ function withFailingTests(result: CoverageRunResult, names: string[]): CoverageR
  * Default JS/TS suite command: vitest under v8 coverage with the `json`
  * reporter pointed at `coverageDir`. The `json` reporter writes
  * `coverage-final.json` — the exact istanbul shape `loadCoverageFinal` parses.
+ *
+ * When `selectedTests` is non-empty the suite is SCOPED to those files —
+ * `vitest run <paths…> --coverage …` — so a per-edit overlay run touches only the
+ * affected tests and fits the budget. Empty/omitted ⇒ the full suite.
  */
-export function defaultJsTestCommand(coverageDir: string): string[] {
+export function defaultJsTestCommand(coverageDir: string, selectedTests?: string[]): string[] {
 	return [
 		"vitest",
 		"run",
+		...(selectedTests ?? []),
 		"--coverage",
 		"--coverage.reporter=json",
+		// Emit coverage even when tests FAIL — otherwise a red suite produces no
+		// report (ok:false) and the red-bar gate never sees testsPassed===false.
+		"--coverage.reportOnFailure=true",
 		`--coverage.reportsDirectory=${coverageDir}`,
 	];
 }
@@ -283,7 +306,8 @@ export class JsCoverageRunner implements CoverageRunner {
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
 
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
-		const command = opts.testCommand ?? defaultJsTestCommand(opts.coverageDir);
+		const command =
+			opts.testCommand ?? defaultJsTestCommand(opts.coverageDir, opts.selectedTests);
 		const outcome = runSuite(this.spawn, command, opts);
 		if (outcome.error || !outcome.result) {
 			return failure(outcome.suiteMs, outcome.error ?? "suite did not run");
@@ -311,9 +335,18 @@ export class JsCoverageRunner implements CoverageRunner {
  * Default Python suite command: pytest under coverage.py's JSON report, written
  * to `<coverageDir>/coverage.json` so the runner can find and parse it. Requires
  * `pytest` + `pytest-cov` in the target environment.
+ *
+ * When `selectedTests` is non-empty the suite is SCOPED to those files —
+ * `pytest <paths…> --cov …` — the fast per-edit path. Empty/omitted ⇒ the full
+ * suite.
  */
-export function defaultPythonTestCommand(coverageDir: string): string[] {
-	return ["pytest", "--cov", `--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`];
+export function defaultPythonTestCommand(coverageDir: string, selectedTests?: string[]): string[] {
+	return [
+		"pytest",
+		...(selectedTests ?? []),
+		"--cov",
+		`--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`,
+	];
 }
 
 /** The coverage.py per-file entry we read — line lists only, the rest ignored. */
@@ -424,7 +457,8 @@ export class PythonCoverageRunner implements CoverageRunner {
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
 
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
-		const command = opts.testCommand ?? defaultPythonTestCommand(opts.coverageDir);
+		const command =
+			opts.testCommand ?? defaultPythonTestCommand(opts.coverageDir, opts.selectedTests);
 		const outcome = runSuite(this.spawn, command, opts);
 		if (outcome.error || !outcome.result) {
 			return failure(outcome.suiteMs, outcome.error ?? "suite did not run");

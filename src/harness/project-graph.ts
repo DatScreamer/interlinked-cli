@@ -198,6 +198,17 @@ export class ProjectGraph {
 	}
 
 	/**
+	 * Whether `filePath` was indexed into the graph (an existing project source
+	 * file). Distinct from "has dependents" — a leaf module with zero importers is
+	 * still in the graph. Lets a caller tell "unknown file" (not indexed) apart
+	 * from "known file, no dependents", which the affected-test selector needs to
+	 * choose between full-suite fallback and a strict-TDD block.
+	 */
+	hasFile(filePath: string): boolean {
+		return this.exportIndex.has(this.toAbsolute(filePath));
+	}
+
+	/**
 	 * Is `file` reachable from any of `entryPoints` via the import graph?
 	 *
 	 * "Reachable" = a chain `e → A → B → ... → file` exists where every

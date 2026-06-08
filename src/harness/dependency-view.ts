@@ -73,6 +73,11 @@ export interface CallerSite {
 export interface DependencyView {
 	/** Files that import or call into this file. */
 	getDependents(file: string): string[];
+	/** Whether the backend knows this file (indexed module / described by a
+	 *  shard). Lets a caller distinguish "unknown file" from "known file with no
+	 *  dependents" — the affected-test selector needs that split to choose between
+	 *  a full-suite fallback (unknown) and a strict-TDD block (known, untested). */
+	hasFile(file: string): boolean;
 	/** Classify this file's role in the dependency graph. */
 	classifyModule(file: string): ModuleRole;
 	/** Blast radius — direct + transitive dependent counts + domains.
@@ -101,6 +106,10 @@ export class InternalDependencyView implements DependencyView {
 
 	getDependents(file: string): string[] {
 		return this.graph.getDependents(file);
+	}
+
+	hasFile(file: string): boolean {
+		return this.graph.hasFile(file);
 	}
 
 	classifyModule(file: string): ModuleRole {
@@ -158,6 +167,13 @@ export class SupermodelDependencyView implements DependencyView {
 			}
 		}
 		return result;
+	}
+
+	hasFile(_file: string): boolean {
+		// A shard is a per-file sidecar that exists because its source exists;
+		// `resolveDependencyView` only hands back this view when the shard matches
+		// the file under analysis, so the described file is always "known".
+		return true;
 	}
 
 	classifyModule(_file: string): ModuleRole {

@@ -540,7 +540,11 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		enabled: true,
 		mode: "block",
 		budget_ms: 25_000,
-		languages: ["js", "ts"],
+		// js/ts via vitest+v8, python via pytest+coverage.py. Affected-test
+		// selection (coverage-test-selector.ts) scopes each per-edit overlay run to
+		// only the tests that transitively import the edited file, so a slow,
+		// multi-language suite still fits the per-edit budget and enforces in-band.
+		languages: ["js", "ts", "python"],
 		// Red-bar (per-edit strict TDD) enforcement — DEFAULT ON (flipped together
 		// with `enabled` / `block_on_crap`). Every edit must keep ALL tests green:
 		// an overlay run that leaves the suite RED (a test failed) is refused before

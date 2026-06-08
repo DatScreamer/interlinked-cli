@@ -289,7 +289,11 @@ export interface PerEditCoverageConfig {
 	 * step). Default: 25_000 (the documented PreToolUse cloud-sync budget).
 	 */
 	budget_ms: number;
-	/** Languages the overlay coverage run covers. Default: ["js", "ts"]. */
+	/**
+	 * Languages the overlay coverage run covers. **Default: `["js", "ts", "python"]`**
+	 * — JS/TS via vitest + v8, Python via pytest + coverage.py. A `.py` edit reaches
+	 * the gate exactly like a `.ts` edit (affected-test selection keeps both fast).
+	 */
 	languages: string[];
 	/**
 	 * Red-bar (per-edit TDD) enforcement. **Default: true (opt-out).** When true,

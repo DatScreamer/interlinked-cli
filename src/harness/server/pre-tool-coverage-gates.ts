@@ -19,10 +19,31 @@
 // a no-op for non-commit Bash, so an opted-in repo pays the commit cost only on
 // an actual `git commit`. Neither throws (each underlying check fails open).
 
+import { resolveDependencyView, type DependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
-import type { ServerRuntime } from "./runtime-context.js";
+import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
+
+/**
+ * Build the {@link DependencyView} for the file an edit touches, REUSING the same
+ * `ProjectGraph` the daemon already holds (lazily built + cached per project root)
+ * and the same `resolveDependencyView` seam PostToolUse impact analysis uses — no
+ * second graph is constructed. The view powers affected-test selection inside
+ * `checkCoverageWrite`. Returns undefined (→ full-suite fallback) for a non-file
+ * event or on any failure: the selector must never run a wrong subset, so an
+ * absent view is the safe default.
+ */
+function depViewForEvent(ctx: ServerRuntime, event: HarnessEvent): DependencyView | undefined {
+	const filePath = (event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
+	if (!filePath) return undefined;
+	try {
+		const graph = getGraphForFile(ctx, filePath);
+		return resolveDependencyView(filePath, ctx.cwd, graph);
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Per-edit coverage gate (config-gated, DEFAULT OFF). The expensive,
@@ -41,7 +62,9 @@ export async function runCoverageWriteGate(
 ): Promise<HarnessDecision | null> {
 	if (preDecision.decision !== "allow") return null;
 	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: default OFF
-	const coverageBlock = await checkCoverageWrite(event, ctx.rules);
+	// Source the dependency view from the daemon's existing graph so the gate can
+	// select only the affected tests (fast → fits the per-edit budget → enforces).
+	const coverageBlock = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
 	if (!coverageBlock) return null;
 	if (preDecision.warnings && preDecision.warnings.length > 0) {
 		coverageBlock.warnings = preDecision.warnings;

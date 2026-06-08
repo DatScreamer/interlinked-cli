@@ -186,10 +186,12 @@ describe("resolveDependencyView — freshness gate", () => {
 describe("DependencyView — interface conformance", () => {
 	function assertSatisfiesInterface(view: DependencyView): void {
 		expect(typeof view.getDependents).toBe("function");
+		expect(typeof view.hasFile).toBe("function");
 		expect(typeof view.classifyModule).toBe("function");
 		expect(typeof view.getBlastRadius).toBe("function");
 		expect(typeof view.getCallers).toBe("function");
 		expect(Array.isArray(view.getDependents("any.ts"))).toBe(true);
+		expect(typeof view.hasFile("any.ts")).toBe("boolean");
 		expect(Array.isArray(view.getCallers("any.ts"))).toBe(true);
 		expect(["leaf", "internal", "hub", "root"]).toContain(
 			view.classifyModule("any.ts"),
@@ -228,6 +230,12 @@ describe("SupermodelDependencyView — shard mapping", () => {
 	it("classifies a HIGH-risk shard as a hub", () => {
 		const view = new SupermodelDependencyView(shardFrom(HIGH_RISK_SHARD));
 		expect(view.classifyModule("src/mod.ts")).toBe("hub");
+	});
+
+	it("hasFile is always true — the shard exists because its source does", () => {
+		const view = new SupermodelDependencyView(shardFrom(HIGH_RISK_SHARD));
+		expect(view.hasFile("src/mod.ts")).toBe(true);
+		expect(view.hasFile("anything.ts")).toBe(true);
 	});
 
 	it("classifies direct>=5 as a hub even when risk is not HIGH", () => {
@@ -348,6 +356,13 @@ describe("InternalDependencyView — matches ProjectGraph", () => {
 			[...graph.getDependents(hubPath)].sort(),
 		);
 		expect(view.getDependents(hubPath)).toHaveLength(3);
+	});
+
+	it("hasFile is true for an indexed file and false for an unknown one", () => {
+		const { graph, hubPath } = buildHubRepo(1);
+		const view = new InternalDependencyView(graph);
+		expect(view.hasFile(hubPath)).toBe(true);
+		expect(view.hasFile(join(hubPath, "..", "never-indexed.ts"))).toBe(false);
 	});
 
 	it("classifyModule returns exactly ProjectGraph.classifyModule", () => {

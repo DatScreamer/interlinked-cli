@@ -12,6 +12,7 @@ import {
 } from "../coverage-obligation-ledger.js";
 import type { CoverageOverlay } from "../coverage-overlay.js";
 import type { CoverageRunResult, CoverageRunner } from "../coverage-runner.js";
+import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import { DEFAULT_CONFIG } from "../rules/default-config.js";
 import {
@@ -845,6 +846,231 @@ describe("checkCoverageWrite — budget gate", () => {
 		);
 		expect(ran()).toBe(true);
 		expect(readRuntimeEstimateMs(root)).toBe(1500);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Affected-test selection — the keystone: scope the overlay run to only the
+// tests that transitively import the edited file (fast → fits the budget →
+// enforces in-band). depView is stubbed; no real ProjectGraph.
+// ---------------------------------------------------------------------------
+
+/** A stub DependencyView: explicit absolute-path reverse edges + membership. */
+function stubDepView(edges: Record<string, string[]>, known?: Set<string>): DependencyView {
+	const membership = known ?? new Set<string>([...Object.keys(edges), ...Object.values(edges).flat()]);
+	return {
+		source: "internal",
+		getDependents: (f: string): string[] => edges[f] ?? [],
+		hasFile: (f: string): boolean => membership.has(f),
+		classifyModule: () => "internal",
+		getBlastRadius: (): BlastRadius => ({ direct: 0, transitive: 0, domains: [] }),
+		getCallers: (): CallerSite[] => [],
+	};
+}
+
+/** A runner that records the `selectedTests` it was handed (or undefined). */
+function capturingRunner(result: CoverageRunResult): {
+	runner: CoverageRunner;
+	selected: () => string[] | undefined;
+} {
+	let captured: string[] | undefined;
+	const runner: CoverageRunner = {
+		run: async (opts) => {
+			captured = opts.selectedTests;
+			return result;
+		},
+	};
+	return { runner, selected: () => captured };
+}
+
+describe("checkCoverageWrite — affected-test selection (scoped per-edit run)", () => {
+	it("passes ONLY the selected affected tests to the runner", async () => {
+		// m.ts ← m.test.ts + integration.test.ts → both selected and forwarded.
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/m.test.ts"), join(root, "tests/integration.test.ts")],
+		});
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull();
+		expect(selected()).toEqual(["src/m.test.ts", "tests/integration.test.ts"]);
+	});
+
+	it("BLOCKS a source edit when NO test depends on the file (selection == [])", async () => {
+		// m.ts is imported only by a non-test; selection is [] → strict-TDD block,
+		// WITHOUT running the suite (runner never called).
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/app.ts")],
+			[join(root, "src/app.ts")]: [],
+		});
+		const { runner, ran } = stubRunner(coverageResult("src/m.ts", []));
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/no test/i);
+		expect(decision?.reason).toMatch(/src\/m\.ts/);
+		expect(decision?.reason).toMatch(/MultiEdit/);
+		expect(decision?.rule_id).toBe("per-edit-coverage");
+		// The block is decided from the graph alone — no overlay/suite run.
+		expect(ran()).toBe(false);
+	});
+
+	it("does NOT defer on budget when a scoped subset exists (enforces in-band)", async () => {
+		// Estimate is above budget, but a scoped subset bypasses the budget gate:
+		// the run is fast, so it executes and enforces instead of deferring.
+		writeRuntimeEstimateAbove(root, 30_000);
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/m.test.ts")],
+		});
+		const { runner, ran } = stubRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ budget_ms: 25_000 }),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(true); // ran despite the over-budget estimate
+	});
+
+	it("falls back to the full suite (no selectedTests) when the file is NOT in the graph", async () => {
+		// hasFile=false → selector returns null → full suite, runner gets no subset.
+		const view = stubDepView({}, new Set<string>([join(root, "src/other.ts")]));
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull();
+		expect(selected()).toBeUndefined();
+	});
+
+	it("with NO depView supplied, behavior is the full-suite path (unchanged)", async () => {
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			// depView omitted
+		);
+		expect(decision).toBeNull();
+		expect(selected()).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fail-LOUD: gate ON for a covered language but the runner could not establish
+// a result → ALLOW (can't-measure ≠ deny) but with a LOUD provider warning,
+// never a silent pass.
+// ---------------------------------------------------------------------------
+
+describe("checkCoverageWrite — fail-loud when the runner cannot run", () => {
+	it("ok:false on a JS edit → ALLOW + a LOUD missing-provider warning (NOT a silent allow)", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const failing: CoverageRunner = {
+			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "no report", testsPassed: null }),
+		};
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules(),
+			deps(failing),
+		);
+		expect(decision).toBeNull(); // allowed (fail-open)
+		// …but LOUDLY: the exact provider-warning text the operator must act on.
+		expect(errSpy).toHaveBeenCalled();
+		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
+		expect(text).toMatch(/coverage\/red-green\/CRAP gate is ON for ts/);
+		expect(text).toMatch(/could not run/);
+		expect(text).toMatch(/missing coverage provider/);
+		expect(text).toMatch(/@vitest\/coverage-v8/);
+		expect(text).toMatch(/NOT enforced this edit/);
+		errSpy.mockRestore();
+	});
+
+	it("no runner for a covered language → ALLOW + the LOUD warning", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const noRunnerDeps: CoverageWriteDeps = {
+			runnerFor: () => null, // gate ON, but the factory yields nothing
+			createOverlay: stubOverlay(),
+			clock: () => 0,
+			cyclomaticFor: () => () => [],
+		};
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules(),
+			noRunnerDeps,
+		);
+		expect(decision).toBeNull();
+		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
+		expect(text).toMatch(/gate is ON for ts but could not run/);
+		expect(text).toMatch(/install it to enforce/);
+		errSpy.mockRestore();
+	});
+
+	it("Python ok:false → the LOUD warning names pytest-cov (the python provider)", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const failing: CoverageRunner = {
+			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, error: "no report", testsPassed: null }),
+		};
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", "x = 1\n"),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(failing),
+		);
+		expect(decision).toBeNull();
+		const text = errSpy.mock.calls.map((c) => String(c[0])).join("");
+		expect(text).toMatch(/gate is ON for python/);
+		expect(text).toMatch(/pytest-cov/);
+		errSpy.mockRestore();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Python reaches the gate now that "python" is a covered language
+// ---------------------------------------------------------------------------
+
+describe("checkCoverageWrite — a .py edit reaches the gate (python covered)", () => {
+	it("runs the runner for a .py edit when python is configured (not a no-op)", async () => {
+		const { runner, ran } = stubRunner(pyCoverageResult("src/a.py", [1], []));
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", "x = 1\n"),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(true);
+	});
+
+	it("the SHIPPED default config now covers python (.py reaches the gate)", async () => {
+		// Regression pin for the languages change: DEFAULT_CONFIG includes python,
+		// so a .py edit is no longer short-circuited as an unsupported language.
+		expect(DEFAULT_CONFIG.per_edit_coverage?.languages).toContain("python");
+		const { runner, ran } = stubRunner(pyCoverageResult("src/a.py", [1], []));
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.py", "x = 1\n"),
+			DEFAULT_CONFIG,
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(true);
 	});
 });
 

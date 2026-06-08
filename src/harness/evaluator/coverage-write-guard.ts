@@ -48,27 +48,27 @@ import {
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
-import { computeCrap, crapScore } from "../checks/crap.js";
-import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
+import {
+	type CrapInput,
+	type CyclomaticAnalyzer,
+	DEFAULT_CRAP_THRESHOLD,
+	decideCrap,
+	hasPerLineData,
+} from "./coverage-crap-decision.js";
+import type { DependencyView } from "../dependency-view.js";
+import { selectAffectedTests } from "../coverage-test-selector.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
-/**
- * A per-function cyclomatic counter for one language, used to compute CRAP from
- * the overlay coverage. Returns `null` when the backing analyzer is unavailable
- * (the loud "do not treat as simple" signal — typescript/radon absent), which
- * the CRAP gate fail-opens on, exactly like the coverage block fail-opens on an
- * unmeasured suite.
- */
-export type CyclomaticAnalyzer = (
-	content: string,
-	filePath: string,
-) => FunctionComplexityEntry[] | null;
+// `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
+// with the CRAP decision; re-exported here so this module's public surface is
+// unchanged for existing importers.
+export type { CyclomaticAnalyzer } from "./coverage-crap-decision.js";
 
 /** Injectable seams so unit tests run with NO real suite / overlay / analyzer. */
 export interface CoverageWriteDeps {
@@ -277,179 +277,34 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 	};
 }
 
-/** True when the runner reported native per-line coverage (coverage.py path). */
-function hasPerLineData(cov: PerFileCoverage): boolean {
-	return cov.uncoveredLines !== undefined || cov.coveredLines !== undefined;
-}
-
-// ===========================================
-// CRAP (Change Risk Anti-Patterns) — the 4th per-edit block
-// ===========================================
-// CRAP(fn) = cyclomatic² · (1 − cov)³ + cyclomatic (the formula REUSED from
-// checks/crap.ts — never reimplemented here). A function blocks when it is BOTH
-// complex AND under-covered. This runs AFTER the uncovered-added-line / drop
-// decision: a flat coverage gap is the more basic failure; CRAP is the "complex
-// AND under-covered" escalation. Computed from the SAME overlay coverage run —
-// no second suite spawn. Cyclomatic comes from the per-language analyzer; the
-// coverage fraction from the overlay's per-function (JS/istanbul) or per-line
-// (Python/coverage.py) data, intersected with each function's body range.
-
-/** Default CRAP cutoff — the McCabe/SonarQube convention (cyclomatic-10 @ 0% = 110). */
-const DEFAULT_CRAP_THRESHOLD = 30;
-
-/** One CRAP violation for an edited function — drives the block message. */
-interface CrapViolation {
-	function: string;
-	line: number;
-	cyclomatic: number;
-	coverage_pct: number;
-	crap_score: number;
-}
-
-/** Inputs to the CRAP decision, all explicit so it needs no GateContext fields. */
-interface CrapInput {
-	relPath: string;
-	proposed: string;
-	cov: PerFileCoverage;
-	editedLines: Set<number> | undefined;
-	threshold: number;
-	analyzer: CyclomaticAnalyzer | null;
-}
-
 /**
- * True when a complexity entry's body range intersects the edited lines, OR when
- * the edited-line set is unavailable (derivation failed — fail-safe: every
- * function counts, matching the coverage check's same-named invariant). The line-
- * precise filter is what scopes CRAP to functions the edit ADDED or TOUCHED.
+ * The strict-TDD block for a source file that NO test transitively depends on
+ * (affected-test selection returned `[]`). Whatever executable lines the edit
+ * adds are exercised by nothing, so — without running a suite — the file is
+ * uncovered by definition. Tells the agent to ship the test in the SAME edit.
  */
-function crapTouches(fn: FunctionComplexityEntry, editedLines: Set<number> | undefined): boolean {
-	if (!editedLines) return true;
-	for (let ln = fn.line; ln <= fn.endLine; ln++) {
-		if (editedLines.has(ln)) return true;
-	}
-	return false;
-}
-
-/** Count how many of [start,end] (inclusive) appear in `lines`. */
-function countInRange(lines: ReadonlySet<number>, start: number, end: number): number {
-	let n = 0;
-	for (const ln of lines) {
-		if (ln >= start && ln <= end) n++;
-	}
-	return n;
-}
-
-/**
- * CRAP violations for the PER-FUNCTION (JS/istanbul) shape. Cyclomatic from the
- * analyzer, coverage from `cov.functions` — matched + scored by the REUSED
- * `computeCrap` (exact formula + ±3-line name/line matching). Only TOUCHED
- * functions are fed in, so the result is already scoped to the edit.
- */
-function crapViolationsPerFunction(
-	relPath: string,
-	complexities: FunctionComplexityEntry[],
-	cov: PerFileCoverage,
-	threshold: number,
-): CrapViolation[] {
-	const findings = computeCrap({
-		complexities,
-		coverage: cov.functions,
-		filePath: relPath,
-		fileMtime: 0,
-		coverageMtime: null, // never stale: this is THIS run's fresh overlay coverage
-		threshold,
-		staleTolerance: "include",
-	});
-	return findings.map((f) => ({
-		function: f.function,
-		line: f.line,
-		cyclomatic: f.complexity,
-		coverage_pct: f.coverage_pct,
-		crap_score: f.crap_score,
-	}));
-}
-
-/**
- * CRAP violations for the PER-LINE (Python/coverage.py) shape. coverage.py has no
- * function ranges, so the per-function fraction is the covered lines INSIDE each
- * analyzer-reported function body range over its executable lines
- * (covered + uncovered in range). A function with no executable lines in range is
- * skipped (no measurable coverage ⇒ not a CRAP signal). Scores via the REUSED
- * `crapScore`. Sorted worst-first for a stable message.
- */
-function crapViolationsPerLine(
-	complexities: FunctionComplexityEntry[],
-	cov: PerFileCoverage,
-	threshold: number,
-): CrapViolation[] {
-	const covered = cov.coveredLines ?? new Set<number>();
-	const uncovered = cov.uncoveredLines ?? new Set<number>();
-	const violations: CrapViolation[] = [];
-	for (const fn of complexities) {
-		const inCovered = countInRange(covered, fn.line, fn.endLine);
-		const inUncovered = countInRange(uncovered, fn.line, fn.endLine);
-		const executable = inCovered + inUncovered;
-		if (executable === 0) continue; // no measurable lines → no CRAP signal
-		const covPct = (inCovered / executable) * 100;
-		const score = crapScore(fn.cyclomatic, covPct);
-		if (score < threshold) continue;
-		violations.push({
-			function: fn.name,
-			line: fn.line,
-			cyclomatic: fn.cyclomatic,
-			coverage_pct: covPct,
-			crap_score: score,
-		});
-	}
-	violations.sort((a, b) => b.crap_score - a.crap_score);
-	return violations;
-}
-
-/** The actionable CRAP block for the worst touched function (highest CRAP). */
-function blockForCrap(relPath: string, worst: CrapViolation): HarnessDecision {
-	const crap = Math.round(worst.crap_score);
-	const cov = Math.round(worst.coverage_pct);
+function blockForUntestedSource(relPath: string): HarnessDecision {
 	return {
 		decision: "block",
 		reason:
-			`[interlinked:coverage] BLOCKED: this edit leaves \`${worst.function}\` ` +
-			`(${relPath} line ${worst.line}) with a CRAP score of ${crap} ` +
-			`(cyclomatic ${worst.cyclomatic}, coverage ${cov}%) — it is BOTH complex AND ` +
-			"under-covered. CRAP = cyclomatic² · (1 − coverage)³ + cyclomatic, checked after " +
-			"the coverage gate. Reduce complexity (decompose the function) OR add coverage " +
-			"(exercise its branches) in this edit (use MultiEdit so the overlay sees code + " +
-			"test together), then retry.",
+			`[interlinked:coverage] BLOCKED: no test in the project imports ${relPath} ` +
+			"(directly or transitively), so this edit's executable lines are covered by " +
+			"nothing. Strict TDD: write the test for " +
+			`${relPath} in this edit (use MultiEdit so the overlay sees code + test ` +
+			"together → covered → allowed), then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
 	};
 }
 
-/**
- * The CRAP block for the edited file, or null when no touched function is over
- * the threshold. Runs only when a cyclomatic analyzer is available — an
- * unavailable analyzer fail-opens (loud-degrade), like the coverage block on an
- * unmeasured suite. Cyclomatic is parsed from the proposed content; only
- * functions the edit ADDED or TOUCHED are scored.
- */
-function decideCrap(input: CrapInput): HarnessDecision | null {
-	if (!input.analyzer) {
-		return loudDegrade(input.relPath, "no cyclomatic analyzer for CRAP — fail-open");
-	}
-	const all = input.analyzer(input.proposed, input.relPath);
-	if (all === null) {
-		return loudDegrade(input.relPath, "cyclomatic analyzer unavailable for CRAP — fail-open");
-	}
-	const touched = all.filter((fn) => crapTouches(fn, input.editedLines));
-	if (touched.length === 0) return null;
-
-	const violations = hasPerLineData(input.cov)
-		? crapViolationsPerLine(touched, input.cov, input.threshold)
-		: crapViolationsPerFunction(input.relPath, touched, input.cov, input.threshold);
-	const worst = violations[0];
-	if (!worst) return null;
-	return blockForCrap(input.relPath, worst);
-}
+// CRAP (Change Risk Anti-Patterns) — the 4th per-edit block — lives in
+// `coverage-crap-decision.ts` (`decideCrap`), extracted to keep this module under
+// the per-file line cap. It runs AFTER the uncovered-added-line / drop decision: a
+// flat coverage gap is the more basic failure; CRAP is the "complex AND
+// under-covered" escalation. Computed from the SAME overlay coverage run (no
+// second suite spawn). `hasPerLineData` (imported above) is shared between the
+// coverage-drop path here and the CRAP path there.
 
 /**
  * The uncovered-added-line block and the now-fraction from PER-LINE data. Used
@@ -521,6 +376,25 @@ function loudDegrade(relPath: string, why: string): null {
 	return null;
 }
 
+/**
+ * The fail-LOUD path for "the gate is ON for this language but the runner could
+ * not establish a result" — no runner, an `ok:false` run, or a `testsPassed`/report
+ * the runner could not produce. The single most common real cause is a MISSING
+ * COVERAGE PROVIDER (`@vitest/coverage-v8` / `pytest-cov`), so we name it. Allows
+ * the edit (fail-open — "can't measure" is not "deny") but NEVER silently: the
+ * warning makes the un-enforced state visible so the operator installs the
+ * provider. Returns null (allow).
+ */
+function loudRunnerUnavailable(relPath: string, language: CoverageLanguage, why: string): null {
+	const provider = language === "python" ? "pytest-cov" : "@vitest/coverage-v8";
+	process.stderr.write(
+		`[interlinked:coverage] WARNING: coverage/red-green/CRAP gate is ON for ${language} ` +
+			`but could not run for ${relPath} (${why}) — missing coverage provider ` +
+			`(e.g. ${provider})? NOT enforced this edit; install it to enforce.\n`,
+	);
+	return null;
+}
+
 /** Record a deferred coverage obligation and allow (budget exceeded). */
 function deferForBudget(
 	projectRoot: string,
@@ -550,6 +424,13 @@ interface GateContext {
 	editedLines: Set<number> | undefined;
 	budgetMs: number;
 	/**
+	 * Affected-test subset (repo-relative paths) the overlay run is scoped to.
+	 * Non-empty ⇒ the fast per-edit path (only these tests run, no budget defer).
+	 * Empty/undefined ⇒ the full suite runs (the budget gate already decided it
+	 * fits). Forwarded to the runner as {@link CoverageRunOpts.selectedTests}.
+	 */
+	selectedTests?: string[];
+	/**
 	 * When true (`per_edit_coverage.block_on_test_failure`), an overlay run that
 	 * leaves the suite RED (`testsPassed === false`) blocks the edit before the
 	 * coverage decision. Default-absent ⇒ falsy ⇒ coverage-only behavior.
@@ -576,16 +457,28 @@ async function runOverlayAndDecide(
 	deps: CoverageWriteDeps,
 ): Promise<HarnessDecision | null> {
 	const runner = deps.runnerFor(ctx.language);
-	if (!runner) return loudDegrade(ctx.relPath, `no coverage runner for ${ctx.language}`);
+	// Gate is ON for this language but no runner could be built → fail LOUD
+	// (missing provider?), never silent. Allow (can't-measure ≠ deny).
+	if (!runner) {
+		return loudRunnerUnavailable(ctx.relPath, ctx.language, `no coverage runner for ${ctx.language}`);
+	}
 
 	const overlay = deps.createOverlay(ctx.projectRoot, ctx.relPath, ctx.proposed);
 	try {
-		const result = await runner.run({
+		const runOpts: { projectRoot: string; coverageDir: string; selectedTests?: string[] } = {
 			projectRoot: overlay.overlayRoot,
 			coverageDir: `${overlay.overlayRoot}/.interlinked/coverage`,
-		});
+		};
+		if (ctx.selectedTests && ctx.selectedTests.length > 0) {
+			runOpts.selectedTests = ctx.selectedTests;
+		}
+		const result = await runner.run(runOpts);
 		updateRuntimeEstimateMs(ctx.projectRoot, result.suiteMs, deps.clock);
-		if (!result.ok) return loudDegrade(ctx.relPath, result.error ?? "coverage run failed");
+		// `ok:false` means the runner produced no parseable coverage — the most
+		// common real cause is a missing provider. Fail LOUD, not silent.
+		if (!result.ok) {
+			return loudRunnerUnavailable(ctx.relPath, ctx.language, result.error ?? "coverage run failed");
+		}
 
 		// Red bar before coverage: a FAILING suite is a harder failure than a
 		// coverage gap. Only when opted in (block_on_test_failure) AND the suite
@@ -608,19 +501,54 @@ async function runOverlayAndDecide(
 		// Coverage allowed → the 4th per-edit gate. Only when opted in
 		// (block_on_crap); uses the SAME overlay coverage just computed.
 		if (ctx.blockOnCrap) {
-			return decideCrap({
+			const crapInput: CrapInput = {
 				relPath: ctx.relPath,
 				proposed: ctx.proposed,
 				cov,
 				editedLines: ctx.editedLines,
 				threshold: ctx.crapThreshold ?? DEFAULT_CRAP_THRESHOLD,
 				analyzer: deps.cyclomaticFor(ctx.language),
-			});
+			};
+			return decideCrap(crapInput, loudDegrade);
 		}
 		return null;
 	} finally {
 		overlay.cleanup();
 	}
+}
+
+/**
+ * Outcome of affected-test selection, routing the rest of the gate:
+ *   - `block`  — the file is in the graph but NO test depends on it (`[]`): a
+ *                strict-TDD block, no suite run needed.
+ *   - `scoped` — a non-empty affected-test subset: run ONLY those (fast → fits
+ *                the per-edit budget → skip the budget defer).
+ *   - `full`   — selection unavailable (no depView, or the file is not in the
+ *                graph → `null`): fall back to the full suite + budget gate.
+ */
+type SelectionRoute =
+	| { kind: "block"; decision: HarnessDecision }
+	| { kind: "scoped"; tests: string[] }
+	| { kind: "full" };
+
+/**
+ * Run affected-test selection (when a dependency view is available) and map its
+ * tri-state result to a {@link SelectionRoute}. `null` from the selector (file
+ * not in the graph) and a missing view both route to `full` — "don't know which
+ * tests" must never run a wrong subset. `[]` routes to a strict-TDD `block`. A
+ * non-empty subset routes to `scoped`. Kept separate so `checkCoverageWrite`
+ * stays low-complexity.
+ */
+function routeBySelection(
+	relPath: string,
+	projectRoot: string,
+	depView: DependencyView | undefined,
+): SelectionRoute {
+	if (!depView) return { kind: "full" };
+	const selected = selectAffectedTests({ editedRelPath: relPath, projectRoot, depView });
+	if (selected === null) return { kind: "full" };
+	if (selected.length === 0) return { kind: "block", decision: blockForUntestedSource(relPath) };
+	return { kind: "scoped", tests: selected };
 }
 
 /** Resolve the edited file path from the tool input (absolute or cwd-relative). */
@@ -644,11 +572,22 @@ function editedRelPath(event: HarnessEvent, projectRoot: string): string | null 
  * overlay suite run. A pure no-op — runner never invoked — when disabled, in warn
  * mode, or for a non-code / unsupported-language / test / non-cappable file. Never
  * throws (fail-open).
+ *
+ * AFFECTED-TEST SELECTION (the keystone that makes this AFFORDABLE on a slow,
+ * multi-language suite): when `depView` is supplied, the gate first walks the
+ * reverse import graph to find only the tests transitively affected by the edit:
+ *   - a NON-EMPTY subset → the overlay runs ONLY those tests (fast → fits the
+ *     per-edit budget → enforced in-band, no defer);
+ *   - `[]` (file in the graph, but nothing tests it) → BLOCK (strict TDD — the
+ *     edit's executable lines are covered by nothing);
+ *   - `null` (file not in the graph) or no `depView` → the FULL suite + budget
+ *     gate (unchanged) — never run a wrong subset.
  */
 export async function checkCoverageWrite(
 	event: HarnessEvent,
 	rules: GuardRulesConfig,
 	deps: CoverageWriteDeps = DEFAULT_DEPS,
+	depView?: DependencyView,
 ): Promise<HarnessDecision | null> {
 	const cfg = rules.per_edit_coverage;
 	if (!cfg?.enabled || cfg.mode !== "block") return null;
@@ -668,25 +607,69 @@ export async function checkCoverageWrite(
 	if (!isCappableFile({ filePath: relPath, content: proposed })) return null;
 
 	try {
-		const estimate = readRuntimeEstimateMs(projectRoot);
-		if (estimate !== null && estimate >= cfg.budget_ms) {
-			return deferForBudget(projectRoot, relPath, event, estimate, cfg.budget_ms);
-		}
-		const editedLines = deriveEditedLineNumbers(event.tool_name, input, proposed);
-		const ctx: GateContext = {
-			projectRoot,
-			relPath,
-			proposed,
-			language,
-			editedLines,
-			budgetMs: cfg.budget_ms,
-			blockOnTestFailure: cfg.block_on_test_failure === true,
-			blockOnCrap: cfg.block_on_crap === true,
-			crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
-		};
-		return await runOverlayAndDecide(ctx, event, deps);
+		return await selectRunAndDecide(
+			{ event, cfg, deps, depView },
+			{ projectRoot, relPath, language, input, proposed },
+		);
 	} catch (err) {
 		const why = err instanceof Error ? err.message : String(err);
 		return loudDegrade(relPath, why);
 	}
+}
+
+/** Fixed-per-call inputs threaded into {@link selectRunAndDecide} (the parts of
+ *  the event/config the routing + run need). Bundled so the helper takes two
+ *  params, not seven. */
+interface GateCall {
+	event: HarnessEvent;
+	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>;
+	deps: CoverageWriteDeps;
+	depView: DependencyView | undefined;
+}
+
+/** Resolved per-edit facts (path/language/content) shared across the helper. */
+interface GateTarget {
+	projectRoot: string;
+	relPath: string;
+	language: CoverageLanguage;
+	input: NonNullable<HarnessEvent["tool_input"]>;
+	proposed: string;
+}
+
+/**
+ * Run affected-test selection, apply the budget gate (full-suite route only),
+ * build the {@link GateContext}, and run the overlay decision. Extracted from
+ * `checkCoverageWrite` so that entry stays under the cyclomatic cap; throwing is
+ * contained by the caller's try/catch (loud-degrade).
+ */
+async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<HarnessDecision | null> {
+	const { cfg, deps, depView, event } = call;
+	const { projectRoot, relPath, language, input, proposed } = target;
+
+	// Affected-test selection FIRST: it decides whether we enforce a fast scoped
+	// run, must block (nothing tests this source), or fall back to the full suite
+	// (and therefore consult the budget gate).
+	const route = routeBySelection(relPath, projectRoot, depView);
+	if (route.kind === "block") return route.decision;
+
+	if (route.kind === "full") {
+		const estimate = readRuntimeEstimateMs(projectRoot);
+		if (estimate !== null && estimate >= cfg.budget_ms) {
+			return deferForBudget(projectRoot, relPath, event, estimate, cfg.budget_ms);
+		}
+	}
+
+	const ctx: GateContext = {
+		projectRoot,
+		relPath,
+		proposed,
+		language,
+		editedLines: deriveEditedLineNumbers(event.tool_name, input, proposed),
+		budgetMs: cfg.budget_ms,
+		blockOnTestFailure: cfg.block_on_test_failure === true,
+		blockOnCrap: cfg.block_on_crap === true,
+		crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
+		...(route.kind === "scoped" ? { selectedTests: route.tests } : {}),
+	};
+	return runOverlayAndDecide(ctx, event, deps);
 }

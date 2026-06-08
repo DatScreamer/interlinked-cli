@@ -507,6 +507,79 @@ describe("PythonCoverageRunner — testsPassed (red/green via exit code)", () =>
 });
 
 // ==================================================================
+// selectedTests — scoped per-edit run (only the affected tests)
+// ==================================================================
+
+describe("CoverageRunner — selectedTests scoping", () => {
+	it("JS: a non-empty selectedTests scopes vitest to exactly those paths", async () => {
+		const { spawn, calls } = makeStubSpawn({});
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writeReportFor(absSrc);
+			return r;
+		};
+		const runner = new JsCoverageRunner(wrappingSpawn);
+		await runner.run({ ...baseOpts(), selectedTests: ["src/a.test.ts", "src/b.test.ts"] });
+
+		expect(calls[0]?.command).toBe("vitest");
+		// `run <paths…> --coverage …` — the affected tests sit right after `run`.
+		expect(calls[0]?.args.slice(0, 3)).toEqual(["run", "src/a.test.ts", "src/b.test.ts"]);
+		expect(calls[0]?.args).toContain("--coverage");
+		expect(calls[0]?.args.join(" ")).toContain(`--coverage.reportsDirectory=${coverageDir}`);
+	});
+
+	it("JS: omitting selectedTests runs the full suite (no path args — unchanged)", async () => {
+		const { spawn, calls } = makeStubSpawn({});
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writeReportFor(absSrc);
+			return r;
+		};
+		await new JsCoverageRunner(wrappingSpawn).run(baseOpts());
+		expect(calls[0]?.args).toEqual(defaultJsTestCommand(coverageDir).slice(1));
+	});
+
+	it("JS: an empty selectedTests array also runs the full suite", () => {
+		// The command builder treats [] the same as omitted (full suite).
+		expect(defaultJsTestCommand(coverageDir, [])).toEqual(defaultJsTestCommand(coverageDir));
+	});
+
+	it("Python: a non-empty selectedTests scopes pytest to exactly those paths", async () => {
+		const { spawn, calls } = makeStubSpawn({});
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writePyReportFor("src/foo.py", [1], []);
+			return r;
+		};
+		const runner = new PythonCoverageRunner(wrappingSpawn);
+		await runner.run({ ...baseOpts(), selectedTests: ["tests/test_a.py"] });
+
+		expect(calls[0]?.command).toBe("pytest");
+		// `pytest <paths…> --cov …` — paths immediately follow the verb.
+		expect(calls[0]?.args.slice(0, 2)).toEqual(["tests/test_a.py", "--cov"]);
+		expect(calls[0]?.args.join(" ")).toContain(
+			`--cov-report=json:${join(coverageDir, COVERAGE_PY_JSON_FILENAME)}`,
+		);
+	});
+
+	it("an explicit testCommand wins over selectedTests (caller owns the argv)", async () => {
+		const { spawn, calls } = makeStubSpawn({});
+		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
+			const r = spawn(cmd, args, optsArg);
+			writeReportFor(absSrc);
+			return r;
+		};
+		await new JsCoverageRunner(wrappingSpawn).run({
+			...baseOpts(),
+			testCommand: ["custom", "--flag"],
+			selectedTests: ["src/a.test.ts"],
+		});
+		expect(calls[0]?.command).toBe("custom");
+		expect(calls[0]?.args).toEqual(["--flag"]);
+	});
+});
+
+// ==================================================================
 // Factory
 // ==================================================================
 
