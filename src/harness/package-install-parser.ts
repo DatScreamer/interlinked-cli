@@ -29,6 +29,8 @@ export {
 	envRegistryFor,
 	dropPreVerbFlags,
 	ENV_REGISTRY_KEYS,
+	pinnedVersionViolation,
+	isExactPinnedVersion,
 } from "./package-install-parser-shared.js";
 
 // Re-export ecosystem parsers so callers that import the named parsers

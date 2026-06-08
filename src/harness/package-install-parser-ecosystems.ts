@@ -520,73 +520,118 @@ export function parseUv(
 // ===========================================================
 // cargo
 // ===========================================================
+const CARGO_SYNC_VERBS = new Set(["build", "test", "run", "check"]);
+
 export function parseCargo(
 	tokens: string[],
 	envVars: Record<string, string>,
 ): InstallCommand | null {
 	const sub = tokens[1] || "";
 	const args = tokens.slice(2);
-	if (sub === "add") {
-		const positionals: string[] = [];
-		let customRegistry: string | undefined;
-		for (let i = 0; i < args.length; i++) {
-			const a = args[i];
-			if (a === "--registry") {
-				customRegistry = args[i + 1];
-				i++;
-				continue;
-			}
-			if (a === "--git") {
-				positionals.push(`git+${args[i + 1]}`);
-				i++;
-				continue;
-			}
-			if (a.startsWith("-")) continue;
-			positionals.push(a);
-		}
-		if (!customRegistry) customRegistry = envRegistryFor("cargo", envVars);
-		return {
-			ecosystem: "cargo",
-			manager: "cargo",
-			action: "add",
-			packages: positionals.map(classifyCargoSpec),
-			fromLockfile: false,
-			fromManifest: false,
-			customRegistry,
-			notes: [],
-		};
-	}
-	if (sub === "install") {
-		const positionals = args.filter((a) => !a.startsWith("-"));
-		return {
-			ecosystem: "cargo",
-			manager: "cargo",
-			action: "install_global",
-			packages: positionals.map(classifyCargoSpec),
-			fromLockfile: false,
-			fromManifest: false,
-			customRegistry: envRegistryFor("cargo", envVars),
-			notes: [],
-		};
-	}
-	if (sub === "build" || sub === "test" || sub === "run" || sub === "check") {
-		const fromLockfile = args.includes("--locked") || args.includes("--frozen");
-		return {
-			ecosystem: "cargo",
-			manager: "cargo",
-			action: "sync",
-			packages: [],
-			fromLockfile,
-			fromManifest: true,
-			manifestFile: "Cargo.toml",
-			customRegistry: envRegistryFor("cargo", envVars),
-			notes: [],
-		};
-	}
+	if (sub === "add") return parseCargoAdd(args, envVars);
+	if (sub === "install") return parseCargoInstall(args, envVars);
+	if (CARGO_SYNC_VERBS.has(sub)) return cargoSync(args, envVars);
 	return null;
 }
 
-function classifyCargoSpec(spec: string): PackageSpec {
+interface CargoArgScan {
+	positionals: string[];
+	customRegistry: string | undefined;
+	// Separate-flag version pin (`--vers`/`--version`), as opposed to the glued
+	// `crate@1.0.0`. Captured so the value isn't mistaken for a second crate and
+	// so the spec carries its pin for the exact-pin gate.
+	pinnedVersion: string | undefined;
+}
+
+// Walk cargo's post-verb args, separating positional crate specs from flags.
+// `withGit` controls whether `--git URL` is folded into a positional (only
+// `cargo add` accepts it) — `cargo install --git` exists too but we keep the
+// existing install behavior (git not captured as a spec) unchanged.
+function scanCargoArgs(args: string[], withGit: boolean): CargoArgScan {
+	const positionals: string[] = [];
+	let customRegistry: string | undefined;
+	let pinnedVersion: string | undefined;
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a === "--registry") {
+			customRegistry = args[i + 1];
+			i++;
+			continue;
+		}
+		if (withGit && a === "--git") {
+			positionals.push(`git+${args[i + 1]}`);
+			i++;
+			continue;
+		}
+		const inlineVers = a.match(/^(?:--vers|--version)=(.+)$/);
+		if (inlineVers) {
+			pinnedVersion = inlineVers[1];
+			continue;
+		}
+		if (a === "--vers" || a === "--version") {
+			pinnedVersion = args[i + 1];
+			i++;
+			continue;
+		}
+		if (a.startsWith("-")) continue;
+		positionals.push(a);
+	}
+	return { positionals, customRegistry, pinnedVersion };
+}
+
+function parseCargoAdd(
+	args: string[],
+	envVars: Record<string, string>,
+): InstallCommand {
+	const scan = scanCargoArgs(args, true);
+	return {
+		ecosystem: "cargo",
+		manager: "cargo",
+		action: "add",
+		packages: scan.positionals.map((p) => classifyCargoSpec(p, scan.pinnedVersion)),
+		fromLockfile: false,
+		fromManifest: false,
+		customRegistry: scan.customRegistry ?? envRegistryFor("cargo", envVars),
+		notes: [],
+	};
+}
+
+function parseCargoInstall(
+	args: string[],
+	envVars: Record<string, string>,
+): InstallCommand {
+	const scan = scanCargoArgs(args, false);
+	return {
+		ecosystem: "cargo",
+		manager: "cargo",
+		action: "install_global",
+		packages: scan.positionals.map((p) => classifyCargoSpec(p, scan.pinnedVersion)),
+		fromLockfile: false,
+		fromManifest: false,
+		customRegistry: scan.customRegistry ?? envRegistryFor("cargo", envVars),
+		notes: [],
+	};
+}
+
+function cargoSync(
+	args: string[],
+	envVars: Record<string, string>,
+): InstallCommand {
+	const fromLockfile = args.includes("--locked") || args.includes("--frozen");
+	return {
+		ecosystem: "cargo",
+		manager: "cargo",
+		action: "sync",
+		packages: [],
+		fromLockfile,
+		fromManifest: true,
+		manifestFile: "Cargo.toml",
+		customRegistry: envRegistryFor("cargo", envVars),
+		notes: [],
+	};
+}
+
+function classifyCargoSpec(spec: string, flagVersion?: string | undefined): PackageSpec {
 	if (spec.startsWith("git+")) return { kind: "git_url", url: spec.slice(4) };
 	if (
 		spec.startsWith("./") ||
@@ -595,8 +640,16 @@ function classifyCargoSpec(spec: string): PackageSpec {
 		spec === "."
 	)
 		return { kind: "local_path", path: spec };
+	// Glued `crate@1.0.0` form. cargo treats `@1.0.0` as a caret range in its
+	// own semantics; the strict cargo pin is `=1.0.0`. We surface the literal
+	// version string here and let pinnedVersionViolation accept both bare and
+	// `=`-prefixed forms (see its cargo note).
+	const at = spec.indexOf("@");
+	if (at > 0) {
+		return { kind: "registry", name: spec.slice(0, at), version: spec.slice(at + 1) };
+	}
 	const nameMatch = spec.match(/^([A-Za-z0-9._-]+)/);
-	return { kind: "registry", name: nameMatch ? nameMatch[1] : spec };
+	return { kind: "registry", name: nameMatch ? nameMatch[1] : spec, version: flagVersion };
 }
 
 // ===========================================================
@@ -611,10 +664,24 @@ export function parseGem(
 	if (sub !== "install") return null;
 	const positionals: string[] = [];
 	let customRegistry: string | undefined;
+	// `gem install x -v 1.2.3` pins x to 1.2.3. The version flag's value is the
+	// pin, NOT a second package — without capturing it the value would be
+	// mis-parsed as a phantom package name AND the spec would look unpinned.
+	let pinnedVersion: string | undefined;
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
 		if (a === "--source" || a === "-s" || a === "--add-source") {
 			customRegistry = args[i + 1];
+			i++;
+			continue;
+		}
+		const inline = a.match(/^(?:-v|--version)=(.+)$/);
+		if (inline) {
+			pinnedVersion = inline[1];
+			continue;
+		}
+		if (a === "-v" || a === "--version") {
+			pinnedVersion = args[i + 1];
 			i++;
 			continue;
 		}
@@ -626,12 +693,23 @@ export function parseGem(
 		ecosystem: "rubygems",
 		manager: "gem",
 		action: "install_global",
-		packages: positionals.map((p) => ({ kind: "registry" as const, name: p })),
+		packages: positionals.map((p) => gemSpec(p, pinnedVersion)),
 		fromLockfile: false,
 		fromManifest: false,
 		customRegistry,
 		notes: [],
 	};
+}
+
+// A gem name may already carry a glued `name:version` (gem's own colon form);
+// otherwise apply a `-v`/`--version` pin captured from a sibling flag. The
+// glued colon form wins when both are present.
+function gemSpec(spec: string, flagVersion: string | undefined): PackageSpec {
+	const colon = spec.indexOf(":");
+	if (colon > 0) {
+		return { kind: "registry", name: spec.slice(0, colon), version: spec.slice(colon + 1) };
+	}
+	return { kind: "registry", name: spec, version: flagVersion };
 }
 
 export function parseBundle(

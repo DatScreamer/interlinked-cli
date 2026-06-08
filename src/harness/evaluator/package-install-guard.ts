@@ -20,7 +20,8 @@ import {
 	isPackageAllowed,
 	matchSnapshot,
 } from "../package-allowlist.js";
-import type { Ecosystem, InstallCommand } from "../package-install-parser.js";
+import type { Ecosystem, InstallCommand, PackageSpec } from "../package-install-parser.js";
+import { pinnedVersionViolation } from "../package-install-parser.js";
 import type { HarnessDecision } from "../types.js";
 
 interface ManifestSearchEntry {
@@ -85,55 +86,13 @@ function evaluateOne(
 		);
 	}
 
-	// Positional packages — check each against the per-ecosystem allowlist.
-	if (cmd.packages.length > 0) {
-		for (const spec of cmd.packages) {
-			const dec = isPackageAllowed(allowlist, cmd.ecosystem, spec);
-			if (!dec.allowed) {
-				return block(
-					`${cmd.manager} ${cmd.action}: ${dec.reason ?? "unapproved package"}`,
-					"supply-chain-unapproved-package",
-				);
-			}
-		}
-		return null; // every package OK, fall through to next command
-	}
+	// Positional packages — each must be exactly version-pinned AND allowlisted.
+	if (cmd.packages.length > 0) return positionalPackagesBlock(cmd, allowlist);
 
 	// Sync from manifest/lockfile without positional args. Require a stored
 	// snapshot match — either the manifest or any of its colocated lockfiles.
-	// All path resolutions use effectiveCwd so a `cd subdir && npm ci` checks
-	// the subdirectory's lockfile, not the root's.
 	if (cmd.fromLockfile || cmd.fromManifest) {
-		const entries = MANIFEST_BY_ECOSYSTEM[cmd.ecosystem] ?? [];
-		// 1. Prefer lockfiles when one exists (stronger guarantee than manifest).
-		for (const entry of entries) {
-			for (const lf of entry.lockfiles) {
-				const p = join(effectiveCwd, lf);
-				if (!isExistingFile(p)) continue;
-				if (matchSnapshot(allowlist, lf, p)) return null;
-			}
-		}
-		// 2. Fall back to manifest snapshot when no lockfile snapshot matched.
-		for (const entry of entries) {
-			const p = join(effectiveCwd, entry.manifest);
-			if (!isExistingFile(p)) continue;
-			if (matchSnapshot(allowlist, entry.manifest, p)) return null;
-		}
-		// Nothing matched.
-		const presentFiles = entries
-			.flatMap((e) => [e.manifest, ...e.lockfiles])
-			.filter((f) => isExistingFile(join(effectiveCwd, f)));
-		const hint = presentFiles.length
-			? ` Run \`interlinked allowlist snapshot\` to approve the current state of: ${presentFiles.join(", ")}.`
-			: ` Initial bootstrap: \`interlinked allowlist add ${cmd.ecosystem} <package>\` per package, or \`interlinked allowlist snapshot\` once the manifest is in place.`;
-		const presentHashes = presentFiles
-			.map((f) => `${f}=${(hashLockfile(join(effectiveCwd, f)) ?? "?").slice(0, 12)}`)
-			.join(" ");
-		const cwdNote = cmd.effectiveCwd ? ` [in ${cmd.effectiveCwd}]` : "";
-		return block(
-			`${cmd.manager} ${cmd.action}${cwdNote}: no allowlist snapshot matches the current ${cmd.ecosystem} manifest/lockfile state.${hint}${presentHashes ? ` (current hashes: ${presentHashes})` : ""}`,
-			"supply-chain-snapshot-mismatch",
-		);
+		return snapshotMismatchBlock(cmd, effectiveCwd, allowlist);
 	}
 
 	// Catch-all: install_global with no positional packages (e.g. malformed
@@ -146,6 +105,87 @@ function evaluateOne(
 	}
 
 	return null;
+}
+
+// Per-spec gate for an install carrying explicit positional packages. Each
+// spec must be (a) exactly version-pinned AND (b) on the per-ecosystem
+// allowlist. These are independent gates: an allowlisted name installed at a
+// floating version (`npm install lodash`, `lodash@^4`, `lodash@latest`) can
+// still resolve to a newer, compromised release, so the pin requirement holds
+// even for approved names. Returns the first block, or null when all pass.
+function positionalPackagesBlock(
+	cmd: InstallCommand,
+	allowlist: Allowlist,
+): HarnessDecision | null {
+	for (const spec of cmd.packages) {
+		const pinBlock = pinViolationBlock(cmd, spec);
+		if (pinBlock) return pinBlock;
+		const dec = isPackageAllowed(allowlist, cmd.ecosystem, spec);
+		if (!dec.allowed) {
+			return block(
+				`${cmd.manager} ${cmd.action}: ${dec.reason ?? "unapproved package"}`,
+				"supply-chain-unapproved-package",
+			);
+		}
+	}
+	return null;
+}
+
+// Manifest/lockfile snapshot gate for a no-positional sync (`npm ci`, bare
+// `npm install`, `pip install -r`, …). Returns null when a stored snapshot
+// matches a present lockfile (preferred) or the manifest; otherwise a block.
+// All path resolutions use effectiveCwd so `cd subdir && npm ci` checks the
+// subdirectory's lockfile, not the root's.
+function snapshotMismatchBlock(
+	cmd: InstallCommand,
+	effectiveCwd: string,
+	allowlist: Allowlist,
+): HarnessDecision | null {
+	const entries = MANIFEST_BY_ECOSYSTEM[cmd.ecosystem] ?? [];
+	// 1. Prefer lockfiles when one exists (stronger guarantee than manifest).
+	for (const entry of entries) {
+		for (const lf of entry.lockfiles) {
+			const p = join(effectiveCwd, lf);
+			if (isExistingFile(p) && matchSnapshot(allowlist, lf, p)) return null;
+		}
+	}
+	// 2. Fall back to manifest snapshot when no lockfile snapshot matched.
+	for (const entry of entries) {
+		const p = join(effectiveCwd, entry.manifest);
+		if (isExistingFile(p) && matchSnapshot(allowlist, entry.manifest, p)) return null;
+	}
+	// Nothing matched.
+	const presentFiles = entries
+		.flatMap((e) => [e.manifest, ...e.lockfiles])
+		.filter((f) => isExistingFile(join(effectiveCwd, f)));
+	const hint = presentFiles.length
+		? ` Run \`interlinked allowlist snapshot\` to approve the current state of: ${presentFiles.join(", ")}.`
+		: ` Initial bootstrap: \`interlinked allowlist add ${cmd.ecosystem} <package>\` per package, or \`interlinked allowlist snapshot\` once the manifest is in place.`;
+	const presentHashes = presentFiles
+		.map((f) => `${f}=${(hashLockfile(join(effectiveCwd, f)) ?? "?").slice(0, 12)}`)
+		.join(" ");
+	const cwdNote = cmd.effectiveCwd ? ` [in ${cmd.effectiveCwd}]` : "";
+	return block(
+		`${cmd.manager} ${cmd.action}${cwdNote}: no allowlist snapshot matches the current ${cmd.ecosystem} manifest/lockfile state.${hint}${presentHashes ? ` (current hashes: ${presentHashes})` : ""}`,
+		"supply-chain-snapshot-mismatch",
+	);
+}
+
+// Exact-pin gate for a single spec. Returns a block decision when a registry
+// spec is not exactly version-pinned, else null. Honors the documented
+// INTERLINKED_DISABLE_PACKAGE_GUARD=1 single-command bypass (the same escape
+// hatch the cold-fallback paths use) — no new config flag. Non-registry specs
+// (git/tarball/file/local) carry no version and are left to the allowlist's
+// own kind-based decision.
+function pinViolationBlock(cmd: InstallCommand, spec: PackageSpec): HarnessDecision | null {
+	if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD === "1") return null;
+	const reason = pinnedVersionViolation(spec, cmd.ecosystem);
+	if (!reason) return null;
+	const name = spec.kind === "registry" ? spec.name : "package";
+	return block(
+		`${cmd.manager} ${cmd.action}: ${reason}. Pin it: install \`${name}@<exact-version>\` (e.g. ${name}@1.2.3); floating versions can resolve to a newer, compromised release.`,
+		"supply-chain-unpinned-version",
+	);
 }
 
 function block(reason: string, ruleId: string): HarnessDecision {

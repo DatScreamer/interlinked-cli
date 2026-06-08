@@ -288,11 +288,13 @@ describe("evaluatePackageInstallGuard", () => {
 	it("returns null when the install resolves to an allowed (non-block) decision", () => {
 		// Approve the package in the workspace allowlist so evaluatePackageInstall
 		// returns {decision:"allow"} — the guard's `decision === "block"` check is
-		// false and it falls through to null.
+		// false and it falls through to null. The spec is exactly pinned so the
+		// (independent) exact-pin gate also passes; an unpinned install would
+		// block on the pin gate regardless of allowlist status.
 		addToAllowlist(workspace, "npm", "approved-pkg-v8", { approved_by: "tester" });
 		expect(
 			evaluatePackageInstallGuard(makeEvent(), "Bash", {
-				command: "npm install approved-pkg-v8",
+				command: "npm install approved-pkg-v8@1.2.3",
 			}),
 		).toBeNull();
 	});

@@ -41,6 +41,109 @@ export interface InstallCommand {
 }
 
 // ---------------------------------------------------------------------------
+// Exact-pinned-version gate
+// ---------------------------------------------------------------------------
+//
+// An allowlisted name is necessary but not sufficient: `npm install lodash`
+// (floating latest) can silently resolve to a newer, compromised release the
+// next time it runs. The supply-chain guard additionally requires every
+// registry spec to carry a CONCRETE full version (major.minor.patch).
+//
+// `pinnedVersionViolation` is the single source of truth for "is this spec
+// exactly pinned?". It is a pure function over the already-parsed PackageSpec
+// — the per-ecosystem parsers normalize the version into `spec.version`
+// (operator/leading-`v` handling differs per ecosystem; see the parser tests
+// for the exact stored form), so this helper reasons over that normalized
+// string and is ecosystem-agnostic apart from the small carve-outs noted
+// below (Go pseudo-versions, the cargo `@1.0.0`-is-caret note).
+
+/** Dist-tags / branch refs that resolve to a moving target, never a pin. */
+const FLOATING_DIST_TAGS = new Set([
+	"latest",
+	"next",
+	"stable",
+	"canary",
+	"beta",
+	"alpha",
+	"rc",
+	"dev",
+	"nightly",
+	"edge",
+	"snapshot",
+	"master",
+	"main",
+	"head",
+]);
+
+// A concrete full version: optional leading exact operator (`==`/`===`/`=`),
+// optional leading `v`, then major.minor.patch, with an optional
+// `-prerelease` and/or `+build`. The prerelease body is permissive enough to
+// admit Go pseudo-versions (`v0.0.0-20191109021931-daa7c04131f5`), whose
+// timestamp-and-hash tail is a single dotted-and-hyphenated identifier.
+const EXACT_FULL_VERSION_RE =
+	/^(?:={1,3})?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+// Range / compound / wildcard operators that disqualify an exact pin.
+// Note `=`/`==`/`===` are EXACT operators and are intentionally NOT here.
+const RANGE_OPERATOR_RE = /[\^~><*]|\|\||,| - |\.x\b|\.\*/;
+
+/** Strip the version down to its bare value for the "looks floating?" tests:
+ *  drop a single leading exact operator and a single leading `v`. */
+function stripExactPrefix(version: string): string {
+	return version.replace(/^={1,3}/, "").replace(/^v/, "");
+}
+
+/** True when `version` names a dist-tag / branch (latest, next, master, …)
+ *  rather than a concrete release. Case-insensitive. */
+function isFloatingTag(version: string): boolean {
+	return FLOATING_DIST_TAGS.has(stripExactPrefix(version).toLowerCase());
+}
+
+/** True when `version` is a concrete full `major.minor.patch` (with the
+ *  allowed exact-operator / leading-`v` / prerelease / build decorations). */
+export function isExactPinnedVersion(version: string): boolean {
+	return EXACT_FULL_VERSION_RE.test(version.trim());
+}
+
+/**
+ * Return a human-readable reason when a `kind:"registry"` spec is NOT
+ * exactly pinned, or null when it is exact (or not a registry spec).
+ *
+ * BLOCK when the version is: absent; a range/compound operator
+ * (`^ ~ > < * || ,`, a ` - ` range, or a `.x`/`.*` wildcard); a dist-tag /
+ * branch ref; or major-only / major.minor-only (`@4`, `@4.17`). ALLOW a
+ * concrete full version, optionally prefixed with an exact operator
+ * (`==`/`===`/`=`) or a leading `v`, optionally suffixed with
+ * `-prerelease`/`+build`. Go pseudo-versions count as exact.
+ *
+ * Cargo note: `@1.0.0` is a CARET range in cargo's own semantics, so the
+ * strict cargo pin is `=1.0.0`. We accept both bare `1.0.0` and `=1.0.0`
+ * here for now (parity with the other ecosystems' bare-version pins); tighten
+ * to require the leading `=` for cargo if/when we surface a cargo-specific
+ * pin policy.
+ */
+export function pinnedVersionViolation(
+	spec: PackageSpec,
+	_ecosystem: Ecosystem,
+): string | null {
+	if (spec.kind !== "registry") return null;
+	const version = spec.version?.trim();
+	if (!version) {
+		return `'${spec.name}' has no pinned version — floating installs resolve to whatever the registry serves next`;
+	}
+	if (RANGE_OPERATOR_RE.test(version)) {
+		return `'${spec.name}@${version}' uses a version range, not an exact pin — a range can resolve to a newer, compromised release`;
+	}
+	if (isFloatingTag(version)) {
+		return `'${spec.name}@${version}' is a moving dist-tag/branch, not an exact pin — it can point at a newer, compromised release`;
+	}
+	if (!isExactPinnedVersion(version)) {
+		return `'${spec.name}@${version}' is not a full major.minor.patch version — partial versions float to the newest matching patch`;
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
 // Registry env-var helpers
 // ---------------------------------------------------------------------------
 

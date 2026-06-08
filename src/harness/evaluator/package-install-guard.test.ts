@@ -43,8 +43,11 @@ describe("evaluatePackageInstall — empty / non-install", () => {
 });
 
 describe("evaluatePackageInstall — registry packages", () => {
+	// These target the ALLOWLIST decision, so the specs are exactly pinned to
+	// satisfy the (independent) pin gate — otherwise the pin gate would block
+	// first and mask the allowlist result being asserted here.
 	it("blocks unapproved npm package", () => {
-		const r = evalCmd("npm install lodash");
+		const r = evalCmd("npm install lodash@4.17.21");
 		expect(r.decision).toBe("block");
 		expect(r.reason).toMatch(/lodash/);
 		expect(r.reason).toMatch(/allowlist/i);
@@ -52,25 +55,25 @@ describe("evaluatePackageInstall — registry packages", () => {
 
 	it("allows approved npm package", () => {
 		addToAllowlist(workspace, "npm", "lodash", { approved_by: "qcody" });
-		expect(evalCmd("npm install lodash").decision).toBe("allow");
+		expect(evalCmd("npm install lodash@4.17.21").decision).toBe("allow");
 	});
 
 	it("blocks if ONE of multiple packages is unapproved", () => {
 		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
-		const r = evalCmd("npm install lodash evil-typosquat");
+		const r = evalCmd("npm install lodash@4.17.21 evil-typosquat@1.0.0");
 		expect(r.decision).toBe("block");
 		expect(r.reason).toMatch(/evil-typosquat/);
 	});
 
 	it("blocks pip install of unapproved package", () => {
-		const r = evalCmd("pip install evil-package");
+		const r = evalCmd("pip install evil-package==1.0.0");
 		expect(r.decision).toBe("block");
 		expect(r.reason).toMatch(/evil-package/);
 	});
 
 	it("allows pip install of approved package", () => {
 		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
-		expect(evalCmd("pip install requests").decision).toBe("allow");
+		expect(evalCmd("pip install requests==2.31.0").decision).toBe("allow");
 	});
 
 	it("blocks cargo add of unapproved crate", () => {
@@ -82,6 +85,88 @@ describe("evaluatePackageInstall — registry packages", () => {
 		const r = evalCmd("go get github.com/evil/pkg");
 		expect(r.decision).toBe("block");
 	});
+});
+
+describe("evaluatePackageInstall — exact-pinned-version gate", () => {
+	// Allowlist every name first so the ONLY thing that can block is the pin
+	// gate — otherwise the allowlist miss would mask the pin result. Asserting
+	// rule_id === "supply-chain-unpinned-version" proves it was the pin gate.
+	function approveAll(): void {
+		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
+		addToAllowlist(workspace, "npm", "@scope/pkg", { approved_by: "x" });
+		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
+		addToAllowlist(workspace, "go", "x", { approved_by: "x" });
+		addToAllowlist(workspace, "rubygems", "x", { approved_by: "x" });
+	}
+
+	// ----- UNPINNED: must block on the pin gate (≥4) -----
+	it.each([
+		["npm install lodash", "absent version"],
+		["npm i lodash@^4", "caret range"],
+		["npm i lodash@latest", "dist-tag"],
+		["npm i lodash@4", "major-only"],
+		["pip install requests", "pip absent"],
+		["pip install requests>=2", "pip range → major-only"],
+		["go get x@latest", "go dist-tag"],
+	])("blocks unpinned: %s (%s)", (cmd) => {
+		approveAll();
+		const r = evalCmd(cmd);
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unpinned-version");
+		expect(r.reason).toMatch(/pin it/i);
+	});
+
+	// ----- PINNED: pin gate passes (allow, since names are allowlisted) (≥4) -----
+	it.each([
+		"npm i lodash@4.17.21",
+		"pip install requests==2.31.0",
+		"go get x@v1.2.3",
+		"gem install x -v 1.2.3",
+		"npm i @scope/pkg@1.2.3",
+	])("allows pinned + allowlisted: %s", (cmd) => {
+		approveAll();
+		expect(evalCmd(cmd).decision).toBe("allow");
+	});
+
+	it("pin gate fires even when the name is allowlisted (independent gate)", () => {
+		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
+		const r = evalCmd("npm install lodash");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-unpinned-version");
+	});
+
+	it("an unpinned but allowlisted pkg blocks BEFORE the allowlist check", () => {
+		// lodash is allowlisted, evil is not. The pin gate on lodash fires first.
+		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
+		const r = evalCmd("npm install lodash evil");
+		expect(r.rule_id).toBe("supply-chain-unpinned-version");
+		expect(r.reason).toMatch(/lodash/);
+	});
+
+	it("INTERLINKED_DISABLE_PACKAGE_GUARD=1 bypasses the pin gate", () => {
+		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
+		const prev = process.env.INTERLINKED_DISABLE_PACKAGE_GUARD;
+		process.env.INTERLINKED_DISABLE_PACKAGE_GUARD = "1";
+		try {
+			// lodash is allowlisted; with the pin gate bypassed this now allows.
+			expect(evalCmd("npm install lodash").decision).toBe("allow");
+		} finally {
+			if (prev === undefined) delete process.env.INTERLINKED_DISABLE_PACKAGE_GUARD;
+			else process.env.INTERLINKED_DISABLE_PACKAGE_GUARD = prev;
+		}
+	});
+
+	// ----- NOT AFFECTED: bare manifest syncs must NOT hit the pin gate -----
+	it.each(["npm install", "npm ci", "pip install -r requirements.txt"])(
+		"does NOT pin-block bare manifest sync: %s",
+		(cmd) => {
+			// No positional registry specs → the per-spec pin loop is a no-op.
+			// (These still block on the snapshot path in a fresh workspace, but
+			// never with the pin rule id.)
+			const r = evalCmd(cmd);
+			expect(r.rule_id).not.toBe("supply-chain-unpinned-version");
+		},
+	);
 });
 
 describe("evaluatePackageInstall — URL specs always blocked", () => {
@@ -277,8 +362,10 @@ describe("evaluatePackageInstall — effective cwd (P1.4)", () => {
 
 describe("evaluatePackageInstall — compound", () => {
 	it("blocks the whole compound if any segment is unapproved", () => {
+		// Pin lodash so the block comes from `evil`'s allowlist miss, not the
+		// pin gate on the first segment.
 		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
-		const r = evalCmd("npm install lodash && pip install evil");
+		const r = evalCmd("npm install lodash@4.17.21 && pip install evil==1.0.0");
 		expect(r.decision).toBe("block");
 		expect(r.reason).toMatch(/evil/);
 	});
@@ -286,6 +373,8 @@ describe("evaluatePackageInstall — compound", () => {
 	it("allows when every segment is approved", () => {
 		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
 		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
-		expect(evalCmd("npm install lodash && pip install requests").decision).toBe("allow");
+		expect(
+			evalCmd("npm install lodash@4.17.21 && pip install requests==2.31.0").decision,
+		).toBe("allow");
 	});
 });

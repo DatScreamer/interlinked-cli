@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { PackageSpec } from "./package-install-parser.js";
 import {
+	isExactPinnedVersion,
 	parseInstallCommands,
+	pinnedVersionViolation,
 	splitShellSegments,
 	stripRedirections,
 } from "./package-install-parser.js";
@@ -580,5 +583,122 @@ describe("parseInstallCommands — compound and noise", () => {
 	it("empty / blank → []", () => {
 		expect(parseInstallCommands("")).toEqual([]);
 		expect(parseInstallCommands("   ")).toEqual([]);
+	});
+});
+
+// The exact-pin gate only works if each ecosystem parser lands the pinned
+// version in spec.version (not as a phantom positional). These cover the
+// separate-flag pin forms that previously dropped the version on the floor.
+describe("parseInstallCommands — version pins land in spec.version", () => {
+	it("cargo add crate@1.0.0 → version on the spec (not a 2nd crate)", () => {
+		const [cmd] = parseInstallCommands("cargo add serde@1.0.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
+	});
+
+	it("cargo add --vers 1.0.0 → version captured, no phantom package", () => {
+		const [cmd] = parseInstallCommands("cargo add serde --vers 1.0.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
+	});
+
+	it("cargo add --version=1.0.0 (glued flag) → version captured", () => {
+		const [cmd] = parseInstallCommands("cargo add serde --version=1.0.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
+	});
+
+	it("cargo install ripgrep@13.0.0 → version captured", () => {
+		const [cmd] = parseInstallCommands("cargo install ripgrep@13.0.0");
+		expect(cmd.packages).toEqual([
+			{ kind: "registry", name: "ripgrep", version: "13.0.0" },
+		]);
+	});
+
+	it("gem install x -v 1.2.3 → version captured, no phantom package", () => {
+		const [cmd] = parseInstallCommands("gem install rails -v 7.1.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "rails", version: "7.1.0" }]);
+	});
+
+	it("gem install x --version 1.2.3 → version captured", () => {
+		const [cmd] = parseInstallCommands("gem install rails --version 7.1.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "rails", version: "7.1.0" }]);
+	});
+
+	it("cargo add --git URL still yields a git_url spec (unchanged)", () => {
+		const [cmd] = parseInstallCommands(
+			"cargo add --git https://github.com/foo/bar foo",
+		);
+		expect(cmd.packages.some((p) => p.kind === "git_url")).toBe(true);
+	});
+});
+
+describe("pinnedVersionViolation — per-ecosystem unit cases", () => {
+	const reg = (name: string, version?: string): PackageSpec =>
+		version === undefined
+			? { kind: "registry", name }
+			: { kind: "registry", name, version };
+
+	it("BLOCKS an absent version (npm `lodash` bare)", () => {
+		expect(pinnedVersionViolation(reg("lodash"), "npm")).not.toBeNull();
+	});
+
+	it("BLOCKS a caret range (npm `lodash@^4`)", () => {
+		expect(pinnedVersionViolation(reg("lodash", "^4"), "npm")).not.toBeNull();
+	});
+
+	it("BLOCKS a dist-tag (npm `lodash@latest`)", () => {
+		expect(pinnedVersionViolation(reg("lodash", "latest"), "npm")).not.toBeNull();
+	});
+
+	it("BLOCKS major-only and major.minor-only (npm `@4`, `@4.17`)", () => {
+		expect(pinnedVersionViolation(reg("lodash", "4"), "npm")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("lodash", "4.17"), "npm")).not.toBeNull();
+	});
+
+	it("BLOCKS a pip range operator residue (`requests` major-only `2`)", () => {
+		// pip strips the operator, so `requests>=2` parses to version "2" — still
+		// caught by the major-only rule.
+		expect(pinnedVersionViolation(reg("requests", "2"), "pypi")).not.toBeNull();
+	});
+
+	it("BLOCKS a go dist-tag (`x@latest`)", () => {
+		expect(pinnedVersionViolation(reg("x", "latest"), "go")).not.toBeNull();
+	});
+
+	it("ALLOWS a full npm version (`lodash@4.17.21`)", () => {
+		expect(pinnedVersionViolation(reg("lodash", "4.17.21"), "npm")).toBeNull();
+	});
+
+	it("ALLOWS a pip `==` exact (`requests==2.31.0` → version `2.31.0`)", () => {
+		expect(pinnedVersionViolation(reg("requests", "2.31.0"), "pypi")).toBeNull();
+	});
+
+	it("ALLOWS a go `v`-prefixed tag and pseudo-version", () => {
+		expect(pinnedVersionViolation(reg("x", "v1.2.3"), "go")).toBeNull();
+		expect(
+			pinnedVersionViolation(reg("x", "v0.0.0-20191109021931-daa7c04131f5"), "go"),
+		).toBeNull();
+	});
+
+	it("ALLOWS a cargo bare and `=`-prefixed exact (`1.0.0`, `=1.0.0`)", () => {
+		expect(pinnedVersionViolation(reg("serde", "1.0.0"), "cargo")).toBeNull();
+		expect(pinnedVersionViolation(reg("serde", "=1.0.0"), "cargo")).toBeNull();
+	});
+
+	it("ALLOWS a gem exact (`rails` at `7.1.0`)", () => {
+		expect(pinnedVersionViolation(reg("rails", "7.1.0"), "rubygems")).toBeNull();
+	});
+
+	it("returns null for non-registry specs (git/tarball/local)", () => {
+		expect(pinnedVersionViolation({ kind: "git_url", url: "x" }, "npm")).toBeNull();
+		expect(
+			pinnedVersionViolation({ kind: "tarball_url", url: "x.tgz" }, "npm"),
+		).toBeNull();
+		expect(pinnedVersionViolation({ kind: "local_path", path: "./x" }, "npm")).toBeNull();
+	});
+
+	it("accepts prerelease and build metadata as exact", () => {
+		expect(isExactPinnedVersion("1.2.3-beta.1")).toBe(true);
+		expect(isExactPinnedVersion("1.2.3+build.5")).toBe(true);
+		expect(isExactPinnedVersion("4.17")).toBe(false);
+		expect(isExactPinnedVersion("latest")).toBe(false);
 	});
 });
