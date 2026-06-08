@@ -8,14 +8,24 @@
 // on-disk before-state is the implicit ratchet baseline. Only a NEW over-cap
 // function, or RAISING an existing function past the cap, is blocked.
 //
+// Dispatch is per-language: `.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts` parse with
+// the TS AST (`computeCyclomaticAst`); `.py` parses with radon
+// (`computeCyclomaticPython`); every other extension is skipped. The block
+// contract (`DEFAULT_MAX_CYCLOMATIC`, delta semantics, no override) is identical
+// across languages — only the per-function counter differs.
+//
 // There is deliberately NO escape hatch / suppression: an agent-writable
 // override gets gamed (the agent would suppress every file it wants to grow),
 // which defeats the gate. The only way past is to decompose.
 //
 // Because a no-override block has no relief valve for a false positive, it runs
-// ONLY when the AST pass is available (the optional `typescript` dep, present in
-// dev/CI and shipped via optionalDependencies). Without it the gate fails open —
-// a heuristic count would risk FP-blocking legitimate code with no recourse.
+// ONLY when the analyzer is available (the optional `typescript` dep for JS/TS,
+// `radon` on PATH for Python — both present in a normal install). Without it the
+// gate fails open — a heuristic count would risk FP-blocking legitimate code
+// with no recourse. The unavailability is surfaced LOUDLY, never silently: the
+// TS path warns at daemon startup (`astComplexityAvailable()` in server.ts); the
+// Python path has no startup probe (radon is per-repo), so a `.py` edit that
+// can't be analyzed emits a one-shot stderr degrade here.
 // Codex/Copilot `apply_patch` payloads are reconstructed to post-edit content
 // via the conservative V4A applier (fail-open on any uncertainty), so they no
 // longer bypass the gate by carrying their edit in the patch body.
@@ -28,7 +38,9 @@ import {
 	parseApplyPatchSections,
 	reconstructAfterContent,
 } from "../apply-patch-content.js";
+import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
+import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { isCappableFile } from "../large-file-policy.js";
 
 /**
@@ -39,11 +51,59 @@ import { isCappableFile } from "../large-file-policy.js";
 export const DEFAULT_MAX_CYCLOMATIC = 25;
 
 const JS_TS_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+const PY_RE = /\.py$/;
 /** AST entries with this name are anonymous — not matchable across before/after. */
 const ANON_FN = "(callback)";
 
 export interface ComplexityWriteBlock {
 	block: string;
+}
+
+/** A per-function cyclomatic counter for one language. Returns `null` (the loud
+ *  "analyzer unavailable" signal — see cyclomatic-ast/cyclomatic-python) when the
+ *  backing parser is absent, which the caller fails open on. */
+type CyclomaticAnalyzer = (content: string, filePath: string) => FunctionComplexityEntry[] | null;
+
+/**
+ * Pick the cyclomatic analyzer for a path, or null to skip (non-code extension).
+ * `language` tags the loud-degrade message; the block contract is identical
+ * regardless. JS/TS uses the in-process TS AST; Python shells to radon.
+ */
+function selectAnalyzer(
+	filePath: string,
+): { compute: CyclomaticAnalyzer; language: "js_ts" | "python" } | null {
+	if (JS_TS_RE.test(filePath)) return { compute: computeCyclomaticAst, language: "js_ts" };
+	if (PY_RE.test(filePath)) return { compute: computeCyclomaticPython, language: "python" };
+	return null;
+}
+
+/**
+ * Surface a per-edit analyzer-unavailable degrade for languages without a
+ * daemon-startup probe (Python: radon is per-repo, so server.ts can't warn up
+ * front the way it does for `typescript`). Fired once per process to stay loud
+ * but not naggy; the gate still fails open (no false block), matching the TS
+ * fallback — the warning is the "not silent" half of the contract.
+ */
+let pythonDegradeWarned = false;
+
+/** Test-only reset of the once-per-process degrade-warning latch, so a suite can
+ *  assert the loud-degrade fires deterministically regardless of test order
+ *  (mirrors `__resetTsCacheForTesting` in cyclomatic-ast.ts). */
+export function __resetPythonDegradeWarningForTesting(): void {
+	pythonDegradeWarned = false;
+}
+
+function warnAnalyzerUnavailable(language: "js_ts" | "python"): void {
+	// JS/TS degrade is already announced at daemon startup (astComplexityAvailable
+	// in server.ts); only Python needs a per-edit surface.
+	if (language !== "python" || pythonDegradeWarned) return;
+	pythonDegradeWarned = true;
+	process.stderr.write(
+		"[interlinked] WARNING: `radon` is not resolvable — the strict cyclomatic " +
+			"PreToolUse gate for Python (.py) is degraded and cannot enforce the " +
+			`${DEFAULT_MAX_CYCLOMATIC}-branch cap. Install it (e.g. \`pip install radon\`) ` +
+			"in this repo to restore enforcement. Edits are allowed meanwhile (fail-open).\n",
+	);
 }
 
 function resolveFilePath(toolInput: JsonObject): string {
@@ -117,10 +177,20 @@ function projectContent(
  * allowing a decompose that splits one over-cap function into several under-cap
  * ones. Names feed the message only, never the decision.
  */
-function complexityViolations(before: string, after: string, filePath: string): string[] | null {
-	const afterFns = computeCyclomaticAst(after, filePath);
-	if (!afterFns) return null; // AST unavailable → fail open (no FP-blocking)
-	const beforeFns = computeCyclomaticAst(before, filePath) ?? [];
+function complexityViolations(
+	before: string,
+	after: string,
+	filePath: string,
+	analyzer: { compute: CyclomaticAnalyzer; language: "js_ts" | "python" },
+): string[] | null {
+	const afterFns = analyzer.compute(after, filePath);
+	if (!afterFns) {
+		// Analyzer unavailable → fail open (no FP-blocking), but surface it loudly
+		// so the degrade is never silent (the TS path warns at startup; Python here).
+		warnAnalyzerUnavailable(analyzer.language);
+		return null;
+	}
+	const beforeFns = analyzer.compute(before, filePath) ?? [];
 
 	const cap = DEFAULT_MAX_CYCLOMATIC;
 	const afterOver = afterFns
@@ -202,14 +272,15 @@ function checkApplyPatchComplexity(
 
 	const violations: string[] = [];
 	for (const section of parseApplyPatchSections(raw)) {
-		if (!JS_TS_RE.test(section.path)) continue;
+		const analyzer = selectAnalyzer(section.path);
+		if (!analyzer) continue; // non-code extension → skip
 		const abs = isAbsolute(section.path) ? section.path : resolve(cwd, section.path);
 		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
 		const after = reconstructAfterContent(section, before);
 		if (after === null) continue; // can't reconstruct confidently → fail open for this file
 		if (!isCappableFile({ filePath: section.path, content: after })) continue;
-		const fileViolations = complexityViolations(before, after, section.path);
-		if (fileViolations === null) return null; // AST unavailable → fail open entirely
+		const fileViolations = complexityViolations(before, after, section.path, analyzer);
+		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
 		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
 	}
 	if (violations.length === 0) return null;
@@ -227,12 +298,13 @@ export function checkFunctionComplexityWrite(
 ): ComplexityWriteBlock | null {
 	const filePath = resolveFilePath(toolInput);
 	if (filePath) {
-		if (!JS_TS_RE.test(filePath)) return null;
+		const analyzer = selectAnalyzer(filePath);
+		if (!analyzer) return null; // non-code extension → skip
 		const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
 		const projected = projectContent(toolInput, abs);
 		if (!projected) return null;
 		if (!isCappableFile({ filePath, content: projected.after })) return null;
-		const violations = complexityViolations(projected.before, projected.after, filePath);
+		const violations = complexityViolations(projected.before, projected.after, filePath, analyzer);
 		if (violations === null || violations.length === 0) return null;
 		return buildBlock(violations);
 	}

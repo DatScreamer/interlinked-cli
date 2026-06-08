@@ -1,8 +1,31 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkFunctionComplexityWrite, DEFAULT_MAX_CYCLOMATIC } from "./complexity-write-guard.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock the Python analyzer so the dispatch + block contract can be tested
+// without `radon` installed (the radon→entries mapping is covered in
+// cyclomatic-python.test.ts via an injected spawn). The TS analyzer
+// (cyclomatic-ast, a different module) stays REAL so the JS/TS tests below
+// exercise the unchanged path end-to-end.
+vi.mock("../checks/cyclomatic-python.js", () => ({
+	computeCyclomaticPython: vi.fn(),
+}));
+
+import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import { computeCyclomaticPython as mockedComputeCyclomaticPython } from "../checks/cyclomatic-python.js";
+import {
+	__resetPythonDegradeWarningForTesting,
+	checkFunctionComplexityWrite,
+	DEFAULT_MAX_CYCLOMATIC,
+} from "./complexity-write-guard.js";
+
+const pythonMock = vi.mocked(mockedComputeCyclomaticPython);
+
+/** One synthetic Python entry at the given complexity. */
+function pyEntry(name: string, cyclomatic: number, line = 1): FunctionComplexityEntry {
+	return { name, line, endLine: line + 5, cyclomatic, language: "python" };
+}
 
 /** A function body with `branches` if-statements → cyclomatic ≈ branches + 1. */
 function fnWith(name: string, branches: number): string {
@@ -32,8 +55,8 @@ describe("checkFunctionComplexityWrite", () => {
 		expect(DEFAULT_MAX_CYCLOMATIC).toBe(25);
 	});
 
-	it("allows non-JS/TS files", () => {
-		const out = checkFunctionComplexityWrite({ file_path: "src/x.py", content: fnWith("f", 40) }, tmp);
+	it("skips unhandled extensions (.rb — neither JS/TS nor Python)", () => {
+		const out = checkFunctionComplexityWrite({ file_path: "src/x.rb", content: fnWith("f", 40) }, tmp);
 		expect(out).toBeNull();
 	});
 
@@ -191,5 +214,119 @@ describe("checkFunctionComplexityWrite", () => {
 			"+bar\n" +
 			"*** End Patch";
 		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});
+
+// ===========================================================================
+// Python (.py) dispatch — same block contract via the radon-backed analyzer.
+// The analyzer is mocked (pythonMock); these tests pin the EXTENSION DISPATCH,
+// the cap boundary, and the loud-degrade-not-silent-pass behavior. The
+// radon→entries mapping itself is covered in cyclomatic-python.test.ts.
+// ===========================================================================
+describe("checkFunctionComplexityWrite — Python dispatch", () => {
+	let pyTmp: string;
+	beforeEach(() => {
+		pyTmp = mkdtempSync(join(tmpdir(), "cyc-guard-py-"));
+		pythonMock.mockReset();
+	});
+	afterEach(() => {
+		rmSync(pyTmp, { recursive: true, force: true });
+	});
+
+	it("routes a .py edit to computeCyclomaticPython (NOT the TS AST)", () => {
+		pythonMock.mockReturnValue([pyEntry("greet", 3)]);
+		checkFunctionComplexityWrite(
+			{ file_path: join(pyTmp, "app.py"), content: "def greet():\n    pass\n" },
+			pyTmp,
+		);
+		expect(pythonMock).toHaveBeenCalledTimes(2); // before + after content
+	});
+
+	it("blocks a Python Write whose function is over the cap (cyc 26)", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content.trim() === "" ? [] : [pyEntry("dispatch", 26)],
+		);
+		const out = checkFunctionComplexityWrite(
+			{ file_path: join(pyTmp, "dispatch.py"), content: "def dispatch():\n    ...\n" },
+			pyTmp,
+		);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("dispatch");
+		expect(out?.block).toContain("26");
+	});
+
+	it("allows a simple Python function (cyc <= 25)", () => {
+		pythonMock.mockReturnValue([pyEntry("simple", 4)]);
+		const out = checkFunctionComplexityWrite(
+			{ file_path: join(pyTmp, "simple.py"), content: "def simple():\n    return 1\n" },
+			pyTmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("boundary: cyclomatic exactly 25 is allowed, 26 is blocked", () => {
+		// 25 — at the cap, not over → allowed.
+		pythonMock.mockReturnValue([pyEntry("atcap", DEFAULT_MAX_CYCLOMATIC)]);
+		expect(
+			checkFunctionComplexityWrite(
+				{ file_path: join(pyTmp, "atcap.py"), content: "def atcap():\n    ...\n" },
+				pyTmp,
+			),
+		).toBeNull();
+
+		// 26 — one over the cap → blocked (file did not exist before → empty before).
+		pythonMock.mockImplementation((content: string) =>
+			content.trim() === "" ? [] : [pyEntry("over", DEFAULT_MAX_CYCLOMATIC + 1)],
+		);
+		const blocked = checkFunctionComplexityWrite(
+			{ file_path: join(pyTmp, "over.py"), content: "def over():\n    ...\n" },
+			pyTmp,
+		);
+		expect(blocked?.block).toContain("cyclomatic");
+		expect(blocked?.block).toContain("over");
+	});
+
+	it("radon unavailable → LOUD degrade to stderr, NOT a silent pass and NOT a false block", () => {
+		// Reset the once-per-process latch so the warning fires regardless of which
+		// earlier test already tripped it.
+		__resetPythonDegradeWarningForTesting();
+		// null = the analyzer-unavailable signal (radon not on PATH).
+		pythonMock.mockReturnValue(null);
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const out = checkFunctionComplexityWrite(
+				{ file_path: join(pyTmp, "noradon.py"), content: "def f():\n    ...\n" },
+				pyTmp,
+			);
+			expect(out).toBeNull(); // fail OPEN — never a false block
+			// LOUD: a degrade warning naming radon was written to stderr (not silent).
+			const wrote = stderrSpy.mock.calls.some(
+				(c) => typeof c[0] === "string" && c[0].includes("radon"),
+			);
+			expect(wrote).toBe(true);
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it("allows holding an already-over-cap Python function (refactor-down / delta)", () => {
+		const file = join(pyTmp, "legacy.py");
+		writeFileSync(file, "def legacy():\n    ...\n");
+		// before AND after both report the same over-cap function → held, allowed.
+		pythonMock.mockReturnValue([pyEntry("legacy", 40)]);
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, old_string: "...", new_string: "pass" },
+			pyTmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("skips a non-code extension (.md) without invoking any analyzer", () => {
+		const out = checkFunctionComplexityWrite(
+			{ file_path: join(pyTmp, "notes.md"), content: "def looks_like_code(): ...\n" },
+			pyTmp,
+		);
+		expect(out).toBeNull();
+		expect(pythonMock).not.toHaveBeenCalled();
 	});
 });
