@@ -512,39 +512,55 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		],
 	},
 	per_edit_coverage: {
-		// DEFAULT OFF — per-edit coverage is opt-in per repo. A repo that does
-		// not set this (or leaves `enabled: false`) pays ZERO cost: the guard
-		// short-circuits to allow before any suite run, so there is no behavior
-		// change. Repos with a fast suite opt in via
+		// DEFAULT ON — all four test-quality gates enforce on every repo out of
+		// the box: cyclomatic complexity (always-on, separate guard) plus the
+		// three flipped here — per-edit coverage, red/green (block_on_test_failure),
+		// and CRAP (block_on_crap). A repo opts OUT via
 		// `.interlinked/guard-rules.local.json`:
-		//   "per_edit_coverage": { "enabled": true }
-		// THIS repo (interlinked-cli, ~16k tests) must NOT enable it — the suite
-		// vastly exceeds the per-edit budget; the budget-gate would defer every
-		// edit to a commit-time obligation anyway. See
-		// docs/design/per-edit-coverage-enforcement.md.
-		enabled: false,
+		//   "per_edit_coverage": { "enabled": false }
+		//
+		// Two enforcement cadences, one policy, chosen automatically by suite cost:
+		//   - Fast suite (overlay run fits inside `budget_ms`): the per-edit
+		//     overlay enforces IN-BAND — the edit is blocked before the real write
+		//     when it adds an uncovered line, drops per-file coverage, leaves the
+		//     suite red, or introduces a CRAPpy function.
+		//   - Big suite (e.g. THIS repo, interlinked-cli, ~16k tests — the overlay
+		//     run exceeds `budget_ms`): the per-edit overlay DEFERS to the
+		//     commit-intercept gate, which runs the full suite + coverage + CRAP at
+		//     `git commit`. Enforcement still holds — it just lands at commit
+		//     cadence instead of per-edit. No repo "must not enable it" anymore;
+		//     the budget gate routes big suites to commit time on its own.
+		//   - No test tooling at all: the guard fail-opens (loud warning, never a
+		//     block) — "can't measure" is treated as allow, not deny.
+		//
+		// Strict-TDD implication: because block_on_test_failure refuses any edit
+		// that leaves the suite red, you write the code and the test that keeps the
+		// bar green TOGETHER in one MultiEdit — you cannot save a transiently-red
+		// intermediate state. See docs/design/per-edit-coverage-enforcement.md.
+		enabled: true,
 		mode: "block",
 		budget_ms: 25_000,
 		languages: ["js", "ts"],
-		// Red-bar (per-edit strict TDD) enforcement — DEFAULT OFF, independent of
-		// `enabled`. When a repo turns this on (alongside enabled+block), every
-		// edit must keep ALL tests green: an overlay run that leaves the suite RED
-		// (a test failed) is refused before the real write, naming the failing
-		// test. Write code + the test that holds the suite green together in one
-		// MultiEdit — you cannot save a transiently-red state. Left false here so
-		// repos that don't opt in see ZERO behavior change (a red bar still
-		// fail-opens just as it does today, treated like "can't measure").
-		block_on_test_failure: false,
-		// CRAP (Change Risk Anti-Patterns) per-edit gate — DEFAULT OFF, independent
-		// of `enabled` / `block_on_test_failure`. The 4th per-edit block: a function
-		// the edit ADDED or TOUCHED whose CRAP score (cyclomatic² · (1−cov)³ +
-		// cyclomatic) reaches `crap_threshold` is refused before the real write —
-		// "this function is complex AND under-covered; reduce complexity or add
-		// coverage." Computed from the SAME overlay coverage run as the coverage
-		// block (no extra suite run) and checked AFTER the uncovered-added-line /
-		// drop decision. Left OFF here so repos that don't opt in see ZERO behavior
-		// change; a separate change flips all per-edit-coverage defaults ON together.
-		block_on_crap: false,
+		// Red-bar (per-edit strict TDD) enforcement — DEFAULT ON (flipped together
+		// with `enabled` / `block_on_crap`). Every edit must keep ALL tests green:
+		// an overlay run that leaves the suite RED (a test failed) is refused before
+		// the real write, naming the failing test. Write code + the test that holds
+		// the suite green together in one MultiEdit — you cannot save a
+		// transiently-red state. A repo opts out via guard-rules.local.json
+		// (`"per_edit_coverage": { "block_on_test_failure": false }`), and an
+		// indeterminate/unavailable runner still fail-opens (treated like "can't
+		// measure"), so opting out restores the old fail-open coverage-only path.
+		block_on_test_failure: true,
+		// CRAP (Change Risk Anti-Patterns) per-edit gate — DEFAULT ON (flipped
+		// together with `enabled` / `block_on_test_failure`). The 4th per-edit
+		// block: a function the edit ADDED or TOUCHED whose CRAP score
+		// (cyclomatic² · (1−cov)³ + cyclomatic) reaches `crap_threshold` is refused
+		// before the real write — "this function is complex AND under-covered;
+		// reduce complexity or add coverage." Computed from the SAME overlay
+		// coverage run as the coverage block (no extra suite run) and checked AFTER
+		// the uncovered-added-line / drop decision. A repo opts out via
+		// guard-rules.local.json (`"per_edit_coverage": { "block_on_crap": false }`).
+		block_on_crap: true,
 		crap_threshold: 30,
 	},
 };

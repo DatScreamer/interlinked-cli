@@ -247,7 +247,7 @@ export interface GuardRulesConfig {
 	 *  session.files_written ∪ pre-session baseline. */
 	git_session_scope_gate?: GitSessionScopeGateConfig;
 	/** Per-edit coverage enforcement (apply-before-disk overlay + budget-gate).
-	 *  DEFAULT OFF — opt-in per repo. See PerEditCoverageConfig and
+	 *  DEFAULT ON — opt-OUT per repo (enabled:false). See PerEditCoverageConfig and
 	 *  `evaluator/coverage-write-guard.ts`. */
 	per_edit_coverage?: PerEditCoverageConfig;
 }
@@ -264,13 +264,15 @@ export interface PlanCaptureConfig {
  * `evaluator/coverage-write-guard.ts` and
  * `docs/design/per-edit-coverage-enforcement.md`.
  *
- * **DEFAULT OFF (opt-in per repo).** When disabled the guard is a pure no-op —
- * it returns before any suite run, so a repo that does not opt in pays zero
- * cost and sees zero behavior change. Repos with a fast suite (e.g. wardotapp,
- * ~1-2s) opt in; this repo (16k tests) deliberately does NOT.
+ * **DEFAULT ON (opt-OUT per repo).** Every repo enforces unless it sets
+ * `"per_edit_coverage": { "enabled": false }` in .interlinked/guard-rules.local.json.
+ * A fast suite (e.g. wardotapp, ~1-2s) enforces in-band per edit; a big suite
+ * (this repo, ~16k tests) exceeds budget_ms and DEFERS to the commit-intercept
+ * gate (full suite+coverage+CRAP at `git commit`), so enforcement still holds at
+ * commit cadence; a repo with no test tooling fail-opens (loud warning, no block).
  */
 export interface PerEditCoverageConfig {
-	/** Master switch. Default: false. The guard short-circuits to allow when off. */
+	/** Master switch. Default: true (opt-out via local config). Short-circuits to allow when off. */
 	enabled: boolean;
 	/**
 	 * What a coverage regression does:
@@ -290,7 +292,7 @@ export interface PerEditCoverageConfig {
 	/** Languages the overlay coverage run covers. Default: ["js", "ts"]. */
 	languages: string[];
 	/**
-	 * Red-bar (per-edit TDD) enforcement. **Default: false (opt-in).** When true,
+	 * Red-bar (per-edit TDD) enforcement. **Default: true (opt-out).** When true,
 	 * an edit whose overlay run leaves the test suite RED — i.e. the suite ran and
 	 * one or more tests FAILED (`CoverageRunResult.testsPassed === false`) — is
 	 * BLOCKED before the real write, naming the failing test(s). This is a HARDER
@@ -299,13 +301,13 @@ export interface PerEditCoverageConfig {
 	 * that keeps the suite green together in one MultiEdit; you cannot save a
 	 * transiently-red state. A runner that cannot establish pass/fail
 	 * (`testsPassed === null` — runner unavailable / errored) fail-opens exactly
-	 * as the coverage block does. When false (the default) the red-bar check is a
+	 * as the coverage block does. When false (opt-out) the red-bar check is a
 	 * pure no-op and behavior is identical to the coverage-only gate.
 	 */
 	block_on_test_failure?: boolean;
 	/**
-	 * CRAP (Change Risk Anti-Patterns) per-edit enforcement. **Default: false
-	 * (opt-in).** CRAP(fn) = cyclomatic² · (1 − coverage)³ + cyclomatic — a
+	 * CRAP (Change Risk Anti-Patterns) per-edit enforcement. **Default: true
+	 * (opt-out).** CRAP(fn) = cyclomatic² · (1 − coverage)³ + cyclomatic — a
 	 * function is "CRAPpy" when it is BOTH complex AND under-covered. When true,
 	 * an edit that leaves any function it ADDED or TOUCHED with a CRAP score at or
 	 * above {@link crap_threshold} is BLOCKED before the real write, naming the

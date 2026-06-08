@@ -280,31 +280,55 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 	});
 });
 
-describe("default config — red-bar is OFF (zero behavior change unless opted in)", () => {
-	it("DEFAULT_CONFIG.per_edit_coverage.block_on_test_failure is false", () => {
-		expect(DEFAULT_CONFIG.per_edit_coverage?.block_on_test_failure).toBe(false);
+describe("default config — all gates are ON (enforce by default unless opted out)", () => {
+	it("DEFAULT_CONFIG.per_edit_coverage.block_on_test_failure is true", () => {
+		expect(DEFAULT_CONFIG.per_edit_coverage?.block_on_test_failure).toBe(true);
 	});
 
-	it("DEFAULT_CONFIG.per_edit_coverage.block_on_crap is false (CRAP gate OFF by default)", () => {
-		expect(DEFAULT_CONFIG.per_edit_coverage?.block_on_crap).toBe(false);
+	it("DEFAULT_CONFIG.per_edit_coverage.block_on_crap is true (CRAP gate ON by default)", () => {
+		expect(DEFAULT_CONFIG.per_edit_coverage?.block_on_crap).toBe(true);
 	});
 
 	it("DEFAULT_CONFIG.per_edit_coverage.crap_threshold defaults to 30", () => {
 		expect(DEFAULT_CONFIG.per_edit_coverage?.crap_threshold).toBe(30);
 	});
 
-	it("the whole coverage feature is OFF by default (enabled === false)", () => {
-		// Doubly proves zero cost: the guard short-circuits before any runner.
-		expect(DEFAULT_CONFIG.per_edit_coverage?.enabled).toBe(false);
+	it("the whole coverage feature is ON by default (enabled === true)", () => {
+		// Enforced on every repo out of the box; opt out in guard-rules.local.json.
+		expect(DEFAULT_CONFIG.per_edit_coverage?.enabled).toBe(true);
 	});
 
-	it("running the guard with the SHIPPED default config is a no-op (runner never called)", async () => {
+	it("running the guard with the SHIPPED default config DOES run the gate (runner called)", async () => {
+		// With the default flipped ON, the shipped config no longer short-circuits:
+		// the overlay runner actually runs. The single function is covered + the
+		// suite is green, so the decision is still allow — but the runner DID run,
+		// which is the observable difference from the old default-OFF behavior.
+		const { runner, ran } = stubRunner(
+			coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			DEFAULT_CONFIG,
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(true);
+	});
+
+	it("OPT-OUT: shipped default with enabled:false is a pure no-op (runner never called)", async () => {
+		// Proves opt-out still gives ZERO behavior change: clone the shipped config
+		// and flip just `enabled` off — the guard short-circuits before any runner,
+		// even with a red suite that the default-ON gates would otherwise block on.
+		const optedOut: GuardRulesConfig = {
+			...DEFAULT_CONFIG,
+			per_edit_coverage: { ...DEFAULT_CONFIG.per_edit_coverage, enabled: false },
+		} as GuardRulesConfig;
 		const { runner, ran } = stubRunner(
 			coverageResult("src/a.ts", [], 1000, { testsPassed: false }),
 		);
 		const decision = await checkCoverageWrite(
 			writeEvent("src/a.ts", "export const a = 1;\n"),
-			DEFAULT_CONFIG,
+			optedOut,
 			deps(runner),
 		);
 		expect(decision).toBeNull();
@@ -316,9 +340,11 @@ describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
 	const GREEN_COVERED = (relPath: string): CoverageRunResult =>
 		coverageResult(relPath, [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]);
 
-	it("OFF (default): a RED suite does NOT block — fail-open, coverage-only behavior", async () => {
-		// testsPassed:false but block_on_test_failure unset → the red bar is inert.
-		// The single function is covered, so the coverage path also allows → null.
+	it("OFF (sub-flag unset): a RED suite does NOT block — fail-open, coverage-only behavior", async () => {
+		// testsPassed:false but block_on_test_failure unset in the passed config →
+		// the red bar is inert (the gate logic treats an unset sub-flag as opt-out,
+		// independent of the shipped default). The single function is covered, so the
+		// coverage path also allows → null.
 		const result = coverageResult(
 			"src/a.ts",
 			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
@@ -579,9 +605,11 @@ describe("checkCoverageWrite — CRAP block (block_on_crap)", () => {
 		expect(decision).toBeNull();
 	});
 
-	it("OFF (default) → no CRAP block even for a complex, under-covered function", async () => {
-		// Same CRAPpy shape as the blocking case, but block_on_crap unset → the CRAP
-		// gate is inert. The function is partially covered so coverage allows → null.
+	it("OFF (sub-flag unset) → no CRAP block even for a complex, under-covered function", async () => {
+		// Same CRAPpy shape as the blocking case, but block_on_crap unset in the
+		// passed config → the CRAP gate is inert (the gate logic treats an unset
+		// sub-flag as opt-out, independent of the shipped default). The function is
+		// partially covered so coverage allows → null.
 		const result = coverageResult("src/a.ts", [
 			{ name: "big", line: 1, endLine: 3, hits: 3, statement_pct: 20 },
 		]);

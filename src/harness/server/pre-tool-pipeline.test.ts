@@ -1716,7 +1716,7 @@ describe("tsgo acceleration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 13b. Per-edit coverage gate (config-gated, DEFAULT OFF)
+// 13b. Per-edit coverage gate (config-gated, DEFAULT ON)
 // ---------------------------------------------------------------------------
 
 describe("per-edit coverage gate wiring", () => {
@@ -1760,7 +1760,7 @@ describe("per-edit coverage gate wiring", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 13c. Commit-time quality gate (config-gated, DEFAULT OFF)
+// 13c. Commit-time quality gate (config-gated, DEFAULT ON)
 // ---------------------------------------------------------------------------
 
 describe("commit gate wiring", () => {
