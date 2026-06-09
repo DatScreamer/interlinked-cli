@@ -16,10 +16,10 @@
 // unavailable (fail-open, never throws).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { extname, join, relative, resolve } from "node:path";
 import { CANONICAL_LCOV_PATH } from "../harness/coverage-adapters.js";
 import { computeCrapForFile } from "../harness/checks/crap.js";
-import { computeCyclomaticComplexity } from "../harness/checks/cyclomatic.js";
+import { computeCyclomaticComplexity, type FunctionComplexityEntry } from "../harness/checks/cyclomatic.js";
 import { astComplexityAvailable, computeCyclomaticAst } from "../harness/checks/cyclomatic-ast.js";
 import {
 	coverageForFile,
@@ -199,6 +199,29 @@ interface MetricsReport {
 	files: FileMetric[];
 }
 
+const JS_TS_METRIC_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
+
+/**
+ * Cyclomatic complexity per function for `interlinked metrics`, DISPATCHED by
+ * extension. JS/TS use the AST pass directly (no test-file exemption — metrics
+ * measures the harness's own checks/ tree), falling back to the regex walker only
+ * when `typescript` is absent. Every other language goes through the
+ * language-dispatching `computeCyclomaticComplexity` (Python/Rust/Go walkers).
+ *
+ * The old `computeCyclomaticAst(content, abs) ?? computeCyclomaticComplexity(...)`
+ * silently reported ZERO functions for .py/.rs/.go: with `typescript` installed,
+ * the AST pass returns an EMPTY array (not null) for a non-JS file, so the `??`
+ * fallback never ran. Dispatch (not "output nonempty") is the contract — a real
+ * source file may legitimately contain no functions. Exported for the conformance
+ * probe (`analyzerForPath`-style: a branchy .py/.rs/.go fixture must score nonzero).
+ */
+export function cyclomaticForMetrics(content: string, filePath: string): FunctionComplexityEntry[] {
+	if (JS_TS_METRIC_EXTS.has(extname(filePath).toLowerCase())) {
+		return computeCyclomaticAst(content, filePath) ?? computeCyclomaticComplexity(content, filePath);
+	}
+	return computeCyclomaticComplexity(content, filePath);
+}
+
 function buildReport(cwd: string, topN: number): MetricsReport {
 	const cov = loadMetricsCoverage(cwd);
 	// discoverFiles returns absolute paths — normalize to repo-relative for
@@ -225,7 +248,7 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		// exemption — that exemption (in computeCyclomaticComplexity) is for
 		// content-quality scans, not measurement, and would hide the harness's
 		// own checks/ tree. Fall back to the guarded walker only sans typescript.
-		const comps = computeCyclomaticAst(content, abs) ?? computeCyclomaticComplexity(content, abs);
+		const comps = cyclomaticForMetrics(content, abs);
 		const perFile = cov.perFile(rel, comps, statSync(abs).mtimeMs);
 		if (cov.available && !perFile) filesNoCoverage++;
 

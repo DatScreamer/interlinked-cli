@@ -158,6 +158,168 @@ describe("parseGitCommit (re-export)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Parser → executor: the gate must evaluate the repo the commit actually runs
+// in, honoring a `cd <dir>` / `git -C <dir>` redirect (finding 4). Without this,
+// a monorepo `cd packages/x && git commit` gated the PARENT cwd — the wrong repo.
+// ---------------------------------------------------------------------------
+
+/** Deps that CAPTURE the projectRoot the gate hands to git-diff and the runner. */
+function capturingRootDeps(coverage: CoverageRunResult): {
+	deps: CommitGateDeps;
+	gitRoot: () => string | undefined;
+	suiteRoot: () => string | undefined;
+} {
+	let gitRoot: string | undefined;
+	let suiteRoot: string | undefined;
+	const deps: CommitGateDeps = {
+		runnerFor: () => ({
+			run: async (opts) => {
+				suiteRoot = opts.projectRoot;
+				return coverage;
+			},
+		}),
+		gitChangedFiles: (projectRoot) => {
+			gitRoot = projectRoot;
+			return ["src/m.ts"]; // diff paths are relative to the (sub)repo root
+		},
+		cyclomaticFor: () => () => [],
+		clock: () => 0,
+		readFile: (abs) => {
+			try {
+				return readFileSync(abs, "utf-8");
+			} catch {
+				return null;
+			}
+		},
+	};
+	return { deps, gitRoot: () => gitRoot, suiteRoot: () => suiteRoot };
+}
+
+describe("checkCommitGate — honors a cd / git -C redirect (finding 4)", () => {
+	it("runs git-diff AND the suite in the redirected subrepo, not the parent cwd", async () => {
+		// A nested repo at packages/api with one changed source file on disk.
+		writeSource("packages/api/src/m.ts", JS_SRC);
+		const green = coverageResult("src/m.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 },
+		]);
+		const { deps: capDeps, gitRoot, suiteRoot } = capturingRootDeps(green);
+		// event.cwd is the PARENT (root); the command cd's into packages/api.
+		const decision = await checkCommitGate(
+			commitEvent("cd packages/api && git commit -m x"),
+			rules(),
+			capDeps,
+		);
+		const expected = join(root, "packages/api");
+		expect(gitRoot()).toBe(expected);
+		expect(suiteRoot()).toBe(expected);
+		expect(decision).toBeNull(); // green subrepo → allow
+	});
+
+	it("equally honors `git -C <dir> commit`", async () => {
+		writeSource("packages/api/src/m.ts", JS_SRC);
+		const green = coverageResult("src/m.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 },
+		]);
+		const { deps: capDeps, gitRoot } = capturingRootDeps(green);
+		await checkCommitGate(commitEvent("git -C packages/api commit -m x"), rules(), capDeps);
+		expect(gitRoot()).toBe(join(root, "packages/api"));
+	});
+
+	it("falls back to event.cwd when the command carries no redirect", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const green = coverageResult("src/m.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 },
+		]);
+		const { deps: capDeps, gitRoot } = capturingRootDeps(green);
+		await checkCommitGate(commitEvent("git commit -m x"), rules(), capDeps);
+		expect(gitRoot()).toBe(root);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Staged-snapshot evaluation (finding 3): a plain commit must be judged against
+// the INDEX (the would-be commit), not the dirty working tree. The materializer
+// is stubbed here (its real git behavior is covered in staged-snapshot.test.ts);
+// these tests pin the GATE's routing: which root the suite runs in per mode.
+// ---------------------------------------------------------------------------
+
+/** Deps that record the suite root + the `stagedOnly` flag, with an injectable
+ *  index materializer (null ⇒ the worktree fallback). */
+function capturingSuiteDeps(materialize: CommitGateDeps["materializeIndexSnapshot"]): {
+	deps: CommitGateDeps;
+	suiteRoot: () => string | undefined;
+	stagedOnly: () => boolean | undefined;
+} {
+	let suiteRoot: string | undefined;
+	let stagedOnly: boolean | undefined;
+	const deps: CommitGateDeps = {
+		runnerFor: () => ({
+			run: async (opts) => {
+				suiteRoot = opts.projectRoot;
+				return coverageResult("src/m.ts", [
+					{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 },
+				]);
+			},
+		}),
+		gitChangedFiles: (_projectRoot, staged) => {
+			stagedOnly = staged;
+			return ["src/m.ts"];
+		},
+		cyclomaticFor: () => () => [],
+		clock: () => 0,
+		readFile: (abs) => {
+			try {
+				return readFileSync(abs, "utf-8");
+			} catch {
+				return null;
+			}
+		},
+		...(materialize ? { materializeIndexSnapshot: materialize } : {}),
+	};
+	return { deps, suiteRoot: () => suiteRoot, stagedOnly: () => stagedOnly };
+}
+
+describe("checkCommitGate — staged-snapshot evaluation (finding 3)", () => {
+	it("runs the suite in the materialized index snapshot for a plain commit", async () => {
+		const snapRoot = join(root, ".interlinked", ".commit-snapshot-fixture");
+		mkdirSync(join(snapRoot, "src"), { recursive: true });
+		writeFileSync(join(snapRoot, "src/m.ts"), JS_SRC, "utf-8"); // staged content
+		let cleaned = false;
+		const { deps, suiteRoot, stagedOnly } = capturingSuiteDeps(() => ({
+			root: snapRoot,
+			cleanup: () => {
+				cleaned = true;
+			},
+		}));
+		const decision = await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
+		expect(stagedOnly()).toBe(true); // plain commit → staged-only changed files
+		expect(suiteRoot()).toBe(snapRoot); // evaluated the INDEX snapshot, not the worktree
+		expect(cleaned).toBe(true); // snapshot cleaned up afterward
+		expect(decision).toBeNull(); // green snapshot → allow
+	});
+
+	it("evaluates the working tree (no snapshot) for `git commit -a`", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		let materialized = false;
+		const { deps, suiteRoot, stagedOnly } = capturingSuiteDeps(() => {
+			materialized = true;
+			return null;
+		});
+		await checkCommitGate(commitEvent("git commit -am x"), rules(), deps);
+		expect(stagedOnly()).toBe(false); // -a → working-tree tracked changes
+		expect(suiteRoot()).toBe(root); // the worktree, not a snapshot
+		expect(materialized).toBe(false); // -a never materializes the index
+	});
+
+	it("falls back to the working tree when materialization fails (never worse than before)", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const { deps, suiteRoot } = capturingSuiteDeps(() => null); // materialization unavailable
+		await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
+		expect(suiteRoot()).toBe(root); // fell back to the worktree
+	});
+});
+
+// ---------------------------------------------------------------------------
 // checkCommitGate — gating / no-op
 // ---------------------------------------------------------------------------
 

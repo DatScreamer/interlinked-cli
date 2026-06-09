@@ -17,10 +17,12 @@
 // measurement — a red bar can only ever fire from a clean, definitive red run.
 //
 // Three safety properties make this safe to ship:
-//   1. CONFIG-GATED, DEFAULT OFF. Runs only when `rules.per_edit_coverage.enabled`
-//      AND `mode === "block"`. A repo that does not opt in returns at the first
-//      gate before any suite run — zero cost, zero behavior change. THIS repo
-//      (interlinked-cli, ~16k tests) deliberately does NOT enable it.
+//   1. CONFIG-GATED (DEFAULT ON — see `rules/default-config.ts`). Runs only when
+//      `rules.per_edit_coverage.enabled` AND `mode === "block"`. A repo that opts
+//      OUT returns at the first gate before any suite run — zero cost. On a big
+//      suite (THIS repo, ~16k tests) the budget gate (property 2) routes
+//      enforcement to commit time, so the per-edit overlay rarely runs HERE — but
+//      it is live by default on fast-suite repos.
 //   2. BUDGET-GATED. If the rolling suite-runtime estimate is at/above
 //      `budget_ms`, the suite is NOT run per-edit; a deferred obligation is
 //      recorded (commit-time enforcement is a later step) and the edit allowed.
@@ -32,7 +34,6 @@
 // Every dependency (CoverageRunner factory, overlay factory, clock) is injected
 // via `CoverageWriteDeps` so the unit tests stub them and NO real suite runs.
 
-import { extname } from "node:path";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
@@ -52,9 +53,6 @@ import {
 } from "../coverage-runner.js";
 import { selectAffectedTests } from "../coverage-test-selector.js";
 import type { DependencyView } from "../dependency-view.js";
-import { isCappableFile } from "../large-file-policy.js";
-import { resolveProposedContent } from "../overlay-content.js";
-import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import {
 	type CrapInput,
@@ -63,6 +61,7 @@ import {
 	decideCrap,
 	hasPerLineData,
 } from "./coverage-crap-decision.js";
+import { type CoverageTarget, coverageTargetsFor } from "./coverage-edit-targets.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
 // `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
@@ -107,27 +106,6 @@ const DEFAULT_DEPS: CoverageWriteDeps = {
 	clock: Date.now,
 	cyclomaticFor: defaultCyclomaticFor,
 };
-
-/** Map a file extension to the coverage language, or null when unsupported. */
-function languageForExt(ext: string): CoverageLanguage | null {
-	switch (ext.toLowerCase()) {
-		case ".ts":
-		case ".tsx":
-		case ".mts":
-		case ".cts":
-			return "ts";
-		case ".js":
-		case ".jsx":
-		case ".mjs":
-		case ".cjs":
-			return "js";
-		case ".py":
-		case ".pyi":
-			return "python";
-		default:
-			return null;
-	}
-}
 
 /**
  * The covered-line *fraction* (0..1) for a file, derived from the per-function
@@ -277,26 +255,15 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 	};
 }
 
-/**
- * The strict-TDD block for a source file that NO test transitively depends on
- * (affected-test selection returned `[]`). Whatever executable lines the edit
- * adds are exercised by nothing, so — without running a suite — the file is
- * uncovered by definition. Tells the agent to ship the test in the SAME edit.
- */
-function blockForUntestedSource(relPath: string): HarnessDecision {
-	return {
-		decision: "block",
-		reason:
-			`[interlinked:coverage] BLOCKED: no test in the project imports ${relPath} ` +
-			"(directly or transitively), so this edit's executable lines are covered by " +
-			"nothing. Strict TDD: write the test for " +
-			`${relPath} in this edit (use MultiEdit so the overlay sees code + test ` +
-			"together → covered → allowed), then retry.",
-		rule_id: "per-edit-coverage",
-		severity: "medium",
-		category: "coverage",
-	};
-}
+// EVIDENCE-AUTHORITY CONTRACT (finding 2): there is deliberately NO
+// `blockForUntestedSource`. An empty affected-test selection (`[]`) means only
+// that no test STATICALLY imports the file — not that it is uncovered. The static
+// reverse-import graph may SELECT which tests to run, but its silence may never
+// PROVE absence of coverage: an integration test routinely exercises a CLI entry
+// point, an HTTP route, a plugin, or a dynamically-imported module without
+// importing its source. So `[]` routes to a MEASURED full-suite run
+// (`routeBySelection`), and a block can only come from the real coverage decision
+// over the lines the suite actually executed — never from the graph alone.
 
 // CRAP (Change Risk Anti-Patterns) — the 4th per-edit block — lives in
 // `coverage-crap-decision.ts` (`decideCrap`), extracted to keep this module under
@@ -541,25 +508,26 @@ async function runOverlayAndDecide(
 
 /**
  * Outcome of affected-test selection, routing the rest of the gate:
- *   - `block`  — the file is in the graph but NO test depends on it (`[]`): a
- *                strict-TDD block, no suite run needed.
  *   - `scoped` — a non-empty affected-test subset: run ONLY those (fast → fits
  *                the per-edit budget → skip the budget defer).
- *   - `full`   — selection unavailable (no depView, or the file is not in the
- *                graph → `null`): fall back to the full suite + budget gate.
+ *   - `full`   — selection unavailable (no depView / `null` / `[]`): run the full
+ *                suite + budget gate. An empty selection is MEASURED, never
+ *                blocked (evidence-authority contract — see routeBySelection).
  */
-type SelectionRoute =
-	| { kind: "block"; decision: HarnessDecision }
-	| { kind: "scoped"; tests: string[] }
-	| { kind: "full" };
+type SelectionRoute = { kind: "scoped"; tests: string[] } | { kind: "full" };
 
 /**
  * Run affected-test selection (when a dependency view is available) and map its
- * tri-state result to a {@link SelectionRoute}. `null` from the selector (file
- * not in the graph) and a missing view both route to `full` — "don't know which
- * tests" must never run a wrong subset. `[]` routes to a strict-TDD `block`. A
- * non-empty subset routes to `scoped`. Kept separate so `checkCoverageWrite`
- * stays low-complexity.
+ * result to a {@link SelectionRoute}. A non-empty subset routes to `scoped` (run
+ * only those tests). Everything else routes to `full`:
+ *   - no `depView` / `null` from the selector (file not in the graph) — "don't
+ *     know which tests", so run them all rather than a wrong subset;
+ *   - `[]` (file in the graph, but no test STATICALLY imports it) — the
+ *     evidence-authority contract: the graph's silence is not proof of no
+ *     coverage (an integration test exercises code it never imports), so MEASURE
+ *     with the full suite; the coverage decision blocks only on what actually
+ *     ran uncovered.
+ * Kept separate so `checkCoverageWrite` stays low-complexity.
  */
 function routeBySelection(
 	relPath: string,
@@ -568,20 +536,8 @@ function routeBySelection(
 ): SelectionRoute {
 	if (!depView) return { kind: "full" };
 	const selected = selectAffectedTests({ editedRelPath: relPath, projectRoot, depView });
-	if (selected === null) return { kind: "full" };
-	if (selected.length === 0) return { kind: "block", decision: blockForUntestedSource(relPath) };
+	if (selected === null || selected.length === 0) return { kind: "full" };
 	return { kind: "scoped", tests: selected };
-}
-
-/** Resolve the edited file path from the tool input (absolute or cwd-relative). */
-function editedRelPath(event: HarnessEvent, projectRoot: string): string | null {
-	const input = event.tool_input ?? {};
-	const raw = (input.file_path as string) || (input.path as string) || "";
-	if (!raw) return null;
-	const abs = raw.startsWith("/") ? raw : `${projectRoot}/${raw}`;
-	// Keep inside the project; an out-of-tree edit isn't this repo's coverage unit.
-	if (!abs.startsWith(`${projectRoot}/`)) return null;
-	return abs.slice(projectRoot.length + 1).replace(/\\/g, "/");
 }
 
 /**
@@ -600,10 +556,11 @@ function editedRelPath(event: HarnessEvent, projectRoot: string): string | null 
  * reverse import graph to find only the tests transitively affected by the edit:
  *   - a NON-EMPTY subset → the overlay runs ONLY those tests (fast → fits the
  *     per-edit budget → enforced in-band, no defer);
- *   - `[]` (file in the graph, but nothing tests it) → BLOCK (strict TDD — the
- *     edit's executable lines are covered by nothing);
- *   - `null` (file not in the graph) or no `depView` → the FULL suite + budget
- *     gate (unchanged) — never run a wrong subset.
+ *   - `[]` (file in the graph, but no test statically imports it), `null` (file
+ *     not in the graph), or no `depView` → the FULL suite + budget gate. A static
+ *     graph may select tests but may never prove absence of coverage (integration
+ *     tests exercise code they don't import), so an empty selection is MEASURED,
+ *     never blocked.
  */
 export async function checkCoverageWrite(
 	event: HarnessEvent,
@@ -616,26 +573,36 @@ export async function checkCoverageWrite(
 	if (!isFileWrite(event.tool_name)) return null;
 
 	const projectRoot = event.cwd || process.cwd();
-	const relPath = editedRelPath(event, projectRoot);
-	if (!relPath) return null;
+	// Every code file this write touches — ONE for Write/Edit/MultiEdit, possibly
+	// MANY for a Codex/Copilot apply_patch (whose paths live in the patch body, not
+	// `file_path` — finding 1). Non-code / test / non-cappable files are filtered out.
+	const targets = coverageTargetsFor(event, projectRoot, cfg);
+	if (targets.length === 0) return null;
 
-	const language = languageForExt(extname(relPath));
-	if (!language || !cfg.languages.includes(language)) return null;
+	// One decision per event: the FIRST blocking file wins (short-circuit). A
+	// multi-file apply_patch otherwise accumulates any allow-time warnings (e.g. a
+	// per-file loud-degrade) into a single allow decision so none is lost.
+	const warnings: string[] = [];
+	for (const target of targets) {
+		const decision = await decideForTarget({ event, cfg, deps, depView }, projectRoot, target);
+		if (decision?.decision === "block") return decision;
+		if (decision?.warnings) warnings.push(...decision.warnings);
+	}
+	return warnings.length > 0 ? { decision: "allow", warnings } : null;
+}
 
-	const input = event.tool_input ?? {};
-	const proposed = resolveProposedContent(`${projectRoot}/${relPath}`, input);
-	// Skip test files / generated / non-code (same predicate as the line cap):
-	// the coverage unit is production code, not the tests themselves.
-	if (!isCappableFile({ filePath: relPath, content: proposed })) return null;
-
+/** Evaluate ONE coverage target, containing its own failure as a loud-degrade so
+ *  a single unmeasurable file in a multi-file patch never aborts the others. */
+async function decideForTarget(
+	call: GateCall,
+	projectRoot: string,
+	target: CoverageTarget,
+): Promise<HarnessDecision | null> {
 	try {
-		return await selectRunAndDecide(
-			{ event, cfg, deps, depView },
-			{ projectRoot, relPath, language, input, proposed },
-		);
+		return await selectRunAndDecide(call, { projectRoot, ...target });
 	} catch (err) {
 		const why = err instanceof Error ? err.message : String(err);
-		return loudDegrade(relPath, why);
+		return loudDegrade(target.relPath, why);
 	}
 }
 
@@ -649,14 +616,10 @@ interface GateCall {
 	depView: DependencyView | undefined;
 }
 
-/** Resolved per-edit facts (path/language/content) shared across the helper. */
-interface GateTarget {
-	projectRoot: string;
-	relPath: string;
-	language: CoverageLanguage;
-	input: NonNullable<HarnessEvent["tool_input"]>;
-	proposed: string;
-}
+/** One resolved coverage target plus the project root — the per-call facts the
+ *  routing + run need. `CoverageTarget` (path/language/content/editedLines) is
+ *  produced by `coverageTargetsFor`. */
+type GateTarget = CoverageTarget & { projectRoot: string };
 
 /**
  * Run affected-test selection, apply the budget gate (full-suite route only),
@@ -666,13 +629,13 @@ interface GateTarget {
  */
 async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<HarnessDecision | null> {
 	const { cfg, deps, depView, event } = call;
-	const { projectRoot, relPath, language, input, proposed } = target;
+	const { projectRoot, relPath, language, proposed, editedLines } = target;
 
-	// Affected-test selection FIRST: it decides whether we enforce a fast scoped
-	// run, must block (nothing tests this source), or fall back to the full suite
-	// (and therefore consult the budget gate).
+	// Affected-test selection FIRST: a non-empty subset runs scoped (fast); an
+	// empty/unknown selection falls back to the full suite (and the budget gate).
+	// There is no "block from selection" — a block must come from a measured run,
+	// never the graph's silence (see routeBySelection's evidence-authority note).
 	const route = routeBySelection(relPath, projectRoot, depView);
-	if (route.kind === "block") return route.decision;
 
 	if (route.kind === "full") {
 		const estimate = readRuntimeEstimateMs(projectRoot);
@@ -686,7 +649,7 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 		relPath,
 		proposed,
 		language,
-		editedLines: deriveEditedLineNumbers(event.tool_name, input, proposed),
+		editedLines,
 		budgetMs: cfg.budget_ms,
 		blockOnTestFailure: cfg.block_on_test_failure === true,
 		blockOnCrap: cfg.block_on_crap === true,

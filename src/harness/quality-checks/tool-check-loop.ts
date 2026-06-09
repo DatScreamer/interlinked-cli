@@ -24,7 +24,7 @@ import { getProfileForFile } from "../language-profiles.js";
 import type { HarnessEvent, QualityCheckConfig } from "../types.js";
 import { resolveDependencyAuditCommand } from "./dependency-audit.js";
 import { runInlineLanguageChecks } from "./inline-language-checks.js";
-import { checkLockfileDrift, LOCKFILE_MAP } from "./lockfile-drift.js";
+import { checkLockfileClassificationDrift, checkLockfileDrift, LOCKFILE_MAP } from "./lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./package-json.js";
 import { findProjectRoot } from "./project-root.js";
 import type { QualityCheckResult, ToolBreakdownEntry } from "./result-types.js";
@@ -291,32 +291,61 @@ function runAffectedTests(
 	}));
 }
 
-/** lockfile_drift — detect stale or missing lockfile after manifest edit. */
+/** Map an mtime-drift result to a finding, or null when not drifted. */
+function mtimeDriftResult(
+	drift: ReturnType<typeof checkLockfileDrift>,
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult | null {
+	if (!drift.drifted) return null;
+	const msg =
+		drift.reason === "missing"
+			? `No lockfile found for ${drift.manifest}. Run the package manager's install command to generate one.`
+			: `${drift.lockfile} is stale — ${drift.manifest} was modified but the lockfile was not regenerated.`;
+	return {
+		name,
+		severity: check.severity,
+		message: msg,
+		file: ctx.filePath,
+		detail:
+			drift.reason === "stale"
+				? `Run \`npm install\`, \`yarn install\`, \`cargo generate-lockfile\`, or the appropriate lock command to update ${drift.lockfile}.`
+				: `Expected one of: ${(LOCKFILE_MAP[drift.manifest] || []).join(", ")}`,
+	};
+}
+
+/** Map each semantic dependency-classification mismatch to a finding (finding 7). */
+function classificationDriftResults(
+	absPath: string,
+	ctx: ToolCheckLoopContext,
+	name: string,
+	check: QualityCheckConfig,
+): QualityCheckResult[] {
+	const cls = checkLockfileClassificationDrift(absPath);
+	return cls.mismatches.map((m) => ({
+		name,
+		severity: check.severity,
+		message: `${m.name} is declared in ${m.manifestSection} in ${cls.manifest} but recorded under ${m.lockSection} in package-lock.json — regenerate the lockfile.`,
+		file: ctx.filePath,
+		detail: `Run \`npm install --package-lock-only\` so the lock matches the manifest. As-is, \`npm ci\` resolves ${m.name}'s classification from the stale lock, not package.json — e.g. \`--omit=dev\` / \`--omit=optional\` would include or drop it incorrectly.`,
+	}));
+}
+
+/** lockfile_drift — stale/missing lockfile (mtime) + dependency-classification
+ *  drift (semantic). The semantic compare is structural, so it fires even inside
+ *  the mtime check's grace window. */
 function runLockfileDriftCheck(
 	ctx: ToolCheckLoopContext,
 	name: string,
 	check: QualityCheckConfig,
 ): QualityCheckResult[] | null {
-	// Inline check — detect stale or missing lockfile after manifest edit
 	const absPath = isAbsolute(ctx.filePath) ? ctx.filePath : resolve(ctx.cwd, ctx.filePath);
-	const drift = checkLockfileDrift(absPath);
-	if (!drift.drifted) return [];
-	const msg =
-		drift.reason === "missing"
-			? `No lockfile found for ${drift.manifest}. Run the package manager's install command to generate one.`
-			: `${drift.lockfile} is stale — ${drift.manifest} was modified but the lockfile was not regenerated.`;
-	return [
-		{
-			name,
-			severity: check.severity,
-			message: msg,
-			file: ctx.filePath,
-			detail:
-				drift.reason === "stale"
-					? `Run \`npm install\`, \`yarn install\`, \`cargo generate-lockfile\`, or the appropriate lock command to update ${drift.lockfile}.`
-					: `Expected one of: ${(LOCKFILE_MAP[drift.manifest] || []).join(", ")}`,
-		},
-	];
+	const results: QualityCheckResult[] = [];
+	const mtime = mtimeDriftResult(checkLockfileDrift(absPath), ctx, name, check);
+	if (mtime) results.push(mtime);
+	results.push(...classificationDriftResults(absPath, ctx, name, check));
+	return results;
 }
 
 /** package_json_consistency — detect duplicate deps and invalid semver. */

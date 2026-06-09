@@ -82,3 +82,71 @@ describe("parseGitCommit", () => {
 		expect(parseGitCommit("   ")).toBeNull();
 	});
 });
+
+describe("parseGitCommit — effective working directory (finding 4)", () => {
+	it("a plain `git commit` carries no cwd override", () => {
+		expect(parseGitCommit("git commit -m x")?.cwd).toBeUndefined();
+	});
+
+	it("captures a `cd <dir> && git commit` redirect", () => {
+		expect(parseGitCommit("cd packages/api && git commit -m x")?.cwd).toBe("packages/api");
+	});
+
+	it("captures a `git -C <dir> commit` redirect", () => {
+		expect(parseGitCommit("git -C packages/api commit -m x")?.cwd).toBe("packages/api");
+	});
+
+	it("compounds a `cd` chain like the shell does", () => {
+		expect(parseGitCommit("cd a && cd b && git commit -m x")?.cwd).toBe("a/b");
+	});
+
+	it("compounds `cd` with a relative `-C`", () => {
+		expect(parseGitCommit("cd a && git -C b commit -m x")?.cwd).toBe("a/b");
+	});
+
+	it("compounds multiple `-C` flags (git semantics)", () => {
+		expect(parseGitCommit("git -C a -C b commit -m x")?.cwd).toBe("a/b");
+	});
+
+	it("an absolute `-C` / `cd` replaces the accumulated prefix", () => {
+		expect(parseGitCommit("cd a && git -C /srv/repo commit -m x")?.cwd).toBe("/srv/repo");
+		expect(parseGitCommit("cd /srv/repo && git commit -m x")?.cwd).toBe("/srv/repo");
+	});
+
+	it("normalizes `..` in a `cd` redirect", () => {
+		expect(parseGitCommit("cd a/b && cd ../c && git commit -m x")?.cwd).toBe("a/c");
+	});
+
+	it("leaves cwd undefined for an unresolvable redirect (variable / glob / `cd -` / `cd ~`)", () => {
+		// Non-literal targets can't be resolved statically → fall back to the shell
+		// cwd rather than treat `$SUBDIR` as a real directory.
+		expect(parseGitCommit("cd $SUBDIR && git commit -m x")?.cwd).toBeUndefined();
+		expect(parseGitCommit("git -C $SUBDIR commit -m x")?.cwd).toBeUndefined();
+		expect(parseGitCommit("cd - && git commit -m x")?.cwd).toBeUndefined();
+		expect(parseGitCommit("cd ~/repo && git commit -m x")?.cwd).toBeUndefined();
+	});
+
+	it("still recognizes the commit while capturing the redirect (isCommit unaffected)", () => {
+		const parsed = parseGitCommit("cd sub && git commit --no-verify -m x");
+		expect(parsed?.isCommit).toBe(true);
+		expect(parsed?.noVerify).toBe(true);
+		expect(parsed?.cwd).toBe("sub");
+	});
+});
+
+describe("parseGitCommit — -a / --all detection (finding 3)", () => {
+	it("a plain `git commit` is not `all`", () => {
+		expect(parseGitCommit("git commit -m x")?.all).toBeUndefined();
+	});
+
+	it("detects `-a`, `--all`, and the `-am` short cluster", () => {
+		expect(parseGitCommit("git commit -a -m x")?.all).toBe(true);
+		expect(parseGitCommit("git commit --all -m x")?.all).toBe(true);
+		expect(parseGitCommit('git commit -am "msg"')?.all).toBe(true);
+	});
+
+	it("does NOT treat `-m` or `--amend` as `all`", () => {
+		expect(parseGitCommit("git commit -m x")?.all).toBeUndefined();
+		expect(parseGitCommit("git commit --amend --no-edit")?.all).toBeUndefined();
+	});
+});

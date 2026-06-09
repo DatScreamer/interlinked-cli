@@ -241,12 +241,12 @@ describe("parseInstallCommands — pip family", () => {
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "requests" }]);
 	});
 
-	it("pip install with version specifier", () => {
+	it("pip install with version specifier RETAINS the operator (finding: pin bypass)", () => {
 		const [cmd] = parseInstallCommands("pip install requests==22.32.5");
 		expect(cmd.packages[0]).toEqual({
 			kind: "registry",
 			name: "requests",
-			version: "22.32.5",
+			version: "==22.32.5", // operator kept so the pin check can see `==` vs a range
 		});
 	});
 
@@ -284,6 +284,30 @@ describe("parseInstallCommands — pip family", () => {
 	it("pipx install → install_global", () => {
 		const [cmd] = parseInstallCommands("pipx install poetry");
 		expect(cmd.action).toBe("install_global");
+	});
+});
+
+// ROUND-TRIP PIN CONTRACT (finding: PyPI operators lost during parsing). raw
+// requirement → parsed spec → pin decision must retain every token that affects
+// the decision. Only `==`/`===` are exact pins; `~=`/`>=`/`<=`/`>`/`<`/`!=` and a
+// bare name are NOT — they previously slipped through as exact `2.31.0`.
+describe("pip exact-pin round-trip (parse → pinnedVersionViolation)", () => {
+	function isExactPin(spec: string): boolean {
+		const [cmd] = parseInstallCommands(`pip install ${spec}`);
+		return pinnedVersionViolation(cmd.packages[0], "pypi") === null;
+	}
+
+	it.each([
+		["requests==2.31.0", true],
+		["requests===2.31.0", true],
+		["requests~=2.31.0", false],
+		["requests>=2.31.0", false],
+		["requests<=2.31.0", false],
+		["requests>2.31.0", false],
+		["requests!=2.31.0", false],
+		["requests", false],
+	])("%s → exact pin = %s", (spec, expected) => {
+		expect(isExactPin(spec)).toBe(expected);
 	});
 });
 

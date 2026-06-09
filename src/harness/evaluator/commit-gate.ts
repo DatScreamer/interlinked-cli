@@ -23,10 +23,11 @@
 // under coverage via the same language {@link CoverageRunner}.
 //
 // Safety properties (mirror the per-edit gate):
-//   1. CONFIG-GATED, DEFAULT OFF. Runs only when `rules.per_edit_coverage.enabled`
-//      is true. A repo that does not opt in returns at the first gate before any
-//      git shell-out or suite run — zero cost. This gate is DORMANT today
-//      (per_edit_coverage defaults OFF).
+//   1. CONFIG-GATED (DEFAULT ON — see `rules/default-config.ts`). Runs only when
+//      `rules.per_edit_coverage.enabled` is true. A repo that opts OUT returns at
+//      the first gate before any git shell-out or suite run — zero cost. On a big
+//      suite (THIS repo) the per-edit overlay defers to THIS commit gate, so it is
+//      the LIVE enforcement surface here, not a dormant one.
 //   2. GENEROUS TIMEOUT. Commit time is allowed to run the full suite — there is
 //      NO ~25s per-edit budget here. The runner gets {@link COMMIT_RUN_TIMEOUT_MS}.
 //   3. FAIL-OPEN. A runner that is unavailable / can't measure, a git-diff that
@@ -58,6 +59,7 @@ import {
 import { isCappableFile } from "../large-file-policy.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import { parseGitCommit } from "./commit-parse.js";
+import { materializeIndexSnapshot, type StagedSnapshot } from "./staged-snapshot.js";
 
 // Re-export the parser surface so existing call sites / tests import it from the
 // gate module too.
@@ -75,11 +77,13 @@ export type CyclomaticAnalyzer = (
 ) => FunctionComplexityEntry[] | null;
 
 /**
- * List the repo-relative POSIX paths of source files changed since HEAD (working
- * tree + staged), for the commit about to run. Returns `null` when the diff could
- * not be taken (git missing, not a repo) — the gate fail-opens on `null`.
+ * List the repo-relative POSIX paths of source files changed for the commit about
+ * to run. `stagedOnly` (a plain `git commit`) returns ONLY the staged set — the
+ * exact files the commit captures; otherwise (`-a`/`--all`) it returns the working
+ * tree's tracked changes too. Returns `null` when the diff could not be taken (git
+ * missing, not a repo) — the gate fail-opens on `null`.
  */
-export type GitChangedFilesFn = (projectRoot: string) => string[] | null;
+export type GitChangedFilesFn = (projectRoot: string, stagedOnly?: boolean) => string[] | null;
 
 /** Injectable seams so unit tests run with NO real suite / git / analyzer. */
 export interface CommitGateDeps {
@@ -93,6 +97,14 @@ export interface CommitGateDeps {
 	clock: () => number;
 	/** Read a file's current content from disk (default: `fs.readFileSync`). */
 	readFile: (absPath: string) => string | null;
+	/**
+	 * Materialize the staged index tree for a plain commit so the gate evaluates
+	 * the would-be commit, not the working tree (finding 3). Optional: when absent
+	 * (or it returns null) the gate falls back to evaluating the working tree, so
+	 * omitting it is exactly the pre-fix behavior. Default: the real `git
+	 * checkout-index` materializer.
+	 */
+	materializeIndexSnapshot?: (projectRoot: string) => StagedSnapshot | null;
 }
 
 /** The default CRAP cutoff — the McCabe / SonarQube convention (matches the per-edit gate). */
@@ -150,16 +162,17 @@ function gitLines(projectRoot: string, args: string[]): string[] | null {
 }
 
 /**
- * The real changed-files function: `git diff --name-only HEAD` (working tree vs
- * HEAD, which already includes staged changes) UNION `git diff --cached
- * --name-only` (staged, to cover the edge case where a path is staged but the
- * working copy was reverted). Read-only. Returns `null` only when BOTH git
- * invocations fail so the gate fail-opens rather than blocking when git can't
- * answer at all.
+ * The real changed-files function. `stagedOnly` (a plain `git commit`) returns
+ * just `git diff --cached --name-only` — the staged set the commit will capture.
+ * Otherwise (`-a`/`--all`, which stages tracked edits first) it UNIONs `git diff
+ * --name-only HEAD` (working tree vs HEAD) with the staged set. Read-only. Returns
+ * `null` only when the needed git invocation(s) fail so the gate fail-opens rather
+ * than blocking when git can't answer at all.
  */
-function defaultGitChangedFiles(projectRoot: string): string[] | null {
-	const worktree = gitLines(projectRoot, ["diff", "--name-only", "HEAD"]);
+function defaultGitChangedFiles(projectRoot: string, stagedOnly = false): string[] | null {
 	const staged = gitLines(projectRoot, ["diff", "--cached", "--name-only"]);
+	if (stagedOnly) return staged; // a plain commit captures the index only
+	const worktree = gitLines(projectRoot, ["diff", "--name-only", "HEAD"]);
 	if (worktree === null && staged === null) return null; // git unusable → fail-open
 	return [...new Set<string>([...(worktree ?? []), ...(staged ?? [])])];
 }
@@ -177,6 +190,7 @@ const DEFAULT_DEPS: CommitGateDeps = {
 			return null;
 		}
 	},
+	materializeIndexSnapshot,
 };
 
 // ===========================================
@@ -566,12 +580,20 @@ async function runSuites(ctx: GateContext, deps: CommitGateDeps): Promise<SuiteO
 	const perFile = new Map<string, PerFileCoverage>();
 	const failingTests: string[] = [];
 	let anyRed = false;
+	// Dedup by the runner's stable EXECUTION KEY, not by language: the Vitest runner
+	// serves both `js` and `ts`, so a commit changing both must run the suite ONCE,
+	// not twice against the same report dir (finding 2026-06). Falls back to the
+	// language when a runner exposes no id (test stubs).
+	const ranKeys = new Set<string>();
 
 	for (const language of languages) {
 		const runner = deps.runnerFor(language);
 		if (!runner) {
 			return { perFile, failingTests, anyRed, degradeReason: `no coverage runner for ${language}` };
 		}
+		const key = runner.id ?? language;
+		if (ranKeys.has(key)) continue;
+		ranKeys.add(key);
 		const result = await runner.run({
 			projectRoot: ctx.projectRoot,
 			coverageDir: `${ctx.projectRoot}/.interlinked/commit-gate-coverage`,
@@ -663,6 +685,28 @@ function degradeWithWarnings(why: string, warnings: string[]): HarnessDecision |
 	return warnings.length > 0 ? { decision: "allow", warnings } : null;
 }
 
+/** Where the gate evaluates the commit, plus an optional snapshot cleanup. */
+interface EvalTarget {
+	root: string;
+	cleanup: (() => void) | null;
+}
+
+/**
+ * Resolve where the commit gate evaluates the commit (finding 3):
+ *   - `-a` / `--all` stages every tracked modification, so the working tree IS
+ *     the would-be snapshot → evaluate `projectRoot`.
+ *   - a plain commit captures the INDEX → materialize the staged tree and evaluate
+ *     THAT, so an unstaged edit can neither mask a broken staged change green nor
+ *     false-block on unrelated dirty work.
+ * Fail-safe: if materialization is unavailable or fails, fall back to the working
+ * tree — exactly the pre-fix behavior, never worse.
+ */
+function resolveEvalTarget(projectRoot: string, all: boolean, deps: CommitGateDeps): EvalTarget {
+	if (all) return { root: projectRoot, cleanup: null };
+	const snap = deps.materializeIndexSnapshot?.(projectRoot) ?? null;
+	return snap ? { root: snap.root, cleanup: snap.cleanup } : { root: projectRoot, cleanup: null };
+}
+
 /**
  * PreToolUse commit gate. Returns a `block` HarnessDecision when the command is a
  * real `git commit` AND `per_edit_coverage.enabled` AND the working tree fails the
@@ -690,25 +734,39 @@ export async function checkCommitGate(
 	const warnings = noVerifyWarnings(parse.noVerify);
 
 	try {
-		const projectRoot = event.cwd || process.cwd();
-		const changed = deps.gitChangedFiles(projectRoot);
+		// Honor a `cd <dir>` / `git -C <dir>` redirect (finding 4): evaluate the
+		// repository the commit actually runs in, not the shell's parent cwd. In a
+		// monorepo `cd packages/x && git commit` must gate packages/x, not the root.
+		const baseCwd = event.cwd || process.cwd();
+		const projectRoot = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
+		const all = parse.all === true;
+		// Changed files = the commit's actual content: staged-only for a plain
+		// commit, working-tree-tracked for `-a` (finding 3).
+		const changed = deps.gitChangedFiles(projectRoot, !all);
 		if (changed === null) {
 			return degradeWithWarnings("git diff unavailable — cannot determine changed files", warnings);
 		}
-		const sources = selectChangedSources(changed, projectRoot, cfg.languages, deps.readFile);
-		// Nothing gated changed (only tests / docs / config) → allow, but still
-		// surface the --no-verify note if present.
-		if (sources.length === 0) return warnings.length > 0 ? { decision: "allow", warnings } : null;
 
-		return await runSuiteAndScan(
-			{
-				projectRoot,
-				sources,
-				crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
-				warnings,
-			},
-			deps,
-		);
+		// Evaluate the staged snapshot for a plain commit, the worktree for `-a`.
+		const target = resolveEvalTarget(projectRoot, all, deps);
+		try {
+			const sources = selectChangedSources(changed, target.root, cfg.languages, deps.readFile);
+			// Nothing gated changed (only tests / docs / config) → allow, but still
+			// surface the --no-verify note if present.
+			if (sources.length === 0) return warnings.length > 0 ? { decision: "allow", warnings } : null;
+
+			return await runSuiteAndScan(
+				{
+					projectRoot: target.root,
+					sources,
+					crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
+					warnings,
+				},
+				deps,
+			);
+		} finally {
+			target.cleanup?.();
+		}
 	} catch (err) {
 		const why = err instanceof Error ? err.message : String(err);
 		return degradeWithWarnings(why, warnings);

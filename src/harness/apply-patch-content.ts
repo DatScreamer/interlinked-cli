@@ -40,6 +40,23 @@ export function looksLikeApplyPatch(raw: string): boolean {
 	return /^\*\*\* (?:Begin Patch|Update File:|Add File:|Delete File:)/m.test(raw);
 }
 
+/**
+ * The raw apply_patch payload across the runner-specific keys (Codex `command`,
+ * Copilot `patch`, plus `_raw_patch` / `content` fallbacks), or "" when none is
+ * present. Single source of the key precedence shared by every PreToolUse content
+ * reconstructor (the complexity gate and the coverage gate) so they can never
+ * drift on which field carries the patch.
+ */
+export function extractApplyPatchRaw(toolInput: Record<string, unknown>): string {
+	return (
+		(typeof toolInput.command === "string" && toolInput.command) ||
+		(typeof toolInput.patch === "string" && toolInput.patch) ||
+		(typeof toolInput._raw_patch === "string" && toolInput._raw_patch) ||
+		(typeof toolInput.content === "string" && toolInput.content) ||
+		""
+	);
+}
+
 /** Parse a raw apply_patch payload into per-file sections, in source order,
  *  resolving `*** Move to:` retargets. */
 export function parseApplyPatchSections(raw: string): ApplyPatchSection[] {

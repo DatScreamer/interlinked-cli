@@ -45,10 +45,20 @@ export interface ParseLcovOptions {
 interface FileAcc {
 	/** 1-based line → summed hit count. */
 	lineHits: Map<number, number>;
-	/** function name → start line (from `FN`). */
-	fnLine: Map<string, number>;
-	/** function name → summed hit count (from `FNDA`). */
-	fnHits: Map<string, number>;
+	/**
+	 * function name → ORDERED start lines (from `FN`). A list, not a single line,
+	 * because LCOV legitimately repeats a name within one file (constructors,
+	 * same-named methods, overloads); keying by name alone collapsed them and
+	 * corrupted coverage/CRAP/ratchet (finding 2026-06).
+	 */
+	fnStartLines: Map<string, number[]>;
+	/**
+	 * function name → ORDERED entry hits (from `FNDA`). FNDA carries no line, so it
+	 * is paired POSITIONALLY with `fnStartLines` (the k-th FN:name ↔ the k-th
+	 * FNDA:name), then merged by (name, line) at finalize so repeated names stay
+	 * distinct while merged reports still sum.
+	 */
+	fnEntryHits: Map<string, number[]>;
 	/** branch key `line:block:branch` → summed taken count (`-` ⇒ 0). */
 	branchTaken: Map<string, number>;
 }
@@ -56,10 +66,17 @@ interface FileAcc {
 function emptyAcc(): FileAcc {
 	return {
 		lineHits: new Map(),
-		fnLine: new Map(),
-		fnHits: new Map(),
+		fnStartLines: new Map(),
+		fnEntryHits: new Map(),
 		branchTaken: new Map(),
 	};
+}
+
+/** Append `value` to the per-name ordered list in `map`. */
+function pushNamed(map: Map<string, number[]>, name: string, value: number): void {
+	const list = map.get(name);
+	if (list) list.push(value);
+	else map.set(name, [value]);
 }
 
 /** Normalize an `SF` path to a repo-relative, POSIX-separated string. */
@@ -112,7 +129,7 @@ function applyFnRecord(cur: FileAcc, rest: string): void {
 	const [lnStr, name] = splitFirstComma(rest);
 	const ln = Number.parseInt(lnStr, 10);
 	if (!name || !Number.isFinite(ln)) return;
-	cur.fnLine.set(name, ln);
+	pushNamed(cur.fnStartLines, name, ln);
 }
 
 /** Apply an `FNDA:<hits>,<name>` record (function entry hits). */
@@ -120,7 +137,7 @@ function applyFndaRecord(cur: FileAcc, rest: string): void {
 	const [hitsStr, name] = splitFirstComma(rest);
 	const hits = Number.parseInt(hitsStr, 10);
 	if (!name || !Number.isFinite(hits)) return;
-	cur.fnHits.set(name, (cur.fnHits.get(name) ?? 0) + hits);
+	pushNamed(cur.fnEntryHits, name, hits);
 }
 
 /** Apply a `BRDA:<line>,<block>,<branch>,<taken|->` record. */
@@ -205,19 +222,34 @@ function finalizeFile(path: string, acc: FileAcc): CanonicalFileCoverage {
 	let branchesCovered = 0;
 	for (const taken of acc.branchTaken.values()) if (taken > 0) branchesCovered++;
 
+	// Pair FN start lines with FNDA hits POSITIONALLY per name (LCOV correlates
+	// them by order within a name, not by line — FNDA carries no line), then merge
+	// by (name, line) so a name repeated within one file stays distinct while
+	// merged reports still sum into the same function.
+	const byKey = new Map<string, { name: string; line: number; hits: number }>();
+	for (const [name, lines] of acc.fnStartLines) {
+		const hitsList = acc.fnEntryHits.get(name) ?? [];
+		for (let k = 0; k < lines.length; k++) {
+			const line = lines[k];
+			const hits = hitsList[k] ?? 0;
+			const key = `${name}@${line}`;
+			const existing = byKey.get(key);
+			if (existing) existing.hits += hits;
+			else byKey.set(key, { name, line, hits });
+		}
+	}
 	const perFunction: CanonicalFunction[] = [];
 	let functionsCovered = 0;
-	for (const [name, ln] of acc.fnLine) {
-		const hits = acc.fnHits.get(name) ?? 0;
-		if (hits > 0) functionsCovered++;
-		perFunction.push({ name, line: ln, hits });
+	for (const fn of byKey.values()) {
+		if (fn.hits > 0) functionsCovered++;
+		perFunction.push({ name: fn.name, line: fn.line, hits: fn.hits });
 	}
 
 	return {
 		path,
 		lines: metric(linesCovered, acc.lineHits.size),
 		branches: metric(branchesCovered, acc.branchTaken.size),
-		functions: metric(functionsCovered, acc.fnLine.size),
+		functions: metric(functionsCovered, byKey.size),
 		perFunction,
 		lineHits: acc.lineHits,
 	};

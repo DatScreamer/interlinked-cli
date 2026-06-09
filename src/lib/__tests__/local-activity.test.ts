@@ -964,3 +964,58 @@ describe("getLocalStats — blank-line-only file", () => {
 		expect(stats.pending_sync).toBe(0);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Schema round-trip invariant (finding 5): a normalized activity event written
+// through appendLocalActivity (which mirrors to the CANONICAL collection.jsonl)
+// must read back through readLocalActivity with its event-type discriminator
+// intact. The regression: once collection.jsonl exists the reader prefers it,
+// and a failed tool (`tool_use_error`) used to collapse to a plain `tool_use`,
+// so `logs --type tool_use_error` returned nothing.
+// ---------------------------------------------------------------------------
+
+describe("canonical round-trip preserves the event-type discriminator", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "la-roundtrip-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	/** A minimal normalized tool event with the given type/tool. */
+	function toolEvent(type: string, tool: string): LocalActivityEvent {
+		return {
+			ts: "2026-06-07T00:00:00.000Z",
+			agent: "claude",
+			type,
+			tool,
+			summary: tool,
+			session: "s1",
+			hook: type === "tool_use_start" ? "PreToolUse" : "PostToolUse",
+		};
+	}
+
+	it.each(["tool_use_start", "tool_use", "tool_use_error"])(
+		"%s survives the collection.jsonl round-trip",
+		(type) => {
+			appendLocalActivity(toolEvent(type, "Bash"), tmp);
+			// collection.jsonl now exists → readLocalActivity reads the CANONICAL stream.
+			const back = readLocalActivity({ type, cwd: tmp });
+			expect(back.length).toBe(1);
+			expect(back[0].type).toBe(type);
+		},
+	);
+
+	it("a failed tool is queryable as tool_use_error and is NOT mislabeled tool_use", () => {
+		appendLocalActivity(toolEvent("tool_use_error", "Bash"), tmp);
+		appendLocalActivity(toolEvent("tool_use", "Read"), tmp);
+
+		const failures = readLocalActivity({ type: "tool_use_error", cwd: tmp });
+		expect(failures.map((e) => e.tool)).toEqual(["Bash"]);
+
+		const successes = readLocalActivity({ type: "tool_use", cwd: tmp });
+		expect(successes.map((e) => e.tool)).toEqual(["Read"]); // the failure is NOT here
+		expect(successes.some((e) => e.type === "tool_use_error")).toBe(false);
+	});
+});

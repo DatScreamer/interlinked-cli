@@ -23,7 +23,10 @@ import { collectSoftwareVersionReferences } from "./quality-checks/software-vers
 import { runToolCheckLoop, yieldEventLoop } from "./quality-checks/tool-check-loop.js";
 import type { DiffAwareConfig, HarnessEvent, PreEditBaseline, QualityCheckConfig } from "./types.js";
 
-export { checkLockfileDrift } from "./quality-checks/lockfile-drift.js";
+export {
+	checkLockfileClassificationDrift,
+	checkLockfileDrift,
+} from "./quality-checks/lockfile-drift.js";
 export { checkPackageJsonConsistency } from "./quality-checks/package-json.js";
 export { findProjectRoot } from "./quality-checks/project-root.js";
 export type { ProjectWideSweepResult } from "./quality-checks/project-wide.js";

@@ -46,6 +46,13 @@ vi.mock("./inline-language-checks.js", () => ({
 
 vi.mock("./lockfile-drift.js", () => ({
 	checkLockfileDrift: vi.fn(),
+	// Default: no classification drift, so the mtime-drift tests below see exactly
+	// the one mtime finding. The semantic compare has its own unit tests.
+	checkLockfileClassificationDrift: vi.fn(() => ({
+		drifted: false,
+		manifest: "package.json",
+		mismatches: [],
+	})),
 	LOCKFILE_MAP: { "package.json": ["package-lock.json", "yarn.lock"] },
 }));
 

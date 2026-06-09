@@ -12,12 +12,36 @@
 // message (`-m "fix: x && y"`) one token so its inner `&&` is not mistaken for a
 // segment separator, and to skip git's global flags (`-C <dir>`, `-c key=val`).
 
+// `node:path` posix helpers are pure string ops (no fs / env), so they keep this
+// module's "no I/O" discipline while giving correct `..`/absolute handling when
+// combining `cd` segments and `-C` flags into one effective directory.
+import { posix } from "node:path";
+
 /** The shape of a detected `git commit` invocation. */
 export interface CommitParse {
 	/** True when the command is a real `git commit` (not status/log/diff). */
 	isCommit: boolean;
 	/** True when `--no-verify` / `-n` is present (a bypass callers note in a warning). */
 	noVerify: boolean;
+	/**
+	 * True when `-a` / `--all` is present (`git commit -a` / `-am`): the commit
+	 * stages every tracked modification first, so the would-be snapshot is the
+	 * working tree's tracked files. Absent/false for a plain `git commit`, whose
+	 * snapshot is the INDEX only — the gate evaluates the staged tree, not the
+	 * worktree, for those (finding 3).
+	 */
+	all?: boolean;
+	/**
+	 * The directory the commit effectively runs in, relative to the shell's own
+	 * cwd (or absolute), when a `cd <dir>` prefix and/or one or more `git -C <dir>`
+	 * flags redirect it — e.g. `cd sub && git commit` ⇒ `"sub"`, `git -C a -C b
+	 * commit` ⇒ `"a/b"`. Undefined when the commit runs in the shell's own cwd.
+	 * The commit gate resolves this against `event.cwd` so it evaluates the
+	 * repository ACTUALLY being committed, not the parent (finding 4). Only literal
+	 * targets are captured; a `cd $VAR` / `cd -` / `cd ~` that cannot be resolved
+	 * statically leaves this undefined (the gate then falls back to `event.cwd`).
+	 */
+	cwd?: string;
 }
 
 /**
@@ -153,54 +177,137 @@ function stripLeadingPrefix(tokens: string[]): string[] {
 	return out;
 }
 
-/** Advance past git's global flags (`-C <dir>`, `-c key=val`, `--no-pager`, …) to
- *  the index of the subcommand token, or -1 when none follows. */
-function subcommandIndex(tokens: string[]): number {
+/**
+ * Combine a base directory with a `next` one the way a shell does: `next` absolute
+ * → `next` wins; otherwise join (posix, so `..` and trailing slashes normalize).
+ * `null` base/next are the "no override yet" identity. Used to fold a chain of
+ * `cd` segments and compounding `-C` flags into a single effective directory.
+ */
+function combineCwd(base: string | null, next: string | null): string | null {
+	if (next === null) return base;
+	// Absolute (posix or Windows-drive) → it replaces whatever came before.
+	if (posix.isAbsolute(next) || /^[A-Za-z]:[\\/]/.test(next)) return next;
+	return base ? posix.join(base, next) : next;
+}
+
+/**
+ * The literal target of a `cd <dir>` segment, or null when the segment is not a
+ * plain `cd` or its target cannot be resolved statically (`cd` with no arg, `cd
+ * -`, `cd ~...`, or only flags like `cd -P`). A non-literal `cd` deliberately
+ * yields null so the caller leaves the effective cwd undefined rather than guess.
+ */
+function parseCdTarget(segment: string): string | null {
+	const tokens = stripLeadingPrefix(shellSplit(segment));
+	if (tokens.length < 2 || tokens[0] !== "cd") return null;
+	const dir = tokens.slice(1).find((t) => !t.startsWith("-"));
+	if (dir === undefined || dir === "-" || dir.startsWith("~")) return null;
+	return literalDir(dir);
+}
+
+/**
+ * A directory token that can be resolved STATICALLY, or null. A target carrying a
+ * shell variable, command substitution, or glob metachar ($, *, ?) cannot be
+ * known at parse time, so it yields null and the caller leaves the effective cwd
+ * undefined (falling back to the shell cwd) rather than treating it as a literal
+ * directory name. Shared by the cd and -C paths so both degrade identically.
+ */
+function literalDir(dir: string): string | null {
+	return /[$*?]/.test(dir) ? null : dir;
+}
+
+/** A `git commit` detected in ONE segment, plus the compounded `-C` directory
+ *  (null when no `-C`). Internal — `parseGitCommit` folds it into a `CommitParse`. */
+interface SegmentCommit {
+	isCommit: boolean;
+	noVerify: boolean;
+	all: boolean;
+	cDir: string | null;
+}
+
+/** True for a `-a` / `--all` flag, including a short cluster like `-am` / `-aS`. */
+function isAllFlag(token: string): boolean {
+	if (token === "--all") return true;
+	// Short cluster: single leading dash, only letters, containing 'a' (-a, -am).
+	return /^-[A-Za-z]+$/.test(token) && token.includes("a");
+}
+
+/**
+ * Advance past git's global flags (`-C <dir>`, `-c key=val`, `--no-pager`, …) to
+ * the subcommand token. Returns its index (or -1) AND the compounded `-C`
+ * directory: multiple `-C` flags compound exactly like `cd` (each relative `-C`
+ * is interpreted against the preceding one), so they fold through `combineCwd`.
+ */
+function scanGitGlobalFlags(tokens: string[]): { subIdx: number; cDir: string | null } {
 	let i = 1;
+	let cDir: string | null = null;
 	while (i < tokens.length) {
 		const t = tokens[i];
-		if (t === "-C" || t === "-c") {
+		if (t === "-C") {
+			const raw = tokens[i + 1];
+			const dir = raw !== undefined ? literalDir(raw) : null;
+			if (dir !== null) cDir = combineCwd(cDir, dir);
 			i += 2; // flag + its argument
+			continue;
+		}
+		if (t === "-c") {
+			i += 2; // config `key=val` — consume both
 			continue;
 		}
 		if (t.startsWith("-")) {
 			i += 1;
 			continue;
 		}
-		return i;
+		return { subIdx: i, cDir };
 	}
-	return -1;
+	return { subIdx: -1, cDir };
 }
 
-/** Parse ONE shell segment for a `git commit`, or null. */
-function parseSegment(segment: string): CommitParse | null {
+/** Parse ONE shell segment for a `git commit`, capturing its `-C` dir, or null. */
+function parseSegment(segment: string): SegmentCommit | null {
 	const tokens = stripLeadingPrefix(shellSplit(segment));
 	if (tokens.length < 2) return null;
 	// Head must be `git` (or a path ending in /git), not a comment or other binary.
 	const head = tokens[0];
 	if (head !== "git" && !head.endsWith("/git")) return null;
 
-	const subIdx = subcommandIndex(tokens);
+	const { subIdx, cDir } = scanGitGlobalFlags(tokens);
 	if (subIdx < 0 || tokens[subIdx] !== "commit") return null;
 
 	const rest = tokens.slice(subIdx + 1);
 	const noVerify = rest.some((t) => t === "--no-verify" || t === "-n");
-	return { isCommit: true, noVerify };
+	const all = rest.some(isAllFlag);
+	return { isCommit: true, noVerify, all, cDir };
 }
 
 /**
  * Detect whether ANY segment of `command` is a real `git commit`. Distinguishes
  * `git commit` / `git commit -m` / `git commit -am` / `git commit --amend` from
  * non-commit git verbs (status / log / diff / show), `commit-graph`/`commit-tree`
- * (different subcommands), and a `# git commit` comment. A leading
- * `git -C <dir>` / `-c key=val` global flag run is skipped so `git -C repo commit`
- * is still recognized. Returns the parse for the first matching segment, or `null`.
+ * (different subcommands), and a `# git commit` comment.
+ *
+ * Working-directory aware (finding 4): a `cd <dir>` prefix chain and the commit's
+ * own `git -C <dir>` flag(s) are folded into `CommitParse.cwd` (relative to the
+ * shell's cwd) so the gate evaluates the repo actually being committed —
+ * `cd repo && git commit` and `git -C repo commit` both surface `cwd: "repo"`.
+ * Returns the parse for the first matching segment, or `null`.
  */
 export function parseGitCommit(command: string): CommitParse | null {
 	if (!command || typeof command !== "string") return null;
+	let runCwd: string | null = null; // accumulated `cd` chain, relative to shell cwd
 	for (const segment of splitSegments(command)) {
-		const parse = parseSegment(segment);
-		if (parse) return parse;
+		const cd = parseCdTarget(segment);
+		if (cd !== null) {
+			runCwd = combineCwd(runCwd, cd);
+			continue;
+		}
+		const seg = parseSegment(segment);
+		if (seg) {
+			const effective = combineCwd(runCwd, seg.cDir);
+			const parse: CommitParse = { isCommit: seg.isCommit, noVerify: seg.noVerify };
+			if (seg.all) parse.all = true;
+			if (effective !== null) parse.cwd = effective;
+			return parse;
+		}
 	}
 	return null;
 }

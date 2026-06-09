@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -117,14 +117,42 @@ describe("determinism-replay conformance (proof-of-enforcement §15 step 0)", ()
 	});
 });
 
+// Some suites create UNIQUE mkdtemp scratch dirs UNDER the source tree (the
+// tsc-overlay fixture, e.g., must sit under a tsconfig root). Under Vitest file
+// parallelism those dirs can appear and vanish mid-walk, so this walk is
+// concurrency-hardened two ways (finding 6): it (a) skips scratch dirs by name,
+// and (b) reads every file defensively — a sibling suite's afterAll deleting a
+// fixture between `readdir` and `readFileSync` must not ENOENT-crash the walk.
+const SCRATCH_DIR_RE = /(?:^|[._-])(?:fixtures?|overlay|tmp|scratch)-[A-Za-z0-9]{4,}$/;
+
+/** True for a dir that must never be descended: deps, build output, or a
+ *  transient per-process fixture/scratch dir created by a parallel suite. */
+function isExcludedDir(name: string): boolean {
+	return name === "node_modules" || name === "dist" || SCRATCH_DIR_RE.test(name);
+}
+
+/** Read a source file, or null when it vanished mid-walk (a raced fixture
+ *  deletion under parallelism) — the caller skips it rather than crashing. */
+function readTextOrNull(file: string): string | null {
+	try {
+		return readFileSync(file, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
 // Recursively collect `.ts` source under a root, sorting dir entries for a
 // machine-stable walk (the same trap the harness now guards against).
 function walkTs(dir: string, out: string[] = []): string[] {
-	const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-		a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-	);
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return out; // dir vanished mid-walk (transient scratch) — skip it
+	}
+	entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	for (const e of entries) {
-		if (e.name === "node_modules" || e.name === "dist") continue;
+		if (isExcludedDir(e.name)) continue;
 		const p = `${dir}/${e.name}`;
 		if (e.isDirectory()) walkTs(p, out);
 		else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) out.push(p);
@@ -134,7 +162,10 @@ function walkTs(dir: string, out: string[] = []): string[] {
 
 describe("determinism hygiene — @determinism-critical substrate", () => {
 	const srcRoot = fileURLToPath(new URL("../../", import.meta.url));
-	const marked = walkTs(srcRoot).filter((f) => isDeterminismCritical(readFileSync(f, "utf-8")));
+	const marked = walkTs(srcRoot).filter((f) => {
+		const text = readTextOrNull(f);
+		return text !== null && isDeterminismCritical(text);
+	});
 
 	it("the conformance module declares itself determinism-critical", () => {
 		expect(marked.some((f) => f.endsWith("/determinism-conformance.ts"))).toBe(true);
@@ -142,7 +173,7 @@ describe("determinism hygiene — @determinism-critical substrate", () => {
 
 	it("every @determinism-critical file is free of locale/FS-order hazards", () => {
 		const offenders = marked
-			.map((f) => ({ f, hz: scanDeterminismHazards(readFileSync(f, "utf-8")) }))
+			.map((f) => ({ f, hz: scanDeterminismHazards(readTextOrNull(f) ?? "") }))
 			.filter((o) => o.hz.length > 0)
 			.map((o) => `${o.f}: ${o.hz.map((h) => `L${h.line} ${h.kind}`).join(", ")}`);
 		expect(offenders, offenders.join("\n")).toEqual([]);

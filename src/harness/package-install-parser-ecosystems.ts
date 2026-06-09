@@ -379,11 +379,17 @@ export function classifyPipSpec(spec: string): PackageSpec {
 		return { kind: "local_path", path: spec };
 	const nameMatch = spec.match(/^([A-Za-z0-9._-]+)/);
 	const name = nameMatch ? nameMatch[1] : spec;
-	const versionMatch = spec.match(/(?:==|>=|<=|~=|!=|>|<)\s*([A-Za-z0-9._+-]+)/);
+	// RETAIN the comparison operator (finding 2026-06): storing only the numeric
+	// portion let `requests~=2.31.0` / `>=2.31.0` / `!=2.31.0` reach the pin check
+	// as a bare `2.31.0` and pass as an exact pin, bypassing the supply-chain
+	// exact-pin guarantee for PEP 508 range syntax. With the operator kept,
+	// `pinnedVersionViolation` blocks `~=`/`>=`/`<=`/`>`/`<` (RANGE_OPERATOR_RE) and
+	// `!=` (fails EXACT_FULL_VERSION_RE), while `==`/`===` remain exact pins.
+	const versionMatch = spec.match(/(===|==|>=|<=|~=|!=|>|<)\s*([A-Za-z0-9._+-]+)/);
 	return {
 		kind: "registry",
 		name,
-		version: versionMatch ? versionMatch[1] : undefined,
+		version: versionMatch ? `${versionMatch[1]}${versionMatch[2]}` : undefined,
 	};
 }
 

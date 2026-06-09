@@ -393,6 +393,12 @@ export function buildCollectionRecord(event: JsonObject): CollectionRecord | nul
 	const phase = detectPhase(eventType);
 	if (!phase) return null;
 
+	// Preserve the success/failure discriminator on POST events so the canonical
+	// round-trip can reconstruct `tool_use_error` rather than collapsing every post
+	// event to `tool_use` (finding 5). Pre events carry no outcome yet.
+	const outcome: "ok" | "error" | undefined =
+		phase === "post" ? (eventType === "tool_use_error" ? "error" : "ok") : undefined;
+
 	const toolClass = classifyTool(toolName);
 	const input = (event.tool_input && typeof event.tool_input === "object"
 		? event.tool_input
@@ -416,6 +422,7 @@ export function buildCollectionRecord(event: JsonObject): CollectionRecord | nul
 		tool_use_id: strField(event, "tool_use_id"),
 		provider: detectProvider(event),
 		phase,
+		...(outcome ? { outcome } : {}),
 		tool_class: toolClass,
 		provider_tool: toolName,
 		cwd,

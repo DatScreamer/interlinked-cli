@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkLockfileDrift, checkPackageJsonConsistency } from "../quality-checks.js";
+import {
+	checkLockfileClassificationDrift,
+	checkLockfileDrift,
+	checkPackageJsonConsistency,
+} from "../quality-checks.js";
 
 // ===========================================
 // Lockfile Drift Detection
@@ -412,5 +416,78 @@ describe("checkPackageJsonConsistency", () => {
 		const issues = checkPackageJsonConsistency(pkg);
 		expect(issues.length).toBe(2);
 		expect(issues.map((i) => i.kind).sort()).toEqual(["duplicate", "invalid_semver"]);
+	});
+});
+
+// ===========================================
+// Semantic lockfile classification drift (finding 7)
+// ===========================================
+
+describe("checkLockfileClassificationDrift", () => {
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "lockfile-class-"));
+	});
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	/** Write package.json + package-lock.json (v2/v3 shape) into the tmp dir. */
+	function writePair(manifest: object, lockRoot: object): string {
+		const manifestPath = join(tmpDir, "package.json");
+		writeFileSync(manifestPath, JSON.stringify(manifest));
+		writeFileSync(join(tmpDir, "package-lock.json"), JSON.stringify({ packages: { "": lockRoot } }));
+		return manifestPath;
+	}
+
+	it("flags a dep the lock records under a DIFFERENT section than the manifest (the finding-7 bug)", () => {
+		// typescript moved to optionalDependencies in the manifest, but the lock
+		// still has it under devDependencies — `npm ci --omit=dev` would drop it.
+		const manifestPath = writePair(
+			{ optionalDependencies: { typescript: "5.9.3" } },
+			{ devDependencies: { typescript: "5.9.3" } },
+		);
+		const drift = checkLockfileClassificationDrift(manifestPath);
+		expect(drift.drifted).toBe(true);
+		expect(drift.mismatches).toEqual([
+			{ name: "typescript", manifestSection: "optionalDependencies", lockSection: "devDependencies" },
+		]);
+	});
+
+	it("is clean when the lock agrees with the manifest", () => {
+		const manifestPath = writePair(
+			{ dependencies: { commander: "12.1.0" }, optionalDependencies: { typescript: "5.9.3" } },
+			{ dependencies: { commander: "12.1.0" }, optionalDependencies: { typescript: "5.9.3" } },
+		);
+		const drift = checkLockfileClassificationDrift(manifestPath);
+		expect(drift.drifted).toBe(false);
+		expect(drift.mismatches).toEqual([]);
+	});
+
+	it("flags a manifest dep absent from the lock root entirely", () => {
+		const manifestPath = writePair({ dependencies: { commander: "12.1.0" } }, {});
+		const drift = checkLockfileClassificationDrift(manifestPath);
+		expect(drift.mismatches).toEqual([
+			{ name: "commander", manifestSection: "dependencies", lockSection: "absent" },
+		]);
+	});
+
+	it("is a no-op for a non-npm manifest (Cargo.toml etc.)", () => {
+		const cargo = join(tmpDir, "Cargo.toml");
+		writeFileSync(cargo, "[dependencies]\nserde = \"1\"\n");
+		expect(checkLockfileClassificationDrift(cargo).drifted).toBe(false);
+	});
+
+	it("is a no-op for a v1 lockfile with no packages map", () => {
+		const manifestPath = join(tmpDir, "package.json");
+		writeFileSync(manifestPath, JSON.stringify({ optionalDependencies: { typescript: "5.9.3" } }));
+		writeFileSync(join(tmpDir, "package-lock.json"), JSON.stringify({ lockfileVersion: 1, dependencies: {} }));
+		expect(checkLockfileClassificationDrift(manifestPath).drifted).toBe(false);
+	});
+
+	it("is a no-op when the lockfile is absent", () => {
+		const manifestPath = join(tmpDir, "package.json");
+		writeFileSync(manifestPath, JSON.stringify({ dependencies: { commander: "12.1.0" } }));
+		expect(checkLockfileClassificationDrift(manifestPath).drifted).toBe(false);
 	});
 });

@@ -253,6 +253,16 @@ export interface CollectionRecord {
 	tool_use_id: string | null;
 	provider: string;
 	phase: "pre" | "post";
+	/**
+	 * For a `post` event, whether the tool call SUCCEEDED (`"ok"`) or FAILED
+	 * (`"error"`, derived from a `tool_use_error` / `PostToolUseFailure`
+	 * discriminator). Absent on `pre` events (no outcome yet). This is what
+	 * preserves the success/failure distinction across the canonical round-trip:
+	 * without it every post event collapses to `tool_use` and a reader can no
+	 * longer surface failures (finding 5). Optional for backward-compat — records
+	 * written before this field existed read as `"ok"`.
+	 */
+	outcome?: "ok" | "error";
 	tool_class: ToolClass;
 	provider_tool: string | null;
 	cwd: string | null;

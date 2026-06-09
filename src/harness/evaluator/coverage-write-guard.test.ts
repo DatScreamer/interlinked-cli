@@ -909,14 +909,44 @@ describe("checkCoverageWrite — affected-test selection (scoped per-edit run)",
 		expect(selected()).toEqual(["src/m.test.ts", "tests/integration.test.ts"]);
 	});
 
-	it("BLOCKS a source edit when NO test depends on the file (selection == [])", async () => {
-		// m.ts is imported only by a non-test; selection is [] → strict-TDD block,
-		// WITHOUT running the suite (runner never called).
+	// EVIDENCE-AUTHORITY CONTRACT (finding 2): an empty affected-test selection
+	// (`[]`) means only that no test STATICALLY imports the file — not that it is
+	// uncovered. The graph may select tests but its silence may never prove
+	// absence of coverage (integration tests exercise code they don't import). So
+	// `[]` MEASURES with the full suite; a block can only come from that run.
+	it("MEASURES with the full suite when no test statically imports the file (selection == []) — never blocks from the graph alone", async () => {
+		// m.ts is imported only by a non-test; selection is [] → fall back to the
+		// FULL suite (no subset forwarded) and MEASURE, rather than block blind.
 		const view = stubDepView({
 			[join(root, "src/m.ts")]: [join(root, "src/app.ts")],
 			[join(root, "src/app.ts")]: [],
 		});
-		const { runner, ran } = stubRunner(coverageResult("src/m.ts", []));
+		// A covered measured result → allowed. The point: the runner RAN (it was
+		// not short-circuited by a graph block) and got NO subset (full suite).
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull(); // measured + covered → allowed, NOT a graph block
+		expect(selected()).toBeUndefined(); // full suite, not a wrong empty subset
+	});
+
+	it("a block on an empty selection is MEASUREMENT-driven (the suite ran and showed the edited line uncovered), not graph-driven", async () => {
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/app.ts")],
+			[join(root, "src/app.ts")]: [],
+		});
+		// The measured run reports the added function as uncovered (hits 0) → the
+		// block comes from the coverage decision, with the uncovered-line reason —
+		// NOT the old graph-only "no test imports this" reason.
+		const { runner, ran } = stubRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 }]),
+		);
 		const decision = await checkCoverageWrite(
 			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
 			rules(),
@@ -924,12 +954,10 @@ describe("checkCoverageWrite — affected-test selection (scoped per-edit run)",
 			view,
 		);
 		expect(decision?.decision).toBe("block");
-		expect(decision?.reason).toMatch(/no test/i);
-		expect(decision?.reason).toMatch(/src\/m\.ts/);
-		expect(decision?.reason).toMatch(/MultiEdit/);
+		expect(ran()).toBe(true); // the block is measurement-driven — the suite ran
+		expect(decision?.reason).toMatch(/uncovered by the test suite after this edit/);
+		expect(decision?.reason).not.toMatch(/no test in the project imports/);
 		expect(decision?.rule_id).toBe("per-edit-coverage");
-		// The block is decided from the graph alone — no overlay/suite run.
-		expect(ran()).toBe(false);
 	});
 
 	it("does NOT defer on budget when a scoped subset exists (enforces in-band)", async () => {

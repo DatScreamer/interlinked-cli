@@ -227,3 +227,51 @@ describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () =
 		expect(perFile.functions[0].hits).toBe(0);
 	});
 });
+
+// DUPLICATE-FUNCTION-NAME CONTRACT (finding: name-keyed collapse). LCOV legitimately
+// repeats a name within one file (constructors, same-named methods). Keying FN by
+// name alone overwrote the line and summed FNDA, collapsing N functions into 1 and
+// marking an uncovered duplicate as covered — corrupting coverage/CRAP/ratchet.
+describe("parseLcov — duplicate function names", () => {
+	const DUP = [
+		"SF:src/dup.ts",
+		"FN:10,constructor",
+		"FN:50,constructor",
+		"FNDA:1,constructor",
+		"FNDA:0,constructor",
+		"FNF:2",
+		"FNH:1",
+		"end_of_record",
+	].join("\n");
+
+	it("keeps two distinct functions by line, hits NOT merged", () => {
+		const f = parseLcov(DUP).files.get("src/dup.ts");
+		const fns = f?.perFunction ?? [];
+		expect(fns).toHaveLength(2);
+		expect(fns).toContainEqual({ name: "constructor", line: 10, hits: 1 });
+		expect(fns).toContainEqual({ name: "constructor", line: 50, hits: 0 });
+		// The uncovered duplicate (line 50) stays uncovered — the collapse bug
+		// summed FNDA (1+0) and marked it covered.
+		expect(f?.functions).toEqual({ covered: 1, total: 2, pct: 50 });
+	});
+
+	it("FNF-vs-count integrity: canonical entry count matches the declared FNF", () => {
+		const f = parseLcov(DUP).files.get("src/dup.ts");
+		expect(f?.perFunction).toHaveLength(2); // declared FNF:2
+	});
+
+	it("merged reports (same SF twice) still SUM hits per (name, line)", () => {
+		const merged = [
+			"SF:src/m.ts",
+			"FN:10,f",
+			"FNDA:2,f",
+			"end_of_record",
+			"SF:src/m.ts",
+			"FN:10,f",
+			"FNDA:3,f",
+			"end_of_record",
+		].join("\n");
+		const f = parseLcov(merged).files.get("src/m.ts");
+		expect(f?.perFunction).toEqual([{ name: "f", line: 10, hits: 5 }]); // 2+3
+	});
+});

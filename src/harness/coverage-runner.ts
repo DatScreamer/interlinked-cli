@@ -114,6 +114,14 @@ export interface CoverageRunResult {
  * implementation per language family; see {@link coverageRunnerFor}.
  */
 export interface CoverageRunner {
+	/**
+	 * Stable execution key. Runners that drive the SAME suite process share an id —
+	 * the Vitest runner serves both `js` and `ts` — so the commit gate dedups runs
+	 * by id and never executes the same suite twice for a mixed-language commit
+	 * (finding 2026-06). Optional for back-compat with test stubs; callers fall back
+	 * to the language when it is absent.
+	 */
+	id?: string;
 	run(opts: CoverageRunOpts): Promise<CoverageRunResult>;
 }
 
@@ -303,6 +311,8 @@ function parseVitestFailingTests(text: string): string[] {
  * runner error (null ⇒ fail-open downstream).
  */
 export class JsCoverageRunner implements CoverageRunner {
+	/** Shared by `js` and `ts` — one Vitest process covers both. */
+	readonly id = "vitest";
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
 
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {
@@ -454,6 +464,8 @@ function parsePytestFailingTests(text: string): string[] {
  * become `{ ok:false, error }`.
  */
 export class PythonCoverageRunner implements CoverageRunner {
+	/** coverage.py / pytest — distinct from the JS/TS Vitest process. */
+	readonly id = "coverage-py";
 	constructor(private readonly spawn: SpawnFn = defaultSpawn) {}
 
 	async run(opts: CoverageRunOpts): Promise<CoverageRunResult> {

@@ -34,6 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import {
+	extractApplyPatchRaw,
 	looksLikeApplyPatch,
 	parseApplyPatchSections,
 	reconstructAfterContent,
@@ -245,18 +246,6 @@ function buildBlock(violations: string[]): ComplexityWriteBlock {
 	};
 }
 
-/** Raw apply_patch payload across the runner-specific keys (matches the hook-side
- *  normalizer's `command || patch || content || _raw_patch`). */
-function extractPatchRaw(toolInput: JsonObject): string {
-	return (
-		(typeof toolInput.command === "string" && toolInput.command) ||
-		(typeof toolInput.patch === "string" && toolInput.patch) ||
-		(typeof toolInput._raw_patch === "string" && toolInput._raw_patch) ||
-		(typeof toolInput.content === "string" && toolInput.content) ||
-		""
-	);
-}
-
 /**
  * apply_patch path: reconstruct each section's post-edit content and run the
  * same over-cap comparison per file. Fails open per-file when the applier can't
@@ -267,7 +256,7 @@ function checkApplyPatchComplexity(
 	toolInput: JsonObject,
 	cwd: string,
 ): ComplexityWriteBlock | null {
-	const raw = extractPatchRaw(toolInput);
+	const raw = extractApplyPatchRaw(toolInput);
 	if (!raw || !looksLikeApplyPatch(raw)) return null;
 
 	const violations: string[] = [];

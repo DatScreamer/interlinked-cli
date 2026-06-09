@@ -5,7 +5,7 @@
 // is stale (older mtime) or missing. Stale lockfiles mean `npm install`
 // will silently resolve to different versions than the manifest declares.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 /** Mapping from manifest filename to candidate lockfile names. */
@@ -135,4 +135,93 @@ export function checkLockfileDrift(
 	}
 
 	return { drifted: false, manifest: fileName, lockfile: lockfileName, reason: "none" };
+}
+
+// ===========================================
+// Semantic classification drift (finding 7)
+// ===========================================
+// The mtime check above answers "was the lockfile regenerated after the
+// manifest changed?". It cannot answer "does the lockfile correctly REPRESENT
+// the manifest's dependency classification?" — the exact gap that let a
+// `typescript` reclassified devDependencies → optionalDependencies in
+// package.json keep a stale `dev: true` lock entry, so `npm ci --omit=dev`
+// would wrongly drop it. This is a structural compare of the npm
+// package-lock.json's root sections against package.json — deterministic, and
+// (unlike the mtime check) NOT suppressed by the grace window.
+
+export type DepSection = "dependencies" | "devDependencies" | "optionalDependencies";
+
+const DEP_SECTIONS: DepSection[] = ["dependencies", "devDependencies", "optionalDependencies"];
+
+export interface LockfileClassificationDrift {
+	drifted: boolean;
+	manifest: string;
+	mismatches: { name: string; manifestSection: DepSection; lockSection: DepSection | "absent" }[];
+}
+
+/** Parse a JSON file, or null on any read / parse error (best-effort). */
+function readJson(path: string): Record<string, unknown> | null {
+	try {
+		return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The section `name` sits in within a manifest or lock-root object, or null when
+ * absent. optionalDependencies takes precedence over dependencies (npm treats a
+ * dep listed as optional as optional even if also a regular dependency), so both
+ * sides are classified the same way and compare consistently.
+ */
+function sectionOf(obj: Record<string, unknown>, name: string): DepSection | null {
+	const order: DepSection[] = ["optionalDependencies", "dependencies", "devDependencies"];
+	for (const section of order) {
+		const block = obj[section];
+		if (block && typeof block === "object" && name in (block as object)) return section;
+	}
+	return null;
+}
+
+/** Every dependency name declared anywhere in a manifest/lock-root object. */
+function declaredNames(obj: Record<string, unknown>): Set<string> {
+	const names = new Set<string>();
+	for (const section of DEP_SECTIONS) {
+		const block = obj[section];
+		if (block && typeof block === "object") for (const k of Object.keys(block as object)) names.add(k);
+	}
+	return names;
+}
+
+/**
+ * Compare the dependency CLASSIFICATION in package.json against package-lock.json's
+ * root entry (`packages[""]`). A dep whose manifest section disagrees with its
+ * lock section is drift. npm-specific: only package.json ↔ package-lock.json (v2/v3
+ * lockfiles with a `packages` map); every other manifest/lock format returns clean.
+ */
+export function checkLockfileClassificationDrift(manifestPath: string): LockfileClassificationDrift {
+	const fileName = manifestPath.replace(/\\/g, "/").split("/").pop() || "";
+	const clean: LockfileClassificationDrift = { drifted: false, manifest: fileName, mismatches: [] };
+	if (fileName !== "package.json") return clean;
+
+	const lockPath = resolve(dirname(manifestPath), "package-lock.json");
+	if (!existsSync(lockPath)) return clean;
+
+	const manifest = readJson(manifestPath);
+	const lock = readJson(lockPath);
+	if (!manifest || !lock) return clean;
+	const lockRoot = (lock.packages as Record<string, unknown> | undefined)?.[""];
+	if (!lockRoot || typeof lockRoot !== "object") return clean; // v1 lock — no root entry
+
+	const root = lockRoot as Record<string, unknown>;
+	const mismatches: LockfileClassificationDrift["mismatches"] = [];
+	for (const name of declaredNames(manifest)) {
+		const manifestSection = sectionOf(manifest, name);
+		if (!manifestSection) continue;
+		const lockSection = sectionOf(root, name) ?? "absent";
+		if (manifestSection !== lockSection) {
+			mismatches.push({ name, manifestSection, lockSection });
+		}
+	}
+	return { drifted: mismatches.length > 0, manifest: fileName, mismatches };
 }

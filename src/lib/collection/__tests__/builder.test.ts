@@ -498,3 +498,25 @@ describe("buildCollectionRecord — edge cases", () => {
 		expect(rec.turn_id).toBe("turn-3");
 	});
 });
+
+describe("buildCollectionRecord — outcome discriminator (finding 5)", () => {
+	it("a successful post tool event carries outcome 'ok'", () => {
+		const rec = buildCollectionRecord(baseEvent({ event_type: "tool_use", tool_name: "Bash" }))!;
+		expect(rec.phase).toBe("post");
+		expect(rec.outcome).toBe("ok");
+	});
+
+	it("a failed post tool event carries outcome 'error'", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ event_type: "tool_use_error", tool_name: "Bash" }),
+		)!;
+		expect(rec.phase).toBe("post");
+		expect(rec.outcome).toBe("error");
+	});
+
+	it("a pre tool event carries no outcome (none yet)", () => {
+		const rec = buildCollectionRecord(preEvent({ tool_name: "Bash" }))!;
+		expect(rec.phase).toBe("pre");
+		expect(rec.outcome).toBeUndefined();
+	});
+});
