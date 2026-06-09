@@ -150,3 +150,28 @@ describe("parseGitCommit — -a / --all detection (finding 3)", () => {
 		expect(parseGitCommit("git commit --amend --no-edit")?.all).toBeUndefined();
 	});
 });
+
+describe("parseGitCommit — constructsContent (finding 4: preceding add / pathspec)", () => {
+	it("a plain or -a commit does NOT construct content", () => {
+		expect(parseGitCommit("git commit -m x")?.constructsContent).toBeUndefined();
+		expect(parseGitCommit("git commit -am x")?.constructsContent).toBeUndefined();
+	});
+
+	it("a preceding `git add` constructs content", () => {
+		expect(parseGitCommit("git add -A && git commit -m x")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git add . && git commit")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git add src/x.ts && git commit -m x")?.constructsContent).toBe(true);
+	});
+
+	it("a pathspec commit constructs content", () => {
+		expect(parseGitCommit("git commit src/x.ts -m x")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git commit -m x src/x.ts")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git commit -- src/x.ts")?.constructsContent).toBe(true);
+	});
+
+	it("does NOT mistake a -m / -am / -F message-or-file value for a pathspec", () => {
+		expect(parseGitCommit('git commit -m "a message"')?.constructsContent).toBeUndefined();
+		expect(parseGitCommit('git commit -am "a message"')?.constructsContent).toBeUndefined();
+		expect(parseGitCommit("git commit -F msg.txt")?.constructsContent).toBeUndefined();
+	});
+});

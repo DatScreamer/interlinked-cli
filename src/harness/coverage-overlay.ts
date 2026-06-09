@@ -54,11 +54,21 @@ export interface CoverageOverlay {
 	cleanup(): void;
 }
 
-/** The injectable overlay factory signature the write-guard depends on. */
+/** One sibling file written into the overlay alongside the primary edited file. */
+export interface OverlayFile {
+	relPath: string;
+	content: string;
+}
+
+/** The injectable overlay factory signature the write-guard depends on. `extraFiles`
+ *  are SIBLING sections of the same apply_patch (its test + other touched files),
+ *  written into the SAME overlay so the suite sees the whole ATOMIC patch — not just
+ *  the one production file — and a code+test patch is not falsely reported uncovered. */
 export type CreateCoverageOverlayFn = (
 	projectRoot: string,
 	editedRelPath: string,
 	proposedContent: string,
+	extraFiles?: ReadonlyArray<OverlayFile>,
 ) => CoverageOverlay;
 
 /**
@@ -126,6 +136,7 @@ export function createCoverageOverlay(
 	projectRoot: string,
 	editedRelPath: string,
 	proposedContent: string,
+	extraFiles?: ReadonlyArray<OverlayFile>,
 ): CoverageOverlay {
 	const overlayParent = join(projectRoot, INTERLINKED_DIR);
 	mkdirSync(overlayParent, { recursive: true });
@@ -141,6 +152,11 @@ export function createCoverageOverlay(
 
 	mirrorProjectInto(projectRoot, overlayRoot);
 	const editedFileInOverlay = writeEditedFile(overlayRoot, editedRelPath, proposedContent);
+	// Materialize sibling apply_patch sections (its test + other touched files) into
+	// the SAME overlay so the suite runs against the whole atomic patch (finding 2026-06).
+	for (const f of extraFiles ?? []) {
+		if (f.relPath !== editedRelPath) writeEditedFile(overlayRoot, f.relPath, f.content);
+	}
 
 	return {
 		overlayRoot,

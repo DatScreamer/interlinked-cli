@@ -298,17 +298,20 @@ describe("checkCommitGate — staged-snapshot evaluation (finding 3)", () => {
 		expect(decision).toBeNull(); // green snapshot → allow
 	});
 
-	it("evaluates the working tree (no snapshot) for `git commit -a`", async () => {
+	it("materializes the -a snapshot (index + tracked worktree, no untracked), not the raw worktree", async () => {
 		writeSource("src/m.ts", JS_SRC);
-		let materialized = false;
-		const { deps, suiteRoot, stagedOnly } = capturingSuiteDeps(() => {
-			materialized = true;
-			return null;
+		const snapRoot = join(root, ".interlinked", ".commit-snapshot-a");
+		mkdirSync(join(snapRoot, "src"), { recursive: true });
+		writeFileSync(join(snapRoot, "src/m.ts"), JS_SRC, "utf-8");
+		let includeTracked: boolean | undefined;
+		const { deps, suiteRoot, stagedOnly } = capturingSuiteDeps((_pr, inc) => {
+			includeTracked = inc;
+			return { root: snapRoot, cleanup: () => {} };
 		});
 		await checkCommitGate(commitEvent("git commit -am x"), rules(), deps);
-		expect(stagedOnly()).toBe(false); // -a → working-tree tracked changes
-		expect(suiteRoot()).toBe(root); // the worktree, not a snapshot
-		expect(materialized).toBe(false); // -a never materializes the index
+		expect(stagedOnly()).toBe(false); // -a → working-tree tracked changed-files query
+		expect(suiteRoot()).toBe(snapRoot); // the -a snapshot, NOT the raw worktree (no untracked)
+		expect(includeTracked).toBe(true); // materialized WITH tracked worktree mods
 	});
 
 	it("falls back to the working tree when materialization fails (never worse than before)", async () => {
@@ -666,5 +669,21 @@ describe("checkCommitGate — Python per-line path (coverage.py shape)", () => {
 			]),
 		);
 		expect(decision).toBeNull();
+	});
+
+	it("evaluates the WORKTREE for a constructed-content commit (`git add -A && git commit`)", async () => {
+		// At PreToolUse the `git add -A` has NOT run, so the index is stale. The gate
+		// must evaluate the worktree (the inclusive superset) — never the empty index
+		// — so content the command will stage is not left unevaluated (finding 4).
+		writeSource("src/m.ts", JS_SRC);
+		let materializeCalled = false;
+		const { deps, suiteRoot, stagedOnly } = capturingSuiteDeps(() => {
+			materializeCalled = true;
+			return { root: join(root, ".interlinked", ".snap"), cleanup: () => {} };
+		});
+		await checkCommitGate(commitEvent("git add -A && git commit -m x"), rules(), deps);
+		expect(suiteRoot()).toBe(root); // the worktree, not a (stale-index) snapshot
+		expect(materializeCalled).toBe(false); // worktree mode never materializes
+		expect(stagedOnly()).toBe(false); // broad changed-files query, not staged-only
 	});
 });

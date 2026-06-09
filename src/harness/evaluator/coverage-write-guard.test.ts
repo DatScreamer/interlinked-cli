@@ -1199,3 +1199,81 @@ function readObligations(projectRoot: string): Array<Record<string, unknown>> {
 		.filter(Boolean)
 		.map((l: string) => JSON.parse(l) as Record<string, unknown>);
 }
+
+// ---------------------------------------------------------------------------
+// APPLY_PATCH ATOMICITY CONTRACT (finding 2026-06). A single apply_patch carrying
+// a production change AND its covering test must be evaluated in ONE overlay
+// holding BOTH sections, with the suite run ONCE — otherwise the code is reported
+// uncovered (its test was filtered out / left on disk) and a valid strict-TDD
+// patch is falsely blocked.
+// ---------------------------------------------------------------------------
+
+describe("checkCoverageWrite — apply_patch atomicity", () => {
+	function applyPatch(...lines: string[]): HarnessEvent {
+		return {
+			hook_event: "PreToolUse",
+			session_id: "s",
+			agent_source: "claude",
+			tool_name: "apply_patch",
+			tool_input: { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") },
+			timestamp: "2026-06-07T00:00:00.000Z",
+			cwd: root,
+		};
+	}
+
+	/** Overlay stub recording the primary + sibling relPaths it was handed. */
+	function capturingOverlay(): { createOverlay: CoverageWriteDeps["createOverlay"]; files: () => string[] } {
+		let captured: string[] = [];
+		const createOverlay: CoverageWriteDeps["createOverlay"] = (projectRoot, editedRelPath, _content, extra) => {
+			captured = [editedRelPath, ...(extra ?? []).map((f) => f.relPath)];
+			return {
+				overlayRoot: join(projectRoot, ".interlinked", ".cov-overlay-stub"),
+				editedFileInOverlay: join(projectRoot, ".interlinked", ".cov-overlay-stub", editedRelPath),
+				cleanup: () => {},
+			};
+		};
+		return { createOverlay, files: () => captured };
+	}
+
+	function depsWith(createOverlay: CoverageWriteDeps["createOverlay"], runner: CoverageRunner): CoverageWriteDeps {
+		return { runnerFor: () => runner, createOverlay, clock: () => 0, cyclomaticFor: () => () => [] };
+	}
+
+	it("overlays BOTH code and test, runs the suite ONCE, and ALLOWS a covered code+test patch", async () => {
+		const { createOverlay, files } = capturingOverlay();
+		let runs = 0;
+		const runner: CoverageRunner = {
+			run: async () => {
+				runs++;
+				return coverageResult("src/m.ts", [
+					{ name: "f", line: 1, endLine: 1, hits: 2, statement_pct: 100 },
+				]);
+			},
+		};
+		const ev = applyPatch(
+			"*** Add File: src/m.ts",
+			"+export function f() {",
+			"+\treturn 1;",
+			"+}",
+			"*** Add File: src/m.test.ts",
+			'+import { f } from "./m";',
+			'+test("f", () => { f(); });',
+		);
+		const decision = await checkCoverageWrite(ev, rules(), depsWith(createOverlay, runner));
+		expect(decision).toBeNull(); // covered → allowed (the test was present in the overlay)
+		expect(runs).toBe(1); // ONE suite run for the whole atomic patch
+		expect(files()).toContain("src/m.ts"); // production primary
+		expect(files()).toContain("src/m.test.ts"); // its test, in the SAME overlay
+	});
+
+	it("BLOCKS a code-only patch whose added function is uncovered", async () => {
+		const { createOverlay } = capturingOverlay();
+		const runner: CoverageRunner = {
+			run: async () =>
+				coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 1, hits: 0, statement_pct: 0 }]),
+		};
+		const ev = applyPatch("*** Add File: src/m.ts", "+export function f() {", "+\treturn 1;", "+}");
+		const decision = await checkCoverageWrite(ev, rules(), depsWith(createOverlay, runner));
+		expect(decision?.decision).toBe("block");
+	});
+});

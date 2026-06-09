@@ -25,6 +25,7 @@ import {
 	parseApplyPatchSections,
 	reconstructAfterContent,
 } from "../apply-patch-content.js";
+import type { OverlayFile } from "../coverage-overlay.js";
 import type { CoverageLanguage } from "../coverage-runner.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { resolveProposedContent } from "../overlay-content.js";
@@ -195,22 +196,13 @@ function applyPatchCoverageTargets(
 	return targets;
 }
 
-/**
- * Every code file this write touches, as coverage targets. `apply_patch` yields
- * one target per reconstructed section (multi-file aware); every other write shape
- * yields the single file named in `file_path` / `path`. Non-code / unsupported-
- * language / test / non-cappable files are filtered out here so the coverage
- * runner is never spun up for them.
- */
-export function coverageTargetsFor(
+/** Single-file (Write/Edit/MultiEdit/str_replace/create) coverage target, or []. */
+function singleFileTargets(
 	event: HarnessEvent,
 	projectRoot: string,
 	cfg: PerEditCfg,
 ): CoverageTarget[] {
 	const input = event.tool_input ?? {};
-	const patchTargets = applyPatchCoverageTargets(input, projectRoot, cfg);
-	if (patchTargets !== null) return patchTargets;
-
 	const relPath = editedRelPath(event, projectRoot);
 	if (!relPath) return [];
 	const language = languageForExt(extname(relPath));
@@ -218,11 +210,75 @@ export function coverageTargetsFor(
 	const proposed = resolveProposedContent(`${projectRoot}/${relPath}`, input);
 	if (!isCappableFile({ filePath: relPath, content: proposed })) return [];
 	return [
-		{
-			relPath,
-			language,
-			proposed,
-			editedLines: deriveEditedLineNumbers(event.tool_name, input, proposed),
-		},
+		{ relPath, language, proposed, editedLines: deriveEditedLineNumbers(event.tool_name, input, proposed) },
 	];
+}
+
+/**
+ * EVERY file an apply_patch materializes — reconstructed + confined, INCLUDING test
+ * and non-code sections (which are not coverage TARGETS but MUST be in the overlay
+ * so a code+test patch's suite actually covers the code instead of false-blocking —
+ * finding 2026-06). Skips sections that can't be confined/reconstructed. Returns null
+ * when the input is not an apply_patch.
+ */
+function applyPatchOverlayFiles(
+	input: NonNullable<HarnessEvent["tool_input"]>,
+	projectRoot: string,
+): OverlayFile[] | null {
+	const raw = extractApplyPatchRaw(input);
+	if (!raw || !looksLikeApplyPatch(raw)) return null;
+	const files: OverlayFile[] = [];
+	for (const section of parseApplyPatchSections(raw)) {
+		const relPath = toProjectRel(section.path, projectRoot);
+		if (relPath === null) continue;
+		const after = reconstructAfterContent(section, safeReadFile(resolve(projectRoot, relPath)));
+		if (after === null) continue;
+		files.push({ relPath, content: after });
+	}
+	return files;
+}
+
+/** The full plan for a write: production files to GATE (`targets`) and ALL files to
+ *  MATERIALIZE in the overlay (`overlayFiles` ⊇ targets — adds the patch's tests and
+ *  siblings). `isPatch` ⇒ a multi-section apply_patch, so the caller runs the FULL
+ *  suite (a scoped subset drawn from the on-disk graph would miss a brand-new test). */
+export interface CoverageEditPlan {
+	targets: CoverageTarget[];
+	overlayFiles: OverlayFile[];
+	isPatch: boolean;
+}
+
+export function coverageEditPlan(
+	event: HarnessEvent,
+	projectRoot: string,
+	cfg: PerEditCfg,
+): CoverageEditPlan {
+	const input = event.tool_input ?? {};
+	const patchOverlay = applyPatchOverlayFiles(input, projectRoot);
+	if (patchOverlay !== null) {
+		return {
+			targets: applyPatchCoverageTargets(input, projectRoot, cfg) ?? [],
+			overlayFiles: patchOverlay,
+			isPatch: true,
+		};
+	}
+	const targets = singleFileTargets(event, projectRoot, cfg);
+	return {
+		targets,
+		overlayFiles: targets.map((t) => ({ relPath: t.relPath, content: t.proposed })),
+		isPatch: false,
+	};
+}
+
+/**
+ * Every code file this write touches, as coverage targets — a back-compat wrapper
+ * over {@link coverageEditPlan}. `apply_patch` yields one target per reconstructed
+ * code section; every other write shape yields the single file named in `file_path`.
+ */
+export function coverageTargetsFor(
+	event: HarnessEvent,
+	projectRoot: string,
+	cfg: PerEditCfg,
+): CoverageTarget[] {
+	return coverageEditPlan(event, projectRoot, cfg).targets;
 }

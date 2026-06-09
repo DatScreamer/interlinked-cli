@@ -82,4 +82,32 @@ describe("materializeIndexSnapshot", () => {
 			rmSync(notRepo, { recursive: true, force: true });
 		}
 	});
+
+	// UNTRACKED-EXCLUSION CONTRACT (finding 3). `git commit -a` stages tracked
+	// modifications but NEVER untracked files, so the -a snapshot must include the
+	// former and exclude the latter — otherwise an untracked test masks a tracked
+	// source change and an uncovered/red commit slips through.
+	it("the -a snapshot includes tracked worktree mods but EXCLUDES untracked files", () => {
+		writeRepo("src/m.ts", "export const v = 1;\n");
+		git("add", "src/m.ts");
+		git("commit", "-qm", "init");
+		writeRepo("src/m.ts", "export const v = 2;\n"); // tracked, unstaged — -a WILL stage this
+		writeRepo("src/m.test.ts", "test('x', () => {});\n"); // untracked — -a will NOT stage this
+
+		const snap = materializeIndexSnapshot(repo, true); // the -a mode
+		expect(snap).not.toBeNull();
+		expect(readFileSync(join(snap?.root ?? "", "src/m.ts"), "utf-8")).toBe("export const v = 2;\n");
+		expect(existsSync(join(snap?.root ?? "", "src/m.test.ts"))).toBe(false); // untracked → absent
+		snap?.cleanup();
+	});
+
+	it("a plain (non--a) snapshot ignores tracked worktree mods (the INDEX exactly)", () => {
+		writeRepo("src/m.ts", "export const v = 1;\n");
+		git("add", "src/m.ts");
+		git("commit", "-qm", "init");
+		writeRepo("src/m.ts", "export const v = 2;\n"); // unstaged — a plain commit ignores it
+		const snap = materializeIndexSnapshot(repo);
+		expect(readFileSync(join(snap?.root ?? "", "src/m.ts"), "utf-8")).toBe("export const v = 1;\n");
+		snap?.cleanup();
+	});
 });

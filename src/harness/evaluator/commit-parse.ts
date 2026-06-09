@@ -32,6 +32,16 @@ export interface CommitParse {
 	 */
 	all?: boolean;
 	/**
+	 * True when the commit CONSTRUCTS its content during execution rather than
+	 * committing the current index — a preceding `git add …` in the same compound
+	 * command (`git add -A && git commit`) or a PATHSPEC commit (`git commit src/x.ts`,
+	 * which stages those worktree paths). At PreToolUse the staging has not happened
+	 * yet, so the index is stale; the gate evaluates the WORKING TREE for these so
+	 * content is never left unevaluated (finding 4). The post-commit tree-hash
+	 * reconciliation receipt is the principled general backstop (designed separately).
+	 */
+	constructsContent?: boolean;
+	/**
 	 * The directory the commit effectively runs in, relative to the shell's own
 	 * cwd (or absolute), when a `cd <dir>` prefix and/or one or more `git -C <dir>`
 	 * flags redirect it — e.g. `cd sub && git commit` ⇒ `"sub"`, `git -C a -C b
@@ -221,6 +231,7 @@ interface SegmentCommit {
 	isCommit: boolean;
 	noVerify: boolean;
 	all: boolean;
+	pathspec: boolean;
 	cDir: string | null;
 }
 
@@ -229,6 +240,53 @@ function isAllFlag(token: string): boolean {
 	if (token === "--all") return true;
 	// Short cluster: single leading dash, only letters, containing 'a' (-a, -am).
 	return /^-[A-Za-z]+$/.test(token) && token.includes("a");
+}
+
+/** Commit flags that consume the FOLLOWING token as a value (so it is not a pathspec). */
+const COMMIT_VALUE_FLAGS = new Set([
+	"-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
+	"--author", "--date", "-t", "--template", "--fixup", "--squash", "--cleanup",
+	"--pathspec-from-file", "-S", "--gpg-sign",
+]);
+
+/** Short-flag letters that consume the FOLLOWING token as a value (`-m`, `-F`, …). */
+const VALUE_SHORT_LETTERS = "mFCctS";
+
+/** True when a short cluster's LAST letter takes a value, so the next token is that
+ *  value, not a pathspec — e.g. `-am "wip"` is `-a -m wip` (wip is the message). */
+function shortClusterTakesValue(token: string): boolean {
+	if (!/^-[A-Za-z]+$/.test(token)) return false;
+	return VALUE_SHORT_LETTERS.includes(token[token.length - 1] ?? "");
+}
+
+/**
+ * True when the commit names a PATHSPEC — positional path args, or anything after a
+ * `--` separator. A pathspec commit stages those WORKTREE paths at run time, so the
+ * current index does not reflect what it commits (finding 4). Heuristic: skip flags
+ * (consuming the value of known value-taking long flags AND short clusters whose
+ * last letter takes a value, like `-am`); a bare positional is a pathspec.
+ */
+function hasPathspec(rest: string[]): boolean {
+	for (let i = 0; i < rest.length; i++) {
+		const t = rest[i];
+		if (t === "--") return i + 1 < rest.length;
+		if (t.startsWith("-")) {
+			if (COMMIT_VALUE_FLAGS.has(t) || shortClusterTakesValue(t)) i++; // its value is not a pathspec
+			continue;
+		}
+		return true; // bare positional → pathspec
+	}
+	return false;
+}
+
+/** True when a segment is a `git add …` (its staging constructs the commit's content). */
+function isGitAddSegment(segment: string): boolean {
+	const tokens = stripLeadingPrefix(shellSplit(segment));
+	if (tokens.length < 2) return false;
+	const head = tokens[0];
+	if (head !== "git" && !head.endsWith("/git")) return false;
+	const { subIdx } = scanGitGlobalFlags(tokens);
+	return subIdx >= 0 && tokens[subIdx] === "add";
 }
 
 /**
@@ -276,7 +334,7 @@ function parseSegment(segment: string): SegmentCommit | null {
 	const rest = tokens.slice(subIdx + 1);
 	const noVerify = rest.some((t) => t === "--no-verify" || t === "-n");
 	const all = rest.some(isAllFlag);
-	return { isCommit: true, noVerify, all, cDir };
+	return { isCommit: true, noVerify, all, pathspec: hasPathspec(rest), cDir };
 }
 
 /**
@@ -294,10 +352,15 @@ function parseSegment(segment: string): SegmentCommit | null {
 export function parseGitCommit(command: string): CommitParse | null {
 	if (!command || typeof command !== "string") return null;
 	let runCwd: string | null = null; // accumulated `cd` chain, relative to shell cwd
+	let sawGitAdd = false; // a `git add …` before the commit constructs its content
 	for (const segment of splitSegments(command)) {
 		const cd = parseCdTarget(segment);
 		if (cd !== null) {
 			runCwd = combineCwd(runCwd, cd);
+			continue;
+		}
+		if (isGitAddSegment(segment)) {
+			sawGitAdd = true;
 			continue;
 		}
 		const seg = parseSegment(segment);
@@ -305,6 +368,7 @@ export function parseGitCommit(command: string): CommitParse | null {
 			const effective = combineCwd(runCwd, seg.cDir);
 			const parse: CommitParse = { isCommit: seg.isCommit, noVerify: seg.noVerify };
 			if (seg.all) parse.all = true;
+			if (seg.pathspec || sawGitAdd) parse.constructsContent = true;
 			if (effective !== null) parse.cwd = effective;
 			return parse;
 		}

@@ -98,13 +98,13 @@ export interface CommitGateDeps {
 	/** Read a file's current content from disk (default: `fs.readFileSync`). */
 	readFile: (absPath: string) => string | null;
 	/**
-	 * Materialize the staged index tree for a plain commit so the gate evaluates
-	 * the would-be commit, not the working tree (finding 3). Optional: when absent
-	 * (or it returns null) the gate falls back to evaluating the working tree, so
-	 * omitting it is exactly the pre-fix behavior. Default: the real `git
-	 * checkout-index` materializer.
+	 * Materialize the would-be-committed tree so the gate evaluates the commit, not
+	 * the raw working tree (finding 3). `includeTrackedWorktree` is true for `-a`
+	 * (index + tracked worktree mods, still NO untracked files), false for a plain
+	 * commit (the index only). Optional: when absent (or it returns null) the gate
+	 * falls back to the working tree. Default: the real `git checkout-index` materializer.
 	 */
-	materializeIndexSnapshot?: (projectRoot: string) => StagedSnapshot | null;
+	materializeIndexSnapshot?: (projectRoot: string, includeTrackedWorktree?: boolean) => StagedSnapshot | null;
 }
 
 /** The default CRAP cutoff — the McCabe / SonarQube convention (matches the per-edit gate). */
@@ -691,19 +691,23 @@ interface EvalTarget {
 	cleanup: (() => void) | null;
 }
 
+/** How the gate models the commit's would-be tree. */
+type EvalMode = "index" | "tracked" | "worktree";
+
 /**
- * Resolve where the commit gate evaluates the commit (finding 3):
- *   - `-a` / `--all` stages every tracked modification, so the working tree IS
- *     the would-be snapshot → evaluate `projectRoot`.
- *   - a plain commit captures the INDEX → materialize the staged tree and evaluate
- *     THAT, so an unstaged edit can neither mask a broken staged change green nor
- *     false-block on unrelated dirty work.
+ * Resolve where the commit gate evaluates the commit (findings 3 & 4):
+ *   - `index`    — a plain commit captures the INDEX exactly (no unstaged, no untracked).
+ *   - `tracked`  — `-a`/`--all`: index PLUS tracked worktree mods, still no untracked.
+ *   - `worktree` — the commit CONSTRUCTS content at run time (a preceding `git add`,
+ *                  or a pathspec): the index is stale at PreToolUse, so evaluate the
+ *                  raw working tree — the inclusive superset of what will be staged,
+ *                  so content is never left UNevaluated (never a false-allow).
  * Fail-safe: if materialization is unavailable or fails, fall back to the working
- * tree — exactly the pre-fix behavior, never worse.
+ * tree — never worse than before the fix.
  */
-function resolveEvalTarget(projectRoot: string, all: boolean, deps: CommitGateDeps): EvalTarget {
-	if (all) return { root: projectRoot, cleanup: null };
-	const snap = deps.materializeIndexSnapshot?.(projectRoot) ?? null;
+function resolveEvalTarget(projectRoot: string, mode: EvalMode, deps: CommitGateDeps): EvalTarget {
+	if (mode === "worktree") return { root: projectRoot, cleanup: null };
+	const snap = deps.materializeIndexSnapshot?.(projectRoot, mode === "tracked") ?? null;
 	return snap ? { root: snap.root, cleanup: snap.cleanup } : { root: projectRoot, cleanup: null };
 }
 
@@ -739,16 +743,18 @@ export async function checkCommitGate(
 		// monorepo `cd packages/x && git commit` must gate packages/x, not the root.
 		const baseCwd = event.cwd || process.cwd();
 		const projectRoot = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
-		const all = parse.all === true;
-		// Changed files = the commit's actual content: staged-only for a plain
-		// commit, working-tree-tracked for `-a` (finding 3).
-		const changed = deps.gitChangedFiles(projectRoot, !all);
+		// How to model the commit (findings 3 & 4): a commit that constructs content
+		// at run time (preceding `git add`, or a pathspec) → the WORKTREE (the index is
+		// stale pre-execution); `-a` → tracked snapshot; a plain commit → the INDEX.
+		const mode: EvalMode = parse.constructsContent ? "worktree" : parse.all === true ? "tracked" : "index";
+		// Changed files: staged-only ONLY for the plain index commit; the broader
+		// worktree query for `-a` and constructed-content commits.
+		const changed = deps.gitChangedFiles(projectRoot, mode === "index");
 		if (changed === null) {
 			return degradeWithWarnings("git diff unavailable — cannot determine changed files", warnings);
 		}
 
-		// Evaluate the staged snapshot for a plain commit, the worktree for `-a`.
-		const target = resolveEvalTarget(projectRoot, all, deps);
+		const target = resolveEvalTarget(projectRoot, mode, deps);
 		try {
 			const sources = selectChangedSources(changed, target.root, cfg.languages, deps.readFile);
 			// Nothing gated changed (only tests / docs / config) → allow, but still

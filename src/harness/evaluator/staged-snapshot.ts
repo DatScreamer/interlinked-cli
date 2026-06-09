@@ -18,8 +18,8 @@
 // the coverage overlay documents.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const INTERLINKED_DIR = ".interlinked";
 const SNAPSHOT_PREFIX = ".commit-snapshot-";
@@ -53,14 +53,54 @@ function removeTree(root: string): void {
 	}
 }
 
+/** Run a read-only git command, returning trimmed nonempty lines, or [] on failure. */
+function gitLines(projectRoot: string, args: string[]): string[] {
+	try {
+		return execFileSync("git", args, { cwd: projectRoot, encoding: "utf-8", timeout: GIT_TIMEOUT_MS })
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0);
+	} catch {
+		return [];
+	}
+}
+
 /**
- * Materialize the INDEX (staged tree) of the git repo at `projectRoot` into a
- * temp tree under `projectRoot/.interlinked`, with node_modules symlinked.
- * Returns the snapshot, or null on any failure (the caller falls back to the
- * working tree). The materialized tree is the exact content a plain `git commit`
- * would write — no unstaged edits, no untracked files.
+ * Overlay the working tree's TRACKED, unstaged modifications onto the snapshot —
+ * the extra content `git commit -a` stages before committing. Untracked files are
+ * intentionally NOT copied (`-a` never stages them), so an untracked test cannot
+ * mask a tracked source change (finding 3). A tracked file deleted in the worktree
+ * is removed from the snapshot (the `-a` commit records the deletion).
  */
-export function materializeIndexSnapshot(projectRoot: string): StagedSnapshot | null {
+function overlayTrackedWorktree(projectRoot: string, root: string): void {
+	for (const rel of gitLines(projectRoot, ["diff", "--name-only"])) {
+		const src = join(projectRoot, rel);
+		const dst = join(root, rel);
+		if (existsSync(src)) {
+			mkdirSync(dirname(dst), { recursive: true });
+			copyFileSync(src, dst);
+		} else {
+			removeTree(dst); // deleted in the worktree → -a commits the deletion
+		}
+	}
+}
+
+/**
+ * Materialize the would-be-committed tree of the git repo at `projectRoot` into a
+ * temp tree under `projectRoot/.interlinked`, with node_modules symlinked. Returns
+ * the snapshot, or null on any failure (the caller falls back to the working tree).
+ *
+ *   - Plain `git commit` (`includeTrackedWorktree=false`) → the INDEX exactly: no
+ *     unstaged edits, no untracked files.
+ *   - `git commit -a` (`includeTrackedWorktree=true`) → the index PLUS tracked
+ *     worktree modifications, but still NO untracked files — `-a` never stages them
+ *     (finding 3: evaluating the raw worktree leaked untracked files, so an
+ *     untracked test could mask a tracked source change).
+ */
+export function materializeIndexSnapshot(
+	projectRoot: string,
+	includeTrackedWorktree = false,
+): StagedSnapshot | null {
 	let root: string | null = null;
 	try {
 		const parent = join(projectRoot, INTERLINKED_DIR);
@@ -71,6 +111,7 @@ export function materializeIndexSnapshot(projectRoot: string): StagedSnapshot | 
 			timeout: GIT_TIMEOUT_MS,
 			stdio: "ignore",
 		});
+		if (includeTrackedWorktree) overlayTrackedWorktree(projectRoot, root);
 		linkNodeModules(projectRoot, root);
 		const snapshotRoot = root;
 		return {

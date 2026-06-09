@@ -45,7 +45,11 @@ import {
 	updateRuntimeEstimateMs,
 	writeFileCoverageBaseline,
 } from "../coverage-obligation-ledger.js";
-import { type CreateCoverageOverlayFn, createCoverageOverlay } from "../coverage-overlay.js";
+import {
+	type CreateCoverageOverlayFn,
+	createCoverageOverlay,
+	type OverlayFile,
+} from "../coverage-overlay.js";
 import {
 	type CoverageLanguage,
 	type CoverageRunner,
@@ -61,7 +65,7 @@ import {
 	decideCrap,
 	hasPerLineData,
 } from "./coverage-crap-decision.js";
-import { type CoverageTarget, coverageTargetsFor } from "./coverage-edit-targets.js";
+import { type CoverageTarget, coverageEditPlan } from "./coverage-edit-targets.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
 // `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
@@ -411,6 +415,10 @@ interface GateContext {
 	proposed: string;
 	language: CoverageLanguage;
 	editedLines: Set<number> | undefined;
+	/** Sibling apply_patch sections (the patch's test + other touched files) written
+	 *  into the SAME overlay alongside `proposed`, so a code+test patch's suite runs
+	 *  against the whole atomic patch (finding 2026-06). Empty for a single-file edit. */
+	overlayFiles?: OverlayFile[];
 	budgetMs: number;
 	/**
 	 * Affected-test subset (repo-relative paths) the overlay run is scoped to.
@@ -452,7 +460,7 @@ async function runOverlayAndDecide(
 		return loudRunnerUnavailable(ctx.relPath, ctx.language, `no coverage runner for ${ctx.language}`);
 	}
 
-	const overlay = deps.createOverlay(ctx.projectRoot, ctx.relPath, ctx.proposed);
+	const overlay = deps.createOverlay(ctx.projectRoot, ctx.relPath, ctx.proposed, ctx.overlayFiles);
 	try {
 		const runOpts: { projectRoot: string; coverageDir: string; selectedTests?: string[] } = {
 			projectRoot: overlay.overlayRoot,
@@ -573,18 +581,25 @@ export async function checkCoverageWrite(
 	if (!isFileWrite(event.tool_name)) return null;
 
 	const projectRoot = event.cwd || process.cwd();
-	// Every code file this write touches — ONE for Write/Edit/MultiEdit, possibly
-	// MANY for a Codex/Copilot apply_patch (whose paths live in the patch body, not
-	// `file_path` — finding 1). Non-code / test / non-cappable files are filtered out.
-	const targets = coverageTargetsFor(event, projectRoot, cfg);
-	if (targets.length === 0) return null;
+	// Plan = the production files to GATE (targets) + ALL files to MATERIALIZE in the
+	// overlay (the patch's tests/siblings). For an apply_patch the whole ATOMIC patch
+	// is overlaid and the full suite runs, so a code+test patch is not falsely reported
+	// uncovered (finding 2026-06). Non-code / test / non-cappable files are not targets.
+	const plan = coverageEditPlan(event, projectRoot, cfg);
+	if (plan.targets.length === 0) return null;
 
 	// One decision per event: the FIRST blocking file wins (short-circuit). A
 	// multi-file apply_patch otherwise accumulates any allow-time warnings (e.g. a
 	// per-file loud-degrade) into a single allow decision so none is lost.
 	const warnings: string[] = [];
-	for (const target of targets) {
-		const decision = await decideForTarget({ event, cfg, deps, depView }, projectRoot, target);
+	for (const target of plan.targets) {
+		const decision = await decideForTarget(
+			{ event, cfg, deps, depView },
+			projectRoot,
+			target,
+			plan.overlayFiles,
+			plan.isPatch,
+		);
 		if (decision?.decision === "block") return decision;
 		if (decision?.warnings) warnings.push(...decision.warnings);
 	}
@@ -597,9 +612,11 @@ async function decideForTarget(
 	call: GateCall,
 	projectRoot: string,
 	target: CoverageTarget,
+	overlayFiles: OverlayFile[],
+	forceFullSuite: boolean,
 ): Promise<HarnessDecision | null> {
 	try {
-		return await selectRunAndDecide(call, { projectRoot, ...target });
+		return await selectRunAndDecide(call, { projectRoot, ...target, overlayFiles, forceFullSuite });
 	} catch (err) {
 		const why = err instanceof Error ? err.message : String(err);
 		return loudDegrade(target.relPath, why);
@@ -619,7 +636,13 @@ interface GateCall {
 /** One resolved coverage target plus the project root — the per-call facts the
  *  routing + run need. `CoverageTarget` (path/language/content/editedLines) is
  *  produced by `coverageTargetsFor`. */
-type GateTarget = CoverageTarget & { projectRoot: string };
+type GateTarget = CoverageTarget & {
+	projectRoot: string;
+	/** All files to materialize in the overlay (this write's full section set). */
+	overlayFiles?: OverlayFile[];
+	/** Run the FULL suite (apply_patch — so newly-added overlay test sections run). */
+	forceFullSuite?: boolean;
+};
 
 /**
  * Run affected-test selection, apply the budget gate (full-suite route only),
@@ -635,7 +658,12 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 	// empty/unknown selection falls back to the full suite (and the budget gate).
 	// There is no "block from selection" — a block must come from a measured run,
 	// never the graph's silence (see routeBySelection's evidence-authority note).
-	const route = routeBySelection(relPath, projectRoot, depView);
+	// An apply_patch forces the FULL suite: its new test sections live only in the
+	// overlay, not the on-disk graph a scoped subset is drawn from, so scoping would
+	// run a subset that never executes them (finding 2026-06).
+	const route: SelectionRoute = target.forceFullSuite
+		? { kind: "full" }
+		: routeBySelection(relPath, projectRoot, depView);
 
 	if (route.kind === "full") {
 		const estimate = readRuntimeEstimateMs(projectRoot);
@@ -654,6 +682,7 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 		blockOnTestFailure: cfg.block_on_test_failure === true,
 		blockOnCrap: cfg.block_on_crap === true,
 		crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
+		...(target.overlayFiles ? { overlayFiles: target.overlayFiles } : {}),
 		...(route.kind === "scoped" ? { selectedTests: route.tests } : {}),
 	};
 	return runOverlayAndDecide(ctx, event, deps);
