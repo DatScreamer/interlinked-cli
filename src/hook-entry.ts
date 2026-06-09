@@ -19,6 +19,8 @@ import { checkDestructiveCommand } from "./lib/hook-template-chunks/destructive-
 import { evaluatePackageInstall } from "./harness/evaluator/package-install-guard.js";
 import { loadAllowlist } from "./harness/package-allowlist.js";
 import { parseInstallCommands } from "./harness/package-install-parser.js";
+import { checkLargeFileLineCountWrite } from "./harness/pre-checks.js";
+import type { JsonObject } from "./lib/json-types.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
@@ -546,6 +548,46 @@ function coldPackageInstallBlockReason(event: UnifiedHookEvent): string | null {
 	return decision.reason ?? "package install blocked by supply-chain allowlist";
 }
 
+/** Cold fail-closed gate: refuse a Write/Edit/MultiEdit that would grow (or create)
+ *  a hand-written code file past the per-file line cap when the daemon is
+ *  unreachable. Runs the SAME pure `checkLargeFileLineCountWrite` the daemon uses —
+ *  file content + the committed `.interlinked/large-files-baseline.json`, no daemon
+ *  state — so the cap holds whether the daemon is up or down. This closes the gap
+ *  that let an over-cap edit slip through when the socket blipped: the line cap is
+ *  a quality gate, but it's deterministic and daemon-independent, so it belongs in
+ *  the cold path alongside the destructive-command and supply-chain guards. */
+function coldLargeFileBlockReason(event: UnifiedHookEvent): string | null {
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	const action = event.action;
+	if (action.kind !== ACTION_TOOL_CALL) return null;
+	const cwd = event.context?.cwd || process.cwd();
+	// `checkLargeFileLineCountWrite` self-filters: it returns null for any input
+	// that isn't a file-write shape (no file_path / unknown tool), so no tool-name
+	// gate is needed here.
+	const result = checkLargeFileLineCountWrite((action.tool_input ?? {}) as JsonObject, cwd);
+	return result?.block ?? null;
+}
+
+/** Build a cold fail-closed BLOCK result for a named gate, appending the
+ *  "<gate> fail-closed gate engaged" notice to stderr. Shared by every cold gate
+ *  so the encode + notice shape is defined once. */
+function coldBlockResult(
+	adapter: RunnerAdapter,
+	event: UnifiedHookEvent,
+	fallbackReason: string,
+	gateLabel: string,
+	blockReason: string,
+): HookEntryResult {
+	const blockOutput = adapter.encodeDecision({ decision: "block", reason: blockReason }, event);
+	const notice = `[interlinked] ${fallbackReason}; ${gateLabel} fail-closed gate engaged\n`;
+	return {
+		stdout: blockOutput.stdout,
+		stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
+		exit_code: blockOutput.exit_code,
+		fell_back: true,
+	};
+}
+
 function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
@@ -566,65 +608,25 @@ function encodeColdFallback(
 	// error. Checked before the graph-shard gate — broken content is a more
 	// immediate signal than the protocol-restart mechanics.
 	const mergeBlockReason = coldMergeConflictBlockReason(event);
-	if (mergeBlockReason) {
-		const blockDecision: HarnessDecision = {
-			decision: "block",
-			reason: mergeBlockReason,
-		};
-		const blockOutput = adapter.encodeDecision(blockDecision, event);
-		const notice = `[interlinked] ${reason}; merge-conflict fail-closed gate engaged\n`;
-		return {
-			stdout: blockOutput.stdout,
-			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
-			exit_code: blockOutput.exit_code,
-			fell_back: true,
-		};
-	}
+	if (mergeBlockReason) return coldBlockResult(adapter, event, reason, "merge-conflict", mergeBlockReason);
+
 	const shardBlockReason = coldGraphShardBlockReason(event);
-	if (shardBlockReason) {
-		const blockDecision: HarnessDecision = {
-			decision: "block",
-			reason: shardBlockReason,
-		};
-		const blockOutput = adapter.encodeDecision(blockDecision, event);
-		const notice = `[interlinked] ${reason}; graph-shard fail-closed gate engaged\n`;
-		return {
-			stdout: blockOutput.stdout,
-			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
-			exit_code: blockOutput.exit_code,
-			fell_back: true,
-		};
-	}
+	if (shardBlockReason) return coldBlockResult(adapter, event, reason, "graph-shard", shardBlockReason);
+
 	const destructiveReason = coldDestructiveCommandBlockReason(event);
-	if (destructiveReason) {
-		const blockDecision: HarnessDecision = {
-			decision: "block",
-			reason: destructiveReason,
-		};
-		const blockOutput = adapter.encodeDecision(blockDecision, event);
-		const notice = `[interlinked] ${reason}; destructive-command fail-closed gate engaged\n`;
-		return {
-			stdout: blockOutput.stdout,
-			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
-			exit_code: blockOutput.exit_code,
-			fell_back: true,
-		};
-	}
+	if (destructiveReason)
+		return coldBlockResult(adapter, event, reason, "destructive-command", destructiveReason);
+
 	const packageInstallReason = coldPackageInstallBlockReason(event);
-	if (packageInstallReason) {
-		const blockDecision: HarnessDecision = {
-			decision: "block",
-			reason: packageInstallReason,
-		};
-		const blockOutput = adapter.encodeDecision(blockDecision, event);
-		const notice = `[interlinked] ${reason}; supply-chain fail-closed gate engaged\n`;
-		return {
-			stdout: blockOutput.stdout,
-			stderr: blockOutput.stderr ? `${blockOutput.stderr}\n${notice}` : notice,
-			exit_code: blockOutput.exit_code,
-			fell_back: true,
-		};
-	}
+	if (packageInstallReason)
+		return coldBlockResult(adapter, event, reason, "supply-chain", packageInstallReason);
+
+	// Quality gate, daemon-independent: enforce the per-file line cap inline so an
+	// over-cap write does not slip through while the daemon is unreachable (the gap
+	// that let a 797→802 edit cross the cap unblocked on a socket blip).
+	const largeFileReason = coldLargeFileBlockReason(event);
+	if (largeFileReason)
+		return coldBlockResult(adapter, event, reason, "large-file cap", largeFileReason);
 	const decision: HarnessDecision = {
 		decision: "allow",
 	};

@@ -355,4 +355,47 @@ describe("runHookEntry — cold fallback on daemon absence", () => {
 		expect(result.stdout).toContain("allow");
 		expect(result.stderr).toContain("evaluator skipped");
 	});
+
+	it("blocks an over-cap code write when the socket is missing (line-cap fail-closed inline)", async () => {
+		// 851 lines, over the 800 default cap (tmp has no baseline). The daemon is
+		// unreachable, so this exercises the INLINE cold-fallback line-cap gate — the
+		// robustness fix so an over-cap write can't slip through on a daemon blip.
+		const bigContent = "export const x = 1;\n".repeat(850);
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "none",
+				cwd: tmp,
+				tool_name: "Write",
+				tool_input: { file_path: join(tmp, "src/big.ts"), content: bigContent },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath: join(tmp, "nope.sock"),
+		});
+		expect(result.fell_back).toBe(true);
+		expect(result.stderr).toContain("large-file cap fail-closed gate engaged");
+		expect(result.stdout).toBeTruthy(); // a block decision is emitted on stdout
+	});
+
+	it("allows an under-cap code write in the cold fallback (no false block)", async () => {
+		const smallContent = "export const x = 1;\n".repeat(10);
+		const result = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "none",
+				cwd: tmp,
+				tool_name: "Write",
+				tool_input: { file_path: join(tmp, "src/small.ts"), content: smallContent },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath: join(tmp, "nope.sock"),
+		});
+		expect(result.fell_back).toBe(true);
+		expect(result.stderr).toContain("evaluator skipped"); // benign allow path
+		expect(result.stderr).not.toContain("large-file cap");
+	});
 });
