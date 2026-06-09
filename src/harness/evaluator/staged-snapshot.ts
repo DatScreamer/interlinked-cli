@@ -18,8 +18,9 @@
 // the coverage overlay documents.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
+import { symlinkInTree, writeFileInTree } from "../overlay-safe-write.js";
 
 const INTERLINKED_DIR = ".interlinked";
 const SNAPSHOT_PREFIX = ".commit-snapshot-";
@@ -74,13 +75,21 @@ function gitLines(projectRoot: string, args: string[]): string[] {
  */
 function overlayTrackedWorktree(projectRoot: string, root: string): void {
 	for (const rel of gitLines(projectRoot, ["diff", "--name-only"])) {
-		const src = join(projectRoot, rel);
-		const dst = join(root, rel);
-		if (existsSync(src)) {
-			mkdirSync(dirname(dst), { recursive: true });
-			copyFileSync(src, dst);
+		// lstat (not exists) so a SYMLINK is detected as such — and a broken symlink
+		// is still seen (exists would skip it). throwIfNoEntry:false ⇒ undefined when absent.
+		const st = lstatSync(join(projectRoot, rel), { throwIfNoEntry: false });
+		if (!st) {
+			removeTree(join(root, rel)); // deleted in the worktree → -a commits the deletion
+			continue;
+		}
+		if (st.isSymbolicLink()) {
+			// Re-create the snapshot symlink pointing at the NEW target. Never copy
+			// THROUGH it — copyFileSync would follow both the src and the old dst
+			// symlink and overwrite the old external target's contents (finding 2026-06).
+			symlinkInTree(root, rel, readlinkSync(join(projectRoot, rel)));
 		} else {
-			removeTree(dst); // deleted in the worktree → -a commits the deletion
+			// Real file → symlink-safe BYTE copy (tracked files can be binary).
+			writeFileInTree(root, rel, readFileSync(join(projectRoot, rel)));
 		}
 	}
 }

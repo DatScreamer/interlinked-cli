@@ -25,17 +25,9 @@
 // the guard's unit tests stub it out entirely (no real mirror) while the
 // real-overlay integration test exercises it end-to-end on a tiny fixture.
 
-import {
-	cpSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	realpathSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
+import { removeInTree, writeFileInTree } from "./overlay-safe-write.js";
 
 /** Directory under projectRoot that holds overlay trees. */
 const INTERLINKED_DIR = ".interlinked";
@@ -54,10 +46,14 @@ export interface CoverageOverlay {
 	cleanup(): void;
 }
 
-/** One sibling file written into the overlay alongside the primary edited file. */
+/** One sibling file materialized into the overlay alongside the primary edited file.
+ *  `delete:true` REMOVES it instead of writing (an apply_patch Delete File, or the
+ *  source side of a Move) so the suite runs against an ABSENT file, not an empty one
+ *  (findings 2026-06). */
 export interface OverlayFile {
 	relPath: string;
 	content: string;
+	delete?: boolean;
 }
 
 /** The injectable overlay factory signature the write-guard depends on. `extraFiles`
@@ -119,10 +115,10 @@ function writeEditedFile(
 	editedRelPath: string,
 	proposedContent: string,
 ): string {
-	const target = join(overlayRoot, editedRelPath);
-	mkdirSync(dirname(target), { recursive: true });
-	writeFileSync(target, proposedContent, "utf-8");
-	return target;
+	// Symlink-safe (finding 2026-06): the mirror preserves symlinks, so a naive write
+	// would follow a symlinked file/parent and modify the real target OUTSIDE the
+	// overlay during a read-only gate. `writeFileInTree` de-symlinks the path first.
+	return writeFileInTree(overlayRoot, editedRelPath, proposedContent);
 }
 
 /**
@@ -154,8 +150,11 @@ export function createCoverageOverlay(
 	const editedFileInOverlay = writeEditedFile(overlayRoot, editedRelPath, proposedContent);
 	// Materialize sibling apply_patch sections (its test + other touched files) into
 	// the SAME overlay so the suite runs against the whole atomic patch (finding 2026-06).
+	// A `delete` section is REMOVED, not written empty, so the suite sees an absent file.
 	for (const f of extraFiles ?? []) {
-		if (f.relPath !== editedRelPath) writeEditedFile(overlayRoot, f.relPath, f.content);
+		if (f.relPath === editedRelPath) continue;
+		if (f.delete) removeInTree(overlayRoot, f.relPath);
+		else writeFileInTree(overlayRoot, f.relPath, f.content);
 	}
 
 	return {

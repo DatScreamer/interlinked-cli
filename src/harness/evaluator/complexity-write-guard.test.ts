@@ -330,3 +330,44 @@ describe("checkFunctionComplexityWrite — Python dispatch", () => {
 		expect(pythonMock).not.toHaveBeenCalled();
 	});
 });
+
+// MOVED-SECTION RECONSTRUCTION (finding 2026-06). An apply_patch `*** Move to:`
+// section's path is the DESTINATION (not yet on disk); the before-state lives at
+// `fromPath`. Reading the destination yielded "" → hunks unreconstructable → the
+// strict cyclomatic gate silently failed OPEN on a move introducing an over-cap fn.
+describe("checkFunctionComplexityWrite — apply_patch Move sections", () => {
+	it("BLOCKS a move whose update grows the function over the cap", () => {
+		writeFileSync(join(tmp, "old.ts"), fnWith("grow", 5), "utf-8"); // ~6, under cap
+		const patch = [
+			"*** Begin Patch",
+			"*** Update File: old.ts",
+			"*** Move to: moved.ts",
+			"@@",
+			...fnWith("grow", 5)
+				.split("\n")
+				.filter((l) => l.length > 0)
+				.map((l) => `-${l}`),
+			...fnWith("grow", 40) // ~41, over cap
+				.split("\n")
+				.filter((l) => l.length > 0)
+				.map((l) => `+${l}`),
+			"*** End Patch",
+		].join("\n");
+		const out = checkFunctionComplexityWrite({ command: patch }, tmp);
+		expect(out).not.toBeNull(); // reconstructed from the SOURCE → over-cap caught
+		expect(out?.block).toContain("grow");
+	});
+
+	it("allows a pure rename (no hunks worsening complexity)", () => {
+		writeFileSync(join(tmp, "keep-old.ts"), fnWith("ok", 5), "utf-8");
+		const patch = [
+			"*** Begin Patch",
+			"*** Update File: keep-old.ts",
+			"*** Move to: keep-new.ts",
+			"@@",
+			" export function ok(a: number): number {",
+			"*** End Patch",
+		].join("\n");
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});

@@ -815,6 +815,38 @@ describe("readDeferredCoverageObligations", () => {
 		expect(out[0]?.file).toBe("src/dup.ts");
 	});
 
+	// DISCHARGE CONTRACT (finding 12). A satisfied obligation must stop being unmet,
+	// else the Stop check warns "never enforced" forever.
+	function discharge(session_id: string, file: string, timestamp = "2026-06-07T01:00:00.000Z"): string {
+		return JSON.stringify({ kind: "coverage_discharge", file, session_id, timestamp });
+	}
+
+	it("nets a DISCHARGE against an earlier obligation — a satisfied file is no longer unmet", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/a.ts" }),
+			row({ session_id: "s1", file: "src/b.ts" }),
+			discharge("s1", "src/a.ts"), // a.ts satisfied by a commit-time coverage run
+		]);
+		expect(readDeferredCoverageObligations(root, "s1").map((o) => o.file)).toEqual(["src/b.ts"]);
+	});
+
+	it("a re-edit AFTER a discharge re-opens the obligation (chronological net)", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/a.ts" }),
+			discharge("s1", "src/a.ts"),
+			row({ session_id: "s1", file: "src/a.ts" }), // re-edited after the discharge
+		]);
+		expect(readDeferredCoverageObligations(root, "s1").map((o) => o.file)).toEqual(["src/a.ts"]);
+	});
+
+	it("ignores a discharge from ANOTHER session", () => {
+		writeLedger([
+			row({ session_id: "s1", file: "src/a.ts" }),
+			discharge("other", "src/a.ts"), // wrong session — must not discharge s1's obligation
+		]);
+		expect(readDeferredCoverageObligations(root, "s1").map((o) => o.file)).toEqual(["src/a.ts"]);
+	});
+
 	it("skips non-coverage rows and torn/malformed JSONL lines without throwing", () => {
 		writeLedger([
 			row({ session_id: "s1", file: "src/ok.ts" }),

@@ -595,6 +595,22 @@ describe("checkCoverageWrite — CRAP block (block_on_crap)", () => {
 		expect(decision?.rule_id).toBe("per-edit-coverage");
 	});
 
+	it("a CRAP block does NOT persist the coverage baseline (finding 8)", async () => {
+		// Coverage passes (the function is partially covered), CRAP blocks. The baseline
+		// must NOT be written — otherwise a corrected retry reads as a coverage DROP
+		// against content that never landed.
+		const result = coverageResult("src/a.ts", [
+			{ name: "big", line: 1, endLine: 3, hits: 3, statement_pct: 20 },
+		]);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", JS_SRC),
+			rules({ block_on_crap: true }),
+			depsWithCyclomatic(stubRunner(result).runner, [fn("big", 1, 3, 10)]),
+		);
+		expect(decision?.decision).toBe("block"); // CRAP blocked
+		expect(readFileCoverageBaseline(root, "src/a.ts")).toBeNull(); // baseline NOT poisoned
+	});
+
 	it("ON + the SAME function fully covered (CRAP ≈ cyclomatic < 30) → ALLOWS", async () => {
 		// cyclomatic 10 @ 100% coverage → CRAP = 10 (< 30). Complexity alone, with
 		// full coverage, is not a CRAP block.

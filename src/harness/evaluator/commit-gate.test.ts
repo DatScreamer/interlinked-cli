@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,8 @@ import {
 	checkCommitGate,
 	COMMIT_RUN_TIMEOUT_MS,
 	type CommitGateDeps,
+	defaultGitChangedFiles,
+	defaultResolveRepoRoot,
 	parseGitCommit,
 } from "./commit-gate.js";
 
@@ -685,5 +688,224 @@ describe("checkCommitGate — Python per-line path (coverage.py shape)", () => {
 		expect(suiteRoot()).toBe(root); // the worktree, not a (stale-index) snapshot
 		expect(materializeCalled).toBe(false); // worktree mode never materializes
 		expect(stagedOnly()).toBe(false); // broad changed-files query, not staged-only
+	});
+
+	// ZERO-FALSE-POSITIVE CONTRACT (finding 6). A NARROW `git add <path> && git commit`
+	// stages only that path; an unrelated dirty worktree file must NOT be evaluated
+	// (the round-3 worktree-everything approach blocked on it).
+	it("a narrow `git add <path> && git commit` evaluates ONLY that path, not unrelated dirty files", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		writeSource("src/b.ts", JS_SRC); // unrelated dirty file — must be ignored
+		const readPaths: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			gitChangedFiles: () => ["src/a.ts", "src/b.ts"], // BOTH dirty in the worktree
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				readPaths.push(abs);
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		await checkCommitGate(commitEvent("git add src/a.ts && git commit -m x"), rules(), deps);
+		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true); // staged path evaluated
+		expect(readPaths.some((p) => p.endsWith("src/b.ts"))).toBe(false); // unrelated file skipped
+	});
+
+	// MISSING-COVERAGE CONTRACT (finding 4). A changed source absent from the coverage
+	// report after a full run was silently skipped — so a brand-new untested file passed.
+	it("BLOCKS a changed source absent from the coverage report but with executable code", async () => {
+		writeSource("src/new.ts", JS_SRC);
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				// The report does NOT include src/new.ts — no test loaded it.
+				run: async () => coverageResult("src/other.ts", []),
+			}),
+			gitChangedFiles: () => ["src/new.ts"],
+			cyclomaticFor: () => () => [{ name: "f", line: 1, endLine: 3, cyclomatic: 2, language: "js_ts" }],
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		const decision = await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/untested|absent from the coverage report/i);
+	});
+
+	it("does NOT block a changed source absent from the report that has NO executable code (type-only)", async () => {
+		writeSource("src/types.ts", "export interface T { a: number }\n");
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({ run: async () => coverageResult("src/other.ts", []) }),
+			gitChangedFiles: () => ["src/types.ts"],
+			cyclomaticFor: () => () => [], // no functions → nothing to cover
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		expect(await checkCommitGate(commitEvent("git commit -m x"), rules(), deps)).toBeNull();
+	});
+
+	// FUNCTION-LESS EXECUTABLE MODULES (finding 2026-06). The type-only exemption was
+	// "the analyzer found no functions" — letting a module of top-level statements
+	// (console.log, an initializing call) pass untested AND discharging its obligation.
+	it("BLOCKS a function-less module with executable top-level statements absent from coverage", async () => {
+		writeSource("src/boot.ts", 'console.log("side effect");\nstartServer();\n');
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({ run: async () => coverageResult("src/other.ts", []) }),
+			gitChangedFiles: () => ["src/boot.ts"],
+			cyclomaticFor: () => () => [], // analyzer sees NO functions — the old exemption
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		const decision = await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/untested|absent from the coverage report/i);
+	});
+});
+
+describe("checkCommitGate — changed-file query flags by mode (findings 2026-06)", () => {
+	type QueryFlags = [boolean | undefined, boolean | undefined];
+
+	function flagCapturingDeps(): { deps: CommitGateDeps; calls: () => QueryFlags[] } {
+		const calls: QueryFlags[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			gitChangedFiles: (_root, stagedOnly, includeUntracked) => {
+				calls.push([stagedOnly, includeUntracked]);
+				return ["src/m.ts"];
+			},
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		return { deps, calls: () => calls };
+	}
+
+	it("a CONSTRUCTED commit (`git add … && git commit`) requests UNTRACKED files too", async () => {
+		// The add stages new files at run time; `git diff` never lists them — without
+		// includeUntracked a brand-new uncovered source bypassed the gate entirely.
+		writeSource("src/m.ts", JS_SRC);
+		const { deps, calls } = flagCapturingDeps();
+		await checkCommitGate(commitEvent("git add -A && git commit -m x"), rules(), deps);
+		expect(calls()).toEqual([[false, true]]); // broad query + untracked
+	});
+
+	it("`-a` requests tracked-only (NO untracked — `-a` never stages them)", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const { deps, calls } = flagCapturingDeps();
+		await checkCommitGate(commitEvent("git commit -am x"), rules(), deps);
+		expect(calls()).toEqual([[false, false]]);
+	});
+
+	it("a plain commit requests staged-only", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const { deps, calls } = flagCapturingDeps();
+		await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
+		expect(calls()).toEqual([[true, false]]);
+	});
+
+	it("anchors evaluation at the git TOPLEVEL when the commit runs from a subdirectory", async () => {
+		// `cd src && git commit -a`: git emits toplevel-relative paths (src/a.ts), so
+		// resolving them against /repo/src would double-prefix and skip every source.
+		writeSource("src/m.ts", JS_SRC);
+		mkdirSync(join(root, "sub"), { recursive: true });
+		const rootsQueried: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			gitChangedFiles: (queriedRoot) => {
+				rootsQueried.push(queriedRoot);
+				return ["src/m.ts"];
+			},
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+			resolveRepoRoot: () => root, // the repo toplevel, NOT root/sub
+		};
+		await checkCommitGate(commitEvent("cd sub && git commit -am x"), rules(), deps);
+		expect(rootsQueried).toEqual([root]); // anchored at the toplevel
+	});
+});
+
+describe("defaultGitChangedFiles / defaultResolveRepoRoot — real git (findings 2026-06)", () => {
+	let repo: string;
+
+	function git(...args: string[]): void {
+		execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+	}
+
+	beforeEach(() => {
+		repo = realpathSync(mkdtempSync(join(tmpdir(), "commit-gate-git-")));
+		git("init", "-q");
+		git("config", "user.email", "t@t.test");
+		git("config", "user.name", "t");
+		mkdirSync(join(repo, "src"), { recursive: true });
+		writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n", "utf-8");
+		git("add", "src/a.ts");
+		git("commit", "-qm", "init");
+	});
+
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	it("includeUntracked=true lists a brand-new file; false (the -a path) does not", () => {
+		writeFileSync(join(repo, "src/a.ts"), "export const a = 2;\n", "utf-8"); // tracked mod
+		writeFileSync(join(repo, "src/new.ts"), "export const n = 1;\n", "utf-8"); // untracked
+		expect(defaultGitChangedFiles(repo, false, true)).toEqual(
+			expect.arrayContaining(["src/a.ts", "src/new.ts"]),
+		);
+		expect(defaultGitChangedFiles(repo, false, false)).not.toContain("src/new.ts");
+		expect(defaultGitChangedFiles(repo, true)).toEqual([]); // staged-only: nothing staged
+	});
+
+	it("resolves a subdirectory to the repository toplevel (and non-repos to null)", () => {
+		expect(defaultResolveRepoRoot(join(repo, "src"))).toBe(repo);
+		const notRepo = mkdtempSync(join(tmpdir(), "not-a-repo-"));
+		try {
+			expect(defaultResolveRepoRoot(notRepo)).toBeNull();
+		} finally {
+			rmSync(notRepo, { recursive: true, force: true });
+		}
 	});
 });

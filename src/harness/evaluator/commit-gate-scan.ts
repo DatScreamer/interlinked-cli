@@ -1,0 +1,282 @@
+// ===========================================
+// Commit-gate per-source violation detection
+// ===========================================
+// Pure violation builders for the commit gate: given one changed source's coverage
+// report + cyclomatic analysis, produce the uncovered / cyclomatic / CRAP violations
+// that become the block reason. No I/O, no daemon state — extracted from
+// `commit-gate.ts` to keep that file under the per-file line cap. `scanFile` (which
+// also needs `loudDegrade` + the analyzer type) stays in `commit-gate.ts` and calls
+// these. REUSES `crapScore` / `computeCrap` from `checks/crap.ts` — never reimplemented.
+
+import { computeCrap, crapScore } from "../checks/crap.js";
+import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import type { PerFileCoverage } from "../coverage-final-reader.js";
+import type { CoverageLanguage } from "../coverage-runner.js";
+
+/** A function over this cap is a cyclomatic violation at commit time. */
+export const COMMIT_CYCLOMATIC_CAP = 25;
+
+/** A changed source file the gate will evaluate, with its resolved language. */
+export interface ChangedSource {
+	relPath: string;
+	language: CoverageLanguage;
+}
+
+/** A single named violation for the block reason. */
+export interface Violation {
+	kind: "uncovered" | "crap" | "cyclomatic";
+	file: string;
+	detail: string;
+}
+
+/** True when the runner reported native per-line coverage (coverage.py path). */
+export function hasPerLineData(cov: PerFileCoverage): boolean {
+	return cov.uncoveredLines !== undefined || cov.coveredLines !== undefined;
+}
+
+/** The lowest uncovered executable line for a per-line (coverage.py) report, or null. */
+function firstUncoveredLine(cov: PerFileCoverage): number | null {
+	const uncovered = cov.uncoveredLines ?? new Set<number>();
+	let lowest: number | null = null;
+	for (const ln of uncovered) {
+		if (lowest === null || ln < lowest) lowest = ln;
+	}
+	return lowest;
+}
+
+/** The first uncovered function for a per-function (istanbul / JS) report, or null. */
+function firstUncoveredFunction(cov: PerFileCoverage): { name: string; line: number } | null {
+	for (const fn of cov.functions) {
+		if (fn.hits === 0 || fn.statement_pct === 0) return { name: fn.name, line: fn.line };
+	}
+	return null;
+}
+
+/** Count how many of [start,end] (inclusive) appear in `lines`. */
+function countInRange(lines: ReadonlySet<number>, start: number, end: number): number {
+	let n = 0;
+	for (const ln of lines) {
+		if (ln >= start && ln <= end) n++;
+	}
+	return n;
+}
+
+/** One CRAP violation for a changed file (worst-first ranked by the callers). */
+interface CrapHit {
+	function: string;
+	line: number;
+	cyclomatic: number;
+	coverage_pct: number;
+	crap_score: number;
+}
+
+/**
+ * CRAP violations for a PER-FUNCTION (istanbul / JS) coverage report. REUSES
+ * `computeCrap` — exact formula + the ±3-line name/line matching — never
+ * reimplemented here. Returns the worst-first list at/above `threshold`.
+ */
+function crapHitsPerFunction(
+	relPath: string,
+	complexities: FunctionComplexityEntry[],
+	cov: PerFileCoverage,
+	threshold: number,
+): CrapHit[] {
+	const findings = computeCrap({
+		complexities,
+		coverage: cov.functions,
+		filePath: relPath,
+		fileMtime: 0,
+		coverageMtime: null, // fresh: this is THIS run's coverage
+		threshold,
+		staleTolerance: "include",
+	});
+	return findings.map((f) => ({
+		function: f.function,
+		line: f.line,
+		cyclomatic: f.complexity,
+		coverage_pct: f.coverage_pct,
+		crap_score: f.crap_score,
+	}));
+}
+
+/**
+ * CRAP violations for a PER-LINE (Python / coverage.py) coverage report. No
+ * function ranges exist, so per-function coverage is the covered lines inside each
+ * analyzer-reported body range over its executable lines. Scores via the REUSED
+ * `crapScore`. Sorted worst-first.
+ */
+function crapHitsPerLine(
+	complexities: FunctionComplexityEntry[],
+	cov: PerFileCoverage,
+	threshold: number,
+): CrapHit[] {
+	const covered = cov.coveredLines ?? new Set<number>();
+	const uncovered = cov.uncoveredLines ?? new Set<number>();
+	const hits: CrapHit[] = [];
+	for (const fn of complexities) {
+		const inCovered = countInRange(covered, fn.line, fn.endLine);
+		const inUncovered = countInRange(uncovered, fn.line, fn.endLine);
+		const executable = inCovered + inUncovered;
+		if (executable === 0) continue;
+		const covPct = (inCovered / executable) * 100;
+		const score = crapScore(fn.cyclomatic, covPct);
+		if (score < threshold) continue;
+		hits.push({
+			function: fn.name,
+			line: fn.line,
+			cyclomatic: fn.cyclomatic,
+			coverage_pct: covPct,
+			crap_score: score,
+		});
+	}
+	hits.sort((a, b) => b.crap_score - a.crap_score);
+	return hits;
+}
+
+/** The worst (first) over-cap cyclomatic function for a file, or null. */
+function firstOverCapCyclomatic(
+	complexities: FunctionComplexityEntry[],
+): FunctionComplexityEntry | null {
+	let worst: FunctionComplexityEntry | null = null;
+	for (const fn of complexities) {
+		if (fn.cyclomatic <= COMMIT_CYCLOMATIC_CAP) continue;
+		if (!worst || fn.cyclomatic > worst.cyclomatic) worst = fn;
+	}
+	return worst;
+}
+
+/** The uncovered-line / uncovered-function coverage violation for a file, or null. */
+export function coverageViolation(source: ChangedSource, cov: PerFileCoverage): Violation | null {
+	if (hasPerLineData(cov)) {
+		const line = firstUncoveredLine(cov);
+		if (line !== null) {
+			return { kind: "uncovered", file: source.relPath, detail: `line ${line} is executable but uncovered` };
+		}
+		return null;
+	}
+	const fn = firstUncoveredFunction(cov);
+	if (fn) {
+		return {
+			kind: "uncovered",
+			file: source.relPath,
+			detail: `\`${fn.name}\` (line ${fn.line}) is executable but uncovered`,
+		};
+	}
+	return null;
+}
+
+/** The whole-file violation for a changed source that ran a full suite yet is ABSENT
+ *  from the coverage report — no test loaded it, so its executable code is uncovered. */
+export function missingCoverageViolation(source: ChangedSource): Violation {
+	return {
+		kind: "uncovered",
+		file: source.relPath,
+		detail: "absent from the coverage report after a full run — no test exercised it (untested)",
+	};
+}
+
+/** Line starters that carry NO runtime behavior: type-level declarations, named /
+ *  type-only imports (erased or pure bindings), re-exports (no logic of their own).
+ *  A side-effect import (`import "./x"`) is NOT here — it runs code at load. */
+const TYPE_ONLY_STARTERS = [
+	"import ", // named/default/namespace import — module binding, no logic of this file's own
+	"import{",
+	"from ", // Python import form, for the gate's python language
+	"export type",
+	"export interface",
+	"export declare",
+	"export default interface",
+	"export {",
+	"export *",
+	"export{",
+	"interface ",
+	"type ",
+	"declare ",
+	"| ", // union member of a multi-line type alias
+	"& ", // intersection member of a multi-line type alias
+];
+
+/** Net brace depth contributed by one line (for skipping interface/type bodies). */
+function braceDelta(line: string): number {
+	let depth = 0;
+	for (const ch of line) {
+		if (ch === "{") depth++;
+		else if (ch === "}") depth--;
+	}
+	return depth;
+}
+
+/**
+ * True when a changed source has NO runtime behavior of its own — only imports,
+ * type/interface/declare declarations, re-exports, and comments. This is the ONLY
+ * exemption from the missing-coverage block: a file absent from the coverage report
+ * with anything executable (a function, a top-level `console.log(…)`, an initializing
+ * call, an enum) must block (finding 2026-06: gating on "the analyzer found ≥1
+ * function" let function-less top-level code pass). Deterministic and deliberately
+ * biased: anything unrecognized counts as EXECUTABLE — the exemption narrows, never
+ * widens. A side-effect import (`import "./x"`) counts as executable.
+ */
+export function isTypeOnlySource(content: string): boolean {
+	// Strip block + line comments (string-naive: a string literal outside a type
+	// context already implies executable code, so misparsing inside one is moot).
+	const stripped = content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+	let depth = 0; // inside an interface/type/declare body
+	let continuation = false; // a type alias whose RHS starts on the NEXT line (`type X =`)
+	for (const raw of stripped.split("\n")) {
+		const line = raw.trim();
+		if (line.length === 0) continue;
+		if (depth > 0) {
+			depth += braceDelta(line);
+			continue; // type-level body line
+		}
+		if (continuation) {
+			depth += braceDelta(line);
+			if (line.endsWith(";")) continuation = false;
+			continue;
+		}
+		// Side-effect import — runs the module at load: executable.
+		if (line.startsWith('import "') || line.startsWith("import '")) return false;
+		const starter = TYPE_ONLY_STARTERS.find((s) => line.startsWith(s));
+		if (!starter) return false; // an executable statement
+		depth += braceDelta(line);
+		// ONLY a trailing `=` means the alias RHS continues below — any other ending
+		// (`;`, a closed `}`, a re-export's quote) completes the statement. The old
+		// "didn't end with ;" rule swallowed the NEXT line after a one-line
+		// `interface T { … }`, hiding an executable statement (probe-caught).
+		if (depth === 0 && line.endsWith("=")) continuation = true;
+	}
+	return true;
+}
+
+/** The over-cap cyclomatic violation for a file, or null. */
+export function cyclomaticViolation(
+	source: ChangedSource,
+	complexities: FunctionComplexityEntry[],
+): Violation | null {
+	const overCap = firstOverCapCyclomatic(complexities);
+	if (!overCap) return null;
+	return {
+		kind: "cyclomatic",
+		file: source.relPath,
+		detail: `\`${overCap.name}\` (line ${overCap.line}) has cyclomatic complexity ${overCap.cyclomatic} (cap ${COMMIT_CYCLOMATIC_CAP})`,
+	};
+}
+
+/** The worst CRAP violation for a file, or null. */
+export function crapViolation(
+	source: ChangedSource,
+	complexities: FunctionComplexityEntry[],
+	cov: PerFileCoverage,
+	threshold: number,
+): Violation | null {
+	const hits = hasPerLineData(cov)
+		? crapHitsPerLine(complexities, cov, threshold)
+		: crapHitsPerFunction(source.relPath, complexities, cov, threshold);
+	const worst = hits[0];
+	if (!worst) return null;
+	return {
+		kind: "crap",
+		file: source.relPath,
+		detail: `\`${worst.function}\` (line ${worst.line}) has a CRAP score of ${Math.round(worst.crap_score)} (cyclomatic ${worst.cyclomatic}, coverage ${Math.round(worst.coverage_pct)}%)`,
+	};
+}

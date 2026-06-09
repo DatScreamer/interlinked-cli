@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
-import { coverageTargetsFor } from "./coverage-edit-targets.js";
+import { coverageEditPlan, coverageTargetsFor } from "./coverage-edit-targets.js";
 
 let root: string;
 beforeEach(() => {
@@ -302,5 +302,41 @@ describe("coverageTargetsFor — editedLines are positional, not content-keyed",
 		// content-bag bug marked line 3 (the shifted original) instead.
 		expect(targets[0].editedLines).toEqual(new Set([1]));
 		expect(targets[0].editedLines?.has(3)).toBe(false);
+	});
+});
+
+describe("coverageEditPlan — overlay models deletes and moves (findings 9 & 10)", () => {
+	it("a Delete File section is REMOVED from the overlay, not written empty (finding 10)", () => {
+		const plan = coverageEditPlan(
+			event("apply_patch", { command: patch("*** Delete File: src/gone.ts") }),
+			root,
+			CFG,
+		);
+		const gone = plan.overlayFiles.find((f) => f.relPath === "src/gone.ts");
+		expect(gone?.delete).toBe(true); // removed, not an empty module
+	});
+
+	it("a Move writes the DEST and removes the SOURCE from the overlay (finding 9)", () => {
+		writeFile("src/old.ts", "export const a = 1;\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/old.ts",
+					"*** Move to: src/new.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+				),
+			}),
+			root,
+			CFG,
+		);
+		// Destination written with content reconstructed from the SOURCE's before-content.
+		const dest = plan.overlayFiles.find((f) => f.relPath === "src/new.ts");
+		expect(dest?.delete).toBeFalsy();
+		expect(dest?.content).toContain("a = 2");
+		// Source removed — it no longer exists in the post-patch tree.
+		const src = plan.overlayFiles.find((f) => f.relPath === "src/old.ts");
+		expect(src?.delete).toBe(true);
 	});
 });

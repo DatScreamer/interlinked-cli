@@ -323,6 +323,7 @@ function decideFromCoverage(
 	relPath: string,
 	cov: PerFileCoverage,
 	editedLines: Set<number> | undefined,
+	out: { now?: number },
 ): HarnessDecision | null {
 	const verdict = hasPerLineData(cov)
 		? decidePerLine(relPath, cov, editedLines)
@@ -333,8 +334,10 @@ function decideFromCoverage(
 	const prior = readFileCoverageBaseline(projectRoot, relPath);
 	if (prior !== null && now < prior) return blockForDrop(relPath, prior, now);
 
-	// Allowed → record the new baseline.
-	writeFileCoverageBaseline(projectRoot, relPath, now);
+	// Allowed on the coverage axis. Hand the new fraction back so the caller PERSISTS it
+	// only after every later gate (CRAP) also passes — writing it here would poison the
+	// baseline with rejected content if CRAP then blocks (finding 8).
+	out.now = now;
 	return null;
 }
 
@@ -492,11 +495,13 @@ async function runOverlayAndDecide(
 		}
 		// Coverage decision first (uncovered-added-line / drop). A block here is the
 		// more basic failure; CRAP is the "complex AND under-covered" escalation.
-		const coverageDecision = decideFromCoverage(ctx.projectRoot, ctx.relPath, cov, ctx.editedLines);
+		const covOut: { now?: number } = {};
+		const coverageDecision = decideFromCoverage(ctx.projectRoot, ctx.relPath, cov, ctx.editedLines, covOut);
 		if (coverageDecision) return coverageDecision;
 
-		// Coverage allowed → the 4th per-edit gate. Only when opted in
-		// (block_on_crap); uses the SAME overlay coverage just computed.
+		// Coverage allowed → the 4th per-edit gate. Only when opted in (block_on_crap);
+		// uses the SAME overlay coverage just computed. It runs BEFORE the baseline is
+		// persisted, so a CRAP block never poisons it with rejected content (finding 8).
 		if (ctx.blockOnCrap) {
 			const crapInput: CrapInput = {
 				relPath: ctx.relPath,
@@ -506,7 +511,13 @@ async function runOverlayAndDecide(
 				threshold: ctx.crapThreshold ?? DEFAULT_CRAP_THRESHOLD,
 				analyzer: deps.cyclomaticFor(ctx.language),
 			};
-			return decideCrap(crapInput, loudDegrade);
+			const crapDecision = decideCrap(crapInput, loudDegrade);
+			if (crapDecision) return crapDecision;
+		}
+
+		// EVERY gate passed → only NOW persist the new coverage baseline.
+		if (covOut.now !== undefined) {
+			writeFileCoverageBaseline(ctx.projectRoot, ctx.relPath, covOut.now);
 		}
 		return null;
 	} finally {

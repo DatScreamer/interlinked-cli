@@ -488,6 +488,18 @@ function isCoverageObligationFor(value: unknown, sessionId: string): value is Co
 	);
 }
 
+/** Narrow a parsed row to a coverage DISCHARGE for one session (finding 12) — a later
+ *  successful coverage run that closes an earlier obligation for the same file. */
+function isCoverageDischargeFor(value: unknown, sessionId: string): value is { file: string } {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	return (
+		row.kind === "coverage_discharge" &&
+		typeof row.file === "string" &&
+		row.session_id === sessionId
+	);
+}
+
 /**
  * Public — read the deferred coverage obligations recorded for `sessionId` from
  * `<projectRoot>/.interlinked/coverage-obligations.jsonl`. Total / never throws:
@@ -519,8 +531,13 @@ export function readDeferredCoverageObligations(
 		if (!line.trim()) continue;
 		try {
 			const parsed: unknown = JSON.parse(line);
-			if (isCoverageObligationFor(parsed, sessionId) && !byFile.has(parsed.file)) {
+			// Chronological net over the append-only log (oldest→newest): an obligation
+			// OPENS the file, a later discharge CLOSES it, and a re-edit after a discharge
+			// re-opens it (finding 12). The last marker for a file wins.
+			if (isCoverageObligationFor(parsed, sessionId)) {
 				byFile.set(parsed.file, parsed);
+			} else if (isCoverageDischargeFor(parsed, sessionId)) {
+				byFile.delete(parsed.file);
 			}
 		} catch {
 			// intentional: JSONL may be torn if a process died mid-write — skip bad lines.

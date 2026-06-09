@@ -561,6 +561,36 @@ describe("mergeLocalOverrides", () => {
 		expect(config.git_session_scope_gate?.mode).toBe("ask");
 	});
 
+	it("merges the documented per_edit_coverage opt-out onto the default-on block (finding 1)", () => {
+		// THE documented opt-out: `{"per_edit_coverage": {"enabled": false}}` in
+		// guard-rules.local.json. Without the merge branch it was silently dropped and
+		// the default-on HARD GATES could not be disabled as advertised.
+		const config = mkBaseConfig();
+		config.per_edit_coverage = {
+			enabled: true,
+			mode: "block",
+			budget_ms: 25_000,
+			languages: ["js", "ts"],
+		} as unknown as NonNullable<GuardRulesConfig["per_edit_coverage"]>;
+		mergeLocalOverrides(config, {
+			per_edit_coverage: { enabled: false } as unknown as NonNullable<
+				GuardRulesConfig["per_edit_coverage"]
+			>,
+		});
+		expect(config.per_edit_coverage?.enabled).toBe(false); // opt-out honored
+		expect(config.per_edit_coverage?.mode).toBe("block"); // other knobs survive the partial
+	});
+
+	it("assigns per_edit_coverage wholesale when the base lacks it", () => {
+		const config = mkBaseConfig();
+		clearProp(config, "per_edit_coverage");
+		const pec = { enabled: false } as unknown as NonNullable<
+			GuardRulesConfig["per_edit_coverage"]
+		>;
+		mergeLocalOverrides(config, { per_edit_coverage: pec });
+		expect(config.per_edit_coverage).toBe(pec);
+	});
+
 	it("is a no-op when local config is empty", () => {
 		const config = mkBaseConfig();
 		const snapshot = JSON.stringify(config);

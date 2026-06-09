@@ -175,3 +175,60 @@ describe("parseGitCommit — constructsContent (finding 4: preceding add / paths
 		expect(parseGitCommit("git commit -F msg.txt")?.constructsContent).toBeUndefined();
 	});
 });
+
+describe("parseGitCommit — constructedPaths (finding 6: narrow vs broad) + pathspec-from-file (finding 7)", () => {
+	it("a NARROW `git add <path>` restricts to that path", () => {
+		expect(parseGitCommit("git add src/a.ts && git commit -m x")?.constructedPaths).toEqual(["src/a.ts"]);
+		expect(parseGitCommit("git add src/a.ts src/b.ts && git commit")?.constructedPaths).toEqual([
+			"src/a.ts",
+			"src/b.ts",
+		]);
+	});
+
+	it("a commit PATHSPEC restricts to that path", () => {
+		expect(parseGitCommit("git commit src/a.ts -m x")?.constructedPaths).toEqual(["src/a.ts"]);
+		expect(parseGitCommit("git commit -- src/a.ts src/b.ts")?.constructedPaths).toEqual([
+			"src/a.ts",
+			"src/b.ts",
+		]);
+	});
+
+	it("a BROAD stage carries NO constructedPaths (the whole worktree is committed)", () => {
+		expect(parseGitCommit("git add -A && git commit -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git add . && git commit")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git add -u && git commit -m x")?.constructedPaths).toBeUndefined();
+	});
+
+	it("`--pathspec-from-file` is a (broad) constructed-content commit, not a stale-index commit", () => {
+		expect(parseGitCommit("git commit --pathspec-from-file=specs.txt")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git commit --pathspec-from-file specs.txt")?.constructsContent).toBe(true);
+		// Broad → no specific paths (its pathspecs live in a file we don't read).
+		expect(parseGitCommit("git commit --pathspec-from-file=specs.txt")?.constructedPaths).toBeUndefined();
+	});
+
+	// NON-LITERAL pathspecs are expanded by git/the shell at run time — an exact-match
+	// filter would match NOTHING and the gate would silently evaluate no source. They
+	// must therefore stay BROAD (constructedPaths absent ⇒ evaluate everything).
+	it("a glob / variable / pathspec-magic spec is BROAD, never a literal filter", () => {
+		expect(parseGitCommit("git add 'src/*.ts' && git commit -m x")?.constructsContent).toBe(true);
+		expect(parseGitCommit("git add 'src/*.ts' && git commit -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git commit 'src/**' -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git commit src/file-?.ts -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git add $FILES && git commit -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git commit ':(icase)readme' -m x")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git add ~/repo/a.ts && git commit -m x")?.constructedPaths).toBeUndefined();
+	});
+
+	// `-a` stages EVERY tracked modification — a preceding narrow add must not shrink
+	// the evaluated set to just the added paths.
+	it("`git add <path> && git commit -am x` is BROAD (the -a stages everything tracked)", () => {
+		const parsed = parseGitCommit("git add src/a.ts && git commit -am x");
+		expect(parsed?.constructsContent).toBe(true);
+		expect(parsed?.all).toBe(true);
+		expect(parsed?.constructedPaths).toBeUndefined(); // NOT narrowed to src/a.ts
+	});
+
+	it("a mixed literal+glob spec list is BROAD (one non-literal poisons the filter)", () => {
+		expect(parseGitCommit("git add src/a.ts 'src/*.spec.ts' && git commit -m x")?.constructedPaths).toBeUndefined();
+	});
+});

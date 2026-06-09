@@ -263,7 +263,12 @@ function checkApplyPatchComplexity(
 	for (const section of parseApplyPatchSections(raw)) {
 		const analyzer = selectAnalyzer(section.path);
 		if (!analyzer) continue; // non-code extension → skip
-		const abs = isAbsolute(section.path) ? section.path : resolve(cwd, section.path);
+		// Read before-content from the SOURCE path for a moved section — the
+		// destination (`section.path`) doesn't exist yet, so reading it yields ""
+		// and the update hunks fail to reconstruct → the gate silently failed open
+		// on a move that introduced an over-cap function (finding 2026-06).
+		const readPath = section.fromPath ?? section.path;
+		const abs = isAbsolute(readPath) ? readPath : resolve(cwd, readPath);
 		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
 		const after = reconstructAfterContent(section, before);
 		if (after === null) continue; // can't reconstruct confidently → fail open for this file

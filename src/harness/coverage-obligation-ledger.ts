@@ -180,3 +180,31 @@ export function recordCoverageObligation(
 		// intentional: best-effort obligation log; never crash the harness.
 	}
 }
+
+/** A DISCHARGE marker: a later run (the commit gate, or an explicit coverage run)
+ *  measured the file's coverage and it PASSED, so its earlier obligation is no longer
+ *  unmet. Appended to the SAME ledger; the reader nets obligations against discharges
+ *  chronologically so a re-edit after a discharge re-opens the obligation (finding 12). */
+export interface CoverageDischarge {
+	kind: "coverage_discharge";
+	file: string;
+	session_id: string;
+	timestamp: string;
+}
+
+/** Append a coverage-obligation discharge for `file` in `sessionId`. Best-effort. */
+export function recordCoverageDischarge(
+	projectRoot: string,
+	file: string,
+	sessionId: string,
+	timestamp: string,
+): void {
+	const path = interlinkedPath(projectRoot, OBLIGATIONS_FILE);
+	const record: CoverageDischarge = { kind: "coverage_discharge", file, session_id: sessionId, timestamp };
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${JSON.stringify(record)}\n`, "utf-8");
+	} catch {
+		// intentional: best-effort discharge log; never crash the harness.
+	}
+}

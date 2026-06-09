@@ -19,7 +19,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildCollectionRecord } from "./collection/builder.js";
+import { buildCollectionRecord, TOOL_EVENT_TYPES } from "./collection/builder.js";
 import type { CollectionAction, CollectionRecord } from "./collection/types.js";
 import { appendCollection, getCollectionPath } from "./collection/writer.js";
 import { getDataDir } from "./config.js";
@@ -117,21 +117,23 @@ export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): vo
 // JSONL Read
 // ===========================================
 
-/**
- * Read and filter local activity events from the JSONL log.
- */
-export function readLocalActivity(opts?: {
+/** Activity types that collection.jsonl covers — the EXACT set the collection builder
+ *  consumes (imported, not mirrored: a hand-copied set drifted and `permission_request`
+ *  came back twice, once projected + once raw — finding 2026-06). Every OTHER type
+ *  (session_start, prompt, notification, token, duration, …) lives only in the
+ *  full-fidelity activity.jsonl stream and is restored from it. */
+const COLLECTION_BACKED_TYPES: ReadonlySet<string> = TOOL_EVENT_TYPES;
+
+interface ReadActivityOpts {
 	since?: number | undefined; // ms cutoff timestamp
 	agent?: string | undefined;
 	limit?: number | undefined;
 	type?: string | undefined;
 	cwd?: string | undefined;
-}): LocalActivityEvent[] {
-	// Canonical source is collection.jsonl; fall back to the legacy activity.jsonl
-	// only when it is absent (older installs / the daemon never ran).
-	if (existsSync(getCollectionPath(opts?.cwd ?? process.cwd()))) {
-		return readCollectionActivity(opts);
-	}
+}
+
+/** Read + filter the legacy full-fidelity activity.jsonl stream (ALL event types). */
+function readActivityStream(opts?: ReadActivityOpts): LocalActivityEvent[] {
 	const path = getActivityPath(opts?.cwd);
 	if (!existsSync(path)) return [];
 
@@ -163,6 +165,30 @@ export function readLocalActivity(opts?: {
 	}
 
 	return events;
+}
+
+/**
+ * Read and filter local activity events. MERGES both stores so no event type is
+ * lost (finding 11): the enriched TOOL events come from the canonical collection.jsonl
+ * projection, while every NON-tool event (session_start / prompt / notification /
+ * token / duration) is restored from the full-fidelity activity.jsonl — which the
+ * collection projection drops. When collection.jsonl is absent (older installs / the
+ * daemon never ran), activity.jsonl is the whole story.
+ */
+export function readLocalActivity(opts?: ReadActivityOpts): LocalActivityEvent[] {
+	const cwd = opts?.cwd ?? process.cwd();
+	const activityEvents = readActivityStream(opts);
+	if (!existsSync(getCollectionPath(cwd))) return activityEvents;
+
+	// Tool events from the enriched projection; non-tool events from activity.jsonl
+	// (the projection has none). Each source is already newest-first and pre-limited,
+	// so the global newest N is within their union — merge, re-sort, re-limit.
+	const collectionEvents = readCollectionActivity(opts);
+	const nonTool = activityEvents.filter((e) => !COLLECTION_BACKED_TYPES.has(e.type));
+	const merged = [...collectionEvents, ...nonTool];
+	merged.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+	const limit = opts?.limit && opts.limit > 0 ? opts.limit : undefined;
+	return limit ? merged.slice(0, limit) : merged;
 }
 
 // ===========================================

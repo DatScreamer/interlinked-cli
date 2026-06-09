@@ -42,6 +42,15 @@ export interface CommitParse {
 	 */
 	constructsContent?: boolean;
 	/**
+	 * When `constructsContent` is set, the SPECIFIC worktree paths the command stages
+	 * — the pathspecs of `git commit <paths>` and/or a narrow preceding `git add
+	 * <paths>`. The gate restricts evaluation to these so an UNRELATED dirty file does
+	 * not block the commit (finding 2026-06: the round-3 worktree-everything approach
+	 * over-blocked, violating zero-FP). EMPTY/absent ⇒ a BROAD stage (`git add -A`/`.`/
+	 * `-u`, or `--pathspec-from-file`) whose set is the whole worktree.
+	 */
+	constructedPaths?: string[];
+	/**
 	 * The directory the commit effectively runs in, relative to the shell's own
 	 * cwd (or absolute), when a `cd <dir>` prefix and/or one or more `git -C <dir>`
 	 * flags redirect it — e.g. `cd sub && git commit` ⇒ `"sub"`, `git -C a -C b
@@ -231,7 +240,10 @@ interface SegmentCommit {
 	isCommit: boolean;
 	noVerify: boolean;
 	all: boolean;
-	pathspec: boolean;
+	/** Specific positional pathspecs on the commit itself (`git commit src/x.ts`). */
+	pathspecs: string[];
+	/** `--pathspec-from-file` — a broad constructed-content commit (paths in a file). */
+	pathspecFromFile: boolean;
 	cDir: string | null;
 }
 
@@ -242,11 +254,13 @@ function isAllFlag(token: string): boolean {
 	return /^-[A-Za-z]+$/.test(token) && token.includes("a");
 }
 
-/** Commit flags that consume the FOLLOWING token as a value (so it is not a pathspec). */
+/** Commit flags that consume the FOLLOWING token as a value (so it is not a pathspec).
+ *  `--pathspec-from-file` is deliberately NOT here — it SUPPLIES pathspecs, so it marks
+ *  a constructed-content commit (handled first in `hasPathspec`). */
 const COMMIT_VALUE_FLAGS = new Set([
 	"-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
 	"--author", "--date", "-t", "--template", "--fixup", "--squash", "--cleanup",
-	"--pathspec-from-file", "-S", "--gpg-sign",
+	"-S", "--gpg-sign",
 ]);
 
 /** Short-flag letters that consume the FOLLOWING token as a value (`-m`, `-F`, …). */
@@ -259,24 +273,66 @@ function shortClusterTakesValue(token: string): boolean {
 	return VALUE_SHORT_LETTERS.includes(token[token.length - 1] ?? "");
 }
 
-/**
- * True when the commit names a PATHSPEC — positional path args, or anything after a
- * `--` separator. A pathspec commit stages those WORKTREE paths at run time, so the
- * current index does not reflect what it commits (finding 4). Heuristic: skip flags
- * (consuming the value of known value-taking long flags AND short clusters whose
- * last letter takes a value, like `-am`); a bare positional is a pathspec.
- */
-function hasPathspec(rest: string[]): boolean {
+/** The SPECIFIC positional pathspecs of a commit's `rest` (after "commit"): bare
+ *  positionals plus everything after a `--`. Flags (and their values) are skipped;
+ *  `--pathspec-from-file` is broad (paths live in a file) and contributes none. */
+function commitPathspecs(rest: string[]): string[] {
+	const paths: string[] = [];
 	for (let i = 0; i < rest.length; i++) {
 		const t = rest[i];
-		if (t === "--") return i + 1 < rest.length;
+		if (t === "--") {
+			for (let k = i + 1; k < rest.length; k++) paths.push(rest[k]);
+			break;
+		}
+		if (t === "--pathspec-from-file" || t.startsWith("--pathspec-from-file=")) continue;
 		if (t.startsWith("-")) {
 			if (COMMIT_VALUE_FLAGS.has(t) || shortClusterTakesValue(t)) i++; // its value is not a pathspec
 			continue;
 		}
-		return true; // bare positional → pathspec
+		paths.push(t); // bare positional → pathspec
 	}
-	return false;
+	return paths;
+}
+
+/** True when the commit reads pathspecs from a file (`--pathspec-from-file[=<file>]`) —
+ *  a constructed-content commit whose path set is broad/unknown (finding 2026-06). */
+function hasPathspecFromFile(rest: string[]): boolean {
+	return rest.some((t) => t === "--pathspec-from-file" || t.startsWith("--pathspec-from-file="));
+}
+
+/** Characters that make a pathspec NON-literal: glob (star / `?` / brackets / braces),
+ *  shell variable or substitution (dollar), tilde expansion. A plain string scanned
+ *  char-by-char (not a regex char class) for lexer friendliness. */
+const NON_LITERAL_PATHSPEC_CHARS = "*?[]$~{}";
+
+/**
+ * True when a pathspec cannot be matched LITERALLY against changed-file paths:
+ * glob chars, shell variables, tilde expansion, or git pathspec magic (leading `:`).
+ * Git/the shell expands these at run time, so an exact-match filter would match
+ * NOTHING and the gate would silently evaluate no source (finding 2026-06) — the
+ * caller treats any non-literal spec as BROAD instead.
+ */
+function isNonLiteralPathspec(spec: string): boolean {
+	for (const ch of NON_LITERAL_PATHSPEC_CHARS) {
+		if (spec.includes(ch)) return true;
+	}
+	return spec.startsWith(":");
+}
+
+/** Paths a `git add` segment stages, and whether it stages BROADLY (`-A`/`.`/`-u`). */
+function addSegmentPaths(segment: string): { paths: string[]; broad: boolean } {
+	const tokens = stripLeadingPrefix(shellSplit(segment));
+	const { subIdx } = scanGitGlobalFlags(tokens);
+	if (subIdx < 0) return { paths: [], broad: false };
+	const paths: string[] = [];
+	for (const t of tokens.slice(subIdx + 1)) {
+		if (t === "-A" || t === "--all" || t === "-u" || t === "--update" || t === ".") {
+			return { paths: [], broad: true }; // stages the whole worktree
+		}
+		if (t === "--" || t.startsWith("-")) continue; // separator / other add flags
+		paths.push(t);
+	}
+	return { paths, broad: false };
 }
 
 /** True when a segment is a `git add …` (its staging constructs the commit's content). */
@@ -334,7 +390,14 @@ function parseSegment(segment: string): SegmentCommit | null {
 	const rest = tokens.slice(subIdx + 1);
 	const noVerify = rest.some((t) => t === "--no-verify" || t === "-n");
 	const all = rest.some(isAllFlag);
-	return { isCommit: true, noVerify, all, pathspec: hasPathspec(rest), cDir };
+	return {
+		isCommit: true,
+		noVerify,
+		all,
+		pathspecs: commitPathspecs(rest),
+		pathspecFromFile: hasPathspecFromFile(rest),
+		cDir,
+	};
 }
 
 /**
@@ -353,6 +416,8 @@ export function parseGitCommit(command: string): CommitParse | null {
 	if (!command || typeof command !== "string") return null;
 	let runCwd: string | null = null; // accumulated `cd` chain, relative to shell cwd
 	let sawGitAdd = false; // a `git add …` before the commit constructs its content
+	let addBroad = false; // a `git add -A`/`.`/`-u` stages the whole worktree
+	const addPaths: string[] = []; // narrow `git add <paths>` staged paths
 	for (const segment of splitSegments(command)) {
 		const cd = parseCdTarget(segment);
 		if (cd !== null) {
@@ -361,6 +426,9 @@ export function parseGitCommit(command: string): CommitParse | null {
 		}
 		if (isGitAddSegment(segment)) {
 			sawGitAdd = true;
+			const a = addSegmentPaths(segment);
+			if (a.broad) addBroad = true;
+			else addPaths.push(...a.paths);
 			continue;
 		}
 		const seg = parseSegment(segment);
@@ -368,7 +436,23 @@ export function parseGitCommit(command: string): CommitParse | null {
 			const effective = combineCwd(runCwd, seg.cDir);
 			const parse: CommitParse = { isCommit: seg.isCommit, noVerify: seg.noVerify };
 			if (seg.all) parse.all = true;
-			if (seg.pathspec || sawGitAdd) parse.constructsContent = true;
+			if (sawGitAdd || seg.pathspecs.length > 0 || seg.pathspecFromFile) {
+				parse.constructsContent = true;
+				// Restrict to SPECIFIC paths (commit pathspecs + narrow add paths) unless
+				// the path set cannot be known statically — then stay BROAD (evaluate
+				// everything; the narrow filter exists only to avoid false BLOCKS, so
+				// unknowable must fail toward evaluating MORE, never less):
+				//   - `git add -A`/`.`/`-u` / `--pathspec-from-file` — whole worktree;
+				//   - `git commit -a` after a narrow add — `-a` stages EVERY tracked
+				//     modification, not just the added paths (finding 2026-06);
+				//   - any NON-LITERAL pathspec (glob / variable / pathspec magic) — git
+				//     expands it at run time, so an exact-match filter would match
+				//     nothing and silently evaluate NO source (finding 2026-06).
+				const specific = [...seg.pathspecs, ...addPaths];
+				const broad =
+					addBroad || seg.pathspecFromFile || seg.all || specific.some(isNonLiteralPathspec);
+				if (!broad && specific.length > 0) parse.constructedPaths = specific;
+			}
 			if (effective !== null) parse.cwd = effective;
 			return parse;
 		}

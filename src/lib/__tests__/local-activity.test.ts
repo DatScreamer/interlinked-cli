@@ -259,7 +259,7 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 		expect(events[0].summary).toBe("/a.ts");
 	});
 
-	it("collection.jsonl takes precedence over a legacy activity.jsonl", () => {
+	it("collection.jsonl supplies the TOOL events (legacy activity tool events are deduped)", () => {
 		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
 		writeFileSync(
 			join(tmp, ".interlinked", "activity.jsonl"),
@@ -267,6 +267,50 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 		);
 		writeCollection([rec({ agent_name: "from-collection" })]);
 		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["from-collection"]);
+	});
+
+	it("does NOT duplicate a permission_request (collection-backed pre event) — finding 2026-06", () => {
+		// The collection builder CONSUMES permission_request (projected as a pre
+		// tool event); the merge filter must drop the raw activity row for it, or one
+		// request appears twice and can displace real events under a limit. The filter
+		// is IMPORTED from the builder now (a hand-mirrored copy is what drifted).
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${[
+				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "permission_request", tool: "Bash" }),
+				JSON.stringify({ ts: "2026-06-06T10:00:01.000Z", agent: "a", type: "session_start" }),
+			].join("\n")}\n`,
+		);
+		writeCollection([rec({ ts: "2026-06-06T10:00:00.000Z", agent_name: "a", phase: "pre" })]);
+
+		const all = readLocalActivity({ cwd: tmp });
+		// Exactly ONE record for the request (the collection projection)…
+		expect(all.filter((e) => e.type === "tool_use_start").length).toBe(1);
+		expect(all.filter((e) => e.type === "permission_request").length).toBe(0);
+		// …while genuinely non-tool events still survive the merge.
+		expect(all.some((e) => e.type === "session_start")).toBe(true);
+		expect(all.length).toBe(2);
+	});
+
+	it("RESTORES non-tool events from activity.jsonl when collection.jsonl exists (finding 11)", () => {
+		// activity.jsonl carries a session_start (non-tool) + a tool_use; collection.jsonl
+		// carries the enriched tool event. The session_start must NOT be dropped.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${[
+				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "session_start" }),
+				JSON.stringify({ ts: "2026-06-06T10:00:02.000Z", agent: "a", type: "tool_use", tool: "Bash" }),
+			].join("\n")}\n`,
+		);
+		writeCollection([rec({ ts: "2026-06-06T10:00:02.000Z", agent_name: "a" })]);
+
+		const all = readLocalActivity({ cwd: tmp });
+		expect(all.some((e) => e.type === "session_start")).toBe(true); // non-tool event preserved
+		expect(all.filter((e) => e.type === "tool_use").length).toBe(1); // tool event not duplicated
+		// `logs --type session_start` works again (was empty once any tool event landed).
+		expect(readLocalActivity({ cwd: tmp, type: "session_start" }).map((e) => e.agent)).toEqual(["a"]);
 	});
 
 	it("applies agent / type / limit filters on the collection source", () => {

@@ -190,10 +190,19 @@ function buildPerFileCoverage(
 		if (!rel || rel.startsWith("..")) continue;
 
 		const functions = extractFunctionCoverage(entry);
+		// Per-LINE coverage from the statement map (finding 5): per-FUNCTION coverage
+		// marks a function covered when ANY statement runs, missing an uncovered branch
+		// inside it AND top-level statements (which live in no function). Populating
+		// coveredLines/uncoveredLines makes `hasPerLineData` true for JS too, so the
+		// gate checks each EDITED line — restoring the added-line guarantee.
+		const { covered, uncovered } = extractLineCoverage(entry);
 		result.set(rel, {
 			filePath: rel,
 			mtime,
 			functions,
+			...(covered.size > 0 || uncovered.size > 0
+				? { coveredLines: covered, uncoveredLines: uncovered }
+				: {}),
 		});
 	}
 
@@ -231,6 +240,38 @@ function extractFunctionCoverage(entry: IstanbulFileEntry): FunctionCoverage[] {
 	}
 
 	return functions.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * Per-LINE coverage from Istanbul's statement map. Catches top-level statements (in
+ * no function) and an uncovered branch body inside an otherwise-covered function
+ * (finding 5). Range handling is deliberately ASYMMETRIC (finding 2026-06):
+ *   - a ZERO-hit statement never executed, so EVERY line it spans is uncovered —
+ *     record its full start..end range (a multi-line call's continuation lines were
+ *     previously in neither set, so an edit touching one slipped the added-line check);
+ *   - a COVERED statement records only its START line: a covered declaration like
+ *     `const f = () => {…}` SPANS its whole body, and since a line with any covered
+ *     statement wins, marking its full range would mask genuinely uncovered inner
+ *     statements.
+ */
+function extractLineCoverage(entry: IstanbulFileEntry): { covered: Set<number>; uncovered: Set<number> } {
+	const covered = new Set<number>();
+	const uncovered = new Set<number>();
+	const statementMap = entry.statementMap ?? {};
+	const statementHits = entry.s ?? {};
+	for (const [id, range] of Object.entries(statementMap)) {
+		const start = range?.start?.line;
+		if (start == null || start <= 0) continue;
+		if ((statementHits[id] ?? 0) > 0) {
+			covered.add(start);
+		} else {
+			const end = Math.max(range?.end?.line ?? start, start);
+			for (let ln = start; ln <= end; ln++) uncovered.add(ln);
+		}
+	}
+	// A line is covered if ANY statement starting on it executed.
+	for (const ln of covered) uncovered.delete(ln);
+	return { covered, uncovered };
 }
 
 interface StatementPctInput {

@@ -185,6 +185,19 @@ export function mergeLocalOverrides(
 	if (local.grep_acceleration) {
 		config.grep_acceleration = { ...config.grep_acceleration, ...local.grep_acceleration };
 	}
+	// Per-edit coverage / red-green / CRAP gates. These are DEFAULT ON and the ONLY
+	// documented opt-out is `{"per_edit_coverage": {"enabled": false}}` in
+	// guard-rules.local.json (default-config.ts) — but without this branch the
+	// override was silently dropped and the default-on HARD GATES could not be
+	// disabled as advertised. Shallow-merged so a partial `{enabled:false}` keeps the
+	// other knobs (mode / budget_ms / languages / block_on_*).
+	if (local.per_edit_coverage) {
+		if (config.per_edit_coverage) {
+			Object.assign(config.per_edit_coverage, local.per_edit_coverage);
+		} else {
+			config.per_edit_coverage = local.per_edit_coverage;
+		}
+	}
 }
 
 /** Deep-merge overrides for the content scanner config. Nested blocks

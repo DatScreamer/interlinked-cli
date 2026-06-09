@@ -42,14 +42,20 @@ describe("parseApplyPatchSections", () => {
 		]);
 	});
 
-	it("retargets a section path via Move to", () => {
+	it("retargets a section path via Move to AND retains the source path (finding 9)", () => {
 		const raw = ["*** Update File: src/old.ts", "*** Move to: src/new.ts", "@@", " a", "+b"].join(
 			"\n",
 		);
 		const sections = parseApplyPatchSections(raw);
 		expect(sections).toHaveLength(1);
-		expect(sections[0].path).toBe("src/new.ts");
+		expect(sections[0].path).toBe("src/new.ts"); // destination
+		expect(sections[0].fromPath).toBe("src/old.ts"); // source retained (was lost before)
 		expect(sections[0].op).toBe("update");
+	});
+
+	it("does NOT set fromPath when Move to targets the same path", () => {
+		const raw = ["*** Update File: src/a.ts", "*** Move to: src/a.ts", "@@", " x", "+y"].join("\n");
+		expect(parseApplyPatchSections(raw)[0].fromPath).toBeUndefined();
 	});
 
 	it("excludes directive lines from the body", () => {

@@ -43,7 +43,13 @@ function classifyTool(toolName: string): ToolClass {
 
 const PRE_EVENT_TYPES = new Set(["tool_use_start", "permission_request"]);
 const POST_EVENT_TYPES = new Set(["tool_use", "tool_use_error"]);
-const TOOL_EVENT_TYPES = new Set([...PRE_EVENT_TYPES, ...POST_EVENT_TYPES]);
+/** Every legacy activity `type` the collection builder CONSUMES (projects into
+ *  collection.jsonl). Exported as the single source of truth for the merge reader:
+ *  when collection.jsonl exists, exactly these types must be dropped from the
+ *  legacy activity stream or each request appears TWICE — once as the collection
+ *  projection, once as the raw activity row (finding 2026-06: `permission_request`
+ *  was missing from a hand-mirrored copy of this set). */
+export const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set([...PRE_EVENT_TYPES, ...POST_EVENT_TYPES]);
 
 const GEMINI_HOOK_EVENTS = new Set(["BeforeTool", "AfterTool"]);
 

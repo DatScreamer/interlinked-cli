@@ -107,6 +107,47 @@ describe("loadCoverageFinal", () => {
 		expect(entry?.functions.map((f) => f.name)).toEqual(["covered", "uncovered"]);
 	});
 
+	it("populates per-LINE coverage from the statement map — flags an uncovered statement INSIDE a covered function (finding 5)", () => {
+		writeFixture(buildFixture(tmp));
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as Map<string, unknown> as never, "src/foo.ts");
+		// Function "covered" (lines 1-3) has f=5 hits — per-FUNCTION coverage calls it
+		// covered. But statement "2" (line 3) has s=0, so per-LINE correctly flags line 3.
+		expect(entry?.uncoveredLines?.has(3)).toBe(true); // uncovered stmt in a covered fn
+		expect(entry?.uncoveredLines?.has(10)).toBe(true); // uncovered fn body
+		expect(entry?.coveredLines?.has(1)).toBe(true); // executed statement
+		expect(entry?.coveredLines?.has(3)).toBe(false);
+	});
+
+	it("a ZERO-hit MULTI-LINE statement marks EVERY spanned line uncovered; a covered one marks only its start (finding 2026-06)", () => {
+		const absPath = join(tmp, "src/multi.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {},
+				f: {},
+				statementMap: {
+					// Uncovered call spanning lines 20-22 — its continuation lines were
+					// previously in NEITHER set, so an edit touching line 21 slipped through.
+					"0": { start: { line: 20, column: 0 }, end: { line: 22, column: 1 } },
+					// Covered declaration spanning 30-32 (`const f = () => {…}` shape):
+					// only its START line is covered — marking the full range would mask
+					// uncovered inner statements via covered-wins.
+					"1": { start: { line: 30, column: 0 }, end: { line: 32, column: 1 } },
+				},
+				s: { "0": 0, "1": 4 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as Map<string, unknown> as never, "src/multi.ts");
+		expect(entry?.uncoveredLines?.has(20)).toBe(true);
+		expect(entry?.uncoveredLines?.has(21)).toBe(true); // continuation line now flagged
+		expect(entry?.uncoveredLines?.has(22)).toBe(true);
+		expect(entry?.coveredLines?.has(30)).toBe(true); // covered: start line only
+		expect(entry?.coveredLines?.has(31)).toBe(false);
+		expect(entry?.uncoveredLines?.has(31)).toBe(false); // and NOT uncovered either
+	});
+
 	it("computes statement_pct from overlapping statement ranges", () => {
 		writeFixture(buildFixture(tmp));
 		const result = loadCoverageFinal(coveragePath, tmp);

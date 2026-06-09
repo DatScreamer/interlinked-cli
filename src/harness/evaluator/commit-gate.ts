@@ -46,17 +46,26 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, resolve } from "node:path";
-import { computeCrap, crapScore } from "../checks/crap.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
+import { recordCoverageDischarge } from "../coverage-obligation-ledger.js";
 import {
 	type CoverageLanguage,
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
 import { isCappableFile } from "../large-file-policy.js";
+import {
+	type ChangedSource,
+	coverageViolation,
+	crapViolation,
+	cyclomaticViolation,
+	isTypeOnlySource,
+	missingCoverageViolation,
+	type Violation,
+} from "./commit-gate-scan.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import { parseGitCommit } from "./commit-parse.js";
 import { materializeIndexSnapshot, type StagedSnapshot } from "./staged-snapshot.js";
@@ -83,7 +92,11 @@ export type CyclomaticAnalyzer = (
  * tree's tracked changes too. Returns `null` when the diff could not be taken (git
  * missing, not a repo) — the gate fail-opens on `null`.
  */
-export type GitChangedFilesFn = (projectRoot: string, stagedOnly?: boolean) => string[] | null;
+export type GitChangedFilesFn = (
+	projectRoot: string,
+	stagedOnly?: boolean,
+	includeUntracked?: boolean,
+) => string[] | null;
 
 /** Injectable seams so unit tests run with NO real suite / git / analyzer. */
 export interface CommitGateDeps {
@@ -97,6 +110,16 @@ export interface CommitGateDeps {
 	clock: () => number;
 	/** Read a file's current content from disk (default: `fs.readFileSync`). */
 	readFile: (absPath: string) => string | null;
+	/** Discharge a file's deferred coverage obligation on a clean pass (finding 12;
+	 *  default: the real ledger append). Optional: tests that don't assert discharge
+	 *  omit it and the discharge is a no-op. */
+	recordDischarge?: (projectRoot: string, file: string, sessionId: string, timestamp: string) => void;
+	/** Resolve a directory to its git repository TOPLEVEL (finding 2026-06: git emits
+	 *  toplevel-relative paths, so a `cd src && git commit -a` must anchor at the
+	 *  toplevel, not the subdirectory). Optional: when absent (or it returns null)
+	 *  the gate uses the command's cwd — exactly the pre-fix behavior. Default: the
+	 *  real `git rev-parse --show-toplevel`. */
+	resolveRepoRoot?: (dir: string) => string | null;
 	/**
 	 * Materialize the would-be-committed tree so the gate evaluates the commit, not
 	 * the raw working tree (finding 3). `includeTrackedWorktree` is true for `-a`
@@ -109,14 +132,6 @@ export interface CommitGateDeps {
 
 /** The default CRAP cutoff — the McCabe / SonarQube convention (matches the per-edit gate). */
 const DEFAULT_CRAP_THRESHOLD = 30;
-
-/**
- * The hard commit-time cyclomatic cap. A changed function above this blocks the
- * commit. Deliberately looser than the strict per-edit cyclomatic gate: the
- * commit gate is the coarse safety net for big-suite repos, not the fine-grained
- * per-edit lever, so it only fires on genuinely pathological complexity.
- */
-const COMMIT_CYCLOMATIC_CAP = 25;
 
 /**
  * Generous per-run timeout (ms) for the commit-time suite. Commit time is allowed
@@ -165,16 +180,41 @@ function gitLines(projectRoot: string, args: string[]): string[] | null {
  * The real changed-files function. `stagedOnly` (a plain `git commit`) returns
  * just `git diff --cached --name-only` — the staged set the commit will capture.
  * Otherwise (`-a`/`--all`, which stages tracked edits first) it UNIONs `git diff
- * --name-only HEAD` (working tree vs HEAD) with the staged set. Read-only. Returns
- * `null` only when the needed git invocation(s) fail so the gate fail-opens rather
- * than blocking when git can't answer at all.
+ * --name-only HEAD` (working tree vs HEAD) with the staged set. `includeUntracked`
+ * (CONSTRUCTED commits only — `git add … && git commit`) additionally unions
+ * `git ls-files --others --exclude-standard`: the add stages NEW files at run time,
+ * while `git diff` never lists them, so without this a brand-new uncovered source
+ * sailed through the gate (finding 2026-06). Plain `-a` never stages untracked
+ * files, so `tracked` mode keeps them excluded. Read-only. Returns `null` only when
+ * every needed git invocation fails so the gate fail-opens rather than blocking
+ * when git can't answer at all.
  */
-function defaultGitChangedFiles(projectRoot: string, stagedOnly = false): string[] | null {
+export function defaultGitChangedFiles(
+	projectRoot: string,
+	stagedOnly = false,
+	includeUntracked = false,
+): string[] | null {
 	const staged = gitLines(projectRoot, ["diff", "--cached", "--name-only"]);
 	if (stagedOnly) return staged; // a plain commit captures the index only
 	const worktree = gitLines(projectRoot, ["diff", "--name-only", "HEAD"]);
-	if (worktree === null && staged === null) return null; // git unusable → fail-open
-	return [...new Set<string>([...(worktree ?? []), ...(staged ?? [])])];
+	const untracked = includeUntracked
+		? gitLines(projectRoot, ["ls-files", "--others", "--exclude-standard"])
+		: [];
+	if (worktree === null && staged === null && untracked === null) return null; // git unusable
+	return [...new Set<string>([...(worktree ?? []), ...(staged ?? []), ...(untracked ?? [])])];
+}
+
+/**
+ * The git repository TOPLEVEL for a directory (`git rev-parse --show-toplevel`),
+ * or null when not a repo / git fails. Git emits changed-file paths relative to the
+ * TOPLEVEL, so the gate must anchor there: evaluating from a subdirectory
+ * (`cd src && git commit -a`) would otherwise resolve `src/a.ts` against
+ * `/repo/src` → `/repo/src/src/a.ts` and silently skip every changed source
+ * (finding 2026-06).
+ */
+export function defaultResolveRepoRoot(dir: string): string | null {
+	const lines = gitLines(dir, ["rev-parse", "--show-toplevel"]);
+	return lines !== null && lines.length > 0 ? (lines[0] ?? null) : null;
 }
 
 /** Production defaults — real runner factory, git diff, analyzer, clock, reader. */
@@ -190,6 +230,8 @@ const DEFAULT_DEPS: CommitGateDeps = {
 			return null;
 		}
 	},
+	recordDischarge: recordCoverageDischarge,
+	resolveRepoRoot: defaultResolveRepoRoot,
 	materializeIndexSnapshot,
 };
 
@@ -216,12 +258,6 @@ function languageForExt(ext: string): CoverageLanguage | null {
 		default:
 			return null;
 	}
-}
-
-/** A changed source file the gate will evaluate, with its resolved language. */
-interface ChangedSource {
-	relPath: string;
-	language: CoverageLanguage;
 }
 
 /**
@@ -254,129 +290,6 @@ function selectChangedSources(
 // Per-source violation detection
 // ===========================================
 
-/** True when the runner reported native per-line coverage (coverage.py path). */
-function hasPerLineData(cov: PerFileCoverage): boolean {
-	return cov.uncoveredLines !== undefined || cov.coveredLines !== undefined;
-}
-
-/** The lowest uncovered executable line for a per-line (coverage.py) report, or null. */
-function firstUncoveredLine(cov: PerFileCoverage): number | null {
-	const uncovered = cov.uncoveredLines ?? new Set<number>();
-	let lowest: number | null = null;
-	for (const ln of uncovered) {
-		if (lowest === null || ln < lowest) lowest = ln;
-	}
-	return lowest;
-}
-
-/** The first uncovered function for a per-function (istanbul / JS) report, or null. */
-function firstUncoveredFunction(cov: PerFileCoverage): { name: string; line: number } | null {
-	for (const fn of cov.functions) {
-		if (fn.hits === 0 || fn.statement_pct === 0) return { name: fn.name, line: fn.line };
-	}
-	return null;
-}
-
-/** Count how many of [start,end] (inclusive) appear in `lines`. */
-function countInRange(lines: ReadonlySet<number>, start: number, end: number): number {
-	let n = 0;
-	for (const ln of lines) {
-		if (ln >= start && ln <= end) n++;
-	}
-	return n;
-}
-
-/** One CRAP violation for a changed file (worst-first ranked by the callers). */
-interface CrapHit {
-	function: string;
-	line: number;
-	cyclomatic: number;
-	coverage_pct: number;
-	crap_score: number;
-}
-
-/**
- * CRAP violations for a PER-FUNCTION (istanbul / JS) coverage report. REUSES
- * `computeCrap` — exact formula + the ±3-line name/line matching — never
- * reimplemented here. Returns the worst-first list at/above `threshold`.
- */
-function crapHitsPerFunction(
-	relPath: string,
-	complexities: FunctionComplexityEntry[],
-	cov: PerFileCoverage,
-	threshold: number,
-): CrapHit[] {
-	const findings = computeCrap({
-		complexities,
-		coverage: cov.functions,
-		filePath: relPath,
-		fileMtime: 0,
-		coverageMtime: null, // fresh: this is THIS run's coverage
-		threshold,
-		staleTolerance: "include",
-	});
-	return findings.map((f) => ({
-		function: f.function,
-		line: f.line,
-		cyclomatic: f.complexity,
-		coverage_pct: f.coverage_pct,
-		crap_score: f.crap_score,
-	}));
-}
-
-/**
- * CRAP violations for a PER-LINE (Python / coverage.py) coverage report. No
- * function ranges exist, so per-function coverage is the covered lines inside each
- * analyzer-reported body range over its executable lines. Scores via the REUSED
- * `crapScore`. Sorted worst-first.
- */
-function crapHitsPerLine(
-	complexities: FunctionComplexityEntry[],
-	cov: PerFileCoverage,
-	threshold: number,
-): CrapHit[] {
-	const covered = cov.coveredLines ?? new Set<number>();
-	const uncovered = cov.uncoveredLines ?? new Set<number>();
-	const hits: CrapHit[] = [];
-	for (const fn of complexities) {
-		const inCovered = countInRange(covered, fn.line, fn.endLine);
-		const inUncovered = countInRange(uncovered, fn.line, fn.endLine);
-		const executable = inCovered + inUncovered;
-		if (executable === 0) continue;
-		const covPct = (inCovered / executable) * 100;
-		const score = crapScore(fn.cyclomatic, covPct);
-		if (score < threshold) continue;
-		hits.push({
-			function: fn.name,
-			line: fn.line,
-			cyclomatic: fn.cyclomatic,
-			coverage_pct: covPct,
-			crap_score: score,
-		});
-	}
-	hits.sort((a, b) => b.crap_score - a.crap_score);
-	return hits;
-}
-
-/** A single named violation for the block reason. */
-interface Violation {
-	kind: "uncovered" | "crap" | "cyclomatic";
-	file: string;
-	detail: string;
-}
-
-/** The worst (first) over-cap cyclomatic function for a file, or null. */
-function firstOverCapCyclomatic(
-	complexities: FunctionComplexityEntry[],
-): FunctionComplexityEntry | null {
-	let worst: FunctionComplexityEntry | null = null;
-	for (const fn of complexities) {
-		if (fn.cyclomatic <= COMMIT_CYCLOMATIC_CAP) continue;
-		if (!worst || fn.cyclomatic > worst.cyclomatic) worst = fn;
-	}
-	return worst;
-}
-
 /** Inputs to the per-file violation scan — explicit so it needs no broader ctx. */
 interface ScanInput {
 	source: ChangedSource;
@@ -384,63 +297,6 @@ interface ScanInput {
 	content: string;
 	analyzer: CyclomaticAnalyzer | null;
 	crapThreshold: number;
-}
-
-/** The uncovered-line / uncovered-function coverage violation for a file, or null. */
-function coverageViolation(source: ChangedSource, cov: PerFileCoverage): Violation | null {
-	if (hasPerLineData(cov)) {
-		const line = firstUncoveredLine(cov);
-		if (line !== null) {
-			return {
-				kind: "uncovered",
-				file: source.relPath,
-				detail: `line ${line} is executable but uncovered`,
-			};
-		}
-		return null;
-	}
-	const fn = firstUncoveredFunction(cov);
-	if (fn) {
-		return {
-			kind: "uncovered",
-			file: source.relPath,
-			detail: `\`${fn.name}\` (line ${fn.line}) is executable but uncovered`,
-		};
-	}
-	return null;
-}
-
-/** The over-cap cyclomatic violation for a file, or null. */
-function cyclomaticViolation(
-	source: ChangedSource,
-	complexities: FunctionComplexityEntry[],
-): Violation | null {
-	const overCap = firstOverCapCyclomatic(complexities);
-	if (!overCap) return null;
-	return {
-		kind: "cyclomatic",
-		file: source.relPath,
-		detail: `\`${overCap.name}\` (line ${overCap.line}) has cyclomatic complexity ${overCap.cyclomatic} (cap ${COMMIT_CYCLOMATIC_CAP})`,
-	};
-}
-
-/** The worst CRAP violation for a file, or null. */
-function crapViolation(
-	source: ChangedSource,
-	complexities: FunctionComplexityEntry[],
-	cov: PerFileCoverage,
-	threshold: number,
-): Violation | null {
-	const hits = hasPerLineData(cov)
-		? crapHitsPerLine(complexities, cov, threshold)
-		: crapHitsPerFunction(source.relPath, complexities, cov, threshold);
-	const worst = hits[0];
-	if (!worst) return null;
-	return {
-		kind: "crap",
-		file: source.relPath,
-		detail: `\`${worst.function}\` (line ${worst.line}) has a CRAP score of ${Math.round(worst.crap_score)} (cyclomatic ${worst.cyclomatic}, coverage ${Math.round(worst.coverage_pct)}%)`,
-	};
 }
 
 /**
@@ -454,21 +310,27 @@ function scanFile(input: ScanInput): Violation[] {
 	const { source, cov, content, analyzer, crapThreshold } = input;
 	const violations: Violation[] = [];
 
-	if (cov) {
-		const covViolation = coverageViolation(source, cov);
-		if (covViolation) violations.push(covViolation);
-	}
-
 	// The cyclomatic + CRAP checks need a per-function analysis. An UNAVAILABLE
 	// analyzer (null) or one that returned null (typescript / radon absent, or a
 	// parse failure) loud-degrades — exactly like the per-edit gate fail-opens on
-	// an unmeasured suite — and those two checks are skipped for this file. The
-	// coverage check above already ran regardless.
+	// an unmeasured suite — and those two checks are skipped for this file.
 	const complexities = analyzer ? analyzer(content, source.relPath) : null;
+
+	if (cov) {
+		const covViolation = coverageViolation(source, cov);
+		if (covViolation) violations.push(covViolation);
+	} else if (!isTypeOnlySource(content)) {
+		// The full suite ran, yet this changed source is ABSENT from the coverage
+		// report → no test loaded it → its executable code is UNCOVERED. Block instead
+		// of silently skipping (finding 4). The ONLY exemption is a genuinely type-only
+		// file (imports / interfaces / type aliases / re-exports): gating on "the
+		// analyzer found ≥1 function" let function-less top-level code — `console.log`,
+		// an initializing call, an enum — pass untested (finding 2026-06).
+		violations.push(missingCoverageViolation(source));
+	}
+
 	if (!complexities) {
-		loudDegrade(
-			`no cyclomatic analysis for ${source.relPath} — CRAP / cyclomatic checks skipped`,
-		);
+		loudDegrade(`no cyclomatic analysis for ${source.relPath} — CRAP / cyclomatic checks skipped`);
 		return violations;
 	}
 	const cycViolation = cyclomaticViolation(source, complexities);
@@ -559,6 +421,12 @@ interface GateContext {
 	sources: ChangedSource[];
 	crapThreshold: number;
 	warnings: string[];
+	/** The REAL repo root (where the obligation ledger lives), session id, and event
+	 *  timestamp — used to DISCHARGE deferred coverage obligations on a clean pass so
+	 *  the Stop check stops warning "never enforced" (finding 12). Absent ⇒ no discharge. */
+	ledgerRoot?: string;
+	sessionId?: string;
+	eventTs?: string;
 }
 
 /** The merged outcome of running every changed language's suite. */
@@ -657,6 +525,16 @@ async function runSuiteAndScan(
 	const violations = collectViolations(ctx, outcome.perFile, deps);
 	if (violations.length > 0) return blockForViolations(violations, ctx.warnings);
 
+	// CLEAN: the suite RAN (not degraded) and every gated source PASSED → discharge
+	// each source's deferred coverage obligation so the Stop check stops warning
+	// "never enforced" (finding 12). Only reached on a measured pass, never a degrade.
+	if (ctx.ledgerRoot && ctx.sessionId && deps.recordDischarge) {
+		const ts = ctx.eventTs ?? new Date().toISOString();
+		for (const source of ctx.sources) {
+			deps.recordDischarge(ctx.ledgerRoot, source.relPath, ctx.sessionId, ts);
+		}
+	}
+
 	// Clean tree → allow. Carry any accumulated warnings (e.g. the `--no-verify`
 	// note) so the bypass attempt stays visible; otherwise a clean no-op (null).
 	return ctx.warnings.length > 0 ? { decision: "allow", warnings: ctx.warnings } : null;
@@ -712,6 +590,17 @@ function resolveEvalTarget(projectRoot: string, mode: EvalMode, deps: CommitGate
 }
 
 /**
+ * Restrict changed files to those a NARROW constructed-content commit actually stages
+ * — an exact pathspec, or a file under a named directory pathspec. Repo-relative on
+ * both sides (the pathspecs resolve against the same projectRoot as the changed-files
+ * query). This is what keeps an unrelated dirty file from blocking the commit.
+ */
+function filterToConstructedPaths(files: string[], specs: string[]): string[] {
+	const norms = specs.map((p) => p.replace(/^\.\//, "").replace(/\/+$/, ""));
+	return files.filter((f) => norms.some((p) => f === p || f.startsWith(`${p}/`)));
+}
+
+/**
  * PreToolUse commit gate. Returns a `block` HarnessDecision when the command is a
  * real `git commit` AND `per_edit_coverage.enabled` AND the working tree fails the
  * quality bar (red suite / uncovered changed line / CRAP-over / cyclomatic-over);
@@ -742,17 +631,33 @@ export async function checkCommitGate(
 		// repository the commit actually runs in, not the shell's parent cwd. In a
 		// monorepo `cd packages/x && git commit` must gate packages/x, not the root.
 		const baseCwd = event.cwd || process.cwd();
-		const projectRoot = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
+		const commandCwd = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
+		// Anchor at the git TOPLEVEL: git emits toplevel-relative changed paths, so a
+		// commit run from an ordinary subdirectory (`cd src && git commit -a`) would
+		// otherwise resolve `src/a.ts` against `/repo/src` → `/repo/src/src/a.ts` and
+		// silently skip every changed source (finding 2026-06). Fail-open to the
+		// command's own cwd when the toplevel can't be resolved.
+		const projectRoot = deps.resolveRepoRoot?.(commandCwd) ?? commandCwd;
 		// How to model the commit (findings 3 & 4): a commit that constructs content
 		// at run time (preceding `git add`, or a pathspec) → the WORKTREE (the index is
 		// stale pre-execution); `-a` → tracked snapshot; a plain commit → the INDEX.
 		const mode: EvalMode = parse.constructsContent ? "worktree" : parse.all === true ? "tracked" : "index";
 		// Changed files: staged-only ONLY for the plain index commit; the broader
-		// worktree query for `-a` and constructed-content commits.
-		const changed = deps.gitChangedFiles(projectRoot, mode === "index");
-		if (changed === null) {
+		// worktree query for `-a` / constructed commits — and untracked files ONLY for
+		// CONSTRUCTED commits, whose `git add` stages new files at run time (finding
+		// 2026-06: `git diff` never lists untracked, so a brand-new source bypassed).
+		const allChanged = deps.gitChangedFiles(projectRoot, mode === "index", mode === "worktree");
+		if (allChanged === null) {
 			return degradeWithWarnings("git diff unavailable — cannot determine changed files", warnings);
 		}
+		// A NARROW constructed-content commit (`git commit src/a.ts`, `git add src/a.ts
+		// && git commit`) stages only specific paths — evaluate ONLY those, so an
+		// UNRELATED dirty worktree file does not block the commit (finding 2026-06: the
+		// round-3 worktree-everything approach over-blocked, breaking the zero-FP contract).
+		const changed =
+			mode === "worktree" && parse.constructedPaths
+				? filterToConstructedPaths(allChanged, parse.constructedPaths)
+				: allChanged;
 
 		const target = resolveEvalTarget(projectRoot, mode, deps);
 		try {
@@ -767,6 +672,11 @@ export async function checkCommitGate(
 					sources,
 					crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
 					warnings,
+					// Discharge obligations against the REAL repo root (where the ledger
+					// lives), not the snapshot, on a clean pass (finding 12).
+					ledgerRoot: projectRoot,
+					sessionId: event.session_id,
+					...(event.timestamp ? { eventTs: event.timestamp } : {}),
 				},
 				deps,
 			);

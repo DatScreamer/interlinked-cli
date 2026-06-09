@@ -155,6 +155,12 @@ function addedLineNumbers(before: string, after: string): Set<number> {
 	return edited;
 }
 
+/** The CONFINED source path of a MOVED section (its pre-Move `fromPath`), or null when
+ *  the section was not moved or the source path escapes the project root. */
+function moveSourceRel(section: ApplyPatchSection, projectRoot: string): string | null {
+	return section.fromPath ? toProjectRel(section.fromPath, projectRoot) : null;
+}
+
 /** Build the coverage target for one reconstructed apply_patch section, or null to
  *  skip it (wrong language, out of tree, unreconstructable, or non-cappable). */
 function targetForSection(
@@ -162,14 +168,16 @@ function targetForSection(
 	projectRoot: string,
 	cfg: PerEditCfg,
 ): CoverageTarget | null {
+	if (section.op === "delete") return null; // a deleted file is not a coverage target
 	const language = languageForExt(extname(section.path));
 	if (!language || !cfg.languages.includes(language)) return null;
 	const relPath = toProjectRel(section.path, projectRoot);
 	if (relPath === null) return null;
-	// Derive the read path from the CONFINED relPath, never the raw section path,
-	// so a rejected traversal can't reach the filesystem here either.
-	const abs = resolve(projectRoot, relPath);
-	const before = safeReadFile(abs);
+	// Read before-content from the SOURCE path for a moved section (finding 2026-06:
+	// reading the destination, which doesn't exist yet, mis-reconstructed the move).
+	// Confined relPath only — a rejected traversal can't reach the filesystem here.
+	const beforeRel = moveSourceRel(section, projectRoot) ?? relPath;
+	const before = safeReadFile(resolve(projectRoot, beforeRel));
 	const after = reconstructAfterContent(section, before);
 	if (after === null) return null; // can't reconstruct confidently → fail open here
 	if (!isCappableFile({ filePath: relPath, content: after })) return null;
@@ -231,9 +239,22 @@ function applyPatchOverlayFiles(
 	for (const section of parseApplyPatchSections(raw)) {
 		const relPath = toProjectRel(section.path, projectRoot);
 		if (relPath === null) continue;
-		const after = reconstructAfterContent(section, safeReadFile(resolve(projectRoot, relPath)));
+		// A Delete REMOVES the file from the overlay so the suite sees it ABSENT, not
+		// as an empty module (finding 2026-06: it was written as "").
+		if (section.op === "delete") {
+			files.push({ relPath, content: "", delete: true });
+			continue;
+		}
+		// Read before-content from the SOURCE (pre-Move) path so a move's hunks
+		// reconstruct against the right contents (finding 2026-06).
+		const fromRel = moveSourceRel(section, projectRoot);
+		const after = reconstructAfterContent(section, safeReadFile(resolve(projectRoot, fromRel ?? relPath)));
 		if (after === null) continue;
 		files.push({ relPath, content: after });
+		// A Move ALSO removes the source file from the overlay (it no longer exists).
+		if (fromRel !== null && fromRel !== relPath) {
+			files.push({ relPath: fromRel, content: "", delete: true });
+		}
 	}
 	return files;
 }

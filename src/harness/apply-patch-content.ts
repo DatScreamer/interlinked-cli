@@ -28,6 +28,12 @@ export interface ApplyPatchSection {
 	op: ApplyPatchOp;
 	/** Raw body lines between this header and the next directive. */
 	body: string[];
+	/** The ORIGINAL path when an `*** Move to:` retargeted this section — the source
+	 *  file to read the before-content from AND to remove from the overlay (finding
+	 *  2026-06: it was overwritten by the destination, so the move's hunks reconstructed
+	 *  against the wrong contents and the source was left present in the overlay).
+	 *  Absent when the section was not moved. */
+	fromPath?: string;
 }
 
 const HEADER_RE = /^\*\*\* (Update|Add|Delete) File:\s+(.+)$/;
@@ -75,7 +81,11 @@ export function parseApplyPatchSections(raw: string): ApplyPatchSection[] {
 		}
 		const move = MOVE_RE.exec(line);
 		if (move && current) {
-			current.path = move[1].trim();
+			const dest = move[1].trim();
+			// Remember the source path (to read before-content from + remove from the
+			// overlay) before retargeting to the destination. Only when it differs.
+			if (dest !== current.path) current.fromPath = current.path;
+			current.path = dest;
 			continue;
 		}
 		// Any other `*** ` line is a directive (Begin/End Patch) — not body.
