@@ -31,6 +31,36 @@ function isAssertionFreeBody(body: string): boolean {
 	return !ASSERT_PATTERN.test(body);
 }
 
+// A case EXPLICITLY named for a smoke / not-throwing check legitimately asserts
+// nothing: `render(<App/>)` (or any setup that would throw on failure) IS the
+// assertion. Without this exemption the pre_block error hard-blocks a common,
+// valid React/RTL pattern. Deliberately narrow — only the explicit phrasings
+// ("…without crashing", "does not throw", "smoke"); a bare "renders the count"
+// is NOT exempt, because it should assert what it renders.
+const SMOKE_TEST_NAME_RE =
+	/\bsmoke\b|without\s+(?:crash(?:ing|es)?|error(?:s)?|throw(?:ing)?|incident)|does(?:\s+not|n'?t)\s+(?:throw|crash|reject|error)|\bno[\s-]?throw\b/i;
+
+/** How many ORIGINAL lines of a test's header to search for its name string.
+ *  Formatters put the name at most a line or two below `it(`; the window is
+ *  generous without scanning whole bodies. */
+const TEST_NAME_HEADER_LINES = 8;
+
+/** Pull the case name from the ORIGINAL (non-stripped) test HEADER — the
+ *  `it(...)`/`test(...)` start line JOINED with the following lines up to the
+ *  block end (capped at {@link TEST_NAME_HEADER_LINES}), because a formatted
+ *  test puts the name on the NEXT line (`it(\n  "name",\n  () => …`). Reading
+ *  only the start line returned "" for those and defeated the smoke-test
+ *  exemption (finding 2026-06). The stripped copy has names collapsed away, so
+ *  this reads the original. Empty when the first argument isn't a string
+ *  literal — the regex anchors the quote to the call's opening paren (only
+ *  whitespace may intervene), so body strings can never be mistaken for a name. */
+function testCaseName(lines: string[], start: number, end: number): string {
+	const stop = Math.min(end, start + TEST_NAME_HEADER_LINES - 1);
+	const header = lines.slice(start, stop + 1).join("\n");
+	const m = header.match(/\b(?:it|test|specify)(?:\s*\.\s*\w+)*\s*\(\s*(["'`])([^"'`]*)\1/);
+	return m ? m[2] : "";
+}
+
 export function checkAssertionFreeTest(content: string, filePath: string): InlineMatch[] {
 	if (!isTestFile(filePath)) return [];
 	const stripped = stripCommentsAndStrings(content);
@@ -45,7 +75,11 @@ export function checkAssertionFreeTest(content: string, filePath: string): Inlin
 		}
 		const end = findBlockEnd(sLines, i);
 		const body = sLines.slice(i, end + 1).join("\n");
-		if (isAssertionFreeBody(body)) push(matches, i, lines, 10);
+		// The name is read from the ORIGINAL header lines (stripped collapses it);
+		// line indices align because stripCommentsAndStrings is line-preserving.
+		if (isAssertionFreeBody(body) && !SMOKE_TEST_NAME_RE.test(testCaseName(lines, i, end))) {
+			push(matches, i, lines, 10);
+		}
 		i = end + 1;
 	}
 	return matches;
