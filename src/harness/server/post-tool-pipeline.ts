@@ -16,6 +16,10 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { join, relative } from "node:path";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import { runPostToolScan } from "../content-scanner/post-scan.js";
+import {
+	dischargeObligationsAfterGreenRun,
+	isCoverageSuiteCommand,
+} from "../coverage-discharge.js";
 import { evaluatePostToolUse } from "../evaluator.js";
 import { runFailureChannels } from "../failure-channels.js";
 import type { ToolBreakdownEntry } from "../quality-checks.js";
@@ -217,6 +221,26 @@ function trackVerificationOutcome(event: HarnessEvent, session: SessionTrajector
 	if (outcome === "neither") return;
 	const detail = cmd.length > 80 ? `${cmd.slice(0, 77)}...` : cmd;
 	applyObservedOutcome(session, kind, outcome, session.tool_call_count, detail);
+}
+
+/**
+ * Deferred-coverage discharge on an observed GREEN coverage-suite run — the
+ * relief path the Stop deferred-coverage nudge promises (finding 2026-06: only
+ * the commit gate recorded discharges, so "run the suite + coverage" changed
+ * nothing). Green-ness uses the same tool_outcome-first classifier as the
+ * observed-check tracker; which obligations actually discharge is decided in
+ * `coverage-discharge.ts` (the file must be MEASURED by a report at least as
+ * fresh as the deferral). Total: a bookkeeping failure never aborts the pipeline.
+ */
+function dischargeCoverageOnGreenRun(event: HarnessEvent, cwd: string): void {
+	const cmd = (event.tool_input?.command as string) || "";
+	if (!cmd || !isCoverageSuiteCommand(cmd)) return;
+	if (classifyObservedOutcome(event) !== "green") return;
+	dischargeObligationsAfterGreenRun(
+		cwd,
+		event.session_id,
+		event.timestamp || new Date().toISOString(),
+	);
 }
 
 /**
@@ -521,6 +545,13 @@ export async function runPostToolPipeline(
 	// --- Observed-check outcome tracking: tsc/build/lint red/green for the
 	// Stop unresolved-red nudge (non-test analogue of trackTestRun). ---
 	trackVerificationOutcome(event, session);
+
+	// --- Deferred-coverage discharge: a coverage-suite run observed GREEN
+	// discharges the session's open obligations its fresh report measured —
+	// the relief path the Stop nudge promises (finding 2026-06: only the
+	// commit gate ever recorded discharges, so following the nudge's "run the
+	// suite + coverage" instruction changed nothing). ---
+	dischargeCoverageOnGreenRun(event, CWD);
 
 	const postDecision = evaluatePostToolUse(event, rules, session, ctx.reservations, ctx.cohort);
 

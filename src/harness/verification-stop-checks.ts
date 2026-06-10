@@ -22,10 +22,12 @@
 // touches the filesystem next to a pure formatter), kept here so the Stop
 // branch's gating in lifecycle-stop-warnings.ts can mock one module.
 
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { isDocFile } from "./commit-cadence.js";
-import type { CoverageObligation } from "./coverage-obligation-ledger.js";
+import {
+	type CoverageObligation,
+	readOpenCoverageObligations,
+} from "./coverage-obligation-ledger.js";
 
 /** Verification signal kinds tracked across a session.
  *
@@ -471,79 +473,25 @@ export function formatUnresolvedRedWarning(opts: FormatUnresolvedRedOpts): strin
 // observed-RED nudge (formatUnresolvedRedWarning): RED is "you saw it fail",
 // deferred-coverage is "you never even ran it".
 
-/** The obligations JSONL filename (mirrors coverage-obligation-ledger.ts's
- *  `OBLIGATIONS_FILE`; that const is module-private there). */
-const OBLIGATIONS_FILE = "coverage-obligations.jsonl";
-
-/** Narrow an unknown parsed JSONL row to a deferred CoverageObligation for one
- *  session. The fields we read at Stop are `kind`, `file`, and `session_id`;
- *  the rest of the row is carried for callers but not required to be present. */
-function isCoverageObligationFor(value: unknown, sessionId: string): value is CoverageObligation {
-	if (typeof value !== "object" || value === null) return false;
-	const row = value as Record<string, unknown>;
-	return (
-		row.kind === "coverage" &&
-		typeof row.file === "string" &&
-		row.session_id === sessionId
-	);
-}
-
-/** Narrow a parsed row to a coverage DISCHARGE for one session (finding 12) — a later
- *  successful coverage run that closes an earlier obligation for the same file. */
-function isCoverageDischargeFor(value: unknown, sessionId: string): value is { file: string } {
-	if (typeof value !== "object" || value === null) return false;
-	const row = value as Record<string, unknown>;
-	return (
-		row.kind === "coverage_discharge" &&
-		typeof row.file === "string" &&
-		row.session_id === sessionId
-	);
-}
-
 /**
- * Public — read the deferred coverage obligations recorded for `sessionId` from
- * `<projectRoot>/.interlinked/coverage-obligations.jsonl`. Total / never throws:
- * a missing or malformed file (or torn line from a mid-write crash) reads as "no
- * obligations". Rows are filtered to `kind === "coverage"` AND the given session.
+ * Public — the OPEN deferred coverage obligations for `sessionId`: the
+ * chronological net of obligations against discharges over the append-only
+ * ledger, deduped by file (an edit deferred three times records three rows but
+ * is one file with unmet coverage). Thin delegation to the ledger's
+ * `readOpenCoverageObligations` — the netting moved there when the discharge
+ * loop closed (finding 2026-06), so the Stop nudge and the PostToolUse
+ * discharge pass read the SAME definition of "still open".
  *
- * The ledger is append-only with NO resolution marker, so every row recorded
- * this session is treated as UNMET — the gate never wrote "later satisfied". The
- * Stop formatter says so explicitly ("never enforced"); the only place an
- * obligation is discharged is the commit gate, which the nudge points at.
- *
- * Deduped by `file` (an edit deferred three times records three rows but is one
- * file with unmet coverage) so the count and the listed files line up.
+ * Both promised relief paths now actually record discharges: the commit gate
+ * on a clean pass, and an observed GREEN coverage-suite run for the files the
+ * fresh report measured (`coverage-discharge.ts`). Discharges count from ANY
+ * session — a measurement is a fact about the file, not the session.
  */
 export function readDeferredCoverageObligations(
 	projectRoot: string,
 	sessionId: string,
 ): CoverageObligation[] {
-	const path = join(projectRoot, ".interlinked", OBLIGATIONS_FILE);
-	if (!existsSync(path)) return [];
-	let raw: string;
-	try {
-		raw = readFileSync(path, "utf-8");
-	} catch {
-		return []; // unreadable → treat as no obligations (the gate fails open)
-	}
-	const byFile = new Map<string, CoverageObligation>();
-	for (const line of raw.split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const parsed: unknown = JSON.parse(line);
-			// Chronological net over the append-only log (oldest→newest): an obligation
-			// OPENS the file, a later discharge CLOSES it, and a re-edit after a discharge
-			// re-opens it (finding 12). The last marker for a file wins.
-			if (isCoverageObligationFor(parsed, sessionId)) {
-				byFile.set(parsed.file, parsed);
-			} else if (isCoverageDischargeFor(parsed, sessionId)) {
-				byFile.delete(parsed.file);
-			}
-		} catch {
-			// intentional: JSONL may be torn if a process died mid-write — skip bad lines.
-		}
-	}
-	return [...byFile.values()];
+	return readOpenCoverageObligations(projectRoot, sessionId);
 }
 
 export interface FormatDeferredCoverageOpts {
@@ -579,9 +527,10 @@ export function formatDeferredCoverageWarning(opts: FormatDeferredCoverageOpts):
 		"coverage check(s) this session that were never enforced — the per-edit coverage gate " +
 		"deferred them (suite runtime over budget) and only the commit gate enforces them:\n" +
 		`${lines.join("\n")}${more}\n` +
-		"Run the suite + coverage to check these now, or commit (the commit gate enforces the " +
-		"deferred obligations), before claiming done. This is a reminder, not a block — a " +
-		"deferred check is unverified coverage, not a known failure."
+		"Run the full suite with coverage (a green run discharges the obligations its report " +
+		"measures), or commit (the commit gate enforces the deferred obligations), before " +
+		"claiming done. This is a reminder, not a block — a deferred check is unverified " +
+		"coverage, not a known failure."
 	);
 }
 

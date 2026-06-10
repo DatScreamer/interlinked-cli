@@ -3,7 +3,7 @@
 // ===========================================
 // An adapter answers exactly two questions for one language / framework:
 //   1. "Is this language present in the project?"  → detection (markers)
-//   2. "What command makes its native coverage engine emit coverage/lcov.info?"
+//   2. "What command makes its native coverage engine emit ITS LCOV report?"
 //
 // Everything *after* that — parse, normalize, ratchet, CRAP, the per-test map —
 // is shared and written once:
@@ -11,8 +11,13 @@
 // because LCOV is the single interchange format. Adapters therefore never parse
 // a language-specific report shape and never reimplement instrumentation; they
 // WRAP the native engine (vitest/v8, coverage.py, cargo-llvm-cov, gcov, …) and
-// point its LCOV reporter at the one canonical path. Two languages flowing
-// through the one parser is the proof the architecture is language-agnostic
+// point its LCOV reporter at a PER-LANGUAGE path — every adapter once wrote the
+// one canonical `coverage/lcov.info`, so in a polyglot repo each language's run
+// CLOBBERED the previous one's report and the ratchet/metrics silently lost a
+// language (finding 2026-06). The readers (`commands/coverage.ts`,
+// `commands/metrics.ts`) MERGE every existing report via
+// {@link lcovReportPaths}. Two languages flowing through the one parser is the
+// proof the architecture is language-agnostic
 // (docs/plans/13-test-quality-suite-implementation-plan.md §C4).
 //
 // Pure + dependency-free apart from filesystem existence checks for detection,
@@ -23,9 +28,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * The single repo-relative path every adapter's `lcovCommand` writes to, and
- * the first candidate the coverage reader looks for. Naming it once keeps the
- * producer (this file) and the consumer (`commands/coverage.ts`) from drifting.
+ * The legacy/aggregate repo-relative LCOV path. Adapters no longer WRITE here
+ * (each owns a per-language path — finding 2026-06: shared output clobbered),
+ * but it stays FIRST among the read candidates: a project whose own tooling is
+ * configured to emit `coverage/lcov.info` (this repo's vitest.config does) keeps
+ * working unchanged, and pre-fix reports remain readable.
  */
 export const CANONICAL_LCOV_PATH = "coverage/lcov.info";
 
@@ -45,10 +52,10 @@ export interface CoverageAdapter {
 	 */
 	markers: string[];
 	/**
-	 * Command that produces `coverage/lcov.info` from a clean checkout. It runs
-	 * the suite under the native engine and points the engine's LCOV reporter at
-	 * `CANONICAL_LCOV_PATH`. Self-contained where possible so it works without
-	 * any project-specific coverage config.
+	 * Command that produces this language's LCOV report from a clean checkout. It
+	 * runs the suite under the native engine and points the engine's LCOV
+	 * reporter at `reportRelPath`. Self-contained where possible so it works
+	 * without any project-specific coverage config.
 	 */
 	lcovCommand: string;
 	/**
@@ -57,7 +64,10 @@ export interface CoverageAdapter {
 	 * first-class per-test context exposed through a single flag.
 	 */
 	perTestLcovCommand: string | null;
-	/** Where `lcovCommand` writes the report (always `CANONICAL_LCOV_PATH`). */
+	/** Where `lcovCommand` writes the report — PER-LANGUAGE and unique across
+	 *  adapters (pinned by a regression test), so polyglot runs never clobber
+	 *  each other's reports (finding 2026-06). Readers merge every existing
+	 *  report via {@link lcovReportPaths}. */
 	reportRelPath: string;
 }
 
@@ -80,10 +90,13 @@ const JAVASCRIPT_ADAPTER: CoverageAdapter = {
 	language: "TypeScript / JavaScript",
 	engine: "vitest + @vitest/coverage-v8",
 	markers: ["package.json", "tsconfig.json", "vitest.config.ts", "vite.config.ts"],
+	// The lcov reporter's filename is fixed (`lcov.info`), so the per-language
+	// separation rides the reports DIRECTORY (finding 2026-06: writing the shared
+	// coverage/ dir clobbered the other languages' reports).
 	lcovCommand:
-		"npx vitest run --coverage --coverage.reporter=lcov --coverage.reportsDirectory=coverage",
+		"npx vitest run --coverage --coverage.reporter=lcov --coverage.reportsDirectory=coverage/javascript",
 	perTestLcovCommand: null,
-	reportRelPath: CANONICAL_LCOV_PATH,
+	reportRelPath: "coverage/javascript/lcov.info",
 };
 
 /**
@@ -110,9 +123,9 @@ const PYTHON_ADAPTER: CoverageAdapter = {
 		"pytest.ini",
 		"tox.ini",
 	],
-	lcovCommand: "coverage run -m pytest && coverage lcov -o coverage/lcov.info",
-	perTestLcovCommand: "pytest --cov --cov-context=test --cov-report=lcov:coverage/lcov.info",
-	reportRelPath: CANONICAL_LCOV_PATH,
+	lcovCommand: "coverage run -m pytest && coverage lcov -o coverage/lcov-python.info",
+	perTestLcovCommand: "pytest --cov --cov-context=test --cov-report=lcov:coverage/lcov-python.info",
+	reportRelPath: "coverage/lcov-python.info",
 };
 
 /**
@@ -129,9 +142,9 @@ const RUST_ADAPTER: CoverageAdapter = {
 	language: "Rust",
 	engine: "cargo-llvm-cov (LLVM source-based coverage)",
 	markers: ["Cargo.toml"],
-	lcovCommand: "cargo llvm-cov --lcov --output-path coverage/lcov.info",
+	lcovCommand: "cargo llvm-cov --lcov --output-path coverage/lcov-rust.info",
 	perTestLcovCommand: null,
-	reportRelPath: CANONICAL_LCOV_PATH,
+	reportRelPath: "coverage/lcov-rust.info",
 };
 
 /**
@@ -176,6 +189,16 @@ export function detectCoverageAdapter(cwd: string): CoverageAdapter | null {
 /** Look up an adapter by id (e.g. for an explicit `--language` override). */
 export function coverageAdapterById(id: string): CoverageAdapter | null {
 	return COVERAGE_ADAPTERS.find((adapter) => adapter.id === id) ?? null;
+}
+
+/**
+ * Every repo-relative LCOV path a reader should consider: the legacy/aggregate
+ * canonical path first (a project's own tooling may still emit it), then each
+ * adapter's per-language report. Readers parse ALL that exist and MERGE —
+ * one language's run must never shadow another's (finding 2026-06).
+ */
+export function lcovReportPaths(): string[] {
+	return [...new Set([CANONICAL_LCOV_PATH, ...COVERAGE_ADAPTERS.map((a) => a.reportRelPath)])];
 }
 
 // ===========================================

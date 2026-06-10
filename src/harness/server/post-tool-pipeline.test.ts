@@ -44,6 +44,16 @@ vi.mock("../content-scanner/post-scan.js", () => ({
 	runPostToolScan: vi.fn(async () => ({ warnings: [], findings: [] })),
 }));
 
+vi.mock("../coverage-discharge.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("../coverage-discharge.js")>();
+	return {
+		// Real command detection (it is the contract under test); mocked ledger
+		// side-effect so no real report parse / file write happens.
+		isCoverageSuiteCommand: real.isCoverageSuiteCommand,
+		dischargeObligationsAfterGreenRun: vi.fn(() => []),
+	};
+});
+
 vi.mock("../evaluator.js", () => ({
 	evaluatePostToolUse: vi.fn((): HarnessDecision => ({ decision: "allow" })),
 }));
@@ -81,6 +91,7 @@ vi.mock("./post-tool-file-checks.js", () => ({
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import { runPostToolScan } from "../content-scanner/post-scan.js";
+import { dischargeObligationsAfterGreenRun } from "../coverage-discharge.js";
 import { evaluatePostToolUse } from "../evaluator.js";
 import { runFailureChannels } from "../failure-channels.js";
 import { detectTestRunFile, recordTestRunCycle } from "../server-tdd-cycle.js";
@@ -94,6 +105,7 @@ import {
 import { runPerFileChecks } from "./post-tool-file-checks.js";
 
 const mEvaluate = evaluatePostToolUse as unknown as Mock;
+const mDischarge = dischargeObligationsAfterGreenRun as unknown as Mock;
 const mPostScan = runPostToolScan as unknown as Mock;
 const mFailureChannels = runFailureChannels as unknown as Mock;
 const mDetectTestRun = detectTestRunFile as unknown as Mock;
@@ -330,6 +342,39 @@ describe("falsy-session guard", () => {
 // ---------------------------------------------------------------------------
 // 3. Test-run tracking
 // ---------------------------------------------------------------------------
+
+describe("deferred-coverage discharge on an observed GREEN coverage run (finding 2026-06)", () => {
+	it("fires for a coverage-suite command that completed green", async () => {
+		const event = ev({
+			tool_name: "Bash",
+			tool_input: { command: "npx vitest run --coverage" },
+			tool_outcome: "success",
+		});
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mDischarge).toHaveBeenCalledTimes(1);
+		expect(mDischarge).toHaveBeenCalledWith("/repo", "s", "2026-04-23T00:00:00.000Z");
+	});
+
+	it("does NOT fire for a test run without coverage", async () => {
+		const event = ev({
+			tool_name: "Bash",
+			tool_input: { command: "npx vitest run" },
+			tool_outcome: "success",
+		});
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mDischarge).not.toHaveBeenCalled();
+	});
+
+	it("does NOT fire for a RED coverage run (green-ness is the evidence)", async () => {
+		const event = ev({
+			tool_name: "Bash",
+			tool_input: { command: "npx vitest run --coverage" },
+			tool_outcome: "error",
+		});
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mDischarge).not.toHaveBeenCalled();
+	});
+});
 
 describe("test-run tracking", () => {
 	it("records a pass + drives the TDD cycle when a test runner is detected", async () => {

@@ -208,3 +208,61 @@ export function recordCoverageDischarge(
 		// intentional: best-effort discharge log; never crash the harness.
 	}
 }
+
+/** Narrow an unknown parsed JSONL row to a deferred CoverageObligation for one
+ *  session. Obligations stay SESSION-scoped: "who deferred" is a per-session
+ *  fact the Stop nudge reports per session. */
+function isCoverageObligationFor(value: unknown, sessionId: string): value is CoverageObligation {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	return row.kind === "coverage" && typeof row.file === "string" && row.session_id === sessionId;
+}
+
+/** Narrow a parsed row to a coverage DISCHARGE — deliberately NOT
+ *  session-filtered: a discharge records that the FILE's coverage was measured
+ *  clean, which is true regardless of which session/process (the commit gate,
+ *  an observed coverage run, a different agent) did the measuring. Filtering by
+ *  session kept the Stop warning alive after the promised relief actually
+ *  happened (finding 2026-06). */
+function isCoverageDischarge(value: unknown): value is CoverageDischarge {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	return row.kind === "coverage_discharge" && typeof row.file === "string";
+}
+
+/**
+ * The OPEN deferred coverage obligations for `sessionId`: the chronological net
+ * over the append-only ledger (oldest→newest) — an obligation OPENS its file, a
+ * later discharge (from ANY session) CLOSES it, and a re-edit after a discharge
+ * re-opens it. Deduped by file. Total / never throws: a missing or malformed
+ * ledger (or a torn line from a mid-write crash) reads as "no obligations" —
+ * the gate fails open.
+ */
+export function readOpenCoverageObligations(
+	projectRoot: string,
+	sessionId: string,
+): CoverageObligation[] {
+	const path = interlinkedPath(projectRoot, OBLIGATIONS_FILE);
+	if (!existsSync(path)) return [];
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf-8");
+	} catch {
+		return [];
+	}
+	const byFile = new Map<string, CoverageObligation>();
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const parsed: unknown = JSON.parse(line);
+			if (isCoverageObligationFor(parsed, sessionId)) {
+				byFile.set(parsed.file, parsed);
+			} else if (isCoverageDischarge(parsed)) {
+				byFile.delete(parsed.file);
+			}
+		} catch {
+			// intentional: skip torn JSONL lines (a process died mid-write).
+		}
+	}
+	return [...byFile.values()];
+}

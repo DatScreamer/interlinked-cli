@@ -220,6 +220,33 @@ describe("coverageCheckCommand", () => {
 		expect(io.mocks().stderr).toContain("lcov.info");
 	});
 
+	it("MERGES every existing per-language LCOV report (finding 2026-06: no clobbered language)", async () => {
+		// Canonical report covers the TS file; the python adapter's per-language
+		// report covers the PY file. Pre-fix only the first existing path was read,
+		// so one language vanished from the ratchet.
+		writeLcov(tmp, "src/foo.ts");
+		const pyBody = ["SF:pkg/mod.py", "DA:1,1", "DA:2,1", "end_of_record", ""].join("\n");
+		writeFileSync(join(tmp, "coverage", "lcov-python.info"), pyBody);
+		await coverageCheckCommand({ cwd: tmp, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.stats.files_checked).toBe(2); // BOTH languages' files
+		expect(parsed.report).toContain("lcov.info");
+		expect(parsed.report).toContain("lcov-python.info");
+	});
+
+	it("an explicit --report path stays a single-file read (user override, no merge)", async () => {
+		writeLcov(tmp, "src/foo.ts");
+		const pyBody = ["SF:pkg/mod.py", "DA:1,1", "end_of_record", ""].join("\n");
+		writeFileSync(join(tmp, "coverage", "lcov-python.info"), pyBody);
+		await coverageCheckCommand({
+			cwd: tmp,
+			report: "coverage/lcov-python.info",
+			json: true,
+		});
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.stats.files_checked).toBe(1); // only the named report
+	});
+
 	it("errors when an explicit --report path does not exist", async () => {
 		writeCoverageSummary(tmp, { "src/foo.ts": { lines: 80, branches: 60 } });
 		// Even though a default report exists, an explicit missing path short-circuits.

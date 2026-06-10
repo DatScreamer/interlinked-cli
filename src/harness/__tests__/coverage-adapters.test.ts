@@ -9,6 +9,7 @@ import {
 	coverageSetupGuidance,
 	detectCoverageAdapter,
 	detectCoverageAdapters,
+	lcovReportPaths,
 } from "../coverage-adapters.js";
 import { canonicalToCoverageSummary, parseLcov } from "../coverage-lcov.js";
 import { type CoverageBaseline, compareCoverage } from "../coverage-ratchet.js";
@@ -114,13 +115,29 @@ describe("detectCoverageAdapter — single best guess + polyglot", () => {
 	});
 });
 
-describe("adapter command shapes (wrap the native engine, emit canonical LCOV)", () => {
-	it("every adapter writes to the one canonical LCOV path", () => {
+describe("adapter command shapes (wrap the native engine, emit per-language LCOV)", () => {
+	it("every adapter writes to its OWN per-language path — never a shared one (finding 2026-06)", () => {
+		// A shared output path means each language's run CLOBBERS the previous
+		// one's report in a polyglot repo, silently dropping a language from the
+		// ratchet and metrics. Unique per-adapter paths are the structural fix;
+		// this pin keeps a future adapter from reintroducing the collision.
+		const paths = COVERAGE_ADAPTERS.map((a) => a.reportRelPath);
+		expect(new Set(paths).size).toBe(COVERAGE_ADAPTERS.length);
 		for (const adapter of COVERAGE_ADAPTERS) {
-			expect(adapter.reportRelPath).toBe(CANONICAL_LCOV_PATH);
-			// The producing command must actually target that path.
-			expect(adapter.lcovCommand).toContain("coverage");
+			// The producing command must actually target the adapter's own path.
+			expect(adapter.lcovCommand).toContain(adapter.reportRelPath.replace("/lcov.info", ""));
+			expect(adapter.reportRelPath).toMatch(/\.info$/);
 		}
+	});
+
+	it("the reader candidate list is canonical-first plus every per-language path", () => {
+		const candidates = lcovReportPaths();
+		expect(candidates[0]).toBe(CANONICAL_LCOV_PATH);
+		for (const adapter of COVERAGE_ADAPTERS) {
+			expect(candidates).toContain(adapter.reportRelPath);
+		}
+		// Deduped — no candidate parsed twice.
+		expect(new Set(candidates).size).toBe(candidates.length);
 	});
 
 	it("Python wraps coverage.py via `coverage lcov` and offers a native per-test map", () => {
@@ -128,26 +145,32 @@ describe("adapter command shapes (wrap the native engine, emit canonical LCOV)",
 		if (!py) throw new Error("python adapter missing");
 		expect(py.engine).toBe("coverage.py");
 		expect(py.lcovCommand).toContain("coverage lcov");
-		expect(py.lcovCommand).toContain(CANONICAL_LCOV_PATH);
+		expect(py.lcovCommand).toContain(py.reportRelPath);
 		// The per-test keystone: coverage.py's native per-test contexts.
 		expect(py.perTestLcovCommand).toContain("--cov-context=test");
+		// Both variants must land on the SAME per-language path.
+		expect(py.perTestLcovCommand).toContain(py.reportRelPath);
 	});
 
-	it("JavaScript wraps vitest/v8 and emits an lcov reporter", () => {
+	it("JavaScript wraps vitest/v8 and emits an lcov reporter into its own directory", () => {
 		const js = coverageAdapterById("javascript");
 		if (!js) throw new Error("javascript adapter missing");
 		expect(js.lcovCommand).toContain("vitest");
 		expect(js.lcovCommand).toContain("lcov");
+		// The lcov reporter's FILENAME is fixed, so the per-language separation
+		// rides the reports directory.
+		expect(js.lcovCommand).toContain("--coverage.reportsDirectory=coverage/javascript");
+		expect(js.reportRelPath).toBe("coverage/javascript/lcov.info");
 		// No single-flag per-test map for V8 → file-level fallback (plan P2).
 		expect(js.perTestLcovCommand).toBeNull();
 	});
 
-	it("Rust wraps cargo-llvm-cov and exports LCOV to the canonical path", () => {
+	it("Rust wraps cargo-llvm-cov and exports LCOV to its per-language path", () => {
 		const rust = coverageAdapterById("rust");
 		if (!rust) throw new Error("rust adapter missing");
 		expect(rust.lcovCommand).toContain("cargo llvm-cov");
 		expect(rust.lcovCommand).toContain("--lcov");
-		expect(rust.lcovCommand).toContain(CANONICAL_LCOV_PATH);
+		expect(rust.lcovCommand).toContain(rust.reportRelPath);
 		// LLVM source-based coverage has no single-flag per-test context.
 		expect(rust.perTestLcovCommand).toBeNull();
 	});

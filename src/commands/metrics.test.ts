@@ -67,6 +67,7 @@ vi.mock("../harness/coverage-lcov.js", () => ({
 }));
 vi.mock("../harness/coverage-adapters.js", () => ({
 	CANONICAL_LCOV_PATH: "coverage/lcov.info",
+	lcovReportPaths: () => ["coverage/lcov.info"],
 }));
 vi.mock("../harness/checks/crap.js", () => ({ computeCrapForFile: m.computeCrapForFile }));
 vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
@@ -392,8 +393,30 @@ describe("metricsCommand — linePctFor branches", () => {
 	it("returns null linePct when the matched summary pct is not a number", async () => {
 		singleCoveredFile();
 		m.loadCoverageSummary.mockReturnValue({
-			// suffix-matches src/a.ts but pct is non-numeric → null branch.
-			"/abs/src/a.ts": { lines: { pct: "x" as unknown as number }, branches: { pct: 0 } },
+			// An ABSOLUTE in-repo key normalizes to src/a.ts (exact match), but the
+			// pct is non-numeric → null branch.
+			"/repo/src/a.ts": { lines: { pct: "x" as unknown as number }, branches: { pct: 0 } },
+		});
+		await metricsCommand({ cwd: CWD, json: true });
+		expect(lastJson().files[0].linePct).toBeNull();
+	});
+
+	it("does NOT attribute another file's coverage by path TAIL (monorepo collision, finding 2026-06)", async () => {
+		singleCoveredFile();
+		m.loadCoverageSummary.mockReturnValue({
+			// The packages/ file shares the `/src/a.ts` tail — the old suffix match
+			// could hand its 11% to the root src/a.ts depending on iteration order.
+			"/repo/packages/x/src/a.ts": { lines: { pct: 11 }, branches: { pct: 0 } },
+			"/repo/src/a.ts": { lines: { pct: 88 }, branches: { pct: 0 } },
+		});
+		await metricsCommand({ cwd: CWD, json: true });
+		expect(lastJson().files[0].linePct).toBe(88);
+	});
+
+	it("drops a summary key OUTSIDE the repo even when its tail matches", async () => {
+		singleCoveredFile();
+		m.loadCoverageSummary.mockReturnValue({
+			"/elsewhere/src/a.ts": { lines: { pct: 11 }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
 		expect(lastJson().files[0].linePct).toBeNull();
@@ -596,7 +619,7 @@ describe("metricsCommand — LCOV coverage source (F4)", () => {
 		expect(r.files[0].linePct).toBe(60);
 	});
 
-	it("prefers istanbul over LCOV when both exist (LCOV not consulted)", async () => {
+	it("istanbul alone still reports source 'istanbul' (LCOV consulted but absent)", async () => {
 		m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
 		m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
 		m.computeCyclomaticAst.mockReturnValue([comp()]);
@@ -604,7 +627,35 @@ describe("metricsCommand — LCOV coverage source (F4)", () => {
 		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
 		await metricsCommand({ cwd: CWD, json: true });
 		expect(lastJson().scope.coverageSource).toBe("istanbul");
-		expect(m.loadLcovFile).not.toHaveBeenCalled();
+		// MERGE, not precedence (finding 2026-06): the LCOV loader is always
+		// consulted now; with no lcov.info it simply contributes nothing.
+		expect(m.loadLcovFile).toHaveBeenCalled();
+	});
+
+	it("MERGES istanbul with LCOV when both exist — the LCOV-only file is no longer dropped (finding 2026-06)", async () => {
+		// istanbul covers the TS file; LCOV covers the Python file. The old
+		// unconditional istanbul precedence discarded the LCOV report entirely,
+		// so src/b.py lost its coverage (and the tested-file gate went blind to it).
+		m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+		m.coverageForFile.mockImplementation((_c, rel) =>
+			rel === "src/a.ts" ? perFile("src/a.ts") : undefined,
+		);
+		m.loadLcovFile.mockReturnValue({
+			files: new Map([["src/b.py", {} as never]]),
+		} as unknown as CanonicalCoverage);
+		m.canonicalToCoverageSummary.mockReturnValue({
+			"src/b.py": { lines: { pct: 70 }, branches: { pct: 0 } },
+		});
+		m.perFileCoverageFromCanonical.mockReturnValue(perFile("src/b.py"));
+		m.computeCyclomaticAst.mockReturnValue([comp()]);
+		m.computeCrapForFile.mockReturnValue([crap()]);
+		m.discoverFiles.mockReturnValue([abs("src/a.ts"), abs("src/b.py")]);
+		await metricsCommand({ cwd: CWD, json: true });
+		const r = lastJson();
+		expect(r.scope.coverageSource).toBe("istanbul+lcov");
+		const bPy = r.files.find((f: { file: string }) => f.file === "src/b.py");
+		expect(bPy?.linePct).toBe(70); // served by the LCOV side of the merge
+		expect(r.files.some((f: { file: string }) => f.file === "src/a.ts")).toBe(true);
 	});
 
 	it("surfaces the regex-fallback warning when the AST pass is unavailable", async () => {

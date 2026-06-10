@@ -715,7 +715,10 @@ describe("formatDeferredCoverageWarning", () => {
 		});
 		expect(msg).toContain("never enforced");
 		expect(msg).toMatch(/commit gate/i);
-		expect(msg).toMatch(/suite \+ coverage/i);
+		// The run-the-suite relief is now REAL (finding 2026-06): a green coverage
+		// run discharges what its report measures — the wording says so.
+		expect(msg).toMatch(/full suite with coverage/i);
+		expect(msg).toMatch(/discharges/i);
 	});
 
 	it("is reflection-only — no BLOCK / BLOCKED wording", () => {
@@ -839,12 +842,20 @@ describe("readDeferredCoverageObligations", () => {
 		expect(readDeferredCoverageObligations(root, "s1").map((o) => o.file)).toEqual(["src/a.ts"]);
 	});
 
-	it("ignores a discharge from ANOTHER session", () => {
+	it("honors a discharge from ANOTHER session (a measurement is a fact about the FILE)", () => {
+		// Reversed 2026-06: the commit gate / an observed coverage run may discharge
+		// under a different session id than the one that deferred — session-filtering
+		// discharges kept the Stop warning alive after the promised relief happened.
 		writeLedger([
 			row({ session_id: "s1", file: "src/a.ts" }),
-			discharge("other", "src/a.ts"), // wrong session — must not discharge s1's obligation
+			discharge("other", "src/a.ts"),
 		]);
-		expect(readDeferredCoverageObligations(root, "s1").map((o) => o.file)).toEqual(["src/a.ts"]);
+		expect(readDeferredCoverageObligations(root, "s1")).toEqual([]);
+	});
+
+	it("still scopes OBLIGATIONS to the requested session", () => {
+		writeLedger([row({ session_id: "someone-else", file: "src/a.ts" })]);
+		expect(readDeferredCoverageObligations(root, "s1")).toEqual([]);
 	});
 
 	it("skips non-coverage rows and torn/malformed JSONL lines without throwing", () => {
