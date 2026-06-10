@@ -75,13 +75,39 @@ const FLOATING_DIST_TAGS = new Set([
 	"head",
 ]);
 
-// A concrete full version: optional leading exact operator (`==`/`===`/`=`),
-// optional leading `v`, then major.minor.patch, with an optional
+// A semver-style concrete full version (after the exact-operator prefix is
+// stripped): optional leading `v`, then major.minor.patch, with an optional
 // `-prerelease` and/or `+build`. The prerelease body is permissive enough to
 // admit Go pseudo-versions (`v0.0.0-20191109021931-daa7c04131f5`), whose
 // timestamp-and-hash tail is a single dotted-and-hyphenated identifier.
-const EXACT_FULL_VERSION_RE =
-	/^(?:={1,3})?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+const SEMVER_EXACT_RE =
+	/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+// Per-ecosystem "concrete exact version" shapes (finding 2026-06): the old
+// UNIVERSAL major.minor.patch rule falsely blocked valid exact pins in
+// ecosystems whose version grammar is not three-component semver — most
+// damagingly PyPI, where `packaging==24.2` is EXACT under PEP 440 (only the
+// `.*` prefix form floats; trailing zeros compare equal, so ==24.2 cannot
+// resolve to 24.3), so the always-on supply-chain guard blocked legitimate
+// pinned installs.
+const EXACT_VERSION_RES: Record<Ecosystem, RegExp> = {
+	// npm semver: `1.2` IS a floating range to npm (>=1.2.0 <1.3.0) — all three
+	// components stay required.
+	npm: SEMVER_EXACT_RE,
+	// PEP 440 exact: [epoch!]N(.N)* + optional pre (aN|bN|cN|rcN), .postN,
+	// .devN, +local — canonical forms. The floating prefix form (`==24.*`) is
+	// rejected earlier by RANGE_OPERATOR_RE.
+	pypi: /^v?(?:\d+!)?\d+(?:\.\d+)*(?:(?:a|b|c|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[0-9A-Za-z][0-9A-Za-z.]*)?$/i,
+	// cargo: a bare or `=`-prefixed PARTIAL version is a range in cargo's own
+	// semantics (`=1.2` ⇒ >=1.2.0 <1.3.0) — all three components stay required.
+	cargo: SEMVER_EXACT_RE,
+	// RubyGems: `'1.2'` means exactly version 1.2 (Gem::Version does no
+	// component padding), with dotted prerelease segments like `7.1.0.rc1`.
+	rubygems: /^\d+(?:\.\d+)*(?:\.[A-Za-z][0-9A-Za-z]*)*$/,
+	// Go modules: vX.Y.Z, including pseudo-versions (their timestamp-and-hash
+	// tail rides the prerelease slot).
+	go: SEMVER_EXACT_RE,
+};
 
 // Range / compound / wildcard operators that disqualify an exact pin.
 // Note `=`/`==`/`===` are EXACT operators and are intentionally NOT here.
@@ -99,10 +125,14 @@ function isFloatingTag(version: string): boolean {
 	return FLOATING_DIST_TAGS.has(stripExactPrefix(version).toLowerCase());
 }
 
-/** True when `version` is a concrete full `major.minor.patch` (with the
- *  allowed exact-operator / leading-`v` / prerelease / build decorations). */
-export function isExactPinnedVersion(version: string): boolean {
-	return EXACT_FULL_VERSION_RE.test(version.trim());
+/** True when `version` is a concrete EXACT version under `ecosystem`'s own
+ *  version grammar (with the allowed exact-operator / leading-`v` / prerelease /
+ *  build decorations). Defaults to npm's semver rule — the strictest — for
+ *  callers that predate the ecosystem parameter (finding 2026-06: one universal
+ *  three-component rule falsely blocked valid PyPI/RubyGems exact pins). */
+export function isExactPinnedVersion(version: string, ecosystem: Ecosystem = "npm"): boolean {
+	const bare = version.trim().replace(/^={1,3}/, "");
+	return EXACT_VERSION_RES[ecosystem].test(bare);
 }
 
 /**
@@ -111,10 +141,14 @@ export function isExactPinnedVersion(version: string): boolean {
  *
  * BLOCK when the version is: absent; a range/compound operator
  * (`^ ~ > < * || ,`, a ` - ` range, or a `.x`/`.*` wildcard); a dist-tag /
- * branch ref; or major-only / major.minor-only (`@4`, `@4.17`). ALLOW a
- * concrete full version, optionally prefixed with an exact operator
- * (`==`/`===`/`=`) or a leading `v`, optionally suffixed with
- * `-prerelease`/`+build`. Go pseudo-versions count as exact.
+ * branch ref; or not a concrete exact version under the ECOSYSTEM's own
+ * grammar (finding 2026-06: one universal major.minor.patch rule falsely
+ * blocked valid PyPI pins — `packaging==24.2` is exact under PEP 440, and a
+ * RubyGems `'7.1'` is exact under Gem::Version — while npm/cargo/go partials
+ * really do float and stay blocked). ALLOW a concrete exact version,
+ * optionally prefixed with an exact operator (`==`/`===`/`=`) or a leading
+ * `v`, optionally suffixed with `-prerelease`/`+build`/PEP 440 post/dev/local
+ * segments. Go pseudo-versions count as exact.
  *
  * Cargo note: `@1.0.0` is a CARET range in cargo's own semantics, so the
  * strict cargo pin is `=1.0.0`. We accept both bare `1.0.0` and `=1.0.0`
@@ -124,7 +158,7 @@ export function isExactPinnedVersion(version: string): boolean {
  */
 export function pinnedVersionViolation(
 	spec: PackageSpec,
-	_ecosystem: Ecosystem,
+	ecosystem: Ecosystem,
 ): string | null {
 	if (spec.kind !== "registry") return null;
 	const version = spec.version?.trim();
@@ -137,8 +171,8 @@ export function pinnedVersionViolation(
 	if (isFloatingTag(version)) {
 		return `'${spec.name}@${version}' is a moving dist-tag/branch, not an exact pin — it can point at a newer, compromised release`;
 	}
-	if (!isExactPinnedVersion(version)) {
-		return `'${spec.name}@${version}' is not a full major.minor.patch version — partial versions float to the newest matching patch`;
+	if (!isExactPinnedVersion(version, ecosystem)) {
+		return `'${spec.name}@${version}' is not a concrete exact version under ${ecosystem}'s version rules — a partial version floats to the newest matching release`;
 	}
 	return null;
 }
