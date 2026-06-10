@@ -38,6 +38,11 @@ function rules(overrides?: Partial<NonNullable<GuardRulesConfig["per_edit_covera
 			mode: "block",
 			budget_ms: 25_000,
 			languages: ["js", "ts"],
+			// Mirror the shipped default (rules/default-config.ts): both flags ON.
+			// The opt-out tests override these to false explicitly (finding 2026-06:
+			// the gate must HONOR them, so the fixture must state them).
+			block_on_test_failure: true,
+			block_on_crap: true,
 			...overrides,
 		},
 	} as unknown as GuardRulesConfig;
@@ -323,6 +328,49 @@ describe("checkCommitGate — staged-snapshot evaluation (finding 3)", () => {
 		await checkCommitGate(commitEvent("git commit -m x"), rules(), deps);
 		expect(suiteRoot()).toBe(root); // fell back to the worktree
 	});
+
+	// NARROW constructed commits evaluate the INDEX + only the named paths — the
+	// actual snapshot the command produces. The raw worktree let an unrelated
+	// UNTRACKED test cover the staged source, approving a commit whose real tree
+	// stays uncovered (finding 2026-06).
+	it("a NARROW `git add <path> && git commit` evaluates the index+path snapshot, not the worktree", async () => {
+		const snapRoot = join(root, ".interlinked", ".commit-snapshot-narrow");
+		mkdirSync(join(snapRoot, "src"), { recursive: true });
+		writeFileSync(join(snapRoot, "src/m.ts"), JS_SRC, "utf-8"); // index + named path
+		let constructedArg: string[] | undefined;
+		let includeTracked: boolean | undefined;
+		const { deps, suiteRoot } = capturingSuiteDeps((_pr, inc, constructed) => {
+			includeTracked = inc;
+			constructedArg = constructed;
+			return { root: snapRoot, cleanup: () => {} };
+		});
+		const decision = await checkCommitGate(
+			commitEvent('git add src/m.ts && git commit -m "x"'),
+			rules(),
+			deps,
+		);
+		expect(constructedArg).toEqual(["src/m.ts"]); // snapshot = index + ONLY this path
+		expect(includeTracked).toBe(false); // never the -a tracked-worktree overlay
+		expect(suiteRoot()).toBe(snapRoot); // the suite ran in the SNAPSHOT
+		expect(decision).toBeNull();
+	});
+
+	it("a BROAD constructed commit (`git add -A && git commit`) keeps the raw worktree", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const materialize = vi.fn(() => null);
+		const { deps, suiteRoot } = capturingSuiteDeps(materialize);
+		await checkCommitGate(commitEvent('git add -A && git commit -m "x"'), rules(), deps);
+		// A broad add stages untracked files too — the worktree IS the snapshot.
+		expect(suiteRoot()).toBe(root);
+		expect(materialize).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the worktree when the NARROW snapshot cannot materialize", async () => {
+		writeSource("src/m.ts", JS_SRC);
+		const { deps, suiteRoot } = capturingSuiteDeps(() => null);
+		await checkCommitGate(commitEvent('git add src/m.ts && git commit -m "x"'), rules(), deps);
+		expect(suiteRoot()).toBe(root);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -382,17 +430,75 @@ describe("checkCommitGate — gating", () => {
 		expect(ran()).toBe(false);
 	});
 
-	it("allows (no-op) when only non-source files changed (tests / docs)", async () => {
-		writeSource("src/a.test.ts", "it('x', () => {});\n");
+	it("allows (no-op) when only NON-CODE files changed (docs / config)", async () => {
 		const { runner, ran } = stubRunner(coverageResult("src/a.ts", []));
 		const decision = await checkCommitGate(
 			commitEvent('git commit -m "x"'),
 			rules(),
-			deps(runner, ["src/a.test.ts", "README.md"]),
+			deps(runner, ["README.md", "docs/notes.md", "package.json"]),
 		);
 		expect(decision).toBeNull();
-		// No gated source → the suite is never run.
+		// No gated-language file at all → the suite is never run.
 		expect(ran()).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkCommitGate — test-only commits run the red-bar suite (finding 2026-06:
+// the non-cappable skip left suiteLanguages empty, so a FAILING test edit
+// could be committed straight through the default-on gate)
+// ---------------------------------------------------------------------------
+
+describe("checkCommitGate — test-only commits", () => {
+	it("BLOCKS a test-only commit whose suite comes back RED", async () => {
+		writeSource("src/a.test.ts", "it('x', () => { throw new Error('red'); });\n");
+		const { runner, ran } = stubRunner(
+			coverageResult("src/other.ts", [], { testsPassed: false, failingTests: ["x"] }),
+		);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(runner, ["src/a.test.ts"]),
+		);
+		expect(ran()).toBe(true); // pre-fix: the suite never ran for a test-only commit
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/RED/);
+	});
+
+	it("ALLOWS a test-only commit whose suite stays GREEN (red-bar only, nothing scanned)", async () => {
+		writeSource("src/a.test.ts", "it('x', () => {});\n");
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(runner, ["src/a.test.ts"]),
+		);
+		expect(ran()).toBe(true);
+		expect(decision).toBeNull();
+	});
+
+	it("spends NO suite on a test-only commit when block_on_test_failure is off (no decidable axis)", async () => {
+		writeSource("src/a.test.ts", "it('x', () => {});\n");
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules({ block_on_test_failure: false }),
+			deps(runner, ["src/a.test.ts"]),
+		);
+		expect(ran()).toBe(false);
+		expect(decision).toBeNull();
+	});
+
+	it("a declaration-only .d.ts commit spends no suite (no runtime behavior to observe)", async () => {
+		writeSource("src/types.d.ts", "export declare const x: number;\n");
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(runner, ["src/types.d.ts"]),
+		);
+		expect(ran()).toBe(false);
+		expect(decision).toBeNull();
 	});
 });
 
@@ -692,7 +798,9 @@ describe("checkCommitGate — Python per-line path (coverage.py shape)", () => {
 
 	// ZERO-FALSE-POSITIVE CONTRACT (finding 6). A NARROW `git add <path> && git commit`
 	// stages only that path; an unrelated dirty worktree file must NOT be evaluated
-	// (the round-3 worktree-everything approach blocked on it).
+	// (the round-3 worktree-everything approach blocked on it). The stub is
+	// staged-aware: nothing is PRE-staged here, so the includesIndex union (the
+	// staged-bypass fix) adds nothing — b.ts is merely worktree-dirty.
 	it("a narrow `git add <path> && git commit` evaluates ONLY that path, not unrelated dirty files", async () => {
 		writeSource("src/a.ts", JS_SRC);
 		writeSource("src/b.ts", JS_SRC); // unrelated dirty file — must be ignored
@@ -702,7 +810,8 @@ describe("checkCommitGate — Python per-line path (coverage.py shape)", () => {
 				run: async () =>
 					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
 			}),
-			gitChangedFiles: () => ["src/a.ts", "src/b.ts"], // BOTH dirty in the worktree
+			// BOTH dirty in the worktree, NOTHING pre-staged (stagedOnly → []).
+			gitChangedFiles: (_root, stagedOnly) => (stagedOnly ? [] : ["src/a.ts", "src/b.ts"]),
 			cyclomaticFor: () => () => [],
 			clock: () => 0,
 			readFile: (abs) => {
@@ -717,6 +826,123 @@ describe("checkCommitGate — Python per-line path (coverage.py shape)", () => {
 		await checkCommitGate(commitEvent("git add src/a.ts && git commit -m x"), rules(), deps);
 		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true); // staged path evaluated
 		expect(readPaths.some((p) => p.endsWith("src/b.ts"))).toBe(false); // unrelated file skipped
+	});
+
+	// STAGED-BYPASS CONTRACT (finding 2026-06). `git add p && git commit` commits the
+	// WHOLE index — pre-existing staged files included. Filtering to the constructed
+	// paths alone let an already-staged file's violations skip evaluation entirely.
+	it("a `git add <path> && git commit` ALSO evaluates pre-existing STAGED files (includesIndex union)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		writeSource("src/staged.ts", JS_SRC); // staged BEFORE this command ran
+		const readPaths: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			// staged.ts is in the index; b-style dirty files absent here for focus.
+			gitChangedFiles: (_root, stagedOnly) =>
+				stagedOnly ? ["src/staged.ts"] : ["src/a.ts", "src/staged.ts"],
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				readPaths.push(abs);
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		await checkCommitGate(commitEvent("git add src/a.ts && git commit -m x"), rules(), deps);
+		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true); // the added path
+		expect(readPaths.some((p) => p.endsWith("src/staged.ts"))).toBe(true); // the pre-staged file too
+	});
+
+	// GIT --only SEMANTICS (finding 2026-06). `git commit <path>` (no --include)
+	// commits ONLY the named path — neither the pre-staged index nor a preceding
+	// add's other paths. Evaluating them would false-block on content this commit
+	// does not capture.
+	it("a pathspec commit WITHOUT --include does not evaluate pre-staged files (git --only default)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		writeSource("src/staged.ts", JS_SRC);
+		const readPaths: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			gitChangedFiles: (_root, stagedOnly) =>
+				stagedOnly ? ["src/staged.ts"] : ["src/a.ts", "src/staged.ts"],
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				readPaths.push(abs);
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		await checkCommitGate(commitEvent("git commit src/a.ts -m x"), rules(), deps);
+		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true);
+		expect(readPaths.some((p) => p.endsWith("src/staged.ts"))).toBe(false); // --only: not committed
+	});
+
+	it("a pathspec commit WITH --include evaluates the named path AND the staged set", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		writeSource("src/staged.ts", JS_SRC);
+		const readPaths: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			gitChangedFiles: (_root, stagedOnly) =>
+				stagedOnly ? ["src/staged.ts"] : ["src/a.ts", "src/staged.ts"],
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				readPaths.push(abs);
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		await checkCommitGate(commitEvent("git commit --include src/a.ts -m x"), rules(), deps);
+		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true);
+		expect(readPaths.some((p) => p.endsWith("src/staged.ts"))).toBe(true); // --include captures the index
+	});
+
+	it("falls back to the FULL changed set when the staged set cannot be read (fail toward MORE)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		writeSource("src/b.ts", JS_SRC);
+		const readPaths: string[] = [];
+		const deps: CommitGateDeps = {
+			runnerFor: () => ({
+				run: async () =>
+					coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 3, statement_pct: 100 }]),
+			}),
+			// The staged-only query FAILS (null) while the broad query works: the
+			// includesIndex union must widen to everything rather than silently narrow.
+			gitChangedFiles: (_root, stagedOnly) => (stagedOnly ? null : ["src/a.ts", "src/b.ts"]),
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: (abs) => {
+				readPaths.push(abs);
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+		};
+		await checkCommitGate(commitEvent("git add src/a.ts && git commit -m x"), rules(), deps);
+		expect(readPaths.some((p) => p.endsWith("src/a.ts"))).toBe(true);
+		expect(readPaths.some((p) => p.endsWith("src/b.ts"))).toBe(true); // widened, not narrowed
 	});
 
 	// MISSING-COVERAGE CONTRACT (finding 4). A changed source absent from the coverage
@@ -907,5 +1133,282 @@ describe("defaultGitChangedFiles / defaultResolveRepoRoot — real git (findings
 		} finally {
 			rmSync(notRepo, { recursive: true, force: true });
 		}
+	});
+});
+
+// DELETE-ONLY COMMITS (finding 2026-06). A commit whose only gated change is a
+// DELETION has nothing to scan, but the deletion can break every importer — the
+// suite must still run (red-bar), instead of `sources.length === 0` skipping
+// enforcement entirely.
+describe("checkCommitGate — delete-only commits still run the suite", () => {
+	it("BLOCKS a delete-only commit whose suite comes back RED", async () => {
+		// src/gone.ts is reported changed but does NOT exist on disk → a deletion.
+		const red = coverageResult("src/other.ts", [], {
+			testsPassed: false,
+			failingTests: ["imports gone.ts"],
+		});
+		const { runner, ran } = stubRunner(red);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "drop module"'),
+			rules(),
+			deps(runner, ["src/gone.ts"]),
+		);
+		expect(ran()).toBe(true); // the suite RAN for the deletion's language
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/RED/);
+	});
+
+	it("ALLOWS a delete-only commit whose suite is GREEN", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "drop module"'),
+			rules(),
+			deps(runner, ["src/gone.ts"]),
+		);
+		expect(ran()).toBe(true);
+		expect(decision).toBeNull();
+	});
+
+	it("does NOT run the suite when only a non-gated file is deleted", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "drop docs"'),
+			rules(),
+			deps(runner, ["README.md"]),
+		);
+		expect(ran()).toBe(false); // nothing gated changed or was deleted
+		expect(decision).toBeNull();
+	});
+
+	it("a mixed edit+delete commit scans the edit AND runs the suite once", async () => {
+		writeSource("src/kept.ts", "export function f() {\n\treturn 1;\n}\n");
+		const { runner, ran } = stubRunner(
+			coverageResult("src/kept.ts", [{ name: "f", line: 1, endLine: 3, hits: 2, statement_pct: 100 }]),
+		);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "edit + delete"'),
+			rules(),
+			deps(runner, ["src/kept.ts", "src/gone.ts"]),
+		);
+		expect(ran()).toBe(true);
+		expect(decision).toBeNull(); // kept.ts covered, suite green → clean
+	});
+
+	it("a deleted PYTHON source runs the python suite even with no scannable sources", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/other.py", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "drop py module"'),
+			rules({ languages: ["js", "ts", "python"] }),
+			deps(runner, ["pkg/gone.py"]),
+		);
+		expect(ran()).toBe(true);
+		expect(decision).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkCommitGate — constructed pathspecs are rebased onto the repo toplevel,
+// and file-mediated pathspecs are broad (findings 2026-06, round 3)
+// ---------------------------------------------------------------------------
+
+describe("checkCommitGate — command-cwd pathspec rebase + file-mediated pathspecs", () => {
+	/** Changed-files stub modeling the PreToolUse reality for `git add … && git
+	 *  commit`: nothing is staged YET (the add runs later), the worktree holds the
+	 *  changes. The toplevel-relative frame is what real git emits. */
+	function stagedAware(worktree: string[]): CommitGateDeps["gitChangedFiles"] {
+		return (_root, stagedOnly) => (stagedOnly ? [] : worktree);
+	}
+
+	it("`cd <subdir> && git add <path> && git commit` rebases the spec — the staged file cannot bypass", async () => {
+		writeSource("packages/app/src/a.ts", JS_SRC);
+		// Uncovered → the ONLY way this blocks is the rebased path being evaluated.
+		const result = coverageResult("packages/app/src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 },
+		]);
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, null),
+			gitChangedFiles: stagedAware(["packages/app/src/a.ts"]),
+			resolveRepoRoot: () => root, // the command cwd is packages/app; the toplevel is root
+		};
+		const decision = await checkCommitGate(
+			commitEvent('cd packages/app && git add src/a.ts && git commit -m "x"'),
+			rules(),
+			d,
+		);
+		// Pre-fix: the raw spec `src/a.ts` matched no toplevel-relative changed path,
+		// nothing was staged yet, and the commit sailed through unevaluated.
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/uncovered/i);
+	});
+
+	it("rebasing keeps the narrow filter narrow: an unrelated dirty file at the toplevel does not block", async () => {
+		writeSource("packages/app/src/a.ts", JS_SRC);
+		writeSource("src/unrelated.ts", JS_SRC); // dirty at the toplevel, NOT committed
+		// Only the committed file appears in the report, fully covered. If the
+		// unrelated file were evaluated, its missing report entry would block.
+		const result = coverageResult("packages/app/src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
+		]);
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, null),
+			gitChangedFiles: stagedAware(["packages/app/src/a.ts", "src/unrelated.ts"]),
+			resolveRepoRoot: () => root,
+		};
+		const decision = await checkCommitGate(
+			commitEvent('cd packages/app && git commit src/a.ts -m "x"'),
+			rules(),
+			d,
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("`git commit .` at the toplevel degrades to BROAD (evaluates every changed file)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult("src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 },
+		]);
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, null),
+			gitChangedFiles: stagedAware(["src/a.ts"]),
+			resolveRepoRoot: () => root,
+		};
+		const decision = await checkCommitGate(commitEvent('git commit . -m "x"'), rules(), d);
+		// Pre-fix the literal spec "." matched nothing → no source evaluated → allow.
+		expect(decision?.decision).toBe("block");
+	});
+
+	it("`git add --pathspec-from-file <file> && git commit` evaluates ALL changed files", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult("src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 },
+		]);
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, null),
+			gitChangedFiles: stagedAware(["src/a.ts"]),
+		};
+		const decision = await checkCommitGate(
+			commitEvent('git add --pathspec-from-file files.txt && git commit -m "x"'),
+			rules(),
+			d,
+		);
+		// Pre-fix the LIST FILE (files.txt) was the narrow path set, src/a.ts matched
+		// nothing, and its uncovered code bypassed the gate.
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/uncovered/i);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkCommitGate — honors the documented per_edit_coverage opt-outs (finding
+// 2026-06, round 3: only `enabled` was checked, so `mode: "warn"`,
+// `block_on_test_failure: false`, and `block_on_crap: false` went ineffective
+// exactly when per-edit checks deferred to commit time)
+// ---------------------------------------------------------------------------
+
+describe("checkCommitGate — config opt-outs honored at commit time", () => {
+	it("is a pure no-op when mode is 'warn' (runner + git never called)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const stub = stubRunner(
+			coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 }]),
+		);
+		let gitCalled = false;
+		const d: CommitGateDeps = {
+			...deps(stub.runner, ["src/a.ts"]),
+			gitChangedFiles: () => {
+				gitCalled = true;
+				return ["src/a.ts"];
+			},
+		};
+		const decision = await checkCommitGate(commitEvent('git commit -m "x"'), rules({ mode: "warn" }), d);
+		expect(decision).toBeNull();
+		expect(stub.ran()).toBe(false);
+		expect(gitCalled).toBe(false);
+	});
+
+	it("does NOT block a RED suite when block_on_test_failure is false — warns and withholds the discharge", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			{ testsPassed: false, failingTests: ["boom"] },
+		);
+		const discharged: string[] = [];
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, ["src/a.ts"]),
+			recordDischarge: (_root, file) => {
+				discharged.push(file);
+			},
+		};
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules({ block_on_test_failure: false }),
+			d,
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.join("\n")).toMatch(/block_on_test_failure is off/);
+		expect(discharged).toEqual([]); // a red bar must never discharge a deferred obligation
+	});
+
+	it("with block_on_test_failure off, the RED run's coverage still enforces (uncovered line blocks)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 }],
+			{ testsPassed: false, failingTests: ["boom"] },
+		);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules({ block_on_test_failure: false }),
+			deps(stubRunner(result).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/uncovered/i);
+	});
+
+	it("does NOT score CRAP when block_on_crap is false (same fixture that blocks with it on)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		// Identical fixture to the "CRAP over threshold" block test above.
+		const result = coverageResult("src/a.ts", [
+			{ name: "big", line: 1, endLine: 3, hits: 3, statement_pct: 20 },
+		]);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules({ block_on_crap: false }),
+			deps(stubRunner(result).runner, ["src/a.ts"], [fn({ name: "big", line: 1, endLine: 3, cyclomatic: 10 })]),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("discharges deferred obligations on a measured GREEN clean pass (the relief path stays real)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult("src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
+		]);
+		const discharged: string[] = [];
+		const d: CommitGateDeps = {
+			...deps(stubRunner(result).runner, ["src/a.ts"]),
+			recordDischarge: (_root, file) => {
+				discharged.push(file);
+			},
+		};
+		const decision = await checkCommitGate(commitEvent('git commit -m "x"'), rules(), d);
+		expect(decision).toBeNull();
+		expect(discharged).toEqual(["src/a.ts"]);
+	});
+
+	it("discharges a DELETED path's obligation on a clean pass (no report can ever measure it)", async () => {
+		// A budget-deferred delete-only edit records an obligation for the deleted
+		// path; the green commit-gate suite IS the verification of that deletion —
+		// without this discharge the Stop warning stayed open forever (finding 2026-06).
+		const discharged: string[] = [];
+		const d: CommitGateDeps = {
+			...deps(stubRunner(coverageResult("src/other.ts", [])).runner, ["src/gone.ts"]),
+			recordDischarge: (_root, file) => {
+				discharged.push(file);
+			},
+		};
+		const decision = await checkCommitGate(commitEvent('git commit -m "drop"'), rules(), d);
+		expect(decision).toBeNull();
+		expect(discharged).toEqual(["src/gone.ts"]);
 	});
 });

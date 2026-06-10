@@ -202,8 +202,56 @@ describe("parseGitCommit — constructedPaths (finding 6: narrow vs broad) + pat
 	it("`--pathspec-from-file` is a (broad) constructed-content commit, not a stale-index commit", () => {
 		expect(parseGitCommit("git commit --pathspec-from-file=specs.txt")?.constructsContent).toBe(true);
 		expect(parseGitCommit("git commit --pathspec-from-file specs.txt")?.constructsContent).toBe(true);
-		// Broad → no specific paths (its pathspecs live in a file we don't read).
+		// Broad → no specific paths (its pathspecs live in a file we don't read) —
+		// for the SEPARATE-value form too: the file argument is consumed, never
+		// misread as a pathspec (finding 2026-06).
 		expect(parseGitCommit("git commit --pathspec-from-file=specs.txt")?.constructedPaths).toBeUndefined();
+		expect(parseGitCommit("git commit --pathspec-from-file specs.txt")?.constructedPaths).toBeUndefined();
+	});
+
+	// `git add --pathspec-from-file …` reads the REAL staged paths from a file a
+	// static parse cannot see — the same indirection class as pip's `-r reqs.txt`.
+	// Pre-fix the LIST FILE itself was recorded as the sole staged path, so the
+	// gate evaluated files.txt and every source named inside bypassed (finding
+	// 2026-06).
+	it("`git add --pathspec-from-file <file> && git commit` is BROAD — the list file is not the path set", () => {
+		const parsed = parseGitCommit("git add --pathspec-from-file files.txt && git commit -m x");
+		expect(parsed?.constructsContent).toBe(true);
+		expect(parsed?.constructedPaths).toBeUndefined();
+		// A no-pathspec commit after an add still captures the whole index.
+		expect(parsed?.includesIndex).toBe(true);
+	});
+
+	it("the `=` and stdin (`-`) forms of the add flag are equally BROAD", () => {
+		expect(
+			parseGitCommit("git add --pathspec-from-file=files.txt && git commit -m x")?.constructedPaths,
+		).toBeUndefined();
+		expect(
+			parseGitCommit("git add --pathspec-from-file=- && git commit -m x")?.constructedPaths,
+		).toBeUndefined();
+	});
+
+	it("a file merely NAMED like the flag stays a narrow add path (no dash prefix)", () => {
+		expect(
+			parseGitCommit("git add pathspec-from-file.txt && git commit -m x")?.constructedPaths,
+		).toEqual(["pathspec-from-file.txt"]);
+	});
+
+	// `--trailer <token>` consumes its value: without that, the trailer text read
+	// as a pathspec, the gate narrowed the changed set to a nonexistent path, and
+	// every staged file bypassed enforcement (finding 2026-06).
+	it("`--trailer` consumes its value — the trailer text is never a pathspec", () => {
+		const parsed = parseGitCommit('git add src/a.ts && git commit --trailer "Reviewed-by: x" -m fix');
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+		expect(parsed?.includesIndex).toBe(true); // still a no-pathspec commit after an add
+		// On a pathspec commit the REAL pathspec survives next to the trailer.
+		expect(
+			parseGitCommit('git commit --trailer "Helped-by: y" src/b.ts -m fix')?.constructedPaths,
+		).toEqual(["src/b.ts"]);
+		// Repeatable — each occurrence consumes its own value.
+		expect(
+			parseGitCommit('git commit --trailer "A: a" --trailer "B: b" -m fix')?.constructedPaths,
+		).toBeUndefined();
 	});
 
 	// NON-LITERAL pathspecs are expanded by git/the shell at run time — an exact-match
@@ -230,5 +278,127 @@ describe("parseGitCommit — constructedPaths (finding 6: narrow vs broad) + pat
 
 	it("a mixed literal+glob spec list is BROAD (one non-literal poisons the filter)", () => {
 		expect(parseGitCommit("git add src/a.ts 'src/*.spec.ts' && git commit -m x")?.constructedPaths).toBeUndefined();
+	});
+});
+
+// STAGED-BYPASS / --only SEMANTICS (finding 2026-06). `git add p && git commit`
+// commits the WHOLE index (pre-staged files included) → `includesIndex`. A
+// pathspec commit WITHOUT --include commits ONLY the named paths (git's --only
+// default) → no includesIndex AND a preceding add's paths are excluded.
+describe("parseGitCommit — includesIndex (--include / whole-index commits)", () => {
+	it("`git add <path> && git commit` (no pathspec) commits the whole index → includesIndex", () => {
+		const parsed = parseGitCommit("git add src/a.ts && git commit -m x");
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+		expect(parsed?.includesIndex).toBe(true);
+	});
+
+	it("a pathspec commit WITHOUT --include is git's --only default → NO includesIndex", () => {
+		expect(parseGitCommit("git commit src/a.ts -m x")?.includesIndex).toBeUndefined();
+		expect(parseGitCommit("git commit -- src/a.ts src/b.ts")?.includesIndex).toBeUndefined();
+	});
+
+	it("`--include` / `-i` (incl. a short cluster) marks the index as committed", () => {
+		expect(parseGitCommit("git commit --include src/a.ts -m x")?.includesIndex).toBe(true);
+		expect(parseGitCommit("git commit -i src/a.ts -m x")?.includesIndex).toBe(true);
+		expect(parseGitCommit("git commit -im x src/a.ts")?.includesIndex).toBe(true);
+	});
+
+	it("an --include pathspec commit still carries its narrow constructedPaths", () => {
+		expect(parseGitCommit("git commit --include src/a.ts -m x")?.constructedPaths).toEqual(["src/a.ts"]);
+	});
+
+	it("`git add a && git commit b` (--only default) excludes the add's path from the commit", () => {
+		const parsed = parseGitCommit("git add src/a.ts && git commit src/b.ts -m x");
+		expect(parsed?.constructedPaths).toEqual(["src/b.ts"]); // a.ts is staged but NOT committed
+		expect(parsed?.includesIndex).toBeUndefined();
+	});
+
+	it("`git add a && git commit --include b` captures BOTH the pathspec and the add's path", () => {
+		const parsed = parseGitCommit("git add src/a.ts && git commit --include src/b.ts -m x");
+		expect(parsed?.constructedPaths).toEqual(["src/b.ts", "src/a.ts"]);
+		expect(parsed?.includesIndex).toBe(true);
+	});
+
+	it("a broad `git add -A` does not poison an --only pathspec commit's narrow filter", () => {
+		const parsed = parseGitCommit("git add -A && git commit src/a.ts -m x");
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]); // -A changed the index, not this commit
+		expect(parsed?.includesIndex).toBeUndefined();
+	});
+
+	it("plain / -a / pathspec-from-file commits carry no includesIndex (their modes already cover the index)", () => {
+		expect(parseGitCommit("git commit -m x")?.includesIndex).toBeUndefined();
+		expect(parseGitCommit("git commit -am x")?.includesIndex).toBeUndefined();
+		expect(parseGitCommit("git add src/a.ts && git commit --pathspec-from-file=f.txt")?.includesIndex).toBeUndefined();
+	});
+
+	it("`--interactive` is NOT --include (long flag matched exactly)", () => {
+		expect(parseGitCommit("git commit --interactive src/a.ts")?.includesIndex).toBeUndefined();
+	});
+});
+
+// ATTACHED OPTION VALUES (finding 2026-06). `git commit -mfix src/a.ts` is valid
+// git: `-mfix` is `-m` with the value `fix` ATTACHED — not a flag cluster
+// containing `i`. Mis-reading attached values as boolean letters set
+// includesIndex/all spuriously and made the default-on commit gate evaluate (and
+// block on) unrelated staged files.
+describe("parseGitCommit — attached short-option values are not flag clusters", () => {
+	it("`-mfix` does not set includesIndex (the i is part of the message)", () => {
+		const parsed = parseGitCommit("git commit -mfix src/a.ts");
+		expect(parsed?.isCommit).toBe(true);
+		expect(parsed?.includesIndex).toBeUndefined();
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+	});
+
+	it("`-mfair` does not set all (the a is part of the message)", () => {
+		const parsed = parseGitCommit("git commit -mfair src/a.ts");
+		expect(parsed?.all).toBeUndefined();
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+	});
+
+	it("`-amfix` IS -a -m fix: all set, message attached, no next-token consumption", () => {
+		const parsed = parseGitCommit("git commit -amfix");
+		expect(parsed?.all).toBe(true);
+		expect(parsed?.includesIndex).toBeUndefined();
+	});
+
+	it("boolean letters BEFORE the value-taker still count: `-im x` sets include", () => {
+		const parsed = parseGitCommit("git commit -im x src/a.ts");
+		expect(parsed?.includesIndex).toBe(true);
+	});
+
+	it("`-anm wip` consumes wip as the message and detects noVerify in the cluster", () => {
+		const parsed = parseGitCommit("git commit -anm wip");
+		expect(parsed?.all).toBe(true);
+		expect(parsed?.noVerify).toBe(true);
+	});
+
+	it("`-S` (optional attached keyid) does NOT consume the next token as a value", () => {
+		// `git commit -S file.ts` signs with the default key and commits file.ts.
+		const parsed = parseGitCommit("git commit -S src/a.ts");
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+	});
+
+	it("`-Skeyid` terminates the cluster: the keyid's letters are not flags", () => {
+		// keyid "abc" contains 'a' — must not read as --all.
+		const parsed = parseGitCommit("git commit -Sabc -m x");
+		expect(parsed?.all).toBeUndefined();
+		expect(parsed?.constructsContent).toBeUndefined();
+	});
+
+	it("`-uno` (optional attached untracked-mode) contributes no flags", () => {
+		const parsed = parseGitCommit("git commit -uno -m x");
+		expect(parsed?.all).toBeUndefined();
+		expect(parsed?.includesIndex).toBeUndefined();
+	});
+
+	it("`--gpg-sign` does not swallow a pathspec", () => {
+		const parsed = parseGitCommit("git commit --gpg-sign src/a.ts");
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+	});
+
+	it("`-m fix` (separate value) still consumes exactly the message token", () => {
+		const parsed = parseGitCommit("git commit -m fix src/a.ts");
+		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
+		expect(parsed?.includesIndex).toBeUndefined();
 	});
 });

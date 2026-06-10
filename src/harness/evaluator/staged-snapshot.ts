@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { symlinkInTree, writeFileInTree } from "../overlay-safe-write.js";
+import { copyDirInTree, symlinkInTree, writeFileInTree } from "../overlay-safe-write.js";
 
 const INTERLINKED_DIR = ".interlinked";
 const SNAPSHOT_PREFIX = ".commit-snapshot-";
@@ -95,6 +95,43 @@ function overlayTrackedWorktree(projectRoot: string, root: string): void {
 }
 
 /**
+ * Overlay ONLY the named worktree paths onto the index snapshot — the actual
+ * snapshot a NARROW constructed commit produces (`git add src/a.ts && git
+ * commit`, `git commit src/a.ts`): the existing index plus exactly the paths the
+ * command stages (finding 2026-06: evaluating the raw worktree let an untracked
+ * test cover the staged source, approving a commit whose real tree is
+ * uncovered). Per path, mirroring the staging semantics:
+ *   - absent in the worktree → the add stages the DELETION → removed;
+ *   - a symlink → re-created verbatim (never copied through);
+ *   - a directory pathspec → the snapshot subtree is REPLACED with the dir's
+ *     current worktree state (a dir add stages its untracked files and
+ *     deletions too; gitignored content inside rides along — a small accepted
+ *     over-inclusion, still far tighter than the whole worktree);
+ *   - a regular file → symlink-safe byte copy.
+ * Paths under `.interlinked/` are skipped: the snapshot itself lives there, so a
+ * dir copy would recurse into its own tree, and harness-internal state is never
+ * suite-relevant.
+ */
+function overlayConstructedPaths(projectRoot: string, root: string, relPaths: string[]): void {
+	for (const rel of relPaths) {
+		if (rel === INTERLINKED_DIR || rel.startsWith(`${INTERLINKED_DIR}/`)) continue;
+		const src = join(projectRoot, rel);
+		const st = lstatSync(src, { throwIfNoEntry: false });
+		if (!st) {
+			removeTree(join(root, rel));
+			continue;
+		}
+		if (st.isSymbolicLink()) {
+			symlinkInTree(root, rel, readlinkSync(src));
+		} else if (st.isDirectory()) {
+			copyDirInTree(root, rel, src);
+		} else {
+			writeFileInTree(root, rel, readFileSync(src));
+		}
+	}
+}
+
+/**
  * Materialize the would-be-committed tree of the git repo at `projectRoot` into a
  * temp tree under `projectRoot/.interlinked`, with node_modules symlinked. Returns
  * the snapshot, or null on any failure (the caller falls back to the working tree).
@@ -105,10 +142,14 @@ function overlayTrackedWorktree(projectRoot: string, root: string): void {
  *     worktree modifications, but still NO untracked files — `-a` never stages them
  *     (finding 3: evaluating the raw worktree leaked untracked files, so an
  *     untracked test could mask a tracked source change).
+ *   - NARROW constructed commit (`constructedPaths` given) → the index PLUS only
+ *     those paths' worktree state (see {@link overlayConstructedPaths}, finding
+ *     2026-06).
  */
 export function materializeIndexSnapshot(
 	projectRoot: string,
 	includeTrackedWorktree = false,
+	constructedPaths?: string[],
 ): StagedSnapshot | null {
 	let root: string | null = null;
 	try {
@@ -121,6 +162,9 @@ export function materializeIndexSnapshot(
 			stdio: "ignore",
 		});
 		if (includeTrackedWorktree) overlayTrackedWorktree(projectRoot, root);
+		if (constructedPaths && constructedPaths.length > 0) {
+			overlayConstructedPaths(projectRoot, root, constructedPaths);
+		}
 		linkNodeModules(projectRoot, root);
 		const snapshotRoot = root;
 		return {

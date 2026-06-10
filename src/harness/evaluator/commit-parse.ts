@@ -48,8 +48,26 @@ export interface CommitParse {
 	 * not block the commit (finding 2026-06: the round-3 worktree-everything approach
 	 * over-blocked, violating zero-FP). EMPTY/absent ⇒ a BROAD stage (`git add -A`/`.`/
 	 * `-u`, or `--pathspec-from-file`) whose set is the whole worktree.
+	 *
+	 * Git's `--only`/`--include` semantics are modeled here (finding 2026-06): a
+	 * pathspec commit WITHOUT `--include` commits ONLY the named paths (`--only` is
+	 * git's default), so a narrow preceding `git add p` does NOT put `p` into this
+	 * commit — its paths are excluded to keep the zero-FP contract. With `--include`,
+	 * or with no pathspecs at all, the add's paths ARE captured and included.
 	 */
 	constructedPaths?: string[];
+	/**
+	 * True when the commit ALSO captures the PRE-EXISTING staged index, beyond the
+	 * paths this command itself constructs: a plain `git add … && git commit` (no
+	 * pathspec — commits the WHOLE index) or `git commit --include <paths>`. The
+	 * gate must union the staged set into its evaluation set for these — filtering
+	 * to `constructedPaths` alone let an already-staged source file's violations
+	 * bypass the quality bar entirely (finding 2026-06). Absent for a pathspec
+	 * commit without `--include` (git's `--only` default: the index is NOT
+	 * committed) and for non-constructed commits (whose modes already evaluate the
+	 * index directly).
+	 */
+	includesIndex?: boolean;
 	/**
 	 * The directory the commit effectively runs in, relative to the shell's own
 	 * cwd (or absolute), when a `cd <dir>` prefix and/or one or more `git -C <dir>`
@@ -240,6 +258,9 @@ interface SegmentCommit {
 	isCommit: boolean;
 	noVerify: boolean;
 	all: boolean;
+	/** `--include`/`-i`: the commit captures the staged index IN ADDITION to its
+	 *  pathspecs (vs git's `--only` default, which commits the named paths alone). */
+	include: boolean;
 	/** Specific positional pathspecs on the commit itself (`git commit src/x.ts`). */
 	pathspecs: string[];
 	/** `--pathspec-from-file` — a broad constructed-content commit (paths in a file). */
@@ -247,30 +268,88 @@ interface SegmentCommit {
 	cDir: string | null;
 }
 
-/** True for a `-a` / `--all` flag, including a short cluster like `-am` / `-aS`. */
+/** True for a `-a` / `--all` flag, including a short cluster like `-am` / `-aq` —
+ *  but NOT a letter inside an attached option value (`-mfair` is `-m fair`):
+ *  only {@link clusterBooleanLetters} count. */
 function isAllFlag(token: string): boolean {
 	if (token === "--all") return true;
-	// Short cluster: single leading dash, only letters, containing 'a' (-a, -am).
-	return /^-[A-Za-z]+$/.test(token) && token.includes("a");
+	return clusterBooleanLetters(token).includes("a");
+}
+
+/** True for `--include` / `-i`, including a short cluster like `-im`. Only the
+ *  cluster's BOOLEAN letters count — `-mfix` is `-m` with the attached value
+ *  `fix`, not a cluster containing `i` (finding 2026-06: it set includesIndex
+ *  and false-blocked pathspec commits). In `git commit`'s short-flag set a
+ *  boolean `i` IS `--include` to git itself, so this cannot false-positive.
+ *  The long `--interactive` is deliberately NOT matched (exact `--include` only). */
+function isIncludeFlag(token: string): boolean {
+	if (token === "--include") return true;
+	return clusterBooleanLetters(token).includes("i");
 }
 
 /** Commit flags that consume the FOLLOWING token as a value (so it is not a pathspec).
  *  `--pathspec-from-file` is deliberately NOT here — it SUPPLIES pathspecs, so it marks
- *  a constructed-content commit (handled first in `hasPathspec`). */
+ *  a constructed-content commit (handled first in `hasPathspec`). `-S`/`--gpg-sign` are
+ *  deliberately NOT here either: their key id is OPTIONAL and attached-only
+ *  (`-Skey`, `--gpg-sign=key`), so `git commit -S file.ts` keeps `file.ts` as a
+ *  pathspec — consuming it as a "value" silently dropped the pathspec and the gate
+ *  evaluated the wrong commit model (finding 2026-06, attached-value class). */
 const COMMIT_VALUE_FLAGS = new Set([
 	"-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
 	"--author", "--date", "-t", "--template", "--fixup", "--squash", "--cleanup",
-	"-S", "--gpg-sign",
+	// Repeatable; its "token: value" argument read as a PATHSPEC without this, so
+	// `git commit --trailer "X: y" …` narrowed the changed set to a nonexistent
+	// path and every staged file bypassed the gate (finding 2026-06).
+	"--trailer",
 ]);
 
-/** Short-flag letters that consume the FOLLOWING token as a value (`-m`, `-F`, …). */
-const VALUE_SHORT_LETTERS = "mFCctS";
+/** Short letters whose value may be ATTACHED (`-mfix`) or the SEPARATE next token
+ *  (`-m fix`). Everything after such a letter in a cluster is its value. */
+const VALUE_SHORT_LETTERS = "mFCct";
 
-/** True when a short cluster's LAST letter takes a value, so the next token is that
- *  value, not a pathspec — e.g. `-am "wip"` is `-a -m wip` (wip is the message). */
+/** Short letters whose value is OPTIONAL and attached-only (`-S[keyid]`,
+ *  `-u[mode]`): they terminate cluster scanning (any trailing chars are the
+ *  attached value) but NEVER consume the next token. */
+const OPTIONAL_ATTACHED_LETTERS = "Su";
+
+/**
+ * The BOOLEAN flag letters of a short cluster, respecting attached option
+ * values: scanning stops at the first value-taking letter, because everything
+ * after it is that option's ATTACHED VALUE, not more flags. `-mfix` is
+ * `-m fix` — NO boolean flags — and must not read as a cluster containing `i`
+ * (finding 2026-06: it set includesIndex and the default-on commit gate
+ * evaluated unrelated staged files, a deterministic false block). `-amfix` is
+ * `-a -m fix` → "a". Non-letter characters likewise end the scan. Returns ""
+ * for long flags (`--…`) and non-flag tokens.
+ */
+function clusterBooleanLetters(token: string): string {
+	if (token.length < 2 || token[0] !== "-" || token[1] === "-") return "";
+	let letters = "";
+	for (const ch of token.slice(1)) {
+		if (!/[A-Za-z]/.test(ch)) return letters;
+		if (VALUE_SHORT_LETTERS.includes(ch) || OPTIONAL_ATTACHED_LETTERS.includes(ch)) {
+			return letters;
+		}
+		letters += ch;
+	}
+	return letters;
+}
+
+/** True when a short cluster consumes the FOLLOWING token as its value, so that
+ *  token is not a pathspec: the cluster's first value-taking letter is its LAST
+ *  character (`-am "wip"` → wip is the message). A value-taking letter with
+ *  trailing characters has its value ATTACHED (`-amfix`), and an
+ *  optional-attached letter (`-S`, `-u`) never consumes the next token. */
 function shortClusterTakesValue(token: string): boolean {
-	if (!/^-[A-Za-z]+$/.test(token)) return false;
-	return VALUE_SHORT_LETTERS.includes(token[token.length - 1] ?? "");
+	if (token.length < 2 || token[0] !== "-" || token[1] === "-") return false;
+	const letters = token.slice(1);
+	for (let i = 0; i < letters.length; i++) {
+		const ch = letters[i] ?? "";
+		if (!/[A-Za-z]/.test(ch)) return false;
+		if (OPTIONAL_ATTACHED_LETTERS.includes(ch)) return false;
+		if (VALUE_SHORT_LETTERS.includes(ch)) return i === letters.length - 1;
+	}
+	return false;
 }
 
 /** The SPECIFIC positional pathspecs of a commit's `rest` (after "commit"): bare
@@ -284,7 +363,15 @@ function commitPathspecs(rest: string[]): string[] {
 			for (let k = i + 1; k < rest.length; k++) paths.push(rest[k]);
 			break;
 		}
-		if (t === "--pathspec-from-file" || t.startsWith("--pathspec-from-file=")) continue;
+		// The SEPARATE-value form consumes its file argument too — without the `i++`
+		// the list file itself read as a pathspec and the gate evaluated it instead
+		// of the sources named inside (finding 2026-06). The commit is already
+		// marked broad via `hasPathspecFromFile`.
+		if (t === "--pathspec-from-file") {
+			i++;
+			continue;
+		}
+		if (t.startsWith("--pathspec-from-file=")) continue;
 		if (t.startsWith("-")) {
 			if (COMMIT_VALUE_FLAGS.has(t) || shortClusterTakesValue(t)) i++; // its value is not a pathspec
 			continue;
@@ -328,6 +415,14 @@ function addSegmentPaths(segment: string): { paths: string[]; broad: boolean } {
 	for (const t of tokens.slice(subIdx + 1)) {
 		if (t === "-A" || t === "--all" || t === "-u" || t === "--update" || t === ".") {
 			return { paths: [], broad: true }; // stages the whole worktree
+		}
+		// File-mediated pathspecs (`--pathspec-from-file files.txt`, `=<file>`, or
+		// `-` for stdin): the real staged paths live INSIDE the file, which a static
+		// parse cannot read — so this add is BROAD, never "the list file is the path"
+		// (finding 2026-06: the gate evaluated files.txt itself and the named sources
+		// bypassed). Same indirection class as pip's `-r requirements.txt`.
+		if (t === "--pathspec-from-file" || t.startsWith("--pathspec-from-file=")) {
+			return { paths: [], broad: true };
 		}
 		if (t === "--" || t.startsWith("-")) continue; // separator / other add flags
 		paths.push(t);
@@ -388,16 +483,63 @@ function parseSegment(segment: string): SegmentCommit | null {
 	if (subIdx < 0 || tokens[subIdx] !== "commit") return null;
 
 	const rest = tokens.slice(subIdx + 1);
-	const noVerify = rest.some((t) => t === "--no-verify" || t === "-n");
+	// `-n` may ride in a cluster (`-anm "x"`); attached values are excluded the
+	// same way as for -a / -i (clusterBooleanLetters).
+	const noVerify = rest.some((t) => t === "--no-verify" || clusterBooleanLetters(t).includes("n"));
 	const all = rest.some(isAllFlag);
 	return {
 		isCommit: true,
 		noVerify,
 		all,
+		include: rest.some(isIncludeFlag),
 		pathspecs: commitPathspecs(rest),
 		pathspecFromFile: hasPathspecFromFile(rest),
 		cDir,
 	};
+}
+
+/** What the preceding `git add` segments of a compound command staged. */
+interface AddState {
+	sawGitAdd: boolean;
+	addBroad: boolean;
+	addPaths: string[];
+}
+
+/**
+ * Fold the constructed-content path set and index-inclusion onto `parse`,
+ * modeling git's `--only`/`--include` semantics (finding 2026-06):
+ *
+ *   - A pathspec commit WITHOUT `--include` commits ONLY the named paths
+ *     (`--only` is git's default): a preceding `git add` — narrow or broad —
+ *     changes the INDEX but not THIS commit's content, so its paths are
+ *     excluded from the evaluation set (zero-FP: an unrelated staged file must
+ *     not block) and the index is NOT marked included.
+ *   - With `--include`, or with no pathspecs at all after a `git add`, the
+ *     commit captures the staged index too → `includesIndex` tells the gate to
+ *     union the staged set (previously those files bypassed evaluation).
+ *
+ * Paths stay SPECIFIC only when knowable statically — otherwise BROAD (evaluate
+ * everything; the narrow filter exists only to avoid false BLOCKS, so unknowable
+ * must fail toward evaluating MORE, never less):
+ *   - `git add -A`/`.`/`-u` (when its paths are captured) / `--pathspec-from-file`
+ *     — whole worktree;
+ *   - `git commit -a` — `-a` stages EVERY tracked modification (finding 2026-06);
+ *   - any NON-LITERAL pathspec (glob / variable / pathspec magic) — git expands
+ *     it at run time, so an exact-match filter would match nothing and silently
+ *     evaluate NO source (finding 2026-06).
+ */
+function applyConstructedContent(parse: CommitParse, seg: SegmentCommit, add: AddState): void {
+	const onlyNamedPaths = seg.pathspecs.length > 0 && !seg.include;
+	const specific = onlyNamedPaths ? [...seg.pathspecs] : [...seg.pathspecs, ...add.addPaths];
+	const broad =
+		(onlyNamedPaths ? false : add.addBroad) ||
+		seg.pathspecFromFile ||
+		seg.all ||
+		specific.some(isNonLiteralPathspec);
+	if (!broad && specific.length > 0) parse.constructedPaths = specific;
+	if (seg.include || (add.sawGitAdd && seg.pathspecs.length === 0 && !seg.pathspecFromFile)) {
+		parse.includesIndex = true;
+	}
 }
 
 /**
@@ -438,20 +580,7 @@ export function parseGitCommit(command: string): CommitParse | null {
 			if (seg.all) parse.all = true;
 			if (sawGitAdd || seg.pathspecs.length > 0 || seg.pathspecFromFile) {
 				parse.constructsContent = true;
-				// Restrict to SPECIFIC paths (commit pathspecs + narrow add paths) unless
-				// the path set cannot be known statically — then stay BROAD (evaluate
-				// everything; the narrow filter exists only to avoid false BLOCKS, so
-				// unknowable must fail toward evaluating MORE, never less):
-				//   - `git add -A`/`.`/`-u` / `--pathspec-from-file` — whole worktree;
-				//   - `git commit -a` after a narrow add — `-a` stages EVERY tracked
-				//     modification, not just the added paths (finding 2026-06);
-				//   - any NON-LITERAL pathspec (glob / variable / pathspec magic) — git
-				//     expands it at run time, so an exact-match filter would match
-				//     nothing and silently evaluate NO source (finding 2026-06).
-				const specific = [...seg.pathspecs, ...addPaths];
-				const broad =
-					addBroad || seg.pathspecFromFile || seg.all || specific.some(isNonLiteralPathspec);
-				if (!broad && specific.length > 0) parse.constructedPaths = specific;
+				applyConstructedContent(parse, seg, { sawGitAdd, addBroad, addPaths });
 			}
 			if (effective !== null) parse.cwd = effective;
 			return parse;

@@ -7,11 +7,14 @@
 // intercepts a real `git commit` Bash tool call at PreToolUse and BLOCKS it when
 // the working tree violates the quality bar:
 //
-//   (a) RED bar      — the full suite came back failing (`testsPassed === false`).
+//   (a) RED bar      — the full suite came back failing (`testsPassed === false`),
+//                      when `block_on_test_failure` is on (the same opt-out the
+//                      per-edit gate honors).
 //   (b) UNCOVERED    — any changed source file has an executable-but-uncovered
 //                      line after the suite ran (strict TDD at commit boundary).
 //   (c) CRAP         — any changed function's CRAP score >= `crap_threshold`
-//                      (REUSED `crapScore` / `computeCrap` from `checks/crap.ts`).
+//                      (REUSED `crapScore` / `computeCrap` from `checks/crap.ts`),
+//                      when `block_on_crap` is on.
 //   (d) CYCLOMATIC   — any changed function's cyclomatic complexity > 25 (the
 //                      hard cap; the strict per-edit gate caps lower but commit
 //                      time is a coarser net — a function this branchy is a
@@ -24,10 +27,15 @@
 //
 // Safety properties (mirror the per-edit gate):
 //   1. CONFIG-GATED (DEFAULT ON — see `rules/default-config.ts`). Runs only when
-//      `rules.per_edit_coverage.enabled` is true. A repo that opts OUT returns at
-//      the first gate before any git shell-out or suite run — zero cost. On a big
-//      suite (THIS repo) the per-edit overlay defers to THIS commit gate, so it is
-//      the LIVE enforcement surface here, not a dormant one.
+//      `rules.per_edit_coverage.enabled` is true AND `mode === "block"` — the
+//      documented `mode: "warn"` / `block_on_test_failure: false` /
+//      `block_on_crap: false` opt-outs are honored HERE exactly as at the
+//      per-edit gate (finding 2026-06: only `enabled` was checked, so a repo's
+//      opt-outs went ineffective precisely when per-edit checks deferred to
+//      commit time). A repo that opts OUT returns at the first gate before any
+//      git shell-out or suite run — zero cost. On a big suite (THIS repo) the
+//      per-edit overlay defers to THIS commit gate, so it is the LIVE
+//      enforcement surface here, not a dormant one.
 //   2. GENEROUS TIMEOUT. Commit time is allowed to run the full suite — there is
 //      NO ~25s per-edit budget here. The runner gets {@link COMMIT_RUN_TIMEOUT_MS}.
 //   3. FAIL-OPEN. A runner that is unavailable / can't measure, a git-diff that
@@ -41,11 +49,12 @@
 // Every dependency (CoverageRunner factory, git-diff fn, cyclomatic analyzer,
 // clock, file reader) is INJECTED via {@link CommitGateDeps} so the unit tests
 // stub them and NO real suite / git / analyzer runs. The `git commit` detection
-// itself lives in the sibling `commit-parse.ts` (re-exported below).
+// itself lives in the sibling `commit-parse.ts`; the changed-file selection
+// (git queries, pathspec rebase, narrow filter, scan/deletion split) in
+// `commit-gate-changes.ts` (both re-exported below).
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { extname, isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
@@ -56,7 +65,16 @@ import {
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
-import { isCappableFile } from "../large-file-policy.js";
+import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
+import {
+	changedSetForCommit,
+	defaultGitChangedFiles,
+	defaultResolveRepoRoot,
+	type EvalMode,
+	type GitChangedFilesFn,
+	rebaseConstructedPaths,
+	selectChangedSources,
+} from "./commit-gate-changes.js";
 import {
 	type ChangedSource,
 	coverageViolation,
@@ -66,14 +84,15 @@ import {
 	missingCoverageViolation,
 	type Violation,
 } from "./commit-gate-scan.js";
-import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import { parseGitCommit } from "./commit-parse.js";
 import { materializeIndexSnapshot, type StagedSnapshot } from "./staged-snapshot.js";
 
-// Re-export the parser surface so existing call sites / tests import it from the
-// gate module too.
-export { parseGitCommit } from "./commit-parse.js";
+export type { GitChangedFilesFn } from "./commit-gate-changes.js";
+export { defaultGitChangedFiles, defaultResolveRepoRoot } from "./commit-gate-changes.js";
 export type { CommitParse } from "./commit-parse.js";
+// Re-export the parser + selection surfaces so existing call sites / tests import
+// them from the gate module too.
+export { parseGitCommit } from "./commit-parse.js";
 
 /**
  * A per-function cyclomatic counter for one language. Returns `null` when the
@@ -84,19 +103,6 @@ export type CyclomaticAnalyzer = (
 	content: string,
 	filePath: string,
 ) => FunctionComplexityEntry[] | null;
-
-/**
- * List the repo-relative POSIX paths of source files changed for the commit about
- * to run. `stagedOnly` (a plain `git commit`) returns ONLY the staged set — the
- * exact files the commit captures; otherwise (`-a`/`--all`) it returns the working
- * tree's tracked changes too. Returns `null` when the diff could not be taken (git
- * missing, not a repo) — the gate fail-opens on `null`.
- */
-export type GitChangedFilesFn = (
-	projectRoot: string,
-	stagedOnly?: boolean,
-	includeUntracked?: boolean,
-) => string[] | null;
 
 /** Injectable seams so unit tests run with NO real suite / git / analyzer. */
 export interface CommitGateDeps {
@@ -124,10 +130,18 @@ export interface CommitGateDeps {
 	 * Materialize the would-be-committed tree so the gate evaluates the commit, not
 	 * the raw working tree (finding 3). `includeTrackedWorktree` is true for `-a`
 	 * (index + tracked worktree mods, still NO untracked files), false for a plain
-	 * commit (the index only). Optional: when absent (or it returns null) the gate
-	 * falls back to the working tree. Default: the real `git checkout-index` materializer.
+	 * commit (the index only). `constructedPaths` (a NARROW `git add p && git
+	 * commit` / `git commit p`) overlays ONLY those paths' worktree state onto the
+	 * index — the actual snapshot such a command produces (finding 2026-06: the raw
+	 * worktree let an untracked test mask the staged source's missing coverage).
+	 * Optional: when absent (or it returns null) the gate falls back to the working
+	 * tree. Default: the real `git checkout-index` materializer.
 	 */
-	materializeIndexSnapshot?: (projectRoot: string, includeTrackedWorktree?: boolean) => StagedSnapshot | null;
+	materializeIndexSnapshot?: (
+		projectRoot: string,
+		includeTrackedWorktree?: boolean,
+		constructedPaths?: string[],
+	) => StagedSnapshot | null;
 }
 
 /** The default CRAP cutoff — the McCabe / SonarQube convention (matches the per-edit gate). */
@@ -139,9 +153,6 @@ const DEFAULT_CRAP_THRESHOLD = 30;
  * `DEFAULT_RUN_TIMEOUT_MS` — a large suite must have room to finish.
  */
 export const COMMIT_RUN_TIMEOUT_MS = 600_000;
-
-/** Shared timeout for the short-lived read-only `git` invocations the gate runs. */
-const GIT_TIMEOUT_MS = 5_000;
 
 /** Cap on the number of named violations in a block reason (keep it scannable). */
 const MAX_NAMED_VIOLATIONS = 8;
@@ -157,64 +168,6 @@ function defaultCyclomaticFor(language: CoverageLanguage): CyclomaticAnalyzer | 
 		default:
 			return null;
 	}
-}
-
-/** Run one read-only `git` command, returning its trimmed nonempty lines or null. */
-function gitLines(projectRoot: string, args: string[]): string[] | null {
-	try {
-		const out = execFileSync("git", args, {
-			cwd: projectRoot,
-			encoding: "utf-8",
-			timeout: GIT_TIMEOUT_MS,
-		});
-		return out
-			.split("\n")
-			.map((l) => l.trim())
-			.filter((l) => l.length > 0);
-	} catch {
-		return null;
-	}
-}
-
-/**
- * The real changed-files function. `stagedOnly` (a plain `git commit`) returns
- * just `git diff --cached --name-only` — the staged set the commit will capture.
- * Otherwise (`-a`/`--all`, which stages tracked edits first) it UNIONs `git diff
- * --name-only HEAD` (working tree vs HEAD) with the staged set. `includeUntracked`
- * (CONSTRUCTED commits only — `git add … && git commit`) additionally unions
- * `git ls-files --others --exclude-standard`: the add stages NEW files at run time,
- * while `git diff` never lists them, so without this a brand-new uncovered source
- * sailed through the gate (finding 2026-06). Plain `-a` never stages untracked
- * files, so `tracked` mode keeps them excluded. Read-only. Returns `null` only when
- * every needed git invocation fails so the gate fail-opens rather than blocking
- * when git can't answer at all.
- */
-export function defaultGitChangedFiles(
-	projectRoot: string,
-	stagedOnly = false,
-	includeUntracked = false,
-): string[] | null {
-	const staged = gitLines(projectRoot, ["diff", "--cached", "--name-only"]);
-	if (stagedOnly) return staged; // a plain commit captures the index only
-	const worktree = gitLines(projectRoot, ["diff", "--name-only", "HEAD"]);
-	const untracked = includeUntracked
-		? gitLines(projectRoot, ["ls-files", "--others", "--exclude-standard"])
-		: [];
-	if (worktree === null && staged === null && untracked === null) return null; // git unusable
-	return [...new Set<string>([...(worktree ?? []), ...(staged ?? []), ...(untracked ?? [])])];
-}
-
-/**
- * The git repository TOPLEVEL for a directory (`git rev-parse --show-toplevel`),
- * or null when not a repo / git fails. Git emits changed-file paths relative to the
- * TOPLEVEL, so the gate must anchor there: evaluating from a subdirectory
- * (`cd src && git commit -a`) would otherwise resolve `src/a.ts` against
- * `/repo/src` → `/repo/src/src/a.ts` and silently skip every changed source
- * (finding 2026-06).
- */
-export function defaultResolveRepoRoot(dir: string): string | null {
-	const lines = gitLines(dir, ["rev-parse", "--show-toplevel"]);
-	return lines !== null && lines.length > 0 ? (lines[0] ?? null) : null;
 }
 
 /** Production defaults — real runner factory, git diff, analyzer, clock, reader. */
@@ -236,57 +189,6 @@ const DEFAULT_DEPS: CommitGateDeps = {
 };
 
 // ===========================================
-// Language mapping (shared shape with the per-edit gate)
-// ===========================================
-
-/** Map a file extension to the coverage language, or null when unsupported. */
-function languageForExt(ext: string): CoverageLanguage | null {
-	switch (ext.toLowerCase()) {
-		case ".ts":
-		case ".tsx":
-		case ".mts":
-		case ".cts":
-			return "ts";
-		case ".js":
-		case ".jsx":
-		case ".mjs":
-		case ".cjs":
-			return "js";
-		case ".py":
-		case ".pyi":
-			return "python";
-		default:
-			return null;
-	}
-}
-
-/**
- * Filter the raw changed-path list to the source files the gate evaluates: a
- * supported language, in the configured `languages` set, and a "cappable" file
- * (the same predicate the line cap uses — excludes test files, generated code,
- * `.d.ts`, non-code). Reads each file's content to apply `isCappableFile`; a path
- * that no longer exists on disk (a pure deletion) is dropped.
- */
-function selectChangedSources(
-	rawPaths: string[],
-	projectRoot: string,
-	languages: string[],
-	readFile: CommitGateDeps["readFile"],
-): ChangedSource[] {
-	const out: ChangedSource[] = [];
-	for (const relPath of rawPaths) {
-		const language = languageForExt(extname(relPath));
-		if (!language || !languages.includes(language)) continue;
-		const abs = isAbsolute(relPath) ? relPath : resolve(projectRoot, relPath);
-		const content = readFile(abs);
-		if (content === null) continue; // deleted / unreadable — nothing to gate
-		if (!isCappableFile({ filePath: relPath, content })) continue;
-		out.push({ relPath, language });
-	}
-	return out;
-}
-
-// ===========================================
 // Per-source violation detection
 // ===========================================
 
@@ -297,6 +199,10 @@ interface ScanInput {
 	content: string;
 	analyzer: CyclomaticAnalyzer | null;
 	crapThreshold: number;
+	/** `per_edit_coverage.block_on_crap` — CRAP violations count only when true
+	 *  (finding 2026-06: the commit gate scored CRAP unconditionally, making the
+	 *  documented opt-out ineffective at commit time). */
+	blockOnCrap: boolean;
 }
 
 /**
@@ -307,7 +213,7 @@ interface ScanInput {
  * Coverage checks run whenever the file appears in the report.
  */
 function scanFile(input: ScanInput): Violation[] {
-	const { source, cov, content, analyzer, crapThreshold } = input;
+	const { source, cov, content, analyzer, crapThreshold, blockOnCrap } = input;
 	const violations: Violation[] = [];
 
 	// The cyclomatic + CRAP checks need a per-function analysis. An UNAVAILABLE
@@ -335,7 +241,7 @@ function scanFile(input: ScanInput): Violation[] {
 	}
 	const cycViolation = cyclomaticViolation(source, complexities);
 	if (cycViolation) violations.push(cycViolation);
-	if (cov) {
+	if (cov && blockOnCrap) {
 		const crapV = crapViolation(source, complexities, cov, crapThreshold);
 		if (crapV) violations.push(crapV);
 	}
@@ -419,7 +325,24 @@ function blockForViolations(violations: Violation[], warnings: string[]): Harnes
 interface GateContext {
 	projectRoot: string;
 	sources: ChangedSource[];
+	/** Languages the suite runs for — every scanned source's language PLUS every
+	 *  gated-language DELETION's language, so a delete-only commit still runs the
+	 *  red-bar suite (finding 2026-06: it skipped enforcement entirely). */
+	suiteLanguages: CoverageLanguage[];
 	crapThreshold: number;
+	/** `per_edit_coverage.block_on_test_failure` — a RED suite blocks only when
+	 *  true; off, the red bar is surfaced as a warning and the scan proceeds
+	 *  (finding 2026-06: the commit gate blocked red unconditionally, making the
+	 *  documented opt-out ineffective exactly when per-edit checks defer here). */
+	blockOnTestFailure: boolean;
+	/** `per_edit_coverage.block_on_crap` — CRAP violations count only when true. */
+	blockOnCrap: boolean;
+	/** Gated-language paths DELETED by this commit. A clean green pass discharges
+	 *  THEIR deferred obligations too: a budget-deferred delete-only edit records
+	 *  an obligation for the deleted path, and no future coverage report can ever
+	 *  contain a deleted file — without this the Stop warning stayed open forever
+	 *  even after the gate verified the deletion (finding 2026-06). */
+	deletedPaths: string[];
 	warnings: string[];
 	/** The REAL repo root (where the obligation ledger lives), session id, and event
 	 *  timestamp — used to DISCHARGE deferred coverage obligations on a clean pass so
@@ -444,7 +367,10 @@ interface SuiteOutcome {
  * `degradeReason` (the caller fail-opens). Red is OR-ed across languages.
  */
 async function runSuites(ctx: GateContext, deps: CommitGateDeps): Promise<SuiteOutcome> {
-	const languages = [...new Set(ctx.sources.map((s) => s.language))];
+	// Suite languages come from the SELECTION (scanned sources ∪ deletions), not
+	// from `sources` alone — a delete-only commit has no scan sources yet must
+	// still run its language's suite (finding 2026-06).
+	const languages = ctx.suiteLanguages;
 	const perFile = new Map<string, PerFileCoverage>();
 	const failingTests: string[] = [];
 	let anyRed = false;
@@ -500,6 +426,7 @@ function collectViolations(
 				content,
 				analyzer: deps.cyclomaticFor(source.language),
 				crapThreshold: ctx.crapThreshold,
+				blockOnCrap: ctx.blockOnCrap,
 			}),
 		);
 	}
@@ -520,18 +447,35 @@ async function runSuiteAndScan(
 	if (outcome.degradeReason !== null) return loudDegrade(outcome.degradeReason);
 
 	// Red bar first — a failing suite is a harder failure than a coverage gap.
-	if (outcome.anyRed) return blockForRedBar(outcome.failingTests, ctx.warnings);
+	// Only when opted in (`block_on_test_failure`, the same flag the per-edit gate
+	// honors — finding 2026-06: the commit gate blocked red unconditionally). With
+	// the flag off the red bar is SURFACED as a warning and the scan proceeds on
+	// the red run's coverage — under-reporting can only ADD violations, never hide
+	// one — while the clean-pass discharge below is withheld.
+	if (outcome.anyRed) {
+		if (ctx.blockOnTestFailure) return blockForRedBar(outcome.failingTests, ctx.warnings);
+		ctx.warnings.push(
+			"[interlinked:commit-gate] NOTE: the full suite is RED " +
+				`(${failingTestPhrase(outcome.failingTests)}) but block_on_test_failure is off — ` +
+				"not blocking on the red bar.",
+		);
+	}
 
 	const violations = collectViolations(ctx, outcome.perFile, deps);
 	if (violations.length > 0) return blockForViolations(violations, ctx.warnings);
 
-	// CLEAN: the suite RAN (not degraded) and every gated source PASSED → discharge
-	// each source's deferred coverage obligation so the Stop check stops warning
-	// "never enforced" (finding 12). Only reached on a measured pass, never a degrade.
-	if (ctx.ledgerRoot && ctx.sessionId && deps.recordDischarge) {
+	// CLEAN: the suite RAN (not degraded), came back GREEN, and every gated source
+	// PASSED → discharge each source's deferred coverage obligation so the Stop
+	// check stops warning "never enforced" (finding 12). Only reached on a measured
+	// pass — never a degrade, and never the red-suite-with-flag-off path above
+	// (an obligation must not be discharged by a red bar). DELETED paths discharge
+	// too: their obligations name files no future coverage report can ever contain,
+	// and the green suite IS the verification of the deletion — without this the
+	// Stop warning stayed open permanently (finding 2026-06).
+	if (!outcome.anyRed && ctx.ledgerRoot && ctx.sessionId && deps.recordDischarge) {
 		const ts = ctx.eventTs ?? new Date().toISOString();
-		for (const source of ctx.sources) {
-			deps.recordDischarge(ctx.ledgerRoot, source.relPath, ctx.sessionId, ts);
+		for (const file of [...ctx.sources.map((s) => s.relPath), ...ctx.deletedPaths]) {
+			deps.recordDischarge(ctx.ledgerRoot, file, ctx.sessionId, ts);
 		}
 	}
 
@@ -569,35 +513,39 @@ interface EvalTarget {
 	cleanup: (() => void) | null;
 }
 
-/** How the gate models the commit's would-be tree. */
-type EvalMode = "index" | "tracked" | "worktree";
-
 /**
  * Resolve where the commit gate evaluates the commit (findings 3 & 4):
  *   - `index`    — a plain commit captures the INDEX exactly (no unstaged, no untracked).
  *   - `tracked`  — `-a`/`--all`: index PLUS tracked worktree mods, still no untracked.
- *   - `worktree` — the commit CONSTRUCTS content at run time (a preceding `git add`,
- *                  or a pathspec): the index is stale at PreToolUse, so evaluate the
- *                  raw working tree — the inclusive superset of what will be staged,
- *                  so content is never left UNevaluated (never a false-allow).
+ *   - `worktree` — the commit CONSTRUCTS content at run time:
+ *       - NARROW (specific constructed paths): the INDEX plus ONLY those paths'
+ *         worktree state — the actual would-be snapshot. Evaluating the raw
+ *         worktree let unrelated UNTRACKED tests and unstaged edits join the
+ *         suite, so an untracked test could cover the staged source and approve
+ *         a commit whose real tree stays uncovered (finding 2026-06). (For a
+ *         pathspec `--only` commit the index base is a small superset of the
+ *         HEAD-based truth — unrelated STAGED content may ride along — accepted:
+ *         strictly tighter than the whole worktree.)
+ *       - BROAD (`git add -A && git commit`): the raw working tree — a broad add
+ *         stages untracked files too, so the worktree IS the would-be snapshot.
  * Fail-safe: if materialization is unavailable or fails, fall back to the working
  * tree — never worse than before the fix.
  */
-function resolveEvalTarget(projectRoot: string, mode: EvalMode, deps: CommitGateDeps): EvalTarget {
-	if (mode === "worktree") return { root: projectRoot, cleanup: null };
+function resolveEvalTarget(
+	projectRoot: string,
+	mode: EvalMode,
+	deps: CommitGateDeps,
+	constructedPaths?: string[] | null,
+): EvalTarget {
+	if (mode === "worktree") {
+		if (constructedPaths && constructedPaths.length > 0) {
+			const snap = deps.materializeIndexSnapshot?.(projectRoot, false, constructedPaths) ?? null;
+			if (snap) return { root: snap.root, cleanup: snap.cleanup };
+		}
+		return { root: projectRoot, cleanup: null };
+	}
 	const snap = deps.materializeIndexSnapshot?.(projectRoot, mode === "tracked") ?? null;
 	return snap ? { root: snap.root, cleanup: snap.cleanup } : { root: projectRoot, cleanup: null };
-}
-
-/**
- * Restrict changed files to those a NARROW constructed-content commit actually stages
- * — an exact pathspec, or a file under a named directory pathspec. Repo-relative on
- * both sides (the pathspecs resolve against the same projectRoot as the changed-files
- * query). This is what keeps an unrelated dirty file from blocking the commit.
- */
-function filterToConstructedPaths(files: string[], specs: string[]): string[] {
-	const norms = specs.map((p) => p.replace(/^\.\//, "").replace(/\/+$/, ""));
-	return files.filter((f) => norms.some((p) => f === p || f.startsWith(`${p}/`)));
 }
 
 /**
@@ -614,9 +562,13 @@ export async function checkCommitGate(
 	rules: GuardRulesConfig,
 	deps: CommitGateDeps = DEFAULT_DEPS,
 ): Promise<HarnessDecision | null> {
-	// Gate 1: feature OFF → pure no-op (default today).
+	// Gate 1: feature OFF, or mode is not "block" → pure no-op. `mode: "warn"` is
+	// the documented loaded-but-non-blocking setting (see PerEditCoverageConfig) and
+	// the per-edit guard already honors it — the commit gate checking only `enabled`
+	// made the opt-out ineffective at commit time and unconditionally blocked
+	// (finding 2026-06). Same contract on both enforcement surfaces.
 	const cfg = rules.per_edit_coverage;
-	if (!cfg?.enabled) return null;
+	if (!cfg?.enabled || cfg.mode !== "block") return null;
 
 	const command = (event.tool_input?.command as string) || "";
 	const parse = parseGitCommit(command);
@@ -653,24 +605,59 @@ export async function checkCommitGate(
 		// A NARROW constructed-content commit (`git commit src/a.ts`, `git add src/a.ts
 		// && git commit`) stages only specific paths — evaluate ONLY those, so an
 		// UNRELATED dirty worktree file does not block the commit (finding 2026-06: the
-		// round-3 worktree-everything approach over-blocked, breaking the zero-FP contract).
-		const changed =
-			mode === "worktree" && parse.constructedPaths
-				? filterToConstructedPaths(allChanged, parse.constructedPaths)
-				: allChanged;
+		// round-3 worktree-everything approach over-blocked, breaking the zero-FP
+		// contract) — UNIONED with the staged set when the commit also captures the
+		// pre-existing index (`includesIndex` — finding 2026-06: staged files bypassed).
+		// The specs are parsed relative to the COMMAND's directory while git's changed
+		// paths are TOPLEVEL-relative — rebase first; an unrebasable spec degrades to
+		// broad (finding 2026-06: `cd packages/app && git add src/a.ts && git commit`
+		// filtered toplevel paths against the raw spec and the staged file bypassed).
+		const constructed = parse.constructedPaths
+			? rebaseConstructedPaths(parse.constructedPaths, commandCwd, projectRoot)
+			: undefined;
+		const changed = changedSetForCommit(
+			allChanged,
+			{
+				...(constructed ? { constructedPaths: constructed } : {}),
+				...(parse.includesIndex ? { includesIndex: true } : {}),
+			},
+			mode,
+			() => deps.gitChangedFiles(projectRoot, true),
+		);
 
-		const target = resolveEvalTarget(projectRoot, mode, deps);
+		// A NARROW constructed commit evaluates the INDEX + its own staged paths,
+		// not the raw worktree (finding 2026-06: an untracked test could cover the
+		// staged source and approve a commit whose actual snapshot is uncovered).
+		const target = resolveEvalTarget(projectRoot, mode, deps, constructed);
 		try {
-			const sources = selectChangedSources(changed, target.root, cfg.languages, deps.readFile);
-			// Nothing gated changed (only tests / docs / config) → allow, but still
-			// surface the --no-verify note if present.
-			if (sources.length === 0) return warnings.length > 0 ? { decision: "allow", warnings } : null;
+			const selected = selectChangedSources(changed, target.root, cfg.languages, deps.readFile);
+			const { sources, deletedPaths, suiteLanguages } = selected;
+			// Nothing gated changed at all (docs / config / declaration-only) → allow,
+			// but still surface the --no-verify note if present. Test-only and
+			// generated-only changes DO proceed: their language is in suiteLanguages
+			// even though there is nothing to scan, because a failing test edit must
+			// not be committed (finding 2026-06: it skipped the suite entirely) —
+			// the same red-bar-only treatment delete-only commits already get.
+			if (sources.length === 0 && suiteLanguages.length === 0) {
+				return warnings.length > 0 ? { decision: "allow", warnings } : null;
+			}
+			// A red-bar-ONLY run (tests / generated / deletions, nothing scannable)
+			// has exactly one decidable axis; with `block_on_test_failure` off no
+			// block is possible, so no suite is spent (mirrors the per-edit
+			// delete-only path's "no decidable axis" skip).
+			if (sources.length === 0 && cfg.block_on_test_failure !== true) {
+				return warnings.length > 0 ? { decision: "allow", warnings } : null;
+			}
 
 			return await runSuiteAndScan(
 				{
 					projectRoot: target.root,
 					sources,
+					suiteLanguages,
 					crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
+					blockOnTestFailure: cfg.block_on_test_failure === true,
+					blockOnCrap: cfg.block_on_crap === true,
+					deletedPaths,
 					warnings,
 					// Discharge obligations against the REAL repo root (where the ledger
 					// lives), not the snapshot, on a clean pass (finding 12).

@@ -111,3 +111,82 @@ describe("materializeIndexSnapshot", () => {
 		snap?.cleanup();
 	});
 });
+
+// NARROW constructed commits (finding 2026-06): `git add src/a.ts && git commit`
+// produces "the existing index + only the named paths". Evaluating the raw
+// worktree instead let an unrelated UNTRACKED test cover the staged source and
+// approve a commit whose actual tree stays uncovered.
+describe("materializeIndexSnapshot — narrow constructed paths", () => {
+	beforeEach(() => {
+		writeRepo("src/a.ts", "export const a = 'OLD';\n");
+		git("add", "src/a.ts");
+		git("commit", "-qm", "baseline");
+	});
+
+	it("overlays ONLY the named worktree path; an untracked sibling test stays OUT", () => {
+		writeRepo("src/a.ts", "export const a = 'NEW';\n"); // modified, NAMED by the add
+		writeRepo("src/sneaky.test.ts", "it('covers a', () => {});\n"); // untracked, NOT named
+		const snap = materializeIndexSnapshot(repo, false, ["src/a.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			// The raw worktree would have included this — the actual commit snapshot
+			// does not, so neither does the materialized tree.
+			expect(existsSync(join(snap?.root ?? "", "src/sneaky.test.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("a named path ABSENT from the worktree is removed (the add stages the deletion)", () => {
+		rmSync(join(repo, "src/a.ts"));
+		const snap = materializeIndexSnapshot(repo, false, ["src/a.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", "src/a.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("a named DIRECTORY brings its current state, including untracked files inside it", () => {
+		writeRepo("src/a.ts", "export const a = 'NEW';\n");
+		writeRepo("src/extra.ts", "export const e = 1;\n"); // untracked but INSIDE the named dir
+		const snap = materializeIndexSnapshot(repo, false, ["src"]);
+		expect(snap).not.toBeNull();
+		try {
+			// `git add src/` stages untracked files under src/ — the snapshot has them.
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			expect(existsSync(join(snap?.root ?? "", "src/extra.ts"))).toBe(true);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("unrelated UNSTAGED edits to tracked files stay at their INDEX content", () => {
+		writeRepo("src/b.ts", "export const b = 'STAGED';\n");
+		git("add", "src/b.ts");
+		git("commit", "-qm", "add b");
+		writeRepo("src/b.ts", "export const b = 'UNSTAGED-EDIT';\n"); // dirty, NOT named
+		writeRepo("src/a.ts", "export const a = 'NEW';\n"); // named
+		const snap = materializeIndexSnapshot(repo, false, ["src/a.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			expect(readFileSync(join(snap?.root ?? "", "src/b.ts"), "utf-8")).toContain("STAGED");
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("skips .interlinked paths — the snapshot must never recurse into its own tree", () => {
+		writeRepo(".interlinked/state.json", "{}\n");
+		const snap = materializeIndexSnapshot(repo, false, [".interlinked", "src/a.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", ".interlinked", "state.json"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+});
