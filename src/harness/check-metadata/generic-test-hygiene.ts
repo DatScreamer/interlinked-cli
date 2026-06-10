@@ -71,4 +71,18 @@ export const GENERIC_TEST_HYGIENE_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	test_platform_conditional: {
+		name: "Platform-Conditional Test Assertion",
+		description:
+			"A test comment narrates platform-variant behavior ('on platforms where…', 'macOS-only') while the file never gates on process.platform/skipIf — the assertions encode one platform's outcome and fail on the others (CI).",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	test_silent_dependency_skip: {
+		name: "Silent Dependency Skip",
+		description:
+			"`if (!X_AVAILABLE) return;` inside a test records a PASS wherever the external dependency is missing — CI reports green while running nothing. Use it.skipIf so the skip is reported.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 };

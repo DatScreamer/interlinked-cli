@@ -21,6 +21,8 @@ Commands:
   checkpoint [options] [message]             Git checkpoint management
   ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)
   clean [options]                            Remove stale data
+  cloud                                      Inspect the cloud governor (reads cloud_governor from config.local.json)
+  compact [options]                          Gzip + archive the synced prefix of activity.jsonl (lossless), reclaiming disk
   completions <shell>                        Output shell completion script (bash, zsh, fish)
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
@@ -41,6 +43,7 @@ Commands:
   login [options]                            Authenticate with the server (opens browser)
   logout [options]                           Clear authentication credentials (preserves other config)
   logs [options]                             View local activity log (offline, no server needed)
+  metrics [options]                          Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops

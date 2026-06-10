@@ -71,6 +71,12 @@ const CI_STEPS: readonly CiStep[] = [
 		mirror: "skip",
 		reason: "npm ci — pre-push runs against the existing dev install",
 	},
+	{
+		name: "Install ripgrep (CI/dev environment parity)",
+		mirror: "skip",
+		reason:
+			"environment provision, not a check — runners ship no ripgrep, so without it the rg-gated tests skip on CI while passing on every dev machine (finding 2026-06: that divergence shipped a red run); locally rg is already the grep-accelerator's own dependency",
+	},
 	{ name: "Typecheck", mirror: "pre-push", command: "npm run typecheck:stable" },
 	{
 		name: "Doc accuracy (landing + README vs source)",

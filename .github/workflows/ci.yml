@@ -33,6 +33,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Dev machines have ripgrep; the runner images do not. Without it the
+      # grep-accelerator's real-rg tests silently early-return (coverage
+      # theater on CI) and any test that reaches the regex→rg route fails
+      # (finding 2026-06: env divergence shipped a red run). Installing it
+      # makes CI exercise the same paths developers do.
+      - name: Install ripgrep (CI/dev environment parity)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+          else
+            brew install ripgrep
+          fi
+          rg --version
+
       - name: Typecheck
         run: npm run typecheck:stable
 

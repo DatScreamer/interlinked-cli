@@ -10,6 +10,20 @@
 // harness impact-analyzer, and docs generators keep working. New code
 // should import from `./checks/<family>.js` directly.
 
+// ---- agent-laziness (Batch 1) ----
+export {
+	checkAgentThumbprintProse,
+	checkDeadBranchLiteral,
+	checkDoubleCastUnknown,
+	checkFetchWithoutTimeout,
+	checkFileLevelSuppression,
+	checkNodeEnvBranchInProd,
+	checkStubNotImplementedThrow,
+	checkSyncIoOnHotPath,
+	checkUnboundedPromiseAll,
+	checkUnionWidenedWithString,
+	checkUntestableTimeInSource,
+} from "./checks/agent-laziness.js";
 // ---- agent-safety ----
 export {
 	checkAesEcbMode,
@@ -47,48 +61,6 @@ export {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./checks/agent-safety-advanced.js";
-// ---- dry (Jaccard code-clone detector) ----
-export { checkCodeClones } from "./checks/dry-check.js";
-// ---- agent-laziness (Batch 1) ----
-export {
-	checkAgentThumbprintProse,
-	checkDeadBranchLiteral,
-	checkDoubleCastUnknown,
-	checkFetchWithoutTimeout,
-	checkFileLevelSuppression,
-	checkNodeEnvBranchInProd,
-	checkStubNotImplementedThrow,
-	checkSyncIoOnHotPath,
-	checkUnboundedPromiseAll,
-	checkUnionWidenedWithString,
-	checkUntestableTimeInSource,
-} from "./checks/agent-laziness.js";
-// ---- test-hygiene (Batch 2) ----
-export {
-	checkDuplicateTestNames,
-	checkHappyPathOnlyTest,
-	checkHardcodedTimeoutInTests,
-	checkMockingTheSutSelf,
-	checkMockOnlyTest,
-	checkRealIoInTests,
-	checkTestMissingSutImport,
-	checkTestNondeterminism,
-	checkTestSubprocessDefaultTimeout,
-} from "./checks/test-hygiene.js";
-// ---- cross-file (Batch 5) ----
-export {
-	checkEmptyBodyHandler,
-	checkListenerPairing,
-	checkMigrationParity,
-	checkSchemaTypeDrift,
-} from "./checks/cross-file.js";
-// ---- demo-data (Batch 8) ----
-export {
-	checkDemoDataUnmarked,
-	checkDemoRuntimeMissingBanner,
-	checkPlaceholderDataInUi,
-	checkSilentDemoFallback,
-} from "./checks/demo-data.js";
 // ---- b-series ----
 export {
 	checkAssertionFreeTests,
@@ -110,14 +82,8 @@ export {
 	checkCUncheckedMalloc,
 	checkCUnsafeFunctions,
 } from "./checks/c-cpp.js";
-// ---- compat-stubs ----
-export {
-	checkMigrationOrdering,
-	checkSqlSchemaConsistency,
-	checkVisibilityFilterMissing,
-} from "./checks/compat-stubs.js";
-// ---- complexity ----
-export { checkFunctionComplexity } from "./checks/complexity.js";
+// ---- cleanup-early-exit ----
+export { checkCleanupSkippedOnEarlyExit } from "./checks/cleanup-early-exit.js";
 // ---- comment-drift (Mythos Phase 2) ----
 export {
 	checkCommentClaimsIdempotentMutates,
@@ -126,6 +92,21 @@ export {
 	checkCommentClaimsThrowsDoesnt,
 	checkCommentClaimsValidationMissing,
 } from "./checks/comment-drift.js";
+// ---- compat-stubs ----
+export {
+	checkMigrationOrdering,
+	checkSqlSchemaConsistency,
+	checkVisibilityFilterMissing,
+} from "./checks/compat-stubs.js";
+// ---- complexity ----
+export { checkFunctionComplexity } from "./checks/complexity.js";
+// ---- cross-file (Batch 5) ----
+export {
+	checkEmptyBodyHandler,
+	checkListenerPairing,
+	checkMigrationParity,
+	checkSchemaTypeDrift,
+} from "./checks/cross-file.js";
 // ---- cross-language ----
 export { checkSqlInjection } from "./checks/cross-language.js";
 // ---- deletion-hygiene ----
@@ -136,6 +117,15 @@ export {
 	checkNotImplementedStubs,
 	checkOrphanedTestStub,
 } from "./checks/deletion-hygiene.js";
+// ---- demo-data (Batch 8) ----
+export {
+	checkDemoDataUnmarked,
+	checkDemoRuntimeMissingBanner,
+	checkPlaceholderDataInUi,
+	checkSilentDemoFallback,
+} from "./checks/demo-data.js";
+// ---- dry (Jaccard code-clone detector) ----
+export { checkCodeClones } from "./checks/dry-check.js";
 // ---- error-handling ----
 export {
 	checkBareCatchBlock,
@@ -147,15 +137,34 @@ export {
 	checkThrowAsControlFlow,
 	checkUntypedCatch,
 } from "./checks/error-handling.js";
+// ---- exhaustiveness ----
+export { checkDiscriminatedUnionExhaustiveness } from "./checks/exhaustiveness.js";
 // ---- export-ripple ----
 export {
 	checkExportRipple,
 	getGitSourceFiles,
 } from "./checks/export-ripple.js";
+// ---- flow-safety ----
+export {
+	checkAwaitStateToctou,
+	checkBoundaryCopyNoRevalidation,
+	checkCleanupReentrancy,
+} from "./checks/flow-safety.js";
 // ---- focused-tests ----
 export { checkFocusedTests } from "./checks/focused-tests.js";
+// ---- github-actions (workflow-injection detector) ----
+export { checkGithubActionsInjection } from "./checks/github-actions.js";
+// ---- imports (own-barrel re-import, Effect-TS port) ----
+export { checkImportFromOwnBarrel } from "./checks/imports.js";
 // ---- index-as-key ----
 export { checkIndexAsKey } from "./checks/index-as-key.js";
+// ---- index-bounds ----
+export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
+// ---- iteration-safety ----
+export {
+	checkFreshCollectionKeyLookup,
+	checkIteratorInvalidation,
+} from "./checks/iteration-safety.js";
 // ---- js-ts-general ----
 export {
 	checkCatchAndLog,
@@ -183,8 +192,6 @@ export {
 	checkPackageJsonPublishInvariantsWithPublint,
 	checkPackageJsonScriptPaths,
 } from "./checks/package-json.js";
-// ---- tsconfig-strictness ----
-export { checkTsconfigStrictness } from "./checks/tsconfig-strictness.js";
 // ---- performance ----
 export {
 	checkArrayFromMap,
@@ -272,6 +279,8 @@ export {
 	extractModuleExportNames,
 	parseEnvDocumentation,
 } from "./checks/swift.js";
+// ---- tainted-sink ----
+export { checkTaintedToPrivilegedSink } from "./checks/tainted-sink.js";
 // ---- taste ----
 export {
 	checkBooleanTrap,
@@ -292,37 +301,35 @@ export {
 	checkNestedTernary,
 	checkSameTypedPrimitiveParams,
 } from "./checks/taste-smell.js";
-// ---- iteration-safety ----
-export {
-	checkFreshCollectionKeyLookup,
-	checkIteratorInvalidation,
-} from "./checks/iteration-safety.js";
-// ---- exhaustiveness ----
-export { checkDiscriminatedUnionExhaustiveness } from "./checks/exhaustiveness.js";
-// ---- type-smuggling ----
-export { checkTypeSmuggling } from "./checks/type-smuggling.js";
-// ---- index-bounds ----
-export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
-// ---- cleanup-early-exit ----
-export { checkCleanupSkippedOnEarlyExit } from "./checks/cleanup-early-exit.js";
-// ---- imports (own-barrel re-import, Effect-TS port) ----
-export { checkImportFromOwnBarrel } from "./checks/imports.js";
-// ---- tainted-sink ----
-export { checkTaintedToPrivilegedSink } from "./checks/tainted-sink.js";
-// ---- flow-safety ----
-export {
-	checkAwaitStateToctou,
-	checkBoundaryCopyNoRevalidation,
-	checkCleanupReentrancy,
-} from "./checks/flow-safety.js";
 // ---- test-file-exists ----
 export { checkTestFileExists } from "./checks/test-file-exists.js";
+// ---- test-hygiene (Batch 2) ----
+export {
+	checkDuplicateTestNames,
+	checkHappyPathOnlyTest,
+	checkHardcodedTimeoutInTests,
+	checkMockingTheSutSelf,
+	checkMockOnlyTest,
+	checkRealIoInTests,
+	checkTestMissingSutImport,
+	checkTestNondeterminism,
+	checkTestSubprocessDefaultTimeout,
+} from "./checks/test-hygiene.js";
+// ---- test-portability (env-divergent tests, finding 2026-06) ----
+export {
+	checkPlatformConditionalAssertion,
+	checkSilentDependencySkip,
+} from "./checks/test-portability.js";
 // ---- testing ----
 export {
 	checkExcessiveUseEffect,
 	checkSnapshotOveruse,
 	checkTestImportingTest,
 } from "./checks/testing.js";
+// ---- tsconfig-strictness ----
+export { checkTsconfigStrictness } from "./checks/tsconfig-strictness.js";
+// ---- type-smuggling ----
+export { checkTypeSmuggling } from "./checks/type-smuggling.js";
 // ---- ubs-language-specific (Plan 04 rows 22, 23, 25, 29, 30 + D.1 backlog) ----
 export {
 	checkChildProcessExecUserInput,
@@ -367,6 +374,3 @@ export {
 	checkXmlExternalEntity,
 	checkYamlUnsafeLoad,
 } from "./checks/ubs-language-specific.js";
-
-// ---- github-actions (workflow-injection detector) ----
-export { checkGithubActionsInjection } from "./checks/github-actions.js";

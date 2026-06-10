@@ -208,6 +208,8 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"test_subprocess_default_timeout",
 			"mock_only_test",
 			"happy_path_only_test",
+			"test_platform_conditional",
+			"test_silent_dependency_skip",
 		],
 	},
 	"generic-cross-file": {
@@ -314,10 +316,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 177-key total", () => {
+	it("preserves the full 179-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(177);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(179);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(177);
+		expect(fragmentKeyTotal).toBe(179);
 	});
 });

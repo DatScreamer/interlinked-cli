@@ -302,6 +302,15 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	// checkPackageJsonScriptPaths note above.
 	"checkPlaceholderMarkdownLinks",
 	"placeholder_markdown_link",
+	// Test-portability checks (finding 2026-06: env-divergent tests shipped a
+	// red CI run): the load-bearing surface is WRITE TIME — the warning must
+	// land while the agent is authoring the test, before it can reach CI. The
+	// verify-side full-scan wiring is a deferred follow-up — same rationale as
+	// checkPlaceholderMarkdownLinks above.
+	"checkPlatformConditionalAssertion",
+	"test_platform_conditional",
+	"checkSilentDependencySkip",
+	"test_silent_dependency_skip",
 ]);
 
 // ===========================================
