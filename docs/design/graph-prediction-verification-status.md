@@ -235,6 +235,14 @@ Three modes available:
 - `soft_gate` — blocks once for prediction, reveals diff, allows. **Current.**
 - `enforced` — `soft_gate` + ack required for high-severity miss / full-abstention against high-impact oracle.
 
+> **Probe prerequisite (since `55223b8`, 2026-06):** the protocol is OPT-IN —
+> `mode` alone no longer activates it. `e2e-protocol-probe`, `e2e-protocol-suite`,
+> and `e2e-hook-script` expect Stage-1 blocks, so they only pass with
+> `harness.graph_prediction.enabled: true` set in `.interlinked/config.json`
+> (flip it for the run, then restore). `e2e-cold-fallback` and `e2e-stability`
+> pass regardless of the flag — the inline fail-closed gates are deliberately
+> not config-gated. Verified 2026-06-09: all five probes green under that recipe.
+
 ## What's still TODO if you want to push further
 
 - **Phase 4 — flip default to `soft_gate`.** Currently the codebase
