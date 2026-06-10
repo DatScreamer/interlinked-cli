@@ -122,6 +122,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
 | `src/harness/grep-accelerator.ts` | PreToolUse grep acceleration: index query + block-and-answer |
 | `src/harness/large-file-policy.ts` | Per-file line cap: threshold, `isCappableFile` predicate, baseline loader, ratchet verdict |
+| `src/harness/evaluator/complexity-pulse.ts` | Ambient per-edit cyclomatic telemetry: the strict gate's observer stashes its already-paid before/after parses at PreToolUse; PostToolUse emits one `[interlinked:cyclomatic]` line per edited code file (ΣCC + max + per-fn Δ; absolutes on stash miss). Same population as the gate (cappable files). Live probe: `node .interlinked/e2e-pulse-probe.mjs` (flip `per_edit_coverage` off first or expect overlay-run latency). |
 
 **Harness source files (analysis):**
 | File | Purpose |

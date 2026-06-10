@@ -60,6 +60,19 @@ export interface ComplexityWriteBlock {
 	block: string;
 }
 
+/**
+ * Telemetry observer — receives the before/after entries the gate already
+ * parsed for every analyzed file, plus the projected after-content (for
+ * content-hash matching at PostToolUse). Observation only: it never affects
+ * the block decision. Wired to the cyclomatic pulse (complexity-pulse.ts).
+ */
+export type ComplexityObserver = (
+	filePath: string,
+	beforeFns: FunctionComplexityEntry[],
+	afterFns: FunctionComplexityEntry[],
+	afterContent: string,
+) => void;
+
 /** A per-function cyclomatic counter for one language. Returns `null` (the loud
  *  "analyzer unavailable" signal — see cyclomatic-ast/cyclomatic-python) when the
  *  backing parser is absent, which the caller fails open on. */
@@ -69,8 +82,9 @@ type CyclomaticAnalyzer = (content: string, filePath: string) => FunctionComplex
  * Pick the cyclomatic analyzer for a path, or null to skip (non-code extension).
  * `language` tags the loud-degrade message; the block contract is identical
  * regardless. JS/TS uses the in-process TS AST; Python shells to radon.
+ * Exported for the pulse's stash-miss fallback parse (complexity-pulse.ts).
  */
-function selectAnalyzer(
+export function selectAnalyzer(
 	filePath: string,
 ): { compute: CyclomaticAnalyzer; language: "js_ts" | "python" } | null {
 	if (JS_TS_RE.test(filePath)) return { compute: computeCyclomaticAst, language: "js_ts" };
@@ -183,6 +197,7 @@ function complexityViolations(
 	after: string,
 	filePath: string,
 	analyzer: { compute: CyclomaticAnalyzer; language: "js_ts" | "python" },
+	observe?: ComplexityObserver,
 ): string[] | null {
 	const afterFns = analyzer.compute(after, filePath);
 	if (!afterFns) {
@@ -192,6 +207,8 @@ function complexityViolations(
 		return null;
 	}
 	const beforeFns = analyzer.compute(before, filePath) ?? [];
+	// Hand the already-paid parses to the telemetry observer (decision unaffected).
+	observe?.(filePath, beforeFns, afterFns, after);
 
 	const cap = DEFAULT_MAX_CYCLOMATIC;
 	const afterOver = afterFns
@@ -255,6 +272,7 @@ function buildBlock(violations: string[]): ComplexityWriteBlock {
 function checkApplyPatchComplexity(
 	toolInput: JsonObject,
 	cwd: string,
+	observe?: ComplexityObserver,
 ): ComplexityWriteBlock | null {
 	const raw = extractApplyPatchRaw(toolInput);
 	if (!raw || !looksLikeApplyPatch(raw)) return null;
@@ -273,7 +291,7 @@ function checkApplyPatchComplexity(
 		const after = reconstructAfterContent(section, before);
 		if (after === null) continue; // can't reconstruct confidently → fail open for this file
 		if (!isCappableFile({ filePath: section.path, content: after })) continue;
-		const fileViolations = complexityViolations(before, after, section.path, analyzer);
+		const fileViolations = complexityViolations(before, after, section.path, analyzer, observe);
 		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
 		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
 	}
@@ -289,6 +307,7 @@ function checkApplyPatchComplexity(
 export function checkFunctionComplexityWrite(
 	toolInput: JsonObject,
 	cwd: string,
+	observe?: ComplexityObserver,
 ): ComplexityWriteBlock | null {
 	const filePath = resolveFilePath(toolInput);
 	if (filePath) {
@@ -298,10 +317,16 @@ export function checkFunctionComplexityWrite(
 		const projected = projectContent(toolInput, abs);
 		if (!projected) return null;
 		if (!isCappableFile({ filePath, content: projected.after })) return null;
-		const violations = complexityViolations(projected.before, projected.after, filePath, analyzer);
+		const violations = complexityViolations(
+			projected.before,
+			projected.after,
+			filePath,
+			analyzer,
+			observe,
+		);
 		if (violations === null || violations.length === 0) return null;
 		return buildBlock(violations);
 	}
 	// No explicit file_path → may be an apply_patch payload (multi-file).
-	return checkApplyPatchComplexity(toolInput, cwd);
+	return checkApplyPatchComplexity(toolInput, cwd, observe);
 }

@@ -5,8 +5,9 @@
 // Runs after a tool executes. Handles reservation release, per-file
 // reminders, output scanning (secrets / prompt injection / sensitivity
 // ratcheting), post-write quality feedback (JSON / YAML / package.json
-// supply-chain / suppressions), oversize file warnings, tool-miss
-// detection on Bash stderr, and Edit near-miss diagnostics.
+// supply-chain / suppressions), the per-edit cyclomatic pulse, oversize
+// file warnings, tool-miss detection on Bash stderr, and Edit near-miss
+// diagnostics.
 
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
@@ -40,6 +41,7 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { STUB_INTRODUCED_CAP, scanForStubs } from "../verification-stop-checks.js";
+import { collectComplexityPulseWarnings } from "./complexity-pulse.js";
 import {
 	globMatch,
 	isBash,
@@ -84,6 +86,9 @@ export function evaluatePostToolUse(
 	warnings.push(...collectFileReminders(event, rules, session));
 	warnings.push(...collectOutputScanWarnings(event, rules, session));
 	warnings.push(...collectPostWriteFileWarnings(event));
+	// Ambient per-edit cyclomatic telemetry — consumes the PreToolUse stash the
+	// complexity gate's observer recorded (see complexity-pulse.ts).
+	warnings.push(...collectComplexityPulseWarnings(event));
 	warnings.push(...collectReadFileSizeWarning(event));
 	warnings.push(...collectToolMissWarning(event));
 	warnings.push(...collectEditNearMissWarning(event));

@@ -10,6 +10,7 @@
 // return a `HarnessDecision` to short-circuit or mutate session state in place;
 // control-flow order is unchanged.
 
+import { isAbsolute, resolve } from "node:path";
 import type { ErrorHistory } from "../error-history.js";
 import { getPatternWarnings } from "../pattern-detector.js";
 import {
@@ -30,6 +31,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { recordComplexityPulse } from "./complexity-pulse.js";
 import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { estimateEditLine, isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
@@ -118,8 +120,20 @@ export function evaluatePreChecksTail(
 		}
 		// GUARD: per-function cyclomatic cap — block a Write/Edit that introduces
 		// or worsens an over-cap function (delta semantics, no override). See
-		// complexity-write-guard.ts.
-		const complexityBlock = checkFunctionComplexityWrite(toolInput, eventCwd);
+		// complexity-write-guard.ts. The observer stashes the gate's already-paid
+		// before/after parses for the PostToolUse pulse (complexity-pulse.ts).
+		const complexityBlock = checkFunctionComplexityWrite(
+			toolInput,
+			eventCwd,
+			(filePath, beforeFns, afterFns, afterContent) =>
+				recordComplexityPulse(
+					event.session_id,
+					isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath),
+					beforeFns,
+					afterFns,
+					afterContent,
+				),
+		);
 		if (complexityBlock?.block) {
 			return {
 				decision: "block",
