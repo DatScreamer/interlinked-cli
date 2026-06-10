@@ -52,6 +52,39 @@ import { loadCoverageFinal, type PerFileCoverage } from "./coverage-final-reader
 /** Languages a runner can be requested for. */
 export type CoverageLanguage = "js" | "ts" | "python";
 
+/**
+ * The coverage language for a file path (by extension), or null when no runner
+ * covers it. SINGLE SOURCE for the extension→language mapping — the commit gate,
+ * the per-edit target resolver, and the deletion paths all consume this one
+ * (finding 2026-06: two hand-mirrored `languageForExt` copies were already
+ * drifting toward a third).
+ */
+export function coverageLanguageForPath(filePath: string): CoverageLanguage | null {
+	const dot = filePath.lastIndexOf(".");
+	const ext = dot >= 0 ? filePath.slice(dot).toLowerCase() : "";
+	switch (ext) {
+		case ".ts":
+		case ".tsx":
+		case ".mts":
+		case ".cts":
+			return "ts";
+		case ".js":
+		case ".jsx":
+		case ".mjs":
+		case ".cjs":
+			return "js";
+		case ".py":
+			// `.pyi` STUBS are deliberately absent: coverage.py never executes or
+			// reports them (they are Python's `.d.ts` analogue), so classifying them
+			// as coverage targets sent ordinary type-stub edits into the default-on
+			// gates where a `class Api: ...` stub blocked as "missing coverage"
+			// (finding 2026-06). Lint/quality surfaces keep their own .pyi gating.
+			return "python";
+		default:
+			return null;
+	}
+}
+
 /** What the caller asks a runner to do. */
 export interface CoverageRunOpts {
 	/** Absolute project root; the suite runs here and report paths resolve here. */

@@ -883,6 +883,7 @@ function stubDepView(edges: Record<string, string[]>, known?: Set<string>): Depe
 	const membership = known ?? new Set<string>([...Object.keys(edges), ...Object.values(edges).flat()]);
 	return {
 		source: "internal",
+		answerScope: "repo",
 		getDependents: (f: string): string[] => edges[f] ?? [],
 		hasFile: (f: string): boolean => membership.has(f),
 		classifyModule: () => "internal",
@@ -1291,5 +1292,344 @@ describe("checkCoverageWrite — apply_patch atomicity", () => {
 		const ev = applyPatch("*** Add File: src/m.ts", "+export function f() {", "+\treturn 1;", "+}");
 		const decision = await checkCoverageWrite(ev, rules(), depsWith(createOverlay, runner));
 		expect(decision?.decision).toBe("block");
+	});
+
+	// Baselines persist ONLY when the WHOLE atomic patch allows (finding 2026-06):
+	// a mid-loop persist let an early target's baseline land while a later target
+	// blocked the patch, leaving the baseline describing content that never
+	// existed and corrupting future drop decisions.
+	function twoTargetResult(m2Covered: boolean): CoverageRunResult {
+		const perFile = new Map<string, PerFileCoverage>();
+		perFile.set("src/m1.ts", {
+			filePath: "src/m1.ts",
+			mtime: 0,
+			functions: [{ name: "f1", line: 1, endLine: 1, hits: 2, statement_pct: 100 }],
+		});
+		perFile.set("src/m2.ts", {
+			filePath: "src/m2.ts",
+			mtime: 0,
+			functions: [
+				{ name: "f2", line: 1, endLine: 1, hits: m2Covered ? 2 : 0, statement_pct: m2Covered ? 100 : 0 },
+			],
+		});
+		return { suiteMs: 1000, perFile, ok: true, testsPassed: true };
+	}
+
+	const TWO_TARGET_PATCH = [
+		"*** Add File: src/m1.ts",
+		"+export function f1() {",
+		"+\treturn 1;",
+		"+}",
+		"*** Add File: src/m2.ts",
+		"+export function f2() {",
+		"+\treturn 2;",
+		"+}",
+	];
+
+	it("does NOT persist an early target's baseline when a LATER target blocks the patch", async () => {
+		const { createOverlay } = capturingOverlay();
+		const runner: CoverageRunner = { run: async () => twoTargetResult(false) };
+		const decision = await checkCoverageWrite(
+			applyPatch(...TWO_TARGET_PATCH),
+			rules(),
+			depsWith(createOverlay, runner),
+		);
+		expect(decision?.decision).toBe("block"); // m2 uncovered blocks the whole patch
+		// Pre-fix: m1's baseline was already written when m2 blocked.
+		expect(readFileCoverageBaseline(root, "src/m1.ts")).toBeNull();
+		expect(readFileCoverageBaseline(root, "src/m2.ts")).toBeNull();
+	});
+
+	it("persists EVERY target's baseline once the whole patch allows", async () => {
+		const { createOverlay } = capturingOverlay();
+		const runner: CoverageRunner = { run: async () => twoTargetResult(true) };
+		const decision = await checkCoverageWrite(
+			applyPatch(...TWO_TARGET_PATCH),
+			rules(),
+			depsWith(createOverlay, runner),
+		);
+		expect(decision).toBeNull();
+		expect(readFileCoverageBaseline(root, "src/m1.ts")).toBe(1);
+		expect(readFileCoverageBaseline(root, "src/m2.ts")).toBe(1);
+	});
+
+	// ---- reasoned full-suite routing (finding 2026-06): a source-only patch may
+	// ---- use the scoped affected-test route; only sections that make scoping
+	// ---- unsound (e.g. a test section) force the full suite.
+	it("a source-only UPDATE patch routes SCOPED — the runner receives the affected-test subset", async () => {
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.ts"), "export const a = 1;\n", "utf-8");
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/m.test.ts")],
+		});
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 1, hits: 2, statement_pct: 100 }]),
+		);
+		const ev = applyPatch(
+			"*** Update File: src/m.ts",
+			"@@",
+			"-export const a = 1;",
+			"+export const a = 2;",
+		);
+		const decision = await checkCoverageWrite(ev, rules(), deps(runner), view);
+		expect(decision).toBeNull();
+		expect(selected()).toEqual(["src/m.test.ts"]); // scoped, not full
+	});
+
+	it("the SAME update patch plus a test section forces the FULL suite (no subset)", async () => {
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.ts"), "export const a = 1;\n", "utf-8");
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/m.test.ts")],
+		});
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 1, hits: 2, statement_pct: 100 }]),
+		);
+		const ev = applyPatch(
+			"*** Update File: src/m.ts",
+			"@@",
+			"-export const a = 1;",
+			"+export const a = 2;",
+			"*** Add File: src/other.test.ts",
+			'+test("t", () => {});',
+		);
+		const decision = await checkCoverageWrite(ev, rules(), deps(runner), view);
+		expect(decision).toBeNull();
+		expect(selected()).toBeUndefined(); // full suite — the overlay-only test must run
+	});
+
+	it("a source-only patch with NO depView still falls back to the full suite", async () => {
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.ts"), "export const a = 1;\n", "utf-8");
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 1, hits: 2, statement_pct: 100 }]),
+		);
+		const ev = applyPatch(
+			"*** Update File: src/m.ts",
+			"@@",
+			"-export const a = 1;",
+			"+export const a = 2;",
+		);
+		const decision = await checkCoverageWrite(ev, rules(), deps(runner));
+		expect(decision).toBeNull();
+		expect(selected()).toBeUndefined();
+	});
+
+	// ---- delete-only plans (finding 2026-06): no coverage targets, but the
+	// ---- deletion overlay can break the suite — red-bar enforcement still runs.
+	it("BLOCKS a delete-only source patch whose suite comes back RED (block_on_test_failure)", async () => {
+		const { runner, ran } = stubRunner(
+			coverageResult("src/other.ts", [], 1000, {
+				testsPassed: false,
+				failingTests: ["imports gone.ts"],
+			}),
+		);
+		const ev = applyPatch("*** Delete File: src/gone.ts");
+		const decision = await checkCoverageWrite(ev, rules({ block_on_test_failure: true }), deps(runner));
+		expect(ran()).toBe(true); // the suite RAN against the deletion overlay
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain("src/gone.ts");
+		expect(decision?.reason).toMatch(/RED/);
+	});
+
+	it("ALLOWS a delete-only source patch whose suite stays GREEN", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const ev = applyPatch("*** Delete File: src/gone.ts");
+		const decision = await checkCoverageWrite(ev, rules({ block_on_test_failure: true }), deps(runner));
+		expect(ran()).toBe(true);
+		expect(decision).toBeNull();
+	});
+
+	it("does NOT spend a suite run on a delete-only patch when red-bar blocking is off", async () => {
+		// Without block_on_test_failure the gate has no decidable axis for a
+		// deletion (no coverage target), so it must not run the suite.
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const ev = applyPatch("*** Delete File: src/gone.ts");
+		const decision = await checkCoverageWrite(ev, rules(), deps(runner));
+		expect(ran()).toBe(false);
+		expect(decision).toBeNull();
+	});
+
+	it("ignores a delete-only patch of NON-code files (nothing gated deleted)", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const ev = applyPatch("*** Delete File: docs/notes.md");
+		const decision = await checkCoverageWrite(ev, rules({ block_on_test_failure: true }), deps(runner));
+		expect(ran()).toBe(false);
+		expect(decision).toBeNull();
+	});
+
+	it("defers a delete-only patch to the commit gate when the estimate exceeds the budget", async () => {
+		writeRuntimeEstimateAbove(root, 30_000);
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const ev = applyPatch("*** Delete File: src/gone.ts");
+		const decision = await checkCoverageWrite(
+			ev,
+			rules({ block_on_test_failure: true, budget_ms: 25_000 }),
+			deps(runner),
+		);
+		expect(ran()).toBe(false); // deferred, not run
+		expect(decision).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Cross-ecosystem sections (finding 2026-06): a patch with coverage targets in
+// one language plus a deletion / move / test section in ANOTHER must run BOTH
+// suites — vitest passing must not ship an unrun pytest breakage.
+// ---------------------------------------------------------------------------
+
+describe("checkCoverageWrite — cross-ecosystem sections run their own suite", () => {
+	function applyPatch(...lines: string[]): HarnessEvent {
+		return {
+			hook_event: "PreToolUse",
+			session_id: "s",
+			agent_source: "claude",
+			tool_name: "apply_patch",
+			tool_input: { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") },
+			timestamp: "2026-06-07T00:00:00.000Z",
+			cwd: root,
+		};
+	}
+
+	/** A runner with a stable execution-key `id` that counts its runs. */
+	function countingRunner(
+		id: string,
+		result: CoverageRunResult,
+	): { runner: CoverageRunner; runs: () => number } {
+		let n = 0;
+		return {
+			runner: {
+				id,
+				run: async () => {
+					n++;
+					return result;
+				},
+			},
+			runs: () => n,
+		};
+	}
+
+	/** Per-language deps: js/ts share one runner (Vitest), python gets its own. */
+	function polyglotDeps(jsTs: CoverageRunner, py: CoverageRunner): CoverageWriteDeps {
+		return {
+			runnerFor: (language) => (language === "python" ? py : jsTs),
+			createOverlay: stubOverlay(),
+			clock: () => 0,
+			cyclomaticFor: () => () => [],
+		};
+	}
+
+	/** A green, fully-covered result for the ts target `src/m.ts`. */
+	function greenTs(): CoverageRunResult {
+		return coverageResult("src/m.ts", [
+			{ name: "f", line: 1, endLine: 1, hits: 2, statement_pct: 100 },
+		]);
+	}
+
+	const POLYGLOT = { languages: ["js", "ts", "python"], block_on_test_failure: true };
+
+	beforeEach(() => {
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.ts"), "export const a = 1;\n", "utf-8");
+	});
+
+	const TS_UPDATE = ["*** Update File: src/m.ts", "@@", "-export const a = 1;", "+export const a = 2;"];
+
+	it("BLOCKS a TS update + Python deletion whose python suite comes back RED", async () => {
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner(
+			"pytest",
+			coverageResult("pkg/other.py", [], 1000, {
+				testsPassed: false,
+				failingTests: ["test_imports_gone"],
+			}),
+		);
+		const ev = applyPatch(...TS_UPDATE, "*** Delete File: pkg/gone.py");
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), polyglotDeps(ts.runner, py.runner));
+		expect(ts.runs()).toBe(1); // the target's own suite still ran
+		expect(py.runs()).toBe(1); // pre-fix: 0 — the python deletion shipped unrun
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain("pkg/gone.py");
+		expect(decision?.reason).toMatch(/python test suite RED/);
+	});
+
+	it("ALLOWS when both ecosystems' suites stay green (each ran exactly once)", async () => {
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner("pytest", coverageResult("pkg/other.py", []));
+		const ev = applyPatch(...TS_UPDATE, "*** Delete File: pkg/gone.py");
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), polyglotDeps(ts.runner, py.runner));
+		expect(decision).toBeNull();
+		expect(ts.runs()).toBe(1);
+		expect(py.runs()).toBe(1);
+	});
+
+	it("a python TEST section added next to a TS target runs the python suite too", async () => {
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner(
+			"pytest",
+			coverageResult("pkg/other.py", [], 1000, { testsPassed: false, failingTests: ["test_new"] }),
+		);
+		const ev = applyPatch(...TS_UPDATE, "*** Add File: tests/test_new.py", "+def test_new():", "+    assert False");
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), polyglotDeps(ts.runner, py.runner));
+		expect(py.runs()).toBe(1);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain("tests/test_new.py");
+	});
+
+	it("does NOT re-run a language whose RUNNER a target already ran (vitest serves js+ts)", async () => {
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner("pytest", coverageResult("pkg/other.py", []));
+		// The js test section shares the ts target's runner (same execution key).
+		const ev = applyPatch(...TS_UPDATE, "*** Add File: src/extra.test.js", '+test("t", () => {});');
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), polyglotDeps(ts.runner, py.runner));
+		expect(decision).toBeNull();
+		expect(ts.runs()).toBe(1); // ONE run covers the ts target AND the js section
+		expect(py.runs()).toBe(0); // no python section anywhere in the patch
+	});
+
+	it("spends NO cross-ecosystem run when block_on_test_failure is off (no decidable axis)", async () => {
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner("pytest", coverageResult("pkg/other.py", []));
+		const ev = applyPatch(...TS_UPDATE, "*** Delete File: pkg/gone.py");
+		const decision = await checkCoverageWrite(
+			ev,
+			rules({ languages: ["js", "ts", "python"] }),
+			polyglotDeps(ts.runner, py.runner),
+		);
+		expect(decision).toBeNull();
+		expect(py.runs()).toBe(0); // red bar is the only axis for a non-target section
+	});
+
+	it("defers the cross-ecosystem obligation when the estimate exceeds the budget", async () => {
+		updateRuntimeEstimateMs(root, 30_000, () => 0); // seed estimate over budget
+		const ts = countingRunner("vitest", greenTs());
+		const py = countingRunner("pytest", coverageResult("pkg/other.py", []));
+		const ev = applyPatch(...TS_UPDATE, "*** Delete File: pkg/gone.py");
+		const decision = await checkCoverageWrite(
+			ev,
+			rules({ ...POLYGLOT, budget_ms: 25_000 }),
+			polyglotDeps(ts.runner, py.runner),
+		);
+		expect(decision).toBeNull();
+		expect(py.runs()).toBe(0); // deferred to the (language-aware) commit gate
+		const ledger = readFileSync(join(root, ".interlinked", "coverage-obligations.jsonl"), "utf-8");
+		expect(ledger).toContain("pkg/gone.py"); // the residual deferral is RECORDED
+	});
+
+	it("a delete-only plan pairing a python deletion with a TS test section runs BOTH languages", async () => {
+		const ts = countingRunner(
+			"vitest",
+			coverageResult("src/other.ts", [], 1000, { testsPassed: false, failingTests: ["new ts test"] }),
+		);
+		const py = countingRunner("pytest", coverageResult("pkg/other.py", []));
+		const ev = applyPatch(
+			"*** Delete File: pkg/gone.py",
+			"*** Add File: src/extra.test.ts",
+			'+test("t", () => { throw new Error("red"); });',
+		);
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), polyglotDeps(ts.runner, py.runner));
+		expect(py.runs() + ts.runs()).toBeGreaterThanOrEqual(1); // ran until the first red
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/RED/);
 	});
 });

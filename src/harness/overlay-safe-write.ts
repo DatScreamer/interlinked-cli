@@ -13,15 +13,62 @@
 // with a real directory — and any symlink AT the target is removed, so a write can
 // never escape `root`.
 
-import { lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
 /**
+ * Replace a symlinked DIRECTORY segment with a real directory carrying a COPY of
+ * the link target's contents. Cutting the link is what keeps the write inside
+ * `root` — but replacing it with an EMPTY dir made every sibling under that
+ * directory vanish from the overlay, so module resolution / sibling tests failed
+ * and the red-bar gate falsely blocked valid edits in symlink-based workspaces
+ * (finding 2026-06). Nested symlinks are preserved VERBATIM (`dereference:false`)
+ * — exactly the project mirror's own contract — because every overlay/snapshot
+ * WRITE goes back through this module's de-symlinking, so a preserved link can
+ * never be written through; reads were always allowed to follow links. Fail-safe:
+ * when the target is unresolvable, not a directory, an ANCESTOR of `root`
+ * (copying it into itself would recurse), or the copy throws (cycle,
+ * permissions), fall back to the empty real dir — the pre-fix behavior — and
+ * warn on stderr.
+ */
+function materializeSymlinkedDir(root: string, linkPath: string): void {
+	let resolved: string | null = null;
+	try {
+		resolved = realpathSync(linkPath);
+	} catch {
+		resolved = null; // broken link — nothing to materialize
+	}
+	rmSync(linkPath, { force: true }); // unlink the symlink itself (never its target)
+	mkdirSync(linkPath, { recursive: true }); // re-create as a real dir inside the tree
+	if (resolved === null) return;
+	try {
+		if (!statSync(resolved).isDirectory()) return; // a file can hold no siblings
+		const rootReal = realpathSync(root);
+		// Target is root itself or an ancestor of root → copying would pull the
+		// whole tree (including this overlay) into a subdirectory of itself.
+		if (rootReal === resolved || rootReal.startsWith(resolved + sep)) {
+			process.stderr.write(
+				`[interlinked:overlay] WARNING: symlinked dir ${linkPath} resolves to an ancestor of the tree — left empty\n`,
+			);
+			return;
+		}
+		cpSync(resolved, linkPath, { recursive: true, dereference: false });
+	} catch (err) {
+		const why = err instanceof Error ? err.message : String(err);
+		process.stderr.write(
+			`[interlinked:overlay] WARNING: could not materialize symlinked dir ${linkPath} (${why}) — siblings unavailable in this tree\n`,
+		);
+	}
+}
+
+/**
  * Replace any symlink in the parent chain (root → parent of `relPath`) with a real
- * directory, then remove any symlink/file AT the target, so the eventual write stays
- * inside `root`. Returns the absolute target path. `throwIfNoEntry:false` makes a
- * not-yet-present segment return `undefined` (the dir is materialized below) without
- * an exception.
+ * directory POPULATED with the link target's contents (see
+ * {@link materializeSymlinkedDir} — an empty replacement lost every sibling), then
+ * remove any symlink/file AT the target, so the eventual write stays inside
+ * `root`. Returns the absolute target path. `throwIfNoEntry:false` makes a
+ * not-yet-present segment return `undefined` (the dir is materialized below)
+ * without an exception.
  */
 function desymlinkParents(root: string, relPath: string): string {
 	const target = join(root, relPath);
@@ -32,8 +79,7 @@ function desymlinkParents(root: string, relPath: string): string {
 		cur = join(cur, parts[i]);
 		const st = lstatSync(cur, { throwIfNoEntry: false });
 		if (st?.isSymbolicLink()) {
-			rmSync(cur, { force: true }); // unlink the symlink itself (never its target)
-			mkdirSync(cur, { recursive: true }); // re-create as a real dir inside the tree
+			materializeSymlinkedDir(root, cur);
 		}
 	}
 	return target;
@@ -70,4 +116,18 @@ export function symlinkInTree(root: string, relPath: string, linkTarget: string)
 export function removeInTree(root: string, relPath: string): void {
 	const target = desymlinkParents(root, relPath);
 	rmSync(target, { force: true, recursive: true });
+}
+
+/** Replace `relPath` inside `root` with a verbatim copy of the directory `srcDir`,
+ *  symlink-safe: the parent chain is de-symlinked and any existing entry at the
+ *  target is removed first, so the copy can never escape `root`. Nested symlinks
+ *  are preserved verbatim (`dereference:false`) — the tree's standing mirror
+ *  contract; later writes still de-symlink through this module. Used to overlay a
+ *  DIRECTORY pathspec's worktree state onto a commit snapshot (finding 2026-06). */
+export function copyDirInTree(root: string, relPath: string, srcDir: string): string {
+	const target = desymlinkParents(root, relPath);
+	mkdirSync(dirname(target), { recursive: true });
+	rmSync(target, { force: true, recursive: true });
+	cpSync(srcDir, target, { recursive: true, dereference: false });
+	return target;
 }

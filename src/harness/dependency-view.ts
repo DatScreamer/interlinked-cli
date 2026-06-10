@@ -71,6 +71,18 @@ export interface CallerSite {
  * or a Supermodel `.graph` shard — `source` records which.
  */
 export interface DependencyView {
+	/**
+	 * Which files this view can answer queries FOR:
+	 *   - `"repo"`      — any file in the project (a whole-graph backend).
+	 *   - `"seed-only"` — only the single file the view was resolved for. A
+	 *     per-file Supermodel shard answers EVERY query with the described file's
+	 *     data regardless of the argument, so a transitive walk over it re-expands
+	 *     the seed's direct dependents at every hop and silently misses indirect
+	 *     dependents (finding 2026-06). Consumers that traverse beyond the seed
+	 *     (e.g. affected-test selection) MUST fall back when the scope is not
+	 *     `"repo"` — a capability the type forces every backend to declare.
+	 */
+	readonly answerScope: "repo" | "seed-only";
 	/** Files that import or call into this file. */
 	getDependents(file: string): string[];
 	/** Whether the backend knows this file (indexed module / described by a
@@ -101,6 +113,8 @@ export interface DependencyView {
  */
 export class InternalDependencyView implements DependencyView {
 	readonly source = "internal" as const;
+	/** Wraps the whole ProjectGraph — answers for any file in the project. */
+	readonly answerScope = "repo" as const;
 
 	constructor(private readonly graph: ProjectGraph) {}
 
@@ -145,6 +159,9 @@ const SUPERMODEL_HUB_THRESHOLD = 5;
  */
 export class SupermodelDependencyView implements DependencyView {
 	readonly source = "supermodel" as const;
+	/** A per-file shard answers every query with the DESCRIBED file's data,
+	 *  whatever the argument — honest only for the seed it was resolved for. */
+	readonly answerScope = "seed-only" as const;
 
 	constructor(private readonly shard: SupermodelGraph) {}
 

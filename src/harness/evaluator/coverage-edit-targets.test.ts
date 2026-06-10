@@ -340,3 +340,121 @@ describe("coverageEditPlan — overlay models deletes and moves (findings 9 & 10
 		expect(src?.delete).toBe(true);
 	});
 });
+
+describe("coverageEditPlan — fullSuiteReason routes scoped vs full (finding 2026-06)", () => {
+	// ---- scoped route stays available: source-only patches return null ----
+	it("a routine source-only UPDATE patch carries no full-suite reason", () => {
+		writeFile("src/m.ts", "export const a = 1;\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch("*** Update File: src/m.ts", "@@", "-export const a = 1;", "+export const a = 2;"),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.isPatch).toBe(true);
+		expect(plan.fullSuiteReason).toBeNull();
+	});
+
+	it("a multi-file source-only update patch still routes scoped", () => {
+		writeFile("src/a.ts", "export const a = 1;\n");
+		writeFile("src/b.ts", "export const b = 1;\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/a.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+					"*** Update File: src/b.ts",
+					"@@",
+					"-export const b = 1;",
+					"+export const b = 2;",
+				),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toBeNull();
+	});
+
+	it("an ADDED source file needs no plan-level forcing (its own target falls back per-file)", () => {
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch("*** Add File: src/new.ts", "+export const n = 1;"),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toBeNull();
+	});
+
+	it("a single-file Write plan never forces the full suite", () => {
+		const plan = coverageEditPlan(
+			event("Write", { file_path: join(root, "src/m.ts"), content: "export const a = 1;\n" }),
+			root,
+			CFG,
+		);
+		expect(plan.isPatch).toBe(false);
+		expect(plan.fullSuiteReason).toBeNull();
+	});
+
+	// ---- full suite forced exactly when sections demand it ----
+	it("an added TEST section forces the full suite (the overlay-only test must run)", () => {
+		writeFile("src/m.ts", "export const a = 1;\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/m.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+					"*** Add File: src/m.test.ts",
+					"+import { a } from './m.js';",
+				),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toContain("src/m.test.ts");
+	});
+
+	it("an UPDATED test section also forces the full suite", () => {
+		writeFile("src/__tests__/m.test.ts", "old\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch("*** Update File: src/__tests__/m.test.ts", "@@", "-old", "+new"),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toContain("src/__tests__/m.test.ts");
+	});
+
+	it("a DELETE section forces the full suite (dependents' tests are outside any scoped subset)", () => {
+		const plan = coverageEditPlan(
+			event("apply_patch", { command: patch("*** Delete File: src/gone.ts") }),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toContain("src/gone.ts");
+	});
+
+	it("a MOVE section forces the full suite (the vacated path's dependents break invisibly)", () => {
+		writeFile("src/old.ts", "export const a = 1;\n");
+		const plan = coverageEditPlan(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/old.ts",
+					"*** Move to: src/new.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+				),
+			}),
+			root,
+			CFG,
+		);
+		expect(plan.fullSuiteReason).toContain("src/old.ts");
+	});
+});

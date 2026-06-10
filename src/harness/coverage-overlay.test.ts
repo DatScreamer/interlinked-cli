@@ -88,4 +88,25 @@ describe("createCoverageOverlay", () => {
 		first.cleanup();
 		second.cleanup();
 	});
+
+	it("honors a delete marker for the PRIMARY path (delete-only plan): the file ends ABSENT", () => {
+		// A delete-only plan passes the deletion as the primary (content "") plus
+		// its own delete marker in extraFiles — the write-then-remove must leave
+		// the file absent, not resurrected as an empty module (finding 2026-06).
+		const overlay = createCoverageOverlay(root, "src/a.ts", "", [
+			{ relPath: "src/a.ts", content: "", delete: true },
+		]);
+		expect(existsSync(join(overlay.overlayRoot, "src", "a.ts"))).toBe(false);
+		overlay.cleanup();
+	});
+
+	it("still skips a NON-delete duplicate of the primary (the primary content wins)", () => {
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 7;\n", [
+			{ relPath: "src/a.ts", content: "export const a = 999;\n" },
+		]);
+		expect(readFileSync(join(overlay.overlayRoot, "src", "a.ts"), "utf-8")).toBe(
+			"export const a = 7;\n",
+		);
+		overlay.cleanup();
+	});
 });

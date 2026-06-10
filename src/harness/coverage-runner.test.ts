@@ -8,6 +8,7 @@ import {
 	COVERAGE_FINAL_FILENAME,
 	COVERAGE_PY_JSON_FILENAME,
 	type CoverageRunOpts,
+	coverageLanguageForPath,
 	coverageRunnerFor,
 	defaultJsTestCommand,
 	defaultPythonTestCommand,
@@ -599,5 +600,27 @@ describe("coverageRunnerFor", () => {
 		expect(runner).not.toBeNull();
 		await runner?.run(baseOpts());
 		expect(calls).toHaveLength(1);
+	});
+});
+
+describe("coverageLanguageForPath — the ONE extension→language table", () => {
+	it("maps the executable source extensions", () => {
+		expect(coverageLanguageForPath("src/a.ts")).toBe("ts");
+		expect(coverageLanguageForPath("src/a.tsx")).toBe("ts");
+		expect(coverageLanguageForPath("src/a.mjs")).toBe("js");
+		expect(coverageLanguageForPath("pkg/mod.py")).toBe("python");
+	});
+
+	it("EXEMPTS .pyi stubs — coverage.py never executes or reports them (finding 2026-06)", () => {
+		// A type-stub edit must not enter the default-on coverage gates: a stub
+		// like `class Api: ...` has no runtime behavior a suite could measure, so
+		// gating it blocked every ordinary stub change as "missing coverage".
+		expect(coverageLanguageForPath("pkg/mod.pyi")).toBeNull();
+	});
+
+	it("returns null for non-code and unsupported extensions", () => {
+		expect(coverageLanguageForPath("README.md")).toBeNull();
+		expect(coverageLanguageForPath("Makefile")).toBeNull();
+		expect(coverageLanguageForPath("src/lib.rs")).toBeNull();
 	});
 });

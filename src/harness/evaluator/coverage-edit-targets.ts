@@ -17,7 +17,7 @@
 //     file named in `file_path` / `path`.
 
 import { existsSync, readFileSync } from "node:fs";
-import { extname, isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
 	type ApplyPatchSection,
 	extractApplyPatchRaw,
@@ -26,7 +26,8 @@ import {
 	reconstructAfterContent,
 } from "../apply-patch-content.js";
 import type { OverlayFile } from "../coverage-overlay.js";
-import type { CoverageLanguage } from "../coverage-runner.js";
+import { type CoverageLanguage, coverageLanguageForPath } from "../coverage-runner.js";
+import { isTestPath } from "../coverage-test-selector.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
@@ -43,27 +44,6 @@ export interface CoverageTarget {
 }
 
 type PerEditCfg = NonNullable<GuardRulesConfig["per_edit_coverage"]>;
-
-/** Map a file extension to the coverage language, or null when unsupported. */
-function languageForExt(ext: string): CoverageLanguage | null {
-	switch (ext.toLowerCase()) {
-		case ".ts":
-		case ".tsx":
-		case ".mts":
-		case ".cts":
-			return "ts";
-		case ".js":
-		case ".jsx":
-		case ".mjs":
-		case ".cjs":
-			return "js";
-		case ".py":
-		case ".pyi":
-			return "python";
-		default:
-			return null;
-	}
-}
 
 /**
  * A raw (absolute or cwd-relative) path as a project-relative POSIX path, or null
@@ -169,7 +149,7 @@ function targetForSection(
 	cfg: PerEditCfg,
 ): CoverageTarget | null {
 	if (section.op === "delete") return null; // a deleted file is not a coverage target
-	const language = languageForExt(extname(section.path));
+	const language = coverageLanguageForPath(section.path);
 	if (!language || !cfg.languages.includes(language)) return null;
 	const relPath = toProjectRel(section.path, projectRoot);
 	if (relPath === null) return null;
@@ -186,18 +166,16 @@ function targetForSection(
 
 /**
  * Coverage targets for a Codex/Copilot `apply_patch` payload — one per code file
- * the patch touches (finding 1). Returns null when the input is NOT an apply_patch
- * (caller falls through to the single-file path); otherwise the gated subset.
+ * the patch touches (finding 1), built from the ALREADY-PARSED section list so
+ * the payload is parsed exactly once per event.
  */
 function applyPatchCoverageTargets(
-	input: NonNullable<HarnessEvent["tool_input"]>,
+	sections: ApplyPatchSection[],
 	projectRoot: string,
 	cfg: PerEditCfg,
-): CoverageTarget[] | null {
-	const raw = extractApplyPatchRaw(input);
-	if (!raw || !looksLikeApplyPatch(raw)) return null;
+): CoverageTarget[] {
 	const targets: CoverageTarget[] = [];
-	for (const section of parseApplyPatchSections(raw)) {
+	for (const section of sections) {
 		const target = targetForSection(section, projectRoot, cfg);
 		if (target) targets.push(target);
 	}
@@ -213,7 +191,7 @@ function singleFileTargets(
 	const input = event.tool_input ?? {};
 	const relPath = editedRelPath(event, projectRoot);
 	if (!relPath) return [];
-	const language = languageForExt(extname(relPath));
+	const language = coverageLanguageForPath(relPath);
 	if (!language || !cfg.languages.includes(language)) return [];
 	const proposed = resolveProposedContent(`${projectRoot}/${relPath}`, input);
 	if (!isCappableFile({ filePath: relPath, content: proposed })) return [];
@@ -226,17 +204,14 @@ function singleFileTargets(
  * EVERY file an apply_patch materializes — reconstructed + confined, INCLUDING test
  * and non-code sections (which are not coverage TARGETS but MUST be in the overlay
  * so a code+test patch's suite actually covers the code instead of false-blocking —
- * finding 2026-06). Skips sections that can't be confined/reconstructed. Returns null
- * when the input is not an apply_patch.
+ * finding 2026-06). Skips sections that can't be confined/reconstructed.
  */
 function applyPatchOverlayFiles(
-	input: NonNullable<HarnessEvent["tool_input"]>,
+	sections: ApplyPatchSection[],
 	projectRoot: string,
-): OverlayFile[] | null {
-	const raw = extractApplyPatchRaw(input);
-	if (!raw || !looksLikeApplyPatch(raw)) return null;
+): OverlayFile[] {
 	const files: OverlayFile[] = [];
-	for (const section of parseApplyPatchSections(raw)) {
+	for (const section of sections) {
 		const relPath = toProjectRel(section.path, projectRoot);
 		if (relPath === null) continue;
 		// A Delete REMOVES the file from the overlay so the suite sees it ABSENT, not
@@ -259,14 +234,53 @@ function applyPatchOverlayFiles(
 	return files;
 }
 
-/** The full plan for a write: production files to GATE (`targets`) and ALL files to
- *  MATERIALIZE in the overlay (`overlayFiles` ⊇ targets — adds the patch's tests and
- *  siblings). `isPatch` ⇒ a multi-section apply_patch, so the caller runs the FULL
- *  suite (a scoped subset drawn from the on-disk graph would miss a brand-new test). */
+/**
+ * The reason this patch MUST run the FULL suite instead of a scoped affected-test
+ * subset, or null when scoped selection is sound. Scoping draws its subset from
+ * the ON-DISK dependency graph, so it is only sound when every section is an
+ * in-place UPDATE of an existing non-test file (the graph already models those).
+ * It is forced full for:
+ *   - a TEST section (added OR updated, incl. a move source/destination): the
+ *     patch's own tests live in the overlay, not the on-disk graph, so a scoped
+ *     subset would never execute them — the red-green/TDD signal would be lost;
+ *   - a DELETE: the deleted file is not a coverage target, so no per-target
+ *     selection ever runs its dependents' tests — only the full suite sees the
+ *     breakage;
+ *   - a MOVE: same blast-radius blindness as a delete for the vacated source path.
+ * A routine source-only patch returns null and stays on the scoped route
+ * (finding 2026-06: blanket full-suite forcing made every patch defer to the
+ * commit gate on big-suite repos even when affected tests were selectable). An
+ * ADDED source file needs no plan-level forcing: it is not in the graph, so its
+ * own target already falls back to the full suite per-file, while sibling update
+ * targets keep their sound scoped runs.
+ */
+function patchFullSuiteReason(sections: ApplyPatchSection[]): string | null {
+	for (const section of sections) {
+		if (isTestPath(section.path) || (section.fromPath && isTestPath(section.fromPath))) {
+			return `the patch touches test file ${section.path} — a scoped subset drawn from the on-disk graph would not run it`;
+		}
+		if (section.op === "delete") {
+			return `the patch deletes ${section.path} — its dependents' tests are outside any scoped subset`;
+		}
+		if (section.fromPath) {
+			return `the patch moves ${section.fromPath} — its dependents' tests are outside any scoped subset`;
+		}
+	}
+	return null;
+}
+
+/** The full plan for a write: production files to GATE (`targets`), ALL files to
+ *  MATERIALIZE in the overlay (`overlayFiles` ⊇ targets — adds the patch's tests
+ *  and siblings), and whether/why the FULL suite is required. */
 export interface CoverageEditPlan {
 	targets: CoverageTarget[];
 	overlayFiles: OverlayFile[];
+	/** True for a recognized apply_patch payload (multi-section write shape). */
 	isPatch: boolean;
+	/** Non-null ⇒ scoped affected-test selection would be UNSOUND for this write
+	 *  and the caller must run the FULL suite, with the human-readable reason why
+	 *  (see {@link patchFullSuiteReason}). Null ⇒ the scoped route is sound. */
+	fullSuiteReason: string | null;
 }
 
 export function coverageEditPlan(
@@ -275,12 +289,16 @@ export function coverageEditPlan(
 	cfg: PerEditCfg,
 ): CoverageEditPlan {
 	const input = event.tool_input ?? {};
-	const patchOverlay = applyPatchOverlayFiles(input, projectRoot);
-	if (patchOverlay !== null) {
+	const raw = extractApplyPatchRaw(input);
+	if (raw && looksLikeApplyPatch(raw)) {
+		// Parse the payload ONCE; targets, overlay files, and the full-suite verdict
+		// are all derived from the same section list.
+		const sections = parseApplyPatchSections(raw);
 		return {
-			targets: applyPatchCoverageTargets(input, projectRoot, cfg) ?? [],
-			overlayFiles: patchOverlay,
+			targets: applyPatchCoverageTargets(sections, projectRoot, cfg),
+			overlayFiles: applyPatchOverlayFiles(sections, projectRoot),
 			isPatch: true,
+			fullSuiteReason: patchFullSuiteReason(sections),
 		};
 	}
 	const targets = singleFileTargets(event, projectRoot, cfg);
@@ -288,6 +306,7 @@ export function coverageEditPlan(
 		targets,
 		overlayFiles: targets.map((t) => ({ relPath: t.relPath, content: t.proposed })),
 		isPatch: false,
+		fullSuiteReason: null,
 	};
 }
 

@@ -11,10 +11,14 @@
 // pointed at exactly those tests (vitest run <paths> / pytest <paths>).
 //
 // Three return states, each load-bearing for the caller's decision:
-//   - `null`  — the edited file is NOT in the dependency graph (e.g. a brand-new
-//               source file not yet indexed). The caller must fall back to the
-//               FULL suite — running a wrong/empty subset would falsely pass the
-//               gate. "Don't know which tests" ≠ "no tests".
+//   - `null`  — selection could not produce a PROVABLY COMPLETE answer: the
+//               edited file is not in the dependency graph (e.g. a brand-new
+//               source file not yet indexed), the view only answers for its own
+//               seed file (a per-file Supermodel shard — no honest transitive
+//               walk), or the BFS hit its node cap with frontier remaining
+//               (truncated ⇒ possibly missing tests). The caller must fall back
+//               to the FULL suite — running a wrong/incomplete subset would
+//               falsely pass the gate. "Don't know which tests" ≠ "no tests".
 //   - `[]`    — the file IS in the graph but NO test transitively depends on it.
 //               For a source edit this is the strict-TDD signal: the added
 //               executable lines are exercised by nothing, so the caller BLOCKS
@@ -41,10 +45,15 @@ export interface SelectAffectedTestsInput {
 	depView: DependencyView;
 }
 
-/** BFS hop ceiling — the reverse graph is shallow, but a malformed cyclic graph
- *  must still terminate quickly. The `visited` set already guarantees
- *  termination; this is a belt-and-braces bound so a pathological fan-in can't
- *  make the per-edit gate slow (the very thing this module exists to avoid). */
+/** BFS node-expansion ceiling — the reverse graph is shallow, but a malformed
+ *  cyclic graph must still terminate quickly. The `visited` set already
+ *  guarantees termination; this is a belt-and-braces bound so a pathological
+ *  fan-in can't make the per-edit gate slow (the very thing this module exists
+ *  to avoid). Hitting the cap with frontier REMAINING means the collected set
+ *  may be incomplete, so the selector returns `null` (full-suite fallback) —
+ *  a truncated walk must never masquerade as a complete subset (finding
+ *  2026-06: it returned the partial set, and a missed affected test let a
+ *  breaking edit through the scoped run). */
 const MAX_TRANSITIVE_HOPS = 1000;
 
 /**
@@ -120,6 +129,14 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 	const { editedRelPath, projectRoot, depView } = input;
 	const editedAbs = resolve(projectRoot, editedRelPath);
 
+	// A seed-only view (per-file Supermodel shard) answers EVERY getDependents
+	// call with the seed file's dependents, whatever the argument — so a
+	// "transitive" walk over it just re-expands hop 1 forever and silently
+	// misses indirect tests (finding 2026-06: a nonempty-but-incomplete subset
+	// skipped a failing indirect test). No honest transitive selection is
+	// possible → full-suite fallback.
+	if (depView.answerScope !== "repo") return null;
+
 	// "Not in the graph" → null → caller runs the full suite. Distinguishing this
 	// from `[]` is the whole point: an empty subset must never falsely pass.
 	if (!depView.hasFile(editedAbs)) return null;
@@ -127,8 +144,8 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 	const tests = new Set<string>();
 	const visited = new Set<string>([editedAbs]);
 	const queue: string[] = [editedAbs];
-	let hops = 0;
-	for (let head = 0; head < queue.length && hops < MAX_TRANSITIVE_HOPS; head++, hops++) {
+	let head = 0;
+	for (; head < queue.length && head < MAX_TRANSITIVE_HOPS; head++) {
 		const current = queue[head];
 		if (current === undefined) break;
 		for (const dependent of depView.getDependents(current)) {
@@ -140,6 +157,11 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 			if (rel && isTestPath(rel)) tests.add(rel);
 		}
 	}
+	// Cap hit with frontier remaining → the walk was TRUNCATED and `tests` may be
+	// missing affected tests beyond the cap. An incomplete subset must never be
+	// returned as if complete — a scoped run drawn from it could skip the very
+	// test this edit breaks and approve it (finding 2026-06). Full-suite fallback.
+	if (head < queue.length) return null;
 
 	// The edited file's own companion test(s), when present on disk — covers a
 	// companion the import graph failed to link.

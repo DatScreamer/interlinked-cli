@@ -36,10 +36,8 @@
 
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
-import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
 import {
 	type CoverageObligation,
-	readFileCoverageBaseline,
 	readRuntimeEstimateMs,
 	recordCoverageObligation,
 	updateRuntimeEstimateMs,
@@ -53,6 +51,7 @@ import {
 import {
 	type CoverageLanguage,
 	type CoverageRunner,
+	coverageLanguageForPath,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
 import { selectAffectedTests } from "../coverage-test-selector.js";
@@ -63,9 +62,8 @@ import {
 	type CyclomaticAnalyzer,
 	DEFAULT_CRAP_THRESHOLD,
 	decideCrap,
-	hasPerLineData,
 } from "./coverage-crap-decision.js";
-import { type CoverageTarget, coverageEditPlan } from "./coverage-edit-targets.js";
+import { type CoverageEditPlan, type CoverageTarget, coverageEditPlan } from "./coverage-edit-targets.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
 // `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
@@ -111,153 +109,16 @@ const DEFAULT_DEPS: CoverageWriteDeps = {
 	cyclomaticFor: defaultCyclomaticFor,
 };
 
-/**
- * The covered-line *fraction* (0..1) for a file, derived from the per-function
- * statement coverage the runner reports. Empty / no-statement files report 1
- * (nothing to cover ⇒ no regression). This is the honest aggregate the drop
- * check compares against the prior baseline.
- */
-function coveredFraction(cov: PerFileCoverage): number {
-	if (cov.functions.length === 0) return 1;
-	let sum = 0;
-	for (const fn of cov.functions) sum += fn.statement_pct;
-	return sum / cov.functions.length / 100;
-}
-
-/**
- * The covered-line fraction from PER-LINE data (coverage.py): covered /
- * (covered + uncovered). A file with no executable lines reports 1 (nothing to
- * cover ⇒ no regression), matching the function-path convention.
- */
-function coveredFractionByLine(covered: ReadonlySet<number>, uncovered: ReadonlySet<number>): number {
-	const total = covered.size + uncovered.size;
-	if (total === 0) return 1;
-	return covered.size / total;
-}
-
-/**
- * The first executable line the edit ADDED that is uncovered, or null when none.
- * When the edited-line set is known, only an added line counts (the line-precise
- * strict-TDD invariant); when derivation failed (undefined), ANY uncovered line
- * counts — an edit must not leave the file with an uncovered line. Lowest line
- * number first, for a stable, actionable message.
- */
-function uncoveredAddedLine(
-	uncovered: ReadonlySet<number>,
-	editedLines: Set<number> | undefined,
-): number | null {
-	let lowest: number | null = null;
-	for (const ln of uncovered) {
-		if (editedLines && !editedLines.has(ln)) continue;
-		if (lowest === null || ln < lowest) lowest = ln;
-	}
-	return lowest;
-}
-
-/** True when a function's body range intersects any edited line. */
-function fnTouchesEditedLines(fn: FunctionCoverage, editedLines: Set<number>): boolean {
-	for (let ln = fn.line; ln <= fn.endLine; ln++) {
-		if (editedLines.has(ln)) return true;
-	}
-	return false;
-}
-
-/**
- * The first uncovered function that the edit ADDED/changed, or null when every
- * edited function is covered. A function is "uncovered" when it never executed
- * (hits 0) or none of its statements ran (statement_pct 0). When the edited-line
- * set is unavailable (fail-open on derivation), every uncovered function counts
- * — the strict-TDD invariant: an edit must not leave an uncovered function.
- */
-function uncoveredAddedFunction(
-	cov: PerFileCoverage,
-	editedLines: Set<number> | undefined,
-): FunctionCoverage | null {
-	for (const fn of cov.functions) {
-		const uncovered = fn.hits === 0 || fn.statement_pct === 0;
-		if (!uncovered) continue;
-		if (!editedLines || fnTouchesEditedLines(fn, editedLines)) return fn;
-	}
-	return null;
-}
-
-/** The actionable strict-TDD block for an uncovered added line. */
-function blockForUncovered(relPath: string, fn: FunctionCoverage): HarnessDecision {
-	return {
-		decision: "block",
-		reason:
-			`[interlinked:coverage] BLOCKED: ${relPath} line ${fn.line} (function ` +
-			`\`${fn.name}\`) is executable but uncovered by the test suite after this edit. ` +
-			"Strict TDD: an edit must not add uncovered code. Add the test that exercises " +
-			"this code in the SAME edit (use MultiEdit so the overlay sees test + code " +
-			"together → covered → allowed), then retry.",
-		rule_id: "per-edit-coverage",
-		severity: "medium",
-		category: "coverage",
-	};
-}
-
-/**
- * The strict-TDD block for an uncovered added line known only by NUMBER (the
- * per-line path; coverage.py gives no function name). Same actionable shape as
- * {@link blockForUncovered} minus the function attribution.
- */
-function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
-	return {
-		decision: "block",
-		reason:
-			`[interlinked:coverage] BLOCKED: ${relPath} line ${line} is executable but ` +
-			"uncovered by the test suite after this edit. Strict TDD: an edit must not add " +
-			"uncovered code. Add the test that exercises this code in the SAME edit (use " +
-			"MultiEdit so the overlay sees test + code together → covered → allowed), then retry.",
-		rule_id: "per-edit-coverage",
-		severity: "medium",
-		category: "coverage",
-	};
-}
-
-/** Render the failing-test list for the red-bar reason, or a generic phrase. */
-function failingTestPhrase(failingTests: string[] | undefined): string {
-	if (!failingTests || failingTests.length === 0) return "one or more tests are failing";
-	const shown = failingTests.slice(0, 3);
-	const suffix = failingTests.length > shown.length ? ", …" : "";
-	return `failing test(s): ${shown.join(", ")}${suffix}`;
-}
-
-/**
- * The red-bar (strict per-edit TDD) block: the overlay ran the suite and it came
- * back RED (`testsPassed === false`). A failing suite is a harder failure than a
- * coverage gap, so this fires BEFORE the uncovered-line / drop decision and names
- * the failing test(s) so the fix is actionable.
- */
-function blockForRedBar(relPath: string, failingTests: string[] | undefined): HarnessDecision {
-	return {
-		decision: "block",
-		reason:
-			`[interlinked:coverage] BLOCKED: your edit to ${relPath} leaves the test suite RED ` +
-			`— ${failingTestPhrase(failingTests)}. Fix it in THIS edit (use MultiEdit so the ` +
-			"overlay sees code + test together → suite green → allowed) before proceeding. " +
-			"Strict TDD: an edit may not save a transiently-red state.",
-		rule_id: "per-edit-coverage",
-		severity: "medium",
-		category: "coverage",
-	};
-}
-
-/** The actionable block for a per-file coverage regression vs the baseline. */
-function blockForDrop(relPath: string, prior: number, now: number): HarnessDecision {
-	const pct = (n: number): string => `${Math.round(n * 100)}%`;
-	return {
-		decision: "block",
-		reason:
-			`[interlinked:coverage] BLOCKED: this edit drops ${relPath} coverage from ` +
-			`${pct(prior)} to ${pct(now)}. Strict TDD: coverage must not decrease. Restore the ` +
-			"test(s) covering the changed code in this edit (MultiEdit), then retry.",
-		rule_id: "per-edit-coverage",
-		severity: "medium",
-		category: "coverage",
-	};
-}
+// The uncovered-added-line / coverage-drop / red-bar DECISION helpers live in
+// ./coverage-write-decision.ts — extracted verbatim to keep this module under
+// the per-file line cap when the delete-only path landed (finding 2026-06).
+// The import sits at the extraction site (top-level imports hoist) so the move
+// is one contiguous replacement; nothing about the decision flow changed.
+import {
+	blockForRedBar,
+	decideFromCoverage,
+	failingTestPhrase,
+} from "./coverage-write-decision.js";
 
 // EVIDENCE-AUTHORITY CONTRACT (finding 2): there is deliberately NO
 // `blockForUntestedSource`. An empty affected-test selection (`[]`) means only
@@ -274,72 +135,8 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 // the per-file line cap. It runs AFTER the uncovered-added-line / drop decision: a
 // flat coverage gap is the more basic failure; CRAP is the "complex AND
 // under-covered" escalation. Computed from the SAME overlay coverage run (no
-// second suite spawn). `hasPerLineData` (imported above) is shared between the
-// coverage-drop path here and the CRAP path there.
-
-/**
- * The uncovered-added-line block and the now-fraction from PER-LINE data. Used
- * for engines whose report is natively per-line (coverage.py). Returns the block
- * for an uncovered added line, or the file's covered fraction when none.
- */
-function decidePerLine(
-	relPath: string,
-	cov: PerFileCoverage,
-	editedLines: Set<number> | undefined,
-): { block: HarnessDecision } | { now: number } {
-	const covered = cov.coveredLines ?? new Set<number>();
-	const uncovered = cov.uncoveredLines ?? new Set<number>();
-	const line = uncoveredAddedLine(uncovered, editedLines);
-	if (line !== null) return { block: blockForUncoveredLine(relPath, line) };
-	return { now: coveredFractionByLine(covered, uncovered) };
-}
-
-/**
- * The uncovered-added-line block and the now-fraction from PER-FUNCTION data
- * (istanbul / JS). Behavior is unchanged from the original single-path gate.
- */
-function decidePerFunction(
-	relPath: string,
-	cov: PerFileCoverage,
-	editedLines: Set<number> | undefined,
-): { block: HarnessDecision } | { now: number } {
-	const uncovered = uncoveredAddedFunction(cov, editedLines);
-	if (uncovered) return { block: blockForUncovered(relPath, uncovered) };
-	return { now: coveredFraction(cov) };
-}
-
-/**
- * Decide block-or-allow from the overlay's coverage of the edited file. Order:
- * uncovered-added-line first (the most actionable, line-specific message), then
- * the per-file drop vs baseline. On allow, refresh the baseline so it reflects
- * the last state the gate let through. Returns the block decision or null.
- *
- * One decision path, two coverage shapes: native per-line data (coverage.py) is
- * preferred when present because the decision is inherently per-line; otherwise
- * the per-function (istanbul / JS) path runs — identical to before this fork.
- */
-function decideFromCoverage(
-	projectRoot: string,
-	relPath: string,
-	cov: PerFileCoverage,
-	editedLines: Set<number> | undefined,
-	out: { now?: number },
-): HarnessDecision | null {
-	const verdict = hasPerLineData(cov)
-		? decidePerLine(relPath, cov, editedLines)
-		: decidePerFunction(relPath, cov, editedLines);
-	if ("block" in verdict) return verdict.block;
-
-	const now = verdict.now;
-	const prior = readFileCoverageBaseline(projectRoot, relPath);
-	if (prior !== null && now < prior) return blockForDrop(relPath, prior, now);
-
-	// Allowed on the coverage axis. Hand the new fraction back so the caller PERSISTS it
-	// only after every later gate (CRAP) also passes — writing it here would poison the
-	// baseline with rejected content if CRAP then blocks (finding 8).
-	out.now = now;
-	return null;
-}
+// second suite spawn). The uncovered-line / drop / red-bar decision itself lives
+// in `coverage-write-decision.ts` (same extraction, finding 2026-06).
 
 /**
  * Build an ALLOW decision that carries a single agent-visible coverage warning,
@@ -412,6 +209,244 @@ function deferForBudget(
 	return null;
 }
 
+// ===========================================
+// Red-bar-only enforcement for NON-TARGET gated sections (findings 2026-06)
+// ===========================================
+// Coverage targets cover only files the gate can SCAN. A patch can also carry
+// gated-language sections with no target: deletions / move sources (nothing to
+// scan) and — in a DIFFERENT ecosystem than every target — test or non-cappable
+// sections. Those sections still land in the overlay and can break THEIR
+// language's suite while every target language stays green (finding 2026-06: a
+// TS update + Python deletion ran only vitest, and the pytest breakage shipped
+// undetected). The red bar is the one decidable axis for them, so:
+//   - a delete-only plan (no targets at all) runs EVERY gated overlay language;
+//   - a target-bearing plan additionally runs every gated overlay language whose
+//     RUNNER no target already runs (the Vitest runner serves js+ts, so a ts
+//     target's run covers a js section).
+// Both paths are opt-in via `block_on_test_failure`, budget-gated (the deferred
+// obligation lands on the language-aware commit gate), and fail-open.
+
+/** The plan's overlay DELETIONS whose language the gate covers. */
+function gatedDeletions(
+	plan: CoverageEditPlan,
+	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>,
+): OverlayFile[] {
+	return plan.overlayFiles.filter((f) => {
+		if (!f.delete) return false;
+		const language = coverageLanguageForPath(f.relPath);
+		return language !== null && cfg.languages.includes(language);
+	});
+}
+
+/** Every gated-language overlay section grouped by language — targets, tests,
+ *  deletions, move sources: the full set the patch materializes. */
+function gatedSectionsByLanguage(
+	plan: CoverageEditPlan,
+	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>,
+): Map<CoverageLanguage, OverlayFile[]> {
+	const byLanguage = new Map<CoverageLanguage, OverlayFile[]>();
+	for (const f of plan.overlayFiles) {
+		const language = coverageLanguageForPath(f.relPath);
+		if (language === null || !cfg.languages.includes(language)) continue;
+		const list = byLanguage.get(language) ?? [];
+		list.push(f);
+		byLanguage.set(language, list);
+	}
+	return byLanguage;
+}
+
+/** The red-bar block for a deletion that breaks the suite. */
+function blockForDeletionRedBar(
+	relPaths: string[],
+	failingTests: string[] | undefined,
+): HarnessDecision {
+	const shown = relPaths.slice(0, 3).join(", ") + (relPaths.length > 3 ? ", …" : "");
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: deleting ${shown} leaves the test suite RED — ` +
+			`${failingTestPhrase(failingTests)}. Other code still depends on what this patch ` +
+			"removes; update or remove the dependents in the SAME patch (the overlay sees the " +
+			"whole patch together), then retry.",
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
+/** The red-bar block for a cross-ecosystem section (a language no target's
+ *  runner serves) that breaks ITS suite. */
+function blockForCrossSuiteRedBar(
+	language: CoverageLanguage,
+	relPaths: string[],
+	failingTests: string[] | undefined,
+): HarnessDecision {
+	const shown = relPaths.slice(0, 3).join(", ") + (relPaths.length > 3 ? ", …" : "");
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: this patch's ${language} sections (${shown}) leave the ` +
+			`${language} test suite RED — ${failingTestPhrase(failingTests)}. The patch's coverage ` +
+			`targets are in a different ecosystem, so that suite would not otherwise run; fix the ` +
+			`${language} breakage in the SAME patch, then retry.`,
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
+/** Materialize ONE overlay carrying the whole patch and run each language's
+ *  suite red-bar-only, once per distinct runner (the Vitest runner serves both
+ *  js and ts — dedup by execution key like the commit gate). Returns the
+ *  `block(...)` decision for the first red language, a loud degrade, or null
+ *  (all green). */
+async function runRedBarSuites(
+	byLanguage: Map<CoverageLanguage, OverlayFile[]>,
+	plan: CoverageEditPlan,
+	projectRoot: string,
+	deps: CoverageWriteDeps,
+	block: (
+		language: CoverageLanguage,
+		relPaths: string[],
+		failingTests: string[] | undefined,
+	) => HarnessDecision,
+): Promise<HarnessDecision | null> {
+	const entries = [...byLanguage.entries()];
+	const anchor = entries[0]?.[1]?.[0];
+	if (!anchor) return null;
+	// The anchor's own content rides the `proposed` slot (the overlay skips its
+	// duplicate non-delete entry); a deleted anchor materializes as "" and its
+	// delete marker then removes it (finding 2026-06).
+	const overlay = deps.createOverlay(
+		projectRoot,
+		anchor.relPath,
+		anchor.delete ? "" : anchor.content,
+		plan.overlayFiles,
+	);
+	try {
+		const ranKeys = new Set<string>();
+		for (const [language, sections] of entries) {
+			const runner = deps.runnerFor(language);
+			if (!runner) {
+				return loudRunnerUnavailable(anchor.relPath, language, `no coverage runner for ${language}`);
+			}
+			const key = runner.id ?? language;
+			if (ranKeys.has(key)) continue;
+			ranKeys.add(key);
+			const result = await runner.run({
+				projectRoot: overlay.overlayRoot,
+				coverageDir: `${overlay.overlayRoot}/.interlinked/coverage`,
+			});
+			updateRuntimeEstimateMs(projectRoot, result.suiteMs, deps.clock);
+			if (!result.ok) {
+				return loudRunnerUnavailable(anchor.relPath, language, result.error ?? "coverage run failed");
+			}
+			if (result.testsPassed === false) {
+				return block(
+					language,
+					sections.map((s) => s.relPath),
+					result.failingTests,
+				);
+			}
+		}
+		return null;
+	} finally {
+		overlay.cleanup();
+	}
+}
+
+/**
+ * Enforcement for a plan with NO coverage targets: a DELETE-ONLY source patch.
+ * The deletion has nothing to scan, but it can break the suite — every importer
+ * of the removed module fails to resolve — and the old `targets.length === 0 →
+ * null` skipped enforcement entirely (finding 2026-06). This path materializes
+ * the whole-patch overlay (the suite sees the files ABSENT) and runs
+ * RED-BAR-ONLY across EVERY gated overlay language — the deletions' own
+ * languages plus any sibling section's (a deletion paired with a test file in
+ * another ecosystem must run both suites, finding 2026-06):
+ *   - only when `block_on_test_failure` is on — with it off the gate has no
+ *     decision it could make for a deletion (no coverage target), so no suite
+ *     is spent. A patch with NO gated deletion (pure test/non-code) stays
+ *     ungated: a failing NEW test is legal TDD, not a regression;
+ *   - budget-gated like every full-suite route (the deferred obligation lands
+ *     on the commit gate, which runs delete-only suites too);
+ *   - fail-open on any error (loud-degrade), like every other gate path.
+ */
+async function decideForDeletionOnly(
+	event: HarnessEvent,
+	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>,
+	deps: CoverageWriteDeps,
+	plan: CoverageEditPlan,
+	projectRoot: string,
+): Promise<HarnessDecision | null> {
+	const deletions = gatedDeletions(plan, cfg);
+	const first = deletions[0];
+	if (!first) return null; // nothing gated deleted (non-code / pure-test / not a patch)
+	if (cfg.block_on_test_failure !== true) return null; // no decidable axis
+	try {
+		const estimate = readRuntimeEstimateMs(projectRoot);
+		if (estimate !== null && estimate >= cfg.budget_ms) {
+			return deferForBudget(projectRoot, first.relPath, event, estimate, cfg.budget_ms);
+		}
+		// A red language with a deletion blocks AS a deletion (the trigger); a red
+		// sibling language with none blocks as the cross-ecosystem section it is.
+		const block = (
+			language: CoverageLanguage,
+			relPaths: string[],
+			failingTests: string[] | undefined,
+		): HarnessDecision => {
+			const dels = deletions
+				.filter((d) => coverageLanguageForPath(d.relPath) === language)
+				.map((d) => d.relPath);
+			return dels.length > 0
+				? blockForDeletionRedBar(dels, failingTests)
+				: blockForCrossSuiteRedBar(language, relPaths, failingTests);
+		};
+		return await runRedBarSuites(gatedSectionsByLanguage(plan, cfg), plan, projectRoot, deps, block);
+	} catch (err) {
+		const why = err instanceof Error ? err.message : String(err);
+		return loudDegrade(first.relPath, why);
+	}
+}
+
+/**
+ * Enforcement for the gated overlay languages a TARGET-BEARING plan does NOT
+ * already run: a patch updating TypeScript while deleting (or moving, or adding
+ * a test in) Python ran only the targets' runner — vitest green shipped a
+ * pytest breakage undetected (finding 2026-06). Languages whose runner some
+ * target already runs are excluded by EXECUTION KEY (a ts target's Vitest run
+ * covers js sections). Red-bar-only, opt-in via `block_on_test_failure`,
+ * budget-gated, fail-open — the same contract as the delete-only path.
+ */
+async function decideForResidualLanguages(
+	event: HarnessEvent,
+	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>,
+	deps: CoverageWriteDeps,
+	plan: CoverageEditPlan,
+	projectRoot: string,
+): Promise<HarnessDecision | null> {
+	if (cfg.block_on_test_failure !== true) return null; // red bar is the only axis here
+	const targetKeys = new Set<string>();
+	for (const t of plan.targets) targetKeys.add(deps.runnerFor(t.language)?.id ?? t.language);
+	const residual = new Map<CoverageLanguage, OverlayFile[]>();
+	for (const [language, sections] of gatedSectionsByLanguage(plan, cfg)) {
+		const key = deps.runnerFor(language)?.id ?? language;
+		if (!targetKeys.has(key)) residual.set(language, sections);
+	}
+	const anchor = [...residual.values()][0]?.[0];
+	if (!anchor) return null; // every gated section's runner already ran
+	try {
+		const estimate = readRuntimeEstimateMs(projectRoot);
+		if (estimate !== null && estimate >= cfg.budget_ms) {
+			return deferForBudget(projectRoot, anchor.relPath, event, estimate, cfg.budget_ms);
+		}
+		return await runRedBarSuites(residual, plan, projectRoot, deps, blockForCrossSuiteRedBar);
+	} catch (err) {
+		const why = err instanceof Error ? err.message : String(err);
+		return loudDegrade(anchor.relPath, why);
+	}
+}
+
 interface GateContext {
 	projectRoot: string;
 	relPath: string;
@@ -444,6 +479,15 @@ interface GateContext {
 	blockOnCrap?: boolean;
 	/** CRAP score at/above which a touched function blocks. Absent ⇒ {@link DEFAULT_CRAP_THRESHOLD}. */
 	crapThreshold?: number;
+	/**
+	 * STAGE a passing target's new coverage baseline instead of persisting it
+	 * in-loop. The entry flushes staged baselines only after the ENTIRE event
+	 * resolves to allow — a mid-loop persist let an early target's baseline land
+	 * while a later target blocked the whole atomic patch, leaving the baseline
+	 * describing content that never existed (finding 2026-06). Absent ⇒ the
+	 * baseline for this run is simply not recorded.
+	 */
+	recordBaseline?: (relPath: string, fraction: number) => void;
 }
 
 /**
@@ -515,9 +559,11 @@ async function runOverlayAndDecide(
 			if (crapDecision) return crapDecision;
 		}
 
-		// EVERY gate passed → only NOW persist the new coverage baseline.
+		// EVERY per-target gate passed → STAGE the new baseline (never persist
+		// in-loop: a later target or residual-language run can still block the whole
+		// atomic patch — finding 2026-06; see GateContext.recordBaseline).
 		if (covOut.now !== undefined) {
-			writeFileCoverageBaseline(ctx.projectRoot, ctx.relPath, covOut.now);
+			ctx.recordBaseline?.(ctx.relPath, covOut.now);
 		}
 		return null;
 	} finally {
@@ -594,25 +640,55 @@ export async function checkCoverageWrite(
 	const projectRoot = event.cwd || process.cwd();
 	// Plan = the production files to GATE (targets) + ALL files to MATERIALIZE in the
 	// overlay (the patch's tests/siblings). For an apply_patch the whole ATOMIC patch
-	// is overlaid and the full suite runs, so a code+test patch is not falsely reported
-	// uncovered (finding 2026-06). Non-code / test / non-cappable files are not targets.
+	// is overlaid, so a code+test patch is not falsely reported uncovered (finding
+	// 2026-06); the full suite is forced only when `fullSuiteReason` says the
+	// sections demand it. Non-code / test / non-cappable files are not targets.
 	const plan = coverageEditPlan(event, projectRoot, cfg);
-	if (plan.targets.length === 0) return null;
+	// NO coverage targets ≠ nothing to enforce: a DELETE-ONLY source patch still
+	// carries deletion overlays that can break the suite — handled by its own
+	// red-bar path instead of a silent skip (finding 2026-06).
+	if (plan.targets.length === 0) {
+		return await decideForDeletionOnly(event, cfg, deps, plan, projectRoot);
+	}
 
 	// One decision per event: the FIRST blocking file wins (short-circuit). A
 	// multi-file apply_patch otherwise accumulates any allow-time warnings (e.g. a
 	// per-file loud-degrade) into a single allow decision so none is lost.
+	// Full-suite forcing is REASONED, not blanket-per-patch (finding 2026-06): only
+	// a patch whose sections make scoping unsound (new/changed tests, deletes,
+	// moves) forces the full suite; a routine source-only patch keeps the scoped
+	// route instead of deferring to the commit gate whenever the full-suite
+	// estimate exceeds the budget.
 	const warnings: string[] = [];
+	// Baselines are STAGED during the loop and persisted only after the ENTIRE
+	// event resolves to allow — a mid-loop persist let an early target's baseline
+	// land while a later target blocked the whole atomic patch, leaving the
+	// baseline describing content that never existed and corrupting future drop
+	// decisions (finding 2026-06).
+	const stagedBaselines: Array<{ relPath: string; fraction: number }> = [];
+	const recordBaseline = (relPath: string, fraction: number): void => {
+		stagedBaselines.push({ relPath, fraction });
+	};
 	for (const target of plan.targets) {
 		const decision = await decideForTarget(
-			{ event, cfg, deps, depView },
+			{ event, cfg, deps, depView, recordBaseline },
 			projectRoot,
 			target,
 			plan.overlayFiles,
-			plan.isPatch,
+			plan.fullSuiteReason !== null,
 		);
 		if (decision?.decision === "block") return decision;
 		if (decision?.warnings) warnings.push(...decision.warnings);
+	}
+	// Gated sections in a language NO target's runner serves (a deletion, move, or
+	// test file in another ecosystem) get their own red-bar run — vitest passing
+	// must not ship an unrun pytest breakage (finding 2026-06).
+	const residual = await decideForResidualLanguages(event, cfg, deps, plan, projectRoot);
+	if (residual?.decision === "block") return residual;
+	if (residual?.warnings) warnings.push(...residual.warnings);
+	// EVERYTHING allowed → only now do the staged baselines become durable state.
+	for (const b of stagedBaselines) {
+		writeFileCoverageBaseline(projectRoot, b.relPath, b.fraction);
 	}
 	return warnings.length > 0 ? { decision: "allow", warnings } : null;
 }
@@ -642,6 +718,8 @@ interface GateCall {
 	cfg: NonNullable<GuardRulesConfig["per_edit_coverage"]>;
 	deps: CoverageWriteDeps;
 	depView: DependencyView | undefined;
+	/** The entry's baseline STAGING sink (see GateContext.recordBaseline). */
+	recordBaseline: (relPath: string, fraction: number) => void;
 }
 
 /** One resolved coverage target plus the project root — the per-call facts the
@@ -651,7 +729,8 @@ type GateTarget = CoverageTarget & {
 	projectRoot: string;
 	/** All files to materialize in the overlay (this write's full section set). */
 	overlayFiles?: OverlayFile[];
-	/** Run the FULL suite (apply_patch — so newly-added overlay test sections run). */
+	/** Run the FULL suite — set when the plan's `fullSuiteReason` is non-null (the
+	 *  patch touches tests / deletes / moves, so a scoped subset would be unsound). */
 	forceFullSuite?: boolean;
 };
 
@@ -669,9 +748,11 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 	// empty/unknown selection falls back to the full suite (and the budget gate).
 	// There is no "block from selection" — a block must come from a measured run,
 	// never the graph's silence (see routeBySelection's evidence-authority note).
-	// An apply_patch forces the FULL suite: its new test sections live only in the
-	// overlay, not the on-disk graph a scoped subset is drawn from, so scoping would
-	// run a subset that never executes them (finding 2026-06).
+	// An apply_patch forces the FULL suite only when its SECTIONS require it (test
+	// sections live only in the overlay, never the on-disk graph a scoped subset is
+	// drawn from; deletes/moves have dependents no per-target selection covers) —
+	// see `patchFullSuiteReason`. A source-only patch routes scoped like any edit
+	// (finding 2026-06: blanket forcing deferred every patch on big-suite repos).
 	const route: SelectionRoute = target.forceFullSuite
 		? { kind: "full" }
 		: routeBySelection(relPath, projectRoot, depView);
@@ -693,6 +774,7 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 		blockOnTestFailure: cfg.block_on_test_failure === true,
 		blockOnCrap: cfg.block_on_crap === true,
 		crapThreshold: cfg.crap_threshold ?? DEFAULT_CRAP_THRESHOLD,
+		recordBaseline: call.recordBaseline,
 		...(target.overlayFiles ? { overlayFiles: target.overlayFiles } : {}),
 		...(route.kind === "scoped" ? { selectedTests: route.tests } : {}),
 	};

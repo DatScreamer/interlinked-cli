@@ -151,8 +151,11 @@ export function createCoverageOverlay(
 	// Materialize sibling apply_patch sections (its test + other touched files) into
 	// the SAME overlay so the suite runs against the whole atomic patch (finding 2026-06).
 	// A `delete` section is REMOVED, not written empty, so the suite sees an absent file.
+	// A delete marker for the PRIMARY path is honored too (a delete-ONLY plan passes a
+	// deletion as its primary — the write-then-remove leaves the file ABSENT); only a
+	// non-delete duplicate of the primary is skipped (finding 2026-06).
 	for (const f of extraFiles ?? []) {
-		if (f.relPath === editedRelPath) continue;
+		if (f.relPath === editedRelPath && !f.delete) continue;
 		if (f.delete) removeInTree(overlayRoot, f.relPath);
 		else writeFileInTree(overlayRoot, f.relPath, f.content);
 	}

@@ -19,11 +19,39 @@
 // a no-op for non-commit Bash, so an opted-in repo pays the commit cost only on
 // an actual `git commit`. Neither throws (each underlying check fails open).
 
+import { resolve } from "node:path";
+import {
+	extractApplyPatchRaw,
+	looksLikeApplyPatch,
+	parseApplyPatchSections,
+} from "../apply-patch-content.js";
 import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
+
+/**
+ * The file an edit event touches, for dependency-view resolution: the named
+ * `file_path`/`path` for ordinary writes, or the FIRST section path of an
+ * `apply_patch` payload (whose paths live in the patch body, never in
+ * `file_path`). Without the patch branch, apply_patch events never got a view
+ * and so could never take the scoped affected-test route (finding 2026-06).
+ * Any patch path works as the seed: the internal backend wraps the whole
+ * ProjectGraph (`answerScope: "repo"`), so the one view answers for every
+ * target in the patch; a per-file Supermodel view is seed-only and the
+ * selector falls back to the full suite for it regardless of seed choice.
+ */
+function editedFileForEvent(event: HarnessEvent): string | undefined {
+	const input = event.tool_input ?? {};
+	const named = (input.file_path as string) || (input.path as string) || "";
+	if (named) return named;
+	const raw = extractApplyPatchRaw(input);
+	if (!raw || !looksLikeApplyPatch(raw)) return undefined;
+	const first = parseApplyPatchSections(raw)[0];
+	if (!first) return undefined;
+	return resolve(event.cwd || process.cwd(), first.path);
+}
 
 /**
  * Build the {@link DependencyView} for the file an edit touches, REUSING the same
@@ -35,7 +63,7 @@ import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
  * absent view is the safe default.
  */
 function depViewForEvent(ctx: ServerRuntime, event: HarnessEvent): DependencyView | undefined {
-	const filePath = (event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
+	const filePath = editedFileForEvent(event);
 	if (!filePath) return undefined;
 	try {
 		const graph = getGraphForFile(ctx, filePath);

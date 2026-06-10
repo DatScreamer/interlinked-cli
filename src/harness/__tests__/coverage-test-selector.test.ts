@@ -39,6 +39,7 @@ function stubView(edges: Record<string, string[]>, known?: Set<string>): Depende
 	const membership = known ?? new Set<string>([...Object.keys(edges), ...Object.values(edges).flat()]);
 	return {
 		source: "internal",
+		answerScope: "repo",
 		getDependents: (file: string): string[] => edges[file] ?? [],
 		hasFile: (file: string): boolean => membership.has(file),
 		classifyModule: () => "internal",
@@ -188,5 +189,87 @@ describe("isTestPath", () => {
 		expect(isTestPath("src/testimony.ts")).toBe(false); // 'test' substring, not a test file
 		expect(isTestPath("src/contest.py")).toBe(false);
 		expect(isTestPath("src/latest.go")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Truncation honesty — a capped BFS must fall back, never return a partial set
+// ---------------------------------------------------------------------------
+
+/** Linear reverse-import chain of `length` hops ending in one test file:
+ *  edited ← c0 ← c1 ← … ← c{length-1} ← far.test.ts */
+function chainEdges(length: number): Record<string, string[]> {
+	const edges: Record<string, string[]> = {};
+	let prev = abs("src/m.ts");
+	for (let i = 0; i < length; i++) {
+		const node = abs(`src/c${i}.ts`);
+		edges[prev] = [node];
+		prev = node;
+	}
+	edges[prev] = [abs("src/far.test.ts")];
+	return edges;
+}
+
+describe("selectAffectedTests — BFS node-cap truncation", () => {
+	it("returns null (full-suite fallback) when the walk hits the node cap with frontier remaining", () => {
+		// 1100 intermediate nodes > the 1000-node expansion cap: the far test lies
+		// beyond the cap, so the collected set is incomplete → must be null, not [].
+		const view = stubView(chainEdges(1100));
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toBeNull();
+	});
+
+	it("still completes (and finds the far test) on a deep chain UNDER the cap", () => {
+		const view = stubView(chainEdges(900));
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toEqual(["src/far.test.ts"]);
+	});
+
+	it("returns null rather than the partial set even when affected tests were already found before the cap", () => {
+		// A direct companion test sits at hop 1 — found long before truncation —
+		// but the walk still truncates, so the subset is not provably complete.
+		const edges = chainEdges(1100);
+		const seed = abs("src/m.ts");
+		edges[seed] = [...(edges[seed] ?? []), abs("src/m.direct.test.ts")];
+		const view = stubView(edges);
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seed-only views (per-file Supermodel shard) — no honest transitive walk
+// ---------------------------------------------------------------------------
+
+describe("selectAffectedTests — seed-only dependency views", () => {
+	/** The same edge map as stubView, but declaring the per-file-shard scope. */
+	function seedOnlyView(edges: Record<string, string[]>): DependencyView {
+		return { ...stubView(edges), answerScope: "seed-only" };
+	}
+
+	it("returns null for a seed-only view even when a direct test dependent exists", () => {
+		const view = seedOnlyView({ [abs("src/m.ts")]: [abs("src/m.test.ts")] });
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toBeNull();
+	});
+
+	it("returns null for a seed-only view that would otherwise yield a nonempty-but-incomplete subset", () => {
+		// Direct test + an indirect test two hops out: a per-file shard would
+		// re-answer the seed's dependents at every hop and miss the indirect one.
+		const view = seedOnlyView({
+			[abs("src/m.ts")]: [abs("src/m.test.ts"), abs("src/mid.ts")],
+			[abs("src/mid.ts")]: [abs("src/integration.test.ts")],
+		});
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toBeNull();
+	});
+
+	it("the identical graph through a repo-scoped view selects BOTH tests (the contrast case)", () => {
+		const view = stubView({
+			[abs("src/m.ts")]: [abs("src/m.test.ts"), abs("src/mid.ts")],
+			[abs("src/mid.ts")]: [abs("src/integration.test.ts")],
+		});
+		const selected = selectAffectedTests({ editedRelPath: "src/m.ts", projectRoot: root, depView: view });
+		expect(selected).toEqual(["src/integration.test.ts", "src/m.test.ts"]);
 	});
 });

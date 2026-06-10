@@ -75,3 +75,89 @@ describe("symlinkInTree — updates a snapshot symlink without corrupting the ol
 		expect(readlinkSync(join(root, "link"))).toBe(newTarget); // now points at NEW
 	});
 });
+
+// SIBLING-PRESERVATION CONTRACT (finding 2026-06). Replacing a symlinked parent
+// directory with an EMPTY real dir made every sibling under it vanish from the
+// overlay — module resolution / sibling tests failed and the red-bar gate falsely
+// blocked valid edits in symlink-based workspaces. The replacement dir must carry
+// a COPY of the link target's contents, while writes still never escape the tree.
+describe("writeFileInTree — symlinked parents are MATERIALIZED, not emptied", () => {
+	it("preserves SIBLING files when writing under a symlinked directory", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		const externalDir = join(base, "shared-lib");
+		mkdirSync(join(externalDir, "nested"), { recursive: true });
+		writeFileSync(join(externalDir, "edited.ts"), "ORIGINAL", "utf-8");
+		writeFileSync(join(externalDir, "sibling.ts"), "SIBLING", "utf-8");
+		writeFileSync(join(externalDir, "nested", "deep.ts"), "DEEP", "utf-8");
+		symlinkSync(externalDir, join(root, "lib"), "dir"); // tree/lib → ../shared-lib
+
+		writeFileInTree(root, "lib/edited.ts", "NEW");
+
+		// The write landed inside the tree; the external dir is untouched.
+		expect(readFileSync(join(externalDir, "edited.ts"), "utf-8")).toBe("ORIGINAL");
+		expect(lstatSync(join(root, "lib")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(root, "lib/edited.ts"), "utf-8")).toBe("NEW");
+		// Siblings (and nested content) SURVIVED the de-symlinking.
+		expect(readFileSync(join(root, "lib/sibling.ts"), "utf-8")).toBe("SIBLING");
+		expect(readFileSync(join(root, "lib/nested/deep.ts"), "utf-8")).toBe("DEEP");
+	});
+
+	it("a nested symlink inside the materialized dir is preserved but still WRITE-guarded", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		const externalDir = join(base, "shared-lib");
+		mkdirSync(externalDir);
+		const externalFile = join(base, "secret.txt");
+		writeFileSync(externalFile, "SECRET", "utf-8");
+		symlinkSync(externalFile, join(externalDir, "inner-link.txt"));
+		symlinkSync(externalDir, join(root, "lib"), "dir");
+
+		writeFileInTree(root, "lib/edited.ts", "NEW");
+
+		// Nested links copy VERBATIM (the project mirror's own contract); the
+		// escape guarantee lives in the WRITE path — a later in-tree write to the
+		// linked path must de-symlink it, never modify the external target.
+		writeFileInTree(root, "lib/inner-link.txt", "IN-TREE");
+		expect(readFileSync(externalFile, "utf-8")).toBe("SECRET"); // untouched
+		expect(lstatSync(join(root, "lib/inner-link.txt")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(root, "lib/inner-link.txt"), "utf-8")).toBe("IN-TREE");
+	});
+
+	it("falls back to an empty dir for a BROKEN symlinked parent (write still succeeds)", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		symlinkSync(join(base, "does-not-exist"), join(root, "lib"), "dir");
+
+		writeFileInTree(root, "lib/edited.ts", "NEW");
+
+		expect(lstatSync(join(root, "lib")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(root, "lib/edited.ts"), "utf-8")).toBe("NEW");
+	});
+
+	it("falls back to an empty dir when the parent symlink points at a FILE", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		const externalFile = join(base, "a-file.txt");
+		writeFileSync(externalFile, "FILE", "utf-8");
+		symlinkSync(externalFile, join(root, "lib"));
+
+		writeFileInTree(root, "lib/edited.ts", "NEW");
+
+		expect(readFileSync(join(root, "lib/edited.ts"), "utf-8")).toBe("NEW");
+		expect(readFileSync(externalFile, "utf-8")).toBe("FILE"); // untouched
+	});
+
+	it("refuses to materialize a link to an ANCESTOR of the tree (no recursive self-copy)", () => {
+		const root = join(base, "tree");
+		mkdirSync(join(root, "other"), { recursive: true });
+		writeFileSync(join(root, "other", "x.txt"), "X", "utf-8");
+		symlinkSync(base, join(root, "lib"), "dir"); // tree/lib → the tree's PARENT
+
+		writeFileInTree(root, "lib/edited.ts", "NEW");
+
+		// Left empty (plus the written file) rather than copying the tree into itself.
+		expect(lstatSync(join(root, "lib")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(root, "lib/edited.ts"), "utf-8")).toBe("NEW");
+	});
+});
