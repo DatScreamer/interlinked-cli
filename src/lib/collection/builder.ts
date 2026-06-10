@@ -41,14 +41,18 @@ function classifyTool(toolName: string): ToolClass {
 
 // --- Phase detection ---
 
-const PRE_EVENT_TYPES = new Set(["tool_use_start", "permission_request"]);
+/** Legacy activity `type`s the builder projects to a PRE-phase record (which the
+ *  collection reader projects back as `tool_use_start`). Exported so the merge
+ *  reader's identity dedup can normalize a raw type to its projected display type
+ *  — `permission_request` ⇄ `tool_use_start` would otherwise never match across
+ *  the two stores (imported, not mirrored: the hand-copied set is what drifted). */
+export const PRE_EVENT_TYPES: ReadonlySet<string> = new Set(["tool_use_start", "permission_request"]);
 const POST_EVENT_TYPES = new Set(["tool_use", "tool_use_error"]);
 /** Every legacy activity `type` the collection builder CONSUMES (projects into
  *  collection.jsonl). Exported as the single source of truth for the merge reader:
- *  when collection.jsonl exists, exactly these types must be dropped from the
- *  legacy activity stream or each request appears TWICE — once as the collection
- *  projection, once as the raw activity row (finding 2026-06: `permission_request`
- *  was missing from a hand-mirrored copy of this set). */
+ *  when collection.jsonl exists, a legacy row of one of these types is dropped
+ *  exactly when its collection twin is present (identity dedup — finding 2026-06:
+ *  type-level dropping erased pre-collection history and failed-append events). */
 export const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set([...PRE_EVENT_TYPES, ...POST_EVENT_TYPES]);
 
 const GEMINI_HOOK_EVENTS = new Set(["BeforeTool", "AfterTool"]);

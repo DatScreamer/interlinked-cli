@@ -19,7 +19,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildCollectionRecord, TOOL_EVENT_TYPES } from "./collection/builder.js";
+import { buildCollectionRecord, PRE_EVENT_TYPES, TOOL_EVENT_TYPES } from "./collection/builder.js";
 import type { CollectionAction, CollectionRecord } from "./collection/types.js";
 import { appendCollection, getCollectionPath } from "./collection/writer.js";
 import { getDataDir } from "./config.js";
@@ -167,25 +167,76 @@ function readActivityStream(opts?: ReadActivityOpts): LocalActivityEvent[] {
 	return events;
 }
 
+/** A raw activity `type` as the collection reader PROJECTS it: every pre-phase
+ *  type (notably `permission_request`) reads back as `tool_use_start`. Keying
+ *  identity on the projected type is what lets a raw `permission_request` row
+ *  match its collection twin across the type mapping. Idempotent on
+ *  already-projected types. */
+function projectedType(rawType: string): string {
+	return PRE_EVENT_TYPES.has(rawType) ? "tool_use_start" : rawType;
+}
+
 /**
- * Read and filter local activity events. MERGES both stores so no event type is
- * lost (finding 11): the enriched TOOL events come from the canonical collection.jsonl
+ * Identity of a tool event for deduplicating across the two stores (the
+ * canonical collection.jsonl projection vs its legacy activity.jsonl twin):
+ *   - `idKey` — `tool_use_id` + the projected `type` (pre/post phases of one
+ *     call share the id but differ in type). Null when the event carries no id.
+ *   - `fieldKey` — timestamp + session + projected type + tool; both records
+ *     are built from the same hook payload, so these agree for a dual-written
+ *     pair.
+ * An event WITH a tool_use_id is identified by the id ALONE — two parallel
+ * calls can legitimately share the same millisecond timestamp, session, type,
+ * and tool while having DIFFERENT ids, and the field fallback would collapse
+ * them (finding 2026-06: one legacy event was dropped as a supposed twin).
+ * The field key is the identity only for id-less events (older writers).
+ */
+function toolEventIdentity(e: LocalActivityEvent): { idKey: string | null; fieldKey: string } {
+	const type = projectedType(e.type);
+	return {
+		idKey: e.tool_use_id ? `id:${e.tool_use_id}|${type}` : null,
+		fieldKey: `f:${e.ts}|${e.session ?? ""}|${type}|${e.tool ?? ""}`,
+	};
+}
+
+/**
+ * Read and filter local activity events. MERGES both stores so no event is lost
+ * (finding 11): the enriched TOOL events come from the canonical collection.jsonl
  * projection, while every NON-tool event (session_start / prompt / notification /
  * token / duration) is restored from the full-fidelity activity.jsonl — which the
  * collection projection drops. When collection.jsonl is absent (older installs / the
  * daemon never ran), activity.jsonl is the whole story.
+ *
+ * Tool events dedup by EVENT IDENTITY, not by type (finding 2026-06): dropping
+ * every collection-backed TYPE from activity.jsonl also erased (a) history from
+ * before the collection stream existed and (b) events whose collection append
+ * failed — both live ONLY in activity.jsonl and vanished from activity/status
+ * output despite remaining on disk. A legacy tool event is dropped only when its
+ * canonical twin is actually present in the collection read.
  */
 export function readLocalActivity(opts?: ReadActivityOpts): LocalActivityEvent[] {
 	const cwd = opts?.cwd ?? process.cwd();
 	const activityEvents = readActivityStream(opts);
 	if (!existsSync(getCollectionPath(cwd))) return activityEvents;
 
-	// Tool events from the enriched projection; non-tool events from activity.jsonl
-	// (the projection has none). Each source is already newest-first and pre-limited,
-	// so the global newest N is within their union — merge, re-sort, re-limit.
+	// Each source is already newest-first and pre-limited, so the global newest N
+	// is within their union — dedup, merge, re-sort, re-limit.
 	const collectionEvents = readCollectionActivity(opts);
-	const nonTool = activityEvents.filter((e) => !COLLECTION_BACKED_TYPES.has(e.type));
-	const merged = [...collectionEvents, ...nonTool];
+	const canonicalIds = new Set<string>();
+	const canonicalFields = new Set<string>();
+	for (const e of collectionEvents) {
+		const id = toolEventIdentity(e);
+		if (id.idKey) canonicalIds.add(id.idKey);
+		canonicalFields.add(id.fieldKey);
+	}
+	// A legacy tool event WITH a tool_use_id is a twin only on an ID match — the
+	// field fallback applies solely to id-less events, so two parallel same-ms
+	// calls with distinct ids both survive (finding 2026-06).
+	const legacy = activityEvents.filter((e) => {
+		if (!COLLECTION_BACKED_TYPES.has(e.type)) return true;
+		const id = toolEventIdentity(e);
+		return id.idKey ? !canonicalIds.has(id.idKey) : !canonicalFields.has(id.fieldKey);
+	});
+	const merged = [...collectionEvents, ...legacy];
 	merged.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
 	const limit = opts?.limit && opts.limit > 0 ? opts.limit : undefined;
 	return limit ? merged.slice(0, limit) : merged;

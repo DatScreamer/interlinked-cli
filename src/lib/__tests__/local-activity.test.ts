@@ -259,14 +259,88 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 		expect(events[0].summary).toBe("/a.ts");
 	});
 
-	it("collection.jsonl supplies the TOOL events (legacy activity tool events are deduped)", () => {
+	it("collection.jsonl supplies the TOOL events (a dual-written legacy twin is deduped)", () => {
+		// The legacy row is a TRUE TWIN of the collection record (same hook payload
+		// → same ts / session / tool) — exactly what the dual-write produces. The
+		// enriched collection projection wins; the raw row is dropped.
 		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
 		writeFileSync(
 			join(tmp, ".interlinked", "activity.jsonl"),
-			`${JSON.stringify({ ts: "2026-06-06T09:00:00.000Z", agent: "from-activity", type: "tool_use" })}\n`,
+			`${JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "from-activity", type: "tool_use", tool: "Bash", session: "s1" })}\n`,
 		);
 		writeCollection([rec({ agent_name: "from-collection" })]);
 		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["from-collection"]);
+	});
+
+	it("PRESERVES legacy tool events with NO collection twin (pre-collection history) — finding 2026-06", () => {
+		// History written BEFORE the collection stream existed lives only in
+		// activity.jsonl. Type-level dropping made it vanish from activity/status
+		// output despite remaining on disk; identity dedup keeps it.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({ ts: "2026-06-01T08:00:00.000Z", agent: "old", type: "tool_use", tool: "Read", session: "s0" })}\n`,
+		);
+		writeCollection([rec({ agent_name: "new" })]); // a different, later event
+		const agents = readLocalActivity({ cwd: tmp }).map((e) => e.agent);
+		expect(agents).toEqual(["new", "old"]); // newest-first, history intact
+	});
+
+	it("PRESERVES a tool event whose collection append FAILED (only in activity.jsonl)", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${[
+				// Twin of the collection record → deduped.
+				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "tool_use", tool: "Bash", session: "s1" }),
+				// No twin (its collection append failed) → must survive.
+				JSON.stringify({ ts: "2026-06-06T10:00:05.000Z", agent: "a", type: "tool_use", tool: "Write", session: "s1" }),
+			].join("\n")}\n`,
+		);
+		writeCollection([rec()]);
+		const all = readLocalActivity({ cwd: tmp });
+		expect(all.filter((e) => e.type === "tool_use").length).toBe(2); // collection Bash + legacy Write
+		expect(all.some((e) => e.tool === "Write")).toBe(true);
+	});
+
+	it("dedups by tool_use_id when the field key cannot match (id is the primary identity)", () => {
+		// The legacy row lacks `session` (so the ts|session|type|tool key differs)
+		// but carries the same tool_use_id → still recognized as the same event.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "tool_use", tool: "Bash", tool_use_id: "tu-1" })}\n`,
+		);
+		writeCollection([rec({ tool_use_id: "tu-1" })]);
+		expect(readLocalActivity({ cwd: tmp }).length).toBe(1);
+	});
+
+	it("two PARALLEL calls with different tool_use_ids in the same millisecond both survive — finding 2026-06", () => {
+		// Same ts / session / type / tool, DIFFERENT ids: the field fallback must
+		// not collapse them — the id decides, so the legacy tu-B event is NOT a
+		// twin of the collection's tu-A event.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "tool_use", tool: "Bash", session: "s1", tool_use_id: "tu-B" })}\n`,
+		);
+		writeCollection([rec({ tool_use_id: "tu-A" })]);
+		const all = readLocalActivity({ cwd: tmp });
+		expect(all.length).toBe(2); // both parallel calls visible
+		expect(all.some((e) => e.tool_use_id === "tu-B")).toBe(true);
+	});
+
+	it("an id-bearing legacy event never dedups via the field fallback (prefer differing ids)", () => {
+		// The collection twin candidate has NO id but an identical field key; the
+		// legacy event HAS an id → identity is the id alone → it survives. The
+		// reviewer-chosen tradeoff: a possible duplicate beats a silent drop.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "tool_use", tool: "Bash", session: "s1", tool_use_id: "tu-X" })}\n`,
+		);
+		writeCollection([rec()]); // no tool_use_id on the collection record
+		expect(readLocalActivity({ cwd: tmp }).length).toBe(2);
 	});
 
 	it("does NOT duplicate a permission_request (collection-backed pre event) — finding 2026-06", () => {
@@ -278,7 +352,9 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 		writeFileSync(
 			join(tmp, ".interlinked", "activity.jsonl"),
 			`${[
-				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "permission_request", tool: "Bash" }),
+				// Raw permission_request — its collection twin is the PRE projection
+				// below; the identity key must match across the type mapping.
+				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "permission_request", tool: "Bash", session: "s1" }),
 				JSON.stringify({ ts: "2026-06-06T10:00:01.000Z", agent: "a", type: "session_start" }),
 			].join("\n")}\n`,
 		);
@@ -301,7 +377,7 @@ describe("readLocalActivity — canonical collection.jsonl source", () => {
 			join(tmp, ".interlinked", "activity.jsonl"),
 			`${[
 				JSON.stringify({ ts: "2026-06-06T10:00:00.000Z", agent: "a", type: "session_start" }),
-				JSON.stringify({ ts: "2026-06-06T10:00:02.000Z", agent: "a", type: "tool_use", tool: "Bash" }),
+				JSON.stringify({ ts: "2026-06-06T10:00:02.000Z", agent: "a", type: "tool_use", tool: "Bash", session: "s1" }),
 			].join("\n")}\n`,
 		);
 		writeCollection([rec({ ts: "2026-06-06T10:00:02.000Z", agent_name: "a" })]);
