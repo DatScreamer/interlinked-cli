@@ -72,7 +72,12 @@ export function runProcessAsync(
 		let killed = false;
 		let settled = false;
 		const env = opts.env ? { ...process.env, ...opts.env } : process.env;
-		const child = spawn(cmd, args, { cwd: opts.cwd, env });
+		// `detached: true` makes the child its own process-group leader, so the
+		// timeout/abort path can signal the WHOLE group (negative pid) and take
+		// down wrapper-spawned grandchildren (e.g. `npx` -> biome/tsc) instead of
+		// orphaning the real tool to run past its deadline. The group is the
+		// child's own, so a negative-pid signal never reaches the daemon's group.
+		const child = spawn(cmd, args, { cwd: opts.cwd, env, detached: true });
 		// Stored so `finalize` can clear the SIGKILL grace timer when the
 		// process exits cleanly between SIGTERM and the deadline. Without
 		// this, every timed-out spawn left a 1s pending timer on the event
@@ -92,21 +97,30 @@ export function runProcessAsync(
 			resolve({ stdout, stderr, code, timedOut, killed });
 		};
 
-		const killTree = (): void => {
-			killed = true;
+		// Signal the child's whole process group (negative pid) so a wrapper
+		// like `npx` takes its real tool grandchild (biome/tsc/...) down with it
+		// instead of orphaning it past the deadline. Falls back to a direct
+		// child signal if the group send fails (e.g. pid already reaped).
+		const signalTree = (signal: NodeJS.Signals): void => {
+			const pid = child.pid;
 			try {
-				child.kill("SIGTERM");
+				if (pid !== undefined) process.kill(-pid, signal);
+				else child.kill(signal);
 			} catch (e) {
 				void e;
-			}
-			killGraceTimer = setTimeout(() => {
-				if (!settled) {
-					try {
-						child.kill("SIGKILL");
-					} catch (e) {
-						void e;
-					}
+				try {
+					child.kill(signal);
+				} catch (e2) {
+					void e2;
 				}
+			}
+		};
+
+		const killTree = (): void => {
+			killed = true;
+			signalTree("SIGTERM");
+			killGraceTimer = setTimeout(() => {
+				if (!settled) signalTree("SIGKILL");
 			}, SIGKILL_GRACE_MS);
 		};
 

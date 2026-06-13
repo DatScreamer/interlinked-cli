@@ -117,6 +117,19 @@ ${REDACTION_CHUNK}
 const HARNESS_SOCK_PATH = resolveHarnessSocket();
 const PENDING_WARNINGS_PATH = join(DATA_DIR, "pending-quality-warnings.json");
 const HARNESS_PRE_TIMEOUT_MS = 5000;  // PreToolUse: allows grep acceleration (ripgrep on candidates)
+
+// Park the thread for ~ms WITHOUT burning a CPU core. Atomics.wait blocks the
+// thread efficiently; the busy-spin fallback only runs if SharedArrayBuffer is
+// unavailable. Replaces the old Date.now() busy-spins that pinned a full core
+// while the hook waited on the harness.
+function blockingSleep(ms) {
+    try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    } catch (_e) {
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* spin fallback */ }
+    }
+}
 const HARNESS_POST_TIMEOUT_MS = ${postTimeoutMs}; // PostToolUse: from harness mode "${modeName}" — see src/harness/rules/modes.ts. Re-rendered on every \`interlinked harness mode <name>\` change.
 
 /**
@@ -124,23 +137,31 @@ const HARNESS_POST_TIMEOUT_MS = ${postTimeoutMs}; // PostToolUse: from harness m
  * Called at the start of every PreToolUse so the agent sees warnings
  * from the file it just edited BEFORE its next tool call.
  *
- * BLOCKING: If the harness is still running quality checks (marker file exists),
- * waits up to 12 seconds for checks to complete. This ensures the agent sees
- * all quality issues before proceeding.
+ * NON-FREEZING: If the harness is still running quality checks (marker file
+ * exists), waits only up to ~1.5s so the agent sees FAST checks before
+ * proceeding. Slow/cold check passes (large repos) are NOT waited out — their
+ * warnings persist in pending-quality-warnings.json and flush on a later
+ * PreToolUse — so the agent is never frozen behind a 20-80s check pass.
  */
 function flushPendingWarnings() {
     try {
         const markerPath = join(DATA_DIR, "quality-check-in-progress");
 
-        // Wait for harness to finish quality checks (blocks the agent).
+        // Briefly let an in-flight check pass finish so its warnings flush now,
+        // but never freeze the agent: a large or cold-cache PostToolUse pass can
+        // run 20-80s, and blocking the agent that long is exactly what reads as
+        // "harness down". Cap the wait low; whatever is not ready flushes on a
+        // later PreToolUse from the persisted pending-warnings file.
         if (existsSync(markerPath)) {
-            const maxWaitMs = 12000;
+            const maxWaitMs = 1500;
             const start = Date.now();
             while (existsSync(markerPath) && (Date.now() - start) < maxWaitMs) {
-                const waitUntil = Date.now() + 50;
-                while (Date.now() < waitUntil) { /* spin */ }
+                blockingSleep(50);
             }
-            // Clean up stale marker if harness timed out
+            // Force-clear a marker the harness left behind (a slow pass still
+            // running, or a daemon that died mid-check) so it can't make every
+            // later PreToolUse pay the wait too. The daemon's own unlink is
+            // ENOENT-safe, so clearing it early never corrupts its state.
             if (existsSync(markerPath)) {
                 try { unlinkSync(markerPath); } catch (_err) { void 0; /* intentional: no-op */ }
             }
@@ -772,8 +793,7 @@ ${PROVIDER_RESPONSES_CHUNK}
             const healed = tryHealHarness();
             if (healed) {
                 // Wait briefly for harness to come up, then retry once
-                const retryDelay = Date.now() + 1500;
-                while (Date.now() < retryDelay) { /* spin */ }
+                blockingSleep(1500);
                 guardDecision = await evaluateViaHarness(harnessEvent);
             }
         }
@@ -932,8 +952,7 @@ ${PROVIDER_RESPONSES_CHUNK}
             // Harness unavailable — try to heal (auto-restart if stale)
             const healed = tryHealHarness();
             if (healed) {
-                const retryDelay = Date.now() + 1500;
-                while (Date.now() < retryDelay) { /* spin */ }
+                blockingSleep(1500);
                 postResult = await evaluateViaHarness(harnessEvent);
             }
         }
