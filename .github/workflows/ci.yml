@@ -62,12 +62,11 @@ jobs:
         run: npm run docs:check
 
       - name: Test
-        # DIAGNOSTIC (temporary): `timeout` self-terminates vitest at 7 min so the
-        # JOB COMPLETES (logs become downloadable) instead of hanging to the cap,
-        # and stops before the build/smoke steps (saving minutes). Default reporter
-        # prints each file as it COMPLETES — the hung file is the one that never
-        # prints a completion line. Restore to `npm test` after the fix.
-        run: timeout 420 npx vitest run --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000
+        # DIAGNOSTIC (temporary): sequential + verbose over ONLY the 21 not-completed
+        # process/socket-spawning suspects → the hung file is the LAST one printed
+        # before the run goes silent. `timeout` self-terminates so the job completes.
+        # Restore to `npm test` after the fix.
+        run: timeout 300 npx vitest run --no-file-parallelism --reporter=verbose --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000 src/__tests__/suggestion-registry-parity.test.ts src/commands/__tests__/harness-multi-workspace.test.ts src/commands/harness-daemon.test.ts src/harness/__tests__/session-git-baseline.test.ts src/harness/__tests__/trigram-git.test.ts src/harness/__tests__/ubs-eval-input-tainted.test.ts src/harness/check-engine/__tests__/poison-corpus.test.ts src/harness/check-engine/spawn-async.test.ts src/harness/checks/tainted-sink.test.ts src/harness/checks/test-hygiene.test.ts src/harness/checks/ubs-language-specific/js-security-checks.test.ts src/harness/daemon-client.test.ts src/harness/library-footguns/child-process.test.ts src/harness/library-footguns/d1.test.ts src/harness/quality-checks/dependency-audit.test.ts src/harness/server/__tests__/socket-lifecycle.test.ts src/harness/session-paths.test.ts src/index.test.ts src/lib/__tests__/attribution.test.ts src/lib/__tests__/git-utils.test.ts src/lib/__tests__/hook-installers-claude.test.ts
 
       - name: Build
         run: npm run build
