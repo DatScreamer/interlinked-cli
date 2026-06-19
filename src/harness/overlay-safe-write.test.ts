@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { symlinkInTree, writeFileInTree } from "./overlay-safe-write.js";
+import { removeInTree, symlinkInTree, writeFileInTree } from "./overlay-safe-write.js";
 
 // SYMLINK-ESCAPE CONTRACT (findings 2026-06: overlay + snapshot data corruption). A
 // repo can contain symlinked files or directories; a naive writeFileSync /
@@ -159,5 +159,40 @@ describe("writeFileInTree — symlinked parents are MATERIALIZED, not emptied", 
 		// Left empty (plus the written file) rather than copying the tree into itself.
 		expect(lstatSync(join(root, "lib")).isSymbolicLink()).toBe(false);
 		expect(readFileSync(join(root, "lib/edited.ts"), "utf-8")).toBe("NEW");
+	});
+});
+
+// Round 6 (finding 2026-06): `rmSync(link, {force})` throws ERR_FS_EISDIR for
+// a DIRECTORY symlink on newer Node majors (observed on Node 25, inside the
+// declared `node >=22` engine range), so every removal here dispatches on
+// lstat and unlinks links explicitly — same behavior on every engine version.
+describe("directory-symlink removal is unlink, never rm (Node 25 ERR_FS_EISDIR)", () => {
+	it("writeFileInTree replaces a dir-symlink AT the target without touching its target", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		const externalDir = join(base, "external");
+		mkdirSync(externalDir);
+		writeFileSync(join(externalDir, "keep.txt"), "KEEP", "utf-8");
+		symlinkSync(externalDir, join(root, "entry"), "dir"); // tree/entry → external dir
+
+		writeFileInTree(root, "entry", "NOW-A-FILE");
+
+		expect(lstatSync(join(root, "entry")).isFile()).toBe(true);
+		expect(readFileSync(join(root, "entry"), "utf-8")).toBe("NOW-A-FILE");
+		expect(readFileSync(join(externalDir, "keep.txt"), "utf-8")).toBe("KEEP"); // untouched
+	});
+
+	it("removeInTree on a dir-symlink removes the LINK, never the target's contents", () => {
+		const root = join(base, "tree");
+		mkdirSync(root);
+		const externalDir = join(base, "external");
+		mkdirSync(externalDir);
+		writeFileSync(join(externalDir, "keep.txt"), "KEEP", "utf-8");
+		symlinkSync(externalDir, join(root, "gone"), "dir");
+
+		removeInTree(root, "gone");
+
+		expect(lstatSync(join(root, "gone"), { throwIfNoEntry: false })).toBeUndefined();
+		expect(readFileSync(join(externalDir, "keep.txt"), "utf-8")).toBe("KEEP"); // untouched
 	});
 });

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	extractTemplateInterpolationExpressions,
 	stripComments,
+	stripLiteralsKeepComments,
+	stripRegexLiterals,
 	stripStringLiterals,
 	stripTemplateLiterals,
 } from "./strip-helpers.js";
@@ -239,5 +241,39 @@ describe("stripStringLiterals — no-literal short-circuit", () => {
 	it("returns a line with no string literals unchanged", () => {
 		// Exercises the regex-replace branch where no match is found.
 		expect(stripStringLiterals("const x = a + b;")).toBe("const x = a + b;");
+	});
+});
+
+describe("stripRegexLiterals — comment openers are not regex literals", () => {
+	it("leaves a block comment at an expression position intact", () => {
+		// JS lexes `/*` as a comment opener, never a regex start. Before the
+		// first-body-char restriction this whole comment was blanked as if it
+		// were `/…/` with a `*…*` body (finding 2026-06: it ate the comments
+		// stripLiteralsKeepComments exists to preserve).
+		const input = "/* the fixture is environment-sensitive */";
+		expect(stripRegexLiterals(input)).toBe(input);
+	});
+
+	it("still strips a real regex whose body starts with an escaped star", () => {
+		const literal = "/\\*x/";
+		const out = stripRegexLiterals(`const re = ${literal};`);
+		expect(out).toBe(`const re = ${" ".repeat(literal.length)};`);
+	});
+});
+
+describe("stripLiteralsKeepComments — comments survive, fixtures do not", () => {
+	it("keeps comment text while blanking template fixture interiors", () => {
+		const fixtureLine = "// looks like a comment";
+		const input = ["// real comment", tpl("const f = @"), fixtureLine, tpl("@;")].join("\n");
+		const out = stripLiteralsKeepComments(input).split("\n");
+		expect(out[0]).toBe("// real comment");
+		// The template body line is blanked to same-length spaces.
+		expect(out[2]).toBe(" ".repeat(fixtureLine.length));
+	});
+
+	it("blanks string interiors but keeps the comment after them", () => {
+		const out = stripLiteralsKeepComments('const s = "// not a comment"; // trailing note');
+		expect(out).toContain("// trailing note");
+		expect(out).not.toContain("not a comment");
 	});
 });

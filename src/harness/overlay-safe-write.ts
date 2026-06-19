@@ -13,7 +13,7 @@
 // with a real directory — and any symlink AT the target is removed, so a write can
 // never escape `root`.
 
-import { cpSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
 /**
@@ -38,7 +38,7 @@ function materializeSymlinkedDir(root: string, linkPath: string): void {
 	} catch {
 		resolved = null; // broken link — nothing to materialize
 	}
-	rmSync(linkPath, { force: true }); // unlink the symlink itself (never its target)
+	removeEntryNoFollow(linkPath, { recursive: false }); // unlink the symlink itself (never its target)
 	mkdirSync(linkPath, { recursive: true }); // re-create as a real dir inside the tree
 	if (resolved === null) return;
 	try {
@@ -59,6 +59,25 @@ function materializeSymlinkedDir(root: string, linkPath: string): void {
 			`[interlinked:overlay] WARNING: could not materialize symlinked dir ${linkPath} (${why}) — siblings unavailable in this tree\n`,
 		);
 	}
+}
+
+/**
+ * Remove the entry at `path` WITHOUT ever following a symlink. Links are
+ * unlinked via `unlinkSync` regardless of target type — `rmSync(link,
+ * {force})` throws ERR_FS_EISDIR for a DIRECTORY symlink on newer Node majors
+ * (observed on Node 25, inside the declared `node >=22` engine range; finding
+ * 2026-06 round 6), which made every overlay/snapshot write through a
+ * symlinked directory fail. Real directories are removed recursively only
+ * when asked; missing paths are a no-op.
+ */
+function removeEntryNoFollow(path: string, opts: { recursive: boolean }): void {
+	const st = lstatSync(path, { throwIfNoEntry: false });
+	if (!st) return;
+	if (st.isSymbolicLink()) {
+		unlinkSync(path);
+		return;
+	}
+	rmSync(path, { force: true, ...(opts.recursive ? { recursive: true } : {}) });
 }
 
 /**
@@ -89,7 +108,7 @@ function desymlinkPath(root: string, relPath: string): string {
 	const target = desymlinkParents(root, relPath);
 	mkdirSync(dirname(target), { recursive: true });
 	// Drop a symlink (or file) AT the target so the write does not follow it.
-	rmSync(target, { force: true });
+	removeEntryNoFollow(target, { recursive: false });
 	return target;
 }
 
@@ -115,7 +134,7 @@ export function symlinkInTree(root: string, relPath: string, linkTarget: string)
  *  an apply_patch Delete / the source side of a Move in an overlay (findings 2026-06). */
 export function removeInTree(root: string, relPath: string): void {
 	const target = desymlinkParents(root, relPath);
-	rmSync(target, { force: true, recursive: true });
+	removeEntryNoFollow(target, { recursive: true });
 }
 
 /** Replace `relPath` inside `root` with a verbatim copy of the directory `srcDir`,
@@ -127,7 +146,7 @@ export function removeInTree(root: string, relPath: string): void {
 export function copyDirInTree(root: string, relPath: string, srcDir: string): string {
 	const target = desymlinkParents(root, relPath);
 	mkdirSync(dirname(target), { recursive: true });
-	rmSync(target, { force: true, recursive: true });
+	removeEntryNoFollow(target, { recursive: true });
 	cpSync(srcDir, target, { recursive: true, dereference: false });
 	return target;
 }

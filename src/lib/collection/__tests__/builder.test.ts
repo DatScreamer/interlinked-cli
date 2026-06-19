@@ -88,11 +88,56 @@ describe("buildCollectionRecord — tool class detection", () => {
 		["web_search", "fetch"],
 		["NotebookEdit", "notebook_edit"],
 		["TaskCreate", "task"],
+		["mcp__context7__resolve-library-id", "mcp_call"],
 		["SomeMcpTool", "other"],
 	])("maps %s → %s", (toolName, expectedClass) => {
 		const rec = buildCollectionRecord(baseEvent({ tool: toolName, tool_name: toolName }));
 		expect(rec).not.toBeNull();
 		expect(rec!.tool_class).toBe(expectedClass);
+	});
+});
+
+describe("buildCollectionRecord — mcp_call", () => {
+	it("parses Claude/Codex-style mcp__server__tool provider names", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "mcp__context7__resolve-library-id",
+				tool_input: { libraryName: "react" },
+				tool_response: { content: [{ type: "text", text: "react docs" }] },
+			}),
+		)!;
+
+		expect(rec.tool_class).toBe("mcp_call");
+		expect(rec.action).toEqual({
+			server: "context7",
+			tool: "resolve-library-id",
+			params: { libraryName: "react" },
+			params_ref: null,
+		});
+		expect(rec.observation).toEqual({
+			result: { content: [{ type: "text", text: "react docs" }] },
+			result_ref: null,
+		});
+	});
+
+	it("lets explicit tool_input server/tool fields override provider-name parsing", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "mcp__context7__resolve-library-id",
+				tool_input: {
+					server: "docs",
+					tool: "lookup",
+					params: { q: "react" },
+				},
+			}),
+		)!;
+
+		expect(rec.action).toEqual({
+			server: "docs",
+			tool: "lookup",
+			params: { q: "react" },
+			params_ref: null,
+		});
 	});
 });
 

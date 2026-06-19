@@ -17,8 +17,8 @@ import {
 } from "../large-file-policy.js";
 
 describe("DEFAULT_MAX_LINES", () => {
-	it("is the canonical 800-line cap", () => {
-		expect(DEFAULT_MAX_LINES).toBe(800);
+	it("is the canonical 500-line cap", () => {
+		expect(DEFAULT_MAX_LINES).toBe(500);
 	});
 
 	// Single source of truth: the in-code default and the committed baseline's
@@ -100,6 +100,19 @@ describe("isCappableFile", () => {
 		const buried = `${"// pad\n".repeat(25)}// @codegen-data\nexport const X = 1;\n`;
 		expect(isCappableFile({ filePath: "src/lib/bar.ts", content: buried })).toBe(true);
 	});
+
+	it("exempts the harness's own .interlinked/ state dir and diff/patch artifacts", () => {
+		// .interlinked/ is tool state (logs, trigram index, archives, e2e probes,
+		// workflow scratch) — never a product module, so a count there is moot.
+		expect(isCappableFile({ filePath: ".interlinked/e2e-stability.mjs", content })).toBe(false);
+		expect(isCappableFile({ filePath: "sub/.interlinked/probe.ts", content })).toBe(false);
+		expect(
+			isCappableFile({ filePath: ".interlinked/merge-patches/item-4.diff", content }),
+		).toBe(false);
+		expect(isCappableFile({ filePath: "patches/fix.patch", content })).toBe(false);
+		// A non-dot "interlinked" directory is ordinary source — still cappable.
+		expect(isCappableFile({ filePath: "src/interlinked/feature.ts", content })).toBe(true);
+	});
 });
 
 describe("evaluateLargeFile", () => {
@@ -156,6 +169,19 @@ describe("evaluateLargeFile", () => {
 		const verdict = evaluateLargeFile({ relPath: "src/x.ts", lines: 1501, baseline: null });
 		expect(verdict.overCap).toBe(true);
 	});
+
+	it("honors an explicit maxLines override below the baseline cap (verify path)", () => {
+		// baseline cap is 1500, but a repo that ran `interlinked caps set lines 300`
+		// resolves to 300 — a 400-line file is over the EFFECTIVE cap. verify must
+		// pass that resolved cap, not the baseline (finding 2026-06, round 8).
+		const verdict = evaluateLargeFile({ relPath: "src/x.ts", lines: 400, baseline, maxLines: 300 });
+		expect(verdict.overCap).toBe(true);
+	});
+
+	it("honors a RAISED maxLines override (a file the baseline would flag passes)", () => {
+		const verdict = evaluateLargeFile({ relPath: "src/x.ts", lines: 1600, baseline, maxLines: 2000 });
+		expect(verdict.overCap).toBe(false);
+	});
 });
 
 describe("loadLargeFileBaseline + maxLinesFor", () => {
@@ -195,5 +221,22 @@ describe("loadLargeFileBaseline + maxLinesFor", () => {
 		resetLargeFileBaselineCache();
 		expect(loadLargeFileBaseline(dir)).toBeNull();
 		expect(maxLinesFor(dir)).toBe(DEFAULT_MAX_LINES);
+	});
+
+	it("metric-caps.json max_lines override beats the baseline (interlinked caps set lines)", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(dir, ".interlinked", "large-files-baseline.json"),
+			JSON.stringify({ version: 1, max_lines: 1200, files: {} }),
+		);
+		writeFileSync(
+			join(dir, ".interlinked", "metric-caps.json"),
+			JSON.stringify({ version: 1, max_lines: 222 }),
+		);
+		resetLargeFileBaselineCache();
+		// maxLinesFor layers metric-caps.json (the unified caps surface) OVER the
+		// large-files baseline; verify resolves through this, so a lowered cap is no
+		// longer silently ignored there (finding 2026-06, round 8).
+		expect(maxLinesFor(dir)).toBe(222);
 	});
 });

@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isGeneratedFile } from "./checks/shared.js";
+import { maxLinesOverride } from "./metric-caps.js";
 
 /**
  * Default per-file line cap, used when no baseline file overrides it.
@@ -40,7 +41,7 @@ import { isGeneratedFile } from "./checks/shared.js";
  * change BOTH this constant and the baseline's `max_lines` together — the
  * pinning test enforces it and the change shows up in one diff.
  */
-export const DEFAULT_MAX_LINES = 800;
+export const DEFAULT_MAX_LINES = 500;
 
 /** Repo-relative path of the baseline file. Module-private — callers go
  *  through `loadLargeFileBaseline` / `maxLinesFor`. */
@@ -52,7 +53,7 @@ const LARGE_FILE_BASELINE_REL = ".interlinked/large-files-baseline.json";
  * Module-private — reached via `isCappableFile`.
  */
 const FILE_SIZE_SKIP_EXT_RE =
-	/\.(?:md|mdx|markdown|txt|rst|adoc|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|svg|min\.[a-z]+)$/i;
+	/\.(?:md|mdx|markdown|txt|rst|adoc|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|diff|patch|svg|min\.[a-z]+)$/i;
 
 /**
  * Path markers for generated code: a `.gen.`/`.generated.` infix on a
@@ -61,6 +62,17 @@ const FILE_SIZE_SKIP_EXT_RE =
  */
 const GENERATED_PATH_RE =
 	/(?:\.gen|\.generated)\.(?:tsx?|jsx?|mjs|cjs|py)$|\/(?:generated|__generated__)\//;
+
+/**
+ * The harness's own state directory. `.interlinked/` holds append-only logs,
+ * the trigram index, archives, merge-patches, e2e probe scripts, and workflow
+ * scratch — tool state and operational scripts, never product source modules.
+ * A line/char count there measures an artifact, not module complexity, so the
+ * cap never applies (the same reasoning that exempts `.git/`, `node_modules/`,
+ * `dist/`). Matches a real `.interlinked/` path segment only — an ordinary
+ * `interlinked/` source dir (no leading dot) stays cappable.
+ */
+const TOOL_STATE_PATH_RE = /(?:^|\/)\.interlinked\//;
 
 /** Per-file line cap config + grandfather list. */
 export interface LargeFileBaseline {
@@ -141,8 +153,16 @@ export function resetLargeFileBaselineCache(): void {
 	baselineCache = new Map();
 }
 
-/** The active line cap for `cwd` (baseline override, else the default). */
+/** The active line cap for `cwd`. Precedence: `.interlinked/metric-caps.json`
+ *  (`max_lines`, the unified `interlinked caps` surface) → the large-files
+ *  baseline (legacy, also carries the grandfather list) → the shipped default. */
 export function maxLinesFor(cwd: string): number {
+	return maxLinesOverride(cwd) ?? baselineOrDefaultLineCap(cwd);
+}
+
+/** The line cap from the large-files baseline (legacy source + grandfather
+ *  list owner), or the shipped default when no baseline file is present. */
+function baselineOrDefaultLineCap(cwd: string): number {
 	return loadLargeFileBaseline(cwd)?.max_lines ?? DEFAULT_MAX_LINES;
 }
 
@@ -196,13 +216,15 @@ function hasCodegenDataMarker(content: string): boolean {
 
 /**
  * Whether the per-file line cap applies to this file. True only for
- * hand-written code modules: generated files (by path or content marker),
- * codegen-DATA modules (a `@codegen-data` header marker), `.d.ts`
- * declarations, test/spec files, and non-code files are exempt.
+ * hand-written code modules. Exempt: `.interlinked/` tool-state/probe files,
+ * generated files (by path or content marker), codegen-DATA modules (a
+ * `@codegen-data` header marker), `.d.ts` declarations, test/spec files, and
+ * non-code files (docs, structured data, diffs/patches, vector art).
  */
 export function isCappableFile(file: { filePath: string; content: string }): boolean {
 	const norm = file.filePath.replace(/\\/g, "/");
 	if (norm.endsWith(".d.ts")) return false;
+	if (TOOL_STATE_PATH_RE.test(norm)) return false;
 	if (FILE_SIZE_SKIP_EXT_RE.test(norm)) return false;
 	if (GENERATED_PATH_RE.test(norm)) return false;
 	if (isTestOrSpecPath(norm)) return false;
@@ -232,8 +254,18 @@ export function evaluateLargeFile(args: {
 	relPath: string;
 	lines: number;
 	baseline: LargeFileBaseline | null;
+	/**
+	 * The EFFECTIVE cap to enforce — pass `maxLinesFor(cwd)` so the
+	 * `.interlinked/metric-caps.json` override (the unified `interlinked caps set
+	 * lines` surface) is honored. When omitted, falls back to the baseline's
+	 * `max_lines` then the shipped default. `verify` previously called this
+	 * WITHOUT the override, so a lowered cap was silently ignored by `verify`
+	 * while still blocking writes / nudging (finding 2026-06, round 8). The
+	 * grandfather list is always read from `baseline.files` regardless.
+	 */
+	maxLines?: number;
 }): LargeFileVerdict {
-	const max = args.baseline?.max_lines ?? DEFAULT_MAX_LINES;
+	const max = args.maxLines ?? args.baseline?.max_lines ?? DEFAULT_MAX_LINES;
 	const recorded = args.baseline?.files?.[args.relPath.replace(/\\/g, "/")];
 	const overCap = args.lines > max;
 	const ceiling = recorded !== undefined && recorded > max ? recorded : max;

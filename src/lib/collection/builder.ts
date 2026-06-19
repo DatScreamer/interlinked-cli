@@ -33,6 +33,7 @@ const TOOL_CLASS_SETS: ReadonlyArray<readonly [ReadonlySet<string>, ToolClass]> 
 ];
 
 function classifyTool(toolName: string): ToolClass {
+	if (toolName.startsWith("mcp__")) return "mcp_call";
 	for (const [nameSet, toolClass] of TOOL_CLASS_SETS) {
 		if (nameSet.has(toolName)) return toolClass;
 	}
@@ -66,6 +67,7 @@ function detectPhase(eventType: string): "pre" | "post" | null {
 // --- Provider detection ---
 
 function detectProvider(event: JsonObject): string {
+	if (event.client_runner === "mcp-proxy") return "mcp-proxy";
 	if (event.client_runner === "codex") return "codex";
 	if (event.client_runner === "copilot") return "copilot";
 	const hookEvent = String(event.hook_event || "");
@@ -99,6 +101,21 @@ function extractFilePath(toolName: string, input: JsonObject): string {
 		return file?.[1]?.trim() ?? "";
 	}
 	return strField(input, "file_path", "filePath", "path") ?? "";
+}
+
+function parseMcpProviderTool(toolName: string): { server: string | null; tool: string } {
+	if (!toolName.startsWith("mcp__")) {
+		return { server: null, tool: toolName };
+	}
+	const rest = toolName.slice("mcp__".length);
+	const delimiter = rest.indexOf("__");
+	if (delimiter === -1) {
+		return { server: null, tool: rest };
+	}
+	return {
+		server: rest.slice(0, delimiter) || null,
+		tool: rest.slice(delimiter + 2) || rest,
+	};
 }
 
 function resolveSessionId(event: JsonObject): string | null {
@@ -194,12 +211,15 @@ const ACTION_BUILDERS: Record<ToolClass, (ctx: ActionContext) => CollectionActio
 		diff: input.diff ?? null,
 	}),
 
-	mcp_call: ({ input }) => ({
-		server: strField(input, "server"),
-		tool: String(input.tool || ""),
-		params: input.params ?? null,
-		params_ref: null,
-	}),
+	mcp_call: ({ toolName, input }) => {
+		const parsed = parseMcpProviderTool(toolName);
+		return {
+			server: strField(input, "server") ?? parsed.server,
+			tool: String(input.tool || parsed.tool),
+			params: input.params ?? input.arguments ?? input.args ?? input,
+			params_ref: null,
+		};
+	},
 
 	other: ({ input }) => ({
 		provider_input: input,

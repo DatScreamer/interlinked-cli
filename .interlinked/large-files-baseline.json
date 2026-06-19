@@ -1,6 +1,28 @@
 {
   "version": 1,
-  "max_lines": 800,
-  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). `files` grandfathers offenders (repo-relative path -> recorded line count): a listed file may shrink or hold, but the harness blocks any edit that grows it and verify fails it. Ratcheted 1500 -> 1000 on 2026-06-01, then 1000 -> 800 on 2026-06-03 after decomposing the 14 modules in the 800-1000 band (each split into a re-exporting public entry + sibling helper modules; importers unchanged). The two former entries (hook-template-chunks/session-state.ts, hooks-template.ts) are codegen DATA — the generated .mjs hook script carried as template strings — and are now exempt via the `@codegen-data` header marker (isCappableFile) rather than grandfathered, so the list is empty. To tighten further (800 -> 500), lower `max_lines` AND DEFAULT_MAX_LINES together (the pinning test in large-file-policy.test.ts enforces equality); the fine-grained complexity/cyclomatic checks do the sub-cap 'is this file actually bad' work. Policy: src/harness/large-file-policy.ts.",
-  "files": {}
+  "max_lines": 500,
+  "_comment": "Per-file line cap for hand-written code modules, enforced by the harness (PreToolUse block) and `interlinked verify` (large_files check). `files` grandfathers offenders (repo-relative path -> recorded line count): a listed file may shrink or hold, but the harness blocks any edit that grows it past its recorded count and verify flags it only if it grows. Ratcheted 1500->1000 (2026-06-01), 1000->800 (2026-06-03), then 800->500 (2026-06-13) — this time grandfathering the existing over-500 modules and decomposing them down over a multi-step campaign (each split into a re-exporting entry + sibling helpers; importers unchanged). Drop each file from `files` as it falls below max_lines; the goal end-state is an empty list. Codegen DATA (hook-template-chunks/session-state.ts, hooks-template.ts) is exempt via the @codegen-data header marker, not grandfathered. max_lines and DEFAULT_MAX_LINES are pinned equal (large-file-policy.test.ts). Policy: src/harness/large-file-policy.ts.",
+  "files": {
+    "src/commands/harness-process.ts": 586,
+    "src/commands/verify/section-table-agent-safety-taste.ts": 575,
+    "src/harness/change-propagation.ts": 579,
+    "src/harness/check-engine/index.ts": 534,
+    "src/harness/discovered-primitives.ts": 518,
+    "src/harness/evaluator/file-dump-guard.ts": 575,
+    "src/harness/graph-prediction-parser.ts": 596,
+    "src/harness/language-profiles-data.ts": 645,
+    "src/harness/project-graph.ts": 582,
+    "src/harness/reservations.ts": 553,
+    "src/harness/result.ts": 529,
+    "src/harness/rules/default-config.ts": 571,
+    "src/harness/sequence-checks/quality.ts": 578,
+    "src/harness/server.ts": 788,
+    "src/harness/structural-checks.ts": 567,
+    "src/harness/taste-checks-checks-2.ts": 514,
+    "src/harness/trigram-index.ts": 729,
+    "src/harness/types/config.ts": 532,
+    "src/harness/types/session.ts": 515,
+    "src/lib/config.ts": 526,
+    "src/lib/hooks.ts": 570
+  }
 }

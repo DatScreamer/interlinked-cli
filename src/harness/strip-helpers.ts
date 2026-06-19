@@ -18,6 +18,11 @@
 //      This avoids the bug where a backtick in a source file comment flips
 //      the parser into "inside template" mode and blanks out code after it.
 
+// Re-exported from a sibling: the template-interpolation extraction cluster
+// was carved out to keep this module under the per-file line cap. External
+// importers (write-content-guards.ts, tests) keep importing it from here.
+export { extractTemplateInterpolationExpressions } from "./strip-helpers-interpolation.js";
+
 /**
  * Strip the interior of template literals across multi-line spans.
  * Preserves backticks and newlines so line numbers stay stable. Both the
@@ -202,204 +207,6 @@ function handleTplInterpolation(ch: string, i: number, s: TplStripState): number
 }
 
 /**
- * Extract executable `${...}` bodies from JS/TS template literals while
- * ignoring backticks inside comments and quoted strings. Plain template text
- * is intentionally not returned; it is string data, not code.
- */
-export function extractTemplateInterpolationExpressions(content: string): string[] {
-	const expressions: string[] = [];
-	scanTemplateLiterals(content, expressions, 0);
-	return expressions;
-}
-
-function scanTemplateLiterals(
-	content: string,
-	expressions: string[],
-	recursionDepth: number,
-): void {
-	let i = 0;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
-
-	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
-
-		if (inLineComment) {
-			if (ch === "\n") inLineComment = false;
-			i++;
-			continue;
-		}
-		if (inBlockComment) {
-			if (ch === "*" && next === "/") {
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			i++;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\" && i + 1 < content.length) {
-				i += 2;
-				continue;
-			}
-			if (ch === inString) inString = null;
-			i++;
-			continue;
-		}
-
-		if (ch === "/" && next === "/") {
-			inLineComment = true;
-			i += 2;
-			continue;
-		}
-		if (ch === "/" && next === "*") {
-			inBlockComment = true;
-			i += 2;
-			continue;
-		}
-		if (ch === '"' || ch === "'") {
-			inString = ch;
-			i++;
-			continue;
-		}
-		if (ch === "`") {
-			const end = collectTemplateExpressions(content, i + 1, expressions, recursionDepth);
-			i = end === null ? content.length : end + 1;
-			continue;
-		}
-		i++;
-	}
-}
-
-function collectTemplateExpressions(
-	content: string,
-	start: number,
-	expressions: string[],
-	recursionDepth: number,
-): number | null {
-	let i = start;
-	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
-
-		if (ch === "\\" && i + 1 < content.length) {
-			i += 2;
-			continue;
-		}
-		if (ch === "`") return i;
-		if (ch === "$" && next === "{") {
-			const expr = readBalancedTemplateExpression(content, i + 2);
-			if (expr === null) return null;
-			expressions.push(expr.body);
-			if (recursionDepth < 3) {
-				scanTemplateLiterals(expr.body, expressions, recursionDepth + 1);
-			}
-			i = expr.end + 1;
-			continue;
-		}
-		i++;
-	}
-	return null;
-}
-
-function readBalancedTemplateExpression(
-	content: string,
-	start: number,
-): { body: string; end: number } | null {
-	let depth = 1;
-	let i = start;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
-
-	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
-
-		if (inLineComment) {
-			if (ch === "\n") inLineComment = false;
-			i++;
-			continue;
-		}
-		if (inBlockComment) {
-			if (ch === "*" && next === "/") {
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			i++;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\" && i + 1 < content.length) {
-				i += 2;
-				continue;
-			}
-			if (ch === inString) inString = null;
-			i++;
-			continue;
-		}
-
-		if (ch === "/" && next === "/") {
-			inLineComment = true;
-			i += 2;
-			continue;
-		}
-		if (ch === "/" && next === "*") {
-			inBlockComment = true;
-			i += 2;
-			continue;
-		}
-		if (ch === '"' || ch === "'") {
-			inString = ch;
-			i++;
-			continue;
-		}
-		if (ch === "`") {
-			const end = findTemplateLiteralEnd(content, i + 1);
-			if (end === null) return null;
-			i = end + 1;
-			continue;
-		}
-		if (ch === "{") {
-			depth++;
-		} else if (ch === "}") {
-			depth--;
-			if (depth === 0) {
-				return { body: content.slice(start, i), end: i };
-			}
-		}
-		i++;
-	}
-
-	return null;
-}
-
-function findTemplateLiteralEnd(content: string, start: number): number | null {
-	let i = start;
-	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
-		if (ch === "\\" && i + 1 < content.length) {
-			i += 2;
-			continue;
-		}
-		if (ch === "`") return i;
-		if (ch === "$" && next === "{") {
-			const expr = readBalancedTemplateExpression(content, i + 2);
-			if (expr === null) return null;
-			i = expr.end + 1;
-			continue;
-		}
-		i++;
-	}
-	return null;
-}
-
-/**
  * Strip line and block comments. Replaces comment characters with spaces of
  * the same length; preserves newlines.
  */
@@ -498,12 +305,15 @@ export function stripStringLiterals(line: string): string {
  * escapes (`\.`) AND character classes (`[...]`) which may themselves
  * contain `/` — the previous implementation failed on regexes like
  * `/[\w./-]+/` because the `/` inside `[...]` closed the regex
- * prematurely. Matches are replaced with equal-length spaces so
- * subsequent offsets stay valid.
+ * prematurely. The first body character may not be `*` or `/`: JS always
+ * lexes `/*` and `//` as comments, never as a regex (a literal `*` must be
+ * escaped, `/\*…/`), and without that restriction a `/* block comment *​/` at
+ * an expression position was blanked as if it were a regex. Matches are
+ * replaced with equal-length spaces so subsequent offsets stay valid.
  */
 export function stripRegexLiterals(content: string): string {
 	const pattern =
-		/((?:^|[=(,![:?;{}&|+\-*^~]|\b(?:return|typeof|in|of|instanceof|new|throw|delete|void)\b)\s*)(\/(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[gimsuyd]*)/g;
+		/((?:^|[=(,![:?;{}&|+\-*^~]|\b(?:return|typeof|in|of|instanceof|new|throw|delete|void)\b)\s*)(\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[gimsuyd]*)/g;
 	return content.replace(
 		pattern,
 		(_m, pre: string, regex: string) => pre + " ".repeat(regex.length),
@@ -521,4 +331,21 @@ export function stripAllLiterals(content: string): string {
 	const afterRegex = stripRegexLiterals(afterTemplates);
 	const afterComments = stripComments(afterRegex);
 	return afterComments.split("\n").map(stripStringLiterals).join("\n");
+}
+
+/**
+ * Strip templates, regex, and string-literal interiors while KEEPING comments.
+ *
+ * For detectors that read COMMENT text (narration-style checks) but must not
+ * mistake string / template fixture content for comments: after this strip, a
+ * line that still starts with a comment marker is a real comment, while a
+ * comment-shaped line inside a template literal or quoted fixture has been
+ * blanked to spaces. Offset-preserving like every stripper here. The
+ * complement of {@link stripAllLiterals}: use that one to scan CODE with
+ * comments removed, this one to scan COMMENTS with code literals removed.
+ */
+export function stripLiteralsKeepComments(content: string): string {
+	const afterTemplates = stripTemplateLiterals(content);
+	const afterRegex = stripRegexLiterals(afterTemplates);
+	return afterRegex.split("\n").map(stripStringLiterals).join("\n");
 }
