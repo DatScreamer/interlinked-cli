@@ -6,8 +6,26 @@
 // Legacy migration from .claude/interlinked-session.json
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { HarnessMode } from "../harness/rules/modes.js";
+import {
+	getConfigDir,
+	getDataDir,
+	getHooksDir,
+	getLegacyConfigPath,
+	getLocalConfigPath,
+	getSharedConfigPath,
+} from "./config-paths.js";
+
+// Path helpers live in ./config-paths.ts (line-cap split). Re-exported here
+// so existing `from "./config.js"` imports across the codebase keep working.
+export {
+	getConfigDir,
+	getDataDir,
+	getHooksDir,
+	getLocalConfigPath,
+	getSharedConfigPath,
+};
 
 // ===========================================
 // Types
@@ -91,6 +109,24 @@ export interface LocalConfig {
 	};
 	/** Guard mode for file reservation enforcement: "warn" (default), "block", or "off". */
 	guard_mode?: "warn" | "block" | "off";
+	/** Anonymous install id for sponsor telemetry (lazily generated UUID). */
+	install_id?: string;
+	/** Sponsor-slot settings — docs/design/sponsor-slots.md. */
+	sponsor?: SponsorConfig;
+}
+
+/** Sponsor-slot settings (all optional; absent = disabled). */
+export interface SponsorConfig {
+	/** Master opt-in for the statusline sponsor row. */
+	enabled?: boolean;
+	/** Feed URL override (defaults to the hosted Worker). */
+	feed_url?: string;
+	/** Anonymous impression/click telemetry (default true when enabled). */
+	telemetry?: boolean;
+	/** Whether the spinner-verb surface was opted into. */
+	spinner?: boolean;
+	/** Verbs we wrote into ~/.claude/settings.json (so disable removes exactly ours). */
+	spinner_verbs_written?: string[];
 }
 
 export interface ResolvedConfig {
@@ -133,65 +169,6 @@ interface LegacySession {
 // point at. Users configure their own remote via `interlinked enable
 // --server <url>` or the `INTERLINKED_SERVER_URL` env var.
 const DEFAULT_SERVER = "http://localhost:8787";
-const CONFIG_DIR = ".interlinked";
-const SHARED_CONFIG = "config.json";
-const LOCAL_CONFIG = "config.local.json";
-const LEGACY_CONFIG_PATH = ".claude/interlinked-session.json";
-
-// ===========================================
-// Path Helpers
-// ===========================================
-
-/**
- * Get the config directory (.interlinked/).
- * Resolution: INTERLINKED_HOME env > {cwd}/.interlinked/
- */
-export function getConfigDir(cwd: string = process.cwd()): string {
-	const envHome = process.env.INTERLINKED_HOME?.trim();
-	if (envHome) return envHome;
-	return join(cwd, CONFIG_DIR);
-}
-
-/**
- * Get the data directory for activity logs, sessions, and sync state.
- * Resolution: INTERLINKED_DATA_DIR env > LocalConfig.data_dir > INTERLINKED_HOME env > {cwd}/.interlinked/
- */
-export function getDataDir(cwd: string = process.cwd()): string {
-	const envDataDir = process.env.INTERLINKED_DATA_DIR?.trim();
-	if (envDataDir) return envDataDir;
-
-	// Check local config for data_dir (read directly to avoid circular dependency with resolveConfig)
-	const localConfigPath = getLocalConfigPath(cwd);
-	if (existsSync(localConfigPath)) {
-		try {
-			const local = JSON.parse(readFileSync(localConfigPath, "utf-8")) as LocalConfig;
-			if (local.data_dir) return local.data_dir;
-		} catch (_err) {
-			/* intentional: corrupt local config — fall through to default data dir */
-		}
-	}
-
-	return getConfigDir(cwd);
-}
-
-/**
- * Get the hooks directory for generated hook scripts.
- */
-export function getHooksDir(cwd: string = process.cwd()): string {
-	return join(getConfigDir(cwd), "hooks");
-}
-
-export function getSharedConfigPath(cwd: string = process.cwd()): string {
-	return join(getConfigDir(cwd), SHARED_CONFIG);
-}
-
-export function getLocalConfigPath(cwd: string = process.cwd()): string {
-	return join(getConfigDir(cwd), LOCAL_CONFIG);
-}
-
-function getLegacyConfigPath(cwd: string = process.cwd()): string {
-	return join(cwd, LEGACY_CONFIG_PATH);
-}
 
 // ===========================================
 // Read/Write Helpers

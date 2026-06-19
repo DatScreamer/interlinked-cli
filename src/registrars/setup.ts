@@ -54,8 +54,13 @@ export function registerSetupCommands(program: Command): void {
 
 	program
 		.command("disable")
-		.description("Remove hooks and optionally clean config")
-		.option("--keep-config", "Preserve .interlinked/ config files")
+		.description("Stand the harness down for this project (recorded); --uninstall to remove hooks + config")
+		.option("--team", "Write a committed marker (shared, shows in PR diffs) instead of a personal one")
+		.option("--reason <text>", "Why the harness is being stood down (recorded in the audit log)")
+		.option("--until <duration>", "Auto-expire the stand-down (e.g. 30m, 2h, 1d)")
+		.option("--by <name>", "Who is standing it down (defaults to agent name / $USER)")
+		.option("--uninstall", "Destructive teardown: remove hooks from all clients and delete .interlinked/")
+		.option("--keep-config", "With --uninstall, preserve .interlinked/ config files")
 		.action(disableCommand);
 
 	program
