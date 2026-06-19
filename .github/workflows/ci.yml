@@ -62,10 +62,12 @@ jobs:
         run: npm run docs:check
 
       - name: Test
-        # DIAGNOSTIC (temporary): sequential + verbose so the hung file is the
-        # last one printed before the run goes silent; aggressive timeouts try to
-        # convert the hang into a named failure. Restore to `npm test` after fix.
-        run: npx vitest run --no-file-parallelism --reporter=verbose --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000
+        # DIAGNOSTIC (temporary): `timeout` self-terminates vitest at 7 min so the
+        # JOB COMPLETES (logs become downloadable) instead of hanging to the cap,
+        # and stops before the build/smoke steps (saving minutes). Default reporter
+        # prints each file as it COMPLETES — the hung file is the one that never
+        # prints a completion line. Restore to `npm test` after the fix.
+        run: timeout 420 npx vitest run --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000
 
       - name: Build
         run: npm run build
