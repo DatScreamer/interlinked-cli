@@ -16,17 +16,14 @@ jobs:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     # Hard cap so a hung test fails the job in minutes instead of burning the
-    # 6h default (finding 2026-06: a Linux-only test hang deadlocked vitest with
-    # no output for 25 min). Permanent safeguard, independent of the diagnostic
-    # timeouts on the Test step below.
+    # 6h default (finding 2026-06: a Linux-only deadlock — a spawned grandchild
+    # held the stdio pipe so `runProcessAsync` never saw 'close' — hung vitest for
+    # 25 min). Root cause fixed in check-engine/spawn-async.ts; this is the backstop.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # DIAGNOSTIC (temporary): ubuntu-only to pinpoint the Linux-only test
-        # hang without burning macOS minutes (billed 10x). Restore macos-latest
-        # once the hang is fixed.
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest]
         node: ["22"]
     steps:
       - name: Checkout
@@ -62,11 +59,7 @@ jobs:
         run: npm run docs:check
 
       - name: Test
-        # DIAGNOSTIC (temporary): sequential + verbose over ONLY the 21 not-completed
-        # process/socket-spawning suspects → the hung file is the LAST one printed
-        # before the run goes silent. `timeout` self-terminates so the job completes.
-        # Restore to `npm test` after the fix.
-        run: timeout 300 npx vitest run --no-file-parallelism --reporter=verbose --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000 src/__tests__/suggestion-registry-parity.test.ts src/commands/__tests__/harness-multi-workspace.test.ts src/commands/harness-daemon.test.ts src/harness/__tests__/session-git-baseline.test.ts src/harness/__tests__/trigram-git.test.ts src/harness/__tests__/ubs-eval-input-tainted.test.ts src/harness/check-engine/__tests__/poison-corpus.test.ts src/harness/check-engine/spawn-async.test.ts src/harness/checks/tainted-sink.test.ts src/harness/checks/test-hygiene.test.ts src/harness/checks/ubs-language-specific/js-security-checks.test.ts src/harness/daemon-client.test.ts src/harness/library-footguns/child-process.test.ts src/harness/library-footguns/d1.test.ts src/harness/quality-checks/dependency-audit.test.ts src/harness/server/__tests__/socket-lifecycle.test.ts src/harness/session-paths.test.ts src/index.test.ts src/lib/__tests__/attribution.test.ts src/lib/__tests__/git-utils.test.ts src/lib/__tests__/hook-installers-claude.test.ts
+        run: npm test
 
       - name: Build
         run: npm run build
