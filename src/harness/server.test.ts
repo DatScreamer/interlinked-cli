@@ -38,8 +38,8 @@ import {
 } from "vitest";
 import type { ContentScanner, ScannerStatus } from "./content-scanner/types.js";
 import { DEFAULT_CONFIG } from "./rules/default-config.js";
-import type { HarnessDecision } from "./types.js";
 import type { GuardRulesConfig } from "./types/config.js";
+import type { HarnessDecision } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared mutable capture slots. Reset in beforeEach. The mock factories below
@@ -335,6 +335,9 @@ vi.mock("./session-paths.js", () => ({
 		pid: `/tmp/harness-${id}.pid`,
 		log: `/tmp/harness-${id}.log`,
 	})),
+	// No foreign daemon in the mocked world — the anti-stomp guard must not
+	// read the real repo's live harness.pid and process.exit() the test worker.
+	liveForeignDaemonPid: vi.fn(() => null),
 }));
 
 // ---------------------------------------------------------------------------

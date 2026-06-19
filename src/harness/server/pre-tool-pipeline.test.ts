@@ -72,6 +72,11 @@ vi.mock("../evaluator/coverage-write-guard.js", () => ({
 	checkCoverageWrite: vi.fn(async (): Promise<HarnessDecision | null> => null),
 }));
 
+vi.mock("../coverage-discharge.js", () => ({
+	isCoverageSuiteCommand: vi.fn(() => false),
+	noteCoverageSuiteRunStart: vi.fn(),
+}));
+
 // The two coverage phase helpers were extracted to a sibling; mock it directly so
 // the pipeline wiring is asserted without driving the real overlay / suite / git.
 vi.mock("./pre-tool-coverage-gates.js", () => ({
@@ -136,6 +141,7 @@ import { applyAllowlist } from "../content-scanner/allowlist.js";
 import { decideFromFindings } from "../content-scanner/policy.js";
 import { buildAskReason, writePendingPrompt } from "../content-scanner/redact-preview.js";
 import { fetchAndScan } from "../content-scanner/web-fetch-proxy.js";
+import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
@@ -158,6 +164,8 @@ const mDecideFromFindings = decideFromFindings as unknown as Mock;
 const mBuildAskReason = buildAskReason as unknown as Mock;
 const mWritePendingPrompt = writePendingPrompt as unknown as Mock;
 const mFetchAndScan = fetchAndScan as unknown as Mock;
+const mIsCoverageSuiteCommand = isCoverageSuiteCommand as unknown as Mock;
+const mNoteCoverageSuiteRunStart = noteCoverageSuiteRunStart as unknown as Mock;
 const mEvaluate = evaluatePreToolUse as unknown as Mock;
 const mCheckCoverage = checkCoverageWrite as unknown as Mock;
 const mRunCoverageGate = runCoverageWriteGate as unknown as Mock;
@@ -299,6 +307,7 @@ beforeEach(() => {
 	}));
 	mDecideFromFindings.mockReturnValue({ decision: "allow" });
 	mFetchAndScan.mockResolvedValue({ kind: "fail_open", detail: "transient" });
+	mIsCoverageSuiteCommand.mockReturnValue(false);
 	mCheckGrep.mockReturnValue(null);
 	mFindRg.mockReturnValue("/usr/bin/rg");
 	mIsBashTsc.mockReturnValue(false);
@@ -1712,6 +1721,39 @@ describe("tsgo acceleration", () => {
 			makeSession(),
 		);
 		expect(mTryTsgo).not.toHaveBeenCalled();
+	});
+});
+
+describe("coverage run-start observation", () => {
+	it("records coverage starts for shell tool aliases with command input", async () => {
+		mIsCoverageSuiteCommand.mockReturnValue(true);
+		await runPreToolPipeline(
+			makeCtx(),
+			ev({
+				tool_name: "shell",
+				tool_input: { command: "python -m coverage run -m pytest" },
+				session_id: "sess-shell",
+				timestamp: "2026-06-18T12:00:00.000Z",
+			}),
+			makeSession(),
+		);
+
+		expect(mIsCoverageSuiteCommand).toHaveBeenCalledWith("python -m coverage run -m pytest");
+		expect(mNoteCoverageSuiteRunStart).toHaveBeenCalledWith(
+			"sess-shell",
+			"2026-06-18T12:00:00.000Z",
+		);
+	});
+
+	it("does not classify non-command tool inputs as coverage starts", async () => {
+		await runPreToolPipeline(
+			makeCtx(),
+			ev({ tool_name: "shell", tool_input: { query: "pytest --cov" } }),
+			makeSession(),
+		);
+
+		expect(mIsCoverageSuiteCommand).not.toHaveBeenCalled();
+		expect(mNoteCoverageSuiteRunStart).not.toHaveBeenCalled();
 	});
 });
 

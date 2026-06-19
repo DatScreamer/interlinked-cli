@@ -42,10 +42,10 @@ vi.mock("./server/protocol-status.js", () => ({
 	recordProtocolEvent: vi.fn(),
 	writeProtocolStatus: vi.fn(),
 }));
+
 // `isPreToolUse` / `isPostToolUse` are pure — use the real impls so the
 // hook_event → branch mapping is exercised end-to-end.
 
-import { createEventLoop, type EventLoopDeps } from "./server-event-loop.js";
 
 // Pull the mocked references so individual tests can program return values.
 import { forwardCloudPreToolUse } from "./cloud-forward.js";
@@ -60,6 +60,7 @@ import {
 	recordProtocolEvent as bumpProtocolEvent,
 	writeProtocolStatus as persistProtocolStatus,
 } from "./server/protocol-status.js";
+import { createEventLoop, type EventLoopDeps } from "./server-event-loop.js";
 
 const mForward = vi.mocked(forwardCloudPreToolUse);
 const mAppendLatency = vi.mocked(appendLatencyLog);
@@ -241,6 +242,24 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 		expect(h.deps.writeCollectionRecord).toHaveBeenCalledTimes(1);
 		expect(decision).toBe(warn);
 		expect(mForward).not.toHaveBeenCalled();
+	});
+
+	it("PostToolUse: fails OPEN (allow) when the post-pipeline throws", async () => {
+		// A thrown PostToolUse check used to propagate into a reason-less block
+		// (surfaced to users as a spurious "harness bug"). The action already
+		// happened, so blocking is wrong — fail open with a warning instead.
+		const h = makeHarness();
+		mPostPipeline.mockRejectedValueOnce(new Error("check boom"));
+		const loop = createEventLoop(h.deps);
+
+		const decision = await loop.evaluateEventLine(
+			preEvent({ hook_event: "PostToolUse" }),
+			"framed",
+		);
+
+		expect(decision.decision).toBe("allow");
+		expect(decision.warnings?.join(" ")).toContain("PostToolUse check errored");
+		expect(h.log).toHaveBeenCalledWith(expect.stringContaining("PostToolUse pipeline threw"));
 	});
 
 	it("non-tool event (no Pre/Post match) returns a bare allow", async () => {

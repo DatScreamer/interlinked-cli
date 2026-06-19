@@ -31,6 +31,7 @@ import {
 } from "./auto-coordinate.js";
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
+import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
 import { CohortManager } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
@@ -47,17 +48,13 @@ import {
 } from "./policy-classifier.js";
 import { ProjectGraph } from "./project-graph.js";
 import { ProjectWideSweepState } from "./quality-checks.js";
-import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
 import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
-import {
-	parseProtocolMode,
-	resolveIdleTimeoutMs,
-	stringArg,
-} from "./server/cli-args.js";
 import { writeActivityRecord } from "./server/activity-writer.js";
+import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
+import { installCrashResilience } from "./server/crash-resilience.js";
 import {
 	buildStartupMessage,
 	computeClassifierStatusLine,
@@ -76,9 +73,10 @@ import { createServerBridge, type ServerBridge } from "./server-bridge.js";
 import { createEventLoop } from "./server-event-loop.js";
 import { createSocketLifecycle } from "./server-socket-lifecycle.js";
 import { startSessionDaemon } from "./session-daemon.js";
-import { daemonPathsFor } from "./session-paths.js";
+import { daemonPathsFor, liveForeignDaemonPid } from "./session-paths.js";
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
+import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/runtime.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
@@ -120,9 +118,7 @@ let filePriorityMap = new Map<string, FilePriority>();
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
 
-// ============================================================================
 // Early SIGTERM/SIGINT handler — installed BEFORE heavy startup work.
-// ============================================================================
 // Why: Node delivers signals on JS turn boundaries. The full graceful
 // `shutdown()` registered at the bottom of this file can't fire until module
 // initialization finishes — and trigram-index load, project-graph build,
@@ -160,7 +156,7 @@ function _earlyShutdown(): void {
 }
 process.on("SIGTERM", _earlyShutdown);
 process.on("SIGINT", _earlyShutdown);
-
+installCrashResilience(); // survive uncaught/async throws (crash-loop fix); see ./server/crash-resilience.ts
 const PROTOCOL_MODE: HarnessProtocolMode = parseProtocolMode(stringArg(args.protocol));
 const RUN_RAW_SOCKET = PROTOCOL_MODE !== "framed";
 const RUN_FRAMED_SOCKET = PROTOCOL_MODE !== "raw";
@@ -419,6 +415,15 @@ function resetIdleTimer(): void {
 	}, IDLE_TIMEOUT_MS);
 }
 
+// Sponsor-runtime activity signal: stamped on every event-loop dispatch (the
+// event loop already calls the idle-timer reset per event), so sponsor
+// rotation-impressions only count windows with real hook traffic.
+let lastHookEventAtMs = 0;
+function noteActivityAndResetIdleTimer(): void {
+	lastHookEventAtMs = Date.now();
+	resetIdleTimer();
+}
+
 // ===========================================
 // Runtime context
 // ===========================================
@@ -509,7 +514,7 @@ const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = cr
 	ctx: serverRuntime,
 	protocolStatus,
 	protocolStatusPath: PROTOCOL_STATUS_PATH,
-	resetIdleTimer,
+	resetIdleTimer: noteActivityAndResetIdleTimer,
 	syncRuntimeIn,
 	syncRuntimeOut,
 	writeCollectionRecord,
@@ -544,6 +549,25 @@ const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, 
 // ===========================================
 // Start Server
 // ===========================================
+
+// Refuse to start if a live daemon already owns this project's raw socket.
+// This is the anti-stomp guard: `cleanupSocket()` unconditionally unlinks
+// `harness.sock`, so a second `node server.js` for the same project — or a
+// stray `import('dist/harness/server.js')`, which runs this whole startup as
+// an import side effect — used to silently delete the live daemon's socket
+// file out from under it, leaving every hook to fall through to cold
+// fallback (an unguarded agent). The framed path already does this PID check
+// (`session-daemon.ts`); the raw path lacked it. A stale pid (dead process)
+// returns null (crash-restart proceeds); a live pid with no socket file also proceeds.
+const __foreignDaemonPid = liveForeignDaemonPid(PID_PATH);
+if (__foreignDaemonPid !== null && existsSync(SOCKET_PATH)) {
+	logAlways(
+		`[interlinked] A harness daemon (PID ${__foreignDaemonPid}) is already ` +
+			`serving ${CWD}. Refusing to start a second one (would stomp its ` +
+			`socket). Use \`interlinked harness restart\` to replace it.`,
+	);
+	process.exit(0);
+}
 
 // Clean up stale raw socket from previous run. Framed startup performs its own
 // PID-aware stale-artifact check before removing `harness-*.sock`.
@@ -642,6 +666,21 @@ const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
 setInterval(() => {
 	refreshStatuslineSnapshot();
 }, STATUSLINE_REFRESH_INTERVAL_MS);
+
+// --- Sponsor slot runtime (opt-in; docs/design/sponsor-slots.md) ---
+// Re-reads sponsor settings from config.local.json each tick (hot toggle),
+// fetches + verifies the signed feed OFF the hook path, and writes
+// `.interlinked/sponsor.status` for the bash statusline's row 3. Disabled
+// installs only ever get the one-line disabled marker. Impressions gate on
+// real hook traffic via the activity stamp above.
+const SPONSOR_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+const sponsorRuntime = startSponsorRuntime({
+	interlinkedDir: INTERLINKED_DIR,
+	readSettings: () => readSponsorSettingsFromConfig(INTERLINKED_DIR),
+	hasRecentActivity: () => Date.now() - lastHookEventAtMs < SPONSOR_ACTIVITY_WINDOW_MS,
+	log: (msg) => log(msg),
+});
+void sponsorRuntime.tick();
 
 // Start idle timer
 resetIdleTimer();

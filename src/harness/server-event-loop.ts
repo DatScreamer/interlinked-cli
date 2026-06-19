@@ -143,9 +143,26 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			}
 
 			if (isPostToolUse(event)) {
-				const decision = await runPostToolPipeline(ctx, event, session);
-				writeCollectionRecord(event);
-				return decision;
+				try {
+					const decision = await runPostToolPipeline(ctx, event, session);
+					writeCollectionRecord(event);
+					return decision;
+				} catch (postErr) {
+					// PostToolUse runs AFTER the tool — the action already happened, so
+					// a thrown observability/quality check must NEVER become a block. A
+					// reason-less block here was surfacing to the user as a spurious
+					// "harness bug". Fail OPEN (feedback_safety_continuity) and report
+					// the skipped check as a non-blocking warning.
+					log(
+						`PostToolUse pipeline threw (failing open): ${
+							postErr instanceof Error ? postErr.message : String(postErr)
+						}`,
+					);
+					return {
+						decision: "allow",
+						warnings: ["[interlinked] a PostToolUse check errored and was skipped (fail-open)."],
+					};
+				}
 			}
 
 			// Non-tool events (lifecycle, notifications, etc.) — always allow
