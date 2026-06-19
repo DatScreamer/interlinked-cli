@@ -16,6 +16,7 @@ import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadCheckPolicy } from "../harness/check-policy.js";
 import { coverageSetupGuidance, lcovReportPaths } from "../harness/coverage-adapters.js";
+import { loadCoverageFinalSummary } from "../harness/coverage-final-reader.js";
 import { canonicalToCoverageSummary, loadLcovFile } from "../harness/coverage-lcov.js";
 import {
 	type CoverageRatchetFinding,
@@ -162,13 +163,18 @@ export function coverageBaselineCommand(opts: { cwd?: string; json?: boolean }):
 /**
  * Load a coverage report into the ratchet's `CoverageSummary` shape, dispatching
  * by format: `.info` → LCOV (the language-agnostic interchange path, via the
- * canonical model); otherwise the istanbul/v8 json-summary. LCOV is preferred
- * (see `DEFAULT_REPORT_PATHS`) so every language's coverage flows one path.
+ * canonical model); `coverage-final.json` → the istanbul FULL format, which
+ * carries statementMap/s rather than summary lines/branches — feeding it to the
+ * json-summary parser made the ratchet evaluate ZERO files and pass vacuously
+ * (finding 2026-06, round 6); otherwise the istanbul/v8 json-summary.
  */
 function loadReport(reportPath: string, cwd: string): CoverageSummary | null {
 	if (reportPath.endsWith(".info")) {
 		const cov = loadLcovFile(reportPath, { cwd });
 		return cov ? canonicalToCoverageSummary(cov) : null;
+	}
+	if (reportPath.endsWith("coverage-final.json")) {
+		return loadCoverageFinalSummary(reportPath, cwd);
 	}
 	return loadCoverageSummary(reportPath);
 }
@@ -176,23 +182,33 @@ function loadReport(reportPath: string, cwd: string): CoverageSummary | null {
 /**
  * The report files the check reads: an explicit `--report` path alone (the user
  * override); otherwise EVERY existing LCOV report (canonical + per-language —
- * all merged, finding 2026-06); otherwise the first existing istanbul fallback.
- * Empty ⇒ no report anywhere.
+ * all merged, finding 2026-06) PLUS the first existing istanbul report. The
+ * istanbul report is never skipped just because LCOV files exist: in a polyglot
+ * repo a fresh JS run may emit ONLY istanbul JSON while stale Python/Rust LCOV
+ * lingers — dropping it made the ratchet silently omit current JS coverage
+ * (round 5). The merge is mtime-ordered, so when both formats cover the same
+ * files the fresher run's numbers win. Empty ⇒ no report anywhere.
  */
-function resolveReportPaths(cwd: string, explicit?: string): string[] {
+export function resolveReportPaths(cwd: string, explicit?: string): string[] {
 	if (explicit) {
 		const resolved = resolve(cwd, explicit);
 		return existsSync(resolved) ? [resolved] : [];
 	}
-	const lcov = lcovReportPaths()
+	const paths = lcovReportPaths()
 		.map((p) => join(cwd, p))
 		.filter((p) => existsSync(p));
-	if (lcov.length > 0) return lcov;
-	for (const candidate of ISTANBUL_REPORT_PATHS) {
-		const resolved = join(cwd, candidate);
-		if (existsSync(resolved)) return [resolved];
-	}
-	return [];
+	// Both istanbul formats (coverage-final.json FULL statementMap, coverage-
+	// summary.json json-summary) describe the SAME run, so take ONE — but the
+	// NEWEST existing one, not the first listed. An older coverage-summary.json
+	// lingering beside a fresh coverage-final.json was silently winning: the loop
+	// `break`ed on summary (listed first), the merge never saw final, and the
+	// ratchet ran on stale data, missing current JS regressions (finding 2026-06).
+	// The mtime sort mirrors loadMergedReport's "freshest run wins".
+	const istanbul = ISTANBUL_REPORT_PATHS.map((candidate) => join(cwd, candidate))
+		.filter((p) => existsSync(p))
+		.sort((a, b) => reportMtimeMs(b) - reportMtimeMs(a))[0];
+	if (istanbul) paths.push(istanbul);
+	return paths;
 }
 
 /** A report file's mtime, or 0 when unreadable (sorts oldest — least trusted). */
@@ -208,10 +224,13 @@ function reportMtimeMs(path: string): number {
  * Load and MERGE the resolved reports. Files merge oldest-first so a FRESHER
  * report's per-file entries win any overlap (per-language reports are normally
  * disjoint; on a shared file the newest run is the honest number). Any existing
- * report that fails to parse aborts the merge LOUDLY (`failedPath`) — a
- * silent-partial merge would misreport exactly like the clobbering this fixes.
+ * report that fails to parse — or parses to ZERO file entries — aborts the
+ * merge LOUDLY (`failedPath`): a silent-partial merge would misreport exactly
+ * like the clobbering this fixes, and an empty parse is how the ratchet once
+ * "passed" with files_checked: 0 and wrote an invalid baseline (finding
+ * 2026-06, round 6 — the vacuous-success class).
  */
-function loadMergedReport(
+export function loadMergedReport(
 	reportPaths: string[],
 	cwd: string,
 ): { summary: CoverageSummary; failedPath: string | null } {
@@ -219,7 +238,9 @@ function loadMergedReport(
 	const merged: CoverageSummary = {};
 	for (const path of ordered) {
 		const summary = loadReport(path, cwd);
-		if (!summary) return { summary: merged, failedPath: path };
+		if (!summary || Object.keys(summary).length === 0) {
+			return { summary: merged, failedPath: path };
+		}
 		for (const [key, entry] of Object.entries(summary)) {
 			merged[key] = entry;
 		}

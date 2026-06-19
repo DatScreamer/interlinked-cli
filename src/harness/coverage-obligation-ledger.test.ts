@@ -10,6 +10,7 @@ import {
 	updateRuntimeEstimateMs,
 	writeFileCoverageBaseline,
 } from "./coverage-obligation-ledger.js";
+import { loadBaseline, saveBaseline } from "./coverage-ratchet.js";
 
 let root: string;
 
@@ -101,5 +102,32 @@ describe("obligation log", () => {
 		const path = join(root, ".interlinked", "coverage-obligations.jsonl");
 		const lines = readFileSync(path, "utf-8").trim().split("\n");
 		expect(lines).toHaveLength(2);
+	});
+});
+
+describe("baseline store separation from the verify-time ratchet (section 8.6)", () => {
+	// Regression: both stores once shared .interlinked/coverage-baseline.json
+	// with incompatible schemas ({version, files} vs flat path→fraction), so
+	// `interlinked coverage --update-baseline` silently wiped every per-edit
+	// drop baseline. Each store now owns its own file; neither write may
+	// disturb the other's data.
+	it("survives a ratchet baseline write and vice versa", () => {
+		const interlinkedDir = join(root, ".interlinked");
+		writeFileCoverageBaseline(root, "src/a.ts", 0.8);
+		saveBaseline(interlinkedDir, {
+			version: 1,
+			updated_at: "2026-06-11T00:00:00.000Z",
+			files: { "src/a.ts": { lines_pct: 90, branches_pct: 80 } },
+		});
+		// Ledger value intact after the ratchet write…
+		expect(readFileCoverageBaseline(root, "src/a.ts")).toBe(0.8);
+		// …and ratchet data intact after a further ledger write.
+		writeFileCoverageBaseline(root, "src/b.ts", 0.5);
+		expect(loadBaseline(interlinkedDir).files["src/a.ts"]).toEqual({
+			lines_pct: 90,
+			branches_pct: 80,
+		});
+		// The ledger owns its own file, not the ratchet's documented path.
+		expect(existsSync(join(interlinkedDir, "coverage-edit-baseline.json"))).toBe(true);
 	});
 });

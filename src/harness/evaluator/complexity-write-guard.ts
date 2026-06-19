@@ -43,6 +43,7 @@ import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { isCappableFile } from "../large-file-policy.js";
+import { maxCyclomaticFor } from "../metric-caps.js";
 
 /**
  * Per-function cyclomatic cap — the agreed hard "bad" line. One number for now;
@@ -50,6 +51,32 @@ import { isCappableFile } from "../large-file-policy.js";
  * lower it (25 → 15 → …) as the codebase's hotspots are decomposed.
  */
 export const DEFAULT_MAX_CYCLOMATIC = 25;
+
+/**
+ * Per-edit sub-cap SLEW tolerance. A uniquely-named function that stays at or
+ * below the cap may rise by AT MOST this many branches in a single edit; a
+ * larger one-edit jump blocks (decompose, then retry). This relaxes the former
+ * strict "may not increase at all" sub-cap ratchet into a per-edit rate limit:
+ * a small incremental rise *toward* — but never *past* — the cap is acceptable,
+ * while a big leap in one edit is the smell worth catching.
+ *
+ * The hard cap (`maxCyclomaticFor`) is unchanged and remains the END-STATE
+ * backstop: no edit may leave a function over the cap regardless of how small
+ * the rise (a within-tolerance bump that crosses the cap is caught by the
+ * over-cap path, not here). Many small rises across several edits can still walk
+ * a function toward the cap — that is the accepted trade (the cap is the ceiling
+ * the slew limit only governs how fast you may approach it).
+ *
+ * CRAP inherits this automatically: CRAP is monotonic in cyclomatic, so a
+ * bounded cyclomatic rise is a bounded CRAP rise, and CRAP's own cap (30) stays
+ * its end-state backstop. There is deliberately no separate sub-cap CRAP ratchet
+ * — every CRAP gate (`decideCrap` block, `computeCrapRisers` advisory) fires
+ * only at/over 30 — so nothing on the CRAP side needs loosening.
+ *
+ * Set to 1 for a tighter "+1 per edit" policy. A future per-repo override can
+ * live alongside `maxCyclomaticFor` in `.interlinked/metric-caps.json`.
+ */
+export const SUB_CAP_RATCHET_TOLERANCE = 2;
 
 const JS_TS_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 const PY_RE = /\.py$/;
@@ -198,6 +225,7 @@ function complexityViolations(
 	filePath: string,
 	analyzer: { compute: CyclomaticAnalyzer; language: "js_ts" | "python" },
 	observe?: ComplexityObserver,
+	cap: number = DEFAULT_MAX_CYCLOMATIC,
 ): string[] | null {
 	const afterFns = analyzer.compute(after, filePath);
 	if (!afterFns) {
@@ -210,56 +238,104 @@ function complexityViolations(
 	// Hand the already-paid parses to the telemetry observer (decision unaffected).
 	observe?.(filePath, beforeFns, afterFns, after);
 
-	const cap = DEFAULT_MAX_CYCLOMATIC;
+	const violations: string[] = [];
+
+	// (1) Over-cap multiset comparison (identity-free) — blocks a new over-cap
+	// function or a worsening of the over-cap profile at any rank. Owns the
+	// `> cap` band (anonymous + collision-named functions included).
 	const afterOver = afterFns
 		.filter((f) => f.cyclomatic > cap)
 		.sort((a, b) => b.cyclomatic - a.cyclomatic);
-	if (afterOver.length === 0) return [];
-
-	const beforeOverVals = beforeFns
-		.filter((f) => f.cyclomatic > cap)
-		.map((f) => f.cyclomatic)
-		.sort((a, b) => b - a);
-
-	// Best-effort per-name lookup of the pre-edit complexity — phrasing only
-	// ("raised from N"), never the block decision.
-	const beforeByName = new Map<string, number>();
-	for (const f of beforeFns) {
-		if (f.name === ANON_FN) continue;
-		beforeByName.set(f.name, Math.max(beforeByName.get(f.name) ?? 0, f.cyclomatic));
+	if (afterOver.length > 0) {
+		const beforeOverVals = beforeFns
+			.filter((f) => f.cyclomatic > cap)
+			.map((f) => f.cyclomatic)
+			.sort((a, b) => b - a);
+		const beforeByName = new Map<string, number>();
+		for (const f of beforeFns) {
+			if (f.name === ANON_FN) continue;
+			beforeByName.set(f.name, Math.max(beforeByName.get(f.name) ?? 0, f.cyclomatic));
+		}
+		for (let i = 0; i < afterOver.length; i++) {
+			const post = afterOver[i];
+			const baseline = beforeOverVals[i] ?? cap;
+			if (post.cyclomatic <= baseline) continue; // this rank held or reduced
+			const prior = post.name === ANON_FN ? undefined : beforeByName.get(post.name);
+			const how =
+				prior !== undefined && prior < post.cyclomatic
+					? `raised from ${prior}`
+					: post.name === ANON_FN
+						? "new anonymous function over cap"
+						: "new over-cap function";
+			violations.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
+		}
 	}
 
-	const violations: string[] = [];
-	for (let i = 0; i < afterOver.length; i++) {
-		const post = afterOver[i];
-		// A missing pre value at this rank means there were fewer over-cap
-		// functions before — the cap is the implicit baseline, so any over-cap
-		// value at this rank is a worsening.
-		const baseline = beforeOverVals[i] ?? cap;
-		if (post.cyclomatic <= baseline) continue; // this rank held or reduced
-		const prior = post.name === ANON_FN ? undefined : beforeByName.get(post.name);
-		const how =
-			prior !== undefined && prior < post.cyclomatic
-				? `raised from ${prior}`
-				: post.name === ANON_FN
-					? "new anonymous function over cap"
-					: "new over-cap function";
-		violations.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
-	}
+	// (2) Sub-cap per-edit SLEW ratchet (identity-based) — an UNIQUELY-named
+	// function present before AND after may rise by at most SUB_CAP_RATCHET_TOLERANCE
+	// branches in a single edit while at/under the cap. Small incremental growth
+	// toward the cap is allowed; a big one-edit leap blocks (decompose). The on-disk
+	// before-state is the baseline, so this is trajectory-aware (each edit ratchets
+	// against the cumulative on-disk state); many small rises can still walk a
+	// function toward the cap over several edits, but never past it — the over-cap
+	// path is the hard backstop. Covers the `<= cap` band only (the over-cap path
+	// owns the rest, no double-report). Ambiguous/anonymous names have no reliable
+	// cross-edit identity — left to the cap path; documented limitation.
+	violations.push(...subCapRatchetViolations(beforeFns, afterFns, cap));
 	return violations;
 }
 
+/** Map of UNIQUELY-named functions (name appears exactly once) -> cyclomatic.
+ *  Collisions and anonymous fns are excluded — no reliable cross-edit identity. */
+function uniqueByName(fns: FunctionComplexityEntry[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const f of fns) {
+		if (f.name === ANON_FN) continue;
+		counts.set(f.name, (counts.get(f.name) ?? 0) + 1);
+	}
+	const out = new Map<string, number>();
+	for (const f of fns) {
+		if (f.name !== ANON_FN && counts.get(f.name) === 1) out.set(f.name, f.cyclomatic);
+	}
+	return out;
+}
+
+/** Over-tolerance sub-cap rises of uniquely-named functions vs the before-state.
+ *  A rise of up to SUB_CAP_RATCHET_TOLERANCE branches per edit is allowed; only a
+ *  larger one-edit jump is a violation. Each entry reads "name (cyclomatic A -> B
+ *  — rose N in one edit, over the +T/edit limit)". `<= cap` band only — a rise
+ *  that lands over the cap is owned by the over-cap path, not double-reported. */
+function subCapRatchetViolations(
+	beforeFns: FunctionComplexityEntry[],
+	afterFns: FunctionComplexityEntry[],
+	cap: number,
+): string[] {
+	const before = uniqueByName(beforeFns);
+	const out: string[] = [];
+	for (const [name, post] of uniqueByName(afterFns)) {
+		const pre = before.get(name);
+		if (pre !== undefined && post <= cap && post - pre > SUB_CAP_RATCHET_TOLERANCE) {
+			out.push(
+				`${name} (cyclomatic ${pre} -> ${post} — rose ${post - pre} in one edit, ` +
+					`over the +${SUB_CAP_RATCHET_TOLERANCE}/edit sub-cap limit)`,
+			);
+		}
+	}
+	return out.sort();
+}
+
 /** The shared block payload for a set of violation strings. */
-function buildBlock(violations: string[]): ComplexityWriteBlock {
-	const cap = DEFAULT_MAX_CYCLOMATIC;
+function buildBlock(violations: string[], cap: number = DEFAULT_MAX_CYCLOMATIC): ComplexityWriteBlock {
 	return {
 		block:
-			`[interlinked:cyclomatic] BLOCKED: this edit pushes ${violations.length} function(s) ` +
-			`past the ${cap}-branch cyclomatic cap:\n` +
+			`[interlinked:cyclomatic] BLOCKED: this edit pushes ${violations.length} function(s) past a ` +
+			`cyclomatic limit — a function may rise by at most ${SUB_CAP_RATCHET_TOLERANCE} branch(es) ` +
+			`per edit, and no function may exceed the ${cap}-branch cap:\n` +
 			`${violations.map((v) => `  • ${v}`).join("\n")}\n` +
 			"Decompose: extract cohesive branches into smaller named functions, then retry. " +
-			"Editing an already-complex function is allowed as long as you don't make it worse — " +
-			"there is no suppression; the cap is enforced.",
+			"Holding or reducing an existing function is always allowed; there is no suppression.\n" +
+			`This ${cap}-branch cap is per-repo configurable: \`interlinked caps set cyclomatic <n>\` ` +
+			"(run `interlinked caps explain cyclomatic` for what cyclomatic complexity measures).",
 	};
 }
 
@@ -278,6 +354,7 @@ function checkApplyPatchComplexity(
 	if (!raw || !looksLikeApplyPatch(raw)) return null;
 
 	const violations: string[] = [];
+	const cap = maxCyclomaticFor(cwd);
 	for (const section of parseApplyPatchSections(raw)) {
 		const analyzer = selectAnalyzer(section.path);
 		if (!analyzer) continue; // non-code extension → skip
@@ -291,12 +368,12 @@ function checkApplyPatchComplexity(
 		const after = reconstructAfterContent(section, before);
 		if (after === null) continue; // can't reconstruct confidently → fail open for this file
 		if (!isCappableFile({ filePath: section.path, content: after })) continue;
-		const fileViolations = complexityViolations(before, after, section.path, analyzer, observe);
+		const fileViolations = complexityViolations(before, after, section.path, analyzer, observe, cap);
 		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
 		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
 	}
 	if (violations.length === 0) return null;
-	return buildBlock(violations);
+	return buildBlock(violations, cap);
 }
 
 /**
@@ -317,15 +394,17 @@ export function checkFunctionComplexityWrite(
 		const projected = projectContent(toolInput, abs);
 		if (!projected) return null;
 		if (!isCappableFile({ filePath, content: projected.after })) return null;
+		const cap = maxCyclomaticFor(cwd);
 		const violations = complexityViolations(
 			projected.before,
 			projected.after,
 			filePath,
 			analyzer,
 			observe,
+			cap,
 		);
 		if (violations === null || violations.length === 0) return null;
-		return buildBlock(violations);
+		return buildBlock(violations, cap);
 	}
 	// No explicit file_path → may be an apply_patch payload (multi-file).
 	return checkApplyPatchComplexity(toolInput, cwd, observe);

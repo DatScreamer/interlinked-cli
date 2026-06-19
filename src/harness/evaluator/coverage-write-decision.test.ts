@@ -2,12 +2,13 @@
 // guard's own suite exercises these end-to-end; this file pins the pure
 // decision surface in isolation (per-function vs per-line shape, baseline
 // drop, red-bar message rendering).
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
 import { writeFileCoverageBaseline } from "../coverage-obligation-ledger.js";
+import { resetMetricCapsCache } from "../metric-caps.js";
 import { blockForRedBar, decideFromCoverage, failingTestPhrase } from "./coverage-write-decision.js";
 
 let root: string;
@@ -50,6 +51,45 @@ describe("decideFromCoverage — per-function (istanbul) shape", () => {
 		const d = decideFromCoverage(root, "src/m.ts", cov, new Set([99]), {});
 		expect(d?.decision).toBe("block");
 		expect(d?.reason).toMatch(/drops src\/m\.ts coverage/);
+	});
+
+	it("tolerates a sub-epsilon wobble that holds at the baseline (the 100%→100% false-block fix)", () => {
+		writeFileCoverageBaseline(root, "src/m.ts", 1);
+		const cov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			// 99.7% — an affected-subset/measurement wobble that still rounds to 100%.
+			functions: [fnCov({ statement_pct: 99.7 })],
+		};
+		const out: { now?: number } = {};
+		expect(decideFromCoverage(root, "src/m.ts", cov, new Set([99]), out)).toBeNull();
+	});
+
+	it("still blocks a real drop beyond the noise tolerance", () => {
+		writeFileCoverageBaseline(root, "src/m.ts", 1);
+		const cov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			functions: [fnCov({ statement_pct: 99 })], // 1% drop > epsilon
+		};
+		const d = decideFromCoverage(root, "src/m.ts", cov, new Set([99]), {});
+		expect(d?.decision).toBe("block");
+	});
+
+	it("blocks a file below the configured min_coverage floor", () => {
+		mkdirSync(join(root, ".interlinked"), { recursive: true });
+		writeFileSync(join(root, ".interlinked", "metric-caps.json"), JSON.stringify({ min_coverage: 90 }));
+		resetMetricCapsCache();
+		const cov: PerFileCoverage = { filePath: "src/m.ts", mtime: 0, functions: [fnCov({ statement_pct: 80 })] };
+		const d = decideFromCoverage(root, "src/m.ts", cov, new Set([99]), {});
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toContain("below the");
+		resetMetricCapsCache();
+	});
+
+	it("allows below 100% when no floor is set (floor defaults to 0 = off)", () => {
+		const cov: PerFileCoverage = { filePath: "src/m.ts", mtime: 0, functions: [fnCov({ statement_pct: 80 })] };
+		expect(decideFromCoverage(root, "src/m.ts", cov, new Set([99]), {})).toBeNull();
 	});
 });
 

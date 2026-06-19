@@ -6,12 +6,13 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createCoverageOverlay } from "./coverage-overlay.js";
+import { createCoverageOverlay, sweepStaleOverlays } from "./coverage-overlay.js";
 
 let root: string;
 
@@ -108,5 +109,63 @@ describe("createCoverageOverlay", () => {
 			"export const a = 7;\n",
 		);
 		overlay.cleanup();
+	});
+});
+
+describe("sweepStaleOverlays — leaked-tree reaping (finding 2026-06-11: 7 leaked trees ≈ 24 GB)", () => {
+	const HOUR_MS = 60 * 60 * 1000;
+
+	/** Make a fake overlay dir under .interlinked with a controlled age. */
+	function plantOverlay(name: string, ageMs: number): string {
+		const parent = join(root, ".interlinked");
+		const dir = join(parent, name);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "marker.txt"), "leaked");
+		const t = new Date(Date.now() - ageMs);
+		utimesSync(dir, t, t);
+		return dir;
+	}
+
+	it("removes overlay-prefixed siblings older than the max age", () => {
+		const stale = plantOverlay(".cov-overlay-stale1", 2 * HOUR_MS);
+		sweepStaleOverlays(join(root, ".interlinked"));
+		expect(existsSync(stale)).toBe(false);
+	});
+
+	it("keeps overlay-prefixed siblings younger than the max age (could be live)", () => {
+		const fresh = plantOverlay(".cov-overlay-fresh", 5 * 60 * 1000);
+		sweepStaleOverlays(join(root, ".interlinked"));
+		expect(existsSync(fresh)).toBe(true);
+	});
+
+	it("never touches non-overlay entries, however old", () => {
+		const parent = join(root, ".interlinked");
+		mkdirSync(parent, { recursive: true });
+		const precious = join(parent, "activity.jsonl");
+		writeFileSync(precious, "data\n");
+		const old = new Date(Date.now() - 30 * 24 * HOUR_MS);
+		utimesSync(precious, old, old);
+		sweepStaleOverlays(parent);
+		expect(existsSync(precious)).toBe(true);
+	});
+
+	it("is a no-op when the parent directory does not exist", () => {
+		expect(() => sweepStaleOverlays(join(root, "no-such-dir"))).not.toThrow();
+	});
+
+	it("createCoverageOverlay reaps stale siblings as a side effect (self-healing)", () => {
+		const stale = plantOverlay(".cov-overlay-deadbeef", 2 * HOUR_MS);
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		expect(existsSync(stale)).toBe(false);
+		expect(existsSync(overlay.overlayRoot)).toBe(true);
+		overlay.cleanup();
+	});
+
+	it("createCoverageOverlay leaves fresh siblings alone (a parallel gate may own them)", () => {
+		const fresh = plantOverlay(".cov-overlay-parallel", 60 * 1000);
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		expect(existsSync(fresh)).toBe(true);
+		overlay.cleanup();
+		rmSync(fresh, { recursive: true, force: true });
 	});
 });

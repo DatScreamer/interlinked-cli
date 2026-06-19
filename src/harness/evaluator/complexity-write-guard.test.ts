@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,9 +15,14 @@ vi.mock("../checks/cyclomatic-python.js", () => ({
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticPython as mockedComputeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import {
+	DEFAULT_MAX_CYCLOMATIC as METRIC_CAPS_DEFAULT_CYCLOMATIC,
+	resetMetricCapsCache,
+} from "../metric-caps.js";
+import {
 	__resetPythonDegradeWarningForTesting,
 	checkFunctionComplexityWrite,
 	DEFAULT_MAX_CYCLOMATIC,
+	SUB_CAP_RATCHET_TOLERANCE,
 } from "./complexity-write-guard.js";
 
 const pythonMock = vi.mocked(mockedComputeCyclomaticPython);
@@ -55,6 +60,26 @@ describe("checkFunctionComplexityWrite", () => {
 		expect(DEFAULT_MAX_CYCLOMATIC).toBe(25);
 	});
 
+	it("keeps the local default pinned to the single-source metric-caps default (no drift)", () => {
+		expect(DEFAULT_MAX_CYCLOMATIC).toBe(METRIC_CAPS_DEFAULT_CYCLOMATIC);
+	});
+
+	it("honors a per-repo configured cap from .interlinked/metric-caps.json", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(join(tmp, ".interlinked", "metric-caps.json"), JSON.stringify({ max_cyclomatic: 15 }));
+		resetMetricCapsCache();
+		// cyclomatic ~18: UNDER the shipped default (25) but OVER the configured 15.
+		const out = checkFunctionComplexityWrite({ file_path: join(tmp, "big.ts"), content: fnWith("big", 17) }, tmp);
+		expect(out?.block).toContain("big");
+		expect(out?.block).toContain("15-branch cap");
+		resetMetricCapsCache();
+	});
+
+	it("allows that same function under the shipped default cap (no override file)", () => {
+		const out = checkFunctionComplexityWrite({ file_path: join(tmp, "big.ts"), content: fnWith("big", 17) }, tmp);
+		expect(out).toBeNull();
+	});
+
 	it("skips unhandled extensions (.rb — neither JS/TS nor Python)", () => {
 		const out = checkFunctionComplexityWrite({ file_path: "src/x.rb", content: fnWith("f", 40) }, tmp);
 		expect(out).toBeNull();
@@ -76,6 +101,18 @@ describe("checkFunctionComplexityWrite", () => {
 		expect(out?.block).toContain("cyclomatic");
 		expect(out?.block).toContain("big");
 		expect(out?.block).toContain("new");
+	});
+
+	it("compares the over-cap MULTISET by rank when several functions are over cap", () => {
+		// Two over-cap functions before (30, 28); the edit raises the worst to 35 →
+		// rank-0 worsens → block. Exercises the multi-element before-profile sort.
+		const file = join(tmp, "multi.ts");
+		writeFileSync(file, `${fnWith("big1", 29)}${fnWith("big2", 27)}`); // 30, 28
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: `${fnWith("big1", 34)}${fnWith("big2", 27)}` }, // 35, 28
+			tmp,
+		);
+		expect(out?.block).toContain("big1");
 	});
 
 	it("allows an Edit that holds/reduces an already-over-cap function (refactor-down)", () => {
@@ -369,5 +406,103 @@ describe("checkFunctionComplexityWrite — apply_patch Move sections", () => {
 			"*** End Patch",
 		].join("\n");
 		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});
+
+
+describe("sub-cap per-edit slew ratchet (bounded rise, cap is the backstop)", () => {
+	// fnWith(name, b) → cyclomatic b + 1, so branchesFor(cyclomatic) = cyclomatic - 1.
+	// Fixtures are built relative to SUB_CAP_RATCHET_TOLERANCE so a future change to
+	// the tolerance is a one-place edit (mirrors the line-cap test convention).
+	const branchesFor = (cyclomatic: number) => cyclomatic - 1;
+
+	it("pins the per-edit slew tolerance (default 2)", () => {
+		expect(SUB_CAP_RATCHET_TOLERANCE).toBe(2);
+	});
+
+	it("allows a single-branch sub-cap rise within tolerance (5 -> 6)", () => {
+		const file = join(tmp, "slew-one.ts");
+		writeFileSync(file, fnWith("f", branchesFor(5)));
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("f", branchesFor(6)) },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("allows a sub-cap rise of exactly the tolerance", () => {
+		const file = join(tmp, "slew-edge.ts");
+		const pre = 5;
+		writeFileSync(file, fnWith("f", branchesFor(pre)));
+		// rise === SUB_CAP_RATCHET_TOLERANCE (5 -> 7 at the default): allowed.
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("f", branchesFor(pre + SUB_CAP_RATCHET_TOLERANCE)) },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("blocks a sub-cap rise one past the tolerance (5 -> 8 at the default)", () => {
+		const file = join(tmp, "ratchet.ts");
+		const pre = 5;
+		const post = pre + SUB_CAP_RATCHET_TOLERANCE + 1; // rise === tolerance + 1
+		writeFileSync(file, fnWith("f", branchesFor(pre)));
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("f", branchesFor(post)) },
+			tmp,
+		);
+		expect(out?.block).toContain(`${pre} -> ${post}`);
+		expect(out?.block).toContain(`rose ${post - pre} in one edit`);
+		expect(out?.block).toContain(`+${SUB_CAP_RATCHET_TOLERANCE}/edit`);
+	});
+
+	it("still blocks a within-tolerance rise that crosses the cap (cap is the backstop)", () => {
+		const file = join(tmp, "cross.ts");
+		// pre just under the cap; a rise within the slew tolerance still lands the
+		// END-STATE over the cap → the over-cap path blocks regardless of the slew.
+		const pre = DEFAULT_MAX_CYCLOMATIC - 1; // 24, under cap
+		const post = DEFAULT_MAX_CYCLOMATIC + 1; // 26, over cap (rise 2 = default tolerance)
+		writeFileSync(file, fnWith("f", branchesFor(pre)));
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("f", branchesFor(post)) },
+			tmp,
+		);
+		expect(out?.block).toContain("cyclomatic");
+		expect(out?.block).toContain("raised from");
+	});
+
+	it("allows holding a sub-cap function (5 -> 5)", () => {
+		const file = join(tmp, "hold.ts");
+		writeFileSync(file, fnWith("f", 4));
+		const out = checkFunctionComplexityWrite({ file_path: file, content: fnWith("f", 4) }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("allows reducing a sub-cap function (8 -> 5)", () => {
+		const file = join(tmp, "reduce.ts");
+		writeFileSync(file, fnWith("f", 7));
+		const out = checkFunctionComplexityWrite({ file_path: file, content: fnWith("f", 4) }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("allows adding a NEW sub-cap function even if more complex than existing ones", () => {
+		const file = join(tmp, "addnew.ts");
+		writeFileSync(file, fnWith("a", 2)); // cyclomatic 3
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: fnWith("a", 2) + fnWith("b", 6) }, // b new, cyclomatic 7
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("does NOT sub-cap-ratchet collision-named functions (only the cap protects them)", () => {
+		const file = join(tmp, "collide.ts");
+		// Two functions both named "h" -> name collides -> excluded from the unique
+		// ratchet. Raising one sub-cap is allowed (the cap still bounds it).
+		const before = `function h(a: number): number {\n\tif (a===0) return 0;\n\treturn 1;\n}\nfunction h(a: number): number {\n\tif (a===1) return 1;\n\treturn 0;\n}\n`;
+		const after = `function h(a: number): number {\n\tif (a===0) return 0;\n\tif (a===2) return 2;\n\treturn 1;\n}\nfunction h(a: number): number {\n\tif (a===1) return 1;\n\treturn 0;\n}\n`;
+		writeFileSync(file, before);
+		const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+		expect(out).toBeNull();
 	});
 });

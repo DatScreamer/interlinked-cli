@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import type { CoverageSummary } from "./coverage-ratchet.js";
 
 // Type-tag constants used in the narrow guards below. Extracted so the
 // runtime checks read as intent ("is this shaped like an object?") rather
@@ -96,6 +97,8 @@ interface IstanbulFileEntry {
 	f?: Record<string, number>;
 	statementMap?: Record<string, IstanbulRange>;
 	s?: Record<string, number>;
+	/** Branch hit arrays (`b[id][pathIndex]`) — read by the summary derivation only. */
+	b?: Record<string, number[]>;
 }
 
 type IstanbulFinalJson = Record<string, IstanbulFileEntry>;
@@ -158,6 +161,92 @@ export function loadCoverageFinal(
 	const data = buildPerFileCoverage(raw as IstanbulFinalJson, repoRoot, mtime);
 	CACHE.set(coveragePath, { mtime, data });
 	return data;
+}
+
+/** Line metrics with istanbul's own semantics: a line's hits are the MAX of
+ *  the statements STARTING on it (getLineCoverage), covered when > 0. */
+function lineMetricsOf(entry: IstanbulFileEntry): { covered: number; total: number } {
+	const lineHits = new Map<number, number>();
+	for (const [id, range] of Object.entries(entry.statementMap ?? {})) {
+		const line = range?.start?.line;
+		if (line == null || line <= 0) continue;
+		lineHits.set(line, Math.max(lineHits.get(line) ?? 0, entry.s?.[id] ?? 0));
+	}
+	let covered = 0;
+	for (const hits of lineHits.values()) if (hits > 0) covered++;
+	return { covered, total: lineHits.size };
+}
+
+/** Branch metrics: each `b[id]` array slot is one branch path, covered when it ran. */
+function branchMetricsOf(entry: IstanbulFileEntry): { covered: number; total: number } {
+	let covered = 0;
+	let total = 0;
+	for (const hitsArr of Object.values(entry.b ?? {})) {
+		if (!Array.isArray(hitsArr)) continue;
+		for (const hits of hitsArr) {
+			if (typeof hits !== "number") continue;
+			total++;
+			if (hits > 0) covered++;
+		}
+	}
+	return { covered, total };
+}
+
+/** Percentage rounded to 2 decimals; istanbul reports 100 for zero-entry
+ *  metrics ("no branches to miss") — mirrored so summary- and final-derived
+ *  numbers agree. */
+function metricPct(covered: number, total: number): number {
+	return total > 0 ? Math.round((covered / total) * 10000) / 100 : 100;
+}
+
+/** Repo-relative key for an istanbul entry, or null when outside the repo. */
+function relKeyFor(entry: IstanbulFileEntry, key: string, repoRoot: string): string | null {
+	const absolute = resolveFileKey(entry.path ?? key, repoRoot);
+	if (!absolute) return null;
+	const rel = normalizeRelPath(relative(repoRoot, absolute));
+	if (!rel || rel.startsWith("..")) return null;
+	return rel;
+}
+
+/**
+ * Load `coverage-final.json` as a ratchet-shaped {@link CoverageSummary} —
+ * per-file lines/branches percentages with istanbul's OWN counting semantics.
+ * The full istanbul format carries statementMap/s, not summary lines/branches,
+ * so feeding it to the json-summary parser made the ratchet evaluate ZERO
+ * files and pass vacuously while writing an invalid baseline (finding 2026-06,
+ * round 6). Returns null when the file is missing, unparseable, or contains no
+ * usable file entries — callers must treat that as a loud failure, never an
+ * empty-but-fine report.
+ */
+export function loadCoverageFinalSummary(
+	coveragePath: string,
+	repoRoot: string,
+): CoverageSummary | null {
+	if (!existsSync(coveragePath)) return null;
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(coveragePath, "utf-8"));
+	} catch {
+		return null;
+	}
+	if (!raw || typeof raw !== TYPE_OBJECT) return null;
+
+	const summary: CoverageSummary = {};
+	let entries = 0;
+	for (const [key, entry] of Object.entries(raw as IstanbulFinalJson)) {
+		if (!entry || typeof entry !== TYPE_OBJECT) continue;
+		if (!entry.statementMap || !entry.s) continue;
+		const rel = relKeyFor(entry, key, repoRoot);
+		if (!rel) continue;
+		const lines = lineMetricsOf(entry);
+		const branches = branchMetricsOf(entry);
+		summary[rel] = {
+			lines: { pct: metricPct(lines.covered, lines.total), ...lines },
+			branches: { pct: metricPct(branches.covered, branches.total), ...branches },
+		};
+		entries++;
+	}
+	return entries > 0 ? summary : null;
 }
 
 /**

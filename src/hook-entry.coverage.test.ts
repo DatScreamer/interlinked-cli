@@ -905,18 +905,26 @@ describe("hook-entry as a direct-run subprocess", () => {
 
 	it("falls back to env vars when flags are absent, and tolerates empty stdin", () => {
 		// No flags; everything via env. Empty stdin → readStdinJson returns {}.
+		// With no payload cwd the daemon-down gate would resolve process.cwd()
+		// (this repo IS a configured interlinked project) and fail closed, so we
+		// stand that gate down to isolate the stdin-parsing path under test. The
+		// daemon-down gate has its own coverage in hook-entry-daemon-gate.test.ts.
 		const r = runSubprocess([], "", {
 			INTERLINKED_RUNNER: "claude-code",
 			INTERLINKED_EVENT: "PreToolUse",
 			INTERLINKED_SOCKET: missingSocket(),
+			INTERLINKED_ALLOW_NO_DAEMON: "1",
 		});
 		expect(r.status).toBe(0);
 		expect(r.stderr).toContain("evaluator skipped");
 	});
 
 	it("tolerates malformed stdin JSON (parse catch → {} payload)", () => {
+		// Malformed stdin → {} payload → no cwd; stand down the daemon-down gate
+		// (see the empty-stdin test above) so this exercises only stdin parsing.
 		const r = runSubprocess(["--runner", "claude-code", "--event", "PreToolUse"], "{not json", {
 			INTERLINKED_SOCKET: missingSocket(),
+			INTERLINKED_ALLOW_NO_DAEMON: "1",
 		});
 		expect(r.status).toBe(0);
 		expect(r.stderr).toContain("evaluator skipped");
@@ -1120,12 +1128,16 @@ describe("hook-entry as a direct-run import (in-process coverage)", () => {
 	});
 
 	it("drives mainFromStdin via env vars + empty stdin (readStdinJson empty → {})", async () => {
+		// Empty stdin → {} payload → no cwd, so the daemon-down gate would resolve
+		// process.cwd() (this configured repo) and fail closed. Stand it down to
+		// isolate stdin parsing; the gate is covered in hook-entry-daemon-gate.test.ts.
 		const cap = await runDirectRunInProcess(
 			[],
 			{
 				INTERLINKED_RUNNER: "claude-code",
 				INTERLINKED_EVENT: "PreToolUse",
 				INTERLINKED_SOCKET: missingSocket(),
+				INTERLINKED_ALLOW_NO_DAEMON: "1",
 			},
 			{ stdinData: "" },
 		);
@@ -1134,9 +1146,10 @@ describe("hook-entry as a direct-run import (in-process coverage)", () => {
 	});
 
 	it("drives mainFromStdin with malformed stdin JSON (parse catch → {})", async () => {
+		// Malformed → {} payload → no cwd; stand down the daemon-down gate (see above).
 		const cap = await runDirectRunInProcess(
 			["--runner=claude-code", "--event=PreToolUse", `--socket=${missingSocket()}`],
-			{},
+			{ INTERLINKED_ALLOW_NO_DAEMON: "1" },
 			{ stdinData: "{not valid json" },
 		);
 		expect(cap.exitCode).toBe(0);
@@ -1145,10 +1158,11 @@ describe("hook-entry as a direct-run import (in-process coverage)", () => {
 
 	it("resolves stdin via the error-listener path (readStdinJson stdin error)", async () => {
 		// Stdin emits `error` before EOF → the error listener resolves with the
-		// (empty) collected buffer → {} payload → benign cold allow.
+		// (empty) collected buffer → {} payload → benign cold allow. No payload
+		// cwd, so stand down the daemon-down gate (see above) to isolate the path.
 		const cap = await runDirectRunInProcess(
 			["--runner", "claude-code", "--event", "PreToolUse", "--socket", missingSocket()],
-			{},
+			{ INTERLINKED_ALLOW_NO_DAEMON: "1" },
 			{ emitStdinError: true },
 		);
 		expect(cap.exitCode).toBe(0);

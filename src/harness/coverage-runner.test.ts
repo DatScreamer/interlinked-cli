@@ -1,4 +1,3 @@
-import { type SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,32 +14,24 @@ import {
 	JsCoverageRunner,
 	PythonCoverageRunner,
 	type SpawnFn,
+	type SpawnOutcome,
 } from "./coverage-runner.js";
 
 // ==================================================================
 // Helpers — stub spawn + a minimal istanbul coverage-final.json fixture
 // ==================================================================
 
-/** A successful spawn result (no error, exit 0). */
-function okSpawnResult(): SpawnSyncReturns<string> {
-	return {
-		pid: 1,
-		output: ["", "", ""],
-		stdout: "",
-		stderr: "",
-		status: 0,
-		signal: null,
-	};
+/** A successful spawn outcome (no error, exit 0). */
+function okSpawnResult(): SpawnOutcome {
+	return { stdout: "", stderr: "", status: 0 };
 }
 
-/** A spawn result with a given exit status and optional captured output. */
+/** A spawn outcome with a given exit status and optional captured output. */
 function spawnResultWith(
 	status: number | null,
 	streams: { stdout?: string; stderr?: string } = {},
-): SpawnSyncReturns<string> {
-	const stdout = streams.stdout ?? "";
-	const stderr = streams.stderr ?? "";
-	return { pid: 1, output: ["", stdout, stderr], stdout, stderr, status, signal: null };
+): SpawnOutcome {
+	return { stdout: streams.stdout ?? "", stderr: streams.stderr ?? "", status };
 }
 
 /**
@@ -52,18 +43,15 @@ function makeStubSpawn(cfg: {
 	coverageDir?: string;
 	writeReport?: boolean;
 	delayMs?: number;
-	extra?: Partial<SpawnSyncReturns<string>>;
+	extra?: Partial<SpawnOutcome>;
 }): { spawn: SpawnFn; calls: Array<{ command: string; args: string[] }> } {
 	const calls: Array<{ command: string; args: string[] }> = [];
-	const spawn: SpawnFn = (command, args) => {
+	const spawn: SpawnFn = async (command, args) => {
 		calls.push({ command, args });
 		if (cfg.delayMs && cfg.delayMs > 0) {
-			// Busy-wait keeps the stub synchronous (spawnSync is sync) while still
-			// advancing wall-clock so `suiteMs` is provably > 0.
-			const until = Date.now() + cfg.delayMs;
-			while (Date.now() < until) {
-				/* spin */
-			}
+			// A real async sleep — the spawn seam is async now, so the stub can
+			// yield the event loop exactly like the production spawn does.
+			await new Promise((resolve) => setTimeout(resolve, cfg.delayMs));
 		}
 		if (cfg.writeReport && cfg.coverageDir) {
 			writeFileSync(join(cfg.coverageDir, COVERAGE_FINAL_FILENAME), istanbulFixture(), "utf-8");
@@ -165,7 +153,7 @@ function baseOpts(): CoverageRunOpts {
 describe("JsCoverageRunner", () => {
 	it("parses a sample coverage-final.json into per-file PerFileCoverage", async () => {
 		// Stub spawn writes the report (with the right abs path) when invoked.
-		const spawn: SpawnFn = () => {
+		const spawn: SpawnFn = async () => {
 			writeReportFor(absSrc);
 			return okSpawnResult();
 		};
@@ -186,8 +174,8 @@ describe("JsCoverageRunner", () => {
 	it("measures suiteMs as wall-clock (> 0 with an injected delay)", async () => {
 		const { spawn } = makeStubSpawn({ coverageDir, writeReport: false, delayMs: 20 });
 		// Write a valid report so the run succeeds; the delay is in the spawn.
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};
@@ -223,8 +211,8 @@ describe("JsCoverageRunner", () => {
 		expect(res.perFile.size).toBe(0);
 	});
 
-	it("returns ok:false + error when the spawn throws", async () => {
-		const spawn: SpawnFn = () => {
+	it("returns ok:false + error when the spawn rejects", async () => {
+		const spawn: SpawnFn = async () => {
 			throw new Error("boom");
 		};
 		const runner = new JsCoverageRunner(spawn);
@@ -236,8 +224,8 @@ describe("JsCoverageRunner", () => {
 
 	it("uses the default vitest command when none is supplied", async () => {
 		const { spawn, calls } = makeStubSpawn({ coverageDir, writeReport: false });
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};
@@ -252,8 +240,8 @@ describe("JsCoverageRunner", () => {
 
 	it("honors an explicit testCommand override", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};
@@ -270,9 +258,9 @@ describe("JsCoverageRunner", () => {
 // ==================================================================
 
 describe("JsCoverageRunner — testsPassed (red/green via exit code)", () => {
-	/** Run with a stub that emits a coverage report AND a chosen spawn result. */
-	async function runWithStatus(stub: SpawnSyncReturns<string>) {
-		const spawn: SpawnFn = () => {
+	/** Run with a stub that emits a coverage report AND a chosen spawn outcome. */
+	async function runWithStatus(stub: SpawnOutcome) {
+		const spawn: SpawnFn = async () => {
 			writeReportFor(absSrc);
 			return stub;
 		};
@@ -326,13 +314,72 @@ describe("JsCoverageRunner — testsPassed (red/green via exit code)", () => {
 });
 
 // ==================================================================
+// defaultSpawn (real processes) — the async production spawn's contract
+// ==================================================================
+
+describe("defaultSpawn (real process) — async spawn contract", () => {
+	it(
+		"kills a run exceeding timeoutMs and reports a timeout error (never hangs)",
+		async () => {
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["node", "-e", "setTimeout(() => {}, 60000)"],
+				timeoutMs: 300,
+			});
+			expect(res.ok).toBe(false);
+			expect(res.testsPassed).toBeNull();
+			expect(res.error).toMatch(/timed out/i);
+		},
+		15_000,
+	);
+
+	it(
+		"resolves (never rejects) with a not-found error for a missing binary",
+		async () => {
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["interlinked-definitely-missing-bin-xyz"],
+				timeoutMs: 5_000,
+			});
+			expect(res.ok).toBe(false);
+			expect(res.testsPassed).toBeNull();
+			expect(res.error).toMatch(/not found/i);
+		},
+		15_000,
+	);
+
+	it(
+		"captures stdout from a real child for failing-test parsing",
+		async () => {
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			// Exit 1 (vitest's "tests failed" code) after printing a FAIL line, and
+			// emit a parseable report so ok:true + testsPassed:false + names.
+			writeReportFor(absSrc);
+			const script =
+				"console.log(' FAIL  src/x.test.ts > suite > real child case'); process.exit(1)";
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["node", "-e", script],
+				timeoutMs: 10_000,
+			});
+			expect(res.ok).toBe(true);
+			expect(res.testsPassed).toBe(false);
+			expect(res.failingTests).toEqual(["real child case"]);
+		},
+		15_000,
+	);
+});
+
+// ==================================================================
 // PythonCoverageRunner — parses coverage.py coverage.json into PerFileCoverage
 // ==================================================================
 
 describe("PythonCoverageRunner", () => {
 	it("parses executed_lines + missing_lines into per-line PerFileCoverage", async () => {
 		// Stub spawn writes a coverage.py report (covered lines 1,2; missing line 3).
-		const spawn: SpawnFn = () => {
+		const spawn: SpawnFn = async () => {
 			writePyReportFor("src/foo.py", [1, 2], [3]);
 			return okSpawnResult();
 		};
@@ -350,7 +397,7 @@ describe("PythonCoverageRunner", () => {
 	});
 
 	it("a fully-covered file has zero uncovered lines (block would allow)", async () => {
-		const spawn: SpawnFn = () => {
+		const spawn: SpawnFn = async () => {
 			writePyReportFor("src/foo.py", [1, 2, 3], []);
 			return okSpawnResult();
 		};
@@ -365,7 +412,7 @@ describe("PythonCoverageRunner", () => {
 
 	it("flags a file's missing_lines as uncovered (block would block that line)", async () => {
 		// Line 7 is executable but never executed — the per-edit gate keys on this.
-		const spawn: SpawnFn = () => {
+		const spawn: SpawnFn = async () => {
 			writePyReportFor("src/foo.py", [5, 6], [7]);
 			return okSpawnResult();
 		};
@@ -380,8 +427,8 @@ describe("PythonCoverageRunner", () => {
 
 	it("measures suiteMs as wall-clock (> 0 with an injected delay)", async () => {
 		const { spawn } = makeStubSpawn({ delayMs: 20 });
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writePyReportFor("src/foo.py", [1], []);
 			return r;
 		};
@@ -416,7 +463,7 @@ describe("PythonCoverageRunner", () => {
 	});
 
 	it("returns ok:false when the report is present but unparseable JSON", async () => {
-		const spawn: SpawnFn = () => {
+		const spawn: SpawnFn = async () => {
 			writeFileSync(join(coverageDir, COVERAGE_PY_JSON_FILENAME), "{ not json", "utf-8");
 			return okSpawnResult();
 		};
@@ -429,8 +476,8 @@ describe("PythonCoverageRunner", () => {
 
 	it("uses the default pytest --cov-report=json command pointed at coverageDir", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writePyReportFor("src/foo.py", [1], []);
 			return r;
 		};
@@ -450,9 +497,9 @@ describe("PythonCoverageRunner", () => {
 // ==================================================================
 
 describe("PythonCoverageRunner — testsPassed (red/green via exit code)", () => {
-	/** Run with a stub that emits a coverage.py report AND a chosen spawn result. */
-	async function runWithStatus(stub: SpawnSyncReturns<string>) {
-		const spawn: SpawnFn = () => {
+	/** Run with a stub that emits a coverage.py report AND a chosen spawn outcome. */
+	async function runWithStatus(stub: SpawnOutcome) {
+		const spawn: SpawnFn = async () => {
 			writePyReportFor("src/foo.py", [1, 2], [3]);
 			return stub;
 		};
@@ -514,8 +561,8 @@ describe("PythonCoverageRunner — testsPassed (red/green via exit code)", () =>
 describe("CoverageRunner — selectedTests scoping", () => {
 	it("JS: a non-empty selectedTests scopes vitest to exactly those paths", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};
@@ -531,8 +578,8 @@ describe("CoverageRunner — selectedTests scoping", () => {
 
 	it("JS: omitting selectedTests runs the full suite (no path args — unchanged)", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};
@@ -547,8 +594,8 @@ describe("CoverageRunner — selectedTests scoping", () => {
 
 	it("Python: a non-empty selectedTests scopes pytest to exactly those paths", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writePyReportFor("src/foo.py", [1], []);
 			return r;
 		};
@@ -565,8 +612,8 @@ describe("CoverageRunner — selectedTests scoping", () => {
 
 	it("an explicit testCommand wins over selectedTests (caller owns the argv)", async () => {
 		const { spawn, calls } = makeStubSpawn({});
-		const wrappingSpawn: SpawnFn = (cmd, args, optsArg) => {
-			const r = spawn(cmd, args, optsArg);
+		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
+			const r = await spawn(cmd, args, optsArg);
 			writeReportFor(absSrc);
 			return r;
 		};

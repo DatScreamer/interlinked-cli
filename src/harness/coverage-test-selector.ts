@@ -35,6 +35,13 @@ import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { DependencyView } from "./dependency-view.js";
 
+/** A test file materialized in the current edit's overlay (a co-created test
+ *  of an atomic apply_patch / MultiEdit), keyed by repo-relative path. */
+export interface OverlaySection {
+	relPath: string;
+	content: string;
+}
+
 /** Inputs for {@link selectAffectedTests}. */
 export interface SelectAffectedTestsInput {
 	/** Repo-relative POSIX path of the edited file (e.g. `src/m.ts`). */
@@ -43,6 +50,14 @@ export interface SelectAffectedTestsInput {
 	projectRoot: string;
 	/** The dependency view the daemon already built (reverse import graph). */
 	depView: DependencyView;
+	/**
+	 * Files materialized in THIS edit's overlay (the whole atomic patch's
+	 * sections). Lets a BRAND-NEW source file — not yet in the import graph —
+	 * scope to a test created in the SAME edit, before either is on disk.
+	 * Non-test sections are ignored. Optional: a plain on-disk Write needs none
+	 * (the companion is found on disk).
+	 */
+	overlaySections?: ReadonlyArray<OverlaySection>;
 }
 
 /** BFS node-expansion ceiling — the reverse graph is shallow, but a malformed
@@ -111,6 +126,49 @@ function companionTestCandidates(editedRelPath: string): string[] {
 }
 
 /**
+ * Tests that COVER `editedRelPath` WITHOUT needing the import graph: its
+ * convention companion present on disk OR as an overlay section, plus any
+ * overlay test section importing the file by path (a co-created test under a
+ * non-convention name). This is what lets a brand-new file — not yet in the
+ * graph — enforce coverage per-edit instead of deferring. INCLUSIVE by design:
+ * an extra test only fails to add coverage (harmless); a MISSED covering test
+ * would let the edit falsely pass, so we err toward including. Repo-relative
+ * POSIX paths.
+ */
+function coveringTestsWithoutGraph(
+	editedRelPath: string,
+	projectRoot: string,
+	overlaySections: ReadonlyArray<OverlaySection>,
+): string[] {
+	const overlayPaths = new Set(overlaySections.map((s) => s.relPath.replace(/\\/g, "/")));
+	const found = new Set<string>();
+	// 1. Convention companions — on disk (test-first TDD) or in the overlay
+	//    (atomic source+test patch).
+	for (const candidate of companionTestCandidates(editedRelPath)) {
+		if (existsSync(resolve(projectRoot, candidate)) || overlayPaths.has(candidate)) {
+			found.add(candidate);
+		}
+	}
+	// 2. Overlay test sections importing the file by path. A relative import of
+	//    `src/dir/m.ts` reads `./m.<ext>` or `../x/m.<ext>`, so the content holds
+	//    the path segment `/m.` — a regex-free, FP-resistant needle (`/metrics.`
+	//    does NOT contain `/m.`). Misses extensionless alias imports; those are
+	//    rare and the convention companion above covers the common case.
+	const base = (editedRelPath.replace(/\\/g, "/").split("/").pop() ?? "").replace(
+		/\.[^.]+$/,
+		"",
+	);
+	if (base.length > 0) {
+		const needle = `/${base}.`;
+		for (const section of overlaySections) {
+			const rel = section.relPath.replace(/\\/g, "/");
+			if (isTestPath(rel) && section.content.includes(needle)) found.add(rel);
+		}
+	}
+	return [...found];
+}
+
+/**
  * Select the test files transitively affected by an edit to `editedRelPath`.
  *
  * Algorithm: BFS the reverse import graph from the edited file. Each visited node
@@ -127,6 +185,7 @@ function companionTestCandidates(editedRelPath: string): string[] {
  */
 export function selectAffectedTests(input: SelectAffectedTestsInput): string[] | null {
 	const { editedRelPath, projectRoot, depView } = input;
+	const overlaySections = input.overlaySections ?? [];
 	const editedAbs = resolve(projectRoot, editedRelPath);
 
 	// A seed-only view (per-file Supermodel shard) answers EVERY getDependents
@@ -137,9 +196,17 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 	// possible → full-suite fallback.
 	if (depView.answerScope !== "repo") return null;
 
-	// "Not in the graph" → null → caller runs the full suite. Distinguishing this
-	// from `[]` is the whole point: an empty subset must never falsely pass.
-	if (!depView.hasFile(editedAbs)) return null;
+	const covering = coveringTestsWithoutGraph(editedRelPath, projectRoot, overlaySections);
+
+	// NEW FILE (not yet in the import graph): the reverse-graph walk can't help —
+	// nothing imports a file the graph hasn't indexed — but its companion / co-
+	// created test CAN run scoped. This is the fix that stops new files (the
+	// dominant TDD case) deferring per-edit coverage to commit. A non-empty
+	// covering set runs scoped; empty → null (full suite / defer), leaving "new
+	// file with no test at all" to the TDD companion gate, not a false pass.
+	if (!depView.hasFile(editedAbs)) {
+		return covering.length > 0 ? [...new Set(covering)].sort() : null;
+	}
 
 	const tests = new Set<string>();
 	const visited = new Set<string>([editedAbs]);
@@ -163,11 +230,9 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 	// test this edit breaks and approve it (finding 2026-06). Full-suite fallback.
 	if (head < queue.length) return null;
 
-	// The edited file's own companion test(s), when present on disk — covers a
-	// companion the import graph failed to link.
-	for (const candidate of companionTestCandidates(editedRelPath)) {
-		if (existsSync(resolve(projectRoot, candidate))) tests.add(candidate);
-	}
+	// The edited file's own companion / co-created test(s) — covers a companion
+	// the import graph failed to link (disk companion or overlay-section test).
+	for (const candidate of covering) tests.add(candidate);
 
 	return [...tests].sort();
 }

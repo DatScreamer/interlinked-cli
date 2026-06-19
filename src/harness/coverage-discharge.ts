@@ -27,6 +27,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { lcovReportPaths } from "./coverage-adapters.js";
+import { shellSplit, splitSegments, stripLeadingPrefix } from "./shell-structure.js";
 import { loadCoverageFinal } from "./coverage-final-reader.js";
 import { loadLcovFile } from "./coverage-lcov.js";
 import {
@@ -34,32 +35,160 @@ import {
 	recordCoverageDischarge,
 } from "./coverage-obligation-ledger.js";
 
-/** Engines that run the suite under coverage as one verb (no separate flag).
- *  REPORT-ONLY subcommands are excluded (finding 2026-06): `c8 report`,
- *  `nyc report|merge|instrument|check-coverage`, and `cargo llvm-cov
- *  report|show-env|clean` re-emit or manage EXISTING data without running a
- *  single test — they can refresh a report's mtime and would discharge
- *  obligations on stale execution evidence. */
-const COVERAGE_WRAPPER_RE =
-	/\bcoverage\s+run\b|\bcargo\s+llvm-cov\b(?!\s+(?:report|show-env|clean)\b)|\b(?:nyc|c8)\s+(?!(?:report|merge|instrument|check-coverage)\b)\S/;
+// ===========================================
+// Coverage-suite command classification — argv-positional, never lexical
+// ===========================================
+// Classification works on the blessed shell-structure tokenization (segments →
+// argv), NEVER by regex over the raw string: `touch coverage/lcov.info && echo
+// 'pytest --cov'` lexically contains a runner + flag, but its only commands
+// are `touch` and `echo` — the old regexes classified it as a green coverage
+// run and the touched stale report discharged obligations without one test
+// executing (finding 2026-06, round 6). Per segment, the HEAD token decides
+// what is being run; quoted arguments are data.
 
-/** Test runners whose run the coverage FLAG below turns into a coverage run. */
-const TEST_RUNNER_RE =
-	/\b(?:vitest|jest|pytest|mocha|node\s+--test|(?:npm|pnpm|yarn)\s+(?:run\s+)?test|bun\s+test)\b/;
+/** Subcommands of nyc/c8 that re-emit or manage EXISTING data (no test runs). */
+const REPORT_ONLY_SUBCOMMANDS = new Set(["report", "merge", "instrument", "check-coverage"]);
 
-/** Coverage flags across the gated ecosystems (`--coverage`, vitest's dotted
+/** Argv tokens that make `cargo llvm-cov` a non-suite invocation: report
+ *  emission/maintenance, and `run` (executes the BINARY, not the suite). Bare
+ *  `cargo llvm-cov` and its `test`/`nextest` forms run the suite by default.
+ *  Token-exact, so `--no-report` no longer disqualifies a real suite run the
+ *  way the round-5 word-scan did. */
+const CARGO_NON_SUITE_TOKENS = new Set(["report", "show-env", "clean", "run"]);
+
+/** Python test-runner tokens, as a bare head (`pytest --cov`) or the `-m`
+ *  module of a python/coverage invocation (`coverage run -m pytest`). */
+const PY_RUNNER_TOKENS = new Set(["pytest", "py.test", "unittest", "nose2"]);
+
+/** JS test runners recognized as the head command of a segment. */
+const JS_RUNNER_HEADS = new Set(["vitest", "jest", "mocha", "ava"]);
+
+/** Launcher heads whose real command follows (`npx vitest …`). */
+const LAUNCHER_HEADS = new Set(["npx", "bunx"]);
+
+/** Coverage wrappers that instrument whatever command follows. */
+const COVERAGE_WRAPPER_HEADS = new Set(["nyc", "c8"]);
+
+/** A node script whose BASENAME is test-named (`test.js`, `app.test.mjs`,
+ *  `parser.spec.js`) — the no-framework way to run a test file under c8/nyc. */
+const TEST_SCRIPT_RE = /(?:^|\/)[^\s/]*(?:test|spec)[^\s/]*\.[cm]?js$/i;
+
+/** Last path segment, so `./node_modules/.bin/vitest` reads as `vitest`. */
+function headName(token: string): string {
+	return token.split("/").pop() ?? token;
+}
+
+/** Tokenized argv of one segment: env/sudo prefixes and launcher heads
+ *  (npx/bunx, plus their own leading flags) are stripped to the real command. */
+function segmentArgv(segment: string): string[] {
+	const tokens = stripLeadingPrefix(shellSplit(segment));
+	while (tokens.length > 0 && LAUNCHER_HEADS.has(headName(tokens[0]))) {
+		tokens.shift();
+		while (tokens.length > 0 && tokens[0].startsWith("-")) tokens.shift();
+	}
+	return tokens;
+}
+
+/** True when this argv IS a test-runner invocation (head-positional). */
+function isRunnerInvocation(argv: string[]): boolean {
+	const head = headName(argv[0] ?? "");
+	if (JS_RUNNER_HEADS.has(head) || PY_RUNNER_TOKENS.has(head)) return true;
+	if (head === "node") {
+		return argv.includes("--test") || argv.slice(1).some((t) => TEST_SCRIPT_RE.test(t));
+	}
+	if (head === "npm" || head === "pnpm" || head === "yarn") {
+		const sub = argv[1] === "run" ? argv[2] : argv[1];
+		return typeof sub === "string" && sub.startsWith("test");
+	}
+	if (head === "bun") return argv[1] === "test";
+	if (head.startsWith("python")) {
+		const mIdx = argv.indexOf("-m");
+		return mIdx !== -1 && PY_RUNNER_TOKENS.has(argv[mIdx + 1] ?? "");
+	}
+	return false;
+}
+
+function pythonCoverageModuleArgv(argv: string[]): string[] | null {
+	const head = headName(argv[0] ?? "");
+	if (!head.startsWith("python")) return null;
+	const mIdx = argv.indexOf("-m");
+	return mIdx !== -1 && argv[mIdx + 1] === "coverage" ? argv.slice(mIdx + 1) : null;
+}
+
+/** Coverage flags as argv TOKENS (`--coverage`, vitest's dotted
  *  `--coverage.*`, pytest-cov's `--cov`/`--cov=…`/`--cov-report…`). */
-const COVERAGE_FLAG_RE = /(?:^|\s)--coverage(?:\b|\.)|(?:^|\s)--cov(?:\b|=)|--cov-report/;
+function hasCoverageFlagToken(argv: string[]): boolean {
+	return argv.some(
+		(t) =>
+			t === "--coverage" ||
+			t.startsWith("--coverage.") ||
+			t === "--cov" ||
+			t.startsWith("--cov=") ||
+			t.startsWith("--cov-report"),
+	);
+}
+
+/** One segment's verdict; see {@link isCoverageSuiteCommand}. */
+function isCoverageSuiteSegment(argv: string[]): boolean {
+	if (argv.length === 0) return false;
+	const head = headName(argv[0]);
+	if (head.startsWith("#")) return false; // comment, not a command
+	if (head === "cargo" && argv[1] === "llvm-cov") {
+		return !argv.slice(2).some((t) => CARGO_NON_SUITE_TOKENS.has(t));
+	}
+	if (head === "coverage" && argv[1] === "run") {
+		return argv.slice(2).some((t) => PY_RUNNER_TOKENS.has(t));
+	}
+	const pythonCoverageArgv = pythonCoverageModuleArgv(argv);
+	if (pythonCoverageArgv) return isCoverageSuiteSegment(pythonCoverageArgv);
+	if (COVERAGE_WRAPPER_HEADS.has(head)) {
+		// Skip the wrapper's own leading flags (`c8 --reporter=lcov mocha`). A
+		// separate-value flag leaves its value in argv[0] and the runner check
+		// then fails — under-matching is the safe direction (obligation stays
+		// open) — while report-only subcommands and non-test programs never pass.
+		const wrapped = argv.slice(1);
+		while (wrapped.length > 0 && wrapped[0].startsWith("-")) wrapped.shift();
+		if (wrapped.length === 0 || REPORT_ONLY_SUBCOMMANDS.has(wrapped[0])) return false;
+		return isRunnerInvocation(wrapped);
+	}
+	return isRunnerInvocation(argv) && hasCoverageFlagToken(argv);
+}
 
 /**
  * True when a Bash command runs a TEST SUITE under coverage — the deterministic
- * trigger for the discharge pass. A test run without coverage, or a coverage
- * EXPORT without a run (`coverage lcov -o …`), is not one.
+ * trigger for the discharge pass. A test run without coverage, a coverage
+ * EXPORT without a run (`coverage lcov -o …`), a coverage wrapper around a
+ * NON-test program (`coverage run app.py`, `c8 node server.js`), or runner
+ * text inside quotes/echo arguments is not one.
  */
 export function isCoverageSuiteCommand(command: string): boolean {
 	if (!command) return false;
-	if (COVERAGE_WRAPPER_RE.test(command)) return true;
-	return TEST_RUNNER_RE.test(command) && COVERAGE_FLAG_RE.test(command);
+	return splitSegments(command).some((seg) => isCoverageSuiteSegment(segmentArgv(seg)));
+}
+
+// ===========================================
+// Run-window binding (finding 2026-06, round 6)
+// ===========================================
+// A report's freshness was judged only against the OBLIGATION's age, so a
+// report written by a FAILED run (after the obligation) still discharged when
+// a later green scoped run — which never rewrote that report — triggered the
+// pass. Evidence must be bound to the observed green run itself: the
+// PreToolUse pipeline notes when a coverage-suite Bash command STARTS, and the
+// discharge pass accepts only reports modified at/after that start. No
+// observed start ⇒ no discharge (fail toward keeping the obligation; the next
+// observed run discharges normally). Single in-flight run per session —
+// concurrent coverage runs overwrite the start, narrowing the window, which
+// can only under-discharge.
+
+const SUITE_RUN_STARTS = new Map<string, number>();
+
+/** Filesystem mtime granularity + clock skew allowance for the window check. */
+const RUN_WINDOW_SKEW_MS = 2000;
+
+/** PreToolUse note: a coverage-suite Bash command is starting for `sessionId`. */
+export function noteCoverageSuiteRunStart(sessionId: string, timestamp?: string): void {
+	const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+	SUITE_RUN_STARTS.set(sessionId, Number.isFinite(parsed) ? parsed : Date.now());
 }
 
 /** One parsed coverage report: the repo-relative files it measured + its mtime. */
@@ -98,11 +227,14 @@ export function measuredCoverageFiles(projectRoot: string): MeasuredReport[] {
 
 /**
  * Discharge every open obligation of `sessionId` whose file a fresh-enough
- * report measured (report mtime at/after the obligation's timestamp — an
- * unparseable obligation timestamp degrades to "any report counts" rather than
- * blocking the relief). Returns the discharged files. Call AFTER observing a
- * GREEN coverage-suite run — green-ness is the caller's evidence; measurement
- * and freshness are checked here. Never throws.
+ * report measured. Freshness is TWO conjuncts: the report postdates the
+ * obligation (an unparseable obligation timestamp degrades to "any report
+ * counts" rather than blocking the relief), AND it was written at/after the
+ * OBSERVED run's start (see {@link noteCoverageSuiteRunStart}) — a report a
+ * failed earlier run left behind is not this run's evidence (round 6).
+ * Returns the discharged files. Call AFTER observing a GREEN coverage-suite
+ * run — green-ness is the caller's evidence; measurement and freshness are
+ * checked here. Never throws.
  */
 export function dischargeObligationsAfterGreenRun(
 	projectRoot: string,
@@ -110,6 +242,9 @@ export function dischargeObligationsAfterGreenRun(
 	timestamp: string,
 ): string[] {
 	try {
+		const runStart = SUITE_RUN_STARTS.get(sessionId);
+		SUITE_RUN_STARTS.delete(sessionId);
+		if (runStart === undefined) return []; // start unobserved → cannot bind evidence
 		const open = readOpenCoverageObligations(projectRoot, sessionId);
 		if (open.length === 0) return [];
 		const reports = measuredCoverageFiles(projectRoot);
@@ -118,7 +253,10 @@ export function dischargeObligationsAfterGreenRun(
 		for (const obligation of open) {
 			const openedAt = Date.parse(obligation.timestamp);
 			const measured = reports.some(
-				(r) => r.files.has(obligation.file) && (!Number.isFinite(openedAt) || r.mtimeMs >= openedAt),
+				(r) =>
+					r.files.has(obligation.file) &&
+					(!Number.isFinite(openedAt) || r.mtimeMs >= openedAt) &&
+					r.mtimeMs >= runStart - RUN_WINDOW_SKEW_MS,
 			);
 			if (!measured) continue;
 			recordCoverageDischarge(projectRoot, obligation.file, sessionId, timestamp);

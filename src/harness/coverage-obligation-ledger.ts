@@ -10,11 +10,19 @@
 //      budget-gate input. Updated from each measured `suiteMs` (EWMA so one slow
 //      run doesn't latch the gate open forever). When the estimate >= budget the
 //      guard defers instead of running the suite per-edit.
-//   2. Per-file coverage baseline (`coverage-baseline.json`) — the prior
+//   2. Per-file coverage baseline (`coverage-edit-baseline.json`) — the prior
 //      allowed-state coverage fraction per repo-relative file. The drop check
 //      compares the overlay's coverage against this; an allowed edit refreshes
 //      it. A rolling baseline (vs a committed report) keeps the module
 //      self-contained and is honest: it is the last state the gate let through.
+//      NOT `coverage-baseline.json` — that path belongs to the verify-time
+//      ratchet (coverage-ratchet.ts, `interlinked coverage --update-baseline`),
+//      whose `{version, files}` schema this module's flat path→fraction map
+//      silently clobbered when both shared one file (design doc
+//      incremental-per-edit-coverage-crap-ratchet.md section 8.6). No migration
+//      from the shared file: its ledger entries may already be ratchet-wiped,
+//      and a missing baseline is benign (first-seen ⇒ no drop comparison until
+//      the next allowed edit reseeds it).
 //   3. Deferred obligation log (`coverage-obligations.jsonl`) — append-only.
 //      When the budget is exceeded the guard records one row here (commit-time
 //      enforcement consumes it in a later step) and allows.
@@ -29,7 +37,7 @@ import { dirname, join } from "node:path";
 /** Directory under the project root where all persisted state lives. */
 const INTERLINKED_DIR = ".interlinked";
 const ESTIMATE_FILE = "coverage-runtime-estimate.json";
-const BASELINE_FILE = "coverage-baseline.json";
+const BASELINE_FILE = "coverage-edit-baseline.json";
 const OBLIGATIONS_FILE = "coverage-obligations.jsonl";
 
 /**

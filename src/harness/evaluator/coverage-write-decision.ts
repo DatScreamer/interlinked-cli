@@ -9,6 +9,7 @@
 
 import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
 import { readFileCoverageBaseline } from "../coverage-obligation-ledger.js";
+import { minCoverageFor } from "../metric-caps.js";
 import type { HarnessDecision } from "../types.js";
 import { hasPerLineData } from "./coverage-crap-decision.js";
 
@@ -90,8 +91,8 @@ function blockForUncovered(relPath: string, fn: FunctionCoverage): HarnessDecisi
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${fn.line} (function ` +
 			`\`${fn.name}\`) is executable but uncovered by the test suite after this edit. ` +
 			"Strict TDD: an edit must not add uncovered code. Add the test that exercises " +
-			"this code in the SAME edit (use MultiEdit so the overlay sees test + code " +
-			"together → covered → allowed), then retry.",
+			"this code in the SAME edit (use `interlinked write --batch <manifest.json>` so the " +
+			"overlay sees test + code together → covered → allowed), then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
@@ -110,7 +111,8 @@ function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${line} is executable but ` +
 			"uncovered by the test suite after this edit. Strict TDD: an edit must not add " +
 			"uncovered code. Add the test that exercises this code in the SAME edit (use " +
-			"MultiEdit so the overlay sees test + code together → covered → allowed), then retry.",
+			"`interlinked write --batch <manifest.json>` so the overlay sees test + code " +
+			"together → covered → allowed), then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
@@ -136,14 +138,30 @@ export function blockForRedBar(relPath: string, failingTests: string[] | undefin
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: your edit to ${relPath} leaves the test suite RED ` +
-			`— ${failingTestPhrase(failingTests)}. Fix it in THIS edit (use MultiEdit so the ` +
-			"overlay sees code + test together → suite green → allowed) before proceeding. " +
+			`— ${failingTestPhrase(failingTests)}. Fix it in THIS edit (use ` +
+			"`interlinked write --batch <manifest.json>` so the overlay sees code + test " +
+			"together → suite green → allowed) before proceeding. " +
 			"Strict TDD: an edit may not save a transiently-red state.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
 	};
 }
+
+/**
+ * Tolerance for the per-file %-drop BACKSTOP (below). The precise non-decrease
+ * guard is the per-LINE added-line check, which runs first (line `decideFromCoverage`
+ * → the `"block" in verdict` return) and exactly refuses a newly-uncovered line.
+ * This %-drop check is a coarser backstop that compares the affected-test
+ * overlay's measurement (`now`) against the full-suite high-water baseline
+ * (`prior`); those are not always measured over the identical test set, so a
+ * hold-at-baseline edit can read a sub-line wobble (e.g. 1.0 → 0.9997, both shown
+ * as "100%") and false-block. Requiring the drop to exceed this epsilon absorbs
+ * that noise while still catching a real multi-line regression; new uncovered
+ * code is still blocked exactly by the added-line check, and the commit-time
+ * full-suite gate re-checks against the complete measurement.
+ */
+export const COVERAGE_DROP_EPSILON = 0.005;
 
 /** The actionable block for a per-file coverage regression vs the baseline. */
 function blockForDrop(relPath: string, prior: number, now: number): HarnessDecision {
@@ -153,11 +171,42 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 		reason:
 			`[interlinked:coverage] BLOCKED: this edit drops ${relPath} coverage from ` +
 			`${pct(prior)} to ${pct(now)}. Strict TDD: coverage must not decrease. Restore the ` +
-			"test(s) covering the changed code in this edit (MultiEdit), then retry.",
+			"test(s) covering the changed code in this edit (`interlinked write --batch`), then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
 	};
+}
+
+/** Block when a file's coverage is below the configured floor (`min_coverage`,
+ *  default 0 = off) — an absolute per-file minimum, distinct from the
+ *  non-decrease drop ratchet. */
+function blockForFloor(relPath: string, now: number, floorPct: number): HarnessDecision {
+	return {
+		decision: "block",
+		reason:
+			`[interlinked:coverage] BLOCKED: ${relPath} coverage ${Math.round(now * 100)}% is below the ` +
+			`configured floor of ${floorPct}%. Add tests to reach it, or change the floor: ` +
+			"`interlinked caps set coverage <pct>`.",
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
+}
+
+/** Per-file coverage regression check: the non-decrease drop vs the high-water
+ *  baseline, then the absolute `min_coverage` floor. Returns a block or null.
+ *  Folding both into one helper keeps `decideFromCoverage` at low complexity. */
+function perFileRegressionBlock(
+	projectRoot: string,
+	relPath: string,
+	now: number,
+): HarnessDecision | null {
+	const prior = readFileCoverageBaseline(projectRoot, relPath);
+	if (prior !== null && now < prior - COVERAGE_DROP_EPSILON) return blockForDrop(relPath, prior, now);
+	const floor = minCoverageFor(projectRoot);
+	if (floor > 0 && now < floor / 100) return blockForFloor(relPath, now, floor);
+	return null;
 }
 
 /**
@@ -216,8 +265,8 @@ export function decideFromCoverage(
 	if ("block" in verdict) return verdict.block;
 
 	const now = verdict.now;
-	const prior = readFileCoverageBaseline(projectRoot, relPath);
-	if (prior !== null && now < prior) return blockForDrop(relPath, prior, now);
+	const regression = perFileRegressionBlock(projectRoot, relPath, now);
+	if (regression) return regression;
 
 	out.now = now;
 	return null;

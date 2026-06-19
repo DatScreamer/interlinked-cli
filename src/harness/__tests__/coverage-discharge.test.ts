@@ -16,6 +16,7 @@ import {
 	dischargeObligationsAfterGreenRun,
 	isCoverageSuiteCommand,
 	measuredCoverageFiles,
+	noteCoverageSuiteRunStart,
 } from "../coverage-discharge.js";
 import {
 	type CoverageObligation,
@@ -61,6 +62,8 @@ describe("isCoverageSuiteCommand — deterministic coverage-run detection", () =
 		expect(isCoverageSuiteCommand("pytest --cov")).toBe(true);
 		expect(isCoverageSuiteCommand("pytest --cov=src --cov-report=lcov")).toBe(true);
 		expect(isCoverageSuiteCommand("coverage run -m pytest")).toBe(true);
+		expect(isCoverageSuiteCommand("python -m coverage run -m pytest")).toBe(true);
+		expect(isCoverageSuiteCommand("python3 -m coverage run -m unittest discover")).toBe(true);
 		expect(isCoverageSuiteCommand("cargo llvm-cov --lcov --output-path coverage/lcov-rust.info")).toBe(true);
 		expect(isCoverageSuiteCommand("npm test -- --coverage")).toBe(true);
 		expect(isCoverageSuiteCommand("npx c8 node test.js")).toBe(true);
@@ -88,6 +91,26 @@ describe("isCoverageSuiteCommand — deterministic coverage-run detection", () =
 		expect(isCoverageSuiteCommand("nyc mocha")).toBe(true);
 		expect(isCoverageSuiteCommand("cargo llvm-cov nextest")).toBe(true);
 	});
+
+	it("rejects coverage wrappers around NON-test programs — a green run of zero tests is not evidence (round 4)", () => {
+		expect(isCoverageSuiteCommand("coverage run app.py")).toBe(false);
+		expect(isCoverageSuiteCommand("coverage run manage.py migrate")).toBe(false);
+		expect(isCoverageSuiteCommand("npx c8 node script.js")).toBe(false);
+		expect(isCoverageSuiteCommand("nyc node server.js")).toBe(false);
+		expect(isCoverageSuiteCommand("cargo llvm-cov run")).toBe(false); // runs the BINARY, not the suite
+		// Round 5: global flags may precede the subcommand — the whole clause is
+		// scanned, not just the token after `llvm-cov`.
+		expect(isCoverageSuiteCommand("cargo llvm-cov --workspace report --lcov")).toBe(false);
+		expect(isCoverageSuiteCommand("cargo llvm-cov --no-report run --bin server")).toBe(false);
+		expect(isCoverageSuiteCommand("cargo llvm-cov --workspace --lcov --output-path coverage/lcov-rust.info")).toBe(true);
+		expect(isCoverageSuiteCommand("cargo llvm-cov nextest --workspace")).toBe(true);
+		// …while wrapped TEST invocations keep counting.
+		expect(isCoverageSuiteCommand("coverage run -m pytest tests/")).toBe(true);
+		expect(isCoverageSuiteCommand("coverage run -m unittest discover")).toBe(true);
+		expect(isCoverageSuiteCommand("c8 node --test")).toBe(true);
+		expect(isCoverageSuiteCommand("nyc ava")).toBe(true);
+		expect(isCoverageSuiteCommand("c8 node parser.spec.js")).toBe(true);
+	});
 });
 
 describe("measuredCoverageFiles — which files a fresh report actually measured", () => {
@@ -107,9 +130,15 @@ describe("measuredCoverageFiles — which files a fresh report actually measured
 });
 
 describe("dischargeObligationsAfterGreenRun — the promised relief path", () => {
+	/** Observed run start a minute ago — fresh report writes land inside the window. */
+	function noteRecentRunStart(sessionId = "sess-1"): void {
+		noteCoverageSuiteRunStart(sessionId, new Date(Date.now() - 60_000).toISOString());
+	}
+
 	it("discharges an open obligation whose file the fresh report measured", () => {
 		recordCoverageObligation(tmp, obligation("src/a.ts"));
 		writeLcov("src/a.ts");
+		noteRecentRunStart();
 		const discharged = dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z");
 		expect(discharged).toEqual(["src/a.ts"]);
 		expect(readOpenCoverageObligations(tmp, "sess-1")).toEqual([]);
@@ -121,6 +150,7 @@ describe("dischargeObligationsAfterGreenRun — the promised relief path", () =>
 	it("leaves an obligation OPEN when the run did not measure its file (scoped run)", () => {
 		recordCoverageObligation(tmp, obligation("src/unmeasured.ts"));
 		writeLcov("src/other.ts");
+		noteRecentRunStart();
 		const discharged = dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z");
 		expect(discharged).toEqual([]);
 		expect(readOpenCoverageObligations(tmp, "sess-1").map((o) => o.file)).toEqual(["src/unmeasured.ts"]);
@@ -131,12 +161,42 @@ describe("dischargeObligationsAfterGreenRun — the promised relief path", () =>
 		const old = new Date("2026-05-01T00:00:00Z");
 		utimesSync(join(tmp, "coverage", "lcov.info"), old, old);
 		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", "2026-06-01T00:00:00.000Z"));
+		noteRecentRunStart();
 		const discharged = dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z");
 		expect(discharged).toEqual([]); // the report predates the deferral — not evidence
 	});
 
+	it("does NOT discharge without an observed run start (evidence cannot be bound)", () => {
+		recordCoverageObligation(tmp, obligation("src/a.ts"));
+		writeLcov("src/a.ts");
+		// No noteCoverageSuiteRunStart — e.g. the daemon restarted mid-run.
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([]);
+		expect(readOpenCoverageObligations(tmp, "sess-1").map((o) => o.file)).toEqual(["src/a.ts"]);
+	});
+
+	it("does NOT discharge on a report predating the observed run (a failed earlier run's leftovers — round 6)", () => {
+		recordCoverageObligation(tmp, obligation("src/a.ts"));
+		writeLcov("src/a.ts"); // written NOW — e.g. by an earlier FAILED full run
+		// The green scoped run we observed started AFTER that report was written.
+		noteCoverageSuiteRunStart("sess-1", new Date(Date.now() + 60_000).toISOString());
+		const discharged = dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z");
+		expect(discharged).toEqual([]);
+		expect(readOpenCoverageObligations(tmp, "sess-1").map((o) => o.file)).toEqual(["src/a.ts"]);
+	});
+
+	it("consumes the noted start: a second discharge pass needs a new observed run", () => {
+		recordCoverageObligation(tmp, obligation("src/a.ts"));
+		writeLcov("src/a.ts");
+		noteRecentRunStart();
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual(["src/a.ts"]);
+		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", "2026-06-10T00:00:00.000Z"));
+		// Same session, no new start observed → the re-opened obligation stays.
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-10T01:00:00.000Z")).toEqual([]);
+	});
+
 	it("is a no-op without open obligations (no report parse spent)", () => {
 		writeLcov("src/a.ts");
+		noteRecentRunStart();
 		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([]);
 	});
 });

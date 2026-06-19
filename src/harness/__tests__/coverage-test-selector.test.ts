@@ -15,8 +15,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
 import { isTestPath, selectAffectedTests } from "../coverage-test-selector.js";
+import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
 
 let root: string;
 
@@ -107,6 +107,93 @@ describe("selectAffectedTests — positive (test dependents found)", () => {
 		});
 		const selected = selectAffectedTests({ editedRelPath: "src/m.py", projectRoot: root, depView: view });
 		expect(selected).toEqual(["pkg/m_test.go", "tests/test_m.py"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// New-file scoping — the fix: a brand-new file (not yet in the graph) still
+// scopes to its companion / co-created test instead of deferring to commit.
+// ---------------------------------------------------------------------------
+
+describe("selectAffectedTests — new file not yet in the graph", () => {
+	/** A view whose membership EXCLUDES `edited` (brand-new, unindexed file). */
+	function viewWithout(edited: string): DependencyView {
+		const membership = new Set<string>([abs("src/unrelated.ts")]);
+		membership.delete(abs(edited));
+		return stubView({}, membership);
+	}
+
+	it("scopes to the on-disk companion test (the test-first TDD flow)", () => {
+		// src/m.ts is brand new (not in graph) but src/m.test.ts was written first.
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.test.ts"), "it('x', () => {});\n", "utf-8");
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: viewWithout("src/m.ts"),
+		});
+		expect(selected).toEqual(["src/m.test.ts"]);
+	});
+
+	it("scopes to a companion created in the SAME overlay (atomic source+test patch)", () => {
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: viewWithout("src/m.ts"),
+			overlaySections: [
+				{ relPath: "src/m.ts", content: "export const x = 1;" },
+				{ relPath: "src/m.test.ts", content: "import './m.js';\nit('x', () => {});" },
+			],
+		});
+		expect(selected).toEqual(["src/m.test.ts"]);
+	});
+
+	it("scopes to a non-convention overlay test that imports the new file by path", () => {
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: viewWithout("src/m.ts"),
+			overlaySections: [
+				{ relPath: "src/integration.test.ts", content: "import { x } from './m.js';" },
+			],
+		});
+		expect(selected).toEqual(["src/integration.test.ts"]);
+	});
+
+	it("returns null for a new file with no resolvable test (defer/full — TDD gate owns 'no test')", () => {
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: viewWithout("src/m.ts"),
+		});
+		expect(selected).toBeNull();
+	});
+
+	it("does NOT scope to a same-prefix overlay test that imports a DIFFERENT file (/metrics. ≠ /m.)", () => {
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: viewWithout("src/m.ts"),
+			overlaySections: [
+				{ relPath: "src/metrics.test.ts", content: "import './metrics.js';" },
+			],
+		});
+		expect(selected).toBeNull();
+	});
+
+	it("merges an overlay co-created test with the graph's dependents for an EXISTING file", () => {
+		// src/m.ts IS in the graph (has m.test.ts dependent); the edit also adds a
+		// new integration test in the same overlay → both run.
+		const view = stubView({ [abs("src/m.ts")]: [abs("src/m.test.ts")] });
+		const selected = selectAffectedTests({
+			editedRelPath: "src/m.ts",
+			projectRoot: root,
+			depView: view,
+			overlaySections: [
+				{ relPath: "src/extra.test.ts", content: "import { x } from './m.js';" },
+			],
+		});
+		expect(selected).toEqual(["src/extra.test.ts", "src/m.test.ts"]);
 	});
 });
 

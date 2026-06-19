@@ -220,7 +220,7 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/uncovered/i);
 		expect(decision?.reason).toMatch(/line \d+/i);
-		expect(decision?.reason).toMatch(/MultiEdit/);
+		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ALLOWS when the edited line is covered (stub reports it covered)", async () => {
@@ -390,7 +390,7 @@ describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/RED/);
 		expect(decision?.reason).toMatch(/adds two numbers/);
-		expect(decision?.reason).toMatch(/MultiEdit/);
+		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ON + testsPassed:false with NO failingTests → still BLOCKS with a generic phrase", async () => {
@@ -518,7 +518,7 @@ describe("checkCoverageWrite — Python per-line path (coverage.py shape)", () =
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/uncovered/i);
 		expect(decision?.reason).toMatch(/line 4/);
-		expect(decision?.reason).toMatch(/MultiEdit/);
+		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ALLOWS when every executable .py line is covered (zero uncovered lines)", async () => {
@@ -1011,6 +1011,49 @@ describe("checkCoverageWrite — affected-test selection (scoped per-edit run)",
 		);
 		expect(decision).toBeNull();
 		expect(selected()).toBeUndefined();
+	});
+
+	it("scopes a NEW file (not in the graph) to its on-disk companion — enforces per-edit instead of deferring", async () => {
+		// THE FIX: hasFile=false (brand-new file) but src/m.test.ts exists on disk
+		// (test-first TDD) → the new-file branch resolves the companion → scoped run.
+		// Even an over-budget estimate doesn't defer, because the scoped route never
+		// consults the budget gate. Before the fix this deferred to the commit gate.
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.test.ts"), "import './m.js';\nit('x', () => {});\n", "utf-8");
+		writeRuntimeEstimateAbove(root, 30_000);
+		const view = stubDepView({}, new Set<string>([join(root, "src/other.ts")]));
+		const { runner, selected } = capturingRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ budget_ms: 25_000 }),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull();
+		expect(selected()).toEqual(["src/m.test.ts"]);
+	});
+
+	it("blocks a NEW file per-edit when its companion leaves an added line uncovered", async () => {
+		// New file + on-disk companion, but the measured run shows the added function
+		// uncovered (hits 0) → per-edit BLOCK, not a deferral. This is the heavy-handed
+		// 100%-coverage enforcement reaching new files.
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/m.test.ts"), "import './m.js';\nit('x', () => {});\n", "utf-8");
+		const view = stubDepView({}, new Set<string>([join(root, "src/other.ts")]));
+		const { runner, ran } = stubRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 0, statement_pct: 0 }]),
+		);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(decision?.decision).toBe("block");
+		expect(ran()).toBe(true);
+		expect(decision?.rule_id).toBe("per-edit-coverage");
 	});
 
 	it("with NO depView supplied, behavior is the full-suite path (unchanged)", async () => {

@@ -241,10 +241,12 @@ describe("collectComplexityPulseWarnings", () => {
 describe("complexity-write-guard observer", () => {
 	it("observes before/after entries on a gated edit without changing the decision", () => {
 		const abs = join(tmp, "observed.ts");
-		writeFileSync(abs, fnWith("alpha", 2));
+		writeFileSync(abs, fnWith("alpha", 3)); // alpha cyclomatic 4
 		const observe = vi.fn<ComplexityObserver>();
+		// A REDUCTION (4 → 3): allowed by both the cap and the monotonic ratchet,
+		// so the decision stays `null` while the observer still sees the delta.
 		const result = checkFunctionComplexityWrite(
-			{ file_path: abs, old_string: "let r = 0;", new_string: "let r = 0;\n\tif (a === 99) r = 99;" },
+			{ file_path: abs, old_string: "\tif (a === 2) r += 2;\n", new_string: "" },
 			tmp,
 			observe,
 		);
@@ -252,9 +254,9 @@ describe("complexity-write-guard observer", () => {
 		expect(observe).toHaveBeenCalledTimes(1);
 		const [filePath, beforeFns, afterFns, afterContent] = observe.mock.calls[0];
 		expect(filePath).toBe(abs);
-		expect(beforeFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(3);
-		expect(afterFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(4);
-		expect(afterContent).toContain("a === 99");
+		expect(beforeFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(4);
+		expect(afterFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(3);
+		expect(afterContent).not.toContain("a === 2");
 	});
 
 	it("still observes when the gate blocks (the hash check protects the stash)", () => {

@@ -25,7 +25,16 @@
 // the guard's unit tests stub it out entirely (no real mirror) while the
 // real-overlay integration test exercises it end-to-end on a tiny fixture.
 
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+	cpSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import { removeInTree, writeFileInTree } from "./overlay-safe-write.js";
 
@@ -35,6 +44,42 @@ const INTERLINKED_DIR = ".interlinked";
 const COV_OVERLAY_PREFIX = ".cov-overlay-";
 /** Top-level entries never mirrored (linked or skipped instead). */
 const SKIP_ENTRIES = new Set([".git", "node_modules", INTERLINKED_DIR]);
+/** Age past which a sibling overlay is presumed leaked (daemon killed mid-gate)
+ *  and swept. Gates are synchronous and bounded in minutes; an hour-old tree
+ *  cannot be live. Found 2026-06-11: seven leaked trees ≈ 24 GB filled the disk
+ *  — `cleanup()` is caller-invoked, so every daemon restart mid-run leaks one. */
+const MAX_OVERLAY_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove sibling `.cov-overlay-*` trees older than `maxAgeMs`. Runs on every
+ * overlay creation so the leak is self-healing under the same workload that
+ * produces it — no daemon-lifecycle hook required. Best-effort throughout:
+ * sweeping must never break the gate run that triggered it.
+ */
+export function sweepStaleOverlays(
+	overlayParent: string,
+	maxAgeMs: number = MAX_OVERLAY_AGE_MS,
+): void {
+	let entries: string[];
+	try {
+		entries = readdirSync(overlayParent);
+	} catch {
+		return; // no parent dir yet → nothing to sweep.
+	}
+	const now = Date.now();
+	for (const entry of entries) {
+		if (!entry.startsWith(COV_OVERLAY_PREFIX)) continue;
+		const stale = join(overlayParent, entry);
+		try {
+			if (now - statSync(stale).mtimeMs > maxAgeMs) {
+				rmSync(stale, { recursive: true, force: true });
+			}
+		} catch {
+			// intentional: a vanished or unreadable entry is someone else's
+			// live overlay or already gone — leave it.
+		}
+	}
+}
 
 /** A live overlay tree the caller runs a suite against, then cleans up. */
 export interface CoverageOverlay {
@@ -136,6 +181,9 @@ export function createCoverageOverlay(
 ): CoverageOverlay {
 	const overlayParent = join(projectRoot, INTERLINKED_DIR);
 	mkdirSync(overlayParent, { recursive: true });
+	// Self-healing leak control: reap siblings a dead daemon left behind
+	// before growing the pile (each tree is a near-full working-tree copy).
+	sweepStaleOverlays(overlayParent);
 	// Resolve symlinks in the overlay root: a coverage engine records each source
 	// file by its REAL (symlink-resolved) path, and the per-file reader keys by
 	// `relative(projectRoot, realAbsPath)`. On macOS `os.tmpdir()` →
@@ -167,7 +215,9 @@ export function createCoverageOverlay(
 			try {
 				rmSync(overlayRoot, { recursive: true, force: true });
 			} catch {
-				// intentional: best-effort cleanup; a leaked temp dir is harmless.
+				// intentional: best-effort — a tree that survives here (or a
+				// daemon killed before reaching cleanup) is reaped by the
+				// sweepStaleOverlays pass on a later overlay creation.
 			}
 		},
 	};
