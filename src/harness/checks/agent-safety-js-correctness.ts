@@ -191,13 +191,17 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 /**
  * Detect broad/opaque object types that hide shape information from cold
  * readers (including cold agents). Flags:
- *   - `Record<K, any>` / `Record<K, unknown>` — wide mapping with any/unknown.
- *   - `{ [key: string]: any }` / `{ [k: string]: unknown }` index signatures.
+ *   - `Record<K, any>` — wide mapping whose VALUE is `any` (no shape, no narrowing).
+ *   - `{ [key: string]: any }` index signature to `any`.
  *   - Bare `Function` type annotation (`: Function`, `as Function`).
  *   - Bare `object` type annotation (`: object`, `as object`).
  *
  * Each of these loses enough type information that a reader has to guess the
- * shape. Skips test files (legitimate brevity) and non-TS files.
+ * shape. The `unknown` value form (`Record<K, unknown>`, `{ [k]: unknown }`) is
+ * deliberately NOT flagged: `unknown` is the type-SAFE wide map — it forces
+ * narrowing at every use site (the honest type for dynamic SQL rows / parsed
+ * JSON), the opposite of `any`'s shapelessness (finding 2026-06: it was firing
+ * on legitimate `Record<string, unknown>`). Skips test/generated/non-TS files.
  */
 export function checkBroadObjectTypes(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
@@ -213,12 +217,12 @@ export function checkBroadObjectTypes(content: string, filePath: string): Inline
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	// `Record<…, any>` / `Record<…, unknown>` where the VALUE type is the escape.
-	// Accepts any key-type identifier (string, number, symbol, or a branded alias).
-	const RECORD_ANY = /\bRecord\s*<\s*[\w.|&\s]+,\s*(?:any|unknown)\s*>/;
-	// `{ [k: string]: any }` / `{ [k: string]: unknown }` index signature to any.
-	const INDEX_ANY =
-		/\{\s*\[\s*\w+\s*:\s*(?:string|number|symbol)\s*\]\s*:\s*(?:any|unknown)\s*\}/;
+	// `Record<…, any>` where the VALUE type is `any`. `unknown` is intentionally
+	// NOT matched — it is the type-safe wide map (forces narrowing), unlike
+	// shapeless `any`. Accepts any key-type identifier (string/number/symbol/alias).
+	const RECORD_ANY = /\bRecord\s*<\s*[\w.|&\s]+,\s*any\s*>/;
+	// `{ [k: string]: any }` index signature to `any` (again, `unknown` is exempt).
+	const INDEX_ANY = /\{\s*\[\s*\w+\s*:\s*(?:string|number|symbol)\s*\]\s*:\s*any\s*\}/;
 	// `: Function` or `as Function` — bare Function type.
 	const BARE_FUNCTION = /(?::|\bas)\s+Function\b/;
 	// `: object` or `as object` — bare object type. Excludes `Object` (the wrapper).

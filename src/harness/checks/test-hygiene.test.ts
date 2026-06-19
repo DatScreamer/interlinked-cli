@@ -70,6 +70,9 @@ it("returns 404 when missing", () => { expect(b).toBe(2); });
 			checkTestMissingSutImport(`import { something } from "./bar.js";`, TEST).length,
 		).toBe(1);
 		expect(checkMockingTheSutSelf(`vi.mock("./foo");`, TEST).length).toBe(1);
+		// FP guard: a same-basename module in a DIFFERENT directory is not the SUT.
+		expect(checkMockingTheSutSelf(`vi.mock("../commands/foo");`, TEST).length).toBe(0);
+		expect(checkMockingTheSutSelf(`vi.mock("./sub/foo");`, TEST).length).toBe(0);
 		expect(
 			checkMockOnlyTest(
 				`it("calls the API", async () => { await run(); expect(client.fetch).toHaveBeenCalledWith("/users"); });`,

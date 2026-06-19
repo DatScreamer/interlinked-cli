@@ -65,6 +65,12 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"floating_promises",
 			"broad_object_types",
 			"magic_literal_in_conditional",
+			"nan_coercion_guard",
+			"array_push_return_used",
+			"array_iteratee_variadic_builtin",
+			"write_without_mkdir",
+			"duplicated_policy_constant",
+			"gitignored_written_config",
 			"promise_reject_non_error",
 			"lossy_error_rethrow",
 			"import_from_own_barrel",
@@ -73,6 +79,8 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"unvalidated_json_boundary",
 			"dead_exports",
 			"circular_imports",
+			"untested_inverse_pair",
+			"untested_idempotent",
 			"lifecycle_cleanup",
 			"default_export",
 			"code_clones",
@@ -316,10 +324,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 179-key total", () => {
+	it("preserves the full 187-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(179);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(187);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(179);
+		expect(fragmentKeyTotal).toBe(187);
 	});
 });

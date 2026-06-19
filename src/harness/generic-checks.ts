@@ -224,6 +224,8 @@ export { checkPlaceholderTests } from "./checks/placeholder-tests.js";
 export type { ProjectSetupIssue } from "./checks/project-setup.js";
 // ---- project-setup ----
 export { checkProjectSetup } from "./checks/project-setup.js";
+// ---- property-testing ----
+export { checkUntestedIdempotent, checkUntestedInversePair } from "./checks/property-testing.js";
 // ---- react ----
 export {
 	checkAsyncEventHandler,

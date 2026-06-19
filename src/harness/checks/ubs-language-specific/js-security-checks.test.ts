@@ -24,6 +24,26 @@ describe("ubs-language-specific/js-security-checks", () => {
 		expect(checkEvalInputTainted('eval("1+1")', "a.js")).toEqual([]);
 	});
 
+	it("checkEvalInputTainted does NOT flag eval/exec inside a Python docstring or comment (FP fix)", () => {
+		// Multi-line triple-quoted docstring — the JS string-masker can't span it,
+		// so the body used to read as code and FP on the quoted `eval(...)`.
+		const docstring = `"""
+Port of eval_from_even.py — it historically called eval(user_input).
+"""
+def even(x):
+    return x % 2 == 0
+`;
+		expect(checkEvalInputTainted(docstring, "even.py")).toEqual([]);
+		// Triple-single-quoted docstring + a # comment mentioning eval.
+		expect(
+			checkEvalInputTainted("def f():\n    '''avoid eval(x) — see eval_from_even.py'''\n    return 1\n", "even.py"),
+		).toEqual([]);
+		expect(checkEvalInputTainted("# previously used eval(s)\ndef even(x):\n    return x\n", "even.py")).toEqual([]);
+		// Real eval/exec calls are still caught.
+		expect(checkEvalInputTainted("def r(s):\n    return eval(s)\n", "even.py").length).toBeGreaterThan(0);
+		expect(checkEvalInputTainted("def r(c):\n    exec(c)\n", "even.py").length).toBeGreaterThan(0);
+	});
+
 	it("checkChildProcessExecUserInput flags namespaced exec with a var arg", () => {
 		const code = "child_process.exec(userInput)";
 		expect(checkChildProcessExecUserInput(code, "a.js").length).toBeGreaterThan(0);

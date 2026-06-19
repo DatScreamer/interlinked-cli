@@ -34,6 +34,48 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	nan_coercion_guard: {
+		name: "NaN Coercion Guard",
+		description:
+			"Detects Date.parse/Number/parseInt/parseFloat results used in a relational comparison without a Number.isFinite/isNaN guard — NaN makes the comparison silently false (fail-open)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	array_push_return_used: {
+		name: "Array push/unshift return value used",
+		description:
+			"Detects Array#push()/unshift() return values returned, bound, or used as an arrow implicit-return body — they return the new length, not the element or array (fail-quiet on stream-style this.push() and chained .push().length)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	array_iteratee_variadic_builtin: {
+		name: "Variadic builtin as array iteratee",
+		description:
+			"Detects parseInt/Number.parseInt passed bare to .map()/.flatMap()/Array.from(x, fn) — the element index becomes parseInt's radix (the ['1','2','3'].map(parseInt) -> [1, NaN, NaN] bug)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	write_without_mkdir: {
+		name: "Write Without mkdir",
+		description:
+			"Detects writeFileSync/appendFileSync/writeFile/createWriteStream on a nested path with no prior mkdir(..., { recursive: true }) / existsSync guard in the same function scope — throws ENOENT when the parent directory is absent",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	duplicated_policy_constant: {
+		name: "Duplicated Policy Constant",
+		description:
+			"Detects a file declaring a named policy constant (DEFAULT_*/MAX_*/MIN_*/*_CAP/*_THRESHOLD/*_LIMIT) that also hard-codes the same bare numeric literal elsewhere instead of referencing the constant",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	gitignored_written_config: {
+		name: "Gitignored Written Config",
+		description:
+			"Detects file-write calls whose statically-resolved path is excluded by .gitignore (no `!` negation carve-out) — a config/policy file intended to be committed can never land in a PR. Verify-only (needs git context).",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	promise_reject_non_error: {
 		name: "Promise.reject with non-Error",
 		description:
@@ -89,6 +131,20 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 			"Detects import cycles involving the edited file (A → B → C → A) — unclear module boundaries and runtime undefined-at-import-time bugs",
 		tier: 3,
 		determinism: "partially_deterministic",
+	},
+	untested_inverse_pair: {
+		name: "Untested Inverse Pair",
+		description:
+			"Detects exported inverse pairs (encode/decode, to<X>/from<X>, etc.) with no round-trip property test across project tests",
+		tier: 3,
+		determinism: "heuristic",
+	},
+	untested_idempotent: {
+		name: "Untested Idempotent",
+		description:
+			"Detects exported idempotent-shaped functions (normalize/sanitize/dedupe/etc.) with no property test across project tests",
+		tier: 3,
+		determinism: "heuristic",
 	},
 	lifecycle_cleanup: {
 		name: "Lifecycle Cleanup",

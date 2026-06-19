@@ -103,6 +103,13 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		determinism: "fully_deterministic",
 		externality: "local_write",
 	},
+	rustfmt_check: {
+		name: "Rustfmt",
+		description: "Rust formatting check (rustfmt --check)",
+		tier: 1,
+		determinism: "fully_deterministic",
+		externality: "local_write",
+	},
 	go_build: {
 		name: "Go Build",
 		description: "Go compilation check",

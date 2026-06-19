@@ -6,10 +6,11 @@ import {
 	type InlineMatch,
 	isGeneratedFile,
 	isTestFile,
-	scanLinesStripped,
+	isVendoredOrFixturePath,
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+export { checkFloatEquality, checkParseIntRadix } from "./b-series-numeric.js";
 
 // ===========================================
 // B-Series PostToolUse Inline Checks
@@ -311,18 +312,27 @@ const DESCRIPTIVE_SUFFIX_RE =
 const TYPE_ANNOTATION_RE =
 	/^(?:z\.|string|String|number|Number|boolean|Boolean|Buffer|Uint8Array|any|unknown|object)/;
 
+/** A hardcoded-credential scan is skipped for test, vendored/fixture, and
+ *  generated files. Everywhere else the `name = "value"` shape is scanned
+ *  regardless of language. */
+function isCredScanExempt(content: string, filePath: string): boolean {
+	return isTestFile(filePath) || isVendoredOrFixturePath(filePath) || isGeneratedFile(content);
+}
+
 export function checkHardcodedCredentials(content: string, filePath: string): InlineMatch[] {
-	if (isTestFile(filePath)) return [];
-	const ext = getExtension(filePath);
-	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java"].includes(ext))
-		return [];
+	// No extension gate — credential assignment looks identical across every
+	// language and config format (ungated 2026-06-12; a hardcoded key is a leak
+	// in Python/Go/PHP/Ruby/YAML/.env just as much as in JS/TS).
+	if (isCredScanExempt(content, filePath)) return [];
 
 	const stripped = stripComments(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 
+	// `(?::=|[:=])` matches `=` (most langs), `:` (YAML / struct fields), and
+	// Go's `:=` walrus. `==` can't match — the trailing `=` leaves no quote.
 	const credPattern =
-		/\b(password|passwd|secret|api_?key|api_?secret|auth_?token|access_?token|private_?key)(\w*)\s*[:=]\s*["']([^"']{4,})["']/i;
+		/\b(password|passwd|secret|api_?key|api_?secret|auth_?token|access_?token|private_?key)(\w*)\s*(?::=|[:=])\s*["']([^"']{4,})["']/i;
 
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
@@ -343,69 +353,6 @@ export function checkHardcodedCredentials(content: string, filePath: string): In
 
 		// Skip type annotations and schema definitions (z.string(), string, etc.)
 		if (TYPE_ANNOTATION_RE.test(value)) continue;
-
-		matches.push({
-			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
-		});
-	}
-	return matches;
-}
-
-/**
- * Detect parseInt() calls without the radix parameter.
- * `parseInt(x)` without second argument can produce unexpected results.
- */
-export function checkParseIntRadix(content: string, filePath: string): InlineMatch[] {
-	const ext = getExtension(filePath);
-	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) return [];
-
-	const stripped = stripCommentsAndStrings(content);
-	const originalLines = content.split("\n");
-	const strippedLines = stripped.split("\n");
-	return scanLinesStripped(originalLines, strippedLines, /\bparseInt\s*\(\s*[^,)]+\s*\)/, 10);
-}
-
-/**
- * Detect floating point equality comparisons.
- * `=== 0.1` or `!== 3.14` — floating point comparisons are unreliable.
- * Skips values exactly representable in IEEE 754 binary64 (e.g., 0.0, 0.5, 1.0).
- */
-const SAFE_FLOAT_VALUES = new Set([
-	"0.0",
-	"0.5",
-	"1.0",
-	"1.5",
-	"2.0",
-	"3.0",
-	"4.0",
-	"5.0",
-	"0.25",
-	"0.75",
-	"0.125",
-	"0.375",
-	"0.625",
-	"0.875",
-]);
-
-export function checkFloatEquality(content: string, filePath: string): InlineMatch[] {
-	const ext = getExtension(filePath);
-	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) return [];
-
-	const stripped = stripCommentsAndStrings(content);
-	const originalLines = content.split("\n");
-	const strippedLines = stripped.split("\n");
-
-	const floatCompare = /[!=]==?\s*(\d+\.\d+)\b|\b(\d+\.\d+)\s*[!=]==?/;
-	const matches: InlineMatch[] = [];
-
-	for (let i = 0; i < strippedLines.length; i++) {
-		if (matches.length >= 10) break;
-		const m = strippedLines[i].match(floatCompare);
-		if (!m) continue;
-
-		const floatValue = m[1] || m[2];
-		if (SAFE_FLOAT_VALUES.has(floatValue)) continue;
 
 		matches.push({
 			line: i + 1,

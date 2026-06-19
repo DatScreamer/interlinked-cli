@@ -118,6 +118,20 @@ describe("checkBroadObjectTypes", () => {
 		);
 		expect(out).toEqual([]);
 	});
+
+	it("does NOT flag the type-safe `unknown` wide map (finding 2026-06)", () => {
+		// `unknown` forces narrowing at every use site — the honest type for dynamic
+		// SQL rows / parsed JSON — so it is exempt; only shapeless `any` is flagged.
+		expect(checkBroadObjectTypes("const x: Record<string, unknown> = {};\n", "src/x.ts")).toEqual(
+			[],
+		);
+		expect(
+			checkBroadObjectTypes("function f(): Record<string, unknown> { return {}; }\n", "src/x.ts"),
+		).toEqual([]);
+		expect(checkBroadObjectTypes("const m: { [k: string]: unknown } = {};\n", "src/x.ts")).toEqual(
+			[],
+		);
+	});
 });
 
 describe("checkEvalUsage", () => {

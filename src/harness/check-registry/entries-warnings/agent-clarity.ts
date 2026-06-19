@@ -3,13 +3,9 @@
 // detectors (Mythos blog adaptation). Extracted from entries-warnings.ts —
 // re-exported there as part of WARNING_ENTRIES.
 
-import {
-	checkCommentClaimsIdempotentMutates,
-	checkCommentClaimsLimitNoGuard,
-	checkCommentClaimsNullThrowsInstead,
-	checkCommentClaimsThrowsDoesnt,
-	checkCommentClaimsValidationMissing,
-} from "../../generic-checks.js";
+import { detectWriteWithoutMkdir } from "../../checks/fs-write-safety.js";
+import { detectNaNCoercionGuards } from "../../checks/nan-coercion.js";
+import { detectPolicyConstantDrift } from "../../checks/policy-constant-drift.js";
 import {
 	checkAwaitStateToctou,
 	checkBooleanTrap,
@@ -19,6 +15,11 @@ import {
 	checkCleanupReentrancy,
 	checkCleanupSkippedOnEarlyExit,
 	checkCodeClones,
+	checkCommentClaimsIdempotentMutates,
+	checkCommentClaimsLimitNoGuard,
+	checkCommentClaimsNullThrowsInstead,
+	checkCommentClaimsThrowsDoesnt,
+	checkCommentClaimsValidationMissing,
 	checkDeadExports,
 	checkDefaultExport,
 	checkDiscriminatedUnionExhaustiveness,
@@ -31,6 +32,8 @@ import {
 	checkPositionalOptionalBoolean,
 	checkSameTypedPrimitiveParams,
 	checkTaintedToPrivilegedSink,
+	checkUntestedIdempotent,
+	checkUntestedInversePair,
 	checkUnvalidatedJsonBoundary,
 } from "../../generic-checks.js";
 import type { CheckRegistration } from "../types.js";
@@ -112,6 +115,36 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 		resultsPropName: "deadExports",
 	},
 	{
+		id: "untested_inverse_pair",
+		phase: "post",
+		name: "Untested Inverse Pair",
+		description:
+			"Detects exported inverse pairs (encode/decode, serialize/deserialize, to<X>/from<X>) with no round-trip property test referencing both halves across the project's test files",
+		tier: 3,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Add a round-trip property test asserting the inverse law -- e.g. with fast-check: `fc.assert(fc.property(fc.string(), (x) => expect(decode(encode(x))).toBe(x)))`. The round trip is the cheapest high-mutation-kill test for an encode/decode-style pair; its absence means the pair is unverified against malformed or edge-case inputs.",
+		fn: (content, filePath) => checkUntestedInversePair(content, filePath, process.cwd()),
+		resultsPropName: "untestedInversePair",
+	},
+	{
+		id: "untested_idempotent",
+		phase: "post",
+		name: "Untested Idempotent",
+		description:
+			"Detects exported idempotent-shaped functions (normalize/sanitize/dedupe) with no property test asserting the f(f(x)) === f(x) law",
+		tier: 3,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Add a property test asserting idempotence with fast-check: `fc.assert(fc.property(fc.string(), (x) => expect(f(f(x))).toEqual(f(x))))`. A normalizer/sanitizer must be safe to apply twice; the property catches the case where a second pass changes the output.",
+		fn: (content, filePath) => checkUntestedIdempotent(content, filePath, process.cwd()),
+		resultsPropName: "untestedIdempotent",
+	},
+	{
 		id: "unvalidated_json_boundary",
 		phase: "post",
 		name: "Unvalidated JSON Boundary",
@@ -140,6 +173,53 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 			"Extract the literal into a named constant or enum so the conditional reads as intent. `if (status === ORDER_FULFILLED)` tells a cold reader what branch they're in; `if (status === 2)` forces them to grep for where 2 is defined.",
 		fn: checkMagicLiteralInConditional,
 		resultsPropName: "magicLiteralInConditional",
+	},
+	{
+		id: "nan_coercion_guard",
+		phase: "post",
+		name: "NaN Coercion Guard",
+		description:
+			"Detects Date.parse / Number / parseInt / parseFloat results used in a relational comparison (<, >, <=, >=) without a Number.isFinite / Number.isNaN / isNaN guard — NaN makes the comparison silently false, falling through to a permissive/default branch (fail-open).",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A coercion (Date.parse/Number/parseInt/parseFloat) can return NaN on malformed input, and `NaN <= x` / `NaN >= x` is always false — so the guarded branch is silently skipped (e.g. an expired record treated as live forever). Guard the value before the comparison: `if (!Number.isFinite(n)) return ...;` then compare, or inline `Number.isFinite(parsed) && parsed <= limit`. Equality (=== / !==) is fine; only relational operators fail-open on NaN.",
+		fn: detectNaNCoercionGuards,
+		resultsPropName: "nanCoercionGuard",
+		content_keywords: ["Date.parse", "Number(", "parseInt", "parseFloat"],
+	},
+	{
+		id: "write_without_mkdir",
+		phase: "post",
+		name: "Write Without mkdir",
+		description:
+			"Detects writeFileSync / appendFileSync / writeFile / createWriteStream calls on a nested path (join(...) with ≥2 args, or a string literal containing a slash) with no prior mkdirSync(..., { recursive: true }) / mkdir(..., { recursive: true }) / existsSync guard in the same function scope — throws ENOENT when the parent directory is absent.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Writing to a nested path throws ENOENT when the parent directory doesn't exist yet. Create the directory first: `mkdirSync(dirname(target), { recursive: true });` (or the async `await mkdir(...)`) before the write, or guard with `existsSync(dir)`. The recursive flag makes the call a no-op when the directory already exists.",
+		fn: detectWriteWithoutMkdir,
+		resultsPropName: "writeWithoutMkdir",
+		content_keywords: ["writeFileSync", "appendFileSync", "writeFile", "createWriteStream"],
+	},
+	{
+		id: "duplicated_policy_constant",
+		phase: "post",
+		name: "Duplicated Policy Constant",
+		description:
+			"Detects a file that declares a named policy constant (DEFAULT_* / MAX_* / MIN_* / *_CAP / *_THRESHOLD / *_LIMIT) and then also hard-codes the same bare numeric literal on another line instead of referencing the constant — the literal silently diverges when the constant is later changed.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A bare literal repeats the value of a named policy constant defined in the same file. Reference the constant (e.g. `MAX_RETRIES` instead of the bare `7`) so the two can't drift — when the cap changes, every use updates with it. Trivial numbers (0, 1, 2, 100, 1000, …) are already excluded, so a flagged literal is a genuine policy value.",
+		fn: detectPolicyConstantDrift,
+		resultsPropName: "duplicatedPolicyConstant",
 	},
 	{
 		id: "iterator_invalidation",

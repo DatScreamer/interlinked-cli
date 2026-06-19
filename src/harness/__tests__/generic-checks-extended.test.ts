@@ -1138,9 +1138,11 @@ describe("checkBroadObjectTypes", () => {
 		expect(checkBroadObjectTypes(code, "props.ts").length).toBe(1);
 	});
 
-	it("flags Record<string, unknown>", () => {
+	it("does NOT flag Record<string, unknown> (type-safe wide map — finding 2026-06)", () => {
+		// `unknown` forces narrowing at use sites (the honest dynamic-row/JSON type);
+		// only shapeless `any` is flagged.
 		const code = "function merge(x: Record<string, unknown>) {}";
-		expect(checkBroadObjectTypes(code, "merge.ts").length).toBe(1);
+		expect(checkBroadObjectTypes(code, "merge.ts").length).toBe(0);
 	});
 
 	it("flags { [k: string]: any } index signature", () => {

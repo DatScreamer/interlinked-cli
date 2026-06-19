@@ -18,6 +18,8 @@ import {
 	stripCommentsAndStrings,
 } from "./shared.js";
 import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
+import { blankRange, isCodeMatch, isSkippedOrTodoCall, maskCommentsAndStrings } from "./test-hygiene-masking.js";
+export { checkMockOnlyTest } from "./test-hygiene-quality-mock-only.js";
 
 const TEST_BLOCK_INTRO_RE =
 	/\b(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*\(\s*(["'`])([^"'`]*)\1/g;
@@ -269,6 +271,17 @@ export function checkTestMissingSutImport(content: string, filePath: string): In
 
 const SUT_MOCK_RE = /\b(?:vi|jest)\s*\.\s*mock\s*\(\s*["']([^"']+)["']/g;
 
+/** True when a vi.mock/jest.mock `target` resolves to the test's OWN sibling
+ *  SUT — a SAME-DIRECTORY relative import whose basename matches `sutBase`. A
+ *  `../`-prefixed or sub-directory specifier that merely shares the basename is
+ *  a DIFFERENT module (e.g. `../commands/foo.js` vs the SUT `./foo.ts`) and must
+ *  NOT be flagged — basename-only matching false-flagged those (fixed 2026-06-12). */
+function mockTargetIsSut(target: string, sutBase: string): boolean {
+	const rel = target.replace(/^\.\//, "");
+	if (rel.includes("/")) return false; // not a same-directory sibling
+	return rel.replace(/\.(js|ts|tsx|jsx|mjs|cjs)$/, "") === sutBase;
+}
+
 /** Public API — flags mocks of the SUT inside its own test file. */
 export function checkMockingTheSutSelf(content: string, filePath: string): InlineMatch[] {
 	if (!isStrictTestFile(filePath)) return [];
@@ -286,9 +299,7 @@ export function checkMockingTheSutSelf(content: string, filePath: string): Inlin
 	let m: RegExpExecArray | null = SUT_MOCK_RE.exec(content);
 	while (m !== null && matches.length < MAX_MATCHES) {
 		const target = m[1];
-		// Resolve the target's basename and compare to the SUT.
-		const targetBase = target.split("/").pop()?.replace(/\.(js|ts|tsx|mjs|cjs)$/, "") ?? "";
-		if (targetBase === sutBase) {
+		if (mockTargetIsSut(target, sutBase)) {
 			const offset = m.index;
 			const lineIdx = (content.slice(0, offset).match(/\n/g) || []).length;
 			matches.push({
@@ -297,256 +308,6 @@ export function checkMockingTheSutSelf(content: string, filePath: string): Inlin
 			});
 		}
 		m = SUT_MOCK_RE.exec(content);
-	}
-	return matches;
-}
-
-// ==========================================================================
-// 8. Mock-only test — every assertion is a call-interaction matcher
-// ==========================================================================
-// An it()/test() block whose only assertions are toHaveBeenCalled* /
-// toHaveReturned* checks that a collaborator was *called* — never that the
-// code produced a correct value, output, or state. It is a change-detector:
-// it restates the call the author wrote, so it passes even when the behavior
-// is wrong. A block whose call assertions are ALL negated (only
-// `not.toHaveBeenCalled()`) is exempt — asserting a call did NOT happen is a
-// genuine behavioral guarantee (a guard fired), not a tautology.
-
-// Vitest / Jest call- and return-interaction matchers. Every member asserts
-// *that a mock was invoked*, not what the code computed.
-const CALL_INTERACTION_MATCHERS = new Set<string>([
-	"toHaveBeenCalled",
-	"toHaveBeenCalledTimes",
-	"toHaveBeenCalledWith",
-	"toHaveBeenLastCalledWith",
-	"toHaveBeenNthCalledWith",
-	"toHaveBeenCalledOnce",
-	"toHaveBeenCalledExactlyOnceWith",
-	"toHaveBeenCalledBefore",
-	"toHaveBeenCalledAfter",
-	"toBeCalled",
-	"toBeCalledTimes",
-	"toBeCalledWith",
-	"lastCalledWith",
-	"nthCalledWith",
-	"toHaveReturned",
-	"toHaveReturnedTimes",
-	"toHaveReturnedWith",
-	"toHaveLastReturnedWith",
-	"toHaveNthReturnedWith",
-	"toReturn",
-	"toReturnTimes",
-	"toReturnWith",
-	"lastReturnedWith",
-	"nthReturnedWith",
-	"toHaveResolved",
-	"toHaveResolvedTimes",
-	"toHaveResolvedWith",
-	"toHaveLastResolvedWith",
-	"toHaveNthResolvedWith",
-]);
-
-// `expect(` in assertion position. `expect.objectContaining(` etc. is
-// `expect.` — the `\(` requirement skips it (asymmetric matchers, not
-// assertions).
-const EXPECT_ASSERTION_RE = /\bexpect\s*\(/g;
-// The `.mod.mod.matcher(` chain that follows an `expect(...)` close paren.
-const MATCHER_CHAIN_RE = /^((?:\s*\.\s*[A-Za-z_$][\w$]*)+)\s*\(/;
-const ZERO_INTERACTION_COUNT_MATCHERS = new Set<string>([
-	"toHaveBeenCalledTimes",
-	"toBeCalledTimes",
-	"toHaveReturnedTimes",
-	"toReturnTimes",
-	"toHaveResolvedTimes",
-]);
-const NODE_ASSERT_MODULE_RE = /^(?:node:assert(?:\/strict)?|assert)$/;
-const NODE_ASSERT_HELPERS = new Set<string>([
-	"deepEqual",
-	"deepStrictEqual",
-	"doesNotMatch",
-	"doesNotReject",
-	"doesNotThrow",
-	"equal",
-	"fail",
-	"ifError",
-	"match",
-	"notDeepEqual",
-	"notDeepStrictEqual",
-	"notEqual",
-	"notStrictEqual",
-	"ok",
-	"rejects",
-	"strictEqual",
-	"throws",
-]);
-
-interface ExpectClassification {
-	/** True when the matcher is a call/return-interaction matcher. */
-	isCallInteraction: boolean;
-	/** True when the matcher chain contains a `.not` modifier. */
-	negated: boolean;
-}
-
-// A non-call classification, shared for every expect whose matcher cannot be
-// resolved. Read-only at every use site, so a single instance is safe.
-const NON_CALL_EXPECT: ExpectClassification = { isCallInteraction: false, negated: false };
-
-/**
- * Classify every `expect(...)` assertion in a stripped block body. An expect
- * whose matcher can't be resolved is reported as a non-call assertion — that
- * keeps the caller conservative: an unrecognized matcher prevents a
- * mock-only verdict rather than forcing one.
- */
-function classifyBlockExpects(body: string): ExpectClassification[] {
-	const out: ExpectClassification[] = [];
-	EXPECT_ASSERTION_RE.lastIndex = 0;
-	let m: RegExpExecArray | null = EXPECT_ASSERTION_RE.exec(body);
-	while (m !== null) {
-		const span = findCallSpan(body, m.index + m[0].length);
-		if (span === null) {
-			out.push(NON_CALL_EXPECT);
-			break;
-		}
-		const chain = MATCHER_CHAIN_RE.exec(body.slice(span.end + 1));
-		if (chain === null) {
-			out.push(NON_CALL_EXPECT);
-		} else {
-			const segments = chain[1]
-				.split(".")
-				.map((s) => s.trim())
-				.filter((s) => s.length > 0);
-			const matcher = segments[segments.length - 1] ?? "";
-			const matcherArgsStart = span.end + 1 + chain[0].length;
-			out.push({
-				isCallInteraction: CALL_INTERACTION_MATCHERS.has(matcher),
-				negated:
-					segments.includes("not") ||
-					matcherHasZeroInteractionCount(body, matcher, matcherArgsStart),
-			});
-		}
-		EXPECT_ASSERTION_RE.lastIndex = span.end + 1;
-		m = EXPECT_ASSERTION_RE.exec(body);
-	}
-	return out;
-}
-
-function matcherHasZeroInteractionCount(
-	body: string,
-	matcher: string,
-	argsStart: number,
-): boolean {
-	if (!ZERO_INTERACTION_COUNT_MATCHERS.has(matcher)) return false;
-	const span = findCallSpan(body, argsStart);
-	if (span === null) return false;
-	const firstArgEnd = span.topLevelCommas[0] ?? span.end;
-	const firstArg = body.slice(argsStart, firstArgEnd);
-	return /^\s*0(?:\s+as\s+const)?\s*$/.test(firstArg);
-}
-
-/** Read an it()/test() case's name from its first argument's string literal. */
-function readCaseName(content: string, argsStart: number, firstArgEnd: number): string {
-	const nameMatch = content
-		.slice(argsStart, firstArgEnd)
-		.match(/["'`]([^"'`]{0,80})["'`]/);
-	return nameMatch ? `"${nameMatch[1]}" ` : "";
-}
-
-function escapeRegexLiteral(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function collectImportedAssertHelpers(content: string): Set<string> {
-	const helpers = new Set<string>();
-	const withoutComments = stripComments(content);
-
-	const importRe =
-		/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*(["'])([^"']+)\2/g;
-	let m: RegExpExecArray | null = importRe.exec(withoutComments);
-	while (m !== null) {
-		if (NODE_ASSERT_MODULE_RE.test(m[3])) addAssertSpecifiers(helpers, m[1], "esm");
-		m = importRe.exec(withoutComments);
-	}
-
-	const requireRe =
-		/\b(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*(["'])([^"']+)\2\s*\)/g;
-	m = requireRe.exec(withoutComments);
-	while (m !== null) {
-		if (NODE_ASSERT_MODULE_RE.test(m[3])) addAssertSpecifiers(helpers, m[1], "cjs");
-		m = requireRe.exec(withoutComments);
-	}
-
-	return helpers;
-}
-
-function addAssertSpecifiers(
-	helpers: Set<string>,
-	specifiers: string,
-	mode: "esm" | "cjs",
-): void {
-	for (const raw of specifiers.split(",")) {
-		const part = raw.trim().replace(/^type\s+/, "");
-		if (part.length === 0) continue;
-		const parsed =
-			mode === "esm"
-				? /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/.exec(part)
-				: /^([A-Za-z_$][\w$]*)(?::\s*([A-Za-z_$][\w$]*))?$/.exec(part);
-		if (!parsed) continue;
-		const imported = parsed[1];
-		const local = parsed[2] ?? imported;
-		if (NODE_ASSERT_HELPERS.has(imported)) helpers.add(local);
-	}
-}
-
-function hasImportedAssertHelperCall(body: string, helpers: Set<string>): boolean {
-	for (const helper of helpers) {
-		if (new RegExp(`\\b${escapeRegexLiteral(helper)}\\s*\\(`).test(body)) return true;
-	}
-	return false;
-}
-
-/** Public API — flags it()/test() blocks that assert only mock interactions. */
-export function checkMockOnlyTest(content: string, filePath: string): InlineMatch[] {
-	if (!isStrictTestFile(filePath)) return [];
-	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
-
-	const stripped = stripCommentsAndStrings(content);
-	const importedAssertHelpers = collectImportedAssertHelpers(content);
-	const matches: InlineMatch[] = [];
-	const MAX_MATCHES = 12;
-
-	IT_TEST_OPEN_RE.lastIndex = 0;
-	let m: RegExpExecArray | null = IT_TEST_OPEN_RE.exec(stripped);
-	while (m !== null && matches.length < MAX_MATCHES) {
-		const argsStart = m.index + m[0].length;
-		const span = findCallSpan(stripped, argsStart);
-		if (span === null) {
-			m = IT_TEST_OPEN_RE.exec(stripped);
-			continue;
-		}
-		const body = stripped.slice(argsStart, span.end);
-		// A non-expect assertion library (node:assert, chai `.should`) means
-		// the block may well check a value — don't call it mock-only.
-		const hasOtherAssertions =
-			/\bassert\s*[(.]/.test(body) ||
-			/\.\s*should\b/.test(body) ||
-			hasImportedAssertHelperCall(body, importedAssertHelpers);
-		const expects = classifyBlockExpects(body);
-		// Mock-only: at least one assertion, EVERY assertion is a call
-		// interaction, and at least one of them is a positive (non-negated)
-		// call assertion. A block of only `not.toHaveBeenCalled()` is a real
-		// guard test and is left alone.
-		const everyCall = expects.length > 0 && expects.every((e) => e.isCallInteraction);
-		const anyPositiveCall = expects.some((e) => e.isCallInteraction && !e.negated);
-		if (!hasOtherAssertions && everyCall && anyPositiveCall) {
-			const lineIdx = (stripped.slice(0, m.index).match(/\n/g) || []).length;
-			const firstArgEnd = span.topLevelCommas[0] ?? span.end;
-			const name = readCaseName(content, argsStart, firstArgEnd);
-			matches.push({
-				line: lineIdx + 1,
-				text: `test ${name}asserts only mock interactions (toHaveBeenCalled / toHaveReturned) — it checks that a collaborator was called, not that the code produced a correct value, output, or state, so it passes even when the behavior is wrong. Assert a return value, rendered output, or observable state. A bare not.toHaveBeenCalled() is fine; a positive call-only assertion is not.`,
-			});
-		}
-		m = IT_TEST_OPEN_RE.exec(stripped);
 	}
 	return matches;
 }
@@ -576,122 +337,6 @@ const NEGATIVE_NAME_RE =
 const DESCRIBE_NAME_RE =
 	/\bdescribe(?:\.(?:each|only|skip|skipIf|runIf))?\s*\(\s*(["'`])([^"'`]*)\1/g;
 
-type MaskMode = "code" | "line-comment" | "block-comment" | "single" | "double" | "template";
-
-/** One scan step's outcome: the mode for the next char, and whether a lookahead
- *  char was already consumed (so the caller advances its index by one more). */
-interface MaskStep {
-	mode: MaskMode;
-	advanced: boolean;
-}
-
-/** Inside `// …`: blank everything until the newline, which ends the comment
- *  (the newline itself stays, preserving offsets and line counts). */
-function maskLineCommentChar(chars: string[], i: number, ch: string): MaskStep {
-	if (ch === "\n") return { mode: "code", advanced: false };
-	chars[i] = " ";
-	return { mode: "line-comment", advanced: false };
-}
-
-/** Inside a block comment: blank the char (keeping newlines); on the closing
- *  `*​/` blank both chars and return to code. `ch` is the original char at `i`. */
-function maskBlockCommentChar(chars: string[], i: number, ch: string, next: string | undefined): MaskStep {
-	chars[i] = ch === "\n" ? "\n" : " ";
-	if (ch === "*" && next === "/") {
-		chars[i + 1] = " ";
-		return { mode: "code", advanced: true };
-	}
-	return { mode: "block-comment", advanced: false };
-}
-
-/** True when `ch` closes the currently-open string literal of `mode`. */
-function closesStringMode(mode: MaskMode, ch: string): boolean {
-	if (mode === "single") return ch === "'";
-	if (mode === "double") return ch === '"';
-	return mode === "template" && ch === "`";
-}
-
-/** Inside a string literal: blank the char, honour a backslash escape (blank the
- *  escaped char too), and close on the matching quote. `mode` is a string mode. */
-function maskStringChar(
-	chars: string[],
-	i: number,
-	ch: string,
-	next: string | undefined,
-	mode: MaskMode,
-): MaskStep {
-	chars[i] = ch === "\n" ? "\n" : " ";
-	if (ch === "\\") {
-		if (next === undefined) return { mode, advanced: false };
-		chars[i + 1] = next === "\n" ? "\n" : " ";
-		return { mode, advanced: true };
-	}
-	if (closesStringMode(mode, ch)) return { mode: "code", advanced: false };
-	return { mode, advanced: false };
-}
-
-/** In code mode: detect the start of a comment or string literal, blanking its
- *  opener and returning the new mode. Plain code chars are left untouched. */
-function enterModeFromCode(
-	chars: string[],
-	i: number,
-	ch: string,
-	next: string | undefined,
-): MaskStep {
-	if (ch === "/" && (next === "/" || next === "*")) {
-		chars[i] = " ";
-		chars[i + 1] = " ";
-		return { mode: next === "/" ? "line-comment" : "block-comment", advanced: true };
-	}
-	if (ch === "'" || ch === '"' || ch === "`") {
-		chars[i] = " ";
-		const opened: MaskMode = ch === "'" ? "single" : ch === '"' ? "double" : "template";
-		return { mode: opened, advanced: false };
-	}
-	return { mode: "code", advanced: false };
-}
-
-/** Dispatch one character to the handler for the current `mode`. */
-function maskStep(
-	chars: string[],
-	i: number,
-	ch: string,
-	next: string | undefined,
-	mode: MaskMode,
-): MaskStep {
-	if (mode === "line-comment") return maskLineCommentChar(chars, i, ch);
-	if (mode === "block-comment") return maskBlockCommentChar(chars, i, ch, next);
-	if (mode === "single" || mode === "double" || mode === "template") {
-		return maskStringChar(chars, i, ch, next, mode);
-	}
-	return enterModeFromCode(chars, i, ch, next);
-}
-
-function maskCommentsAndStrings(content: string): string {
-	const chars = content.split("");
-	let mode: MaskMode = "code";
-	for (let i = 0; i < chars.length; i++) {
-		const step = maskStep(chars, i, chars[i], chars[i + 1], mode);
-		mode = step.mode;
-		if (step.advanced) i++;
-	}
-	return chars.join("");
-}
-
-function isCodeMatch(maskedContent: string, offset: number): boolean {
-	return /\S/.test(maskedContent[offset] ?? "");
-}
-
-function isSkippedOrTodoCall(matchText: string): boolean {
-	const head = matchText.slice(0, Math.max(0, matchText.indexOf("(")));
-	return /\.(?:skip|todo)\b/.test(head);
-}
-
-function blankRange(chars: string[], start: number, end: number): void {
-	for (let i = start; i < Math.min(end, chars.length); i++) {
-		chars[i] = chars[i] === "\n" ? "\n" : " ";
-	}
-}
 
 function blankNonExecutingTestCalls(content: string, maskedContent: string): string {
 	const chars = content.split("");

@@ -74,14 +74,14 @@ export const GENERIC_TEST_HYGIENE_META: Record<string, CheckMeta> = {
 	test_platform_conditional: {
 		name: "Platform-Conditional Test Assertion",
 		description:
-			"A test comment narrates platform-variant behavior ('on platforms where…', 'macOS-only') while the file never gates on process.platform/skipIf — the assertions encode one platform's outcome and fail on the others (CI).",
+			"A test comment narrates platform-variant behavior ('on platforms where…', 'macOS-only') while the NARRATED test never gates on it — evidence must be a PLATFORM-conditioned skipIf/runIf (process.platform, a platform-derived constant, or a platform-named flag) on that test or an enclosing suite, a platform branch in its body, or an unconditional .skip/.todo; a dependency gate like skipIf(!dockerAvailable), a gate on an unrelated sibling, or a mention in a comment/string is not evidence.",
 		tier: 3,
 		determinism: "heuristic",
 	},
 	test_silent_dependency_skip: {
 		name: "Silent Dependency Skip",
 		description:
-			"`if (!X_AVAILABLE) return;` inside a test records a PASS wherever the external dependency is missing — CI reports green while running nothing. Use it.skipIf so the skip is reported.",
+			"`if (!X_AVAILABLE) return;` inside a test callback — bare, braced (`{ return; }`), or multi-line — records a PASS wherever the external dependency is missing; CI reports green while running nothing. Guards in helpers/lifecycle hooks are exempt. Use it.skipIf so the skip is reported.",
 		tier: 1,
 		determinism: "fully_deterministic",
 	},

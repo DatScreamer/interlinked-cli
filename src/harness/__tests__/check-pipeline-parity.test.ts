@@ -54,6 +54,7 @@ const VERIFY_SUBMODULES = [
 	// continue seeing every streaming section.
 	"section-table-core.ts",
 	"section-table-agent-safety.ts",
+	"section-table-agent-safety-taste.ts",
 	"section-table-ubs.ts",
 	"section-table-batches.ts",
 	"output-json.ts",
@@ -102,7 +103,18 @@ function readRegistrySources(): string {
 		"entries-warnings.ts",
 		"entries-warnings/agent-clarity.ts",
 		"entries-warnings/code-quality.ts",
+		// `code-quality.ts` was itself decomposed: its React-hooks / test-hygiene /
+		// SQL second half now lives in `code-quality-extra.ts` (spread back into
+		// CODE_QUALITY_ENTRIES). Concatenate it so the regex extraction continues
+		// to see those entry blocks and their generic-checks imports.
+		"entries-warnings/code-quality-extra.ts",
 		"entries-warnings/ubs-checks.ts",
+		// `ubs-checks.ts` was itself decomposed: its crypto / unpickle-wrapper /
+		// external-script-SRI / Go shell-injection / GitHub-Actions / DOM-XSS
+		// second half now lives in `ubs-checks-extra.ts` (spread back into
+		// UBS_ENTRIES). Concatenate it so the regex extraction continues to see
+		// those entry blocks and their generic-checks imports.
+		"entries-warnings/ubs-checks-extra.ts",
 		"entries-warnings/agent-laziness.ts",
 		"entries-warnings/test-and-demo.ts",
 		"entries-warnings/endpoint-security.ts",
@@ -244,6 +256,13 @@ function extractJsonOutputProps(source: string): Set<string> {
 
 // Checks that only exist in verify (not PostToolUse) with documented reasons
 const VERIFY_ONLY_CHECKS = new Set([
+	// gitignored_written_config: the detector is 3-arg (content, filePath,
+	// isIgnored) — it needs an `isIgnored` predicate backed by repo/git context
+	// (`git check-ignore`), which the registry's uniform (content, filePath) =>
+	// InlineMatch[] PostToolUse contract can't supply. Wired verify-only in
+	// file-checks-agent-safety.ts (toIssues call) with the git-backed resolver;
+	// no registry entry, hence this exception. Also in DEFAULT_ADVISORY_SKIPS.
+	"gitignored_written_config",
 	// Cross-file checks that need full project scan
 	"checkExportRipple",
 	"checkProjectSetup",
@@ -548,6 +567,12 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"cleanupReentrancy",
 			"boundaryCopyNoRevalidation",
 			"magicLiteralInConditional",
+			"nanCoercionGuard",
+			"arrayPushReturnUsed",
+			"arrayIterateeVariadicBuiltin",
+			"writeWithoutMkdir",
+			"duplicatedPolicyConstant",
+			"gitignoredWrittenConfig",
 			"asyncPromiseExecutor",
 			"selfImports",
 			"extraneousDeps",
@@ -565,6 +590,8 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"unvalidatedJsonBoundary",
 			"deadExports",
 			"circularImports",
+			"untestedInversePair",
+			"untestedIdempotent",
 			"lifecycleCleanup",
 			"defaultExport",
 			"codeClones",
