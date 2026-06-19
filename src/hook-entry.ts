@@ -12,15 +12,9 @@
 //
 // This module is importable (for tests) and also runnable as a CLI script.
 
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkDestructiveCommand } from "./lib/hook-template-chunks/destructive-command-guard.js";
-import { evaluatePackageInstall } from "./harness/evaluator/package-install-guard.js";
-import { loadAllowlist } from "./harness/package-allowlist.js";
-import { parseInstallCommands } from "./harness/package-install-parser.js";
-import { checkLargeFileLineCountWrite } from "./harness/pre-checks.js";
-import type { JsonObject } from "./lib/json-types.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
@@ -32,6 +26,22 @@ import {
 } from "./harness/legacy-client.js";
 import type { HarnessDecision } from "./harness/types.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
+import {
+	coldDestructiveCommandBlockReason,
+	coldGraphShardBlockReason,
+	coldLargeFileBlockReason,
+	coldMergeConflictBlockReason,
+	coldPackageInstallBlockReason,
+} from "./hook-entry-cold-gates.js";
+import {
+	attemptDaemonSelfHeal,
+	coldDaemonUnreachableBlockReason,
+	findRepoRoot,
+} from "./hook-entry-daemon-gate.js";
+import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
+
+// Re-export for back-compat: tests import this from "./hook-entry.js".
+export { coldDaemonUnreachableBlockReason };
 
 const DEFAULT_HOOK_TIMEOUT_MS = 2000;
 
@@ -92,11 +102,22 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	let event: UnifiedHookEvent;
 	event = tryBuildEvent(adapter, opts.nativeJson, opts.nativeEventName);
 
-	const socketPath =
-		opts.socketPath ?? discoverSocket(opts.cwd ?? process.cwd(), event.session_id);
+	const resolvedCwd = opts.cwd ?? process.cwd();
+	// The daemon-liveness gate keys on the TOOL CALL's project (the event's
+	// cwd), not the hook process's cwd — the hook may be spawned from anywhere
+	// (a parent shell, a test harness), but `event.context.cwd` is the project
+	// whose harness should be guarding this action.
+	const gateCwd = event.context?.cwd ?? resolvedCwd;
+	// Discover the socket in the SAME project the daemon gate keys on (the event's
+	// cwd), not the hook process's cwd: a client that launches the hook binary
+	// from outside the repo would otherwise miss the healthy daemon under the
+	// event project and fall through to the fail-closed cold path on every call
+	// (finding 2026-06).
+	const socketPath = opts.socketPath ?? discoverSocket(gateCwd, event.session_id);
 	if (!socketPath) {
-		// No daemon available at all — cold fallback to allow with note.
-		return encodeColdFallback(adapter, event, "daemon socket not found");
+		// No daemon available at all — cold fallback (which itself fails closed
+		// when a daemon was running here and crashed; see encodeColdFallback).
+		return encodeColdFallback(adapter, event, "daemon socket not found", gateCwd, opts.env);
 	}
 
 	const method = methodForPhase(event.phase);
@@ -104,6 +125,7 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	let decision: HarnessDecision;
 	const fellBack = false;
 	const protocol = resolveHookProtocol(socketPath, opts.env);
+	const callStartMs = Date.now();
 	const result =
 		protocol === HOOK_PROTOCOL_RAW
 			? await safeCallLegacy(socketPath, event, timeoutMs)
@@ -111,9 +133,15 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	if (result.ok) {
 		decision = result.decision;
 	} else {
-		const cold = encodeColdFallback(adapter, event, result.reason);
+		writeNoHarnessArtifact(dirname(socketPath), event, Date.now() - callStartMs);
+		const cold = encodeColdFallback(adapter, event, result.reason, gateCwd, opts.env);
 		return cold;
 	}
+
+	// Feed the statusline's kinetic row (`.interlinked/last-check.txt`) —
+	// the same artifact the generated .mjs hook writes. The socket lives at
+	// <root>/.interlinked/harness.sock, so its dirname IS the data dir.
+	writeLastCheckArtifact(dirname(socketPath), event, decision, Date.now() - callStartMs);
 
 	const output = adapter.encodeDecision(decision, event);
 	return {
@@ -219,9 +247,45 @@ function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): HookPr
 	return isLegacyHarnessSocket(socketPath) ? HOOK_PROTOCOL_RAW : HOOK_PROTOCOL_FRAMED;
 }
 
+/**
+ * Client wait ceiling for a code-edit PreToolUse. A Write/Edit can trigger the
+ * daemon's per-edit coverage/CRAP overlay, which runs to its `budget_ms` (25s
+ * default) — mirror + vitest + v8 routinely exceeds the 5s base. If the CLIENT
+ * gives up first it cold-fallback-ALLOWS, so the daemon's coverage BLOCK never
+ * reaches the agent and per-edit enforcement is silently a no-op (the 5s came
+ * from the 2026-05 fast-guard era; per-edit coverage landed 2026-06-07 with the
+ * 25s budget and the two were never reconciled — found 2026-06-12). The daemon
+ * answers the instant it has a verdict, so a non-coverage edit still returns in
+ * ~1ms; this ceiling only bites while coverage is genuinely computing (or the
+ * daemon is hung, where the fail-closed gate then engages).
+ */
+const COVERAGE_EDIT_PRE_TOOL_TIMEOUT_MS = 30_000;
+// Stored NORMALIZED (lowercased, underscores stripped) so every naming style
+// maps in: Claude/Codex camelCase `MultiEdit`/`NotebookEdit` AND snake_case
+// `multi_edit`/`notebook_edit`/`apply_patch` all collapse to the same key.
+// Codex preserves raw tool names, so without the strip its `MultiEdit` →
+// `multiedit` would miss the (formerly snake_case) set and get the short
+// non-coverage timeout, falling back before the per-edit overlay's verdict
+// (finding 2026-06).
+const EDIT_TOOL_NAMES = new Set(["write", "edit", "multiedit", "applypatch", "notebookedit"]);
+
+/** A PreToolUse whose tool could trigger the per-edit coverage overlay. */
+export function isCodeEditEvent(event: UnifiedHookEvent): boolean {
+	const action = event.action as { kind?: string; tool_name?: string };
+	if (action?.kind === ACTION_FILE_OPERATION) return true;
+	return (
+		action?.kind === ACTION_TOOL_CALL &&
+		EDIT_TOOL_NAMES.has((action.tool_name ?? "").toLowerCase().replace(/_/g, ""))
+	);
+}
+
 function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
-	if (event.phase === PHASE_PRE_TOOL) return DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
-	return DEFAULT_HOOK_TIMEOUT_MS;
+	if (event.phase !== PHASE_PRE_TOOL) return DEFAULT_HOOK_TIMEOUT_MS;
+	// Edits may run the coverage overlay (up to budget_ms) — wait for that
+	// verdict; Bash/Read/Grep answer in ~1ms, so keep them on the snappy ceiling.
+	return isCodeEditEvent(event)
+		? COVERAGE_EDIT_PRE_TOOL_TIMEOUT_MS
+		: DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
 }
 
 /** Discover the daemon socket. Priority:
@@ -252,19 +316,6 @@ export function discoverSocket(cwd: string, sessionId: string): string | null {
 	return null;
 }
 
-function findRepoRoot(cwd: string): string | null {
-	let dir = cwd;
-	let depth = 0;
-	while (depth < 20) {
-		if (existsSync(join(dir, ".interlinked"))) return dir;
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
-		depth++;
-	}
-	return null;
-}
-
 function safeReaddir(dir: string): string[] {
 	let out: string[] = [];
 	try {
@@ -275,298 +326,6 @@ function safeReaddir(dir: string): string[] {
 	return out;
 }
 
-// Graph-prediction protocol mirror for the cold path. When the harness daemon
-// is unreachable or times out, the runner-adapter path (this file) used to
-// fall through to `allow`. The protocol explicitly requires that edits to
-// files with a fresh `.graph.*` shard go through predict/reveal/reconcile;
-// allowing them silently when the daemon is busy or down breaks the
-// protocol's "must" guarantee. This function mirrors the inline check in
-// `src/lib/hook-template-chunks/guards-inline.ts::inlineGraphShardCheck` —
-// any change here should be reflected there (and vice versa).
-const GRAPH_SHARD_STALENESS_GRACE_MS = 60_000;
-// Tool names AFTER `normalizeToolName` in the Claude Code adapter (PascalCase
-// → snake_case, e.g. `Edit` → `edit`, `MultiEdit` → `multi_edit`). Other
-// adapters use the snake_case form directly. Both are covered here so a future
-// adapter that forwards the raw PascalCase string still hits the same set.
-const GRAPH_SHARD_WRITE_TOOLS = new Set([
-	// Normalized (snake_case) forms — the canonical UnifiedHookEvent shape.
-	"write",
-	"edit",
-	"multi_edit",
-	"notebook_edit",
-	"write_file",
-	"edit_file",
-	"file_write",
-	"file_edit",
-	"create",
-	"str_replace",
-	"apply_patch",
-	// Raw PascalCase fallbacks for adapters that bypass normalization.
-	"Write",
-	"Edit",
-	"MultiEdit",
-	"NotebookEdit",
-	"WriteFile",
-	"EditFile",
-	"FileWrite",
-	"FileEdit",
-]);
-
-// Path keys that appear on tool_input across runners. Centralized so the
-// cold-fallback path doesn't have to keep a separate copy of the list. The
-// adapters normalize input keys but historic callers have used all of these.
-const FILE_PATH_INPUT_KEYS = ["file_path", "filePath", "path", "target_file"] as const;
-
-// `apply_patch` body markers used in OpenAI Codex CLI and similar tools.
-const APPLY_PATCH_TOOL = "apply_patch";
-const APPLY_PATCH_FILE_HEADER_RE = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/gm;
-const APPLY_PATCH_MOVE_HEADER_RE = /^\*\*\* Move to:\s+(.+)$/gm;
-
-// What `colColdToolName` returns when the unified event is a generic
-// file_operation (no specific tool name). "edit" matches the normalized
-// form in GRAPH_SHARD_WRITE_TOOLS.
-const FILE_OPERATION_DEFAULT_TOOL = "edit";
-
-// Sentinel value for `INTERLINKED_DISABLE_GRAPH_SHARD_INLINE` that opts out of
-// the cold-fallback gate. Stored as a constant so the comparison is
-// self-documenting and matches the inline-fallback variant exactly.
-const DISABLE_GRAPH_SHARD_FLAG = "1";
-
-interface ApplyPatchInput {
-	command?: string;
-	patch?: string;
-	content?: string;
-	_raw_patch?: string;
-}
-
-interface FileTargetInput {
-	file_path?: string;
-	filePath?: string;
-	path?: string;
-	target_file?: string;
-}
-
-type ColdToolInput = FileTargetInput & ApplyPatchInput;
-
-function extractColdTargetPaths(event: UnifiedHookEvent): string[] {
-	const paths: string[] = [];
-	const action = event.action;
-	if (action.kind === ACTION_TOOL_CALL) {
-		const ti = (action.tool_input ?? {}) as ColdToolInput;
-		for (const key of FILE_PATH_INPUT_KEYS) {
-			const v = ti[key];
-			if (typeof v === "string" && v.trim() !== "") paths.push(v.trim());
-		}
-		if (action.tool_name === APPLY_PATCH_TOOL) {
-			const patch = String(ti.command ?? ti.patch ?? ti.content ?? ti._raw_patch ?? "");
-			let m: RegExpExecArray | null;
-			while ((m = APPLY_PATCH_FILE_HEADER_RE.exec(patch)) !== null) {
-				const p = (m[1] ?? "").trim();
-				if (p && !paths.includes(p)) paths.push(p);
-			}
-			while ((m = APPLY_PATCH_MOVE_HEADER_RE.exec(patch)) !== null) {
-				const p = (m[1] ?? "").trim();
-				if (p && !paths.includes(p)) paths.push(p);
-			}
-			APPLY_PATCH_FILE_HEADER_RE.lastIndex = 0;
-			APPLY_PATCH_MOVE_HEADER_RE.lastIndex = 0;
-		}
-	} else if (action.kind === ACTION_FILE_OPERATION) {
-		if (typeof action.path === "string" && action.path.trim() !== "") {
-			paths.push(action.path.trim());
-		}
-	}
-	return paths;
-}
-
-function colColdToolName(event: UnifiedHookEvent): string | null {
-	const action = event.action;
-	if (action.kind === ACTION_TOOL_CALL) return action.tool_name;
-	if (action.kind === ACTION_FILE_OPERATION) return FILE_OPERATION_DEFAULT_TOOL;
-	return null;
-}
-
-function coldGraphShardBlockReason(event: UnifiedHookEvent): string | null {
-	if (event.phase !== PHASE_PRE_TOOL) return null;
-	if (process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE === "1") return null;
-	const toolName = colColdToolName(event);
-	if (!toolName || !GRAPH_SHARD_WRITE_TOOLS.has(toolName)) return null;
-	const paths = extractColdTargetPaths(event);
-	if (paths.length === 0) return null;
-	const cwd = event.context?.cwd ?? process.cwd();
-	for (const t of paths) {
-		const abs = isAbsolute(t) ? t : resolvePath(cwd, t);
-		try {
-			if (!existsSync(abs)) continue;
-			const m = abs.match(/\.[^./]+$/);
-			const ext = m ? m[0] : "";
-			const shardPath = ext ? abs.slice(0, -ext.length) + ".graph" + ext : abs + ".graph";
-			if (!existsSync(shardPath)) continue;
-			const sourceMtime = statSync(abs).mtimeMs;
-			const shardMtime = statSync(shardPath).mtimeMs;
-			if (shardMtime < sourceMtime - GRAPH_SHARD_STALENESS_GRACE_MS) continue;
-			return (
-				"[interlinked:graph-pred][harness-offline] Cannot evaluate the graph-prediction protocol because the harness daemon is unreachable (or did not respond in time), but " +
-				abs +
-				" has a fresh Supermodel shard colocated. Edits to E-fresh files MUST go through the predict/reveal/reconcile loop. " +
-				"Start the harness with: interlinked harness start  (or restart it). Once it's up, retry your edit. " +
-				"Override (advanced, defeats the protocol): set INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1."
-			);
-		} catch {
-			continue;
-		}
-	}
-	return null;
-}
-
-/** Merge-conflict marker regex — mirrors evaluator/write-content-guards.ts. */
-const MERGE_CONFLICT_MARKER_RE = /^<{7}\s|^={7}$|^>{7}\s/m;
-
-interface ColdWriteContentInput {
-	content?: unknown;
-	new_string?: unknown;
-	new_source?: unknown;
-	edits?: unknown;
-}
-
-/** Extract the text a file-write tool call would put on disk, across the
- *  Write (`content`), Edit (`new_string`), NotebookEdit (`new_source`) and
- *  MultiEdit (`edits[].new_string`) shapes. Returns null when no write
- *  content is present (a non-write tool, or apply_patch — whose
- *  line-prefixed diff body the daemon parses separately). */
-function extractColdWriteContent(event: UnifiedHookEvent): string | null {
-	const action = event.action;
-	if (action.kind !== ACTION_TOOL_CALL) return null;
-	const ti = (action.tool_input ?? {}) as ColdWriteContentInput;
-	if (typeof ti.content === "string") return ti.content;
-	if (typeof ti.new_string === "string") return ti.new_string;
-	if (typeof ti.new_source === "string") return ti.new_source;
-	if (Array.isArray(ti.edits)) {
-		const parts: string[] = [];
-		for (const e of ti.edits) {
-			if (e && typeof e === "object" && "new_string" in e) {
-				const ns = (e as { new_string?: unknown }).new_string;
-				if (typeof ns === "string") parts.push(ns);
-			}
-		}
-		if (parts.length > 0) return parts.join("\n");
-	}
-	return null;
-}
-
-/** Cold fail-closed gate: refuse a file write whose content carries
- *  merge-conflict markers. A file with `<<<<<<<` / `=======` / `>>>>>>>`
- *  markers is a guaranteed parse error; the daemon blocks it at
- *  write-content-guards check A1, so the cold path must too — otherwise a
- *  daemon outage silently lets broken content through. Returns the block
- *  reason, or null when the write is clean / not a file write. */
-function coldMergeConflictBlockReason(event: UnifiedHookEvent): string | null {
-	if (event.phase !== PHASE_PRE_TOOL) return null;
-	const toolName = colColdToolName(event);
-	if (!toolName || !GRAPH_SHARD_WRITE_TOOLS.has(toolName)) return null;
-	const content = extractColdWriteContent(event);
-	if (!content || !MERGE_CONFLICT_MARKER_RE.test(content)) return null;
-	const paths = extractColdTargetPaths(event);
-	const where = paths.length > 0 ? paths[0] : "the target file";
-	return (
-		"[interlinked:merge-conflict] BLOCKED: merge-conflict markers " +
-		"(<<<<<<<, =======, >>>>>>>) detected in the content being written to " +
-		where +
-		". A file with conflict markers is a guaranteed parse error — resolve " +
-		"the conflict before writing."
-	);
-}
-
-// Shell-command tool names across runners — normalized (Claude Code
-// lowercases via normalizeToolName, Cursor lowercases) and raw forms.
-// Over-inclusion is harmless: a non-shell tool here simply has no
-// `.command` and yields null.
-const COLD_BASH_TOOL_NAMES = new Set([
-	"bash",
-	"Bash",
-	"shell",
-	"Shell",
-	"run_command",
-	"local_shell",
-]);
-
-/** Cold fail-closed gate: refuse a destructive shell command (`rm -rf`,
- *  force push, `DROP TABLE`, ...) when the daemon is unreachable. Runs the
- *  SAME `checkDestructiveCommand` the generated .mjs hook runs inline as its
- *  primary guard, so the two hook paths block the identical set — daemon up
- *  or down. Returns the block reason, or null when the command is benign. */
-function coldDestructiveCommandBlockReason(event: UnifiedHookEvent): string | null {
-	if (event.phase !== PHASE_PRE_TOOL) return null;
-	const action = event.action;
-
-	let command = "";
-	if (action.kind === ACTION_SHELL_COMMAND) {
-		// Cursor's beforeShellExecution produces shell_command actions with the
-		// command string directly on `action.command` — no tool_name gating needed.
-		command = action.command;
-	} else if (action.kind === ACTION_TOOL_CALL) {
-		if (!COLD_BASH_TOOL_NAMES.has(action.tool_name)) return null;
-		const ti = (action.tool_input ?? {}) as { command?: unknown };
-		command = typeof ti.command === "string" ? ti.command : "";
-	} else {
-		return null;
-	}
-
-	if (!command) return null;
-	const verdict = checkDestructiveCommand(command);
-	return verdict ? verdict.reason : null;
-}
-
-/** Cold fail-closed gate: refuse a package-install shell command when the
- *  daemon is unreachable. Mirrors the daemon-side `evaluatePackageInstall`
- *  by loading the same `.interlinked/package-allowlist.json` and running
- *  the same parser, so the .mjs path and hook-entry cold path block the
- *  identical set whether the daemon is up or down. Returns the block
- *  reason, or null when the command is benign / approved / not an install.
- *  Bypass via INTERLINKED_DISABLE_PACKAGE_GUARD=1. */
-function coldPackageInstallBlockReason(event: UnifiedHookEvent): string | null {
-	if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD === "1") return null;
-	if (event.phase !== PHASE_PRE_TOOL) return null;
-	const action = event.action;
-	let command = "";
-	if (action.kind === ACTION_SHELL_COMMAND) {
-		command = action.command;
-	} else if (action.kind === ACTION_TOOL_CALL) {
-		if (!COLD_BASH_TOOL_NAMES.has(action.tool_name)) return null;
-		const ti = (action.tool_input ?? {}) as { command?: unknown };
-		command = typeof ti.command === "string" ? ti.command : "";
-	} else {
-		return null;
-	}
-	if (!command) return null;
-	const installCommands = parseInstallCommands(command);
-	if (installCommands.length === 0) return null;
-	const cwd = event.context?.cwd || process.cwd();
-	const allowlist = loadAllowlist(cwd);
-	const decision = evaluatePackageInstall(installCommands, cwd, allowlist);
-	if (!decision || decision.decision !== "block") return null;
-	return decision.reason ?? "package install blocked by supply-chain allowlist";
-}
-
-/** Cold fail-closed gate: refuse a Write/Edit/MultiEdit that would grow (or create)
- *  a hand-written code file past the per-file line cap when the daemon is
- *  unreachable. Runs the SAME pure `checkLargeFileLineCountWrite` the daemon uses —
- *  file content + the committed `.interlinked/large-files-baseline.json`, no daemon
- *  state — so the cap holds whether the daemon is up or down. This closes the gap
- *  that let an over-cap edit slip through when the socket blipped: the line cap is
- *  a quality gate, but it's deterministic and daemon-independent, so it belongs in
- *  the cold path alongside the destructive-command and supply-chain guards. */
-function coldLargeFileBlockReason(event: UnifiedHookEvent): string | null {
-	if (event.phase !== PHASE_PRE_TOOL) return null;
-	const action = event.action;
-	if (action.kind !== ACTION_TOOL_CALL) return null;
-	const cwd = event.context?.cwd || process.cwd();
-	// `checkLargeFileLineCountWrite` self-filters: it returns null for any input
-	// that isn't a file-write shape (no file_path / unknown tool), so no tool-name
-	// gate is needed here.
-	const result = checkLargeFileLineCountWrite((action.tool_input ?? {}) as JsonObject, cwd);
-	return result?.block ?? null;
-}
 
 /** Build a cold fail-closed BLOCK result for a named gate, appending the
  *  "<gate> fail-closed gate engaged" notice to stderr. Shared by every cold gate
@@ -592,6 +351,8 @@ function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
 	reason: string,
+	cwd?: string,
+	env: NodeJS.ProcessEnv = process.env,
 ): HookEntryResult {
 	// Cold fallback: allow the action and report the skipped evaluator only
 	// on stderr. Do not put timeout/socket failures in decision warnings:
@@ -601,6 +362,21 @@ function encodeColdFallback(
 	// every runner — the correct place to add cold checks is here as this
 	// module grows, but never at the cost of the per-tool-class budget.
 	//
+	// FIRST gate — daemon-crashed-mid-session. If a harness daemon was started
+	// for this project (a `harness.pid` exists) but we've reached the cold
+	// path, the daemon died or hung while the agent is mid-session. Block the
+	// tool call rather than let the agent proceed UNGUARDED — a silently-dead
+	// guard layer is a security failure, not a degraded-mode convenience.
+	// Pre-tool only, with an explicit env escape hatch. (Distinct from "no
+	// daemon ever ran here", which preserves the allow path below.)
+	const daemonDownReason = coldDaemonUnreachableBlockReason(event, cwd, env);
+	if (daemonDownReason) {
+		// Self-heal: respawn the daemon (lock-guarded, no rebuild) so the NEXT call is
+		// guarded again; block THIS one. attemptDaemonSelfHeal never throws.
+		attemptDaemonSelfHeal(cwd ?? event.context?.cwd, env);
+		return coldBlockResult(adapter, event, reason, "harness-offline", daemonDownReason);
+	}
+
 	// Exception: fail-closed graph-prediction gate. If the agent is about to
 	// edit a file with a fresh `.graph.*` shard and we can't reach the
 	// evaluator, block — the protocol requires it.

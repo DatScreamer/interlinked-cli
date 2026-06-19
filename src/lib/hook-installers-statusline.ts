@@ -311,10 +311,11 @@ elif [ "$LAST_RESULT" = "clean" ] && [ "$LAST_AGE" -lt 60 ]; then
     [ -n "$LAST_MS" ] && MS_PART=" \${DIM}(\${LAST_MS}ms)\${RESET}"
     LINE2="\${GREEN}✓ last edit verified clean\${RESET}\${SEP}\${FILE_LINK}\${MS_PART}"
 
-# Priority 5: stale-but-present — always show something on row 2 if the
-# harness has ever processed an edit, so screenshots at idle still
-# convey activity.
-elif [ -n "$LAST_RESULT" ]; then
+# Priority 5: stale-but-present — show the last outcome on row 2 so
+# screenshots at idle still convey activity, but only within 24h. An
+# ancient "last action blocked · 11d ago" reads as a live alarm (and in
+# practice meant the writer was broken — see last-check-writer.ts).
+elif [ -n "$LAST_RESULT" ] && [ "$LAST_AGE" -lt 86400 ]; then
     case "$LAST_RESULT" in
         clean) STALE_VERB="last edit verified clean" ;;
         warn)  STALE_VERB="last edit had \${LAST_COUNT} issue(s)" ;;
@@ -330,8 +331,38 @@ else
     LINE2="\${DIM}ready · waiting for first edit to verify\${RESET}"
 fi
 
-if [ -n "$LINE2" ]; then
+# --- Row 3: sponsor slot (opt-in; docs/design/sponsor-slots.md) ---
+# Reads the daemon-sanitized kv file. Rendered only when enabled=1 AND the
+# file is fresh (<30 min) — a dead daemon ages the sponsor out instead of
+# pinning a stale creative on screen. The daemon stripped control bytes
+# before writing, so these fields are safe to interpolate.
+SPONSOR_FILE="$ID/sponsor.status"
+LINE3=""
+if [ -f "$SPONSOR_FILE" ]; then
+    SP_EN=$(grep -E '^enabled=' "$SPONSOR_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [ "\$SP_EN" = "1" ]; then
+        SP_NOW=$(date +%s)
+        SP_MT=$(stat -f %m "$SPONSOR_FILE" 2>/dev/null || stat -c %Y "$SPONSOR_FILE" 2>/dev/null || echo 0)
+        if [ $((SP_NOW - SP_MT)) -lt 1800 ]; then
+            SP_TEXT=$(grep -E '^text=' "$SPONSOR_FILE" | head -1 | cut -d= -f2-)
+            SP_URL=$(grep -E '^url=' "$SPONSOR_FILE" | head -1 | cut -d= -f2-)
+            if [ -n "$SP_TEXT" ]; then
+                if [ -n "$SP_URL" ]; then
+                    LINE3="\${DIM}♥ sponsor\${RESET}\${SEP}$(osc8 "$SP_URL" "$SP_TEXT") \${DIM}↗\${RESET}"
+                else
+                    LINE3="\${DIM}♥ sponsor\${RESET}\${SEP}\${DIM}\${SP_TEXT}\${RESET}"
+                fi
+            fi
+        fi
+    fi
+fi
+
+if [ -n "$LINE2" ] && [ -n "$LINE3" ]; then
+    printf '%s\\n%s\\n%s' "$LINE1" "$LINE2" "$LINE3"
+elif [ -n "$LINE2" ]; then
     printf '%s\\n%s' "$LINE1" "$LINE2"
+elif [ -n "$LINE3" ]; then
+    printf '%s\\n%s' "$LINE1" "$LINE3"
 else
     printf '%s' "$LINE1"
 fi
@@ -387,8 +418,10 @@ function statuslineSettingsPath(client: ClientName, home: string): string | null
 		return join(home, ".claude", "settings.json");
 	}
 	if (client === CLIENT_COPILOT) {
-		// Copilot reads ~/.copilot/config.json for user-level settings
-		return join(home, ".copilot", "config.json");
+		// Copilot reads user settings from ~/.copilot/settings.json since the
+		// 2026-05 split (config.json became auto-managed internal state; a
+		// statusLine entry written there is dead config).
+		return join(home, ".copilot", "settings.json");
 	}
 	return null;
 }

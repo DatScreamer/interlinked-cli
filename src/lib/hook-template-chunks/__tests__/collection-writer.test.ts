@@ -170,6 +170,31 @@ describe("collection writer chunk — tool class: fetch", () => {
 	});
 });
 
+describe("collection writer chunk — tool class: mcp_call", () => {
+	const build = getRecordBuilder();
+
+	it("classifies mcp__server__tool names as mcp_call with parsed attribution", () => {
+		const record = build({
+			event_type: "tool_use",
+			tool_name: "mcp__context7__resolve-library-id",
+			tool_input: { libraryName: "react" },
+			tool_response: { content: [{ type: "text", text: "react docs" }] },
+			ts: "2026-05-19T00:00:00Z",
+		});
+		expect(record!.tool_class).toBe("mcp_call");
+		expect(record!.action).toEqual({
+			server: "context7",
+			tool: "resolve-library-id",
+			params: { libraryName: "react" },
+			params_ref: null,
+		});
+		expect(record!.observation).toEqual({
+			result: { content: [{ type: "text", text: "react docs" }] },
+			result_ref: null,
+		});
+	});
+});
+
 describe("collection writer chunk — tool class: other", () => {
 	const build = getRecordBuilder();
 

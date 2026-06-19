@@ -56,6 +56,7 @@ import type { JsonObject } from "./json-types.js";
 import type { ClientName } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
+export { ensureGitignore } from "./hooks-gitignore.js";
 
 /**
  * Public API — consumed by `src/commands/enable.ts`.
@@ -379,85 +380,6 @@ export function uninstallAllHooks(cwd: string, clients: ClientName[]): InstallRe
 			};
 		}
 	});
-}
-
-// ===========================================
-// .gitignore Management
-// ===========================================
-
-const GITIGNORE_ENTRIES = [
-	".interlinked/config.local.json",
-	".interlinked/activity.jsonl",
-	".interlinked/collection.jsonl",
-	".interlinked/recurrences.jsonl",
-	".interlinked/realtime-retry.jsonl",
-	".interlinked/sync-errors.jsonl",
-	".interlinked/sync-state.json",
-	".interlinked/sessions/",
-	".interlinked/failures/",
-	".interlinked/checkpoints.json",
-	".interlinked/guard-cache.json",
-	".interlinked/guard-rules.local.json",
-	".interlinked/harness.sock",
-	".interlinked/harness.pid",
-	".interlinked/pending-quality-warnings.json",
-	".interlinked/index/",
-	".interlinked/error-history.jsonl",
-];
-
-const DATA_GITIGNORE_ENTRIES = new Set([
-	".interlinked/activity.jsonl",
-	".interlinked/collection.jsonl",
-	".interlinked/recurrences.jsonl",
-	".interlinked/realtime-retry.jsonl",
-	".interlinked/sync-errors.jsonl",
-	".interlinked/sync-state.json",
-	".interlinked/sessions/",
-	".interlinked/failures/",
-	".interlinked/checkpoints.json",
-]);
-
-/**
- * Ensure .gitignore contains entries for Interlinked CLI local files.
- * Skips data-related entries when data dir is outside the repo.
- * Returns true if modifications were made.
- */
-export function ensureGitignore(cwd: string): boolean {
-	const gitignorePath = join(cwd, ".gitignore");
-	let content = "";
-
-	if (existsSync(gitignorePath)) {
-		content = readFileSync(gitignorePath, "utf-8");
-	}
-
-	const envDataDir = process.env.INTERLINKED_DATA_DIR?.trim();
-	const isExternalData = Boolean(envDataDir) && !envDataDir?.startsWith(cwd);
-
-	const lines = content.split("\n");
-	const missingEntries: string[] = [];
-
-	for (const entry of GITIGNORE_ENTRIES) {
-		if (isExternalData && DATA_GITIGNORE_ENTRIES.has(entry)) continue;
-		const alreadyPresent = lines.some(
-			(line) => line.trim() === entry || line.trim() === entry.replace(/\/$/, ""),
-		);
-		if (!alreadyPresent) {
-			missingEntries.push(entry);
-		}
-	}
-
-	if (missingEntries.length === 0) return false;
-
-	const additions: string[] = [];
-	if (!content.includes("# Interlinked CLI") && !content.includes("# Interlinked")) {
-		additions.push("");
-		additions.push("# Interlinked CLI (local agent config)");
-	}
-	additions.push(...missingEntries);
-
-	const newContent = `${content.trimEnd()}\n${additions.join("\n")}\n`;
-	writeFileSync(gitignorePath, newContent);
-	return true;
 }
 
 // ===========================================

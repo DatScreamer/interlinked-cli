@@ -1,0 +1,332 @@
+// ===========================================
+// Hook cold-path daemon detection + self-heal
+// ===========================================
+// Repo-root resolution, the fail-closed "daemon down mid-session" gate, and a
+// best-effort self-heal that respawns the daemon — extracted from
+// `hook-entry.ts` (which re-exports the public names for back-compat).
+// Self-contained: no import from hook-entry.ts, so there is no import cycle.
+// See the `project_harness_crash_fail_closed` memory for the incident this
+// closes.
+//
+// THE GUARANTEE: a coding agent must never proceed unguarded while a session is
+// active on a repo where the harness is set up AND the daemon is genuinely GONE.
+// The flip side matters just as much: a daemon that is merely SLOW must not block
+// edits (fail-open is the house rule for safety layers — continuity over a
+// premature outage; see `feedback_safety_continuity`). So the gate blocks three
+// genuine cut-outs:
+//   1. CRASH — a daemon pid whose process is no longer alive (stale pidfile).
+//   2. STOMP — the daemon is alive but its `.sock` file was removed → unreachable.
+//   3. CLEAN STOP / IDLE — no pid file but the repo is CONFIGURED for interlinked
+//              (a `config.json` is present).
+// and ALLOWS the alive-but-slow daemon (live pid + present socket): a busy event
+// loop on a large repo can blow the hook's short connect budget while the daemon
+// is healthy. For the three block cases the caller fires `attemptDaemonSelfHeal`,
+// which respawns the daemon (lock-guarded, no rebuild) so the NEXT call is
+// guarded again — the agent sees one block, retries, and is protected.
+//
+// PID/SOCKET NAMING: a daemon started raw writes `harness.pid` / `harness.sock`;
+// one started with `--protocol framed` or a `--session-id` writes
+// `harness-default.pid` / `harness-<id>.pid` (+ matching `.sock`) — see
+// `session-paths.ts::daemonPathsFor`. The gate must discover ANY of these, or a
+// healthy framed/session daemon looks GONE on a connect timeout and gets blocked
+// + needlessly self-healed (the regression this fixes).
+
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { UnifiedHookEvent } from "./harness/unified-event.js";
+import { readGuardDisable } from "./lib/guard-state.js";
+
+/** Local copy of the pre-tool phase tag (avoids importing from hook-entry.ts,
+ *  which would create a cycle — this module is a leaf). */
+const PHASE_PRE_TOOL = "pre-tool";
+
+/** Walk up from `cwd` to the nearest ancestor holding a `.interlinked/` dir
+ *  (the project root the daemon serves), or null within 20 hops. */
+export function findRepoRoot(cwd: string): string | null {
+	let dir = cwd;
+	let depth = 0;
+	while (depth < 20) {
+		if (existsSync(join(dir, ".interlinked"))) return dir;
+		const parent = dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+		depth++;
+	}
+	return null;
+}
+
+/** List the immediate entries of `.interlinked/`, failing OPEN to an empty array
+ *  when the dir is missing/unreadable (or is a file, not a dir). One guarded
+ *  readdir shared by the pid + socket scans so the gate never throws on the hook
+ *  path — a thrown readdir here would crash the cold gate instead of deciding. */
+function listInterlinkedEntries(interlinkedDir: string): string[] {
+	try {
+		return readdirSync(interlinkedDir);
+	} catch {
+		return []; // no `.interlinked/` dir (or unreadable) → nothing to scan
+	}
+}
+
+/** Parse the daemon PID from a pid file; null on absent/garbage. */
+function readDaemonPid(pidPath: string): number | null {
+	try {
+		const n = Number.parseInt(readFileSync(pidPath, "utf-8").trim(), 10);
+		return Number.isFinite(n) && n > 0 ? n : null;
+	} catch {
+		return null;
+	}
+}
+
+/** All daemon pid-file names present in `.interlinked/`: the raw `harness.pid`
+ *  (always considered) plus any framed/session `harness-<id>.pid` (incl.
+ *  `harness-default.pid`) that the listing turns up. A daemon started with
+ *  `--protocol framed` or a non-default `--session-id` writes the framed names,
+ *  NOT the raw one (see `session-paths.ts::daemonPathsFor`). */
+function daemonPidFileNames(interlinkedDir: string): string[] {
+	const names = ["harness.pid"];
+	for (const name of listInterlinkedEntries(interlinkedDir)) {
+		if (/^harness-.+\.pid$/.test(name)) names.push(name);
+	}
+	return names;
+}
+
+/** Discover the daemon pid the gate should reason about, scanning the raw AND
+ *  framed/session pid files. PREFERS a LIVE pid (so a `--protocol framed` daemon
+ *  that is merely slow takes the alive+slow ALLOW path instead of looking GONE on
+ *  a connect timeout — the regression this fixes). When NO daemon is alive it
+ *  falls back to the first PRESENT-but-dead pid so the crash signal survives (a
+ *  stale pidfile must still block + self-heal). Returns null only when no pid
+ *  file exists at all — the never-configured / clean-stop case the caller then
+ *  resolves via the config check. */
+function discoverDaemonPid(interlinkedDir: string): number | null {
+	const names = daemonPidFileNames(interlinkedDir);
+	let firstPresent: number | null = null;
+	for (const name of names) {
+		const pid = readDaemonPid(join(interlinkedDir, name));
+		if (pid === null) continue;
+		if (isPidAlive(pid)) return pid; // a live daemon wins outright
+		if (firstPresent === null) firstPresent = pid; // remember a dead-but-present pid
+	}
+	return firstPresent; // dead pid (crash) → non-null so the gate still blocks; else null
+}
+
+/** True when the repo is set up for interlinked — a committed `config.json` (or
+ *  the personal `config.local.json`) is present. This is the signal that the
+ *  harness is MEANT to guard this repo, so a missing daemon during an active
+ *  session is a cut-out (block), not a never-configured repo (allow). */
+function harnessConfigured(interlinkedDir: string): boolean {
+	return (
+		existsSync(join(interlinkedDir, "config.json")) ||
+		existsSync(join(interlinkedDir, "config.local.json"))
+	);
+}
+
+/** True when a process with `pid` is currently alive (signal-0 probe). A dead
+ *  pid (stale pidfile from a crash) → false; an alive pid whose socket RPC just
+ *  timed out → true (the daemon is up but slow, not gone). EPERM = the process
+ *  exists but is owned by another user → treat as alive. */
+function isPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** True when a daemon Unix socket file is present in `.interlinked/` — evidence
+ *  it is (or was) listening here. Combined with a live pid this is the "alive but
+ *  slow" signal; its ABSENCE next to a live pid is the stomp signal (socket
+ *  removed while the daemon stayed up). Matches the raw `harness.sock`, the framed
+ *  default `harness-default.sock`, AND any `harness-<id>.sock` so a non-default
+ *  session socket is also seen. Uses the shared guarded listing (fails open to
+ *  "no socket found"), so it never throws on the hook path. */
+function daemonSocketPresent(interlinkedDir: string): boolean {
+	return listInterlinkedEntries(interlinkedDir).some((name) =>
+		/^harness(-.+)?\.sock$/.test(name),
+	);
+}
+
+/** The block decision: should a cold-path pre-tool call be refused because the
+ *  harness should be guarding this repo but is genuinely GONE? We are on the cold
+ *  path because the socket RPC failed/timed out — but that alone does not mean the
+ *  daemon is dead. Two ALLOW cases preserve continuity (fail-open is the house
+ *  rule for safety layers — a slow guard must not become an edit-blocking outage;
+ *  see `feedback_safety_continuity`):
+ *    1. Fresh checkout — no pid AND not configured → nothing was ever set up here.
+ *    2. Alive but slow — the pid is a LIVE process AND a `.sock` file is present.
+ *       On a large repo the daemon's event loop can be busy enough to blow the
+ *       hook's short connect budget while it is perfectly healthy; the next call
+ *       is served. Blocking here turned a transient slowdown into a flood of
+ *       blocked edits (the 2026-06 regression this reverts). The pid is the FIRST
+ *       live daemon discovered (raw OR framed/session — see `discoverDaemonPid`),
+ *       so a `--protocol framed` daemon also takes this allow path.
+ *  Everything else IS a genuine cut-out → block (the caller then self-heals so the
+ *  next call is guarded): a dead pid (crash → stale pidfile), an alive pid whose
+ *  socket was stomped/removed (unreachable), or a configured repo with no daemon
+ *  at all (clean-stop / idle while the session is live). */
+function daemonCutOut(interlinkedDir: string, pid: number | null): boolean {
+	if (pid === null && !harnessConfigured(interlinkedDir)) return false;
+	if (pid !== null && isPidAlive(pid) && daemonSocketPresent(interlinkedDir)) return false;
+	return true;
+}
+
+/** The block message; `pidPresent` distinguishes a crash (stale pid) from a
+ *  clean-stop/idle on a configured repo, for an accurate diagnosis. */
+function daemonDownBlockMessage(pidPresent: boolean): string {
+	const why = pidPresent
+		? "(harness pid present, no live daemon)"
+		: "(configured here, but no live daemon)";
+	return (
+		`BLOCKED: the interlinked harness should be guarding this project but is unreachable ${why}. ` +
+		"The guard layer has cut out mid-session, so tool calls are blocked to avoid running " +
+		"unguarded. It is being auto-restarted — retry your call in a moment, or run " +
+		"`interlinked harness start`. To intentionally run this project unguarded, use " +
+		"`interlinked disable` (recorded + auditable); for a one-off bypass, set " +
+		"INTERLINKED_ALLOW_NO_DAEMON=1."
+	);
+}
+
+/** The project root this gate should evaluate: the explicit cwd, the event's
+ *  own cwd, or the process cwd — first that resolves to an interlinked project.
+ *  Pulling the `??` chain out keeps the gate under the complexity ratchet as new
+ *  decision branches (e.g. the disable check) are added. */
+function resolveGateRoot(event: UnifiedHookEvent, cwd: string | undefined): string | null {
+	return findRepoRoot(cwd ?? event.context?.cwd ?? process.cwd());
+}
+
+/**
+ * Fail-closed gate for "the harness should be guarding this repo but is down".
+ * Returns a block reason on the cold path (daemon unreachable) when either a
+ * daemon pid proves a daemon was started (crash/hang) OR the repo is
+ * configured for interlinked (clean-stop / idle-exit while the session is
+ * still active). The pid is discovered across the raw `harness.pid` AND the
+ * framed/session `harness-*.pid` files, so a `--protocol framed` daemon that is
+ * merely slow takes the alive+slow ALLOW path instead of being blocked.
+ * Returns null when the harness was never set up here (no pid AND no config) —
+ * preserving the cold ALLOW path for a fresh checkout — when the project is
+ * intentionally stood down (`interlinked disable`), or for lifecycle events /
+ * the explicit escape hatch.
+ *
+ * The caller pairs a block with {@link attemptDaemonSelfHeal} so the daemon
+ * comes back automatically — this gate stays a pure decision (no side effects).
+ */
+export function coldDaemonUnreachableBlockReason(
+	event: UnifiedHookEvent,
+	cwd: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): string | null {
+	if (event.phase !== PHASE_PRE_TOOL) return null;
+	if (env.INTERLINKED_ALLOW_NO_DAEMON === "1") return null;
+	const root = resolveGateRoot(event, cwd);
+	if (!root) return null;
+	const dir = join(root, ".interlinked");
+	// An intentional, recorded stand-down (`interlinked disable`) means the
+	// operator chose to run this project unguarded — honor it, and the caller
+	// skips self-heal. A crash or clean-stop leaves NO marker, so the
+	// fail-closed branch below still fires for those.
+	if (readGuardDisable(dir)) return null;
+	// Discover the daemon across the raw AND framed/session pid names. A framed
+	// daemon writes `harness-default.pid`, not `harness.pid`; reading only the raw
+	// name made a healthy framed daemon look GONE on a connect timeout (→ block +
+	// needless self-heal). A live pid (any name) feeds the alive+slow ALLOW path;
+	// a present-but-dead pid still feeds the crash block.
+	const pid = discoverDaemonPid(dir);
+	if (!daemonCutOut(dir, pid)) return null;
+	return daemonDownBlockMessage(pid !== null);
+}
+
+// ── Self-heal ───────────────────────────────────────────────────────────────
+
+/** Outcome of a self-heal attempt (also the unit-test surface). */
+export type SelfHealResult = "spawned" | "locked" | "skipped";
+
+/** Hidden lock file under `.interlinked/` that throttles respawns. */
+const SELF_HEAL_LOCK = ".harness-selfheal.lock";
+/** Suppress a second respawn within this window (one boot is ~1s; the window
+ *  covers boot + socket-listen so concurrent hooks don't spawn a storm). */
+const SELF_HEAL_LOCK_MS = 20_000;
+
+/** Injectable dependencies so the spawn path is unit-testable without actually
+ *  launching a daemon. Defaults wire the real fs/child_process. */
+export interface SelfHealDeps {
+	resolveServerPath?: () => string | null;
+	spawnDaemon?: (serverPath: string, root: string) => void;
+}
+
+/** Resolve the daemon entry (`dist/harness/server.js`) relative to this bundled
+ *  module. Returns null when it can't be found (caller stays fail-closed).
+ *  fileURLToPath + existsSync do not throw for a valid module URL, so no guard. */
+function selfHealServerPath(): string | null {
+	const here = dirname(fileURLToPath(import.meta.url));
+	const candidates = [
+		join(here, "harness", "server.js"),
+		join(here, "..", "harness", "server.js"),
+		join(here, "dist", "harness", "server.js"),
+	];
+	return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+/** True when a respawn was attempted within the throttle window. */
+function selfHealLockedRecently(lockPath: string): boolean {
+	try {
+		return Date.now() - statSync(lockPath).mtimeMs < SELF_HEAL_LOCK_MS;
+	} catch {
+		return false; // no lock (or unreadable) → not throttled
+	}
+}
+
+/** Detached spawn of the daemon from the EXISTING dist — never rebuilds (a
+ *  rebuild on the hook path is what destabilizes sibling daemons). */
+function spawnDaemonDetached(serverPath: string, root: string): void {
+	const child = spawn(
+		process.execPath,
+		[serverPath, "--cwd", root, "--protocol", "dual", "--session-id", "default"],
+		{ detached: true, stdio: "ignore" },
+	);
+	child.unref();
+}
+
+/**
+ * Best-effort respawn of the daemon for `cwd`'s repo so the guard returns
+ * automatically after a cut-out. Lock-guarded (one attempt per
+ * {@link SELF_HEAL_LOCK_MS}); never rebuilds; never throws. Returns what it
+ * did, for the caller's logging + tests. `INTERLINKED_NO_SELF_HEAL=1` disables.
+ */
+/** Stamp the throttle lock and spawn the daemon detached. Split out of
+ *  {@link attemptDaemonSelfHeal} so its try/catch + dep-resolution branches
+ *  don't push the caller past the complexity ratchet. Never throws. */
+function spawnGuardedDaemon(
+	lockPath: string,
+	serverPath: string,
+	root: string,
+	deps: SelfHealDeps,
+): SelfHealResult {
+	try {
+		writeFileSync(lockPath, String(Date.now()));
+		(deps.spawnDaemon ?? spawnDaemonDetached)(serverPath, root);
+		return "spawned";
+	} catch {
+		return "skipped"; // lock-write or spawn failed → stay fail-closed (no unguarded proceed)
+	}
+}
+
+export function attemptDaemonSelfHeal(
+	cwd: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+	deps: SelfHealDeps = {},
+): SelfHealResult {
+	if (env.INTERLINKED_NO_SELF_HEAL === "1") return "skipped";
+	const root = findRepoRoot(cwd ?? process.cwd());
+	if (!root) return "skipped";
+	// Never resurrect the daemon on a project the operator intentionally stood
+	// down with `interlinked disable` — respawning it would fight their choice.
+	if (readGuardDisable(join(root, ".interlinked"))) return "skipped";
+	const lockPath = join(root, ".interlinked", SELF_HEAL_LOCK);
+	if (selfHealLockedRecently(lockPath)) return "locked";
+	const serverPath = (deps.resolveServerPath ?? selfHealServerPath)();
+	if (!serverPath) return "skipped";
+	return spawnGuardedDaemon(lockPath, serverPath, root, deps);
+}

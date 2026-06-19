@@ -441,9 +441,30 @@ function inlinePackageInstallCheck(hookEvent, toolName, toolInput) {
     };
 }
 
+function inlineGuardDisabled() {
+    try {
+        for (const name of ["guard-disabled.local.json", "guard-disabled.json"]) {
+            const p = join(CONFIG_DIR, name);
+            if (!existsSync(p)) continue;
+            const rec = JSON.parse(readFileSync(p, "utf-8"));
+            if (!rec || rec.disabled !== true) continue;
+            // Fail toward guarding on a malformed expiry: an unparseable expires_at
+            // (NaN) must NOT read as a live stand-down (mirrors guard-state.ts).
+            if (rec.expires_at !== undefined) { const exp = Date.parse(rec.expires_at); if (!Number.isFinite(exp) || exp <= Date.now()) continue; }
+            return true;
+        }
+    } catch (_e) { /* malformed/unreadable -> fail toward guarding */ }
+    return false;
+}
+
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
     if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
     if (!toolName) return null;
+
+    // Intentional, recorded stand-down (interlinked disable) honors the marker
+    // so the operator can run unguarded here, mirroring the daemon + dist cold
+    // gates. A crash leaves no marker, so the gates below still fail closed.
+    if (inlineGuardDisabled()) return null;
 
     // Merge-conflict markers in file-write content are a guaranteed parse
     // error — mirror the daemon's write-content-guards A1 gate.

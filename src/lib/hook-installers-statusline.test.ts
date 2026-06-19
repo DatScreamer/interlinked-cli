@@ -86,7 +86,9 @@ afterEach(() => {
 
 const SCRIPT_PATH = join(HOME, ".interlinked", "statusline-interlinked.sh");
 const CLAUDE_SETTINGS = join(HOME, ".claude", "settings.json");
-const COPILOT_CONFIG = join(HOME, ".copilot", "config.json");
+// Copilot reads user settings from settings.json (config.json became
+// auto-managed internal state when Copilot CLI split the two in 2026-05).
+const COPILOT_CONFIG = join(HOME, ".copilot", "settings.json");
 
 function readSettings(path: string): Record<string, unknown> {
 	return JSON.parse(files.get(path) as string) as Record<string, unknown>;
@@ -141,6 +143,23 @@ describe("installStatusLine — script generation", () => {
 		expect(chmods.get(SCRIPT_PATH)).toBe(0o755);
 	});
 
+	it("renders the opt-in sponsor row from sponsor.status with a freshness gate", () => {
+		installStatusLine(["claude"]);
+		const script = files.get(SCRIPT_PATH) as string;
+		// Row 3 anchors: the daemon-written kv file, the visible label, and
+		// the 30-minute staleness cutoff that ages a dead daemon's ad out.
+		expect(script).toContain("sponsor.status");
+		expect(script).toContain("♥ sponsor");
+		expect(script).toContain("1800");
+		expect(script).toContain('SP_EN" = "1');
+	});
+
+	it("caps the stale last-check row at 24 hours", () => {
+		installStatusLine(["claude"]);
+		const script = files.get(SCRIPT_PATH) as string;
+		expect(script).toContain('"$LAST_AGE" -lt 86400');
+	});
+
 	it("creates the ~/.interlinked directory when it does not exist", () => {
 		installStatusLine(["claude"]);
 		expect(mockFs.mkdirSync).toHaveBeenCalledWith(join(HOME, ".interlinked"), {
@@ -172,7 +191,7 @@ describe("installStatusLine — client routing", () => {
 		});
 	});
 
-	it("configures Copilot via ~/.copilot/config.json", () => {
+	it("configures Copilot via ~/.copilot/settings.json", () => {
 		const result = installStatusLine(["copilot"]);
 		expect(result).toBe(SCRIPT_PATH);
 		const cfg = readSettings(COPILOT_CONFIG);

@@ -27,6 +27,7 @@ const COLLECTION_TOOL_CLASS_MAP = [
 ];
 
 function collectionClassifyTool(toolName) {
+    if (toolName.startsWith("mcp__")) return "mcp_call";
     for (const [nameSet, toolClass] of COLLECTION_TOOL_CLASS_MAP) {
         if (nameSet.has(toolName)) return toolClass;
     }
@@ -44,6 +45,7 @@ function collectionDetectPhase(eventType) {
 }
 
 function collectionDetectProvider(event) {
+    if (event.client_runner === "mcp-proxy") return "mcp-proxy";
     if (event.client_runner === "codex") return "codex";
     const hookEvt = String(event.hook_event || "");
     if (hookEvt === "BeforeTool" || hookEvt === "AfterTool") return "gemini-cli";
@@ -78,6 +80,17 @@ function collectionExtractPath(toolName, input) {
     return collectionStrField(input, "file_path", "filePath", "path") || "";
 }
 
+function collectionParseMcpProviderTool(toolName) {
+    if (!toolName.startsWith("mcp__")) return { server: null, tool: toolName };
+    const rest = toolName.slice("mcp__".length);
+    const delimiter = rest.indexOf("__");
+    if (delimiter === -1) return { server: null, tool: rest };
+    return {
+        server: rest.slice(0, delimiter) || null,
+        tool: rest.slice(delimiter + 2) || rest,
+    };
+}
+
 function collectionBuildAction(toolClass, toolName, input, cwd, event) {
     switch (toolClass) {
         case "shell_exec": return { command: String(input.command || input.cmd || ""), cwd: cwd };
@@ -101,6 +114,15 @@ function collectionBuildAction(toolClass, toolName, input, cwd, event) {
         case "fetch": return { url: String(input.url || input.query || ""), prompt: collectionStrField(input, "prompt") };
         case "task": return { task: String(input.subject || input.task || ""), params: input.description || null };
         case "notebook_edit": return { path: collectionExtractPath("NotebookEdit", input), cell: collectionStrField(input, "cell"), diff: input.diff || null };
+        case "mcp_call": {
+            const parsed = collectionParseMcpProviderTool(toolName);
+            return {
+                server: collectionStrField(input, "server") || parsed.server,
+                tool: String(input.tool || parsed.tool),
+                params: input.params !== undefined ? input.params : (input.arguments !== undefined ? input.arguments : (input.args !== undefined ? input.args : input)),
+                params_ref: null,
+            };
+        }
         default: return { provider_input: input, provider_input_ref: null };
     }
 }
@@ -139,6 +161,7 @@ function collectionBuildObservation(toolClass, resp) {
         }
         case "task": return { result: resp };
         case "notebook_edit": return { applied: true, result_message: typeof resp === "string" ? resp : null };
+        case "mcp_call": return { result: resp, result_ref: null };
         default: return { provider_output: resp, provider_output_ref: null };
     }
 }

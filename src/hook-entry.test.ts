@@ -8,7 +8,8 @@ import { type SessionDaemonHandle, startSessionDaemon } from "./harness/session-
 import type { DaemonPaths } from "./harness/session-paths.js";
 import type { TsgoRunner } from "./harness/tsgo-runner.js";
 import type { HarnessDecision, HarnessEvent } from "./harness/types.js";
-import { discoverSocket, runHookEntry } from "./hook-entry.js";
+import type { UnifiedHookEvent } from "./harness/unified-event.js";
+import { discoverSocket, isCodeEditEvent, runHookEntry } from "./hook-entry.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
@@ -77,6 +78,41 @@ function startLegacyHarnessServer(
 		legacyServer?.listen(socketPath, () => resolve());
 	});
 }
+
+describe("isCodeEditEvent (drives the extended coverage timeout)", () => {
+	function ev(kind: string, toolName?: string): UnifiedHookEvent {
+		const action = toolName ? { kind, tool_name: toolName } : { kind };
+		return { phase: "pre-tool", action } as unknown as UnifiedHookEvent;
+	}
+
+	it("is true for the normalized write-shaped tools and file operations", () => {
+		// Unified events carry lowercase_snake tool names (the adapter normalizes
+		// Write/MultiEdit/NotebookEdit → write/multi_edit/notebook_edit).
+		for (const t of ["write", "edit", "multi_edit", "apply_patch", "notebook_edit"]) {
+			expect(isCodeEditEvent(ev("tool_call", t))).toBe(true);
+		}
+		expect(isCodeEditEvent(ev("file_operation"))).toBe(true);
+		// Defensive case-insensitivity for any stray casing.
+		expect(isCodeEditEvent(ev("tool_call", "WRITE"))).toBe(true);
+	});
+
+	it("is true for camelCase tool names a runner preserves un-normalized (Codex)", () => {
+		// Codex does NOT normalize — it sends `MultiEdit` / `NotebookEdit` verbatim.
+		// The lowercase + underscore-strip must still map these into the edit set so
+		// they get the long coverage timeout, not the short fallback that returns
+		// before the per-edit overlay's verdict (finding 2026-06).
+		for (const t of ["MultiEdit", "NotebookEdit", "Write", "Edit"]) {
+			expect(isCodeEditEvent(ev("tool_call", t))).toBe(true);
+		}
+	});
+
+	it("is false for non-edit tool calls and shell commands", () => {
+		for (const t of ["bash", "read", "grep", "glob"]) {
+			expect(isCodeEditEvent(ev("tool_call", t))).toBe(false);
+		}
+		expect(isCodeEditEvent(ev("shell_command"))).toBe(false);
+	});
+});
 
 describe("discoverSocket", () => {
 	it("returns null when no .interlinked dir exists", () => {
