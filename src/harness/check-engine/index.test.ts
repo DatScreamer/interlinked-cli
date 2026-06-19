@@ -175,6 +175,7 @@ vi.mock("./tool-runners/python.js", () => ({
 vi.mock("./tool-runners/rust.js", () => ({
 	runCargoCheck: mkSyncRunner("cargo-check"),
 	runCargoClippy: mkSyncRunner("cargo-clippy"),
+	runRustfmtCheck: mkSyncRunner("rustfmt"),
 }));
 
 vi.mock("./tool-runners/go.js", () => ({
@@ -877,7 +878,7 @@ describe("CheckEngine.getDiagnostics", () => {
 		{ file: "/proj/a.mjs", tools: ["biome", "oxlint"] },
 		{ file: "/proj/a.cjs", tools: ["biome", "oxlint"] },
 		{ file: "/proj/a.pyi", tools: ["mypy", "ruff"] },
-		{ file: "/proj/a.rs", tools: ["cargo-check", "cargo-clippy"] },
+		{ file: "/proj/a.rs", tools: ["cargo-check", "cargo-clippy", "rustfmt"] },
 		{ file: "/proj/a.go", tools: ["go-build", "golangci-lint"] },
 		{ file: "/proj/a.c", tools: ["c-compile", "clang-tidy"] },
 		{ file: "/proj/a.cpp", tools: ["c-compile", "clang-tidy"] },

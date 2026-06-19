@@ -75,6 +75,12 @@ interface ServiceContext {
 	tsconfigDir: string;
 	/** Mutable: the file being overlaid, if any. */
 	overlay: { filePath: string; content: string; version: number } | null;
+	/**
+	 * Mutable: sibling files overlaid simultaneously (abs path -> proposed
+	 * content) so cross-file resolution sees the proposed combined state of a
+	 * transactional multi-file edit, not disk.
+	 */
+	siblings: Map<string, string>;
 	/** Per-file version counter; bumped when mtime changes (for non-overlay) */
 	versions: Map<string, number>;
 	/** Last-seen mtime per file; drives version bumps for files touched outside the overlay */
@@ -131,6 +137,7 @@ function getOrCreateService(projectRoot: string): ServiceContext | null {
 		service: null,
 		tsconfigDir,
 		overlay: null,
+		siblings: new Map(),
 		versions: new Map(),
 		mtimes: new Map(),
 	};
@@ -143,16 +150,25 @@ function getOrCreateService(projectRoot: string): ServiceContext | null {
 	const host: import("typescript").LanguageServiceHost = {
 		getCompilationSettings: () => compilerOptions,
 		getScriptFileNames: () => {
-			// Include the overlaid file if it's not already part of the project
-			// (covers Write-of-new-file edits that aren't yet on disk).
+			// Include the overlaid file + any sibling overlays not already part of
+			// the project (covers Write-of-new-file edits not yet on disk).
+			const extra: string[] = [];
 			if (ctx.overlay && !staticFileNames.includes(ctx.overlay.filePath)) {
-				return [...staticFileNames, ctx.overlay.filePath];
+				extra.push(ctx.overlay.filePath);
 			}
-			return staticFileNames;
+			for (const p of ctx.siblings.keys()) {
+				if (!staticFileNames.includes(p)) extra.push(p);
+			}
+			return extra.length > 0 ? [...staticFileNames, ...extra] : staticFileNames;
 		},
 		getScriptVersion: (fileName) => {
 			if (ctx.overlay && fileName === ctx.overlay.filePath) {
 				return String(ctx.overlay.version);
+			}
+			// Sibling overlays carry a version bumped on set/clear so the LS
+			// invalidates its snapshot when the content flips disk<->proposed.
+			if (ctx.siblings.has(fileName)) {
+				return String(ctx.versions.get(fileName) ?? 0);
 			}
 			// Bump on-disk version if mtime changed since we last saw it —
 			// keeps cross-file analysis accurate when files change between
@@ -175,6 +191,10 @@ function getOrCreateService(projectRoot: string): ServiceContext | null {
 		getScriptSnapshot: (fileName) => {
 			if (ctx.overlay && fileName === ctx.overlay.filePath) {
 				return ts.ScriptSnapshot.fromString(ctx.overlay.content);
+			}
+			const sibling = ctx.siblings.get(fileName);
+			if (sibling !== undefined) {
+				return ts.ScriptSnapshot.fromString(sibling);
 			}
 			if (!existsSync(fileName)) return undefined;
 			const content = ts.sys.readFile(fileName);
@@ -206,6 +226,13 @@ export interface RunTscOverlayInput {
 	projectRoot: string;
 	filePath: string;
 	content: string;
+	/**
+	 * Other in-flight files of a transactional multi-file edit, overlaid in
+	 * memory so cross-file resolution (imports, shared types) sees the proposed
+	 * combined state instead of disk. The target `filePath` always wins over a
+	 * sibling of the same path.
+	 */
+	siblings?: ReadonlyArray<{ filePath: string; content: string }>;
 }
 
 export function runTscOverlay(input: RunTscOverlayInput): CheckResult[] {
@@ -227,6 +254,18 @@ export function runTscOverlay(input: RunTscOverlayInput): CheckResult[] {
 		content,
 		version: prevVersion + 1,
 	};
+
+	// Overlay sibling files (other batch members) so cross-file analysis of the
+	// target sees the proposed combined state. Bump each version so the LS
+	// invalidates any cached snapshot for the flip to in-memory content.
+	const siblingPaths: string[] = [];
+	for (const sib of input.siblings ?? []) {
+		const abs = resolve(sib.filePath);
+		if (abs === absFilePath) continue;
+		ctx.siblings.set(abs, sib.content);
+		ctx.versions.set(abs, (ctx.versions.get(abs) ?? 0) + 1);
+		siblingPaths.push(abs);
+	}
 
 	try {
 		const syntactic = service.getSyntacticDiagnostics(absFilePath);
@@ -275,6 +314,12 @@ export function runTscOverlay(input: RunTscOverlayInput): CheckResult[] {
 		// cross-file calls see disk state.
 		ctx.versions.set(absFilePath, ctx.overlay?.version ?? 0);
 		ctx.overlay = null;
+		// Drop sibling overlays and bump their versions again so the next read
+		// invalidates the in-memory snapshot back to disk content.
+		for (const abs of siblingPaths) {
+			ctx.versions.set(abs, (ctx.versions.get(abs) ?? 0) + 1);
+			ctx.siblings.delete(abs);
+		}
 	}
 }
 

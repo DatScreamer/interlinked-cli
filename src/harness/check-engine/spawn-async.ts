@@ -151,6 +151,22 @@ export function runProcessAsync(
 			stderr += chunk.toString("utf-8");
 		});
 
+		// As soon as the child is REAPED ('exit'), the OS can recycle its pid — at
+		// which point a later `process.kill(-pid, …)` could signal an unrelated,
+		// recycled process group. So cancel every still-pending path that would
+		// signal it (the timeout timer, the SIGKILL grace timer, the abort
+		// listener) here, before that window opens. signalTree is therefore only
+		// ever reached while the child is genuinely alive. The result is still
+		// resolved on 'close' by finalize() (after stdio fully flushes).
+		child.on("exit", () => {
+			clearTimeout(timer);
+			if (killGraceTimer !== null) {
+				clearTimeout(killGraceTimer);
+				killGraceTimer = null;
+			}
+			if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+		});
+
 		// `error` fires on spawn failures (ENOENT, EACCES). We don't reject;
 		// callers expect a settled result with code=null in that case.
 		child.on("error", (e) => {

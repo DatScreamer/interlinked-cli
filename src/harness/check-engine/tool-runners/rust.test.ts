@@ -16,7 +16,10 @@
 //   • catch block (spawnSync throws) → []
 
 import type { SpawnSyncReturns } from "node:child_process";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
 
 const spawnSyncMock = vi.fn();
@@ -26,7 +29,8 @@ vi.mock("node:child_process", () => ({
 }));
 
 // Imported after the mock is registered.
-const { runCargoCheck, runCargoClippy } = await import("./rust.js");
+const { runCargoCheck, runCargoClippy, runRustfmtCheck, parseRustfmtCheckOutput, crateEditionFor } =
+	await import("./rust.js");
 
 const PROJECT_ROOT = "/work/crate";
 const TARGET_FILE = "src/lib.rs";
@@ -357,5 +361,208 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 			throw new Error("boom");
 		});
 		expect(fn(input(fileScope()))).toEqual([]);
+	});
+});
+
+// -------------------------------------------
+// rustfmt --check
+// -------------------------------------------
+
+describe("parseRustfmtCheckOutput", () => {
+	it("parses the `at line` header format", () => {
+		const out = parseRustfmtCheckOutput(
+			`Diff in ${PROJECT_ROOT}/src/lib.rs at line 5:\n some diff body\n`,
+			PROJECT_ROOT,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ tool: "rustfmt", severity: "warning", file: "src/lib.rs", line: 5 });
+	});
+
+	it("parses the colon header format", () => {
+		const out = parseRustfmtCheckOutput(
+			`Diff in ${PROJECT_ROOT}/src/main.rs:12:\n`,
+			PROJECT_ROOT,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].file).toBe("src/main.rs");
+		expect(out[0].line).toBe(12);
+	});
+
+	it("emits one finding per diff header and ignores diff bodies", () => {
+		const out = parseRustfmtCheckOutput(
+			[
+				`Diff in ${PROJECT_ROOT}/src/a.rs at line 1:`,
+				"-fn x(){}",
+				"+fn x() {}",
+				`Diff in ${PROJECT_ROOT}/src/b.rs at line 9:`,
+			].join("\n"),
+			PROJECT_ROOT,
+		);
+		expect(out.map((r) => r.file)).toEqual(["src/a.rs", "src/b.rs"]);
+	});
+
+	it("returns [] for non-diff output (e.g. a parse error message)", () => {
+		expect(parseRustfmtCheckOutput("error: expected one of `!` or `::`\n", PROJECT_ROOT)).toEqual(
+			[],
+		);
+	});
+});
+
+describe("runRustfmtCheck", () => {
+	it("file mode invokes rustfmt --check on the single target file", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+		runRustfmtCheck(input(fileScope()));
+		expect(spawnSyncMock).toHaveBeenCalledWith(
+			"rustfmt",
+			["--check", "--color=never", TARGET_FILE],
+			expect.objectContaining({ cwd: PROJECT_ROOT }),
+		);
+	});
+
+	it("project mode delegates to cargo fmt --all -- --check", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+		runRustfmtCheck(input({ projectRoot: PROJECT_ROOT, mode: "project" }));
+		expect(spawnSyncMock).toHaveBeenCalledWith(
+			"cargo",
+			["fmt", "--all", "--", "--check", "--color=never"],
+			expect.objectContaining({ cwd: PROJECT_ROOT }),
+		);
+	});
+
+	it("returns [] when rustfmt is not installed (ENOENT)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ error: enoentError(), status: null }));
+		expect(runRustfmtCheck(input(fileScope()))).toEqual([]);
+	});
+
+	it("returns [] on a clean exit (file already formatted)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0, stdout: "" }));
+		expect(runRustfmtCheck(input(fileScope()))).toEqual([]);
+	});
+
+	it("maps diff output to warnings on a non-zero exit", () => {
+		spawnSyncMock.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: `Diff in ${PROJECT_ROOT}/${TARGET_FILE} at line 3:\n-fn a(){}\n+fn a() {}\n`,
+			}),
+		);
+		const out = runRustfmtCheck(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ tool: "rustfmt", file: TARGET_FILE, line: 3 });
+	});
+
+	it("surfaces a tool FAILURE on a non-zero exit with no diff headers (round 6: silence read as clean)", () => {
+		spawnSyncMock.mockReturnValue(
+			spawnResult({ status: 1, stderr: "error: this file contains an unclosed delimiter\n" }),
+		);
+		const out = runRustfmtCheck(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ tool: "rustfmt", severity: "warning", file: TARGET_FILE });
+		expect(out[0].message).toContain("formatting NOT validated");
+		expect(out[0].message).toContain("unclosed delimiter");
+	});
+
+	it("returns [] from the catch block when spawnSync throws", () => {
+		spawnSyncMock.mockImplementation(() => {
+			throw new Error("boom");
+		});
+		expect(runRustfmtCheck(input(fileScope()))).toEqual([]);
+	});
+
+	// Round 7 (finding 2026-06): rustfmt aimed at a crate root / mod.rs recurses
+	// into child modules and reports their formatting diffs too. A per-edit
+	// check must honor filterToFile and surface only the EDITED file's findings.
+	it("filters child-module diffs to the target file in file mode (filterToFile=true)", () => {
+		spawnSyncMock.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: [
+					`Diff in ${PROJECT_ROOT}/${TARGET_FILE} at line 3:`,
+					`Diff in ${PROJECT_ROOT}/src/other_mod.rs at line 9:`,
+					`Diff in ${PROJECT_ROOT}/src/nested/deep.rs at line 1:`,
+				].join("\n"),
+			}),
+		);
+		const out = runRustfmtCheck(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0].file).toBe(TARGET_FILE);
+	});
+
+	it("returns [] (target clean) when ONLY other files have diffs — no synthesized failure", () => {
+		spawnSyncMock.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: `Diff in ${PROJECT_ROOT}/src/other_mod.rs at line 9:\n-fn a(){}\n+fn a() {}\n`,
+			}),
+		);
+		expect(runRustfmtCheck(input(fileScope()))).toEqual([]);
+	});
+
+	it("does NOT filter when filterToFile is absent (project-wide reporting preserved)", () => {
+		const scope = fileScope();
+		delete (scope as { filterToFile?: boolean }).filterToFile;
+		spawnSyncMock.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: [
+					`Diff in ${PROJECT_ROOT}/${TARGET_FILE} at line 3:`,
+					`Diff in ${PROJECT_ROOT}/src/other_mod.rs at line 9:`,
+				].join("\n"),
+			}),
+		);
+		expect(runRustfmtCheck(input(scope))).toHaveLength(2);
+	});
+});
+
+// -------------------------------------------
+// rustfmt — crate edition threading (round 6)
+// -------------------------------------------
+// Direct `rustfmt` does not read Cargo.toml and defaults to edition 2015, so
+// 2021/2024 syntax parse-errored and (pre-fix) the runner suppressed the
+// failure entirely — formatting silently never validated.
+
+describe("crateEditionFor + file-mode --edition threading", () => {
+	let crateRoot: string;
+
+	beforeEach(() => {
+		crateRoot = mkdtempSync(join(tmpdir(), "rustfmt-edition-"));
+	});
+
+	afterEach(() => {
+		rmSync(crateRoot, { recursive: true, force: true });
+	});
+
+	it("reads the edition from the nearest Cargo.toml walking up from the file", () => {
+		mkdirSync(join(crateRoot, "member/src"), { recursive: true });
+		writeFileSync(join(crateRoot, "Cargo.toml"), '[workspace]\nmembers = ["member"]\n', "utf-8");
+		writeFileSync(
+			join(crateRoot, "member/Cargo.toml"),
+			'[package]\nname = "member"\nedition = "2021"\n',
+			"utf-8",
+		);
+		expect(crateEditionFor("member/src/lib.rs", crateRoot)).toBe("2021");
+		// A file outside the member falls through to the (edition-less) root.
+		expect(crateEditionFor("src/other.rs", crateRoot)).toBeNull();
+	});
+
+	it("ignores values outside the known edition set", () => {
+		writeFileSync(join(crateRoot, "Cargo.toml"), 'edition = "2099"\n', "utf-8");
+		expect(crateEditionFor("src/lib.rs", crateRoot)).toBeNull();
+	});
+
+	it("passes --edition to file-mode rustfmt when the crate declares one", () => {
+		mkdirSync(join(crateRoot, "src"), { recursive: true });
+		writeFileSync(
+			join(crateRoot, "Cargo.toml"),
+			'[package]\nname = "x"\nedition = "2024"\n',
+			"utf-8",
+		);
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+		runRustfmtCheck(input({ projectRoot: crateRoot, mode: "file", targetFile: "src/lib.rs" }));
+		expect(spawnSyncMock).toHaveBeenCalledWith(
+			"rustfmt",
+			["--check", "--color=never", "--edition", "2024", "src/lib.rs"],
+			expect.objectContaining({ cwd: crateRoot }),
+		);
 	});
 });

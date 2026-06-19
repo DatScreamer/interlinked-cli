@@ -14,6 +14,7 @@ export type ToolId =
 	| "ruff"
 	| "cargo-check"
 	| "cargo-clippy"
+	| "rustfmt"
 	| "go-build"
 	| "golangci-lint"
 	| "c-compile"
@@ -26,6 +27,7 @@ export type ToolId =
 	| "taplo"
 	| "swiftlint"
 	| "swift-build"
+	| "lizard"
 	// Project-local check: `node scripts/check-docs.mjs` validates that
 	// `gen:*` markers in README/landing/etc. match the source-of-truth
 	// counts (rule_count, runner_count, …). Mirrors the same CI step

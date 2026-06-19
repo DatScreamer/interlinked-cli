@@ -25,6 +25,7 @@ const CHECK_LANGUAGE_MAP: Record<string, LanguageId[]> = {
 	ruff_lint: ["python"],
 	cargo_check: ["rust"],
 	cargo_clippy: ["rust"],
+	rustfmt_check: ["rust"],
 	go_build: ["go"],
 	golangci_lint: ["go"],
 	c_compile: ["c_cpp"],

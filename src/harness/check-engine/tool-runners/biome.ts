@@ -22,6 +22,20 @@ function findBiomeConfig(startDir: string): boolean {
 	return false;
 }
 
+/** A non-zero biome exit whose output yielded NO parsed diagnostics is a tool
+ *  failure (or a diagnostic-format drift), not a clean pass — silence here
+ *  read as green (finding 2026-06, round 6; same class as the rustfmt
+ *  parse-error suppression). */
+function biomeFailureResult(status: number | null): CheckResult {
+	return {
+		tool: "biome",
+		severity: "warning",
+		file: ".",
+		line: 1,
+		message: `biome exited ${status ?? "without status"} but no diagnostics were parsed — lint/format NOT validated for this change`,
+	};
+}
+
 export function runBiome(input: ToolRunnerInput): CheckResult[] {
 	const { scope, timeoutMs } = input;
 	if (!findBiomeConfig(scope.projectRoot)) return [];
@@ -38,7 +52,8 @@ export function runBiome(input: ToolRunnerInput): CheckResult[] {
 
 		if (result.status === 0) return [];
 		const output = (result.stdout || "") + (result.stderr || "");
-		return parseBiomeOutput(output);
+		const findings = parseBiomeOutput(output);
+		return findings.length > 0 ? findings : [biomeFailureResult(result.status)];
 	} catch {
 		return [];
 	}
@@ -60,7 +75,8 @@ export async function runBiomeAsync(input: ToolRunnerInput): Promise<CheckResult
 		{ cwd: scope.projectRoot, timeout: timeoutMs },
 	);
 	if (result.code === 0) return [];
-	return parseBiomeOutput(`${result.stdout}${result.stderr}`);
+	const findings = parseBiomeOutput(`${result.stdout}${result.stderr}`);
+	return findings.length > 0 ? findings : [biomeFailureResult(result.code)];
 }
 
 /**

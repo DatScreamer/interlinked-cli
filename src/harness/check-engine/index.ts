@@ -9,31 +9,12 @@ import { cpus } from "node:os";
 import { extname } from "node:path";
 import { discoverSingleTool, discoverTools, formatToolReport } from "./discovery.js";
 import { createLimiter } from "./pool.js";
-import { runActionlint, runActionlintAsync } from "./tool-runners/actionlint.js";
-import { runBiome, runBiomeAsync, runBiomeOverlay } from "./tool-runners/biome.js";
-import { runCCompile, runClangTidy } from "./tool-runners/c-cpp.js";
-import {
-	runDepAudit,
-	runEslint,
-	runGitleaks,
-	runKnip,
-	runOxlint,
-	runSemgrep,
-	runEslintAsync,
-	runGitleaksAsync,
-	runKnipAsync,
-	runOxlintAsync,
-	runSemgrepAsync,
-} from "./tool-runners/generic.js";
-import { runGoBuild, runGolangciLint } from "./tool-runners/go.js";
-import { runHadolint, runHadolintAsync } from "./tool-runners/hadolint.js";
-import { runMypy, runMypyAsync, runRuff, runRuffAsync } from "./tool-runners/python.js";
-import { runCargoCheck, runCargoClippy } from "./tool-runners/rust.js";
-import { runShellcheck, runShellcheckAsync } from "./tool-runners/shellcheck.js";
-import { runSwiftBuild, runSwiftLint, runSwiftLintAsync } from "./tool-runners/swift.js";
-import { runTaplo, runTaploAsync } from "./tool-runners/taplo.js";
-import { runTsc, runTscAsync } from "./tool-runners/tsc.js";
+import { buildConfigToTool, buildToolRegistry } from "./tool-catalog.js";
+import { runBiomeOverlay } from "./tool-runners/biome.js";
+import { runDepAudit } from "./tool-runners/generic.js";
 import { clearTscOverlayCache, runTscOverlay } from "./tool-runners/tsc-overlay.js";
+import { type DeduplicationResult, deduplicateResults } from "./index-dedup.js";
+import { getToolsForExtension } from "./index-extension-tools.js";
 import type {
 	AuditResult,
 	CheckOptions,
@@ -49,6 +30,8 @@ import type {
 
 // Re-export types and utilities for consumers
 export { formatToolReport } from "./discovery.js";
+export { deduplicateResults };
+export type { DeduplicationResult };
 export type {
 	CheckReport,
 	CheckResult,
@@ -61,31 +44,8 @@ export type {
 // Config name mapping (harness ↔ engine)
 // -------------------------------------------
 
-const CONFIG_TO_TOOL: Record<string, ToolId> = {
-	typescript: "tsc",
-	biome_lint: "biome",
-	biome: "biome",
-	eslint: "eslint",
-	semgrep: "semgrep",
-	gitleaks: "gitleaks",
-	dependency_audit: "dep-audit",
-	oxlint: "oxlint",
-	knip: "knip",
-	python_typecheck: "mypy",
-	ruff_lint: "ruff",
-	cargo_check: "cargo-check",
-	cargo_clippy: "cargo-clippy",
-	go_build: "go-build",
-	golangci_lint: "golangci-lint",
-	c_compile: "c-compile",
-	clang_tidy: "clang-tidy",
-	shellcheck: "shellcheck",
-	actionlint: "actionlint",
-	hadolint: "hadolint",
-	taplo: "taplo",
-	swiftlint: "swiftlint",
-	swift_build: "swift-build",
-};
+// Derived from the single tool catalog (see tool-catalog.ts).
+const CONFIG_TO_TOOL: Record<string, ToolId> = buildConfigToTool();
 
 export function configNameToToolId(name: string): ToolId | undefined {
 	return CONFIG_TO_TOOL[name];
@@ -99,42 +59,7 @@ export function configNameToToolId(name: string): ToolId | undefined {
 // Tools that write lock files, caches, or use shared build artifacts
 // (e.g. cargo-check and cargo-clippy share the target/ dir) are unsafe.
 
-const TOOL_REGISTRY: Record<string, ToolRunnerMeta> = {
-	tsc: { runner: runTsc, runnerAsync: runTscAsync, concurrencySafe: true },
-	biome: { runner: runBiome, runnerAsync: runBiomeAsync, concurrencySafe: true },
-	eslint: { runner: runEslint, runnerAsync: runEslintAsync, concurrencySafe: true },
-	semgrep: { runner: runSemgrep, runnerAsync: runSemgrepAsync, concurrencySafe: true },
-	gitleaks: { runner: runGitleaks, runnerAsync: runGitleaksAsync, concurrencySafe: true },
-	oxlint: { runner: runOxlint, runnerAsync: runOxlintAsync, concurrencySafe: true },
-	knip: { runner: runKnip, runnerAsync: runKnipAsync, concurrencySafe: true },
-	// Python
-	mypy: { runner: runMypy, runnerAsync: runMypyAsync, concurrencySafe: true },
-	ruff: { runner: runRuff, runnerAsync: runRuffAsync, concurrencySafe: true },
-	// Rust — share target/ directory, must run sequentially
-	"cargo-check": { runner: runCargoCheck, concurrencySafe: false },
-	"cargo-clippy": { runner: runCargoClippy, concurrencySafe: false },
-	// Go — share build cache, must run sequentially
-	"go-build": { runner: runGoBuild, concurrencySafe: false },
-	"golangci-lint": { runner: runGolangciLint, concurrencySafe: false },
-	// C/C++ — share object files, must run sequentially
-	"c-compile": { runner: runCCompile, concurrencySafe: false },
-	"clang-tidy": { runner: runClangTidy, concurrencySafe: false },
-	// Shell
-	shellcheck: { runner: runShellcheck, runnerAsync: runShellcheckAsync, concurrencySafe: true },
-	// GitHub Actions
-	actionlint: { runner: runActionlint, runnerAsync: runActionlintAsync, concurrencySafe: true },
-	// Dockerfile
-	hadolint: { runner: runHadolint, runnerAsync: runHadolintAsync, concurrencySafe: true },
-	// TOML
-	taplo: { runner: runTaplo, runnerAsync: runTaploAsync, concurrencySafe: true },
-	// Swift — swift build shares build dir, must run sequentially
-	swiftlint: {
-		runner: runSwiftLint,
-		runnerAsync: runSwiftLintAsync,
-		concurrencySafe: true,
-	},
-	"swift-build": { runner: runSwiftBuild, concurrencySafe: false },
-};
+const TOOL_REGISTRY: Record<string, ToolRunnerMeta> = buildToolRegistry();
 
 /** Backward-compat lookup: get the runner function for a tool ID. */
 const TOOL_RUNNERS: Record<string, ToolRunner> = Object.fromEntries(
@@ -155,110 +80,6 @@ interface DiagnosticCacheEntry {
 }
 
 const diagnosticCache = new Map<string, DiagnosticCacheEntry>();
-
-// -------------------------------------------
-// Extension → tool dispatch
-// -------------------------------------------
-
-function getToolsForExtension(ext: string): ToolId[] {
-	switch (ext) {
-		case ".ts":
-		case ".tsx":
-			return ["tsc", "biome", "oxlint"];
-		case ".js":
-		case ".jsx":
-		case ".mjs":
-		case ".cjs":
-			return ["biome", "oxlint"];
-		case ".py":
-		case ".pyi":
-			return ["mypy", "ruff"];
-		case ".rs":
-			return ["cargo-check", "cargo-clippy"];
-		case ".go":
-			return ["go-build", "golangci-lint"];
-		case ".c":
-		case ".cpp":
-		case ".cc":
-		case ".cxx":
-		case ".h":
-		case ".hpp":
-		case ".hxx":
-			return ["c-compile", "clang-tidy"];
-		case ".sh":
-		case ".bash":
-		case ".zsh":
-		case ".ksh":
-			return ["shellcheck"];
-		case ".toml":
-			return ["taplo"];
-		case ".swift":
-			return ["swiftlint", "swift-build"];
-		default:
-			return [];
-	}
-}
-
-// -------------------------------------------
-// Deduplication
-// -------------------------------------------
-
-/**
- * Normalize a diagnostic message for dedup comparison.
- * Strips tool-specific prefixes, rule IDs, and whitespace variations
- * so that "unused variable 'x'" from biome and eslint collapse to one.
- */
-function normalizeMessage(msg: string): string {
-	return msg
-		.replace(/^[\w/-]+:\s*/, "") // strip leading rule id like "lint/suspicious/noDoubleEquals: "
-		.replace(/\s+/g, " ") // collapse whitespace
-		.trim()
-		.toLowerCase();
-}
-
-/**
- * Build a dedup key from a check result.
- * Two results are duplicates if they point to the same file+line and say
- * essentially the same thing (after normalization).
- */
-function dedupKey(r: CheckResult): string {
-	return `${r.file}:${r.line}:${normalizeMessage(r.message)}`;
-}
-
-/** Result of deduplicating check findings. */
-export interface DeduplicationResult {
-	deduplicated: CheckResult[];
-	removedCount: number;
-}
-
-/**
- * Remove duplicate findings across tools.
- * When duplicates exist, keeps the one from the higher-priority tool
- * (first in TOOL_RUNNERS order) and the higher severity.
- */
-export function deduplicateResults(results: CheckResult[]): DeduplicationResult {
-	const seen = new Map<string, CheckResult>();
-	const severityRank: Record<string, number> = { error: 3, warning: 2, info: 1 };
-
-	for (const r of results) {
-		const key = dedupKey(r);
-		const existing = seen.get(key);
-		if (!existing) {
-			seen.set(key, r);
-		} else {
-			// Keep the higher severity; on tie, keep the first (earlier tool = higher priority)
-			if ((severityRank[r.severity] ?? 0) > (severityRank[existing.severity] ?? 0)) {
-				seen.set(key, r);
-			}
-		}
-	}
-
-	const deduplicated = [...seen.values()];
-	return {
-		deduplicated,
-		removedCount: results.length - deduplicated.length,
-	};
-}
 
 // -------------------------------------------
 // CheckEngine
@@ -606,11 +427,16 @@ export class CheckEngine {
 	 * ~20-100ms on incremental analysis. The LS is cached on a
 	 * module-level registry keyed by project root.
 	 */
-	getTscDiagnosticsForOverlay(filePath: string, content: string): CheckResult[] {
+	getTscDiagnosticsForOverlay(
+		filePath: string,
+		content: string,
+		siblings?: ReadonlyArray<{ filePath: string; content: string }>,
+	): CheckResult[] {
 		return runTscOverlay({
 			projectRoot: this.projectRoot,
 			filePath,
 			content,
+			...(siblings ? { siblings } : {}),
 		});
 	}
 

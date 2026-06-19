@@ -36,6 +36,17 @@ describe("runProcessAsync", () => {
 		expect(r.code).not.toBe(0);
 	});
 
+	it("cancels pending timeout/kill timers once the child exits (no signal after reap)", async () => {
+		// A process that finishes well within its timeout must report killed=false:
+		// the 'exit' handler cancels the timeout + SIGKILL-grace timers so nothing
+		// can signal the child's (now potentially OS-recycled) pid after it is reaped
+		// — closing the `process.kill(-pid)`-hits-the-wrong-group window.
+		const r = await runProcessAsync("/bin/sh", ["-c", "exit 0"], { timeout: 5000 });
+		expect(r.killed).toBe(false);
+		expect(r.timedOut).toBe(false);
+		expect(r.code).toBe(0);
+	});
+
 	it("respects an external AbortSignal", async () => {
 		const controller = new AbortController();
 		const promise = runProcessAsync("/bin/sh", ["-c", "sleep 5"], {

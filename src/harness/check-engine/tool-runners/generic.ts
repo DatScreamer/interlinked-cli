@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { hasOsvScanner } from "../../quality-checks/dependency-audit.js";
+import { interlinkedSemgrepConfigArgs } from "../semgrep-rules.js";
 import {
 	filterResultsToFile,
 	parseEslintOutput,
@@ -157,6 +158,7 @@ export function runSemgrep(input: ToolRunnerInput): CheckResult[] {
 				"off",
 				"--config",
 				"p/default",
+				...interlinkedSemgrepConfigArgs(),
 				"--json",
 				target,
 			],
@@ -302,6 +304,7 @@ export async function runSemgrepAsync(input: ToolRunnerInput): Promise<CheckResu
 			"off",
 			"--config",
 			"p/default",
+			...interlinkedSemgrepConfigArgs(),
 			"--json",
 			target,
 		],
