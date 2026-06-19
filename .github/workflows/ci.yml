@@ -15,10 +15,18 @@ jobs:
   build-and-test:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
+    # Hard cap so a hung test fails the job in minutes instead of burning the
+    # 6h default (finding 2026-06: a Linux-only test hang deadlocked vitest with
+    # no output for 25 min). Permanent safeguard, independent of the diagnostic
+    # timeouts on the Test step below.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # DIAGNOSTIC (temporary): ubuntu-only to pinpoint the Linux-only test
+        # hang without burning macOS minutes (billed 10x). Restore macos-latest
+        # once the hang is fixed.
+        os: [ubuntu-latest]
         node: ["22"]
     steps:
       - name: Checkout
@@ -54,7 +62,10 @@ jobs:
         run: npm run docs:check
 
       - name: Test
-        run: npm test
+        # DIAGNOSTIC (temporary): sequential + verbose so the hung file is the
+        # last one printed before the run goes silent; aggressive timeouts try to
+        # convert the hang into a named failure. Restore to `npm test` after fix.
+        run: npx vitest run --no-file-parallelism --reporter=verbose --test-timeout=20000 --hook-timeout=20000 --teardown-timeout=20000
 
       - name: Build
         run: npm run build
