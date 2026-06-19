@@ -158,13 +158,29 @@ export function runProcessAsync(
 		// listener) here, before that window opens. signalTree is therefore only
 		// ever reached while the child is genuinely alive. The result is still
 		// resolved on 'close' by finalize() (after stdio fully flushes).
-		child.on("exit", () => {
+		child.on("exit", (code) => {
 			clearTimeout(timer);
 			if (killGraceTimer !== null) {
 				clearTimeout(killGraceTimer);
 				killGraceTimer = null;
 			}
 			if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+			// The child itself has exited and its output is captured. 'close' (stdio
+			// EOF) normally follows immediately and finalizes. But a grandchild that
+			// inherited — and still holds — the stdout/stderr pipe keeps it open with
+			// no EOF, so 'close' can NEVER fire: the promise, and any vitest worker /
+			// daemon awaiting it, then hangs forever (Linux + parallel batches where a
+			// detached grandchild escaped the group-kill; finding 2026-06: a 25-min CI
+			// deadlock). Guarantee resolution — if 'close' hasn't landed shortly after
+			// exit, destroy our pipe ends and finalize. `unref` so this guard never
+			// keeps the loop alive or delays daemon shutdown.
+			const closeGuard = setTimeout(() => {
+				if (settled) return;
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+				finalize(typeof code === "number" ? code : null);
+			}, 250);
+			closeGuard.unref?.();
 		});
 
 		// `error` fires on spawn failures (ENOENT, EACCES). We don't reject;

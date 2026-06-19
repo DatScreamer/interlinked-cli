@@ -58,4 +58,18 @@ describe("runProcessAsync", () => {
 		const r = await promise;
 		expect(r.killed).toBe(true);
 	});
+
+	it("resolves promptly after the child exits even if a backgrounded grandchild holds the stdio pipe", async () => {
+		// `sh` exits 0 immediately, but the backgrounded `sleep` inherits the
+		// stdout pipe and keeps it OPEN — so 'close' (stdio EOF) is delayed until
+		// the grandchild exits. Resolving only on 'close' let a grandchild that
+		// escaped the process-group kill wedge the call — and any awaiting vitest
+		// worker / daemon — indefinitely (Linux + parallel batches; finding
+		// 2026-06: a 25-min CI deadlock). We must resolve shortly after exit, not
+		// wait the full 3 s for the orphaned grandchild.
+		const start = Date.now();
+		const r = await runProcessAsync("/bin/sh", ["-c", "sleep 3 & exit 0"], { timeout: 30_000 });
+		expect(r.code).toBe(0);
+		expect(Date.now() - start).toBeLessThan(2000);
+	}, 10_000);
 });
