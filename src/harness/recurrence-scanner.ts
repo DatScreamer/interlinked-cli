@@ -16,7 +16,11 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { buildAgentSafetyChecks } from "./check-registry/index.js";
 import type { DetectorFinding } from "./checks/endpoint-security.js";
+import { extractCICommands, isCIFile } from "./ci-command-extractor.js";
+import { matchesRule } from "./evaluator/rule-matching.js";
 import { recordRecurrenceEvent } from "./recurrence.js";
+import { loadRules } from "./rules-loader.js";
+import type { GuardRule } from "./types.js";
 
 /** Default directory roots scanned when the caller doesn't override. The
  *  intent is "user-authored source" — node_modules / dist / build / vendor
@@ -63,6 +67,10 @@ export interface ScanCodebaseOptions {
 	/** When true, append a codebase_existing recurrence event per finding
 	 *  to `.interlinked/recurrences.jsonl`. Default false (dry run). */
 	recordEvents?: boolean;
+	/** When false, skip the CI/build-file destructive-command scan. Default
+	 *  true — workflow/Dockerfile/Makefile commands never pass a PreToolUse
+	 *  hook, so this is the only surface that audits them. */
+	includeCI?: boolean;
 }
 
 /** Walk the working tree and return every inline-detector hit found in
@@ -113,6 +121,8 @@ export function scanCodebaseForRecurrences(
 		}
 	}
 
+	appendCIFindings(findings, options, cwd);
+
 	if (options.recordEvents) {
 		const ts = new Date().toISOString();
 		for (const f of findings) {
@@ -129,6 +139,74 @@ export function scanCodebaseForRecurrences(
 		}
 	}
 
+	return findings;
+}
+
+/** Append CI/build-file destructive-command findings unless `includeCI` is
+ *  explicitly false. Kept as a helper so the option branch doesn't raise
+ *  `scanCodebaseForRecurrences`'s cyclomatic count. */
+function appendCIFindings(
+	findings: ScanCodebaseFinding[],
+	options: ScanCodebaseOptions,
+	cwd: string,
+): void {
+	if (options.includeCI === false) return;
+	findings.push(...scanCIFilesForRecurrences(cwd));
+}
+
+/** Bash/Shell destructive rules (block / ask / soft_block) from the loaded
+ *  config that a CI command should be evaluated against. Temporal rules are
+ *  included but stay dormant in this path — `matchesRule` returns false for
+ *  `requires_prior` / `forbids_after` predicates when no session is supplied. */
+function destructiveBashRules(cwd: string): GuardRule[] {
+	return loadRules(cwd).rules.filter((r) => {
+		if (!r.enabled) return false;
+		if (r.action !== "block" && r.action !== "ask" && r.action !== "soft_block") return false;
+		if (r.trigger !== "PreToolUse" && r.trigger !== "both") return false;
+		return r.tool_match.some((t) => {
+			const l = t.toLowerCase();
+			return l === "bash" || l === "shell" || l === "run_command" || l === "*";
+		});
+	});
+}
+
+/**
+ * Walk the working tree for CI/build files (workflow YAML, Dockerfile,
+ * Makefile), extract their commands, and run the destructive guard rules over
+ * each — surfacing destructive commands that ship in CI but never pass a
+ * PreToolUse hook. Each hit becomes a `codebase_existing`-shaped finding whose
+ * `check_id` is the guard rule it tripped. Adapted from
+ * destructive_command_guard's `dcg scan`; see
+ * docs/external-pulse/destructive-command-guard.md.
+ */
+export function scanCIFilesForRecurrences(cwdInput?: string): ScanCodebaseFinding[] {
+	const cwd = resolve(cwdInput ?? process.cwd());
+	const rules = destructiveBashRules(cwd);
+	const findings: ScanCodebaseFinding[] = [];
+	for (const fileAbs of walk(cwd)) {
+		const relPath = relative(cwd, fileAbs).split(sep).join("/");
+		if (!isCIFile(relPath)) continue;
+		let content: string;
+		try {
+			content = readFileSync(fileAbs, "utf-8");
+		} catch (_err) {
+			continue;
+		}
+		for (const { line, command } of extractCICommands(relPath, content)) {
+			for (const rule of rules) {
+				const hit = matchesRule({
+					command,
+					toolInput: { command },
+					rule,
+					toolName: "Bash",
+				});
+				if (hit) {
+					findings.push({ file: relPath, check_id: rule.id, line, text: command.slice(0, 200) });
+					break; // first matching rule wins — mirrors the live evaluator
+				}
+			}
+		}
+	}
 	return findings;
 }
 

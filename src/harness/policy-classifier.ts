@@ -40,6 +40,13 @@ import type {
 	SessionTrajectory,
 } from "./types.js";
 
+import {
+	parseAnthropicResponse,
+	parseClaudeCodeOutput,
+	parseOpenAIResponse,
+} from "./policy-classifier-parsers.js";
+import { loadPolicies } from "./policy-classifier-policies.js";
+
 // ===========================================
 // Session State (per classifier instance)
 // ===========================================
@@ -239,52 +246,6 @@ export function buildEvidenceEnvelope(
 	};
 }
 
-/** Load applicable policies from .interlinked/policies.json */
-function loadPolicies(trigger: string): PolicyRule[] {
-	try {
-		const policiesPath = join(process.cwd(), ".interlinked", "policies.json");
-		if (!existsSync(policiesPath)) return getDefaultPolicies(trigger);
-		const data = JSON.parse(readFileSync(policiesPath, "utf-8"));
-		if (!Array.isArray(data.policies)) return getDefaultPolicies(trigger);
-		// Filter to policies that apply to this trigger
-		return (data.policies as PolicyRule[]).filter(
-			(p) => p.applies_to_triggers.includes(trigger) || p.applies_to_triggers.includes("*"),
-		);
-	} catch {
-		return getDefaultPolicies(trigger);
-	}
-}
-
-/** Default policies when no policies.json exists */
-function getDefaultPolicies(trigger: string): PolicyRule[] {
-	const ALL_DEFAULTS: PolicyRule[] = [
-		{
-			id: "no_exfil_after_taint",
-			name: "No outbound network after reading sensitive files",
-			description:
-				"Agents must not make network calls to external URLs after reading files classified at Internal sensitivity or above.",
-			applies_to_triggers: ["tainted_network_internal", "external_url"],
-		},
-		{
-			id: "post_injection_compliance",
-			name: "No destructive operations after injection detection",
-			description:
-				"After prompt injection content was detected in a file read during this session, the agent must not perform destructive operations (file deletion, force push, dropping data).",
-			applies_to_triggers: ["post_injection_action"],
-		},
-		{
-			id: "step_budget_justification",
-			name: "Essential operations only near step budget",
-			description:
-				"Agents approaching their step budget (>80%) should only perform essential operations, not exploratory reads or refactoring.",
-			applies_to_triggers: ["high_step_budget"],
-		},
-	];
-	return ALL_DEFAULTS.filter(
-		(p) => p.applies_to_triggers.includes(trigger) || p.applies_to_triggers.includes("*"),
-	);
-}
-
 // ===========================================
 // Classifier Client
 // ===========================================
@@ -397,31 +358,6 @@ async function callViaClaudeCode(
 }
 
 /**
- * Parse claude -p --output-format json output.
- * With --json-schema, classification is in structured_output.
- * Without, it's in result (markdown-fenced JSON).
- */
-function parseClaudeCodeOutput(output: string): PolicyClassification {
-	try {
-		const wrapper = JSON.parse(output) as JsonObject;
-		// --json-schema puts parsed result directly in structured_output
-		if (wrapper.structured_output && typeof wrapper.structured_output === "object") {
-			const so = wrapper.structured_output as JsonObject;
-			return {
-				label: so.compliant === false ? "deny" : "allow",
-				confidence: Math.max(0, Math.min(1, Number(so.confidence) || 0)),
-				reasoning: String(so.reasoning || "No reasoning provided"),
-				policy_id: (so.policy_id as string) || undefined,
-			};
-		}
-		// Fallback: result field contains text (possibly markdown-fenced)
-		return parseClassificationJson(String(wrapper.result || ""));
-	} catch {
-		return parseClassificationJson(output);
-	}
-}
-
-/**
  * Call the classifier via HTTP to an inference provider (Groq, HuggingFace, Anthropic, etc.).
  * Requires an API key in the environment.
  */
@@ -501,63 +437,6 @@ async function callViaHttp(
 		return failOpenClassification(`Classifier call failed: ${detail}`);
 	} finally {
 		clearTimeout(timer);
-	}
-}
-
-/**
- * Parse an OpenAI-compatible chat completions response.
- */
-function parseOpenAIResponse(data: JsonObject): PolicyClassification {
-	try {
-		const choices = data.choices as Array<JsonObject> | undefined;
-		if (!choices || choices.length === 0) {
-			return { label: "allow", confidence: 0, reasoning: "No choices in response" };
-		}
-		const message = choices[0].message as JsonObject | undefined;
-		return parseClassificationJson(String(message?.content || ""));
-	} catch {
-		return { label: "allow", confidence: 0, reasoning: "Failed to parse OpenAI response" };
-	}
-}
-
-/**
- * Parse an Anthropic Messages API response.
- */
-function parseAnthropicResponse(data: JsonObject): PolicyClassification {
-	try {
-		const content = data.content as Array<JsonObject> | undefined;
-		if (!content || content.length === 0) {
-			return { label: "allow", confidence: 0, reasoning: "No content in response" };
-		}
-		return parseClassificationJson(String(content[0].text || ""));
-	} catch {
-		return { label: "allow", confidence: 0, reasoning: "Failed to parse Anthropic response" };
-	}
-}
-
-/**
- * Parse the JSON classification payload from model output text.
- */
-function parseClassificationJson(text: string): PolicyClassification {
-	try {
-		// Strip markdown code fences (claude -p wraps output in ```json ... ```)
-		let cleaned = text.trim();
-		const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-		if (fenceMatch) cleaned = fenceMatch[1].trim();
-		const parsed = JSON.parse(cleaned) as JsonObject;
-		const compliant = parsed.compliant as boolean | undefined;
-		const confidence = Number(parsed.confidence) || 0;
-		const reasoning = String(parsed.reasoning || "No reasoning provided");
-		const policyId = parsed.policy_id as string | undefined;
-
-		return {
-			label: compliant === false ? "deny" : "allow",
-			confidence: Math.max(0, Math.min(1, confidence)),
-			reasoning,
-			policy_id: policyId || undefined,
-		};
-	} catch {
-		return { label: "allow", confidence: 0, reasoning: "Failed to parse classifier JSON" };
 	}
 }
 

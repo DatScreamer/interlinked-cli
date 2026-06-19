@@ -12,7 +12,18 @@
 // list-typed section are format violations and surface back to the
 // agent as "narrow your top-K or use `unknown` for the long tail."
 
-const MAX_LIST_ENTRIES = 50;
+import {
+	type KeyValueLine,
+	type ListItemLine,
+	flowQuote,
+	parseCount,
+	parseInlineValue,
+	parseRisk,
+	parseScalar,
+	tokenizeKeyValue,
+	tokenizeListItem,
+} from "./graph-prediction-parser-scalars.js";
+
 const FENCE_RE = /^```(?:ya?ml)?\s*$/;
 const FENCE_END_RE = /^```\s*$/;
 
@@ -74,98 +85,6 @@ function extractFences(text: string): FenceBlock[] {
 
 function isPredictionBlock(body: string): boolean {
 	return /^graph_prediction:\s*$/m.test(body);
-}
-
-interface KeyValueLine {
-	indent: number;
-	key: string;
-	rest: string;
-	/** Populated by `tokenizeBody` when block-style `- item` lines follow a
-	 *  `key:` with empty rest. The post-pass synthesizes these into a
-	 *  flow-list representation in `rest` so the downstream value parser
-	 *  doesn't need a separate code path for the two YAML forms. */
-	blockItems?: string[];
-}
-
-function tokenizeKeyValue(line: string): KeyValueLine | null {
-	if (line.trim() === "") return null;
-	const indentMatch = line.match(/^( *)/);
-	const indent = indentMatch ? indentMatch[0].length : 0;
-	const trimmed = line.slice(indent);
-	if (trimmed.startsWith("#")) return null;
-	const m = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
-	if (!m) return null;
-	return { indent, key: m[1], rest: m[2].trim() };
-}
-
-interface ParsedScalarOrList {
-	value: string | number | string[] | "unknown";
-	formatViolation: boolean;
-}
-
-function parseScalar(text: string): string | number {
-	if (/^-?\d+$/.test(text)) return Number.parseInt(text, 10);
-	if (/^-?\d*\.\d+$/.test(text)) return Number.parseFloat(text);
-	if (
-		(text.startsWith('"') && text.endsWith('"')) ||
-		(text.startsWith("'") && text.endsWith("'"))
-	) {
-		return text.slice(1, -1);
-	}
-	return text;
-}
-
-function splitInlineList(text: string): string[] {
-	const parts: string[] = [];
-	const buffer: string[] = [];
-	const flush = (): void => {
-		const piece = buffer.join("").trim();
-		if (piece) parts.push(piece);
-		buffer.length = 0;
-	};
-	let inQuote: '"' | "'" | null = null;
-	for (let j = 0; j < text.length; j++) {
-		const ch = text[j];
-		if (inQuote) {
-			if (ch === inQuote) inQuote = null;
-			buffer.push(ch);
-			continue;
-		}
-		if (ch === '"' || ch === "'") {
-			inQuote = ch;
-			buffer.push(ch);
-			continue;
-		}
-		if (ch === ",") {
-			flush();
-			continue;
-		}
-		buffer.push(ch);
-	}
-	flush();
-	return parts;
-}
-
-/** Parse the value to the right of `key:` on a single line. Recognizes
- *  inline `[a, b]` lists, bare `unknown` sentinel, quoted strings,
- *  integers, and floats. Returns format-violation when an inline list
- *  exceeds the entry cap. */
-function parseInlineValue(rest: string): ParsedScalarOrList {
-	if (rest === UNKNOWN_SENTINEL) return { value: UNKNOWN_SENTINEL, formatViolation: false };
-	if (rest === "[]") return { value: [], formatViolation: false };
-	if (rest.startsWith("[") && rest.endsWith("]")) {
-		const inner = rest.slice(1, -1).trim();
-		if (inner === "") return { value: [], formatViolation: false };
-		const items = splitInlineList(inner).map((p) => {
-			const scalar = parseScalar(p);
-			return typeof scalar === "string" ? scalar : String(scalar);
-		});
-		if (items.length > MAX_LIST_ENTRIES) {
-			return { value: items, formatViolation: true };
-		}
-		return { value: items, formatViolation: false };
-	}
-	return { value: parseScalar(rest) as string | number, formatViolation: false };
 }
 
 interface SectionParse {
@@ -280,27 +199,6 @@ function applySubsection(
 	if (field === FIELD_IMPACT && FIELD_IMPACT in parsed) acc.out.impact = parsed.impact;
 	if (parsed.formatViolation) acc.formatViolation = true;
 	return parsed.nextIndex;
-}
-
-interface ListItemLine {
-	indent: number;
-	value: string;
-}
-
-function tokenizeListItem(line: string): ListItemLine | null {
-	const indentMatch = line.match(/^( *)/);
-	const indent = indentMatch ? indentMatch[0].length : 0;
-	const trimmed = line.slice(indent);
-	if (trimmed === "-") return { indent, value: "" };
-	if (!trimmed.startsWith("- ")) return null;
-	return { indent, value: trimmed.slice(2).trim() };
-}
-
-function flowQuote(item: string): string {
-	// Wrap each block-list item in double quotes for the synthesized flow-list
-	// representation so commas/brackets inside items don't confuse the
-	// downstream `splitInlineList`. parseScalar strips the outer quote pair.
-	return `"${item.replace(/"/g, '\\"')}"`;
 }
 
 function attachListItem(
@@ -571,25 +469,4 @@ function parseImpact(
 		subfields: IMPACT_SUBFIELDS,
 	});
 	return { impact: r.state, formatViolation: r.formatViolation, nextIndex: r.nextIndex };
-}
-
-const RISK_VALUES = new Set<"low" | "medium" | "high" | typeof UNKNOWN_SENTINEL>([
-	"low",
-	"medium",
-	"high",
-	UNKNOWN_SENTINEL,
-]);
-
-function parseRisk(text: string): "low" | "medium" | "high" | typeof UNKNOWN_SENTINEL {
-	if (RISK_VALUES.has(text as "low" | "medium" | "high" | typeof UNKNOWN_SENTINEL)) {
-		return text as "low" | "medium" | "high" | typeof UNKNOWN_SENTINEL;
-	}
-	return UNKNOWN_SENTINEL;
-}
-
-function parseCount(text: string): number | typeof UNKNOWN_SENTINEL {
-	if (text === UNKNOWN_SENTINEL) return UNKNOWN_SENTINEL;
-	const n = Number.parseInt(text, 10);
-	if (!Number.isFinite(n)) return UNKNOWN_SENTINEL;
-	return n;
 }

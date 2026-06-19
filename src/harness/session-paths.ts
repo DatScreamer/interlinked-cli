@@ -96,6 +96,21 @@ export function cleanupOrphans(repoRoot: string): DiscoveredDaemon[] {
 	return cleaned;
 }
 
+/**
+ * Return the PID owning `pidPath` when a LIVE, foreign process holds it,
+ * else null. "Foreign" = not this process. Used as a pre-bind guard so a
+ * second daemon start (or a stray `import('server.js')`, which runs the
+ * startup as a side effect) refuses to unlink + rebind a socket a live
+ * daemon already owns — the raw-socket analogue of the framed daemon's
+ * PID-aware check in `session-daemon.ts`. A stale pid file (dead process)
+ * returns null, so normal restarts after a crash proceed.
+ */
+export function liveForeignDaemonPid(pidPath: string): number | null {
+	const pid = readPidFile(pidPath);
+	if (pid === null || pid === process.pid) return null;
+	return isProcessAlive(pid) ? pid : null;
+}
+
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------

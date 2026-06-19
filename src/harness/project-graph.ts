@@ -16,6 +16,8 @@ import { extractInterfaceBodies } from "./project-graph/interface-bodies.js";
 import { parseExports } from "./project-graph/parser-exports.js";
 import { parseImports } from "./project-graph/parser-imports.js";
 import { resolveImportPath } from "./project-graph/resolve.js";
+import { findCyclesThroughGraph } from "./project-graph-cycles.js";
+import { computeReachabilityVerdict } from "./project-graph-reachability.js";
 import type {
 	ExportedSymbol,
 	ImportEdge,
@@ -29,6 +31,7 @@ export { extractInterfaceBodies } from "./project-graph/interface-bodies.js";
 export { parseExports } from "./project-graph/parser-exports.js";
 export { parseImports } from "./project-graph/parser-imports.js";
 export { resolveImportPath, tryResolveFile } from "./project-graph/resolve.js";
+export { REACHABILITY_DEPTH_CAP } from "./project-graph-reachability.js";
 
 // ===========================================
 // Skip Directories
@@ -66,18 +69,6 @@ const SKIP_DIRS = new Set([
 ]);
 
 const TS_JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
-
-/**
- * Maximum BFS depth for `isFileReachableFromEntryPoints`. Empirically a
- * 1000-file repo with typical depth-of-imports under 10 never needs more
- * than ~15 hops; the cap is set well above that so the structural rule
- * (no pathological deep chains) does the limiting, not this number.
- *
- * Public API — exported so the Phase A2 tests and the Phase B
- * endpoint-security pack can assert against the cap value without
- * hard-coding it.
- */
-export const REACHABILITY_DEPTH_CAP = 25;
 
 // ===========================================
 // Project Graph
@@ -232,7 +223,6 @@ export class ProjectGraph {
 	isFileReachableFromEntryPoints(file: string, entryPoints: string[]): ReachabilityVerdict {
 		const target = this.toAbsolute(file);
 		const entryAbs = entryPoints.map((p) => this.toAbsolute(p));
-		const considered = [...entryAbs];
 
 		// Self-reachability shortcut: if the target is an entry point.
 		const entrySet = new Set(entryAbs);
@@ -241,7 +231,7 @@ export class ProjectGraph {
 				reachable: true,
 				distance: 0,
 				path: [target],
-				entry_points_considered: considered,
+				entry_points_considered: [...entryAbs],
 			};
 		}
 
@@ -249,67 +239,9 @@ export class ProjectGraph {
 		const cached = this.reachabilityMemo.get(memoKey);
 		if (cached) return cached;
 
-		// Backward BFS from target along reverseGraph until we hit any
-		// entry point or exhaust / hit depth cap. Tracks parent pointers
-		// so we can reconstruct the shortest path on success.
-		const parents = new Map<string, string>();
-		const distances = new Map<string, number>([[target, 0]]);
-		const queue: string[] = [target];
-		let depthCapHit = false;
-		let head = 0;
-		let foundEntry: string | null = null;
-
-		while (head < queue.length) {
-			const current = queue[head++];
-			const currentDist = distances.get(current) ?? 0;
-			if (currentDist >= REACHABILITY_DEPTH_CAP) {
-				depthCapHit = true;
-				continue;
-			}
-			const parentsOfCurrent = this.reverseGraph.get(current);
-			if (!parentsOfCurrent) continue;
-			for (const parent of parentsOfCurrent) {
-				if (distances.has(parent)) continue;
-				distances.set(parent, currentDist + 1);
-				parents.set(parent, current);
-				if (entrySet.has(parent)) {
-					foundEntry = parent;
-					break;
-				}
-				queue.push(parent);
-			}
-			if (foundEntry) break;
-		}
-
-		let verdict: ReachabilityVerdict;
-		if (foundEntry) {
-			// Reconstruct path: entry → ... → target.
-			const reversedPath: string[] = [foundEntry];
-			let cursor: string | undefined = foundEntry;
-			while (cursor && cursor !== target) {
-				const next: string | undefined = parents.get(cursor);
-				if (!next) break;
-				reversedPath.push(next);
-				cursor = next;
-			}
-			verdict = {
-				reachable: true,
-				distance: reversedPath.length - 1,
-				path: reversedPath,
-				entry_points_considered: considered,
-			};
-		} else {
-			if (depthCapHit && process.env.INTERLINKED_VERBOSE === "1") {
-				console.error(
-					`[project-graph] reachability depth cap (${REACHABILITY_DEPTH_CAP}) hit for ${this.toRelative(target)}`,
-				);
-			}
-			verdict = {
-				reachable: false,
-				entry_points_considered: considered,
-			};
-		}
-
+		const verdict = computeReachabilityVerdict(target, entryAbs, this.reverseGraph, (p) =>
+			this.toRelative(p),
+		);
 		this.reachabilityMemo.set(memoKey, verdict);
 		return verdict;
 	}
@@ -360,36 +292,7 @@ export class ProjectGraph {
 	 * Returns arrays of file paths forming each cycle, or empty if none.
 	 */
 	findCyclesThrough(filePath: string): string[][] {
-		const absPath = this.toAbsolute(filePath);
-		const cycles: string[][] = [];
-		const visited = new Set<string>();
-
-		const dfs = (current: string, path: string[]): void => {
-			if (path.length > 1 && current === absPath) {
-				cycles.push([...path, current]);
-				return;
-			}
-			if (visited.has(current)) return;
-			if (path.length > 15) return; // Limit depth to avoid pathological cases
-
-			visited.add(current);
-			const edges = this.importGraph.get(current) || [];
-			for (const edge of edges) {
-				if (edge.toFile) {
-					dfs(edge.toFile, [...path, current]);
-				}
-			}
-			visited.delete(current);
-		};
-
-		const startEdges = this.importGraph.get(absPath) || [];
-		for (const edge of startEdges) {
-			if (edge.toFile) {
-				dfs(edge.toFile, [absPath]);
-			}
-		}
-
-		return cycles;
+		return findCyclesThroughGraph(this.toAbsolute(filePath), this.importGraph);
 	}
 
 	/** Get previous interface/type bodies for a file (for change comparison) */

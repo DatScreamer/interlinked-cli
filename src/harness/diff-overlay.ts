@@ -152,6 +152,15 @@ export function isTscFindingBlocking(f: CheckResult): boolean {
 	return !TSC_WARN_ONLY_CODES.has(f.ruleId ?? "");
 }
 
+/** A relative-import module-not-found (TS2307 for `./` or `../`). Its presence
+ *  in a proposed file's diagnostics marks the TDD red step: the file references
+ *  a sibling module not yet written (a test before its impl). `_`-prefixed so a
+ *  unit test can pin it. */
+const RELATIVE_MODULE_NOT_FOUND = /Cannot find module ['"]\.\.?\//;
+export function _isRelativeModuleNotFound(f: CheckResult): boolean {
+	return RELATIVE_MODULE_NOT_FOUND.test(f.message ?? "");
+}
+
 /**
  * Evaluate whether the proposed overlay content introduces new tsc
  * diagnostics relative to the file on disk.
@@ -167,6 +176,7 @@ export function evaluateTscDiffOverlay(
 	filePath: string,
 	proposedContent: string,
 	projectRoot: string,
+	siblings?: ReadonlyArray<{ filePath: string; content: string }>,
 ): DiffOverlayResult {
 	const empty: DiffOverlayResult = {
 		newFindings: [],
@@ -197,12 +207,27 @@ export function evaluateTscDiffOverlay(
 	}
 
 	const start = Date.now();
-	const overlay = engine.getTscDiagnosticsForOverlay(filePath, proposedContent);
+	// Overlay the other in-flight batch files (siblings) so a transactional
+	// multi-file edit's cross-file references resolve against the proposed
+	// combined state. The pre-edit baseline above stays disk-only, so new
+	// findings are correctly attributed to the batch, not pre-existing state.
+	const overlay = engine.getTscDiagnosticsForOverlay(filePath, proposedContent, siblings);
 	const elapsedMs = Date.now() - start;
 	const exceededBudget = elapsedMs > TSC_BUDGET_MS;
 
 	const preKeys = new Set(preEdit.map(diagKey));
 	const newFindings = overlay.filter((r) => !preKeys.has(diagKey(r)));
+
+	// TDD red-step tolerance: if the proposed content references a sibling
+	// module that doesn't resolve yet (a test written before its impl), every
+	// symbol from that import is `any`, cascading into spurious implicit-any /
+	// unknown errors. Blocking here punishes the exact test-first step the TDD
+	// gate requires — the friction that forces agents into `write --batch`.
+	// Suppress this file's introduced findings; the next edit (the impl, or a
+	// batch overlaying it) resolves the import and re-validates everything.
+	if (overlay.some(_isRelativeModuleNotFound)) {
+		return { newFindings: [], elapsedMs, exceededBudget };
+	}
 
 	return { newFindings, elapsedMs, exceededBudget };
 }

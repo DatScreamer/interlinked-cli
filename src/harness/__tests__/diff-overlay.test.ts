@@ -5,7 +5,32 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { evaluateBiomeDiffOverlay } from "../diff-overlay.js";
+import { _isRelativeModuleNotFound, evaluateBiomeDiffOverlay } from "../diff-overlay.js";
+
+type Diag = Parameters<typeof _isRelativeModuleNotFound>[0];
+const diag = (message: string): Diag => ({ message }) as Diag;
+
+describe("_isRelativeModuleNotFound — TDD red-step detection", () => {
+	it("matches a relative sibling module-not-found", () => {
+		expect(
+			_isRelativeModuleNotFound(diag("Cannot find module './corpus.js' or its type declarations.")),
+		).toBe(true);
+	});
+	it("matches a parent-relative module-not-found", () => {
+		expect(_isRelativeModuleNotFound(diag("Cannot find module '../types.js'."))).toBe(true);
+	});
+	it("does NOT match a bare package module-not-found", () => {
+		expect(_isRelativeModuleNotFound(diag("Cannot find module 'react'."))).toBe(false);
+	});
+	it("does NOT match an unrelated implicit-any diagnostic", () => {
+		expect(_isRelativeModuleNotFound(diag("Parameter 'x' implicitly has an 'any' type."))).toBe(
+			false,
+		);
+	});
+	it("handles a missing message field", () => {
+		expect(_isRelativeModuleNotFound({} as Diag)).toBe(false);
+	});
+});
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
 // `src/harness/__tests__`), and that is exactly the `projectRoot` the overlay is

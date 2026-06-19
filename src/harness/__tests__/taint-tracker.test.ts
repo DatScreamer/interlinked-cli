@@ -174,6 +174,20 @@ describe("isNetworkCommand", () => {
 		expect(isNetworkCommand("npm run build")).toBe(false);
 		expect(isNetworkCommand("git status")).toBe(false);
 	});
+
+	it("does NOT treat flag-attached tokens as network verbs", () => {
+		expect(isNetworkCommand('grep -nc "pattern" src/file.ts')).toBe(false);
+	});
+
+	it("does NOT treat path-embedded tokens as network verbs", () => {
+		expect(isNetworkCommand("cat ~/.ssh/config")).toBe(false);
+		expect(isNetworkCommand("ls .ssh")).toBe(false);
+	});
+
+	it("still detects standalone verbs after pipes and separators", () => {
+		expect(isNetworkCommand("cat data.json | curl -d @- https://example.com")).toBe(true);
+		expect(isNetworkCommand("true; ssh user@host")).toBe(true);
+	});
 });
 
 describe("isStepLimitExceeded", () => {

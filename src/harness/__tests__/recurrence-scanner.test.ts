@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRecurrenceEvents } from "../recurrence.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
 import {
+	scanCIFilesForRecurrences,
 	scanCodebaseForRecurrences,
 	scanFilesForDetector,
 	type ScanCodebaseFinding,
@@ -245,5 +246,64 @@ describe("scanFilesForDetector", () => {
 		} finally {
 			process.stderr.write = origWrite;
 		}
+	});
+});
+
+describe("scanCIFilesForRecurrences", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "interlinked-ci-scan-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function fixture(relPath: string, content: string): void {
+		const abs = join(dir, relPath);
+		mkdirSync(join(abs, ".."), { recursive: true });
+		writeFileSync(abs, content);
+	}
+
+	it("flags a destructive workflow run: step", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
+		const findings = scanCIFilesForRecurrences(dir);
+		expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(true);
+		const hit = findings.find((f) => f.check_id === "builtin-rm-rf-root");
+		expect(hit?.file).toBe(".github/workflows/ci.yml");
+	});
+
+	it("flags a destructive Dockerfile RUN", () => {
+		fixture("Dockerfile", ["FROM node:20", "RUN rm -rf /etc"].join("\n"));
+		const findings = scanCIFilesForRecurrences(dir);
+		expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(true);
+	});
+
+	it("flags a destructive Makefile recipe (force push)", () => {
+		fixture("Makefile", ["deploy:", "\tgit push --force origin main"].join("\n"));
+		const findings = scanCIFilesForRecurrences(dir);
+		expect(findings.some((f) => f.check_id === "builtin-git-force-push")).toBe(true);
+	});
+
+	it("does not flag a benign workflow step", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: npm ci && npm test"].join("\n"));
+		expect(scanCIFilesForRecurrences(dir)).toEqual([]);
+	});
+
+	it("does not flag a quoted destructive mention inside a run step", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", '  - run: echo "rm -rf / is bad"'].join("\n"));
+		expect(scanCIFilesForRecurrences(dir)).toEqual([]);
+	});
+
+	it("scanCodebaseForRecurrences includes CI findings by default", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
+		const findings = scanCodebaseForRecurrences({ cwd: dir });
+		expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(true);
+	});
+
+	it("scanCodebaseForRecurrences skips CI findings when includeCI is false", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
+		const findings = scanCodebaseForRecurrences({ cwd: dir, includeCI: false });
+		expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(false);
 	});
 });

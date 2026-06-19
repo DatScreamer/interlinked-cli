@@ -8,13 +8,22 @@
 // cap; the public API is re-exported from `behavioral-checks.ts` so all
 // importers are unchanged.
 
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
-import { isTypeOnlyModule, stripCommentsAndStrings } from "./checks/shared.js";
-import { hasTddExemptDirective, isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
-import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
-import { isCodeFile } from "./verification-stop-checks.js";
+import { isTypeOnlyModule } from "./checks/shared.js";
+import { isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
+import type { CheckResultEntry, SessionTrajectory } from "./types.js";
+import { checkAssertionDensity, countAssertions } from "./behavioral-checks-tdd-assertions.js";
+import {
+	checkProdTestLocRatio,
+	gitNumstatDelta,
+	type LocDelta,
+} from "./behavioral-checks-tdd-loc-ratio.js";
+
+export { checkAssertionDensity, countAssertions };
+export { checkProdTestLocRatio, gitNumstatDelta };
+export type { LocDelta };
 
 // ---- Helpers ----
 
@@ -237,7 +246,6 @@ function isTypeOnlySourceFile(filePath: string): boolean {
 	}
 }
 
-const PROD_TEST_LOC_RATIO_LIMIT = 5;
 const TPP_LEAPFROG_THRESHOLD = 2;
 
 // "Heavy" TPP transformations — high priority in the TPP list. Introducing
@@ -430,269 +438,4 @@ function anyEditedTestUsesSourceExports(testFiles: string[], sourceFile: string)
 
 function escapeRe(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Lines added + deleted, split by prod vs test path. */
-export interface LocDelta {
-	prodLoc: number;
-	testLoc: number;
-}
-
-/**
- * Compute LOC delta covering BOTH tracked changes (`git diff --numstat HEAD`)
- * AND untracked-but-not-ignored files (counted at full line count, since
- * they're entirely new). Counts added + deleted for tracked files so a
- * 50-line refactor registers as 100 churn — that's what the ratio gate
- * cares about (proportional test coverage of touched code).
- *
- * Three-bucket classification: a path counts toward testLoc if it matches
- * the test convention, prodLoc if it's a known code-file extension, and
- * is dropped otherwise. The third bucket exists because the previous
- * bipartite split routed every non-test path into prodLoc — docs
- * (CLAUDE.md), JSON data, lockfiles, and shell-script bootstraps then
- * tripped the "wrote N lines of production code with no tests" warning
- * on doc-only sessions. `isCodeFile` is the shared positive predicate
- * used by the Stop-event verification nudges.
- *
- * The untracked path matters because `git diff` doesn't see new files
- * before they're staged, and the gate fires at PreToolUse time on
- * `git add ... && git commit ...` — before staging happens. Without
- * untracked accounting, a brand-new test file wouldn't count.
- *
- * Returns zeroes on any failure (not in a repo, no HEAD, git missing).
- */
-export function gitNumstatDelta(cwd: string = process.cwd()): LocDelta {
-	let prodLoc = 0;
-	let testLoc = 0;
-	try {
-		const numstat = execSync("git diff --numstat HEAD", {
-			cwd,
-			encoding: "utf-8",
-			timeout: 3000,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		for (const line of numstat.split("\n")) {
-			const parts = line.split("\t");
-			if (parts.length < 3) continue;
-			const added = Number.parseInt(parts[0], 10);
-			const deleted = Number.parseInt(parts[1], 10);
-			if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue;
-			const path = parts[2];
-			const delta = added + deleted;
-			if (TEST_FILE_RE.test(path)) testLoc += delta;
-			else if (isCodeFile(path)) prodLoc += delta;
-			// else: docs, JSON data, lockfiles, etc. — not "production code"
-		}
-		const untracked = execSync("git ls-files --others --exclude-standard", {
-			cwd,
-			encoding: "utf-8",
-			timeout: 3000,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		for (const path of untracked.split("\n")) {
-			if (!path) continue;
-			if (!TEST_FILE_RE.test(path) && !isCodeFile(path)) continue;
-			try {
-				const content = readFileSync(join(cwd, path), "utf-8");
-				const loc = content.split("\n").length;
-				if (TEST_FILE_RE.test(path)) testLoc += loc;
-				else prodLoc += loc;
-			} catch {
-				// intentional: best-effort read; skip an unreadable untracked file.
-			}
-		}
-	} catch {
-		// intentional: git unavailable / not a repo / no HEAD — fall back to 0
-	}
-	return { prodLoc, testLoc };
-}
-
-/**
- * Commit gate: flag when prod LOC delta exceeds test LOC delta by more than
- * PROD_TEST_LOC_RATIO_LIMIT × — measured against `git diff HEAD`, NOT against
- * file totals. Touching a 1000-line file with a 2-line edit contributes 2 to
- * the delta, not 1000. The previous file-total approach made the gate fire
- * on any session that brushed a large file, even when the actual change was
- * small and well-tested.
- */
-export function checkProdTestLocRatio(
-	session: SessionTrajectory,
-	getDelta: () => LocDelta = gitNumstatDelta,
-): CheckResultEntry[] {
-	void session; // signature kept for symmetry with other commit gates
-	const { prodLoc, testLoc } = getDelta();
-	if (testLoc === 0 && prodLoc === 0) return [];
-	if (testLoc === 0) {
-		return [
-			{
-				source: "structural",
-				name: "prod_test_loc_ratio",
-				severity: "warning",
-				message: `Wrote ${prodLoc} lines of production code this session with no tests written. Add tests before committing.`,
-				file: "<session>",
-				determinism: "heuristic",
-			},
-		];
-	}
-	const ratio = prodLoc / testLoc;
-	if (ratio > PROD_TEST_LOC_RATIO_LIMIT) {
-		return [
-			{
-				source: "structural",
-				name: "prod_test_loc_ratio",
-				severity: "warning",
-				message: `Prod/test LOC ratio is ${ratio.toFixed(1)}:1 (limit ${PROD_TEST_LOC_RATIO_LIMIT}:1). Production code is growing faster than test coverage.`,
-				file: "<session>",
-				determinism: "heuristic",
-			},
-		];
-	}
-	return [];
-}
-
-// ---- Assertion density (delta-based; called outside runBehavioralChecks) ----
-
-// Matches plain `it(`, `test(`, `specify(` AND the chained variants vitest /
-// jest expose: `.each`, `.only`, `.skip`, `.concurrent`, `.skipIf`, `.runIf`,
-// `.todo`, `.failing`, `.sequential`. Also accepts the table-form
-// `it.each([...])\`...\`(` so each tagged-template case counts as one block.
-// Matching is on the call-site, not the chain — `.each` followed by `(...)`
-// is one block; without that we'd miss every data-driven test in the repo.
-const TEST_BLOCK_RE =
-	/\b(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*(?:\([^)]*\)\s*)?(?:\(\s*['"`]|`+\s*\()/g;
-
-// Default regex stays narrow on purpose — bare `ok(`, `match(`, `equal(`,
-// `fail(` would false-positive on jQuery's `.match()`, lodash's `_.equal`,
-// business-logic helpers, etc. Named-import awareness (below) handles
-// `node:assert` cases properly without false-positives.
-const ASSERTION_RE =
-	/\b(?:expect|assert|chai\.assert|should|sinon\.assert|toMatchSnapshot|toMatchInlineSnapshot)\s*[(.]/g;
-
-// Names that are unambiguous as Node:assert calls only when imported from
-// `node:assert` / `assert`. Detected from the import statement, then matched
-// in the body. Drops the bare-name FP risk.
-const NODE_ASSERT_NAMES = [
-	"strictEqual",
-	"deepStrictEqual",
-	"notStrictEqual",
-	"notDeepStrictEqual",
-	"deepEqual",
-	"notEqual",
-	"ifError",
-	"doesNotThrow",
-	"doesNotMatch",
-	"throws",
-	"rejects",
-	"fail",
-	"match",
-	"ok",
-	"equal",
-] as const;
-
-const NODE_ASSERT_IMPORT_RE =
-	/import\s*(?:type\s+)?\{([^}]+)\}\s*from\s*['"](?:node:)?assert(?:\/strict)?['"]/g;
-
-function importedAssertNames(content: string): Set<string> {
-	const out = new Set<string>();
-	NODE_ASSERT_IMPORT_RE.lastIndex = 0;
-	let m: RegExpExecArray | null = NODE_ASSERT_IMPORT_RE.exec(content);
-	while (m !== null) {
-		for (const raw of m[1].split(",")) {
-			// Handle `strictEqual as eq` rename — credit the local binding.
-			const local = (raw.split(/\s+as\s+/i)[1] ?? raw).trim();
-			if (
-				local &&
-				NODE_ASSERT_NAMES.includes(local as (typeof NODE_ASSERT_NAMES)[number])
-			) {
-				out.add(local);
-			} else if (local) {
-				const src = raw.split(/\s+as\s+/i)[0]?.trim();
-				if (
-					src &&
-					NODE_ASSERT_NAMES.includes(src as (typeof NODE_ASSERT_NAMES)[number])
-				) {
-					out.add(local);
-				}
-			}
-		}
-		m = NODE_ASSERT_IMPORT_RE.exec(content);
-	}
-	return out;
-}
-
-export function countAssertions(rawContent: string): AssertionCounts {
-	// Strip comments + strings so a comment that mentions `expect(` or a
-	// string containing `assert.ok(` doesn't inflate counts.
-	const stripped = stripCommentsAndStrings(rawContent);
-
-	TEST_BLOCK_RE.lastIndex = 0;
-	ASSERTION_RE.lastIndex = 0;
-
-	const blocks = (stripped.match(TEST_BLOCK_RE) || []).length;
-	let assertions = (stripped.match(ASSERTION_RE) || []).length;
-
-	// Named-import credit — only for names actually imported from node:assert.
-	// Use the *raw* content for import detection (strip can mangle import
-	// specifier strings); use the *stripped* content for call-site matching.
-	const named = importedAssertNames(rawContent);
-	if (named.size > 0) {
-		const namedRe = new RegExp(`\\b(?:${[...named].join("|")})\\s*\\(`, "g");
-		assertions += (stripped.match(namedRe) || []).length;
-	}
-
-	return { blocks, assertions };
-}
-
-/**
- * Detect test files where the agent added `it()`/`test()` blocks without
- * adding any assertions. Heuristic, warning-severity, session-delta-based:
- * the first sight of any test file silently establishes baseline; the check
- * fires on the *second* same-session edit when blocks grew but assertions
- * did not.
- *
- * Brand-new assertion-free test files are an accepted blind spot — see
- * `docs/plans/09-local-runtime-quality-hooks.md` (Failure modes table).
- * `tdd_new_file_gate` does NOT cover this case (it exempts test files at
- * `evaluator/tdd-new-file-gate.ts:35-48`); Plan 10 (mutation testing)
- * catches it asynchronously.
- */
-export function checkAssertionDensity(
-	session: SessionTrajectory,
-	filePath: string,
-	content: string,
-): CheckResultEntry | null {
-	if (!TEST_FILE_RE.test(filePath)) return null;
-	if (hasTddExemptDirective(content)) return null;
-
-	const after = countAssertions(content);
-	const before = session.assertion_counts.get(filePath);
-
-	// Always refresh the cache — every visit becomes the new baseline for
-	// the *next* edit's delta.
-	session.assertion_counts.set(filePath, after);
-
-	// First time we see this file in the session: silently establish
-	// baseline. Firing on `before === undefined` would false-positive on
-	// every pre-existing assertion-free test the agent touches.
-	if (before === undefined) return null;
-
-	const dBlocks = after.blocks - before.blocks;
-	const dAssertions = after.assertions - before.assertions;
-
-	if (dBlocks > 0 && dAssertions <= 0) {
-		const assertionPart =
-			dAssertions === 0
-				? "0 new assertions"
-				: `${-dAssertions} fewer assertion${-dAssertions === 1 ? "" : "s"}`;
-		return {
-			source: "structural",
-			name: "assertion_density",
-			severity: "warning",
-			message: `Added ${dBlocks} test block(s) with ${assertionPart}. Each it()/test() block typically needs at least one expect()/assert*() call.`,
-			file: filePath,
-			determinism: "heuristic",
-		};
-	}
-
-	return null;
 }

@@ -30,7 +30,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getChangedFilesSince, getHeadCommit, getTrackedFiles } from "./trigram-git.js";
+import { getHeadCommit, getTrackedFiles } from "./trigram-git.js";
 import {
 	computeIndexStats,
 	loadIndex,
@@ -38,19 +38,28 @@ import {
 	saveIndex,
 } from "./trigram-index-serialization.js";
 import {
-	binarySearchU32,
 	DEFAULT_MAX_FILE_SIZE,
 	DEFAULT_STOP_THRESHOLD,
-	EARLY_TERMINATION_THRESHOLD,
-	extractTrigrams,
 	extractTrigramsWithMasks,
 	type IndexBuildOptions,
 	type IndexStats,
 	isBinaryContent,
-	nextCharBit,
 	type PostingList,
 	shouldSkipFile,
 } from "./trigram-primitives.js";
+import {
+	queryCandidatePaths as queryCandidatePathsImpl,
+	queryIndex,
+	type QueryView,
+} from "./trigram-index-query.js";
+import {
+	clearDirtyState,
+	dirtyFileCount,
+	incrementalUpdateState,
+	isDirtyState,
+	type MutableIndexView,
+	updateFileInState,
+} from "./trigram-index-mutation.js";
 
 // Re-export the primitives so existing importers of ./trigram-index.js keep
 // working unchanged (public API is preserved across the decomposition).
@@ -226,220 +235,32 @@ export class TrigramIndex {
 	// Querying
 	// ===========================================
 
-	/**
-	 * Query the index with a set of required trigrams.
-	 * Returns file IDs that contain ALL non-stop trigrams.
-	 * If all trigrams are stop trigrams or none provided, returns all files.
-	 *
-	 * @param requiredTrigrams - Trigrams that must all appear in matching files
-	 * @param trigramSequences - Ordered sequences of consecutive trigrams for adjacency checking
-	 */
+	/** Query the index for file IDs containing all required (non-stop) trigrams. */
 	query(requiredTrigrams: number[], trigramSequences?: number[][]): Set<number> {
-		// Filter out stop trigrams — they match too many files to be useful
-		const usable = requiredTrigrams.filter((t) => !this.stopTrigrams.has(t));
-
-		if (usable.length === 0) {
-			// No usable trigrams — every file is a candidate
-			return this.getAllFileIds();
-		}
-
-		// Sort by posting list size (smallest first) for fastest intersection
-		usable.sort((a, b) => this.getPostingSize(a) - this.getPostingSize(b));
-
-		let result: Set<number> | null = null;
-
-		for (const tri of usable) {
-			const candidates = this.getCandidatesForTrigram(tri);
-
-			if (candidates.size === 0) {
-				return new Set(); // definitive miss — no file has this trigram
-			}
-
-			if (result === null) {
-				result = candidates;
-			} else {
-				// Intersect: keep only IDs in both sets. Snapshot first so the
-				// delete never mutates the Set we are iterating.
-				for (const id of [...result]) {
-					if (!candidates.has(id)) {
-						result.delete(id);
-					}
-				}
-			}
-
-			if (result.size === 0) return result; // early exit
-
-			// Early termination: candidate set small enough, further intersection unlikely to help
-			if (result.size <= EARLY_TERMINATION_THRESHOLD) break;
-		}
-
-		result = result ?? this.getAllFileIds();
-
-		// Adjacency filtering using probabilistic masks
-		if (trigramSequences && trigramSequences.length > 0 && result.size > 0) {
-			const filtered = this.filterByAdjacency(result, trigramSequences);
-			// Only use filtered result if it's non-empty (avoid false-negative wipeout)
-			if (filtered.size > 0) {
-				result = filtered;
-			}
-		}
-
-		return result;
+		return queryIndex(this.view(), requiredTrigrams, trigramSequences);
 	}
 
-	/**
-	 * Query and return candidate file paths (relative to cwd).
-	 */
+	/** Query and return candidate file paths (relative to cwd). */
 	queryCandidatePaths(requiredTrigrams: number[], trigramSequences?: number[][]): string[] {
-		const ids = this.query(requiredTrigrams, trigramSequences);
-		const paths: string[] = [];
-		for (const id of ids) {
-			const p = this.getFilePath(id);
-			if (p) paths.push(p);
-		}
-		return paths;
+		return queryCandidatePathsImpl(this.view(), requiredTrigrams, trigramSequences);
+	}
+
+	/** Shared structural view fed to the query + mutation free functions (no back-import). */
+	private view(): QueryView & MutableIndexView {
+		return {
+			files: this.files,
+			postings: this.postings,
+			stopTrigrams: this.stopTrigrams,
+			fileToId: this.fileToId,
+			dirtyOverrides: this.dirtyOverrides,
+			dirtyNewFiles: this.dirtyNewFiles,
+			allocFileId: () => this.nextFileId++,
+		};
 	}
 
 	/** Get the total number of indexed files (base + dirty new) */
 	get totalFiles(): number {
 		return this.files.length + this.dirtyNewFiles.size;
-	}
-
-	// ===========================================
-	// Adjacency Filtering
-	// ===========================================
-
-	/**
-	 * Filter candidates by verifying that consecutive trigrams in query sequences
-	 * are actually adjacent in the file (using locMask and nextMask bloom filters).
-	 */
-	private filterByAdjacency(candidates: Set<number>, sequences: number[][]): Set<number> {
-		const filtered = new Set<number>();
-		for (const fileId of candidates) {
-			if (this.passesAdjacencyCheck(fileId, sequences)) {
-				filtered.add(fileId);
-			}
-		}
-		return filtered;
-	}
-
-	private passesAdjacencyCheck(fileId: number, sequences: number[][]): boolean {
-		for (const seq of sequences) {
-			if (seq.length < 2) continue; // single trigram, no adjacency to check
-
-			for (let i = 0; i < seq.length - 1; i++) {
-				const triA = seq[i];
-				const triB = seq[i + 1];
-
-				// Skip check for stop trigrams (no masks available)
-				if (this.stopTrigrams.has(triA) || this.stopTrigrams.has(triB)) continue;
-
-				const masksA = this.getMasksForFile(triA, fileId);
-				const masksB = this.getMasksForFile(triB, fileId);
-				if (!masksA || !masksB) continue; // not in base postings, skip
-
-				// Position adjacency: rotate A's locMask left by 1, must overlap with B's
-				const rotated = ((masksA.locMask << 1) | (masksA.locMask >>> 7)) & 0xff;
-				if ((rotated & masksB.locMask) === 0) return false;
-
-				// Next-char check: the 3rd char of triB should be in A's nextMask
-				const thirdCharOfB = triB & 0xff; // lowest byte = 3rd character
-				if ((masksA.nextMask & nextCharBit(thirdCharOfB)) === 0) return false;
-			}
-		}
-		return true;
-	}
-
-	/**
-	 * Look up the locMask and nextMask for a specific (trigram, fileId) pair.
-	 * Returns null if the trigram is not in the base postings for this file.
-	 */
-	private getMasksForFile(
-		trigram: number,
-		fileId: number,
-	): { locMask: number; nextMask: number } | null {
-		// Check dirty override first
-		if (this.dirtyOverrides.has(fileId)) {
-			// Dirty files don't have masks — skip adjacency for them
-			return null;
-		}
-
-		// Check dirty new files
-		for (const entry of this.dirtyNewFiles.values()) {
-			if (entry.id === fileId) return null; // dirty new file, no masks
-		}
-
-		// Check base postings
-		const posting = this.postings.get(trigram);
-		if (!posting) return null;
-
-		const idx = binarySearchU32(posting.fileIds, fileId);
-		if (idx < 0) return null;
-
-		return { locMask: posting.locMasks[idx], nextMask: posting.nextMasks[idx] };
-	}
-
-	// ===========================================
-	// Private Query Helpers
-	// ===========================================
-
-	/** Get file path for a file ID */
-	private getFilePath(id: number): string | undefined {
-		if (id < this.files.length) {
-			return this.files[id];
-		}
-		// Check dirty new files
-		for (const [path, entry] of this.dirtyNewFiles) {
-			if (entry.id === id) return path;
-		}
-		return undefined;
-	}
-
-	/** Get all file IDs (base + dirty, excluding deleted) */
-	private getAllFileIds(): Set<number> {
-		const ids = new Set<number>();
-		for (let i = 0; i < this.files.length; i++) {
-			if (this.dirtyOverrides.get(i) !== null || !this.dirtyOverrides.has(i)) {
-				ids.add(i);
-			}
-		}
-		for (const entry of this.dirtyNewFiles.values()) {
-			ids.add(entry.id);
-		}
-		return ids;
-	}
-
-	/** Get candidates for a single trigram, merging base + dirty */
-	private getCandidatesForTrigram(trigram: number): Set<number> {
-		const candidates = new Set<number>();
-
-		// Add from base posting list (skipping overridden files)
-		const basePostings = this.postings.get(trigram);
-		if (basePostings) {
-			for (const id of basePostings.fileIds) {
-				if (this.dirtyOverrides.has(id)) continue; // handled below
-				candidates.add(id);
-			}
-		}
-
-		// Handle dirty overrides: files whose trigrams have been recomputed
-		for (const [id, trigrams] of this.dirtyOverrides) {
-			if (trigrams === null) continue; // deleted file
-			if (trigrams.has(trigram)) candidates.add(id);
-		}
-
-		// Handle dirty new files
-		for (const entry of this.dirtyNewFiles.values()) {
-			if (entry.trigrams.has(trigram)) candidates.add(entry.id);
-		}
-
-		return candidates;
-	}
-
-	/** Get posting list size (for sort order optimization) */
-	private getPostingSize(trigram: number): number {
-		const base = this.postings.get(trigram);
-		return base ? base.fileIds.length : 0;
 	}
 
 	// ===========================================
@@ -451,50 +272,22 @@ export class TrigramIndex {
 	 * Pass null content to mark a file as deleted.
 	 */
 	updateFile(relPath: string, content: string | null): void {
-		const existingId = this.fileToId.get(relPath);
-		const dirtyNew = this.dirtyNewFiles.get(relPath);
-
-		if (content === null) {
-			// File deleted
-			if (existingId !== undefined) {
-				this.dirtyOverrides.set(existingId, null);
-			}
-			if (dirtyNew) {
-				this.dirtyNewFiles.delete(relPath);
-			}
-			return;
-		}
-
-		// Extract new trigrams
-		const trigrams = isBinaryContent(content) ? new Set<number>() : extractTrigrams(content);
-
-		if (existingId !== undefined) {
-			// Override existing file
-			this.dirtyOverrides.set(existingId, trigrams);
-		} else if (dirtyNew) {
-			// Update an already-dirty new file
-			dirtyNew.trigrams = trigrams;
-		} else {
-			// Brand new file
-			const id = this.nextFileId++;
-			this.dirtyNewFiles.set(relPath, { id, trigrams });
-		}
+		updateFileInState(this.view(), relPath, content);
 	}
 
 	/** Get the number of dirty (modified/added/deleted) files */
 	get dirtyFileCount(): number {
-		return this.dirtyOverrides.size + this.dirtyNewFiles.size;
+		return dirtyFileCount(this.view());
 	}
 
 	/** Check if the index has any dirty state */
 	get isDirty(): boolean {
-		return this.dirtyOverrides.size > 0 || this.dirtyNewFiles.size > 0;
+		return isDirtyState(this.view());
 	}
 
 	/** Clear all dirty state (e.g., after saving to disk) */
 	clearDirty(): void {
-		this.dirtyOverrides.clear();
-		this.dirtyNewFiles.clear();
+		clearDirtyState(this.view());
 	}
 
 	/**
@@ -627,37 +420,12 @@ export class TrigramIndex {
 	 * Returns the number of files updated.
 	 */
 	incrementalUpdate(): number {
-		const currentCommit = getHeadCommit(this.cwd);
-		if (currentCommit === this.baseCommit) return 0;
-
-		// If diff fails (e.g., base commit no longer exists), return 0 —
-		// a full rebuild would be needed.
-		const changedFiles = getChangedFilesSince(this.cwd, this.baseCommit);
-		if (changedFiles === null) return 0;
-
-		let updated = 0;
-		for (const relPath of changedFiles) {
-			if (shouldSkipFile(relPath)) continue;
-			const absPath = join(this.cwd, relPath);
-			try {
-				if (!existsSync(absPath)) {
-					this.updateFile(relPath, null);
-					updated++;
-					continue;
-				}
-				const buf = readFileSync(absPath);
-				if (buf.length > DEFAULT_MAX_FILE_SIZE || isBinaryContent(buf)) {
-					this.updateFile(relPath, null);
-				} else {
-					this.updateFile(relPath, buf.toString("utf-8"));
-				}
-				updated++;
-			} catch (err) {
-				void err; /* intentional: skip unreadable files during incremental rebuild */
-			}
-		}
-
-		this.baseCommit = currentCommit;
+		const { updated, newBaseCommit } = incrementalUpdateState(
+			this.cwd,
+			this.baseCommit,
+			(relPath, content) => this.updateFile(relPath, content),
+		);
+		this.baseCommit = newBaseCommit;
 		return updated;
 	}
 

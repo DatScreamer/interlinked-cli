@@ -6,6 +6,7 @@ import {
 	cleanupOrphans,
 	daemonPathsFor,
 	discoverDaemons,
+	liveForeignDaemonPid,
 	sanitizeSessionId,
 } from "./session-paths.js";
 
@@ -34,6 +35,32 @@ describe("daemonPathsFor", () => {
 	it("treats an explicit 'default' session id as the framed default socket", () => {
 		const p = daemonPathsFor("/repo", "default");
 		expect(p.socket.endsWith("/harness-default.sock")).toBe(true);
+	});
+});
+
+describe("liveForeignDaemonPid", () => {
+	it("returns null when the pid file is absent", () => {
+		expect(liveForeignDaemonPid(join(tmp, ".interlinked", "harness.pid"))).toBeNull();
+	});
+
+	it("returns null for a stale pid (dead process) so a post-crash restart proceeds", () => {
+		const p = join(tmp, ".interlinked", "harness.pid");
+		// PID 2^31-ish is effectively never live on a test host.
+		writeFileSync(p, "2147480000\n");
+		expect(liveForeignDaemonPid(p)).toBeNull();
+	});
+
+	it("returns null for our own pid (never self-trip)", () => {
+		const p = join(tmp, ".interlinked", "harness.pid");
+		writeFileSync(p, `${process.pid}\n`);
+		expect(liveForeignDaemonPid(p)).toBeNull();
+	});
+
+	it("returns the pid of a live foreign daemon (the stomp guard)", () => {
+		const p = join(tmp, ".interlinked", "harness.pid");
+		// process.ppid is alive and (in vitest) not equal to our own pid.
+		writeFileSync(p, `${process.ppid}\n`);
+		expect(liveForeignDaemonPid(p)).toBe(process.ppid);
 	});
 });
 

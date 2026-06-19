@@ -5,6 +5,7 @@
 // Once a session reads sensitive data, its label ratchets UP (never down).
 // Outbound network commands are blocked when sensitivity reaches threshold.
 
+import { shellSplit, splitSegments, stripLeadingPrefix } from "./shell-structure.js";
 import type {
 	SensitivityLevel,
 	SessionTrajectory,
@@ -77,19 +78,50 @@ export const DEFAULT_TAINT_CONFIG: TaintTrackingConfig = {
 // ===========================================
 // Network Command Detection
 // ===========================================
+// Classification is POSITIONAL — a network verb counts only as the HEAD command
+// of a shell segment (segments split on ; | && || newline), never as a
+// substring. The previous `\b(curl|…|nc|…|ssh|…)\b` regex matched `nc` inside
+// `grep -nc` and `ssh` inside `~/.ssh/config`, because `-` and `.` are
+// non-word chars so `\b` fired right before the verb (finding 2026-06, round
+// 7) — the flag-attached / path-embedded false-positive class. Tokenizing
+// through the blessed shell-structure contract is the same fix round 6 applied
+// to the coverage/install/commit classifiers; isNetworkCommand is enrolled in
+// the shared adversarial command corpus alongside them.
 
-const NETWORK_COMMANDS = /\b(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp)\b/i;
-const NETWORK_PIPE = /\|\s*(curl|wget|nc|ncat|netcat|ssh|socat)\b/i;
-const PUBLISH_COMMANDS =
-	/\b(npm\s+publish|cargo\s+publish|pip\s+upload|twine\s+upload|gem\s+push)\b/i;
+/** Verbs whose mere invocation opens a network connection. */
+const NETWORK_VERBS = new Set([
+	"curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "socat", "telnet", "ftp",
+]);
 
-/** Check if a shell command involves network communication */
+/** `head subcommand` pairs that publish to a remote registry. */
+const PUBLISH_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+	npm: new Set(["publish"]),
+	pnpm: new Set(["publish"]),
+	yarn: new Set(["publish"]),
+	cargo: new Set(["publish"]),
+	pip: new Set(["upload"]),
+	twine: new Set(["upload"]),
+	gem: new Set(["push"]),
+};
+
+/** Last path segment of a command token, so `/usr/bin/curl` reads as `curl`. */
+function commandHead(token: string): string {
+	return (token.split("/").pop() ?? token).toLowerCase();
+}
+
+/** Check if a shell command involves network communication. A verb is counted
+ *  only when it is the actual command being run in some segment — the head
+ *  token (after env/sudo prefixes strip), or a publish subcommand of it. */
 export function isNetworkCommand(command: string): boolean {
-	return (
-		NETWORK_COMMANDS.test(command) ||
-		NETWORK_PIPE.test(command) ||
-		PUBLISH_COMMANDS.test(command)
-	);
+	for (const segment of splitSegments(command)) {
+		const tokens = stripLeadingPrefix(shellSplit(segment));
+		if (tokens.length === 0) continue;
+		const head = commandHead(tokens[0]);
+		if (NETWORK_VERBS.has(head)) return true;
+		const sub = PUBLISH_SUBCOMMANDS[head];
+		if (sub && tokens[1] !== undefined && sub.has(tokens[1].toLowerCase())) return true;
+	}
+	return false;
 }
 
 // ===========================================
