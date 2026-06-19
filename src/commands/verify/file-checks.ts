@@ -16,7 +16,7 @@
 // statement order — preserved verbatim across the split.
 
 import { basename, extname, relative } from "node:path";
-
+import { isGeneratedFile } from "../../harness/checks/shared.js";
 import {
 	checkConsoleDebug,
 	checkFunctionComplexity,
@@ -28,16 +28,20 @@ import {
 	extractEnvReferences,
 	extractMockDefinitions,
 } from "../../harness/generic-checks.js";
-import { parseImports, resolveImportPath } from "../../harness/project-graph.js";
-import { findAnyTypes } from "../../harness/quality-checks.js";
-import { isGeneratedFile } from "../../harness/checks/shared.js";
 import {
 	countLines,
-	DEFAULT_MAX_LINES,
 	evaluateLargeFile,
 	isCappableFile,
 	loadLargeFileBaseline,
+	maxLinesFor,
 } from "../../harness/large-file-policy.js";
+import { parseImports, resolveImportPath } from "../../harness/project-graph.js";
+import { findAnyTypes } from "../../harness/quality-checks.js";
+import {
+	type InlineSuppressions,
+	isSuppressed,
+	scanInlineSuppressions,
+} from "../../harness/suppressions.js";
 import {
 	evaluateTestedFile,
 	hasCompanionTest,
@@ -45,27 +49,22 @@ import {
 	loadUntestedFilesBaseline,
 } from "../../harness/tested-file-policy.js";
 import { loadMetricsCoverage, type MetricsCoverage } from "../metrics.js";
-import {
-	type InlineSuppressions,
-	isSuppressed,
-	scanInlineSuppressions,
-} from "../../harness/suppressions.js";
 import { JS_TS_EXTS } from "./advisory.js";
 import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
 import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
 import { runReactAndTasteChecks } from "./file-checks-react-test.js";
-import { toIssues } from "./file-checks-shared.js";
 import type { FileCheckContext, PiiOpts } from "./file-checks-shared.js";
+import { toIssues } from "./file-checks-shared.js";
 import { runUbsChecks } from "./file-checks-ubs.js";
 import { collectSuppressionFindings } from "./suppressions.js";
-import { CQ_RESULT_KEYS } from "./tool-results-types.js";
 import type { CodeQualityIssue, CodeQualityResults } from "./tool-results-types.js";
+import { CQ_RESULT_KEYS } from "./tool-results-types.js";
 
+export type { FileCheckContext, PiiOpts };
 // Re-exported for the `file-checks-<group>.test.ts` files, which import these
 // names from `./file-checks.js`. The definitions now live in
 // `./file-checks-shared.js` to break the file-checks ↔ group-file cycle.
 export { toIssues };
-export type { FileCheckContext, PiiOpts };
 
 const JSON_EXT = ".json";
 const TS_EXT = ".ts";
@@ -195,9 +194,14 @@ function dropInlineSuppressed(
 function collectLargeFileFinding(file: string, content: string, cwd: string, relPath: string, r: CodeQualityResults): void {
 	if (!isCappableFile({ filePath: file, content })) return;
 	const baseline = loadLargeFileBaseline(cwd);
-	const verdict = evaluateLargeFile({ relPath, lines: countLines(content), baseline });
+	// The EFFECTIVE cap — `maxLinesFor` layers the `.interlinked/metric-caps.json`
+	// override (`interlinked caps set lines`) over the baseline. verify previously
+	// passed only the baseline, so a lowered cap was honored at write/nudge time
+	// but silently IGNORED here (finding 2026-06, round 8). Grandfathering still
+	// comes from `baseline.files` inside evaluateLargeFile.
+	const cap = maxLinesFor(cwd);
+	const verdict = evaluateLargeFile({ relPath, lines: countLines(content), baseline, maxLines: cap });
 	if (!verdict.overCap || verdict.grandfathered) return;
-	const cap = baseline?.max_lines ?? DEFAULT_MAX_LINES;
 	r.largeFiles.push({
 		check: "large_files",
 		file: relPath,

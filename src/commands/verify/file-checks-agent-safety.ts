@@ -12,9 +12,23 @@
 // so cross-helper ordering is invisible to output — only the per-bucket
 // statement order matters, and that is preserved verbatim.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-
+import { isAbsolute, relative, resolve } from "node:path";
+import {
+	detectArrayIterateeVariadicBuiltin,
+	detectReturnArrayPush,
+} from "../../harness/checks/array-method-misuse.js";
+import { computeCrap } from "../../harness/checks/crap.js";
+import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
+import { detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js";
+import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js";
+import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
+import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
+import {
+	coverageForFile,
+	loadCoverageFinal,
+} from "../../harness/coverage-final-reader.js";
 import {
 	checkAccumulatingSpread,
 	checkAsyncPromiseExecutor,
@@ -63,15 +77,50 @@ import {
 	checkTaintedToPrivilegedSink,
 	checkThrowLiteral,
 	checkUnsafeOptionalChaining,
+	checkUntestedIdempotent,
+	checkUntestedInversePair,
 } from "../../harness/generic-checks.js";
-import { computeCrap } from "../../harness/checks/crap.js";
-import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
-import {
-	coverageForFile,
-	loadCoverageFinal,
-} from "../../harness/coverage-final-reader.js";
 import type { FileCheckContext } from "./file-checks-shared.js";
 import { toIssues } from "./file-checks-shared.js";
+
+/**
+ * Build an `isIgnored(writtenPath)` predicate backed by `git check-ignore`.
+ *
+ * The written path is resolved relative to the directory of the file that
+ * contains the write call (so a relative literal like `"a/b/c.json"` is
+ * interpreted as the author would expect), then made repo-relative before the
+ * git query. `git check-ignore <path>` exits 0 when the path is ignored (and
+ * NO `!` negation rescues it) — that is the only "ignored" signal we trust.
+ *
+ * Fail-OPEN: any error (non-git repo, git missing, path outside cwd) returns
+ * `false` so offline / non-git trees never false-fire. The `-q` flag keeps the
+ * command quiet; we only read the exit status.
+ */
+function makeGitIgnoreResolver(
+	cwd: string,
+	containingFileAbs: string,
+): (writtenPath: string) => boolean {
+	const fileDir = resolve(containingFileAbs, "..");
+	return (writtenPath: string): boolean => {
+		try {
+			const abs = isAbsolute(writtenPath) ? writtenPath : resolve(fileDir, writtenPath);
+			const rel = relative(cwd, abs);
+			// A path that escapes the repo root (`../…`) can't be matched against
+			// this repo's .gitignore — treat as not-ignored.
+			if (rel.startsWith("..") || isAbsolute(rel)) return false;
+			execFileSync("git", ["check-ignore", "-q", "--", rel], {
+				cwd,
+				stdio: "ignore",
+			});
+			// Exit 0 → the path IS ignored.
+			return true;
+		} catch {
+			// Exit 1 (not ignored) lands here too, alongside genuine errors — both
+			// resolve to "not ignored", which is the fail-open behavior we want.
+			return false;
+		}
+	};
+}
 
 /**
  * CRAP (Change Risk Anti-Patterns) — complexity × coverage composite.
@@ -118,6 +167,12 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.deadExports.push(...toIssues("dead_exports", relPath, checkDeadExports(content, file, cwd)));
 	r.circularImports.push(
 		...toIssues("circular_imports", relPath, checkCircularImports(content, file, cwd)),
+	);
+	r.untestedInversePair.push(
+		...toIssues("untested_inverse_pair", relPath, checkUntestedInversePair(content, file, cwd)),
+	);
+	r.untestedIdempotent.push(
+		...toIssues("untested_idempotent", relPath, checkUntestedIdempotent(content, file, cwd)),
 	);
 	r.lifecycleCleanup.push(
 		...toIssues("lifecycle_cleanup", relPath, checkLifecycleCleanup(content, file)),
@@ -245,6 +300,38 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			"magic_literal_in_conditional",
 			relPath,
 			checkMagicLiteralInConditional(content, file),
+		),
+	);
+	r.nanCoercionGuard.push(
+		...toIssues("nan_coercion_guard", relPath, detectNaNCoercionGuards(content, file)),
+	);
+	r.arrayPushReturnUsed.push(
+		...toIssues("array_push_return_used", relPath, detectReturnArrayPush(content, file)),
+	);
+	r.arrayIterateeVariadicBuiltin.push(
+		...toIssues(
+			"array_iteratee_variadic_builtin",
+			relPath,
+			detectArrayIterateeVariadicBuiltin(content, file),
+		),
+	);
+	r.writeWithoutMkdir.push(
+		...toIssues("write_without_mkdir", relPath, detectWriteWithoutMkdir(content, file)),
+	);
+	r.duplicatedPolicyConstant.push(
+		...toIssues(
+			"duplicated_policy_constant",
+			relPath,
+			detectPolicyConstantDrift(content, file),
+		),
+	);
+	// gitignored_written_config — verify-only (3-arg detector needs git context).
+	// Backed by a `git check-ignore` resolver; fails open to "not ignored" off-git.
+	r.gitignoredWrittenConfig.push(
+		...toIssues(
+			"gitignored_written_config",
+			relPath,
+			detectGitignoredWrites(content, file, makeGitIgnoreResolver(cwd, file)),
 		),
 	);
 	r.asyncPromiseExecutor.push(

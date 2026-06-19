@@ -47,6 +47,20 @@ export const coreSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "untested inverse pairs",
+		key: "untestedInversePair",
+		noun: "inverse pairs with no round-trip test",
+		passLabel: "all inverse pairs round-trip-tested",
+		color: "33",
+	},
+	{
+		label: "untested idempotent fns",
+		key: "untestedIdempotent",
+		noun: "idempotent-shaped functions with no property test",
+		passLabel: "all idempotent-shaped functions tested",
+		color: "33",
+	},
+	{
 		label: "lifecycle cleanup",
 		key: "lifecycleCleanup",
 		noun: "subscription without paired cleanup in dispose/destroy",

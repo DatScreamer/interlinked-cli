@@ -112,6 +112,23 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// nearby object literal. Advisory until the detection can consult a
 	// named-constants index.
 	"magic_literal_in_conditional",
+	// write_without_mkdir: real ENOENT bug class, but the function-scope guard
+	// scan is heuristic — delegated mkdir (a helper that ensures the dir),
+	// module-level dir creation, and existsSync guards in a sibling function
+	// all read as "no guard". Advisory until the scan can follow the path
+	// variable across call boundaries.
+	"write_without_mkdir",
+	// duplicated_policy_constant: real drift bug class, but the bare-literal
+	// match fires on coincidental reuse (a `7` that is the constant's value but
+	// means something unrelated elsewhere in the file). Trivial numbers are
+	// excluded, yet domain values still collide. Advisory until the match can
+	// consult the literal's syntactic role.
+	"duplicated_policy_constant",
+	// gitignored_written_config: verify-only (needs `git check-ignore`). Real
+	// "this file can never be committed" bug class, but only statically-
+	// resolvable paths are flagged and the ephemeral-target exclusion list is
+	// heuristic. Advisory until path resolution covers more shapes.
+	"gitignored_written_config",
 	// Unvalidated JSON boundary: real agent-quality issue, but the heuristic
 	// "assign + property-access before schema parse" over-flags idiomatic
 	// patterns where the parsed value is typed via a separate cast. Advisory
@@ -122,6 +139,14 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// consumed by external packages. Advisory until we can honor package.json
 	// `exports` maps + skip project-root `index.*` files properly.
 	"dead_exports",
+	// Untested inverse pair: real property-test-gap signal, but heuristic -- a
+	// round-trip test imported under an alias, or living in an integration
+	// suite the basename prefilter misses, reads as "untested". Advisory until
+	// the test-reference scan is broadened (plan 21).
+	"untested_inverse_pair",
+	// Untested idempotent: idempotent-shaped function (normalize/sanitize/dedupe)
+	// with no property test. Same heuristic / FN-tolerant profile as inverse-pair.
+	"untested_idempotent",
 	// Lifecycle cleanup: heuristic class-body scan. Real memory-leak signal,
 	// but FPs on legitimate patterns (single-shot setTimeout that doesn't
 	// need cleanup, delegated cleanup through super.dispose()). Advisory

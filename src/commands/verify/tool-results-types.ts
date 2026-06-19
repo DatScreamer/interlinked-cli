@@ -52,6 +52,8 @@ export interface CodeQualityResults {
 	exportRipple: CodeQualityIssue[];
 	deadExports: CodeQualityIssue[];
 	circularImports: CodeQualityIssue[];
+	untestedInversePair: CodeQualityIssue[];
+	untestedIdempotent: CodeQualityIssue[];
 	lifecycleCleanup: CodeQualityIssue[];
 	defaultExport: CodeQualityIssue[];
 	codeClones: CodeQualityIssue[];
@@ -79,6 +81,18 @@ export interface CodeQualityResults {
 	cleanupReentrancy: CodeQualityIssue[];
 	boundaryCopyNoRevalidation: CodeQualityIssue[];
 	magicLiteralInConditional: CodeQualityIssue[];
+	/** NaN-from-coercion used unguarded in a relational comparison (fail-open). */
+	nanCoercionGuard: CodeQualityIssue[];
+	/** Array#push()/unshift() return value (the new length) returned, bound, or arrow-returned. */
+	arrayPushReturnUsed: CodeQualityIssue[];
+	/** parseInt passed bare as a .map()/.flatMap()/Array.from iteratee (index → radix). */
+	arrayIterateeVariadicBuiltin: CodeQualityIssue[];
+	/** writeFile-family / createWriteStream on a nested path with no prior mkdir-recursive / existsSync guard. */
+	writeWithoutMkdir: CodeQualityIssue[];
+	/** Bare numeric literal duplicating a same-file named policy constant. */
+	duplicatedPolicyConstant: CodeQualityIssue[];
+	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
+	gitignoredWrittenConfig: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];
 	selfImports: CodeQualityIssue[];
 	extraneousDeps: CodeQualityIssue[];
@@ -336,222 +350,7 @@ export interface CodeQualityResults {
 	endpointMassAssignment: CodeQualityIssue[];
 }
 
-/** Public API — consumed by verify submodules. Every top-level key. */
-export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
-	"strongTyping",
-	"suppressions",
-	"largeFiles",
-	"untestedFiles",
-	"jsonValidity",
-	"phantomImports",
-	"consoleStatements",
-	"silentCatches",
-	"testRegressions",
-	"undocumentedEnvVars",
-	"mockDrift",
-	"incompleteRenames",
-	"missingReturnTypes",
-	"noTestFile",
-	"complexity",
-	"exportRipple",
-	"deadExports",
-	"circularImports",
-	"lifecycleCleanup",
-	"defaultExport",
-	"codeClones",
-	"misusedPromises",
-	"floatingPromises",
-	"broadObjectTypes",
-	"booleanTrap",
-	"positionalOptionalBoolean",
-	"manyOptionalParams",
-	"sameTypedPrimitiveParams",
-	"commentClaimsLimitNoGuard",
-	"commentClaimsNullThrowsInstead",
-	"commentClaimsValidationMissing",
-	"commentClaimsIdempotentMutates",
-	"commentClaimsThrowsDoesnt",
-	"iteratorInvalidation",
-	"freshCollectionKeyLookup",
-	"discriminatedUnionExhaustiveness",
-	"indexBoundsUnchecked",
-	"cleanupSkippedOnEarlyExit",
-	"taintedToPrivilegedSink",
-	"awaitStateToctou",
-	"cleanupReentrancy",
-	"boundaryCopyNoRevalidation",
-	"magicLiteralInConditional",
-	"asyncPromiseExecutor",
-	"selfImports",
-	"extraneousDeps",
-	"nonNullAssertions",
-	"evalUsage",
-	"innerHtml",
-	"nanComparison",
-	"constantCondition",
-	"unsafeOptionalChaining",
-	"numberPrecisionLoss",
-	"throwLiteral",
-	"promiseRejectNonError",
-	"lossyErrorRethrow",
-	"importFromOwnBarrel",
-	"errorDispatchByInstanceof",
-	"silentPromiseSwallow",
-	"requireAwait",
-	"accumulatingSpread",
-	"manualFieldCopy",
-	"excessiveUseState",
-	"dangerouslySetInnerHtml",
-	"directDomAccess",
-	"inlineObjectProps",
-	"asyncEventHandler",
-	"nestedTernaries",
-	"catchAndLog",
-	"jsonParseUnsafe",
-	"unvalidatedJsonBoundary",
-	"hardcodedTimeout",
-	"disabledTests",
-	"placeholderTest",
-	"suppressionHygiene",
-	"targetBlankNoRel",
-	"snapshotOveruse",
-	"testImportingTest",
-	"excessiveUseEffect",
-	"sequentialAwaits",
-	"indexAsKey",
-	"missingEffectCleanup",
-	"overMocking",
-	"focusedTests",
-	"migrationOrdering",
-	"sqlSchemaConsistency",
-	"visibilityFilterMissing",
-	"piiDetection",
-	"assertionFreeTest",
-	"tautologicalAssertion",
-	"mockingTheSut",
-	"privateMemberTestAccess",
-	"loopNestingDepth",
-	"elseIfChain",
-	"duplicateSwitchDiscriminant",
-	"hybridClass",
-	"fuzzyResponsibilityName",
-	"lawOfDemeter",
-	"flagArgument",
-	"commentedOutCode",
-	"conditionalInTest",
-	"nonDeterministicTest",
-	"emptyCatch",
-	"testWithoutDescription",
-	"assertionRoulette",
-	"magicNumber",
-	"functionArgCount",
-	"dataClump",
-	"duplicateDescribe",
-	"crossFileSwitchDiscriminant",
-	"singleImplementationInterface",
-	"filesWithoutTest",
-	"projectLocRatio",
-	"crap",
-	"jsLooseEquality",
-	"floatEquality",
-	"javaOptionalGet",
-	"divisionByVariable",
-	"mutexLockUnwrap",
-	"subprocessShellTrue",
-	"tlsVerifyDisabled",
-	"pyNoneEquality",
-	"weakHash",
-	"evalInputTainted",
-	"sqlStringConcat",
-	"sqlEscapeHatchNonLiteral",
-	"pyMutableDefaultArg",
-	"tempfileMktempRace",
-	"pickleUntrustedLoad",
-	"xmlExternalEntity",
-	"osSystemTainted",
-	"unsafeFormatString",
-	"uncheckedRedirect",
-	"goroutineNoWaitgroup",
-	"deferInLoop",
-	"ubsStringConcatInLoop",
-	"numericComparisonChain",
-	"printDebugLeak",
-	"ubsHardcodedLocalhost",
-	"magicNumberNoConst",
-	"largeFunction",
-	"deeplyNestedCallback",
-	"timeFormatLocaleDep",
-	"regexInLoopNoCompile",
-	"childProcessExecUserInput",
-	"mixedSyncAsyncFileApi",
-	"cookieMissingSecurityFlags",
-	"loggerFormatUserInput",
-	// Batch 1: agent-laziness
-	"agentThumbprintProse",
-	"stubNotImplementedThrow",
-	"deadBranchLiteral",
-	"fileLevelSuppression",
-	"untestableTimeInSource",
-	"doubleCastUnknown",
-	"typeSmuggling",
-	"unionWidenedWithString",
-	"nodeenvBranchInProd",
-	"fetchWithoutTimeout",
-	"unboundedPromiseAll",
-	"syncIoOnHotPath",
-	// Batch 2: test-hygiene
-	"duplicateTestNames",
-	"realIoInTests",
-	"testNondeterminism",
-	"hardcodedTimeoutInTests",
-	"testMissingSutImport",
-	"mockingTheSutSelf",
-	"testSubprocessDefaultTimeout",
-	// Test-quality checks
-	"mockOnlyTest",
-	"happyPathOnlyTest",
-	// Batch 5: cross-file
-	"emptyBodyHandler",
-	"listenerPairing",
-	"schemaTypeDrift",
-	"migrationParity",
-	// Batch 8: demo-data
-	"demoDataUnmarked",
-	"silentDemoFallback",
-	"demoRuntimeMissingBanner",
-	"placeholderDataInUi",
-	// tsconfig strictness
-	"tsconfigStrictness",
-	// Plan 04 D.2 (2026-05) — pattern-parity expansion
-	"marshalLoad",
-	"shelveOpen",
-	"yamlUnsafeLoad",
-	"torchUnsafeLoad",
-	"pickleWrapperLoad",
-	"aesEcbMode",
-	"nodeCreateCipher",
-	"scriptWithoutSri",
-	"goShellInjection",
-	"githubActionsInjection",
-	"documentWrite",
-	"outerHtmlAssignment",
-	"insertAdjacentHtml",
-	// Phase B endpoint-security pack (2026-05)
-	"endpointAuthMissing",
-	"endpointIdorShape",
-	"endpointMissingTenantFilter",
-	"endpointSsrfShape",
-	"endpointMassAssignment",
-];
-
-/** Public API — consumed by verify submodules. Build an empty result set. */
-export function emptyResults(): CodeQualityResults {
-	// `CodeQualityResults` is structurally a `Record<keyof CodeQualityResults,
-	// CodeQualityIssue[]>` — every bucket is a `CodeQualityIssue[]`. Building
-	// the record from the canonical key list lets TS verify completeness
-	// instead of trusting a `{} as CodeQualityResults` smuggling cast.
-	const r: Record<keyof CodeQualityResults, CodeQualityIssue[]> = Object.fromEntries(
-		CQ_RESULT_KEYS.map((key) => [key, [] as CodeQualityIssue[]]),
-	) as Record<keyof CodeQualityResults, CodeQualityIssue[]>;
-	return r;
-}
+// `CQ_RESULT_KEYS` and `emptyResults` were split into
+// `tool-results-types-keys.ts` to keep this module under the file-size cap.
+// Re-exported here so importers of the public module path are unaffected.
+export { CQ_RESULT_KEYS, emptyResults } from "./tool-results-types-keys.js";

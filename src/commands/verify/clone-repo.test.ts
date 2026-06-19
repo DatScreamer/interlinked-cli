@@ -1,16 +1,40 @@
 // ===========================================
 // clone-repo unit tests
 // ===========================================
+//
+// The two OS boundaries clone-repo touches — `execFileSync` (node:child_process,
+// the actual `git clone`) and `rmSync` (node:fs, failure cleanup) — are mocked
+// so nothing is ever spawned and no real network/git is involved. `randomUUID`,
+// `tmpdir`, and `join` are left real so the returned temp-dir path is genuine and
+// assertable. The mocks are reset per-test; assertions pin the exact git argv,
+// the spawn options, the returned shape, and that cleanup runs on failure.
 
-import { describe, expect, it } from "vitest";
-import {
-	CLONE_TIMEOUT_MS,
-	cloneRepo,
-	isGitUrl,
-	normalizeGitUrl,
-	repoDisplayName,
-	SHELL_META,
-} from "./clone-repo.js";
+import { tmpdir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const execFileSyncMock = vi.fn();
+const rmSyncMock = vi.fn();
+
+vi.mock("node:child_process", () => ({
+	execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+}));
+
+vi.mock("node:fs", () => ({
+	rmSync: (...args: unknown[]) => rmSyncMock(...args),
+}));
+
+// Imported after the mocks are registered so clone-repo binds the mocked fns.
+const { CLONE_TIMEOUT_MS, cloneRepo, isGitUrl, normalizeGitUrl, repoDisplayName, SHELL_META } =
+	await import("./clone-repo.js");
+
+beforeEach(() => {
+	execFileSyncMock.mockReset();
+	rmSyncMock.mockReset();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("isGitUrl", () => {
 	it("recognizes https URLs", () => {
@@ -29,6 +53,13 @@ describe("isGitUrl", () => {
 
 	it("recognizes .git suffix", () => {
 		expect(isGitUrl("example.com/owner/repo.git")).toBe(true);
+	});
+
+	it("recognizes a bare .git suffix that matches no earlier rule", () => {
+		// No scheme, no git@/ssh, and no host/owner/repo path structure, so this
+		// reaches the final `.endsWith('.git')` check specifically (line 21).
+		expect(isGitUrl("myrepo.git")).toBe(true);
+		expect(isGitUrl("some.deep/path/thing.git")).toBe(true);
 	});
 
 	it("rejects plain filesystem paths", () => {
@@ -74,6 +105,99 @@ describe("cloneRepo", () => {
 		expect(() =>
 			cloneRepo("https://github.com/owner/repo", { branch: "main$(whoami)" }),
 		).toThrow(/shell metacharacters/);
+	});
+
+	it("rejects before ever invoking git when the URL is dangerous", () => {
+		expect(() => cloneRepo("https://evil.com;rm -rf /", {})).toThrow(/shell metacharacters/);
+		expect(execFileSyncMock).not.toHaveBeenCalled();
+		expect(rmSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("success (no branch): shallow-clones into a unique temp dir and returns its path + elapsed", () => {
+		execFileSyncMock.mockReturnValue(Buffer.from("")); // git exits 0
+		const result = cloneRepo("https://github.com/owner/repo", {});
+
+		expect(result.dir.startsWith(tmpdir())).toBe(true);
+		expect(result.dir).toMatch(/interlinked-verify-[0-9a-f]{8}$/);
+		expect(typeof result.elapsed_ms).toBe("number");
+		expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+
+		expect(execFileSyncMock).toHaveBeenCalledOnce();
+		const [bin, argv, options] = execFileSyncMock.mock.calls[0] as [
+			string,
+			string[],
+			{ timeout: number; env: Record<string, string>; stdio: unknown },
+		];
+		expect(bin).toBe("git");
+		// No --branch when none is requested.
+		expect(argv).toEqual(["clone", "--depth", "1", "https://github.com/owner/repo", result.dir]);
+		expect(options.timeout).toBe(CLONE_TIMEOUT_MS);
+		expect(options.env.GIT_TERMINAL_PROMPT).toBe("0");
+		expect(options.stdio).toEqual(["pipe", "pipe", "inherit"]);
+
+		// Success path must never attempt cleanup.
+		expect(rmSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("success (with clean branch): threads --branch <name> into the git argv", () => {
+		execFileSyncMock.mockReturnValue(Buffer.from(""));
+		const result = cloneRepo("https://github.com/owner/repo", { branch: "release-2.0" });
+
+		const argv = (execFileSyncMock.mock.calls[0] as [string, string[], unknown])[1];
+		expect(argv).toEqual([
+			"clone",
+			"--depth",
+			"1",
+			"--branch",
+			"release-2.0",
+			"https://github.com/owner/repo",
+			result.dir,
+		]);
+		expect(rmSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("failure: cleans up the temp dir and rethrows a wrapped Error message", () => {
+		execFileSyncMock.mockImplementation(() => {
+			throw new Error("fatal: repository not found");
+		});
+
+		expect(() => cloneRepo("https://github.com/owner/missing", {})).toThrow(
+			/Clone failed: fatal: repository not found/,
+		);
+
+		// Cleanup is attempted on the same temp dir, recursive + force.
+		expect(rmSyncMock).toHaveBeenCalledOnce();
+		const [dir, rmOpts] = rmSyncMock.mock.calls[0] as [
+			string,
+			{ recursive: boolean; force: boolean },
+		];
+		expect(dir).toMatch(/interlinked-verify-[0-9a-f]{8}$/);
+		expect(rmOpts).toEqual({ recursive: true, force: true });
+	});
+
+	it("failure with a non-Error throw: stringifies it via String(err)", () => {
+		execFileSyncMock.mockImplementation(() => {
+			// git layer throwing a non-Error value exercises the `instanceof Error` false arm.
+			throw "boom-string";
+		});
+
+		expect(() => cloneRepo("https://github.com/owner/repo", {})).toThrow(/Clone failed: boom-string/);
+		expect(rmSyncMock).toHaveBeenCalledOnce();
+	});
+
+	it("failure where cleanup itself throws: still surfaces the clone error, not the rmSync error", () => {
+		execFileSyncMock.mockImplementation(() => {
+			throw new Error("clone exploded");
+		});
+		rmSyncMock.mockImplementation(() => {
+			throw new Error("EBUSY: cannot remove");
+		});
+
+		// The best-effort cleanup swallow means the original clone error wins.
+		expect(() => cloneRepo("https://github.com/owner/repo", {})).toThrow(
+			/Clone failed: clone exploded/,
+		);
+		expect(() => cloneRepo("https://github.com/owner/repo", {})).not.toThrow(/EBUSY/);
 	});
 });
 
