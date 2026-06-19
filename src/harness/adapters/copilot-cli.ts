@@ -101,7 +101,10 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 				// Append resolved targets to the deny reason when present so
 				// the human sees the concrete file/URL/branch instead of just
 				// the rule description.
-				const baseReason = decision.reason ?? "Blocked by interlinked harness";
+				const baseReason =
+					decision.reason ??
+					"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
+						"bug; re-run, or run `interlinked harness restart`, then report it.";
 				const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
 				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
 			}

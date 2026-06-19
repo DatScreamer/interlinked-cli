@@ -135,7 +135,10 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 				event?.runner_native_event ?? (isPre ? "PreToolUse" : "PostToolUse");
 
 			if (decision.decision === "block") {
-				const reason = decision.reason ?? "Blocked by interlinked harness";
+				const reason =
+					decision.reason ??
+					"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
+						"bug; re-run, or run `interlinked harness restart`, then report it.";
 				if (isPre) {
 					// PreToolUse: a deny MUST be carried in
 					// hookSpecificOutput.permissionDecision. Root-level

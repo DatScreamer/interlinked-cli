@@ -367,10 +367,14 @@ describe("Copilot CLI renderSettingsFragment — full shape", () => {
 // allow + additional_context, and resolved_targets rendering.
 // ---------------------------------------------------------------------------
 describe("Copilot CLI encodeDecision — block branches", () => {
-	it("uses a default reason when block carries none", () => {
+	it("uses an actionable default reason when block carries none", () => {
 		const out = adapter.encodeDecision({ decision: "block" }, dummyEvent);
 		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toBe("Blocked by interlinked harness");
+		// A reason-less block falls back to an actionable message (finding 2026-06:
+		// agents reported opaque "no detail" blocks). Pin the stable anchor + the
+		// actionable hint, not the exact wording.
+		expect(out.stderr).toContain("interlinked harness");
+		expect(out.stderr).toContain("no reason");
 	});
 
 	it("prefixes warnings before the reason on a block", () => {

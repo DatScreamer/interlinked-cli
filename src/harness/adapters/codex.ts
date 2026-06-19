@@ -23,12 +23,12 @@
 
 import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
 import type { JsonObject } from "../../lib/json-types.js";
-import type { HarnessDecision } from "../types.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
 	classifyFromToolName,
 } from "../tool-class-classifier.js";
+import type { HarnessDecision } from "../types.js";
 import type { UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
 import { buildHookCommand } from "./hook-command.js";
@@ -207,7 +207,10 @@ function encodeCodexBlock(
 	// Append resolved targets to the deny reason. When ask→deny collapses
 	// (Codex has no ask primitive on PreToolUse) this is how the user sees
 	// the specific resources the action would have touched.
-	const baseReason = decision.reason ?? "Blocked by interlinked harness";
+	const baseReason =
+		decision.reason ??
+		"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
+			"re-run, or run `interlinked harness restart`, then report it.";
 	const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
 	const stderrTail = (decision.warnings ?? []).join("\n");
 	if (isPermissionRequest) {

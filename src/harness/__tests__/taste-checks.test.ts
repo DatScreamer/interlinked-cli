@@ -88,6 +88,11 @@ describe("checkMockingTheSUT", () => {
 		expect(checkMockingTheSUT(content, "/x/foo.test.ts")).toEqual([]);
 	});
 
+	it("allows mocking a same-basename module in a DIFFERENT directory (FP guard)", () => {
+		expect(checkMockingTheSUT('vi.mock("../commands/foo");', "/x/foo.test.ts")).toEqual([]);
+		expect(checkMockingTheSUT('vi.mock("./sub/foo");', "/x/foo.test.ts")).toEqual([]);
+	});
+
 	it("flags jest.mock of the SUT", () => {
 		const content = 'jest.mock("./bar");';
 		expect(checkMockingTheSUT(content, "/x/bar.spec.ts").length).toBe(1);

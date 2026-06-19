@@ -86,7 +86,10 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 				return {
 					stdout: JSON.stringify({
 						allow: false,
-						reason: decision.reason ?? "Blocked by interlinked harness",
+						reason:
+							decision.reason ??
+							"Blocked by the interlinked harness, but no reason was attached — likely a " +
+								"harness bug; re-run, or run `interlinked harness restart`, then report it.",
 					}),
 					stderr: stderr || undefined,
 					exit_code: 2,

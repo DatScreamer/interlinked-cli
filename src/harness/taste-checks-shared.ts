@@ -5,7 +5,9 @@
 // extracted family modules (e.g. taste-checks-test-assertions.ts). Kept in
 // a dependency-leaf module so the family files and the barrel can share them
 // without creating an import cycle. This module imports only from
-// ./strip-helpers.js — never from taste-checks.ts.
+// ./strip-helpers.js — never from taste-checks.ts. Also consumed by the
+// checks/ package (test-structure.ts / test-portability.ts import
+// findBlockEnd, isJsTs, and lineIdxForOffset).
 
 import { stripAllLiterals } from "./strip-helpers.js";
 

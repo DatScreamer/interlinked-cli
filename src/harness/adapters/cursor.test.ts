@@ -80,6 +80,19 @@ describe("Cursor parseHookInput — MCP tool", () => {
 		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
 		expect(e.action.tool_input).toEqual({ q: "abc" });
 	});
+	it("preserves post MCP output when Cursor provides it", () => {
+		const e = adapter.parseHookInput(
+			{
+				session_id: "cur-4c",
+				tool_name: "search",
+				tool_input: '{"q":"abc"}',
+				tool_output: { content: [{ type: "text", text: "result" }] },
+			},
+			"afterMCPExecution",
+		);
+		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(e.action.tool_response).toEqual({ content: [{ type: "text", text: "result" }] });
+	});
 });
 
 describe("Cursor parseHookInput — afterFileEdit", () => {
@@ -101,6 +114,7 @@ describe("Cursor parseHookInput — new event surface (2026-04-30)", () => {
 				session_id: "f1",
 				tool_name: "Bash",
 				tool_input: { command: "npm test" },
+				tool_output: "partial output",
 				error_message: "timed out",
 				failure_type: "timeout",
 			},
@@ -109,6 +123,8 @@ describe("Cursor parseHookInput — new event surface (2026-04-30)", () => {
 		expect(e.phase).toBe("post-tool");
 		if (e.action.kind !== "tool_call") throw new Error("expected tool_call");
 		expect(e.action.tool_name).toBe("bash");
+		expect(e.action.tool_response).toBe("partial output");
+		expect(e.action.tool_error).toBe("timed out");
 	});
 
 	it("subagentStart carries subagent_type + task in the action data", () => {

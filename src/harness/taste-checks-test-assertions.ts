@@ -124,9 +124,17 @@ export function checkTautologicalAssertion(content: string, filePath: string): I
 const MOCK_CALL_STATIC = /\b(?:vi|jest)\s*\.\s*(?:mock|doMock|setMock)\s*\(\s*["']([^"']+)["']/;
 
 function mockedPathEqualsSut(mockedPath: string, sut: string): boolean {
-	const tail = mockedPath.split("/").pop() || "";
-	const tailNoExt = tail.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
-	return tailNoExt === sut;
+	return sameDirSiblingBase(mockedPath) === sut;
+}
+
+/** Basename (no ext) of a SAME-DIRECTORY relative import, or "" when the path is
+ *  `../`-prefixed or in a sub-directory — those are different modules even if the
+ *  basename matches the SUT (basename-only matching false-flagged them, e.g.
+ *  `../commands/foo.js` vs the SUT `./foo.ts`; fixed 2026-06-12). The caller
+ *  guards `sut !== ""`, so a "" result never matches. */
+function sameDirSiblingBase(mockedPath: string): string {
+	const rel = mockedPath.replace(/^\.\//, "");
+	return rel.includes("/") ? "" : rel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
 }
 
 export function checkMockingTheSUT(content: string, filePath: string): InlineMatch[] {
