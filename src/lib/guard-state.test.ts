@@ -173,8 +173,17 @@ describe("appendGuardEvent", () => {
 	});
 
 	it("never throws on an unwritable target", () => {
+		// A path nested *under a regular file* is unwritable on every platform:
+		// ensureDir's `mkdirSync(…, { recursive: true })` hits ENOTDIR immediately
+		// and is swallowed. This must NOT use a "/proc/…" path: on Linux, recursive
+		// mkdir against a /proc subpath spins forever (the parent dir exists but is
+		// unwritable, and the recursive walk never terminates) instead of throwing,
+		// which hung the vitest worker and timed CI out for 25 min (finding 2026-06).
+		// macOS has no /proc so the bug was invisible locally.
+		const fileAsParent = join(root, "not-a-directory");
+		writeFileSync(fileAsParent, "x");
 		expect(() =>
-			appendGuardEvent("/proc/nonexistent/ bad", { action: "enable", cleared: [] }),
+			appendGuardEvent(join(fileAsParent, "nested"), { action: "enable", cleared: [] }),
 		).not.toThrow();
 	});
 });
