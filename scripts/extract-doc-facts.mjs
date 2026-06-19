@@ -20,7 +20,7 @@
 //
 // No runtime dependencies — runs on Node 18+.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -112,6 +112,21 @@ function extractNodeMin() {
 }
 
 // ---------------------------------------------------------------------
+// Per-file line cap — DEFAULT_MAX_LINES in src/harness/large-file-policy.ts
+// ---------------------------------------------------------------------
+// Single source of truth for the cap (pinned equal to the committed baseline's
+// max_lines by large-file-policy.test.ts). Read by regex — no import — to keep
+// this extractor dependency-free.
+function extractLineCap() {
+	const text = read("src/harness/large-file-policy.ts");
+	const m = text.match(/export const DEFAULT_MAX_LINES\s*=\s*(\d+)/);
+	if (!m) {
+		throw new Error("DEFAULT_MAX_LINES not found in src/harness/large-file-policy.ts");
+	}
+	return Number.parseInt(m[1], 10);
+}
+
+// ---------------------------------------------------------------------
 // Update-check feature — present iff source defines REGISTRY_URL +
 // honors INTERLINKED_NO_UPDATE_CHECK in src/.
 // ---------------------------------------------------------------------
@@ -157,6 +172,7 @@ const facts = {
 	mode_names_user_facing: modes.user_facing,
 	mode_names_inline: modes.user_facing.join(" / "),
 	node_min_version: extractNodeMin(),
+	line_cap: extractLineCap(),
 	update_check_in_source: updateCheck.has_registry_url && updateCheck.honors_opt_out,
 };
 

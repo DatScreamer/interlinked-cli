@@ -17,6 +17,7 @@ Commands:
   allowlist                                  Manage the supply-chain package allowlist (.interlinked/package-allowlist.json)
   attach [options]                           Attach local CLI settings to workspace/agent and link remote identity
   audit                                      Verify tamper-evidence of the guard-decision audit chain in activity.jsonl
+  caps [options]                             View, set, and explain the quality-metric caps (lines/cyclomatic/CRAP/coverage)
   check [options]                            Scan project for structural issues and optionally run external tool checks (tsc, biome, eslint, semgrep, gitleaks, mypy, ruff, etc.)
   checkpoint [options] [message]             Git checkpoint management
   ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)
@@ -58,6 +59,7 @@ Commands:
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate
   skill                                      Skill marker management (scopes distilled rules via active_when)
+  sponsor                                    Opt-in sponsor slot on the statusline (free-sponsor phase)
   status [options]                           Dashboard: local sessions, recent activity, sync status
   structure                                  Generic artifact structure management (manifests, catalogs, adoption)
   sync [options]                             Push locally-buffered events to the server

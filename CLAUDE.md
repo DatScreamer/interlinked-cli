@@ -50,13 +50,16 @@ The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/a
 
 ## Per-file line cap (`large-file-policy.ts`)
 
-Hand-written code modules are capped at **800 lines** (`DEFAULT_MAX_LINES`;
-ratcheted 1000 → 800 on 2026-06-03 after decomposing the 14 modules then in the
-800–1000 band — each split into a re-exporting public entry + sibling helpers).
-`src/harness/large-file-policy.ts` is the single source of truth — the
-threshold, the `isCappableFile` predicate (generated / `@codegen-data` /
-test / `.d.ts` / non-code files are exempt), the baseline loader, the one
-canonical line counter (`countLines`), and the ratchet verdict.
+Hand-written code modules are capped at **<!-- gen:line_cap -->500<!-- /gen:line_cap --> lines**
+(`DEFAULT_MAX_LINES`; ratcheted 1500 → 1000 → 800 → 500 across 2026-06,
+decomposing each over-cap module into a re-exporting public entry + sibling
+helpers as the cap dropped). `src/harness/large-file-policy.ts` is the single
+source of truth — the threshold, the `isCappableFile` predicate (`.interlinked/`
+tool-state / generated / `@codegen-data` / test / `.d.ts` / non-code files are
+exempt), the baseline loader, the one canonical line counter (`countLines`), and
+the ratchet verdict. The number above is gen-markered: `extract-doc-facts.mjs`
+reads `DEFAULT_MAX_LINES` and `npm run docs:check` (CI) fails if this prose
+drifts from it — run `npm run docs:build` after ratcheting to refresh it.
 
 **The cap is ONE number.** `DEFAULT_MAX_LINES` (code) and `max_lines` in
 `.interlinked/large-files-baseline.json` (config) are kept identical by a
@@ -79,17 +82,18 @@ Three enforcement surfaces, one policy:
 
 The cap and the grandfather list live in `.interlinked/large-files-baseline.json`
 (committed — carved out of the `.interlinked/*` gitignore). The grandfather list
-(`files`) is currently empty: the two former entries (`hook-template-chunks/session-state.ts`,
-`hooks-template.ts`) are codegen DATA — the generated `.mjs` hook script carried
-as template strings — now exempt via a `@codegen-data` header marker (scoped to
-the line cap only; tsc/lint still run). A grandfathered file may shrink or hold
-but not grow; decompose it below `max_lines` to drop its entry. Ratchet the cap
-down (800 → 500) as the list stays empty by editing BOTH `max_lines` (baseline)
-and `DEFAULT_MAX_LINES` (code) together — the pinning test enforces they match,
-so it surfaces in one diff. The cap is a coarse proxy;
-the `complexity` / `cyclomatic` checks do the fine-grained "is this file bad"
-work, which is why the enforced line number sits well above the ~300–500-line
-aspirational module size.
+(`files`) records a high-water line count per offender: a listed file may shrink
+or hold but not grow past its recorded count. Drop each entry once its file falls
+below `max_lines` (decompose it, or let it become `@codegen-data`-exempt) — the
+goal end-state is an empty list. Codegen DATA — the `.mjs` hook script carried as
+template strings under `src/lib/hook-template-chunks/`, large embedded data
+tables — is exempt via a `@codegen-data` header marker, NOT grandfathered; the
+marker is scoped to the line cap only (tsc/lint still run). Ratchet the cap down
+(500 → …) by editing BOTH `max_lines` (baseline) and `DEFAULT_MAX_LINES` (code)
+together — the pinning test enforces they match, so it surfaces in one diff. The
+cap is a coarse proxy; the `complexity` / `cyclomatic` checks do the fine-grained
+"is this file bad" work, which is why the enforced line number sits well above
+the ~300–500-line aspirational module size.
 
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 
@@ -116,7 +120,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
-| `src/harness/quality-checks.ts` | PostToolUse: 31 checks across 8+ languages (tsc, biome, cargo, mypy, etc.) |
+| `src/harness/quality-checks.ts` | PostToolUse: 32 checks across 8+ languages (tsc, biome, cargo, rustfmt, mypy, etc.) |
 | `src/harness/server-bridge.ts` | Server coordination: reservation sync, guard event reporting |
 | `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
@@ -165,6 +169,22 @@ Advisory checks only run under `verify --all-checks`; default-gate ones run
 on every edit. Non-null-assertion enforcement is a ratchet metric alongside
 `as any` and suppression directives: the pre-edit count is baselined and any
 post-edit increase is flagged.
+
+### Bug-class checks generalized from review findings (added 2026-06)
+
+Four detectors generalized from concrete review bugs so the harness catches the
+same CLASS in any guarded repo. Detectors live in their own `checks/` family
+files; the first three are registered (PostToolUse + verify), `gitignored_written_config`
+is verify-only (its 3-arg signature can't satisfy the registry's
+`(content, filePath) => InlineMatch[]` contract — it needs a `git check-ignore`
+resolver, so it sits in `VERIFY_ONLY_CHECKS`).
+
+| Check | File | Phase | Gate | Catches |
+|-------|------|-------|------|---------|
+| `nan_coercion_guard` | `checks/nan-coercion.ts` | post | **default** | `Date.parse`/`Number`/`parseInt`/`parseFloat` result used in a `< > <= >=` comparison with no `Number.isFinite`/`isNaN` guard — NaN reads as false → fail-open. (Found + fixed 2 real instances in `sponsor/types.ts` on landing.) |
+| `write_without_mkdir` | `checks/fs-write-safety.ts` | post | advisory | `writeFileSync`/`appendFileSync`/`writeFile`/`createWriteStream` to a nested path with no prior `mkdirSync(…, {recursive})` / `existsSync` guard → ENOENT. |
+| `duplicated_policy_constant` | `checks/policy-constant-drift.ts` | post | advisory | a bare numeric literal duplicating a same-file `DEFAULT_*`/`*_CAP`/`*_THRESHOLD` constant's value (drift — the literal won't follow the constant). |
+| `gitignored_written_config` | `checks/gitignored-write.ts` | (verify-only) | advisory | code writes a statically-resolvable config path that `.gitignore` excludes with no `!` carve-out → never committable. |
 
 Shared patterns when adding another agent-quality check (verified
 against current code, May 2026):
@@ -225,7 +245,7 @@ against current code, May 2026):
 | File | Contents |
 |------|----------|
 | `docs/generated/guard-rules.md` | All 105 built-in guard rules by category |
-| `docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
+| `docs/generated/quality-checks.md` | All 32 PostToolUse quality checks |
 | `docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
@@ -470,12 +490,25 @@ interlinked allowlist verify                                 # diff manifest dep
 interlinked allowlist remove npm lodash
 ```
 
-**Approving a typosquat is the worst failure mode** (after which install
-proceeds silently), so `allowlist add` runs the Levenshtein-distance
-typosquat detector (`src/harness/checks/supply-chain.ts::findTyposquatMatch`)
-on the name and refuses unless `--force` is passed. Per-package
-detection currently fires for npm only (the popular-package list is
-npm-specific); extension to PyPI would mean curating an equivalent list.
+**Approving a bad package is the worst failure mode** (after which install
+proceeds silently), so `allowlist add` runs three admission screens and
+refuses unless `--force` is passed (added 2026-06, adapted from cargo-deny's
+CI role — see `docs/external-pulse/sondera-coding-agent-hooks.md`):
+1. **Typosquat** — Levenshtein distance against popular names
+   (`src/harness/checks/supply-chain.ts::findTyposquatMatch`); npm only (the
+   popular-package list is npm-specific).
+2. **License** — registry-declared SPDX expression vs the committed
+   `license_allowlist` array in `package-allowlist.json` (default: permissive
+   seed in `src/harness/license-policy.ts::DEFAULT_LICENSE_ALLOWLIST`). The
+   license is recorded on the entry; manifest-edit-guard re-checks the
+   RECORDED field per-edit (warning only, zero network on the hook path) so
+   `--force`-admitted grants and later policy tightening stay visible.
+3. **Advisories** — OSV query (`api.osv.dev`) for vulns affecting the latest
+   published version.
+Screens 2–3 fetch registry metadata (`src/harness/registry-metadata.ts`) —
+network is acceptable at admission (human-invoked) and never on the hook
+path; both fail open with a loud "screen skipped" note when offline.
+`allowlist verify` exits non-zero on unapproved deps (CI-gateable).
 
 Source files (added 2026-05):
 - `src/harness/package-install-parser.ts` — pure-function parser for ten
@@ -483,7 +516,13 @@ Source files (added 2026-05):
   classifies each positional spec as registry / git_url / tarball_url /
   local_path / file_url.
 - `src/harness/package-allowlist.ts` — file I/O, sha256 snapshotting,
-  per-spec `isPackageAllowed` decision.
+  per-spec `isPackageAllowed` decision, `effectiveLicenseAllowlist`.
+- `src/harness/license-policy.ts` — SPDX allowlist seed + `isLicenseAllowed`
+  (exact ids, WITH exceptions, top-level OR/AND; parens/`+` → conservative
+  false).
+- `src/harness/registry-metadata.ts` — admission-time-only network module:
+  registry latest-version/license fetch + OSV advisory query (both fail open
+  to null).
 - `src/harness/evaluator/package-install-guard.ts` — daemon-side
   PreToolUse Bash gate combining parser + allowlist.
 - `src/harness/evaluator/manifest-edit-guard.ts` — daemon-side
@@ -496,6 +535,18 @@ Tests pin every ecosystem path (positive + negative cases). The pre-2026-05
 defense-in-depth on allowlisted installs (a stale `--ignore-scripts`-less
 install of a package that's been updated since approval is still risky).
 
+## Sponsor slots
+
+Opt-in sponsored row 3 on the statusline, driven by an Ed25519-signed feed
+(fail-closed: unsigned/tampered/expired ⇒ no render; control bytes stripped
+at the daemon). Client-side code is public: `src/harness/sponsor/`,
+`src/commands/sponsor.ts`, `src/lib/sponsor-spinner.ts`,
+`src/registrars/sponsor.ts`, row-3 render in
+`src/lib/hook-installers-statusline.ts`. `interlinked sponsor
+enable|status|disable` manages opt-in. Intake, review tooling, and the
+Worker live in the private `interlinked-cloud` repo; operator notes in
+`CLAUDE.local.md` (gitignored).
+
 ## External-pulse intake
 
 Before "what can we do with X?" on a tool, paper, or repo found on the
@@ -506,6 +557,34 @@ Skip the rubric for drive-by curiosity — it's specifically for the things
 that would otherwise become a paste-and-ask. See `docs/external-pulse/codewiki.md`
 for a worked example, including the "marketing-vs-reality" failure mode
 (read the load-bearing function in source, not the README).
+
+## Monotonic metric ratchet (bounded per-edit growth, hard cap as backstop)
+
+Spec: `docs/design/monotonic-metric-ratchet.md`. Three metrics, each gated so no
+edit leaves a function past its hard cap and (cyclomatic) no single edit makes a
+big complexity jump (per tool call, trajectory-aware via the on-disk/baseline
+state):
+- **Cyclomatic** — `complexity-write-guard.ts`: a uniquely-named function present
+  before+after may rise by at most `SUB_CAP_RATCHET_TOLERANCE` (= 2) branches *per
+  edit* while at/under the 25-branch cap (`subCapRatchetViolations`); a larger
+  one-edit jump blocks. New/anonymous/collision functions and any end-state over
+  the cap are bounded by the cap (the over-cap path). No suppression; the escape
+  is to decompose. Small rises across edits can walk a function toward the cap but
+  never past it (the cap is the ceiling; the slew limit only governs how fast you
+  approach it). Set the constant to 1 for a tighter "+1/edit" policy.
+- **Coverage** — `coverage-write-decision.ts` (pre-existing): blocks an uncovered
+  added line or a per-file coverage drop vs `coverage-baseline.json` (high-water).
+- **CRAP** — implied: CRAP = cyclo²·(1−cov)³+cyclo is ↑ in cyclo, ↓ in cov, so the
+  bounded cyclomatic slew + coverage-hold-or-↑ bound the per-edit CRAP rise — it
+  inherits the relaxation automatically. There is **no** separate sub-cap CRAP
+  ratchet: every CRAP gate (`decideCrap` block, `computeCrapRisers` advisory)
+  fires only at/over cap 30, which bounds new/touched functions and is the
+  end-state backstop.
+
+Endgame seam (mutation, not built this session): the per-edit run returns the
+FULL `MetricRegression[]` (all metrics at once) so an agent fixes them in one
+pass; a parallel mutation suite slots in as "another metric" over the same
+scoped overlay + affected-test set, kept ≤25s by small files.
 
 ## Conventions
 

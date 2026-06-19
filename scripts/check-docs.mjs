@@ -44,6 +44,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS = [
 	join(ROOT, "landing/public/index.html"),
 	join(ROOT, "README.md"),
+	join(ROOT, "CLAUDE.md"),
 ];
 
 // Map gen-marker NAME → how to compute its expected value from
@@ -61,18 +62,26 @@ const GEN_MARKERS = {
 	runners_inline: ({ facts }) => facts.runners_inline,
 	mode_names_inline: ({ facts }) => facts.mode_names_inline,
 	node_min_version: ({ facts }) => `${facts.node_min_version}+`,
+	line_cap: ({ facts }) => String(facts.line_cap),
 
 	// Receipts headline + per-row counts. Each row pulls from
 	// receipts.json's verified_rows array, keyed by rule_id.
 	receipts_verified: ({ receipts }) => String(receipts.total_verified),
 	receipts_logged: ({ receipts }) => String(receipts.total_logged),
 	receipts_residual: ({ receipts }) => String(receipts.residual_unverified),
+	receipts_window_days: ({ receipts }) => String(receipts.window_days),
+	receipts_collapsed: ({ receipts }) => String(receipts.dedup_collapsed),
+	receipts_grep_accel: ({ receipts }) => String(receipts.grep_accel_answers_excluded),
 	row_tsc_diff_overlay: ({ receipts }) => String(receiptCount(receipts, "tsc-diff-overlay")),
 	row_bash_redirect_bypass: ({ receipts }) => String(receiptCount(receipts, "bash-code-file-write-bypass")),
 	row_tdd_new_file: ({ receipts }) => String(receiptCount(receipts, "tdd_new_file_gate")),
 	row_empty_catch: ({ receipts }) => String(receiptCount(receipts, "empty_catch")),
 	row_repo_confinement: ({ receipts }) => String(receiptCount(receipts, "builtin-repo-confinement")),
-	row_self_kill: ({ receipts }) => String(receiptCount(receipts, "self-kill-protection")),
+	row_process_kill: ({ receipts }) => String(receiptCount(receipts, "process-kill")),
+	row_reservation_conflict: ({ receipts }) => String(receiptCount(receipts, "reservation-conflict")),
+	row_git_destructive: ({ receipts }) => String(receiptCount(receipts, "git-destructive")),
+	row_secrets_in_source: ({ receipts }) => String(receiptCount(receipts, "secrets_in_source")),
+	row_supply_chain: ({ receipts }) => String(receiptCount(receipts, "supply-chain")),
 
 	// data_as_of is hand-edited; the build script does NOT regenerate it.
 	// CI checks staleness separately (see DATA_AS_OF_MAX_AGE_DAYS).
@@ -175,6 +184,32 @@ const ASSERTIONS = [
 						`README claims '${claimed} deterministic safety rules' but the source has ` +
 							`${facts.builtin_rule_count}. Either gen-marker the value or update the prose.`,
 					);
+				}
+			}
+		},
+	},
+	{
+		name: "per-file line-cap claim stays in sync with DEFAULT_MAX_LINES",
+		run(facts, docs) {
+			// Catch a CURRENT-cap claim ("capped at N lines" / "N-line per-file
+			// cap") that drifts from DEFAULT_MAX_LINES, in README or CLAUDE.md.
+			// Historical ratchet arrows ("1500 → 500") aren't "capped at" /
+			// "-line per-file cap" shaped, so they're left alone. The gen-markered
+			// canonical value is validated by the marker loop; this is the
+			// backstop for re-introduced un-markered prose.
+			const re = /capped at\D*?(\d{3,4})\s+lines|\b(\d{3,4})-line per-file cap/gi;
+			for (const path of [join(ROOT, "README.md"), join(ROOT, "CLAUDE.md")]) {
+				const text = docs[path];
+				if (!text) continue;
+				for (const m of text.matchAll(re)) {
+					const claimed = Number.parseInt(m[1] ?? m[2], 10);
+					if (claimed !== facts.line_cap) {
+						throw new Error(
+							`${path.replace(`${ROOT}/`, "")} claims a ${claimed}-line per-file cap but ` +
+								`DEFAULT_MAX_LINES is ${facts.line_cap}. Wrap it in ` +
+								`<!-- gen:line_cap -->${facts.line_cap}<!-- /gen:line_cap --> or fix the prose.`,
+						);
+					}
 				}
 			}
 		},

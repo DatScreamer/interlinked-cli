@@ -5,27 +5,72 @@ hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates
 every tool call against deterministic rules; blocks the dangerous ones in
 milliseconds; keeps a local activity log you can grep.
 
-> **Receipts from 2 weeks of dogfooding on the author's machine.** The
-> activity log captured <!-- gen:receipts_logged -->446<!-- /gen:receipts_logged -->
-> `guard_block` events; **<!-- gen:receipts_verified -->195<!-- /gen:receipts_verified -->
+## Why this matters for responsible AI at scale
+
+Once an AI agent can write code, run shell commands, and install dependencies
+on its own, the question for any organization stops being *"can it help?"* and
+becomes *"how do we prove every autonomous action was checked against policy
+**before** it ran — and reconstruct what happened afterward?"*
+
+Interlinked is a control plane for exactly that. It sits at the boundary between
+the agent and the system, and on **every** tool call it:
+
+- **Enforces policy deterministically** — a block-or-allow decision in
+  milliseconds, with no model in the decision path, so every verdict is
+  explainable and reproducible rather than a probabilistic guess.
+- **Fails closed on what causes incidents** — destructive commands, secrets
+  written into source, and unvetted dependencies are stopped *before* they
+  touch disk, and remain blocked even when the daemon is unreachable.
+- **Produces an audit trail by construction** — every decision is written to a
+  replayable log, attributable to a specific agent and session, ready to
+  inspect or report on.
+
+That is the triad every responsible-AI program is built on — **evaluation,
+observability, and enforceable guardrails** — implemented at the one layer
+where it can't be skipped: the point where an agent's intent becomes a
+real-world action. Policy is shared through version control and enforced
+identically across <!-- gen:runner_count -->5<!-- /gen:runner_count --> agent
+runners and a fleet of agents working in parallel — with no cloud dependency
+and no telemetry.
+
+This isn't only an architecture diagram. The receipts below are
+**<!-- gen:receipts_verified -->865<!-- /gen:receipts_verified --> per-event-audited
+blocks** captured over **<!-- gen:receipts_window_days -->38<!-- /gen:receipts_window_days -->
+days** of daily use on a single developer's machine — and the pattern is the
+point: a deterministic, audit-first enforcement boundary that works the same
+way for one agent or a thousand.
+
+> **Receipts from <!-- gen:receipts_window_days -->38<!-- /gen:receipts_window_days --> days of dogfooding on the author's machine.** The
+> activity log captured <!-- gen:receipts_logged -->1081<!-- /gen:receipts_logged -->
+> distinct `guard_block` events (over-registration duplicates collapsed,
+> grep-accelerator answers excluded); **<!-- gen:receipts_verified -->865<!-- /gen:receipts_verified -->
 > of them survived a per-event audit** against Claude Code session
 > transcripts to confirm the agent's actual `tool_input`. The audited
 > breakdown:
 >
-> - <!-- gen:row_tsc_diff_overlay -->84<!-- /gen:row_tsc_diff_overlay -->×
+> - <!-- gen:row_tsc_diff_overlay -->574<!-- /gen:row_tsc_diff_overlay -->×
 >   edits that introduced a *new* TypeScript error — blocked before the
 >   write landed (`tsc-diff-overlay`)
-> - <!-- gen:row_bash_redirect_bypass -->35<!-- /gen:row_bash_redirect_bypass -->×
+> - <!-- gen:row_tdd_new_file -->90<!-- /gen:row_tdd_new_file -->× new
+>   source file with no companion test (TDD gate)
+> - <!-- gen:row_bash_redirect_bypass -->65<!-- /gen:row_bash_redirect_bypass -->×
 >   shell-redirect bypass attempts (`cat > file.ts` to dodge the
 >   content-quality gate)
-> - <!-- gen:row_tdd_new_file -->29<!-- /gen:row_tdd_new_file -->× new
->   source file with no companion test (TDD gate)
-> - <!-- gen:row_empty_catch -->25<!-- /gen:row_empty_catch -->× empty
->   `catch {}` blocks
-> - <!-- gen:row_repo_confinement -->18<!-- /gen:row_repo_confinement -->×
+> - <!-- gen:row_repo_confinement -->42<!-- /gen:row_repo_confinement -->×
 >   writes outside the repo root
-> - <!-- gen:row_self_kill -->4<!-- /gen:row_self_kill -->× `kill <pid>`
->   where the PID was the harness/session process
+> - <!-- gen:row_empty_catch -->32<!-- /gen:row_empty_catch -->× empty
+>   `catch {}` blocks
+> - <!-- gen:row_process_kill -->25<!-- /gen:row_process_kill -->×
+>   `kill` / `pkill` / `killall` at running processes — four aimed at the
+>   harness or session itself
+> - <!-- gen:row_reservation_conflict -->17<!-- /gen:row_reservation_conflict -->×
+>   edits to files another agent held the reservation on
+> - <!-- gen:row_git_destructive -->13<!-- /gen:row_git_destructive -->×
+>   destructive git (`reset --hard`, `branch -D`, `stash drop`)
+> - <!-- gen:row_secrets_in_source -->4<!-- /gen:row_secrets_in_source -->×
+>   secrets detected in proposed write content
+> - <!-- gen:row_supply_chain -->3<!-- /gen:row_supply_chain -->×
+>   package installs not on the team allowlist (fail-closed supply-chain gate)
 >
 > Full breakdown on the [landing page](./landing/) or in
 > [What you get](#what-you-get) below.

@@ -129,10 +129,24 @@ docs/plans/*/
 !.interlinked/structure.json
 !.interlinked/registry-parity.json
 !.interlinked/large-files-baseline.json
+# Configurable quality-metric caps (lines / cyclomatic / CRAP / coverage) written
+# by `interlinked caps set`. Committed policy — it MUST surface in PR diffs, so it
+# is carved out of the .interlinked/* ignore like the other team-shared configs.
+!.interlinked/metric-caps.json
 !.interlinked/untested-files-baseline.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json
+# Team/committed guard stand-down marker — must show up in PR diffs so a repo
+# disabling the harness is visible and reviewable (the personal marker below
+# stays local).
+!.interlinked/guard-disabled.json
+# The `.interlinked/*` rule above is root-anchored (middle slash), so it does NOT
+# match a NESTED .interlinked/ a tool writes when it runs with a cwd inside the
+# source tree (e.g. src/harness/check-engine/tool-runners/.interlinked/). Ignore
+# those recursively so stray hook/session logs can never be `git add`ed. Scoped
+# to src/** to avoid disturbing the root carve-outs above.
+src/**/.interlinked/
 
 # Agent-driven test reports (generated, not committed)
 test/agent-driven/reports/*.json
@@ -147,6 +161,8 @@ tmp/
 .interlinked/checkpoints.json
 .interlinked/guard-cache.json
 .interlinked/guard-rules.local.json
+.interlinked/guard-disabled.local.json
+.interlinked/guard-events.jsonl
 .interlinked/harness.sock
 .interlinked/harness.pid
 .interlinked/pending-quality-warnings.json
@@ -155,3 +171,19 @@ tmp/
 .interlinked/collection.jsonl
 .interlinked/recurrences.jsonl
 .interlinked/failures/
+
+# Sponsor/advertising business detail stays out of the public repo. The
+# client-side sponsor code (src/harness/sponsor/, src/commands/sponsor.ts,
+# spinner, registrar) is deliberately PUBLIC — users must be able to read
+# the feed verifier. Private: operator notes (CLAUDE.local.md), the
+# product/monetization design doc, and any locally built/signed feed
+# artifacts (the signing key already lives outside the repo in
+# ~/.interlinked/sponsor-keys/; the Worker source lives in the private
+# interlinked-cloud repo; scripts/sponsor-feed.mjs is caught by scripts/*).
+CLAUDE.local.md
+docs/design/sponsor-slots.md
+sponsors.json
+feed.signed.json
+.interlinked/sponsor.status
+.interlinked/sponsor-feed.json
+.interlinked/sponsor-beacons.jsonl

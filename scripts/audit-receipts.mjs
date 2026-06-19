@@ -1,29 +1,47 @@
 #!/usr/bin/env node
 // =====================================================================
 // Receipts audit — verify the landing page's "blocks" table against
-// activity.jsonl + Claude Code session transcripts.
+// the full local activity-log history + Claude Code session transcripts.
 // =====================================================================
 //
 // Why this exists: every row in landing/public/index.html's receipt
-// table is a count drawn from .interlinked/activity.jsonl. The raw
-// counts are real, but the row LABELS imply the agent attempted the
-// dangerous thing in the row's title — and the older substring-matching
-// rules fired on commit-message bodies, echo arguments, and grep
-// patterns too. This script resolves every block to the agent's actual
-// tool_input by looking up the nearest-before tool_use in the session
-// transcript at:
+// table is a count drawn from the local guard_block history. The raw
+// counts are real, but two classes of inflation/noise had to be
+// removed before the numbers are honest:
 //
-//   ~/.claude/projects/-Users-quentincody-interlinked-cli/<session_id>.jsonl
+//   1. Substring-FP rules — the older substring-matching rules fired
+//      on commit-message bodies, echo arguments, and grep patterns.
+//      Every event for those rules is resolved to the agent's actual
+//      tool_input via the session transcript at
+//      ~/.claude/projects/-Users-quentincody-interlinked-cli/<session>.jsonl
+//      and classified real / fp_in_text / needs_review.
+//   2. Duplicate hook registrations — until 2026-05-18 the hook
+//      installer could register the same hook 3-4x, so one blocked
+//      tool call produced 3-4 identical guard_block events. Identical
+//      (session, tool, summary) events within DEDUP_WINDOW_MS collapse
+//      to one. The collapsed count is reported in the output.
+//
+// Additionally, grep-accelerator "block-and-answer" events (the index
+// answering a grep query via a block decision; identified by the
+// guard_grep_stats field) are excluded entirely — they are
+// accelerations, not enforcement.
+//
+// The activity log has rotated several times since dogfooding started
+// (plus a v5 schema migration on 2026-05-29), so the audit unions all
+// known local segments, oldest first (see SOURCES).
 //
 // Output: writes landing/receipts.json with confirmed-real counts +
 // per-row verdicts. The HTML's receipts table is hand-edited to match
-// (gen-markers around the headline number); scripts/check-docs.mjs
-// validates the HTML's "Verified blocks" stat agrees with this JSON.
+// (gen-markers around the headline numbers); scripts/check-docs.mjs
+// validates the HTML agrees with this JSON.
 //
 // Limitations:
-//   - activity.jsonl is gitignored local data. CI cannot run this
-//     script. It must run locally before launch and the resulting
+//   - The activity segments are gitignored local data. CI cannot run
+//     this script. It runs locally before launch and the resulting
 //     receipts.json gets committed.
+//   - guard_block records stop on 2026-06-01 (an event-writer
+//     regression in the v5 pipeline; tool_use events continue). The
+//     audit window therefore ends there until the writer is fixed.
 //   - Some sessions' transcripts have rolled out of the local
 //     ~/.claude/projects/ retention window. Those events become
 //     "transcript_missing" — counted as unverified, not real.
@@ -32,27 +50,108 @@
 //   npm run docs:audit-receipts            # writes landing/receipts.json
 //   node scripts/audit-receipts.mjs --json # prints to stdout instead
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const ACTIVITY = join(ROOT, ".interlinked/activity.jsonl");
 const TRANSCRIPT_DIR = join(homedir(), ".claude/projects/-Users-quentincody-interlinked-cli");
 const OUT_PATH = join(ROOT, "landing/receipts.json");
 
-// Rule IDs grouped by whether the row is confirmed-real after audit
-// (kept on the landing page) or FP-heavy (dropped from the headline
-// table but still counted in the residual). Update this when adding
-// new rules — the audit script is intentionally explicit, not inferring.
+// Activity-log segments, oldest first. The .archive files are pre-v5
+// rotations; archive/activity-0001.jsonl.gz is the 2026-05-29 v5
+// migration segment; activity.jsonl is current. All use
+// type:"guard_block" for block events regardless of schema_version.
+const SOURCES = [
+	".interlinked/activity.jsonl.2026-05-14T19-51-41-310Z.archive",
+	".interlinked/activity.jsonl.2026-05-14T21-31-19-843Z.archive",
+	".interlinked/archive/activity-0001.jsonl.gz",
+	".interlinked/activity.jsonl",
+];
+
+// Collapse identical (session, tool, summary) events closer together
+// than this. Over-registration duplicates arrive within ~1-2s; real
+// agent retries of the same blocked action arrive after a model turn.
+const DEDUP_WINDOW_MS = 5000;
+
+// Rows shown on the landing page. Every rule here is content-derived /
+// deterministic (compiler gates, structural checks, path confinement,
+// resolved-PID checks) — no substring-FP problem, so the deduped raw
+// count is the verified count. `rule_ids` supports families that are
+// one story split across several rule ids (process kills, destructive
+// git). `key` is what check-docs.mjs row markers look up.
 const KEEP_ROWS = [
-	{ rule_id: "tsc-diff-overlay", severity: "high", label: "Edits that introduced a new TypeScript error — blocked before the write landed" },
-	{ rule_id: "bash-code-file-write-bypass", severity: "high", label: "Shell-redirect bypass attempts (cat > file.ts to dodge content-quality gate)" },
-	{ rule_id: "tdd_new_file_gate", severity: "high", label: "New source file with no companion test" },
-	{ rule_id: "empty_catch", severity: "high", label: "Empty catch{} blocks" },
-	{ rule_id: "builtin-repo-confinement", severity: "critical", label: "Writes outside the repo root" },
-	{ rule_id: "self-kill-protection", severity: "critical", label: "kill <pid> targeting the harness or session process" },
+	{
+		key: "tsc-diff-overlay",
+		rule_ids: ["tsc-diff-overlay"],
+		severity: "high",
+		label: "Edits that introduced a new TypeScript error — blocked before the write landed",
+	},
+	{
+		key: "tdd_new_file_gate",
+		rule_ids: ["tdd_new_file_gate"],
+		severity: "high",
+		label: "New source file with no companion test",
+	},
+	{
+		key: "bash-code-file-write-bypass",
+		rule_ids: ["bash-code-file-write-bypass"],
+		severity: "high",
+		label: "Shell-redirect bypass attempts (cat > file.ts to dodge content-quality gate)",
+	},
+	{
+		key: "builtin-repo-confinement",
+		rule_ids: ["builtin-repo-confinement"],
+		severity: "critical",
+		label: "Writes outside the repo root",
+	},
+	{
+		key: "empty_catch",
+		rule_ids: ["empty_catch"],
+		severity: "high",
+		label: "Empty catch{} blocks",
+	},
+	{
+		key: "process-kill",
+		rule_ids: [
+			"self-kill-protection",
+			"builtin-kill-signal",
+			"builtin-kill-multi-pid",
+			"builtin-pkill-f",
+			"builtin-killall",
+			"builtin-kill-substitution",
+			"builtin-pgrep-xargs-kill",
+			"builtin-pkill-node",
+		],
+		severity: "critical",
+		label: "kill / pkill / killall at running processes — four aimed at the harness or session itself",
+	},
+	{
+		key: "reservation-conflict",
+		rule_ids: ["reservation-conflict"],
+		severity: "high",
+		label: "Edits to files another agent held the reservation on",
+	},
+	{
+		key: "git-destructive",
+		rule_ids: ["builtin-git-reset-hard", "builtin-git-branch-D", "builtin-git-stash-destroy"],
+		severity: "high",
+		label: "Destructive git (reset --hard, branch -D, stash drop)",
+	},
+	{
+		key: "secrets_in_source",
+		rule_ids: ["secrets_in_source"],
+		severity: "critical",
+		label: "Secrets detected in proposed write content",
+	},
+	{
+		key: "supply-chain",
+		rule_ids: ["supply-chain-unapproved-package"],
+		severity: "critical",
+		label: "Package installs not on the team allowlist (fail-closed)",
+	},
 ];
 
 // Rule IDs that the audit found to be FP-heavy. Counts are still
@@ -74,23 +173,86 @@ function parseTs(s) {
 	return Date.parse(s);
 }
 
-function loadActivityBlocks() {
-	if (!existsSync(ACTIVITY)) {
-		throw new Error(`activity.jsonl not found at ${ACTIVITY} — audit can only run locally where the activity log exists`);
+// Some v5-era records (check-engine path, reservation conflicts,
+// stale-edit fast-fails) don't carry guard_rule_id. Resolve a rule id
+// from the summary prefix; anything unrecognized stays _unknown and
+// lands in the residual.
+function resolveRuleId(e) {
+	if (e.guard_rule_id) return e.guard_rule_id;
+	const s = e.summary || "";
+	if (s.startsWith("[interlinked:typescript]") || s.startsWith("[interlinked:tsgo]")) {
+		return "tsc-diff-overlay";
 	}
-	const blocks = [];
-	const text = readFileSync(ACTIVITY, "utf8");
-	for (const line of text.split("\n")) {
-		if (!line) continue;
-		let event;
-		try {
-			event = JSON.parse(line);
-		} catch {
+	if (s.startsWith("[interlinked:secrets_in_source]")) return "secrets_in_source";
+	if (s.startsWith("File reserved by")) return "reservation-conflict";
+	if (s.startsWith("Edit will fail")) return "stale-edit-fast-fail";
+	return "_unknown";
+}
+
+function loadActivityBlocks() {
+	const events = [];
+	const sourceStats = [];
+	let grepAccelAnswers = 0;
+	let sawAny = false;
+	for (const rel of SOURCES) {
+		const path = join(ROOT, rel);
+		if (!existsSync(path)) {
+			process.stderr.write(`[audit] segment missing, skipped: ${rel}\n`);
+			sourceStats.push({ file: rel.split("/").pop(), blocks: 0, missing: true });
 			continue;
 		}
-		if (event.type === "guard_block") blocks.push(event);
+		sawAny = true;
+		const raw = rel.endsWith(".gz")
+			? gunzipSync(readFileSync(path)).toString("utf8")
+			: readFileSync(path, "utf8");
+		let count = 0;
+		for (const line of raw.split("\n")) {
+			if (!line || !line.includes("guard_block")) continue;
+			let event;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			if (event.type !== "guard_block") continue;
+			// Grep-accelerator block-and-answer: the index answering a grep
+			// query, not an enforcement decision. Excluded from all counts.
+			if ("guard_grep_stats" in event) {
+				grepAccelAnswers++;
+				continue;
+			}
+			events.push(event);
+			count++;
+		}
+		sourceStats.push({ file: rel.split("/").pop(), blocks: count });
 	}
-	return blocks;
+	if (!sawAny) {
+		throw new Error(
+			"no activity segments found — audit can only run locally where the activity log exists",
+		);
+	}
+	return { events, sourceStats, grepAccelAnswers };
+}
+
+// Collapse over-registration duplicates: identical (session, tool,
+// summary) within DEDUP_WINDOW_MS of the last kept occurrence.
+function dedupe(events) {
+	const sorted = [...events].sort((a, b) => parseTs(a.ts || 0) - parseTs(b.ts || 0));
+	const lastKept = new Map();
+	const kept = [];
+	let collapsed = 0;
+	for (const e of sorted) {
+		const key = `${e.session || ""}|${e.tool || ""}|${e.summary || ""}`;
+		const ts = parseTs(e.ts || 0);
+		const prev = lastKept.get(key);
+		if (prev !== undefined && ts - prev <= DEDUP_WINDOW_MS) {
+			collapsed++;
+			continue;
+		}
+		lastKept.set(key, ts);
+		kept.push(e);
+	}
+	return { kept, collapsed };
 }
 
 function loadTranscript(sessionId) {
@@ -184,12 +346,6 @@ function classify(ruleId, command) {
 		if (!lc.includes("nohup")) return "fp_in_text";
 		return "needs_review";
 	}
-	if (ruleId === "self-kill-protection") {
-		// kill <pid> where the pid was the harness — the rule fires only
-		// when the resolved PID belongs to the harness or session process.
-		if (/^\s*kill\s+-?\d/.test(command)) return "real";
-		return "needs_review";
-	}
 	if (ruleId === "pretooluse-injection-scan") {
 		// File-path field, not a command. Whether the content was real
 		// prompt injection depends on the file's contents at write time,
@@ -200,12 +356,26 @@ function classify(ruleId, command) {
 }
 
 function audit() {
-	const blocks = loadActivityBlocks();
+	const { events: rawEvents, sourceStats, grepAccelAnswers } = loadActivityBlocks();
+	const { kept: blocks, collapsed } = dedupe(rawEvents);
 
-	// Bucket by rule_id.
+	let windowStart = null;
+	let windowEnd = null;
+	for (const b of blocks) {
+		if (!b.ts) continue;
+		if (!windowStart || b.ts < windowStart) windowStart = b.ts;
+		if (!windowEnd || b.ts > windowEnd) windowEnd = b.ts;
+	}
+	// Floor, not round — the receipts page underclaims by policy.
+	const windowDays =
+		windowStart && windowEnd
+			? Math.floor((parseTs(windowEnd) - parseTs(windowStart)) / 86_400_000)
+			: 0;
+
+	// Bucket by resolved rule id.
 	const byRule = new Map();
 	for (const b of blocks) {
-		const id = b.guard_rule_id || "_unknown";
+		const id = resolveRuleId(b);
 		if (!byRule.has(id)) byRule.set(id, []);
 		byRule.get(id).push(b);
 	}
@@ -214,17 +384,18 @@ function audit() {
 	const droppedRows = [];
 
 	for (const row of KEEP_ROWS) {
-		const events = byRule.get(row.rule_id) || [];
 		// For "keep" rows we trust the rule fired correctly; the verified
-		// count is the raw count. (Row labels were chosen because they're
-		// content-quality / TDD / structural — these rules don't have
-		// the substring-FP problem.)
+		// count is the deduped raw count. (Rows were chosen because they're
+		// content-quality / TDD / structural / resolved-state checks —
+		// these rules don't have the substring-FP problem.)
+		const count = row.rule_ids.reduce((s, id) => s + (byRule.get(id) || []).length, 0);
 		verifiedRows.push({
-			rule_id: row.rule_id,
+			rule_id: row.key,
+			rule_ids: row.rule_ids,
 			label: row.label,
 			severity: row.severity,
-			count_logged: events.length,
-			count_verified: events.length,
+			count_logged: count,
+			count_verified: count,
 		});
 	}
 
@@ -265,10 +436,18 @@ function audit() {
 
 	return {
 		audited_at: new Date().toISOString(),
-		method: "Per-event resolution against ~/.claude/projects/<cwd>/<session>.jsonl tool_use entries; nearest-before tool_use within 60s window. FP-heavy rules classified via command-text heuristic (see scripts/audit-receipts.mjs).",
+		method:
+			"Union of all local activity-log segments (two pre-v5 archives, the 2026-05-29 migration segment, current activity.jsonl). Grep-accelerator block-and-answer events excluded via guard_grep_stats. Identical (session, tool, summary) events within 5s collapsed to remove pre-2026-05-18 hook over-registration duplicates. FP-heavy rules resolved per-event against ~/.claude/projects/<cwd>/<session>.jsonl tool_use entries (nearest-before within 60s) and classified via command-text heuristic (see scripts/audit-receipts.mjs).",
+		window_start: windowStart,
+		window_end: windowEnd,
+		window_days: windowDays,
 		total_logged: totalLogged,
 		total_verified: totalVerified,
 		residual_unverified: residual,
+		dedup_window_ms: DEDUP_WINDOW_MS,
+		dedup_collapsed: collapsed,
+		grep_accel_answers_excluded: grepAccelAnswers,
+		sources: sourceStats,
 		verified_rows: verifiedRows,
 		dropped_rows: droppedRows,
 	};
@@ -282,5 +461,7 @@ if (wantStdout) {
 	process.stdout.write(payload);
 } else {
 	writeFileSync(OUT_PATH, payload);
-	process.stdout.write(`wrote landing/receipts.json (${result.total_verified} verified / ${result.total_logged} logged)\n`);
+	process.stdout.write(
+		`wrote landing/receipts.json (${result.total_verified} verified / ${result.total_logged} logged, window ${result.window_start?.slice(0, 10)} → ${result.window_end?.slice(0, 10)}, ${result.dedup_collapsed} duplicates collapsed, ${result.grep_accel_answers_excluded} grep-accel answers excluded)\n`,
+	);
 }
