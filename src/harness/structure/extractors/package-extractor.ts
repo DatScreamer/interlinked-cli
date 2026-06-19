@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const PACKAGE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
@@ -21,6 +21,31 @@ export const metadata: ExtractorMetadata = {
 	max_determinism: "partially_deterministic",
 	version: 1,
 };
+
+/** Classify ONE file into its package node, if its basename is a package
+ *  marker. Pure path logic (no fs read) — exported for the barrel's per-file
+ *  path. `extract` keeps its own walk + the root-fallback + depth sort (those
+ *  are aggregate concerns a single-file classify can't decide). */
+export function classifyFile(_repoRoot: string, relPath: string): ExtractorResult {
+	const name = path.basename(relPath);
+	if (!PACKAGE_MARKERS.includes(name)) return { nodes: [], edges: [] };
+	const relDir = path.dirname(relPath);
+	const isRoot = relDir === "." || relDir === "";
+	const localId = isRoot ? "root" : relDir.replace(/\//g, "-");
+	return {
+		nodes: [
+			{
+				id: makeGlobalRef("package", localId),
+				kind: "package",
+				label: isRoot ? "root" : relDir,
+				file: relPath,
+				provenance: "extracted",
+				determinism_ceiling: "partially_deterministic",
+			},
+		],
+		edges: [],
+	};
+}
 
 interface WalkContext {
 	repoRoot: string;

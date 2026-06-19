@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, DocKind, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const DOC_EXTENSIONS = new Set([".md", ".mdx", ".rst"]);
@@ -38,6 +38,32 @@ interface WalkContext {
 	budget: WalkBudget;
 }
 
+/** Classify ONE file into its doc node, if it is one. Pure path/name logic (no
+ *  fs read), so it is cheap to call per-edited-file in the incremental refresh
+ *  as well as per-walked-file in the full extract — the single source of the
+ *  doc-node shape for both paths. `_repoRoot` is unused here (paths are already
+ *  repo-relative) but kept for a uniform per-file extractor signature. */
+export function classifyFile(_repoRoot: string, relPath: string): ExtractorResult {
+	const name = path.basename(relPath);
+	const ext = path.extname(name);
+	if (!DOC_EXTENSIONS.has(ext) && !/^README/i.test(name)) return { nodes: [], edges: [] };
+	const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
+	return {
+		nodes: [
+			{
+				id: makeGlobalRef("doc", localId),
+				kind: "doc",
+				label: relPath,
+				file: relPath,
+				provenance: "inferred",
+				determinism_ceiling: "heuristic",
+				metadata: { doc_kind: classifyDoc(relPath, name) },
+			},
+		],
+		edges: [],
+	};
+}
+
 function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
@@ -53,22 +79,8 @@ function walkDir(dir: string, ctx: WalkContext): void {
 			walkDir(path.join(dir, entry.name), ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
-			const ext = path.extname(entry.name);
-			const isReadme = /^README/i.test(entry.name);
-			if (!DOC_EXTENSIONS.has(ext) && !isReadme) continue;
-			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(ctx.repoRoot, fullPath);
-			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			const docKind = classifyDoc(relPath, entry.name);
-			ctx.nodes.push({
-				id: makeGlobalRef("doc", localId),
-				kind: "doc",
-				label: relPath,
-				file: relPath,
-				provenance: "inferred",
-				determinism_ceiling: "heuristic",
-				metadata: { doc_kind: docKind },
-			});
+			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
+			ctx.nodes.push(...classifyFile(ctx.repoRoot, relPath).nodes);
 		}
 	}
 }

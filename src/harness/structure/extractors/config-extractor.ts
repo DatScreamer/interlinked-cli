@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
@@ -40,6 +40,34 @@ function scanFile(content: string, configKeys: Map<string, string>, relPath: str
 			}
 		}
 	}
+}
+
+/** Classify ONE source file into its config_key nodes by scanning for config
+ *  access patterns. Reads the file (catch → no keys) so it works per-edited-file
+ *  in the incremental refresh; aggregate dedup (first-seen key) is the caller's
+ *  job. Exported for the barrel's per-file path; `extract` keeps its own walk. */
+export function classifyFile(repoRoot: string, relPath: string): ExtractorResult {
+	if (!SOURCE_EXTENSIONS.has(path.extname(relPath))) return { nodes: [], edges: [] };
+	let content: string;
+	try {
+		content = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
+	} catch {
+		return { nodes: [], edges: [] };
+	}
+	const configKeys = new Map<string, string>();
+	scanFile(content, configKeys, relPath);
+	const nodes: ArtifactNode[] = [];
+	for (const [key, file] of configKeys) {
+		nodes.push({
+			id: makeGlobalRef("config_key", key),
+			kind: "config_key",
+			label: key,
+			file,
+			provenance: "extracted",
+			determinism_ceiling: "heuristic",
+		});
+	}
+	return { nodes, edges: [] };
 }
 
 interface WalkContext {

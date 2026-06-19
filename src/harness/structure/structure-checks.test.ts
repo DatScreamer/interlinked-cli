@@ -35,8 +35,14 @@ const runAllExtractors = vi.fn((_repoRoot: string) => ({
 	edges: extractorEdges,
 	truncated: false,
 }));
+// refreshFileInGraph now delegates the per-file re-extract to relinkEditedFile;
+// its node/edge behavior is unit-tested in extractors/index.test.ts. Here it is a
+// spy so the delegation contract can be asserted without real I/O.
+const relinkEditedFile = vi.fn((_graph: ArtifactGraph, _repoRoot: string, _relPath: string) => {});
 vi.mock("./extractors/index.js", () => ({
 	runAllExtractors: (repoRoot: string) => runAllExtractors(repoRoot),
+	relinkEditedFile: (graph: ArtifactGraph, repoRoot: string, relPath: string) =>
+		relinkEditedFile(graph, repoRoot, relPath),
 }));
 
 // ---- ./rules/index mock ----------------------------------------------------
@@ -162,6 +168,7 @@ beforeEach(() => {
 	implicitConfig = makeConfig({ mode: "minimal" });
 	artifactData = {};
 	runAllExtractors.mockClear();
+	relinkEditedFile.mockClear();
 	evaluateStructureRules.mockClear();
 	loadStructureConfig.mockClear();
 	getImplicitConfig.mockClear();
@@ -249,11 +256,12 @@ describe("runStructureChecks", () => {
 
 		runStructureChecks("src/foo.ts", "/repo", graph, config);
 
-		// supplied config → no loader call; supplied graph → only the refresh
-		// extractor pass runs (build pass skipped).
+		// supplied config → no loader call; supplied graph → build pass skipped, so
+		// no full runAllExtractors; only the per-file refresh (relinkEditedFile) runs.
 		expect(loadStructureConfig).not.toHaveBeenCalled();
 		expect(getImplicitConfig).not.toHaveBeenCalled();
-		expect(runAllExtractors).toHaveBeenCalledTimes(1);
+		expect(runAllExtractors).not.toHaveBeenCalled();
+		expect(relinkEditedFile).toHaveBeenCalledTimes(1);
 		// rules ran against the exact graph instance we passed in
 		expect(evaluateStructureRules.mock.calls[0]![0]).toBe(graph);
 		expect(evaluateStructureRules.mock.calls[0]![1]).toBe(config);
@@ -306,10 +314,12 @@ describe("runStructureChecks", () => {
 
 		runStructureChecks("src/foo.ts", "/repo", null, config);
 
-		// build pass + refresh pass each call the extractor → 2 calls total
-		expect(runAllExtractors).toHaveBeenCalledTimes(2);
+		// build pass calls the full extractor once; the per-file refresh delegates to
+		// relinkEditedFile (no second full walk — that was the per-edit starvation fix).
+		expect(runAllExtractors).toHaveBeenCalledTimes(1);
+		expect(relinkEditedFile).toHaveBeenCalledTimes(1);
 		const builtGraph = evaluateStructureRules.mock.calls[0]![0]!;
-		// the extracted module survived (foo.ts is the edited file → re-added on refresh)
+		// the extracted module added during the build pass is present
 		expect(builtGraph.getNode("module:src/foo.ts")).toBeDefined();
 		// the extracted edge was added during the build pass
 		expect(builtGraph.getEdgesFrom("module:src/foo.ts")).toHaveLength(1);
@@ -376,127 +386,20 @@ describe("runStructureChecks", () => {
 // ===========================================================================
 
 describe("runStructureChecks → refreshFileInGraph", () => {
-	it("removes the edited file's stale nodes, re-adds fresh nodes, and keeps other files intact", () => {
+	// The node/edge re-extract logic now lives in (and is unit-tested by)
+	// extractors/index.ts::relinkEditedFile. Here we assert the delegation +
+	// path normalization that refreshFileInGraph is responsible for.
+	it("delegates the per-file re-extract to relinkEditedFile(graph, repoRoot, relPath)", () => {
 		const graph = new ArtifactGraph();
-		// stale node for the edited file + an unrelated node that must survive
-		graph.addNode({
-			id: "module:src/foo.ts",
-			kind: "module",
-			label: "stale-foo",
-			file: "src/foo.ts",
-			provenance: "extracted",
-			determinism_ceiling: "fully_deterministic",
-		});
-		graph.addNode({
-			id: "module:src/keep.ts",
-			kind: "module",
-			label: "keep",
-			file: "src/keep.ts",
-			provenance: "extracted",
-			determinism_ceiling: "fully_deterministic",
-		});
-		// fresh extraction yields an updated node for foo.ts plus a node for
-		// another file (which must NOT be added — only edited-file nodes are).
-		extractorNodes = [
-			{
-				id: "module:src/foo.ts",
-				kind: "module",
-				label: "fresh-foo",
-				file: "src/foo.ts",
-				provenance: "extracted",
-				determinism_ceiling: "fully_deterministic",
-			},
-			{
-				id: "module:src/other.ts",
-				kind: "module",
-				label: "other",
-				file: "src/other.ts",
-				provenance: "extracted",
-				determinism_ceiling: "fully_deterministic",
-			},
-		];
-
 		runStructureChecks("src/foo.ts", "/repo", graph, makeConfig());
-
-		expect(graph.getNode("module:src/foo.ts")?.label).toBe("fresh-foo");
-		expect(graph.getNode("module:src/keep.ts")?.label).toBe("keep");
-		// other.ts is not the edited file → its fresh node is skipped
-		expect(graph.getNode("module:src/other.ts")).toBeUndefined();
+		expect(relinkEditedFile).toHaveBeenCalledTimes(1);
+		expect(relinkEditedFile).toHaveBeenCalledWith(graph, "/repo", "src/foo.ts");
 	});
 
-	it("re-adds a fresh edge when its FROM endpoint belongs to the edited file", () => {
+	it("normalizes an absolute edited path to repo-relative before relinkEditedFile", () => {
 		const graph = new ArtifactGraph();
-		extractorNodes = [
-			{
-				id: "module:src/foo.ts",
-				kind: "module",
-				label: "foo",
-				file: "src/foo.ts",
-				provenance: "extracted",
-				determinism_ceiling: "fully_deterministic",
-			},
-		];
-		extractorEdges = [
-			{
-				id: "edge:module:src/foo.ts->package:core",
-				kind: "belongs_to_package",
-				from: "module:src/foo.ts",
-				to: "package:core",
-				provenance: "extracted",
-				confidence: 1,
-			},
-		];
-
-		runStructureChecks("src/foo.ts", "/repo", graph, makeConfig());
-
-		expect(graph.getEdgesFrom("module:src/foo.ts")).toHaveLength(1);
-	});
-
-	it("re-adds a fresh edge when its TO endpoint belongs to the edited file (other OR branch)", () => {
-		const graph = new ArtifactGraph();
-		extractorNodes = [
-			{
-				id: "doc:src/foo.ts",
-				kind: "doc",
-				label: "foo-doc",
-				file: "src/foo.ts",
-				provenance: "extracted",
-				determinism_ceiling: "fully_deterministic",
-			},
-		];
-		extractorEdges = [
-			{
-				id: "edge:public_symbol:bar->doc:src/foo.ts",
-				kind: "documents",
-				from: "public_symbol:bar",
-				to: "doc:src/foo.ts",
-				provenance: "extracted",
-				confidence: 1,
-			},
-		];
-
-		runStructureChecks("src/foo.ts", "/repo", graph, makeConfig());
-
-		expect(graph.getEdgesTo("doc:src/foo.ts")).toHaveLength(1);
-	});
-
-	it("does not add a fresh edge when neither endpoint belongs to the edited file", () => {
-		const graph = new ArtifactGraph();
-		extractorEdges = [
-			{
-				id: "edge:module:src/x.ts->package:core",
-				kind: "belongs_to_package",
-				from: "module:src/x.ts",
-				to: "package:core",
-				provenance: "extracted",
-				confidence: 1,
-			},
-		];
-
-		runStructureChecks("src/foo.ts", "/repo", graph, makeConfig());
-
-		expect(graph.getEdgesFrom("module:src/x.ts")).toHaveLength(0);
-		expect(graph.edgeCount).toBe(0);
+		runStructureChecks("/repo/src/foo.ts", "/repo", graph, makeConfig());
+		expect(relinkEditedFile).toHaveBeenCalledWith(graph, "/repo", "src/foo.ts");
 	});
 });
 

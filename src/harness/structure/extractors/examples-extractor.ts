@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const EXAMPLE_DIRS = new Set(["examples", "sample", "samples", "demo"]);
@@ -28,34 +28,28 @@ interface WalkContext {
 	budget: WalkBudget;
 }
 
-function collectFiles(dir: string, ctx: WalkContext): void {
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return;
+/** A file is an "example" iff one of its directory segments is in EXAMPLE_DIRS
+ *  (examples/sample/samples/demo). Pure path logic — the single source of the
+ *  example-node shape for the full walk and the per-edited-file refresh. */
+export function classifyFile(_repoRoot: string, relPath: string): ExtractorResult {
+	const dir = path.dirname(relPath);
+	if (dir === "." || !dir.split("/").some((seg) => EXAMPLE_DIRS.has(seg))) {
+		return { nodes: [], edges: [] };
 	}
-	for (const entry of entries) {
-		// Hard cap: stop descending/iterating once the entry or time budget trips.
-		if (!consumeWalkEntry(ctx.budget)) return;
-		const fullPath = path.join(dir, entry.name);
-		if (entry.isDirectory()) {
-			if (SKIP_DIRS.has(entry.name)) continue;
-			collectFiles(fullPath, ctx);
-			if (ctx.budget.truncated) return;
-		} else if (entry.isFile()) {
-			const relPath = path.relative(ctx.repoRoot, fullPath);
-			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			ctx.nodes.push({
+	const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
+	return {
+		nodes: [
+			{
 				id: makeGlobalRef("example", localId),
 				kind: "example",
 				label: relPath,
 				file: relPath,
 				provenance: "inferred",
 				determinism_ceiling: "heuristic",
-			});
-		}
-	}
+			},
+		],
+		edges: [],
+	};
 }
 
 function walkDir(dir: string, ctx: WalkContext): void {
@@ -68,14 +62,14 @@ function walkDir(dir: string, ctx: WalkContext): void {
 	for (const entry of entries) {
 		// Hard cap: stop descending/iterating once the entry or time budget trips.
 		if (!consumeWalkEntry(ctx.budget)) return;
-		if (!entry.isDirectory()) continue;
-		if (SKIP_DIRS.has(entry.name)) continue;
-		if (EXAMPLE_DIRS.has(entry.name)) {
-			collectFiles(path.join(dir, entry.name), ctx);
-		} else {
+		if (entry.isDirectory()) {
+			if (SKIP_DIRS.has(entry.name)) continue;
 			walkDir(path.join(dir, entry.name), ctx);
+			if (ctx.budget.truncated) return;
+		} else if (entry.isFile()) {
+			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
+			ctx.nodes.push(...classifyFile(ctx.repoRoot, relPath).nodes);
 		}
-		if (ctx.budget.truncated) return;
 	}
 }
 

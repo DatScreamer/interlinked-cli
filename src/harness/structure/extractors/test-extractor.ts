@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const TEST_PATTERNS = [
@@ -64,6 +64,41 @@ function inferTestedModule(relPath: string): string | null {
 	return path.join(moduleDir, stripped);
 }
 
+/** Classify ONE file into its test node (+ a tests→module edge when the tested
+ *  module can be inferred), if it is a test file by naming convention or
+ *  location. The single source of the test-node shape for the full walk and the
+ *  per-edited-file refresh. */
+export function classifyFile(_repoRoot: string, relPath: string): ExtractorResult {
+	const name = path.basename(relPath);
+	if (!isTestFile(name) && !isUnderTestDir(relPath)) return { nodes: [], edges: [] };
+	const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
+	const testRef = makeGlobalRef("test", localId);
+	const nodes: ArtifactNode[] = [
+		{
+			id: testRef,
+			kind: "test",
+			label: relPath,
+			file: relPath,
+			provenance: "inferred",
+			determinism_ceiling: "heuristic",
+		},
+	];
+	const edges: ArtifactEdge[] = [];
+	const testedPath = inferTestedModule(relPath);
+	if (testedPath) {
+		const moduleRef = makeGlobalRef("module", testedPath.replace(/\//g, "-").replace(/\.[^.]+$/, ""));
+		edges.push({
+			id: makeEdgeId(testRef, moduleRef),
+			kind: "tests",
+			from: testRef,
+			to: moduleRef,
+			provenance: "inferred",
+			confidence: 0.7,
+		});
+	}
+	return { nodes, edges };
+}
+
 interface WalkContext {
 	repoRoot: string;
 	nodes: ArtifactNode[];
@@ -87,30 +122,9 @@ function walkDir(dir: string, ctx: WalkContext): void {
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
-			if (!isTestFile(entry.name) && !isUnderTestDir(relPath)) continue;
-			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			const testRef = makeGlobalRef("test", localId);
-			ctx.nodes.push({
-				id: testRef,
-				kind: "test",
-				label: relPath,
-				file: relPath,
-				provenance: "inferred",
-				determinism_ceiling: "heuristic",
-			});
-			const testedPath = inferTestedModule(relPath);
-			if (testedPath) {
-				const moduleLocalId = testedPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-				const moduleRef = makeGlobalRef("module", moduleLocalId);
-				ctx.edges.push({
-					id: makeEdgeId(testRef, moduleRef),
-					kind: "tests",
-					from: testRef,
-					to: moduleRef,
-					provenance: "inferred",
-					confidence: 0.7,
-				});
-			}
+			const result = classifyFile(ctx.repoRoot, relPath);
+			ctx.nodes.push(...result.nodes);
+			ctx.edges.push(...result.edges);
 		}
 	}
 }

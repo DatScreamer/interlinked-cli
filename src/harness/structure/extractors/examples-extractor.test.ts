@@ -53,4 +53,17 @@ describe("examples-extractor", () => {
 		expect(nodes).toHaveLength(1);
 		expect(nodes[0].label).toBe("examples/subdir/deep.ts");
 	});
+
+	it("skips heavy dirs (node_modules) even under an example dir", () => {
+		mkdirSync(join(tmp, "examples", "node_modules", "dep"), { recursive: true });
+		writeFileSync(join(tmp, "examples", "node_modules", "dep", "index.ts"), "");
+		writeFileSync(join(tmp, "examples", "real.ts"), "");
+		const { nodes } = extract(tmp);
+		expect(nodes).toHaveLength(1);
+		expect(nodes[0]?.label).toBe("examples/real.ts");
+	});
+
+	it("returns empty for a missing/unreadable root (readdirSync catch)", () => {
+		expect(extract(join(tmp, "does-not-exist")).nodes).toEqual([]);
+	});
 });

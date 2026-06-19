@@ -8,7 +8,7 @@ import { isAbsolute, relative } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import type { CheckResultEntry } from "../types.js";
 import { ArtifactGraph } from "./artifact-graph.js";
-import { runAllExtractors } from "./extractors/index.js";
+import { relinkEditedFile, runAllExtractors } from "./extractors/index.js";
 import { evaluateStructureRules } from "./rules/index.js";
 import { getImplicitConfig, loadArtifactFile, loadStructureConfig } from "./structure-loader.js";
 import type {
@@ -139,22 +139,12 @@ function refreshFileInGraph(
 	repoRoot: string,
 	config: StructureConfig,
 ): void {
-	graph.removeNodesByFile(editedFilePath);
-	const freshExtracted = runAllExtractors(repoRoot);
-
-	for (const node of freshExtracted.nodes) {
-		if (node.file === editedFilePath) {
-			graph.addNode(node);
-		}
-	}
-	for (const edge of freshExtracted.edges) {
-		const fromNode = graph.getNode(edge.from);
-		const toNode = graph.getNode(edge.to);
-		if (fromNode?.file === editedFilePath || toNode?.file === editedFilePath) {
-			graph.addEdge(edge);
-		}
-	}
-	// Re-layer declared artifacts so declared nodes for this file are not lost
+	// Per-file re-extract (O(1)) instead of re-walking + re-reading the WHOLE repo
+	// on every edit — the env/config extractors read every source file, so the old
+	// full runAllExtractors here was the per-edit event-loop starvation on big repos.
+	// relinkEditedFile (extractors/index.ts) also restores the cross-file edges a
+	// single-file re-extract can't see. Re-layer declared artifacts afterward.
+	relinkEditedFile(graph, repoRoot, editedFilePath);
 	layerDeclaredArtifacts(graph, repoRoot, config);
 }
 

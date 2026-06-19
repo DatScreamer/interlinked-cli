@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([
@@ -64,6 +64,51 @@ function scanFile(filePath: string, content: string, envKeys: EnvKeyMap): void {
 			}
 		}
 	}
+}
+
+/** Classify ONE file into its env_key nodes: declared keys from `.env.example`,
+ *  or extracted `process.env.X`-style refs from a source file. Reads the file
+ *  (catch → no keys) so it works per-edited-file in the incremental refresh;
+ *  aggregate dedup is the caller's job. `extract` keeps its own walk + ordering
+ *  (`.env.example` first so declared wins). */
+export function classifyFile(repoRoot: string, relPath: string): ExtractorResult {
+	const name = path.basename(relPath);
+	const envKeys: EnvKeyMap = new Map();
+	if (name === ".env.example") {
+		try {
+			const content = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
+			for (const line of content.split("\n")) {
+				const trimmed = line.trim();
+				if (trimmed === "" || trimmed.startsWith("#")) continue;
+				const eqIdx = trimmed.indexOf("=");
+				const key = eqIdx >= 0 ? trimmed.slice(0, eqIdx).trim() : trimmed;
+				if (/^[A-Z][A-Z0-9_]*$/.test(key)) {
+					envKeys.set(key, { provenance: "declared", file: relPath });
+				}
+			}
+		} catch {
+			return { nodes: [], edges: [] };
+		}
+	} else if (SOURCE_EXTENSIONS.has(path.extname(name))) {
+		try {
+			const content = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
+			scanFile(relPath, content, envKeys);
+		} catch {
+			return { nodes: [], edges: [] };
+		}
+	}
+	const nodes: ArtifactNode[] = [];
+	for (const [key, info] of envKeys) {
+		nodes.push({
+			id: makeGlobalRef("env_key", key),
+			kind: "env_key",
+			label: key,
+			file: info.file,
+			provenance: info.provenance,
+			determinism_ceiling: "partially_deterministic",
+		});
+	}
+	return { nodes, edges: [] };
 }
 
 interface WalkContext {

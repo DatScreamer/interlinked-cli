@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { extract, metadata } from "./env-extractor.js";
+import { classifyFile, extract, metadata } from "./env-extractor.js";
 
 // Test fixtures write real `process.env.*` patterns into tmp files so the
 // extractor's regex fires on them. The strings below are built by runtime
@@ -85,5 +85,20 @@ describe("env-extractor", () => {
 		const { nodes } = extract(tmp);
 		expect(nodes.some((n) => n.label === NODE_MOD)).toBe(false);
 		expect(nodes.some((n) => n.label === USER_K)).toBe(true);
+	});
+
+	it("classifyFile: source refs, .env.example declared parse, and skip/unreadable branches", () => {
+		const KEY = "SCOPED_ENV_KEY";
+		writeFileSync(join(tmp, "a.ts"), `${ENV}.${KEY};`);
+		expect(classifyFile(tmp, "a.ts").nodes.map((n) => n.label)).toContain(KEY);
+		writeFileSync(join(tmp, ".env.example"), "DECLARED_K=1\n# comment\n\nNO_EQ\nlower=2\n");
+		const declared = classifyFile(tmp, ".env.example").nodes;
+		expect(declared.find((n) => n.label === "DECLARED_K")?.provenance).toBe("declared");
+		expect(declared.some((n) => n.label === "NO_EQ")).toBe(true);
+		expect(declared.some((n) => n.label === "lower")).toBe(false);
+		expect(classifyFile(tmp, "missing.ts")).toEqual({ nodes: [], edges: [] });
+		mkdirSync(join(tmp, "sub"));
+		expect(classifyFile(tmp, join("sub", ".env.example"))).toEqual({ nodes: [], edges: [] });
+		expect(classifyFile(tmp, "plain.md")).toEqual({ nodes: [], edges: [] });
 	});
 });

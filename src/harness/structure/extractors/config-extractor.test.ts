@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { extract, metadata } from "./config-extractor.js";
+import { classifyFile, extract, metadata } from "./config-extractor.js";
 
 describe("config-extractor", () => {
 	let tmp: string;
@@ -49,5 +49,12 @@ describe("config-extractor", () => {
 		writeFileSync(join(tmp, "b.ts"), 'config.get("dup.key")');
 		const { nodes } = extract(tmp);
 		expect(nodes.filter((n) => n.label === "dup.key")).toHaveLength(1);
+	});
+
+	it("classifyFile extracts keys from one file and skips unreadable/non-source", () => {
+		writeFileSync(join(tmp, "z.ts"), 'config.get("scoped.key")');
+		expect(classifyFile(tmp, "z.ts").nodes.map((n) => n.label)).toEqual(["scoped.key"]);
+		expect(classifyFile(tmp, "missing.ts")).toEqual({ nodes: [], edges: [] });
+		expect(classifyFile(tmp, "notes.md")).toEqual({ nodes: [], edges: [] });
 	});
 });

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ArtifactNode } from "../types.js";
-import { extract, linkModulesToPackages, metadata } from "./package-extractor.js";
+import { classifyFile, extract, linkModulesToPackages, metadata } from "./package-extractor.js";
 
 describe("package-extractor", () => {
 	let tmp: string;
@@ -119,5 +119,12 @@ describe("linkModulesToPackages", () => {
 		];
 		const edges = linkModulesToPackages(modules, packages);
 		expect(edges[0].kind).toBe("belongs_to_package");
+	});
+
+	it("classifyFile maps a marker file to its package node and ignores non-markers", () => {
+		// classifyFile is path-only (repoRoot unused), so no tmp dir is needed.
+		expect(classifyFile("/repo", "package.json").nodes[0]?.label).toBe("root");
+		expect(classifyFile("/repo", join("pkgs", "a", "package.json")).nodes[0]?.label).toBe("pkgs/a");
+		expect(classifyFile("/repo", "src/index.ts")).toEqual({ nodes: [], edges: [] });
 	});
 });

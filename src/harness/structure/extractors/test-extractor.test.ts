@@ -57,4 +57,8 @@ describe("test-extractor", () => {
 		const { nodes } = extract(tmp);
 		expect(nodes).toEqual([]);
 	});
+
+	it("returns empty for a missing/unreadable root (readdirSync catch)", () => {
+		expect(extract(join(tmp, "does-not-exist"))).toEqual({ nodes: [], edges: [] });
+	});
 });

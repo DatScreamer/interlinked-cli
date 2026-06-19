@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
-import { consumeWalkEntry, createWalkBudget, warnWalkTruncated, type WalkBudget } from "./bounded-walk.js";
+import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
 import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const EXTENSIONS = new Set([
@@ -40,6 +40,28 @@ interface WalkContext {
 	budget: WalkBudget;
 }
 
+/** Classify ONE file into its module node, if its extension is a source one.
+ *  Pure path logic (no fs read) — the single source of the module-node shape for
+ *  both the full walk and the per-edited-file incremental refresh. `_repoRoot` is
+ *  unused (paths are repo-relative) but kept for a uniform per-file signature. */
+export function classifyFile(_repoRoot: string, relPath: string): ExtractorResult {
+	if (!EXTENSIONS.has(path.extname(relPath))) return { nodes: [], edges: [] };
+	const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
+	return {
+		nodes: [
+			{
+				id: makeGlobalRef("module", localId),
+				kind: "module",
+				label: relPath,
+				file: relPath,
+				provenance: "extracted",
+				determinism_ceiling: "partially_deterministic",
+			},
+		],
+		edges: [],
+	};
+}
+
 function walkDir(dir: string, ctx: WalkContext): void {
 	let entries: fs.Dirent[];
 	try {
@@ -55,19 +77,8 @@ function walkDir(dir: string, ctx: WalkContext): void {
 			walkDir(path.join(dir, entry.name), ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
-			const ext = path.extname(entry.name);
-			if (!EXTENSIONS.has(ext)) continue;
-			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(ctx.repoRoot, fullPath);
-			const localId = relPath.replace(/\//g, "-").replace(/\.[^.]+$/, "");
-			ctx.nodes.push({
-				id: makeGlobalRef("module", localId),
-				kind: "module",
-				label: relPath,
-				file: relPath,
-				provenance: "extracted",
-				determinism_ceiling: "partially_deterministic",
-			});
+			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
+			ctx.nodes.push(...classifyFile(ctx.repoRoot, relPath).nodes);
 		}
 	}
 }
