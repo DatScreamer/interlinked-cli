@@ -15,6 +15,7 @@ import {
 	updateLocalConfig,
 } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
+import { clearGuardDisable } from "../lib/guard-state.js";
 import {
 	detectHookManagers,
 	ensureGitignore,
@@ -90,6 +91,9 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	announceConfigState(cwd);
 	maybeMigrateLegacyConfig(cwd);
 	ensureConfigPresent(cwd, options.server);
+	// Re-arm: `interlinked enable` clears any stand-down marker so the guard
+	// guards again (symmetric with `interlinked disable`).
+	clearGuardDisable(getConfigDir(cwd));
 	applyOptionFlags(cwd, options);
 	announceHookManagers(cwd);
 

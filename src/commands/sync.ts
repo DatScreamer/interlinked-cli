@@ -16,6 +16,19 @@ import {
 } from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { loadScrubConfig, recordScrub, scrubEgressPayload } from "../lib/secrets.js";
+import {
+	buildBatchBody,
+	buildBatchHeaders,
+	buildEventPayload,
+	type PayloadDefaults,
+} from "./sync-payload.js";
+import {
+	buildBatchSummary,
+	fmtTime,
+	formatUpToDate,
+	renderCountSection,
+	renderTopToolsSection,
+} from "./sync-format.js";
 
 const BATCH_SIZE = 100;
 const MAX_BATCH_RETRIES = 3;
@@ -261,128 +274,6 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-interface PayloadDefaults {
-	workspaceKey: string;
-	projectKey: string;
-}
-
-/** v2 token + attribution fields (omit-if-absent, exactOptionalPropertyTypes-safe). */
-function mapV2Fields(e: LocalActivityEvent, payload: JsonObject): void {
-	if (e.duration_ms) payload.duration_ms = e.duration_ms;
-	if (e.tokens?.input) payload.tokens_input = e.tokens.input;
-	if (e.tokens?.output) payload.tokens_output = e.tokens.output;
-	if (e.tokens?.cache_read) payload.tokens_cache_read = e.tokens.cache_read;
-	if (e.tokens?.cache_creation) payload.tokens_cache_creation = e.tokens.cache_creation;
-	if (e.parent_agent) payload.parent_agent = e.parent_agent;
-	if (e.subagent_id) payload.subagent_id = e.subagent_id;
-	if (e.files_modified) payload.files_modified = e.files_modified;
-}
-
-/** v3 hook + error fields (object errors are JSON-stringified, mirrored to message + detail). */
-function mapV3Fields(e: LocalActivityEvent, payload: JsonObject): void {
-	if (e.hook) payload.hook_event = e.hook;
-	if (e.error)
-		payload.error_message = typeof e.error === "string" ? e.error : JSON.stringify(e.error);
-	if (e.error)
-		payload.error_detail = typeof e.error === "string" ? e.error : JSON.stringify(e.error);
-}
-
-/** v4 full-capture payload fields: tool I/O + prompt/assistant message. */
-function mapV4CaptureFields(e: LocalActivityEvent, payload: JsonObject): void {
-	if (e.tool_input !== undefined)
-		payload.tool_input_json =
-			typeof e.tool_input === "string" ? e.tool_input : JSON.stringify(e.tool_input);
-	if (e.tool_response !== undefined)
-		payload.tool_response_json =
-			typeof e.tool_response === "string" ? e.tool_response : JSON.stringify(e.tool_response);
-	if (e.prompt !== undefined) payload.prompt = e.prompt;
-	if (e.last_assistant_message !== undefined)
-		payload.last_assistant_message = e.last_assistant_message;
-}
-
-/** v4 environment/context fields: cwd, model, source, identifiers. */
-function mapV4ContextFields(e: LocalActivityEvent, payload: JsonObject): void {
-	if (e.cwd) payload.cwd = e.cwd;
-	if (e.model) payload.model = e.model;
-	if (e.source) payload.source = e.source;
-	if (e.agent_type) payload.agent_type_hook = e.agent_type;
-	if (e.tool_use_id) payload.tool_use_id = e.tool_use_id;
-	if (e.session) payload.session_id = e.session;
-	if (e.is_interrupt !== undefined) payload.is_interrupt = e.is_interrupt;
-	if (e.transcript_path) payload.transcript_path = e.transcript_path;
-	if (e.agent_transcript_path) payload.agent_transcript_path = e.agent_transcript_path;
-}
-
-/** v4 notification + task + governance metadata fields. */
-function mapV4MetaFields(e: LocalActivityEvent, payload: JsonObject): void {
-	if (e.notification_type) payload.notification_type = e.notification_type;
-	if (e.notification_title) payload.notification_title = e.notification_title;
-	if (e.task_subject) payload.task_subject = e.task_subject;
-	if (e.task_id) payload.task_id_hook = e.task_id;
-	if (e.task_description) payload.task_description_hook = e.task_description;
-	if (e.trigger) payload.trigger = e.trigger;
-	if (e.reason) payload.reason = e.reason;
-	if (e.permission_mode) payload.permission_mode = e.permission_mode;
-	if (e.teammate_name) payload.teammate_name = e.teammate_name;
-	if (e.team_name) payload.team_name = e.team_name;
-	if (e.custom_instructions) payload.custom_instructions = e.custom_instructions;
-	if (e.stop_hook_active !== undefined) payload.stop_hook_active = e.stop_hook_active;
-	if (e.permission_suggestions !== undefined)
-		payload.permission_suggestions =
-			typeof e.permission_suggestions === "string"
-				? e.permission_suggestions
-				: JSON.stringify(e.permission_suggestions);
-}
-
-/**
- * Build the server-bound batch payload for one local event. Mirrors the hook
- * egress field mapping exactly (required fields + v2/v3/v4). Caller applies
- * egress scrubbing on the returned object.
- */
-function buildEventPayload(e: LocalActivityEvent, defaults: PayloadDefaults): JsonObject {
-	const payload: JsonObject = {
-		agent_name: e.agent || "unknown",
-		workspace_key: e.workspace_key || defaults.workspaceKey,
-		project_key: e.project_key || defaults.projectKey,
-		event_type: e.type,
-		tool_name: e.tool || undefined,
-		tool_input_summary: e.summary || undefined,
-		occurred_at: e.ts,
-	};
-	mapV2Fields(e, payload);
-	mapV3Fields(e, payload);
-	mapV4CaptureFields(e, payload);
-	mapV4ContextFields(e, payload);
-	mapV4MetaFields(e, payload);
-	return payload;
-}
-
-/** Build the request headers for a batch POST (Bearer for prod, none for localhost). */
-function buildBatchHeaders(token: string | null, isLocalDev: boolean): Record<string, string> {
-	const headers: Record<string, string> = { "Content-Type": "application/json" };
-	if (token && !isLocalDev) {
-		headers.Authorization = `Bearer ${token}`;
-	}
-	return headers;
-}
-
-/** Build the batch request body, including workspace_uuid routing when present. */
-function buildBatchBody(
-	defaults: PayloadDefaults,
-	batchPayload: JsonObject[],
-	workspaceId: string | undefined,
-): JsonObject {
-	const body: JsonObject = {
-		workspace_key: defaults.workspaceKey,
-		project_key: defaults.projectKey,
-		events: batchPayload,
-	};
-	if (workspaceId) {
-		body.workspace_uuid = workspaceId;
-	}
-	return body;
-}
-
 /** Resolved server/auth context for a sync run. */
 interface SyncContext {
 	serverUrl: string;
@@ -588,133 +479,4 @@ async function sendOneBatch(args: SendBatchArgs): Promise<BatchSendOutcome> {
 		delta.errors += batchSize;
 	}
 	return { kind: "done", ...delta };
-}
-
-/** Aggregated breakdown of the events synced in one run. */
-interface BatchSummary {
-	byType: Record<string, number>;
-	byAgent: Record<string, number>;
-	byTool: Record<string, number>;
-	topTools: [string, number][];
-	sessions: Set<string>;
-	earliest: string;
-	latest: string;
-}
-
-/** Tally per-type / per-agent / per-tool counts, sessions, and time range. */
-function buildBatchSummary(events: LocalActivityEvent[]): BatchSummary {
-	const byType: Record<string, number> = {};
-	const byAgent: Record<string, number> = {};
-	const byTool: Record<string, number> = {};
-	const sessions = new Set<string>();
-	let earliest = "";
-	let latest = "";
-
-	for (const e of events) {
-		byType[e.type] = (byType[e.type] || 0) + 1;
-		if (e.agent && e.agent !== "unknown") {
-			byAgent[e.agent] = (byAgent[e.agent] || 0) + 1;
-		}
-		if (e.tool) {
-			byTool[e.tool] = (byTool[e.tool] || 0) + 1;
-		}
-		if (e.session) sessions.add(e.session);
-		if (!earliest || e.ts < earliest) earliest = e.ts;
-		if (!latest || e.ts > latest) latest = e.ts;
-	}
-
-	const topTools = Object.entries(byTool)
-		.sort((a, b) => b[1] - a[1])
-		.slice(0, 5) as [string, number][];
-
-	return { byType, byAgent, byTool, topTools, sessions, earliest, latest };
-}
-
-/**
- * Render one labeled count section ("Event Types", "Agents", ...) as a block of
- * output lines, or [] when there are no entries. `formatKey` lets callers
- * humanize the key (e.g. underscores → spaces for event types).
- */
-function renderCountSection(
-	title: string,
-	entries: [string, number][],
-	formatKey: (key: string) => string = (key) => key,
-): string[] {
-	if (entries.length === 0) return [];
-	const lines: string[] = ["", c.bold(`  ${title}`)];
-	for (const [key, count] of entries) {
-		lines.push(`    ${c.cyan(String(count).padStart(4))}  ${formatKey(key)}`);
-	}
-	return lines;
-}
-
-/** Render the Top Tools section plus the "... +N more" overflow footer. */
-function renderTopToolsSection(
-	topTools: [string, number][],
-	byTool: Record<string, number>,
-): string[] {
-	const lines = renderCountSection("Top Tools", topTools);
-	if (lines.length === 0) return lines;
-	const otherToolCount = Object.keys(byTool).length - topTools.length;
-	if (otherToolCount > 0) {
-		lines.push(c.dim(`    ... +${otherToolCount} more`));
-	}
-	return lines;
-}
-
-function fmtTime(iso: string): string {
-	const d = new Date(iso);
-	return d.toLocaleString("en-US", {
-		month: "short",
-		day: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-		hour12: true,
-	});
-}
-
-function formatUpToDate(): string {
-	const state = readSyncState();
-	const lines: string[] = [];
-	lines.push(`${c.green("Already up to date.")} No unsynced events.`);
-
-	if (state.last_summary && state.last_sync_at) {
-		const s = state.last_summary;
-		lines.push("");
-		lines.push(c.dim(`  Last sync: ${fmtTime(state.last_sync_at)}`));
-		lines.push(c.dim(`  Server:    ${s.server_url}`));
-		if (s.workspace_id) {
-			lines.push(c.dim(`  Workspace: ${s.workspace_id}`));
-		}
-		lines.push(
-			c.dim(
-				`  ${s.events_total} events (${s.accepted} new, ${s.skipped} dedup) across ${s.sessions} session${s.sessions !== 1 ? "s" : ""}`,
-			),
-		);
-
-		if (s.time_range.earliest && s.time_range.latest) {
-			lines.push(
-				c.dim(
-					`  Covering: ${fmtTime(s.time_range.earliest)} → ${fmtTime(s.time_range.latest)}`,
-				),
-			);
-		}
-
-		const agentNames = Object.keys(s.by_agent);
-		if (agentNames.length > 0) {
-			lines.push(c.dim(`  Agents: ${agentNames.join(", ")}`));
-		}
-
-		const typeEntries = Object.entries(s.by_type)
-			.sort((a, b) => b[1] - a[1])
-			.slice(0, 4);
-		if (typeEntries.length > 0) {
-			const typeSummary = typeEntries
-				.map(([t, n]) => `${n} ${t.replace(/_/g, " ")}`)
-				.join(", ");
-			lines.push(c.dim(`  Events: ${typeSummary}`));
-		}
-	}
-
-	return lines.join("\n");
 }

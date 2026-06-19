@@ -38,45 +38,29 @@ import {
 	companionTestCandidates,
 	isTddExemptPath,
 } from "../harness/evaluator/tdd-new-file-gate.js";
-import { c, header, kvLine } from "../lib/formatter.js";
+import { crapThresholdFor, maxCyclomaticFor } from "../harness/metric-caps.js";
 import { getOutputMode, output } from "../lib/output.js";
+import {
+	type FileMetric,
+	type FnMetric,
+	type MetricsReport,
+	renderNormal,
+	renderShort,
+} from "./metrics-renderers.js";
 import { discoverFiles } from "./verify/file-discovery.js";
 
-// Agreed thresholds (see the test-quality session): cyclomatic > 25 is the hard
-// "bad" line, > 15 the design-smell "review" line; CRAP >= 30 is the canonical
-// Crap4J gate. These are the verdicts the scan reports against.
+// The cyclomatic "review" band is the design-smell window just below the hard
+// "bad" cap: a function with complexity in `(CYCLOMATIC_REVIEW, cap]` is worth a
+// look but not a gate failure. The lower bound is a fixed convention; the UPPER
+// bound (the "bad" cap) and the CRAP gate are RESOLVED per repo from
+// `.interlinked/metric-caps.json` via `maxCyclomaticFor` / `crapThresholdFor`, so
+// the counts + labels match exactly what the write/commit gates enforce — a repo
+// that tightened its caps no longer sees a stale 25/30 here.
 const CYCLOMATIC_REVIEW = 15;
-const CYCLOMATIC_BAD = 25;
-const CRAP_GATE = 30;
 
 /** Source extensions the AST/regex complexity pass + coverage adapters cover. */
 const ANALYZABLE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/;
 const TEST_EXT_RE = /\.(test|spec)\.(?:tsx?|jsx?|mjs|cjs|py|rs|go)$/;
-
-interface FnMetric {
-	file: string;
-	name: string;
-	line: number;
-	cyclomatic: number;
-	/** null when no coverage data is available for the file. */
-	coveragePct: number | null;
-	/** null when no coverage data is available (CRAP needs coverage). */
-	crap: number | null;
-}
-
-interface FileMetric {
-	file: string;
-	functions: number;
-	/** Per-file line coverage %, or null when no coverage report is present. */
-	linePct: number | null;
-	maxCyclomatic: number;
-	/** null when no coverage data. */
-	maxCrap: number | null;
-	/** true/false when a companion is expected, null when the file is exempt. */
-	companion: boolean | null;
-	/** functions in this file at/over the CRAP gate. */
-	overGate: number;
-}
 
 interface MetricsOptions {
 	cwd?: string;
@@ -297,30 +281,6 @@ export function loadMetricsCoverage(cwd: string): MetricsCoverage {
 	};
 }
 
-interface MetricsReport {
-	scope: {
-		files: number;
-		functions: number;
-		coverageAvailable: boolean;
-		coverageSource: "istanbul" | "lcov" | "istanbul+lcov" | null;
-		astComplexityAvailable: boolean;
-	};
-	gates: {
-		functionsOverCrap: number;
-		functionsCyclomaticReview: number;
-		functionsCyclomaticBad: number;
-		filesMissingCompanion: number;
-		filesNoCoverage: number;
-	};
-	distributions: {
-		cyclomatic: Record<string, number>;
-		crap: Record<string, number>;
-	};
-	hotspots: FnMetric[];
-	missingCompanion: string[];
-	files: FileMetric[];
-}
-
 const JS_TS_METRIC_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
 
 /**
@@ -345,6 +305,11 @@ export function cyclomaticForMetrics(content: string, filePath: string): Functio
 }
 
 function buildReport(cwd: string, topN: number): MetricsReport {
+	// Resolve the gate caps ONCE per scan from `.interlinked/metric-caps.json`
+	// (else the shipped defaults) — these are the SAME numbers the write/commit
+	// gates enforce, so the report's labels + counts can never drift from them.
+	const crapGate = crapThresholdFor(cwd);
+	const cyclomaticBad = maxCyclomaticFor(cwd);
 	const cov = loadMetricsCoverage(cwd);
 	// discoverFiles returns absolute paths — normalize to repo-relative for
 	// coverage lookup, companion paths, and display.
@@ -413,7 +378,7 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			maxCyclomatic: fileFns.reduce((m, f) => Math.max(m, f.cyclomatic), 0),
 			maxCrap: perFile ? fileFns.reduce((m, f) => Math.max(m, f.crap ?? 0), 0) : null,
 			companion,
-			overGate: fileFns.filter((f) => (f.crap ?? 0) >= CRAP_GATE).length,
+			overGate: fileFns.filter((f) => (f.crap ?? 0) >= crapGate).length,
 		});
 	}
 
@@ -436,12 +401,17 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			coverageSource: cov.source,
 			astComplexityAvailable: astComplexityAvailable(),
 		},
+		caps: {
+			crap: crapGate,
+			cyclomatic: cyclomaticBad,
+			cyclomaticReview: CYCLOMATIC_REVIEW,
+		},
 		gates: {
-			functionsOverCrap: crapVals.filter((x) => x >= CRAP_GATE).length,
+			functionsOverCrap: crapVals.filter((x) => x >= crapGate).length,
 			functionsCyclomaticReview: fns.filter(
-				(f) => f.cyclomatic > CYCLOMATIC_REVIEW && f.cyclomatic <= CYCLOMATIC_BAD,
+				(f) => f.cyclomatic > CYCLOMATIC_REVIEW && f.cyclomatic <= cyclomaticBad,
 			).length,
-			functionsCyclomaticBad: fns.filter((f) => f.cyclomatic > CYCLOMATIC_BAD).length,
+			functionsCyclomaticBad: fns.filter((f) => f.cyclomatic > cyclomaticBad).length,
 			filesMissingCompanion: missingCompanion.length,
 			filesNoCoverage,
 		},
@@ -478,65 +448,4 @@ export async function metricsCommand(opts: MetricsOptions): Promise<void> {
 		short: () => renderShort(report),
 		normal: () => renderNormal(report),
 	});
-}
-
-function renderShort(r: MetricsReport): string {
-	const cov = r.scope.coverageAvailable ? "" : " (no coverage)";
-	return `${r.scope.files} files · ${r.scope.functions} fns · CRAP≥${CRAP_GATE}: ${r.gates.functionsOverCrap} · cyc>${CYCLOMATIC_BAD}: ${r.gates.functionsCyclomaticBad} · no-companion: ${r.gates.filesMissingCompanion}${cov}`;
-}
-
-function renderNormal(r: MetricsReport): string {
-	const lines: string[] = [];
-	lines.push(header("Test-Quality Metrics"));
-	lines.push(kvLine("Source files", String(r.scope.files)));
-	lines.push(kvLine("Functions", String(r.scope.functions)));
-	const covLabel = r.scope.coverageAvailable
-		? c.green(`present (${r.scope.coverageSource})`)
-		: c.yellow("absent (CRAP/coverage unavailable — run `npm run test:coverage`)");
-	lines.push(kvLine("Coverage", covLabel));
-	if (!r.scope.astComplexityAvailable) {
-		lines.push(
-			kvLine(
-				"Complexity",
-				c.yellow("regex fallback — `typescript` not resolvable; install it for AST-accurate metrics"),
-			),
-		);
-	}
-	lines.push("");
-	lines.push(c.bold("  Gates"));
-	lines.push(kvLine("  CRAP ≥ 30", gateStr(r.gates.functionsOverCrap), 22));
-	lines.push(kvLine("  cyclomatic > 25", gateStr(r.gates.functionsCyclomaticBad), 22));
-	lines.push(kvLine("  cyclomatic 16–25", String(r.gates.functionsCyclomaticReview), 22));
-	lines.push(kvLine("  files no companion", gateStr(r.gates.filesMissingCompanion), 22));
-	if (r.scope.coverageAvailable) {
-		lines.push(kvLine("  files no coverage", String(r.gates.filesNoCoverage), 22));
-	}
-	lines.push("");
-	lines.push(c.bold("  CRAP distribution"));
-	for (const [bucket, n] of Object.entries(r.distributions.crap)) {
-		lines.push(`    ${bucket.padEnd(10)} ${n}`);
-	}
-	lines.push("");
-	lines.push(c.bold(`  Top ${r.hotspots.length} CRAP hotspots`));
-	if (r.hotspots.length === 0) {
-		lines.push(c.dim("    (no coverage data — CRAP unavailable)"));
-	}
-	for (const h of r.hotspots) {
-		lines.push(
-			`    ${String(Math.round(h.crap ?? 0)).padStart(6)}  cyc=${String(h.cyclomatic).padStart(3)}  cov=${String(Math.round(h.coveragePct ?? 0)).padStart(3)}%  ${h.file}::${h.name}`,
-		);
-	}
-	if (r.missingCompanion.length > 0) {
-		lines.push("");
-		lines.push(c.bold(`  Files missing a companion test (${r.missingCompanion.length})`));
-		for (const f of r.missingCompanion.slice(0, 25)) lines.push(`    ${c.yellow("✗")} ${f}`);
-		if (r.missingCompanion.length > 25) {
-			lines.push(c.dim(`    … and ${r.missingCompanion.length - 25} more`));
-		}
-	}
-	return lines.join("\n");
-}
-
-function gateStr(n: number): string {
-	return n === 0 ? c.green("0") : c.red(String(n));
 }

@@ -248,6 +248,44 @@ describe("checkCommand", () => {
 		expect(exitCode).toBe(1);
 	});
 
+	// ---- newly-added engine tools are --only-able (drift fix, finding 2026-06) ----
+	it.each(["rustfmt", "lizard"])(
+		"accepts engine tool %s for --only instead of rejecting it as 'Unknown check'",
+		async (tool) => {
+			await checkCommand({ only: tool, cwd: "/abs" });
+			const { stderr, exitCode } = io.mocks();
+			expect(stderr).not.toContain("Unknown check");
+			expect(exitCode).not.toBe(1);
+		},
+	);
+
+	// ---- discovery-only engine tools rejected, not falsely-cleaned ----
+	it.each(["dep-audit", "docs-check"])(
+		"rejects discovery-only engine tool %s with exit 1 (no 0-finding false clean)",
+		async (tool) => {
+			await checkCommand({ only: tool, cwd: "/abs" });
+			const { stdout, stderr, exitCode } = io.mocks();
+			expect(exitCode).toBe(1);
+			expect(stderr).toContain("discovery-only");
+			expect(stderr).toContain("interlinked verify");
+			expect(stdout).toBe("");
+		},
+	);
+
+	// ---- --tools drops discovery-only ids (no phantom clean row) ----
+	it("drops a discovery-only tool from --tools and warns instead of a clean row", async () => {
+		engineState.report = report({
+			toolsRun: [{ id: "tsc", available: true, version: "5.0" }],
+			results: [],
+		});
+		await checkCommand({ tools: "tsc,dep-audit", cwd: "/abs" });
+		const { stderr, exitCode } = io.mocks();
+		expect(stderr).toContain("Skipping discovery-only tool(s) dep-audit");
+		expect(stderr).toContain("tsc [5.0]");
+		expect(stderr).not.toContain("dep-audit [");
+		expect(exitCode).not.toBe(1);
+	});
+
 	// ---- --report short-circuit ----
 	it("prints the tool report and returns early when only --report is set", async () => {
 		engineState.toolReport = "REPORT-XYZ";

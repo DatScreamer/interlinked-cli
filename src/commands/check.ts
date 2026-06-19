@@ -8,14 +8,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { CheckEngine, type CheckReport, type ToolId } from "../harness/check-engine/index.js";
+import { RUNNABLE_TOOL_IDS } from "../harness/check-engine/tool-catalog.js";
 import { ProjectGraph } from "../harness/project-graph.js";
 import { containsSecrets, findAnyTypes } from "../harness/quality-checks.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { findDeadImports } from "./check-dead-imports.js";
+import {
+	emitEngineOnly,
+	emitFullSummary,
+	emitJsonOutput,
+	emitStructuralOnly,
+	type StructuralCheckResult,
+} from "./check-output.js";
 
-interface StructuralCheckResult {
-	name: string;
-	files: Set<string>;
-}
+// Re-exported for callers/tests that import the dead-import helpers directly.
+export { extractBindings, findDeadImports } from "./check-dead-imports.js";
 
 // Helper: returns true if any symbol in the import edge is not exported by the target file.
 function hasMissingSymbol(importSymbols: string[], exportedNames: Set<string>): boolean {
@@ -241,7 +247,9 @@ const STRUCTURAL_CHECKS = [
 	"dead-imports",
 ] as const;
 
-const ALL_TOOL_IDS: ToolId[] = [
+// Every engine ToolId `--only <tool>` may name. Kept `as const` (not a widened
+// `ToolId[]`) so the compile-time drift guard below can see the literal members.
+const ALL_TOOL_IDS = [
 	"tsc",
 	"biome",
 	"eslint",
@@ -249,15 +257,42 @@ const ALL_TOOL_IDS: ToolId[] = [
 	"knip",
 	"semgrep",
 	"gitleaks",
+	"dep-audit",
 	"mypy",
 	"ruff",
 	"cargo-check",
 	"cargo-clippy",
+	"rustfmt",
 	"go-build",
 	"golangci-lint",
 	"c-compile",
 	"clang-tidy",
-];
+	"shellcheck",
+	"actionlint",
+	"hadolint",
+	"taplo",
+	"swiftlint",
+	"swift-build",
+	"lizard",
+	"docs-check",
+] as const satisfies readonly ToolId[];
+
+// Compile-time drift guard: `--only <tool>` must accept EVERY engine ToolId.
+// rustfmt/lizard (and 8 others) were added to the ToolId union but not to this
+// list, so `interlinked check --only rustfmt` rejected a runnable tool as
+// "Unknown check" (finding 2026-06). If a ToolId is added to check-engine/types.ts
+// without being listed above, `_MissingToolIds` stops being `never` and this
+// assignment fails to type-check — surfacing the drift at build time.
+type _MissingToolIds = Exclude<ToolId, (typeof ALL_TOOL_IDS)[number]>;
+const _allToolIdsCoverEveryToolId: [_MissingToolIds] extends [never] ? true : false = true;
+void _allToolIdsCoverEveryToolId;
+
+// True for a known engine tool with NO runner (dep-audit/docs-check). runChecks
+// skips a runner-less id → 0 findings, so both --only and --tools must refuse to
+// report it (the summary would otherwise print a misleading clean row).
+function isDiscoveryOnlyTool(id: string): boolean {
+	return (ALL_TOOL_IDS as readonly ToolId[]).includes(id as ToolId) && !RUNNABLE_TOOL_IDS.has(id as ToolId);
+}
 
 // Dispatch table: structural check name -> scanner. Keyed by the names in
 // STRUCTURAL_CHECKS so iteration order (and thus results order) is preserved.
@@ -306,134 +341,6 @@ function runEngineChecks(
 	});
 }
 
-// Builds + writes the combined JSON payload (structural counts + engine
-// findings) to stdout.
-function emitJsonOutput(results: StructuralCheckResult[], engineReport: CheckReport | null): void {
-	const jsonData: JsonObject = {};
-	for (const r of results) {
-		jsonData[r.name] = { count: r.files.size, files: [...r.files].sort() };
-	}
-	if (engineReport) {
-		for (const tool of engineReport.toolsRun) {
-			const toolResults = engineReport.results.filter((r) => r.tool === tool.id);
-			jsonData[tool.id] = {
-				count: toolResults.length,
-				findings: toolResults.map((r) => ({
-					file: r.file,
-					line: r.line,
-					severity: r.severity,
-					message: r.message,
-					ruleId: r.ruleId,
-				})),
-			};
-		}
-	}
-	process.stdout.write(`${JSON.stringify(jsonData, null, 2)}\n`);
-}
-
-// Writes the single-check (`--only`) text output for a structural check:
-// flagged files to stdout, the count to stderr.
-function emitStructuralOnly(results: StructuralCheckResult[], onlyCheck: string): void {
-	const result = results.find((r) => r.name === onlyCheck);
-	if (result && result.files.size > 0) {
-		for (const f of [...result.files].sort()) {
-			process.stdout.write(`${f}\n`);
-		}
-		process.stderr.write(`\n${result.files.size} files\n`);
-	} else {
-		process.stderr.write("0 files\n");
-	}
-}
-
-// Writes the single-check (`--only`) text output for an engine tool: findings
-// (sorted by file) to stdout, the count to stderr.
-function emitEngineOnly(engineReport: CheckReport, onlyCheck: string): void {
-	const toolResults = engineReport.results.filter((r) => r.tool === onlyCheck);
-	if (toolResults.length > 0) {
-		for (const r of toolResults.sort((a, b) => a.file.localeCompare(b.file))) {
-			process.stdout.write(`${r.file}:${r.line}: ${r.message}\n`);
-		}
-		process.stderr.write(`\n${toolResults.length} findings\n`);
-	} else {
-		process.stderr.write("0 findings\n");
-	}
-}
-
-const SEVERITY_CHECK_ERRORS = new Set(["broken-imports", "cycles", "dead-imports", "secrets"]);
-
-// Builds the colored icon + count fragment for one structural-summary row.
-function structuralRowMarks(size: number, isError: boolean): { icon: string; count: string } {
-	if (size === 0) {
-		return { icon: "\x1b[32m✓\x1b[0m", count: "\x1b[32m0\x1b[0m" };
-	}
-	const icon = isError ? "\x1b[31m✗\x1b[0m" : "\x1b[33m!\x1b[0m";
-	const count = isError ? `\x1b[31m${size}\x1b[0m` : `\x1b[33m${size}\x1b[0m`;
-	return { icon, count };
-}
-
-// Writes the structural-checks section of the full summary. Accumulates flagged
-// files into `allFlagged`; returns whether any error-severity check fired.
-function emitStructuralSummary(results: StructuralCheckResult[], allFlagged: Set<string>): boolean {
-	if (results.length === 0) return false;
-	let hasErrors = false;
-	process.stderr.write("  Structural checks:\n\n");
-	for (const r of results) {
-		const isError = SEVERITY_CHECK_ERRORS.has(r.name);
-		if (isError && r.files.size > 0) hasErrors = true;
-		const { icon, count } = structuralRowMarks(r.files.size, isError);
-		const severity = isError ? "error" : "info";
-		process.stderr.write(`  ${icon} ${r.name} [${severity}]: ${count} files\n`);
-		for (const f of r.files) allFlagged.add(f);
-	}
-	return hasErrors;
-}
-
-// Writes one engine-tool row of the full summary. Accumulates flagged files
-// into `allFlagged`; returns whether this tool reported any error-severity
-// finding.
-function emitEngineToolRow(
-	tool: CheckReport["toolsRun"][number],
-	engineReport: CheckReport,
-	allFlagged: Set<string>,
-): boolean {
-	const toolResults = engineReport.results.filter((r) => r.tool === tool.id);
-	const errorCount = toolResults.filter((r) => r.severity === "error").length;
-	const total = toolResults.length;
-	const version = tool.version || "?";
-
-	if (total === 0) {
-		process.stderr.write(
-			`  \x1b[32m✓\x1b[0m ${tool.id} [${version}]: \x1b[32m0\x1b[0m findings\n`,
-		);
-		return false;
-	}
-	const icon = errorCount > 0 ? "\x1b[31m✗\x1b[0m" : "\x1b[33m!\x1b[0m";
-	const countStr = errorCount > 0 ? `\x1b[31m${total}\x1b[0m` : `\x1b[33m${total}\x1b[0m`;
-	const warnCount = total - errorCount;
-	process.stderr.write(
-		`  ${icon} ${tool.id} [${version}]: ${countStr} findings (${errorCount} errors, ${warnCount} warnings)\n`,
-	);
-	for (const r of toolResults) allFlagged.add(r.file);
-	return errorCount > 0;
-}
-
-// Writes the external-tool-checks section of the full summary. Accumulates
-// flagged files into `allFlagged`; returns whether any tool reported errors.
-function emitEngineSummary(engineReport: CheckReport, allFlagged: Set<string>): boolean {
-	let hasErrors = false;
-	process.stderr.write("\n  External tool checks:\n\n");
-	for (const tool of engineReport.toolsRun) {
-		if (emitEngineToolRow(tool, engineReport, allFlagged)) hasErrors = true;
-	}
-	for (const tool of engineReport.toolsSkipped.filter((t) => !t.available)) {
-		process.stderr.write(`  \x1b[2m- ${tool.id}: ${tool.reason || "skipped"}\x1b[0m\n`);
-	}
-	process.stderr.write(
-		`\x1b[2m  completed in ${(engineReport.elapsedMs / 1000).toFixed(1)}s\x1b[0m\n`,
-	);
-	return hasErrors;
-}
-
 interface ResolvedCheckPlan {
 	onlyCheck: string | undefined;
 	isStructuralOnly: boolean;
@@ -455,8 +362,17 @@ function resolveCheckPlan(opts: {
 	const isStructuralOnly = Boolean(
 		onlyCheck && (STRUCTURAL_CHECKS as readonly string[]).includes(onlyCheck),
 	);
-	const isEngineOnly = Boolean(onlyCheck && ALL_TOOL_IDS.includes(onlyCheck as ToolId));
-	const unknown = Boolean(onlyCheck) && !isStructuralOnly && !isEngineOnly;
+	// A known engine tool id. Some are discovery-only (dep-audit / docs-check):
+	// in the ToolId union for availability reporting but with NO engine runner.
+	// CheckEngine.runChecks skips a runner-less id and returns 0 findings, so
+	// `--only dep-audit` would emit a false clean. Split "known" from "runnable":
+	// only runnable ids are engine-only; known-but-not-runnable ids are
+	// discovery-only and get rejected by the command (finding 2026-06).
+	const isKnownEngineTool = Boolean(
+		onlyCheck && (ALL_TOOL_IDS as readonly ToolId[]).includes(onlyCheck as ToolId),
+	);
+	const isEngineOnly = isKnownEngineTool && RUNNABLE_TOOL_IDS.has(onlyCheck as ToolId);
+	const unknown = Boolean(onlyCheck) && !isStructuralOnly && !isKnownEngineTool;
 
 	const runEngine = opts.tools !== undefined || Boolean(opts.report) || isEngineOnly;
 	const runStructural = !isEngineOnly;
@@ -465,7 +381,13 @@ function resolveCheckPlan(opts: {
 	if (isEngineOnly && onlyCheck) {
 		engineToolFilter = [onlyCheck as ToolId];
 	} else if (typeof opts.tools === "string") {
-		engineToolFilter = opts.tools.split(",").map((t) => t.trim()) as ToolId[];
+		// Drop discovery-only ids (dep-audit/docs-check): runChecks skips them and
+		// the summary would print a "0 findings" row implying a clean run that never
+		// happened — the same false-clean the --only path rejects. Unknown ids stay
+		// (a typo just runs nothing, no row).
+		engineToolFilter = (
+			opts.tools.split(",").map((t) => t.trim()).filter(Boolean) as ToolId[]
+		).filter((t) => !isDiscoveryOnlyTool(t));
 	}
 
 	return {
@@ -479,25 +401,20 @@ function resolveCheckPlan(opts: {
 	};
 }
 
-// Writes the full (no-filter) summary: header, structural section, engine
-// section, totals, and the process exit code on error.
-function emitFullSummary(
-	results: StructuralCheckResult[],
-	engineReport: CheckReport | null,
-	fileCount: number,
-): void {
-	const allFlagged = new Set<string>();
-	let hasErrors = false;
-	process.stderr.write(`\n  Interlinked project check (${fileCount} files indexed)\n\n`);
-
-	if (emitStructuralSummary(results, allFlagged)) hasErrors = true;
-	if (engineReport && emitEngineSummary(engineReport, allFlagged)) hasErrors = true;
-
-	process.stderr.write(`\n  total unique: ${allFlagged.size} / ${fileCount} files\n\n`);
-
-	if (hasErrors) {
-		process.exitCode = 1;
+// The stderr message to reject a `--only` target with (caller sets exit 1), or
+// null when it's runnable. Unknown name → list valid checks. (A second case —
+// known-but-discovery-only engine tools — is added alongside its test.)
+function onlyRejectionMessage(plan: ResolvedCheckPlan): string | null {
+	if (plan.unknown) {
+		return `Unknown check: "${plan.onlyCheck}". Available: ${[...STRUCTURAL_CHECKS, ...ALL_TOOL_IDS].join(", ")}\n`;
 	}
+	// Known engine tool with no runner (dep-audit/docs-check): runChecks skips it
+	// and returns 0 findings + exit 0 — a false clean. Reject; these run under
+	// interlinked verify, not interlinked check.
+	if (plan.onlyCheck && !plan.isStructuralOnly && !plan.isEngineOnly) {
+		return `Check "${plan.onlyCheck}" is discovery-only and has no runner under interlinked check — it would report a false clean. Run interlinked verify (it performs the dependency audit and docs checks).\n`;
+	}
+	return null;
 }
 
 export async function checkCommand(opts: {
@@ -513,12 +430,23 @@ export async function checkCommand(opts: {
 	const plan = resolveCheckPlan(opts);
 	const { onlyCheck, isStructuralOnly, isEngineOnly } = plan;
 
-	if (plan.unknown) {
-		process.stderr.write(
-			`Unknown check: "${onlyCheck}". Available: ${[...STRUCTURAL_CHECKS, ...ALL_TOOL_IDS].join(", ")}\n`,
-		);
+	const rejection = onlyRejectionMessage(plan);
+	if (rejection) {
+		process.stderr.write(rejection);
 		process.exitCode = 1;
 		return;
+	}
+
+	// --tools: warn (don't fail) on discovery-only ids dropped from the filter so
+	// the run never prints a misleading "0 findings" row for a check that did not
+	// run; these run under `interlinked verify`.
+	if (typeof opts.tools === "string") {
+		const dropped = opts.tools.split(",").map((t) => t.trim()).filter(isDiscoveryOnlyTool);
+		if (dropped.length > 0) {
+			process.stderr.write(
+				`Skipping discovery-only tool(s) ${dropped.join(", ")} from --tools — no interlinked check runner; run interlinked verify instead.\n`,
+			);
+		}
 	}
 
 	// --- Tool report ---
@@ -561,127 +489,4 @@ export async function checkCommand(opts: {
 
 	// --- Full summary ---
 	emitFullSummary(results, engineReport, graph?.fileCount ?? 0);
-}
-
-// ===========================================
-// Dead Import Detection (shared with structural-checks.ts)
-// ===========================================
-
-// Helper: true for lines that precede / interleave with imports but are not
-// themselves import statements (blank, JSDoc/star comments, shebang).
-function isNonImportPrefixLine(trimmed: string): boolean {
-	return (
-		trimmed === "" ||
-		trimmed.startsWith("*") ||
-		trimmed.startsWith("/*") ||
-		trimmed.startsWith("*/") ||
-		trimmed.startsWith("#!")
-	);
-}
-
-interface ImportScanState {
-	bindings: string[];
-	lastImportLine: number;
-	buffer: string;
-	importSectionEnded: boolean;
-}
-
-// Helper: processes a single source line during the import-collection scan,
-// mutating `state` (buffer continuation, binding extraction, section end).
-function scanImportLine(state: ImportScanState, lineIndex: number, trimmed: string): void {
-	if (state.buffer) {
-		state.buffer += ` ${trimmed}`;
-		if (/from\s+['"]/.test(state.buffer) || /['"]/.test(state.buffer)) {
-			extractBindings(state.buffer, state.bindings);
-			state.buffer = "";
-		}
-		state.lastImportLine = lineIndex;
-		return;
-	}
-	// Stop scanning once we hit non-import code (prevents matching imports
-	// inside string literals, template HTML, generated scripts, etc.)
-	if (state.importSectionEnded) return;
-	if (isNonImportPrefixLine(trimmed)) return;
-	if (/^import\s/.test(trimmed) && trimmed.includes("{") && !trimmed.includes("}")) {
-		state.buffer = trimmed;
-		state.lastImportLine = lineIndex;
-		return;
-	}
-	if (/^import\s/.test(trimmed)) {
-		extractBindings(trimmed, state.bindings);
-		state.lastImportLine = lineIndex;
-		return;
-	}
-	// Non-import, non-blank line — import section is over
-	state.importSectionEnded = true;
-}
-
-// Helper: returns the subset of import bindings that never appear in the file
-// body below the import section.
-function filterDeadBindings(bindings: string[], body: string): string[] {
-	const dead: string[] = [];
-	for (const name of bindings) {
-		if (!name || name.length < 2) continue;
-		const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
-		if (!regex.test(body)) {
-			dead.push(name);
-		}
-	}
-	return dead;
-}
-
-/** Find import bindings that are not referenced in the file body */
-export function findDeadImports(content: string): string[] {
-	const lines = content.split("\n");
-	const state: ImportScanState = {
-		bindings: [],
-		lastImportLine: 0,
-		buffer: "",
-		importSectionEnded: false,
-	};
-
-	for (let i = 0; i < lines.length; i++) {
-		// Strip inline comments from import lines
-		const trimmed = lines[i]
-			.trim()
-			.replace(/\/\/[^\n]*/g, "")
-			.trim();
-		scanImportLine(state, i, trimmed);
-	}
-	if (state.buffer) extractBindings(state.buffer, state.bindings);
-
-	if (state.bindings.length === 0) return [];
-
-	const body = lines.slice(state.lastImportLine + 1).join("\n");
-	return filterDeadBindings(state.bindings, body);
-}
-
-export function extractBindings(line: string, bindings: string[]): void {
-	const trimmed = line.trim();
-	if (trimmed.startsWith("//")) return;
-	if (/^import\s+['"]/.test(trimmed)) return;
-	if (/^import\s+\*\s+as\s/.test(trimmed)) return;
-
-	const namedMatch = trimmed.match(/^import\s+(?:type\s+)?\{([^}]+)\}/);
-	if (namedMatch) {
-		const names = namedMatch[1]
-			.split(",")
-			.map((s) => {
-				const parts = s
-					.trim()
-					.replace(/^type\s+/, "")
-					.split(/\s+as\s+/);
-				return parts[parts.length - 1].trim();
-			})
-			.filter(Boolean);
-		for (const name of names) {
-			if (name !== "type") bindings.push(name);
-		}
-		return;
-	}
-
-	const defaultMatch = trimmed.match(/^import\s+(?:type\s+)?(\w+)\s+from/);
-	if (defaultMatch && defaultMatch[1] !== "type") {
-		bindings.push(defaultMatch[1]);
-	}
 }

@@ -30,6 +30,16 @@ import { ensureRemoteOnboarding } from "../lib/onboarding.js";
 import { type ClientName, detectClients } from "../lib/settings.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 import { loginCommand } from "./login.js";
+import {
+	emitDryRun,
+	isLocalServer,
+	type OnboardingResult,
+	printBanner,
+	printCompletion,
+	printDetectedClients,
+	printProjectContext,
+	printServer,
+} from "./init-presentation.js";
 
 // No hardcoded production default — the public distribution has no server
 // to point at. Users supply one via `--server`, and the probe/local
@@ -67,10 +77,6 @@ async function isServerReachable(
 	} finally {
 		clearTimeout(timeout);
 	}
-}
-
-function isLocalServer(url: string): boolean {
-	return url.includes("localhost") || url.includes("127.0.0.1");
 }
 
 /**
@@ -114,56 +120,7 @@ function suggestAgentName(detectedClients: ClientName[]): string {
 	return `${user}-${client}`;
 }
 
-type OnboardingResult = Awaited<ReturnType<typeof ensureRemoteOnboarding>>;
 type HarnessStatus = ReturnType<typeof isHarnessRunning>;
-
-interface DetectedClientInfo {
-	name: ClientName;
-	exists: boolean;
-}
-
-/** Step 0: print the human banner (suppressed in json mode). */
-function printBanner(isJson: boolean): void {
-	if (isJson) return;
-	console.log(c.bold("Interlinked CLI — Quick Setup"));
-	console.log(c.dim("═".repeat(40)));
-	console.log("");
-}
-
-/** Step 1: report detected AI clients (suppressed in json mode). */
-function printDetectedClients(detectedClients: DetectedClientInfo[], isJson: boolean): void {
-	if (isJson) return;
-	console.log(`${c.bold("1.")} Detecting AI clients...`);
-	if (detectedClients.length > 0) {
-		for (const client of detectedClients) {
-			console.log(`   ${c.green("✓")} ${client.name}`);
-		}
-	} else {
-		console.log(
-			`   ${c.dim("No AI client directories found. Hooks will be installed when clients are set up.")}`,
-		);
-	}
-	console.log("");
-}
-
-/** Step 2: report git/project context (suppressed in json mode). */
-function printProjectContext(
-	projectName: string | null,
-	projectRoot: string | null,
-	isJson: boolean,
-): void {
-	if (isJson) return;
-	console.log(`${c.bold("2.")} Detecting project context...`);
-	if (projectName) {
-		console.log(`   ${c.green("✓")} Git project: ${c.cyan(projectName)}`);
-	} else {
-		console.log(`   ${c.dim("No git repository detected.")}`);
-	}
-	if (projectRoot) {
-		console.log(`   ${c.dim(`Root: ${projectRoot}`)}`);
-	}
-	console.log("");
-}
 
 /** Step 3: resolve the target server URL (flag → env → reachability probe). */
 async function resolveServerUrl(options: InitOptions): Promise<string> {
@@ -172,15 +129,6 @@ async function resolveServerUrl(options: InitOptions): Promise<string> {
 	const localHealthy = await isServerReachable(DEFAULT_LOCAL_SERVER);
 	return localHealthy ? DEFAULT_LOCAL_SERVER : DEFAULT_REMOTE_SERVER;
 }
-
-/** Step 3 (output): report the resolved server (suppressed in json mode). */
-function printServer(serverUrl: string, isJson: boolean): void {
-	if (isJson) return;
-	console.log(`${c.bold("3.")} Server: ${c.cyan(serverUrl)}`);
-	console.log(`   ${isLocalServer(serverUrl) ? c.dim("(local dev server)") : c.dim("(production)")}`);
-	console.log("");
-}
-
 /** Step 4: resolve the agent name, prompting interactively when appropriate. */
 async function resolveAgentName(
 	options: InitOptions,
@@ -204,33 +152,6 @@ async function resolveAgentName(
 
 	if (!isJson) console.log("");
 	return agentName;
-}
-
-/** Dry-run early exit: emit the planned configuration and stop. */
-function emitDryRun(
-	serverUrl: string,
-	agentName: string,
-	projectName: string | null,
-	syncMode: string,
-	detectedNames: ClientName[],
-	isJson: boolean,
-): void {
-	if (isJson) {
-		console.log(
-			JSON.stringify({
-				dry_run: true,
-				server_url: serverUrl,
-				agent_name: agentName,
-				project: projectName,
-				sync_mode: syncMode,
-				detected_clients: detectedNames,
-				hook_version: HOOK_SCRIPT_VERSION,
-			}),
-		);
-	} else {
-		console.log(c.bold("Dry run — no changes made."));
-		console.log(c.dim("Would install hooks, configure, and authenticate."));
-	}
 }
 
 /** Step 5: write config + hook script and install hooks for detected clients. */
@@ -410,74 +331,6 @@ async function setupHarness(
 		console.log(`   ${c.dim("Skipped — start later with: interlinked harness start")}`);
 	}
 	return false;
-}
-
-/** Final human summary: the "Ready!" line plus next-step hints. */
-function printSummary(
-	serverUrl: string,
-	agentName: string,
-	serverReachable: boolean,
-	onlineAgents: number,
-	harnessStarted: boolean,
-): void {
-	console.log("");
-	console.log(c.dim("═".repeat(40)));
-
-	if (serverReachable) {
-		const agentLabel =
-			onlineAgents > 0 ? `${onlineAgents} agent${onlineAgents !== 1 ? "s" : ""} online` : "";
-		console.log(
-			c.green(
-				`\nReady! Connected to ${isLocalServer(serverUrl) ? "local server" : "production"} as ${c.cyan(agentName)}.`,
-			) + (agentLabel ? ` ${c.dim(agentLabel)}` : ""),
-		);
-	} else {
-		console.log(
-			`${c.green("\nSetup complete.")} ${c.yellow("Server not reachable — hooks will buffer locally.")}`,
-		);
-	}
-
-	console.log(`\n${c.bold("Next steps:")}`);
-	if (!harnessStarted) {
-		console.log(`  interlinked harness start    ${c.dim("— Start guard evaluation server")}`);
-	}
-	console.log(`  interlinked status          ${c.dim("— Dashboard")}`);
-	console.log(`  interlinked context          ${c.dim("— Show effective config")}`);
-	console.log(`  interlinked inbox            ${c.dim("— Check messages")}`);
-	console.log(`  interlinked tasks list       ${c.dim("— View tasks")}`);
-	console.log(`  interlinked doctor           ${c.dim("— Diagnose issues")}`);
-}
-
-/** Final completion summary, dispatching between human and json output. */
-function printCompletion(
-	serverUrl: string,
-	agentName: string,
-	projectName: string | null,
-	syncMode: string,
-	detectedNames: ClientName[],
-	serverReachable: boolean,
-	onlineAgents: number,
-	onboarding: OnboardingResult,
-	harnessStarted: boolean,
-	isJson: boolean,
-): void {
-	if (!isJson) {
-		printSummary(serverUrl, agentName, serverReachable, onlineAgents, harnessStarted);
-		return;
-	}
-	console.log(
-		JSON.stringify({
-			status: "complete",
-			server_url: serverUrl,
-			agent_name: agentName,
-			project: projectName,
-			sync_mode: syncMode,
-			detected_clients: detectedNames,
-			server_reachable: serverReachable,
-			online_agents: onlineAgents,
-			onboarding: onboarding.status,
-		}),
-	);
 }
 
 export async function initCommand(options: InitOptions): Promise<void> {

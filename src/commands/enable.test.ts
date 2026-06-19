@@ -54,6 +54,11 @@ vi.mock("../lib/config.js", () => ({
 	updateLocalConfig: vi.fn(),
 }));
 
+vi.mock("../lib/guard-state.js", () => ({
+	// Stub the re-arm so the enable suite never touches real marker files.
+	clearGuardDisable: vi.fn(() => ({ cleared: [] })),
+}));
+
 vi.mock("../lib/hooks.js", () => ({
 	detectHookManagers: vi.fn(),
 	ensureGitignore: vi.fn(),
