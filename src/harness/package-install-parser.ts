@@ -45,7 +45,10 @@ export {
 	parseCargo,
 	parseGem,
 	parseBundle,
+	parseComposer,
 	parseGo,
+	parseMaven,
+	parseNuget,
 } from "./package-install-parser-ecosystems.js";
 
 // ---------------------------------------------------------------------------
@@ -62,7 +65,10 @@ import {
 	parseCargo,
 	parseGem,
 	parseBundle,
+	parseComposer,
 	parseGo,
+	parseMaven,
+	parseNuget,
 } from "./package-install-parser-ecosystems.js";
 
 const NPM_LIKE = new Set(["npm", "pnpm", "yarn", "bun"]);
@@ -289,6 +295,20 @@ function parseOneSegment(seg: string): InstallCommand | null {
 	if (bin === "gem") return parseGem(tokens, envVars);
 	if (bin === "bundle" || bin === "bundler") return parseBundle(tokens, envVars);
 	if (bin === "go") return parseGo(tokens, envVars);
+	return parseExtendedEcosystem(bin, tokens, envVars);
+}
+
+/** Newer ecosystems split out so `parseOneSegment` keeps its cyclomatic
+ *  count flat. Gradle has no CLI install verb (deps live in build.gradle),
+ *  so it is covered via the manifest/allowlist path only, not here. */
+function parseExtendedEcosystem(
+	bin: string,
+	tokens: string[],
+	envVars: Record<string, string>,
+): InstallCommand | null {
+	if (bin === "composer") return parseComposer(tokens, envVars);
+	if (bin === "dotnet" || bin === "nuget") return parseNuget(bin, tokens, envVars);
+	if (bin === "mvn") return parseMaven(tokens, envVars);
 	return null;
 }
 

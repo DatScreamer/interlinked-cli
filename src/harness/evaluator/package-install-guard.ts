@@ -15,6 +15,7 @@
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { findTyposquatMatch } from "../checks/supply-chain.js";
+import { findManifestFiles } from "../manifest-file-walk.js";
 import {
 	type Allowlist,
 	hashLockfile,
@@ -85,6 +86,27 @@ const MANIFEST_BY_ECOSYSTEM: Record<Ecosystem, ManifestSearchEntry[]> = {
 	cargo: [{ manifest: "Cargo.toml", lockfiles: ["Cargo.lock"] }],
 	rubygems: [{ manifest: "Gemfile", lockfiles: ["Gemfile.lock"] }],
 	go: [{ manifest: "go.mod", lockfiles: ["go.sum"] }],
+	composer: [{ manifest: "composer.json", lockfiles: ["composer.lock"] }],
+	// Maven/Gradle have no universally-named lockfile; the manifest snapshot is
+	// the anchor. Gradle's `.lockfile` is opt-in and project-placed.
+	maven: [{ manifest: "pom.xml", lockfiles: [] }],
+	gradle: [
+		{ manifest: "build.gradle", lockfiles: ["gradle.lockfile"] },
+		{ manifest: "build.gradle.kts", lockfiles: ["gradle.lockfile"] },
+	],
+	// NuGet: packages.config is exact-named; modern .csproj names vary, so the
+	// lockfile (packages.lock.json) carries the snapshot when present.
+	nuget: [{ manifest: "packages.config", lockfiles: ["packages.lock.json"] }],
+};
+
+// Ecosystems whose manifest filename is NOT a fixed basename — matched by
+// extension in the install cwd. NuGet SDK-style projects keep deps in a
+// variably-named *.csproj that `dotnet restore` reads with no packages.config
+// present, so without scanning here the snapshot gate has nothing to match and
+// an approved `allowlist snapshot --lockfile App.csproj` is never consulted
+// (the restore stays blocked forever). Found 2026-06.
+const GLOB_MANIFEST_EXTENSIONS: Partial<Record<Ecosystem, string[]>> = {
+	nuget: [".csproj"],
 };
 
 export function evaluatePackageInstall(
@@ -189,22 +211,40 @@ function snapshotMismatchBlock(
 	allowlist: Allowlist,
 ): HarnessDecision | null {
 	const entries = MANIFEST_BY_ECOSYSTEM[cmd.ecosystem] ?? [];
+	const globManifests = scanGlobManifests(effectiveCwd, cmd.ecosystem);
+	const globManifestsMatch =
+		globManifests.length > 0 &&
+		globManifests.every((name) => matchSnapshot(allowlist, name, join(effectiveCwd, name)));
+	const fixedSnapshotCanAllow = globManifests.length === 0 || globManifestsMatch;
 	// 1. Prefer lockfiles when one exists (stronger guarantee than manifest).
 	for (const entry of entries) {
 		for (const lf of entry.lockfiles) {
 			const p = join(effectiveCwd, lf);
-			if (isExistingFile(p) && matchSnapshot(allowlist, lf, p)) return null;
+			if (isExistingFile(p) && matchSnapshot(allowlist, lf, p) && fixedSnapshotCanAllow) {
+				return null;
+			}
 		}
 	}
 	// 2. Fall back to manifest snapshot when no lockfile snapshot matched.
 	for (const entry of entries) {
 		const p = join(effectiveCwd, entry.manifest);
-		if (isExistingFile(p) && matchSnapshot(allowlist, entry.manifest, p)) return null;
+		if (isExistingFile(p) && matchSnapshot(allowlist, entry.manifest, p) && fixedSnapshotCanAllow) {
+			return null;
+		}
+	}
+	// 3. Glob-named manifests (e.g. *.csproj): each project file is independent
+	//    and `dotnet restore` resolves ALL of them (RECURSIVELY, across nested
+	//    projects via .sln / <ProjectReference>), so allow only when EVERY present
+	//    one matches a snapshot — a single snapshotted project must not vouch for
+	//    an unsnapshotted sibling (root OR nested) with an unapproved package.
+	if (globManifestsMatch) {
+		return null;
 	}
 	// Nothing matched.
-	const presentFiles = entries
-		.flatMap((e) => [e.manifest, ...e.lockfiles])
-		.filter((f) => isExistingFile(join(effectiveCwd, f)));
+	const presentFiles = [
+		...entries.flatMap((e) => [e.manifest, ...e.lockfiles]),
+		...globManifests,
+	].filter((f) => isExistingFile(join(effectiveCwd, f)));
 	const hint = presentFiles.length
 		? ` Run \`interlinked allowlist snapshot\` to approve the current state of: ${presentFiles.join(", ")}.`
 		: ` Initial bootstrap: \`interlinked allowlist add ${cmd.ecosystem} <package>\` per package, or \`interlinked allowlist snapshot\` once the manifest is in place.`;
@@ -252,4 +292,16 @@ function isExistingFile(path: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+// Files matching a glob-named ecosystem manifest extension (e.g. `*.csproj` for
+// nuget), found RECURSIVELY under `dir` and returned as paths relative to it.
+// `dotnet restore` resolves projects transitively (.sln / <ProjectReference>,
+// the common src/App/App.csproj layout), so a root-only scan would let an
+// unapproved nested project slip past the snapshot gate. Relative paths are the
+// snapshot keys — bare basenames would alias two App.csproj in different dirs.
+function scanGlobManifests(dir: string, ecosystem: Ecosystem): string[] {
+	const exts = GLOB_MANIFEST_EXTENSIONS[ecosystem];
+	if (!exts) return [];
+	return findManifestFiles(dir, (name) => exts.some((ext) => name.endsWith(ext)));
 }

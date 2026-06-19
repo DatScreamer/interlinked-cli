@@ -295,6 +295,282 @@ describe("evaluateManifestEdit — Gemfile repin (P2.5)", () => {
 	});
 });
 
+describe("evaluateManifestEdit — composer.json", () => {
+	it("blocks adding an unapproved require dep", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "composer.json",
+				current: JSON.stringify({ require: { php: ">=8.1" } }, null, 2),
+				next: JSON.stringify(
+					{ require: { php: ">=8.1", "evil/pkg": "^1.0" } },
+					null,
+					2,
+				),
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil\/pkg/);
+		expect(r?.reason).toMatch(/composer/);
+	});
+
+	it("blocks an unapproved require-dev dep", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "composer.json",
+				current: JSON.stringify({ "require-dev": {} }, null, 2),
+				next: JSON.stringify(
+					{ "require-dev": { "phpunit/phpunit": "^10" } },
+					null,
+					2,
+				),
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/phpunit/);
+	});
+
+	it("blocks flipping an approved dep to an inline git source", () => {
+		addToAllowlist(workspace, "composer", "monolog/monolog", { approved_by: "x" });
+		const before = JSON.stringify({ require: { "monolog/monolog": "^3.0" } }, null, 2);
+		const after = JSON.stringify(
+			{ require: { "monolog/monolog": "dev-main git=https://attacker.test/monolog" } },
+			null,
+			2,
+		);
+		const r = evaluateManifestEdit(
+			newContent({ filename: "composer.json", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+	});
+
+	it("allows adding an allowlisted composer dep", () => {
+		addToAllowlist(workspace, "composer", "monolog/monolog", { approved_by: "x" });
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "composer.json",
+				current: JSON.stringify({ require: {} }, null, 2),
+				next: JSON.stringify(
+					{ require: { "monolog/monolog": "^3.0" } },
+					null,
+					2,
+				),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("allows a plain version bump on an existing dep", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "composer.json",
+				current: JSON.stringify({ require: { "monolog/monolog": "^3.0" } }, null, 2),
+				next: JSON.stringify({ require: { "monolog/monolog": "^3.1" } }, null, 2),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null on a no-dep edit (only metadata changed)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "composer.json",
+				current: JSON.stringify({ name: "vendor/a", require: {} }, null, 2),
+				next: JSON.stringify({ name: "vendor/b", require: {} }, null, 2),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — pom.xml (maven)", () => {
+	const POM_BASE = `<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+  </dependencies>
+</project>`;
+
+	it("blocks adding an unapproved <dependency>", () => {
+		const after = `<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+    <dependency>
+      <groupId>com.evil</groupId>
+      <artifactId>payload</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pom.xml", current: POM_BASE, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/com\.evil:payload/);
+		expect(r?.reason).toMatch(/maven/);
+	});
+
+	it("allows adding an allowlisted maven coordinate", () => {
+		// Seed BEFORE newContent so loadAllowlist picks up the grant. The only
+		// delta vs POM_BASE is the new junit dep (guava is unchanged, so not
+		// re-checked); the new junit coordinate must be allowlisted.
+		addToAllowlist(workspace, "maven", "org.junit.jupiter:junit-jupiter", {
+			approved_by: "x",
+		});
+		const after = `<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.0</version>
+    </dependency>
+  </dependencies>
+</project>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pom.xml", current: POM_BASE, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null when no dependency changed (whitespace-only edit)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "pom.xml",
+				current: POM_BASE,
+				next: `${POM_BASE}\n`,
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null for a pom edit touching only <build> plugins (not deps)", () => {
+		const after = `<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
+    </dependency>
+  </dependencies>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-surefire-plugin</artifactId>
+  </plugin></plugins></build>
+</project>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pom.xml", current: POM_BASE, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — build.gradle / build.gradle.kts", () => {
+	it("blocks an unapproved Groovy implementation line specifically", () => {
+		addToAllowlist(workspace, "gradle", "com.google.guava:guava", { approved_by: "x" });
+		const before = `dependencies {\n  implementation "com.google.guava:guava:33.0.0-jre"\n}`;
+		const after = `dependencies {\n  implementation "com.google.guava:guava:33.0.0-jre"\n  implementation "com.evil:payload:1.0.0"\n}`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "build.gradle", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/com\.evil:payload/);
+		expect(r?.reason).toMatch(/gradle/);
+	});
+
+	it('blocks an unapproved Kotlin-DSL implementation("...") line', () => {
+		const before = `dependencies {\n}`;
+		const after = `dependencies {\n  implementation("io.evil:ktor-evil:2.3.7")\n}`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "build.gradle.kts", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/io\.evil:ktor-evil/);
+	});
+
+	it("allows an allowlisted gradle coordinate", () => {
+		addToAllowlist(workspace, "gradle", "com.squareup.okhttp3:okhttp", {
+			approved_by: "x",
+		});
+		const before = `dependencies {\n}`;
+		const after = `dependencies {\n  implementation "com.squareup.okhttp3:okhttp:4.12.0"\n}`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "build.gradle", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null on a version bump of an existing coordinate", () => {
+		const before = `dependencies {\n  implementation "com.google.guava:guava:33.0.0-jre"\n}`;
+		const after = `dependencies {\n  implementation "com.google.guava:guava:33.1.0-jre"\n}`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "build.gradle", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null on a non-dependency edit (a task block, no coordinate)", () => {
+		const before = `dependencies {\n}\ntasks.register("hello") {}`;
+		const after = `dependencies {\n}\ntasks.register("goodbye") {}`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "build.gradle", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — packages.config (nuget)", () => {
+	it("blocks adding an unapproved <package> entry", () => {
+		addToAllowlist(workspace, "nuget", "Newtonsoft.Json", { approved_by: "x" });
+		const before = `<packages>\n  <package id="Newtonsoft.Json" version="13.0.3" />\n</packages>`;
+		const after = `<packages>\n  <package id="Newtonsoft.Json" version="13.0.3" />\n  <package id="Evil.Payload" version="1.0.0" />\n</packages>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "packages.config", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/Evil\.Payload/);
+		expect(r?.reason).toMatch(/nuget/);
+	});
+
+	it("allows an allowlisted nuget package", () => {
+		addToAllowlist(workspace, "nuget", "Serilog", { approved_by: "x" });
+		const before = `<packages>\n</packages>`;
+		const after = `<packages>\n  <package id="Serilog" version="3.1.1" />\n</packages>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "packages.config", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null on a version bump of an existing package", () => {
+		const before = `<packages>\n  <package id="Newtonsoft.Json" version="13.0.2" />\n</packages>`;
+		const after = `<packages>\n  <package id="Newtonsoft.Json" version="13.0.3" />\n</packages>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "packages.config", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("returns null on a no-package edit (comment only)", () => {
+		const before = `<packages>\n</packages>`;
+		const after = `<packages>\n  <!-- restored -->\n</packages>`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "packages.config", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
 describe("evaluateManifestEdit — irrelevant files", () => {
 	it("returns null for non-manifest files", () => {
 		const r = evaluateManifestEdit(
@@ -339,6 +615,157 @@ describe("evaluateManifestEdit — new file (no current)", () => {
 				filename: "package.json",
 				current: null,
 				next: JSON.stringify({ name: "x" }, null, 2),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — license policy (recorded field, never network)", () => {
+	function approveWithLicense(name: string, license?: string): void {
+		addToAllowlist(workspace, "npm", name, {
+			approved_by: "qcody",
+			...(license !== undefined ? { license } : {}),
+		});
+	}
+
+	function editAddingDep(dep: string, warnings: string[]) {
+		const base = newContent({
+			filename: "package.json",
+			current: JSON.stringify({ name: "x", dependencies: {} }, null, 2),
+			next: JSON.stringify({ name: "x", dependencies: { [dep]: "1.0.0" } }, null, 2),
+		});
+		return { ...base, allowlist: loadAllowlist(workspace), warnings };
+	}
+
+	it("warns when an allowed dep's recorded license is outside the SPDX allowlist", () => {
+		approveWithLicense("copyleft-pkg", "AGPL-3.0");
+		const warnings: string[] = [];
+		const r = evaluateManifestEdit(editAddingDep("copyleft-pkg", warnings));
+		expect(r).toBeNull(); // allowed — license drift is a warning, not a block
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toMatch(/AGPL-3\.0/);
+		expect(warnings[0]).toMatch(/license_allowlist/);
+	});
+
+	it("warning fires for a --force-admitted license even though the dep is approved", () => {
+		approveWithLicense("gpl-pkg", "GPL-3.0");
+		const warnings: string[] = [];
+		evaluateManifestEdit(editAddingDep("gpl-pkg", warnings));
+		expect(warnings.some((w) => w.includes("GPL-3.0"))).toBe(true);
+	});
+
+	it("stays silent for an allowed license", () => {
+		approveWithLicense("mit-pkg", "MIT");
+		const warnings: string[] = [];
+		const r = evaluateManifestEdit(editAddingDep("mit-pkg", warnings));
+		expect(r).toBeNull();
+		expect(warnings).toHaveLength(0);
+	});
+
+	it("stays silent when no license was recorded at admission (no noise for old grants)", () => {
+		approveWithLicense("legacy-pkg");
+		const warnings: string[] = [];
+		const r = evaluateManifestEdit(editAddingDep("legacy-pkg", warnings));
+		expect(r).toBeNull();
+		expect(warnings).toHaveLength(0);
+	});
+
+	it("does not crash when no warnings array is provided", () => {
+		approveWithLicense("copyleft-pkg2", "AGPL-3.0");
+		const base = newContent({
+			filename: "package.json",
+			current: JSON.stringify({ name: "x", dependencies: {} }, null, 2),
+			next: JSON.stringify({ name: "x", dependencies: { "copyleft-pkg2": "1.0.0" } }, null, 2),
+		});
+		const r = evaluateManifestEdit({ ...base, allowlist: loadAllowlist(workspace) });
+		expect(r).toBeNull();
+	});
+
+	it("respects a committed license_allowlist override (no warning when policy permits)", () => {
+		approveWithLicense("agpl-ok", "AGPL-3.0");
+		const al = loadAllowlist(workspace);
+		al.license_allowlist = ["AGPL-3.0"];
+		const base = newContent({
+			filename: "package.json",
+			current: JSON.stringify({ name: "x", dependencies: {} }, null, 2),
+			next: JSON.stringify({ name: "x", dependencies: { "agpl-ok": "1.0.0" } }, null, 2),
+		});
+		const warnings: string[] = [];
+		evaluateManifestEdit({ ...base, allowlist: al, warnings });
+		expect(warnings).toHaveLength(0);
+	});
+});
+
+describe("evaluateManifestEdit — .csproj / version-catalog / gradle map-notation (hardening)", () => {
+	it("blocks an unapproved <PackageReference> added to a .csproj (modern .NET form)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "App.csproj",
+				current: "<Project><ItemGroup></ItemGroup></Project>",
+				next: '<Project><ItemGroup><PackageReference Include="Evil.Pkg" Version="1.0.0" /></ItemGroup></Project>',
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/Evil\.Pkg/);
+		expect(r?.reason).toMatch(/nuget/);
+	});
+
+	it("allows an allowlisted <PackageReference> in a nested .csproj", () => {
+		addToAllowlist(workspace, "nuget", "Serilog", { approved_by: "x" });
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "src/App/App.csproj",
+				current: "<Project></Project>",
+				next: '<Project><ItemGroup><PackageReference Include="Serilog" Version="3.0.0"/></ItemGroup></Project>',
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("blocks an unapproved coordinate added to libs.versions.toml (version-catalog)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "gradle/libs.versions.toml",
+				current: "[libraries]\n",
+				next: '[libraries]\nevil = { module = "com.evil:payload", version = "1.0" }\n',
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/com\.evil:payload/);
+		expect(r?.reason).toMatch(/gradle/);
+	});
+
+	it("allows an allowlisted version-catalog coordinate (group/name form)", () => {
+		addToAllowlist(workspace, "gradle", "com.google.guava:guava", { approved_by: "x" });
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "libs.versions.toml",
+				current: "[libraries]\n",
+				next: '[libraries]\nguava = { group = "com.google.guava", name = "guava", version = "33.0" }\n',
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("blocks an unapproved gradle map-notation dependency (group:/name:)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "build.gradle",
+				current: "dependencies {\n}\n",
+				next: "dependencies {\n  implementation group: 'com.evil', name: 'pkg', version: '1.0'\n}\n",
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/com\.evil:pkg/);
+	});
+
+	it("does not block a non-dependency .csproj edit (property change)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "App.csproj",
+				current: "<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>",
+				next: "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>",
 			}),
 		);
 		expect(r).toBeNull();

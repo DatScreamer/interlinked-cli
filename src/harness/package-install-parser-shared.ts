@@ -8,7 +8,16 @@
 // Public types (re-exported from package-install-parser.ts for back-compat)
 // ---------------------------------------------------------------------------
 
-export type Ecosystem = "npm" | "pypi" | "cargo" | "rubygems" | "go";
+export type Ecosystem =
+	| "npm"
+	| "pypi"
+	| "cargo"
+	| "rubygems"
+	| "go"
+	| "composer"
+	| "maven"
+	| "gradle"
+	| "nuget";
 
 export type InstallAction =
 	| "add"
@@ -107,6 +116,15 @@ const EXACT_VERSION_RES: Record<Ecosystem, RegExp> = {
 	// Go modules: vX.Y.Z, including pseudo-versions (their timestamp-and-hash
 	// tail rides the prerelease slot).
 	go: SEMVER_EXACT_RE,
+	// Composer (Packagist): semver; partial versions float, so all three
+	// components stay required.
+	composer: SEMVER_EXACT_RE,
+	// Maven/Gradle (Maven Central coordinates): a concrete dotted version,
+	// rejecting `-SNAPSHOT` (a moving build).
+	maven: /^v?\d+(?:\.\d+){1,3}(?:-(?!snapshot\b)[0-9A-Za-z][0-9A-Za-z.-]*)?$/i,
+	gradle: /^v?\d+(?:\.\d+){1,3}(?:-(?!snapshot\b)[0-9A-Za-z][0-9A-Za-z.-]*)?$/i,
+	// NuGet: 2–4 numeric components plus optional prerelease.
+	nuget: /^v?\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/i,
 };
 
 // Range / compound / wildcard operators that disqualify an exact pin.
@@ -199,6 +217,10 @@ export const ENV_REGISTRY_KEYS: Record<Ecosystem, readonly string[]> = {
 	cargo: [],
 	rubygems: ["GEM_SOURCE"],
 	go: ["GOPROXY"],
+	composer: [],
+	maven: [],
+	gradle: [],
+	nuget: [],
 };
 
 const CARGO_REGISTRY_RE = /^CARGO_REGISTRIES_[A-Z0-9_]+_INDEX$/;

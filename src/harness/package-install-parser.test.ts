@@ -843,3 +843,28 @@ describe("pinnedVersionViolation — per-ecosystem unit cases", () => {
 		expect(isExactPinnedVersion("latest")).toBe(false);
 	});
 });
+
+describe("parseInstallCommands — composer / nuget / maven ecosystems", () => {
+	it("routes composer require to the composer ecosystem", () => {
+		const [cmd] = parseInstallCommands("composer require monolog/monolog:2.9.1");
+		expect(cmd?.ecosystem).toBe("composer");
+		expect(cmd?.packages[0]).toMatchObject({ name: "monolog/monolog", version: "2.9.1" });
+	});
+	it("routes dotnet add package to nuget", () => {
+		const [cmd] = parseInstallCommands("dotnet add package Newtonsoft.Json --version 13.0.1");
+		expect(cmd?.ecosystem).toBe("nuget");
+		expect(cmd?.packages[0]).toMatchObject({ name: "Newtonsoft.Json", version: "13.0.1" });
+	});
+	it("routes nuget install to nuget", () => {
+		const [cmd] = parseInstallCommands("nuget install Moq -Version 4.20.70");
+		expect(cmd?.ecosystem).toBe("nuget");
+	});
+	it("routes mvn dependency:get to maven", () => {
+		const [cmd] = parseInstallCommands("mvn dependency:get -Dartifact=org.foo:bar:1.0.0");
+		expect(cmd?.ecosystem).toBe("maven");
+		expect(cmd?.packages[0]).toMatchObject({ name: "org.foo:bar", version: "1.0.0" });
+	});
+	it("returns [] for an unknown bin (parseExtendedEcosystem miss)", () => {
+		expect(parseInstallCommands("frobnicate widget")).toEqual([]);
+	});
+});

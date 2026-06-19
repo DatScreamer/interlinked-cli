@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	addToAllowlist,
 	type Allowlist,
+	addToAllowlist,
 	allowlistPath,
 	hashLockfile,
 	loadAllowlist,
@@ -224,7 +224,7 @@ describe("evaluatePackageInstall — lockfile snapshots", () => {
 		const sha = hashLockfile(lf);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: sha!,
@@ -243,7 +243,7 @@ describe("evaluatePackageInstall — lockfile snapshots", () => {
 		const originalHash = hashLockfile(lf);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: originalHash!,
@@ -274,7 +274,7 @@ describe("evaluatePackageInstall — manifest-only sync (npm install no args)", 
 		const sha = hashLockfile(mf);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package.json": {
 					sha256: sha!,
@@ -295,7 +295,7 @@ describe("evaluatePackageInstall — manifest-only sync (npm install no args)", 
 		const lockSha = hashLockfile(lf);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: lockSha!,
@@ -323,7 +323,7 @@ describe("evaluatePackageInstall — effective cwd (P1.4)", () => {
 		);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: rootSha!,
@@ -346,7 +346,7 @@ describe("evaluatePackageInstall — effective cwd (P1.4)", () => {
 		const subSha = hashLockfile(subLf);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: subSha!,
@@ -443,5 +443,139 @@ describe("evaluatePackageInstall — compound", () => {
 		expect(
 			evalCmd("npm install lodash@4.17.21 && pip install requests==2.31.0").decision,
 		).toBe("allow");
+	});
+});
+
+describe("evaluatePackageInstall — NuGet SDK-style *.csproj snapshots", () => {
+	const CSPROJ =
+		'<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup></Project>';
+
+	it("blocks `dotnet restore` when a *.csproj has no snapshot", () => {
+		writeFileSync(join(workspace, "App.csproj"), CSPROJ);
+		const r = evalCmd("dotnet restore");
+		expect(r.decision).toBe("block");
+		expect(r.reason).toMatch(/App\.csproj|snapshot/i);
+	});
+
+	it("lists the discovered *.csproj in the block hint", () => {
+		writeFileSync(join(workspace, "App.csproj"), CSPROJ);
+		expect(evalCmd("dotnet restore").reason).toMatch(/App\.csproj/);
+	});
+
+	it("allows `dotnet restore` when the *.csproj hash matches a stored snapshot", () => {
+		const csproj = join(workspace, "App.csproj");
+		writeFileSync(csproj, CSPROJ);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["App.csproj"] = {
+			sha256: hashLockfile(csproj) ?? "",
+			approved_at: "2026-06-17",
+			approved_by: "qcody",
+		};
+		saveAllowlist(workspace, al);
+		expect(evalCmd("dotnet restore").decision).toBe("allow");
+	});
+
+	it("blocks `dotnet restore` when one of several *.csproj is unsnapshotted", () => {
+		const app = join(workspace, "App.csproj");
+		writeFileSync(app, CSPROJ);
+		writeFileSync(
+			join(workspace, "Other.csproj"),
+			'<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Evil.Sibling" Version="9.9.9" /></ItemGroup></Project>',
+		);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["App.csproj"] = {
+			sha256: hashLockfile(app) ?? "",
+			approved_at: "2026-06-17",
+			approved_by: "qcody",
+		};
+		saveAllowlist(workspace, al);
+		// Only App.csproj is snapshotted; the unapproved Other.csproj must keep the
+		// restore blocked — one snapshotted project can't vouch for a sibling.
+		expect(evalCmd("dotnet restore").decision).toBe("block");
+	});
+
+	it("requires *.csproj snapshots even when packages.lock.json matches", () => {
+		const lockfile = join(workspace, "packages.lock.json");
+		writeFileSync(lockfile, "{}");
+		writeFileSync(
+			join(workspace, "Other.csproj"),
+			'<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Evil.Sibling" Version="9.9.9" /></ItemGroup></Project>',
+		);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["packages.lock.json"] = {
+			sha256: hashLockfile(lockfile) ?? "",
+			approved_at: "2026-06-17",
+			approved_by: "qcody",
+		};
+		saveAllowlist(workspace, al);
+
+		expect(evalCmd("dotnet restore").decision).toBe("block");
+	});
+
+	it("allows `dotnet restore` only when ALL *.csproj are snapshotted", () => {
+		const app = join(workspace, "App.csproj");
+		const other = join(workspace, "Other.csproj");
+		writeFileSync(app, CSPROJ);
+		writeFileSync(
+			other,
+			'<Project><ItemGroup><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup></Project>',
+		);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["App.csproj"] = {
+			sha256: hashLockfile(app) ?? "",
+			approved_at: "x",
+			approved_by: "q",
+		};
+		al.lockfile_snapshots["Other.csproj"] = {
+			sha256: hashLockfile(other) ?? "",
+			approved_at: "x",
+			approved_by: "q",
+		};
+		saveAllowlist(workspace, al);
+		expect(evalCmd("dotnet restore").decision).toBe("allow");
+	});
+
+	it("blocks `dotnet restore` when a NESTED *.csproj is unsnapshotted", () => {
+		const app = join(workspace, "App.csproj");
+		writeFileSync(app, CSPROJ);
+		mkdirSync(join(workspace, "src", "Lib"), { recursive: true });
+		writeFileSync(
+			join(workspace, "src", "Lib", "Lib.csproj"),
+			'<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Evil.Nested" Version="9.9.9" /></ItemGroup></Project>',
+		);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["App.csproj"] = {
+			sha256: hashLockfile(app) ?? "",
+			approved_at: "x",
+			approved_by: "q",
+		};
+		saveAllowlist(workspace, al);
+		// Root App.csproj is snapshotted but the nested Lib.csproj (unapproved) is
+		// not — dotnet restore resolves it, so the gate must still block.
+		expect(evalCmd("dotnet restore").decision).toBe("block");
+	});
+
+	it("allows `dotnet restore` when a nested *.csproj is also snapshotted (relative-path key)", () => {
+		const app = join(workspace, "App.csproj");
+		writeFileSync(app, CSPROJ);
+		mkdirSync(join(workspace, "src", "Lib"), { recursive: true });
+		const lib = join(workspace, "src", "Lib", "Lib.csproj");
+		writeFileSync(
+			lib,
+			'<Project><ItemGroup><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup></Project>',
+		);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["App.csproj"] = {
+			sha256: hashLockfile(app) ?? "",
+			approved_at: "x",
+			approved_by: "q",
+		};
+		al.lockfile_snapshots["src/Lib/Lib.csproj"] = {
+			sha256: hashLockfile(lib) ?? "",
+			approved_at: "x",
+			approved_by: "q",
+		};
+		saveAllowlist(workspace, al);
+		expect(evalCmd("dotnet restore").decision).toBe("allow");
 	});
 });

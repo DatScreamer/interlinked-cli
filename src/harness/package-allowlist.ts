@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DEFAULT_LICENSE_ALLOWLIST } from "./license-policy.js";
 import type { Ecosystem, PackageSpec } from "./package-install-parser.js";
 
 export interface AllowlistEntry {
@@ -20,6 +21,9 @@ export interface AllowlistEntry {
 	approved_by: string;
 	reason?: string | undefined;
 	version_range?: string | undefined;
+	/** SPDX license expression recorded at admission time (registry-declared).
+	 *  Per-edit license enforcement reads ONLY this field — never the network. */
+	license?: string | undefined;
 }
 
 export interface LockfileSnapshot {
@@ -33,6 +37,9 @@ export interface Allowlist {
 	version: 1;
 	packages: Record<Ecosystem, Record<string, AllowlistEntry>>;
 	lockfile_snapshots: Record<string, LockfileSnapshot>;
+	/** Committed SPDX license allowlist. Absent → DEFAULT_LICENSE_ALLOWLIST
+	 *  (use effectiveLicenseAllowlist(), don't read this field directly). */
+	license_allowlist?: string[] | undefined;
 }
 
 export interface AllowDecision {
@@ -49,7 +56,17 @@ export function allowlistPath(cwd: string): string {
 function emptyAllowlist(): Allowlist {
 	return {
 		version: 1,
-		packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+		packages: {
+			npm: {},
+			pypi: {},
+			cargo: {},
+			rubygems: {},
+			go: {},
+			composer: {},
+			maven: {},
+			gradle: {},
+			nuget: {},
+		},
 		lockfile_snapshots: {},
 	};
 }
@@ -62,13 +79,29 @@ export function loadAllowlist(cwd: string): Allowlist {
 		const parsed = JSON.parse(raw) as Partial<Allowlist>;
 		const base = emptyAllowlist();
 		if (parsed.packages && typeof parsed.packages === "object") {
-			for (const eco of ["npm", "pypi", "cargo", "rubygems", "go"] as Ecosystem[]) {
+			for (const eco of [
+				"npm",
+				"pypi",
+				"cargo",
+				"rubygems",
+				"go",
+				"composer",
+				"maven",
+				"gradle",
+				"nuget",
+			] as Ecosystem[]) {
 				const eco_entry = parsed.packages[eco];
 				if (eco_entry && typeof eco_entry === "object") base.packages[eco] = eco_entry;
 			}
 		}
 		if (parsed.lockfile_snapshots && typeof parsed.lockfile_snapshots === "object") {
 			base.lockfile_snapshots = parsed.lockfile_snapshots;
+		}
+		if (
+			Array.isArray(parsed.license_allowlist) &&
+			parsed.license_allowlist.every((id) => typeof id === "string")
+		) {
+			base.license_allowlist = parsed.license_allowlist;
 		}
 		return base;
 	} catch {
@@ -97,8 +130,15 @@ export function addToAllowlist(
 		approved_by: meta.approved_by,
 		reason: meta.reason,
 		version_range: meta.version_range,
+		license: meta.license,
 	};
 	saveAllowlist(cwd, al);
+}
+
+/** The project's SPDX license allowlist: the committed `license_allowlist`
+ *  field when present, otherwise the built-in permissive default seed. */
+export function effectiveLicenseAllowlist(al: Allowlist): readonly string[] {
+	return al.license_allowlist ?? DEFAULT_LICENSE_ALLOWLIST;
 }
 
 export function isPackageAllowed(

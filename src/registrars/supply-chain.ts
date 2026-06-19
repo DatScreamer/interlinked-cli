@@ -19,7 +19,10 @@ export function registerSupplyChainCommands(program: Command): void {
 		.option("--by <name>", "Approver name (required)")
 		.option("--reason <text>", "Why this package is approved")
 		.option("--version-range <range>", "Optional semver/PEP-440 range constraint")
-		.option("--force", "Override the typosquat refusal for legitimate near-miss names")
+		.option(
+			"--force",
+			"Override the admission screens (typosquat refusal, non-allowlisted license, open OSV advisories)",
+		)
 		.option("--cwd <path>", "Project root (default: current directory)")
 		.action(
 			async (
@@ -39,7 +42,7 @@ export function registerSupplyChainCommands(program: Command): void {
 				}
 				const { addAllowlistCommand } = await import("../commands/allowlist.js");
 				try {
-					addAllowlistCommand(ecosystem, pkg, {
+					await addAllowlistCommand(ecosystem, pkg, {
 						cwd: opts.cwd || process.cwd(),
 						by: opts.by,
 						...(opts.reason !== undefined ? { reason: opts.reason } : {}),

@@ -70,6 +70,10 @@ describe("saveAllowlist + loadAllowlist roundtrip", () => {
 				cargo: {},
 				rubygems: {},
 				go: {},
+				composer: {},
+				maven: {},
+				gradle: {},
+				nuget: {},
 			},
 			lockfile_snapshots: {},
 		};
@@ -100,7 +104,7 @@ describe("addToAllowlist", () => {
 describe("isPackageAllowed", () => {
 	const empty: Allowlist = {
 		version: 1,
-		packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+		packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 		lockfile_snapshots: {},
 	};
 
@@ -256,7 +260,7 @@ describe("hashLockfile + matchSnapshot", () => {
 		const hash = hashLockfile(file);
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": { sha256: hash!, approved_at: "2026-05-19", approved_by: "x" },
 			},
@@ -269,7 +273,7 @@ describe("hashLockfile + matchSnapshot", () => {
 		writeFileSync(file, "newcontent");
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {
 				"package-lock.json": {
 					sha256: "0".repeat(64),
@@ -284,7 +288,7 @@ describe("hashLockfile + matchSnapshot", () => {
 	it("matchSnapshot returns false when no snapshot exists for that lockfile", () => {
 		const al: Allowlist = {
 			version: 1,
-			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {} },
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
 			lockfile_snapshots: {},
 		};
 		expect(

@@ -23,6 +23,9 @@ import {
 // PyPI family — re-exported from the sibling module (line-cap extraction).
 export { classifyPipSpec, parsePip, parsePoetry, parseUv } from "./package-install-parser-pypi.js";
 
+// Composer / NuGet / Maven family — re-exported from the sibling module (line-cap extraction).
+export { parseComposer, parseMaven, parseNuget } from "./package-install-parser-ecosystems-extra.js";
+
 // ===========================================================
 // npm / pnpm / yarn / bun
 // ===========================================================

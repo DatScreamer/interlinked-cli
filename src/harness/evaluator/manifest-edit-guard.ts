@@ -7,8 +7,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { isLicenseAllowed } from "../license-policy.js";
+import {
+	extractComposerDeps,
+	extractGradleDeps,
+	extractGradleVersionCatalogDeps,
+	extractNugetDeps,
+	extractPomDeps,
+} from "../manifest-dep-extract.js";
 import {
 	type Allowlist,
+	effectiveLicenseAllowlist,
 	isPackageAllowed,
 } from "../package-allowlist.js";
 import type { Ecosystem, PackageSpec } from "../package-install-parser.js";
@@ -19,6 +28,8 @@ export interface ManifestEditInput {
 	newContent: string;
 	allowlist: Allowlist;
 	cwd: string;
+	/** Out-param: non-blocking findings (license policy) are pushed here. */
+	warnings?: string[] | undefined;
 }
 
 interface DepDelta {
@@ -38,11 +49,31 @@ const MANIFEST_HANDLERS: Record<
 	"Cargo.toml": diffCargoToml,
 	"go.mod": diffGoMod,
 	Gemfile: diffGemfile,
+	"composer.json": diffComposer,
+	"pom.xml": diffPom,
+	"build.gradle": diffGradle,
+	"build.gradle.kts": diffGradle,
+	"libs.versions.toml": diffGradleCatalog,
+	"packages.config": diffNuget,
 };
+
+/** libs.versions.toml (Gradle version-catalog): new `[libraries]` coordinates
+ *  are deltas, same as the other gradle manifests. */
+function diffGradleCatalog(before: string, after: string): DepDelta[] {
+	return diffByValueShape(
+		extractGradleVersionCatalogDeps(before),
+		extractGradleVersionCatalogDeps(after),
+		"gradle",
+	);
+}
 
 export function evaluateManifestEdit(input: ManifestEditInput): HarnessDecision | null {
 	const name = basename(input.filePath);
-	const handler = MANIFEST_HANDLERS[name];
+	// `.csproj` filenames vary (not a fixed basename), so match by extension —
+	// the nuget extractor reads its <PackageReference> entries. Without this, a
+	// direct edit adding an unapproved package to a .csproj is entirely unblocked
+	// (the dominant modern .NET form; finding 2026-06).
+	const handler = MANIFEST_HANDLERS[name] ?? (name.endsWith(".csproj") ? diffNuget : undefined);
 	if (!handler) return null;
 
 	const before = existsSync(input.filePath)
@@ -69,6 +100,21 @@ export function evaluateManifestEdit(input: ManifestEditInput): HarnessDecision 
 				severity: "high",
 				category: "supply-chain",
 			};
+		}
+		// License policy (warning, never blocks): re-check the license RECORDED
+		// at admission time against the committed SPDX allowlist. Catches
+		// entries admitted via --force and allowlists tightened after the
+		// grant. Reads only the stored field — the hook path never fetches.
+		if (spec.kind === "registry" && input.warnings) {
+			const entry = input.allowlist.packages[delta.ecosystem][spec.name];
+			if (
+				entry?.license !== undefined &&
+				!isLicenseAllowed(entry.license, effectiveLicenseAllowlist(input.allowlist))
+			) {
+				input.warnings.push(
+					`[interlinked:supply-chain] ${name} adds ${delta.ecosystem} dependency "${delta.name}" whose recorded license "${entry.license}" is outside the SPDX license allowlist. Review the grant or extend license_allowlist in .interlinked/package-allowlist.json.`,
+				);
+			}
 		}
 	}
 	return null;
@@ -350,6 +396,37 @@ export function extractGemfileDeps(content: string): Map<string, string> {
 		deps.set(m[1], m[2] || "");
 	}
 	return deps;
+}
+
+// ============================================================
+// composer.json / pom.xml / build.gradle[.kts] / packages.config
+// (extractors live in ../manifest-dep-extract.ts — shared with
+//  `interlinked allowlist verify`). All four reuse diffByValueShape:
+// new names are deltas, and a composer name flipped to an inline git/path
+// source value is a delta too (the version-bump path stays allowed).
+// ============================================================
+function diffComposer(before: string, after: string): DepDelta[] {
+	return diffByValueShape(
+		extractComposerDeps(before),
+		extractComposerDeps(after),
+		"composer",
+	);
+}
+
+function diffPom(before: string, after: string): DepDelta[] {
+	return diffByValueShape(extractPomDeps(before), extractPomDeps(after), "maven");
+}
+
+function diffGradle(before: string, after: string): DepDelta[] {
+	return diffByValueShape(
+		extractGradleDeps(before),
+		extractGradleDeps(after),
+		"gradle",
+	);
+}
+
+function diffNuget(before: string, after: string): DepDelta[] {
+	return diffByValueShape(extractNugetDeps(before), extractNugetDeps(after), "nuget");
 }
 
 // ============================================================
