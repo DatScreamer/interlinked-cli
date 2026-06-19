@@ -165,6 +165,14 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 		severity: "warning",
 		description: "Rust linting with clippy",
 	},
+	rustfmt_check: {
+		enabled: true,
+		command: "rustfmt --check",
+		file_types: [".rs"],
+		timeout_ms: 10_000,
+		severity: "warning",
+		description: "Rust formatting check (rustfmt --check)",
+	},
 	go_build: {
 		enabled: true,
 		command: "go build ./...",

@@ -32,11 +32,12 @@ import {
 	writeLocalGuardRules,
 	writeTeamGuardRules,
 } from "./rules/file-io.js";
+import { getFindingRulesWatchPaths, loadFindingRules } from "./rules/finding-rules.js";
 import { autoTuneQualityChecks, detectProjectLanguages } from "./rules/language-detection.js";
 import { mergeLocalOverrides, mergeTeamRules } from "./rules/merge.js";
 import {
-	type HarnessModePreset,
 	getModePreset,
+	type HarnessModePreset,
 	isKnownMode,
 	migrateLegacyMode,
 } from "./rules/modes.js";
@@ -187,10 +188,15 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 		process.env.INTERLINKED_SKIP_DISTILLED_RULES === "1" ||
 		process.env.INTERLINKED_SKIP_COMPILED_RULES === "1";
 	const distilledRules = skipDistilled ? [] : loadDistilledRules(cwd);
+	// 4th layer — findings-distilled rules (rules/finding-rules.ts). A SEPARATE
+	// file from distilled (a bare /enforce run regenerates its pristine file and
+	// would clobber these). loadFindingRules returns the active set already, so
+	// spread it directly. Born advisory (action:warn); ratchets via recurrence.
 	const allRules = [
 		...BUILTIN_RULES.filter((r) => !disabledSet.has(r.id)),
 		...config.rules.filter((r) => r.enabled !== false),
 		...distilledRules.filter((r) => r.enabled !== false && !disabledSet.has(r.id)),
+		...loadFindingRules(cwd),
 	];
 	config.rules = allRules;
 
@@ -209,6 +215,7 @@ export function watchRulesFiles(
 	const teamPath = join(cwd, ".interlinked", "guard-rules.json");
 	const localPath = join(cwd, ".interlinked", "guard-rules.local.json");
 	const distilledPaths = getDistilledRulesWatchPaths(cwd);
+	const findingRulePaths = getFindingRulesWatchPaths(cwd);
 
 	const reload = () => {
 		try {
@@ -223,9 +230,9 @@ export function watchRulesFiles(
 	const WATCH_POLL_INTERVAL_MS = 2_000;
 	// Watch all rules files (watchFile is safe even when files don't exist —
 	// it fires once they're created, which is the right behavior for the
-	// distilled-rules pair: an `/enforce` run creates them mid-session and
-	// we want the running daemon to pick them up without a restart).
-	const watchedPaths = [teamPath, localPath, ...distilledPaths];
+	// distilled/findings pairs: skill runs create them mid-session and we want
+	// the running daemon to pick them up without a restart).
+	const watchedPaths = [teamPath, localPath, ...distilledPaths, ...findingRulePaths];
 	for (const path of watchedPaths) {
 		watchFile(path, { interval: WATCH_POLL_INTERVAL_MS }, reload);
 	}

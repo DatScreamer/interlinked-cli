@@ -454,17 +454,19 @@ describe("watchRulesFiles", () => {
 	it("registers a watcher on every rules file and returns a cleanup fn", () => {
 		const cleanup = watchRulesFiles(tmp4, () => {});
 		expect(typeof cleanup).toBe("function");
-		// team + local + 2 distilled paths = 4 watched files.
-		expect(fsWatchState.watch.length).toBe(4);
+		// team + local + 2 distilled paths + 2 findings paths = 6 watched files.
+		expect(fsWatchState.watch.length).toBe(6);
 		const watchedPaths = fsWatchState.watch.map((w) => w.path);
 		expect(watchedPaths.some((p) => p.endsWith("guard-rules.json"))).toBe(true);
 		expect(watchedPaths.some((p) => p.endsWith("guard-rules.local.json"))).toBe(true);
 		expect(watchedPaths.some((p) => p.endsWith("distilled-rules.json"))).toBe(true);
 		expect(watchedPaths.some((p) => p.endsWith("distilled-rules.overrides.json"))).toBe(true);
+		expect(watchedPaths.some((p) => p.endsWith("findings-rules.json"))).toBe(true);
+		expect(watchedPaths.some((p) => p.endsWith("findings-rules.overrides.json"))).toBe(true);
 
 		cleanup();
-		// Cleanup unwatches exactly the same four paths.
-		expect(fsWatchState.unwatch.length).toBe(4);
+		// Cleanup unwatches exactly the same six paths.
+		expect(fsWatchState.unwatch.length).toBe(6);
 		const unwatchedPaths = fsWatchState.unwatch.map((w) => w.path).sort();
 		expect(unwatchedPaths).toEqual(watchedPaths.slice().sort());
 	});

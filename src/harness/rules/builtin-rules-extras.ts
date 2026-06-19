@@ -167,8 +167,12 @@ export const DESTRUCTIVE_V1_EXTRA_RULES: GuardRule[] = [
 		action: "block",
 		patterns: [
 			{
+				// Walker bounded to git's own shell segment (excludes shell
+				// metacharacters) so it can't span `&&`/`;`/`|` into a later
+				// `stash drop` mention; still allows `git -C /path stash drop`.
+				// executed_only masks quoted occurrences. Cf. dcg #124.
 				field: "command",
-				regex: "\\bgit\\s+(?:\\S+\\s+)*stash\\s+(?:drop|clear)\\b",
+				regex: "\\bgit\\s+(?:[^\\s;&|<>()`]+\\s+)*stash\\s+(?:drop|clear)\\b",
 				flags: "i",
 				executed_only: true,
 			},
