@@ -23,11 +23,12 @@ import type {
 import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { evaluateGitScopeGateSync } from "./git-session-scope-gate.js";
+import { isInspectionWrapperCall } from "./inspection-wrapper.js";
 import { evaluateManifestEdit } from "./manifest-edit-guard.js";
 import { evaluatePackageInstall } from "./package-install-guard.js";
+import { computeFullNewContent, containsSecrets } from "./pre-tool-helpers.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import { isBash, isFileOperation, isFileWrite } from "./tool-classifiers.js";
-import { computeFullNewContent, containsSecrets } from "./pre-tool-helpers.js";
 
 /** The harness event's tool-input bag, normalized to a non-undefined object. */
 type ToolInput = NonNullable<HarnessEvent["tool_input"]>;
@@ -47,7 +48,7 @@ export function evaluateMetaTestWrapper(
 ): HarnessDecision | null {
 	if (toolName === "Bash" || toolName === "Shell" || toolName === "run_command") {
 		const command = typeof toolInput.command === "string" ? toolInput.command : "";
-		if (/^\s*interlinked\s+harness\s+test\b/.test(command)) {
+		if (isInspectionWrapperCall(command)) {
 			return { decision: "allow" };
 		}
 	}
@@ -297,6 +298,7 @@ export function evaluateManifestEditGuard(
 	event: HarnessEvent,
 	toolName: string,
 	toolInput: ToolInput,
+	warnings: string[],
 ): HarnessDecision | null {
 	if (process.env.INTERLINKED_DISABLE_PACKAGE_GUARD !== "1" && isFileWrite(toolName)) {
 		const mfPath = (toolInput.file_path as string) || (toolInput.path as string) || "";
@@ -310,6 +312,7 @@ export function evaluateManifestEditGuard(
 					newContent: fullNewContent,
 					allowlist: loadAllowlist(mfCwd),
 					cwd: mfCwd,
+					warnings,
 				});
 				if (manifestBlock) return manifestBlock;
 			}

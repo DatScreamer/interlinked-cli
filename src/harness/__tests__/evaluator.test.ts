@@ -114,6 +114,66 @@ describe("evaluatePreToolUse", () => {
 			expect(result.decision).toBe("allow");
 		});
 
+		it("allows `interlinked harness test \"rm -rf /\"` (inspection-wrapper exemption)", () => {
+			const event = makeEvent({
+				tool_input: { command: 'interlinked harness test "rm -rf /"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("still blocks an inspection wrapper with a chained destructive tail", () => {
+			const event = makeEvent({
+				tool_input: { command: 'interlinked harness test "x" && rm -rf /' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("does not fire rm -rf rules on a cat-heredoc body (data sink)", () => {
+			const event = makeEvent({
+				tool_input: { command: "cat <<EOF > notes.md\nwhy rm -rf / is dangerous\nEOF\n" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("does not fire rm -rf rules on a quoted mention (echo)", () => {
+			const event = makeEvent({
+				tool_input: { command: 'echo "remember: rm -rf / wipes everything"' },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+		});
+
+		it("still blocks a destructive payload in a bash-heredoc body (executing sink)", () => {
+			const event = makeEvent({
+				tool_input: { command: "bash <<EOF\nrm -rf /\nEOF\n" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("still blocks rm -rf / inside an inline-exec payload (bash -c)", () => {
+			const event = makeEvent({
+				tool_input: { command: "bash -c 'rm -rf /'" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			expect(result.decision).toBe("block");
+		});
+
+		it("warns on the real publish in a dry-run-then-publish compound (segment-scoped negate)", () => {
+			const event = makeEvent({
+				tool_input: { command: "npm publish --dry-run\nnpm publish" },
+			});
+			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
+			// builtin-npm-publish is warn-only, so the decision stays allow — but
+			// the bare `npm publish` segment must still surface its warning even
+			// though the leading segment carries --dry-run (the cross-segment
+			// negate must not suppress it).
+			expect((result.warnings ?? []).some((w) => /publish/i.test(w))).toBe(true);
+		});
+
 		it("allows rm -rf dist/ (relative path)", () => {
 			const event = makeEvent({
 				tool_input: { command: "rm -rf dist/" },

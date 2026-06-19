@@ -12,9 +12,20 @@ import { computeCrap, crapScore } from "../checks/crap.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
 import type { CoverageLanguage } from "../coverage-runner.js";
+import { DEFAULT_MAX_CYCLOMATIC } from "../metric-caps.js";
 
-/** A function over this cap is a cyclomatic violation at commit time. */
-export const COMMIT_CYCLOMATIC_CAP = 25;
+/**
+ * DEFAULT per-function cyclomatic cap at commit time — used when no caller
+ * passes an explicit cap. Kept identical to the per-edit default
+ * (`DEFAULT_MAX_CYCLOMATIC`) so the two enforcement surfaces agree on the
+ * shipped figure. The commit gate resolves the EFFECTIVE per-repo cap via
+ * `maxCyclomaticFor(repoRoot)` and threads it down: a lowered `interlinked caps
+ * set cyclomatic` was honored per-edit but the deferred commit gate still
+ * compared against a hard-coded 25, so a big suite that defers to commit time
+ * could bypass a tightened cap (and a raised cap produced false commit blocks)
+ * — finding 2026-06, round 8.
+ */
+export const COMMIT_CYCLOMATIC_CAP = DEFAULT_MAX_CYCLOMATIC;
 
 /** A changed source file the gate will evaluate, with its resolved language. */
 export interface ChangedSource {
@@ -133,13 +144,15 @@ function crapHitsPerLine(
 	return hits;
 }
 
-/** The worst (first) over-cap cyclomatic function for a file, or null. */
+/** The worst (first) over-cap cyclomatic function for a file, or null. `cap` is
+ *  the effective per-repo cyclomatic cap (defaults to the shipped figure). */
 function firstOverCapCyclomatic(
 	complexities: FunctionComplexityEntry[],
+	cap: number = COMMIT_CYCLOMATIC_CAP,
 ): FunctionComplexityEntry | null {
 	let worst: FunctionComplexityEntry | null = null;
 	for (const fn of complexities) {
-		if (fn.cyclomatic <= COMMIT_CYCLOMATIC_CAP) continue;
+		if (fn.cyclomatic <= cap) continue;
 		if (!worst || fn.cyclomatic > worst.cyclomatic) worst = fn;
 	}
 	return worst;
@@ -248,17 +261,20 @@ export function isTypeOnlySource(content: string): boolean {
 	return true;
 }
 
-/** The over-cap cyclomatic violation for a file, or null. */
+/** The over-cap cyclomatic violation for a file, or null. `cap` is the effective
+ *  per-repo cyclomatic cap (`maxCyclomaticFor`), defaulting to the shipped figure
+ *  so existing callers/tests keep their behavior. */
 export function cyclomaticViolation(
 	source: ChangedSource,
 	complexities: FunctionComplexityEntry[],
+	cap: number = COMMIT_CYCLOMATIC_CAP,
 ): Violation | null {
-	const overCap = firstOverCapCyclomatic(complexities);
+	const overCap = firstOverCapCyclomatic(complexities, cap);
 	if (!overCap) return null;
 	return {
 		kind: "cyclomatic",
 		file: source.relPath,
-		detail: `\`${overCap.name}\` (line ${overCap.line}) has cyclomatic complexity ${overCap.cyclomatic} (cap ${COMMIT_CYCLOMATIC_CAP})`,
+		detail: `\`${overCap.name}\` (line ${overCap.line}) has cyclomatic complexity ${overCap.cyclomatic} (cap ${cap})`,
 	};
 }
 

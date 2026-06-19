@@ -107,14 +107,26 @@ function overlayTrackedWorktree(projectRoot: string, root: string): void {
  *     current worktree state (a dir add stages its untracked files and
  *     deletions too; gitignored content inside rides along — a small accepted
  *     over-inclusion, still far tighter than the whole worktree);
- *   - a regular file → symlink-safe byte copy.
+ *   - a regular file → symlink-safe byte copy;
+ *   - a path in `trackedOnly` → TRACKED files only (see
+ *     {@link overlayTrackedScope}): pathspec commits and `-u` adds never
+ *     include untracked files, so the raw copy is wrong for them.
  * Paths under `.interlinked/` are skipped: the snapshot itself lives there, so a
  * dir copy would recurse into its own tree, and harness-internal state is never
  * suite-relevant.
  */
-function overlayConstructedPaths(projectRoot: string, root: string, relPaths: string[]): void {
+function overlayConstructedPaths(
+	projectRoot: string,
+	root: string,
+	relPaths: string[],
+	trackedOnly: ReadonlySet<string>,
+): void {
 	for (const rel of relPaths) {
 		if (rel === INTERLINKED_DIR || rel.startsWith(`${INTERLINKED_DIR}/`)) continue;
+		if (trackedOnly.has(rel)) {
+			overlayTrackedScope(projectRoot, root, rel);
+			continue;
+		}
 		const src = join(projectRoot, rel);
 		const st = lstatSync(src, { throwIfNoEntry: false });
 		if (!st) {
@@ -132,6 +144,33 @@ function overlayConstructedPaths(projectRoot: string, root: string, relPaths: st
 }
 
 /**
+ * Overlay ONLY the TRACKED files under pathspec `rel` (worktree content; a
+ * worktree deletion removes the snapshot file — the pathspec commits the
+ * deletion). `git commit -- src` commits tracked paths only: copying the raw
+ * directory also picked up untracked files, so an untracked test beneath the
+ * pathspec could supply coverage and approve a commit that does not contain it
+ * (finding 2026-06, round 4). An untracked FILE pathspec overlays nothing —
+ * git would refuse to commit it (`did not match any file(s) known to git`).
+ * `ls-files` failure overlays nothing: the snapshot then shows index content
+ * for the scope, and on a truly broken repo checkout-index already failed.
+ */
+function overlayTrackedScope(projectRoot: string, root: string, rel: string): void {
+	for (const f of gitLines(projectRoot, ["ls-files", "--", rel])) {
+		const src = join(projectRoot, f);
+		const st = lstatSync(src, { throwIfNoEntry: false });
+		if (!st) {
+			removeTree(join(root, f));
+			continue;
+		}
+		if (st.isSymbolicLink()) {
+			symlinkInTree(root, f, readlinkSync(src));
+		} else {
+			writeFileInTree(root, f, readFileSync(src));
+		}
+	}
+}
+
+/**
  * Materialize the would-be-committed tree of the git repo at `projectRoot` into a
  * temp tree under `projectRoot/.interlinked`, with node_modules symlinked. Returns
  * the snapshot, or null on any failure (the caller falls back to the working tree).
@@ -142,28 +181,60 @@ function overlayConstructedPaths(projectRoot: string, root: string, relPaths: st
  *     worktree modifications, but still NO untracked files — `-a` never stages them
  *     (finding 3: evaluating the raw worktree leaked untracked files, so an
  *     untracked test could mask a tracked source change).
- *   - NARROW constructed commit (`constructedPaths` given) → the index PLUS only
- *     those paths' worktree state (see {@link overlayConstructedPaths}, finding
- *     2026-06).
+ *   - NARROW constructed commit (`constructedPaths` given) → the base tree PLUS
+ *     only those paths' worktree state (see {@link overlayConstructedPaths},
+ *     finding 2026-06). Paths listed in `trackedOnlyPaths` overlay TRACKED
+ *     files only — a pathspec commit / `-u` add never includes untracked files
+ *     (round 4).
+ *   - `baseTree: "head"` (a pathspec `--only` commit — `git commit src/a.ts`
+ *     WITHOUT `--include`) → the base is HEAD, not the index: git builds that
+ *     commit from HEAD plus the named paths, so unrelated STAGED index changes
+ *     are NOT in it. Basing on the index let a separately staged failing test
+ *     false-block the commit, and a staged test supply coverage the resulting
+ *     commit does not contain (round 5). A repo without HEAD fails → null →
+ *     working-tree fallback.
  */
 export function materializeIndexSnapshot(
 	projectRoot: string,
 	includeTrackedWorktree = false,
 	constructedPaths?: string[],
+	trackedOnlyPaths?: string[],
+	baseTree: "index" | "head" = "index",
 ): StagedSnapshot | null {
 	let root: string | null = null;
 	try {
 		const parent = join(projectRoot, INTERLINKED_DIR);
 		mkdirSync(parent, { recursive: true });
 		root = realpathSync(mkdtempSync(join(parent, SNAPSHOT_PREFIX)));
-		execFileSync("git", ["checkout-index", "--all", `--prefix=${root}/`], {
-			cwd: projectRoot,
-			timeout: GIT_TIMEOUT_MS,
-			stdio: "ignore",
-		});
+		if (baseTree === "head") {
+			// Materialize HEAD through a throwaway index file so the repo's real
+			// index is never touched. Both steps share GIT_INDEX_FILE; the temp
+			// file is removed once the tree is extracted.
+			const tmpIndex = join(root, ".head-base.gitindex");
+			const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+			execFileSync("git", ["read-tree", "HEAD"], {
+				cwd: projectRoot,
+				env,
+				timeout: GIT_TIMEOUT_MS,
+				stdio: "ignore",
+			});
+			execFileSync("git", ["checkout-index", "--all", `--prefix=${root}/`], {
+				cwd: projectRoot,
+				env,
+				timeout: GIT_TIMEOUT_MS,
+				stdio: "ignore",
+			});
+			rmSync(tmpIndex, { force: true });
+		} else {
+			execFileSync("git", ["checkout-index", "--all", `--prefix=${root}/`], {
+				cwd: projectRoot,
+				timeout: GIT_TIMEOUT_MS,
+				stdio: "ignore",
+			});
+		}
 		if (includeTrackedWorktree) overlayTrackedWorktree(projectRoot, root);
 		if (constructedPaths && constructedPaths.length > 0) {
-			overlayConstructedPaths(projectRoot, root, constructedPaths);
+			overlayConstructedPaths(projectRoot, root, constructedPaths, new Set(trackedOnlyPaths ?? []));
 		}
 		linkNodeModules(projectRoot, root);
 		const snapshotRoot = root;

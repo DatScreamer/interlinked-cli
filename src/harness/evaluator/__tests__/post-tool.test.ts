@@ -628,7 +628,7 @@ describe("post-write file warnings", () => {
 		const hit = ws.find((w) => w.includes("[interlinked:file-size]"));
 		expect(hit).toBeDefined();
 		expect(hit).toContain("900 lines");
-		expect(hit).toContain("800-line cap");
+		expect(hit).toContain("500-line cap");
 	});
 
 	it("does not warn for an exempt test file even when oversized", () => {

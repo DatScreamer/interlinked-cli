@@ -52,6 +52,18 @@ describe("cyclomaticViolation", () => {
 		expect(cyclomaticViolation(SRC, [over])?.kind).toBe("cyclomatic");
 		expect(cyclomaticViolation(SRC, [ok])).toBeNull();
 	});
+
+	it("honors an explicit (configured) cap, not just the shipped default", () => {
+		// A cyclomatic-11 function is fine under the default cap (25) but OVER a repo
+		// that ran `interlinked caps set cyclomatic 10`. The commit gate threads the
+		// EFFECTIVE per-repo cap (maxCyclomaticFor) here, so it must compare against
+		// the passed cap, not a hard-coded 25 (finding 2026-06, round 8).
+		const fn: FunctionComplexityEntry = { name: "mid", line: 1, endLine: 9, cyclomatic: 11, language: "js_ts" };
+		expect(cyclomaticViolation(SRC, [fn])).toBeNull(); // default cap (25) → fine
+		const v = cyclomaticViolation(SRC, [fn], 10); // configured cap 10 → over
+		expect(v?.kind).toBe("cyclomatic");
+		expect(v?.detail).toContain("(cap 10)");
+	});
 });
 
 describe("crapViolation", () => {

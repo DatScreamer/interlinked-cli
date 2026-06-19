@@ -9,13 +9,6 @@
 // or `null` to continue. Control-flow order is preserved exactly.
 
 import type { JsonObject } from "../../lib/json-types.js";
-import type {
-	GuardRule,
-	GuardRulesConfig,
-	HarnessDecision,
-	HarnessEvent,
-	SessionTrajectory,
-} from "../types.js";
 import {
 	applyRewrite,
 	evaluateCompoundCommand,
@@ -23,6 +16,13 @@ import {
 	ruleAppliesToRole,
 } from "../command-decomposition.js";
 import { detectBashCodeFileWrite } from "../pre-checks.js";
+import type {
+	GuardRule,
+	GuardRulesConfig,
+	HarnessDecision,
+	HarnessEvent,
+	SessionTrajectory,
+} from "../types.js";
 import { evaluateActiveWhen } from "./active-when.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
@@ -179,9 +179,8 @@ function evaluateBashRoutedWrite(
 					"it lands. For coordinated multi-site atomic edits (e.g. adding an import AND using " +
 					"it in the same landing — which would trip the diff-overlay if staged as two Edit " +
 					"calls), route through `interlinked write` (single-file) or `interlinked write " +
-					"--batch <manifest.json>` (multi-file atomic), or use the MultiEdit tool — each of " +
-					"these applies the same content-quality gate but treats your whole change as one " +
-					"transactional unit.",
+					"--batch <manifest.json>` (multi-file atomic) — both apply the same content-quality " +
+					"gate but treat your whole change as one transactional unit.",
 				warnings,
 				rule_id: "bash-code-file-write-bypass",
 				severity: "high",
@@ -206,7 +205,11 @@ function evaluateCompoundDecomposition(
 	toolInput: JsonObject,
 	warnings: string[],
 ): HarnessDecision | null {
-	if (isBash(toolName) && (cmd.includes("&&") || cmd.includes("||") || cmd.includes(";"))) {
+	// Any shell separator triggers decomposition — including newlines, pipes
+	// and background `&`. Restricting this to `&&`/`||`/`;` left a compound
+	// bypass open: `npm publish --dry-run\nnpm publish` never decomposed, so
+	// the first segment's `--dry-run` suppressed the rule for the second.
+	if (isBash(toolName) && /[;&|\n]/.test(cmd)) {
 		const compoundResult = evaluateCompoundCommand(
 			cmd,
 			rules.rules,

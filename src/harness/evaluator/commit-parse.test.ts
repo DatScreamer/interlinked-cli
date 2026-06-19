@@ -193,10 +193,75 @@ describe("parseGitCommit — constructedPaths (finding 6: narrow vs broad) + pat
 		]);
 	});
 
-	it("a BROAD stage carries NO constructedPaths (the whole worktree is committed)", () => {
+	it("a BROAD stage (bare -A/-u) carries NO constructedPaths (the whole worktree is committed)", () => {
 		expect(parseGitCommit("git add -A && git commit -m x")?.constructedPaths).toBeUndefined();
-		expect(parseGitCommit("git add . && git commit")?.constructedPaths).toBeUndefined();
 		expect(parseGitCommit("git add -u && git commit -m x")?.constructedPaths).toBeUndefined();
+	});
+
+	// Round 4 (finding 2026-06): `-A`/`-u` WITH a pathspec stage only that scope,
+	// and `.` is an ordinary cwd-relative pathspec — treating them as whole-worktree
+	// made the gate evaluate the entire repository, so unrelated files could
+	// false-block the commit or supply coverage the commit does not contain.
+	it("-A/-u WITH a pathspec stay scoped to it", () => {
+		expect(parseGitCommit("git add -A src/ && git commit -m x")?.constructedPaths).toEqual(["src/"]);
+		expect(parseGitCommit("git add --all src && git commit -m x")?.constructedPaths).toEqual(["src"]);
+		expect(parseGitCommit("git add -u src && git commit -m x")?.constructedPaths).toEqual(["src"]);
+	});
+
+	it("`git add .` surfaces the cwd-relative pathspec for the gate's rebase to scope", () => {
+		// From the repo root the rebase resolves `.` to the root → broad (unchanged
+		// behavior); from a subdirectory it scopes to that subtree (the fix).
+		const parsed = parseGitCommit("git add . && git commit");
+		expect(parsed?.constructedPaths).toEqual(["."]);
+		expect(parsed?.includesIndex).toBe(true);
+	});
+
+	it("`-u` add paths and commit pathspecs are tracked-only; plain adds are not", () => {
+		expect(parseGitCommit("git add -u src && git commit -m x")?.trackedOnlyPaths).toEqual(["src"]);
+		expect(parseGitCommit("git commit src/a.ts -m x")?.trackedOnlyPaths).toEqual(["src/a.ts"]);
+		expect(parseGitCommit("git commit -- src")?.trackedOnlyPaths).toEqual(["src"]);
+		expect(parseGitCommit("git add src && git commit -m x")?.trackedOnlyPaths).toBeUndefined();
+		expect(parseGitCommit("git add . && git commit")?.trackedOnlyPaths).toBeUndefined();
+	});
+
+	// Round 5: a plain add BENEATH a tracked-only scope must not widen the whole
+	// scope to a raw copy — the dir stays tracked-only and the child path rides
+	// in constructedPaths with its own full overlay, so unrelated untracked
+	// files the command never stages cannot supply coverage.
+	it("keeps the dir tracked-only when a plain add stages a CHILD beneath it", () => {
+		const parsed = parseGitCommit("git add -u src && git add src/new.test.ts && git commit -m x");
+		expect(parsed?.constructedPaths).toEqual(["src", "src/new.test.ts"]);
+		expect(parsed?.trackedOnlyPaths).toEqual(["src"]);
+	});
+
+	it("surfaces a child add under a commit pathspec for its own full overlay", () => {
+		const parsed = parseGitCommit("git add src/new.ts && git commit src -m x");
+		expect(parsed?.constructedPaths).toEqual(["src", "src/new.ts"]);
+		expect(parsed?.trackedOnlyPaths).toEqual(["src"]);
+	});
+
+	it("a glob add under the commit pathspec degrades to broad (unknowable content)", () => {
+		const parsed = parseGitCommit("git add 'src/*.gen.ts' && git commit src -m x");
+		expect(parsed?.constructsContent).toBe(true);
+		expect(parsed?.constructedPaths).toBeUndefined();
+	});
+
+	it("a plain add overlapping the pathspec keeps the full overlay (it stages untracked content)", () => {
+		// The add makes the file tracked before the commit runs, so the commit DOES
+		// contain its worktree content — tracked-only would evaluate stale state.
+		expect(
+			parseGitCommit("git add src/new.ts && git commit src/new.ts -m x")?.trackedOnlyPaths,
+		).toBeUndefined();
+		expect(
+			parseGitCommit("git add src && git commit src/a.ts -m x")?.trackedOnlyPaths,
+		).toBeUndefined();
+		expect(
+			parseGitCommit("git add -A && git commit src/a.ts -m x")?.trackedOnlyPaths,
+		).toBeUndefined();
+		// …but an unrelated plain add does not unmark the commit pathspec.
+		expect(
+			parseGitCommit("git add docs/readme.md && git commit --include src/b.ts -m x")?.trackedOnlyPaths,
+		).toEqual(["src/b.ts"]);
 	});
 
 	it("`--pathspec-from-file` is a (broad) constructed-content commit, not a stale-index commit", () => {

@@ -157,6 +157,33 @@ describe("evaluateMetaTestWrapper", () => {
 			evaluateMetaTestWrapper("Bash", { command: "interlinked harness status" }),
 		).toBeNull();
 	});
+
+	// Hardened 2026-06-12: the prefix-only test blanket-allowed any command
+	// that merely STARTED with the wrapper, letting a chained tail run
+	// unguarded. These pin the tail guard (see inspection-wrapper.ts).
+	it("does NOT allow a chained destructive tail (the bypass it used to permit)", () => {
+		expect(
+			evaluateMetaTestWrapper("Bash", {
+				command: 'interlinked harness test "x" && rm -rf /',
+			}),
+		).toBeNull();
+	});
+
+	it("does NOT allow a redirect tail", () => {
+		expect(
+			evaluateMetaTestWrapper("Bash", {
+				command: "interlinked harness test 'x' > /etc/passwd",
+			}),
+		).toBeNull();
+	});
+
+	it("does NOT allow a command-substitution argument", () => {
+		expect(
+			evaluateMetaTestWrapper("Bash", {
+				command: 'interlinked harness test "$(rm -rf /)"',
+			}),
+		).toBeNull();
+	});
 });
 
 // ============================================================
@@ -1081,6 +1108,7 @@ describe("evaluateManifestEditGuard", () => {
 					2,
 				),
 			},
+			[],
 		);
 		expect(d?.decision).toBe("block");
 		expect(d?.reason).toMatch(/evil/);
@@ -1091,14 +1119,19 @@ describe("evaluateManifestEditGuard", () => {
 			join(workspace, "package.json"),
 			JSON.stringify({ name: "x", dependencies: {} }, null, 2),
 		);
-		const d = evaluateManifestEditGuard(makeEvent(), "Write", {
-			file_path: "package.json",
-			content: JSON.stringify(
-				{ name: "x", dependencies: { evil: "9.9.9" } },
-				null,
-				2,
-			),
-		});
+		const d = evaluateManifestEditGuard(
+			makeEvent(),
+			"Write",
+			{
+				file_path: "package.json",
+				content: JSON.stringify(
+					{ name: "x", dependencies: { evil: "9.9.9" } },
+					null,
+					2,
+				),
+			},
+			[],
+		);
 		expect(d?.decision).toBe("block");
 	});
 
@@ -1110,28 +1143,31 @@ describe("evaluateManifestEditGuard", () => {
 			JSON.stringify({ name: "x", dependencies: {} }, null, 2),
 		);
 		expect(
-			evaluateManifestEditGuard(makeEvent(), "Write", {
-				file_path: target,
-				content: JSON.stringify(
-					{ name: "x", dependencies: { evil: "1.0.0" } },
-					null,
-					2,
-				),
-			}),
+			evaluateManifestEditGuard(
+				makeEvent(),
+				"Write",
+				{
+					file_path: target,
+					content: JSON.stringify(
+						{ name: "x", dependencies: { evil: "1.0.0" } },
+						null,
+						2,
+					),
+				},
+				[],
+			),
 		).toBeNull();
 	});
 
 	it("returns null for a non-file-write tool", () => {
 		expect(
-			evaluateManifestEditGuard(makeEvent(), "Bash", {
-				command: "npm i evil",
-			}),
+			evaluateManifestEditGuard(makeEvent(), "Bash", { command: "npm i evil" }, []),
 		).toBeNull();
 	});
 
 	it("returns null when no manifest path is present", () => {
 		expect(
-			evaluateManifestEditGuard(makeEvent(), "Write", { content: "{}" }),
+			evaluateManifestEditGuard(makeEvent(), "Write", { content: "{}" }, []),
 		).toBeNull();
 	});
 
@@ -1139,9 +1175,12 @@ describe("evaluateManifestEditGuard", () => {
 		// No `content`, no old/new string, no edits array → computeFullNewContent
 		// returns null and the manifest check is skipped.
 		expect(
-			evaluateManifestEditGuard(makeEvent(), "Write", {
-				file_path: join(workspace, "package.json"),
-			}),
+			evaluateManifestEditGuard(
+				makeEvent(),
+				"Write",
+				{ file_path: join(workspace, "package.json") },
+				[],
+			),
 		).toBeNull();
 	});
 
@@ -1152,14 +1191,19 @@ describe("evaluateManifestEditGuard", () => {
 			JSON.stringify({ name: "x", dependencies: { existing: "1.0.0" } }, null, 2),
 		);
 		expect(
-			evaluateManifestEditGuard(makeEvent(), "Write", {
-				file_path: target,
-				content: JSON.stringify(
-					{ name: "x", dependencies: { existing: "1.0.1" } },
-					null,
-					2,
-				),
-			}),
+			evaluateManifestEditGuard(
+				makeEvent(),
+				"Write",
+				{
+					file_path: target,
+					content: JSON.stringify(
+						{ name: "x", dependencies: { existing: "1.0.1" } },
+						null,
+						2,
+					),
+				},
+				[],
+			),
 		).toBeNull();
 	});
 
@@ -1171,14 +1215,19 @@ describe("evaluateManifestEditGuard", () => {
 		);
 		const ev = makeEvent();
 		delete ev.cwd;
-		const d = evaluateManifestEditGuard(ev, "Write", {
-			file_path: target,
-			content: JSON.stringify(
-				{ name: "x", dependencies: { evil: "9.9.9" } },
-				null,
-				2,
-			),
-		});
+		const d = evaluateManifestEditGuard(
+			ev,
+			"Write",
+			{
+				file_path: target,
+				content: JSON.stringify(
+					{ name: "x", dependencies: { evil: "9.9.9" } },
+					null,
+					2,
+				),
+			},
+			[],
+		);
 		expect(d?.decision).toBe("block");
 	});
 });

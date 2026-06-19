@@ -190,3 +190,113 @@ describe("materializeIndexSnapshot — narrow constructed paths", () => {
 		}
 	});
 });
+
+// Round 4 (finding 2026-06): `git commit -- src` commits TRACKED paths only.
+// Copying the raw worktree directory also included untracked files, so an
+// untracked test beneath the pathspec could supply coverage and approve a
+// source commit even though that test is absent from the resulting commit.
+describe("materializeIndexSnapshot — tracked-only pathspec scopes (`git commit -- <path>`, `git add -u <path>`)", () => {
+	beforeEach(() => {
+		writeRepo("src/a.ts", "export const a = 'OLD';\n");
+		git("add", "src/a.ts");
+		git("commit", "-qm", "baseline");
+	});
+
+	it("excludes untracked files under a tracked-only dir — they are not in the commit", () => {
+		writeRepo("src/a.ts", "export const a = 'NEW';\n"); // tracked, modified
+		writeRepo("src/sneaky.test.ts", "it('covers a', () => {});\n"); // untracked
+		const snap = materializeIndexSnapshot(repo, false, ["src"], ["src"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			expect(existsSync(join(snap?.root ?? "", "src/sneaky.test.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("a tracked file deleted in the worktree is removed (the pathspec commits the deletion)", () => {
+		rmSync(join(repo, "src/a.ts"));
+		const snap = materializeIndexSnapshot(repo, false, ["src"], ["src"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", "src/a.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("an untracked FILE pathspec overlays nothing (git would refuse to commit it)", () => {
+		writeRepo("src/new.ts", "export const n = 1;\n"); // untracked
+		const snap = materializeIndexSnapshot(repo, false, ["src/new.ts"], ["src/new.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", "src/new.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	// Round 5: `git commit src/a.ts` (--only) builds the commit from HEAD plus
+	// the named paths — unrelated STAGED index changes are NOT in it. Basing the
+	// snapshot on the index let a separately staged failing test false-block,
+	// and a staged test supply coverage the commit will not contain.
+	it("HEAD base: an unrelated STAGED file stays OUT of the snapshot", () => {
+		writeRepo("src/a.ts", "export const a = 'NEW';\n"); // the named path
+		writeRepo("other.test.ts", "it('fails', () => { boom(); });\n");
+		git("add", "other.test.ts"); // staged, but `git commit src/a.ts` won't commit it
+		const snap = materializeIndexSnapshot(repo, false, ["src/a.ts"], ["src/a.ts"], "head");
+		expect(snap).not.toBeNull();
+		try {
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			expect(existsSync(join(snap?.root ?? "", "other.test.ts"))).toBe(false);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("HEAD base: unrelated tracked files show HEAD content, not staged edits", () => {
+		writeRepo("src/b.ts", "export const b = 'HEAD';\n");
+		git("add", "src/b.ts");
+		git("commit", "-qm", "add b");
+		writeRepo("src/b.ts", "export const b = 'STAGED-ONLY';\n");
+		git("add", "src/b.ts"); // staged change git commit src/a.ts will NOT pick up
+		writeRepo("src/a.ts", "export const a = 'NEW';\n");
+		const snap = materializeIndexSnapshot(repo, false, ["src/a.ts"], ["src/a.ts"], "head");
+		expect(snap).not.toBeNull();
+		try {
+			expect(readFileSync(join(snap?.root ?? "", "src/a.ts"), "utf-8")).toContain("NEW");
+			expect(readFileSync(join(snap?.root ?? "", "src/b.ts"), "utf-8")).toContain("HEAD");
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("HEAD base: returns null when the repo has no HEAD (caller falls back to the worktree)", () => {
+		const fresh = mkdtempSync(join(tmpdir(), "staged-snap-nohead-"));
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: fresh });
+			writeFileSync(join(fresh, "a.ts"), "export const a = 1;\n");
+			execFileSync("git", ["add", "a.ts"], { cwd: fresh });
+			expect(materializeIndexSnapshot(fresh, false, ["a.ts"], undefined, "head")).toBeNull();
+		} finally {
+			rmSync(fresh, { recursive: true, force: true });
+		}
+	});
+
+	it("mixed scopes: an add-staged dir keeps untracked files, a tracked-only dir does not", () => {
+		writeRepo("lib/b.ts", "export const b = 1;\n");
+		git("add", "lib/b.ts");
+		git("commit", "-qm", "add lib");
+		writeRepo("src/sneaky.test.ts", "it('x', () => {});\n"); // untracked under tracked-only scope
+		writeRepo("lib/new.ts", "export const n = 1;\n"); // untracked under add-staged scope
+		const snap = materializeIndexSnapshot(repo, false, ["src", "lib"], ["src"]);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", "src/sneaky.test.ts"))).toBe(false);
+			expect(existsSync(join(snap?.root ?? "", "lib/new.ts"))).toBe(true);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+});

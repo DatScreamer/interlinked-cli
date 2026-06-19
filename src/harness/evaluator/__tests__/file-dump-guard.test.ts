@@ -308,3 +308,46 @@ describe("evaluateFileDumpGuard — pipeline cases", () => {
 		expect(r.kind).toBe("allow");
 	});
 });
+
+describe("evaluateFileDumpGuard — first-command-group bounding", () => {
+	it("does not leak a later `sed -n` count onto a leading head (2026-06-12 misreport)", () => {
+		// The exact shape that misfired: a small head, then unrelated commands,
+		// then `sed -n '295,350p'`. The trailing `-n 295` must not be attributed
+		// to `head` (sed is not even a dump verb).
+		const p = writeFileLines("git.rs", 5);
+		const r = evaluateFileDumpGuard({
+			command: `head -3 ${p}; echo ===; sed -n '295,350p' ${p}`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("allow");
+	});
+
+	it("does not leak a later command's -n across &&", () => {
+		const p = writeFileLines("a.txt", 5);
+		const r = evaluateFileDumpGuard({
+			command: `head -3 ${p} && grep x ${p} | head -n 9999`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("allow");
+	});
+
+	it("still blocks a genuine unfiltered over-cap dump in the first group", () => {
+		const p = writeFileLines("big.txt", 500);
+		const r = evaluateFileDumpGuard({
+			command: `head -n 300 ${p}; echo done`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("block");
+	});
+
+	it("does not split on a semicolon inside quotes", () => {
+		const p = writeFileLines("c.txt", 5);
+		const r = evaluateFileDumpGuard({
+			command: `awk 'BEGIN{print "a;b"}' ${p} | head -n 2`,
+			cwd: dir,
+		});
+		// awk is the verb, not a dump verb → allow; the quoted `;` must not
+		// truncate the group mid-quote.
+		expect(r.kind).toBe("allow");
+	});
+});

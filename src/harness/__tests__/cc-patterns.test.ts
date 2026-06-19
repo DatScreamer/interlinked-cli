@@ -161,8 +161,60 @@ describe("decomposeCommand", () => {
 		]);
 	});
 
-	it("does NOT split on pipe (|)", () => {
-		expect(decomposeCommand("cat file | grep pattern")).toEqual(["cat file | grep pattern"]);
+	it("splits on pipe (|) — each pipeline stage is a command", () => {
+		// Changed 2026-06-12 (was pinned as not-splitting): `echo x | xargs
+		// rm -rf` needs stage-level evaluation, and segment evaluation is
+		// additive — the full-string rule pass still sees pipe context.
+		expect(decomposeCommand("cat file | grep pattern")).toEqual(["cat file", "grep pattern"]);
+	});
+
+	it("splits on newlines (the compound-bypass separator)", () => {
+		expect(decomposeCommand("npm publish --dry-run\nnpm publish")).toEqual([
+			"npm publish --dry-run",
+			"npm publish",
+		]);
+	});
+
+	it("splits on background &", () => {
+		expect(decomposeCommand("npm run dev & sleep 5")).toEqual(["npm run dev", "sleep 5"]);
+	});
+
+	it("does NOT split fd-redirect & forms (2>&1, &>)", () => {
+		expect(decomposeCommand("cmd 2>&1")).toEqual(["cmd 2>&1"]);
+		expect(decomposeCommand("cmd &> log.txt")).toEqual(["cmd &> log.txt"]);
+	});
+
+	it("does NOT split on backslash line continuations", () => {
+		expect(decomposeCommand("git clone url \\\n  /tmp/dest")).toEqual([
+			"git clone url \\\n  /tmp/dest",
+		]);
+	});
+
+	it("keeps heredoc bodies attached to their command (no body-as-segment)", () => {
+		const cmd = "cat <<EOF\nfoo; bar && baz\nEOF";
+		expect(decomposeCommand(cmd)).toEqual([cmd]);
+	});
+
+	it("does not split a heredoc header line's pipe", () => {
+		const cmd = "cat <<EOF | grep x\nbody\nEOF";
+		expect(decomposeCommand(cmd)).toEqual([cmd]);
+	});
+
+	it("splits the command following a heredoc closer", () => {
+		expect(decomposeCommand("cat <<EOF\nbody\nEOF\necho done")).toEqual([
+			"cat <<EOF\nbody\nEOF",
+			"echo done",
+		]);
+	});
+
+	it("does NOT split operators inside inline-exec payloads", () => {
+		expect(decomposeCommand("bash -c 'a; b && c'")).toEqual(["bash -c 'a; b && c'"]);
+	});
+
+	it("does NOT split operators inside comments", () => {
+		expect(decomposeCommand("echo ok # not a; separator")).toEqual([
+			"echo ok # not a; separator",
+		]);
 	});
 
 	it("handles empty input", () => {
