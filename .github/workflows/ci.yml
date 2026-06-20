@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded run when a newer commit lands on the same ref, instead of
+# letting redundant full matrices pile up (each macOS leg bills 10x). Biggest
+# Actions-minutes lever for rapid-push iteration; only the latest commit in a
+# burst keeps its check — acceptable since the local harness is the real gate.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
@@ -52,10 +60,16 @@ jobs:
           fi
           rg --version
 
+      # OS-independent gates run on ubuntu only (1x) instead of also on the
+      # macOS runner (10x) — tsc/docs/publint/attw/pack are deterministic across
+      # platforms, so the macОS copies were pure billed-minute waste. macOS still
+      # runs the OS-sensitive legs (test, build, install smokes).
       - name: Typecheck
+        if: runner.os == 'Linux'
         run: npm run typecheck:stable
 
       - name: Doc accuracy (landing + README vs source)
+        if: runner.os == 'Linux'
         run: npm run docs:check
 
       - name: Test
@@ -65,12 +79,15 @@ jobs:
         run: npm run build
 
       - name: Lint package with publint
+        if: runner.os == 'Linux'
         run: npx publint
 
       - name: Check types with arethetypeswrong
+        if: runner.os == 'Linux'
         run: npx --package=@arethetypeswrong/cli attw --pack . --profile esm-only
 
       - name: Pack dry-run
+        if: runner.os == 'Linux'
         run: npm pack --dry-run
 
       - name: Tarball install smoke test
