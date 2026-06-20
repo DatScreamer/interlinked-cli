@@ -4,6 +4,9 @@
 // run alongside related project rules. Extracted from entries-warnings.ts —
 // re-exported there as part of WARNING_ENTRIES.
 
+import { findUnjustifiedCasts } from "../../checks/cast-justification.js";
+import { findProcessEnvOutsideConfig } from "../../checks/env-access-scope.js";
+import { findTopLevelSideEffects } from "../../checks/module-load-side-effects.js";
 import {
 	checkAccumulatingSpread,
 	checkAsyncEventHandler,
@@ -379,6 +382,54 @@ export const CODE_QUALITY_ENTRIES: CheckRegistration[] = [
 			"Tests should not import from other test files. Extract shared test utilities to a separate helpers file.",
 		fn: checkTestImportingTest,
 		resultsPropName: "testImportingTest",
+	},
+	{
+		id: "unjustified_cast",
+		phase: "post",
+		name: "Unjustified Cast",
+		description:
+			"Detects type-assertion casts (as X) that lack a // SAFETY: justification comment",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Every non-(as const) type assertion must carry a // SAFETY: comment explaining why the cast is sound; the assertion silences the type checker, so the reviewer needs the invariant spelled out. Put it on the same line or the line(s) directly above.",
+		fn: findUnjustifiedCasts,
+		resultsPropName: "unjustifiedCasts",
+		content_keywords: [" as "],
+	},
+	{
+		id: "process_env_outside_config",
+		phase: "post",
+		name: "process.env Outside Config",
+		description:
+			"Detects process.env reads outside the config boundary (config modules, .config.* files, /config/ dirs, setup/bootstrap)",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"process.env should be read only at a configuration boundary (a config module, .config.* file, /config/ directory, or setup/bootstrap file) and the parsed value passed through arguments. This keeps the config shape explicit, typed, and testable.",
+		fn: findProcessEnvOutsideConfig,
+		resultsPropName: "processEnvOutsideConfig",
+		content_keywords: ["process.env"],
+	},
+	{
+		id: "top_level_side_effect",
+		phase: "post",
+		name: "Top-Level Side Effect",
+		description:
+			"Detects I/O and side-effecting calls at module load time (not deferred inside a function/class)",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Modules should not perform I/O, open connections, start servers, or read env at import time. Move this call inside a function or export so the module is testable and import order cannot cause ordering bugs. Entrypoint modules (index/server/cli/hook-entry/bootstrap/setup) are exempt.",
+		fn: findTopLevelSideEffects,
+		resultsPropName: "topLevelSideEffects",
+		content_keywords: ["readFileSync", "writeFileSync", "execSync", "spawnSync", "listen", "fetch"],
 	},
 	...CODE_QUALITY_ENTRIES_EXTRA,
 ];

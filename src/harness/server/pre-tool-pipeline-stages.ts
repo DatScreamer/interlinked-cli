@@ -33,7 +33,6 @@ import { coverageForFile, loadCoverageFinal } from "../coverage-final-reader.js"
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "../discovered-primitives.js";
 import { checkFunctionComplexity, checkMissingReturnTypes } from "../generic-checks.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "../project-typecheck-gate.js";
-import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import {
 	collectSoftwareVersionReferences,
 	countAsAnyCasts,
@@ -43,8 +42,10 @@ import {
 	countSuppressionDirectives,
 	countTodoMarkers,
 	countTypeDensity,
+	countUnjustifiedCasts,
 	findProjectRoot,
 } from "../quality-checks.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { loadStructureConfig } from "../structure/structure-loader.js";
 import type { HarnessDecision, HarnessEvent, PreEditBaseline, SessionTrajectory } from "../types.js";
 import { type ServerRuntime, summarizeToolInput } from "./runtime-context.js";
@@ -343,6 +344,7 @@ export function captureDiffAwareBaseline(
 					suppressionCount: countSuppressionDirectives(preContent),
 					asAnyCastCount: countAsAnyCasts(preContent),
 					nonNullAssertionCount: countNonNullAssertions(preContent),
+					unjustifiedCastCount: countUnjustifiedCasts(preContent),
 					todoMarkerCount: countTodoMarkers(preContent),
 					consoleStatementCount: countConsoleStatements(preContent),
 					publicApiSurfaceCount: countPublicApiSurface(preContent),

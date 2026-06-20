@@ -99,6 +99,9 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"snapshot_overuse",
 			"test_importing_test",
 			"target_blank_no_rel",
+			"unjustified_cast",
+			"process_env_outside_config",
+			"top_level_side_effect",
 		],
 	},
 	"generic-react-warnings": {
@@ -324,10 +327,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 187-key total", () => {
+	it("preserves the full 190-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(187);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(190);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(187);
+		expect(fragmentKeyTotal).toBe(190);
 	});
 });

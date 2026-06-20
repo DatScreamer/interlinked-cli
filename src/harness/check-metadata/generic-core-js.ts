@@ -263,4 +263,25 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "fully_deterministic",
 	},
+	unjustified_cast: {
+		name: "Unjustified Cast",
+		description:
+			"Detects type-assertion casts (as X) lacking a // SAFETY: justification — heuristic over comment/string-stripped content",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	process_env_outside_config: {
+		name: "process.env Outside Config",
+		description:
+			"Detects process.env reads outside the config boundary — heuristic over comment-stripped content",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	top_level_side_effect: {
+		name: "Top-Level Side Effect",
+		description:
+			"Detects I/O / side-effecting calls at module load (column-0 heuristic for top level)",
+		tier: 2,
+		determinism: "heuristic",
+	},
 };

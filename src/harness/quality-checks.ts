@@ -44,6 +44,7 @@ export {
 	countSuppressionDirectives,
 	countTodoMarkers,
 	countTypeDensity,
+	countUnjustifiedCasts,
 	type TypeDensityCounts,
 } from "./quality-checks/ratchet-metrics.js";
 export type { ToolBreakdownEntry } from "./quality-checks/result-types.js";

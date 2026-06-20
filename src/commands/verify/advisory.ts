@@ -410,6 +410,17 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// swift_abbreviations: pure style enforcement — the most heuristic of
 	// the batch. Advisory by design; promotes only if a project opts in.
 	"swift_abbreviations",
+	// === Coding-standards inline heuristics (2026-06) — advisory ===
+	// unjustified_cast: regex over comment/string-stripped content; casts whose
+	// safety is obvious from nearby code read as FPs. The net-new ratchet is the
+	// real teeth; the verify check is a periodic sweep.
+	"unjustified_cast",
+	// process_env_outside_config: path/name-based boundary heuristic; FPs on
+	// wrapper modules that delegate env parsing to a submodule.
+	"process_env_outside_config",
+	// top_level_side_effect: column-0 proxy for top-level + name regex; FPs on
+	// single-line function definitions whose body names a side-effect call.
+	"top_level_side_effect",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */

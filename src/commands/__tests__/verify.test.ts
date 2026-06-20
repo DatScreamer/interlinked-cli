@@ -297,6 +297,9 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"swift_timer_no_invalidate",
 				"swift_try_question_discarded",
 				"swift_unhandled_task_error",
+				"unjustified_cast",
+				"process_env_outside_config",
+				"top_level_side_effect",
 			].sort(),
 		);
 	});

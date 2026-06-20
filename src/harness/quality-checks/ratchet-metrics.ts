@@ -6,6 +6,7 @@
 // assertions) in a file's text. The quality-checks runner compares pre-edit
 // and post-edit counts and flags any increase as a ratchet violation.
 
+import { nonNull } from "../../lib/non-null.js";
 import { stripAllLiterals } from "../strip-helpers.js";
 
 const SUPPRESSION_PATTERN = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore/g;
@@ -82,7 +83,7 @@ export function countPublicApiSurface(content: string): number {
 	EXPORTED_NAME_PATTERN.lastIndex = 0;
 	let m: RegExpExecArray | null = EXPORTED_NAME_PATTERN.exec(stripped);
 	while (m !== null) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 		m = EXPORTED_NAME_PATTERN.exec(stripped);
 	}
 	return names.size;
@@ -188,3 +189,8 @@ function countUntypedParams(paramList: string): number {
 	}
 	return untyped;
 }
+
+// Re-export the unjustified-cast counter (defined in checks/cast-justification.ts)
+// so the ratchet baseline, capture, and comparison can use it alongside the
+// as-any and non-null counters.
+export { countUnjustifiedCasts } from "../checks/cast-justification.js";

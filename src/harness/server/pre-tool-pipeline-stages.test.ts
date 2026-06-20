@@ -77,6 +77,7 @@ vi.mock("../quality-checks.js", () => ({
 	countSuppressionDirectives: vi.fn(() => 5),
 	countTodoMarkers: vi.fn(() => 6),
 	countTypeDensity: vi.fn(() => ({ value: 7 })),
+	countUnjustifiedCasts: vi.fn(() => 8),
 	findProjectRoot: vi.fn((_fp: string, cwd: string) => cwd),
 }));
 

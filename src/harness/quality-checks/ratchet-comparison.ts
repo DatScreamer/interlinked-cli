@@ -18,6 +18,7 @@ import {
 	countSuppressionDirectives,
 	countTodoMarkers,
 	countTypeDensity,
+	countUnjustifiedCasts,
 } from "./ratchet-metrics.js";
 import type { QualityCheckResult } from "./result-types.js";
 
@@ -76,6 +77,23 @@ export function runRatchetComparison(ctx: RatchetContext): QualityCheckResult[] 
 				message: `Non-null assertions increased (${pre.nonNullAssertionCount} → ${postNonNull}). Replace \`foo!.bar\` with an explicit null check, optional chaining (\`foo?.bar\`), or narrow the type so the assertion is unnecessary.`,
 				file: absPath,
 			});
+		}
+
+		if (pre.unjustifiedCastCount !== undefined) {
+			const postUnjustified = countUnjustifiedCasts(postContent);
+			if (postUnjustified > pre.unjustifiedCastCount) {
+				results.push({
+					name: "unjustified_cast_ratchet",
+					severity: "warning",
+					message:
+						"Unjustified casts increased (" +
+						pre.unjustifiedCastCount +
+						" -> " +
+						postUnjustified +
+						"). Add a // SAFETY: comment explaining why each cast is sound, or remove the cast.",
+					file: absPath,
+				});
+			}
 		}
 
 		// Defensive-primitive coverage ratchet — adapted from curl's

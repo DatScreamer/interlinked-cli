@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
 
@@ -137,7 +138,7 @@ function extractGenericCheckImports(source: string, transitiveSource?: string): 
 	const names = new Set<string>();
 	const importRegex = /import\s*\{([^}]+)\}\s*from\s*["'][^"']*generic-checks[^"']*["']/gs;
 	for (const m of source.matchAll(importRegex)) {
-		for (const name of m[1].split(",")) {
+		for (const name of nonNull(m[1]).split(",")) {
 			const trimmed = name.trim().replace(/^type\s+/, "");
 			if (trimmed.startsWith("check")) {
 				names.add(trimmed);
@@ -147,7 +148,7 @@ function extractGenericCheckImports(source: string, transitiveSource?: string): 
 	// If the source imports from check-registry, include the registry's generic-checks imports
 	if (/from\s*["'][^"']*check-registry[^"']*["']/.test(source) && transitiveSource) {
 		for (const m of transitiveSource.matchAll(importRegex)) {
-			for (const name of m[1].split(",")) {
+			for (const name of nonNull(m[1]).split(",")) {
 				const trimmed = name.trim().replace(/^type\s+/, "");
 				if (trimmed.startsWith("check")) {
 					names.add(trimmed);
@@ -169,7 +170,7 @@ function extractAgentSafetyCheckNames(source: string, registrySource?: string): 
 	const arrayMatch = source.match(/const\s+agentSafetyChecks[^=]*=\s*\[[\s\S]*?\];/);
 	if (arrayMatch) {
 		for (const m of arrayMatch[0].matchAll(/name:\s*["'](\w+)["']/g)) {
-			names.add(m[1]);
+			names.add(nonNull(m[1]));
 		}
 		return names;
 	}
@@ -185,7 +186,7 @@ function extractAgentSafetyCheckNames(source: string, registrySource?: string): 
 			const idMatch = entry.match(/id:\s*["'](\w+)["']/);
 			const pipelineMatch = entry.match(/pipeline:\s*["'](\w+)["']/);
 			if (idMatch && pipelineMatch && pipelineMatch[1] === "agent_safety") {
-				names.add(idMatch[1]);
+				names.add(nonNull(idMatch[1]));
 			}
 		}
 	}
@@ -196,7 +197,7 @@ function extractAgentSafetyCheckNames(source: string, registrySource?: string): 
 function extractVerifyCheckNames(source: string): Set<string> {
 	const names = new Set<string>();
 	for (const m of source.matchAll(/toIssues\(\s*["'](\w+)["']/g)) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 	}
 	return names;
 }
@@ -209,12 +210,12 @@ function extractStreamSectionNames(source: string): Set<string> {
 	for (const m of source.matchAll(
 		/streamCqSection\(\s*\n?\s*["'][^"']+["'],\s*\n?\s*cq\.(\w+)/g,
 	)) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 	}
 	// Declarative table form (post-refactor): `key: "nameOfBucket"` inside a
 	// SectionSpec whose sibling `label` marks the entry as a streaming section.
 	for (const m of source.matchAll(/key:\s*["'](\w+)["']/g)) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 	}
 	return names;
 }
@@ -224,8 +225,8 @@ function extractResultsInterfaceProps(source: string): Set<string> {
 	const names = new Set<string>();
 	const interfaceMatch = source.match(/interface\s+CodeQualityResults\s*\{([\s\S]*?)\n\}/);
 	if (!interfaceMatch) return names;
-	for (const m of interfaceMatch[1].matchAll(/^\s*(\w+)\s*:/gm)) {
-		names.add(m[1]);
+	for (const m of nonNull(interfaceMatch[1]).matchAll(/^\s*(\w+)\s*:/gm)) {
+		names.add(nonNull(m[1]));
 	}
 	return names;
 }
@@ -239,13 +240,13 @@ function extractJsonOutputProps(source: string): Set<string> {
 		/function\s+outputJson[\s\S]*?const\s*\{([\s\S]*?)\}\s*=\s*cq;/,
 	);
 	if (destructMatch) {
-		for (const m of destructMatch[1].matchAll(/(\w+)/g)) {
-			names.add(m[1]);
+		for (const m of nonNull(destructMatch[1]).matchAll(/(\w+)/g)) {
+			names.add(nonNull(m[1]));
 		}
 	}
 	// Post-refactor: outputJson reads `cq.X` directly across the build object.
 	for (const m of source.matchAll(/\bcq\.(\w+)/g)) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 	}
 	return names;
 }
@@ -330,6 +331,16 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"test_platform_conditional",
 	"checkSilentDependencySkip",
 	"test_silent_dependency_skip",
+	// Coding-standards inline heuristics (2026-06): unjustified casts, scattered
+	// process.env reads, top-level side effects. Load-bearing surface is WRITE TIME
+	// (PostToolUse warning + the unjustified_cast net-new ratchet); verify-side full
+	// scan wiring is a deferred follow-up, same rationale as checkPlaceholderMarkdownLinks.
+	"findUnjustifiedCasts",
+	"unjustified_cast",
+	"findProcessEnvOutsideConfig",
+	"process_env_outside_config",
+	"findTopLevelSideEffects",
+	"top_level_side_effect",
 ]);
 
 // ===========================================
