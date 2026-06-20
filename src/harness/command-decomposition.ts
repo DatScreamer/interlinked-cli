@@ -14,6 +14,7 @@ import type {
 	ToolConcurrencyClass,
 } from "./types.js";
 import { DANGEROUS_ENV_VARS, SAFE_ENV_VARS } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Compound Command Decomposition
@@ -162,8 +163,8 @@ export function stripEnvVarPrefix(command: string, mode: "deny" | "allow"): EnvS
 	const parts = command.trim().split(/\s+/);
 	let i = 0;
 
-	while (i < parts.length && ENV_VAR_ASSIGN_RE.test(parts[i])) {
-		const varName = parts[i].split("=")[0];
+	while (i < parts.length && ENV_VAR_ASSIGN_RE.test(nonNull(parts[i]))) {
+		const varName = nonNull(nonNull(parts[i]).split("=")[0]);
 
 		if (DANGEROUS_ENV_VARS.has(varName)) {
 			return { stripped: command, dangerous_var: varName };
@@ -226,7 +227,7 @@ export function evaluateCompoundCommand(
 	const matcher = matchFn ?? defaultMatchRule;
 
 	for (let idx = 0; idx < subcommands.length; idx++) {
-		const sub = subcommands[idx];
+		const sub = nonNull(subcommands[idx]);
 		const { stripped, dangerous_var } = stripEnvVarPrefix(sub, "deny");
 
 		if (dangerous_var) {
@@ -248,7 +249,7 @@ export function evaluateCompoundCommand(
 			if (rule.action === "block") {
 				return {
 					decision: "block",
-					reason: `BLOCKED: ${rule.reason} (in subcommand: ${sub.slice(0, 80)})`,
+					reason: `BLOCKED: ${rule.reason} (in subcommand: ${nonNull(sub).slice(0, 80)})`,
 					warnings,
 					rule_id: rule.id,
 					severity: rule.severity,
@@ -258,7 +259,7 @@ export function evaluateCompoundCommand(
 
 			if (rule.action === "warn") {
 				warnings.push(
-					`[interlinked] Warning: ${rule.reason} (in subcommand: ${sub.slice(0, 60)})`,
+					`[interlinked] Warning: ${rule.reason} (in subcommand: ${nonNull(sub).slice(0, 60)})`,
 				);
 			}
 
@@ -268,7 +269,7 @@ export function evaluateCompoundCommand(
 					if (!rewrittenParts) rewrittenParts = [...subcommands];
 					rewrittenParts[idx] = rewritten;
 					warnings.push(
-						`[interlinked:rewrite] Rewrote: ${sub.slice(0, 40)} → ${rewritten.slice(0, 40)}`,
+						`[interlinked:rewrite] Rewrote: ${nonNull(sub).slice(0, 40)} → ${rewritten.slice(0, 40)}`,
 					);
 				}
 			}

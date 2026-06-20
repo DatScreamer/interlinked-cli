@@ -9,6 +9,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { isBash } from "./tool-classifiers.js";
 
@@ -110,7 +111,7 @@ function extractCompoundBashPattern(cmd: string): string | null {
 		const segParts = seg.trim().split(/\s+/);
 		// Skip leading variable assignments (FOO=bar, FOO=$(...)).
 		let cmdStart = 0;
-		while (cmdStart < segParts.length && /^[A-Z_]+=/.test(segParts[cmdStart])) {
+		while (cmdStart < segParts.length && /^[A-Z_]+=/.test(nonNull(segParts[cmdStart]))) {
 			cmdStart++;
 		}
 		const core = segParts[cmdStart] || "";

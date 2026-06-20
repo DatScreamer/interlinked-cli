@@ -10,6 +10,7 @@
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 
@@ -138,8 +139,8 @@ describe("runGoBuild", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stderr: "", stdout: goBuildOutput() }));
 		const out = runGoBuild(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(TARGET);
-		expect(out[0].line).toBe(12);
+		expect(nonNull(out[0]).file).toBe(TARGET);
+		expect(nonNull(out[0]).line).toBe(12);
 	});
 
 	it("tolerates undefined stderr/stdout via the '' fallbacks (no findings)", () => {
@@ -163,7 +164,7 @@ describe("runGoBuild", () => {
 		);
 		const out = runGoBuild(input(fileScope({ mode: "project" })));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
+		expect(nonNull(out[0]).file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
 	});
 
 	it("returns unfiltered findings when filterToFile is not set", () => {
@@ -174,7 +175,7 @@ describe("runGoBuild", () => {
 		);
 		const out = runGoBuild(input(scope));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
+		expect(nonNull(out[0]).file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
 	});
 
 	it("returns unfiltered findings when targetFile is missing in file mode", () => {
@@ -183,7 +184,7 @@ describe("runGoBuild", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 2, stderr: goBuildOutput() }));
 		const out = runGoBuild(input(scope));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(TARGET);
+		expect(nonNull(out[0]).file).toBe(TARGET);
 	});
 
 	it("returns [] from the catch block when spawnSync throws", () => {
@@ -277,7 +278,7 @@ describe("runGolangciLint", () => {
 		);
 		const out = runGolangciLint(input(fileScope({ mode: "project" })));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
+		expect(nonNull(out[0]).file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
 	});
 
 	it("returns unfiltered issues when filterToFile is not set", () => {
@@ -288,7 +289,7 @@ describe("runGolangciLint", () => {
 		);
 		const out = runGolangciLint(input(scope));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
+		expect(nonNull(out[0]).file).toBe(`${PROJECT_ROOT}/cmd/other/x.go`);
 	});
 
 	it("returns unfiltered issues when targetFile is missing in file mode", () => {
@@ -297,7 +298,7 @@ describe("runGolangciLint", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: golangciJson() }));
 		const out = runGolangciLint(input(scope));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(TARGET);
+		expect(nonNull(out[0]).file).toBe(TARGET);
 	});
 
 	it("returns [] from the catch block when spawnSync throws", () => {

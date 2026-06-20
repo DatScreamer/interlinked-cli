@@ -30,6 +30,7 @@
 // individually catalogued.
 
 import type { GuardRule } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Verbs that signal a destructive intent inside a JSON body / GraphQL
 // mutation / shell pipeline. We accept English-tense plurality (delete /
@@ -52,7 +53,7 @@ const DESTRUCTIVE_VERB_STEMS = [
 
 const DESTRUCTIVE_VERB_LC_ALT = DESTRUCTIVE_VERB_STEMS.join("|");
 const DESTRUCTIVE_VERB_UC_ALT = DESTRUCTIVE_VERB_STEMS
-	.map((v) => v[0].toUpperCase() + v.slice(1))
+	.map((v) => nonNull(v[0]).toUpperCase() + v.slice(1))
 	.join("|");
 
 // Word-boundary form (case-insensitive). Catches:

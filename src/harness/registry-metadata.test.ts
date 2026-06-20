@@ -9,6 +9,7 @@ import {
 	fetchVersionMetadata,
 	queryOsvAdvisories,
 } from "./registry-metadata.js";
+import { nonNull } from "../lib/non-null.js";
 
 type FetchImpl = typeof globalThis.fetch;
 
@@ -26,7 +27,7 @@ function throwingFetch(): FetchImpl {
 }
 
 function urlOf(f: FetchImpl): string {
-	return (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+	return nonNull((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0])[0] as string;
 }
 
 describe("fetchRegistryMetadata — per ecosystem", () => {
@@ -241,8 +242,8 @@ describe("queryOsvAdvisories", () => {
 			{ id: "GHSA-xxxx", summary: undefined },
 		]);
 		const call = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-		expect(call[0]).toBe("https://api.osv.dev/v1/query");
-		const body = JSON.parse((call[1] as { body: string }).body);
+		expect(nonNull(call)[0]).toBe("https://api.osv.dev/v1/query");
+		const body = JSON.parse((nonNull(call)[1] as { body: string }).body);
 		expect(body).toEqual({
 			version: "0.9.0",
 			package: { name: "rsa", ecosystem: "crates.io" },
@@ -259,7 +260,7 @@ describe("queryOsvAdvisories", () => {
 			const f = fakeFetch({ vulns: [] });
 			await queryOsvAdvisories(eco, "pkg", "1.0.0", { fetchImpl: f });
 			const body = JSON.parse(
-				((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as { body: string }).body,
+				(nonNull((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0])[1] as { body: string }).body,
 			);
 			expect(body.package.ecosystem).toBe(spelled);
 		}

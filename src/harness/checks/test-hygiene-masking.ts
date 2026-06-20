@@ -8,6 +8,8 @@
 // over a char array — no project imports, no state. Tested end-to-end through
 // `checkHappyPathOnlyTest` in test-hygiene.test.ts (the public consumer).
 
+import { nonNull } from "../../lib/non-null.js";
+
 type MaskMode = "code" | "line-comment" | "block-comment" | "single" | "double" | "template";
 
 /** One scan step's outcome: the mode for the next char, and whether a lookahead
@@ -105,7 +107,7 @@ export function maskCommentsAndStrings(content: string): string {
 	const chars = content.split("");
 	let mode: MaskMode = "code";
 	for (let i = 0; i < chars.length; i++) {
-		const step = maskStep(chars, i, chars[i], chars[i + 1], mode);
+		const step = maskStep(chars, i, nonNull(chars[i]), chars[i + 1], mode);
 		mode = step.mode;
 		if (step.advanced) i++;
 	}

@@ -43,6 +43,7 @@ import {
 	GhCliFetcher,
 	registerCiCommand,
 } from "./ci-status.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -178,7 +179,7 @@ describe("aggregateRuns", () => {
 		]);
 		expect(agg.completed).toBe(3);
 		expect(agg.failures).toBe(0);
-		expect(agg.byWorkflow[0].failures).toBe(0);
+		expect(nonNull(agg.byWorkflow[0]).failures).toBe(0);
 	});
 
 	it("excludes in-progress and queued runs from completed/failure counts but keeps total", () => {

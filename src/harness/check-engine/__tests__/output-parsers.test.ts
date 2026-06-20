@@ -13,6 +13,7 @@ import {
 	parseShellcheckJson,
 	parseTscOutput,
 } from "../output-parsers.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("parseTscOutput", () => {
 	it("parses file-level errors with line/column/ruleId", () => {
@@ -33,7 +34,7 @@ describe("parseTscOutput", () => {
 		const out = "error TS2688: Cannot find type definition for 'node'.";
 		const results = parseTscOutput(out);
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("tsconfig.json");
+		expect(nonNull(results[0]).file).toBe("tsconfig.json");
 	});
 
 	it("returns [] on empty output", () => {
@@ -46,8 +47,8 @@ describe("parseBiomeOutput", () => {
 		const out = "src/a.ts:10:5 lint/suspicious/noDoubleEquals ━━━━━━";
 		const results = parseBiomeOutput(out);
 		expect(results).toHaveLength(1);
-		expect(results[0].tool).toBe("biome");
-		expect(results[0].ruleId).toBe("lint/suspicious/noDoubleEquals");
+		expect(nonNull(results[0]).tool).toBe("biome");
+		expect(nonNull(results[0]).ruleId).toBe("lint/suspicious/noDoubleEquals");
 	});
 
 	it("returns [] on empty output", () => {
@@ -60,7 +61,7 @@ describe("parseEslintOutput", () => {
 		const out = "src/a.ts:5:10: Missing semicolon. [semi]";
 		const results = parseEslintOutput(out);
 		expect(results).toHaveLength(1);
-		expect(results[0].ruleId).toBe("semi");
+		expect(nonNull(results[0]).ruleId).toBe("semi");
 	});
 });
 
@@ -69,7 +70,7 @@ describe("parseMypyOutput", () => {
 		const out = "foo.py:5: error: Incompatible return type [return-value]";
 		const results = parseMypyOutput(out);
 		expect(results.length).toBeGreaterThan(0);
-		expect(results[0].tool).toBe("mypy");
+		expect(nonNull(results[0]).tool).toBe("mypy");
 	});
 
 	it("returns [] on empty", () => {
@@ -89,7 +90,7 @@ describe("parseRuffJson", () => {
 		]);
 		const results = parseRuffJson(payload);
 		expect(results).toHaveLength(1);
-		expect(results[0].ruleId).toBe("E501");
+		expect(nonNull(results[0]).ruleId).toBe("E501");
 	});
 
 	it("returns [] on malformed JSON", () => {
@@ -111,7 +112,7 @@ describe("parseSemgrepJson", () => {
 		});
 		const results = parseSemgrepJson(payload, "/proj");
 		expect(results.length).toBe(1);
-		expect(results[0].tool).toBe("semgrep");
+		expect(nonNull(results[0]).tool).toBe("semgrep");
 	});
 
 	it("returns [] on malformed JSON", () => {
@@ -132,7 +133,7 @@ describe("parseGitleaksJson", () => {
 		]);
 		const results = parseGitleaksJson(payload);
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("error");
+		expect(nonNull(results[0]).severity).toBe("error");
 	});
 
 	it("returns [] on empty / non-array", () => {
@@ -275,7 +276,7 @@ describe("parseShellcheckJson", () => {
 		});
 		const results = parseShellcheckJson(payload);
 		expect(results.length).toBe(1);
-		expect(results[0].ruleId).toMatch(/^SC\d+/);
+		expect(nonNull(results[0]).ruleId).toMatch(/^SC\d+/);
 	});
 
 	it("returns [] on malformed JSON", () => {
@@ -320,7 +321,7 @@ describe("filterResultsToFile", () => {
 		];
 		const filtered = filterResultsToFile(all, "/p/a.ts");
 		expect(filtered.length).toBe(1);
-		expect(filtered[0].file).toBe("/p/a.ts");
+		expect(nonNull(filtered[0]).file).toBe("/p/a.ts");
 	});
 
 	it("is an identity when no match", () => {

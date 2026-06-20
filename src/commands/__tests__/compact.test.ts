@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { GENESIS_HASH, computeEntryHash, verifyAuditChain } from "../../lib/audit-chain.js";
+import { nonNull } from "../../lib/non-null.js";
 import { compactCommand, loadArchiveManifest } from "../compact.js";
 
 function writeLog(records: object[]): { tempDir: string; dataDir: string; content: string } {
@@ -37,7 +38,7 @@ describe("interlinked compact", () => {
 
 		const manifest = loadArchiveManifest(tempDir);
 		expect(manifest.segments.length).toBe(1);
-		const seg = manifest.segments[0];
+		const seg = nonNull(manifest.segments[0]);
 		const gzPath = join(dataDir, "archive", seg.file);
 		expect(existsSync(gzPath)).toBe(true);
 

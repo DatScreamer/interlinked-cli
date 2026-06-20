@@ -17,6 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { extname, isAbsolute, resolve, sep } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
 import { isGeneratedFile, isTestFile } from "../checks/shared.js";
@@ -180,7 +181,7 @@ function runDependencyAudit(
 	});
 	if (!resolved) return null;
 
-	const auditResult = spawnSync(resolved.cmd[0], resolved.cmd.slice(1), {
+	const auditResult = spawnSync(nonNull(resolved.cmd[0]), resolved.cmd.slice(1), {
 		shell: false,
 		timeout: check.timeout_ms,
 		cwd: checkCwd,

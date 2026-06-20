@@ -19,6 +19,7 @@ import {
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // External-input source pattern. `\b` keeps us from matching `xreq.body`
 // while still composing cleanly inside larger patterns (the `(?:^|[^\w$])`
@@ -136,14 +137,14 @@ export function checkIndexBoundsUnchecked(
 				: stripped.length;
 
 		const window = stripped.slice(windowStart, windowEnd);
-		const escaped = name.replace(/[$]/g, "\\$");
+		const escaped = nonNull(name).replace(/[$]/g, "\\$");
 		// `<receiver>[<name>]` — index access where the bracket contains
 		// only the name (and optional whitespace).
 		const indexUseRe = new RegExp(
 			String.raw`[A-Za-z_$][\w$]*\s*\[\s*${escaped}\s*\]`,
 			"g",
 		);
-		const guardRe = buildGuardPattern(name);
+		const guardRe = buildGuardPattern(nonNull(name));
 
 		let useHit: RegExpExecArray | null;
 		while ((useHit = indexUseRe.exec(window))) {

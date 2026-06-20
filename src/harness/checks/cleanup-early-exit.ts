@@ -16,6 +16,7 @@ import {
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Lookahead window from acquisition to cleanup. Larger than typical
  * function bodies, smaller than file size. */
@@ -118,7 +119,7 @@ export function checkCleanupSkippedOnEarlyExit(
 		let acqHit: RegExpExecArray | null;
 		while ((acqHit = re.exec(stripped))) {
 			if (matches.length >= MAX_MATCHES_PER_FILE) return matches;
-			const name = acqHit[1];
+			const name = nonNull(acqHit[1]);
 			const acqEnd = acqHit.index + acqHit[0].length;
 			const windowEnd = Math.min(stripped.length, acqHit.index + LOOKAHEAD_CHARS);
 			const window = stripped.slice(acqEnd, windowEnd);
@@ -144,7 +145,7 @@ export function checkCleanupSkippedOnEarlyExit(
 	let addHit: RegExpExecArray | null;
 	while ((addHit = addRe.exec(stripped))) {
 		if (matches.length >= MAX_MATCHES_PER_FILE) return matches;
-		const receiver = addHit[1].replace(/[.]/g, "\\.");
+		const receiver = nonNull(addHit[1]).replace(/[.]/g, "\\.");
 		const acqEnd = addHit.index + addHit[0].length;
 		const windowEnd = Math.min(stripped.length, addHit.index + LOOKAHEAD_CHARS);
 		const window = stripped.slice(acqEnd, windowEnd);

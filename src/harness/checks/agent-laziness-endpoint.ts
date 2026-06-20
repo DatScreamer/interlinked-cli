@@ -18,6 +18,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==========================================================================
 // 6. `as unknown as X` double cast
@@ -40,12 +41,12 @@ export function checkDoubleCastUnknown(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = DOUBLE_CAST_RE.exec(strippedLines[i]);
+		const m = DOUBLE_CAST_RE.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
-		const target = m[1].trim().slice(0, 30);
+		const target = nonNull(m[1]).trim().slice(0, 30);
 		matches.push({
 			line: i + 1,
-			text: `\`as unknown as ${target}\` — double-cast bypasses the type system. Validate at the boundary instead. ${originalLines[i].trim().slice(0, 80)}`,
+			text: `\`as unknown as ${target}\` — double-cast bypasses the type system. Validate at the boundary instead. ${nonNull(originalLines[i]).trim().slice(0, 80)}`,
 		});
 	}
 	return matches;
@@ -83,7 +84,7 @@ export function checkUnionWidenedWithString(content: string, filePath: string): 
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (!TYPE_ALIAS_ANCHOR_RE.test(strippedLines[i])) continue;
+		if (!TYPE_ALIAS_ANCHOR_RE.test(nonNull(strippedLines[i]))) continue;
 		const window = originalLines
 			.slice(i, Math.min(originalLines.length, i + TYPE_ALIAS_WINDOW_LINES))
 			.join(" ");
@@ -93,7 +94,7 @@ export function checkUnionWidenedWithString(content: string, filePath: string): 
 		if (!widensWithString) continue;
 		matches.push({
 			line: i + 1,
-			text: `union widened with bare \`string\`: ${originalLines[i].trim().slice(0, 130)} — the literal alternatives are erased.`,
+			text: `union widened with bare \`string\`: ${nonNull(originalLines[i]).trim().slice(0, 130)} — the literal alternatives are erased.`,
 		});
 	}
 	return matches;
@@ -134,7 +135,7 @@ const CONFIG_FILE_TAIL_RE = /\.config\.[mc]?[jt]sx?$/;
 function isProjectConfigFile(filePath: string): boolean {
 	const last = filePath.replace(/\\/g, "/").split("/").pop() || "";
 	if (!CONFIG_FILE_TAIL_RE.test(last)) return false;
-	const base = last.split(".")[0];
+	const base = nonNull(last.split(".")[0]);
 	return CONFIG_FILE_BASES.has(base);
 }
 
@@ -156,12 +157,12 @@ export function checkNodeEnvBranchInProd(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = NODEENV_BRANCH_RE.exec(strippedLines[i]);
+		const m = NODEENV_BRANCH_RE.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
 		const matchedEnv = m[1];
 		matches.push({
 			line: i + 1,
-			text: `production code branches on NODE_ENV (matched value: ${matchedEnv}): ${originalLines[i].trim().slice(0, 110)}`,
+			text: `production code branches on NODE_ENV (matched value: ${matchedEnv}): ${nonNull(originalLines[i]).trim().slice(0, 110)}`,
 		});
 	}
 	return matches;
@@ -211,7 +212,7 @@ function fetchHasTimeoutInWindow(strippedLines: string[], startIdx: number): boo
 function isBindingFetchCall(line: string): boolean {
 	const m = FETCH_MEMBER_RECEIVER_RE.exec(line);
 	if (!m) return false;
-	const receiver = m[1];
+	const receiver = nonNull(m[1]);
 	return !FETCH_GLOBAL_NS.test(receiver);
 }
 
@@ -227,16 +228,17 @@ export function checkFetchWithoutTimeout(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const isFetch = FETCH_CALL_RE.test(strippedLines[i]);
-		const isAxios = AXIOS_CALL_RE.test(strippedLines[i]);
+		const line = nonNull(strippedLines[i]);
+		const isFetch = FETCH_CALL_RE.test(line);
+		const isAxios = AXIOS_CALL_RE.test(line);
 		if (!isFetch && !isAxios) continue;
 		// Skip Cloudflare Worker entry handler — the `fetch(req: Request, ...)`
 		// method declaration on the default ExportedHandler is invoked by the
 		// runtime, not a `fetch()` call we'd want to add a timeout to.
-		if (isFetch && FETCH_HANDLER_DECL_RE.test(strippedLines[i])) continue;
+		if (isFetch && FETCH_HANDLER_DECL_RE.test(line)) continue;
 		// Skip runtime binding member calls (`env.ASSETS.fetch(request)`, service /
 		// DO stubs) — they don't accept a per-call AbortSignal/timeout.
-		if (isFetch && isBindingFetchCall(strippedLines[i])) continue;
+		if (isFetch && isBindingFetchCall(line)) continue;
 		if (fetchHasTimeoutInWindow(strippedLines, i)) continue;
 		const label = isFetch ? "fetch()" : "axios call";
 		matches.push({
@@ -276,14 +278,15 @@ export function checkUnboundedPromiseAll(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (PROMISE_ALL_INLINE_RE.test(strippedLines[i])) continue;
-		const m = PROMISE_ALL_MAP_RE.exec(strippedLines[i]);
+		const line = nonNull(strippedLines[i]);
+		if (PROMISE_ALL_INLINE_RE.test(line)) continue;
+		const m = PROMISE_ALL_MAP_RE.exec(line);
 		if (!m) continue;
-		const ident = m[1];
-		if (isLocallyBoundedArray(strippedLines[i], ident)) continue;
+		const ident = nonNull(m[1]);
+		if (isLocallyBoundedArray(line, ident)) continue;
 		matches.push({
 			line: i + 1,
-			text: `Promise.all(${ident}.map(...)) fans out unboundedly. Use p-limit / pMap({concurrency}) to cap parallelism: ${originalLines[i].trim().slice(0, 100)}`,
+			text: `Promise.all(${ident}.map(...)) fans out unboundedly. Use p-limit / pMap({concurrency}) to cap parallelism: ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 		});
 	}
 	return matches;
@@ -342,12 +345,12 @@ export function checkSyncIoOnHotPath(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = SYNC_IO_RE.exec(strippedLines[i]);
+		const m = SYNC_IO_RE.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
 		const callName = m[0].replace(/\s+/g, "").replace(/\($/, "");
 		matches.push({
 			line: i + 1,
-			text: `sync I/O on hot path (${callName}): ${originalLines[i].trim().slice(0, 100)} — blocks the event loop under load.`,
+			text: `sync I/O on hot path (${callName}): ${nonNull(originalLines[i]).trim().slice(0, 100)} — blocks the event loop under load.`,
 		});
 	}
 	return matches;

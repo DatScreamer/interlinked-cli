@@ -9,6 +9,7 @@
 
 import { hasTddExemptDirective } from "./evaluator/tdd-new-file-gate.js";
 import { stripCommentsAndStrings } from "./checks/shared.js";
+import { nonNull } from "../lib/non-null.js";
 import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
@@ -60,7 +61,7 @@ function importedAssertNames(content: string): Set<string> {
 	NODE_ASSERT_IMPORT_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = NODE_ASSERT_IMPORT_RE.exec(content);
 	while (m !== null) {
-		for (const raw of m[1].split(",")) {
+		for (const raw of nonNull(m[1]).split(",")) {
 			// Handle `strictEqual as eq` rename — credit the local binding.
 			const local = (raw.split(/\s+as\s+/i)[1] ?? raw).trim();
 			if (

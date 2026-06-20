@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { c, divider, header } from "../lib/formatter.js";
+import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output } from "../lib/output.js";
 
 interface StaleItem {
@@ -180,7 +181,7 @@ export async function cleanCommand(opts: {
 						/node\s+([^\s"]+interlinked-activity\.mjs)/,
 					);
 					if (scriptPathMatch) {
-						const scriptPath = scriptPathMatch[1];
+						const scriptPath = nonNull(scriptPathMatch[1]);
 						if (!existsSync(scriptPath)) {
 							staleItems.push({
 								type: "orphaned_hook",

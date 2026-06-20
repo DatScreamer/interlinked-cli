@@ -61,6 +61,7 @@ vi.mock("../lib/formatter.js", () => ({
 }));
 
 import { resetCommand } from "./reset.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Canonical absolute paths the command derives from cwd="/repo".
 const CONFIG_DIR = "/repo/.interlinked";
@@ -335,10 +336,10 @@ describe("reset --force — Claude Code settings.json hook cleanup", () => {
 		await resetCommand({ force: true, json: true });
 
 		expect(written).toHaveLength(1);
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		expect(out.hooks.PreToolUse).toEqual([{ hooks: [{ command: "node other.mjs" }] }]);
 		expect(out.otherKey).toBe(1);
-		expect(written[0].data.endsWith("\n")).toBe(true); // trailing newline
+		expect(nonNull(written[0]).data.endsWith("\n")).toBe(true); // trailing newline
 		expect(lastJson().removed).toEqual([".claude/settings.json (hook entries)"]);
 	});
 
@@ -358,7 +359,7 @@ describe("reset --force — Claude Code settings.json hook cleanup", () => {
 			keep: true,
 		});
 		await resetCommand({ force: true, json: true });
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		expect(out.hooks).toBeUndefined();
 		expect("hooks" in out).toBe(false);
 		expect(out.keep).toBe(true);
@@ -401,7 +402,7 @@ describe("reset --force — Claude Code settings.json hook cleanup", () => {
 			},
 		});
 		await resetCommand({ force: true, json: true });
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		// PreToolUse emptied -> undefined, BadShape untouched -> hooks NOT deleted
 		expect(out.hooks.PreToolUse).toBeUndefined();
 		expect(out.hooks.BadShape).toEqual({ not: "an-array" });
@@ -476,7 +477,7 @@ describe("reset --force — Gemini settings.json hook cleanup", () => {
 			},
 		});
 		await resetCommand({ force: true, json: true });
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		expect(out.hooks.PreToolUse).toEqual([{ hooks: [{ command: "node keep.mjs" }] }]);
 		expect(lastJson().removed).toEqual([".gemini/settings.json (hook entries)"]);
 	});
@@ -496,7 +497,7 @@ describe("reset --force — Gemini settings.json hook cleanup", () => {
 			hooks: { PreToolUse: [{ hooks: [{ command: "node interlinked-activity.mjs" }] }] },
 		});
 		await resetCommand({ force: true, json: true });
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		// key retained, value set to undefined -> serialized away, but `hooks` itself stays as {}
 		expect(out.hooks).toEqual({});
 	});
@@ -525,7 +526,7 @@ describe("reset --force — Gemini settings.json hook cleanup", () => {
 			},
 		});
 		await resetCommand({ force: true, json: true });
-		const out = JSON.parse(written[0].data);
+		const out = JSON.parse(nonNull(written[0]).data);
 		expect(out.hooks.PreToolUse).toBeUndefined();
 		expect(out.hooks.Weird).toBe(7);
 	});
@@ -579,9 +580,9 @@ describe("reset --force — Codex config.toml notify cleanup", () => {
 		].join("\n");
 		await resetCommand({ force: true, json: true });
 		expect(written).toHaveLength(1);
-		expect(written[0].data).not.toContain("notify =");
-		expect(written[0].data).toContain("[features]");
-		expect(written[0].data).toContain("other = 1");
+		expect(nonNull(written[0]).data).not.toContain("notify =");
+		expect(nonNull(written[0]).data).toContain("[features]");
+		expect(nonNull(written[0]).data).toContain("other = 1");
 		expect(lastJson().removed).toEqual([".codex/config.toml (notify entry)"]);
 	});
 
@@ -599,7 +600,7 @@ describe("reset --force — Codex config.toml notify cleanup", () => {
 		vfs.files[CODEX_CONFIG] = "# comment mentioning interlinked-activity\nfoo = 1\n";
 		await resetCommand({ force: true, json: true });
 		expect(written).toHaveLength(1);
-		expect(written[0].data).toBe("# comment mentioning interlinked-activity\nfoo = 1\n");
+		expect(nonNull(written[0]).data).toBe("# comment mentioning interlinked-activity\nfoo = 1\n");
 		expect(lastJson().removed).toEqual([".codex/config.toml (notify entry)"]);
 	});
 

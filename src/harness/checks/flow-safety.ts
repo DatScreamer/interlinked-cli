@@ -16,6 +16,7 @@ import {
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const REPORT_LINE_TRUNC = 150;
 const MAX_MATCHES_PER_FILE = 10;
@@ -101,7 +102,7 @@ export function checkAwaitStateToctou(content: string, filePath: string): Inline
 		if (awaitIdx < 0) continue;
 		const afterAwait = body.slice(awaitIdx);
 
-		const escapedPath = path.replace(/[.$]/g, (m) => `\\${m}`);
+		const escapedPath = nonNull(path).replace(/[.$]/g, (m) => `\\${m}`);
 		// Use of same path after await: `<path>.<method>(`, `<path> =`, `<path>(`.
 		const useRe = new RegExp(
 			String.raw`\b${escapedPath}\s*(?:\.[A-Za-z_$][\w$]*\s*\(|\s*=(?!=)|\s*\()`,
@@ -173,7 +174,7 @@ export function checkCleanupReentrancy(content: string, filePath: string): Inlin
 	while ((effectHit = effectCleanupRe.exec(stripped))) {
 		if (matches.length >= MAX_MATCHES_PER_FILE) return matches;
 		const cleanupBody = effectHit[1];
-		const stateMutator = cleanupBody.match(/\b(?:set[A-Z]\w*|dispatch)\s*\(/);
+		const stateMutator = nonNull(cleanupBody).match(/\b(?:set[A-Z]\w*|dispatch)\s*\(/);
 		if (!stateMutator || stateMutator.index === undefined) continue;
 		// Locate the offset of the mutator within the original stripped string.
 		const cleanupStart = effectHit.index + effectHit[0].indexOf("{", effectHit[0].lastIndexOf("=>")) + 1;

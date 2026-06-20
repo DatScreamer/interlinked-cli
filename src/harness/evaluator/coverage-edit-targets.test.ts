@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import { coverageEditPlan, coverageTargetsFor } from "./coverage-edit-targets.js";
 
@@ -52,8 +53,8 @@ describe("coverageTargetsFor — single-file write shapes", () => {
 			CFG,
 		);
 		expect(targets.map((t) => t.relPath)).toEqual(["src/m.ts"]);
-		expect(targets[0].language).toBe("ts");
-		expect(targets[0].proposed).toContain("export const a = 1;");
+		expect(nonNull(targets[0]).language).toBe("ts");
+		expect(nonNull(targets[0]).proposed).toContain("export const a = 1;");
 	});
 
 	it("Edit yields one target with the post-edit content", () => {
@@ -64,7 +65,7 @@ describe("coverageTargetsFor — single-file write shapes", () => {
 			CFG,
 		);
 		expect(targets.map((t) => t.relPath)).toEqual(["src/m.ts"]);
-		expect(targets[0].proposed).toContain("export const a = 2;");
+		expect(nonNull(targets[0]).proposed).toContain("export const a = 2;");
 	});
 
 	it("returns [] for a non-code file", () => {
@@ -102,9 +103,9 @@ describe("coverageTargetsFor — apply_patch (the finding-1 gap)", () => {
 			CFG,
 		);
 		expect(targets.map((t) => t.relPath)).toEqual(["src/m.ts"]);
-		expect(targets[0].proposed).toContain("return 2;");
+		expect(nonNull(targets[0]).proposed).toContain("return 2;");
 		// Edited-line scoping: only the changed line is "added", not the whole file.
-		expect(targets[0].editedLines).toEqual(new Set([2]));
+		expect(nonNull(targets[0]).editedLines).toEqual(new Set([2]));
 	});
 
 	it("Add File: yields a whole-new-file target with every line added", () => {
@@ -116,8 +117,8 @@ describe("coverageTargetsFor — apply_patch (the finding-1 gap)", () => {
 			CFG,
 		);
 		expect(targets.map((t) => t.relPath)).toEqual(["src/new.ts"]);
-		expect(targets[0].proposed).toBe("export const x = 1;\nexport const y = 2;");
-		expect(targets[0].editedLines).toEqual(new Set([1, 2]));
+		expect(nonNull(targets[0]).proposed).toBe("export const x = 1;\nexport const y = 2;");
+		expect(nonNull(targets[0]).editedLines).toEqual(new Set([1, 2]));
 	});
 
 	it("yields ONE target per code file for a multi-file patch", () => {
@@ -300,8 +301,8 @@ describe("coverageTargetsFor — editedLines are positional, not content-keyed",
 		expect(targets.map((t) => t.relPath)).toEqual(["src/m.ts"]);
 		// LCS aligns the existing lines; only the inserted line 1 is "added". The
 		// content-bag bug marked line 3 (the shifted original) instead.
-		expect(targets[0].editedLines).toEqual(new Set([1]));
-		expect(targets[0].editedLines?.has(3)).toBe(false);
+		expect(nonNull(targets[0]).editedLines).toEqual(new Set([1]));
+		expect(nonNull(targets[0]).editedLines?.has(3)).toBe(false);
 	});
 });
 

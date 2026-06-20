@@ -6,6 +6,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonObject } from "../../lib/json-types.js";
 import { getExtension, type InlineMatch, isCliFile, isTestFile, JS_TS_EXTS } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Read the side-loaded popular-packages JSON. The file lives next to this
@@ -368,18 +369,18 @@ function levenshtein(a: string, b: string): number {
 	if (Math.abs(a.length - b.length) > 2) return 3; // fast exit
 	const matrix: number[][] = [];
 	for (let i = 0; i <= a.length; i++) matrix[i] = [i];
-	for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+	for (let j = 0; j <= b.length; j++) nonNull(matrix[0])[j] = j;
 	for (let i = 1; i <= a.length; i++) {
 		for (let j = 1; j <= b.length; j++) {
 			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-			matrix[i][j] = Math.min(
-				matrix[i - 1][j] + 1,
-				matrix[i][j - 1] + 1,
-				matrix[i - 1][j - 1] + cost,
+			nonNull(matrix[i])[j] = Math.min(
+				nonNull(nonNull(matrix[i - 1])[j]) + 1,
+				nonNull(nonNull(matrix[i])[j - 1]) + 1,
+				nonNull(nonNull(matrix[i - 1])[j - 1]) + cost,
 			);
 		}
 	}
-	return matrix[a.length][b.length];
+	return nonNull(nonNull(matrix[a.length])[b.length]);
 }
 
 /**

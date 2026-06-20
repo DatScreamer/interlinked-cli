@@ -3,6 +3,7 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { deduplicateResults } from "../index.js";
 import {
 	filterResultsToFile,
@@ -47,8 +48,8 @@ describe("parseTscOutput", () => {
 			message: "TS2345: Argument of type 'string' is not assignable.",
 			ruleId: "TS2345",
 		});
-		expect(results[1].file).toBe("src/bar.ts");
-		expect(results[1].line).toBe(10);
+		expect(nonNull(results[1]).file).toBe("src/bar.ts");
+		expect(nonNull(results[1]).line).toBe(10);
 	});
 
 	it("returns empty for clean output", () => {
@@ -79,7 +80,7 @@ describe("parseBiomeOutput", () => {
 			message: "lint/suspicious/noDoubleEquals",
 			ruleId: "lint/suspicious/noDoubleEquals",
 		});
-		expect(results[1].message).toBe("format");
+		expect(nonNull(results[1]).message).toBe("format");
 	});
 
 	it("returns empty for clean output", () => {
@@ -96,9 +97,9 @@ describe("parseEslintOutput", () => {
 		const output = "src/foo.ts:10:5: 'x' is never used [no-unused-vars]\n";
 		const results = parseEslintOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("src/foo.ts");
-		expect(results[0].line).toBe(10);
-		expect(results[0].ruleId).toBe("no-unused-vars");
+		expect(nonNull(results[0]).file).toBe("src/foo.ts");
+		expect(nonNull(results[0]).line).toBe(10);
+		expect(nonNull(results[0]).ruleId).toBe("no-unused-vars");
 	});
 });
 
@@ -121,8 +122,8 @@ describe("parseSemgrepJson", () => {
 
 		const results = parseSemgrepJson(output, "/project");
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("src/handler.ts");
-		expect(results[0].ruleId).toBe("javascript.lang.security.detect-eval");
+		expect(nonNull(results[0]).file).toBe("src/handler.ts");
+		expect(nonNull(results[0]).ruleId).toBe("javascript.lang.security.detect-eval");
 	});
 
 	it("returns empty for invalid JSON", () => {
@@ -151,8 +152,8 @@ describe("parseGitleaksJson", () => {
 
 		const results = parseGitleaksJson(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].ruleId).toBe("aws-access-key-id");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).ruleId).toBe("aws-access-key-id");
 	});
 
 	it("returns empty for invalid JSON", () => {
@@ -246,8 +247,8 @@ describe("parseMypyOutput", () => {
 			message: "Incompatible types in assignment",
 			ruleId: "assignment",
 		});
-		expect(results[1].severity).toBe("warning");
-		expect(results[1].ruleId).toBe("unused-ignore");
+		expect(nonNull(results[1]).severity).toBe("warning");
+		expect(nonNull(results[1]).ruleId).toBe("unused-ignore");
 	});
 
 	it("returns empty for clean output", () => {
@@ -258,7 +259,7 @@ describe("parseMypyOutput", () => {
 		const output = "app/main.py:5: error: Missing return statement\n";
 		const results = parseMypyOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].ruleId).toBeUndefined();
+		expect(nonNull(results[0]).ruleId).toBeUndefined();
 	});
 
 	it("skips note-level messages", () => {
@@ -352,8 +353,8 @@ describe("parseCargoJson", () => {
 			message: "unused variable: `x`",
 			ruleId: "unused_variables",
 		});
-		expect(results[1].severity).toBe("error");
-		expect(results[1].ruleId).toBe("E0425");
+		expect(nonNull(results[1]).severity).toBe("error");
+		expect(nonNull(results[1]).ruleId).toBe("E0425");
 	});
 
 	it("uses provided toolId for cargo-clippy", () => {
@@ -368,7 +369,7 @@ describe("parseCargoJson", () => {
 		});
 
 		const results = parseCargoJson(line, "cargo-clippy");
-		expect(results[0].tool).toBe("cargo-clippy");
+		expect(nonNull(results[0]).tool).toBe("cargo-clippy");
 	});
 
 	it("skips messages with no spans", () => {
@@ -402,7 +403,7 @@ describe("parseGoBuildOutput", () => {
 			column: 10,
 			message: "undefined: someFunc",
 		});
-		expect(results[1].file).toBe("utils.go");
+		expect(nonNull(results[1]).file).toBe("utils.go");
 	});
 
 	it("returns empty for clean build", () => {
@@ -483,22 +484,22 @@ describe("parseGccOutput", () => {
 			message: "expected ';' after expression",
 			ruleId: undefined,
 		});
-		expect(results[1].severity).toBe("warning");
-		expect(results[1].ruleId).toBe("-Wunused-variable");
+		expect(nonNull(results[1]).severity).toBe("warning");
+		expect(nonNull(results[1]).ruleId).toBe("-Wunused-variable");
 	});
 
 	it("parses fatal error", () => {
 		const output = "main.c:1:10: fatal error: 'missing.h' file not found\n";
 		const results = parseGccOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
+		expect(nonNull(results[0]).severity).toBe("error");
 	});
 
 	it("handles C++ file extensions", () => {
 		const output = "main.cpp:5:3: error: use of undeclared identifier\n";
 		const results = parseGccOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("main.cpp");
+		expect(nonNull(results[0]).file).toBe("main.cpp");
 	});
 
 	it("returns empty for clean compile", () => {
@@ -531,7 +532,7 @@ describe("parseClangTidyOutput", () => {
 		const output = "main.c:1:1: error: unknown type name 'foo' [clang-diagnostic-error]\n";
 		const results = parseClangTidyOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
+		expect(nonNull(results[0]).severity).toBe("error");
 	});
 
 	it("skips note-level messages", () => {
@@ -581,8 +582,8 @@ describe("parseOxlintJson", () => {
 			message: "Catch parameter '_err' is caught but never used.",
 			ruleId: "eslint(no-unused-vars)",
 		});
-		expect(results[1].severity).toBe("error");
-		expect(results[1].ruleId).toBe("eslint(no-eval)");
+		expect(nonNull(results[1]).severity).toBe("error");
+		expect(nonNull(results[1]).ruleId).toBe("eslint(no-eval)");
 	});
 
 	it("returns empty for invalid JSON", () => {
@@ -619,12 +620,12 @@ describe("parseDocsCheckOutput", () => {
 			"1 doc-accuracy failure(s).\n";
 		const results = parseDocsCheckOutput(output);
 		expect(results).toHaveLength(1);
-		expect(results[0].tool).toBe("docs-check");
-		expect(results[0].severity).toBe("error");
-		expect(results[0].file).toBe("/repo/landing/public/index.html");
-		expect(results[0].message).toMatch(/gen:builtin_rule_count drift/);
-		expect(results[0].message).toMatch(/expected 106/);
-		expect(results[0].message).toMatch(/actual 105/);
+		expect(nonNull(results[0]).tool).toBe("docs-check");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).file).toBe("/repo/landing/public/index.html");
+		expect(nonNull(results[0]).message).toMatch(/gen:builtin_rule_count drift/);
+		expect(nonNull(results[0]).message).toMatch(/expected 106/);
+		expect(nonNull(results[0]).message).toMatch(/actual 105/);
 	});
 
 	it("parses multiple drift blocks into one CheckResult each", () => {
@@ -639,8 +640,8 @@ describe("parseDocsCheckOutput", () => {
 			"2 doc-accuracy failure(s).\n";
 		const results = parseDocsCheckOutput(output);
 		expect(results).toHaveLength(2);
-		expect(results[0].file).toBe("/repo/landing/public/index.html");
-		expect(results[1].file).toBe("/repo/README.md");
+		expect(nonNull(results[0]).file).toBe("/repo/landing/public/index.html");
+		expect(nonNull(results[1]).file).toBe("/repo/README.md");
 	});
 
 	it("ignores lines that aren't [docs:fail] headers", () => {
@@ -679,7 +680,7 @@ describe("deduplicateResults", () => {
 		expect(deduplicated).toHaveLength(1);
 		expect(removedCount).toBe(1);
 		// Keeps the first (higher-priority tool)
-		expect(deduplicated[0].tool).toBe("biome");
+		expect(nonNull(deduplicated[0]).tool).toBe("biome");
 	});
 
 	it("keeps higher severity when duplicates differ in severity", () => {
@@ -702,8 +703,8 @@ describe("deduplicateResults", () => {
 		const { deduplicated, removedCount } = deduplicateResults(results);
 		expect(deduplicated).toHaveLength(1);
 		expect(removedCount).toBe(1);
-		expect(deduplicated[0].severity).toBe("error");
-		expect(deduplicated[0].tool).toBe("eslint");
+		expect(nonNull(deduplicated[0]).severity).toBe("error");
+		expect(nonNull(deduplicated[0]).tool).toBe("eslint");
 	});
 
 	it("does not deduplicate findings on different lines", () => {
@@ -833,6 +834,6 @@ describe("deduplicateResults", () => {
 		expect(deduplicated).toHaveLength(1);
 		expect(removedCount).toBe(1);
 		// cargo-check comes first in registry, so it wins on tie
-		expect(deduplicated[0].tool).toBe("cargo-check");
+		expect(nonNull(deduplicated[0]).tool).toBe("cargo-check");
 	});
 });

@@ -15,6 +15,7 @@ import {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./agent-safety-advanced.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Behavioral coverage companion for agent-safety-advanced.ts. The deeper
 // existing tests live in src/harness/__tests__/generic-checks-extended*.test.ts
@@ -33,7 +34,7 @@ describe("checkThrowLiteral", () => {
 	it("flags throwing a string literal", () => {
 		const out = checkThrowLiteral('function f() {\n  throw "boom";\n}\n', "src/x.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].line).toBe(2);
+		expect(nonNull(out[0]).line).toBe(2);
 	});
 
 	it("flags throwing a numeric literal", () => {
@@ -103,13 +104,13 @@ describe("checkDefaultExport — extra branches", () => {
 		].join("\n");
 		const out = checkDefaultExport(code, "/tmp/foo.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].line).toBe(4);
+		expect(nonNull(out[0]).line).toBe(4);
 	});
 
 	it("flags a named default whose name differs from the filename", () => {
 		const out = checkDefaultExport("export default function widget() {}\n", "/tmp/foo.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("does not match filename");
+		expect(nonNull(out[0]).text).toContain("does not match filename");
 	});
 
 	it("does NOT flag a named default matching the filename (case-insensitive)", () => {
@@ -146,7 +147,7 @@ describe("checkLifecycleCleanup — extra branches", () => {
 		].join("\n");
 		const out = checkLifecycleCleanup(code, "src/poller.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("setInterval");
+		expect(nonNull(out[0]).text).toContain("setInterval");
 	});
 
 	it("does NOT flag when the lifecycle method clears the timer (clean present)", () => {
@@ -248,7 +249,7 @@ describe("checkCircularImports", () => {
 		const aContent = 'import { b } from "./b.js";\nexport const a = () => b();\n';
 		const out = checkCircularImports(aContent, aPath, dir);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("import cycle");
+		expect(nonNull(out[0]).text).toContain("import cycle");
 	});
 
 	it("does NOT flag an acyclic import chain", () => {
@@ -336,7 +337,7 @@ describe("checkDeadExports", () => {
 			dir,
 		);
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("orphan");
+		expect(nonNull(out[0]).text).toContain("orphan");
 	});
 
 	it("does NOT flag exports that are imported elsewhere", () => {
@@ -379,7 +380,7 @@ describe("checkDeadExports", () => {
 		const out = checkDeadExports("export const solo = 1;\n", relName, dir);
 		// No importer → solo is dead.
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("solo");
+		expect(nonNull(out[0]).text).toContain("solo");
 	});
 });
 
@@ -458,7 +459,7 @@ describe("checkRequireAwait", () => {
 		].join("\n");
 		const out = checkRequireAwait(code, "src/calc.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].line).toBe(1);
+		expect(nonNull(out[0]).line).toBe(1);
 	});
 
 	it("does NOT flag an async function that uses await", () => {
@@ -619,7 +620,7 @@ describe("checkManualFieldCopy — direct-import smoke", () => {
 		].join("\n");
 		const out = checkManualFieldCopy(code, "src/build.ts");
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("consecutive field copies");
+		expect(nonNull(out[0]).text).toContain("consecutive field copies");
 	});
 
 	it("does NOT flag fewer than 5 copies", () => {

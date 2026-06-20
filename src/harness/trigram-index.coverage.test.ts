@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	DEFAULT_MAX_FILE_SIZE,
 	extractTrigramsWithMasks,
@@ -46,9 +47,9 @@ function buildPlainIndex(
 	const fileArray: string[] = [];
 
 	for (let fileId = 0; fileId < filePaths.length; fileId++) {
-		const path = filePaths[fileId];
+		const path = nonNull(filePaths[fileId]);
 		fileArray.push(path);
-		for (const tri of extractTrigrams(files[path])) {
+		for (const tri of extractTrigrams(nonNull(files[path]))) {
 			let list = postingsBuilder.get(tri);
 			if (!list) {
 				list = [];
@@ -82,9 +83,9 @@ function buildMaskedIndex(files: Record<string, string>): TrigramIndex {
 	const fileArray: string[] = [];
 
 	for (let fileId = 0; fileId < filePaths.length; fileId++) {
-		const path = filePaths[fileId];
+		const path = nonNull(filePaths[fileId]);
 		fileArray.push(path);
-		const masks = extractTrigramsWithMasks(files[path]);
+		const masks = extractTrigramsWithMasks(nonNull(files[path]));
 		for (const [tri, m] of masks) {
 			let entry = builder.get(tri);
 			if (!entry) {

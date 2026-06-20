@@ -8,6 +8,7 @@
 // "./taste-checks.js" (and "./taste-checks-checks-2.js") unchanged.
 // ===========================================
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	type InlineMatch,
 	isJsTs,
@@ -39,9 +40,9 @@ export function checkMagicNumber(content: string, filePath: string): InlineMatch
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		const line = sLines[i];
+		const line = nonNull(sLines[i]);
 		if (DECLARATION_LINE.test(line)) continue;
-		if (COMMENT_LINE_PATTERN.test(lines[i])) continue;
+		if (COMMENT_LINE_PATTERN.test(nonNull(lines[i]))) continue;
 		if (MAGIC_IN_CALL.test(line)) push(matches, i, lines, 10);
 	}
 	return matches;
@@ -98,7 +99,7 @@ function flagOversizedArgList(
 ): void {
 	for (const m of stripped.matchAll(pattern)) {
 		if (matches.length >= limit) return;
-		if (argCount(m[1]) > ARG_COUNT_THRESHOLD) {
+		if (argCount(nonNull(m[1])) > ARG_COUNT_THRESHOLD) {
 			push(matches, lineIdxForOffset(stripped, m.index ?? 0), lines, limit);
 		}
 	}
@@ -128,7 +129,7 @@ function paramType(part: string): string {
 	const colon = part.indexOf(":");
 	if (colon === -1) return "";
 	const typePart = part.slice(colon + 1).trim();
-	const firstToken = typePart.split(/[\s|&=]/)[0];
+	const firstToken = nonNull(typePart.split(/[\s|&=]/)[0]);
 	return firstToken;
 }
 
@@ -163,7 +164,7 @@ function flagDataClump(
 ): void {
 	for (const m of stripped.matchAll(pattern)) {
 		if (matches.length >= limit) return;
-		if (hasDataClump(m[1])) {
+		if (hasDataClump(nonNull(m[1]))) {
 			push(matches, lineIdxForOffset(stripped, m.index ?? 0), lines, limit);
 		}
 	}
@@ -208,7 +209,7 @@ export function checkDuplicateDescribe(content: string, filePath: string): Inlin
 		// The `d` of `describe` survives in `oracle` only when it is real code;
 		// inside a blanked literal/comment it becomes a space, so skip it.
 		if (oracle[idx] !== content[idx]) continue;
-		const name = m[1] ?? m[2] ?? m[3];
+		const name = nonNull(m[1] ?? m[2] ?? m[3]);
 		if (seen.has(name)) {
 			push(matches, lineIdxForOffset(content, idx), lines, 5);
 		} else {

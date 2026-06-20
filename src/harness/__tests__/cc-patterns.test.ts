@@ -15,6 +15,7 @@ import {
 import { createLearnedRulesStore } from "../learned-rules.js";
 import { buildTurnEndSummary, detectTurnPatterns, formatTurnEndWarnings } from "../turn-end.js";
 import type { CheckResultEntry, GuardRule, HarnessEvent, SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Private per-process tmp root for the on-disk store tests below
 // (learned-rules + async-analysis). Parallel-safety: the prior fixed paths
@@ -619,7 +620,7 @@ describe("createAsyncAnalysisManager", () => {
 		await mgr.drain();
 		const consumed = mgr.consume("src/foo.ts");
 		expect(consumed).toHaveLength(1);
-		expect(consumed[0].name).toBe("export_surface");
+		expect(nonNull(consumed[0]).name).toBe("export_surface");
 	});
 
 	it("consume clears findings", async () => {

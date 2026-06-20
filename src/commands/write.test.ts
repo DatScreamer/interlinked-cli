@@ -66,6 +66,7 @@ import {
 	gateProposedContent,
 } from "../harness/content-gate.js";
 import { writeCommand, type WriteCommandOptions } from "./write.js";
+import { nonNull } from "../lib/non-null.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -232,7 +233,7 @@ describe("interlinked write — single-file mode", () => {
 		expect(mockGate).toHaveBeenCalledWith([{ path: target, content }]);
 		// Atomic write: a temp file written, then renamed into place.
 		expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
-		const [tmpPath, writtenContent] = mockWriteFileSync.mock.calls[0];
+		const [tmpPath, writtenContent] = nonNull(mockWriteFileSync.mock.calls[0]);
 		expect(String(tmpPath)).toContain(`${target}.interlinked-write-`);
 		expect(writtenContent).toBe(content);
 		expect(mockRenameSync).toHaveBeenCalledWith(tmpPath, target);
@@ -581,7 +582,7 @@ describe("interlinked write — gate outcomes", () => {
 		);
 		expect(r.exitCode).toBe(1);
 		const failures = loggedJson().failures as Array<Record<string, unknown>>;
-		expect(failures[0].column).toBe(12);
+		expect(nonNull(failures[0]).column).toBe(12);
 	});
 });
 
@@ -604,7 +605,7 @@ describe("interlinked write — atomic write failure", () => {
 		expect(loggedErr()).toContain("EXDEV");
 		// The temp written in phase 1 is cleaned up in the catch.
 		expect(mockUnlinkSync).toHaveBeenCalledTimes(1);
-		const tmpWritten = String(mockWriteFileSync.mock.calls[0][0]);
+		const tmpWritten = String(nonNull(mockWriteFileSync.mock.calls[0])[0]);
 		expect(mockUnlinkSync).toHaveBeenCalledWith(tmpWritten);
 	});
 

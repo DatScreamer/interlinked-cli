@@ -7,6 +7,7 @@
 // Auth is project-specific (no built-in middleware.ts equivalent), so
 // V1 leaves auth_chain empty.
 
+import { nonNull } from "../../lib/non-null.js";
 import type { Endpoint } from "../types/session.js";
 import {
 	conventionPath,
@@ -21,7 +22,7 @@ const SVELTEKIT_ROUTE_FILE = /[/\\]src[/\\]routes[/\\](.*?)[/\\]\+server\.(?:ts|
 export function extractEndpoints(filePath: string, content: string): Endpoint[] {
 	const match = filePath.match(SVELTEKIT_ROUTE_FILE);
 	if (!match) return [];
-	const urlPath = conventionPath(match[1]);
+	const urlPath = conventionPath(nonNull(match[1]));
 	const methods = detectExportedMethods(content);
 	if (methods.length === 1 && methods[0] === "ALL" && !hasExportedMethod(content)) {
 		return [];

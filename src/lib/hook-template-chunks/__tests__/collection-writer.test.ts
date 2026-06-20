@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { COLLECTION_WRITER_CHUNK } from "../collection-writer.js";
+import { nonNull } from "../../non-null.js";
 
 /**
  * Build self-contained `buildCollectionRecord` from the chunk source.
@@ -399,10 +400,10 @@ describe("collection writer chunk — fidelity (Bug 2)", () => {
 		};
 		expect(fidelity.record.completeness).toBe("interlinked_capped");
 		expect(fidelity.fields["observation.stdout"]).toBeDefined();
-		expect(fidelity.fields["observation.stdout"].completeness).toBe("interlinked_capped");
-		expect(fidelity.fields["observation.stdout"].interlinked_capped).toBe(true);
-		expect(fidelity.fields["observation.stdout"].provider_payload_bytes).toBe(1048576);
-		expect(fidelity.fields["observation.stdout"].captured_bytes).toBeGreaterThan(0);
+		expect(nonNull(fidelity.fields["observation.stdout"]).completeness).toBe("interlinked_capped");
+		expect(nonNull(fidelity.fields["observation.stdout"]).interlinked_capped).toBe(true);
+		expect(nonNull(fidelity.fields["observation.stdout"]).provider_payload_bytes).toBe(1048576);
+		expect(nonNull(fidelity.fields["observation.stdout"]).captured_bytes).toBeGreaterThan(0);
 	});
 
 	it("produces complete fidelity for uncapped Bash response", () => {
@@ -421,8 +422,8 @@ describe("collection writer chunk — fidelity (Bug 2)", () => {
 		};
 		expect(fidelity.record.completeness).toBe("complete");
 		expect(fidelity.fields["observation.stdout"]).toBeDefined();
-		expect(fidelity.fields["observation.stdout"].completeness).toBe("complete");
-		expect(fidelity.fields["observation.stdout"].interlinked_capped).toBe(false);
+		expect(nonNull(fidelity.fields["observation.stdout"]).completeness).toBe("complete");
+		expect(nonNull(fidelity.fields["observation.stdout"]).interlinked_capped).toBe(false);
 	});
 
 	it("produces interlinked_capped fidelity for capped file_read response", () => {
@@ -440,7 +441,7 @@ describe("collection writer chunk — fidelity (Bug 2)", () => {
 		};
 		expect(fidelity.record.completeness).toBe("interlinked_capped");
 		expect(fidelity.fields["observation.content"]).toBeDefined();
-		expect(fidelity.fields["observation.content"].completeness).toBe("interlinked_capped");
+		expect(nonNull(fidelity.fields["observation.content"]).completeness).toBe("interlinked_capped");
 	});
 
 	it("produces complete fidelity for capped search response", () => {
@@ -458,7 +459,7 @@ describe("collection writer chunk — fidelity (Bug 2)", () => {
 		// String response has no _interlinked_truncated_bytes marker
 		expect(fidelity.record.completeness).toBe("complete");
 		expect(fidelity.fields["observation.result_text"]).toBeDefined();
-		expect(fidelity.fields["observation.result_text"].completeness).toBe("complete");
+		expect(nonNull(fidelity.fields["observation.result_text"]).completeness).toBe("complete");
 	});
 
 	it("produces complete fidelity for fetch response with result", () => {
@@ -475,7 +476,7 @@ describe("collection writer chunk — fidelity (Bug 2)", () => {
 		};
 		expect(fidelity.record.completeness).toBe("complete");
 		expect(fidelity.fields["observation.result"]).toBeDefined();
-		expect(fidelity.fields["observation.result"].completeness).toBe("complete");
+		expect(nonNull(fidelity.fields["observation.result"]).completeness).toBe("complete");
 	});
 
 	it("has empty fields for pre-phase events", () => {

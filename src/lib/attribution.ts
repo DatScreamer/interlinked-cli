@@ -4,6 +4,7 @@
 // Per-file pool heuristic: compare git diff stat before and after agent runs.
 
 import { execSync } from "node:child_process";
+import { nonNull } from "./non-null.js";
 
 // ===========================================
 // Types
@@ -43,8 +44,8 @@ function getDiffStat(cwd: string): Record<string, number> {
 		for (const line of output.split("\n")) {
 			const parts = line.split("\t");
 			if (parts.length >= 3) {
-				const added = Number.parseInt(parts[0], 10) || 0;
-				const deleted = Number.parseInt(parts[1], 10) || 0;
+				const added = Number.parseInt(nonNull(parts[0]), 10) || 0;
+				const deleted = Number.parseInt(nonNull(parts[1]), 10) || 0;
 				const file = parts[2];
 				if (file) files[file] = added + deleted;
 			}
@@ -139,9 +140,9 @@ export function readAttributionTrailer(commitSha?: string, cwd?: string): Attrib
 		);
 		if (!match) return null;
 
-		const agentPct = Number.parseInt(match[1], 10);
-		const agentLines = Number.parseInt(match[2], 10);
-		const totalLines = Number.parseInt(match[3], 10);
+		const agentPct = Number.parseInt(nonNull(match[1]), 10);
+		const agentLines = Number.parseInt(nonNull(match[2]), 10);
+		const totalLines = Number.parseInt(nonNull(match[3]), 10);
 
 		return {
 			agent_lines: agentLines,

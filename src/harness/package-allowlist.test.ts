@@ -13,6 +13,7 @@ import {
 	saveAllowlist,
 	type Allowlist,
 } from "./package-allowlist.js";
+import { nonNull } from "../lib/non-null.js";
 
 let workspace: string;
 
@@ -79,7 +80,7 @@ describe("saveAllowlist + loadAllowlist roundtrip", () => {
 		};
 		saveAllowlist(workspace, al);
 		const loaded = loadAllowlist(workspace);
-		expect(loaded.packages.npm.lodash.approved_by).toBe("qcody");
+		expect(nonNull(loaded.packages.npm.lodash).approved_by).toBe("qcody");
 	});
 });
 
@@ -88,16 +89,16 @@ describe("addToAllowlist", () => {
 		addToAllowlist(workspace, "npm", "lodash", { approved_by: "qcody", reason: "util" });
 		const loaded = loadAllowlist(workspace);
 		expect(loaded.packages.npm.lodash).toBeDefined();
-		expect(loaded.packages.npm.lodash.approved_by).toBe("qcody");
-		expect(loaded.packages.npm.lodash.approved_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
+		expect(nonNull(loaded.packages.npm.lodash).approved_by).toBe("qcody");
+		expect(nonNull(loaded.packages.npm.lodash).approved_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
 	});
 
 	it("is idempotent — re-adding overwrites with new approval metadata", () => {
 		addToAllowlist(workspace, "npm", "foo", { approved_by: "a" });
 		addToAllowlist(workspace, "npm", "foo", { approved_by: "b", reason: "v2" });
 		const loaded = loadAllowlist(workspace);
-		expect(loaded.packages.npm.foo.approved_by).toBe("b");
-		expect(loaded.packages.npm.foo.reason).toBe("v2");
+		expect(nonNull(loaded.packages.npm.foo).approved_by).toBe("b");
+		expect(nonNull(loaded.packages.npm.foo).reason).toBe("v2");
 	});
 });
 

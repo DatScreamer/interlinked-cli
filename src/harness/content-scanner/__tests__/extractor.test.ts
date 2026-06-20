@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HarnessEvent } from "../../types.js";
 import { extractScannableContent } from "../extractor.js";
 import type { ContentScannerConfig } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Fixtures
@@ -75,8 +76,8 @@ describe("extractScannableContent — write/edit", () => {
 			makeConfig(),
 		);
 		expect(req?.hook).toBe("pre_write_edit");
-		expect(req?.parts[0].source).toBe("Edit.content");
-		expect(req?.parts[0].text).toBe("email: alice@example.com");
+		expect(nonNull(req?.parts[0]).source).toBe("Edit.content");
+		expect(nonNull(req?.parts[0]).text).toBe("email: alice@example.com");
 	});
 
 	it("also covers the Copilot-style Write aliases", () => {

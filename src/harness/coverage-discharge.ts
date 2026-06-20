@@ -34,6 +34,7 @@ import {
 	readOpenCoverageObligations,
 	recordCoverageDischarge,
 } from "./coverage-obligation-ledger.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Coverage-suite command classification — argv-positional, never lexical
@@ -82,9 +83,9 @@ function headName(token: string): string {
  *  (npx/bunx, plus their own leading flags) are stripped to the real command. */
 function segmentArgv(segment: string): string[] {
 	const tokens = stripLeadingPrefix(shellSplit(segment));
-	while (tokens.length > 0 && LAUNCHER_HEADS.has(headName(tokens[0]))) {
+	while (tokens.length > 0 && LAUNCHER_HEADS.has(headName(nonNull(tokens[0])))) {
 		tokens.shift();
-		while (tokens.length > 0 && tokens[0].startsWith("-")) tokens.shift();
+		while (tokens.length > 0 && nonNull(tokens[0]).startsWith("-")) tokens.shift();
 	}
 	return tokens;
 }
@@ -131,7 +132,7 @@ function hasCoverageFlagToken(argv: string[]): boolean {
 /** One segment's verdict; see {@link isCoverageSuiteCommand}. */
 function isCoverageSuiteSegment(argv: string[]): boolean {
 	if (argv.length === 0) return false;
-	const head = headName(argv[0]);
+	const head = headName(nonNull(argv[0]));
 	if (head.startsWith("#")) return false; // comment, not a command
 	if (head === "cargo" && argv[1] === "llvm-cov") {
 		return !argv.slice(2).some((t) => CARGO_NON_SUITE_TOKENS.has(t));
@@ -147,8 +148,8 @@ function isCoverageSuiteSegment(argv: string[]): boolean {
 		// then fails — under-matching is the safe direction (obligation stays
 		// open) — while report-only subcommands and non-test programs never pass.
 		const wrapped = argv.slice(1);
-		while (wrapped.length > 0 && wrapped[0].startsWith("-")) wrapped.shift();
-		if (wrapped.length === 0 || REPORT_ONLY_SUBCOMMANDS.has(wrapped[0])) return false;
+		while (wrapped.length > 0 && nonNull(wrapped[0]).startsWith("-")) wrapped.shift();
+		if (wrapped.length === 0 || REPORT_ONLY_SUBCOMMANDS.has(nonNull(wrapped[0]))) return false;
 		return isRunnerInvocation(wrapped);
 	}
 	return isRunnerInvocation(argv) && hasCoverageFlagToken(argv);

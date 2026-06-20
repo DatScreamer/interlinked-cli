@@ -24,6 +24,7 @@
 
 import type { CapturedPlan, PlanStep } from "./types/plan.js";
 import type { SessionTrajectory } from "./types/session.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Tokens shared across English plan prose that carry no signal for
  *  matching against tool-sequence entries. Kept small and lowercased so
@@ -203,7 +204,7 @@ export function detectPlanDrift(session: SessionTrajectory): PlanDriftReport | n
 		let bestIdx = -1;
 		for (let i = 0; i < pool.length; i++) {
 			const candidate = pool[i];
-			if (jaccard(stepTokens, candidate.tokens) > JACCARD_MATCH_THRESHOLD) {
+			if (jaccard(stepTokens, nonNull(candidate).tokens) > JACCARD_MATCH_THRESHOLD) {
 				bestIdx = i;
 				break;
 			}
@@ -212,7 +213,7 @@ export function detectPlanDrift(session: SessionTrajectory): PlanDriftReport | n
 			missingSteps.push(step);
 		} else {
 			matchedCount++;
-			matchedEntries.add(pool[bestIdx].entry);
+			matchedEntries.add(nonNull(pool[bestIdx]).entry);
 			pool.splice(bestIdx, 1);
 		}
 	}

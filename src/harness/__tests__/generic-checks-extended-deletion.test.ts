@@ -20,6 +20,7 @@ import {
 	checkThrowAsControlFlow,
 	checkUntypedCatch,
 } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Deletion Hygiene — Layer 1 Zombie Detectors
@@ -79,7 +80,7 @@ describe("checkEmptyFunctionBody", () => {
 		const code = "export function processData() {}";
 		const matches = checkEmptyFunctionBody(code, "processor.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("empty function body");
+		expect(nonNull(matches[0]).text).toContain("empty function body");
 	});
 
 	it("detects function returning only null", () => {
@@ -129,7 +130,7 @@ describe("checkDeprecationNotice", () => {
 		const code = 'console.warn("This function is deprecated");';
 		const matches = checkDeprecationNotice(code, "api.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("deprecation ceremony");
+		expect(nonNull(matches[0]).text).toContain("deprecation ceremony");
 	});
 
 	it("detects console.log with removed message", () => {
@@ -142,7 +143,7 @@ describe("checkDeprecationNotice", () => {
 		const code = "/** @deprecated */\nexport function oldApi() {}";
 		const matches = checkDeprecationNotice(code, "api.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("@deprecated on empty/stub");
+		expect(nonNull(matches[0]).text).toContain("@deprecated on empty/stub");
 	});
 
 	it("does NOT flag @deprecated on function with real body", () => {
@@ -166,7 +167,7 @@ describe("checkOrphanedTestStub", () => {
 		const code = 'it("should process data", () => {});';
 		const matches = checkOrphanedTestStub(code, "data.test.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("empty test body");
+		expect(nonNull(matches[0]).text).toContain("empty test body");
 	});
 
 	it("detects test with only return", () => {
@@ -205,7 +206,7 @@ describe("checkDeletionComments", () => {
 		const code = "// Removed the old auth handler";
 		const matches = checkDeletionComments(code, "auth.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("deletion narration");
+		expect(nonNull(matches[0]).text).toContain("deletion narration");
 	});
 
 	it("detects 'No longer needed'", () => {
@@ -272,7 +273,7 @@ function handleRequest(input) {
 }`;
 		const matches = checkMixedErrorStrategy(code, "handler.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("mixed error strategy");
+		expect(nonNull(matches[0]).text).toContain("mixed error strategy");
 	});
 
 	it("detects function that throws and returns { error: }", () => {
@@ -342,7 +343,7 @@ function alsoClean(x) {
 }`;
 		const matches = checkMixedErrorStrategy(code, "utils.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("mixed");
+		expect(nonNull(matches[0]).text).toContain("mixed");
 	});
 
 	it("does NOT flag short files", () => {

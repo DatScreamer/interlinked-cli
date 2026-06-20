@@ -13,6 +13,8 @@
 //   - Skip oversized files (configurable, default 1MB)
 //   - Filter "stop trigrams" that appear in > 40% of files (useless for filtering)
 
+import { nonNull } from "../lib/non-null.js";
+
 // ===========================================
 // Constants
 // ===========================================
@@ -251,7 +253,7 @@ export function binarySearchU32(arr: Uint32Array, target: number): number {
 	let hi = arr.length - 1;
 	while (lo <= hi) {
 		const mid = (lo + hi) >>> 1;
-		const val = arr[mid];
+		const val = nonNull(arr[mid]);
 		if (val < target) lo = mid + 1;
 		else if (val > target) hi = mid - 1;
 		else return mid;

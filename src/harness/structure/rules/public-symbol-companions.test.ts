@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode } from "../types.js";
 import { checkPublicSymbolCompanions } from "./public-symbol-companions.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function symbolNode(
 	id: string,
@@ -77,8 +78,8 @@ describe("checkPublicSymbolCompanions", () => {
 
 		const findings = checkPublicSymbolCompanions(g, ["src/foo.ts"]);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("public_symbol_companion_untouched");
-		expect(findings[0].affected_files).toEqual(["docs/foo.md"]);
+		expect(nonNull(findings[0]).name).toBe("public_symbol_companion_untouched");
+		expect(nonNull(findings[0]).affected_files).toEqual(["docs/foo.md"]);
 	});
 
 	it("determinism is fully_deterministic when every node is declared", () => {
@@ -90,8 +91,8 @@ describe("checkPublicSymbolCompanions", () => {
 		g.addEdge(companionEdge(sym.id, doc.id, "documents"));
 
 		const finding = checkPublicSymbolCompanions(g, ["src/foo.ts"])[0];
-		expect(finding.determinism).toBe("fully_deterministic");
-		expect(finding.confidence).toBe(1.0);
+		expect(nonNull(finding).determinism).toBe("fully_deterministic");
+		expect(nonNull(finding).confidence).toBe(1.0);
 	});
 
 	it("determinism falls back to partially_deterministic when any node is inferred", () => {
@@ -103,7 +104,7 @@ describe("checkPublicSymbolCompanions", () => {
 		g.addEdge(companionEdge(sym.id, doc.id, "documents"));
 
 		const finding = checkPublicSymbolCompanions(g, ["src/foo.ts"])[0];
-		expect(finding.determinism).toBe("partially_deterministic");
-		expect(finding.confidence).toBe(0.8);
+		expect(nonNull(finding).determinism).toBe("partially_deterministic");
+		expect(nonNull(finding).confidence).toBe(0.8);
 	});
 });

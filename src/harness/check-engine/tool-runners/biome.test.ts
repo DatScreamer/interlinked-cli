@@ -14,6 +14,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 const runProcessAsyncMock = vi.fn();
@@ -232,7 +233,7 @@ describe("runBiome (sync)", () => {
 		);
 		const out = runBiome(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].ruleId).toBe("lint/suspicious/noDoubleEquals");
+		expect(nonNull(out[0]).ruleId).toBe("lint/suspicious/noDoubleEquals");
 	});
 
 	it("synthesizes a tool-FAILURE finding when biome exits non-zero but parses NO diagnostics", () => {
@@ -243,15 +244,15 @@ describe("runBiome (sync)", () => {
 		const out = runBiome(input(fileScope()));
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({ tool: "biome", severity: "warning", file: ".", line: 1 });
-		expect(out[0].message).toContain("biome exited 2");
-		expect(out[0].message).toContain("NOT validated");
+		expect(nonNull(out[0]).message).toContain("biome exited 2");
+		expect(nonNull(out[0]).message).toContain("NOT validated");
 	});
 
 	it("reports the failure with 'without status' when status is null and no diagnostics parse", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: null, stdout: undefined, stderr: undefined }));
 		const out = runBiome(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("biome exited without status");
+		expect(nonNull(out[0]).message).toContain("biome exited without status");
 	});
 
 	it("returns [] from the catch block when spawnSync throws", () => {
@@ -324,15 +325,15 @@ describe("runBiomeAsync", () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 2, stdout: "panic\n" }));
 		const out = await runBiomeAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("biome exited 2");
-		expect(out[0].message).toContain("NOT validated");
+		expect(nonNull(out[0]).message).toContain("biome exited 2");
+		expect(nonNull(out[0]).message).toContain("NOT validated");
 	});
 
 	it("reports 'without status' when code is null and no diagnostics parse", async () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: null }));
 		const out = await runBiomeAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("biome exited without status");
+		expect(nonNull(out[0]).message).toContain("biome exited without status");
 	});
 });
 
@@ -389,8 +390,8 @@ describe("runBiomeOverlay", () => {
 		const out = runBiomeOverlay(overlayInput());
 		expect(out).toHaveLength(1);
 		// Path rewritten from the tmp file back to the target's relative path.
-		expect(out[0].file).toBe("src/app.ts");
-		expect(out[0].ruleId).toBe("lint/suspicious/noDoubleEquals");
+		expect(nonNull(out[0]).file).toBe("src/app.ts");
+		expect(nonNull(out[0]).ruleId).toBe("lint/suspicious/noDoubleEquals");
 	});
 
 	it("leaves non-tmp diagnostic paths untouched (only the overlay file is rewritten)", () => {
@@ -399,7 +400,7 @@ describe("runBiomeOverlay", () => {
 		);
 		const out = runBiomeOverlay(overlayInput());
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/other.ts");
+		expect(nonNull(out[0]).file).toBe("src/other.ts");
 	});
 
 	it("reads a finding from stderr when stdout is undefined ('' fallback on the stdout side)", () => {
@@ -410,8 +411,8 @@ describe("runBiomeOverlay", () => {
 		);
 		const out = runBiomeOverlay(overlayInput());
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/other.ts");
-		expect(out[0].ruleId).toBe("lint/suspicious/noDoubleEquals");
+		expect(nonNull(out[0]).file).toBe("src/other.ts");
+		expect(nonNull(out[0]).ruleId).toBe("lint/suspicious/noDoubleEquals");
 	});
 
 	it("returns [] from the catch block when spawnSync throws (and still unlinks)", () => {

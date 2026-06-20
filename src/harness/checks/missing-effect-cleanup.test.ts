@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checkMissingEffectCleanup } from "./missing-effect-cleanup.js";
 import { __setPackageRootForTesting } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // `checkMissingEffectCleanup` gates on `isTestFile`, which (via
 // `isHarnessInternalDataFile`) returns true for ANY path under the resolved
@@ -93,9 +94,9 @@ describe("checkMissingEffectCleanup — positive cases (.tsx, leak flagged)", ()
 		expect(out).toHaveLength(1);
 		// The match is reported at the useEffect start line (1-based). The
 		// `useEffect(` is on source line 3.
-		expect(out[0].line).toBe(3);
-		expect(out[0].text).toContain("potential memory leak");
-		expect(out[0].text).toContain("useEffect");
+		expect(nonNull(out[0]).line).toBe(3);
+		expect(nonNull(out[0]).text).toContain("potential memory leak");
+		expect(nonNull(out[0]).text).toContain("useEffect");
 	});
 
 	it("flags setInterval with no cleanup return", () => {
@@ -106,7 +107,7 @@ describe("checkMissingEffectCleanup — positive cases (.tsx, leak flagged)", ()
 		].join("\n");
 		const out = checkMissingEffectCleanup(code, TSX);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
+		expect(nonNull(out[0]).line).toBe(1);
 	});
 
 	it("flags setTimeout with no cleanup return", () => {
@@ -158,7 +159,7 @@ describe("checkMissingEffectCleanup — positive cases (.tsx, leak flagged)", ()
 		// line is far longer than 100 chars, so the sliced segment is exactly
 		// 100 chars.
 		const prefix = "[useEffect with subscription but no cleanup — potential memory leak] ";
-		const slice = out[0].text.slice(prefix.length);
+		const slice = nonNull(out[0]).text.slice(prefix.length);
 		expect(slice).toHaveLength(100);
 	});
 });
@@ -238,7 +239,7 @@ describe("checkMissingEffectCleanup — multi-effect block boundaries", () => {
 		].join("\n");
 		const out = checkMissingEffectCleanup(code, TSX);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
+		expect(nonNull(out[0]).line).toBe(1);
 	});
 
 	it("flags BOTH effects when both leak (last effect uses end = lines.length)", () => {
@@ -267,6 +268,6 @@ describe("checkMissingEffectCleanup — multi-effect block boundaries", () => {
 		].join("\n");
 		const out = checkMissingEffectCleanup(code, TSX);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(5);
+		expect(nonNull(out[0]).line).toBe(5);
 	});
 });

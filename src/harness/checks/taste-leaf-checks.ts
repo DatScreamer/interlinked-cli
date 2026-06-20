@@ -8,6 +8,7 @@ import {
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect variable declarations with semantically empty names.
@@ -35,10 +36,10 @@ export function checkNarrativeNaming(content: string, filePath: string): InlineM
 		const line = strippedLines[i];
 
 		// Match: const/let/var <name> = (without type annotation providing context)
-		const declMatch = line.match(/\b(?:const|let|var)\s+(\w+)\s*(?::\s*(\S+))?\s*=/);
+		const declMatch = nonNull(line).match(/\b(?:const|let|var)\s+(\w+)\s*(?::\s*(\S+))?\s*=/);
 		if (!declMatch) continue;
 
-		const varName = declMatch[1];
+		const varName = nonNull(declMatch[1]);
 		const typeAnnotation = declMatch[2];
 
 		if (!BLOCKLIST.test(varName)) continue;
@@ -50,11 +51,11 @@ export function checkNarrativeNaming(content: string, filePath: string): InlineM
 		// Skip if the variable is immediately returned on the next line
 		if (
 			i + 1 < strippedLines.length &&
-			strippedLines[i + 1].trim().startsWith(`return ${varName}`)
+			nonNull(strippedLines[i + 1]).trim().startsWith(`return ${varName}`)
 		)
 			continue;
 
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
@@ -128,14 +129,14 @@ export function checkTestDescriptionQuality(content: string, filePath: string): 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = originalLines[i];
-		const trimmed = line.trim();
+		const trimmed = nonNull(line).trim();
 
 		if (skipPattern.test(trimmed) || xPattern.test(trimmed)) continue;
 
 		const m = trimmed.match(testPattern);
 		if (!m) continue;
 
-		const desc = (m[1] || m[2] || m[3]).trim();
+		const desc = nonNull((m[1] || m[2] || m[3])).trim();
 
 		// Too short
 		if (desc.length < 10) {

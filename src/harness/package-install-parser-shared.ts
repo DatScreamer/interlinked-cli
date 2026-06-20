@@ -8,6 +8,8 @@
 // Public types (re-exported from package-install-parser.ts for back-compat)
 // ---------------------------------------------------------------------------
 
+import { nonNull } from "../lib/non-null.js";
+
 export type Ecosystem =
 	| "npm"
 	| "pypi"
@@ -260,16 +262,16 @@ export function dropPreVerbFlags(
 	const out: string[] = [];
 	let i = 0;
 	while (i < args.length) {
-		const a = args[i];
+		const a = nonNull(args[i]);
 		if (verbRecognizer(a)) {
 			out.push(...args.slice(i));
 			return out;
 		}
-		if (a.startsWith("--") && a.includes("=")) {
+		if (nonNull(a).startsWith("--") && nonNull(a).includes("=")) {
 			i++;
 			continue;
 		}
-		if (a.startsWith("-")) {
+		if (nonNull(a).startsWith("-")) {
 			// Looks-like-takes-value: next token is non-flag → consume pair
 			const next = args[i + 1];
 			if (next && !next.startsWith("-") && !verbRecognizer(next)) {
@@ -280,7 +282,7 @@ export function dropPreVerbFlags(
 			continue;
 		}
 		// Yarn-only: `yarn workspace <name> <subverb>` — eat the workspace name
-		if (bin === "yarn" && a === "workspace" && args[i + 1] && !verbRecognizer(args[i + 1])) {
+		if (bin === "yarn" && a === "workspace" && args[i + 1] && !verbRecognizer(nonNull(args[i + 1]))) {
 			i += 2;
 			continue;
 		}

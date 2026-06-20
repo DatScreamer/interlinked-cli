@@ -14,6 +14,7 @@ import { ALL_PRESETS, isKnownMode, type ModeName } from "../harness/modes.js";
 import type { RunnerId } from "../harness/unified-event.js";
 import { resolveHookBinaryPath } from "../lib/hooks.js";
 import { writeMode } from "./mode.js";
+import { nonNull } from "../lib/non-null.js";
 
 export interface InstallHooksOptions {
 	runner?: string;
@@ -97,8 +98,8 @@ function promptForMode(): ModeName {
 	process.stdout.write("\nPick an enforcement mode:\n");
 	for (let i = 0; i < ALL_PRESETS.length; i++) {
 		const p = ALL_PRESETS[i];
-		const label = p.name === "balanced" ? `${p.name} (default)` : p.name;
-		process.stdout.write(`  ${i + 1}. ${label.padEnd(18)} ${p.description}\n`);
+		const label = nonNull(p).name === "balanced" ? `${nonNull(p).name} (default)` : nonNull(p).name;
+		process.stdout.write(`  ${i + 1}. ${label.padEnd(18)} ${nonNull(p).description}\n`);
 	}
 	process.stdout.write("\nEnter a number, a name, or press Enter for the default.\n> ");
 	const raw = readStdinLine();
@@ -110,7 +111,7 @@ export function parseModeChoice(raw: string): ModeName {
 	if (trimmed.length === 0) return "balanced";
 	const n = Number.parseInt(trimmed, 10);
 	if (Number.isFinite(n) && n >= 1 && n <= ALL_PRESETS.length) {
-		return ALL_PRESETS[n - 1].name;
+		return nonNull(ALL_PRESETS[n - 1]).name;
 	}
 	if (isKnownMode(trimmed)) return trimmed;
 	return "balanced";

@@ -23,6 +23,7 @@ import {
 	recordHarnessCaught,
 } from "../recurrence.js";
 import type { CheckResultEntry } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("PostToolUse recurrence consolidation — behavioral round-trip", () => {
 	let dir: string;
@@ -77,11 +78,11 @@ describe("PostToolUse recurrence consolidation — behavioral round-trip", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].kind).toBe("harness_caught");
-		expect(events[0].check_id).toBe("typescript");
-		expect(events[0].file).toBe("src/db.ts");
-		expect(events[0].agent_source).toBe("claude");
-		expect(events[0].session_id).toBe("sess-q");
+		expect(nonNull(events[0]).kind).toBe("harness_caught");
+		expect(nonNull(events[0]).check_id).toBe("typescript");
+		expect(nonNull(events[0]).file).toBe("src/db.ts");
+		expect(nonNull(events[0]).agent_source).toBe("claude");
+		expect(nonNull(events[0]).session_id).toBe("sess-q");
 	});
 
 	it("records a harness_caught event for a structural-check failure", () => {
@@ -104,8 +105,8 @@ describe("PostToolUse recurrence consolidation — behavioral round-trip", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].check_id).toBe("export_surface");
-		expect(events[0].agent_source).toBe("codex");
+		expect(nonNull(events[0]).check_id).toBe("export_surface");
+		expect(nonNull(events[0]).agent_source).toBe("codex");
 	});
 
 	it("records harness_caught events for all six CheckResultEntry source kinds", () => {
@@ -168,7 +169,7 @@ describe("PostToolUse recurrence consolidation — behavioral round-trip", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].check_id).toBe("real_warning");
+		expect(nonNull(events[0]).check_id).toBe("real_warning");
 	});
 
 	it("records even when error_memory.enabled is effectively false (no gate at this layer)", () => {
@@ -200,7 +201,7 @@ describe("PostToolUse recurrence consolidation — behavioral round-trip", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].check_id).toBe("import_resolution");
+		expect(nonNull(events[0]).check_id).toBe("import_resolution");
 	});
 
 	it("multi-file fan-out: cursor prevents replaying prior files' findings", () => {
@@ -266,7 +267,7 @@ describe("PostToolUse recurrence consolidation — behavioral round-trip", () =>
 			if (allCheckResults.length > recurrenceCursor) {
 				const recurrenceRelPath = relative(dir, iter.editedFilePath);
 				for (let i = recurrenceCursor; i < allCheckResults.length; i++) {
-					const r = allCheckResults[i];
+					const r = nonNull(allCheckResults[i]);
 					if (r.severity !== "error" && r.severity !== "warning") continue;
 					recordHarnessCaught({
 						check_id: r.name,

@@ -9,6 +9,7 @@ import {
 	detectSoftwareVersionFreshnessConcerns,
 	detectSoftwareVersionRegressions,
 } from "./software-version-regression.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const SOFTWARE_VERSION_CHECKS: Record<string, QualityCheckConfig> = {
 	software_version_regression: {
@@ -39,9 +40,9 @@ describe("software version regression detector", () => {
 		const regressions = detectSoftwareVersionRegressions(before, after);
 
 		expect(regressions).toHaveLength(1);
-		expect(regressions[0].after.label).toBe("dependencies react");
-		expect(regressions[0].before.version).toBe("^19.0.0");
-		expect(regressions[0].after.version).toBe("^18.2.0");
+		expect(nonNull(regressions[0]).after.label).toBe("dependencies react");
+		expect(nonNull(regressions[0]).before.version).toBe("^19.0.0");
+		expect(nonNull(regressions[0]).after.version).toBe("^18.2.0");
 	});
 
 	it("detects model-name downgrades in code assignments", () => {
@@ -57,9 +58,9 @@ describe("software version regression detector", () => {
 		const regressions = detectSoftwareVersionRegressions(before, after);
 
 		expect(regressions).toHaveLength(1);
-		expect(regressions[0].after.label).toBe("model");
-		expect(regressions[0].before.version).toBe("vendor-model-v6");
-		expect(regressions[0].after.version).toBe("vendor-model-v4");
+		expect(nonNull(regressions[0]).after.label).toBe("model");
+		expect(nonNull(regressions[0]).before.version).toBe("vendor-model-v6");
+		expect(nonNull(regressions[0]).after.version).toBe("vendor-model-v4");
 	});
 
 	it("detects GitHub Action and Docker tag downgrades", () => {
@@ -157,10 +158,10 @@ describe("software version regression detector", () => {
 		const concerns = detectSoftwareVersionFreshnessConcerns(before, after);
 
 		expect(concerns).toHaveLength(1);
-		expect(concerns[0].ref.version).toBe("vendor-model-v4");
-		expect(concerns[0].reason).toContain("verify against provider docs");
-		expect(concerns[0].verifyHint.source).toContain("official model provider documentation");
-		expect(concerns[0].reason).not.toContain("deprecated");
+		expect(nonNull(concerns[0]).ref.version).toBe("vendor-model-v4");
+		expect(nonNull(concerns[0]).reason).toContain("verify against provider docs");
+		expect(nonNull(concerns[0]).verifyHint.source).toContain("official model provider documentation");
+		expect(nonNull(concerns[0]).reason).not.toContain("deprecated");
 	});
 });
 
@@ -225,7 +226,7 @@ describe("freshness model-identifier false positives (CLAUDE.md / .claude paths 
 			const concerns = detectSoftwareVersionFreshnessConcerns(before, after);
 			const modelConcerns = concerns.filter((c) => c.ref.kind === "model");
 			expect(modelConcerns.length).toBeGreaterThan(0);
-			expect(modelConcerns[0].ref.version).toBe(value);
+			expect(nonNull(modelConcerns[0]).ref.version).toBe(value);
 		});
 	}
 
@@ -288,7 +289,7 @@ describe("runQualityChecks software_version_regression", () => {
 			severity: "error",
 			file: filePath,
 		});
-		expect(results[0].detail).toContain("@ai/sdk ^6.0.0 -> ^4.0.0");
+		expect(nonNull(results[0]).detail).toContain("@ai/sdk ^6.0.0 -> ^4.0.0");
 
 		const [warning] = formatQualityWarnings(results);
 		expect(warning).toContain("[interlinked:software_version_regression] [heuristic]");

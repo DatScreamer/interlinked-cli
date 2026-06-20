@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { createCodexAdapter } from "./codex.js";
 
 const adapter = createCodexAdapter();
@@ -177,14 +178,14 @@ describe("Codex renderSettingsFragment", () => {
 			matcher: string;
 			hooks: Array<{ type: string; command: string }>;
 		}>;
-		expect(entries[0].hooks[0].type).toBe("command");
-		expect(entries[0].hooks[0].command).toContain("/bin/hook");
+		expect(nonNull(nonNull(entries[0]).hooks[0]).type).toBe("command");
+		expect(nonNull(nonNull(entries[0]).hooks[0]).command).toContain("/bin/hook");
 	});
 	it("uses empty PostToolUse matcher (match all tools)", () => {
 		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
 		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
 		const entries = root.hooks.PostToolUse as Array<{ matcher: string }>;
-		expect(entries[0].matcher).toBe("");
+		expect(nonNull(entries[0]).matcher).toBe("");
 	});
 
 	it("uses empty matcher for all events", () => {
@@ -192,7 +193,7 @@ describe("Codex renderSettingsFragment", () => {
 		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
 		for (const eventName of Object.keys(root.hooks)) {
 			const entries = root.hooks[eventName] as Array<{ matcher: string }>;
-			expect(entries[0].matcher).toBe("");
+			expect(nonNull(entries[0]).matcher).toBe("");
 		}
 	});
 });

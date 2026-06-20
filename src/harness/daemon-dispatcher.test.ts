@@ -3,6 +3,7 @@ import { type DispatcherState, dispatchRpc } from "./daemon-dispatcher.js";
 import type { RpcError, RpcRequest, RpcResponse } from "./daemon-protocol.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Freeze time so `Date.now()` in makeState is deterministic — the check
 // `non_deterministic_test` flags raw Date.now() in tests.
@@ -122,7 +123,7 @@ describe("dispatchRpc — daemon.shutdown + invalidate", () => {
 			state,
 		);
 		if (isError(result)) throw new Error("unexpected error");
-		expect((state.tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/a.ts");
+		expect(nonNull((state.tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0])[0]).toBe("/a.ts");
 	});
 });
 
@@ -139,7 +140,7 @@ describe("dispatchRpc — tsgo methods", () => {
 			state,
 		);
 		if (isError(result)) throw new Error("unexpected error");
-		expect((state.tsgo.checkFile as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(
+		expect(nonNull((state.tsgo.checkFile as ReturnType<typeof vi.fn>).mock.calls[0])[0]).toBe(
 			"/repo/a.ts",
 		);
 	});

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkCodeClones } from "./dry-check.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let dir: string;
 
@@ -33,7 +34,7 @@ function collectB(rows: Row[]): number[] ${cloneBody}
 		writeFileSync(file, content);
 		const matches = checkCodeClones(content, file);
 		expect(matches.length).toBeGreaterThanOrEqual(1);
-		expect(matches[0].text).toContain("similar to");
+		expect(nonNull(matches[0]).text).toContain("similar to");
 	});
 
 	it("flags a clone living in a sibling file", () => {
@@ -49,7 +50,7 @@ function collectZ(rows: Row[]): number[] ${cloneBody}
 		writeFileSync(siblingFile, siblingContent);
 		const matches = checkCodeClones(editedContent, editedFile);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("b.ts");
+		expect(nonNull(matches[0]).text).toContain("b.ts");
 	});
 
 	it("returns [] for non-JS/TS files", () => {

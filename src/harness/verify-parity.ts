@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { isGeneratedFile } from "./checks/shared.js";
 import type { StructuralCheckResult } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
 const JS_TS_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
@@ -71,7 +72,7 @@ export function scanProjectSwitchDiscriminants(reads: FileContent[]): Structural
 		// that are not production code.
 		if (isTest) continue;
 		for (const m of content.matchAll(SWITCH_DISC)) {
-			const disc = m[1];
+			const disc = nonNull(m[1]);
 			if (!DISC_TAIL.test(disc)) continue;
 			const line = lineOfOffset(content, m.index ?? 0);
 			const arr = usesByDisc.get(disc) ?? [];
@@ -115,7 +116,7 @@ export function scanProjectSingleImplInterfaces(reads: FileContent[]): Structura
 		for (const m of content.matchAll(IFACE_DECL)) {
 			interfaces.push({
 				file,
-				name: m[1],
+				name: nonNull(m[1]),
 				line: lineOfOffset(content, m.index ?? 0),
 			});
 		}
@@ -127,7 +128,7 @@ export function scanProjectSingleImplInterfaces(reads: FileContent[]): Structura
 	for (const { file, content, isTest } of reads) {
 		if (isTest) continue;
 		for (const m of content.matchAll(IMPL_EXTENDS)) {
-			const names = m[1].split(",").map((n) => n.trim());
+			const names = nonNull(m[1]).split(",").map((n) => n.trim());
 			for (const name of names) {
 				const set = implsByName.get(name) ?? new Set<string>();
 				set.add(file);
@@ -146,7 +147,7 @@ export function scanProjectSingleImplInterfaces(reads: FileContent[]): Structura
 			check: "single_implementation_interface",
 			severity: "info",
 			file: iface.file,
-			message: `Interface \`${iface.name}\` (line ${iface.line}) has exactly one implementor: ${basename(others[0])}. Premature abstraction?`,
+			message: `Interface \`${iface.name}\` (line ${iface.line}) has exactly one implementor: ${basename(nonNull(others[0]))}. Premature abstraction?`,
 			affectedFiles: others,
 		});
 	}

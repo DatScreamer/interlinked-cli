@@ -5,6 +5,7 @@
 // Once a session reads sensitive data, its label ratchets UP (never down).
 // Outbound network commands are blocked when sensitivity reaches threshold.
 
+import { nonNull } from "../lib/non-null.js";
 import { shellSplit, splitSegments, stripLeadingPrefix } from "./shell-structure.js";
 import type {
 	SensitivityLevel,
@@ -116,7 +117,7 @@ export function isNetworkCommand(command: string): boolean {
 	for (const segment of splitSegments(command)) {
 		const tokens = stripLeadingPrefix(shellSplit(segment));
 		if (tokens.length === 0) continue;
-		const head = commandHead(tokens[0]);
+		const head = commandHead(nonNull(tokens[0]));
 		if (NETWORK_VERBS.has(head)) return true;
 		const sub = PUBLISH_SUBCOMMANDS[head];
 		if (sub && tokens[1] !== undefined && sub.has(tokens[1].toLowerCase())) return true;

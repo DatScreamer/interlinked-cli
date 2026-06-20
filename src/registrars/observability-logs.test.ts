@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerObservabilityLogCommands } from "./observability-logs.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Mock every lazily-`import()`-ed command implementation the registrar wires.
@@ -229,7 +230,7 @@ describe("recurrence actions — wiring", () => {
 			{ from: "user" },
 		);
 		expect(recurrenceListCommand).toHaveBeenCalledTimes(1);
-		expect(recurrenceListCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(recurrenceListCommand.mock.calls[0])[0]).toMatchObject({
 			kind: "harness_caught",
 			top: "5",
 			since: "7d",
@@ -245,7 +246,7 @@ describe("recurrence actions — wiring", () => {
 		await program.parseAsync(["recurrence", "list"], { from: "user" });
 		expect(recurrenceListCommand).toHaveBeenCalledTimes(1);
 		// The registrar does not inject a cwd default here — it forwards opts as-is.
-		expect(recurrenceListCommand.mock.calls[0][0]).toEqual({});
+		expect(nonNull(recurrenceListCommand.mock.calls[0])[0]).toEqual({});
 	});
 
 	it("detail forwards the signature positional and opts", async () => {
@@ -255,8 +256,8 @@ describe("recurrence actions — wiring", () => {
 			{ from: "user" },
 		);
 		expect(recurrenceDetailCommand).toHaveBeenCalledTimes(1);
-		expect(recurrenceDetailCommand.mock.calls[0][0]).toBe("raw-sql-concat");
-		expect(recurrenceDetailCommand.mock.calls[0][1]).toMatchObject({ cwd: "/d", json: true });
+		expect(nonNull(recurrenceDetailCommand.mock.calls[0])[0]).toBe("raw-sql-concat");
+		expect(nonNull(recurrenceDetailCommand.mock.calls[0])[1]).toMatchObject({ cwd: "/d", json: true });
 	});
 
 	it("flag forwards the signature plus message/check-id/file", async () => {
@@ -277,8 +278,8 @@ describe("recurrence actions — wiring", () => {
 			],
 			{ from: "user" },
 		);
-		expect(recurrenceFlagCommand.mock.calls[0][0]).toBe("raw-sql-concat");
-		expect(recurrenceFlagCommand.mock.calls[0][1]).toMatchObject({
+		expect(nonNull(recurrenceFlagCommand.mock.calls[0])[0]).toBe("raw-sql-concat");
+		expect(nonNull(recurrenceFlagCommand.mock.calls[0])[1]).toMatchObject({
 			message: "spotted in db.ts",
 			checkId: "sql_injection",
 			file: "src/db.ts",
@@ -292,7 +293,7 @@ describe("recurrence actions — wiring", () => {
 			["recurrence", "scan", "--root", "src", "lib", "--record", "--json"],
 			{ from: "user" },
 		);
-		expect(recurrenceScanCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(recurrenceScanCommand.mock.calls[0])[0]).toMatchObject({
 			root: ["src", "lib"],
 			record: true,
 			json: true,
@@ -304,8 +305,8 @@ describe("recurrence actions — wiring", () => {
 		await program.parseAsync(["recurrence", "propose", "raw-sql-concat", "--json"], {
 			from: "user",
 		});
-		expect(recurrenceProposeCommand.mock.calls[0][0]).toBe("raw-sql-concat");
-		expect(recurrenceProposeCommand.mock.calls[0][1]).toMatchObject({ json: true });
+		expect(nonNull(recurrenceProposeCommand.mock.calls[0])[0]).toBe("raw-sql-concat");
+		expect(nonNull(recurrenceProposeCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 });
 
@@ -317,7 +318,7 @@ describe("trajectory actions — wiring", () => {
 	it("list forwards opts", async () => {
 		const program = build();
 		await program.parseAsync(["trajectory", "list", "--cwd", "/t", "--json"], { from: "user" });
-		expect(trajectoryListCommand.mock.calls[0][0]).toMatchObject({ cwd: "/t", json: true });
+		expect(nonNull(trajectoryListCommand.mock.calls[0])[0]).toMatchObject({ cwd: "/t", json: true });
 	});
 
 	it("show forwards --session + view flags", async () => {
@@ -325,7 +326,7 @@ describe("trajectory actions — wiring", () => {
 		await program.parseAsync(["trajectory", "show", "--session", "sess-1", "--json"], {
 			from: "user",
 		});
-		expect(trajectoryShowCommand.mock.calls[0][0]).toMatchObject({ session: "sess-1", json: true });
+		expect(nonNull(trajectoryShowCommand.mock.calls[0])[0]).toMatchObject({ session: "sess-1", json: true });
 	});
 
 	it("replay merges the file positional into opts alongside --check/--phase", async () => {
@@ -346,7 +347,7 @@ describe("trajectory actions — wiring", () => {
 			{ from: "user" },
 		);
 		expect(trajectoryReplayCommand).toHaveBeenCalledTimes(1);
-		expect(trajectoryReplayCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(trajectoryReplayCommand.mock.calls[0])[0]).toMatchObject({
 			file: "events.jsonl",
 			check: "rapid_fire",
 			phase: "stop",
@@ -363,13 +364,13 @@ describe("audit + plan actions — wiring", () => {
 	it("audit verify forwards opts", async () => {
 		const program = build();
 		await program.parseAsync(["audit", "verify", "--cwd", "/a", "--json"], { from: "user" });
-		expect(auditVerifyCommand.mock.calls[0][0]).toMatchObject({ cwd: "/a", json: true });
+		expect(nonNull(auditVerifyCommand.mock.calls[0])[0]).toMatchObject({ cwd: "/a", json: true });
 	});
 
 	it("plan list forwards opts when invoked explicitly", async () => {
 		const program = build();
 		await program.parseAsync(["plan", "list", "--cwd", "/p", "--json"], { from: "user" });
-		expect(planListCommand.mock.calls[0][0]).toMatchObject({ cwd: "/p", json: true });
+		expect(nonNull(planListCommand.mock.calls[0])[0]).toMatchObject({ cwd: "/p", json: true });
 	});
 
 	it("bare `plan` routes to the default list subcommand", async () => {
@@ -382,8 +383,8 @@ describe("audit + plan actions — wiring", () => {
 	it("plan show forwards the session_id positional and opts", async () => {
 		const program = build();
 		await program.parseAsync(["plan", "show", "sess-9", "--json"], { from: "user" });
-		expect(planShowCommand.mock.calls[0][0]).toBe("sess-9");
-		expect(planShowCommand.mock.calls[0][1]).toMatchObject({ json: true });
+		expect(nonNull(planShowCommand.mock.calls[0])[0]).toBe("sess-9");
+		expect(nonNull(planShowCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 });
 
@@ -399,7 +400,7 @@ describe("cloud recent action — branches", () => {
 			{ from: "user" },
 		);
 		expect(cloudRecentCommand).toHaveBeenCalledTimes(1);
-		expect(cloudRecentCommand.mock.calls[0][0]).toEqual({ cwd: "/c", limit: 50, json: true });
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).toEqual({ cwd: "/c", limit: 50, json: true });
 	});
 
 	it("forwards json:false explicitly (the json key is present but false)", async () => {
@@ -408,31 +409,31 @@ describe("cloud recent action — branches", () => {
 		// is covered elsewhere; here we confirm the spread is conditional, not forced.
 		const program = build();
 		await program.parseAsync(["cloud", "recent", "--cwd", "/c"], { from: "user" });
-		expect(cloudRecentCommand.mock.calls[0][0]).not.toHaveProperty("json");
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).not.toHaveProperty("json");
 	});
 
 	it("defaults cwd to process.cwd() when --cwd is omitted", async () => {
 		const program = build();
 		await program.parseAsync(["cloud", "recent"], { from: "user" });
-		expect(cloudRecentCommand.mock.calls[0][0]).toEqual({ cwd: DEFAULT_CWD, limit: 20 });
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).toEqual({ cwd: DEFAULT_CWD, limit: 20 });
 	});
 
 	it("falls back to limit 20 when --limit is non-numeric (NaN guard)", async () => {
 		const program = build();
 		await program.parseAsync(["cloud", "recent", "--limit", "abc"], { from: "user" });
-		expect(cloudRecentCommand.mock.calls[0][0]).toMatchObject({ limit: 20 });
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).toMatchObject({ limit: 20 });
 	});
 
 	it("falls back to limit 20 when --limit is zero or negative", async () => {
 		const program = build();
 		await program.parseAsync(["cloud", "recent", "--limit", "-5"], { from: "user" });
-		expect(cloudRecentCommand.mock.calls[0][0]).toMatchObject({ limit: 20 });
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).toMatchObject({ limit: 20 });
 	});
 
 	it("uses the string default '20' (Number.parseInt) when no --limit flag is given", async () => {
 		const program = build();
 		await program.parseAsync(["cloud", "recent"], { from: "user" });
-		expect(cloudRecentCommand.mock.calls[0][0]).toMatchObject({ limit: 20 });
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0]).toMatchObject({ limit: 20 });
 	});
 
 	it("always supplies opts.limit (commander default) so the action never sees undefined", async () => {
@@ -444,7 +445,7 @@ describe("cloud recent action — branches", () => {
 		// source or a non-commander invocation that misrepresents real usage).
 		const program = build();
 		await program.parseAsync(["cloud", "recent"], { from: "user" });
-		expect(typeof cloudRecentCommand.mock.calls[0][0].limit).toBe("number");
-		expect(cloudRecentCommand.mock.calls[0][0].limit).toBe(20);
+		expect(typeof nonNull(cloudRecentCommand.mock.calls[0])[0].limit).toBe("number");
+		expect(nonNull(cloudRecentCommand.mock.calls[0])[0].limit).toBe(20);
 	});
 });

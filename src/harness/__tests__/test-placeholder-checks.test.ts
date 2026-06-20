@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkFocusedTests, checkPlaceholderTests } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // checkFocusedTests — committed .only / fdescribe / fit markers
@@ -10,7 +11,7 @@ describe("checkFocusedTests", () => {
 		const code = 'it.only("runs this only", () => { expect(1).toBe(1); });';
 		const matches = checkFocusedTests(code, "foo.test.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(1);
+		expect(nonNull(matches[0]).line).toBe(1);
 	});
 
 	it("flags describe.only", () => {
@@ -77,7 +78,7 @@ describe("checkPlaceholderTests — .todo markers", () => {
 		const code = 'it.todo("implement this later");';
 		const matches = checkPlaceholderTests(code, "foo.test.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain(".todo placeholder");
+		expect(nonNull(matches[0]).text).toContain(".todo placeholder");
 	});
 
 	it("flags test.todo", () => {

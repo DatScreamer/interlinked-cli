@@ -172,8 +172,7 @@ interface SuppressionCounts {
 function analyzeSuppressions(content: string): Map<string, SuppressionCounts> {
 	const byLabel = new Map<string, SuppressionCounts>();
 	const lines = content.split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+	for (const [i, line] of lines.entries()) {
 		for (const { label, re, isJustified } of SUPPRESSION_DIRECTIVES) {
 			const match = re.exec(line);
 			if (!match) continue;

@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 
 const ROOT = process.cwd();
 const HARNESS_FILE = join(ROOT, "src/harness/server/suggestion-checks.ts");
@@ -28,7 +29,7 @@ function checkIds(file: string): Set<string> {
 	while (true) {
 		m = re.exec(src);
 		if (m === null) break;
-		ids.add(m[1]);
+		ids.add(nonNull(m[1]));
 	}
 	return ids;
 }

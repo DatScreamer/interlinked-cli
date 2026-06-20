@@ -9,6 +9,7 @@ import {
 	checkTddRegression,
 } from "../behavioral-checks.js";
 import type { SessionTrajectory, TddCycle } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -291,8 +292,8 @@ describe("checkTddCommitGate", () => {
 
 		const results = checkTddCommitGate(session, "enforce");
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].message).toContain("FAILING");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).message).toContain("FAILING");
 	});
 
 	it("reports regression as error in enforce mode", () => {
@@ -307,8 +308,8 @@ describe("checkTddCommitGate", () => {
 
 		const results = checkTddCommitGate(session, "enforce");
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].message).toContain("REGRESSING");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).message).toContain("REGRESSING");
 	});
 
 	it("reports untested files in enforce mode as warnings (not errors)", () => {
@@ -326,8 +327,8 @@ describe("checkTddCommitGate", () => {
 
 		const results = checkTddCommitGate(session, "enforce");
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("warning");
-		expect(results[0].message).toContain("No tests");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("No tests");
 	});
 
 	it("reports as warnings in warn mode", () => {
@@ -339,7 +340,7 @@ describe("checkTddCommitGate", () => {
 
 		const results = checkTddCommitGate(session, "warn");
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("warning");
+		expect(nonNull(results[0]).severity).toBe("warning");
 	});
 
 	it("reports as info in nudge mode", () => {
@@ -351,7 +352,7 @@ describe("checkTddCommitGate", () => {
 
 		const results = checkTddCommitGate(session, "nudge");
 		expect(results.length).toBe(1);
-		expect(results[0].severity).toBe("info");
+		expect(nonNull(results[0]).severity).toBe("info");
 	});
 
 	it("returns empty for green cycles", () => {

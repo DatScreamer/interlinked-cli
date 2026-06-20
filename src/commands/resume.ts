@@ -6,6 +6,7 @@ import { getCheckpoint, listCheckpoints, rewindToCheckpoint } from "../lib/check
 import { c, header, kvLine } from "../lib/formatter.js";
 import { readLocalSessions } from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Max time (ms) to wait for `get_work_context` server fetch before falling back to local. */
 const SERVER_CONTEXT_TIMEOUT_MS = 3000;
@@ -31,7 +32,7 @@ export async function resumeCommand(
 				);
 				return;
 			}
-			targetId = recent[0].id;
+			targetId = nonNull(recent[0]).id;
 		}
 
 		const checkpoint = getCheckpoint(targetId);

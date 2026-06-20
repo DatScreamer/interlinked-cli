@@ -8,6 +8,7 @@ import {
 	detectConfigLoosening,
 	evaluateConfigLooseningForEvent,
 } from "./config-loosening-gate.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Minimal PreToolUse event factory — only the fields the gate reads. */
 function makeEvent(toolInput: Record<string, unknown>, cwd?: string): HarnessEvent {
@@ -90,7 +91,7 @@ describe("detectConfigLoosening — tsconfig.json", () => {
 		const after = `{ "compilerOptions": { "strict": true, "noImplicitAny": false } }`;
 		const findings = detectConfigLoosening("tsconfig.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("noImplicitAny");
+		expect(nonNull(findings[0]).rule).toBe("noImplicitAny");
 	});
 
 	it("flags adding `strictNullChecks: false` override under `strict: true`", () => {
@@ -98,7 +99,7 @@ describe("detectConfigLoosening — tsconfig.json", () => {
 		const after = `{ "compilerOptions": { "strict": true, "strictNullChecks": false } }`;
 		const findings = detectConfigLoosening("tsconfig.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("strictNullChecks");
+		expect(nonNull(findings[0]).rule).toBe("strictNullChecks");
 	});
 
 	it("does not flag adding a strict subflag override under `strict: false`", () => {
@@ -116,7 +117,7 @@ describe("detectConfigLoosening — tsconfig.json", () => {
 		const after = `{ "compilerOptions": { "strict": true } }`;
 		const findings = detectConfigLoosening("tsconfig.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("noUncheckedIndexedAccess");
+		expect(nonNull(findings[0]).rule).toBe("noUncheckedIndexedAccess");
 	});
 
 	it("flags removing `strict: true` entirely", () => {
@@ -144,7 +145,7 @@ describe("detectConfigLoosening — package.json", () => {
 		const after = `{ "engines": { "node": ">=18.0.0" } }`;
 		const findings = detectConfigLoosening("package.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("engines.node");
+		expect(nonNull(findings[0]).rule).toBe("engines.node");
 	});
 
 	it("flags engines.node removal entirely (no floor at all)", () => {
@@ -152,7 +153,7 @@ describe("detectConfigLoosening — package.json", () => {
 		const after = `{ }`;
 		const findings = detectConfigLoosening("package.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("engines.node");
+		expect(nonNull(findings[0]).rule).toBe("engines.node");
 	});
 
 	it("flags engines block removal", () => {
@@ -167,7 +168,7 @@ describe("detectConfigLoosening — package.json", () => {
 		const after = `{ "scripts": { "build": "tsup" } }`;
 		const findings = detectConfigLoosening("package.json", before, after);
 		expect(findings.length).toBe(1);
-		expect(findings[0].rule).toBe("scripts.test");
+		expect(nonNull(findings[0]).rule).toBe("scripts.test");
 	});
 
 	it("does not flag adding a script", () => {
@@ -272,7 +273,7 @@ describe("detectConfigLoosening — parsing + fail-open edges", () => {
 		const after = `{ "compilerOptions": { "strict": false } }`;
 		const findings = detectConfigLoosening("packages/api/tsconfig.json", before, after);
 		expect(findings.map((f) => f.rule)).toContain("strict");
-		expect(findings[0].file).toBe("packages/api/tsconfig.json");
+		expect(nonNull(findings[0]).file).toBe("packages/api/tsconfig.json");
 	});
 
 	it("matches tsconfig.build.json variant", () => {
@@ -353,10 +354,10 @@ describe("detectConfigLoosening — package.json semver + script edges", () => {
 		const before = `{ "engines": { "node": ">=22.0.0" } }`;
 		const after = `{ "engines": { "node": ">=18.0.0" } }`;
 		const [finding] = detectConfigLoosening("package.json", before, after);
-		expect(finding.message).toContain("22");
-		expect(finding.message).toContain("18");
-		expect(finding.before).toBe(">=22.0.0");
-		expect(finding.after).toBe(">=18.0.0");
+		expect(nonNull(finding).message).toContain("22");
+		expect(nonNull(finding).message).toContain("18");
+		expect(nonNull(finding).before).toBe(">=22.0.0");
+		expect(nonNull(finding).after).toBe(">=18.0.0");
 	});
 });
 

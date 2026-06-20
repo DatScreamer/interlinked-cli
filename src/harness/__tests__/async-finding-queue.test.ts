@@ -14,6 +14,7 @@
 //              drain of an unknown session is [].
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { AsyncFindingQueue, type DeferredFinding } from "../async-finding-queue.js";
 
 // ===========================================
@@ -90,7 +91,7 @@ describe("AsyncFindingQueue — enqueue/drain roundtrip", () => {
 		});
 		q.enqueue("s", finding);
 
-		const [out] = q.drain("s");
+		const out = nonNull(q.drain("s")[0]);
 
 		expect(out.message).toBe("[interlinked:render] smoke test rendered a blank page");
 		expect(out.computedAt).toBe(computedAt);
@@ -104,7 +105,7 @@ describe("AsyncFindingQueue — dedup by id", () => {
 		q.enqueue("s", mkFinding({ id: "coverage_delta:a.ts", message: "fresh" }));
 
 		expect(q.pending("s")).toHaveLength(1);
-		const [out] = q.drain("s");
+		const out = nonNull(q.drain("s")[0]);
 		// Newer computation wins.
 		expect(out.message).toBe("fresh");
 	});

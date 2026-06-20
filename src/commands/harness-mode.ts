@@ -34,6 +34,7 @@ import {
 	writeSharedConfig,
 } from "../lib/config.js";
 import { writeHookScript } from "../lib/hooks.js";
+import { nonNull } from "../lib/non-null.js";
 
 export interface HarnessModeOptions {
 	json?: boolean;
@@ -47,7 +48,7 @@ function detectActiveRunner(cwd: string): RunnerId | undefined {
 	const mfPath = manifestPath(cwd);
 	if (!existsSync(mfPath)) return undefined;
 	const entries = readManifest(mfPath);
-	return entries.length > 0 ? entries[0].runner : undefined;
+	return entries.length > 0 ? nonNull(entries[0]).runner : undefined;
 }
 
 /** Read the configured mode from disk, applying legacy migration. Falls back

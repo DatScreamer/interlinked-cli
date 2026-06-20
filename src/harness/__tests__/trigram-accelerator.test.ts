@@ -3,6 +3,7 @@
 // the non_deterministic_test check via this marker (see taste-checks.ts).
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { _resetRgPathCache, checkGrepAcceleration } from "../grep-accelerator.js";
 import { decomposePattern } from "../regex-trigrams.js";
 import { extractTrigrams, type PostingList, packTrigram, TrigramIndex } from "../trigram-index.js";
@@ -289,9 +290,9 @@ describe("end-to-end integration", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			const trigrams = extractTrigrams(files[path]);
+			const trigrams = extractTrigrams(nonNull(files[path]));
 			for (const tri of trigrams) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
@@ -394,9 +395,9 @@ describe("edge cases", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -455,9 +456,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -496,9 +497,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -548,9 +549,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];

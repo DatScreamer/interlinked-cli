@@ -8,6 +8,7 @@
 // `execFileSync`) so it stays trivially testable in isolation.
 
 import { execFileSync } from "node:child_process";
+import { nonNull } from "../lib/non-null.js";
 
 /** Timeout for the SessionStart git-baseline snapshot. Both `git rev-parse HEAD`
  *  and `git status --porcelain` should complete in milliseconds on a normal
@@ -59,7 +60,7 @@ export function captureGitBaseline(cwd: string): {
 	const untracked = new Set<string>();
 	const entries = porcelain.split("\0").filter((e) => e.length > 0);
 	for (let i = 0; i < entries.length; i++) {
-		const raw = entries[i];
+		const raw = nonNull(entries[i]);
 		if (raw.length < 3) continue;
 		const indexStatus = raw[0];
 		const worktreeStatus = raw[1];

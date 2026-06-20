@@ -8,6 +8,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 import { countLines, isCappableFile, maxLinesFor } from "./large-file-policy.js";
 import type { SessionTrajectory } from "./types.js";
 
@@ -41,7 +42,7 @@ function getProtectedPids(): Set<number> {
 		for (const line of output.split("\n")) {
 			const match = line.trim().match(/^(\d+)\s+(\d+)$/);
 			if (match) {
-				pidToParent.set(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10));
+				pidToParent.set(Number.parseInt(nonNull(match[1]), 10), Number.parseInt(nonNull(match[2]), 10));
 			}
 		}
 		// Walk ancestors from our ppid
@@ -93,7 +94,7 @@ export function checkSelfKill(command: string): PreCheckResult | null {
 	const killMatch = command.match(/^\s*kill\s+(\d+)\s*$/);
 	if (!killMatch) return null;
 
-	const targetPid = Number.parseInt(killMatch[1], 10);
+	const targetPid = Number.parseInt(nonNull(killMatch[1]), 10);
 	if (Number.isNaN(targetPid)) return null;
 
 	// Check 1: Is it in our known protected set (harness + ancestors)?

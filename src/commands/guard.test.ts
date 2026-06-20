@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	guardCheckCommand,
 	guardInstallCommand,
@@ -67,7 +68,7 @@ vi.mock("../lib/guard-hooks.js", () => ({
 //     the pattern's directory prefix (everything before the first glob char).
 vi.mock("../lib/glob-overlap.js", () => ({
 	patternsOverlap: (file: string, pattern: string) => {
-		const prefix = pattern.split(/[*?[]/)[0];
+		const prefix = nonNull(pattern.split(/[*?[]/)[0]);
 		return file.startsWith(prefix);
 	},
 }));

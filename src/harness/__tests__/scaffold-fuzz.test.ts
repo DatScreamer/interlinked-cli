@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { nonNull } from "../../lib/non-null.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
 import { attachScaffolds } from "../scaffold-fuzz.js";
 import type { Endpoint } from "../types/session.js";
@@ -58,11 +59,11 @@ describe("attachScaffolds — TS endpoint", () => {
 		const out = attachScaffolds(findings, { endpoints });
 
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toMatch(/base message/);
-		expect(out[0].message).toMatch(/it\.prop/);
-		expect(out[0].message).toContain("id");
-		expect(out[0].message).toContain("/api/users/:id");
-		expect(out[0].message).toContain("@fast-check/vitest");
+		expect(nonNull(out[0]).message).toMatch(/base message/);
+		expect(nonNull(out[0]).message).toMatch(/it\.prop/);
+		expect(nonNull(out[0]).message).toContain("id");
+		expect(nonNull(out[0]).message).toContain("/api/users/:id");
+		expect(nonNull(out[0]).message).toContain("@fast-check/vitest");
 	});
 });
 
@@ -91,10 +92,10 @@ describe("attachScaffolds — FastAPI endpoint", () => {
 
 		const out = attachScaffolds(findings, { endpoints });
 
-		expect(out[0].message).toContain("@given");
-		expect(out[0].message).toContain("from hypothesis");
-		expect(out[0].message).toContain("import pytest");
-		expect(out[0].message).toContain("item_id");
+		expect(nonNull(out[0]).message).toContain("@given");
+		expect(nonNull(out[0]).message).toContain("from hypothesis");
+		expect(nonNull(out[0]).message).toContain("import pytest");
+		expect(nonNull(out[0]).message).toContain("item_id");
 	});
 });
 
@@ -114,8 +115,8 @@ describe("attachScaffolds — no matching endpoint", () => {
 
 		const out = attachScaffolds(findings, { endpoints });
 
-		expect(out[0].message).toBe("base message");
-		expect(fenceCount(out[0].message)).toBe(0);
+		expect(nonNull(out[0]).message).toBe("base message");
+		expect(fenceCount(nonNull(out[0]).message)).toBe(0);
 	});
 });
 
@@ -131,11 +132,11 @@ describe("attachScaffolds — multiple findings on same endpoint", () => {
 		const out = attachScaffolds(findings, { endpoints });
 
 		expect(out).toHaveLength(2);
-		expect(out[0].message).toContain("it.prop");
-		expect(out[1].message).toContain("it.prop");
+		expect(nonNull(out[0]).message).toContain("it.prop");
+		expect(nonNull(out[1]).message).toContain("it.prop");
 		// The appended fenced block is identical for both — pure-function property.
-		const block0 = out[0].message.replace("base message\n\n", "");
-		const block1 = out[1].message.replace("base message\n\n", "");
+		const block0 = nonNull(out[0]).message.replace("base message\n\n", "");
+		const block1 = nonNull(out[1]).message.replace("base message\n\n", "");
 		expect(block0).toBe(block1);
 	});
 });
@@ -149,17 +150,17 @@ describe("attachScaffolds — per-detector polyglots", () => {
 		const findings = [makeFinding({ check_id: "endpoint_ssrf_shape" })];
 		const endpoints = [makeEndpoint()];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("169.254.169.254");
-		expect(out[0].message).toContain("localhost");
-		expect(out[0].message).toContain("file:///etc/passwd");
+		expect(nonNull(out[0]).message).toContain("169.254.169.254");
+		expect(nonNull(out[0]).message).toContain("localhost");
+		expect(nonNull(out[0]).message).toContain("file:///etc/passwd");
 	});
 
 	it("endpoint_mass_assignment scaffold contains isAdmin / role-owner body injections", () => {
 		const findings = [makeFinding({ check_id: "endpoint_mass_assignment" })];
 		const endpoints = [makeEndpoint()];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("isAdmin");
-		expect(out[0].message).toContain("role");
+		expect(nonNull(out[0]).message).toContain("isAdmin");
+		expect(nonNull(out[0]).message).toContain("role");
 	});
 
 	it("endpoint_idor_shape scaffold contains UUID-shaped values", () => {
@@ -167,7 +168,7 @@ describe("attachScaffolds — per-detector polyglots", () => {
 		const endpoints = [makeEndpoint()];
 		const out = attachScaffolds(findings, { endpoints });
 		// At least one UUID-like literal must appear.
-		expect(out[0].message).toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+		expect(nonNull(out[0]).message).toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
 	});
 
 	it("endpoint_auth_missing scaffold omits SQL/path polyglots and probes empty auth", () => {
@@ -175,8 +176,8 @@ describe("attachScaffolds — per-detector polyglots", () => {
 		const endpoints = [makeEndpoint()];
 		const out = attachScaffolds(findings, { endpoints });
 		// Auth-missing scaffold does NOT carry the SQL polyglot.
-		expect(out[0].message).not.toContain("DROP TABLE");
-		expect(out[0].message).toContain("auth");
+		expect(nonNull(out[0]).message).not.toContain("DROP TABLE");
+		expect(nonNull(out[0]).message).toContain("auth");
 	});
 });
 
@@ -189,8 +190,8 @@ describe("attachScaffolds — unknown framework fallback", () => {
 		const findings = [makeFinding()];
 		const endpoints = [makeEndpoint({ framework: "mcp" })];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("@fast-check/vitest");
-		expect(out[0].message).not.toContain("from hypothesis");
+		expect(nonNull(out[0]).message).toContain("@fast-check/vitest");
+		expect(nonNull(out[0]).message).not.toContain("from hypothesis");
 	});
 
 	it("falls back to TS for sveltekit / nuxt / hono / nextjs", () => {
@@ -199,7 +200,7 @@ describe("attachScaffolds — unknown framework fallback", () => {
 			const findings = [makeFinding()];
 			const endpoints = [makeEndpoint({ framework: fw })];
 			const out = attachScaffolds(findings, { endpoints });
-			expect(out[0].message).toContain("@fast-check/vitest");
+			expect(nonNull(out[0]).message).toContain("@fast-check/vitest");
 		}
 	});
 });
@@ -222,9 +223,9 @@ describe("attachScaffolds — emitFor opt-in", () => {
 			emitFor: new Set(["endpoint_idor_shape"]),
 		});
 
-		expect(out[0].message).toContain("it.prop");
-		expect(out[1].message).toBe("base message");
-		expect(out[2].message).toBe("base message");
+		expect(nonNull(out[0]).message).toContain("it.prop");
+		expect(nonNull(out[1]).message).toBe("base message");
+		expect(nonNull(out[2]).message).toBe("base message");
 	});
 });
 
@@ -235,7 +236,7 @@ describe("attachScaffolds — emitFor opt-in", () => {
 describe("attachScaffolds — purity", () => {
 	it("does not mutate the input array or the finding objects", () => {
 		const findings = [makeFinding()];
-		const original = findings[0];
+		const original = nonNull(findings[0]);
 		const originalMessage = original.message;
 		const endpoints = [makeEndpoint()];
 
@@ -243,7 +244,7 @@ describe("attachScaffolds — purity", () => {
 
 		expect(findings).toHaveLength(1);
 		expect(findings[0]).toBe(original);
-		expect(findings[0].message).toBe(originalMessage);
+		expect(nonNull(findings[0]).message).toBe(originalMessage);
 		expect(out).not.toBe(findings);
 		expect(out[0]).not.toBe(original);
 	});
@@ -259,8 +260,8 @@ describe("attachScaffolds — purity", () => {
 
 		expect(endpoints).toHaveLength(1);
 		expect(endpoints[0]).toBe(endpoint);
-		expect(endpoints[0].line).toBe(originalLine);
-		expect(endpoints[0].declared_params).toBe(originalDeclaredParams);
+		expect(nonNull(endpoints[0]).line).toBe(originalLine);
+		expect(nonNull(endpoints[0]).declared_params).toBe(originalDeclaredParams);
 	});
 });
 
@@ -273,7 +274,7 @@ describe("attachScaffolds — fence structure", () => {
 		const findings = [makeFinding()];
 		const endpoints = [makeEndpoint()];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(fenceCount(out[0].message)).toBe(2);
+		expect(fenceCount(nonNull(out[0]).message)).toBe(2);
 	});
 
 	it("FastAPI scaffold also has exactly one fenced block", () => {
@@ -289,7 +290,7 @@ describe("attachScaffolds — fence structure", () => {
 			}),
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(fenceCount(out[0].message)).toBe(2);
+		expect(fenceCount(nonNull(out[0]).message)).toBe(2);
 	});
 });
 
@@ -310,8 +311,8 @@ describe("attachScaffolds — default param fallback", () => {
 			}),
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toMatch(/\bid\b/);
-		expect(out[0].message).toContain("it.prop");
+		expect(nonNull(out[0]).message).toMatch(/\bid\b/);
+		expect(nonNull(out[0]).message).toContain("it.prop");
 	});
 
 	it("prefers a path param over a body param when both are declared", () => {
@@ -332,7 +333,7 @@ describe("attachScaffolds — default param fallback", () => {
 			}),
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("widgetId");
+		expect(nonNull(out[0]).message).toContain("widgetId");
 	});
 });
 
@@ -346,7 +347,7 @@ describe("attachScaffolds — method-casing tolerance", () => {
 		const findings = [makeFinding({ endpoint_method: "get" })];
 		const endpoints = [makeEndpoint({ method: "GET" })];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("it.prop");
+		expect(nonNull(out[0]).message).toContain("it.prop");
 	});
 });
 
@@ -366,8 +367,8 @@ describe("attachScaffolds — matcher skip branches", () => {
 			makeEndpoint({ file: TS_FILE }), // matches
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("it.prop");
-		expect(fenceCount(out[0].message)).toBe(2);
+		expect(nonNull(out[0]).message).toContain("it.prop");
+		expect(fenceCount(nonNull(out[0]).message)).toBe(2);
 	});
 
 	it("skips an endpoint whose path differs (same file), then matches", () => {
@@ -377,8 +378,8 @@ describe("attachScaffolds — matcher skip branches", () => {
 			makeEndpoint({ path: "/api/users/:id" }), // matches
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("/api/users/:id");
-		expect(out[0].message).not.toContain("/api/admins/:id");
+		expect(nonNull(out[0]).message).toContain("/api/users/:id");
+		expect(nonNull(out[0]).message).not.toContain("/api/admins/:id");
 	});
 
 	it("skips an endpoint whose method differs (same file+path), then matches", () => {
@@ -390,9 +391,9 @@ describe("attachScaffolds — matcher skip branches", () => {
 			makeEndpoint({ path: "/api/users/:id", method: "DELETE" }), // matches
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("DELETE /api/users/:id");
+		expect(nonNull(out[0]).message).toContain("DELETE /api/users/:id");
 		// fast-check `it` block uses the DELETE method in the fetch call.
-		expect(out[0].message).toContain('method: "DELETE"');
+		expect(nonNull(out[0]).message).toContain('method: "DELETE"');
 	});
 
 	it("returns finding unchanged when the only candidate differs solely by method", () => {
@@ -402,8 +403,8 @@ describe("attachScaffolds — matcher skip branches", () => {
 		];
 		const endpoints = [makeEndpoint({ path: "/api/users/:id", method: "GET" })];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toBe("base message");
-		expect(fenceCount(out[0].message)).toBe(0);
+		expect(nonNull(out[0]).message).toBe("base message");
+		expect(fenceCount(nonNull(out[0]).message)).toBe(0);
 	});
 
 	it("matches purely on file when finding omits path and method", () => {
@@ -418,8 +419,8 @@ describe("attachScaffolds — matcher skip branches", () => {
 		};
 		const endpoints = [makeEndpoint({ path: "/whatever", method: "PUT" })];
 		const out = attachScaffolds([finding], { endpoints });
-		expect(out[0].message).toContain("it.prop");
-		expect(out[0].message).toContain("/whatever");
+		expect(nonNull(out[0]).message).toContain("it.prop");
+		expect(nonNull(out[0]).message).toContain("/whatever");
 	});
 });
 
@@ -441,7 +442,7 @@ describe("attachScaffolds — param selection fallbacks", () => {
 			}),
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("queryTerm");
+		expect(nonNull(out[0]).message).toContain("queryTerm");
 	});
 });
 
@@ -469,9 +470,9 @@ describe("attachScaffolds — Python test-id sanitization", () => {
 		const out = attachScaffolds(findings, { endpoints });
 		// "GET_/items/{item_id}" → lowercased → non-[a-z0-9_] runs collapse to
 		// "_": "get_" + "/items/{item_id}" → "get__items_item_id".
-		expect(out[0].message).toContain("def test_get__items_item_id_");
+		expect(nonNull(out[0]).message).toContain("def test_get__items_item_id_");
 		// No raw braces / slashes survive into the identifier.
-		expect(out[0].message).toMatch(/def test_get__items_item_id_rejects_adversarial\(/);
+		expect(nonNull(out[0]).message).toMatch(/def test_get__items_item_id_rejects_adversarial\(/);
 	});
 
 	it("uses the `endpoint` fallback id when method+path sanitize to empty", () => {
@@ -489,7 +490,7 @@ describe("attachScaffolds — Python test-id sanitization", () => {
 			}),
 		];
 		const out = attachScaffolds(findings, { endpoints });
-		expect(out[0].message).toContain("def test_endpoint_rejects_adversarial(");
+		expect(nonNull(out[0]).message).toContain("def test_endpoint_rejects_adversarial(");
 	});
 });
 
@@ -525,7 +526,7 @@ describe("attachScaffolds — FastAPI auth scaffold", () => {
 		const out = attachScaffolds([makePyFinding({ check_id: "endpoint_auth_missing" })], {
 			endpoints: [makePyEndpoint()],
 		});
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("endpoint_auth_missing");
 		expect(msg).toContain("from hypothesis");
 		expect(msg).toContain("# no auth header");
@@ -545,7 +546,7 @@ describe("attachScaffolds — FastAPI mass-assignment scaffold", () => {
 		const out = attachScaffolds([makePyFinding({ check_id: "endpoint_mass_assignment" })], {
 			endpoints: [makePyEndpoint()],
 		});
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("endpoint_mass_assignment");
 		// The setup-lines branch of pyScaffoldBlock fires for this detector.
 		expect(msg).toContain("BODY_INJECTIONS = [");
@@ -569,7 +570,7 @@ describe("attachScaffolds — FastAPI generic-path polyglots", () => {
 		const out = attachScaffolds([makePyFinding({ check_id: "endpoint_ssrf_shape" })], {
 			endpoints: [makePyEndpoint()],
 		});
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("169.254.169.254");
 		expect(msg).toContain("localhost");
 		expect(msg).toContain("POLYGLOTS = [");
@@ -583,7 +584,7 @@ describe("attachScaffolds — FastAPI generic-path polyglots", () => {
 			[makePyFinding({ check_id: "endpoint_missing_tenant_filter" })],
 			{ endpoints: [makePyEndpoint()] },
 		);
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("org_attacker");
 		expect(msg).toContain("org_victim");
 		expect(msg).toContain("POLYGLOTS = [");
@@ -593,7 +594,7 @@ describe("attachScaffolds — FastAPI generic-path polyglots", () => {
 		const out = attachScaffolds([makePyFinding({ check_id: "endpoint_unknown_kind" })], {
 			endpoints: [makePyEndpoint()],
 		});
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		// default case → POLYGLOTS_GENERIC_PY (contains the SQL injection probe).
 		expect(msg).toContain("DROP TABLE users");
 		expect(msg).toContain("../../../etc/passwd");
@@ -610,7 +611,7 @@ describe("attachScaffolds — TS generic-path polyglots", () => {
 			[makeFinding({ check_id: "endpoint_missing_tenant_filter" })],
 			{ endpoints: [makeEndpoint()] },
 		);
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("org_attacker");
 		expect(msg).toContain("org_victim");
 		expect(msg).toContain("@fast-check/vitest");
@@ -620,7 +621,7 @@ describe("attachScaffolds — TS generic-path polyglots", () => {
 		const out = attachScaffolds([makeFinding({ check_id: "endpoint_unknown_kind" })], {
 			endpoints: [makeEndpoint()],
 		});
-		const msg = out[0].message;
+		const msg = nonNull(out[0]).message;
 		expect(msg).toContain("DROP TABLE users");
 		expect(msg).toContain("<script>alert(1)</script>");
 	});
@@ -653,6 +654,6 @@ describe("attachScaffolds — Python string-literal escaping", () => {
 		];
 		const out = attachScaffolds(findings, { endpoints });
 		// Backslash doubled, embedded quote backslash-escaped.
-		expect(out[0].message).toContain('"/items/{id}\\\\\\"x"');
+		expect(nonNull(out[0]).message).toContain('"/items/{id}\\\\\\"x"');
 	});
 });

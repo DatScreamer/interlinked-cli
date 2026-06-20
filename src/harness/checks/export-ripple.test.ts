@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { checkExportRipple, getGitSourceFiles } from "./export-ripple.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- tmp git-repo fixture helpers -------------------------------------------
 
@@ -217,12 +218,12 @@ describe("checkExportRipple — ripple detection", () => {
 
 		const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(0);
-		expect(matches[0].text).toContain("src/importer.ts:1");
-		expect(matches[0].text).toContain('imports "gone"');
-		expect(matches[0].text).toContain("no longer exists");
+		expect(nonNull(matches[0]).line).toBe(0);
+		expect(nonNull(matches[0]).text).toContain("src/importer.ts:1");
+		expect(nonNull(matches[0]).text).toContain('imports "gone"');
+		expect(nonNull(matches[0]).text).toContain("no longer exists");
 		// The present name must NOT be reported.
-		expect(matches[0].text).not.toContain('"stillHere"');
+		expect(nonNull(matches[0]).text).not.toContain('"stillHere"');
 	});
 
 	it("does not flag when every imported name still exists", () => {
@@ -248,8 +249,8 @@ describe("checkExportRipple — ripple detection", () => {
 		const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 		expect(matches).toHaveLength(1);
 		// Reported name is the source symbol (`missingName`), not the alias `local`.
-		expect(matches[0].text).toContain('imports "missingName"');
-		expect(matches[0].text).not.toContain("local");
+		expect(nonNull(matches[0]).text).toContain('imports "missingName"');
+		expect(nonNull(matches[0]).text).not.toContain("local");
 	});
 
 	it("does not flag an aliased import whose source name still exists", () => {
@@ -281,7 +282,7 @@ describe("checkExportRipple — ripple detection", () => {
 		const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 		// Only `Gone` is missing; `Kept` (both lines) exists.
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain('imports "Gone"');
+		expect(nonNull(matches[0]).text).toContain('imports "Gone"');
 	});
 
 	it("skips non-relative (bare package) imports even when the fast-filter passes", () => {
@@ -382,7 +383,7 @@ describe("checkExportRipple — ripple detection", () => {
 		add(repo);
 		const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain('imports "missing"');
+		expect(nonNull(matches[0]).text).toContain('imports "missing"');
 	});
 
 	it("resolves a relative import that points UP a directory (../)", () => {
@@ -398,8 +399,8 @@ describe("checkExportRipple — ripple detection", () => {
 		add(repo);
 		const matches = checkExportRipple(targetSrc, join(repo, "lib/target.ts"), repo);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain('imports "vanished"');
-		expect(matches[0].text).toContain("lib/sub/importer.ts");
+		expect(nonNull(matches[0]).text).toContain('imports "vanished"');
+		expect(nonNull(matches[0]).text).toContain("lib/sub/importer.ts");
 	});
 
 	it("reports across multiple importers and multiple missing names", () => {
@@ -482,7 +483,7 @@ describe("checkExportRipple — ripple detection", () => {
 		// arm of the `isAbsolute ? : ` ternary.
 		const matches = checkExportRipple(targetSrc, "src/target.ts", repo);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain('imports "vanished"');
+		expect(nonNull(matches[0]).text).toContain('imports "vanished"');
 	});
 
 	it("strips an inline `type ` prefix together with an alias on a missing name", () => {
@@ -498,7 +499,7 @@ describe("checkExportRipple — ripple detection", () => {
 		add(repo);
 		const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain('imports "Missing"');
+		expect(nonNull(matches[0]).text).toContain('imports "Missing"');
 	});
 
 	it("ignores empty specifier entries from a trailing comma", () => {
@@ -546,7 +547,7 @@ describe("checkExportRipple — fast-filter quote forms", () => {
 			add(repo);
 			const matches = checkExportRipple(targetSrc, join(repo, "src/target.ts"), repo);
 			expect(matches).toHaveLength(1);
-			expect(matches[0].text).toContain('imports "gone"');
+			expect(nonNull(matches[0]).text).toContain('imports "gone"');
 		});
 	}
 });
@@ -624,7 +625,7 @@ describe("checkExportRipple — fs/git error branches (mocked)", () => {
 			"/repo",
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain('imports "phantom"');
-		expect(out[0].text).toContain("src/importer.ts:1");
+		expect(nonNull(out[0]).text).toContain('imports "phantom"');
+		expect(nonNull(out[0]).text).toContain("src/importer.ts:1");
 	});
 });

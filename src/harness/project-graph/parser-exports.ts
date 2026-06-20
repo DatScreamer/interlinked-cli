@@ -6,6 +6,7 @@
 // on the ProjectGraph class and its indexing logic.
 
 import type { ExportedSymbol } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by ProjectGraph.indexFile and structural-checks.
@@ -209,31 +210,31 @@ function matchExportDeclaration(trimmed: string, lineNum: number): ExportedSymbo
 	// export class Name
 	const cls = trimmed.match(/^export\s+class\s+(\w+)/);
 	if (cls) {
-		return [{ name: cls[1], kind: "class", isTypeOnly: false, line: lineNum }];
+		return [{ name: nonNull(cls[1]), kind: "class", isTypeOnly: false, line: lineNum }];
 	}
 
 	// export interface Name
 	const iface = trimmed.match(/^export\s+interface\s+(\w+)/);
 	if (iface) {
-		return [{ name: iface[1], kind: "interface", isTypeOnly: true, line: lineNum }];
+		return [{ name: nonNull(iface[1]), kind: "interface", isTypeOnly: true, line: lineNum }];
 	}
 
 	// export type Name =
 	const typeAlias = trimmed.match(/^export\s+type\s+(\w+)\s*[=<]/);
 	if (typeAlias) {
-		return [{ name: typeAlias[1], kind: "type", isTypeOnly: true, line: lineNum }];
+		return [{ name: nonNull(typeAlias[1]), kind: "type", isTypeOnly: true, line: lineNum }];
 	}
 
 	// export enum Name
 	const enm = trimmed.match(/^export\s+enum\s+(\w+)/);
 	if (enm) {
-		return [{ name: enm[1], kind: "enum", isTypeOnly: false, line: lineNum }];
+		return [{ name: nonNull(enm[1]), kind: "enum", isTypeOnly: false, line: lineNum }];
 	}
 
 	// export abstract class Name
 	const abstractCls = trimmed.match(/^export\s+abstract\s+class\s+(\w+)/);
 	if (abstractCls) {
-		return [{ name: abstractCls[1], kind: "class", isTypeOnly: false, line: lineNum }];
+		return [{ name: nonNull(abstractCls[1]), kind: "class", isTypeOnly: false, line: lineNum }];
 	}
 
 	return null;
@@ -254,7 +255,7 @@ function processExportStatement(
 	const match = statement.match(/\{([^}]+)\}/);
 	if (!match) return;
 
-	const names = match[1]
+	const names = nonNull(match[1])
 		.split(",")
 		.map((n) =>
 			n

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("findAnyTypes", () => {
 	it("flags explicit `: any` type annotations", () => {
 		const out = findAnyTypes("const x: any = 1;");
 		expect(out.length).toBe(1);
-		expect(out[0].kind).toBe("any");
+		expect(nonNull(out[0]).kind).toBe("any");
 	});
 
 	it("flags `as any` casts", () => {

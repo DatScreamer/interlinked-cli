@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 
 export type SpoolEventKind =
 	| "hook_decision"
@@ -127,7 +128,7 @@ function selectEventsToKeep(events: SpoolEvent[], targetBytes: number): SpoolEve
 	const kept: SpoolEvent[] = [];
 	let used = 0;
 	for (let i = events.length - 1; i >= 0; i--) {
-		const ev = events[i];
+		const ev = nonNull(events[i]);
 		const line = `${JSON.stringify(ev)}\n`;
 		const size = Buffer.byteLength(line, "utf-8");
 		const preferred = PREFERRED_KINDS.has(ev.kind);

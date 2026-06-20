@@ -20,6 +20,7 @@ import {
 	type RegistryParityConfig,
 	runRegistryParityCheck,
 } from "../registry-parity.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let dir: string;
 
@@ -75,8 +76,8 @@ describe("loadRegistryParityConfig", () => {
 		});
 		const c = loadRegistryParityConfig(dir);
 		expect(c?.pairs).toHaveLength(1);
-		expect(c?.pairs[0].name).toBe("p1");
-		expect(c?.pairs[0].left.file).toBe("a.ts");
+		expect(nonNull(c?.pairs[0]).name).toBe("p1");
+		expect(nonNull(c?.pairs[0]).left.file).toBe("a.ts");
 	});
 
 	it("loads optional allowlists", () => {
@@ -92,8 +93,8 @@ describe("loadRegistryParityConfig", () => {
 			],
 		});
 		const c = loadRegistryParityConfig(dir);
-		expect(c?.pairs[0].left_only_allowed).toEqual(["alpha"]);
-		expect(c?.pairs[0].right_only_allowed).toEqual(["beta"]);
+		expect(nonNull(c?.pairs[0]).left_only_allowed).toEqual(["alpha"]);
+		expect(nonNull(c?.pairs[0]).right_only_allowed).toEqual(["beta"]);
 	});
 
 	it("rejects malformed configs loudly", () => {
@@ -134,10 +135,10 @@ describe("checkRegistryParity", () => {
 		writeFile("right.ts", 'check: "alpha"');
 		const findings = checkRegistryParity(pairConfig(), dir);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].kind).toBe("missing-from-right");
-		expect(findings[0].id).toBe("beta");
-		expect(findings[0].source_file).toBe("left.ts");
-		expect(findings[0].target_file).toBe("right.ts");
+		expect(nonNull(findings[0]).kind).toBe("missing-from-right");
+		expect(nonNull(findings[0]).id).toBe("beta");
+		expect(nonNull(findings[0]).source_file).toBe("left.ts");
+		expect(nonNull(findings[0]).target_file).toBe("right.ts");
 	});
 
 	it("reports drift when right has an ID that left lacks", () => {
@@ -145,8 +146,8 @@ describe("checkRegistryParity", () => {
 		writeFile("right.ts", 'check: "alpha"\ncheck: "gamma"');
 		const findings = checkRegistryParity(pairConfig(), dir);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].kind).toBe("missing-from-left");
-		expect(findings[0].id).toBe("gamma");
+		expect(nonNull(findings[0]).kind).toBe("missing-from-left");
+		expect(nonNull(findings[0]).id).toBe("gamma");
 	});
 
 	it("respects left_only_allowed", () => {
@@ -183,7 +184,7 @@ describe("checkRegistryParity", () => {
 		// right.ts deliberately not created
 		const findings = checkRegistryParity(pairConfig(), dir);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].kind).toBe("missing-file");
+		expect(nonNull(findings[0]).kind).toBe("missing-file");
 	});
 
 	it("handles multiple pairs independently", () => {
@@ -207,8 +208,8 @@ describe("checkRegistryParity", () => {
 		};
 		const findings = checkRegistryParity(cfg, dir);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].pair).toBe("p1");
-		expect(findings[0].id).toBe("beta");
+		expect(nonNull(findings[0]).pair).toBe("p1");
+		expect(nonNull(findings[0]).id).toBe("beta");
 	});
 });
 
@@ -231,6 +232,6 @@ describe("runRegistryParityCheck (load + run)", () => {
 		});
 		const findings = runRegistryParityCheck(dir);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].id).toBe("beta");
+		expect(nonNull(findings[0]).id).toBe("beta");
 	});
 });

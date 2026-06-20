@@ -28,6 +28,7 @@
 import { execFileSync } from "node:child_process";
 
 import type { RollbackAssessment } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Public API — Channel 5 entry point. The harness handler calls this once
  *  per file-edit failure with a provenance check that returns true iff WE
@@ -66,14 +67,14 @@ export function assessRollbackFeasibility(
 	// Porcelain entry: 2 status bytes, a space, then the path. Renames may
 	// produce trailing entries which we don't try to roll back.
 	const first = entries[0];
-	if (first.length < 3) {
+	if (nonNull(first).length < 3) {
 		return {
 			safe: false,
 			reason: "unparseable git status entry",
 			caused_by_us: causedByUs,
 		};
 	}
-	const statusBytes = first.slice(0, 2);
+	const statusBytes = nonNull(first).slice(0, 2);
 	const isUntracked = statusBytes === "??";
 	const isAddedToIndex = statusBytes[0] === "A";
 	const isModifiedToIndex = statusBytes[0] === "M";

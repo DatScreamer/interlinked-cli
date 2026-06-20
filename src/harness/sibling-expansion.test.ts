@@ -6,6 +6,7 @@ import {
 	type TrigramIndexLike,
 	expandSiblings,
 } from "./sibling-expansion.js";
+import { nonNull } from "../lib/non-null.js";
 
 function makeIndex(byAnchor: Record<string, string[]>): TrigramIndexLike {
 	return {
@@ -72,7 +73,7 @@ describe("expandSiblings", () => {
 			cwd: "/repo",
 		});
 		expect(out.length).toBe(1);
-		expect(out[0].file).toBe("src/sibling.ts");
+		expect(nonNull(out[0]).file).toBe("src/sibling.ts");
 	});
 
 	it("caps siblings per trigger to maxSiblingsPerTrigger", () => {
@@ -135,7 +136,7 @@ describe("expandSiblings", () => {
 			triggerSpecs: [custom],
 		});
 		expect(out.length).toBe(1);
-		expect(out[0].siblingRuleId).toBe("custom_sibling");
+		expect(nonNull(out[0]).siblingRuleId).toBe("custom_sibling");
 	});
 
 	it("DEFAULT_TRIGGERS contains as_any_ratchet and unvalidated_json_boundary", () => {
@@ -190,7 +191,7 @@ describe("expandSiblings", () => {
 			cwd: "/repo",
 		});
 		expect(out.length).toBe(1);
-		expect(out[0].file).toBe("src/parser.ts");
+		expect(nonNull(out[0]).file).toBe("src/parser.ts");
 	});
 
 	it("doc-file exclusion is case-insensitive (.MD / .Markdown)", () => {
@@ -216,6 +217,6 @@ describe("expandSiblings", () => {
 			cwd: "/repo",
 		});
 		expect(out.length).toBe(1);
-		expect(out[0].file).toBe("docs/examples/sample.ts");
+		expect(nonNull(out[0]).file).toBe("docs/examples/sample.ts");
 	});
 });

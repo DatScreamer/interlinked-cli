@@ -30,6 +30,7 @@
 // a wrong association.
 
 import { findBlockEnd } from "../taste-checks-shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 export interface TestBlock {
 	/** `it`/`test`/`specify` → "test"; `describe`/`suite`/`context` → "suite". */
@@ -103,7 +104,7 @@ function callExtentEndLine(masked: string, openParen: number, startLine: number)
 function gateConditionsOf(chain: string): string[] {
 	const conditions: string[] = [];
 	for (const m of chain.matchAll(CONDITIONAL_GATE_RE)) {
-		const cond = m[1].trim();
+		const cond = nonNull(m[1]).trim();
 		if (cond.length > 0) conditions.push(cond);
 	}
 	return conditions;
@@ -126,7 +127,7 @@ export function extractTestBlocks(mLines: string[]): TestBlock[] {
 
 	const blocks: TestBlock[] = [];
 	for (let i = 0; i < mLines.length; i++) {
-		if (!CALLEE_ON_LINE_RE.test(mLines[i])) continue;
+		if (!CALLEE_ON_LINE_RE.test(nonNull(mLines[i]))) continue;
 		const window = mLines.slice(i, i + START_WINDOW_LINES).join("\n");
 		const m = BLOCK_START_RE.exec(window);
 		if (!m) continue;
@@ -135,7 +136,7 @@ export function extractTestBlocks(mLines: string[]): TestBlock[] {
 		// The match can span window lines, so the paren's own line is
 		// startLine plus the newlines consumed before it.
 		const parenInWindow = m[0].lastIndexOf("(");
-		const openParen = lineStart[i] + parenInWindow;
+		const openParen = nonNull(lineStart[i]) + parenInWindow;
 		const parenLine = i + (m[0].slice(0, parenInWindow).match(/\n/g) ?? []).length;
 		const endLine =
 			callExtentEndLine(masked, openParen, parenLine) ?? Math.max(i, findBlockEnd(mLines, i));
@@ -152,10 +153,10 @@ export function extractTestBlocks(mLines: string[]): TestBlock[] {
 
 	const stack: number[] = [];
 	for (let b = 0; b < blocks.length; b++) {
-		while (stack.length > 0 && blocks[stack[stack.length - 1]].endLine < blocks[b].startLine) {
+		while (stack.length > 0 && nonNull(blocks[nonNull(stack[stack.length - 1])]).endLine < nonNull(blocks[b]).startLine) {
 			stack.pop();
 		}
-		blocks[b].parent = stack.length > 0 ? stack[stack.length - 1] : -1;
+		nonNull(blocks[b]).parent = stack.length > 0 ? nonNull(stack[stack.length - 1]) : -1;
 		stack.push(b);
 	}
 	return blocks;
@@ -167,8 +168,8 @@ export function innermostBlockAt(blocks: TestBlock[], line: number): number {
 	let best = -1;
 	for (let i = 0; i < blocks.length; i++) {
 		const b = blocks[i];
-		if (b.startLine > line || line > b.endLine) continue;
-		if (best === -1 || b.endLine - b.startLine <= blocks[best].endLine - blocks[best].startLine) {
+		if (nonNull(b).startLine > line || line > nonNull(b).endLine) continue;
+		if (best === -1 || nonNull(b).endLine - nonNull(b).startLine <= nonNull(blocks[best]).endLine - nonNull(blocks[best]).startLine) {
 			best = i;
 		}
 	}
@@ -179,7 +180,7 @@ export function innermostBlockAt(blocks: TestBlock[], line: number): number {
  *  (0-based, inclusive), or -1. The comment-above-test association window. */
 export function blockStartingWithin(blocks: TestBlock[], fromLine: number, toLine: number): number {
 	for (let i = 0; i < blocks.length; i++) {
-		const s = blocks[i].startLine;
+		const s = nonNull(blocks[i]).startLine;
 		if (s >= fromLine && s <= toLine) return i;
 	}
 	return -1;
@@ -191,8 +192,8 @@ export function blockStartingWithin(blocks: TestBlock[], fromLine: number, toLin
 export function inTestBlock(blocks: TestBlock[], line: number): boolean {
 	let idx = innermostBlockAt(blocks, line);
 	while (idx !== -1) {
-		if (blocks[idx].kind === "test") return true;
-		idx = blocks[idx].parent;
+		if (nonNull(blocks[idx]).kind === "test") return true;
+		idx = nonNull(blocks[idx]).parent;
 	}
 	return false;
 }
@@ -213,9 +214,9 @@ export function gatedByChain(
 	let cur = idx;
 	while (cur !== -1) {
 		const b = blocks[cur];
-		if (b.unconditionalGate) return true;
-		if (b.gateConditions.some(conditionGates)) return true;
-		cur = b.parent;
+		if (nonNull(b).unconditionalGate) return true;
+		if (nonNull(b).gateConditions.some(conditionGates)) return true;
+		cur = nonNull(b).parent;
 	}
 	return false;
 }

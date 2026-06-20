@@ -21,14 +21,15 @@ import {
 	readFileSync as mockedReadFileSync,
 	writeFileSync as mockedWriteFileSync,
 } from "node:fs";
+import { nonNull } from "../lib/non-null.js";
 import {
 	computeFilePriority,
 	type FilePriority,
 	HOT_DAYS_MAX,
 	loadPriorityCache,
-	parseGitLogOutput,
 	PRIORITY_TTL_MS,
 	type PriorityCache,
+	parseGitLogOutput,
 	priorityTierForAge,
 	refreshPriorityIfStale,
 	savePriorityCache,
@@ -256,7 +257,7 @@ describe("computeFilePriority", () => {
 		expect(map.get("src/a.ts")?.tier).toBe("hot");
 
 		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-		const [bin, args, opts] = spawnSyncMock.mock.calls[0];
+		const [bin, args, opts] = nonNull(spawnSyncMock.mock.calls[0]);
 		expect(bin).toBe("git");
 		expect(args).toEqual([
 			"-C",
@@ -407,12 +408,12 @@ describe("savePriorityCache", () => {
 		savePriorityCache("/repo", cache);
 
 		expect(mkdirSyncMock).toHaveBeenCalledTimes(1);
-		const [dirArg, mkOpts] = mkdirSyncMock.mock.calls[0];
+		const [dirArg, mkOpts] = nonNull(mkdirSyncMock.mock.calls[0]);
 		expect(String(dirArg).endsWith("/.interlinked")).toBe(true);
 		expect(mkOpts).toEqual({ recursive: true });
 
 		expect(writeFileSyncMock).toHaveBeenCalledTimes(1);
-		const [pathArg, payload] = writeFileSyncMock.mock.calls[0];
+		const [pathArg, payload] = nonNull(writeFileSyncMock.mock.calls[0]);
 		expect(String(pathArg).endsWith("/.interlinked/file-priority.json")).toBe(
 			true,
 		);
@@ -473,7 +474,7 @@ describe("refreshPriorityIfStale", () => {
 
 		// Persisted the freshly computed map.
 		expect(writeFileSyncMock).toHaveBeenCalledTimes(1);
-		const persisted = JSON.parse(String(writeFileSyncMock.mock.calls[0][1]));
+		const persisted = JSON.parse(String(nonNull(writeFileSyncMock.mock.calls[0])[1]));
 		expect(persisted).toMatchObject({
 			version: 1,
 			computedAt: NOW,
@@ -499,7 +500,7 @@ describe("refreshPriorityIfStale", () => {
 
 		const map = refreshPriorityIfStale("/repo", NOW, PRIORITY_TTL_MS);
 		expect(map.size).toBe(0);
-		const persisted = JSON.parse(String(writeFileSyncMock.mock.calls[0][1]));
+		const persisted = JSON.parse(String(nonNull(writeFileSyncMock.mock.calls[0])[1]));
 		expect(persisted.files).toEqual({});
 	});
 

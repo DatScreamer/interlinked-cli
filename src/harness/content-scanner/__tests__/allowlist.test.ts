@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { applyAllowlist, compileAllowlist } from "../allowlist.js";
 import type { AllowlistEntry, ScanFinding } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function finding(args: { label: string; text: string; start?: number }): ScanFinding {
 	const start = args.start ?? 0;
@@ -191,7 +192,7 @@ describe("applyAllowlist — passthrough when nothing matches", () => {
 		]);
 		const result = applyAllowlist(findings, compiled);
 		expect(result.kept).toHaveLength(1);
-		expect(result.kept[0].label).toBe("secret");
+		expect(nonNull(result.kept[0]).label).toBe("secret");
 		expect(result.suppressed).toHaveLength(2);
 	});
 });

@@ -9,6 +9,7 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
 
@@ -171,8 +172,8 @@ describe("runTaplo (sync)", () => {
 		);
 		const out = runTaplo(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("Cargo.toml");
-		expect(out[0].line).toBe(5);
+		expect(nonNull(out[0]).file).toBe("Cargo.toml");
+		expect(nonNull(out[0]).line).toBe(5);
 	});
 
 	it("falls back to the relative targetFile when no '-->' location is present (no rewrite)", () => {
@@ -181,20 +182,20 @@ describe("runTaplo (sync)", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stderr: taploErrorNoLocation() }));
 		const out = runTaplo(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("Cargo.toml");
-		expect(out[0].line).toBe(0);
-		expect(out[0].ruleId).toBe("schema");
-		expect(out[0].message).toBe("expected string");
+		expect(nonNull(out[0]).file).toBe("Cargo.toml");
+		expect(nonNull(out[0]).line).toBe(0);
+		expect(nonNull(out[0]).ruleId).toBe("schema");
+		expect(nonNull(out[0]).message).toBe("expected string");
 	});
 
 	it("leaves an already-relative '-->' path untouched (no leading-slash rewrite)", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stderr: taploErrorRelative() }));
 		const out = runTaplo(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("Cargo.toml");
-		expect(out[0].line).toBe(9);
-		expect(out[0].column).toBe(1);
-		expect(out[0].message).toBe("dangling key");
+		expect(nonNull(out[0]).file).toBe("Cargo.toml");
+		expect(nonNull(out[0]).line).toBe(9);
+		expect(nonNull(out[0]).column).toBe(1);
+		expect(nonNull(out[0]).message).toBe("dangling key");
 	});
 
 	it("handles undefined stdout/stderr via the '' fallback (parser yields nothing)", () => {
@@ -275,15 +276,15 @@ describe("runTaploAsync", () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 1, stdout: taploErrorAbsolute() }));
 		const out = await runTaploAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("Cargo.toml");
+		expect(nonNull(out[0]).file).toBe("Cargo.toml");
 	});
 
 	it("leaves an already-relative '-->' path untouched on code === 1", async () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 1, stderr: taploErrorRelative() }));
 		const out = await runTaploAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("Cargo.toml");
-		expect(out[0].line).toBe(9);
+		expect(nonNull(out[0]).file).toBe("Cargo.toml");
+		expect(nonNull(out[0]).line).toBe(9);
 	});
 
 	it("returns [] on code === 1 with empty output (parser yields no errors)", async () => {

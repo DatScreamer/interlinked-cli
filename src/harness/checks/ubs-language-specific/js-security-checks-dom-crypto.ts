@@ -13,6 +13,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_unchecked_redirect` — JS/TS `redirect(url)` / `location.href = url` /
@@ -35,11 +36,11 @@ export function checkUncheckedRedirect(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const stripLine = strippedLines[i];
+		const stripLine = nonNull(strippedLines[i]);
 		if (!callRe.test(stripLine)) continue;
 		// Skip lines that look like a relative-path string assignment intent —
 		// those were stripped to `""`, so an empty arg slot won't match here.
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -80,8 +81,8 @@ export function checkDocumentWrite(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -107,8 +108,8 @@ export function checkOuterHtmlAssignment(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -134,8 +135,8 @@ export function checkInsertAdjacentHtml(content: string, filePath: string): Inli
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -170,8 +171,8 @@ export function checkNodeCreateCipher(content: string, filePath: string): Inline
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -210,7 +211,7 @@ export function checkScriptWithoutSri(content: string, filePath: string): Inline
 		if (matches.length >= 10) break;
 		const idx = m.index ?? 0;
 		const lineNum = content.slice(0, idx).split("\n").length;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 	return matches;
 }

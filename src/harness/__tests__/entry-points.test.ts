@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { nonNull } from "../../lib/non-null.js";
 import { collectEntryPoints } from "../entry-points.js";
 import type { EntryPoint } from "../entry-points.js";
 import { RouteMap } from "../route-map.js";
@@ -45,8 +46,8 @@ describe("collectEntryPoints — bin source", () => {
 		const eps = collectEntryPoints(workdir);
 		const bin = eps.filter((e) => e.kind === "bin");
 		expect(bin).toHaveLength(1);
-		expect(bin[0].file).toBe(join(workdir, "cli.js"));
-		expect(bin[0].reason).toBe("package.json:bin");
+		expect(nonNull(bin[0]).file).toBe(join(workdir, "cli.js"));
+		expect(nonNull(bin[0]).reason).toBe("package.json:bin");
 	});
 
 	it("extracts each entry from a map-shape package.json:bin", () => {
@@ -89,8 +90,8 @@ describe("collectEntryPoints — lib_export source", () => {
 		const eps = collectEntryPoints(workdir);
 		const lib = eps.filter((e) => e.kind === "lib_export");
 		expect(lib).toHaveLength(1);
-		expect(lib[0].file).toBe(join(workdir, "dist", "main.js"));
-		expect(lib[0].reason).toBe("package.json:main");
+		expect(nonNull(lib[0]).file).toBe(join(workdir, "dist", "main.js"));
+		expect(nonNull(lib[0]).reason).toBe("package.json:main");
 	});
 
 	it("walks package.json:exports.import / .require / subpath targets", () => {
@@ -138,7 +139,7 @@ describe("collectEntryPoints — lib_export source", () => {
 		// Exactly one record — `package.json:main` named it first, so the root-index
 		// pass should NOT re-add it.
 		expect(lib).toHaveLength(1);
-		expect(lib[0].reason).toBe("package.json:main");
+		expect(nonNull(lib[0]).reason).toBe("package.json:main");
 	});
 });
 
@@ -195,7 +196,7 @@ describe("collectEntryPoints — http_handler source", () => {
 		const eps = collectEntryPoints(workdir, { routeMap });
 		const http = eps.filter((e) => e.kind === "http_handler");
 		expect(http.length).toBeGreaterThanOrEqual(1);
-		expect(http[0].reason).toMatch(/express GET \/foo/);
+		expect(nonNull(http[0]).reason).toMatch(/express GET \/foo/);
 	});
 
 	it("returns an empty list when the RouteMap has no endpoints", () => {
@@ -231,7 +232,7 @@ describe("collectEntryPoints — opt-in tests and dedupe", () => {
 		const eps = collectEntryPoints(workdir, { includeTests: true });
 		const tests = eps.filter((e) => e.kind === "test");
 		expect(tests).toHaveLength(1);
-		expect(tests[0].file).toBe(join(workdir, "src", "__tests__", "thing.test.ts"));
+		expect(nonNull(tests[0]).file).toBe(join(workdir, "src", "__tests__", "thing.test.ts"));
 	});
 
 	it("collapses duplicate (kind, file) records but keeps cross-kind duplicates", () => {

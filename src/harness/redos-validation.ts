@@ -19,6 +19,8 @@
 // shapes are rejected at load time.
 
 /** Nested quantifier inside a group: `(a+)*`, `(a*b)+`, `(\w+\d*)*`. */
+import { nonNull } from "../lib/non-null.js";
+
 const NESTED_QUANT_RE = /\([^()]*[+*][^()]*\)[+*?]/;
 
 /** Wildcard `.*` under repetition: `(.*)*`, `(.*X)+`. */
@@ -61,8 +63,8 @@ export function looksLikeReDoS(pattern: string): boolean {
 function hasPrefixOverlap(branches: readonly string[]): boolean {
 	for (let i = 0; i < branches.length; i++) {
 		for (let j = i + 1; j < branches.length; j++) {
-			const a = branches[i];
-			const b = branches[j];
+			const a = nonNull(branches[i]);
+			const b = nonNull(branches[j]);
 			if (a.startsWith(b) || b.startsWith(a)) return true;
 		}
 	}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectPolicyConstantDrift } from "./policy-constant-drift.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const FILE = "src/lib/config.ts";
 
@@ -22,8 +23,8 @@ function runWithRetry(fn: () => void): void {
 `.trim();
 		const findings = detectPolicyConstantDrift(content, FILE);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].text).toMatch(/MAX_RETRIES/);
-		expect(findings[0].line).toBeGreaterThan(1);
+		expect(nonNull(findings[0]).text).toMatch(/MAX_RETRIES/);
+		expect(nonNull(findings[0]).line).toBeGreaterThan(1);
 	});
 
 	it("fires when DEFAULT_TIMEOUT_MS=4500 and bare 4500 used in setTimeout", () => {
@@ -36,7 +37,7 @@ function scheduleCleanup(fn: () => void): void {
 `.trim();
 		const findings = detectPolicyConstantDrift(content, FILE);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].text).toMatch(/DEFAULT_TIMEOUT_MS/);
+		expect(nonNull(findings[0]).text).toMatch(/DEFAULT_TIMEOUT_MS/);
 	});
 
 	it("fires when CYCLOMATIC_CAP=25 and bare 25 used in a guard", () => {
@@ -49,7 +50,7 @@ function isTooComplex(score: number): boolean {
 `.trim();
 		const findings = detectPolicyConstantDrift(content, FILE);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].text).toMatch(/CYCLOMATIC_CAP/);
+		expect(nonNull(findings[0]).text).toMatch(/CYCLOMATIC_CAP/);
 	});
 
 	it("fires for a _THRESHOLD suffix constant", () => {

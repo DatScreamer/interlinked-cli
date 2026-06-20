@@ -15,6 +15,7 @@ import type {
 } from "./package-install-parser-shared.js";
 
 import { envRegistryFor } from "./package-install-parser-shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Composer (PHP / Packagist)
@@ -92,9 +93,9 @@ function readFlagValue(args: string[], ...flags: string[]): string | undefined {
 	const lower = flags.map((f) => f.toLowerCase());
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
-		const eq = a.indexOf("=");
-		if (eq > 0 && lower.includes(a.slice(0, eq).toLowerCase())) return a.slice(eq + 1);
-		if (lower.includes(a.toLowerCase()) && args[i + 1] && !args[i + 1].startsWith("-")) {
+		const eq = nonNull(a).indexOf("=");
+		if (eq > 0 && lower.includes(nonNull(a).slice(0, eq).toLowerCase())) return nonNull(a).slice(eq + 1);
+		if (lower.includes(nonNull(a).toLowerCase()) && args[i + 1] && !nonNull(args[i + 1]).startsWith("-")) {
 			return args[i + 1];
 		}
 	}

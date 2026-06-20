@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClientName } from "./settings.js";
+import { nonNull } from "./non-null.js";
 
 const SKILL_NAME = "enforce";
 
@@ -314,13 +315,13 @@ export function installEnforceSkill(
 			}
 			results.push({
 				client,
-				path: join(cwd, targets[0].relPath),
+				path: join(cwd, nonNull(targets[0]).relPath),
 				installed: true,
 			});
 		} catch (err) {
 			results.push({
 				client,
-				path: join(cwd, targets[0].relPath),
+				path: join(cwd, nonNull(targets[0]).relPath),
 				installed: false,
 				error: err instanceof Error ? err.message : String(err),
 			});

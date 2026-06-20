@@ -19,6 +19,7 @@
 // "dormant" when all are dormant, etc.
 
 import { SidecarManager, type SidecarLifecycleState, type SidecarRequest, type SidecarResponse, type SidecarStatus, type SpawnFn } from "./sidecar-manager.js";
+import { nonNull } from "../../lib/non-null.js";
 
 export interface SidecarPoolOptions {
 	python_bin: string;
@@ -105,7 +106,7 @@ export class SidecarPool {
 	async send(req: SidecarRequest): Promise<SidecarResponse> {
 		const child = this.children[this.nextIdx];
 		this.nextIdx = (this.nextIdx + 1) % this.children.length;
-		return child.send(req);
+		return nonNull(child).send(req);
 	}
 
 	/** Shut down every child in parallel. */

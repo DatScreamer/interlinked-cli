@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import { parseExports, parseImports, resolveImportPath } from "../project-graph.js";
 import { getGitSourceFiles } from "./export-ripple.js";
 import {
@@ -79,7 +80,7 @@ export function checkDefaultExport(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i].trim();
+		const line = nonNull(strippedLines[i]).trim();
 		if (!line.startsWith("export default")) continue;
 
 		// Anonymous forms — always flag.
@@ -94,7 +95,7 @@ export function checkDefaultExport(content: string, filePath: string): InlineMat
 		// Named form — flag when the symbol name doesn't match the filename.
 		const named = NAMED_FORM.exec(line);
 		if (named) {
-			const sym = named[1];
+			const sym = nonNull(named[1]);
 			if (sym.toLowerCase() !== base.toLowerCase()) {
 				matches.push({
 					line: i + 1,

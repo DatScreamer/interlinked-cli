@@ -2,6 +2,7 @@
 // Agent-specific failure-mode helpers extracted from swift.ts.
 // Test-regression signals, env-reference extraction, and mock/stub drift detection.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -110,11 +111,11 @@ export function extractEnvReferences(content: string, filePath: string): EnvRefe
 	];
 
 	const scan = (linesArr: string[], pats: Array<{ re: RegExp; source: string }>): void => {
-		for (let i = 0; i < linesArr.length; i++) {
+		for (const [i, lineText] of linesArr.entries()) {
 			for (const { re, source } of pats) {
 				re.lastIndex = 0;
-				for (const m of linesArr[i].matchAll(re)) {
-					const name = m[1];
+				for (const m of lineText.matchAll(re)) {
+					const name = nonNull(m[1]);
 					if (!SYSTEM_ENV_VARS.has(name)) {
 						refs.push({ name, line: i + 1, source });
 					}
@@ -155,7 +156,7 @@ export function extractMockDefinitions(content: string, filePath: string): MockD
 
 	for (const match of fullText.matchAll(mockPattern)) {
 		const startIdx = match.index ?? 0;
-		const modulePath = match[1];
+		const modulePath = nonNull(match[1]);
 		if (!modulePath.startsWith(".") && !modulePath.startsWith("@/")) continue;
 
 		// Find the matching closing })
@@ -172,7 +173,7 @@ export function extractMockDefinitions(content: string, filePath: string): MockD
 		// Extract property names: `name: vi.fn()` or `name: jest.fn()`
 		const mockedNames: string[] = [];
 		for (const pm of body.matchAll(/(\w+)\s*:\s*(?:vi|jest)\.fn\(/g)) {
-			mockedNames.push(pm[1]);
+			mockedNames.push(nonNull(pm[1]));
 		}
 
 		if (mockedNames.length > 0) {
@@ -207,35 +208,35 @@ export function extractModuleExportNames(content: string): string[] {
 		// export function name / export async function name
 		const fn = trimmed.match(/^export\s+(?:async\s+)?function\s+(\w+)/);
 		if (fn) {
-			names.push(fn[1]);
+			names.push(nonNull(fn[1]));
 			continue;
 		}
 
 		// export const/let/var name
 		const v = trimmed.match(/^export\s+(?:const|let|var)\s+(\w+)/);
 		if (v) {
-			names.push(v[1]);
+			names.push(nonNull(v[1]));
 			continue;
 		}
 
 		// export class name
 		const cls = trimmed.match(/^export\s+(?:abstract\s+)?class\s+(\w+)/);
 		if (cls) {
-			names.push(cls[1]);
+			names.push(nonNull(cls[1]));
 			continue;
 		}
 
 		// export interface/type name
 		const iface = trimmed.match(/^export\s+(?:interface|type)\s+(\w+)/);
 		if (iface) {
-			names.push(iface[1]);
+			names.push(nonNull(iface[1]));
 			continue;
 		}
 
 		// export enum name
 		const enm = trimmed.match(/^export\s+enum\s+(\w+)/);
 		if (enm) {
-			names.push(enm[1]);
+			names.push(nonNull(enm[1]));
 			continue;
 		}
 
@@ -248,7 +249,7 @@ export function extractModuleExportNames(content: string): string[] {
 		// export { a, b, c } or export type { a, b, c } (single-line)
 		const named = trimmed.match(/^export\s+(?:type\s+)?\{([^}]+)\}/);
 		if (named) {
-			for (const n of named[1].split(",")) {
+			for (const n of nonNull(named[1]).split(",")) {
 				const name = n
 					.trim()
 					.replace(/^type\s+/, "")

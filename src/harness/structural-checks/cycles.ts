@@ -7,6 +7,7 @@
 
 import type { ProjectGraph } from "../project-graph.js";
 import type { StructuralCheckResult } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.
@@ -24,7 +25,7 @@ export function checkImportCycles(
 
 	// Show the shortest cycle
 	const shortest = cycles.sort((a, b) => a.length - b.length)[0];
-	const cyclePath = shortest.map((f) => graph.toRelative(f)).join(" → ");
+	const cyclePath = nonNull(shortest).map((f) => graph.toRelative(f)).join(" → ");
 
 	return [
 		{
@@ -32,7 +33,7 @@ export function checkImportCycles(
 			severity: "warning",
 			message: `Circular dependency detected involving ${relPath}: ${cyclePath}. Circular imports can cause initialization issues and make the code harder to reason about.`,
 			file: filePath,
-			affectedFiles: shortest,
+			affectedFiles: nonNull(shortest),
 		},
 	];
 }

@@ -10,6 +10,7 @@ import { DEFAULT_MAX_LINES } from "../../harness/large-file-policy.js";
 import { resetUntestedFilesBaselineCache } from "../../harness/tested-file-policy.js";
 import { resetUntestedCoverageCache, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function makeEmptyResults(): CodeQualityResults {
 	const r = {} as CodeQualityResults;
@@ -242,7 +243,7 @@ describe("runPerFileChecks — inline-ignore on the default gate", () => {
 	it("reports the inline finding when there is no ignore comment", () => {
 		const r = run("/tmp/foo.test.ts", withoutIgnore);
 		expect(r.hardcodedTimeoutInTests).toHaveLength(1);
-		expect(r.hardcodedTimeoutInTests[0].check).toBe("hardcoded_timeout_in_tests");
+		expect(nonNull(r.hardcodedTimeoutInTests[0]).check).toBe("hardcoded_timeout_in_tests");
 	});
 
 	it("drops the inline finding when a matching // interlinked-ignore is present", () => {
@@ -290,7 +291,7 @@ describe("runPerFileChecks — large_files cap", () => {
 	it("flags a hand-written code file over the cap", () => {
 		const r = run("/tmp/huge.ts", overCap);
 		expect(r.largeFiles).toHaveLength(1);
-		expect(r.largeFiles[0].check).toBe("large_files");
+		expect(nonNull(r.largeFiles[0]).check).toBe("large_files");
 	});
 
 	it("does not flag a file under the cap", () => {
@@ -348,8 +349,8 @@ describe("runPerFileChecks — untested_files ratchet", () => {
 	it("flags a non-grandfathered uncovered source file with no companion", () => {
 		const r = run("src/lonely.ts");
 		expect(r.untestedFiles).toHaveLength(1);
-		expect(r.untestedFiles[0].check).toBe("untested_files");
-		expect(r.untestedFiles[0].file).toContain("lonely.ts");
+		expect(nonNull(r.untestedFiles[0]).check).toBe("untested_files");
+		expect(nonNull(r.untestedFiles[0]).file).toContain("lonely.ts");
 	});
 
 	it("does NOT flag a grandfathered file listed in the baseline", () => {
@@ -410,8 +411,8 @@ describe("runPerFileChecks — strong_typing (any vs unknown)", () => {
 	it("flags an explicit `: any` annotation in a non-test .ts file", () => {
 		const r = run("/tmp/svc.ts", "export const a: any = 1;\n");
 		expect(r.strongTyping).toHaveLength(1);
-		expect(r.strongTyping[0].check).toBe("strong_typing");
-		expect(r.strongTyping[0].line).toBe(1);
+		expect(nonNull(r.strongTyping[0]).check).toBe("strong_typing");
+		expect(nonNull(r.strongTyping[0]).line).toBe(1);
 	});
 
 	it("skips `as unknown` (kind !== 'any') but still flags the `: any` on the next line", () => {
@@ -423,7 +424,7 @@ describe("runPerFileChecks — strong_typing (any vs unknown)", () => {
 		);
 		const r = run("/tmp/svc.ts", content);
 		expect(r.strongTyping).toHaveLength(1);
-		expect(r.strongTyping[0].line).toBe(2);
+		expect(nonNull(r.strongTyping[0]).line).toBe(2);
 	});
 
 	it("does not run strong_typing on a .test.ts file (test exemption)", () => {
@@ -471,8 +472,8 @@ describe("runPerFileChecks — phantom_imports", () => {
 		const dir = "/tmp/interlinked-fc-phantom-nonexistent-xyz";
 		const r = run(join(dir, "x.ts"), 'import { y } from "./definitely-missing.js";\n');
 		expect(r.phantomImports).toHaveLength(1);
-		expect(r.phantomImports[0].check).toBe("phantom_imports");
-		expect(r.phantomImports[0].message).toContain("./definitely-missing.js");
+		expect(nonNull(r.phantomImports[0]).check).toBe("phantom_imports");
+		expect(nonNull(r.phantomImports[0]).message).toContain("./definitely-missing.js");
 	});
 
 	it("ignores bare (node_modules) specifiers — neither '.' nor '/' prefixed", () => {
@@ -495,7 +496,7 @@ describe("runPerFileChecks — phantom_imports", () => {
 			'import { z } from "/nonexistent-abs-interlinked-fc/mod.js";\n',
 		);
 		expect(r.phantomImports).toHaveLength(1);
-		expect(r.phantomImports[0].message).toContain("/nonexistent-abs-interlinked-fc/mod.js");
+		expect(nonNull(r.phantomImports[0]).message).toContain("/nonexistent-abs-interlinked-fc/mod.js");
 	});
 
 	it("does not run phantom_imports on a non-JS/TS extension", () => {
@@ -530,7 +531,7 @@ describe("runPerFileChecks — test regressions and env-ref accumulation", () =>
 	it("records skipped tests via test_regressions", () => {
 		const r = run("/tmp/foo.test.ts", 'describe.skip("later", () => {});\n', new Map());
 		expect(r.testRegressions.length).toBeGreaterThan(0);
-		expect(r.testRegressions[0].check).toBe("test_regressions");
+		expect(nonNull(r.testRegressions[0]).check).toBe("test_regressions");
 	});
 
 	it("does not push test_regressions when there are no skipped tests", () => {
@@ -596,9 +597,9 @@ describe("runPerFileChecks — mock_drift against cached module exports", () => 
 		const content = 'vi.mock("./real-module.js", () => ({ ghost: vi.fn() }));\n';
 		const r = runMock(content, cache);
 		expect(r.mockDrift).toHaveLength(1);
-		expect(r.mockDrift[0].check).toBe("mock_drift");
-		expect(r.mockDrift[0].message).toContain('mock references "ghost"');
-		expect(r.mockDrift[0].message).toContain("real-module.ts");
+		expect(nonNull(r.mockDrift[0]).check).toBe("mock_drift");
+		expect(nonNull(r.mockDrift[0]).message).toContain('mock references "ghost"');
+		expect(nonNull(r.mockDrift[0]).message).toContain("real-module.ts");
 	});
 
 	it("does not flag when every mocked name is a real export", () => {
@@ -641,7 +642,7 @@ describe("runPerFileChecks — mock_drift against cached module exports", () => 
 			piiOpts: {},
 		});
 		expect(r.phantomImports).toHaveLength(1);
-		expect(r.phantomImports[0].message).toContain("./not-here.js");
+		expect(nonNull(r.phantomImports[0]).message).toContain("./not-here.js");
 		expect(r.phantomImports.some((p) => p.message.includes("./real-module.js"))).toBe(false);
 	});
 });

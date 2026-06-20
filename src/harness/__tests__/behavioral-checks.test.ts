@@ -7,6 +7,7 @@ import {
 	runBehavioralChecks,
 } from "../behavioral-checks.js";
 import type { CheckResultEntry, SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -217,9 +218,9 @@ describe("checkPersistentWarningEscalation", () => {
 
 		const results = checkPersistentWarningEscalation(session, "src/foo.ts", ["typescript"]);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].name).toBe("persistent_warning_escalation");
-		expect(results[0].message).toContain("typescript");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).name).toBe("persistent_warning_escalation");
+		expect(nonNull(results[0]).message).toContain("typescript");
 	});
 
 	it("does NOT escalate for checks not previously issued", () => {
@@ -307,7 +308,7 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 			editedLines,
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].name).toBe("persistent_warning_escalation");
+		expect(nonNull(out[0]).name).toBe("persistent_warning_escalation");
 	});
 
 	it("rate-limits — fires once per (file, check) per session, not on every re-edit", () => {
@@ -410,7 +411,7 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 			new Set([252]),
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].name).toBe("persistent_warning_escalation");
+		expect(nonNull(out[0]).name).toBe("persistent_warning_escalation");
 	});
 });
 

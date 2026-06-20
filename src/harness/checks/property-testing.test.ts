@@ -8,6 +8,7 @@ import {
 	checkUntestedInversePair,
 	scaffoldPropertyTest,
 } from "./property-testing.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Positive cases use a basename that appears in NO real test-file path, so the
 // path-prefilter finds zero candidate suites → the pair reads as untested →
@@ -66,9 +67,9 @@ describe("checkUntestedInversePair — positive (must fire when untested)", () =
 			cwd,
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(2);
-		expect(out[0].text).toContain("encode/decode");
-		expect(out[0].text).toContain("decode(encode(x)) === x");
+		expect(nonNull(out[0]).line).toBe(2);
+		expect(nonNull(out[0]).text).toContain("encode/decode");
+		expect(nonNull(out[0]).text).toContain("decode(encode(x)) === x");
 	});
 });
 
@@ -151,9 +152,9 @@ describe("checkUntestedIdempotent — positive (must fire when untested)", () =>
 			cwd,
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(2);
-		expect(out[0].text).toContain("idempotent-shaped normalize");
-		expect(out[0].text).toContain("normalize(normalize(x)) === normalize(x)");
+		expect(nonNull(out[0]).line).toBe(2);
+		expect(nonNull(out[0]).text).toContain("idempotent-shaped normalize");
+		expect(nonNull(out[0]).text).toContain("normalize(normalize(x)) === normalize(x)");
 	});
 });
 

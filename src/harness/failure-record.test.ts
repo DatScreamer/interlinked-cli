@@ -31,6 +31,7 @@ import {
 	writeFailureRecord,
 } from "./failure-record.js";
 import type { FailureRecord } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 const mkdirSyncMock = vi.mocked(mkdirSync);
 const writeFileSyncMock = vi.mocked(writeFileSync);
@@ -74,7 +75,7 @@ describe("writeFailureRecord", () => {
 
 		// 2. Canonical record written as pretty JSON to <failure_id>.json.
 		expect(writeFileSyncMock).toHaveBeenCalledTimes(1);
-		const [recordPath, recordBody, recordEnc] = writeFileSyncMock.mock.calls[0];
+		const [recordPath, recordBody, recordEnc] = nonNull(writeFileSyncMock.mock.calls[0]);
 		expect(recordPath).toBe(`/proj/.interlinked/failures/${record.failure_id}.json`);
 		expect(recordEnc).toBe("utf-8");
 		// Pretty-printed (2-space indent) and round-trips to the full record.
@@ -83,7 +84,7 @@ describe("writeFailureRecord", () => {
 
 		// 3. Index row appended as one JSONL line with the projected fields.
 		expect(appendFileSyncMock).toHaveBeenCalledTimes(1);
-		const [indexPath, indexBody, indexEnc] = appendFileSyncMock.mock.calls[0];
+		const [indexPath, indexBody, indexEnc] = nonNull(appendFileSyncMock.mock.calls[0]);
 		expect(indexPath).toBe("/proj/.interlinked/failures/index.jsonl");
 		expect(indexEnc).toBe("utf-8");
 		expect(indexBody).toBe(
@@ -136,7 +137,7 @@ describe("mintFailureId", () => {
 		);
 		// randomFillSync was used to seed the 16-byte buffer.
 		expect(randomFillSyncMock).toHaveBeenCalledTimes(1);
-		expect((randomFillSyncMock.mock.calls[0][0] as Uint8Array).length).toBe(16);
+		expect((nonNull(randomFillSyncMock.mock.calls[0])[0] as Uint8Array).length).toBe(16);
 	});
 
 	it("preserves the low nibble of byte 6 and low 6 bits of byte 8 from randomness", () => {

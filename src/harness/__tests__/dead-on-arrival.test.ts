@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { detectDeadOnArrival, formatDeadOnArrivalWarning } from "../dead-on-arrival.js";
 import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const HEADER = "// @generated supermodel-shard — do not edit";
 
@@ -70,7 +71,7 @@ describe("detectDeadOnArrival", () => {
 		const src = writePair(dir, "dead", DEAD_SHARD);
 		const hits = detectDeadOnArrival(new Set([src]), dir);
 		expect(hits).toHaveLength(1);
-		expect(hits[0].sourcePath).toBe(src);
+		expect(nonNull(hits[0]).sourcePath).toBe(src);
 	});
 
 	it("does not flag a file with dependents (direct > 0)", () => {

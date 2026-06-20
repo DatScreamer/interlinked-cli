@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { detectAuthChain } from "../auth-chain.js";
 import type { EndpointFramework } from "../types/session.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("detectAuthChain — express", () => {
 	it("picks up app.use(requireAuth) above the route", () => {
@@ -17,8 +18,8 @@ describe("detectAuthChain — express", () => {
 		].join("\n");
 		const chain = detectAuthChain("express", "/abs/app.ts", content, 3);
 		expect(chain.map((c) => c.name)).toEqual(["requireAuth"]);
-		expect(chain[0].kind).toBe("middleware");
-		expect(chain[0].line).toBe(2);
+		expect(nonNull(chain[0]).kind).toBe("middleware");
+		expect(nonNull(chain[0]).line).toBe(2);
 	});
 
 	it("recognizes router.use(authn) where the name matches the auth regex", () => {
@@ -85,7 +86,7 @@ describe("detectAuthChain — fastapi", () => {
 		].join("\n");
 		const chain = detectAuthChain("fastapi", "/abs/main.py", content, 1);
 		expect(chain.map((c) => c.name)).toEqual(["get_current_user"]);
-		expect(chain[0].kind).toBe("depends");
+		expect(nonNull(chain[0]).kind).toBe("depends");
 	});
 
 	it("picks up route-level dependencies=[Depends(requireAuth)]", () => {
@@ -135,8 +136,8 @@ describe("detectAuthChain — extraNames extension hook", () => {
 			extraNames: ["gatekeeper"],
 		});
 		expect(chain.map((c) => c.name)).toEqual(["gatekeeper"]);
-		expect(chain[0].kind).toBe("middleware");
-		expect(chain[0].line).toBe(1);
+		expect(nonNull(chain[0]).kind).toBe("middleware");
+		expect(nonNull(chain[0]).line).toBe(1);
 	});
 
 	it("matches extraNames case-insensitively", () => {
@@ -191,7 +192,7 @@ describe("detectAuthChain — extraNames extension hook", () => {
 			extraNames: ["tenant_principal"],
 		});
 		expect(chain.map((c) => c.name)).toEqual(["tenant_principal"]);
-		expect(chain[0].kind).toBe("depends");
+		expect(nonNull(chain[0]).kind).toBe("depends");
 	});
 });
 

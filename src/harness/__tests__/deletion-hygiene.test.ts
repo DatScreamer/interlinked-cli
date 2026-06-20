@@ -6,6 +6,7 @@ import {
 	checkReplacedWithStub,
 	checkTestGutted,
 } from "../deletion-hygiene.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Layer 2: Diff-Aware Zombie Detectors
@@ -18,7 +19,7 @@ describe("checkReplacedWithStub", () => {
 		const newStr = 'function process(data) {\n  throw new Error("Not implemented");\n}';
 		const findings = checkReplacedWithStub(oldStr, newStr, "handler.ts");
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check).toBe("replaced-with-stub");
+		expect(nonNull(findings[0]).check).toBe("replaced-with-stub");
 	});
 
 	it("detects working code replaced with return null", () => {
@@ -54,7 +55,7 @@ describe("checkTestGutted", () => {
 		const newStr = `it.${"skip"}("validates input", () => {\n});`;
 		const findings = checkTestGutted(oldStr, newStr, "validate.test.ts");
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check).toBe("test-gutted");
+		expect(nonNull(findings[0]).check).toBe("test-gutted");
 	});
 
 	it("detects test body emptied", () => {
@@ -90,7 +91,7 @@ describe("checkDeprecationAdded", () => {
 		const newStr = "/** @deprecated */\nexport function old() { return 1; }";
 		const findings = checkDeprecationAdded(oldStr, newStr, "api.ts");
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check).toBe("deprecation-added");
+		expect(nonNull(findings[0]).check).toBe("deprecation-added");
 	});
 
 	it("detects new console.warn with deprecated", () => {
@@ -121,7 +122,7 @@ describe("checkDeletionCommentAdded", () => {
 			"// Removed the old validation logic\nfunction handler() {\n  return process();\n}";
 		const findings = checkDeletionCommentAdded(oldStr, newStr, "handler.ts");
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check).toBe("deletion-comment-added");
+		expect(nonNull(findings[0]).check).toBe("deletion-comment-added");
 	});
 
 	it("detects 'no longer needed' comment added", () => {
@@ -154,8 +155,8 @@ describe("checkOrphanedTests", () => {
 			'import { validateToken } from "../auth";\n\ndescribe("validateToken", () => {\n  it("validates", () => {\n    expect(validateToken("x")).toBe(true);\n  });\n});';
 		const findings = checkOrphanedTests(["validateToken"], "auth.test.ts", testContent, false);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check).toBe("orphaned-test-reference");
-		expect(findings[0].message).toContain("validateToken");
+		expect(nonNull(findings[0]).check).toBe("orphaned-test-reference");
+		expect(nonNull(findings[0]).message).toContain("validateToken");
 	});
 
 	it("detects multiple removed symbols", () => {

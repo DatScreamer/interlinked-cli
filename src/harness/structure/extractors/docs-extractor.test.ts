@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extract, metadata } from "./docs-extractor.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("docs-extractor", () => {
 	let tmp: string;
@@ -23,20 +24,20 @@ describe("docs-extractor", () => {
 	it("classifies README as doc_kind=readme", () => {
 		writeFileSync(join(tmp, "README.md"), "# hi");
 		const { nodes } = extract(tmp);
-		expect(nodes[0].metadata?.doc_kind).toBe("readme");
+		expect(nonNull(nodes[0]).metadata?.doc_kind).toBe("readme");
 	});
 
 	it("classifies docs/*.md as doc_kind=reference", () => {
 		mkdirSync(join(tmp, "docs"), { recursive: true });
 		writeFileSync(join(tmp, "docs", "api.md"), "#");
 		const { nodes } = extract(tmp);
-		expect(nodes[0].metadata?.doc_kind).toBe("reference");
+		expect(nonNull(nodes[0]).metadata?.doc_kind).toBe("reference");
 	});
 
 	it("classifies standalone *.md as doc_kind=guide", () => {
 		writeFileSync(join(tmp, "CONTRIBUTING.md"), "#");
 		const { nodes } = extract(tmp);
-		expect(nodes[0].metadata?.doc_kind).toBe("guide");
+		expect(nonNull(nodes[0]).metadata?.doc_kind).toBe("guide");
 	});
 
 	it("discovers .md, .mdx, and .rst files", () => {

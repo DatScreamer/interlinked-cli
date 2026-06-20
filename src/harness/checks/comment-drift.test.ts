@@ -11,6 +11,7 @@ import {
 	checkCommentClaimsThrowsDoesnt,
 	checkCommentClaimsValidationMissing,
 } from "./comment-drift.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("checkCommentClaimsLimitNoGuard", () => {
 	it('fires when JSDoc says "max N" but body has no < N / <= N guard', () => {
@@ -26,7 +27,7 @@ describe("checkCommentClaimsLimitNoGuard", () => {
 		`;
 		const matches = checkCommentClaimsLimitNoGuard(content, "src/foo.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text.toLowerCase()).toContain("max");
+		expect(nonNull(matches[0]).text.toLowerCase()).toContain("max");
 	});
 
 	it('fires for "at most N"', () => {

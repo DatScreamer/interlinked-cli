@@ -8,6 +8,7 @@
 import type { JsonObject } from "../lib/json-types.js";
 import type { HarnessDecision } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Wire-version. Bumped when the envelope breaks compatibility. */
 export const PROTOCOL_VERSION = "1" as const;
@@ -135,7 +136,7 @@ export function splitFrames(chunk: string, pending = ""): { frames: string[]; re
 	const remainder = parts[parts.length - 1] ?? "";
 	const frames: string[] = [];
 	for (let i = 0; i < parts.length - 1; i++) {
-		const part = parts[i];
+		const part = nonNull(parts[i]);
 		if (part.length > 0) frames.push(part);
 	}
 	return { frames, remainder };

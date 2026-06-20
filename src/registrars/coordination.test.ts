@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { registerCoordinationCommands } from "./coordination.js";
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ describe("attach — action wiring", () => {
 			{ from: "user" },
 		);
 		expect(attachCommand).toHaveBeenCalledTimes(1);
-		expect(attachCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(attachCommand.mock.calls[0])[0]).toMatchObject({
 			server: "https://s",
 			workspace: "ws_1",
 			workspaceKey: "wk",
@@ -239,7 +240,7 @@ describe("reminder — action wiring", () => {
 			{ from: "user" },
 		);
 		expect(reminderAddCommand).toHaveBeenCalledTimes(1);
-		expect(reminderAddCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(reminderAddCommand.mock.calls[0])[0]).toMatchObject({
 			glob: "src/**",
 			message: "careful",
 			ops: "Edit,Write",
@@ -256,7 +257,7 @@ describe("reminder — action wiring", () => {
 			["reminder", "add", "--glob", "a", "--message", "m", "--no-once"],
 			{ from: "user" },
 		);
-		expect(reminderAddCommand.mock.calls[0][0]).toMatchObject({ once: false });
+		expect(nonNull(reminderAddCommand.mock.calls[0])[0]).toMatchObject({ once: false });
 	});
 
 	it("rejects a parse error when a requiredOption is missing and never calls the impl", async () => {
@@ -274,7 +275,7 @@ describe("reminder — action wiring", () => {
 		// Bare `reminder` resolves to the isDefault `list` subcommand.
 		await program.parseAsync(["reminder", "--json", "--short", "--full"], { from: "user" });
 		expect(reminderListCommand).toHaveBeenCalledTimes(1);
-		expect(reminderListCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(reminderListCommand.mock.calls[0])[0]).toMatchObject({
 			json: true,
 			short: true,
 			full: true,
@@ -285,15 +286,15 @@ describe("reminder — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["reminder", "remove", "r1", "--team", "--json"], { from: "user" });
 		expect(reminderRemoveCommand).toHaveBeenCalledTimes(1);
-		expect(reminderRemoveCommand.mock.calls[0][0]).toBe("r1");
-		expect(reminderRemoveCommand.mock.calls[0][1]).toMatchObject({ team: true, json: true });
+		expect(nonNull(reminderRemoveCommand.mock.calls[0])[0]).toBe("r1");
+		expect(nonNull(reminderRemoveCommand.mock.calls[0])[1]).toMatchObject({ team: true, json: true });
 	});
 
 	it("remove passes undefined positional with --all", async () => {
 		const program = build();
 		await program.parseAsync(["reminder", "remove", "--all"], { from: "user" });
-		expect(reminderRemoveCommand.mock.calls[0][0]).toBeUndefined();
-		expect(reminderRemoveCommand.mock.calls[0][1]).toMatchObject({ all: true });
+		expect(nonNull(reminderRemoveCommand.mock.calls[0])[0]).toBeUndefined();
+		expect(nonNull(reminderRemoveCommand.mock.calls[0])[1]).toMatchObject({ all: true });
 	});
 });
 
@@ -308,8 +309,8 @@ describe("skill — action wiring", () => {
 			{ from: "user" },
 		);
 		expect(skillEnterCommand).toHaveBeenCalledTimes(1);
-		expect(skillEnterCommand.mock.calls[0][0]).toBe("deep-research");
-		expect(skillEnterCommand.mock.calls[0][1]).toMatchObject({
+		expect(nonNull(skillEnterCommand.mock.calls[0])[0]).toBe("deep-research");
+		expect(nonNull(skillEnterCommand.mock.calls[0])[1]).toMatchObject({
 			ttl: "1h",
 			session: "s1",
 			source: "hook",
@@ -322,15 +323,15 @@ describe("skill — action wiring", () => {
 		await program.parseAsync(["skill", "leave", "deep-research", "--session", "s2", "--json"], {
 			from: "user",
 		});
-		expect(skillLeaveCommand.mock.calls[0][0]).toBe("deep-research");
-		expect(skillLeaveCommand.mock.calls[0][1]).toMatchObject({ session: "s2", json: true });
+		expect(nonNull(skillLeaveCommand.mock.calls[0])[0]).toBe("deep-research");
+		expect(nonNull(skillLeaveCommand.mock.calls[0])[1]).toMatchObject({ session: "s2", json: true });
 	});
 
 	it("list (default subcommand) forwards session + json when invoked implicitly", async () => {
 		const program = build();
 		await program.parseAsync(["skill", "--session", "s3", "--json"], { from: "user" });
 		expect(skillListCommand).toHaveBeenCalledTimes(1);
-		expect(skillListCommand.mock.calls[0][0]).toMatchObject({ session: "s3", json: true });
+		expect(nonNull(skillListCommand.mock.calls[0])[0]).toMatchObject({ session: "s3", json: true });
 	});
 
 	it("propagates a rejection thrown by the awaited skill impl", async () => {
@@ -352,9 +353,9 @@ describe("handoff + send — action wiring", () => {
 			from: "user",
 		});
 		expect(handoffCommand).toHaveBeenCalledTimes(1);
-		expect(handoffCommand.mock.calls[0][0]).toBe("alice");
-		expect(handoffCommand.mock.calls[0][1]).toBe("bob");
-		expect(handoffCommand.mock.calls[0][2]).toMatchObject({ includeFiles: true, json: true });
+		expect(nonNull(handoffCommand.mock.calls[0])[0]).toBe("alice");
+		expect(nonNull(handoffCommand.mock.calls[0])[1]).toBe("bob");
+		expect(nonNull(handoffCommand.mock.calls[0])[2]).toMatchObject({ includeFiles: true, json: true });
 	});
 
 	it("send forwards to + message positionals + flags", async () => {
@@ -364,17 +365,17 @@ describe("handoff + send — action wiring", () => {
 			{ from: "user" },
 		);
 		expect(sendCommand).toHaveBeenCalledTimes(1);
-		expect(sendCommand.mock.calls[0][0]).toBe("bob");
-		expect(sendCommand.mock.calls[0][1]).toBe("hello there");
-		expect(sendCommand.mock.calls[0][2]).toMatchObject({ importance: "urgent", json: true });
+		expect(nonNull(sendCommand.mock.calls[0])[0]).toBe("bob");
+		expect(nonNull(sendCommand.mock.calls[0])[1]).toBe("hello there");
+		expect(nonNull(sendCommand.mock.calls[0])[2]).toMatchObject({ importance: "urgent", json: true });
 	});
 
 	it("send passes undefined message and --file when body omitted", async () => {
 		const program = build();
 		await program.parseAsync(["send", "bob", "--file", "/p/note.txt"], { from: "user" });
-		expect(sendCommand.mock.calls[0][0]).toBe("bob");
-		expect(sendCommand.mock.calls[0][1]).toBeUndefined();
-		expect(sendCommand.mock.calls[0][2]).toMatchObject({ file: "/p/note.txt" });
+		expect(nonNull(sendCommand.mock.calls[0])[0]).toBe("bob");
+		expect(nonNull(sendCommand.mock.calls[0])[1]).toBeUndefined();
+		expect(nonNull(sendCommand.mock.calls[0])[2]).toMatchObject({ file: "/p/note.txt" });
 	});
 });
 
@@ -402,7 +403,7 @@ describe("tasks — action wiring", () => {
 			{ from: "user" },
 		);
 		expect(tasksListCommand).toHaveBeenCalledTimes(1);
-		expect(tasksListCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(tasksListCommand.mock.calls[0])[0]).toMatchObject({
 			status: "open",
 			assignee: "me",
 			priority: "high",
@@ -419,8 +420,8 @@ describe("tasks — action wiring", () => {
 			["tasks", "create", "Fix bug", "--description", "details", "--assignee", "me", "--priority", "low", "--json"],
 			{ from: "user" },
 		);
-		expect(tasksCreateCommand.mock.calls[0][0]).toBe("Fix bug");
-		expect(tasksCreateCommand.mock.calls[0][1]).toMatchObject({
+		expect(nonNull(tasksCreateCommand.mock.calls[0])[0]).toBe("Fix bug");
+		expect(nonNull(tasksCreateCommand.mock.calls[0])[1]).toMatchObject({
 			description: "details",
 			assignee: "me",
 			priority: "low",
@@ -431,22 +432,22 @@ describe("tasks — action wiring", () => {
 	it("show forwards the id positional + json", async () => {
 		const program = build();
 		await program.parseAsync(["tasks", "show", "t_1", "--json"], { from: "user" });
-		expect(tasksShowCommand.mock.calls[0][0]).toBe("t_1");
-		expect(tasksShowCommand.mock.calls[0][1]).toMatchObject({ json: true });
+		expect(nonNull(tasksShowCommand.mock.calls[0])[0]).toBe("t_1");
+		expect(nonNull(tasksShowCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 
 	it("claim forwards the id positional + json", async () => {
 		const program = build();
 		await program.parseAsync(["tasks", "claim", "t_2", "--json"], { from: "user" });
-		expect(tasksClaimCommand.mock.calls[0][0]).toBe("t_2");
-		expect(tasksClaimCommand.mock.calls[0][1]).toMatchObject({ json: true });
+		expect(nonNull(tasksClaimCommand.mock.calls[0])[0]).toBe("t_2");
+		expect(nonNull(tasksClaimCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 
 	it("complete forwards the id positional + json", async () => {
 		const program = build();
 		await program.parseAsync(["tasks", "complete", "t_3", "--json"], { from: "user" });
-		expect(tasksCompleteCommand.mock.calls[0][0]).toBe("t_3");
-		expect(tasksCompleteCommand.mock.calls[0][1]).toMatchObject({ json: true });
+		expect(nonNull(tasksCompleteCommand.mock.calls[0])[0]).toBe("t_3");
+		expect(nonNull(tasksCompleteCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 
 	it("propagates a rejection from an awaited tasks impl", async () => {
@@ -466,13 +467,13 @@ describe("workspace — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["workspace", "list", "--json"], { from: "user" });
 		expect(workspaceListCommand).toHaveBeenCalledTimes(1);
-		expect(workspaceListCommand.mock.calls[0][0]).toMatchObject({ json: true });
+		expect(nonNull(workspaceListCommand.mock.calls[0])[0]).toMatchObject({ json: true });
 	});
 
 	it("switch forwards only the id positional", async () => {
 		const program = build();
 		await program.parseAsync(["workspace", "switch", "ws_42"], { from: "user" });
 		expect(workspaceSwitchCommand).toHaveBeenCalledTimes(1);
-		expect(workspaceSwitchCommand.mock.calls[0][0]).toBe("ws_42");
+		expect(nonNull(workspaceSwitchCommand.mock.calls[0])[0]).toBe("ws_42");
 	});
 });

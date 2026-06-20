@@ -7,6 +7,7 @@
 // import-graph walk, a different shape from these single-file detectors.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -39,7 +40,7 @@ function bodyLinesAreEffectivelyEmpty(body: string): boolean {
 	if (lines.length === 0) return true;
 	if (lines.length > 1) return false;
 	for (const re of HANDLER_EMPTY_BODY_PATTERNS) {
-		if (re.test(lines[0])) return true;
+		if (re.test(nonNull(lines[0]))) return true;
 	}
 	return false;
 }
@@ -161,7 +162,7 @@ function extractObjectKeys(block: string): Set<string> {
 	KEY_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = KEY_RE.exec(block);
 	while (m !== null) {
-		keys.add(m[1]);
+		keys.add(nonNull(m[1]));
 		m = KEY_RE.exec(block);
 	}
 	return keys;
@@ -185,7 +186,7 @@ export function checkSchemaTypeDrift(content: string, filePath: string): InlineM
 		const block = openIdx >= 0 ? extractBalancedBlock(content, openIdx) : null;
 		if (block) {
 			shapes.push({
-				name: m[1],
+				name: nonNull(m[1]),
 				line: (content.slice(0, m.index).match(/\n/g) || []).length + 1,
 				keys: extractObjectKeys(block),
 				kind: "schema",

@@ -6,6 +6,8 @@
 // accelerator can answer, or declines (returns null) so the real command runs.
 // Split out of regex-trigrams.ts; consumes nothing from the decomposition side.
 
+import { nonNull } from "../lib/non-null.js";
+
 export interface ParsedGrepCommand {
 	pattern: string;
 	isRegex: boolean;
@@ -80,7 +82,7 @@ function hasUnquotedShellOperator(argsStr: string): boolean {
 	let inSingle = false;
 	let inDouble = false;
 	for (let i = 0; i < argsStr.length; i++) {
-		const ch = argsStr[i];
+		const ch = nonNull(argsStr[i]);
 		if (inSingle) {
 			if (ch === "'") inSingle = false;
 			continue;
@@ -129,7 +131,7 @@ function applyGrepFlag(
 	else {
 		// `-e PATTERN` — the next token is the pattern.
 		if (i + 1 >= tokens.length) return "decline";
-		result.pattern = tokens[i + 1];
+		result.pattern = nonNull(tokens[i + 1]);
 		return { i: i + 1, patternFromFlag: true };
 	}
 	return { i, patternFromFlag: false };
@@ -147,11 +149,11 @@ function assignGrepPositionals(
 ): boolean {
 	if (patternFromFlag) {
 		if (positionals.length > 1) return false;
-		if (positionals.length === 1) result.path = positionals[0];
+		if (positionals.length === 1) result.path = nonNull(positionals[0]);
 	} else {
 		if (positionals.length === 0 || positionals.length > 2) return false;
-		result.pattern = positionals[0];
-		if (positionals.length === 2) result.path = positionals[1];
+		result.pattern = nonNull(positionals[0]);
+		if (positionals.length === 2) result.path = nonNull(positionals[1]);
 	}
 	return Boolean(result.pattern);
 }
@@ -177,7 +179,7 @@ export function parseGrepCommand(command: string): ParsedGrepCommand | null {
 	);
 	if (!rgMatch) return null;
 
-	const argsStr = rgMatch[1];
+	const argsStr = nonNull(rgMatch[1]);
 	// Pipeline / compound command → only native can run the whole thing.
 	if (hasUnquotedShellOperator(argsStr)) return null;
 
@@ -193,7 +195,7 @@ export function parseGrepCommand(command: string): ParsedGrepCommand | null {
 	let endOfFlags = false;
 
 	for (let i = 0; i < tokens.length; i++) {
-		const tok = tokens[i];
+		const tok = nonNull(tokens[i]);
 
 		// `--` ends flag parsing; everything after is positional.
 		if (!endOfFlags && tok === "--") {
@@ -269,7 +271,7 @@ function tokenizeShellArgs(input: string): string[] {
 	};
 
 	while (i < input.length) {
-		const ch = input[i];
+		const ch = nonNull(input[i]);
 
 		if (inSingle) {
 			const st = consumeSingleQuoted(input, i, current);

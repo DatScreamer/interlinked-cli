@@ -6,6 +6,8 @@
 // under the per-file line cap. Pure value/token parsing only — no module-private
 // state, no import back from the parent module (this file is a true leaf).
 
+import { nonNull } from "../lib/non-null.js";
+
 const MAX_LIST_ENTRIES = 50;
 
 /** Local copy of the parent module's sentinel. Same literal value; kept here so
@@ -31,7 +33,7 @@ export function tokenizeKeyValue(line: string): KeyValueLine | null {
 	if (trimmed.startsWith("#")) return null;
 	const m = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
 	if (!m) return null;
-	return { indent, key: m[1], rest: m[2].trim() };
+	return { indent, key: nonNull(m[1]), rest: nonNull(m[2]).trim() };
 }
 
 export interface ParsedScalarOrList {
@@ -61,7 +63,7 @@ export function splitInlineList(text: string): string[] {
 	};
 	let inQuote: '"' | "'" | null = null;
 	for (let j = 0; j < text.length; j++) {
-		const ch = text[j];
+		const ch = nonNull(text[j]);
 		if (inQuote) {
 			if (ch === inQuote) inQuote = null;
 			buffer.push(ch);

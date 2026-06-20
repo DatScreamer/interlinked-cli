@@ -12,6 +12,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 
@@ -39,12 +40,12 @@ export function checkSwiftEmptyCatch(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		// Same-line empty: `catch [pattern]? { }`.
 		// Pattern can be `let x`, `let x as MyError`, `MyError.case`, etc.
 		// We accept any non-`{` chars between `catch` and `{ }`.
 		if (/\bcatch\b[^{]*\{\s*\}/.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 		// Multi-line: `catch ... {` on this line, `}` on a later non-empty line
@@ -52,13 +53,13 @@ export function checkSwiftEmptyCatch(content: string, filePath: string): InlineM
 		if (!/\bcatch\b[^{]*\{\s*$/.test(line)) continue;
 		let emptyBody = false;
 		for (let j = i + 1; j < Math.min(i + 5, strippedLines.length); j++) {
-			const next = strippedLines[j].trim();
+			const next = nonNull(strippedLines[j]).trim();
 			if (next === "") continue;
 			if (next === "}") emptyBody = true;
 			break;
 		}
 		if (emptyBody) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -90,7 +91,7 @@ export function checkSwiftTryQuestionDiscarded(
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		if (!/\btry\?\s/.test(line)) continue;
 		const trimmed = line.trimStart();
 		// Bound forms / control flow / explicit discard — skip.
@@ -103,7 +104,7 @@ export function checkSwiftTryQuestionDiscarded(
 		if (/=\s*try\?/.test(line)) continue;
 		// Must start with `try?` (statement-level discard).
 		if (!/^try\?\s/.test(trimmed)) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -153,15 +154,15 @@ export function checkSwiftFatalErrorInGuard(content: string, filePath: string): 
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		if (!/\bguard\b.*\belse\s*\{/.test(line)) continue;
 		// Look in this line + next 3 for fatalError.
 		for (let j = i; j < Math.min(i + 4, strippedLines.length); j++) {
-			if (/\bfatalError\s*\(/.test(strippedLines[j])) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			if (/\bfatalError\s*\(/.test(nonNull(strippedLines[j]))) {
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 				break;
 			}
-			if (j > i && /^\s*\}/.test(strippedLines[j])) break;
+			if (j > i && /^\s*\}/.test(nonNull(strippedLines[j]))) break;
 		}
 	}
 	return matches;
@@ -194,7 +195,7 @@ export function checkSwiftPrintInViewBody(content: string, filePath: string): In
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		if (!inBody) {
 			if (/\bvar\s+body\s*:\s*(?:some\s+)?View\s*\{/.test(line)) {
@@ -212,7 +213,7 @@ export function checkSwiftPrintInViewBody(content: string, filePath: string): In
 		bodyDepth += opens - closes;
 
 		if (/\bprint\s*\(/.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 
 		if (bodyDepth <= 0) inBody = false;

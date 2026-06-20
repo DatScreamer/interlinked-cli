@@ -14,6 +14,7 @@ import {
 } from "./suggestion-scorer.js";
 import type { FileSuppressions, InlineSuppressions } from "./suppressions.js";
 import type { SessionTrajectory } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // --- fixtures -------------------------------------------------------------
 
@@ -55,10 +56,10 @@ describe("scoreFindings", () => {
 		// not perf => perfBoost 1.0. score = 0.85 * 1.0 * 0.75 * 1.0 = 0.6375
 		const out = scoreFindings([finding()], baseOpts());
 		expect(out).toHaveLength(1);
-		expect(out[0].score).toBeCloseTo(0.6375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.6375, 6);
 		// the spread preserves the original finding fields
-		expect(out[0].check).toBe("sql-injection");
-		expect(out[0].message).toBe("raw SQL concatenation");
+		expect(nonNull(out[0]).check).toBe("sql-injection");
+		expect(nonNull(out[0]).message).toBe("raw SQL concatenation");
 	});
 
 	it("falls back to default base severity (0.5) for an unknown check", () => {
@@ -73,7 +74,7 @@ describe("scoreFindings", () => {
 			baseOpts({ threshold: 0 }),
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].score).toBeCloseTo(0.375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.375, 6);
 	});
 
 	it("skips suppressed findings entirely (suppression always wins)", () => {
@@ -88,7 +89,7 @@ describe("scoreFindings", () => {
 			baseOpts({ session: sessionWith("src/db.ts") }),
 		);
 		// 0.85 * 1.0 * 0.75 * 1.0 = 0.6375
-		expect(out[0].score).toBeCloseTo(0.6375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.6375, 6);
 	});
 
 	it("applies file-relevance 0.5 when the session did NOT write this file", () => {
@@ -103,7 +104,7 @@ describe("scoreFindings", () => {
 			[finding()],
 			baseOpts({ session: sessionWith("src/other.ts"), threshold: 0 }),
 		);
-		expect(out2[0].score).toBeCloseTo(0.31875, 6);
+		expect(nonNull(out2[0]).score).toBeCloseTo(0.31875, 6);
 	});
 
 	it("uses edit proximity 1.0 when finding is within 20 lines of the edit region", () => {
@@ -113,7 +114,7 @@ describe("scoreFindings", () => {
 		);
 		// dist = min(|30-25|, |30-40|) = 5 < 20 => proximity 1.0
 		// 0.85 * 1.0 * 1.0 * 1.0 = 0.85
-		expect(out[0].score).toBeCloseTo(0.85, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.85, 6);
 	});
 
 	it("uses edit proximity 0.7 when finding is 20-49 lines away", () => {
@@ -123,7 +124,7 @@ describe("scoreFindings", () => {
 		);
 		// dist = min(40, 30) = 30 => 20<=dist<50 => proximity 0.7
 		// 0.85 * 1.0 * 0.7 * 1.0 = 0.595
-		expect(out[0].score).toBeCloseTo(0.595, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.595, 6);
 	});
 
 	it("uses edit proximity 0.5 when finding is 50+ lines away", () => {
@@ -138,7 +139,7 @@ describe("scoreFindings", () => {
 			[finding({ line: 200 })],
 			baseOpts({ editStartLine: 10, editEndLine: 20, threshold: 0 }),
 		);
-		expect(out2[0].score).toBeCloseTo(0.425, 6);
+		expect(nonNull(out2[0]).score).toBeCloseTo(0.425, 6);
 	});
 
 	it("uses default proximity 0.75 when line is 0 even if edit bounds are given", () => {
@@ -148,7 +149,7 @@ describe("scoreFindings", () => {
 		);
 		// line>0 is false => proximity stays default 0.75
 		// 0.85 * 1.0 * 0.75 * 1.0 = 0.6375
-		expect(out[0].score).toBeCloseTo(0.6375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.6375, 6);
 	});
 
 	it("uses default proximity 0.75 when edit bounds are missing", () => {
@@ -157,7 +158,7 @@ describe("scoreFindings", () => {
 			[finding({ line: 30 })],
 			baseOpts({ editStartLine: 25 }),
 		);
-		expect(out[0].score).toBeCloseTo(0.6375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.6375, 6);
 	});
 
 	it("applies hot-path perf boost for perf- checks (handlers => 0.9)", () => {
@@ -172,7 +173,7 @@ describe("scoreFindings", () => {
 			[finding({ check: "perf-query-in-loop", source: "performance" })],
 			baseOpts({ filePath: "src/tools/handlers/x.ts", threshold: 0 }),
 		);
-		expect(out2[0].score).toBeCloseTo(0.4725, 6);
+		expect(nonNull(out2[0]).score).toBeCloseTo(0.4725, 6);
 	});
 
 	it("zeroes perf score in test files (hot path likelihood 0)", () => {
@@ -181,7 +182,7 @@ describe("scoreFindings", () => {
 			baseOpts({ filePath: "src/foo.test.ts", threshold: 0 }),
 		);
 		// perfBoost 0 => score 0
-		expect(out[0].score).toBe(0);
+		expect(nonNull(out[0]).score).toBe(0);
 	});
 
 	it("does not apply perf boost to non-perf checks even in a cold path", () => {
@@ -190,7 +191,7 @@ describe("scoreFindings", () => {
 			baseOpts({ filePath: "src/__tests__/x.test.ts" }),
 		);
 		// non-perf => perfBoost 1.0 regardless of hot-path likelihood
-		expect(out[0].score).toBeCloseTo(0.6375, 6);
+		expect(nonNull(out[0]).score).toBeCloseTo(0.6375, 6);
 	});
 
 	it("sorts descending and slices to the default limit of 3", () => {
@@ -204,9 +205,9 @@ describe("scoreFindings", () => {
 		const out = scoreFindings(findings, baseOpts());
 		expect(out).toHaveLength(3); // limit
 		// descending by score
-		expect(out[0].check).toBe("sql-injection"); // 0.6375
-		expect(out[1].check).toBe("secrets_in_source"); // 0.5625
-		expect(out[2].check).toBe("recursive-walker-lstat"); // 0.525
+		expect(nonNull(out[0]).check).toBe("sql-injection"); // 0.6375
+		expect(nonNull(out[1]).check).toBe("secrets_in_source"); // 0.5625
+		expect(nonNull(out[2]).check).toBe("recursive-walker-lstat"); // 0.525
 	});
 
 	it("respects an explicit limit smaller than the number of passing findings", () => {
@@ -216,7 +217,7 @@ describe("scoreFindings", () => {
 		];
 		const out = scoreFindings(findings, baseOpts({ limit: 1 }));
 		expect(out).toHaveLength(1);
-		expect(out[0].check).toBe("sql-injection");
+		expect(nonNull(out[0]).check).toBe("sql-injection");
 	});
 
 	it("returns an empty array when given no findings", () => {
@@ -244,7 +245,7 @@ describe("scoreFindings — hot path likelihood branches (via perf scoring)", ()
 			baseOpts({ filePath, threshold: 0 }),
 		);
 		// score = 0.5 (base) * 1.0 * 0.75 * perfBoost => perfBoost = score / 0.375
-		return out[0].score / 0.375;
+		return nonNull(out[0]).score / 0.375;
 	};
 
 	it("test paths => 0", () => {
@@ -419,7 +420,7 @@ describe("writeTelemetry", () => {
 		// Constrain the edit region so only line 2 passes the threshold.
 		const shown = scoreFindings(all, baseOpts({ editStartLine: 1, editEndLine: 3 }));
 		expect(shown).toHaveLength(1);
-		expect(shown[0].line).toBe(2);
+		expect(nonNull(shown[0]).line).toBe(2);
 
 		writeTelemetry(all, shown, telemetryOpts());
 		const records = readFileSync(join(dir, "suggestion-telemetry.jsonl"), "utf-8")

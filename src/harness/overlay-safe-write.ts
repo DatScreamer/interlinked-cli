@@ -15,6 +15,7 @@
 
 import { cpSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Replace a symlinked DIRECTORY segment with a real directory carrying a COPY of
@@ -95,7 +96,7 @@ function desymlinkParents(root: string, relPath: string): string {
 	let cur = root;
 	// Parent segments only (exclude the final filename).
 	for (let i = 0; i < parts.length - 1; i++) {
-		cur = join(cur, parts[i]);
+		cur = join(cur, nonNull(parts[i]));
 		const st = lstatSync(cur, { throwIfNoEntry: false });
 		if (st?.isSymbolicLink()) {
 			materializeSymlinkedDir(root, cur);

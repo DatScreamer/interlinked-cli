@@ -70,6 +70,7 @@ import type {
 	PolicyEvidence,
 	SessionTrajectory,
 } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // fetch stubbing
@@ -699,7 +700,7 @@ describe("callClassifier", () => {
 		// so the body sent to the model must be exactly 4 chars.
 		const bigEvidence = makeEvidence({ trigger_reason: "x".repeat(5000) });
 		await callClassifier(bigEvidence, makeConfig({ provider: "groq", max_input_tokens: 1 }), state);
-		const init = fetchSpy.mock.calls[0][1] as RequestInit;
+		const init = nonNull(fetchSpy.mock.calls[0])[1] as RequestInit;
 		const sentBody = JSON.parse(init.body as string);
 		const userMsg = (sentBody.messages as Array<{ role: string; content: string }>).find(
 			(m) => m.role === "user",
@@ -717,7 +718,7 @@ describe("callClassifier", () => {
 		const state = createClassifierSessionState();
 		// 0 is falsy → defaults to 800 → 3200 chars. Small evidence is untruncated.
 		await callClassifier(makeEvidence(), makeConfig({ provider: "groq", max_input_tokens: 0 }), state);
-		const init = fetchSpy.mock.calls[0][1] as RequestInit;
+		const init = nonNull(fetchSpy.mock.calls[0])[1] as RequestInit;
 		const sentBody = JSON.parse(init.body as string);
 		const userMsg = (sentBody.messages as Array<{ role: string; content: string }>).find(
 			(m) => m.role === "user",
@@ -926,7 +927,7 @@ describe("callViaClaudeCode", () => {
 				child.emit("close", 0);
 			},
 		});
-		const [cmd, args] = spawnMock.spawn.mock.calls[0];
+		const [cmd, args] = nonNull(spawnMock.spawn.mock.calls[0]);
 		expect(cmd).toBe("claude");
 		expect(args).toContain("sonnet");
 		expect(args).toContain(CLASSIFIER_SYSTEM_PROMPT);
@@ -944,7 +945,7 @@ describe("callViaClaudeCode", () => {
 				child.emit("close", 0);
 			},
 		});
-		const [, args] = spawnMock.spawn.mock.calls[0];
+		const [, args] = nonNull(spawnMock.spawn.mock.calls[0]);
 		expect(args).toContain("haiku");
 	});
 
@@ -959,7 +960,7 @@ describe("callViaClaudeCode", () => {
 				child.emit("close", 0);
 			},
 		});
-		const opts = spawnMock.spawn.mock.calls[0][2] as { timeout: number };
+		const opts = nonNull(spawnMock.spawn.mock.calls[0])[2] as { timeout: number };
 		expect(opts.timeout).toBe(15000);
 	});
 });
@@ -988,7 +989,7 @@ describe("callViaHttp (OpenAI-compatible providers)", () => {
 			reasoning: "blocked",
 			policy_id: "p1",
 		});
-		const init = fetchSpy.mock.calls[0][1] as RequestInit;
+		const init = nonNull(fetchSpy.mock.calls[0])[1] as RequestInit;
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer k-openai");
 		expect(state.consecutive_failures).toBe(0);
 	});
@@ -999,7 +1000,7 @@ describe("callViaHttp (OpenAI-compatible providers)", () => {
 		);
 		const state = createClassifierSessionState();
 		await callClassifier(makeEvidence(), makeConfig({ provider: "groq", model: "llama-3.1-8b" }), state);
-		const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+		const body = JSON.parse((nonNull(fetchSpy.mock.calls[0])[1] as RequestInit).body as string);
 		expect(body.max_tokens).toBe(150);
 		expect(body.max_completion_tokens).toBeUndefined();
 		expect(body.reasoning_effort).toBeUndefined();
@@ -1011,7 +1012,7 @@ describe("callViaHttp (OpenAI-compatible providers)", () => {
 		);
 		const state = createClassifierSessionState();
 		await callClassifier(makeEvidence(), makeConfig({ provider: "groq", model: "gpt-oss-120b" }), state);
-		const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+		const body = JSON.parse((nonNull(fetchSpy.mock.calls[0])[1] as RequestInit).body as string);
 		expect(body.max_completion_tokens).toBe(1024);
 		expect(body.reasoning_effort).toBe("low");
 		expect(body.max_tokens).toBeUndefined();
@@ -1023,7 +1024,7 @@ describe("callViaHttp (OpenAI-compatible providers)", () => {
 		);
 		const state = createClassifierSessionState();
 		await callClassifier(makeEvidence(), makeConfig({ provider: "groq", model: "my-reasoning-model" }), state);
-		const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+		const body = JSON.parse((nonNull(fetchSpy.mock.calls[0])[1] as RequestInit).body as string);
 		expect(body.max_completion_tokens).toBe(1024);
 	});
 
@@ -1126,7 +1127,7 @@ describe("callViaHttp (Anthropic provider)", () => {
 			state,
 		);
 		expect(result).toMatchObject({ label: "allow", confidence: 0.77, reasoning: "fine" });
-		const init = fetchSpy.mock.calls[0][1] as RequestInit;
+		const init = nonNull(fetchSpy.mock.calls[0])[1] as RequestInit;
 		const headers = init.headers as Record<string, string>;
 		expect(headers["x-api-key"]).toBe("k-anthropic");
 		expect(headers["anthropic-version"]).toBe("2023-06-01");
@@ -1325,7 +1326,7 @@ describe("appendShadowLog", () => {
 			recursive: true,
 		});
 		expect(fsMock.appendFileSync).toHaveBeenCalledOnce();
-		const [path, data] = fsMock.appendFileSync.mock.calls[0];
+		const [path, data] = nonNull(fsMock.appendFileSync.mock.calls[0]);
 		expect(path).toContain("policy-shadow.jsonl");
 		expect(data.endsWith("\n")).toBe(true);
 		expect(JSON.parse(data.trim()).session_id).toBe("s1");
@@ -1341,7 +1342,7 @@ describe("appendShadowLog", () => {
 	it("honors an explicit cwd override for the log path", () => {
 		fsMock.existsSync.mockReturnValue(true);
 		appendShadowLog(makeEntry(), "/custom/root");
-		const [path] = fsMock.appendFileSync.mock.calls[0];
+		const [path] = nonNull(fsMock.appendFileSync.mock.calls[0]);
 		expect(path).toContain("/custom/root");
 		expect(path).toContain(".interlinked");
 	});

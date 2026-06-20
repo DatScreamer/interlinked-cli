@@ -26,6 +26,8 @@
  *  to feed OSV — silently SKIPPING the advisory screen on a pinned, possibly
  *  vulnerable module (finding 2026-06). The prefix is preserved through to the
  *  screened version because OSV's `Go` ecosystem expects the `v`-prefixed form. */
+import { nonNull } from "../lib/non-null.js";
+
 const FLOOR_LITERAL_RE = /^[vV]?\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?/;
 
 /** Leading range comparator, longest-first so `>=`/`<=`/`==`/`~=` win over the
@@ -61,7 +63,7 @@ function normalizeVersionLiteral(lit: string): string {
 export function resolveScreenVersion(range: string): string | null {
 	// An npm hyphen range ("1.2.3 - 2.3.4") floors at its left endpoint.
 	const hyphen = range.match(/^\s*([vV]?\d[0-9A-Za-z.+-]*)\s+-\s+[vV]?\d/);
-	if (hyphen) return normalizeVersionLiteral(hyphen[1]);
+	if (hyphen) return normalizeVersionLiteral(nonNull(hyphen[1]));
 	// Otherwise scan the comparator clauses (whitespace- or comma-separated; pip
 	// uses commas) and take the first LOWER-bound / exact literal. A `<` / `<=`
 	// clause is an UPPER bound — its literal sits at or past the excluded edge,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { StructureConfig } from "../types.js";
 import { evaluateStructureRules } from "./index.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function baseConfig(overrides: Partial<StructureConfig["builtins"]> = {}): StructureConfig {
 	return {
@@ -62,7 +63,7 @@ describe("evaluateStructureRules", () => {
 			"src/foo.ts",
 		]);
 		expect(findings.length).toBe(1);
-		expect(findings[0].name).toBe("public_symbol_companion_untouched");
+		expect(nonNull(findings[0]).name).toBe("public_symbol_companion_untouched");
 	});
 
 	it("accepts the single-argument context form as well as positional args", () => {

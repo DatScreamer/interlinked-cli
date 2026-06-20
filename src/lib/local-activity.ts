@@ -27,6 +27,7 @@ import {
 	getSyncErrorsPath,
 } from "./local-activity-paths.js";
 import { readSyncState } from "./local-activity-sync.js";
+import { nonNull } from "./non-null.js";
 
 // Re-exported for back-compat call sites that import these from local-activity.js.
 export { mergeAndDedup } from "./local-activity-merge.js";
@@ -287,12 +288,12 @@ export function getLocalStats(cwd?: string): LocalStats {
 	let newest: string | undefined;
 	if (lines.length > 0) {
 		try {
-			oldest = JSON.parse(lines[0]).ts;
+			oldest = JSON.parse(nonNull(lines[0])).ts;
 		} catch (_err) {
 			/* intentional: first line unparseable — leave oldest undefined */
 		}
 		try {
-			newest = JSON.parse(lines[lines.length - 1]).ts;
+			newest = JSON.parse(nonNull(lines[lines.length - 1])).ts;
 		} catch (_err) {
 			/* intentional: last line unparseable — leave newest undefined */
 		}
@@ -326,7 +327,7 @@ export function getSyncDiagnostics(cwd?: string): SyncDiagnostics {
 	let lastSyncError: string | undefined;
 	if (syncErrorCount > 0) {
 		try {
-			const parsed = JSON.parse(errorLines[0]) as { ts?: string; message?: string };
+			const parsed = JSON.parse(nonNull(errorLines[0])) as { ts?: string; message?: string };
 			lastSyncErrorAt = parsed.ts;
 			lastSyncError = parsed.message;
 		} catch (_err) {

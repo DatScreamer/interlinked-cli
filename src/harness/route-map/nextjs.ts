@@ -15,6 +15,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { nonNull } from "../../lib/non-null.js";
 import type { AuthChainEntry, Endpoint } from "../types/session.js";
 import {
 	conventionPath,
@@ -45,7 +46,7 @@ export function extractEndpoints(
 	// conventionPath already returns a `/`-prefixed path from the captured
 	// directory segments — App Router files under `app/api/...` produce
 	// paths like `/api/admin/orgs` directly.
-	const fullPath = conventionPath(match[1]);
+	const fullPath = conventionPath(nonNull(match[1]));
 	const methods = detectExportedMethods(content);
 	// detectExportedMethods returns ["ALL"] when no method exports exist;
 	// Next.js requires explicit method exports — treat that as "no endpoint".
@@ -110,11 +111,11 @@ function parseMatcherConfig(content: string): string[] {
 	const re = /matcher\s*:\s*(\[[^\]]+\]|["'`][^"'`]+["'`])/;
 	const m = re.exec(content);
 	if (!m) return [];
-	const raw = m[1];
+	const raw = nonNull(m[1]);
 	const strings: string[] = [];
 	const stringRe = /["'`]([^"'`]+)["'`]/g;
 	for (let sm = stringRe.exec(raw); sm !== null; sm = stringRe.exec(raw)) {
-		strings.push(sm[1]);
+		strings.push(nonNull(sm[1]));
 	}
 	return strings;
 }

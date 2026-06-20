@@ -7,6 +7,7 @@ import {
 	stripStringLiterals,
 	stripTemplateLiterals,
 } from "../strip-helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("stripComments", () => {
 	it("strips line comments to spaces", () => {
@@ -136,10 +137,10 @@ describe("stripAllLiterals — order regression", () => {
 		const lines = out.split("\n");
 
 		// The JSDoc line (L2) must be fully stripped.
-		expect(lines[1].trim()).toBe("");
+		expect(nonNull(lines[1]).trim()).toBe("");
 
 		// The line comment (L8) must be fully stripped.
-		expect(lines[7].trim()).toBe("");
+		expect(nonNull(lines[7]).trim()).toBe("");
 
 		// Real code (L10) must be preserved aside from the string bodies.
 		expect(lines[9]).toContain("try");

@@ -14,6 +14,7 @@ import {
 	parseCommitMessageFromBash,
 } from "./behavioral-diff-checks.js";
 import type { SessionTrajectory } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ==========================================================================
 // parseCommitMessageFromBash — pure-function unit tests
@@ -123,8 +124,8 @@ describe("checkDisabledTestDelta", () => {
 		);
 		const results = checkDisabledTestDelta(makeSession(["foo.test.ts"]));
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("disabled_test_delta");
-		expect(results[0].severity).toBe("error");
+		expect(nonNull(results[0]).name).toBe("disabled_test_delta");
+		expect(nonNull(results[0]).severity).toBe("error");
 	});
 
 	it("does not fire when an existing skip is removed", () => {
@@ -152,7 +153,7 @@ describe("checkTestBlockCountRegression", () => {
 		stageEdit("foo.test.ts", `it("a", () => {});\n`);
 		const results = checkTestBlockCountRegression(makeSession(["foo.test.ts"]));
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("test_block_count_regression");
+		expect(nonNull(results[0]).name).toBe("test_block_count_regression");
 	});
 
 	it("does not fire when blocks are added", () => {
@@ -174,7 +175,7 @@ describe("checkAssertionStrengthWeakening", () => {
 		);
 		const results = checkAssertionStrengthWeakening(makeSession(["foo.test.ts"]));
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("assertion_strength_weakening");
+		expect(nonNull(results[0]).name).toBe("assertion_strength_weakening");
 	});
 
 	it("does not fire when only adding assertions", () => {
@@ -196,7 +197,7 @@ describe("checkClockMockAdded", () => {
 		);
 		const results = checkClockMockAdded(makeSession(["foo.test.ts"]));
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("clock_mock_added");
+		expect(nonNull(results[0]).name).toBe("clock_mock_added");
 	});
 
 	it("does not fire when vi.useFakeTimers was already there", () => {
@@ -221,7 +222,7 @@ describe("checkConventionalCommitCoherence", () => {
 			{ type: "fix", subject: "the bug" },
 		);
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("commit_message_diff_mismatch");
+		expect(nonNull(results[0]).name).toBe("commit_message_diff_mismatch");
 	});
 
 	it("flags feat: without new exports", () => {
@@ -344,7 +345,7 @@ describe("checkReintroducesRemovedCode", () => {
 		stageEdit("foo.ts", `function a() { console.log("debug-marker-xyz-123"); return 1; }\n`);
 		const results = checkReintroducesRemovedCode(makeSession(["foo.ts"]));
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("reintroduces_removed_code");
+		expect(nonNull(results[0]).name).toBe("reintroduces_removed_code");
 	});
 
 	it("does not fire when the line was never previously removed", () => {
@@ -372,7 +373,7 @@ describe("checkDoneWithoutVerify", () => {
 		const session = makeSession(["foo.ts"]);
 		const results = checkDoneWithoutVerify(session);
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("done_without_verify");
+		expect(nonNull(results[0]).name).toBe("done_without_verify");
 	});
 
 	it("does not fire when test_runs is non-empty", () => {

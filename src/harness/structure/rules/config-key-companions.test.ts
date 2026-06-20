@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode } from "../types.js";
 import { checkConfigKeyCompanions } from "./config-key-companions.js";
@@ -45,9 +46,9 @@ describe("checkConfigKeyCompanions", () => {
 
 		const findings = checkConfigKeyCompanions(g, ["src/config.ts"]);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("config_key_companion_untouched");
-		expect(findings[0].artifact_kind).toBe("config_key");
-		expect(findings[0].determinism).toBe("fully_deterministic");
+		expect(nonNull(findings[0]).name).toBe("config_key_companion_untouched");
+		expect(nonNull(findings[0]).artifact_kind).toBe("config_key");
+		expect(nonNull(findings[0]).determinism).toBe("fully_deterministic");
 	});
 
 	it("returns empty when every companion is in changedFiles", () => {

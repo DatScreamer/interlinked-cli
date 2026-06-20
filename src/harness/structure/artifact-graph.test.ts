@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "./artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode } from "./types.js";
 
@@ -239,11 +240,11 @@ describe("ArtifactGraph", () => {
 
 			const companions = graph.getCompanions("public_symbol:foo");
 			expect(companions.docs).toHaveLength(1);
-			expect(companions.docs[0].id).toBe("doc:foo-ref");
+			expect(nonNull(companions.docs[0]).id).toBe("doc:foo-ref");
 			expect(companions.tests).toHaveLength(1);
-			expect(companions.tests[0].id).toBe("test:foo-unit");
+			expect(nonNull(companions.tests[0]).id).toBe("test:foo-unit");
 			expect(companions.examples).toHaveLength(1);
-			expect(companions.examples[0].id).toBe("example:foo-ex");
+			expect(nonNull(companions.examples[0]).id).toBe("example:foo-ex");
 		});
 
 		it("returns empty arrays when no companions exist", () => {

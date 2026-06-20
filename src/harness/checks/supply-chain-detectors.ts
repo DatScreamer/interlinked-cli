@@ -17,12 +17,12 @@ export function checkInfiniteRetryLoop(content: string, filePath: string): Inlin
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 5) break;
-		const line = lines[i].trim();
+		const trimmed = line.trim();
 
 		// Pattern: while(true) { try { ...fetch/request... } catch { continue } }
-		if (/while\s*\(\s*(true|1)\s*\)/.test(line)) {
+		if (/while\s*\(\s*(true|1)\s*\)/.test(trimmed)) {
 			// Look ahead for catch+continue without delay/backoff/break/return
 			const block = lines.slice(i, Math.min(i + 20, lines.length)).join("\n");
 			if (
@@ -33,7 +33,7 @@ export function checkInfiniteRetryLoop(content: string, filePath: string): Inlin
 			) {
 				matches.push({
 					line: i + 1,
-					text: lines[i].trim().slice(0, 150),
+					text: line.trim().slice(0, 150),
 				});
 			}
 		}
@@ -56,9 +56,8 @@ export function checkHardcodedLocalhost(content: string, filePath: string): Inli
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 5) break;
-		const line = lines[i];
 		// Skip comments
 		if (/^\s*(\/\/|\/?\*|\*)/.test(line)) continue;
 		// Match hardcoded localhost URLs with ports (not just localhost in a comment)
@@ -67,7 +66,7 @@ export function checkHardcodedLocalhost(content: string, filePath: string): Inli
 			if (/\?\?|process\.env|fallback|default|development|DEV/i.test(line)) continue;
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}
@@ -87,14 +86,13 @@ export function checkProcessExitInLibrary(content: string, filePath: string): In
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 3) break;
-		const line = lines[i];
 		if (/^\s*(\/\/|\/?\*|\*)/.test(line)) continue;
 		if (/\bprocess\.exit\s*\(/.test(line)) {
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}
@@ -111,14 +109,14 @@ export function checkImportFromDist(content: string, filePath: string): InlineMa
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 5) break;
-		const line = lines[i].trim();
+		const trimmed = line.trim();
 		// Match: import/require from paths containing dist/ or build/ in relative path
-		if (/(?:from\s+|require\s*\(\s*)['"]\.\.?\/[^'"]*?(dist|build)\//.test(line)) {
+		if (/(?:from\s+|require\s*\(\s*)['"]\.\.?\/[^'"]*?(dist|build)\//.test(trimmed)) {
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}
@@ -147,9 +145,8 @@ export function checkPlaceholderValues(content: string, filePath: string): Inlin
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 5) break;
-		const line = lines[i];
 		if (
 			/\b(YOUR_\w*_HERE|REPLACE_?ME|TODO_?REPLACE|CHANGEME|INSERT_?\w*_?HERE|XXX_|PLACEHOLDER|PUT_?YOUR)\b/i.test(
 				line,
@@ -157,7 +154,7 @@ export function checkPlaceholderValues(content: string, filePath: string): Inlin
 		) {
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}
@@ -175,9 +172,8 @@ export function checkErrorMessageLeakage(content: string, filePath: string): Inl
 	const matches: InlineMatch[] = [];
 	const lines = content.split("\n");
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (matches.length >= 5) break;
-		const line = lines[i];
 		if (/^\s*(\/\/|\/?\*|\*)/.test(line)) continue;
 		// Pattern: res.json/res.send/Response with raw error
 		if (
@@ -188,7 +184,7 @@ export function checkErrorMessageLeakage(content: string, filePath: string): Inl
 		) {
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}

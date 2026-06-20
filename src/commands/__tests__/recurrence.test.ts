@@ -21,6 +21,7 @@ import {
 	recurrenceProposeCommand,
 	recurrenceScanCommand,
 } from "../recurrence.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let dir: string;
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -85,8 +86,8 @@ describe("recurrence list", () => {
 		const out = captured();
 		const parsed = JSON.parse(out) as Array<{ count: number; kind: string }>;
 		expect(parsed).toHaveLength(1);
-		expect(parsed[0].count).toBe(3);
-		expect(parsed[0].kind).toBe("harness_caught");
+		expect(nonNull(parsed[0]).count).toBe(3);
+		expect(nonNull(parsed[0]).kind).toBe("harness_caught");
 	});
 
 	it("filters by --kind", async () => {
@@ -140,9 +141,9 @@ describe("recurrence flag", () => {
 		await recurrenceFlagCommand("raw-sql-concat", { cwd: dir, message: "spotted in db.ts" });
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].kind).toBe("harness_missed");
-		expect(events[0].signature).toBe("raw-sql-concat");
-		expect(events[0].message).toBe("spotted in db.ts");
+		expect(nonNull(events[0]).kind).toBe("harness_missed");
+		expect(nonNull(events[0]).signature).toBe("raw-sql-concat");
+		expect(nonNull(events[0]).message).toBe("spotted in db.ts");
 	});
 });
 
@@ -183,7 +184,7 @@ describe("recurrence list — filters and rendering", () => {
 		// Both events share the same check_id but a *different* agent_source, so
 		// they aggregate to distinct signatures — the filter must keep only codex.
 		expect(parsed).toHaveLength(1);
-		expect(parsed[0].agent_sources).toEqual(["codex"]);
+		expect(nonNull(parsed[0]).agent_sources).toEqual(["codex"]);
 	});
 
 	it("filters by --check-id", async () => {
@@ -204,7 +205,7 @@ describe("recurrence list — filters and rendering", () => {
 		await recurrenceListCommand({ cwd: dir, checkId: "raw_sql_concat", json: true });
 		const parsed = JSON.parse(captured()) as Array<{ check_id: string }>;
 		expect(parsed).toHaveLength(1);
-		expect(parsed[0].check_id).toBe("raw_sql_concat");
+		expect(nonNull(parsed[0]).check_id).toBe("raw_sql_concat");
 	});
 
 	it("filters by --since (events older than the cutoff are dropped)", async () => {
@@ -234,15 +235,15 @@ describe("recurrence list — filters and rendering", () => {
 		const parsed = JSON.parse(captured()) as Array<{ count: number; distinct_sessions: number }>;
 		// Same signature; the old event must be filtered out by the cutoff.
 		expect(parsed).toHaveLength(1);
-		expect(parsed[0].count).toBe(1);
-		expect(parsed[0].distinct_sessions).toBe(1);
+		expect(nonNull(parsed[0]).count).toBe(1);
+		expect(nonNull(parsed[0]).distinct_sessions).toBe(1);
 	});
 
 	it("ignores an unparseable --since (no cutoff applied, all rows kept)", async () => {
 		seedThreeCaughtEvents();
 		await recurrenceListCommand({ cwd: dir, since: "not-a-duration", json: true });
 		const parsed = JSON.parse(captured()) as Array<{ count: number }>;
-		expect(parsed[0].count).toBe(3);
+		expect(nonNull(parsed[0]).count).toBe(3);
 	});
 
 	it("ignores a non-numeric --top (returns all rows)", async () => {
@@ -414,7 +415,7 @@ describe("recurrence — defaults to process.cwd() when --cwd is omitted", () =>
 		seedThreeCaughtEvents();
 		await recurrenceListCommand({ json: true });
 		const parsed = JSON.parse(captured()) as Array<{ count: number }>;
-		expect(parsed[0].count).toBe(3);
+		expect(nonNull(parsed[0]).count).toBe(3);
 	});
 
 	it("detail reads events from process.cwd()", async () => {
@@ -428,7 +429,7 @@ describe("recurrence — defaults to process.cwd() when --cwd is omitted", () =>
 		await recurrenceFlagCommand("cwd-default-miss", {});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].signature).toBe("cwd-default-miss");
+		expect(nonNull(events[0]).signature).toBe("cwd-default-miss");
 	});
 
 	it("scan walks process.cwd()", async () => {
@@ -462,8 +463,8 @@ describe("recurrence flag — usage error and json", () => {
 		expect(parsed).toEqual({ ok: true, signature: "raw-sql-concat" });
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].check_id).toBe("raw_sql_concat");
-		expect(events[0].file).toBe("src/db.ts");
+		expect(nonNull(events[0]).check_id).toBe("raw_sql_concat");
+		expect(nonNull(events[0]).file).toBe("src/db.ts");
 	});
 
 	it("prints a human-readable confirmation without --json", async () => {

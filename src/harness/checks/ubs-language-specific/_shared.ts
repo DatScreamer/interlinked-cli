@@ -3,6 +3,7 @@
 // Not part of the public API — only the sibling check modules import this.
 
 import { lineHasNoqaSuppression } from "../shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Extension predicates
@@ -111,7 +112,7 @@ export function isNoqaSuppressedInRange(
 	const lo = Math.max(1, Math.min(startLine, endLine));
 	const hi = Math.min(originalLines.length, Math.max(startLine, endLine));
 	for (let i = lo - 1; i < hi; i++) {
-		if (lineHasNoqaSuppression(originalLines[i], checkId)) return true;
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), checkId)) return true;
 	}
 	return false;
 }

@@ -8,6 +8,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Loop-body anti-pattern detectors live in a sibling to keep this file under
 // the per-file line cap; they import the loop-body extractors back from here.
@@ -53,18 +54,18 @@ export function extractBraceLoopBodies(content: string): LoopBody[] {
 	const bodies: LoopBody[] = [];
 
 	for (let i = 0; i < strippedLines.length; i++) {
-		const _trimmed = strippedLines[i].trim();
+		const _trimmed = nonNull(strippedLines[i]).trim();
 
 		// Match loop heads: for (...) {, while (...) {, loop {
 		// Also: Go/Rust for without parens — for ... {, for ... in ... {
 		// Skip "for await" — that's an async iterator, not sequential
-		if (!/^\s*(for\s*[\s(]|while\s*[\s(]|loop\s*\{)/.test(strippedLines[i])) continue;
-		if (/\bfor\s+await\b/.test(strippedLines[i])) continue;
+		if (!/^\s*(for\s*[\s(]|while\s*[\s(]|loop\s*\{)/.test(nonNull(strippedLines[i]))) continue;
+		if (/\bfor\s+await\b/.test(nonNull(strippedLines[i]))) continue;
 
 		// Find the opening brace — may be on same line or next few lines
 		let braceLineIdx = -1;
 		for (let k = i; k < Math.min(i + 5, strippedLines.length); k++) {
-			if (strippedLines[k].includes("{")) {
+			if (nonNull(strippedLines[k]).includes("{")) {
 				braceLineIdx = k;
 				break;
 			}
@@ -73,7 +74,7 @@ export function extractBraceLoopBodies(content: string): LoopBody[] {
 
 		// Count all braces on the brace line to get initial depth
 		let depth = 0;
-		for (const ch of strippedLines[braceLineIdx]) {
+		for (const ch of nonNull(strippedLines[braceLineIdx])) {
 			if (ch === "{") depth++;
 			if (ch === "}") depth--;
 		}
@@ -85,13 +86,13 @@ export function extractBraceLoopBodies(content: string): LoopBody[] {
 		const bodyOriginalLines: string[] = [];
 		let j = bodyStart;
 		for (; j < strippedLines.length; j++) {
-			for (const ch of strippedLines[j]) {
+			for (const ch of nonNull(strippedLines[j])) {
 				if (ch === "{") depth++;
 				if (ch === "}") depth--;
 			}
 			if (depth <= 0) break; // Closing brace reached
-			bodyStrippedLines.push(strippedLines[j]);
-			bodyOriginalLines.push(originalLines[j]);
+			bodyStrippedLines.push(nonNull(strippedLines[j]));
+			bodyOriginalLines.push(nonNull(originalLines[j]));
 		}
 
 		if (bodyStrippedLines.length > 0) {
@@ -121,12 +122,12 @@ export function extractIndentLoopBodies(content: string): LoopBody[] {
 	const bodies: LoopBody[] = [];
 
 	for (let i = 0; i < strippedLines.length; i++) {
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!/^(for\s+.+|while\s+.+):\s*$/.test(trimmed)) continue;
 		// Single-line body (e.g., "for x in y: pass") — skip
 		if (/:\s*\S/.test(trimmed) && !trimmed.endsWith(":")) continue;
 
-		const headIndent = strippedLines[i].search(/\S/);
+		const headIndent = nonNull(strippedLines[i]).search(/\S/);
 		if (headIndent < 0) continue;
 
 		const bodyStart = i + 1;
@@ -134,16 +135,16 @@ export function extractIndentLoopBodies(content: string): LoopBody[] {
 		const bodyOriginalLines: string[] = [];
 
 		for (let j = bodyStart; j < strippedLines.length; j++) {
-			const line = strippedLines[j];
+			const line = nonNull(strippedLines[j]);
 			if (line.trim() === "") {
 				bodyStrippedLines.push(line);
-				bodyOriginalLines.push(originalLines[j]);
+				bodyOriginalLines.push(nonNull(originalLines[j]));
 				continue; // Blank lines don't break indent
 			}
 			const indent = line.search(/\S/);
 			if (indent <= headIndent) break; // Exited the loop body
 			bodyStrippedLines.push(line);
-			bodyOriginalLines.push(originalLines[j]);
+			bodyOriginalLines.push(nonNull(originalLines[j]));
 		}
 
 		if (bodyStrippedLines.length > 0) {
@@ -243,19 +244,19 @@ export function checkSpreadInReduce(content: string, filePath: string): InlineMa
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!/\.reduce\s*\(/.test(strippedLines[i])) continue;
+		if (!/\.reduce\s*\(/.test(nonNull(strippedLines[i]))) continue;
 
 		// Scan the reduce callback body (up to 20 lines) for spread
 		let depth = 0;
 		for (let j = i; j < Math.min(i + 20, strippedLines.length); j++) {
-			for (const ch of strippedLines[j]) {
+			for (const ch of nonNull(strippedLines[j])) {
 				if (ch === "(") depth++;
 				if (ch === ")") depth--;
 			}
-			if (/\[\s*\.\.\./.test(strippedLines[j]) && j > i) {
+			if (/\[\s*\.\.\./.test(nonNull(strippedLines[j])) && j > i) {
 				matches.push({
 					line: j + 1,
-					text: originalLines[j].trim().slice(0, 150),
+					text: nonNull(originalLines[j]).trim().slice(0, 150),
 				});
 				break;
 			}

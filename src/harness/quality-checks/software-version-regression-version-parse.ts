@@ -9,6 +9,7 @@
 // shape imported from the parent module.
 
 import type { SoftwareVersionReference } from "./software-version-regression.js";
+import { nonNull } from "../../lib/non-null.js";
 
 interface ComparableVersion {
 	kind: "number" | "date" | "model";
@@ -124,7 +125,7 @@ function parseNamedModelVersion(raw: string): number[] | undefined {
 	const matches = [...raw.matchAll(/(?:^|[-_.])v?(\d+)(?:[.-](\d+))?(?:[.-](\d+))?/gi)];
 	if (matches.length === 0) return undefined;
 	const last = matches[matches.length - 1];
-	return [Number(last[1]), Number(last[2] ?? 0), Number(last[3] ?? 0)];
+	return [Number(nonNull(last)[1]), Number(nonNull(last)[2] ?? 0), Number(nonNull(last)[3] ?? 0)];
 }
 
 function parseNumericVersion(raw: string): number[] | undefined {

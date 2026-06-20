@@ -9,6 +9,7 @@ import {
 	shouldBlockNetwork,
 } from "../taint-tracker.js";
 import type { SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Deterministic fixtures.
 const FIXED_NOW = 1_700_000_000_000;
@@ -101,7 +102,7 @@ describe("ratchetSensitivity", () => {
 		expect(escalated).toBe(true);
 		expect(session.sensitivity_level).toBe("Confidential");
 		expect(session.taint_sources).toHaveLength(1);
-		expect(session.taint_sources[0].file).toBe(".env");
+		expect(nonNull(session.taint_sources[0]).file).toBe(".env");
 	});
 
 	it("does NOT downgrade sensitivity", () => {

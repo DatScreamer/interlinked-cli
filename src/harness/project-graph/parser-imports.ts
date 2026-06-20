@@ -5,6 +5,7 @@
 // Extracted from project-graph.ts to keep the main module focused
 // on the ProjectGraph class and its indexing logic.
 
+import { nonNull } from "../../lib/non-null.js";
 import type { ImportEdge } from "../types.js";
 
 /**
@@ -121,10 +122,11 @@ function parseDestructuredSymbols(raw: string): string[] {
 	return raw
 		.split(",")
 		.map((s) =>
-			s
-				.trim()
-				.split(/\s*:\s*/)[0]
-				.trim(),
+			nonNull(
+				s
+					.trim()
+					.split(/\s*:\s*/)[0],
+			).trim(),
 		)
 		.filter(Boolean);
 }
@@ -154,8 +156,8 @@ function matchStaticImport(
 	if (defaultImport) {
 		return {
 			fromFile,
-			specifier: defaultImport[2],
-			symbols: [defaultImport[1]],
+			specifier: nonNull(defaultImport[2]),
+			symbols: [nonNull(defaultImport[1])],
 			isTypeOnly,
 		};
 	}
@@ -163,13 +165,13 @@ function matchStaticImport(
 	// import * as name from 'module'
 	const nsImport = trimmed.match(/^import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/);
 	if (nsImport) {
-		return { fromFile, specifier: nsImport[2], symbols: [], isTypeOnly };
+		return { fromFile, specifier: nonNull(nsImport[2]), symbols: [], isTypeOnly };
 	}
 
 	// import 'module' (side-effect)
 	const sideEffect = trimmed.match(/^import\s+['"]([^'"]+)['"]/);
 	if (sideEffect) {
-		return { fromFile, specifier: sideEffect[1], symbols: [], isTypeOnly: false };
+		return { fromFile, specifier: nonNull(sideEffect[1]), symbols: [], isTypeOnly: false };
 	}
 
 	return null;
@@ -187,7 +189,7 @@ function matchDynamicImport(
 	// require('module')
 	const req = trimmed.match(/require\(['"]([^'"]+)['"]\)/);
 	if (req) {
-		return { fromFile, specifier: req[1], symbols: [], isTypeOnly: false };
+		return { fromFile, specifier: nonNull(req[1]), symbols: [], isTypeOnly: false };
 	}
 
 	// Destructured dynamic import — const/let/var binding of a destructuring
@@ -199,8 +201,8 @@ function matchDynamicImport(
 	if (destructuredDynamic) {
 		return {
 			fromFile,
-			specifier: destructuredDynamic[2],
-			symbols: parseDestructuredSymbols(destructuredDynamic[1]),
+			specifier: nonNull(destructuredDynamic[2]),
+			symbols: parseDestructuredSymbols(nonNull(destructuredDynamic[1])),
 			isTypeOnly: false,
 		};
 	}
@@ -212,13 +214,13 @@ function matchDynamicImport(
 		/^(?:const|let|var)\s+\w+\s*=\s*(?:await\s+)?import\(\s*['"]([^'"]+)['"]\s*\)/,
 	);
 	if (namespaceDynamic) {
-		return { fromFile, specifier: namespaceDynamic[1], symbols: [], isTypeOnly: false };
+		return { fromFile, specifier: nonNull(namespaceDynamic[1]), symbols: [], isTypeOnly: false };
 	}
 
 	// Dynamic import('module')
 	const dynamic = trimmed.match(/import\(['"]([^'"]+)['"]\)/);
 	if (dynamic) {
-		return { fromFile, specifier: dynamic[1], symbols: [], isTypeOnly: false };
+		return { fromFile, specifier: nonNull(dynamic[1]), symbols: [], isTypeOnly: false };
 	}
 
 	return null;

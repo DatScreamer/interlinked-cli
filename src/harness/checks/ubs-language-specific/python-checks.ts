@@ -2,6 +2,7 @@
 // ubs-language-specific.ts during the 1500-line decomposition. Each function
 // returns InlineMatch[]. Ext-gated to .py / .pyi.
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -59,7 +60,7 @@ export function checkSubprocessShellTrue(content: string, filePath: string): Inl
 		}
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -96,10 +97,10 @@ export function checkPyNoneEquality(content: string, filePath: string): InlineMa
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (re.test(strippedLines[i])) {
+		if (re.test(nonNull(strippedLines[i]))) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -124,8 +125,8 @@ export function checkPyMutableDefaultArg(content: string, filePath: string): Inl
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(originalLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(originalLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -149,8 +150,8 @@ export function checkTempfileMktempRace(content: string, filePath: string): Inli
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -177,10 +178,10 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
+		if (!re.test(nonNull(strippedLines[i]))) continue;
 		// 139-repo audit: respect Bandit `# noqa: S301`.
-		if (lineHasNoqaSuppression(originalLines[i], "ubs_pickle_untrusted_load")) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), "ubs_pickle_untrusted_load")) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -227,10 +228,10 @@ export function checkXmlExternalEntity(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
+		if (!re.test(nonNull(strippedLines[i]))) continue;
 		// 139-repo audit: respect Bandit `# noqa: S314 / S320`.
-		if (lineHasNoqaSuppression(originalLines[i], "ubs_xml_external_entity")) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), "ubs_xml_external_entity")) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -258,8 +259,8 @@ export function checkOsSystemTainted(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -285,7 +286,7 @@ export function checkRegexInLoopNoCompile(content: string, filePath: string): In
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		const indent = line.search(/\S/);
 		if (inLoop && indent !== -1 && indent <= loopIndent) {
 			inLoop = false;
@@ -297,7 +298,7 @@ export function checkRegexInLoopNoCompile(content: string, filePath: string): In
 			continue;
 		}
 		if (inLoop && /\bre\.(?:match|search|sub|fullmatch|findall|finditer)\s*\(/.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -323,9 +324,9 @@ export function checkMarshalLoad(content: string, filePath: string): InlineMatch
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		if (lineHasNoqaSuppression(originalLines[i], "ubs_marshal_load")) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), "ubs_marshal_load")) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -349,9 +350,9 @@ export function checkShelveOpen(content: string, filePath: string): InlineMatch[
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		if (lineHasNoqaSuppression(originalLines[i], "ubs_shelve_open")) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(nonNull(strippedLines[i]))) continue;
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), "ubs_shelve_open")) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -386,8 +387,8 @@ export function checkYamlUnsafeLoad(content: string, filePath: string): InlineMa
 		if (matches.length >= MATCH_LIMIT) break;
 		const idx = m.index ?? 0;
 		const lineNum = stripped.slice(0, idx).split("\n").length;
-		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_yaml_unsafe_load")) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[lineNum - 1]), "ubs_yaml_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 
 	// `yaml.load(arg)` without a `Safe`-class Loader argument within the call.
@@ -402,8 +403,8 @@ export function checkYamlUnsafeLoad(content: string, filePath: string): InlineMa
 		const idx = m.index ?? 0;
 		const lineNum = stripped.slice(0, idx).split("\n").length;
 		if (matches.some((mx) => mx.line === lineNum)) continue;
-		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_yaml_unsafe_load")) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[lineNum - 1]), "ubs_yaml_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -435,8 +436,8 @@ export function checkTorchUnsafeLoad(content: string, filePath: string): InlineM
 		if (matches.length >= MATCH_LIMIT) break;
 		const idx = m.index ?? 0;
 		const lineNum = stripped.slice(0, idx).split("\n").length;
-		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_torch_unsafe_load")) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[lineNum - 1]), "ubs_torch_unsafe_load")) continue;
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -468,8 +469,8 @@ export function checkPickleWrapperLoad(content: string, filePath: string): Inlin
 		if (matches.length >= MATCH_LIMIT) break;
 		const idx = m.index ?? 0;
 		const lineNum = stripped.slice(0, idx).split("\n").length;
-		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_pickle_wrapper_load")) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[lineNum - 1]), "ubs_pickle_wrapper_load")) continue;
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 
 	// numpy.load(..., allow_pickle=True) — only flagged with explicit opt-in.
@@ -479,8 +480,8 @@ export function checkPickleWrapperLoad(content: string, filePath: string): Inlin
 		const idx = m.index ?? 0;
 		const lineNum = stripped.slice(0, idx).split("\n").length;
 		if (matches.some((mx) => mx.line === lineNum)) continue;
-		if (lineHasNoqaSuppression(originalLines[lineNum - 1], "ubs_pickle_wrapper_load")) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		if (lineHasNoqaSuppression(nonNull(originalLines[lineNum - 1]), "ubs_pickle_wrapper_load")) continue;
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 	return matches;
 }

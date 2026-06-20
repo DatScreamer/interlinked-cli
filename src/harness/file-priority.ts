@@ -29,6 +29,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { nonNull } from "../lib/non-null.js";
 
 /** Priority tier for a tracked file. */
 export type PriorityTier = "hot" | "warm" | "cold";
@@ -88,12 +89,12 @@ export function parseGitLogOutput(
 		const trimmed = block.trim();
 		if (!trimmed) continue;
 		const lines = trimmed.split("\n");
-		const ts = Number.parseInt(lines[0], 10);
+		const ts = Number.parseInt(nonNull(lines[0]), 10);
 		if (!Number.isFinite(ts) || ts <= 0) continue;
 		const commitMs = ts * 1000;
 		const ageDays = Math.max(0, Math.round((now - commitMs) / MS_PER_DAY));
 		for (let i = 1; i < lines.length; i++) {
-			const path = lines[i].trim();
+			const path = nonNull(lines[i]).trim();
 			if (!path) continue;
 			if (out.has(path)) continue; // Most-recent wins.
 			out.set(path, { ageDays, tier: priorityTierForAge(ageDays) });

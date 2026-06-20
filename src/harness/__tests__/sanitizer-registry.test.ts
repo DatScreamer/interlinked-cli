@@ -26,6 +26,7 @@ import {
 	watchSanitizerFiles,
 	type SanitizerRegistry,
 } from "../sanitizer-registry.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ---------- Test scaffolding ----------
 
@@ -126,7 +127,7 @@ describe("validate — schema coercion and compilation", () => {
 			},
 		});
 		expect(reg.sanitizers.identity).toHaveLength(1);
-		expect(reg.sanitizers.identity[0].name).toBe("ok");
+		expect(nonNull(reg.sanitizers.identity[0]).name).toBe("ok");
 	});
 
 	const compileFixture = (): SanitizerRegistry =>
@@ -184,7 +185,7 @@ describe("validate — schema coercion and compilation", () => {
 				html: [{ name: "escape", kind: "function", pattern: "escape" }],
 			},
 		});
-		expect(reg.sanitizers.html[0].scope).toBe("global");
+		expect(nonNull(reg.sanitizers.html[0]).scope).toBe("global");
 	});
 });
 

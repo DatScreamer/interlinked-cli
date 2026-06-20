@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerSetupCommands } from "./setup.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Mock every command implementation the registrar wires — both the directly
@@ -146,19 +147,19 @@ describe("direct-binding actions", () => {
 		const program = build();
 		await program.parseAsync(["clean", "--force", "--json"], { from: "user" });
 		expect(cleanCommand).toHaveBeenCalledTimes(1);
-		expect(cleanCommand.mock.calls[0][0]).toMatchObject({ force: true, json: true });
+		expect(nonNull(cleanCommand.mock.calls[0])[0]).toMatchObject({ force: true, json: true });
 	});
 
 	it("disable forwards --keep-config", async () => {
 		const program = build();
 		await program.parseAsync(["disable", "--keep-config"], { from: "user" });
-		expect(disableCommand.mock.calls[0][0]).toMatchObject({ keepConfig: true });
+		expect(nonNull(disableCommand.mock.calls[0])[0]).toMatchObject({ keepConfig: true });
 	});
 
 	it("doctor forwards --fix --json", async () => {
 		const program = build();
 		await program.parseAsync(["doctor", "--fix", "--json"], { from: "user" });
-		expect(doctorCommand.mock.calls[0][0]).toMatchObject({ fix: true, json: true });
+		expect(nonNull(doctorCommand.mock.calls[0])[0]).toMatchObject({ fix: true, json: true });
 	});
 
 	it("enable forwards its full option spread", async () => {
@@ -182,7 +183,7 @@ describe("direct-binding actions", () => {
 			],
 			{ from: "user" },
 		);
-		expect(enableCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(enableCommand.mock.calls[0])[0]).toMatchObject({
 			server: "https://s",
 			agent: "a",
 			clients: "claude,codex",
@@ -198,7 +199,7 @@ describe("direct-binding actions", () => {
 		await program.parseAsync(["login", "--server", "https://s", "--token", "tok"], {
 			from: "user",
 		});
-		expect(loginCommand.mock.calls[0][0]).toMatchObject({ server: "https://s", token: "tok" });
+		expect(nonNull(loginCommand.mock.calls[0])[0]).toMatchObject({ server: "https://s", token: "tok" });
 	});
 });
 
@@ -215,13 +216,13 @@ describe("lazy-import action wrappers", () => {
 	it("context passes view opts", async () => {
 		const program = build();
 		await program.parseAsync(["context", "--json", "--short", "--full"], { from: "user" });
-		expect(contextCommand.mock.calls[0][0]).toMatchObject({ json: true, short: true, full: true });
+		expect(nonNull(contextCommand.mock.calls[0])[0]).toMatchObject({ json: true, short: true, full: true });
 	});
 
 	it("env passes view opts", async () => {
 		const program = build();
 		await program.parseAsync(["env", "--full"], { from: "user" });
-		expect(envCommand.mock.calls[0][0]).toMatchObject({ full: true });
+		expect(nonNull(envCommand.mock.calls[0])[0]).toMatchObject({ full: true });
 	});
 
 	it("init passes opts including -y/--yes", async () => {
@@ -230,7 +231,7 @@ describe("lazy-import action wrappers", () => {
 			["init", "--server", "https://s", "--agent", "a", "--sync-mode", "realtime", "-y"],
 			{ from: "user" },
 		);
-		expect(initCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(initCommand.mock.calls[0])[0]).toMatchObject({
 			server: "https://s",
 			agent: "a",
 			syncMode: "realtime",
@@ -241,19 +242,19 @@ describe("lazy-import action wrappers", () => {
 	it("logout passes --all --json", async () => {
 		const program = build();
 		await program.parseAsync(["logout", "--all", "--json"], { from: "user" });
-		expect(logoutCommand.mock.calls[0][0]).toMatchObject({ all: true, json: true });
+		expect(nonNull(logoutCommand.mock.calls[0])[0]).toMatchObject({ all: true, json: true });
 	});
 
 	it("update passes --force --json", async () => {
 		const program = build();
 		await program.parseAsync(["update", "--force", "--json"], { from: "user" });
-		expect(updateCommand.mock.calls[0][0]).toMatchObject({ force: true, json: true });
+		expect(nonNull(updateCommand.mock.calls[0])[0]).toMatchObject({ force: true, json: true });
 	});
 
 	it("update is reachable via the upgrade alias", async () => {
 		const program = build();
 		await program.parseAsync(["upgrade", "--json"], { from: "user" });
-		expect(updateCommand.mock.calls[0][0]).toMatchObject({ json: true });
+		expect(nonNull(updateCommand.mock.calls[0])[0]).toMatchObject({ json: true });
 	});
 
 	it("install-hooks forwards runner/scope/mode/binary and defaults scope+mode", async () => {
@@ -262,7 +263,7 @@ describe("lazy-import action wrappers", () => {
 			["install-hooks", "--runner", "claude-code,codex", "--binary", "/bin/il", "--dry-run"],
 			{ from: "user" },
 		);
-		expect(installHooksCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(installHooksCommand.mock.calls[0])[0]).toMatchObject({
 			runner: "claude-code,codex",
 			binary: "/bin/il",
 			scope: "project", // default
@@ -276,7 +277,7 @@ describe("lazy-import action wrappers", () => {
 		await program.parseAsync(["uninstall-hooks", "--runner", "codex", "--json"], {
 			from: "user",
 		});
-		expect(uninstallHooksCommand.mock.calls[0][0]).toMatchObject({ runner: "codex", json: true });
+		expect(nonNull(uninstallHooksCommand.mock.calls[0])[0]).toMatchObject({ runner: "codex", json: true });
 	});
 
 	it("mode passes the name positional and opts", async () => {
@@ -284,8 +285,8 @@ describe("lazy-import action wrappers", () => {
 		await program.parseAsync(["mode", "strict", "--diff", "--local", "--force", "--json"], {
 			from: "user",
 		});
-		expect(modeCommand.mock.calls[0][0]).toBe("strict");
-		expect(modeCommand.mock.calls[0][1]).toMatchObject({
+		expect(nonNull(modeCommand.mock.calls[0])[0]).toBe("strict");
+		expect(nonNull(modeCommand.mock.calls[0])[1]).toMatchObject({
 			diff: true,
 			local: true,
 			force: true,
@@ -296,7 +297,7 @@ describe("lazy-import action wrappers", () => {
 	it("mode passes undefined name when omitted (show-current path)", async () => {
 		const program = build();
 		await program.parseAsync(["mode"], { from: "user" });
-		expect(modeCommand.mock.calls[0][0]).toBeUndefined();
+		expect(nonNull(modeCommand.mock.calls[0])[0]).toBeUndefined();
 	});
 });
 
@@ -311,7 +312,7 @@ describe("setup action — branches", () => {
 		await program.parseAsync(["setup", "--server", "https://s", "--agent", "a", "--dry-run"], {
 			from: "user",
 		});
-		expect(enableCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(enableCommand.mock.calls[0])[0]).toMatchObject({
 			server: "https://s",
 			agent: "a",
 			dryRun: true,
@@ -329,7 +330,7 @@ describe("setup action — branches", () => {
 			["setup", "--clients", "claude,cursor", "--sync-mode", "manual"],
 			{ from: "user" },
 		);
-		expect(enableCommand.mock.calls[0][0]).toMatchObject({
+		expect(nonNull(enableCommand.mock.calls[0])[0]).toMatchObject({
 			clients: "claude,cursor",
 			syncMode: "manual",
 			dryRun: undefined,

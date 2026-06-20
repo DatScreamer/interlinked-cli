@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactGraph, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode } from "../types.js";
 import { checkGlossaryResidue } from "./glossary-residue.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function termNode(label: string, deprecated: string[]): ArtifactNode {
 	return {
@@ -47,8 +48,8 @@ describe("checkGlossaryResidue", () => {
 		writeFileSync(join(tmp, "a.ts"), "const x = old_workspace;");
 		const findings = checkGlossaryResidue(g, ["a.ts"], tmp);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("glossary_residue");
-		expect(findings[0].severity).toBe("info");
+		expect(nonNull(findings[0]).name).toBe("glossary_residue");
+		expect(nonNull(findings[0]).severity).toBe("info");
 	});
 
 	it("is case-insensitive on the deprecated term", () => {

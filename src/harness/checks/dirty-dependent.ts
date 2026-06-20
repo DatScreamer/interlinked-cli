@@ -28,6 +28,8 @@
 // `isTestFile`, and (optionally) `isRelevant`. Graph walk, dedup, and the
 // diff-cross-reference helpers live here.
 
+import { nonNull } from "../../lib/non-null.js";
+
 const DEFAULT_MAX_DEPTH = 5;
 
 /** Which way the import edge runs between `staged` and `dirtyFile`.
@@ -219,7 +221,7 @@ function parseHunkContexts(diff: string): string[] {
 	for (const line of diff.split("\n")) {
 		const m = line.match(HUNK_HEADER);
 		if (m) {
-			const ctx = m[1].trim();
+			const ctx = nonNull(m[1]).trim();
 			if (ctx.length > 0) out.push(ctx);
 		}
 	}
@@ -235,11 +237,11 @@ function defNameFromContext(context: string): string | null {
 	const byKeyword = context.match(
 		/\b(?:function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/,
 	);
-	if (byKeyword) return byKeyword[1];
+	if (byKeyword) return nonNull(byKeyword[1]);
 	const byBinding = context.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/);
-	if (byBinding) return byBinding[1];
+	if (byBinding) return nonNull(byBinding[1]);
 	const byCallable = context.match(/([A-Za-z_$][\w$]*)\s*[(<:]/);
-	if (byCallable) return byCallable[1];
+	if (byCallable) return nonNull(byCallable[1]);
 	return null;
 }
 

@@ -10,6 +10,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 export { checkFloatEquality, checkParseIntRadix } from "./b-series-numeric.js";
 
 // ===========================================
@@ -34,7 +35,8 @@ export function checkUnreachableCode(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length - 1; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const strippedLineI = nonNull(strippedLines[i]);
+		const trimmed = strippedLineI.trim();
 		// Match return/throw/break/continue that end a statement
 		if (!/^(return\b|throw\b|break\s*;|continue\s*;)/.test(trimmed)) continue;
 
@@ -53,21 +55,22 @@ export function checkUnreachableCode(content: string, filePath: string): InlineM
 		}
 
 		// Get indent level of current line
-		const indent = strippedLines[i].search(/\S/);
+		const indent = strippedLineI.search(/\S/);
 		if (indent < 0) continue;
 		// Check next non-empty line
 		for (let j = i + 1; j < strippedLines.length && j <= i + 3; j++) {
-			const nextTrimmed = strippedLines[j].trim();
+			const strippedLineJ = nonNull(strippedLines[j]);
+			const nextTrimmed = strippedLineJ.trim();
 			if (!nextTrimmed) continue;
 			// Closing brace is fine
 			if (nextTrimmed === "}" || nextTrimmed === "};") break;
 			// Case/default labels are fine
 			if (/^(case\s|default\s*:)/.test(nextTrimmed)) break;
-			const nextIndent = strippedLines[j].search(/\S/);
+			const nextIndent = strippedLineJ.search(/\S/);
 			if (nextIndent >= indent) {
 				matches.push({
 					line: j + 1,
-					text: lines[j].trim().slice(0, 150),
+					text: nonNull(lines[j]).trim().slice(0, 150),
 				});
 			}
 			break;
@@ -93,18 +96,18 @@ export function checkSilentCatch(content: string, filePath: string): InlineMatch
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!pattern.test(strippedLines[i])) continue;
+		if (!pattern.test(nonNull(strippedLines[i]))) continue;
 		// Check the original (pre-strip) line: if the catch block has a comment
 		// between the braces, it's an intentional empty catch — don't flag it.
 		// e.g. catch (e) { /* expected */ } or catch { // optional }
-		const original = originalLines[i];
+		const original = nonNull(originalLines[i]);
 		if (/\bcatch\s*(?:\([^)]*\))?\s*\{[^}]*(?:\/\/|\/\*)/.test(original)) continue;
 		// Also check the next line for a comment inside the catch block
-		if (i + 1 < originalLines.length && /^\s*(\/\/|\/\*)/.test(originalLines[i + 1])) {
+		if (i + 1 < originalLines.length && /^\s*(\/\/|\/\*)/.test(nonNull(originalLines[i + 1]))) {
 			// Multi-line catch with comment body: catch (e) {\n  // reason\n}
-			if (/\bcatch\s*(?:\([^)]*\))?\s*\{\s*$/.test(originalLines[i])) continue;
+			if (/\bcatch\s*(?:\([^)]*\))?\s*\{\s*$/.test(nonNull(originalLines[i]))) continue;
 		}
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
@@ -127,7 +130,7 @@ export function checkAssertionFreeTests(content: string, filePath: string): Inli
 	let testName = "";
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		if (!inTestBlock) {
 			const testMatch = trimmed.match(/^(?:it|test)\s*\(/);
@@ -138,7 +141,7 @@ export function checkAssertionFreeTests(content: string, filePath: string): Inli
 				hasAssertion = false;
 				testName = trimmed.slice(0, 80);
 				// Count braces on the opening line (arrow function body brace)
-				for (const ch of lines[i]) {
+				for (const ch of nonNull(lines[i])) {
 					if (ch === "{") braceDepth++;
 					if (ch === "}") braceDepth--;
 				}
@@ -147,7 +150,7 @@ export function checkAssertionFreeTests(content: string, filePath: string): Inli
 		}
 
 		// Count braces
-		for (const ch of lines[i]) {
+		for (const ch of nonNull(lines[i])) {
 			if (ch === "{") braceDepth++;
 			if (ch === "}") braceDepth--;
 		}
@@ -188,15 +191,15 @@ export function checkTrivialAssertions(content: string, filePath: string): Inlin
 	const lines = content.split("\n");
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		// Match expect(LITERAL).toBe(LITERAL) or .toEqual(LITERAL) where both literals are identical
 		const m = trimmed.match(
 			/expect\(\s*(true|false|null|undefined|\d+|'[^']*'|"[^"]*")\s*\)\s*\.(?:toBe|toEqual|toStrictEqual)\(\s*(true|false|null|undefined|\d+|'[^']*'|"[^"]*")\s*\)/,
 		);
 		if (m) {
-			const left = m[1].replace(/['"]/g, "");
-			const right = m[2].replace(/['"]/g, "");
+			const left = nonNull(m[1]).replace(/['"]/g, "");
+			const right = nonNull(m[2]).replace(/['"]/g, "");
 			if (left === right) {
 				matches.push({
 					line: i + 1,
@@ -337,11 +340,11 @@ export function checkHardcodedCredentials(content: string, filePath: string): In
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const m = strippedLines[i].match(credPattern);
+		const m = nonNull(strippedLines[i]).match(credPattern);
 		if (!m) continue;
 
 		const varSuffix = m[2]; // e.g., "Validator" from "passwordValidator"
-		const value = m[3]; // the string value between quotes
+		const value = nonNull(m[3]); // the string value between quotes
 		const valueLower = value.toLowerCase();
 
 		// Skip if variable name has a descriptive suffix (passwordPattern, secretName, etc.)
@@ -356,7 +359,7 @@ export function checkHardcodedCredentials(content: string, filePath: string): In
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -380,14 +383,14 @@ export function checkInfiniteRecursion(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 5) break;
-		const funcMatch = strippedLines[i].match(funcNameRegex);
+		const funcMatch = nonNull(strippedLines[i]).match(funcNameRegex);
 		if (!funcMatch) continue;
 		const funcName = funcMatch[1] || funcMatch[2];
 		if (!funcName) continue;
 
 		// Track brace depth to ensure self-call is inside the function body
 		let fnBraceDepth = 0;
-		for (const ch of strippedLines[i]) {
+		for (const ch of nonNull(strippedLines[i])) {
 			if (ch === "{") fnBraceDepth++;
 			if (ch === "}") fnBraceDepth--;
 		}
@@ -401,9 +404,9 @@ export function checkInfiniteRecursion(content: string, filePath: string): Inlin
 		// Look ahead up to 15 lines for a self-call without a guard
 		let hasGuard = false;
 		for (let j = i + 1; j < Math.min(i + 15, strippedLines.length); j++) {
-			const line = strippedLines[j].trim();
+			const line = nonNull(strippedLines[j]).trim();
 			// Track brace depth — stop when we leave the function body
-			for (const ch of strippedLines[j]) {
+			for (const ch of nonNull(strippedLines[j])) {
 				if (ch === "{") fnBraceDepth++;
 				if (ch === "}") fnBraceDepth--;
 			}
@@ -425,7 +428,7 @@ export function checkInfiniteRecursion(content: string, filePath: string): Inlin
 				if (!hasGuard) {
 					matches.push({
 						line: j + 1,
-						text: originalLines[j].trim().slice(0, 150),
+						text: nonNull(originalLines[j]).trim().slice(0, 150),
 					});
 				}
 				break;
@@ -451,7 +454,7 @@ export function checkSyncIoInAsync(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 
 		// Track async function entry
 		if (/\basync\s+(function|\()/.test(line) || /=\s*async\s*(\(|[^=])/.test(line)) {
@@ -477,7 +480,7 @@ export function checkSyncIoInAsync(content: string, filePath: string): InlineMat
 		) {
 			matches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: nonNull(lines[i]).trim().slice(0, 150),
 			});
 		}
 	}

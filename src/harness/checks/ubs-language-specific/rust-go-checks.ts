@@ -9,6 +9,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { MATCH_LIMIT } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Row 22 — `ubs_mutex_lock_unwrap` (Rust)
@@ -39,7 +40,7 @@ export function checkMutexLockUnwrap(content: string, filePath: string): InlineM
 		const lineNum = stripped.slice(0, idx).split("\n").length;
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -76,7 +77,7 @@ export function checkGoroutineNoWaitgroup(content: string, filePath: string): In
 		const lineNum = stripped.slice(0, idx).split("\n").length;
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -108,7 +109,7 @@ export function checkDeferInLoop(content: string, filePath: string): InlineMatch
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		// Count braces opening before checking the line content.
 		const openCount = (line.match(/\{/g) || []).length;
@@ -123,14 +124,14 @@ export function checkDeferInLoop(content: string, filePath: string): InlineMatch
 
 		// Now if we're inside a loop and the line has `defer `, flag it.
 		if (loopDepth > 0 && /\bdefer\s+\w/.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 
 		// Apply brace depth changes for next iteration.
 		braceDepth += openCount - closeCount;
 
 		// Pop loops whose entry depth is now above the current depth.
-		while (loopStack.length > 0 && loopStack[loopStack.length - 1] >= braceDepth) {
+		while (loopStack.length > 0 && nonNull(loopStack[loopStack.length - 1]) >= braceDepth) {
 			loopStack.pop();
 			loopDepth--;
 		}
@@ -172,7 +173,7 @@ export function checkGoShellInjection(content: string, filePath: string): Inline
 		const lineNum = commentOnly.slice(0, idx).split("\n").length;
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	void stripped; // kept consistent with sibling checks' shape

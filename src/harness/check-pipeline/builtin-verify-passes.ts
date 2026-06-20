@@ -9,6 +9,7 @@
 
 import type { InlineMatch } from "../checks/shared.js";
 import { registerVerifyPass } from "./verify-pass.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const FIXTURE_PATH_RE = /(?:^|\/)(?:__fixtures__|fixtures|test-data|testdata)\//;
 
@@ -18,7 +19,7 @@ function lineAt(content: string, lineNo: number): string {
 	if (lineNo < 1) return "";
 	const lines = content.split("\n");
 	if (lineNo > lines.length) return "";
-	return lines[lineNo - 1].trim();
+	return nonNull(lines[lineNo - 1]).trim();
 }
 
 /** True when the line at `lineNo` looks like a typeof-narrowing

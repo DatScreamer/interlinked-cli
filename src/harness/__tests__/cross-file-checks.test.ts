@@ -8,6 +8,7 @@ import {
 } from "../cross-file-checks.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Minimal fake ProjectGraph — implements only the methods the checks call.
 function makeGraph(
@@ -46,7 +47,7 @@ describe("checkCrossFileSwitchDiscriminant", () => {
 			graph as unknown as ProjectGraph,
 		);
 		expect(results.length).toBe(1);
-		expect(results[0].check).toBe("cross_file_switch_discriminant");
+		expect(nonNull(results[0]).check).toBe("cross_file_switch_discriminant");
 	});
 
 	it("does not flag when discriminant appears only in the edited file", () => {
@@ -98,7 +99,7 @@ describe("checkSingleImplementationInterface", () => {
 			graph as unknown as ProjectGraph,
 		);
 		expect(results.length).toBe(1);
-		expect(results[0].check).toBe("single_implementation_interface");
+		expect(nonNull(results[0]).check).toBe("single_implementation_interface");
 	});
 
 	it("passes interface with multiple implementors", () => {

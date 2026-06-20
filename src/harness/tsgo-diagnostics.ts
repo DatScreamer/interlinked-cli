@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import type { TsgoDiagnostic } from "./daemon-protocol.js";
 
 // -----------------------------------------------------------------------------
@@ -288,24 +289,24 @@ export function parseDiagnosticLine(line: string, defaultFile: string): TsgoDiag
 	const m1 = /^(.+?)\((\d+),(\d+)\):\s+(error|warning|info)\s+TS(\d+):\s+(.*)$/.exec(line);
 	if (m1) {
 		return {
-			file: m1[1],
-			line: Number.parseInt(m1[2], 10),
-			column: Number.parseInt(m1[3], 10),
+			file: nonNull(m1[1]),
+			line: Number.parseInt(nonNull(m1[2]), 10),
+			column: Number.parseInt(nonNull(m1[3]), 10),
 			severity: m1[4] as "error" | "warning" | "info",
-			code: Number.parseInt(m1[5], 10),
-			message: m1[6],
+			code: Number.parseInt(nonNull(m1[5]), 10),
+			message: nonNull(m1[6]),
 		};
 	}
 	// Form 2: file:line:col - severity TSxxxx: message
 	const m2 = /^(.+?):(\d+):(\d+)\s+-\s+(error|warning|info)\s+TS(\d+):\s+(.*)$/.exec(line);
 	if (m2) {
 		return {
-			file: m2[1],
-			line: Number.parseInt(m2[2], 10),
-			column: Number.parseInt(m2[3], 10),
+			file: nonNull(m2[1]),
+			line: Number.parseInt(nonNull(m2[2]), 10),
+			column: Number.parseInt(nonNull(m2[3]), 10),
 			severity: m2[4] as "error" | "warning" | "info",
-			code: Number.parseInt(m2[5], 10),
-			message: m2[6],
+			code: Number.parseInt(nonNull(m2[5]), 10),
+			message: nonNull(m2[6]),
 		};
 	}
 	// Fall-through: line has no structured diagnostic — skip. We use the
@@ -318,8 +319,8 @@ export function parseDiagnosticLine(line: string, defaultFile: string): TsgoDiag
 				line: 0,
 				column: 0,
 				severity: m3[1] as "error" | "warning" | "info",
-				code: Number.parseInt(m3[2], 10),
-				message: m3[3],
+				code: Number.parseInt(nonNull(m3[2]), 10),
+				message: nonNull(m3[3]),
 			};
 		}
 	}

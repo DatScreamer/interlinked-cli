@@ -3,6 +3,7 @@
 // Extracted verbatim from agent-safety-advanced.ts to stay under the line cap.
 // Each function depends only on ./shared.js helpers (no project-graph / fs / path).
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -27,7 +28,7 @@ export function checkThrowLiteral(content: string, filePath: string): InlineMatc
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		// throw followed by a string literal, number, boolean, null, undefined, or a variable (not `new`)
 		// We check original content for string literals since stripped content removes them
 		if (/^\bthrow\s+/.test(trimmed)) {
@@ -36,13 +37,13 @@ export function checkThrowLiteral(content: string, filePath: string): InlineMatc
 			if (/^new\s+/.test(afterThrow)) continue;
 			// Skip: throw someVar (could be an Error instance — too ambiguous)
 			// Only flag obvious literals: throw "...", throw 0, throw true, throw null, throw undefined
-			const origTrimmed = originalLines[i].trim().replace(/^throw\s+/, "");
+			const origTrimmed = nonNull(originalLines[i]).trim().replace(/^throw\s+/, "");
 			if (
 				/^["'`]/.test(origTrimmed) ||
 				/^\d+/.test(afterThrow) ||
 				/^(true|false|null|undefined)\b/.test(afterThrow)
 			) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}
 	}
@@ -87,7 +88,7 @@ export function checkUnvalidatedJsonBoundary(content: string, filePath: string):
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		const m = ASSIGN.exec(line);
 		if (!m) continue;
@@ -101,7 +102,7 @@ export function checkUnvalidatedJsonBoundary(content: string, filePath: string):
 
 		let flag = false;
 		for (let j = i + 1; j < Math.min(strippedLines.length, i + 1 + SCAN_AHEAD); j++) {
-			const forward = strippedLines[j];
+			const forward = nonNull(strippedLines[j]);
 			if (validated.test(forward)) {
 				flag = false;
 				break;
@@ -113,7 +114,7 @@ export function checkUnvalidatedJsonBoundary(content: string, filePath: string):
 		}
 
 		if (flag) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -145,8 +146,8 @@ export function checkPromiseRejectNonError(content: string, filePath: string): I
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (NON_ERROR_ARG.test(strippedLines[i])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (NON_ERROR_ARG.test(nonNull(strippedLines[i]))) {
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -171,7 +172,7 @@ function findBlockEndByBrace(
 	let bodyStarted = false;
 	let bodyEnd = start;
 	for (let j = start; j < lines.length; j++) {
-		for (const ch of lines[j]) {
+		for (const ch of nonNull(lines[j])) {
 			if (ch === "{") {
 				braceDepth++;
 				bodyStarted = true;
@@ -220,7 +221,7 @@ export function checkRequireAwait(content: string, filePath: string): InlineMatc
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 
 		// Match async function declarations (not arrow functions — those are harder to scope)
 		if (!/\basync\s+function\b/.test(trimmed)) continue;
@@ -235,7 +236,7 @@ export function checkRequireAwait(content: string, filePath: string): InlineMatc
 		const bodyText = strippedLines.slice(i, bodyEnd + 1).join("\n");
 		const originalBodyText = originalLines.slice(i, bodyEnd + 1).join("\n");
 		if (asyncBodyIsAcceptable(bodyText, originalBodyText, bodyEnd - i)) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -252,7 +253,7 @@ export function checkAccumulatingSpread(content: string, filePath: string): Inli
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		// Pattern: .reduce( ... { ...acc  or  .reduce( ... [...acc
 		if (/\.reduce\s*\(/.test(trimmed)) {
 			// Look at this line and the next few for spread of accumulator
@@ -262,7 +263,7 @@ export function checkAccumulatingSpread(content: string, filePath: string): Inli
 			// list stops `[^)]*` and the canonical accumulating form
 			// `reduce((acc, x) => [...acc, x], [])` is missed.
 			if (/\.reduce\s*\((?:\s*\([^)]*\)\s*=>)?[^)]*[\[{]\s*\.\.\./.test(window)) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}
 	}
@@ -301,7 +302,7 @@ export function checkManualFieldCopy(content: string, filePath: string): InlineM
 		runCount = 0;
 	};
 	for (let i = 0; i < strippedLines.length; i++) {
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (trimmed === "") continue; // blank / comment-only — does not break a run
 		const m = trimmed.match(copyRe);
 		const isCopy = m !== null && m[2] === m[4] && m[1] !== m[3];
@@ -310,8 +311,8 @@ export function checkManualFieldCopy(content: string, filePath: string): InlineM
 				runCount++;
 			} else {
 				flushRun();
-				runTarget = m[1];
-				runSource = m[3];
+				runTarget = nonNull(m[1]);
+				runSource = nonNull(m[3]);
 				runStart = i + 1;
 				runCount = 1;
 			}

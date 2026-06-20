@@ -12,6 +12,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import type { ProjectGraph } from "../project-graph.js";
 import type { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, StructuralCheckResult } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.
@@ -106,21 +107,21 @@ export function checkJSDocParamMismatch(
 
 	for (let i = 0; i < lines.length; i++) {
 		// Find function/method declarations
-		const funcMatch = lines[i].match(
+		const funcMatch = nonNull(lines[i]).match(
 			/(?:function\s+\w+|(?:async\s+)?(?:\w+\s*)?(?:=>|\())\s*\(([^)]*)\)/,
 		);
 		if (!funcMatch) continue;
 
 		// Extract parameter names from the function signature
 		const paramStr = funcMatch[1];
-		if (!paramStr.trim()) continue;
-		const paramNames = paramStr
+		if (!nonNull(paramStr).trim()) continue;
+		const paramNames = nonNull(paramStr)
 			.split(",")
 			.map((p) => {
-				const name = p
+				const name = nonNull(p
 					.trim()
 					.replace(/^\.\.\./, "")
-					.split(/[\s:=?]/)[0]
+					.split(/[\s:=?]/)[0])
 					.trim();
 				return name;
 			})
@@ -131,17 +132,17 @@ export function checkJSDocParamMismatch(
 		// Look back for JSDoc @param tags
 		const jsdocParams: string[] = [];
 		for (let j = i - 1; j >= Math.max(0, i - 30); j--) {
-			const paramTag = lines[j].match(/@param\s+(?:\{[^}]*\}\s+)?(\w+)/);
+			const paramTag = nonNull(lines[j]).match(/@param\s+(?:\{[^}]*\}\s+)?(\w+)/);
 			if (paramTag) {
-				jsdocParams.push(paramTag[1]);
+				jsdocParams.push(nonNull(paramTag[1]));
 			}
 			// Stop at JSDoc start
-			if (lines[j].trim().startsWith("/**")) break;
+			if (nonNull(lines[j]).trim().startsWith("/**")) break;
 			// Stop at non-comment line
 			if (
-				!lines[j].trim().startsWith("*") &&
-				!lines[j].trim().startsWith("//") &&
-				lines[j].trim() !== ""
+				!nonNull(lines[j]).trim().startsWith("*") &&
+				!nonNull(lines[j]).trim().startsWith("//") &&
+				nonNull(lines[j]).trim() !== ""
 			) {
 				break;
 			}

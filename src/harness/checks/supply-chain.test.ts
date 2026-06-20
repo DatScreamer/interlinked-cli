@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkTyposquatDependencies } from "./supply-chain.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("checkTyposquatDependencies — allowlist", () => {
 	let tempDir: string;
@@ -81,23 +82,23 @@ describe("checkTyposquatDependencies — allowlist", () => {
 		writeFileSync(pkgPath, JSON.stringify({ dependencies: { chlk: "^5.0.0" } }));
 		const matches = checkTyposquatDependencies(pkgPath);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("chlk");
-		expect(matches[0].text).toContain("chalk");
+		expect(nonNull(matches[0]).text).toContain("chlk");
+		expect(nonNull(matches[0]).text).toContain("chalk");
 	});
 
 	it("STILL flags 'expresss' (classic duplicate-letter typosquat)", () => {
 		writeFileSync(pkgPath, JSON.stringify({ dependencies: { expresss: "^4.0.0" } }));
 		const matches = checkTyposquatDependencies(pkgPath);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("expresss");
-		expect(matches[0].text).toContain("express");
+		expect(nonNull(matches[0]).text).toContain("expresss");
+		expect(nonNull(matches[0]).text).toContain("express");
 	});
 
 	it("STILL flags 'typescirpt' (transposition typosquat)", () => {
 		writeFileSync(pkgPath, JSON.stringify({ devDependencies: { typescirpt: "^5.0.0" } }));
 		const matches = checkTyposquatDependencies(pkgPath);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("typescript");
+		expect(nonNull(matches[0]).text).toContain("typescript");
 	});
 });
 

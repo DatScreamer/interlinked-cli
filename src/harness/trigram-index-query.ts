@@ -19,6 +19,7 @@ import {
 	nextCharBit,
 	type PostingList,
 } from "./trigram-primitives.js";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Read-only view of the TrigramIndex fields the query path needs. The
@@ -142,8 +143,8 @@ function passesAdjacencyCheck(view: QueryView, fileId: number, sequences: number
 		if (seq.length < 2) continue; // single trigram, no adjacency to check
 
 		for (let i = 0; i < seq.length - 1; i++) {
-			const triA = seq[i];
-			const triB = seq[i + 1];
+			const triA = nonNull(seq[i]);
+			const triB = nonNull(seq[i + 1]);
 
 			// Skip check for stop trigrams (no masks available)
 			if (view.stopTrigrams.has(triA) || view.stopTrigrams.has(triB)) continue;
@@ -191,7 +192,7 @@ function getMasksForFile(
 	const idx = binarySearchU32(posting.fileIds, fileId);
 	if (idx < 0) return null;
 
-	return { locMask: posting.locMasks[idx], nextMask: posting.nextMasks[idx] };
+	return { locMask: nonNull(posting.locMasks[idx]), nextMask: nonNull(posting.nextMasks[idx]) };
 }
 
 // ===========================================

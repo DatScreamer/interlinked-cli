@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extract, metadata } from "./examples-extractor.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("examples-extractor", () => {
 	let tmp: string;
@@ -51,7 +52,7 @@ describe("examples-extractor", () => {
 		writeFileSync(join(tmp, "examples", "subdir", "deep.ts"), "");
 		const { nodes } = extract(tmp);
 		expect(nodes).toHaveLength(1);
-		expect(nodes[0].label).toBe("examples/subdir/deep.ts");
+		expect(nonNull(nodes[0]).label).toBe("examples/subdir/deep.ts");
 	});
 
 	it("skips heavy dirs (node_modules) even under an example dir", () => {

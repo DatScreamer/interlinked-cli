@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { nonNull } from "../../../lib/non-null.js";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
@@ -34,7 +35,7 @@ function scanFile(content: string, configKeys: Map<string, string>, relPath: str
 		for (;;) {
 			const match = pattern.exec(content);
 			if (match === null) break;
-			const key = match[1];
+			const key = nonNull(match[1]);
 			if (!configKeys.has(key)) {
 				configKeys.set(key, relPath);
 			}

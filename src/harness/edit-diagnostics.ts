@@ -6,6 +6,8 @@
 // spans so the harness can return them as additionalContext, converting a
 // dead round-trip into a fix.
 
+import { nonNull } from "../lib/non-null.js";
+
 export interface NearMiss {
 	/** 1-based line number of the matching span's first line */
 	line: number;
@@ -43,7 +45,7 @@ export function findClosestSpans(content: string, target: string, n = 3): NearMi
 		if (sim < MIN_SIMILARITY) continue;
 		candidates.push({
 			line: i + 1,
-			snippet: windowLines[0].trim().slice(0, 120),
+			snippet: nonNull(windowLines[0]).trim().slice(0, 120),
 			similarity: sim,
 		});
 	}
@@ -51,13 +53,13 @@ export function findClosestSpans(content: string, target: string, n = 3): NearMi
 	// For very short single-line targets, also scan all lines (in case the
 	// match is at a line whose trimmed length differs significantly).
 	if (targetIsShortSingleLine && candidates.length < n) {
-		for (let i = 0; i < fileLines.length; i++) {
-			const sim = lineSimilarity(target, fileLines[i]);
+		for (const [i, fileLine] of fileLines.entries()) {
+			const sim = lineSimilarity(target, fileLine);
 			if (sim < MIN_SIMILARITY) continue;
 			if (candidates.some((c) => c.line === i + 1)) continue;
 			candidates.push({
 				line: i + 1,
-				snippet: fileLines[i].trim().slice(0, 120),
+				snippet: fileLine.trim().slice(0, 120),
 				similarity: sim,
 			});
 		}
@@ -96,8 +98,8 @@ const MIN_SIMILARITY = 0.4;
 function windowSimilarity(target: string[], window: string[]): number {
 	if (target.length !== window.length) return 0;
 	let total = 0;
-	for (let i = 0; i < target.length; i++) {
-		total += lineSimilarity(target[i], window[i]);
+	for (const [i, targetLine] of target.entries()) {
+		total += lineSimilarity(targetLine, nonNull(window[i]));
 	}
 	return total / target.length;
 }

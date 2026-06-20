@@ -20,7 +20,9 @@ export function getManagedSourceRoot(home = homedir()): string {
 function resolveCliRoot(): string | null {
 	try {
 		// The binary is at cli/dist/index.js — resolve symlinks to find the real path
-		const binPath = realpathSync(process.argv[1]);
+		const argv1 = process.argv[1];
+		if (argv1 === undefined) return null;
+		const binPath = realpathSync(argv1);
 		// Walk up from dist/index.js to cli/
 		let dir = dirname(binPath);
 		for (let i = 0; i < 5; i++) {

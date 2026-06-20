@@ -8,6 +8,7 @@
 // the verbose depth-cap note. No module-private state.
 
 import type { ReachabilityVerdict } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Maximum BFS depth for `isFileReachableFromEntryPoints`. Empirically a
@@ -57,7 +58,7 @@ export function computeReachabilityVerdict(
 	let foundEntry: string | null = null;
 
 	while (head < queue.length) {
-		const current = queue[head++];
+		const current = nonNull(queue[head++]);
 		const currentDist = distances.get(current) ?? 0;
 		if (currentDist >= REACHABILITY_DEPTH_CAP) {
 			depthCapHit = true;

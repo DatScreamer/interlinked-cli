@@ -13,6 +13,7 @@
 
 import { basename, extname } from "node:path";
 import type { InlineCheckDef, LanguageId, LanguageProfile } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { isLikelyTestFile } from "./test-classifier.js";
 
 export interface InlineLangCheckResult {
@@ -156,8 +157,9 @@ function findLineMatches(
 		// `src` originates from safeCompile above (already ReDoS-screened).
 		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 		const lineRe = new RegExp(src, flagsNoG);
-		if (lineRe.test(strippedLines[i])) {
-			out.push({ lineNum: i + 1, lineText: strippedLines[i] });
+		const lineText = nonNull(strippedLines[i]);
+		if (lineRe.test(lineText)) {
+			out.push({ lineNum: i + 1, lineText });
 		}
 	}
 	return out;
@@ -282,7 +284,7 @@ function stripPython(content: string): string {
 			i++;
 			continue;
 		}
-		out.push(ch);
+		out.push(nonNull(ch));
 		i++;
 	}
 
@@ -360,7 +362,7 @@ function stripCStyle(content: string): string {
 			i++;
 			continue;
 		}
-		out.push(ch);
+		out.push(nonNull(ch));
 		i++;
 	}
 

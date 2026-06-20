@@ -13,6 +13,7 @@ import {
 	loadCoverageSummary,
 	saveBaseline,
 } from "./coverage-ratchet.js";
+import { nonNull } from "../lib/non-null.js";
 
 const STRICT_CONFIG: CoverageRatchetConfig = {
 	enabled: true,
@@ -147,10 +148,10 @@ describe("compareCoverage — decrease detection", () => {
 			repoRoot: "/repo",
 		});
 		expect(res.findings).toHaveLength(1);
-		expect(res.findings[0].metric).toBe("lines");
-		expect(res.findings[0].baseline_pct).toBe(90);
-		expect(res.findings[0].current_pct).toBe(80);
-		expect(res.findings[0].delta_pct).toBe(-10);
+		expect(nonNull(res.findings[0]).metric).toBe("lines");
+		expect(nonNull(res.findings[0]).baseline_pct).toBe(90);
+		expect(nonNull(res.findings[0]).current_pct).toBe(80);
+		expect(nonNull(res.findings[0]).delta_pct).toBe(-10);
 	});
 
 	it("flags both lines and branches when both drop", () => {

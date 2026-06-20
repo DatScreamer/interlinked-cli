@@ -13,6 +13,7 @@ import {
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 
@@ -43,8 +44,8 @@ export function checkSwiftNotificationObserverNoRemoval(
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (/\baddObserver\s*\(/.test(strippedLines[i])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (/\baddObserver\s*\(/.test(nonNull(strippedLines[i]))) {
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -71,8 +72,8 @@ export function checkSwiftTimerNoInvalidate(content: string, filePath: string): 
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (/\bTimer\s*\.\s*scheduledTimer\s*\(/.test(strippedLines[i])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (/\bTimer\s*\.\s*scheduledTimer\s*\(/.test(nonNull(strippedLines[i]))) {
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -106,8 +107,8 @@ export function checkSwiftCombineNoStore(content: string, filePath: string): Inl
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (/\.\s*(?:sink|assign)\s*[({]/.test(strippedLines[i])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (/\.\s*(?:sink|assign)\s*[({]/.test(nonNull(strippedLines[i]))) {
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;

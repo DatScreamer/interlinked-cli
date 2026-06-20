@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { McpProtocolRecorder } from "./recorder.js";
 import type { McpEventRecord } from "./types.js";
 import type { CollectionRecord } from "../collection/types.js";
+import { nonNull } from "../non-null.js";
 
 function makeRecorder(records: McpEventRecord[], clock: { ms: number }): McpProtocolRecorder {
     return new McpProtocolRecorder({
@@ -50,8 +51,8 @@ describe("McpProtocolRecorder", () => {
             latency_ms: 42,
             jsonrpc_id: 1,
         });
-        expect(records[0].privacy.allowed_for_cloud_upload).toBe(false);
-        expect(records[0].privacy.allowed_for_training).toBe(false);
+        expect(nonNull(records[0]).privacy.allowed_for_cloud_upload).toBe(false);
+        expect(nonNull(records[0]).privacy.allowed_for_training).toBe(false);
     });
 
     it("dual-writes proxied tools/call requests and responses into collection.jsonl shape", () => {
@@ -157,7 +158,7 @@ describe("McpProtocolRecorder", () => {
             message_type: "notification",
             method: "notifications/message",
         });
-        expect(records[0].jsonrpc_id).toBeUndefined();
+        expect(nonNull(records[0]).jsonrpc_id).toBeUndefined();
     });
 
     it("records malformed JSON lines as parse-error events", () => {
@@ -173,7 +174,7 @@ describe("McpProtocolRecorder", () => {
             direction: "client_to_server",
             message_type: "parse_error",
         });
-        expect(records[0].payload).toMatchObject({ line: '{"jsonrpc":' });
+        expect(nonNull(records[0]).payload).toMatchObject({ line: '{"jsonrpc":' });
     });
 
     it("splits JSON-RPC batches into per-message records", () => {

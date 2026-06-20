@@ -11,6 +11,7 @@
 // module's "no I/O" discipline while giving correct `..`/absolute handling when
 // combining `cd` segments and `-C` flags into one effective directory.
 import { posix } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Minimal shell-aware splitter: handles single + double quotes and backslash
@@ -26,7 +27,7 @@ export function shellSplit(input: string): string[] {
 	let inSingle = false;
 	let inDouble = false;
 	for (let i = 0; i < input.length; i++) {
-		const c = input[i];
+		const c = nonNull(input[i]);
 		if (c === "\\" && i + 1 < input.length && !inSingle) {
 			cur += input[i + 1];
 			i++;
@@ -107,7 +108,7 @@ export function splitSegments(command: string): string[] {
 	const segments: string[] = [];
 	const scan: SegmentScan = { cur: "", inSingle: false, inDouble: false };
 	for (let i = 0; i < command.length; i++) {
-		const c = command[i];
+		const c = nonNull(command[i]);
 		const next = command[i + 1];
 		const consumed = consumeQuoteOrEscape(scan, c, next);
 		if (consumed !== null) {
@@ -130,7 +131,7 @@ export function splitSegments(command: string): string[] {
 export function stripLeadingPrefix(tokens: string[]): string[] {
 	const out = tokens.slice();
 	while (out.length > 0) {
-		const head = out[0];
+		const head = nonNull(out[0]);
 		if (head === "sudo" || head === "command" || head === "nohup" || head === "time") {
 			out.shift();
 			continue;

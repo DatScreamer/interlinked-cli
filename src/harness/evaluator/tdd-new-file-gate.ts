@@ -18,6 +18,7 @@
 
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type {
 	GuardRulesConfig,
 	HarnessDecision,
@@ -146,7 +147,7 @@ function extractPublicSurface(content: string | undefined): string[] {
 		re.lastIndex = 0;
 		let m: RegExpExecArray | null = re.exec(content);
 		while (m !== null) {
-			names.add(m[1]);
+			names.add(nonNull(m[1]));
 			if (names.size >= SURFACE_LIMIT) return [...names];
 			m = re.exec(content);
 		}

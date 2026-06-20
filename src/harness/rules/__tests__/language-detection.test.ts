@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { QualityCheckConfig } from "../../types.js";
 import { autoTuneQualityChecks, detectProjectLanguages } from "../language-detection.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function mkTmp(): string {
 	return mkdtempSync(join(tmpdir(), "interlinked-lang-detect-"));
@@ -80,9 +81,9 @@ describe("autoTuneQualityChecks", () => {
 			typescript: makeCheck(),
 		};
 		autoTuneQualityChecks(checks, new Set(["typescript"]));
-		expect(checks.cargo_check.enabled).toBe(false);
-		expect(checks.cargo_clippy.enabled).toBe(false);
-		expect(checks.typescript.enabled).toBe(true);
+		expect(nonNull(checks.cargo_check).enabled).toBe(false);
+		expect(nonNull(checks.cargo_clippy).enabled).toBe(false);
+		expect(nonNull(checks.typescript).enabled).toBe(true);
 	});
 
 	it("leaves language-agnostic checks enabled", () => {
@@ -91,7 +92,7 @@ describe("autoTuneQualityChecks", () => {
 		};
 		autoTuneQualityChecks(checks, new Set(["typescript"]));
 		// Language-agnostic check stays enabled
-		expect(checks.unknown_check.enabled).toBe(true);
+		expect(nonNull(checks.unknown_check).enabled).toBe(true);
 	});
 
 	it("keeps affected_tests enabled across supported languages", () => {
@@ -99,6 +100,6 @@ describe("autoTuneQualityChecks", () => {
 			affected_tests: makeCheck(),
 		};
 		autoTuneQualityChecks(checks, new Set(["python"]));
-		expect(checks.affected_tests.enabled).toBe(true);
+		expect(nonNull(checks.affected_tests).enabled).toBe(true);
 	});
 });

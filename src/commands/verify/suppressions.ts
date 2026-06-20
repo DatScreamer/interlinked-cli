@@ -9,6 +9,7 @@
 // suppression-file loader (`loadFileSuppressions`, `addSuppressions`, etc.)
 // lives in `../../harness/suppressions.ts`.
 
+import { nonNull } from "../../lib/non-null.js";
 import { stripStringLiterals } from "../../harness/strip-helpers.js";
 import type { CodeQualityIssue } from "./tool-results-types.js";
 
@@ -50,7 +51,7 @@ function hasSuppressionRationale(trimmedLine: string, label: string): boolean {
 		// Require at least 8 characters of reason so a single-word
 		// rationale isn't a full pass — meaningful rationale should
 		// explain WHY.
-		return rationaleMatch[1].trim().length >= MIN_RATIONALE_LENGTH;
+		return nonNull(rationaleMatch[1]).trim().length >= MIN_RATIONALE_LENGTH;
 	}
 	// Namespaced rule spec (e.g., `foo/bar`) is substantive enough on its
 	// own. Same for eslint plugins.
@@ -144,10 +145,10 @@ export function collectSuppressionFindings(
 	if (/(?:^|\/)(?:fixtures|__fixtures__)\//.test(relPath)) return;
 	const allowHash = isHashCommentFile(relPath);
 	const lines = content.split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+	for (const [i, line] of lines.entries()) {
+		const trimmed = line.trim();
 		if (trimmed.startsWith("*") || trimmed.startsWith("/**")) continue;
-		const hit = findSuppressionMatch(lines[i], trimmed, allowHash);
+		const hit = findSuppressionMatch(line, trimmed, allowHash);
 		if (!hit) continue;
 		out.push({
 			check: "suppressions",

@@ -10,6 +10,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // JS/TS General Checks
@@ -29,7 +30,7 @@ export function checkNestedTernaries(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		// Skip TypeScript type annotation patterns that use ? but aren't ternaries
 		if (/\bextends\s+.*\?/.test(line)) continue; // conditional types
 		if (/\btype\s+\w+.*=.*\?/.test(line)) continue; // type aliases with conditionals
@@ -49,7 +50,7 @@ export function checkNestedTernaries(content: string, filePath: string): InlineM
 		if (ternaryMatches && ternaryMatches.length >= 2) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -93,15 +94,16 @@ function scanCatchBody(strippedLines: string[], braceStart: number): CatchBodySc
 	let closeIdx = -1;
 
 	for (let j = braceStart; j < Math.min(braceStart + 8, strippedLines.length); j++) {
-		for (const ch of strippedLines[j]) {
+		const sLine = nonNull(strippedLines[j]);
+		for (const ch of sLine) {
 			if (ch === "{") depth++;
 			if (ch === "}") depth--;
 		}
 		if (j > braceStart) {
-			const trimmed = strippedLines[j].trim();
+			const trimmed = sLine.trim();
 			if (trimmed === "}" || trimmed === "") {
 				// empty line or closing brace — fine
-			} else if (/^\s*console\.(log|error|warn|info|debug)\s*\(/.test(strippedLines[j])) {
+			} else if (/^\s*console\.(log|error|warn|info|debug)\s*\(/.test(sLine)) {
 				hasConsole = true;
 			} else {
 				onlyConsole = false;
@@ -125,7 +127,7 @@ function scanCatchBody(strippedLines: string[], braceStart: number): CatchBodySc
  */
 function hasMeaningfulCodeAfterCatch(strippedLines: string[], closeIdx: number): boolean {
 	for (let j = closeIdx + 1; j < Math.min(closeIdx + 5, strippedLines.length); j++) {
-		const afterTrimmed = strippedLines[j].trim();
+		const afterTrimmed = nonNull(strippedLines[j]).trim();
 		if (afterTrimmed && afterTrimmed !== "}" && afterTrimmed !== ");") {
 			return true;
 		}
@@ -150,11 +152,11 @@ export function checkCatchAndLog(content: string, filePath: string): InlineMatch
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!/\}\s*catch\s*/.test(strippedLines[i])) continue;
+		if (!/\}\s*catch\s*/.test(nonNull(strippedLines[i]))) continue;
 
 		let braceStart = -1;
 		for (let k = i; k < Math.min(i + 3, strippedLines.length); k++) {
-			if (strippedLines[k].includes("{")) {
+			if (nonNull(strippedLines[k]).includes("{")) {
 				braceStart = k;
 				break;
 			}
@@ -173,7 +175,7 @@ export function checkCatchAndLog(content: string, filePath: string): InlineMatch
 
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -206,7 +208,7 @@ export function checkJsonParseUnsafe(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		if (TRY_OPEN.test(line)) {
 			tryDepth++;
@@ -217,7 +219,7 @@ export function checkJsonParseUnsafe(content: string, filePath: string): InlineM
 			if (tryDepth <= 0) {
 				matches.push({
 					line: i + 1,
-					text: originalLines[i].trim().slice(0, 150),
+					text: nonNull(originalLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -244,13 +246,13 @@ export function checkHardcodedTimeout(content: string, filePath: string): Inline
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const m = strippedLines[i].match(pattern);
+		const m = nonNull(strippedLines[i]).match(pattern);
 		if (m) {
-			const ms = Number.parseInt(m[1], 10);
+			const ms = Number.parseInt(nonNull(m[1]), 10);
 			if (ms >= 100) {
 				matches.push({
 					line: i + 1,
-					text: originalLines[i].trim().slice(0, 150),
+					text: nonNull(originalLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -287,14 +289,14 @@ export function checkTargetBlankNoRel(content: string, filePath: string): Inline
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 		if (!/target=["']_blank["']/.test(line)) continue;
 
 		// Check surrounding JSX element context (±5 lines) for rel attribute.
 		// In JSX, target and rel are often on different lines of the same element.
 		let hasRel = false;
 		for (let j = Math.max(0, i - 5); j < Math.min(originalLines.length, i + 6); j++) {
-			const nearby = originalLines[j];
+			const nearby = nonNull(originalLines[j]);
 			if (/rel=["'][^"']*(noopener|noreferrer)/.test(nearby)) {
 				hasRel = true;
 				break;
@@ -306,7 +308,7 @@ export function checkTargetBlankNoRel(content: string, filePath: string): Inline
 		if (!hasRel) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}

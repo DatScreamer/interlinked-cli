@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HarnessDecision } from "../types.js";
 import type { UnifiedHookEvent } from "../unified-event.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./index.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("buildAllAdapters", () => {
 	const adapters = buildAllAdapters();
@@ -67,7 +68,7 @@ describe("cross-runner equivalence — semantically identical Edit events", () =
 	const runners: Array<[string, UnifiedHookEvent]> = [
 		[
 			"claude",
-			buildAllAdapters()[0].parseHookInput(
+			nonNull(buildAllAdapters()[0]).parseHookInput(
 				{
 					session_id: "s",
 					cwd: "/r",
@@ -79,7 +80,7 @@ describe("cross-runner equivalence — semantically identical Edit events", () =
 		],
 		[
 			"copilot",
-			buildAllAdapters()[1].parseHookInput(
+			nonNull(buildAllAdapters()[1]).parseHookInput(
 				{
 					sessionId: "s",
 					cwd: "/r",
@@ -105,7 +106,7 @@ describe("encodeDecision maps the same allow across adapters", () => {
 		it(`${a.id} allow → exit 0`, () => {
 			const event = a.parseHookInput(
 				{ session_id: "s", tool_name: "Read", cwd: "/r" },
-				a.nativeEventNames[0],
+				nonNull(a.nativeEventNames[0]),
 			);
 			const out = a.encodeDecision(decision, event);
 			expect(out.exit_code).toBe(0);

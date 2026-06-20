@@ -8,6 +8,7 @@ import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
@@ -73,7 +74,7 @@ async function roundTrip(
 				clearTimeout(timer);
 				socket.destroy();
 				try {
-					resolve(JSON.parse(frames[0]));
+					resolve(JSON.parse(nonNull(frames[0])));
 				} catch (err) {
 					reject(err);
 				}
@@ -181,7 +182,7 @@ describe("startSessionDaemon", () => {
 			method: "daemon.invalidate",
 			params: { path: "/x/y.ts" },
 		} as RpcMessage);
-		expect((tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/x/y.ts");
+		expect(nonNull((tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0])[0]).toBe("/x/y.ts");
 	});
 
 	it("responds with bad_request for malformed frames", async () => {
@@ -207,7 +208,7 @@ describe("startSessionDaemon", () => {
 				if (frames.length > 0) {
 					clearTimeout(timer);
 					socket.destroy();
-					resolve(JSON.parse(frames[0]));
+					resolve(JSON.parse(nonNull(frames[0])));
 				}
 			});
 			socket.on("error", (err) => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../default-config.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("DEFAULT_CONFIG", () => {
 	it("has expected shape", () => {
@@ -33,9 +34,9 @@ describe("DEFAULT_CONFIG", () => {
 	it("ships the four advisory checks off-by-default", () => {
 		// These four cost more than they pay off in the median repo.
 		// Repos can re-enable per-project via .interlinked/guard-rules.local.json.
-		expect(DEFAULT_CONFIG.quality_checks.affected_tests.enabled).toBe(false);
-		expect(DEFAULT_CONFIG.quality_checks.semgrep.enabled).toBe(false);
-		expect(DEFAULT_CONFIG.quality_checks.prompt_injection.enabled).toBe(false);
+		expect(nonNull(DEFAULT_CONFIG.quality_checks.affected_tests).enabled).toBe(false);
+		expect(nonNull(DEFAULT_CONFIG.quality_checks.semgrep).enabled).toBe(false);
+		expect(nonNull(DEFAULT_CONFIG.quality_checks.prompt_injection).enabled).toBe(false);
 		expect(DEFAULT_CONFIG.structural_checks?.enabled).toBe(false);
 	});
 

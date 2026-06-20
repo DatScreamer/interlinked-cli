@@ -22,6 +22,7 @@ import {
 	JS_TS_EXTS,
 	stripForBraceScan,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Extensions hoisted to module scope so the per-language dispatch reads as
 // intent rather than a magic-literal comparison, and so the literal braces
@@ -138,7 +139,7 @@ const JS_RESERVED_HEAD_WORDS = new Set([
 function walkJsTs(lines: string[]): FunctionComplexityEntry[] {
 	const entries: FunctionComplexityEntry[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const funcName = detectJsFunctionName(lines[i]);
+		const funcName = detectJsFunctionName(nonNull(lines[i]));
 		if (!funcName) continue;
 
 		const braceLineIdx = findOpeningBrace(lines, i);
@@ -160,14 +161,14 @@ function walkJsTs(lines: string[]): FunctionComplexityEntry[] {
 
 function detectJsFunctionName(line: string): string | null {
 	const named = JS_NAMED_FUNCTION.exec(line);
-	if (named) return named[1];
+	if (named) return nonNull(named[1]);
 
 	const arrow = JS_ARROW_ASSIGNED.exec(line);
-	if (arrow) return arrow[1];
+	if (arrow) return nonNull(arrow[1]);
 
 	const method = JS_METHOD_LINE.exec(line);
 	if (method) {
-		const candidate = method[2];
+		const candidate = nonNull(method[2]);
 		if (!JS_RESERVED_HEAD_WORDS.has(candidate)) return candidate;
 	}
 	return null;
@@ -204,11 +205,11 @@ const PY_DEF = /^(\s*)(?:async\s+)?def\s+(\w+)\s*\(/;
 function walkPython(lines: string[]): FunctionComplexityEntry[] {
 	const entries: FunctionComplexityEntry[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const m = PY_DEF.exec(lines[i]);
+		const m = PY_DEF.exec(nonNull(lines[i]));
 		if (!m) continue;
 
-		const headIndent = m[1].length;
-		const funcName = m[2];
+		const headIndent = nonNull(m[1]).length;
+		const funcName = nonNull(m[2]);
 
 		// Walk forward while lines are more indented than the `def` line,
 		// skipping blank lines. First non-blank line with indent <= headIndent
@@ -216,7 +217,7 @@ function walkPython(lines: string[]): FunctionComplexityEntry[] {
 		let cyclomatic = 1;
 		let endLine = i;
 		for (let k = i + 1; k < lines.length; k++) {
-			const bodyLine = lines[k];
+			const bodyLine = nonNull(lines[k]);
 			if (bodyLine.trim() === "") {
 				endLine = k;
 				continue;
@@ -279,9 +280,9 @@ const GO_FUNC = /^\s*func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(/;
 function walkGo(lines: string[]): FunctionComplexityEntry[] {
 	const entries: FunctionComplexityEntry[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const m = GO_FUNC.exec(lines[i]);
+		const m = GO_FUNC.exec(nonNull(lines[i]));
 		if (!m) continue;
-		const funcName = m[1];
+		const funcName = nonNull(m[1]);
 
 		const braceLineIdx = findOpeningBrace(lines, i);
 		if (braceLineIdx === -1) continue;
@@ -328,9 +329,9 @@ const RUST_FN =
 function walkRust(lines: string[]): FunctionComplexityEntry[] {
 	const entries: FunctionComplexityEntry[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const m = RUST_FN.exec(lines[i]);
+		const m = RUST_FN.exec(nonNull(lines[i]));
 		if (!m) continue;
-		const funcName = m[1];
+		const funcName = nonNull(m[1]);
 
 		const braceLineIdx = findOpeningBrace(lines, i);
 		if (braceLineIdx === -1) continue;
@@ -385,7 +386,7 @@ function countRustDecisions(bodyLine: string): number {
 function findOpeningBrace(lines: string[], fromIdx: number): number {
 	const limit = Math.min(fromIdx + 10, lines.length);
 	for (let k = fromIdx; k < limit; k++) {
-		if (lines[k].includes(OPEN_BRACE)) return k;
+		if (nonNull(lines[k]).includes(OPEN_BRACE)) return k;
 	}
 	return -1;
 }
@@ -417,7 +418,7 @@ function walkBraceBody(
 	let closed = false;
 
 	for (let j = braceLineIdx; j < lines.length; j++) {
-		const bodyLine = lines[j];
+		const bodyLine = nonNull(lines[j]);
 		for (const ch of bodyLine) {
 			if (ch === "{") {
 				depth++;

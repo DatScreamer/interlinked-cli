@@ -3,29 +3,30 @@
 import { describe, expect, it } from "vitest";
 
 import { extractEndpoints } from "./nuxt.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("route-map/nuxt.extractEndpoints", () => {
 	it("extracts a route from server/api/users.get.ts", () => {
 		const filePath = "/abs/server/api/users.get.ts";
 		const [endpoint] = extractEndpoints(filePath, "export default defineEventHandler(() => []);");
 		expect(endpoint).toBeDefined();
-		expect(endpoint.framework).toBe("nuxt");
-		expect(endpoint.method).toBe("GET");
-		expect(endpoint.path).toBe("/api/users");
+		expect(nonNull(endpoint).framework).toBe("nuxt");
+		expect(nonNull(endpoint).method).toBe("GET");
+		expect(nonNull(endpoint).path).toBe("/api/users");
 	});
 
 	it("infers method=ALL when filename has no method suffix", () => {
 		const filePath = "/abs/server/api/health.ts";
 		const [endpoint] = extractEndpoints(filePath, "export default defineEventHandler(() => 'ok');");
-		expect(endpoint.method).toBe("ALL");
-		expect(endpoint.path).toBe("/api/health");
+		expect(nonNull(endpoint).method).toBe("ALL");
+		expect(nonNull(endpoint).path).toBe("/api/health");
 	});
 
 	it("converts [id] segments to :id", () => {
 		const filePath = "/abs/server/api/users/[id].get.ts";
 		const [endpoint] = extractEndpoints(filePath, "export default defineEventHandler(() => ({}));");
-		expect(endpoint.path).toBe("/api/users/:id");
-		expect(endpoint.declared_params.map((p) => p.name)).toContain("id");
+		expect(nonNull(endpoint).path).toBe("/api/users/:id");
+		expect(nonNull(endpoint).declared_params.map((p) => p.name)).toContain("id");
 	});
 
 	it("returns [] for non-Nuxt files", () => {

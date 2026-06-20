@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkPlaceholderMarkdownLinks } from "./markdown.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("checkPlaceholderMarkdownLinks", () => {
 	// ── Positive cases: real placeholder links that must be flagged ──
@@ -9,7 +10,7 @@ describe("checkPlaceholderMarkdownLinks", () => {
 			"docs/guide.md",
 		);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(1);
+		expect(nonNull(matches[0]).line).toBe(1);
 	});
 
 	it("flags an anchor-only placeholder link [text](#)", () => {

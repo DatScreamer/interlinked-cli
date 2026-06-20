@@ -7,6 +7,7 @@ import {
 	coverageForFile,
 	loadCoverageFinal,
 } from "./coverage-final-reader.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ==================================================================
 // Fixtures
@@ -221,7 +222,7 @@ describe("loadCoverageFinal", () => {
 		});
 		const result = loadCoverageFinal(coveragePath, tmp);
 		const entry = coverageForFile(result as never, "src/foo.ts");
-		expect(entry?.functions[0].name).toBe("anon@42");
+		expect(nonNull(entry?.functions[0]).name).toBe("anon@42");
 	});
 });
 

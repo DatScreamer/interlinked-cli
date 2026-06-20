@@ -21,6 +21,7 @@
 //     the CLI path and the hook path stay in sync.
 
 import { existsSync, readFileSync } from "node:fs";
+import { nonNull } from "../lib/non-null.js";
 import type { CheckResult } from "./check-engine/types.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/index.js";
 import {
@@ -132,7 +133,8 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 		for (const check of preBlockChecks) {
 			const matches = check.fn();
 			if (matches.length === 0) continue;
-			const first = matches[0];
+			const first = nonNull(matches[0]);
+			const hint = instructions[check.name];
 			failures.push({
 				path,
 				tool: "pre_block",
@@ -142,7 +144,7 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 					.map((m) => `L${m.line}`)
 					.join(", ")}`,
 				severity: "error",
-				hint: instructions[check.name],
+				...(hint !== undefined ? { hint } : {}),
 			});
 		}
 
@@ -191,7 +193,8 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 			for (const check of preWarnChecks) {
 				const matches = check.fn();
 				if (matches.length === 0) continue;
-				const first = matches[0];
+				const first = nonNull(matches[0]);
+				const hint = instructions[check.name];
 				failures.push({
 					path,
 					tool: "pre_warn",
@@ -201,7 +204,7 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 						.map((m) => `L${m.line}`)
 						.join(", ")}`,
 					severity: "warning",
-					hint: instructions[check.name],
+					...(hint !== undefined ? { hint } : {}),
 				});
 			}
 		}

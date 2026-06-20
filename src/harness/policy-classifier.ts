@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Resolve an API key by name. Checks:
@@ -213,7 +214,7 @@ export function buildEvidenceEnvelope(
 			.injection_detected_steps || [];
 	const injectionInSession = injectionDetected.length > 0;
 	const stepsSinceInjection = injectionInSession
-		? session.tool_call_count - injectionDetected[injectionDetected.length - 1]
+		? session.tool_call_count - nonNull(injectionDetected[injectionDetected.length - 1])
 		: undefined;
 
 	// Load policies from .interlinked/policies.json if available

@@ -3,6 +3,8 @@
 // Dead Import Detection (shared with structural-checks.ts)
 // ===========================================
 
+import { nonNull } from "../lib/non-null.js";
+
 // Helper: true for lines that precede / interleave with imports but are not
 // themselves import statements (blank, JSDoc/star comments, shebang).
 function isNonImportPrefixLine(trimmed: string): boolean {
@@ -76,9 +78,9 @@ export function findDeadImports(content: string): string[] {
 		importSectionEnded: false,
 	};
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, rawLine] of lines.entries()) {
 		// Strip inline comments from import lines
-		const trimmed = lines[i]
+		const trimmed = rawLine
 			.trim()
 			.replace(/\/\/[^\n]*/g, "")
 			.trim();
@@ -100,14 +102,14 @@ export function extractBindings(line: string, bindings: string[]): void {
 
 	const namedMatch = trimmed.match(/^import\s+(?:type\s+)?\{([^}]+)\}/);
 	if (namedMatch) {
-		const names = namedMatch[1]
+		const names = nonNull(namedMatch[1])
 			.split(",")
 			.map((s) => {
 				const parts = s
 					.trim()
 					.replace(/^type\s+/, "")
 					.split(/\s+as\s+/);
-				return parts[parts.length - 1].trim();
+				return nonNull(parts[parts.length - 1]).trim();
 			})
 			.filter(Boolean);
 		for (const name of names) {
@@ -117,7 +119,8 @@ export function extractBindings(line: string, bindings: string[]): void {
 	}
 
 	const defaultMatch = trimmed.match(/^import\s+(?:type\s+)?(\w+)\s+from/);
-	if (defaultMatch && defaultMatch[1] !== "type") {
-		bindings.push(defaultMatch[1]);
+	const defaultName = defaultMatch?.[1];
+	if (defaultName && defaultName !== "type") {
+		bindings.push(defaultName);
 	}
 }

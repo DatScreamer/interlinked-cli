@@ -11,6 +11,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import type { CheckResultEntry, SessionTrajectory } from "./types.js";
 import { isCodeFile } from "./verification-stop-checks.js";
 
@@ -60,10 +61,10 @@ export function gitNumstatDelta(cwd: string = process.cwd()): LocDelta {
 		for (const line of numstat.split("\n")) {
 			const parts = line.split("\t");
 			if (parts.length < 3) continue;
-			const added = Number.parseInt(parts[0], 10);
-			const deleted = Number.parseInt(parts[1], 10);
+			const added = Number.parseInt(nonNull(parts[0]), 10);
+			const deleted = Number.parseInt(nonNull(parts[1]), 10);
 			if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue;
-			const path = parts[2];
+			const path = nonNull(parts[2]);
 			const delta = added + deleted;
 			if (TEST_FILE_RE.test(path)) testLoc += delta;
 			else if (isCodeFile(path)) prodLoc += delta;

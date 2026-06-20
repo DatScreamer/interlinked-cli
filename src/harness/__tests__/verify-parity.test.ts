@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { runVerifyParityChecks } from "../verify-parity.js";
 
 describe("verify-parity: scanProjectSwitchDiscriminants", () => {
@@ -87,7 +88,7 @@ describe("verify-parity: scanFilesWithoutTest", () => {
 		writeFileSync(prod, "export const x = 1;");
 		const r = runVerifyParityChecks([prod]);
 		expect(r.filesWithoutTest.length).toBe(1);
-		expect(r.filesWithoutTest[0].file).toBe(prod);
+		expect(nonNull(r.filesWithoutTest[0]).file).toBe(prod);
 	});
 
 	it("passes when sibling test exists", () => {

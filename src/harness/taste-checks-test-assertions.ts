@@ -17,6 +17,7 @@ import {
 	push,
 	stripCommentsAndStrings,
 } from "./taste-checks-shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // 1. Assertion-Free Tests
@@ -58,7 +59,7 @@ function testCaseName(lines: string[], start: number, end: number): string {
 	const stop = Math.min(end, start + TEST_NAME_HEADER_LINES - 1);
 	const header = lines.slice(start, stop + 1).join("\n");
 	const m = header.match(/\b(?:it|test|specify)(?:\s*\.\s*\w+)*\s*\(\s*(["'`])([^"'`]*)\1/);
-	return m ? m[2] : "";
+	return m ? nonNull(m[2]) : "";
 }
 
 export function checkAssertionFreeTest(content: string, filePath: string): InlineMatch[] {
@@ -69,7 +70,7 @@ export function checkAssertionFreeTest(content: string, filePath: string): Inlin
 	const matches: InlineMatch[] = [];
 	let i = 0;
 	while (i < sLines.length && matches.length < 10) {
-		if (!isCountableTestStart(sLines[i])) {
+		if (!isCountableTestStart(nonNull(sLines[i]))) {
 			i++;
 			continue;
 		}
@@ -111,7 +112,7 @@ export function checkTautologicalAssertion(content: string, filePath: string): I
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		if (hasTautology(sLines[i])) push(matches, i, lines, 10);
+		if (hasTautology(nonNull(sLines[i]))) push(matches, i, lines, 10);
 	}
 	return matches;
 }
@@ -147,8 +148,8 @@ export function checkMockingTheSUT(content: string, filePath: string): InlineMat
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 5; i++) {
-		const m = MOCK_CALL_STATIC.exec(sLines[i]);
-		if (m && mockedPathEqualsSut(m[1], sut)) push(matches, i, lines, 5);
+		const m = MOCK_CALL_STATIC.exec(nonNull(sLines[i]));
+		if (m && mockedPathEqualsSut(nonNull(m[1]), sut)) push(matches, i, lines, 5);
 	}
 	return matches;
 }
@@ -174,13 +175,13 @@ export function checkPrivateMemberTestAccess(content: string, filePath: string):
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		const line = sLines[i];
+		const line = nonNull(sLines[i]);
 		const m = PRIVATE_TEST_ACCESS.exec(line);
 		if (!m) continue;
 		// If the match was the `as unknown as` cast form, require it to be
 		// followed by `.` or `[` (accessor) to count as private-member access.
 		if (m[0].includes("as unknown as")) {
-			const after = line.slice((m.index ?? 0) + m[0].length);
+			const after = nonNull(line).slice((m.index ?? 0) + m[0].length);
 			if (!PRIVATE_ACCESS_POST.test(after)) continue;
 		}
 		push(matches, i, lines, 10);

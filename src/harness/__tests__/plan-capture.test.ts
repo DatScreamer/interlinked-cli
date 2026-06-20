@@ -25,6 +25,7 @@ import {
 } from "../plan-capture.js";
 import { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TIMESTAMP = "2026-04-23T00:00:00.000Z";
 
@@ -88,8 +89,8 @@ describe("parseTaskCreate", () => {
 		});
 		// TaskCreate.steps must NOT auto-populate hints — the content is
 		// agent prose, not a tool plan.
-		expect(p.steps[0].tool_hint).toBeUndefined();
-		expect(p.steps[1].target_hint).toBeUndefined();
+		expect(nonNull(p.steps[0]).tool_hint).toBeUndefined();
+		expect(nonNull(p.steps[1]).target_hint).toBeUndefined();
 	});
 
 	it("returns null on an empty / malformed TaskCreate payload", () => {
@@ -132,7 +133,7 @@ describe("parseExitPlanMode", () => {
 		const p = plan as NonNullable<typeof plan>;
 		expect(p.source).toBe("ExitPlanMode");
 		expect(p.steps).toHaveLength(3);
-		expect(p.steps[0].intent).toContain("read src/foo.ts");
+		expect(nonNull(p.steps[0]).intent).toContain("read src/foo.ts");
 	});
 
 	it("extracts tool_hint and target_hint from common imperatives", () => {
@@ -150,16 +151,16 @@ describe("parseExitPlanMode", () => {
 		const plan = parseExitPlanMode(event, session) as NonNullable<
 			ReturnType<typeof parseExitPlanMode>
 		>;
-		expect(plan.steps[0].tool_hint).toBe("Read");
-		expect(plan.steps[0].target_hint).toBe("src/foo.ts");
-		expect(plan.steps[1].tool_hint).toBe("Edit");
-		expect(plan.steps[1].target_hint).toBe("src/bar.ts");
-		expect(plan.steps[2].tool_hint).toBe("Write");
-		expect(plan.steps[2].target_hint).toBe("src/new.ts");
-		expect(plan.steps[3].tool_hint).toBe("Bash");
+		expect(nonNull(plan.steps[0]).tool_hint).toBe("Read");
+		expect(nonNull(plan.steps[0]).target_hint).toBe("src/foo.ts");
+		expect(nonNull(plan.steps[1]).tool_hint).toBe("Edit");
+		expect(nonNull(plan.steps[1]).target_hint).toBe("src/bar.ts");
+		expect(nonNull(plan.steps[2]).tool_hint).toBe("Write");
+		expect(nonNull(plan.steps[2]).target_hint).toBe("src/new.ts");
+		expect(nonNull(plan.steps[3]).tool_hint).toBe("Bash");
 		// Bash steps deliberately don't capture target_hint (the rest of
 		// the command is arbitrary shell, not a single file path).
-		expect(plan.steps[3].target_hint).toBeUndefined();
+		expect(nonNull(plan.steps[3]).target_hint).toBeUndefined();
 	});
 
 	it("returns null on missing / empty / non-string plan", () => {
@@ -191,10 +192,10 @@ describe("parseMarkdownBullets / extractPlanSection", () => {
 
 	it("treats continuation lines as part of the previous bullet", () => {
 		const steps = parseMarkdownBullets("- first line\n  continued text\n  more text\n- second\n");
-		expect(steps[0].intent).toContain("first line");
-		expect(steps[0].intent).toContain("continued text");
-		expect(steps[0].intent).toContain("more text");
-		expect(steps[1].intent).toBe("second");
+		expect(nonNull(steps[0]).intent).toContain("first line");
+		expect(nonNull(steps[0]).intent).toContain("continued text");
+		expect(nonNull(steps[0]).intent).toContain("more text");
+		expect(nonNull(steps[1]).intent).toBe("second");
 	});
 
 	it("extractPlanSection pulls the body under a `## Plan` heading", () => {
@@ -268,7 +269,7 @@ describe("appendCapturedPlan persistence", () => {
 		expect(existsSync(path)).toBe(true);
 		const lines = readFileSync(path, "utf-8").trim().split("\n");
 		expect(lines).toHaveLength(1);
-		const parsed = JSON.parse(lines[0]);
+		const parsed = JSON.parse(nonNull(lines[0]));
 		expect(parsed.session_id).toBe("sess-1");
 		expect(parsed.steps[0].intent).toBe("step one");
 	});
@@ -285,7 +286,7 @@ describe("appendCapturedPlan persistence", () => {
 			enabled: true,
 		});
 		expect(first).not.toBeNull();
-		expect(session.declared_plan?.steps[0].intent).toBe("first plan");
+		expect(nonNull(session.declared_plan?.steps[0]).intent).toBe("first plan");
 		const second = await maybeCaptureFromPreToolUse({
 			event: preEvent({
 				tool_name: "TaskCreate",
@@ -304,8 +305,8 @@ describe("appendCapturedPlan persistence", () => {
 		expect(session.declared_plan?.steps).toHaveLength(2);
 		const lines = readFileSync(planLogPath(tmp, "sess-1"), "utf-8").trim().split("\n");
 		expect(lines).toHaveLength(2);
-		expect(JSON.parse(lines[0]).steps).toHaveLength(1);
-		expect(JSON.parse(lines[1]).steps).toHaveLength(2);
+		expect(JSON.parse(nonNull(lines[0])).steps).toHaveLength(1);
+		expect(JSON.parse(nonNull(lines[1])).steps).toHaveLength(2);
 	});
 
 	it("config-disabled UserPromptSubmit does NOT capture", async () => {

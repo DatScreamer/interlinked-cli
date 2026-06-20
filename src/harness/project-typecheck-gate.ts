@@ -31,6 +31,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CheckResultEntry } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 const TYPECHECK_TIMEOUT_MS = 60_000;
 const MAX_DIAGS_REPORTED = 50;
@@ -92,11 +93,11 @@ export function parseTscDiagnostics(stdout: string): TscDiagnostic[] {
 		const m = line.match(/^(.+?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$/);
 		if (!m) continue;
 		diags.push({
-			file: m[1],
-			line: Number.parseInt(m[2], 10),
-			col: Number.parseInt(m[3], 10),
-			code: m[4],
-			message: m[5].trim(),
+			file: nonNull(m[1]),
+			line: Number.parseInt(nonNull(m[2]), 10),
+			col: Number.parseInt(nonNull(m[3]), 10),
+			code: nonNull(m[4]),
+			message: nonNull(m[5]).trim(),
 		});
 	}
 	return diags;
@@ -231,7 +232,7 @@ export function parseTestFailures(stdout: string): string[] {
 		// Vitest red-cross prefix on failed tests
 		const m = stripped.match(/^\s*(?:×|✗|FAIL)\s+(.+)$/);
 		if (m) {
-			const msg = m[1].trim();
+			const msg = nonNull(m[1]).trim();
 			// Skip retry-noise duplicates ("(retry x2)")
 			if (!failures.includes(msg)) failures.push(msg);
 		}

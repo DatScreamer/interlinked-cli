@@ -9,6 +9,7 @@
 
 import { extractBraceLoopBodies, getLoopBodies } from "./performance.js";
 import { getExtension, type InlineMatch } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect await inside for/while loops (not for-await-of).
@@ -24,7 +25,7 @@ function isAwaitInNestedAsync(bodyLines: string[], awaitIdx: number): boolean {
 	// Track brace depth relative to each async declaration.
 	let depth = 0;
 	for (let k = awaitIdx; k >= 0; k--) {
-		const line = bodyLines[k];
+		const line = nonNull(bodyLines[k]);
 		// Count braces in reverse — closing braces increase depth, opening decrease
 		for (let c = line.length - 1; c >= 0; c--) {
 			if (line[c] === "}") depth++;
@@ -54,14 +55,14 @@ export function checkAwaitInLoop(content: string, filePath: string): InlineMatch
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (!/\bawait\b/.test(loop.bodyLines[i])) continue;
+			if (!/\bawait\b/.test(nonNull(loop.bodyLines[i]))) continue;
 
 			// Skip if the await is inside a nested async function/arrow
 			if (isAwaitInNestedAsync(loop.bodyLines, i)) continue;
 
 			matches.push({
 				line: loop.startLine + i,
-				text: loop.originalBodyLines[i].trim().slice(0, 150),
+				text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 			});
 			break; // One per loop is enough
 		}
@@ -105,10 +106,10 @@ export function checkQueryInLoop(content: string, filePath: string): InlineMatch
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (pattern.test(loop.bodyLines[i])) {
+			if (pattern.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 				break; // One per loop
 			}
@@ -133,10 +134,10 @@ export function checkStringConcatInLoop(content: string, filePath: string): Inli
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (pattern.test(loop.bodyLines[i])) {
+			if (pattern.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -169,10 +170,10 @@ export function checkRegexInLoop(content: string, filePath: string): InlineMatch
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (pattern.test(loop.bodyLines[i])) {
+			if (pattern.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -194,10 +195,10 @@ export function checkCloneInLoop(content: string, filePath: string): InlineMatch
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (/\.clone\s*\(\s*\)/.test(loop.bodyLines[i])) {
+			if (/\.clone\s*\(\s*\)/.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -236,10 +237,10 @@ export function checkSortInLoop(content: string, filePath: string): InlineMatch[
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (pattern.test(loop.bodyLines[i])) {
+			if (pattern.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 				break; // One per loop
 			}
@@ -274,10 +275,10 @@ export function checkJsonInLoop(content: string, filePath: string): InlineMatch[
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (pattern.test(loop.bodyLines[i])) {
+			if (pattern.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -304,10 +305,10 @@ export function checkMallocInLoop(content: string, filePath: string): InlineMatc
 
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (/\b(malloc|calloc|realloc)\s*\(/.test(loop.bodyLines[i])) {
+			if (/\b(malloc|calloc|realloc)\s*\(/.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 				break; // One per loop
 			}
@@ -330,10 +331,10 @@ export function checkSprintfInLoop(content: string, filePath: string): InlineMat
 	for (const loop of bodies) {
 		for (let i = 0; i < loop.bodyLines.length; i++) {
 			if (matches.length >= 10) break;
-			if (/\bfmt\.Sprintf\s*\(/.test(loop.bodyLines[i])) {
+			if (/\bfmt\.Sprintf\s*\(/.test(nonNull(loop.bodyLines[i]))) {
 				matches.push({
 					line: loop.startLine + i,
-					text: loop.originalBodyLines[i].trim().slice(0, 150),
+					text: nonNull(loop.originalBodyLines[i]).trim().slice(0, 150),
 				});
 			}
 		}

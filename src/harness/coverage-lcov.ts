@@ -229,8 +229,7 @@ function finalizeFile(path: string, acc: FileAcc): CanonicalFileCoverage {
 	const byKey = new Map<string, { name: string; line: number; hits: number }>();
 	for (const [name, lines] of acc.fnStartLines) {
 		const hitsList = acc.fnEntryHits.get(name) ?? [];
-		for (let k = 0; k < lines.length; k++) {
-			const line = lines[k];
+		for (const [k, line] of lines.entries()) {
 			const hits = hitsList[k] ?? 0;
 			const key = `${name}@${line}`;
 			const existing = byKey.get(key);

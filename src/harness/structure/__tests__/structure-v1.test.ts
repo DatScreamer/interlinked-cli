@@ -36,6 +36,7 @@ import type {
 	StructureFinding,
 } from "../types.js";
 import { MODE_DEFAULTS } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // -------------------------------------------
 // Test Helpers
@@ -965,8 +966,8 @@ describe("Rule Families", () => {
 					heuristic: 2,
 				};
 				for (let i = 1; i < deterOrder.length; i++) {
-					expect(orderMap[deterOrder[i]]).toBeGreaterThanOrEqual(
-						orderMap[deterOrder[i - 1]],
+					expect(orderMap[nonNull(deterOrder[i])]).toBeGreaterThanOrEqual(
+						orderMap[nonNull(deterOrder[i - 1])],
 					);
 				}
 			}
@@ -1017,7 +1018,7 @@ describe("Baseline", () => {
 		const baseline: BaselineFile = { schema_version: 1, entries: [] };
 		const result = addToBaseline(baseline, [finding]);
 		expect(result.entries).toHaveLength(1);
-		expect(result.entries[0].finding_name).toBe("public_symbol_companion_untouched");
+		expect(nonNull(result.entries[0]).finding_name).toBe("public_symbol_companion_untouched");
 	});
 
 	it("findingToBaselineEntry generates consistent context_hash", () => {
@@ -1160,7 +1161,7 @@ describe("Verify Output", () => {
 		expect(output.findings.fully_deterministic).toBe(1);
 		expect(output.findings.heuristic).toBe(1);
 		expect(output.details).toHaveLength(2);
-		expect(output.details[0].name).toBe("rule_a");
+		expect(nonNull(output.details[0]).name).toBe("rule_a");
 	});
 
 	it("exit code logic: fully_deterministic findings + fail_on_deterministic implies exit 1", () => {

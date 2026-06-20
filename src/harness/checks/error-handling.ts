@@ -8,6 +8,7 @@ import {
 	JS_TS_ALL_EXTS,
 	stripComments,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Enforcement: Error Handling Quality
@@ -25,36 +26,36 @@ export function checkBareCatchBlock(content: string, filePath: string): InlineMa
 	const matches: InlineMatch[] = [];
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		// JS/TS: catch (...) { } or catch { } on same line
 		if (/\bcatch\s*(\([^)]*\))?\s*\{\s*\}/.test(line)) {
 			matches.push({
 				line: i + 1,
-				text: `bare catch block silently swallows error: ${line.trim().slice(0, 100)}`,
+				text: `bare catch block silently swallows error: ${nonNull(line).trim().slice(0, 100)}`,
 			});
 			continue;
 		}
 		// catch block with only a comment inside
 		if (/\bcatch\s*(\([^)]*\))?\s*\{/.test(line) && i + 2 < lines.length) {
-			const next = lines[i + 1].trim();
-			const afterNext = lines[i + 2].trim();
+			const next = nonNull(lines[i + 1]).trim();
+			const afterNext = nonNull(lines[i + 2]).trim();
 			if (
 				(next.startsWith("//") || next.startsWith("/*") || next === "") &&
 				afterNext === "}"
 			) {
 				matches.push({
 					line: i + 1,
-					text: `catch block with only a comment — error is silently ignored: ${line.trim().slice(0, 100)}`,
+					text: `catch block with only a comment — error is silently ignored: ${nonNull(line).trim().slice(0, 100)}`,
 				});
 			}
 		}
 		// Python: except: pass / except Exception: pass
 		if (ext === ".py" && /\bexcept\b.*:\s*$/.test(line) && i + 1 < lines.length) {
-			const next = lines[i + 1].trim();
+			const next = nonNull(lines[i + 1]).trim();
 			if (next === "pass" || next === "...") {
 				matches.push({
 					line: i + 1,
-					text: `bare except/pass silently swallows error: ${line.trim().slice(0, 100)}`,
+					text: `bare except/pass silently swallows error: ${nonNull(line).trim().slice(0, 100)}`,
 				});
 			}
 		}
@@ -77,7 +78,7 @@ export function checkCatchReturnNull(content: string, filePath: string): InlineM
 	let catchDepth = 0;
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		if (/\bcatch\s*(\([^)]*\))?\s*\{/.test(line)) {
 			inCatch = true;
 			catchLine = i;
@@ -93,7 +94,7 @@ export function checkCatchReturnNull(content: string, filePath: string): InlineM
 				if (ch === "}") catchDepth--;
 			}
 			if (/\breturn\s+(null|undefined)\s*;?/.test(line)) {
-				const catchText = lines[catchLine].trim().slice(0, 80);
+				const catchText = nonNull(lines[catchLine]).trim().slice(0, 80);
 				matches.push({
 					line: i + 1,
 					text: `return null/undefined in catch — error context is lost: ${catchText}`,
@@ -122,10 +123,10 @@ export function checkThrowAsControlFlow(content: string, filePath: string): Inli
 		/\bthrow\s+new\s+(?:Error|TypeError|RangeError)\s*\(\s*["'`](?:not found|invalid|missing|expected|no such|does not exist|cannot find|failed to)/i;
 
 	for (let i = 0; i < lines.length; i++) {
-		if (CONTROL_FLOW_THROWS.test(lines[i])) {
+		if (CONTROL_FLOW_THROWS.test(nonNull(lines[i]))) {
 			matches.push({
 				line: i + 1,
-				text: `throw for expected condition — return a Result or error value instead: ${originalLines[i].trim().slice(0, 120)}`,
+				text: `throw for expected condition — return a Result or error value instead: ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 		if (matches.length >= 5) break;
@@ -146,20 +147,20 @@ export function checkUntypedCatch(content: string, filePath: string): InlineMatc
 	const matches: InlineMatch[] = [];
 
 	for (let i = 0; i < lines.length; i++) {
-		const catchMatch = lines[i].match(/\bcatch\s*\(\s*(\w+)\s*\)\s*\{/);
+		const catchMatch = nonNull(lines[i]).match(/\bcatch\s*\(\s*(\w+)\s*\)\s*\{/);
 		if (!catchMatch) continue;
 
 		const varName = catchMatch[1];
 		let hasNarrowing = false;
 		const endSearch = Math.min(i + 10, lines.length);
 		for (let j = i + 1; j < endSearch; j++) {
-			const jLine = lines[j];
-			if (jLine.includes("}") && !jLine.includes("{")) break;
+			const jLine = nonNull(lines[j]);
+			if (nonNull(jLine).includes("}") && !nonNull(jLine).includes("{")) break;
 			if (
-				jLine.includes("instanceof") ||
-				jLine.includes(`${varName}._tag`) ||
-				jLine.includes(`${varName}.code`) ||
-				jLine.includes(`typeof ${varName}`) ||
+				nonNull(jLine).includes("instanceof") ||
+				nonNull(jLine).includes(`${varName}._tag`) ||
+				nonNull(jLine).includes(`${varName}.code`) ||
+				nonNull(jLine).includes(`typeof ${varName}`) ||
 				/\bas\s+\w+Error\b/.test(jLine)
 			) {
 				hasNarrowing = true;
@@ -170,7 +171,7 @@ export function checkUntypedCatch(content: string, filePath: string): InlineMatc
 		if (!hasNarrowing) {
 			matches.push({
 				line: i + 1,
-				text: `untyped catch(${varName}) without narrowing — use instanceof, tagged errors, or error codes: ${originalLines[i].trim().slice(0, 100)}`,
+				text: `untyped catch(${varName}) without narrowing — use instanceof, tagged errors, or error codes: ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 			});
 		}
 		if (matches.length >= 5) break;
@@ -193,10 +194,10 @@ export function checkErrorStringComparison(content: string, filePath: string): I
 	const ERR_MSG_CMP = /\.message\s*===?\s*["'`]|\.message\.includes\s*\(\s*["'`]/;
 
 	for (let i = 0; i < lines.length; i++) {
-		if (ERR_MSG_CMP.test(lines[i])) {
+		if (ERR_MSG_CMP.test(nonNull(lines[i]))) {
 			matches.push({
 				line: i + 1,
-				text: `comparing error.message string — fragile, use error codes or instanceof instead: ${originalLines[i].trim().slice(0, 120)}`,
+				text: `comparing error.message string — fragile, use error codes or instanceof instead: ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 		if (matches.length >= 5) break;
@@ -445,7 +446,7 @@ export function checkErrorDispatchByInstanceof(
 		let opMatch: RegExpExecArray | null = INSTANCEOF_RE.exec(stripped);
 		while (opMatch !== null && opMatch.index < closeIdx) {
 			if (matches.length >= 10) break;
-			const className = opMatch[1];
+			const className = nonNull(opMatch[1]);
 			const afterIdx = opMatch.index + opMatch[0].length;
 			if (
 				BUILTIN_ERROR_CLASSES.has(className) &&

@@ -13,6 +13,7 @@ import {
 import { c, header, kvLine, relativeTime, table } from "../lib/formatter.js";
 import { readLocalSessions } from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+import { nonNull } from "../lib/non-null.js";
 
 export function checkpointCommand(
 	messageOrSubcmd?: string,
@@ -251,5 +252,5 @@ function parseSinceDuration(s: string): number {
 	const match = s.match(/^(\d+)\s*(s|m|h|d)$/);
 	if (!match) return Date.now() - 86400000; // default 1 day
 	const multipliers: Record<string, number> = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
-	return Date.now() - Number.parseInt(match[1], 10) * multipliers[match[2]];
+	return Date.now() - Number.parseInt(nonNull(match[1]), 10) * nonNull(multipliers[nonNull(match[2])]);
 }

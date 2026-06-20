@@ -4,6 +4,7 @@
 // Common git operations used across git, guard, and attach commands.
 
 import { execFileSync } from "node:child_process";
+import { nonNull } from "./non-null.js";
 
 /**
  * Run a git command and return trimmed stdout.
@@ -110,7 +111,7 @@ export function parseInterlinkedTrailers(message: string): Record<string, string
 	for (const line of lines) {
 		const match = line.match(/^(Interlinked-\w[\w-]*):\s*(.+)$/);
 		if (match) {
-			trailers[match[1]] = match[2].trim();
+			trailers[nonNull(match[1])] = nonNull(match[2]).trim();
 		}
 	}
 	return trailers;
@@ -135,7 +136,7 @@ export function deriveProjectIdentity(cwd: string): ProjectIdentity {
 			const sshMatch = remoteUrl.match(/[:/]([^/]+?)(?:\.git)?$/);
 			// HTTPS: https://github.com/user/my-project.git
 			if (sshMatch) {
-				repoName = sshMatch[1];
+				repoName = nonNull(sshMatch[1]);
 			}
 		}
 	} catch (_err) {

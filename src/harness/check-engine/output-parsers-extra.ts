@@ -7,6 +7,7 @@
 // existing import sites are unchanged.
 
 import type { AuditResult, CheckResult } from "./types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // -------------------------------------------
 // osv-scanner (osv-scanner --format=json)
@@ -168,9 +169,9 @@ export function parseMypyOutput(output: string): CheckResult[] {
 			results.push({
 				tool: "mypy",
 				severity,
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				message: match[4].trim(),
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				message: nonNull(match[4]).trim(),
 				ruleId: match[5],
 			});
 		}
@@ -252,10 +253,10 @@ export function parseGoBuildOutput(output: string): CheckResult[] {
 			results.push({
 				tool: "go-build",
 				severity: "error",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
-				message: match[4].trim(),
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				column: Number.parseInt(nonNull(match[3]), 10),
+				message: nonNull(match[4]).trim(),
 			});
 		}
 	}
@@ -302,15 +303,15 @@ export function parseGccOutput(output: string): CheckResult[] {
 			/^(.+?\.[chm](?:pp|xx|c|m)?):(\d+):(\d+):\s*(error|warning|fatal error):\s*(.+)/,
 		);
 		if (match) {
-			const severity = match[4].includes("error") ? "error" : "warning";
-			const msg = match[5].trim();
+			const severity = nonNull(match[4]).includes("error") ? "error" : "warning";
+			const msg = nonNull(match[5]).trim();
 			const ruleMatch = msg.match(/\[(-W[\w-]+)\]\s*$/);
 			results.push({
 				tool: "c-compile",
 				severity,
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				column: Number.parseInt(nonNull(match[3]), 10),
 				message: ruleMatch ? msg.replace(ruleMatch[0], "").trim() : msg,
 				ruleId: ruleMatch?.[1],
 			});
@@ -335,10 +336,10 @@ export function parseClangTidyOutput(output: string): CheckResult[] {
 			results.push({
 				tool: "clang-tidy",
 				severity: match[4] === "error" ? "error" : "warning",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
-				message: match[5].trim(),
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				column: Number.parseInt(nonNull(match[3]), 10),
+				message: nonNull(match[5]).trim(),
 				ruleId: match[6],
 			});
 		}

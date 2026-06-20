@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { HarnessEvent } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	__resetComplexityPulseForTesting,
 	collectComplexityPulseWarnings,
@@ -252,7 +253,7 @@ describe("complexity-write-guard observer", () => {
 		);
 		expect(result).toBeNull();
 		expect(observe).toHaveBeenCalledTimes(1);
-		const [filePath, beforeFns, afterFns, afterContent] = observe.mock.calls[0];
+		const [filePath, beforeFns, afterFns, afterContent] = nonNull(observe.mock.calls[0]);
 		expect(filePath).toBe(abs);
 		expect(beforeFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(4);
 		expect(afterFns.find((f) => f.name === "alpha")?.cyclomatic).toBe(3);
@@ -290,7 +291,7 @@ describe("complexity-write-guard observer", () => {
 		const observe = vi.fn<ComplexityObserver>();
 		expect(checkFunctionComplexityWrite({ file_path: abs, content: fnWith("born", 2) }, tmp, observe)).toBeNull();
 		expect(observe).toHaveBeenCalledTimes(1);
-		const [, beforeFns, afterFns] = observe.mock.calls[0];
+		const [, beforeFns, afterFns] = nonNull(observe.mock.calls[0]);
 		expect(beforeFns).toEqual([]);
 		expect(afterFns.find((f) => f.name === "born")?.cyclomatic).toBe(3);
 	});

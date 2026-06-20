@@ -32,6 +32,7 @@ import {
 	checkJSDocParamMismatch,
 	checkTestProximity,
 } from "./misc-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockExistsSync = vi.mocked(existsSync);
@@ -187,8 +188,8 @@ describe("checkCoDependencyStaleness", () => {
 			file: FILE,
 			affectedFiles: ["/proj/dep.ts"],
 		});
-		expect(out[0].message).toContain("alice recently read dep.ts");
-		expect(out[0].message).toContain("These files import from target.ts");
+		expect(nonNull(out[0]).message).toContain("alice recently read dep.ts");
+		expect(nonNull(out[0]).message).toContain("These files import from target.ts");
 	});
 
 	it("uses empty agent name when event.agent_name is undefined (L30 ?? branch)", () => {
@@ -206,9 +207,9 @@ describe("checkCoDependencyStaleness", () => {
 		]);
 		const out = checkCoDependencyStaleness(FILE, REL, makeEvent(undefined), graph, sessions, 3600);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("bob recently read");
+		expect(nonNull(out[0]).message).toContain("bob recently read");
 		// The empty-name session must have been skipped, not reported.
-		expect(out[0].message).not.toContain(" recently read dep.ts; ");
+		expect(nonNull(out[0]).message).not.toContain(" recently read dep.ts; ");
 	});
 
 	it("aggregates multiple files per agent and adds a +N overflow (L68-69 ternary true)", () => {
@@ -224,7 +225,7 @@ describe("checkCoDependencyStaleness", () => {
 		const out = checkCoDependencyStaleness(FILE, REL, makeEvent("me"), graph, sessions, 3600);
 		expect(out).toHaveLength(1);
 		// First 3 listed, then " +2" overflow.
-		expect(out[0].message).toContain("carol recently read a.ts, b.ts, c.ts +2");
+		expect(nonNull(out[0]).message).toContain("carol recently read a.ts, b.ts, c.ts +2");
 	});
 
 	it("does not add overflow when an agent read 3 or fewer deps (L69 ternary false)", () => {
@@ -238,8 +239,8 @@ describe("checkCoDependencyStaleness", () => {
 			}),
 		]);
 		const out = checkCoDependencyStaleness(FILE, REL, makeEvent("me"), graph, sessions, 3600);
-		expect(out[0].message).toContain("dan recently read a.ts, b.ts, c.ts.");
-		expect(out[0].message).not.toContain("+");
+		expect(nonNull(out[0]).message).toContain("dan recently read a.ts, b.ts, c.ts.");
+		expect(nonNull(out[0]).message).not.toContain("+");
 	});
 
 	it("dedups two distinct agents into separate summaries (byAgent map, L67 multi-key)", () => {
@@ -258,10 +259,10 @@ describe("checkCoDependencyStaleness", () => {
 		]);
 		const out = checkCoDependencyStaleness(FILE, REL, makeEvent("me"), graph, sessions, 3600);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("alice recently read dep.ts");
-		expect(out[0].message).toContain("bob recently read dep.ts");
+		expect(nonNull(out[0]).message).toContain("alice recently read dep.ts");
+		expect(nonNull(out[0]).message).toContain("bob recently read dep.ts");
 		// Two summaries joined by "; ".
-		expect(out[0].message).toContain("; ");
+		expect(nonNull(out[0]).message).toContain("; ");
 	});
 
 	it("merges two sessions of the SAME agent into one summary (L61 `|| []` existing-array branch)", () => {
@@ -282,9 +283,9 @@ describe("checkCoDependencyStaleness", () => {
 		expect(out).toHaveLength(1);
 		// Single "eve" summary listing both files (proves the `|| []` reused the
 		// existing array on the second push for the same agent key).
-		const eveCount = (out[0].message.match(/eve recently read/g) || []).length;
+		const eveCount = (nonNull(out[0]).message.match(/eve recently read/g) || []).length;
 		expect(eveCount).toBe(1);
-		expect(out[0].message).toContain("eve recently read a.ts, b.ts");
+		expect(nonNull(out[0]).message).toContain("eve recently read a.ts, b.ts");
 	});
 });
 
@@ -340,9 +341,9 @@ describe("checkJSDocParamMismatch", () => {
 			severity: "warning",
 			file: FILE,
 		});
-		expect(out[0].message).toContain('JSDoc @param "oldName"');
-		expect(out[0].message).toContain("[name, age]");
-		expect(out[0].message).toContain("foo.ts:6");
+		expect(nonNull(out[0]).message).toContain('JSDoc @param "oldName"');
+		expect(nonNull(out[0]).message).toContain("[name, age]");
+		expect(nonNull(out[0]).message).toContain("foo.ts:6");
 	});
 
 	it("does not flag when every @param matches the parameters (L154 false)", () => {
@@ -423,7 +424,7 @@ describe("checkJSDocParamMismatch", () => {
 		mockReadFileSync.mockReturnValue(src);
 		const out = checkJSDocParamMismatch(FILE, REL);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain('"mismatchHere"');
+		expect(nonNull(out[0]).message).toContain('"mismatchHere"');
 	});
 
 	it("caps the backward scan ~30 lines above the function (L133 Math.max bound)", () => {
@@ -453,7 +454,7 @@ describe("checkJSDocParamMismatch", () => {
 		mockReadFileSync.mockReturnValue(src);
 		const out = checkJSDocParamMismatch(FILE, REL);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain('"typeless"');
+		expect(nonNull(out[0]).message).toContain('"typeless"');
 	});
 });
 
@@ -485,8 +486,8 @@ describe("checkInterfaceChangeImpact", () => {
 		});
 		const out = checkInterfaceChangeImpact(FILE, REL, oldBodies, graph);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("`Gone`");
-		expect(out[0].message).toContain("importer.ts");
+		expect(nonNull(out[0]).message).toContain("`Gone`");
+		expect(nonNull(out[0]).message).toContain("importer.ts");
 	});
 
 	it("detects a modified interface body (L189 oldBody !== newBody -> Modified)", () => {
@@ -504,7 +505,7 @@ describe("checkInterfaceChangeImpact", () => {
 			file: FILE,
 			affectedFiles: ["/proj/importer.ts"],
 		});
-		expect(out[0].message).toContain("Verify implementations are updated");
+		expect(nonNull(out[0]).message).toContain("Verify implementations are updated");
 	});
 
 	it("returns [] when a changed interface has no dependents (L198 guard)", () => {
@@ -541,7 +542,7 @@ describe("checkInterfaceChangeImpact", () => {
 		const out = checkInterfaceChangeImpact(FILE, REL, old, graph);
 		expect(out).toHaveLength(1);
 		// First 4 names listed, then " +2".
-		expect(out[0].message).toContain("I1, I2, I3, I4 +2");
+		expect(nonNull(out[0]).message).toContain("I1, I2, I3, I4 +2");
 	});
 
 	it("does not truncate names at exactly 4 changed interfaces (L211 ternary false)", () => {
@@ -554,8 +555,8 @@ describe("checkInterfaceChangeImpact", () => {
 		});
 		const out = checkInterfaceChangeImpact(FILE, REL, old, graph);
 		// Names are wrapped in backticks: `I1, I2, I3, I4` with no +N overflow.
-		expect(out[0].message).toContain("`I1, I2, I3, I4`");
-		expect(out[0].message).not.toContain("+");
+		expect(nonNull(out[0]).message).toContain("`I1, I2, I3, I4`");
+		expect(nonNull(out[0]).message).not.toContain("+");
 	});
 
 	it("truncates the affected-file list past 6 with 'and N more' (L216 ternary true)", () => {
@@ -569,8 +570,8 @@ describe("checkInterfaceChangeImpact", () => {
 		const out = checkInterfaceChangeImpact(FILE, REL, oldBodies, graph);
 		expect(out).toHaveLength(1);
 		// 6 files listed + "and 2 more".
-		expect(out[0].message).toContain("and 2 more");
-		expect(out[0].affectedFiles).toHaveLength(8);
+		expect(nonNull(out[0]).message).toContain("and 2 more");
+		expect(nonNull(out[0]).affectedFiles).toHaveLength(8);
 	});
 
 	it("does not append 'and N more' at exactly 6 affected files (L216 ternary false)", () => {
@@ -582,8 +583,8 @@ describe("checkInterfaceChangeImpact", () => {
 			importers: importerFiles.map((f) => edge(["Foo"], f)),
 		});
 		const out = checkInterfaceChangeImpact(FILE, REL, oldBodies, graph);
-		expect(out[0].message).not.toContain("more");
-		expect(out[0].affectedFiles).toHaveLength(6);
+		expect(nonNull(out[0]).message).not.toContain("more");
+		expect(nonNull(out[0]).affectedFiles).toHaveLength(6);
 	});
 });
 
@@ -668,9 +669,9 @@ describe("checkTestProximity", () => {
 			severity: "info",
 			file: "/proj/src/foo.ts",
 		});
-		expect(out[0].message).toContain("No test file found for src/foo.ts");
-		expect(out[0].message).toContain("Consider adding foo.test.ts");
-		expect(out[0].affectedFiles).toBeUndefined();
+		expect(nonNull(out[0]).message).toContain("No test file found for src/foo.ts");
+		expect(nonNull(out[0]).message).toContain("Consider adding foo.test.ts");
+		expect(nonNull(out[0]).affectedFiles).toBeUndefined();
 		// All four candidates probed.
 		expect(mockExistsSync).toHaveBeenCalledTimes(4);
 	});
@@ -690,8 +691,8 @@ describe("checkTestProximity", () => {
 			file: "/proj/src/foo.ts",
 			affectedFiles: [testPath],
 		});
-		expect(out[0].message).toContain("its test file hasn't been updated");
-		expect(out[0].message).toContain("Test: foo.test.ts");
+		expect(nonNull(out[0]).message).toContain("its test file hasn't been updated");
+		expect(nonNull(out[0]).message).toContain("Test: foo.test.ts");
 	});
 
 	it("stays silent when the agent HAS written the test file this session (L283 false)", () => {
@@ -729,7 +730,7 @@ describe("checkTestProximity", () => {
 			sessions,
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("its test file hasn't been updated");
+		expect(nonNull(out[0]).message).toContain("its test file hasn't been updated");
 	});
 
 	it("finds a test in a __tests__ subdir (later candidate in the find() scan)", () => {
@@ -738,7 +739,7 @@ describe("checkTestProximity", () => {
 		const sessions = makeSessions([makeSession({ agent_name: "me" })]);
 		const out = checkTestProximity("/proj/src/foo.ts", "src/foo.ts", makeEvent("me"), sessions);
 		expect(out).toHaveLength(1);
-		expect(out[0].affectedFiles).toEqual([testPath]);
-		expect(out[0].message).toContain("Test: foo.test.ts");
+		expect(nonNull(out[0]).affectedFiles).toEqual([testPath]);
+		expect(nonNull(out[0]).message).toContain("Test: foo.test.ts");
 	});
 });

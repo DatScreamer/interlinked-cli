@@ -7,6 +7,7 @@ import {
 } from "../plan-drift.js";
 import type { CapturedPlan, PlanStep } from "../types/plan.js";
 import type { SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -129,7 +130,7 @@ describe("detectPlanDrift", () => {
 		expect(report!.declared_count).toBe(3);
 		expect(report!.matched_count).toBe(2);
 		expect(report!.missing_steps).toHaveLength(1);
-		expect(report!.missing_steps[0].intent).toContain("npm test");
+		expect(nonNull(report!.missing_steps[0]).intent).toContain("npm test");
 		expect(report!.drift_pct).toBeCloseTo(1 / 3, 5);
 	});
 

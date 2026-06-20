@@ -10,6 +10,8 @@
 // a message asking the agent to use the Write tool instead.
 
 /** File extensions the harness's content-gate checks care about. */
+import { nonNull } from "../lib/non-null.js";
+
 const CODE_FILE_EXT_RE =
 	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
 
@@ -49,9 +51,9 @@ function parseRedirectTarget(
 	const afterOp = cmd.slice(operatorIdx + operator.length).trim();
 	// Match: "path", 'path', or bare path until whitespace/operator
 	const quoted = afterOp.match(/^(["'])([^"']+)\1/);
-	if (quoted) return { target: quoted[2], mechanism: `shell redirect (${operator})` };
+	if (quoted) return { target: nonNull(quoted[2]), mechanism: `shell redirect (${operator})` };
 	const bare = afterOp.match(/^(\S+)/);
-	if (bare) return { target: bare[1], mechanism: `shell redirect (${operator})` };
+	if (bare) return { target: nonNull(bare[1]), mechanism: `shell redirect (${operator})` };
 	return null;
 }
 
@@ -79,7 +81,7 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 	const redirRe = /(?<![0-9&])(>>?)(?![&])/g;
 	const stripped = stripQuotedStrings(normalized);
 	for (const m of stripped.matchAll(redirRe)) {
-		const op = m[1];
+		const op = nonNull(m[1]);
 		const idx = m.index ?? 0;
 		const hit = parseRedirectTarget(normalized, idx, op);
 		if (!hit) continue;
@@ -92,7 +94,7 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 		/\btee\s+(?:-a\s+|--append\s+)?(?:--\s+)?(['"]?)([^\s'"|&]+)\1/,
 	);
 	if (teeMatch) {
-		const target = teeMatch[2];
+		const target = nonNull(teeMatch[2]);
 		if (CODE_FILE_EXT_RE.test(target)) {
 			return { target, mechanism: "tee" };
 		}
@@ -113,12 +115,12 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 		const script = inlineInterp[3];
 		// Look for `writeFileSync('foo.ts', ...)` / `open('foo.ts','w')`
 		const writeArg =
-			script.match(/writeFile(?:Sync)?\s*\(\s*['"]([^'"]+)['"]/) ??
-			script.match(/open\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"][aw]/) ??
-			script.match(/fs\.writeFile\s*\(\s*['"]([^'"]+)['"]/);
-		if (writeArg && CODE_FILE_EXT_RE.test(writeArg[1])) {
+			nonNull(script).match(/writeFile(?:Sync)?\s*\(\s*['"]([^'"]+)['"]/) ??
+			nonNull(script).match(/open\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"][aw]/) ??
+			nonNull(script).match(/fs\.writeFile\s*\(\s*['"]([^'"]+)['"]/);
+		if (writeArg && CODE_FILE_EXT_RE.test(nonNull(writeArg[1]))) {
 			return {
-				target: writeArg[1],
+				target: nonNull(writeArg[1]),
 				mechanism: `inline ${inlineInterp[1]} -${inlineInterp[0].includes("-c ") ? "c" : "e"} script`,
 			};
 		}
@@ -151,7 +153,7 @@ function detectFileMoveToProtected(
 	for (const segment of splitCommandSegments(cmd)) {
 		const args = splitShellWordsLoose(segment).map(stripOuterQuotes);
 		if (args.length < 2) continue;
-		const verb = args[0].split("/").pop() ?? args[0];
+		const verb = nonNull(args[0]).split("/").pop() ?? nonNull(args[0]);
 		if (!FILE_MOVE_VERBS.has(verb)) continue;
 		// Skip any subsequent flag-token (starts with `-`), find the last
 		// positional argument. `cp` and friends always put the destination
@@ -159,7 +161,7 @@ function detectFileMoveToProtected(
 		const positionals: string[] = [];
 		for (let i = 1; i < args.length; i++) {
 			const arg = args[i];
-			if (arg.startsWith("-")) {
+			if (nonNull(arg).startsWith("-")) {
 				// Some flags take a value in two-token form (`-m 644`,
 				// `--mode 644`, `-t DIR`). Skip the next token only for those.
 				// `-T` is `--no-target-directory` — a boolean; do NOT skip,
@@ -173,15 +175,15 @@ function detectFileMoveToProtected(
 					arg === "--target-directory" ||
 					arg === "-S" ||
 					arg === "--suffix";
-				if (flagTakesArg && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+				if (flagTakesArg && i + 1 < args.length && !nonNull(args[i + 1]).startsWith("-")) {
 					i++;
 				}
 				continue;
 			}
-			positionals.push(arg);
+			positionals.push(nonNull(arg));
 		}
 		if (positionals.length < 2) continue;
-		const target = positionals[positionals.length - 1];
+		const target = nonNull(positionals[positionals.length - 1]);
 		if (isProtectedTarget(target)) {
 			return { target, mechanism: `${verb} (write to tracked file)` };
 		}
@@ -196,7 +198,7 @@ function detectDdWriteToProtected(
 		if (!/\bdd\b/.test(segment)) continue;
 		const ofMatch = segment.match(/\bof=(\S+)/);
 		if (!ofMatch) continue;
-		const target = stripOuterQuotes(ofMatch[1]);
+		const target = stripOuterQuotes(nonNull(ofMatch[1]));
 		if (isProtectedTarget(target)) {
 			return { target, mechanism: "dd (block-level write)" };
 		}
@@ -214,7 +216,7 @@ function detectSedInPlaceEdit(cmd: string): { target: string; mechanism: string 
 		if (!sedArgs.some(isSedInPlaceOption)) continue;
 
 		for (let i = sedArgs.length - 1; i >= 0; i--) {
-			const arg = sedArgs[i];
+			const arg = nonNull(sedArgs[i]);
 			if (arg.startsWith("-")) continue;
 			if (CODE_FILE_EXT_RE.test(arg)) {
 				return { target: arg, mechanism: "sed -i (in-place)" };

@@ -23,6 +23,7 @@ import {
 	recurrencesPath,
 	resolveSinceCutoff,
 } from "../recurrence.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function ev(overrides: Partial<RecurrenceEvent> = {}): RecurrenceEvent {
 	return {
@@ -80,12 +81,12 @@ describe("aggregateRecurrences", () => {
 			ev({ check_id: "a", session_id: "s2", file: "f1.ts" }),
 		]);
 		expect(rows).toHaveLength(2);
-		expect(rows[0].check_id).toBe("a");
-		expect(rows[0].count).toBe(3);
-		expect(rows[0].distinct_sessions).toBe(2);
-		expect(rows[0].distinct_files).toBe(2);
-		expect(rows[1].check_id).toBe("b");
-		expect(rows[1].count).toBe(1);
+		expect(nonNull(rows[0]).check_id).toBe("a");
+		expect(nonNull(rows[0]).count).toBe(3);
+		expect(nonNull(rows[0]).distinct_sessions).toBe(2);
+		expect(nonNull(rows[0]).distinct_files).toBe(2);
+		expect(nonNull(rows[1]).check_id).toBe("b");
+		expect(nonNull(rows[1]).count).toBe(1);
 	});
 
 	it("derives first_seen / last_seen from the event timestamps", () => {
@@ -94,8 +95,8 @@ describe("aggregateRecurrences", () => {
 			ev({ ts: "2026-05-03T00:00:00.000Z" }),
 			ev({ ts: "2026-05-02T00:00:00.000Z" }),
 		]);
-		expect(rows[0].first_seen).toBe("2026-05-01T00:00:00.000Z");
-		expect(rows[0].last_seen).toBe("2026-05-03T00:00:00.000Z");
+		expect(nonNull(rows[0]).first_seen).toBe("2026-05-01T00:00:00.000Z");
+		expect(nonNull(rows[0]).last_seen).toBe("2026-05-03T00:00:00.000Z");
 	});
 
 	it("collects sample_files most-recent-first, deduplicated", () => {
@@ -105,7 +106,7 @@ describe("aggregateRecurrences", () => {
 			ev({ ts: "2026-05-03T00:00:00.000Z", file: "mid.ts" }), // dup
 			ev({ ts: "2026-05-04T00:00:00.000Z", file: "new.ts" }),
 		]);
-		expect(rows[0].sample_files).toEqual(["new.ts", "mid.ts", "old.ts"]);
+		expect(nonNull(rows[0]).sample_files).toEqual(["new.ts", "mid.ts", "old.ts"]);
 	});
 
 	it("collects agent_sources sorted and unique", () => {
@@ -241,8 +242,8 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		recordRecurrenceEvent(ev({ ts: "2026-05-02T00:00:00.000Z" }), dir);
 		const out = loadRecurrenceEvents(dir);
 		expect(out).toHaveLength(2);
-		expect(out[0].ts).toBe("2026-05-01T00:00:00.000Z");
-		expect(out[1].ts).toBe("2026-05-02T00:00:00.000Z");
+		expect(nonNull(out[0]).ts).toBe("2026-05-01T00:00:00.000Z");
+		expect(nonNull(out[1]).ts).toBe("2026-05-02T00:00:00.000Z");
 	});
 
 	it("recordHarnessMissed records a harness_missed event with the supplied signature", () => {
@@ -254,9 +255,9 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].kind).toBe("harness_missed");
-		expect(events[0].signature).toBe("raw-sql-concat");
-		expect(events[0].file).toBe("src/db.ts");
+		expect(nonNull(events[0]).kind).toBe("harness_missed");
+		expect(nonNull(events[0]).signature).toBe("raw-sql-concat");
+		expect(nonNull(events[0]).file).toBe("src/db.ts");
 	});
 
 	it("recordHarnessCaught wraps recordRecurrenceEvent with kind=harness_caught + a fresh ts", () => {
@@ -270,14 +271,14 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		});
 		const events = loadRecurrenceEvents(dir);
 		expect(events).toHaveLength(1);
-		expect(events[0].kind).toBe("harness_caught");
-		expect(events[0].check_id).toBe("misused_promises");
-		expect(events[0].agent_source).toBe("claude");
-		expect(events[0].session_id).toBe("s1");
-		expect(events[0].file).toBe("src/foo.ts");
-		expect(events[0].message).toBe("x");
+		expect(nonNull(events[0]).kind).toBe("harness_caught");
+		expect(nonNull(events[0]).check_id).toBe("misused_promises");
+		expect(nonNull(events[0]).agent_source).toBe("claude");
+		expect(nonNull(events[0]).session_id).toBe("s1");
+		expect(nonNull(events[0]).file).toBe("src/foo.ts");
+		expect(nonNull(events[0]).message).toBe("x");
 		// ts auto-populated as ISO 8601
-		expect(events[0].ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		expect(nonNull(events[0]).ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 	});
 
 	it("markOutcome writes outcome_marker rows that survive reload", () => {

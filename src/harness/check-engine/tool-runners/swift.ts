@@ -3,6 +3,7 @@
 // ===========================================
 
 import { spawnSync } from "node:child_process";
+import { nonNull } from "../../../lib/non-null.js";
 import { filterResultsToFile } from "../output-parsers.js";
 import { runProcessAsync } from "../spawn-async.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
@@ -122,10 +123,10 @@ function parseSwiftBuildOutput(output: string): CheckResult[] {
 			results.push({
 				tool: "swift-build",
 				severity: match[4] === "error" ? "error" : "warning",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
-				message: match[5],
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				column: Number.parseInt(nonNull(match[3]), 10),
+				message: nonNull(match[5]),
 			});
 		}
 	}

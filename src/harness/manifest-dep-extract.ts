@@ -12,6 +12,8 @@
 /** composer.json `require` + `require-dev` (keys are "vendor/pkg" strings).
  *  Platform pseudo-packages (`php`, `ext-*`, `lib-*`, `composer-*`) are
  *  dropped — they constrain the runtime, not a registry download. */
+import { nonNull } from "../lib/non-null.js";
+
 export function extractComposerDeps(content: string): Map<string, string> {
 	const deps = new Map<string, string>();
 	let parsed: unknown;
@@ -54,11 +56,11 @@ export function extractPomDeps(content: string): Map<string, string> {
 	const depBlock = /<dependency\b[^>]*>([\s\S]*?)<\/dependency>/gi;
 	for (const m of content.matchAll(depBlock)) {
 		const inner = m[1];
-		const group = inner.match(/<groupId>\s*([^<\s][^<]*?)\s*<\/groupId>/i);
-		const artifact = inner.match(/<artifactId>\s*([^<\s][^<]*?)\s*<\/artifactId>/i);
+		const group = nonNull(inner).match(/<groupId>\s*([^<\s][^<]*?)\s*<\/groupId>/i);
+		const artifact = nonNull(inner).match(/<artifactId>\s*([^<\s][^<]*?)\s*<\/artifactId>/i);
 		if (!group || !artifact) continue;
-		const version = inner.match(/<version>\s*([^<]*?)\s*<\/version>/i);
-		deps.set(`${group[1]}:${artifact[1]}`, version ? version[1] : "");
+		const version = nonNull(inner).match(/<version>\s*([^<]*?)\s*<\/version>/i);
+		deps.set(`${nonNull(group[1])}:${nonNull(artifact[1])}`, version ? nonNull(version[1]) : "");
 	}
 	return deps;
 }
@@ -76,7 +78,7 @@ export function extractGradleDeps(content: string): Map<string, string> {
 	// is not folded into the recorded version.
 	const call = new RegExp(`\\b(?:${cfg})\\s*\\(?\\s*['\"]([^'\":]+):([^'\":]+):([^'\":]+)`, "g");
 	for (const m of content.matchAll(call)) {
-		deps.set(`${m[1]}:${m[2]}`, m[3]);
+		deps.set(`${nonNull(m[1])}:${nonNull(m[2])}`, nonNull(m[3]));
 	}
 	// Map-notation form: implementation group: 'g', name: 'a'[, version: 'v'].
 	// A standard documented Gradle dependency shape — matching only the string
@@ -126,10 +128,10 @@ export function extractNugetDeps(content: string): Map<string, string> {
 	const pkg = /<package\b([^>]*?)\/?>/gi;
 	for (const m of content.matchAll(pkg)) {
 		const attrs = m[1];
-		const id = attrs.match(/\bid\s*=\s*(['"])([^'"]+)\1/i);
+		const id = nonNull(attrs).match(/\bid\s*=\s*(['"])([^'"]+)\1/i);
 		if (!id) continue;
-		const version = attrs.match(/\bversion\s*=\s*(['"])([^'"]+)\1/i);
-		deps.set(id[2], version ? version[2] : "");
+		const version = nonNull(attrs).match(/\bversion\s*=\s*(['"])([^'"]+)\1/i);
+		deps.set(nonNull(id[2]), version ? nonNull(version[2]) : "");
 	}
 	// Modern SDK-style .csproj: <PackageReference Include="X" Version="Y" /> or
 	// <PackageReference Include="X"><Version>Y</Version></PackageReference>. This
@@ -138,11 +140,11 @@ export function extractNugetDeps(content: string): Map<string, string> {
 	const ref = /<PackageReference\b([^>]*?)(?:\/>|>([\s\S]*?)<\/PackageReference>)/gi;
 	for (const m of content.matchAll(ref)) {
 		const attrs = m[1];
-		const inc = attrs.match(/\bInclude\s*=\s*(['"])([^'"]+)\1/i);
+		const inc = nonNull(attrs).match(/\bInclude\s*=\s*(['"])([^'"]+)\1/i);
 		if (!inc) continue;
-		const vAttr = attrs.match(/\bVersion\s*=\s*(['"])([^'"]+)\1/i);
+		const vAttr = nonNull(attrs).match(/\bVersion\s*=\s*(['"])([^'"]+)\1/i);
 		const vChild = m[2] ? m[2].match(/<Version>\s*([^<]*?)\s*<\/Version>/i) : null;
-		deps.set(inc[2], vAttr ? vAttr[2] : vChild ? vChild[1] : "");
+		deps.set(nonNull(inc[2]), vAttr ? nonNull(vAttr[2]) : vChild ? nonNull(vChild[1]) : "");
 	}
 	return deps;
 }

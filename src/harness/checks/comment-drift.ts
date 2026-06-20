@@ -17,6 +17,7 @@
 // All return InlineMatch[] keyed on the comment line, so the agent
 // sees WHICH claim is broken without having to scan the function.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -62,8 +63,8 @@ export function collectAnnotatedFunctions(
 	const declRe =
 		/^(?:\s*)(?:export\s+)?(?:async\s+)?(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>)/;
 
-	for (let i = 0; i < lines.length; i++) {
-		if (!declRe.test(lines[i])) continue;
+	for (const [i, declLine] of lines.entries()) {
+		if (!declRe.test(declLine)) continue;
 		// Walk backwards collecting the comment block above this line.
 		const { commentLine, commentText } = harvestLeadingComment(lines, i);
 		if (!commentText) continue;
@@ -89,21 +90,21 @@ function harvestLeadingComment(
 ): { commentLine: number; commentText: string } {
 	let j = declIdx - 1;
 	// Skip blank lines between comment and decl.
-	while (j >= 0 && lines[j].trim() === "") j--;
+	while (j >= 0 && nonNull(lines[j]).trim() === "") j--;
 	if (j < 0) return { commentLine: 0, commentText: "" };
 
-	const last = lines[j].trim();
+	const last = nonNull(lines[j]).trim();
 	if (last.endsWith("*/")) {
 		// Block comment — walk back to `/*`.
 		let k = j;
-		while (k >= 0 && !lines[k].trim().startsWith("/*")) k--;
+		while (k >= 0 && !nonNull(lines[k]).trim().startsWith("/*")) k--;
 		if (k < 0) return { commentLine: 0, commentText: "" };
 		return { commentLine: k + 1, commentText: lines.slice(k, j + 1).join("\n") };
 	}
 	if (last.startsWith("//")) {
 		// Contiguous line comments — walk back.
 		let k = j;
-		while (k >= 0 && lines[k].trim().startsWith("//")) k--;
+		while (k >= 0 && nonNull(lines[k]).trim().startsWith("//")) k--;
 		return {
 			commentLine: k + 2,
 			commentText: lines.slice(k + 1, j + 1).join("\n"),
@@ -114,7 +115,7 @@ function harvestLeadingComment(
 
 function lineOffset(lines: string[], targetIdx: number): number {
 	let off = 0;
-	for (let i = 0; i < targetIdx; i++) off += lines[i].length + 1; // +1 for \n
+	for (let i = 0; i < targetIdx; i++) off += nonNull(lines[i]).length + 1; // +1 for \n
 	return off;
 }
 
@@ -149,7 +150,7 @@ function asMatch(
 ): InlineMatch {
 	// Use the first line of the comment as the displayed text — the
 	// claim that drove the finding.
-	const firstLine = commentText.split("\n")[0].trim();
+	const firstLine = nonNull(commentText.split("\n")[0]).trim();
 	return {
 		line,
 		text: firstLine.length > maxChars ? `${firstLine.slice(0, maxChars - 1)}…` : firstLine,

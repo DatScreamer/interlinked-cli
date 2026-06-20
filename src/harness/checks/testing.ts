@@ -1,6 +1,7 @@
 // Testing-specific checks (snapshot, test-importing-test, excessive useEffect).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -24,24 +25,25 @@ export function checkSnapshotOveruse(content: string, filePath: string): InlineM
 	const allMatches: InlineMatch[] = [];
 	const THRESHOLD = 5;
 
-	for (let i = 0; i < lines.length; i++) {
+	for (const [i, line] of lines.entries()) {
 		if (
-			/\btoMatchSnapshot\s*\(/.test(lines[i]) ||
-			/\btoMatchInlineSnapshot\s*\(/.test(lines[i])
+			/\btoMatchSnapshot\s*\(/.test(line) ||
+			/\btoMatchInlineSnapshot\s*\(/.test(line)
 		) {
 			allMatches.push({
 				line: i + 1,
-				text: lines[i].trim().slice(0, 150),
+				text: line.trim().slice(0, 150),
 			});
 		}
 	}
 
 	if (allMatches.length < THRESHOLD) return [];
 
+	const first = nonNull(allMatches[0]);
 	return [
 		{
-			line: allMatches[0].line,
-			text: `[${allMatches.length} snapshot assertions — snapshots test nothing meaningful. Use explicit assertions] ${allMatches[0].text}`,
+			line: first.line,
+			text: `[${allMatches.length} snapshot assertions — snapshots test nothing meaningful. Use explicit assertions] ${first.text}`,
 		},
 	];
 }
@@ -81,8 +83,8 @@ export function checkExcessiveUseEffect(content: string, filePath: string): Inli
 	let count = 0;
 	const WARNING_THRESHOLD = 6;
 
-	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+	for (const line of lines) {
+		const trimmed = line.trim();
 		if (/\buseEffect\s*\(/.test(trimmed)) {
 			count++;
 		}
@@ -90,11 +92,11 @@ export function checkExcessiveUseEffect(content: string, filePath: string): Inli
 
 	if (count >= WARNING_THRESHOLD) {
 		// Report the first useEffect line as the anchor with the total count
-		for (let i = 0; i < lines.length; i++) {
-			if (/\buseEffect\s*\(/.test(lines[i].trim())) {
+		for (const [i, line] of lines.entries()) {
+			if (/\buseEffect\s*\(/.test(line.trim())) {
 				matches.push({
 					line: i + 1,
-					text: `[${count} useEffect hooks — consider custom hooks or consolidating] ${lines[i].trim().slice(0, 100)}`,
+					text: `[${count} useEffect hooks — consider custom hooks or consolidating] ${line.trim().slice(0, 100)}`,
 				});
 				break;
 			}

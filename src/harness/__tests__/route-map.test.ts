@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { nonNull } from "../../lib/non-null.js";
 import { RouteMap } from "../route-map.js";
 
 let workdir: string;
@@ -99,6 +100,6 @@ describe("RouteMap dispatcher", () => {
 		map.initialize([pyFile]);
 		const endpoints = map.extractEndpointsForFile(pyFile);
 		expect(endpoints.length).toBe(1);
-		expect(endpoints[0].framework).toBe("fastapi");
+		expect(nonNull(endpoints[0]).framework).toBe("fastapi");
 	});
 });

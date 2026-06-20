@@ -10,6 +10,7 @@ import {
 	removeJsonPath,
 	uninstallHooks,
 } from "./installer.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -26,7 +27,7 @@ describe("installHooks — project scope", () => {
 			scope: "project",
 		});
 		expect(result.entries.length).toBe(1);
-		expect(result.entries[0].runner).toBe("claude-code");
+		expect(nonNull(result.entries[0]).runner).toBe("claude-code");
 
 		const claudeSettings = JSON.parse(
 			readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"),
@@ -35,7 +36,7 @@ describe("installHooks — project scope", () => {
 
 		const manifest = readManifest(manifestPath(tmp));
 		expect(manifest.length).toBe(1);
-		expect(manifest[0].added_paths.length).toBeGreaterThan(0);
+		expect(nonNull(manifest[0]).added_paths.length).toBeGreaterThan(0);
 	});
 
 	it("appends hooks rather than replacing user-owned entries", () => {
@@ -102,7 +103,7 @@ describe("installHooks — multi-runner", () => {
 			runners: ["codex"],
 		});
 		expect(result.entries.length).toBe(1);
-		expect(result.entries[0].runner).toBe("codex");
+		expect(nonNull(result.entries[0]).runner).toBe("codex");
 
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		const { existsSync } = require("node:fs") as { existsSync(p: string): boolean };
@@ -156,7 +157,7 @@ describe("uninstallHooks — round-trip", () => {
 		expect(existsSync(join(tmp, ".github", "hooks", "hooks.json"))).toBe(true);
 		const manifest = readManifest(manifestPath(tmp));
 		expect(manifest.length).toBe(1);
-		expect(manifest[0].runner).toBe("copilot-cli");
+		expect(nonNull(manifest[0]).runner).toBe("copilot-cli");
 	});
 });
 

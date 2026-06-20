@@ -3,6 +3,8 @@
 // ===========================================
 // Inline ANSI with NO_COLOR/CI detection. No external dependencies.
 
+import { nonNull } from "./non-null.js";
+
 const supportsColor = !process.env.NO_COLOR && !process.env.CI && process.stdout.isTTY !== false;
 
 // ===========================================
@@ -57,7 +59,7 @@ export function table(
 	const lines: string[] = [];
 
 	// Header
-	const headerLine = headers.map((h, i) => h.padEnd(widths[i])).join(" ".repeat(padding));
+	const headerLine = headers.map((h, i) => h.padEnd(nonNull(widths[i]))).join(" ".repeat(padding));
 	lines.push(c.bold(headerLine));
 	lines.push(c.dim(widths.map((w) => "─".repeat(w)).join(" ".repeat(padding))));
 
@@ -66,7 +68,7 @@ export function table(
 		const line = row
 			.map((cell, i) => {
 				const stripped = stripAnsi(cell);
-				const pad = Math.max(0, widths[i] - stripped.length);
+				const pad = Math.max(0, (widths[i] ?? 0) - stripped.length);
 				return cell + " ".repeat(pad);
 			})
 			.join(" ".repeat(padding));

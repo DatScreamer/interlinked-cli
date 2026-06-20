@@ -10,6 +10,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Row 24 — `ubs_tls_verify_disabled` (cross-language)
@@ -61,7 +62,7 @@ export function checkTlsVerifyDisabled(content: string, filePath: string): Inlin
 			envRe.test(commentStrippedLines[i] ?? "");
 		if (fired && !flagged.has(i)) {
 			flagged.add(i);
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -180,18 +181,18 @@ function collectWalkerDecls(sLines: string[]): WalkerDecl[] {
 	const declRe3 =
 		/^\s+(?:(?:public|private|protected|static|readonly|override|async)\s+)*(?!(?:if|for|while|switch|catch|do|with|return|new|typeof|throw|delete|void|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{\s*$/;
 	for (let i = 0; i < sLines.length; i++) {
-		const m1 = sLines[i].match(declRe1);
+		const m1 = nonNull(sLines[i]).match(declRe1);
 		if (m1) {
-			decls.push({ name: m1[1], line: i });
+			decls.push({ name: nonNull(m1[1]), line: i });
 			continue;
 		}
-		const m2 = sLines[i].match(declRe2);
+		const m2 = nonNull(sLines[i]).match(declRe2);
 		if (m2) {
-			decls.push({ name: m2[1], line: i });
+			decls.push({ name: nonNull(m2[1]), line: i });
 			continue;
 		}
-		const m3 = sLines[i].match(declRe3);
-		if (m3) decls.push({ name: m3[1], line: i });
+		const m3 = nonNull(sLines[i]).match(declRe3);
+		if (m3) decls.push({ name: nonNull(m3[1]), line: i });
 	}
 	return decls;
 }
@@ -209,8 +210,8 @@ function findWalkerBodyOpen(
 	startLine: number,
 ): number {
 	for (let i = startLine; i < sLines.length; i++) {
-		const idx = sLines[i].indexOf("{");
-		if (idx !== -1) return linePrefixLen[i] + idx;
+		const idx = nonNull(sLines[i]).indexOf("{");
+		if (idx !== -1) return nonNull(linePrefixLen[i]) + idx;
 	}
 	return -1;
 }
@@ -296,7 +297,7 @@ export function checkRecursiveWalkerLstat(
 
 	const linePrefixLen: number[] = [0];
 	for (const ln of sLines) {
-		linePrefixLen.push(linePrefixLen[linePrefixLen.length - 1] + ln.length + 1);
+		linePrefixLen.push(nonNull(linePrefixLen[linePrefixLen.length - 1]) + ln.length + 1);
 	}
 
 	const decls = collectWalkerDecls(sLines);

@@ -15,6 +15,7 @@ import { layerDeclaredArtifacts } from "../structure-checks.js";
 import { formatStructureVerifyOutput } from "../structure-formatter.js";
 import { getImplicitConfig, loadArtifactFile, loadStructureConfig } from "../structure-loader.js";
 import type { ArtifactFileKey, StructureConfig } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // -------------------------------------------
 // Helper: build a full graph from a fixture root
@@ -180,11 +181,11 @@ describe("fixture repos", () => {
 
 			// The finding should reference the untouched companion files
 			const finding = companionFindings[0];
-			expect(finding.file).toBe("src/client.ts");
-			expect(finding.required_updates.length).toBeGreaterThan(0);
+			expect(nonNull(finding).file).toBe("src/client.ts");
+			expect(nonNull(finding).required_updates.length).toBeGreaterThan(0);
 
 			// Check that docs/client.md and test/client.test.ts are in required updates
-			const updateFiles = finding.required_updates.map((u) => u.file);
+			const updateFiles = nonNull(finding).required_updates.map((u) => u.file);
 			expect(updateFiles).toContain("docs/client.md");
 			expect(updateFiles).toContain("test/client.test.ts");
 		});
@@ -219,8 +220,8 @@ describe("fixture repos", () => {
 
 			const glossaryFindings = findings.filter((f) => f.name === "glossary_residue");
 			expect(glossaryFindings.length).toBeGreaterThan(0);
-			expect(glossaryFindings[0].message).toContain("agent");
-			expect(glossaryFindings[0].message).toContain("client");
+			expect(nonNull(glossaryFindings[0]).message).toContain("agent");
+			expect(nonNull(glossaryFindings[0]).message).toContain("client");
 		});
 
 		it("layer violation fires when domain imports app", () => {
@@ -274,10 +275,10 @@ describe("fixture repos", () => {
 			// Add an import edge from domain module to app module
 			if (domainModules.length > 0 && appModules.length > 0) {
 				graph.addEdge({
-					id: `edge:${domainModules[0].id}->${appModules[0].id}`,
+					id: `edge:${nonNull(domainModules[0]).id}->${nonNull(appModules[0]).id}`,
 					kind: "imports",
-					from: domainModules[0].id,
-					to: appModules[0].id,
+					from: nonNull(domainModules[0]).id,
+					to: nonNull(appModules[0]).id,
 					provenance: "extracted",
 					confidence: 0.9,
 				});
@@ -287,8 +288,8 @@ describe("fixture repos", () => {
 
 			const layerFindings = findings.filter((f) => f.name === "layer_boundary_violation");
 			expect(layerFindings.length).toBeGreaterThan(0);
-			expect(layerFindings[0].message).toContain("layer:domain");
-			expect(layerFindings[0].message).toContain("layer:app");
+			expect(nonNull(layerFindings[0]).message).toContain("layer:domain");
+			expect(nonNull(layerFindings[0]).message).toContain("layer:app");
 		});
 
 		it("verify --structure returns deterministic findings", () => {
@@ -302,10 +303,10 @@ describe("fixture repos", () => {
 
 			expect(findings1.length).toBe(findings2.length);
 			for (let i = 0; i < findings1.length; i++) {
-				expect(findings1[i].name).toBe(findings2[i].name);
-				expect(findings1[i].file).toBe(findings2[i].file);
-				expect(findings1[i].artifact_id).toBe(findings2[i].artifact_id);
-				expect(findings1[i].determinism).toBe(findings2[i].determinism);
+				expect(nonNull(findings1[i]).name).toBe(nonNull(findings2[i]).name);
+				expect(nonNull(findings1[i]).file).toBe(nonNull(findings2[i]).file);
+				expect(nonNull(findings1[i]).artifact_id).toBe(nonNull(findings2[i]).artifact_id);
+				expect(nonNull(findings1[i]).determinism).toBe(nonNull(findings2[i]).determinism);
 			}
 
 			// Format verify output

@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import {
 	FLAG_LOWERCASE,
 	FLAG_MASKS,
@@ -91,10 +92,10 @@ export function saveIndex(
 	for (const entry of sortedEntries) {
 		const count = entry.posting.fileIds.length;
 		const entryBuf = Buffer.alloc(count * 6);
-		for (let i = 0; i < count; i++) {
-			entryBuf.writeUInt32LE(entry.posting.fileIds[i], i * 6);
-			entryBuf.writeUInt8(entry.posting.locMasks[i], i * 6 + 4);
-			entryBuf.writeUInt8(entry.posting.nextMasks[i], i * 6 + 5);
+		for (const [i, fileId] of entry.posting.fileIds.entries()) {
+			entryBuf.writeUInt32LE(fileId, i * 6);
+			entryBuf.writeUInt8(nonNull(entry.posting.locMasks[i]), i * 6 + 4);
+			entryBuf.writeUInt8(nonNull(entry.posting.nextMasks[i]), i * 6 + 5);
 		}
 		postingsChunks.push(entryBuf);
 
@@ -147,15 +148,14 @@ export function saveIndex(
 	// Stop trigrams (sorted for deterministic output)
 	const sortedStops = [...stopTrigrams].sort((a, b) => a - b);
 	const stopBuf = Buffer.alloc(sortedStops.length * 4);
-	for (let i = 0; i < sortedStops.length; i++) {
-		stopBuf.writeUInt32LE(sortedStops[i], i * 4);
+	for (const [i, stop] of sortedStops.entries()) {
+		stopBuf.writeUInt32LE(stop, i * 4);
 	}
 	lookupChunks.push(stopBuf);
 
 	// Lookup table entries (sorted by hash): [hash(4) + packed(4) + offset(4) + count(4)]
 	const lookupTableBuf = Buffer.alloc(lookupData.length * 16);
-	for (let i = 0; i < lookupData.length; i++) {
-		const e = lookupData[i];
+	for (const [i, e] of lookupData.entries()) {
 		lookupTableBuf.writeUInt32LE(e.hash, i * 16);
 		lookupTableBuf.writeUInt32LE(e.packed, i * 16 + 4);
 		lookupTableBuf.writeUInt32LE(e.offset, i * 16 + 8);
@@ -171,9 +171,9 @@ export function saveIndex(
 	let totalLocBits = 0;
 	let totalNextBits = 0;
 	for (const posting of postings.values()) {
-		for (let i = 0; i < posting.locMasks.length; i++) {
-			totalLocBits += popcount8(posting.locMasks[i]);
-			totalNextBits += popcount8(posting.nextMasks[i]);
+		for (const [i, locMask] of posting.locMasks.entries()) {
+			totalLocBits += popcount8(locMask);
+			totalNextBits += popcount8(nonNull(posting.nextMasks[i]));
 		}
 	}
 
@@ -353,9 +353,9 @@ export function computeIndexStats(
 	for (const posting of postings.values()) {
 		postingsSizeBytes += posting.fileIds.length * 6;
 		totalPostings += posting.fileIds.length;
-		for (let i = 0; i < posting.locMasks.length; i++) {
-			totalLocBits += popcount8(posting.locMasks[i]);
-			totalNextBits += popcount8(posting.nextMasks[i]);
+		for (const [i, locMask] of posting.locMasks.entries()) {
+			totalLocBits += popcount8(locMask);
+			totalNextBits += popcount8(nonNull(posting.nextMasks[i]));
 		}
 	}
 

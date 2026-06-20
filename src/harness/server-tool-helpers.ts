@@ -3,6 +3,7 @@
 // ===========================================
 // Extracted from server.ts. Pure functions — no module-level state.
 
+import { nonNull } from "../lib/non-null.js";
 import type { HarnessEvent } from "./types.js";
 
 const APPLY_PATCH_FILE_LINE = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/m;
@@ -87,7 +88,7 @@ export function extractAllApplyPatchFilePaths(command: string): string[] {
  *  {@link extractAllEditedFilePaths}. */
 export function extractEditedFilePath(event: HarnessEvent): string | null {
 	const all = extractAllEditedFilePaths(event);
-	return all.length > 0 ? all[0] : null;
+	return all.length > 0 ? nonNull(all[0]) : null;
 }
 
 /** Resolve every edited file path from a hook event, in order, with

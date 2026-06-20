@@ -72,6 +72,7 @@ import {
 	checkRippleTests,
 	findTestFileForSource,
 } from "./export-surface.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- fixture helpers ---------------------------------------------------------
 
@@ -182,11 +183,11 @@ describe("checkExportSurface", () => {
 			file: FILE,
 			affectedFiles: ["/proj/a.ts"],
 		});
-		expect(out[0].message).toContain("Removed export(s) `foo`");
-		expect(out[0].message).toContain("a.ts");
-		expect(out[0].message).toContain("Update or remove the stale imports.");
+		expect(nonNull(out[0]).message).toContain("Removed export(s) `foo`");
+		expect(nonNull(out[0]).message).toContain("a.ts");
+		expect(nonNull(out[0]).message).toContain("Update or remove the stale imports.");
 		// non-hub => no "(hub module)" annotation
-		expect(out[0].message).not.toContain("hub module");
+		expect(nonNull(out[0]).message).not.toContain("hub module");
 	});
 
 	it("flags a namespace/wildcard importer (empty symbols => always affected, L54)", () => {
@@ -197,7 +198,7 @@ describe("checkExportSurface", () => {
 		});
 		const out = checkExportSurface(FILE, REL, [exp("foo")], graph);
 		expect(out).toHaveLength(1);
-		expect(out[0].affectedFiles).toEqual(["/proj/ns.ts"]);
+		expect(nonNull(out[0]).affectedFiles).toEqual(["/proj/ns.ts"]);
 	});
 
 	it("annotates hub modules in the message (role === hub, L72/L74)", () => {
@@ -208,8 +209,8 @@ describe("checkExportSurface", () => {
 			role: "hub",
 		});
 		const out = checkExportSurface(FILE, REL, [exp("foo")], graph);
-		expect(out[0].severity).toBe("error");
-		expect(out[0].message).toContain("(hub module)");
+		expect(nonNull(out[0]).severity).toBe("error");
+		expect(nonNull(out[0]).message).toContain("(hub module)");
 	});
 
 	it("joins multiple removed names with comma (L62)", () => {
@@ -219,7 +220,7 @@ describe("checkExportSurface", () => {
 			importers: [edge(["foo", "bar"], "/proj/a.ts")],
 		});
 		const out = checkExportSurface(FILE, REL, [exp("foo"), exp("bar")], graph);
-		expect(out[0].message).toContain("`foo, bar`");
+		expect(nonNull(out[0]).message).toContain("`foo, bar`");
 	});
 
 	it('truncates the file list to 6 and appends "and N more" (L63-67)', () => {
@@ -232,12 +233,12 @@ describe("checkExportSurface", () => {
 		}
 		const graph = makeGraph({ exports: [], dependents, importers });
 		const out = checkExportSurface(FILE, REL, [exp("foo")], graph);
-		expect(out[0].affectedFiles).toHaveLength(8);
+		expect(nonNull(out[0]).affectedFiles).toHaveLength(8);
 		// 8 - 6 = 2 more
-		expect(out[0].message).toContain("and 2 more");
+		expect(nonNull(out[0]).message).toContain("and 2 more");
 		// the 7th/8th files are not in the listed prefix
-		expect(out[0].message).toContain("imp0.ts");
-		expect(out[0].message).not.toContain("imp7.ts, ");
+		expect(nonNull(out[0]).message).toContain("imp0.ts");
+		expect(nonNull(out[0]).message).not.toContain("imp7.ts, ");
 	});
 
 	it("does not append 'more' when affected files == 6 (boundary, no L67 suffix)", () => {
@@ -250,8 +251,8 @@ describe("checkExportSurface", () => {
 		}
 		const graph = makeGraph({ exports: [], dependents, importers });
 		const out = checkExportSurface(FILE, REL, [exp("foo")], graph);
-		expect(out[0].affectedFiles).toHaveLength(6);
-		expect(out[0].message).not.toContain("more");
+		expect(nonNull(out[0]).affectedFiles).toHaveLength(6);
+		expect(nonNull(out[0]).message).not.toContain("more");
 	});
 
 	it("returns [] when dependents exist but importers list is empty (affectedFiles empty, L60 false)", () => {
@@ -306,11 +307,11 @@ describe("checkExportRippleCompilation", () => {
 			severity: "warning",
 			file: FILE,
 		});
-		expect(out[0].message).toContain("broke 1 importer(s)");
-		expect(out[0].detail).toContain("a.ts: 2 error(s)");
-		expect(out[0].affectedFiles).toEqual(["/proj/a.ts"]);
+		expect(nonNull(out[0]).message).toContain("broke 1 importer(s)");
+		expect(nonNull(out[0]).detail).toContain("a.ts: 2 error(s)");
+		expect(nonNull(out[0]).affectedFiles).toEqual(["/proj/a.ts"]);
 		// only one affected file, under RIPPLE_MAX_FILES => no skipped suffix
-		expect(out[0].detail).not.toContain("not checked");
+		expect(nonNull(out[0]).detail).not.toContain("not checked");
 	});
 
 	it("caps checked files at RIPPLE_MAX_FILES and notes the skipped remainder (L101, L135-138)", () => {
@@ -322,9 +323,9 @@ describe("checkExportRippleCompilation", () => {
 		expect(out).toHaveLength(1);
 		// runChecks invoked exactly RIPPLE_MAX_FILES (5) times
 		expect(engineStub.runChecks).toHaveBeenCalledTimes(5);
-		expect(out[0].message).toContain("broke 5 importer(s)");
+		expect(nonNull(out[0]).message).toContain("broke 5 importer(s)");
 		// 7 - 5 = 2 more not checked
-		expect(out[0].detail).toContain("(2 more file(s) not checked)");
+		expect(nonNull(out[0]).detail).toContain("(2 more file(s) not checked)");
 	});
 
 	it("passes a file-scoped, tsc-only check request to the engine (L115-123)", () => {
@@ -394,12 +395,12 @@ describe("checkRippleTests", () => {
 			severity: "warning",
 			file: FILE,
 		});
-		expect(out[0].message).toContain("Tests failed for target.ts");
-		expect(out[0].affectedFiles).toEqual(["/proj/target.test.ts"]);
+		expect(nonNull(out[0]).message).toContain("Tests failed for target.ts");
+		expect(nonNull(out[0]).affectedFiles).toEqual(["/proj/target.test.ts"]);
 		// last 8 lines: line4..line11 kept, line0..line3 dropped
-		expect(out[0].detail).toContain("line11");
-		expect(out[0].detail).toContain("line4");
-		expect(out[0].detail).not.toContain("line3\n");
+		expect(nonNull(out[0]).detail).toContain("line11");
+		expect(nonNull(out[0]).detail).toContain("line4");
+		expect(nonNull(out[0]).detail).not.toContain("line3\n");
 	});
 
 	it("falls back to stderr when stdout is empty (L187)", () => {
@@ -407,7 +408,7 @@ describe("checkRippleTests", () => {
 		spawnImpl = () => ({ status: 1, stdout: "", stderr: "boom on stderr", error: null });
 		const graph = makeGraph();
 		const out = checkRippleTests(FILE, REL, graph);
-		expect(out[0].detail).toContain("boom on stderr");
+		expect(nonNull(out[0]).detail).toContain("boom on stderr");
 	});
 
 	it("handles undefined stdout/stderr gracefully (L187 `|| \"\"`)", () => {
@@ -418,7 +419,7 @@ describe("checkRippleTests", () => {
 		const out = checkRippleTests(FILE, REL, graph);
 		expect(out).toHaveLength(1);
 		// empty output => detail is the empty-string split, i.e. ""
-		expect(out[0].detail).toBe("");
+		expect(nonNull(out[0]).detail).toBe("");
 	});
 
 	it("spawns vitest run on the test path scoped to the project root (L173-179)", () => {
@@ -445,7 +446,7 @@ describe("checkRippleTests", () => {
 		const graph = makeGraph();
 		const out = checkRippleTests(FILE, REL, graph);
 		expect(out).toHaveLength(1);
-		expect(out[0].check).toBe("export_ripple_tests");
+		expect(nonNull(out[0]).check).toBe("export_ripple_tests");
 	});
 });
 

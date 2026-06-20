@@ -37,6 +37,7 @@ vi.mock("../lib/secrets.js", () => scrubMock);
 
 // Imported AFTER the mocks above are registered (vi.mock is hoisted, so the
 // ordering is cosmetic — but it documents intent).
+import { nonNull } from "../lib/non-null.js";
 import { createServerBridge, ServerBridge } from "./server-bridge.js";
 import type { SessionTrajectory } from "./types.js";
 
@@ -369,7 +370,7 @@ describe("listReservations", () => {
 			},
 			{ agent_name: "bob", path_pattern: "b.ts" },
 		]);
-		expect("expires_at" in r[1]).toBe(false);
+		expect("expires_at" in nonNull(r[1])).toBe(false);
 		b.shutdown();
 	});
 
@@ -471,7 +472,7 @@ describe("reportGuardEvent / flushGuardEvents", () => {
 		for (let i = 0; i < 10; i++) b.reportGuardEvent(makeEvent());
 		await flush();
 		expect(bodies).toHaveLength(1);
-		const payload = JSON.parse(bodies[0]);
+		const payload = JSON.parse(nonNull(bodies[0]));
 		expect(payload.events).toHaveLength(10);
 		// Egress scrubber ran once per event (10) at the cloud boundary.
 		expect(scrubMock.scrubEgressPayload).toHaveBeenCalledTimes(10);
@@ -506,7 +507,7 @@ describe("reportGuardEvent / flushGuardEvents", () => {
 			b.reportGuardEvent(makeEvent({ reason: longReason, event_type: "guard_warn" }));
 		}
 		await flush();
-		const ev = (captured?.events as Array<Record<string, unknown>>)[0];
+		const ev = nonNull((captured?.events as Array<Record<string, unknown>>)[0]);
 		expect(ev).toMatchObject({
 			agent_name: "alice",
 			event_type: "guard_warn",

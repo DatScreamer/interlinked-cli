@@ -55,6 +55,7 @@ import {
 	formatCodeCloneFinding,
 } from "../checks/dry-check.js";
 import { type InlineBlockContext, runInlineCheckBlock } from "./inline-block.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- Fixture builders -------------------------------------------------------
 
@@ -137,7 +138,7 @@ describe("runInlineCheckBlock — short-circuits", () => {
 			severity: "error",
 			file: "src/example.ts",
 		});
-		expect(out[0].message).toContain("Binary content detected");
+		expect(nonNull(out[0]).message).toContain("Binary content detected");
 	});
 
 	it("flags a whitespace-only file as an empty_file warning", () => {

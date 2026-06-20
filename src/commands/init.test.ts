@@ -108,6 +108,7 @@ import { detectClients } from "../lib/settings.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 import { initCommand } from "./init.js";
 import { loginCommand } from "./login.js";
+import { nonNull } from "../lib/non-null.js";
 
 const mocks = {
 	resolveAuthToken: vi.mocked(resolveAuthToken),
@@ -772,7 +773,7 @@ describe("health check", () => {
 		expect(out).toContain("Ready! Connected to local server as bot.");
 		expect(out).toContain("2 agents online");
 		// client constructed with token threaded through
-		expect(clientCtorCalls[0][0]).toEqual({ serverUrl: "http://localhost:8787", token: "tok" });
+		expect(nonNull(clientCtorCalls[0])[0]).toEqual({ serverUrl: "http://localhost:8787", token: "tok" });
 	});
 
 	it("passes the threshold_minutes arg to list_online_agents", async () => {
@@ -836,7 +837,7 @@ describe("health check", () => {
 			name === "health_check" ? Promise.resolve({}) : Promise.resolve({ agents: [] });
 		// remote server + no token + no TTY → auth skipped, health still attempted
 		await initCommand({ server: "https://remote.example", agent: "bot" });
-		expect(clientCtorCalls[0][0]).toEqual({ serverUrl: "https://remote.example" });
+		expect(nonNull(clientCtorCalls[0])[0]).toEqual({ serverUrl: "https://remote.example" });
 	});
 
 	it("labels production in the ready line for a non-local reachable server", async () => {

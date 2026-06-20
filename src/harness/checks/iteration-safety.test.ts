@@ -3,6 +3,7 @@ import {
 	checkFreshCollectionKeyLookup,
 	checkIteratorInvalidation,
 } from "./iteration-safety.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 
@@ -21,7 +22,7 @@ describe("checkIteratorInvalidation — positive cases", () => {
 		].join("\n");
 		const out = checkIteratorInvalidation(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("items.push");
+		expect(nonNull(out[0]).text).toContain("items.push");
 	});
 
 	it("flags Set.delete inside .forEach over the same Set", () => {
@@ -34,7 +35,7 @@ describe("checkIteratorInvalidation — positive cases", () => {
 		].join("\n");
 		const out = checkIteratorInvalidation(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("set.delete");
+		expect(nonNull(out[0]).text).toContain("set.delete");
 	});
 
 	it("flags Map.set inside .forEach over the same Map", () => {
@@ -59,7 +60,7 @@ describe("checkIteratorInvalidation — positive cases", () => {
 		].join("\n");
 		const out = checkIteratorInvalidation(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("delete obj");
+		expect(nonNull(out[0]).text).toContain("delete obj");
 	});
 
 	it("flags array.splice inside .forEach over the same array", () => {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkAssertionDensity,
 	checkProdDeltaWithoutTestDelta,
@@ -86,7 +87,7 @@ describe("checkProdDeltaWithoutTestDelta", () => {
 		const session = makeSession({ files_written: new Set([prodFile]) });
 		const results = checkProdDeltaWithoutTestDelta(session);
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("prod_delta_no_test_delta");
+		expect(nonNull(results[0]).name).toBe("prod_delta_no_test_delta");
 	});
 
 	it("passes when prod and test are both edited", () => {
@@ -141,7 +142,7 @@ describe("checkProdDeltaWithoutTestDelta", () => {
 		const session = makeSession({ files_written: new Set([prodFile, unrelatedTest]) });
 		const results = checkProdDeltaWithoutTestDelta(session);
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("prod_delta_no_test_delta");
+		expect(nonNull(results[0]).name).toBe("prod_delta_no_test_delta");
 	});
 });
 
@@ -158,7 +159,7 @@ describe("checkProdTestLocRatio", () => {
 		const session = makeSession({ files_written: new Set() });
 		const results = checkProdTestLocRatio(session, () => ({ prodLoc: 60, testLoc: 10 }));
 		expect(results.length).toBe(1);
-		expect(results[0].message).toMatch(/6\.0:1/);
+		expect(nonNull(results[0]).message).toMatch(/6\.0:1/);
 	});
 
 	it("passes when ratio is healthy", () => {
@@ -172,7 +173,7 @@ describe("checkProdTestLocRatio", () => {
 		const session = makeSession({ files_written: new Set() });
 		const results = checkProdTestLocRatio(session, () => ({ prodLoc: 30, testLoc: 0 }));
 		expect(results.length).toBe(1);
-		expect(results[0].message).toMatch(/no tests written/);
+		expect(nonNull(results[0]).message).toMatch(/no tests written/);
 	});
 
 	it("is silent when delta is zero", () => {
@@ -251,8 +252,8 @@ export function run(items: number[]) {
 		const session = makeSession({ files_written: new Set([abs]) });
 		const results = checkTppLeapfrog(session);
 		expect(results.length).toBe(1);
-		expect(results[0].name).toBe("tpp_leapfrog");
-		expect(results[0].severity).toBe("info");
+		expect(nonNull(results[0]).name).toBe("tpp_leapfrog");
+		expect(nonNull(results[0]).severity).toBe("info");
 	});
 
 	it("does not flag when only one heavy construct was added", () => {
@@ -607,7 +608,7 @@ describe("checkTddCommitGate — disk reality check", () => {
 
 		const out = checkTddCommitGate(session, "warn");
 		expect(out.length).toBe(1);
-		expect(out[0].name).toBe("tdd_commit_gate");
+		expect(nonNull(out[0]).name).toBe("tdd_commit_gate");
 	});
 });
 
@@ -736,7 +737,7 @@ describe("checkTddCommitGate — exemption surface (post-2026-05 refinement)", (
 
 		const out = checkTddCommitGate(session, "warn");
 		expect(out.length).toBe(1);
-		expect(out[0].name).toBe("tdd_commit_gate");
+		expect(nonNull(out[0]).name).toBe("tdd_commit_gate");
 	});
 });
 
@@ -785,7 +786,7 @@ describe("checkProdDeltaWithoutTestDelta — sibling-test detection", () => {
 		});
 		const out = checkProdDeltaWithoutTestDelta(session);
 		expect(out.length).toBe(1);
-		expect(out[0].name).toBe("prod_delta_no_test_delta");
+		expect(nonNull(out[0]).name).toBe("prod_delta_no_test_delta");
 	});
 });
 

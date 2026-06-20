@@ -14,6 +14,7 @@ import {
 	readSyncState,
 	updateSyncState,
 } from "../lib/local-activity.js";
+import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { loadScrubConfig, recordScrub, scrubEgressPayload } from "../lib/secrets.js";
 import {
@@ -379,7 +380,7 @@ async function handleNonOkResponse(
 
 	if (transient && attempt < MAX_BATCH_RETRIES) {
 		delta.retriesUsed++;
-		await sleep(RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)]);
+		await sleep(nonNull(RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)]));
 		return "retry";
 	}
 
@@ -413,7 +414,7 @@ async function handleBatchError(
 
 	if (attempt < MAX_BATCH_RETRIES) {
 		delta.retriesUsed++;
-		await sleep(RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)]);
+		await sleep(nonNull(RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)]));
 		return "retry";
 	}
 

@@ -12,6 +12,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { extractInterfaceBodies } from "./project-graph/interface-bodies.js";
 import { parseExports } from "./project-graph/parser-exports.js";
 import { parseImports } from "./project-graph/parser-imports.js";
@@ -391,7 +392,7 @@ export class ProjectGraph {
 				// Find the source specifier from the file content
 				const starRe = /export\s+\*\s+from\s+['"]([^'"]+)['"]/g;
 				for (let m = starRe.exec(fileContent); m !== null; m = starRe.exec(fileContent)) {
-					const resolved = resolveImportPath(absPath, m[1], this.tsconfigPaths);
+					const resolved = resolveImportPath(absPath, nonNull(m[1]), this.tsconfigPaths);
 					if (resolved) starTargets.push(resolved);
 				}
 				break; // Only need to scan once

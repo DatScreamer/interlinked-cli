@@ -23,6 +23,7 @@ import {
 	parseGraphPredictionsFromText,
 	type ParsedGraphPrediction,
 } from "./graph-prediction-parser.js";
+import { nonNull } from "../lib/non-null.js";
 
 const RECENT_ASSISTANT_MESSAGE_LIMIT = 10;
 
@@ -151,7 +152,7 @@ export function readRecentAssistantTexts(transcriptPath: string): string[] {
 	// at RECENT_ASSISTANT_MESSAGE_LIMIT to keep parsing cheap.
 	for (let i = lines.length - 1; i >= 0; i--) {
 		if (texts.length >= RECENT_ASSISTANT_MESSAGE_LIMIT) break;
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		if (!line.trim()) continue;
 		let obj: unknown;
 		try {

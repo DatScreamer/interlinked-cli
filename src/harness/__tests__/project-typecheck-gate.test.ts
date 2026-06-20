@@ -15,6 +15,7 @@ import {
 	resolveTestCommand,
 	resolveTypecheckCommand,
 } from "../project-typecheck-gate.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tmp: string;
 let savedEnv: string | undefined;
@@ -116,7 +117,7 @@ describe("parseTscDiagnostics", () => {
 			code: "TS2322",
 			message: "Type 'string' is not assignable to type 'number'.",
 		});
-		expect(diags[1].code).toBe("TS2783");
+		expect(nonNull(diags[1]).code).toBe("TS2783");
 	});
 
 	it("ignores npm-script preamble and 'Found N errors' summary lines", () => {
@@ -130,7 +131,7 @@ describe("parseTscDiagnostics", () => {
 		].join("\n");
 		const diags = parseTscDiagnostics(out);
 		expect(diags).toHaveLength(1);
-		expect(diags[0].file).toBe("src/foo.ts");
+		expect(nonNull(diags[0]).file).toBe("src/foo.ts");
 	});
 
 	it("handles paths with spaces and unicode", () => {
@@ -138,8 +139,8 @@ describe("parseTscDiagnostics", () => {
 			"src/with space/héllo.ts(1,1): error TS9999: Custom check failed — see docs.";
 		const diags = parseTscDiagnostics(out);
 		expect(diags).toHaveLength(1);
-		expect(diags[0].file).toBe("src/with space/héllo.ts");
-		expect(diags[0].message).toContain("Custom check failed");
+		expect(nonNull(diags[0]).file).toBe("src/with space/héllo.ts");
+		expect(nonNull(diags[0]).message).toContain("Custom check failed");
 	});
 
 	it("returns empty array on clean output", () => {
@@ -160,9 +161,9 @@ describe("checkProjectTypecheckClean", () => {
 		process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK = "1";
 		const results = checkProjectTypecheckClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(results[0].name).toBe("project_typecheck_skipped");
-		expect(results[0].severity).toBe("warning");
-		expect(results[0].message).toContain("INTERLINKED_SKIP_PROJECT_TYPECHECK");
+		expect(nonNull(results[0]).name).toBe("project_typecheck_skipped");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("INTERLINKED_SKIP_PROJECT_TYPECHECK");
 	});
 
 	it("returns empty when the typecheck script exits clean", () => {
@@ -196,8 +197,8 @@ describe("checkProjectTypecheckClean", () => {
 		expect(results).toHaveLength(2);
 		expect(results.every((r) => r.severity === "error")).toBe(true);
 		expect(results.every((r) => r.name === "project_typecheck_clean")).toBe(true);
-		expect(results[0].file).toBe("src/foo.ts");
-		expect(results[1].file).toBe("src/bar.ts");
+		expect(nonNull(results[0]).file).toBe("src/foo.ts");
+		expect(nonNull(results[1]).file).toBe("src/bar.ts");
 		expect(results.every((r) => r.determinism === "fully_deterministic")).toBe(true);
 	});
 
@@ -235,9 +236,9 @@ describe("checkProjectTypecheckClean", () => {
 		);
 		const results = checkProjectTypecheckClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].name).toBe("project_typecheck_clean");
-		expect(results[0].message).toContain("compiler crashed");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).name).toBe("project_typecheck_clean");
+		expect(nonNull(results[0]).message).toContain("compiler crashed");
 	});
 });
 
@@ -325,9 +326,9 @@ describe("checkProjectTestsClean", () => {
 		process.env.INTERLINKED_SKIP_PROJECT_TESTS = "1";
 		const results = checkProjectTestsClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(results[0].name).toBe("project_tests_skipped");
-		expect(results[0].severity).toBe("warning");
-		expect(results[0].message).toContain("INTERLINKED_SKIP_PROJECT_TESTS");
+		expect(nonNull(results[0]).name).toBe("project_tests_skipped");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("INTERLINKED_SKIP_PROJECT_TESTS");
 	});
 
 	it("returns empty when the test script exits 0", () => {
@@ -353,8 +354,8 @@ describe("checkProjectTestsClean", () => {
 		expect(results).toHaveLength(2);
 		expect(results.every((r) => r.severity === "error")).toBe(true);
 		expect(results.every((r) => r.name === "project_tests_clean")).toBe(true);
-		expect(results[0].message).toContain("suite > test 1");
-		expect(results[1].message).toContain("suite > test 2");
+		expect(nonNull(results[0]).message).toContain("suite > test 1");
+		expect(nonNull(results[1]).message).toContain("suite > test 2");
 	});
 
 	it("surfaces unparseable failure output rather than silently allowing", () => {
@@ -370,7 +371,7 @@ describe("checkProjectTestsClean", () => {
 		);
 		const results = checkProjectTestsClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(results[0].severity).toBe("error");
-		expect(results[0].message).toContain("vitest crashed");
+		expect(nonNull(results[0]).severity).toBe("error");
+		expect(nonNull(results[0]).message).toContain("vitest crashed");
 	});
 });

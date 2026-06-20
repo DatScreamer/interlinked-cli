@@ -11,6 +11,7 @@
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, extname, relative, resolve, sep } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type { LanguageId, LanguageProfile } from "../types.js";
 import { buildTestCandidates, classifyTestFailure } from "./test-classifier.js";
 
@@ -138,7 +139,7 @@ function runVitestDispatcher(input: TestDispatcherInput): TestDispatcherResult[]
 				: testFile;
 			const runnerParts = runnerCmd.split(/\s+/).filter(Boolean);
 			const result = spawnSync(
-				runnerParts[0],
+				nonNull(runnerParts[0]),
 				[...runnerParts.slice(1), relTest, "--reporter=verbose"],
 				{
 					shell: false,

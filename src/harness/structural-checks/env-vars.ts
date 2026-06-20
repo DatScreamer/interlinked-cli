@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type { HarnessEvent, StructuralCheckResult } from "../types.js";
 import { readEnvExampleFromDir } from "./env-loader.js";
 
@@ -33,7 +34,7 @@ export function checkUndefinedEnvVars(
 	const usedVars = new Set<string>();
 	let match = envVarPattern.exec(content);
 	while (match !== null) {
-		usedVars.add(match[1]);
+		usedVars.add(nonNull(match[1]));
 		match = envVarPattern.exec(content);
 	}
 
@@ -48,7 +49,7 @@ export function checkUndefinedEnvVars(
 			const editVars = new Set<string>();
 			let em = editEnvPattern.exec(editContent);
 			while (em !== null) {
-				editVars.add(em[1]);
+				editVars.add(nonNull(em[1]));
 				em = editEnvPattern.exec(editContent);
 			}
 			// If the edit doesn't introduce any env var references, skip entirely

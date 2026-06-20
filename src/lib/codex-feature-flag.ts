@@ -141,8 +141,8 @@ function insertIntoExistingFeaturesBlock(existing: string): string | null {
 	let featuresStart = -1;
 	let featuresEnd = lines.length;
 
-	for (let i = 0; i < lines.length; i += 1) {
-		const normalized = stripTomlLineComment(lines[i]).trim();
+	for (const [i, rawLine] of lines.entries()) {
+		const normalized = stripTomlLineComment(rawLine).trim();
 		if (!normalized.startsWith("[") || !normalized.endsWith("]")) continue;
 
 		if (featuresStart === -1 && normalized === "[features]") {

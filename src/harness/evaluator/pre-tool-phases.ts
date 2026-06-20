@@ -11,6 +11,7 @@
 // control-flow order is unchanged.
 
 import { isAbsolute, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type { ErrorHistory } from "../error-history.js";
 import { getPatternWarnings } from "../pattern-detector.js";
 import {
@@ -193,8 +194,9 @@ export function computePostInjectionEscalation(
 		(isBash(toolName) || isFileWrite(toolName)) &&
 		!pendingEscalation
 	) {
-		const lastInjectionStep =
-			session.injection_detected_steps[session.injection_detected_steps.length - 1];
+		const lastInjectionStep = nonNull(
+			session.injection_detected_steps[session.injection_detected_steps.length - 1],
+		);
 		const stepsSince = session.tool_call_count - lastInjectionStep;
 		const filePath = (toolInput.file_path as string) || "";
 		return {

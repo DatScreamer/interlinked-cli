@@ -23,6 +23,7 @@ import {
 	tokenizeKeyValue,
 	tokenizeListItem,
 } from "./graph-prediction-parser-scalars.js";
+import { nonNull } from "../lib/non-null.js";
 
 const FENCE_RE = /^```(?:ya?ml)?\s*$/;
 const FENCE_END_RE = /^```\s*$/;
@@ -70,10 +71,10 @@ function extractFences(text: string): FenceBlock[] {
 	const blocks: FenceBlock[] = [];
 	let i = 0;
 	while (i < lines.length) {
-		if (FENCE_RE.test(lines[i])) {
+		if (FENCE_RE.test(nonNull(lines[i]))) {
 			const startIdx = i + 1;
 			i++;
-			while (i < lines.length && !FENCE_END_RE.test(lines[i])) i++;
+			while (i < lines.length && !FENCE_END_RE.test(nonNull(lines[i]))) i++;
 			blocks.push({ body: lines.slice(startIdx, i).join("\n") });
 			i++;
 		} else {
@@ -163,7 +164,7 @@ const TOP_LEVEL_FIELD_PARSERS: ReadonlyMap<string, TopLevelFieldParser> = new Ma
 	[
 		FIELD_FILE,
 		({ tokens, idx, acc }) => {
-			const value = parseScalar(tokens[idx].rest);
+			const value = parseScalar(nonNull(tokens[idx]).rest);
 			if (typeof value !== "string" || value === "") {
 				acc.parseFailure = "file field missing or non-string";
 			} else {
@@ -215,21 +216,21 @@ function attachListItem(
 	//     and our parent.
 	for (let i = tokens.length - 1; i >= 0; i--) {
 		const candidate = tokens[i];
-		if (candidate.indent === item.indent) {
+		if (nonNull(candidate).indent === item.indent) {
 			return {
 				ok: false,
-				error: `list item "${item.value}" at same indent as preceding key "${candidate.key}"`,
+				error: `list item "${item.value}" at same indent as preceding key "${nonNull(candidate).key}"`,
 			};
 		}
-		if (candidate.indent < item.indent) {
-			if (candidate.rest !== "") {
+		if (nonNull(candidate).indent < item.indent) {
+			if (nonNull(candidate).rest !== "") {
 				return {
 					ok: false,
-					error: `list item "${item.value}" under "${candidate.key}" which already has a scalar value`,
+					error: `list item "${item.value}" under "${nonNull(candidate).key}" which already has a scalar value`,
 				};
 			}
-			if (!candidate.blockItems) candidate.blockItems = [];
-			candidate.blockItems.push(item.value);
+			if (!nonNull(candidate).blockItems) nonNull(candidate).blockItems = [];
+			nonNull(nonNull(candidate).blockItems).push(item.value);
 			return { ok: true };
 		}
 	}
@@ -297,10 +298,10 @@ function parseSinglePrediction(body: string): ParsedGraphPrediction {
 		const file = extractFilePartial(tokens);
 		return { ...failed(error), file };
 	}
-	if (tokens.length === 0 || tokens[0].key !== TOP_LEVEL_KEY) {
+	if (tokens.length === 0 || nonNull(tokens[0]).key !== TOP_LEVEL_KEY) {
 		return { ...failed(`missing ${TOP_LEVEL_KEY}: header`), file: extractFilePartial(tokens) };
 	}
-	const topIndent = tokens[0].indent;
+	const topIndent = nonNull(tokens[0]).indent;
 	const childIndent = inferChildIndent(tokens, topIndent);
 	if (childIndent === null) return failed(`no fields under ${TOP_LEVEL_KEY}`);
 
@@ -308,11 +309,11 @@ function parseSinglePrediction(body: string): ParsedGraphPrediction {
 	let i = 1;
 	while (i < tokens.length) {
 		const tok = tokens[i];
-		if (tok.indent !== childIndent) {
+		if (nonNull(tok).indent !== childIndent) {
 			i++;
 			continue;
 		}
-		const parser = TOP_LEVEL_FIELD_PARSERS.get(tok.key);
+		const parser = TOP_LEVEL_FIELD_PARSERS.get(nonNull(tok).key);
 		i = parser ? parser({ tokens, idx: i, childIndent, acc }) : i + 1;
 	}
 	return finalize(acc);
@@ -331,7 +332,7 @@ function failed(reason: string): ParsedGraphPrediction {
 
 function inferChildIndent(tokens: KeyValueLine[], topIndent: number): number | null {
 	for (let i = 1; i < tokens.length; i++) {
-		if (tokens[i].indent > topIndent) return tokens[i].indent;
+		if (nonNull(tokens[i]).indent > topIndent) return nonNull(tokens[i]).indent;
 	}
 	return null;
 }
@@ -372,11 +373,11 @@ function walkSubsection<T>(args: WalkSubsectionArgs<T>): SubsectionWalk<T> {
 	let i = sectionIdx + 1;
 	while (i < tokens.length) {
 		const tok = tokens[i];
-		if (tok.indent <= parentIndent) break;
-		if (tok.indent === childIndent) {
-			const apply = subfields.get(tok.key);
+		if (nonNull(tok).indent <= parentIndent) break;
+		if (nonNull(tok).indent === childIndent) {
+			const apply = subfields.get(nonNull(tok).key);
 			if (apply) {
-				const violated = apply({ state: initial, rest: tok.rest, tokens, indent: childIndent });
+				const violated = apply({ state: initial, rest: nonNull(tok).rest, tokens, indent: childIndent });
 				if (violated) formatViolation = true;
 			}
 		}

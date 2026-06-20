@@ -6,6 +6,7 @@ import {
 	perFileCoverageFromCanonical,
 } from "../coverage-lcov.js";
 import { type CoverageBaseline, compareCoverage } from "../coverage-ratchet.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // A small, valid two-file LCOV report used by several cases.
 const TWO_FILE = [
@@ -211,8 +212,8 @@ describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () =
 		]);
 		expect(perFile.filePath).toBe("src/foo.ts");
 		expect(perFile.functions).toHaveLength(1);
-		expect(perFile.functions[0].statement_pct).toBe(75);
-		expect(perFile.functions[0].hits).toBe(5); // from FNDA
+		expect(nonNull(perFile.functions[0]).statement_pct).toBe(75);
+		expect(nonNull(perFile.functions[0]).hits).toBe(5); // from FNDA
 	});
 
 	it("yields 0% (and 0 hits) for a function whose range LCOV never recorded", () => {
@@ -223,8 +224,8 @@ describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () =
 		const perFile = perFileCoverageFromCanonical(cf, "src/foo.ts", 1, [
 			{ name: "ghost", line: 50, endLine: 60 },
 		]);
-		expect(perFile.functions[0].statement_pct).toBe(0);
-		expect(perFile.functions[0].hits).toBe(0);
+		expect(nonNull(perFile.functions[0]).statement_pct).toBe(0);
+		expect(nonNull(perFile.functions[0]).hits).toBe(0);
 	});
 });
 

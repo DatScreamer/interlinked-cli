@@ -48,6 +48,7 @@ import {
 	runImpactOrFallback,
 } from "./post-tool-file-checks-structural.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Cross-iteration / cross-phase accumulator for the PostToolUse per-file
  *  fan-out. The orchestrator creates one of these per event and passes it
@@ -381,7 +382,7 @@ function consolidateRecurrence(
 	if (editedFilePath && allCheckResults.length > acc.recurrenceCursor) {
 		const recurrenceRelPath = relative(CWD, editedFilePath);
 		for (let i = acc.recurrenceCursor; i < allCheckResults.length; i++) {
-			const r = allCheckResults[i];
+			const r = nonNull(allCheckResults[i]);
 			if (r.severity !== "error" && r.severity !== "warning") continue;
 			recordHarnessCaught({
 				check_id: r.name,

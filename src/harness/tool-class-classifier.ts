@@ -17,6 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { JsonObject } from "../lib/json-types.js";
 import type { ToolClass } from "./unified-event.js";
+import { nonNull } from "../lib/non-null.js";
 
 export interface ClassRule {
 	pattern: RegExp;
@@ -196,10 +197,10 @@ export function classifyCommand(
 	const cap = Math.min(substrings.length, MAX_SUBSTRING_CHECKS);
 	for (let i = 0; i < cap; i++) {
 		const rule = substrings[i];
-		if (rule.case_sensitive) {
-			if (command.includes(rule.match)) return rule.class;
-		} else if (lowerCommand.includes(rule.match.toLowerCase())) {
-			return rule.class;
+		if (nonNull(rule).case_sensitive) {
+			if (command.includes(nonNull(rule).match)) return nonNull(rule).class;
+		} else if (lowerCommand.includes(nonNull(rule).match.toLowerCase())) {
+			return nonNull(rule).class;
 		}
 	}
 

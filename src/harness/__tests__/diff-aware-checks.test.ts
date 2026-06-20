@@ -46,6 +46,7 @@ let MOCK_FILE_CONTENT = "";
 
 import { snapshotDryShingles } from "../checks/dry-baseline.js";
 import { runQualityChecks } from "../quality-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Deterministic fixtures.
 const FIXED_NOW = 1_700_000_000_000;
@@ -101,7 +102,7 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project");
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
-		expect(mrt[0].message).toContain("2 exported function(s)");
+		expect(nonNull(mrt[0]).message).toContain("2 exported function(s)");
 	});
 
 	it("filters out pre-existing findings when baseline is provided", async () => {
@@ -123,7 +124,7 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
-		expect(mrt[0].message).toContain("1 exported function(s)");
+		expect(nonNull(mrt[0]).message).toContain("1 exported function(s)");
 	});
 
 	it("reports all findings when diff_aware is disabled", async () => {
@@ -144,7 +145,7 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
-		expect(mrt[0].message).toContain("2 exported function(s)");
+		expect(nonNull(mrt[0]).message).toContain("2 exported function(s)");
 	});
 
 	it("reports all findings when missing_return_types strategy is 'off'", async () => {
@@ -166,7 +167,7 @@ describe("diff-aware: missing_return_types baseline subtraction", () => {
 		const results = await runQualityChecks(makeEvent(), BASIC_CHECKS, "/project", options);
 		const mrt = results.filter((r) => r.name === "missing_return_types");
 		expect(mrt).toHaveLength(1);
-		expect(mrt[0].message).toContain("2 exported function(s)");
+		expect(nonNull(mrt[0]).message).toContain("2 exported function(s)");
 	});
 
 	it("suppresses all findings when baseline matches everything", async () => {
@@ -277,7 +278,7 @@ function collectB(rows: Row[]): number[] ${cloneBody}
 		});
 		const cloneResults = results.filter((r) => r.name === "code_clones");
 		expect(cloneResults).toHaveLength(1);
-		expect(cloneResults[0].detail).toContain("collectA()");
+		expect(nonNull(cloneResults[0]).detail).toContain("collectA()");
 	});
 });
 
@@ -514,8 +515,8 @@ describe("type_density_ratchet", () => {
 		});
 		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
 		expect(ratchet).toHaveLength(1);
-		expect(ratchet[0].message).toContain("`: any`");
-		expect(ratchet[0].message).toContain("(1→2)");
+		expect(nonNull(ratchet[0]).message).toContain("`: any`");
+		expect(nonNull(ratchet[0]).message).toContain("(1→2)");
 	});
 
 	it("fires when missing exported return types increase", async () => {
@@ -527,7 +528,7 @@ describe("type_density_ratchet", () => {
 		});
 		const ratchet = results.filter((r) => r.name === "type_density_ratchet");
 		expect(ratchet).toHaveLength(1);
-		expect(ratchet[0].message).toContain("missing exported return type");
+		expect(nonNull(ratchet[0]).message).toContain("missing exported return type");
 	});
 
 	it("does not fire when counters are unchanged", async () => {

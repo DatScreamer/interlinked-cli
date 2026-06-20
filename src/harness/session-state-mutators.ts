@@ -25,6 +25,7 @@ import {
 	classifyVerificationCommand,
 	STUB_INTRODUCED_CAP,
 } from "./verification-stop-checks.js";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Set-union the subagent's verification_observed signals into the parent.
@@ -295,7 +296,7 @@ function extractToolTarget(event: HarnessEvent): string {
 		if (base === "npx" && parts[1]) return `${base} ${parts[1]}`;
 		if (base === "npm" && parts[1]) return `${base} ${parts[1]}`;
 		if (base === "git" && parts[1]) return `${base} ${parts[1]}`;
-		return base.slice(0, 30);
+		return nonNull(base).slice(0, 30);
 	}
 	if (input.url) return String(input.url).slice(0, 40);
 	return "";

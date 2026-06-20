@@ -5,6 +5,7 @@ import {
 	parseApplyPatchSections,
 	reconstructAfterContent,
 } from "./apply-patch-content.js";
+import { nonNull } from "../lib/non-null.js";
 
 describe("looksLikeApplyPatch", () => {
 	it("recognizes a V4A patch payload", () => {
@@ -48,20 +49,20 @@ describe("parseApplyPatchSections", () => {
 		);
 		const sections = parseApplyPatchSections(raw);
 		expect(sections).toHaveLength(1);
-		expect(sections[0].path).toBe("src/new.ts"); // destination
-		expect(sections[0].fromPath).toBe("src/old.ts"); // source retained (was lost before)
-		expect(sections[0].op).toBe("update");
+		expect(nonNull(sections[0]).path).toBe("src/new.ts"); // destination
+		expect(nonNull(sections[0]).fromPath).toBe("src/old.ts"); // source retained (was lost before)
+		expect(nonNull(sections[0]).op).toBe("update");
 	});
 
 	it("does NOT set fromPath when Move to targets the same path", () => {
 		const raw = ["*** Update File: src/a.ts", "*** Move to: src/a.ts", "@@", " x", "+y"].join("\n");
-		expect(parseApplyPatchSections(raw)[0].fromPath).toBeUndefined();
+		expect(nonNull(parseApplyPatchSections(raw)[0]).fromPath).toBeUndefined();
 	});
 
 	it("excludes directive lines from the body", () => {
 		const raw = "*** Begin Patch\n*** Add File: a.ts\n+line\n*** End Patch";
 		const [section] = parseApplyPatchSections(raw);
-		expect(section.body).toEqual(["+line"]);
+		expect(nonNull(section).body).toEqual(["+line"]);
 	});
 });
 

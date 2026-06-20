@@ -10,6 +10,7 @@
 
 import type { Endpoint } from "../types/session.js";
 import { makeEndpoint } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const NUXT_API_FILE = /[/\\]server[/\\]api[/\\](.+?)\.(?:ts|js)$/;
 const METHOD_SUFFIX_RE = /\.(get|post|put|patch|delete|head|options)$/i;
@@ -27,9 +28,9 @@ export function extractEndpoints(filePath: string, content: string): Endpoint[] 
 		// `export default` of a function-like value.
 		if (!/^\s*export\s+default\b/m.test(content)) return [];
 	}
-	const rawSegments = match[1];
+	const rawSegments = nonNull(match[1]);
 	const methodMatch = METHOD_SUFFIX_RE.exec(rawSegments);
-	const method = methodMatch ? methodMatch[1].toUpperCase() : "ALL";
+	const method = methodMatch ? nonNull(methodMatch[1]).toUpperCase() : "ALL";
 	const segments = rawSegments.replace(METHOD_SUFFIX_RE, "");
 	// Rewrite [id] → :id (Nuxt uses the same convention as Next.js for
 	// dynamic segments).

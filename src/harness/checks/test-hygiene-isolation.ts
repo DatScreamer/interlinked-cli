@@ -8,6 +8,7 @@
 // Public symbols are re-exported from `test-hygiene.ts` (the barrel) so the
 // check registry and every importer stay unchanged.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -62,20 +63,19 @@ export function checkRealIoInTests(content: string, filePath: string): InlineMat
 	// raw node:fs writes. Scan the literal-stripped content so a verb mentioned
 	// inside a string/comment doesn't register as a definition.
 	const localFsHelpers = new Set<string>();
-	for (const m of stripped.matchAll(FS_HELPER_DEF_RE)) localFsHelpers.add(m[1]);
+	for (const m of stripped.matchAll(FS_HELPER_DEF_RE)) localFsHelpers.add(nonNull(m[1]));
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
-		const line = strippedLines[i];
 
 		// Network: only flag if the same line in the ORIGINAL contains a URL
 		// pointing somewhere that isn't localhost / 127.0.0.1 / 0.0.0.0.
 		if (NETWORK_CALL_RE.test(line)) {
-			const urlMatch = HTTP_LITERAL_URL_RE.exec(original[i]);
+			const urlMatch = HTTP_LITERAL_URL_RE.exec(nonNull(original[i]));
 			if (urlMatch) {
 				matches.push({
 					line: i + 1,
-					text: `real network call in test (${urlMatch[1].slice(0, 80)}). Mock with msw / fetch-mock / nock — real upstreams make tests flaky.`,
+					text: `real network call in test (${nonNull(urlMatch[1]).slice(0, 80)}). Mock with msw / fetch-mock / nock — real upstreams make tests flaky.`,
 				});
 				continue;
 			}
@@ -85,11 +85,11 @@ export function checkRealIoInTests(content: string, filePath: string): InlineMat
 		// not a write quoted inside a string fixture), then read the path literal
 		// from the original line. Only flag paths outside a tmp / fixtures dir.
 		if (FS_WRITE_CALL_RE.test(line)) {
-			const fsMatch = FS_WRITE_RE.exec(original[i]);
+			const fsMatch = FS_WRITE_RE.exec(nonNull(original[i]));
 			if (fsMatch) {
-				const verb = fsMatch[1];
-				const target = fsMatch[2];
-				const isMemberCall = original[i][fsMatch.index - 1] === ".";
+				const verb = nonNull(fsMatch[1]);
+				const target = nonNull(fsMatch[2]);
+				const isMemberCall = nonNull(original[i])[fsMatch.index - 1] === ".";
 				const isLocalHelper = !isMemberCall && localFsHelpers.has(verb);
 				if (!isLocalHelper && !TMP_PATH_RE.test(target) && !target.startsWith("/tmp")) {
 					matches.push({
@@ -131,14 +131,14 @@ export function checkTestNondeterminism(content: string, filePath: string): Inli
 	// suppress the check entirely for that file.
 	if (/\bvi\s*\.\s*useFakeTimers\b|\bjest\s*\.\s*useFakeTimers\b/.test(stripped)) return [];
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, strippedLine] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (MOCK_SETUP_LINE_RE.test(strippedLines[i])) continue;
-		const m = TEST_NONDETERMINISM_RE.exec(strippedLines[i]);
+		if (MOCK_SETUP_LINE_RE.test(strippedLine)) continue;
+		const m = TEST_NONDETERMINISM_RE.exec(strippedLine);
 		if (!m) continue;
 		matches.push({
 			line: i + 1,
-			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${original[i].trim().slice(0, 80)}`,
+			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${nonNull(original[i]).trim().slice(0, 80)}`,
 		});
 	}
 	return matches;
@@ -168,14 +168,14 @@ export function checkHardcodedTimeoutInTests(
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 5;
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, strippedLine] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = HARDCODED_TIMEOUT_RE.exec(strippedLines[i]);
+		const m = HARDCODED_TIMEOUT_RE.exec(strippedLine);
 		if (!m) continue;
-		const ms = m[1];
+		const ms = nonNull(m[1]);
 		matches.push({
 			line: i + 1,
-			text: `hardcoded ${ms}ms wait in test — fix the timing condition (vi.waitFor / poll a deterministic predicate) instead of adding sleep. ${original[i].trim().slice(0, 80)}`,
+			text: `hardcoded ${ms}ms wait in test — fix the timing condition (vi.waitFor / poll a deterministic predicate) instead of adding sleep. ${nonNull(original[i]).trim().slice(0, 80)}`,
 		});
 	}
 	return matches;
@@ -280,7 +280,7 @@ function hasExplicitTimeout(
 	if (TIMEOUT_OPTION_RE.test(argRegion)) return true;
 	// Trailing-numeric form: text of the final argument is a bare number.
 	if (span.topLevelCommas.length > 0) {
-		const lastComma = span.topLevelCommas[span.topLevelCommas.length - 1];
+		const lastComma = nonNull(span.topLevelCommas[span.topLevelCommas.length - 1]);
 		const lastArg = stripped.slice(lastComma + 1, span.end);
 		if (TRAILING_NUMERIC_RE.test(lastArg)) return true;
 	}

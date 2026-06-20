@@ -9,6 +9,7 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
 
@@ -262,8 +263,8 @@ describe("runHadolintAsync", () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 1, stdout: hadolintErrorRelative() }));
 		const out = await runHadolintAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].severity).toBe("error");
-		expect(out[0].file).toBe("Dockerfile");
+		expect(nonNull(out[0]).severity).toBe("error");
+		expect(nonNull(out[0]).file).toBe("Dockerfile");
 	});
 
 	it("returns [] on code === 1 with empty stdout (parser yields nothing)", async () => {

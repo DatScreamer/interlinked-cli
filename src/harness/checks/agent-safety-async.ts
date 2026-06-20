@@ -10,6 +10,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- 1. Async/Promise Safety ---
 
@@ -25,10 +26,10 @@ export function checkMisusedPromises(content: string, filePath: string): InlineM
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		// .forEach(async, .map(async without assignment, .filter(async, .some(async, .every(async
 		if (/\.(forEach|reduce)\s*\(\s*async\b/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -52,20 +53,20 @@ function collectFloatingAsyncIds(strippedLines: string[]): Set<string> {
 	for (const line of strippedLines) {
 		// `async function foo(` / `async function *foo(`
 		let m = line.match(/\basync\s+function\s*\*?\s+([A-Za-z_$][\w$]*)\s*\(/);
-		if (m) asyncIds.add(m[1]);
+		if (m) asyncIds.add(nonNull(m[1]));
 		// `const foo = async (`, `let foo: Type = async <T>(`, etc.
 		m = line.match(
 			/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?\s*=\s*async\s*[(<]/,
 		);
-		if (m) asyncIds.add(m[1]);
+		if (m) asyncIds.add(nonNull(m[1]));
 		// Class method: `  async foo(` with optional access modifiers / static.
 		m = line.match(
 			/^\s+(?:(?:public|private|protected|static|readonly|override|abstract)\s+)*async\s+([A-Za-z_$][\w$]*)\s*[(<]/,
 		);
-		if (m && m[1] !== "function") asyncIds.add(m[1]);
+		if (m && m[1] !== "function") asyncIds.add(nonNull(m[1]));
 		// Object shorthand property: `foo: async (`.
 		m = line.match(/\b([A-Za-z_$][\w$]*)\s*:\s*async\s*[(<]/);
-		if (m) asyncIds.add(m[1]);
+		if (m) asyncIds.add(nonNull(m[1]));
 	}
 	return asyncIds;
 }
@@ -89,14 +90,14 @@ function shouldSkipFloatingLine(strippedLines: string[], i: number, trimmed: str
 	// block opener (function/class/if/etc.) than a multi-line object literal, and
 	// treating blocks as arg lists would swallow every statement after a brace.
 	let prev = i - 1;
-	while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
-	if (prev >= 0 && /[([,]\s*$/.test(strippedLines[prev])) return true;
+	while (prev >= 0 && nonNull(strippedLines[prev]).trim() === "") prev--;
+	if (prev >= 0 && /[([,]\s*$/.test(nonNull(strippedLines[prev]))) return true;
 
 	// Skip arrow-function concise-body return values. When the previous non-blank
 	// line ends with `=>`, this line is the single-expression body of an arrow
 	// function — its value is *returned*, not dropped. Example false-positive:
 	// `discovered.map((d) =>\n    probeHealth(d))`
-	if (prev >= 0 && /=>\s*$/.test(strippedLines[prev])) return true;
+	if (prev >= 0 && /=>\s*$/.test(nonNull(strippedLines[prev]))) return true;
 
 	// Skip TypeScript interface / type method signatures. A line like
 	// `drain(timeoutMs?: number): Promise<void>;` inside an `interface` body
@@ -113,8 +114,8 @@ function shouldSkipFloatingLine(strippedLines: string[], i: number, trimmed: str
 	// chain's handler (if any) lives on a later line and we can't tell with
 	// regex. Under-detect by skipping.
 	let next = i + 1;
-	while (next < strippedLines.length && strippedLines[next].trim() === "") next++;
-	if (next < strippedLines.length && strippedLines[next].trim().startsWith(".")) return true;
+	while (next < strippedLines.length && nonNull(strippedLines[next]).trim() === "") next++;
+	if (next < strippedLines.length && nonNull(strippedLines[next]).trim().startsWith(".")) return true;
 
 	return false;
 }
@@ -130,7 +131,7 @@ function extractCallLeafId(trimmed: string): string | null {
 	const callMatch = trimmed.match(/^([\w$?.[\]]+)\s*\(/);
 	if (!callMatch) return null;
 	const callPath = callMatch[1];
-	const leafId = callPath
+	const leafId = nonNull(callPath)
 		.replace(/\?\./g, ".")
 		.split(".")
 		.pop()
@@ -178,7 +179,7 @@ export function checkFloatingPromises(content: string, filePath: string): Inline
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!trimmed) continue;
 		if (shouldSkipFloatingLine(strippedLines, i, trimmed)) continue;
 
@@ -190,7 +191,7 @@ export function checkFloatingPromises(content: string, filePath: string): Inline
 		if (/\.catch\s*\(/.test(trimmed)) continue;
 		if (/\.finally\s*\(/.test(trimmed)) continue;
 
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
@@ -245,7 +246,7 @@ export function checkSilentPromiseSwallow(
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		if (!arrowPattern.test(line) && !functionPattern.test(line)) continue;
 		if (intentCommentRe.test(originalLines[i] ?? "")) continue;
 		matches.push({ line: i + 1, text: (originalLines[i] ?? "").trim().slice(0, 150) });

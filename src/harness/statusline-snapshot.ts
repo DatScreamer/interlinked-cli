@@ -12,6 +12,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
 import type { GuardRule, GuardRulesConfig, QualityCheckConfig } from "./types.js";
@@ -446,7 +447,7 @@ function byId(a: { id: string }, b: { id: string }): number {
 function humanizeCategory(cat: string): string {
 	return cat
 		.split(/[_-]/)
-		.map((p) => (p.length === 0 ? p : p[0].toUpperCase() + p.slice(1)))
+		.map((p) => (p.length === 0 ? p : nonNull(p[0]).toUpperCase() + p.slice(1)))
 		.join(" ");
 }
 

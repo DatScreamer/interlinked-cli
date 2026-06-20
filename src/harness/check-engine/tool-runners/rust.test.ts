@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 
@@ -236,8 +237,8 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe("borrow checker error");
-		expect(out[0].ruleId).toBe("E0502");
+		expect(nonNull(out[0]).message).toBe("borrow checker error");
+		expect(nonNull(out[0]).ruleId).toBe("E0502");
 	});
 
 	it("handles undefined stderr via the '' fallback (stdout-only diagnostic)", () => {
@@ -250,7 +251,7 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe("type error");
+		expect(nonNull(out[0]).message).toBe("type error");
 	});
 
 	it("returns [] on status 101 with empty output (parser yields nothing)", () => {
@@ -265,7 +266,7 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe("killed mid-build");
+		expect(nonNull(out[0]).message).toBe("killed mid-build");
 	});
 
 	it("emits ruleId undefined when the diagnostic carries no code", () => {
@@ -274,7 +275,7 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].ruleId).toBeUndefined();
+		expect(nonNull(out[0]).ruleId).toBeUndefined();
 	});
 
 	// --- file-mode filtering branch -----------------------------------------
@@ -291,8 +292,8 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(TARGET_FILE);
-		expect(out[0].message).toBe("in target file");
+		expect(nonNull(out[0]).file).toBe(TARGET_FILE);
+		expect(nonNull(out[0]).message).toBe("in target file");
 	});
 
 	it("matches via endsWith when cargo reports an absolute path for the target", () => {
@@ -308,7 +309,7 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(fileScope({ targetFile: `${PROJECT_ROOT}/${TARGET_FILE}` })));
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe("abs path diag");
+		expect(nonNull(out[0]).message).toBe("abs path diag");
 	});
 
 	it("does NOT filter in project mode (returns every file's diagnostics)", () => {
@@ -353,7 +354,7 @@ describe.each(runners)("$name", ({ fn, expectedTool, expectedArgv }) => {
 		);
 		const out = fn(input(scope));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/anywhere.rs");
+		expect(nonNull(out[0]).file).toBe("src/anywhere.rs");
 	});
 
 	it("returns [] from the catch block when spawnSync throws", () => {
@@ -384,8 +385,8 @@ describe("parseRustfmtCheckOutput", () => {
 			PROJECT_ROOT,
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/main.rs");
-		expect(out[0].line).toBe(12);
+		expect(nonNull(out[0]).file).toBe("src/main.rs");
+		expect(nonNull(out[0]).line).toBe(12);
 	});
 
 	it("emits one finding per diff header and ignores diff bodies", () => {
@@ -458,8 +459,8 @@ describe("runRustfmtCheck", () => {
 		const out = runRustfmtCheck(input(fileScope()));
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({ tool: "rustfmt", severity: "warning", file: TARGET_FILE });
-		expect(out[0].message).toContain("formatting NOT validated");
-		expect(out[0].message).toContain("unclosed delimiter");
+		expect(nonNull(out[0]).message).toContain("formatting NOT validated");
+		expect(nonNull(out[0]).message).toContain("unclosed delimiter");
 	});
 
 	it("returns [] from the catch block when spawnSync throws", () => {
@@ -485,7 +486,7 @@ describe("runRustfmtCheck", () => {
 		);
 		const out = runRustfmtCheck(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(TARGET_FILE);
+		expect(nonNull(out[0]).file).toBe(TARGET_FILE);
 	});
 
 	it("returns [] (target clean) when ONLY other files have diffs — no synthesized failure", () => {

@@ -44,6 +44,7 @@ import {
 } from "../reachability-annotator.js";
 import { RouteMap } from "../route-map.js";
 import type { Endpoint } from "../types/session.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const mockedExistsSync = existsSync as unknown as ReturnType<typeof vi.fn>;
 const mockedStatSync = statSync as unknown as ReturnType<typeof vi.fn>;
@@ -117,10 +118,10 @@ describe("annotateReachability", () => {
 		});
 
 		expect(annotated).toHaveLength(1);
-		expect(annotated[0].message).toBe("auth missing on /x\n[reachable]");
+		expect(nonNull(annotated[0]).message).toBe("auth missing on /x\n[reachable]");
 		// Tag lands on its own line so the formatter's newline-aware
 		// rendering keeps it visually separate.
-		expect(annotated[0].message.split("\n").pop()).toBe("[reachable]");
+		expect(nonNull(annotated[0]).message.split("\n").pop()).toBe("[reachable]");
 	});
 
 	it("appends [unreachable-from-entrypoints] to findings whose file is not reachable", () => {
@@ -133,7 +134,7 @@ describe("annotateReachability", () => {
 		});
 
 		expect(annotated).toHaveLength(1);
-		expect(annotated[0].message).toBe("auth missing on /o\n[unreachable-from-entrypoints]");
+		expect(nonNull(annotated[0]).message).toBe("auth missing on /o\n[unreachable-from-entrypoints]");
 	});
 
 	it("annotates a mixed batch correctly — two reachable, one unreachable", () => {
@@ -150,9 +151,9 @@ describe("annotateReachability", () => {
 		});
 
 		expect(annotated).toHaveLength(3);
-		expect(annotated[0].message).toBe("msg-a\n[reachable]");
-		expect(annotated[1].message).toBe("msg-b\n[unreachable-from-entrypoints]");
-		expect(annotated[2].message).toBe("msg-c\n[reachable]");
+		expect(nonNull(annotated[0]).message).toBe("msg-a\n[reachable]");
+		expect(nonNull(annotated[1]).message).toBe("msg-b\n[unreachable-from-entrypoints]");
+		expect(nonNull(annotated[2]).message).toBe("msg-c\n[reachable]");
 	});
 
 	it("returns an empty array for empty input without touching the graph", () => {
@@ -179,7 +180,7 @@ describe("annotateReachability", () => {
 		});
 
 		expect(annotated).toHaveLength(1);
-		const lines = annotated[0].message.split("\n");
+		const lines = nonNull(annotated[0]).message.split("\n");
 		expect(lines[0]).toBe("msg");
 		expect(lines[1]).toBe("[reachable]");
 		expect(lines[2]).toBe("Entry points considered: entry.ts");
@@ -200,7 +201,7 @@ describe("annotateReachability", () => {
 			verbose: true,
 		});
 
-		const verboseLine = annotated[0].message.split("\n")[2];
+		const verboseLine = nonNull(annotated[0]).message.split("\n")[2];
 		// First five entry-point basenames, then an ellipsis marker.
 		expect(verboseLine).toBe("Entry points considered: ep0.ts, ep1.ts, ep2.ts, ep3.ts, ep4.ts, …");
 	});
@@ -249,7 +250,7 @@ describe("annotateReachability", () => {
 		// Original finding object unchanged (deep field equality).
 		expect(original).toEqual(snapshot);
 		// And the output message is the annotated one.
-		expect(annotated[0].message).toBe("untouched\n[reachable]");
+		expect(nonNull(annotated[0]).message).toBe("untouched\n[reachable]");
 	});
 });
 
@@ -357,7 +358,7 @@ describe("buildHttpHandlerEntryPoints", () => {
 		const eps = buildHttpHandlerEntryPoints(routeMapStub);
 
 		expect(eps).toHaveLength(1);
-		expect(eps[0].file).toBe("/project/api.ts");
+		expect(nonNull(eps[0]).file).toBe("/project/api.ts");
 	});
 
 	it("formats the reason string as http_handler:<framework>:<method>:<path>", () => {
@@ -379,6 +380,6 @@ describe("buildHttpHandlerEntryPoints", () => {
 		const eps = buildHttpHandlerEntryPoints(routeMapStub);
 
 		expect(eps).toHaveLength(1);
-		expect(eps[0].reason).toBe("http_handler:hono:PATCH:/users/:id");
+		expect(nonNull(eps[0]).reason).toBe("http_handler:hono:PATCH:/users/:id");
 	});
 });

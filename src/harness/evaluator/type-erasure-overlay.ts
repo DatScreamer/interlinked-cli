@@ -14,6 +14,7 @@
 // once stable.
 
 import { existsSync, readFileSync } from "node:fs";
+import { nonNull } from "../../lib/non-null.js";
 import { stripAllLiterals } from "../strip-helpers.js";
 
 /** A single new instance of a type-erasure pattern, keyed for diffing. */
@@ -105,7 +106,7 @@ function findAll(content: string, filePath: string): TypeErasureFinding[] {
 		if (spec.skipTestFiles && isTestFile) continue;
 		const targetLines = spec.matchOriginal ? origLines : strippedLines;
 		for (let i = 0; i < targetLines.length; i++) {
-			const slLine = targetLines[i];
+			const slLine = nonNull(targetLines[i]);
 			const origLine = origLines[i] ?? "";
 			spec.pattern.lastIndex = 0;
 			let m: RegExpExecArray | null = spec.pattern.exec(slLine);

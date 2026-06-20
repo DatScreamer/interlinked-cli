@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { _resetPackageNameCacheForTests, checkImportFromOwnBarrel } from "./imports.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 
@@ -8,7 +9,7 @@ describe("checkImportFromOwnBarrel — positive cases", () => {
 		const code = `import { Foo } from "./index";\nexport function bar() {}\n`;
 		const out = checkImportFromOwnBarrel(code, TS);
 		expect(out.length).toBe(1);
-		expect(out[0].text).toMatch(/own-directory barrel/);
+		expect(nonNull(out[0]).text).toMatch(/own-directory barrel/);
 	});
 
 	it("flags `from './'`", () => {

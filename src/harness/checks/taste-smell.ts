@@ -8,6 +8,7 @@ import {
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 export { checkSameTypedPrimitiveParams } from "./taste-smell-same-typed-params.js";
 
 /**
@@ -73,7 +74,7 @@ export function checkMagicNumbers(content: string, filePath: string): InlineMatc
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		const line = strippedLines[i];
-		const trimmed = line.trim();
+		const trimmed = nonNull(line).trim();
 
 		// Skip declarations — the number IS the named constant
 		if (/^\s*(const|let|var|enum|static\s+(readonly\s+)?)\b/.test(trimmed)) continue;
@@ -94,18 +95,18 @@ export function checkMagicNumbers(content: string, filePath: string): InlineMatc
 
 		// Find bare numeric literals
 		const numPattern = /(?<![.\w])(-?\d+(?:\.\d+)?)\b/g;
-		const numHits = line.matchAll(numPattern);
+		const numHits = nonNull(line).matchAll(numPattern);
 		let flaggedLine = false;
 		for (const numMatch of numHits) {
 			if (flaggedLine) break;
-			const num = numMatch[1];
+			const num = nonNull(numMatch[1]);
 			if (ALLOWED.has(num)) continue;
 
 			// Skip if it's an array index: [123]
-			const before = line.slice(Math.max(0, numMatch.index! - 1), numMatch.index);
+			const before = nonNull(line).slice(Math.max(0, numMatch.index! - 1), numMatch.index);
 			if (before === "[") continue;
 
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			flaggedLine = true;
 		}
 	}
@@ -132,7 +133,7 @@ export function checkNegatedConditionWithElse(content: string, filePath: string)
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		// Match: if (!identifier) or if (!identifier.property)
 		if (!/\bif\s*\(\s*!\s*\w+[\w.]*\s*\)/.test(line)) continue;
@@ -143,18 +144,18 @@ export function checkNegatedConditionWithElse(content: string, filePath: string)
 		let scanDone = false;
 		for (let j = i; j < Math.min(i + 50, strippedLines.length) && !scanDone; j++) {
 			const scanLine = strippedLines[j];
-			for (let k = 0; k < scanLine.length; k++) {
-				if (scanLine[k] === "{") braceDepth++;
-				if (scanLine[k] === "}") {
+			for (let k = 0; k < nonNull(scanLine).length; k++) {
+				if (nonNull(scanLine)[k] === "{") braceDepth++;
+				if (nonNull(scanLine)[k] === "}") {
 					braceDepth--;
 					// The moment the if-block closes, check for else
 					if (braceDepth === 0 && (j > i || k > 0)) {
-						const remaining = scanLine.slice(k + 1);
+						const remaining = nonNull(scanLine).slice(k + 1);
 						if (/\belse\b/.test(remaining)) {
 							foundElse = true;
 						} else if (
 							j + 1 < strippedLines.length &&
-							/^\s*else\b/.test(strippedLines[j + 1])
+							/^\s*else\b/.test(nonNull(strippedLines[j + 1]))
 						) {
 							foundElse = true;
 						}
@@ -167,7 +168,7 @@ export function checkNegatedConditionWithElse(content: string, filePath: string)
 
 		if (!foundElse) continue;
 
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
@@ -193,7 +194,7 @@ export function checkNestedTernary(content: string, filePath: string): InlineMat
 		const line = strippedLines[i];
 
 		// Quick check: line must have at least 2 question marks
-		const qCount = (line.match(/\?/g) || []).length;
+		const qCount = (nonNull(line).match(/\?/g) || []).length;
 		if (qCount < 2) continue;
 
 		// Verify nesting: walk through and track ternary depth
@@ -202,16 +203,16 @@ export function checkNestedTernary(content: string, filePath: string): InlineMat
 		let maxTernaryDepth = 0;
 		let inGeneric = 0;
 
-		for (let j = 0; j < line.length; j++) {
-			const ch = line[j];
+		for (let j = 0; j < nonNull(line).length; j++) {
+			const ch = nonNull(line)[j];
 			if (ch === "<") inGeneric++;
 			if (ch === ">") inGeneric = Math.max(0, inGeneric - 1);
 			if (inGeneric > 0) continue;
 
 			// Skip optional chaining ?.
-			if (ch === "?" && j + 1 < line.length && line[j + 1] === ".") continue;
+			if (ch === "?" && j + 1 < nonNull(line).length && nonNull(line)[j + 1] === ".") continue;
 			// Skip nullish coalescing ??
-			if (ch === "?" && j + 1 < line.length && line[j + 1] === "?") {
+			if (ch === "?" && j + 1 < nonNull(line).length && nonNull(line)[j + 1] === "?") {
 				j++; // skip next ?
 				continue;
 			}
@@ -226,7 +227,7 @@ export function checkNestedTernary(content: string, filePath: string): InlineMat
 		}
 
 		if (maxTernaryDepth >= 2) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 
@@ -261,13 +262,13 @@ export function checkFlagArguments(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		let funcName: string | null = null;
 		for (const pat of funcPatterns) {
 			const m = trimmed.match(pat);
 			if (m) {
-				funcName = m[1];
+				funcName = nonNull(m[1]);
 				break;
 			}
 		}
@@ -279,7 +280,7 @@ export function checkFlagArguments(content: string, filePath: string): InlineMat
 		if (!paramMatch) continue;
 
 		// Count params with `: boolean` type annotation
-		const params = paramMatch[1].split(",");
+		const params = nonNull(paramMatch[1]).split(",");
 		let boolParamCount = 0;
 		for (const p of params) {
 			// Match: paramName: boolean or paramName?: boolean
@@ -291,7 +292,7 @@ export function checkFlagArguments(content: string, filePath: string): InlineMat
 		if (boolParamCount >= 2) {
 			matches.push({
 				line: i + 1,
-				text: `[${boolParamCount} boolean params → use options object] ${originalLines[i].trim().slice(0, 100)}`,
+				text: `[${boolParamCount} boolean params → use options object] ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 			});
 		}
 	}
@@ -450,7 +451,7 @@ export function checkCommentedOutCode(content: string, filePath: string): Inline
 	for (let i = 0; i <= originalLines.length; i++) {
 		if (matches.length >= 5) break;
 
-		const line = i < originalLines.length ? originalLines[i] : "";
+		const line = i < originalLines.length ? nonNull(originalLines[i]) : "";
 		const isComment = commentPrefix.test(line);
 
 		if (isComment) {

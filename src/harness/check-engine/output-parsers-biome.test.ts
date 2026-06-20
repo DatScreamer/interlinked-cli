@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { parseBiomeOutput } from "./output-parsers-biome.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("parseBiomeOutput", () => {
 	it("parses lint-rule diagnostics as warnings", () => {
@@ -25,7 +26,7 @@ describe("parseBiomeOutput", () => {
 	it("parses format diagnostics", () => {
 		const out = parseBiomeOutput("src/b.ts:1:1 format ━━━━━━━━━━━\n");
 		expect(out).toHaveLength(1);
-		expect(out[0].ruleId).toBe("format");
+		expect(nonNull(out[0]).ruleId).toBe("format");
 	});
 
 	it("parses ASSIST diagnostics — organizeImports (finding 2026-06: these were silently dropped, so an assist-only run reported 'lint NOT validated' and waved unsorted imports through)", () => {
@@ -53,7 +54,7 @@ describe("parseBiomeOutput", () => {
 		);
 		expect(out).toHaveLength(2);
 		expect(out[0]).toMatchObject({ severity: "error", file: "poison.ts", line: 1, column: 7 });
-		expect(out[0].message).toContain("does not parse");
+		expect(nonNull(out[0]).message).toContain("does not parse");
 	});
 
 	it("ignores non-diagnostic lines (summaries, diff bodies)", () => {

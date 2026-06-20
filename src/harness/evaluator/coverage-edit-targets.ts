@@ -32,6 +32,7 @@ import { isCappableFile } from "../large-file-policy.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** One file the coverage gate will evaluate: its project-relative POSIX path, the
  *  coverage language, the proposed post-edit content, and the lines this edit
@@ -110,7 +111,10 @@ function addedLineNumbers(before: string, after: string): Set<number> {
 	const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
 	for (let i = n - 1; i >= 0; i--) {
 		for (let j = m - 1; j >= 0; j--) {
-			dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+			nonNull(dp[i])[j] =
+				a[i] === b[j]
+					? nonNull(nonNull(dp[i + 1])[j + 1]) + 1
+					: Math.max(nonNull(nonNull(dp[i + 1])[j]), nonNull(nonNull(dp[i])[j + 1]));
 		}
 	}
 	// Walk the alignment: an after-line with no matching before-line is inserted.
@@ -121,7 +125,7 @@ function addedLineNumbers(before: string, after: string): Set<number> {
 		if (a[i] === b[j]) {
 			i++;
 			j++;
-		} else if (dp[i + 1][j] >= dp[i][j + 1]) {
+		} else if (nonNull(nonNull(dp[i + 1])[j]) >= nonNull(nonNull(dp[i])[j + 1])) {
 			i++; // a[i] deleted — absent from `after`
 		} else {
 			edited.add(j + 1); // b[j] inserted / changed

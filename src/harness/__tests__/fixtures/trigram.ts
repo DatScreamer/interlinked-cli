@@ -1,3 +1,4 @@
+import { nonNull } from "../../../lib/non-null.js";
 import { extractTrigrams, type PostingList, TrigramIndex } from "../../trigram-index.js";
 
 // Fixed timestamp for deterministic test fixtures. Not time-sensitive
@@ -11,9 +12,9 @@ export function buildTestIndex(files: Record<string, string>): TrigramIndex {
 	const fileArray: string[] = [];
 
 	for (let fileId = 0; fileId < filePaths.length; fileId++) {
-		const path = filePaths[fileId];
+		const path = nonNull(filePaths[fileId]);
 		fileArray.push(path);
-		const trigrams = extractTrigrams(files[path]);
+		const trigrams = extractTrigrams(nonNull(files[path]));
 		for (const tri of trigrams) {
 			let list = postingsBuilder.get(tri);
 			if (!list) {

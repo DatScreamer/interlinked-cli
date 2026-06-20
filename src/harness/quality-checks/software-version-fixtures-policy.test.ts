@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 
 const SRC_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -45,7 +46,7 @@ function findVersionFixtureViolations(filePath: string, content: string): string
 	const violations: string[] = [];
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		if (line.includes(ALLOW_MARKER) || lines[i - 1]?.includes(ALLOW_MARKER)) continue;
 		const match = FAST_MOVING_FIXTURE_PATTERNS.find(({ re }) => re.test(line));
 		if (!match) continue;

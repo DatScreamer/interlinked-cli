@@ -8,6 +8,7 @@ import {
 	checkMigrationParity,
 	checkSchemaTypeDrift,
 } from "./cross-file.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 const TEST = "src/lib/foo.test.ts";
@@ -75,7 +76,7 @@ interface User { id: string; name: string; }
 `;
 		const matches = checkSchemaTypeDrift(code, TS);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("email");
+		expect(nonNull(matches[0]).text).toContain("email");
 	});
 
 	it("does not fire when shapes match", () => {
@@ -111,7 +112,7 @@ describe("checkMigrationParity", () => {
 		const filePath = join(migrationsDir, "0001_up.sql");
 		const matches = checkMigrationParity("CREATE TABLE foo();", filePath);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("0001_down.sql");
+		expect(nonNull(matches[0]).text).toContain("0001_down.sql");
 	});
 
 	it("does not fire when paired down.sql exists", () => {

@@ -8,6 +8,7 @@
 // `lineHasNearbyDemoDirective` from here.
 
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const DEMO_DIRECTIVE_RE = /\/\/\s*@demo-data\s*:\s*(\S.*)$/;
 const DIRECTIVE_LOOKBACK = 10;
@@ -15,8 +16,8 @@ const DIRECTIVE_LOOKBACK = 10;
 export function lineHasNearbyDemoDirective(lines: string[], lineIdx: number): boolean {
 	const start = Math.max(0, lineIdx - DIRECTIVE_LOOKBACK);
 	for (let i = start; i <= lineIdx; i++) {
-		const m = DEMO_DIRECTIVE_RE.exec(lines[i]);
-		if (m && m[1].trim().length >= 4) return true;
+		const m = DEMO_DIRECTIVE_RE.exec(nonNull(lines[i]));
+		if (m && nonNull(m[1]).trim().length >= 4) return true;
 	}
 	return false;
 }
@@ -94,18 +95,18 @@ const VISIBLE_ATTR_RE =
 function extractRenderedSegments(line: string): string[] {
 	const out: string[] = [];
 	for (const m of line.matchAll(/>([^<>{}]*)</g)) {
-		const t = m[1].trim();
+		const t = nonNull(m[1]).trim();
 		if (t) out.push(t);
 	}
 	for (const m of line.matchAll(/>\s*\{([^{}]+)\}\s*</g)) {
-		const t = m[1].trim();
+		const t = nonNull(m[1]).trim();
 		if (t) out.push(t);
 	}
 	for (const m of line.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
-		if (m[1].trim()) out.push(m[1].trim());
+		if (nonNull(m[1]).trim()) out.push(nonNull(m[1]).trim());
 	}
 	const standalone = /^\s*\{([^{}]+)\}\s*$/.exec(line);
-	if (standalone && standalone[1].trim()) out.push(standalone[1].trim());
+	if (standalone && nonNull(standalone[1]).trim()) out.push(nonNull(standalone[1]).trim());
 	for (const m of line.matchAll(VISIBLE_ATTR_RE)) {
 		const v = (m[1] ?? m[2] ?? m[3] ?? "").trim();
 		if (v) out.push(v);
@@ -209,16 +210,18 @@ function markedNumberDetail(
 	originalLines: string[],
 	analyzedLines: string[],
 ): string | null {
-	const code = analyzedLines[i];
+	const code = nonNull(analyzedLines[i]);
 	const hasNumber = extractRenderedSegments(code).some((s) =>
 		/\d{2,}/.test(s.replace(/[,_\s]/g, "")),
 	);
 	if (!hasNumber) return null;
 	const marked = "hardcoded number a comment marks as placeholder";
-	if (PLACEHOLDER_COMMENT_RE.test(commentTextOf(originalLines[i], code))) return marked;
+	if (PLACEHOLDER_COMMENT_RE.test(commentTextOf(nonNull(originalLines[i]), code))) return marked;
 	for (let j = i - 1; j >= 0 && j >= i - 3; j--) {
-		if (originalLines[j].trim() === "") continue;
-		return PLACEHOLDER_COMMENT_RE.test(commentTextOf(originalLines[j], analyzedLines[j]))
+		if (nonNull(originalLines[j]).trim() === "") continue;
+		return PLACEHOLDER_COMMENT_RE.test(
+			commentTextOf(nonNull(originalLines[j]), nonNull(analyzedLines[j])),
+		)
 			? marked
 			: null;
 	}
@@ -239,12 +242,12 @@ export function checkPlaceholderDataInUi(content: string, filePath: string): Inl
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < analyzedLines.length && matches.length < MAX_UI_MATCHES; i++) {
 		const detail =
-			placeholderSignalOnLine(analyzedLines[i]) ??
+			placeholderSignalOnLine(nonNull(analyzedLines[i])) ??
 			markedNumberDetail(i, originalLines, analyzedLines);
 		if (!detail || lineHasNearbyDemoDirective(originalLines, i)) continue;
 		matches.push({
 			line: i + 1,
-			text: `placeholder data rendered to a user (${detail}): ${originalLines[i].trim().slice(0, 100)}`,
+			text: `placeholder data rendered to a user (${detail}): ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 		});
 	}
 	return matches;

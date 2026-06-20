@@ -28,6 +28,7 @@ import {
 	splitSegments,
 	stripLeadingPrefix,
 } from "./commit-parse-tokens.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Re-export the blessed shell-structure tokenizers so `harness/shell-structure.ts`
 // (and its downstream `taint-tracker.ts`) keep importing them from this module's
@@ -131,9 +132,9 @@ interface SegmentCommit {
 function commitPathspecs(rest: string[]): string[] {
 	const paths: string[] = [];
 	for (let i = 0; i < rest.length; i++) {
-		const t = rest[i];
+		const t = nonNull(rest[i]);
 		if (t === "--") {
-			for (let k = i + 1; k < rest.length; k++) paths.push(rest[k]);
+			for (let k = i + 1; k < rest.length; k++) paths.push(nonNull(rest[k]));
 			break;
 		}
 		// The SEPARATE-value form consumes its file argument too — without the `i++`
@@ -227,7 +228,7 @@ function isGitAddSegment(segment: string): boolean {
 	const tokens = stripLeadingPrefix(shellSplit(segment));
 	if (tokens.length < 2) return false;
 	const head = tokens[0];
-	if (head !== "git" && !head.endsWith("/git")) return false;
+	if (head !== "git" && !nonNull(head).endsWith("/git")) return false;
 	const { subIdx } = scanGitGlobalFlags(tokens);
 	return subIdx >= 0 && tokens[subIdx] === "add";
 }
@@ -254,7 +255,7 @@ function scanGitGlobalFlags(tokens: string[]): { subIdx: number; cDir: string | 
 			i += 2; // config `key=val` — consume both
 			continue;
 		}
-		if (t.startsWith("-")) {
+		if (nonNull(t).startsWith("-")) {
 			i += 1;
 			continue;
 		}
@@ -269,7 +270,7 @@ function parseSegment(segment: string): SegmentCommit | null {
 	if (tokens.length < 2) return null;
 	// Head must be `git` (or a path ending in /git), not a comment or other binary.
 	const head = tokens[0];
-	if (head !== "git" && !head.endsWith("/git")) return null;
+	if (head !== "git" && !nonNull(head).endsWith("/git")) return null;
 
 	const { subIdx, cDir } = scanGitGlobalFlags(tokens);
 	if (subIdx < 0 || tokens[subIdx] !== "commit") return null;

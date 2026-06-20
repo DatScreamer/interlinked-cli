@@ -17,6 +17,7 @@ import {
 	isTscFindingBlocking,
 } from "../harness/diff-overlay.js";
 import { findProjectRoot } from "../harness/quality-checks/project-root.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ───────────────────────────────────────────────
 // Error codes (const-object pattern so they read as intent in conditionals)
@@ -136,7 +137,7 @@ export function countOccurrences(haystack: string, needle: string): number {
 export function applyEditsToBuffer(original: string, edits: EditPair[]): ApplyEditsResult {
 	let buf = original;
 	for (let i = 0; i < edits.length; i += 1) {
-		const { old_string, new_string } = edits[i];
+		const { old_string, new_string } = nonNull(edits[i]);
 		// An empty old_string is nonsensical — treat as not-found so the
 		// manifest fails loudly rather than silently applying identity.
 		const matches = countOccurrences(buf, old_string);

@@ -15,6 +15,7 @@
 // use `{name}` syntax; handler-signature params can carry a
 // `Depends(...)` call that the auth-chain detector picks up.
 
+import { nonNull } from "../../lib/non-null.js";
 import { detectAuthChain } from "../auth-chain.js";
 import type { Endpoint, ParamSpec } from "../types/session.js";
 import { extractPathParams, findHandlerSymbol, lineNumberAt, makeEndpoint } from "./shared.js";
@@ -45,10 +46,10 @@ export function extractEndpoints(filePath: string, content: string): Endpoint[] 
 	const seen = new Set<string>();
 	DECORATOR_RE.lastIndex = 0;
 	for (let m = DECORATOR_RE.exec(content); m !== null; m = DECORATOR_RE.exec(content)) {
-		const receiver = m[1];
+		const receiver = nonNull(m[1]);
 		if (!RECEIVER_NAME_RE.test(receiver)) continue;
-		const verb = m[2].toUpperCase();
-		const path = m[3];
+		const verb = nonNull(m[2]).toUpperCase();
+		const path = nonNull(m[3]);
 		const line = lineNumberAt(content, m.index);
 		const key = `${verb}:${path}:${line}`;
 		if (seen.has(key)) continue;

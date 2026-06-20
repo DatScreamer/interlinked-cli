@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ArtifactNode } from "../types.js";
 import { classifyFile, extract, linkModulesToPackages, metadata } from "./package-extractor.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("package-extractor", () => {
 	let tmp: string;
@@ -25,7 +26,7 @@ describe("package-extractor", () => {
 	it("returns a synthetic `root` package when no manifest is present", () => {
 		const { nodes } = extract(tmp);
 		expect(nodes).toHaveLength(1);
-		expect(nodes[0].label).toBe("root");
+		expect(nonNull(nodes[0]).label).toBe("root");
 	});
 
 	it("creates one node per manifest file (package.json + Cargo.toml)", () => {
@@ -118,7 +119,7 @@ describe("linkModulesToPackages", () => {
 			},
 		];
 		const edges = linkModulesToPackages(modules, packages);
-		expect(edges[0].kind).toBe("belongs_to_package");
+		expect(nonNull(edges[0]).kind).toBe("belongs_to_package");
 	});
 
 	it("classifyFile maps a marker file to its package node and ignores non-markers", () => {

@@ -8,6 +8,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect parseInt() calls without the radix parameter.
@@ -58,15 +59,15 @@ export function checkFloatEquality(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const m = strippedLines[i].match(floatCompare);
+		const m = nonNull(strippedLines[i]).match(floatCompare);
 		if (!m) continue;
 
-		const floatValue = m[1] || m[2];
+		const floatValue = nonNull(m[1] || m[2]);
 		if (SAFE_FLOAT_VALUES.has(floatValue)) continue;
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;

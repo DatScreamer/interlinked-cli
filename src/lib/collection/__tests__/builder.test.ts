@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildCollectionRecord } from "../builder.js";
 import type { CollectionRecord } from "../types.js";
+import { nonNull } from "../../non-null.js";
 
 // Helper: minimal activity event with required fields
 function baseEvent(overrides: Record<string, unknown> = {}) {
@@ -395,8 +396,8 @@ describe("buildCollectionRecord — fidelity", () => {
 
 		const stdoutFidelity = rec.fidelity.fields["observation.stdout"];
 		expect(stdoutFidelity).toBeDefined();
-		expect(stdoutFidelity.interlinked_capped).toBe(true);
-		expect(stdoutFidelity.completeness).toBe("interlinked_capped");
+		expect(nonNull(stdoutFidelity).interlinked_capped).toBe(true);
+		expect(nonNull(stdoutFidelity).completeness).toBe("interlinked_capped");
 	});
 
 	it("marks complete when no truncation signals", () => {
@@ -410,8 +411,8 @@ describe("buildCollectionRecord — fidelity", () => {
 		)!;
 
 		const stdoutFidelity = rec.fidelity.fields["observation.stdout"];
-		expect(stdoutFidelity.interlinked_capped).toBe(false);
-		expect(stdoutFidelity.completeness).toBe("complete");
+		expect(nonNull(stdoutFidelity).interlinked_capped).toBe(false);
+		expect(nonNull(stdoutFidelity).completeness).toBe("complete");
 	});
 
 	it("marks absent when observation field is missing", () => {

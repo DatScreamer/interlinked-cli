@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { computeCyclomaticComplexity } from "./cyclomatic.js";
 
 describe("computeCyclomaticComplexity", () => {
@@ -8,9 +9,9 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("foo");
-		expect(entries[0].cyclomatic).toBe(1);
-		expect(entries[0].line).toBe(1);
+		expect(nonNull(entries[0]).name).toBe("foo");
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).line).toBe(1);
 	});
 
 	it("counts `if` as +1", () => {
@@ -21,7 +22,7 @@ describe("computeCyclomaticComplexity", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(2);
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
 	});
 
 	it("counts `else if` via the inner `if` (not `else`)", () => {
@@ -34,7 +35,7 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		// 1 base + 2 ifs (primary + else-if)
-		expect(entries[0].cyclomatic).toBe(3);
+		expect(nonNull(entries[0]).cyclomatic).toBe(3);
 	});
 
 	it("counts `case` labels but not `default`", () => {
@@ -49,7 +50,7 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		// 1 base + 2 cases (default not counted)
-		expect(entries[0].cyclomatic).toBe(3);
+		expect(nonNull(entries[0]).cyclomatic).toBe(3);
 	});
 
 	it("counts `catch` as +1", () => {
@@ -60,7 +61,7 @@ describe("computeCyclomaticComplexity", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(2);
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
 	});
 
 	it("counts ternaries", () => {
@@ -70,7 +71,7 @@ describe("computeCyclomaticComplexity", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(2);
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
 	});
 
 	it("counts `??` (nullish coalescing) as a branch, but not `?.` (optional chaining)", () => {
@@ -83,7 +84,7 @@ describe("computeCyclomaticComplexity", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(2); // base 1 + one `??`
+		expect(nonNull(entries[0]).cyclomatic).toBe(2); // base 1 + one `??`
 	});
 
 	it("does not count `?.` optional chaining on its own", () => {
@@ -93,7 +94,7 @@ describe("computeCyclomaticComplexity", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 
 	it("counts `&&` and `||`", () => {
@@ -105,7 +106,7 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		// 1 base + 1 if + 1 && + 1 ||
-		expect(entries[0].cyclomatic).toBe(4);
+		expect(nonNull(entries[0]).cyclomatic).toBe(4);
 	});
 
 	it("counts `for` and `while`", () => {
@@ -121,7 +122,7 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		// 1 base + 1 for + 1 while
-		expect(entries[0].cyclomatic).toBe(3);
+		expect(nonNull(entries[0]).cyclomatic).toBe(3);
 	});
 
 	it("detects arrow functions assigned to const", () => {
@@ -132,8 +133,8 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("foo");
-		expect(entries[0].cyclomatic).toBe(2);
+		expect(nonNull(entries[0]).name).toBe("foo");
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
 	});
 
 	it("detects class methods", () => {
@@ -182,7 +183,7 @@ describe("computeCyclomaticComplexity", () => {
 		);
 		// Only one function should be detected: `wrapper`.
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("wrapper");
+		expect(nonNull(entries[0]).name).toBe("wrapper");
 	});
 
 	it("does not misdetect ordinary function calls as method declarations", () => {
@@ -195,7 +196,7 @@ describe("computeCyclomaticComplexity", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("wrapper");
+		expect(nonNull(entries[0]).name).toBe("wrapper");
 	});
 
 	it("skips test files entirely", () => {
@@ -225,9 +226,9 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			expect(entries).toHaveLength(1);
-			expect(entries[0].name).toBe("foo");
-			expect(entries[0].language).toBe("python");
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).name).toBe("foo");
+			expect(nonNull(entries[0]).language).toBe("python");
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("counts `elif`, `for`, `while`, `except`", () => {
@@ -248,7 +249,7 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			// 1 base + 1 for + 1 if + 1 elif + 1 while + 1 except = 6
-			expect(entries[0].cyclomatic).toBe(6);
+			expect(nonNull(entries[0]).cyclomatic).toBe(6);
 		});
 
 		it("counts `and` and `or` as decision points", () => {
@@ -261,7 +262,7 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			// 1 base + 1 if + 1 and + 1 or = 4
-			expect(entries[0].cyclomatic).toBe(4);
+			expect(nonNull(entries[0]).cyclomatic).toBe(4);
 		});
 
 		it("detects `async def`", () => {
@@ -272,8 +273,8 @@ describe("computeCyclomaticComplexity", () => {
 `,
 				"src/foo.py",
 			);
-			expect(entries[0].name).toBe("fetch");
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).name).toBe("fetch");
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("counts a single-line ternary expression (`x if cond else y`)", () => {
@@ -285,7 +286,7 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			// base 1 + ternary (meaningful `y =` before `if`) = 2
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("counts `case` labels in a structural-pattern `match`", () => {
@@ -302,7 +303,7 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			// base 1 + 2 `case` arms = 3
-			expect(entries[0].cyclomatic).toBe(3);
+			expect(nonNull(entries[0]).cyclomatic).toBe(3);
 		});
 
 		it("does not double-count a statement `if` as a ternary", () => {
@@ -316,7 +317,7 @@ describe("computeCyclomaticComplexity", () => {
 			);
 			// base 1 + the statement `if` only (no text precedes `if`, so the
 			// ternary heuristic does not also fire) = 2
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("counts a statement `if` that also contains `else` exactly once", () => {
@@ -334,7 +335,7 @@ describe("computeCyclomaticComplexity", () => {
 				"src/foo.py",
 			);
 			// base 1 + the single statement `if` (ternary guard suppressed) = 2
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("ends the body at the first line dedented to/under the def indent", () => {
@@ -387,9 +388,9 @@ x = 1
 				"src/foo.go",
 			);
 			expect(entries).toHaveLength(1);
-			expect(entries[0].name).toBe("foo");
-			expect(entries[0].language).toBe("go");
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).name).toBe("foo");
+			expect(nonNull(entries[0]).language).toBe("go");
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("detects methods with receivers", () => {
@@ -402,8 +403,8 @@ x = 1
 }`,
 				"src/server.go",
 			);
-			expect(entries[0].name).toBe("Handle");
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).name).toBe("Handle");
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("counts `case` labels in switch / select", () => {
@@ -421,7 +422,7 @@ x = 1
 				"src/foo.go",
 			);
 			// 1 base + 2 cases (default not counted)
-			expect(entries[0].cyclomatic).toBe(3);
+			expect(nonNull(entries[0]).cyclomatic).toBe(3);
 		});
 
 		it("counts `&&` and `||`", () => {
@@ -435,7 +436,7 @@ x = 1
 				"src/foo.go",
 			);
 			// 1 base + 1 if + 1 && + 1 ||
-			expect(entries[0].cyclomatic).toBe(4);
+			expect(nonNull(entries[0]).cyclomatic).toBe(4);
 		});
 
 		it("emits no entry when no opening brace is found within the lookahead", () => {
@@ -472,9 +473,9 @@ x = 1
 				"src/foo.rs",
 			);
 			expect(entries).toHaveLength(1);
-			expect(entries[0].name).toBe("foo");
-			expect(entries[0].language).toBe("rust");
-			expect(entries[0].cyclomatic).toBe(2);
+			expect(nonNull(entries[0]).name).toBe("foo");
+			expect(nonNull(entries[0]).language).toBe("rust");
+			expect(nonNull(entries[0]).cyclomatic).toBe(2);
 		});
 
 		it("detects `pub fn`, `async fn`, and `pub(crate) fn`", () => {
@@ -499,7 +500,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 				"src/foo.rs",
 			);
 			// 1 base + 3 arms = 4
-			expect(entries[0].cyclomatic).toBe(4);
+			expect(nonNull(entries[0]).cyclomatic).toBe(4);
 		});
 
 		it("counts `?` try operator", () => {
@@ -512,7 +513,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 				"src/foo.rs",
 			);
 			// 1 base + 2 try-ops
-			expect(entries[0].cyclomatic).toBe(3);
+			expect(nonNull(entries[0]).cyclomatic).toBe(3);
 		});
 
 		it("counts `&&` and `||`", () => {
@@ -526,7 +527,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 				"src/foo.rs",
 			);
 			// 1 base + 1 if + 1 && + 1 ||
-			expect(entries[0].cyclomatic).toBe(4);
+			expect(nonNull(entries[0]).cyclomatic).toBe(4);
 		});
 
 		it("does not count `?Sized`-style trait bounds as the `?` try operator", () => {
@@ -538,7 +539,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 }`,
 				"src/foo.rs",
 			);
-			expect(entries[0].cyclomatic).toBe(1);
+			expect(nonNull(entries[0]).cyclomatic).toBe(1);
 		});
 
 		it("emits no entry when no opening brace is found within the lookahead", () => {
@@ -570,7 +571,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 			"src/foo.ts",
 		);
 		// 1 base, 0 decisions (string content is stripped)
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 
 	it("ignores `if` inside comments", () => {
@@ -582,7 +583,7 @@ pub(crate) fn c() -> i32 { 0 }`,
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 
 	it("reports start and end lines (1-based, inclusive)", () => {
@@ -592,8 +593,8 @@ pub(crate) fn c() -> i32 { 0 }`,
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].line).toBe(1);
-		expect(entries[0].endLine).toBe(3);
+		expect(nonNull(entries[0]).line).toBe(1);
+		expect(nonNull(entries[0]).endLine).toBe(3);
 	});
 
 	it("handles nested functions as independent entries", () => {

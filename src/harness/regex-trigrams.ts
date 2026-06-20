@@ -17,6 +17,7 @@
 // that actually matches (no false negatives).
 
 import { extractTrigrams, isControlChar, packTrigram } from "./trigram-index.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Types
@@ -185,7 +186,7 @@ function handleEscape(pattern: string, i: number, current: string, segments: str
 	if (i + 1 >= len) {
 		return { current: current + "\\", i: i + 1 };
 	}
-	const literal = resolveEscape(pattern[i + 1]);
+	const literal = resolveEscape(nonNull(pattern[i + 1]));
 	if (literal !== null) {
 		return { current: current + literal, i: i + 2 };
 	}

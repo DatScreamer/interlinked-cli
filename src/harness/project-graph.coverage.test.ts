@@ -69,6 +69,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { ProjectGraph, REACHABILITY_DEPTH_CAP } from "./project-graph.js";
+import { nonNull } from "../lib/non-null.js";
 
 function resetFs(): void {
 	fileContents.clear();
@@ -123,7 +124,7 @@ describe("ProjectGraph constructor / loadTsconfigPaths", () => {
 
 		const deps = graph.getDependencies("/proj/src/index.ts");
 		expect(deps).toHaveLength(1);
-		expect(deps[0].toFile).toBe("/proj/src/app.ts");
+		expect(nonNull(deps[0]).toFile).toBe("/proj/src/app.ts");
 	});
 
 	it("falls through to null when an aliased specifier resolves to nothing", () => {
@@ -137,7 +138,7 @@ describe("ProjectGraph constructor / loadTsconfigPaths", () => {
 		addFile("/proj/src/index.ts", `import { gone } from '@app/does-not-exist';`);
 		const graph = new ProjectGraph("/proj");
 		graph.updateFile("/proj/src/index.ts");
-		expect(graph.getDependencies("/proj/src/index.ts")[0].toFile).toBe("");
+		expect(nonNull(graph.getDependencies("/proj/src/index.ts")[0]).toFile).toBe("");
 	});
 
 	it("leaves a bare specifier unresolved when it matches no alias prefix", () => {
@@ -151,7 +152,7 @@ describe("ProjectGraph constructor / loadTsconfigPaths", () => {
 		addFile("/proj/index.ts", `import { z } from 'unrelated-pkg';`);
 		const graph = new ProjectGraph("/proj");
 		graph.updateFile("/proj/index.ts");
-		expect(graph.getDependencies("/proj/index.ts")[0].toFile).toBe("");
+		expect(nonNull(graph.getDependencies("/proj/index.ts")[0]).toFile).toBe("");
 	});
 
 	it("ignores tsconfig with no compilerOptions.paths", () => {
@@ -159,7 +160,7 @@ describe("ProjectGraph constructor / loadTsconfigPaths", () => {
 		const graph = new ProjectGraph("/proj");
 		// A bare specifier with no alias config stays unresolved.
 		graph.updateFile("/proj/a.ts", `import { y } from 'some-lib';`);
-		expect(graph.getDependencies("/proj/a.ts")[0].toFile).toBe("");
+		expect(nonNull(graph.getDependencies("/proj/a.ts")[0]).toFile).toBe("");
 	});
 
 	it("swallows a malformed tsconfig.json without throwing", () => {
@@ -380,7 +381,7 @@ describe("ProjectGraph.updateFile / indexFile", () => {
 		addFile("/p/a.ts", `import { x } from 'bare-pkg';\nexport const a = 1;`);
 		const graph = new ProjectGraph("/p");
 		graph.updateFile("/p/a.ts");
-		expect(graph.getDependencies("/p/a.ts")[0].toFile).toBe("");
+		expect(nonNull(graph.getDependencies("/p/a.ts")[0]).toFile).toBe("");
 		// Re-index with different content; must not throw on the empty old edge.
 		const old = graph.updateFile("/p/a.ts", "export const a = 2;");
 		expect(old.map((e) => e.name)).toEqual(["a"]);
@@ -443,7 +444,7 @@ describe("ProjectGraph dependency accessors", () => {
 		const graph = buildAB();
 		const deps = graph.getDependencies("/p/a.ts");
 		expect(deps).toHaveLength(1);
-		expect(deps[0].specifier).toBe("./b");
+		expect(nonNull(deps[0]).specifier).toBe("./b");
 		expect(graph.getDependencies("/p/unknown.ts")).toEqual([]);
 	});
 
@@ -451,8 +452,8 @@ describe("ProjectGraph dependency accessors", () => {
 		const graph = buildAB();
 		const importers = graph.getImporters("/p/b.ts");
 		expect(importers).toHaveLength(1);
-		expect(importers[0].fromFile).toBe("/p/a.ts");
-		expect(importers[0].toFile).toBe("/p/b.ts");
+		expect(nonNull(importers[0]).fromFile).toBe("/p/a.ts");
+		expect(nonNull(importers[0]).toFile).toBe("/p/b.ts");
 		// a.ts has no dependents -> early [] return.
 		expect(graph.getImporters("/p/a.ts")).toEqual([]);
 	});
@@ -471,7 +472,7 @@ describe("ProjectGraph dependency accessors", () => {
 
 		const importers = graph.getImporters("/p/b.ts");
 		expect(importers).toHaveLength(1);
-		expect(importers[0].toFile).toBe("/p/b.ts");
+		expect(nonNull(importers[0]).toFile).toBe("/p/b.ts");
 	});
 });
 
@@ -542,8 +543,8 @@ describe("ProjectGraph.findCyclesThrough", () => {
 		expect(cycles.length).toBeGreaterThanOrEqual(1);
 		// The cycle should start and end at a.ts.
 		const cyc = cycles[0];
-		expect(cyc[0]).toBe("/p/a.ts");
-		expect(cyc[cyc.length - 1]).toBe("/p/a.ts");
+		expect(nonNull(cyc)[0]).toBe("/p/a.ts");
+		expect(nonNull(cyc)[nonNull(cyc).length - 1]).toBe("/p/a.ts");
 	});
 
 	it("returns [] when the file has no cycle", () => {

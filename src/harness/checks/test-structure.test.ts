@@ -16,6 +16,7 @@ import {
 	inTestBlock,
 	innermostBlockAt,
 } from "./test-structure.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function blocksOf(src: string) {
 	return extractTestBlocks(stripAllLiterals(src).split("\n"));
@@ -49,9 +50,9 @@ describe("extractTestBlocks", () => {
 		].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks.map((b) => b.kind)).toEqual(["suite", "test", "test"]);
-		expect(blocks[1].parent).toBe(0);
-		expect(blocks[2].parent).toBe(0);
-		expect(blocks[0].endLine).toBe(7);
+		expect(nonNull(blocks[1]).parent).toBe(0);
+		expect(nonNull(blocks[2]).parent).toBe(0);
+		expect(nonNull(blocks[0]).endLine).toBe(7);
 	});
 
 	it("captures conditional gate arguments and unconditional markers", () => {
@@ -62,11 +63,11 @@ describe("extractTestBlocks", () => {
 			"it('d', () => {});",
 		].join("\n");
 		const blocks = blocksOf(src);
-		expect(blocks[0].gateConditions).toEqual(["!onMac"]);
-		expect(blocks[1].gateConditions).toEqual(["hasDocker"]);
-		expect(blocks[2].unconditionalGate).toBe(true);
-		expect(blocks[3].unconditionalGate).toBe(false);
-		expect(blocks[3].gateConditions).toEqual([]);
+		expect(nonNull(blocks[0]).gateConditions).toEqual(["!onMac"]);
+		expect(nonNull(blocks[1]).gateConditions).toEqual(["hasDocker"]);
+		expect(nonNull(blocks[2]).unconditionalGate).toBe(true);
+		expect(nonNull(blocks[3]).unconditionalGate).toBe(false);
+		expect(nonNull(blocks[3]).gateConditions).toEqual([]);
 	});
 
 	it("matches a multi-line .skipIf chain within the start window", () => {
@@ -79,9 +80,9 @@ describe("extractTestBlocks", () => {
 		].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks).toHaveLength(1);
-		expect(blocks[0].gateConditions).toHaveLength(1);
-		expect(blocks[0].gateConditions[0]).toContain("!onLinux");
-		expect(blocks[0].endLine).toBe(4);
+		expect(nonNull(blocks[0]).gateConditions).toHaveLength(1);
+		expect(nonNull(blocks[0]).gateConditions[0]).toContain("!onLinux");
+		expect(nonNull(blocks[0]).endLine).toBe(4);
 	});
 
 	it("matches a header whose title lands on the fourth line (round 5)", () => {
@@ -95,8 +96,8 @@ describe("extractTestBlocks", () => {
 		].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks).toHaveLength(1);
-		expect(blocks[0].endLine).toBe(5);
-		expect(blocks[0].gateConditions[0]).toContain("dockerAvailable");
+		expect(nonNull(blocks[0]).endLine).toBe(5);
+		expect(nonNull(blocks[0]).gateConditions[0]).toContain("dockerAvailable");
 	});
 
 	it("ends expression-bodied callbacks at their own call, not a later brace", () => {
@@ -108,8 +109,8 @@ describe("extractTestBlocks", () => {
 		].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks).toHaveLength(2);
-		expect(blocks[0].endLine).toBe(0);
-		expect(blocks[1].parent).toBe(-1);
+		expect(nonNull(blocks[0]).endLine).toBe(0);
+		expect(nonNull(blocks[1]).parent).toBe(-1);
 		// The sibling must not inherit the expression-bodied test's gate.
 		expect(gatedByChain(blocks, 1)).toBe(false);
 	});
@@ -121,9 +122,9 @@ describe("extractTestBlocks", () => {
 			"it('b', () => { expect(1).toBe(1); });",
 		].join("\n");
 		const blocks = blocksOf(src);
-		expect(blocks[0].endLine).toBe(1);
-		expect(blocks[1].startLine).toBe(2);
-		expect(blocks[1].parent).toBe(-1);
+		expect(nonNull(blocks[0]).endLine).toBe(1);
+		expect(nonNull(blocks[1]).startLine).toBe(2);
+		expect(nonNull(blocks[1]).parent).toBe(-1);
 	});
 
 	it("keeps a body-less it.todo from swallowing the next test", () => {
@@ -135,8 +136,8 @@ describe("extractTestBlocks", () => {
 		].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks).toHaveLength(2);
-		expect(blocks[0].endLine).toBe(0);
-		expect(blocks[0].unconditionalGate).toBe(true);
+		expect(nonNull(blocks[0]).endLine).toBe(0);
+		expect(nonNull(blocks[0]).unconditionalGate).toBe(true);
 		const inner = innermostBlockAt(blocks, 2);
 		expect(inner).toBe(1);
 		expect(gatedByChain(blocks, inner)).toBe(false); // .todo's gate must not leak
@@ -161,7 +162,7 @@ describe("extractTestBlocks", () => {
 		const src = ["", "it('a', () => {", "  expect(1).toBe(1);", "});"].join("\n");
 		const blocks = blocksOf(src);
 		expect(blocks).toHaveLength(1);
-		expect(blocks[0].startLine).toBe(1);
+		expect(nonNull(blocks[0]).startLine).toBe(1);
 	});
 });
 
@@ -179,8 +180,8 @@ describe("containment and gating queries", () => {
 	const blocks = blocksOf(src);
 
 	it("innermostBlockAt prefers the deepest containing block", () => {
-		expect(blocks[innermostBlockAt(blocks, 2)].kind).toBe("test");
-		expect(blocks[innermostBlockAt(blocks, 0)].kind).toBe("suite");
+		expect(nonNull(blocks[innermostBlockAt(blocks, 2)]).kind).toBe("test");
+		expect(nonNull(blocks[innermostBlockAt(blocks, 0)]).kind).toBe("suite");
 		expect(innermostBlockAt(blocks, 99)).toBe(-1);
 	});
 

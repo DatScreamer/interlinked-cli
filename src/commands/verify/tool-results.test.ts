@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { filterCodeQualityResults, runCodeQualityChecks, runSuggestions } from "./tool-results.js";
 import type { CodeQualityResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tempDir: string;
 let counter = 0;
@@ -71,12 +72,12 @@ describe("runCodeQualityChecks", () => {
 		const hits = r.undocumentedEnvVars.filter((i) => i.message.includes(v));
 		expect(hits.length).toBe(1);
 		const issue = hits[0];
-		expect(issue.check).toBe("undocumented_env_vars");
+		expect(nonNull(issue).check).toBe("undocumented_env_vars");
 		// "(2 references across 2 files)" — exercises refs.length and fileCount math.
-		expect(issue.message).toContain("2 references across 2 files");
+		expect(nonNull(issue).message).toContain("2 references across 2 files");
 		// firstRef is the lexicographically-first file (a.ts < b.ts).
-		expect(issue.file).toBe("a.ts");
-		expect(issue.line).toBe(1);
+		expect(nonNull(issue).file).toBe("a.ts");
+		expect(nonNull(issue).line).toBe(1);
 	});
 
 	it("uses the line tiebreaker when an undocumented var is referenced twice in one file", () => {
@@ -126,11 +127,11 @@ describe("runCodeQualityChecks", () => {
 
 		expect(r.crossFileSwitchDiscriminant.length).toBeGreaterThanOrEqual(2);
 		const first = r.crossFileSwitchDiscriminant[0];
-		expect(first.check).toBe("cross_file_switch_discriminant");
-		expect(first.line).toBe(0);
+		expect(nonNull(first).check).toBe("cross_file_switch_discriminant");
+		expect(nonNull(first).line).toBe(0);
 		// Paths are relativized to cwd (tempDir) — no absolute prefix leaks.
-		expect(first.file === "disc1.ts" || first.file === "disc2.ts").toBe(true);
-		expect(first.message).toContain("kind");
+		expect(nonNull(first).file === "disc1.ts" || nonNull(first).file === "disc2.ts").toBe(true);
+		expect(nonNull(first).message).toContain("kind");
 	});
 
 	it("emits a single_implementation_interface finding for an interface with exactly one implementor", () => {
@@ -159,12 +160,12 @@ describe("runCodeQualityChecks", () => {
 
 		expect(r.projectLocRatio.length).toBe(1);
 		const issue = r.projectLocRatio[0];
-		expect(issue.check).toBe("project_loc_ratio");
-		expect(issue.file).toBe("<project>");
+		expect(nonNull(issue).check).toBe("project_loc_ratio");
+		expect(nonNull(issue).file).toBe("<project>");
 		// Finite ratio: rendered as a decimal "<n>.<d>:1" with a limit of 5:1,
 		// never the "∞" sentinel.
-		expect(issue.message).toMatch(/ratio is \d+\.\d:1 \(limit 5:1\)/);
-		expect(issue.message).not.toContain("∞");
+		expect(nonNull(issue).message).toMatch(/ratio is \d+\.\d:1 \(limit 5:1\)/);
+		expect(nonNull(issue).message).not.toContain("∞");
 	});
 
 	it("renders an infinite (∞) project LOC ratio when there are prod files but zero test lines", () => {
@@ -178,8 +179,8 @@ describe("runCodeQualityChecks", () => {
 
 		expect(r.projectLocRatio.length).toBe(1);
 		const issue = r.projectLocRatio[0];
-		expect(issue.message).toContain("∞:1");
-		expect(issue.message).not.toContain("Infinity");
+		expect(nonNull(issue).message).toContain("∞:1");
+		expect(nonNull(issue).message).not.toContain("Infinity");
 	});
 
 	it("honors PII config (pii_opt_in + pii_patterns) from .interlinked/config.json without throwing", () => {

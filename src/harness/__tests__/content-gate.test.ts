@@ -69,6 +69,7 @@ import {
 	gateProposedContent,
 	readOnDiskOrUndefined,
 } from "../content-gate.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
 // `src/harness/__tests__`), and that is exactly the `projectRoot` the gate is
@@ -193,7 +194,7 @@ describe("gateProposedContent", () => {
 		expect(result.ok).toBe(false);
 		const biomeFails = result.failures.filter((f) => f.tool === "biome");
 		expect(biomeFails.length).toBeGreaterThan(0);
-		expect(biomeFails[0].severity).toBe(GATE_SEVERITY_ERROR);
+		expect(nonNull(biomeFails[0]).severity).toBe(GATE_SEVERITY_ERROR);
 		const codes = biomeFails.map((f) => f.code).join(",");
 		expect(codes).toMatch(/noSelfCompare|noDoubleEquals/);
 	});

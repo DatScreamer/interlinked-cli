@@ -12,6 +12,7 @@ import {
 	loadDisabledLibraries,
 	runFootgunChecks,
 } from "./registry.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tmp: string;
 
@@ -103,8 +104,8 @@ describe("runFootgunChecks", () => {
 		const findings = runFootgunChecks(content, "src/api.ts", new Set());
 		const ftMatches = findings.filter((f) => f.id === "node_fetch_no_timeout");
 		expect(ftMatches.length).toBeGreaterThan(0);
-		expect(ftMatches[0].match.line).toBeGreaterThan(0);
-		expect(ftMatches[0].match.text.length).toBeGreaterThan(0);
+		expect(nonNull(ftMatches[0]).match.line).toBeGreaterThan(0);
+		expect(nonNull(ftMatches[0]).match.text.length).toBeGreaterThan(0);
 	});
 
 	it("skips matches from disabled libraries", () => {

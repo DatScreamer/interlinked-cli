@@ -9,6 +9,7 @@ import {
 	type SpoolEvent,
 	truncateFilePaths,
 } from "./telemetry-spool.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -42,7 +43,7 @@ describe("TelemetrySpool.append + readAll", () => {
 		spool.append(makeEvent({ kind: "session_lifecycle" }));
 		const events = spool.readAll();
 		expect(events.length).toBe(2);
-		expect(events[1].kind).toBe("session_lifecycle");
+		expect(nonNull(events[1]).kind).toBe("session_lifecycle");
 	});
 });
 

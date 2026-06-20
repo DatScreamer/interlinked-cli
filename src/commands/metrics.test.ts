@@ -77,6 +77,7 @@ vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
 // formatter is real (color-stripped under CI/NO_COLOR — tests assert plain text).
 
 import { metricsCommand } from "./metrics.js";
+import { nonNull } from "../lib/non-null.js";
 
 // --- helpers ------------------------------------------------------------
 let logged = "";
@@ -330,10 +331,10 @@ describe("metricsCommand — coverage present (CRAP path)", () => {
 		// hotspots sorted desc by crap.
 		expect(r.hotspots.map((h) => h.name)).toEqual(["hi", "lo"]);
 		const file = r.files[0];
-		expect(file.linePct).toBe(91.5);
-		expect(file.maxCrap).toBe(45);
-		expect(file.maxCyclomatic).toBe(12);
-		expect(file.overGate).toBe(1);
+		expect(nonNull(file).linePct).toBe(91.5);
+		expect(nonNull(file).maxCrap).toBe(45);
+		expect(nonNull(file).maxCyclomatic).toBe(12);
+		expect(nonNull(file).overGate).toBe(1);
 		// CRAP distribution buckets the two scores: 12 ≤30, 45 in 30–60.
 		expect(r.distributions.crap["10–30"]).toBe(1);
 		expect(r.distributions.crap["30–60"]).toBe(1);
@@ -362,11 +363,11 @@ describe("metricsCommand — coverage present (CRAP path)", () => {
 		m.computeCrapForFile.mockReturnValue([crap({ crap_score: 0, coverage_pct: 100 })]);
 		await metricsCommand({ cwd: CWD, json: true });
 		const r = lastJson();
-		expect(r.files[0].maxCrap).toBe(0);
+		expect(nonNull(r.files[0]).maxCrap).toBe(0);
 		expect(r.gates.functionsOverCrap).toBe(0);
 		// crap !== null so it IS a hotspot, with crap 0.
 		expect(r.hotspots).toHaveLength(1);
-		expect(r.hotspots[0].crap).toBe(0);
+		expect(nonNull(r.hotspots[0]).crap).toBe(0);
 	});
 });
 
@@ -387,7 +388,7 @@ describe("metricsCommand — linePctFor branches", () => {
 			"src/a.ts": { lines: { pct: 77 }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBe(77);
+		expect(nonNull(lastJson().files[0]).linePct).toBe(77);
 	});
 
 	it("returns null linePct when the matched summary pct is not a number", async () => {
@@ -398,7 +399,7 @@ describe("metricsCommand — linePctFor branches", () => {
 			"/repo/src/a.ts": { lines: { pct: "x" as unknown as number }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBeNull();
+		expect(nonNull(lastJson().files[0]).linePct).toBeNull();
 	});
 
 	it("does NOT attribute another file's coverage by path TAIL (monorepo collision, finding 2026-06)", async () => {
@@ -410,7 +411,7 @@ describe("metricsCommand — linePctFor branches", () => {
 			"/repo/src/a.ts": { lines: { pct: 88 }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBe(88);
+		expect(nonNull(lastJson().files[0]).linePct).toBe(88);
 	});
 
 	it("drops a summary key OUTSIDE the repo even when its tail matches", async () => {
@@ -419,7 +420,7 @@ describe("metricsCommand — linePctFor branches", () => {
 			"/elsewhere/src/a.ts": { lines: { pct: 11 }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBeNull();
+		expect(nonNull(lastJson().files[0]).linePct).toBeNull();
 	});
 
 	it("returns null linePct when no summary key matches the file", async () => {
@@ -428,14 +429,14 @@ describe("metricsCommand — linePctFor branches", () => {
 			"src/other.ts": { lines: { pct: 50 }, branches: { pct: 0 } },
 		});
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBeNull();
+		expect(nonNull(lastJson().files[0]).linePct).toBeNull();
 	});
 
 	it("returns null linePct when the summary itself is absent", async () => {
 		singleCoveredFile();
 		m.loadCoverageSummary.mockReturnValue(null);
 		await metricsCommand({ cwd: CWD, json: true });
-		expect(lastJson().files[0].linePct).toBeNull();
+		expect(nonNull(lastJson().files[0]).linePct).toBeNull();
 	});
 });
 
@@ -614,9 +615,9 @@ describe("metricsCommand — LCOV coverage source (F4)", () => {
 		expect(r.scope.coverageSource).toBe("lcov");
 		expect(m.perFileCoverageFromCanonical).toHaveBeenCalled();
 		// CRAP is computed via the LCOV-derived per-function coverage.
-		expect(r.files[0].maxCrap).toBe(40);
+		expect(nonNull(r.files[0]).maxCrap).toBe(40);
 		expect(r.gates.functionsOverCrap).toBe(1);
-		expect(r.files[0].linePct).toBe(60);
+		expect(nonNull(r.files[0]).linePct).toBe(60);
 	});
 
 	it("istanbul alone still reports source 'istanbul' (LCOV consulted but absent)", async () => {

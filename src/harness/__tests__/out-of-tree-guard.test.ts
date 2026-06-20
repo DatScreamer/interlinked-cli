@@ -173,13 +173,34 @@ beforeAll(async () => {
 	server = spawn(
 		TSX_BIN,
 		[SERVER_ENTRY, "--socket", SOCKET, "--cwd", PROJECT, "--idle-timeout", "120000"],
-		{ cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe"] },
+		// `detached: true` makes the daemon its own process-group leader. tsx forks
+		// the real `node server.ts` as a child, so a plain `server.kill()` in
+		// afterAll only signals the launcher and ORPHANS the daemon — which then
+		// lingers for the full --idle-timeout (2 min), leaking across the suite and
+		// deadlocking the Linux CI run (finding 2026-06). afterAll signals the whole
+		// group (negative pid) so the forked daemon dies with the launcher.
+		{ cwd: REPO_ROOT, stdio: ["ignore", "ignore", "pipe"], detached: true },
 	);
 	await waitForServerReady(server);
 }, SERVER_STARTUP_TIMEOUT_MS + 10_000);
 
 afterAll(() => {
-	if (server && !server.killed) server.kill("SIGKILL");
+	// Signal the whole process group (negative pid) so the tsx-forked `node
+	// server.ts` daemon dies with its launcher; fall back to a direct kill if the
+	// group send fails (e.g. already reaped). A plain server.kill() left the
+	// forked daemon orphaned and leaking (finding 2026-06).
+	if (server?.pid !== undefined) {
+		try {
+			process.kill(-server.pid, "SIGKILL");
+		} catch (e) {
+			void e;
+			try {
+				server.kill("SIGKILL");
+			} catch (e2) {
+				void e2;
+			}
+		}
+	}
 	rmSync(SCRATCH, { recursive: true, force: true });
 });
 

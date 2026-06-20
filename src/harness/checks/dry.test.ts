@@ -7,6 +7,7 @@ import {
 	shingleSet,
 	tokenize,
 } from "./dry.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Primitive helpers
@@ -70,7 +71,7 @@ export function sumPositiveB(values: number[]): number {
 		const fns = extractFunctionShingles(content, "src/math.ts");
 		const findings = findClones({ edited: fns, candidates: [] });
 		expect(findings.length).toBe(1);
-		expect(findings[0].similarity).toBeGreaterThanOrEqual(DEFAULT_SIMILARITY_THRESHOLD);
+		expect(nonNull(findings[0]).similarity).toBeGreaterThanOrEqual(DEFAULT_SIMILARITY_THRESHOLD);
 	});
 
 	it("flags a clone that lives in a sibling file (candidate set)", () => {
@@ -102,7 +103,7 @@ export function validateNameField(input: string): boolean {
 		const siblingFns = extractFunctionShingles(sibling, "src/validators/name.ts");
 		const findings = findClones({ edited: editedFns, candidates: siblingFns });
 		expect(findings.length).toBe(1);
-		expect(findings[0].otherFile).toBe("src/validators/name.ts");
+		expect(nonNull(findings[0]).otherFile).toBe("src/validators/name.ts");
 	});
 
 	it("flags near-duplicates with only minor identifier drift", () => {

@@ -19,6 +19,7 @@ import {
 	dropPreVerbFlags,
 	envRegistryFor,
 } from "./package-install-parser-shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 // PyPI family — re-exported from the sibling module (line-cap extraction).
 export { classifyPipSpec, parsePip, parsePoetry, parseUv } from "./package-install-parser-pypi.js";
@@ -78,7 +79,7 @@ function scanNpmFlags(args: string[]): NpmFlagScan {
 	let frozenLockfile = false;
 
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+		const a = nonNull(args[i]);
 		if (a === "--registry" || a === "--registry-url") {
 			customRegistry = args[i + 1];
 			i++;
@@ -258,7 +259,7 @@ function scanCargoArgs(args: string[], withGit: boolean): CargoArgScan {
 	let customRegistry: string | undefined;
 	let pinnedVersion: string | undefined;
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+		const a = nonNull(args[i]);
 		if (a === "--registry") {
 			customRegistry = args[i + 1];
 			i++;
@@ -355,7 +356,7 @@ function classifyCargoSpec(spec: string, flagVersion?: string | undefined): Pack
 		return { kind: "registry", name: spec.slice(0, at), version: spec.slice(at + 1) };
 	}
 	const nameMatch = spec.match(/^([A-Za-z0-9._-]+)/);
-	return { kind: "registry", name: nameMatch ? nameMatch[1] : spec, version: flagVersion };
+	return { kind: "registry", name: nameMatch ? nonNull(nameMatch[1]) : spec, version: flagVersion };
 }
 
 // ===========================================================
@@ -375,7 +376,7 @@ export function parseGem(
 	// mis-parsed as a phantom package name AND the spec would look unpinned.
 	let pinnedVersion: string | undefined;
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+		const a = nonNull(args[i]);
 		if (a === "--source" || a === "-s" || a === "--add-source") {
 			customRegistry = args[i + 1];
 			i++;

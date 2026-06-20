@@ -16,6 +16,7 @@ import {
 	unpackTrigram,
 } from "../trigram-index.js";
 import type { HarnessEvent } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Fixed timestamp for deterministic test fixtures. Not time-sensitive
 // for these tests — only exists to satisfy the HarnessEvent shape.
@@ -232,9 +233,9 @@ describe("TrigramIndex", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			const trigrams = extractTrigrams(files[path]);
+			const trigrams = extractTrigrams(nonNull(files[path]));
 			for (const tri of trigrams) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
@@ -968,9 +969,9 @@ describe("checkGrepAcceleration", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			const trigrams = extractTrigrams(files[path]);
+			const trigrams = extractTrigrams(nonNull(files[path]));
 			for (const tri of trigrams) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
@@ -1149,9 +1150,9 @@ describe("end-to-end integration", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			const trigrams = extractTrigrams(files[path]);
+			const trigrams = extractTrigrams(nonNull(files[path]));
 			for (const tri of trigrams) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
@@ -1287,9 +1288,9 @@ describe("end-to-end integration", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			const trigrams = extractTrigrams(files[path]);
+			const trigrams = extractTrigrams(nonNull(files[path]));
 			for (const tri of trigrams) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
@@ -1392,9 +1393,9 @@ describe("edge cases", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -1453,9 +1454,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -1494,9 +1495,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];
@@ -1546,9 +1547,9 @@ describe("performance", () => {
 		const fileArray: string[] = [];
 
 		for (let fileId = 0; fileId < filePaths.length; fileId++) {
-			const path = filePaths[fileId];
+			const path = nonNull(filePaths[fileId]);
 			fileArray.push(path);
-			for (const tri of extractTrigrams(files[path])) {
+			for (const tri of extractTrigrams(nonNull(files[path]))) {
 				let list = postingsBuilder.get(tri);
 				if (!list) {
 					list = [];

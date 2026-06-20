@@ -10,6 +10,7 @@
 // findBlockEnd, isJsTs, and lineIdxForOffset).
 
 import { stripAllLiterals } from "./strip-helpers.js";
+import { nonNull } from "../lib/non-null.js";
 
 export interface InlineMatch {
 	line: number;
@@ -110,7 +111,7 @@ function legacyFindBlockEnd(strippedLines: string[], start: number): number {
 	let depth = 0;
 	let opened = false;
 	for (let i = start; i < strippedLines.length; i++) {
-		for (const ch of strippedLines[i]) {
+		for (const ch of nonNull(strippedLines[i])) {
 			if (ch === "{") {
 				depth++;
 				opened = true;
@@ -130,7 +131,7 @@ export function push(
 	limit: number,
 ): void {
 	if (matches.length >= limit) return;
-	matches.push({ line: lineIdx + 1, text: originalLines[lineIdx].trim().slice(0, 150) });
+	matches.push({ line: lineIdx + 1, text: nonNull(originalLines[lineIdx]).trim().slice(0, 150) });
 }
 
 export function lineIdxForOffset(stripped: string, offset: number): number {

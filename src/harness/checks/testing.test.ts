@@ -14,6 +14,7 @@ import {
 	checkSnapshotOveruse,
 	checkTestImportingTest,
 } from "./testing.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // A genuine JS/TS test path that isStrictTestFile recognizes, but which is
 // NOT under any harness-internal data tree, so the broad/strict split is
@@ -35,18 +36,18 @@ describe("checkSnapshotOveruse", () => {
 		const matches = checkSnapshotOveruse(content, TEST_TS);
 		expect(matches).toHaveLength(1);
 		// Anchored on the FIRST snapshot line (line 1 here).
-		expect(matches[0].line).toBe(1);
-		expect(matches[0].text).toContain("5 snapshot assertions");
-		expect(matches[0].text).toContain("Use explicit assertions");
+		expect(nonNull(matches[0]).line).toBe(1);
+		expect(nonNull(matches[0]).text).toContain("5 snapshot assertions");
+		expect(nonNull(matches[0]).text).toContain("Use explicit assertions");
 		// The first matching line's trimmed text is appended after the bracket.
-		expect(matches[0].text).toContain("expect(v0).toMatchSnapshot();");
+		expect(nonNull(matches[0]).text).toContain("expect(v0).toMatchSnapshot();");
 	});
 
 	it("fires for toMatchInlineSnapshot (the second arm of the || )", () => {
 		const content = fiveSnapshots("toMatchInlineSnapshot");
 		const matches = checkSnapshotOveruse(content, TEST_TS);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("5 snapshot assertions");
+		expect(nonNull(matches[0]).text).toContain("5 snapshot assertions");
 	});
 
 	it("counts a mix of toMatchSnapshot and toMatchInlineSnapshot toward the threshold", () => {
@@ -59,7 +60,7 @@ describe("checkSnapshotOveruse", () => {
 		].join("\n");
 		const matches = checkSnapshotOveruse(content, TEST_TS);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("5 snapshot assertions");
+		expect(nonNull(matches[0]).text).toContain("5 snapshot assertions");
 	});
 
 	it("reports a higher count and anchors on the true first occurrence (later line)", () => {
@@ -75,8 +76,8 @@ describe("checkSnapshotOveruse", () => {
 		].join("\n");
 		const matches = checkSnapshotOveruse(content, TEST_TS);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(3);
-		expect(matches[0].text).toContain("6 snapshot assertions");
+		expect(nonNull(matches[0]).line).toBe(3);
+		expect(nonNull(matches[0]).text).toContain("6 snapshot assertions");
 	});
 
 	it("does NOT fire below the threshold (4 snapshots)", () => {
@@ -108,11 +109,11 @@ describe("checkSnapshotOveruse", () => {
 		const content = Array.from({ length: 5 }, () => long).join("\n");
 		const matches = checkSnapshotOveruse(content, TEST_TS);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("5 snapshot assertions");
+		expect(nonNull(matches[0]).text).toContain("5 snapshot assertions");
 		// The appended snippet starts with "expect(" then x's, capped so the
 		// whole sliced line is 150 chars (143 x's). 144 x's must NOT appear.
-		expect(matches[0].text.includes(`expect(${"x".repeat(143)}`)).toBe(true);
-		expect(matches[0].text.includes("x".repeat(144))).toBe(false);
+		expect(nonNull(matches[0]).text.includes(`expect(${"x".repeat(143)}`)).toBe(true);
+		expect(nonNull(matches[0]).text.includes("x".repeat(144))).toBe(false);
 	});
 
 	it("returns [] for a test file with no snapshot calls at all", () => {
@@ -188,22 +189,22 @@ describe("checkExcessiveUseEffect", () => {
 	it("fires at exactly 6 useEffect hooks in a .tsx file", () => {
 		const matches = checkExcessiveUseEffect(nEffects(6), "src/Component.tsx");
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("6 useEffect hooks");
-		expect(matches[0].text).toContain("consider custom hooks or consolidating");
+		expect(nonNull(matches[0]).text).toContain("6 useEffect hooks");
+		expect(nonNull(matches[0]).text).toContain("consider custom hooks or consolidating");
 	});
 
 	it("anchors on the FIRST useEffect line and reports it only once", () => {
 		const matches = checkExcessiveUseEffect(nEffects(7), "src/Component.tsx");
 		expect(matches).toHaveLength(1);
 		// function line is 1, first useEffect is line 2.
-		expect(matches[0].line).toBe(2);
-		expect(matches[0].text).toContain("7 useEffect hooks");
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text).toContain("7 useEffect hooks");
 	});
 
 	it("fires on .jsx files too (the second arm of the ext check)", () => {
 		const matches = checkExcessiveUseEffect(nEffects(6), "src/Component.jsx");
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("6 useEffect hooks");
+		expect(nonNull(matches[0]).text).toContain("6 useEffect hooks");
 	});
 
 	it("does NOT fire below the threshold (5 useEffect hooks)", () => {
@@ -231,8 +232,8 @@ describe("checkExcessiveUseEffect", () => {
 		const content = `function C() {\n${body}\n}`;
 		const matches = checkExcessiveUseEffect(content, "src/Component.tsx");
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("6 useEffect hooks");
+		expect(nonNull(matches[0]).text).toContain("6 useEffect hooks");
 		// The appended snippet is sliced to 100 chars.
-		expect(matches[0].text.includes("z".repeat(101))).toBe(false);
+		expect(nonNull(matches[0]).text.includes("z".repeat(101))).toBe(false);
 	});
 });

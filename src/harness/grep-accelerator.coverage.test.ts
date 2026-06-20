@@ -38,6 +38,7 @@ import {
 } from "./grep-accelerator.js";
 import { extractTrigrams, type PostingList, TrigramIndex } from "./trigram-index.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 const FIXED_TIMESTAMP = "2024-01-01T00:00:00.000Z";
 
@@ -67,15 +68,16 @@ function buildDiskFixture(files: Record<string, string>): Fixture {
 	const fileArray: string[] = [];
 
 	for (let fileId = 0; fileId < filePaths.length; fileId++) {
-		const relPath = filePaths[fileId];
+		const relPath = nonNull(filePaths[fileId]);
 		fileArray.push(relPath);
 		// Write the real file so matchInProcess / rg can read it.
 		const abs = join(dir, relPath);
 		const lastSlash = relPath.lastIndexOf("/");
 		if (lastSlash >= 0) mkdirSync(join(dir, relPath.slice(0, lastSlash)), { recursive: true });
-		writeFileSync(abs, files[relPath]);
+		const fileContent = nonNull(files[relPath]);
+		writeFileSync(abs, fileContent);
 
-		for (const tri of extractTrigrams(files[relPath])) {
+		for (const tri of extractTrigrams(fileContent)) {
 			let list = postingsBuilder.get(tri);
 			if (!list) {
 				list = [];

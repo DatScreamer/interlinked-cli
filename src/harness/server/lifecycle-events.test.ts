@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { CohortManager } from "../cohort.js";
 import { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
@@ -1224,8 +1225,8 @@ describe("SkillEnter handler — branch coverage", () => {
 		const all = [bSession({ session_id: "a" }), bSession({ session_id: "b" })];
 		const ctx = ctx0({ sessions: bSessions({ getAll: vi.fn(() => all) }) });
 		await enter(ctx, { session_id: "", tool_input: { name: "broad" } });
-		expect(all[0].active_skills?.has("broad")).toBe(true);
-		expect(all[1].active_skills?.has("broad")).toBe(true);
+		expect(nonNull(all[0]).active_skills?.has("broad")).toBe(true);
+		expect(nonNull(all[1]).active_skills?.has("broad")).toBe(true);
 		expect(bLog.some((l) => l.includes("SkillEnter: broad (cli, 2 sessions)"))).toBe(true);
 	});
 });
@@ -1295,8 +1296,8 @@ describe("SkillList handler — branch coverage", () => {
 			skills: Array<{ name: string }>;
 		}>;
 		expect(parsed).toHaveLength(1);
-		expect(parsed[0].session_id).toBe("s1");
-		expect(parsed[0].skills.map((s) => s.name)).toEqual(["verify"]);
+		expect(nonNull(parsed[0]).session_id).toBe("s1");
+		expect(nonNull(parsed[0]).skills.map((s) => s.name)).toEqual(["verify"]);
 	});
 
 	it("collects across all live sessions when session_id is absent", async () => {

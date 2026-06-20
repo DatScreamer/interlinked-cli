@@ -16,6 +16,7 @@ import {
 	stripCommentsAndStrings,
 } from "./shared.js";
 import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==========================================================================
 // 8. Mock-only test — every assertion is a call-interaction matcher
@@ -127,7 +128,7 @@ function classifyBlockExpects(body: string): ExpectClassification[] {
 		if (chain === null) {
 			out.push(NON_CALL_EXPECT);
 		} else {
-			const segments = chain[1]
+			const segments = nonNull(chain[1])
 				.split(".")
 				.map((s) => s.trim())
 				.filter((s) => s.length > 0);
@@ -179,7 +180,7 @@ function collectImportedAssertHelpers(content: string): Set<string> {
 		/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*(["'])([^"']+)\2/g;
 	let m: RegExpExecArray | null = importRe.exec(withoutComments);
 	while (m !== null) {
-		if (NODE_ASSERT_MODULE_RE.test(m[3])) addAssertSpecifiers(helpers, m[1], "esm");
+		if (NODE_ASSERT_MODULE_RE.test(nonNull(m[3]))) addAssertSpecifiers(helpers, nonNull(m[1]), "esm");
 		m = importRe.exec(withoutComments);
 	}
 
@@ -187,7 +188,7 @@ function collectImportedAssertHelpers(content: string): Set<string> {
 		/\b(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*(["'])([^"']+)\2\s*\)/g;
 	m = requireRe.exec(withoutComments);
 	while (m !== null) {
-		if (NODE_ASSERT_MODULE_RE.test(m[3])) addAssertSpecifiers(helpers, m[1], "cjs");
+		if (NODE_ASSERT_MODULE_RE.test(nonNull(m[3]))) addAssertSpecifiers(helpers, nonNull(m[1]), "cjs");
 		m = requireRe.exec(withoutComments);
 	}
 
@@ -207,7 +208,7 @@ function addAssertSpecifiers(
 				? /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/.exec(part)
 				: /^([A-Za-z_$][\w$]*)(?::\s*([A-Za-z_$][\w$]*))?$/.exec(part);
 		if (!parsed) continue;
-		const imported = parsed[1];
+		const imported = nonNull(parsed[1]);
 		const local = parsed[2] ?? imported;
 		if (NODE_ASSERT_HELPERS.has(imported)) helpers.add(local);
 	}

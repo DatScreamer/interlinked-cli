@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { capsExplainAction, capsSetAction, capsShowAction } from "./caps.js";
+import { nonNull } from "../lib/non-null.js";
 
 let cwd: string;
 let logs: string[];
@@ -46,10 +47,10 @@ describe("capsShowAction", () => {
 	it("emits machine-readable JSON with --json", async () => {
 		await capsShowAction({ json: true }, { cwd });
 		const parsed = JSON.parse(out()) as Record<string, { value: number; source: string }>;
-		expect(parsed.cyclomatic.value).toBe(25);
-		expect(parsed.lines.value).toBe(500);
-		expect(parsed.crap.value).toBe(30);
-		expect(parsed.coverage.value).toBe(0);
+		expect(nonNull(parsed.cyclomatic).value).toBe(25);
+		expect(nonNull(parsed.lines).value).toBe(500);
+		expect(nonNull(parsed.crap).value).toBe(30);
+		expect(nonNull(parsed.coverage).value).toBe(0);
 	});
 });
 

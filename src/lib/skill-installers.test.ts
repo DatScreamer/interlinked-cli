@@ -25,6 +25,7 @@ import {
 	installEnforceSkill,
 	uninstallEnforceSkill,
 } from "./skill-installers.js";
+import { nonNull } from "./non-null.js";
 
 let tmpRoot: string;
 
@@ -39,7 +40,7 @@ afterEach(() => {
 describe("findEnforceSkillSource", () => {
 	function extractFrontmatter(content: string): string {
 		const match = content.match(/^---\n([\s\S]*?)\n---\n/);
-		return match ? match[1] : "";
+		return match ? nonNull(match[1]) : "";
 	}
 
 	function extractDescription(frontmatter: string): string {
@@ -47,7 +48,7 @@ describe("findEnforceSkillSource", () => {
 			/^description\s*:\s*\|\s*\n([\s\S]*?)(?=\n\S|$)/m,
 		);
 		if (blockMatch) {
-			return blockMatch[1]
+			return nonNull(blockMatch[1])
 				.split("\n")
 				.map((l) => l.replace(/^\s+/, ""))
 				.join(" ")
@@ -57,7 +58,7 @@ describe("findEnforceSkillSource", () => {
 			/^description\s*:\s*"((?:[^"\\]|\\.)*)"/m,
 		);
 		if (quotedMatch) {
-			return quotedMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+			return nonNull(quotedMatch[1]).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
 		}
 		return "";
 	}
@@ -178,7 +179,7 @@ describe("installEnforceSkill", () => {
 describe("description transform for runners with strict limits", () => {
 	function extractFrontmatter(content: string): string {
 		const match = content.match(/^---\n([\s\S]*?)\n---\n/);
-		return match ? match[1] : "";
+		return match ? nonNull(match[1]) : "";
 	}
 
 	function extractDescription(frontmatter: string): string {
@@ -187,7 +188,7 @@ describe("description transform for runners with strict limits", () => {
 			/^description\s*:\s*\|\s*\n([\s\S]*?)(?=\n\S|$)/m,
 		);
 		if (blockMatch) {
-			return blockMatch[1]
+			return nonNull(blockMatch[1])
 				.split("\n")
 				.map((l) => l.replace(/^\s+/, ""))
 				.join(" ")
@@ -198,7 +199,7 @@ describe("description transform for runners with strict limits", () => {
 			/^description\s*:\s*"((?:[^"\\]|\\.)*)"/m,
 		);
 		if (quotedMatch) {
-			return quotedMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+			return nonNull(quotedMatch[1]).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
 		}
 		return "";
 	}

@@ -12,6 +12,7 @@ import {
 	checkUnionWidenedWithString,
 	checkUntestableTimeInSource,
 } from "./agent-laziness.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 const TEST = "src/lib/foo.test.ts";
@@ -26,7 +27,7 @@ function foo() {
 }`;
 		const matches = checkAgentThumbprintProse(code, TS);
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 
 	it("flags 'for now' / self-describing 'placeholder' / 'simplified version'", () => {
@@ -142,7 +143,7 @@ describe("checkStubNotImplementedThrow", () => {
 		const code = `function foo() { throw new Error("not implemented"); }`;
 		const matches = checkStubNotImplementedThrow(code, TS);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("not implemented");
+		expect(nonNull(matches[0]).text).toContain("not implemented");
 	});
 
 	it("flags TODO / stub / coming soon variants", () => {
@@ -159,7 +160,7 @@ function c() { throw new Error("coming soon"); }
 		const code = `function foo() { throw new Error(); }`;
 		const matches = checkStubNotImplementedThrow(code, TS);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("no message");
+		expect(nonNull(matches[0]).text).toContain("no message");
 	});
 
 	it("does not fire on real error messages", () => {
@@ -511,7 +512,7 @@ await fetch(url, {
 		// Two `fetch(` occurrences — the handler (skipped) AND the call (flagged).
 		const matches = checkFetchWithoutTimeout(code, TS);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toContain("fetch()");
+		expect(nonNull(matches[0]).text).toContain("fetch()");
 	});
 
 	it("does not fire on a Cloudflare binding member call (env.ASSETS.fetch)", () => {

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { extractEndpoints } from "./nextjs.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const FIXTURE_ROOT = join(
 	__dirname,
@@ -38,7 +39,7 @@ describe("route-map/nextjs.extractEndpoints — user route fixture", () => {
 	});
 
 	it("derives id path param", () => {
-		expect(endpoints[0].declared_params.map((p) => p.name)).toContain("id");
+		expect(nonNull(endpoints[0]).declared_params.map((p) => p.name)).toContain("id");
 	});
 
 	it("tags framework=nextjs", () => {
@@ -56,7 +57,7 @@ describe("route-map/nextjs.extractEndpoints — health route fixture", () => {
 		const content = readFileSync(HEALTH_ROUTE, "utf-8");
 		const endpoints = extractEndpoints(HEALTH_ROUTE, content, { projectRoot: FIXTURE_ROOT });
 		expect(endpoints).toHaveLength(1);
-		expect(endpoints[0].auth_chain).toEqual([]);
+		expect(nonNull(endpoints[0]).auth_chain).toEqual([]);
 	});
 });
 
@@ -67,7 +68,7 @@ describe("route-map/nextjs.extractEndpoints — admin route fixture", () => {
 		expect(endpoints.length).toBeGreaterThanOrEqual(2);
 		const auths = endpoints.filter((e) => e.auth_chain.length > 0);
 		expect(auths.length).toBeGreaterThanOrEqual(1);
-		expect(auths[0].auth_chain[0].kind).toBe("matcher");
+		expect(nonNull(nonNull(auths[0]).auth_chain[0]).kind).toBe("matcher");
 	});
 });
 

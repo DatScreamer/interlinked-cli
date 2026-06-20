@@ -13,6 +13,7 @@
 // JS analog of Firefox 2023817 (parent process trusted sandbox-supplied
 // input). Advisory until dogfood signal supports promotion.
 
+import { nonNull } from "../../lib/non-null.js";
 import { isSanitized, load as loadSanitizerRegistry } from "../sanitizer-registry.js";
 import {
 	getExtension,
@@ -151,8 +152,8 @@ export function checkTaintedToPrivilegedSink(
 		/\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*([^;]+)/g;
 	let assignHit: RegExpExecArray | null;
 	while ((assignHit = assignRe.exec(stripped))) {
-		const name = assignHit[1];
-		const rhs = assignHit[2];
+		const name = nonNull(assignHit[1]);
+		const rhs = nonNull(assignHit[2]);
 		if (!externalInputRe.test(rhs)) continue;
 		// If the RHS itself routes through a validator, the bound name is
 		// already validated — record but mark validated.
@@ -189,13 +190,14 @@ export function checkTaintedToPrivilegedSink(
 			// and no validator runs between the assignment and the sink call.
 			const bareName = arg.trim().match(/^([A-Za-z_$][\w$]*)$/);
 			if (!bareName) continue;
-			const tainted = taintedAssignments.get(bareName[1]);
+			const bareIdent = nonNull(bareName[1]);
+			const tainted = taintedAssignments.get(bareIdent);
 			if (!tainted) continue;
 			if (tainted.validatedAtAssignment) continue;
 			if (tainted.offset > sinkOffset) continue;
 
 			const between = stripped.slice(tainted.offset, sinkOffset);
-			const escaped = bareName[1].replace(/[$]/g, "\\$");
+			const escaped = bareIdent.replace(/[$]/g, "\\$");
 			// Validator check is two-tier: any of the generic VALIDATOR_PATTERNS
 			// firing somewhere between the assignment and the sink is enough,
 			// AND the validator has to plausibly involve `name` (a `.parse(`

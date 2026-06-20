@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Public API — consumed by `verify.ts` and `__tests__/verify.test.ts`. */
 export function isGitUrl(target: string): boolean {
@@ -31,9 +32,9 @@ export function normalizeGitUrl(target: string): string {
 /** Public API — consumed by `verify.ts`. */
 export function repoDisplayName(url: string): string {
 	const sshMatch = url.match(/:([^/]+\/[^/]+?)(?:\.git)?$/);
-	if (sshMatch) return sshMatch[1];
+	if (sshMatch) return nonNull(sshMatch[1]);
 	const httpsMatch = url.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/);
-	if (httpsMatch) return httpsMatch[1];
+	if (httpsMatch) return nonNull(httpsMatch[1]);
 	return url;
 }
 

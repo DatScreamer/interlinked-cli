@@ -13,6 +13,7 @@ import type { FileReminder } from "../harness/types.js";
 import { readLocalConfig } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -186,6 +187,6 @@ export function reminderRemoveCommand(
 	output(mode, removed, {
 		json: () => ({ removed }),
 		normal: () =>
-			`${c.green("Removed")} reminder ${c.bold(removed.id || removed.glob)}: "${removed.message}"`,
+			`${c.green("Removed")} reminder ${c.bold(nonNull(removed).id || nonNull(removed).glob)}: "${nonNull(removed).message}"`,
 	});
 }

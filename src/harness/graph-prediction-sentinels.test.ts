@@ -9,6 +9,7 @@
 
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import type { CaseResult } from "./graph-prediction-classifier.js";
 import type {
 	GraphPredictionRow,
@@ -459,7 +460,7 @@ describe("handleAckSubmission", () => {
 		expect(r.additional_context).toContain("retry the original Edit");
 
 		expect(appendPredictionRowMock).toHaveBeenCalledTimes(1);
-		const [, persisted] = appendPredictionRowMock.mock.calls[0];
+		const [, persisted] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(persisted).toMatchObject({
 			...priorRow(),
 			emitted_at: "2026-06-01T12:00:00Z",
@@ -481,7 +482,7 @@ describe("handleAckSubmission", () => {
 		expect(r.decision).toBe("allow");
 		expect(r.additional_context).toContain("accepted.");
 		expect(r.additional_context).not.toContain("(");
-		const [, persisted] = appendPredictionRowMock.mock.calls[0];
+		const [, persisted] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(persisted.ack_text).toBe("acknowledged");
 	});
 
@@ -498,7 +499,7 @@ describe("handleAckSubmission", () => {
 		);
 		vi.useRealTimers();
 		expect(r.decision).toBe("allow");
-		const [, persisted] = appendPredictionRowMock.mock.calls[0];
+		const [, persisted] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(persisted.emitted_at).toBe("2026-07-04T08:09:10.000Z");
 		expect(persisted.acknowledged_at).toBe("2026-07-04T08:09:10.000Z");
 	});
@@ -652,7 +653,7 @@ describe("handleSentinelSubmission", () => {
 		expect(r?.additional_context).not.toContain("Format violation");
 
 		expect(appendPredictionRowMock).toHaveBeenCalledTimes(1);
-		const [, row] = appendPredictionRowMock.mock.calls[0];
+		const [, row] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(row).toMatchObject({
 			session_id: "sess-1",
 			file_path: "/repo/src/foo.ts",
@@ -683,7 +684,7 @@ describe("handleSentinelSubmission", () => {
 		expect(r?.decision).toBe("allow");
 		expect(r?.additional_context).toContain("Format violation noted (too many imports)");
 		expect(r?.additional_context).toContain("retry the original Edit");
-		const [, row] = appendPredictionRowMock.mock.calls[0];
+		const [, row] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(row.comparison_status).toBe("parse_failed");
 	});
 
@@ -715,7 +716,7 @@ describe("handleSentinelSubmission", () => {
 			CWD,
 		);
 		vi.useRealTimers();
-		const [, row] = appendPredictionRowMock.mock.calls[0];
+		const [, row] = nonNull(appendPredictionRowMock.mock.calls[0]);
 		expect(row.emitted_at).toBe("2026-08-09T10:11:12.000Z");
 	});
 });

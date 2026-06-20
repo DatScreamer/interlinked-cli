@@ -27,6 +27,7 @@ import type {
 	ModuleRole,
 	StructuralCheckResult,
 } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 vi.mock("node:fs");
 
@@ -132,7 +133,7 @@ describe("constructor + load", () => {
 		const h = new ErrorHistory(DATA_DIR, cfg());
 
 		expect(h.size).toBe(1);
-		expect(h.getRecords()[0].file).toBe("src/fresh.ts");
+		expect(nonNull(h.getRecords()[0]).file).toBe("src/fresh.ts");
 		expect(mockFs.readFileSync).toHaveBeenCalledWith(FILE_PATH, "utf-8");
 	});
 
@@ -164,10 +165,10 @@ describe("recordError", () => {
 
 		expect(h.size).toBe(1);
 		const r = h.getRecords()[0];
-		expect(r.severity).toBe("warning"); // info → warning ternary
-		expect(r.affected_files).toEqual(["src/b.ts"]); // affectedFiles?.map present
-		expect(r.session_id).toBe("sess");
-		expect(r.timestamp).toBe(new Date(NOW).toISOString());
+		expect(nonNull(r).severity).toBe("warning"); // info → warning ternary
+		expect(nonNull(r).affected_files).toEqual(["src/b.ts"]); // affectedFiles?.map present
+		expect(nonNull(r).session_id).toBe("sess");
+		expect(nonNull(r).timestamp).toBe(new Date(NOW).toISOString());
 		// indexed so lookups see it immediately
 		expect(h.lookupByFile("src/a.ts")).toHaveLength(1);
 		// appended to disk (not full rewrite)
@@ -182,14 +183,14 @@ describe("recordError", () => {
 		const h = freshHistory();
 		await h.recordError("s", "a", "src/a.ts", ROLE, result({ severity: "error" }), "d");
 		const r = h.getRecords()[0];
-		expect(r.severity).toBe("error"); // ternary false branch
-		expect(r.affected_files).toBeUndefined(); // affectedFiles?.map → undefined
+		expect(nonNull(r).severity).toBe("error"); // ternary false branch
+		expect(nonNull(r).affected_files).toBeUndefined(); // affectedFiles?.map → undefined
 	});
 
 	it("caps diff_context at 2000 chars", async () => {
 		const h = freshHistory();
 		await h.recordError("s", "a", "src/a.ts", ROLE, result(), "x".repeat(3000));
-		expect(h.getRecords()[0].diff_context).toHaveLength(2000);
+		expect(nonNull(h.getRecords()[0]).diff_context).toHaveLength(2000);
 	});
 
 	it("records the `extra` fields when provided (optional-chaining present branch)", async () => {
@@ -201,19 +202,19 @@ describe("recordError", () => {
 			pre_error_sequence: ["Read", "Edit"],
 		});
 		const r = h.getRecords()[0];
-		expect(r.line_start).toBe(10);
-		expect(r.line_end).toBe(20);
-		expect(r.co_edited_files).toEqual(["src/x.ts"]);
-		expect(r.pre_error_sequence).toEqual(["Read", "Edit"]);
+		expect(nonNull(r).line_start).toBe(10);
+		expect(nonNull(r).line_end).toBe(20);
+		expect(nonNull(r).co_edited_files).toEqual(["src/x.ts"]);
+		expect(nonNull(r).pre_error_sequence).toEqual(["Read", "Edit"]);
 	});
 
 	it("leaves extra fields undefined when `extra` is omitted (optional-chaining absent branch)", async () => {
 		const h = freshHistory();
 		await h.recordError("s", "a", "src/a.ts", ROLE, result(), "d");
 		const r = h.getRecords()[0];
-		expect(r.line_start).toBeUndefined();
-		expect(r.co_edited_files).toBeUndefined();
-		expect(r.pre_error_sequence).toBeUndefined();
+		expect(nonNull(r).line_start).toBeUndefined();
+		expect(nonNull(r).co_edited_files).toBeUndefined();
+		expect(nonNull(r).pre_error_sequence).toBeUndefined();
 	});
 
 	it("swallows an appendFileSync throw (appendToDisk catch) without losing the in-memory record", async () => {
@@ -285,8 +286,8 @@ describe("recordFix", () => {
 
 		const recs = h.getRecords();
 		// scans from the end → newest unfixed gets the fix
-		expect(recs[1].fix_context).toBe("patched");
-		expect(recs[0].fix_context).toBeUndefined();
+		expect(nonNull(recs[1]).fix_context).toBe("patched");
+		expect(nonNull(recs[0]).fix_context).toBeUndefined();
 		expect(mockFs.writeFileSync).toHaveBeenCalledTimes(1);
 	});
 
@@ -300,8 +301,8 @@ describe("recordFix", () => {
 		h.recordFix("src/a.ts", "fix-older"); // index 1 already fixed → falls to index 0
 
 		const recs = h.getRecords();
-		expect(recs[1].fix_context).toBe("fix-newer");
-		expect(recs[0].fix_context).toBe("fix-older");
+		expect(nonNull(recs[1]).fix_context).toBe("fix-newer");
+		expect(nonNull(recs[0]).fix_context).toBe("fix-older");
 		expect(mockFs.writeFileSync).toHaveBeenCalledTimes(1);
 	});
 
@@ -314,14 +315,14 @@ describe("recordFix", () => {
 		h.recordFix("src/a.ts", "again"); // nothing unfixed left
 
 		expect(mockFs.writeFileSync).not.toHaveBeenCalled();
-		expect(h.getRecords()[0].fix_context).toBe("done"); // unchanged
+		expect(nonNull(h.getRecords()[0]).fix_context).toBe("done"); // unchanged
 	});
 
 	it("caps fix_context at 1000 chars", async () => {
 		const h = freshHistory();
 		await h.recordError("s", "a", "src/a.ts", ROLE, result(), "d");
 		h.recordFix("src/a.ts", "y".repeat(2000));
-		expect(h.getRecords()[0].fix_context).toHaveLength(1000);
+		expect(nonNull(h.getRecords()[0]).fix_context).toHaveLength(1000);
 	});
 
 	it("swallows a writeFileSync throw (writeToDisk catch) but keeps the in-memory fix", async () => {
@@ -331,7 +332,7 @@ describe("recordFix", () => {
 			throw new Error("EROFS");
 		});
 		h.recordFix("src/a.ts", "patched");
-		expect(h.getRecords()[0].fix_context).toBe("patched");
+		expect(nonNull(h.getRecords()[0]).fix_context).toBe("patched");
 	});
 
 	it("creates the data dir when missing before rewriting (writeToDisk mkdir branch)", async () => {

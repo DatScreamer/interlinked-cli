@@ -12,6 +12,7 @@ import {
 } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { deriveProjectIdentity, isGitRepo } from "../lib/git-utils.js";
+import { nonNull } from "../lib/non-null.js";
 import { ensureRemoteOnboarding, type RemoteOnboardingResult } from "../lib/onboarding.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 
@@ -92,7 +93,7 @@ function buildRemoteStatusLines(remote: RemoteOnboardingResult, result: AttachRe
 	};
 
 	if (remote.status === "skipped" && remote.reason && skippedReasons[remote.reason]) {
-		const { label, help } = skippedReasons[remote.reason];
+		const { label, help } = nonNull(skippedReasons[remote.reason]);
 		lines.push(kvLine("Remote", c.yellow(label)));
 		if (help) lines.push(c.dim(help));
 		return lines;

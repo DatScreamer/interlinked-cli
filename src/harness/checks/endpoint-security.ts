@@ -17,6 +17,7 @@
 // metadata, parity-test updates, and verify-command plumbing land in
 // pass 2 of the plan.
 
+import { nonNull } from "../../lib/non-null.js";
 import { isSanitized, type SanitizerRegistry } from "../sanitizer-registry.js";
 import type { SecurityConfig } from "../security-config.js";
 import type { Endpoint } from "../types/session.js";
@@ -143,7 +144,7 @@ function scanForMountLevelAuth(content: string): boolean {
 		/\b(?:[A-Za-z_$][\w$]*)\.use\s*\(\s*(?:["'`][^"'`]*["'`]\s*,\s*)?([A-Za-z_$][\w$]*)/g;
 	useRe.lastIndex = 0;
 	for (let m = useRe.exec(content); m !== null; m = useRe.exec(content)) {
-		if (AUTH_MIDDLEWARE_RE.test(m[1])) return true;
+		if (AUTH_MIDDLEWARE_RE.test(nonNull(m[1]))) return true;
 	}
 	return false;
 }
@@ -362,7 +363,7 @@ function collectUrlParamNames(endpoint: Endpoint, body: string): string[] {
 	// req.body.<x> / req.query.<x> / c.req.query("<x>") shapes.
 	const re = /(?:req\.(?:body|query|params)\.|c\.req\.(?:query|param)\(\s*['"\`])([A-Za-z_][\w]*)/g;
 	for (let m = re.exec(body); m !== null; m = re.exec(body)) {
-		if (URL_PARAM_NAME_RE.test(m[1])) names.add(m[1]);
+		if (URL_PARAM_NAME_RE.test(nonNull(m[1]))) names.add(nonNull(m[1]));
 	}
 	// Python signature args appear in `body` because handler scope starts
 	// at the decorator and continues into the function body — match the
@@ -370,9 +371,9 @@ function collectUrlParamNames(endpoint: Endpoint, body: string): string[] {
 	const pyDefRe = /^\s*(?:async\s+)?def\s+\w+\s*\(([^)]*)\)/m;
 	const pyDef = pyDefRe.exec(body);
 	if (pyDef) {
-		const args = pyDef[1].split(",");
+		const args = nonNull(pyDef[1]).split(",");
 		for (const arg of args) {
-			const name = arg.split(":")[0].split("=")[0].trim();
+			const name = nonNull(nonNull(arg.split(":")[0]).split("=")[0]).trim();
 			if (name && URL_PARAM_NAME_RE.test(name)) names.add(name);
 		}
 	}

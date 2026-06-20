@@ -5,6 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ErrorMemoryConfig, ErrorRecord, ModuleRole, StructuralCheckResult } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Cap the diff snippet stored alongside each error record. */
 const MAX_DIFF_CONTEXT_CHARS = 2000;
@@ -77,8 +78,8 @@ export class ErrorHistory {
 		if (!fileRecords) return;
 
 		for (let i = fileRecords.length - 1; i >= 0; i--) {
-			if (!fileRecords[i].fix_context) {
-				fileRecords[i].fix_context = fixContext.slice(0, MAX_FIX_CONTEXT_CHARS);
+			if (!nonNull(fileRecords[i]).fix_context) {
+				nonNull(fileRecords[i]).fix_context = fixContext.slice(0, MAX_FIX_CONTEXT_CHARS);
 				this.writeToDisk();
 				break;
 			}

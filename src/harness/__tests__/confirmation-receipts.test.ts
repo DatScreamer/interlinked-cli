@@ -23,6 +23,7 @@ import { createCopilotCliAdapter } from "../adapters/copilot-cli.js";
 import { createCursorAdapter } from "../adapters/cursor.js";
 import { extractResolvedTargets } from "../evaluator/rule-matching.js";
 import type { GuardRule, ResolvedTarget } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Minimal rule fixture — the extractor signature accepts a rule for
 // future rule-specific overrides but is rule-agnostic today, so any
@@ -208,9 +209,9 @@ describe("extractResolvedTargets — truncation + caps", () => {
 			fakeRule(),
 		);
 		expect(out).toHaveLength(1);
-		expect(out[0].value.length).toBeLessThanOrEqual(200);
+		expect(nonNull(out[0]).value.length).toBeLessThanOrEqual(200);
 		// Sanity: ends with the ellipsis sentinel
-		expect(out[0].value.endsWith("…")).toBe(true);
+		expect(nonNull(out[0]).value.endsWith("…")).toBe(true);
 	});
 
 	it("returns empty array for an unknown tool family", () => {

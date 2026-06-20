@@ -12,6 +12,7 @@
 // All output is info-severity warnings injected on PreToolUse.
 
 // NOTE: All detectors are pure functions over arrays — no side effects, no I/O.
+import { nonNull } from "../lib/non-null.js";
 import type { ErrorRecord, SessionTrajectory } from "./types.js";
 
 // ===========================================
@@ -89,7 +90,7 @@ function getHotRegionWarning(
 	}
 
 	// No line info — warn about the hottest region
-	const hottest = hotspots[0];
+	const hottest = nonNull(hotspots[0]);
 	return `[interlinked:hot-region] Lines ${hottest.lineStart}-${hottest.lineEnd} in this file have had ${hottest.errorCount} check failures (${hottest.checks.join(", ")}). Take extra care in this region.`;
 }
 
@@ -219,15 +220,15 @@ function getTemporalStats(records: ErrorRecord[], file: string): TemporalStats {
 	// Calculate average interval between errors
 	let avgIntervalS = 0;
 	if (fileRecords.length >= 2) {
-		const firstTime = new Date(fileRecords[0].timestamp).getTime();
-		const lastTime = new Date(fileRecords[fileRecords.length - 1].timestamp).getTime();
+		const firstTime = new Date(nonNull(fileRecords[0]).timestamp).getTime();
+		const lastTime = new Date(nonNull(fileRecords[fileRecords.length - 1]).timestamp).getTime();
 		avgIntervalS = Math.round((lastTime - firstTime) / (fileRecords.length - 1) / 1000);
 	}
 
 	// Burst detection: last hour has 3x+ the average hourly rate
 	const totalSpanHours =
 		total > 0
-			? Math.max(1, (now - new Date(fileRecords[0].timestamp).getTime()) / (60 * 60 * 1000))
+			? Math.max(1, (now - new Date(nonNull(fileRecords[0]).timestamp).getTime()) / (60 * 60 * 1000))
 			: 1;
 	const avgHourlyRate = total / totalSpanHours;
 	const isBurst = lastHour >= 3 && lastHour > avgHourlyRate * 3;
@@ -354,7 +355,9 @@ function extractSequenceFeatures(sequence: string[]): string[] {
 	let editsSinceLastTest = 0;
 
 	for (const entry of sequence) {
-		const [tool, target] = entry.split(":", 2);
+		const parts = entry.split(":", 2);
+		const tool = nonNull(parts[0]);
+		const target = parts[1];
 
 		if (isEditTool(tool)) {
 			editCount++;

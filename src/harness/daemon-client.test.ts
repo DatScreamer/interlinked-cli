@@ -9,6 +9,7 @@ import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
@@ -81,7 +82,7 @@ describe("DaemonClient.call — happy path", () => {
 		const client = createDaemonClient(paths.socket);
 		const ack = await client.call("daemon.invalidate", { path: "/x.ts" });
 		expect(ack.ack).toBe(true);
-		expect((tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/x.ts");
+		expect(nonNull((tsgo.invalidate as ReturnType<typeof vi.fn>).mock.calls[0])[0]).toBe("/x.ts");
 	});
 
 	it("ignores responses whose id does not match the request", async () => {

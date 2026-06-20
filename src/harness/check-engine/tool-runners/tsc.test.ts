@@ -21,6 +21,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // --- Module-edge mocks (registered once; behavior swapped per test) ---------
 
@@ -485,8 +486,8 @@ describe("runTsc (sync) — file mode", () => {
 		const { runTsc } = await loadTsc();
 		const out = runTsc(input(fileScope())); // targetFile = <root>/src/app.ts
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/app.ts");
-		expect(out[0].ruleId).toBe("TS2345");
+		expect(nonNull(out[0]).file).toBe("src/app.ts");
+		expect(nonNull(out[0]).ruleId).toBe("TS2345");
 	});
 
 	it("does NOT filter when filterToFile is false (returns all parsed results)", async () => {
@@ -523,7 +524,7 @@ describe("runTsc (sync) — file mode", () => {
 		const { runTsc } = await loadTsc();
 		const out = runTsc(input(fileScope({ targetFile: scriptFile })));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(scriptFile);
+		expect(nonNull(out[0]).file).toBe(scriptFile);
 		// Three spawnSync calls: version probe, project run, standalone run.
 		const checkCalls = spawnSyncMock.mock.calls.filter(
 			(c) => !(c[1] as string[])?.includes("--version"),
@@ -571,7 +572,7 @@ describe("runTsc (sync) — standalone (no tsconfig)", () => {
 		const { runTsc } = await loadTsc();
 		const out = runTsc(input(fileScope({ targetFile: standalone })));
 		expect(out).toHaveLength(1);
-		expect(out[0].ruleId).toBe("TS2345");
+		expect(nonNull(out[0]).ruleId).toBe("TS2345");
 
 		const check = spawnSyncMock.mock.calls.at(-1) as [string, string[], { cwd: string }];
 		expect(check[0]).toBe("npx");
@@ -682,8 +683,8 @@ describe("runTsc (sync) — standalone (no tsconfig)", () => {
 		const { runTsc } = await loadTsc();
 		const out = runTsc(input(fileScope({ targetFile: standalone })));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(standalone);
-		expect(out[0].ruleId).toBe("TS2345");
+		expect(nonNull(out[0]).file).toBe(standalone);
+		expect(nonNull(out[0]).ruleId).toBe("TS2345");
 	});
 
 	it("returns [] from the standalone catch block when spawnSync throws", async () => {
@@ -812,8 +813,8 @@ describe("runTscAsync — project mode", () => {
 		const { runTscAsync } = await loadTsc();
 		const out = await runTscAsync(input(projectScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("tsconfig.json");
-		expect(out[0].ruleId).toBe("TS2688");
+		expect(nonNull(out[0]).file).toBe("tsconfig.json");
+		expect(nonNull(out[0]).ruleId).toBe("TS2688");
 	});
 
 	it("returns [] for a project-mode scope with no tsconfig anywhere", async () => {
@@ -848,7 +849,7 @@ describe("runTscAsync — file mode + standalone", () => {
 		const { runTscAsync } = await loadTsc();
 		const out = await runTscAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("src/app.ts");
+		expect(nonNull(out[0]).file).toBe("src/app.ts");
 	});
 
 	it("re-runs standalone (async) when filtered result is empty AND file is out of scope", async () => {
@@ -871,7 +872,7 @@ describe("runTscAsync — file mode + standalone", () => {
 		const { runTscAsync } = await loadTsc();
 		const out = await runTscAsync(input(fileScope({ targetFile: scriptFile })));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(scriptFile);
+		expect(nonNull(out[0]).file).toBe(scriptFile);
 		expect(runProcessAsyncMock).toHaveBeenCalledTimes(2); // project + standalone
 	});
 

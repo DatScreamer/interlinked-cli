@@ -3,6 +3,7 @@
 // Extracted from taste-smell.ts to keep that module under the line cap.
 
 import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Conventional name-pairs that are not orderable-by-mistake in practice.
 // Module-level so it is built once, not per call. Kept small on purpose — grow
@@ -105,7 +106,7 @@ function identifyPublicFunctionName(trimmed: string, inExportedClass: boolean): 
 		!/^\s*(?:if|while|for|switch|return|throw|catch|else|do|try|new)\b/.test(trimmed) &&
 		methodMatch[1] !== "constructor"
 	) {
-		return methodMatch[1];
+		return nonNull(methodMatch[1]);
 	}
 	return null;
 }
@@ -187,8 +188,9 @@ export function checkSameTypedPrimitiveParams(
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = lines[i].trim();
-		scope = trackExportedClassScope(lines[i], scope);
+		const lineText = nonNull(lines[i]);
+		const trimmed = lineText.trim();
+		scope = trackExportedClassScope(lineText, scope);
 
 		// Identify the function/method signature start point (exported top-level
 		// function/arrow, or a public method inside an exported class).
@@ -206,7 +208,7 @@ export function checkSameTypedPrimitiveParams(
 		if (!pair) continue;
 		matches.push({
 			line: i + 1,
-			text: `[2 same-typed ${pair.type} params (${pair.left}, ${pair.right}) → use branded types or a struct param] ${originalLines[i].trim().slice(0, 100)}`,
+			text: `[2 same-typed ${pair.type} params (${pair.left}, ${pair.right}) → use branded types or a struct param] ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 		});
 	}
 
@@ -223,7 +225,7 @@ export function checkSameTypedPrimitiveParams(
  */
 function collectParamList(lines: string[], startIdx: number): string | null {
 	const first = lines[startIdx];
-	const openIdx = first.indexOf("(");
+	const openIdx = nonNull(first).indexOf("(");
 	if (openIdx < 0) return null;
 	let depthParen = 0;
 	let depthAngle = 0;
@@ -234,8 +236,8 @@ function collectParamList(lines: string[], startIdx: number): string | null {
 	for (let i = startIdx; i < Math.min(startIdx + 20, lines.length); i++) {
 		const line = lines[i];
 		const startCol = i === startIdx ? openIdx : 0;
-		for (let k = startCol; k < line.length; k++) {
-			const ch = line[k];
+		for (let k = startCol; k < nonNull(line).length; k++) {
+			const ch = nonNull(line)[k];
 			if (ch === "(") {
 				depthParen++;
 				if (depthParen === 1 && !started) {
@@ -319,8 +321,8 @@ function parseParamPrimitives(paramStr: string): ParsedParam[] {
 			out.push({ name: trimmed.split(/[\s:?]/)[0] || "<unknown>", type: null });
 			continue;
 		}
-		const name = m[1];
-		const annotation = m[2].trim();
+		const name = nonNull(m[1]);
+		const annotation = nonNull(m[2]).trim();
 		// Surface-primitive match: must be exactly `string` / `number` /
 		// `boolean`, no unions, no arrays, no generics, no `| undefined` etc.
 		let type: "string" | "number" | "boolean" | null = null;

@@ -10,6 +10,7 @@ import {
 	JS_TS_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const BARREL_LOCAL_SPECIFIERS = new Set([
 	".",
@@ -87,14 +88,14 @@ export function checkImportFromOwnBarrel(content: string, filePath: string): Inl
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 5) break;
-		const strippedTrimmed = strippedLines[i].trim();
+		const strippedTrimmed = nonNull(strippedLines[i]).trim();
 		if (!/^(?:import|export)\b/.test(strippedTrimmed)) continue;
 		// Confirm it's actually an `import ... from <spec>` or `export ... from <spec>`
 		// shape, not e.g. `export function ...`. The original line carries the spec.
 		const originalLine = originalLines[i] ?? "";
 		const fromMatch = originalLine.match(/\bfrom\s+['"]([^'"]+)['"]/);
 		if (!fromMatch) continue;
-		const specifier = fromMatch[1];
+		const specifier = nonNull(fromMatch[1]);
 
 		if (BARREL_LOCAL_SPECIFIERS.has(specifier)) {
 			matches.push({

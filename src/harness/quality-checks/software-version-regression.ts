@@ -9,6 +9,7 @@
 
 import { basename } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	classifyGenericKind,
 	isVersionRegression,
@@ -90,8 +91,7 @@ export function collectSoftwareVersionReferences(
 
 	const lines = content.split("\n");
 	const pathByLine = computeObjectPathByLine(content, lines.length);
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+	for (const [i, line] of lines.entries()) {
 		const lineNo = i + 1;
 
 		collectLineRef(refs, seen, collectDockerFromRef(line, lineNo));
@@ -126,7 +126,7 @@ export function detectSoftwareVersionRegressions(
 	for (const after of afterRefs) {
 		const beforeList = beforeByAnchor.get(after.anchor);
 		if (!beforeList) continue;
-		const before = beforeList[0];
+		const before = nonNull(beforeList[0]);
 		if (!isVersionRegression(before, after)) continue;
 		const key = `${after.anchor}\0${before.version}\0${after.version}`;
 		if (emitted.has(key)) continue;
@@ -434,8 +434,8 @@ function findJsonPropLine(content: string, key: string, value: string): number {
 	const escapedValue = escapeRegExp(value);
 	const re = new RegExp(`"${escapedKey}"\\s*:\\s*"${escapedValue}"`);
 	const lines = content.split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		if (re.test(lines[i])) return i + 1;
+	for (const [i, line] of lines.entries()) {
+		if (re.test(line)) return i + 1;
 	}
 	return 1;
 }

@@ -2,6 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Over-Mocking Detection (Testing)
@@ -28,7 +29,7 @@ export function checkOverMocking(content: string, filePath: string): InlineMatch
 	const mockPattern = /\b(vi|jest)\.(mock|spyOn)\s*\(/;
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 		if (mockPattern.test(trimmed)) {
 			count++;
 		}
@@ -37,10 +38,10 @@ export function checkOverMocking(content: string, filePath: string): InlineMatch
 	if (count >= WARNING_THRESHOLD) {
 		// Report the first mock/spy line as the anchor with the total count
 		for (let i = 0; i < lines.length; i++) {
-			if (mockPattern.test(lines[i].trim())) {
+			if (mockPattern.test(nonNull(lines[i]).trim())) {
 				matches.push({
 					line: i + 1,
-					text: `[${count} mock/spy calls — tests may be testing mocks rather than real behavior] ${lines[i].trim().slice(0, 100)}`,
+					text: `[${count} mock/spy calls — tests may be testing mocks rather than real behavior] ${nonNull(lines[i]).trim().slice(0, 100)}`,
 				});
 				break;
 			}

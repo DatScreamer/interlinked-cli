@@ -2,6 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Missing Effect Cleanup Detection (React)
@@ -32,20 +33,21 @@ export function checkMissingEffectCleanup(content: string, filePath: string): In
 	// Find all useEffect start lines
 	const effectStarts: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		if (/\buseEffect\s*\(/.test(lines[i].trim())) {
+		if (/\buseEffect\s*\(/.test(nonNull(lines[i]).trim())) {
 			effectStarts.push(i);
 		}
 	}
 
 	for (let e = 0; e < effectStarts.length; e++) {
-		const start = effectStarts[e];
-		const end = e + 1 < effectStarts.length ? effectStarts[e + 1] : lines.length;
+		const start = nonNull(effectStarts[e]);
+		const end = e + 1 < effectStarts.length ? nonNull(effectStarts[e + 1]) : lines.length;
 
 		let hasSubscription = false;
 		let hasReturn = false;
 
 		for (let i = start; i < end; i++) {
-			const trimmed = lines[i].trim();
+			const lineAtI = nonNull(lines[i]);
+			const trimmed = lineAtI.trim();
 			if (subscriptionPattern.test(trimmed)) {
 				hasSubscription = true;
 			}
@@ -54,7 +56,7 @@ export function checkMissingEffectCleanup(content: string, filePath: string): In
 				hasReturn = true;
 			}
 			// Also catch bare `return () =>` or `return cleanup;`
-			if (/^\s*return\s/.test(lines[i])) {
+			if (/^\s*return\s/.test(lineAtI)) {
 				hasReturn = true;
 			}
 		}
@@ -62,7 +64,7 @@ export function checkMissingEffectCleanup(content: string, filePath: string): In
 		if (hasSubscription && !hasReturn) {
 			matches.push({
 				line: start + 1,
-				text: `[useEffect with subscription but no cleanup — potential memory leak] ${lines[start].trim().slice(0, 100)}`,
+				text: `[useEffect with subscription but no cleanup — potential memory leak] ${nonNull(lines[start]).trim().slice(0, 100)}`,
 			});
 		}
 	}

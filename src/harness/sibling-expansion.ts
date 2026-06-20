@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { DetectorFinding } from "./checks/endpoint-security.js";
 import { decomposePattern } from "./regex-trigrams.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** A single sibling instance discovered for a triggered finding. */
 export interface SiblingFinding {
@@ -181,8 +182,8 @@ function findFirstMatch(
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
 		pattern.lastIndex = 0;
-		if (pattern.test(lines[i])) {
-			const trimmed = lines[i].trim();
+		if (pattern.test(nonNull(lines[i]))) {
+			const trimmed = nonNull(lines[i]).trim();
 			const snippet =
 				trimmed.length > SNIPPET_LENGTH ? `${trimmed.slice(0, SNIPPET_LENGTH)}…` : trimmed;
 			return { line: i + 1, snippet };
@@ -256,14 +257,14 @@ export function expandEndpointDetectorSiblings(
 	// Build groups: check_id|file → indices into `result`.
 	const groups = new Map<string, number[]>();
 	for (let i = 0; i < findings.length; i += 1) {
-		const key = `${findings[i].check_id}|${findings[i].file}`;
+		const key = `${nonNull(findings[i]).check_id}|${nonNull(findings[i]).file}`;
 		const list = groups.get(key);
 		if (list) list.push(i);
 		else groups.set(key, [i]);
 	}
 
 	for (const [, indices] of groups) {
-		const lead = result[indices[0]];
+		const lead = nonNull(result[nonNull(indices[0])]);
 		const file = lead.file;
 		const checkId = lead.check_id;
 
@@ -299,7 +300,7 @@ export function expandEndpointDetectorSiblings(
 		// Siblings = rescan findings on lines NOT already in the original
 		// group. Deduplicate by line — a detector that fires twice on the
 		// same line counts once.
-		const originalLines = new Set(indices.map((i) => result[i].line));
+		const originalLines = new Set(indices.map((i) => nonNull(result[i]).line));
 		const siblingLines: number[] = [];
 		const seen = new Set<number>();
 		for (const f of sameCheck) {
@@ -316,7 +317,7 @@ export function expandEndpointDetectorSiblings(
 		// Append with a blank line so the formatter renders the bundle as a
 		// distinct paragraph. The lead finding owns the bundle; the rest of
 		// the group is unchanged so the suffix doesn't print N times.
-		result[indices[0]] = {
+		result[nonNull(indices[0])] = {
 			...lead,
 			message: `${lead.message}\n\n${suffix}`,
 		};

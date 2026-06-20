@@ -41,6 +41,7 @@ import {
 	collectContentQualityWarnings,
 	isContentScanExempt,
 } from "./write-content-guards-content-quality.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Extension regex for binary file formats we block text editors from writing to. */
 const BINARY_FILE_EXTENSIONS =
@@ -85,7 +86,7 @@ export function buildTscDiffOverlayBlockReason(
 	const restSummary = rest > 0 ? ` (+ ${rest} more)` : "";
 	const head =
 		`BLOCKED by tsc diff-overlay: this edit introduces ${blocking.length} new type error(s) in ${filePath}. ` +
-		`First: [${first.ruleId}] L${first.line}:${first.column ?? 1} — ${first.message}${restSummary}. ` +
+		`First: [${nonNull(first).ruleId}] L${nonNull(first).line}:${nonNull(first).column ?? 1} — ${nonNull(first).message}${restSummary}. ` +
 		"Fix the type error(s) in your edit, or retry without introducing them.";
 	if (toolName === "MultiEdit") return head;
 	const allMissingSymbols = blocking.every((f) =>
@@ -207,7 +208,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		if (highConfidence) {
 			return {
 				decision: "block",
-				reason: `BLOCKED: Prompt injection pattern detected in content being written to ${filePath}: ${injectionMatches[0].description}. This content may compromise agent behavior.`,
+				reason: `BLOCKED: Prompt injection pattern detected in content being written to ${filePath}: ${nonNull(injectionMatches[0]).description}. This content may compromise agent behavior.`,
 				warnings,
 				rule_id: "pretooluse-injection-scan",
 				severity: "critical",
@@ -217,7 +218,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		// Lower-confidence match — set escalation for classifier
 		escalation = {
 			trigger: "post_injection_action",
-			summary: `Partial prompt injection pattern detected in content for ${filePath}: ${injectionMatches[0].description}`,
+			summary: `Partial prompt injection pattern detected in content for ${filePath}: ${nonNull(injectionMatches[0]).description}`,
 			tool_name: toolName,
 			tool_input_redacted: { file_path: filePath, content: "[REDACTED]" },
 			sensitivity_level: session?.sensitivity_level || "Public",
@@ -225,7 +226,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 			recent_tool_sequence: session?.tool_sequence.slice(-10) || [],
 		};
 		warnings.push(
-			`[interlinked:injection] Low-confidence injection pattern detected in ${filePath}: ${injectionMatches[0].description}`,
+			`[interlinked:injection] Low-confidence injection pattern detected in ${filePath}: ${nonNull(injectionMatches[0]).description}`,
 		);
 		return null;
 	}
@@ -257,15 +258,15 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		if (malformed.length === 0) return null;
 		const first = malformed[0];
 		const others = malformed.length > 1 ? ` (and ${malformed.length - 1} more)` : "";
-		const suggestion = suggestRuleFix(first.rule, first.reason);
+		const suggestion = suggestRuleFix(nonNull(first).rule, nonNull(first).reason);
 		const suggestionClause =
 			suggestion !== null ? ` Did you mean ${JSON.stringify(suggestion)}?` : "";
 		return {
 			decision: "block",
 			reason:
 				`BLOCKED: Write to ${filePath} would add a malformed permission rule. ` +
-				`permissions.${first.bucket}[${first.index}] = ${JSON.stringify(first.rule)} ` +
-				`(${describeReason(first.reason)})${others}.${suggestionClause} ` +
+				`permissions.${nonNull(first).bucket}[${nonNull(first).index}] = ${JSON.stringify(nonNull(first).rule)} ` +
+				`(${describeReason(nonNull(first).reason)})${others}.${suggestionClause} ` +
 				"Claude Code's /doctor would skip this rule at load time. " +
 				"Fix the rule string (or remove it) before retrying.",
 			warnings,
@@ -358,7 +359,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		const first = overlay.newFindings[0];
 		if (overlay.exceededBudget) {
 			warnings.push(
-				`[interlinked:biome-overlay] ${overlay.newFindings.length} new biome finding(s) in ${filePath} from this edit (first: ${first.message} at L${first.line}). Overlay ${overlay.elapsedMs}ms exceeded 500ms budget — demoted to warning.`,
+				`[interlinked:biome-overlay] ${overlay.newFindings.length} new biome finding(s) in ${filePath} from this edit (first: ${nonNull(first).message} at L${nonNull(first).line}). Overlay ${overlay.elapsedMs}ms exceeded 500ms budget — demoted to warning.`,
 			);
 			return null;
 		}
@@ -368,7 +369,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 			decision: "block",
 			reason:
 				`BLOCKED by biome diff-overlay: this edit introduces ${overlay.newFindings.length} new biome finding(s) in ${filePath}. ` +
-				`First: [${first.ruleId ?? "biome"}] L${first.line} — ${first.message}${restSummary}. ` +
+				`First: [${nonNull(first).ruleId ?? "biome"}] L${nonNull(first).line} — ${nonNull(first).message}${restSummary}. ` +
 				"Fix the new issue(s) in your edit, or retry without introducing them.",
 			warnings,
 			rule_id: "biome-diff-overlay",
@@ -430,7 +431,7 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 			decision: "block",
 			reason:
 				`BLOCKED by strict-typing pre-overlay: this edit introduces ${overlay.newFindings.length} new type-erasure pattern(s) in ${filePath} (${lineList}). ` +
-				`First: [${first.ruleId}] L${first.line} — ${first.message}${restSummary}. ` +
+				`First: [${nonNull(first).ruleId}] L${nonNull(first).line} — ${nonNull(first).message}${restSummary}. ` +
 				"Fix the pattern(s) in your edit, or retry without introducing them. " +
 				"Justification escapes are accepted: `// @ts-expect-error: <reason>` for suppression directives.",
 			warnings,

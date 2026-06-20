@@ -20,7 +20,7 @@ interface FixtureFs {
 
 function makeOptions(fs: FixtureFs): DetectDecisionSurfaceOptions {
 	return {
-		readFile: (path) => (path in fs.files ? fs.files[path] : null),
+		readFile: (path) => (path in fs.files ? (fs.files[path] ?? null) : null),
 		exists: (path) => path in fs.files,
 		readdir: () => {
 			if (fs.topLevelEntries) return fs.topLevelEntries;

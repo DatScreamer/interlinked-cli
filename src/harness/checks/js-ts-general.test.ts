@@ -7,6 +7,7 @@ import {
 	checkNestedTernaries,
 	checkTargetBlankNoRel,
 } from "./js-ts-general.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Non-test source paths the checks should actually run on.
 const TS = "src/lib/foo.ts";
@@ -25,8 +26,8 @@ describe("checkNestedTernaries", () => {
 		const code = "const x = a ? b : c ? d : e;";
 		const out = checkNestedTernaries(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
-		expect(out[0].text).toBe("const x = a ? b : c ? d : e;");
+		expect(nonNull(out[0]).line).toBe(1);
+		expect(nonNull(out[0]).text).toBe("const x = a ? b : c ? d : e;");
 	});
 
 	it("does not flag a single ternary", () => {
@@ -39,8 +40,8 @@ describe("checkNestedTernaries", () => {
 		const out = checkNestedTernaries(code, TS);
 		expect(out).toHaveLength(1);
 		// Truncation is applied to the trimmed original line.
-		expect(out[0].text.length).toBe(150);
-		expect(out[0].text.startsWith("const x = a ? b : c ? d : e;")).toBe(true);
+		expect(nonNull(out[0]).text.length).toBe(150);
+		expect(nonNull(out[0]).text.startsWith("const x = a ? b : c ? d : e;")).toBe(true);
 	});
 
 	it("returns [] for test files (gate)", () => {
@@ -127,8 +128,8 @@ describe("checkCatchAndLog", () => {
 		const out = checkCatchAndLog(code, TS);
 		expect(out).toHaveLength(1);
 		// Line of the `} catch` (4 here, 1-based).
-		expect(out[0].line).toBe(4);
-		expect(out[0].text).toContain("catch");
+		expect(nonNull(out[0]).line).toBe(4);
+		expect(nonNull(out[0]).text).toContain("catch");
 	});
 
 	it("flags catch-only-log with the body brace on the following line", () => {
@@ -146,7 +147,7 @@ describe("checkCatchAndLog", () => {
 		].join("\n");
 		const out = checkCatchAndLog(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(4);
+		expect(nonNull(out[0]).line).toBe(4);
 	});
 
 	it("does not flag when the catch body does real work besides logging", () => {
@@ -209,7 +210,7 @@ describe("checkCatchAndLog", () => {
 		].join("\n");
 		const out = checkCatchAndLog(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(4);
+		expect(nonNull(out[0]).line).toBe(4);
 	});
 
 	it("treats a lone `}` after the catch as NOT meaningful (still flags)", () => {
@@ -226,7 +227,7 @@ describe("checkCatchAndLog", () => {
 		].join("\n");
 		const out = checkCatchAndLog(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(4);
+		expect(nonNull(out[0]).line).toBe(4);
 	});
 
 	it("returns [] for test files (gate)", () => {
@@ -313,8 +314,8 @@ describe("checkJsonParseUnsafe", () => {
 		const code = "const data = JSON.parse(input);";
 		const out = checkJsonParseUnsafe(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
-		expect(out[0].text).toContain("JSON.parse");
+		expect(nonNull(out[0]).line).toBe(1);
+		expect(nonNull(out[0]).text).toContain("JSON.parse");
 	});
 
 	it("does not flag JSON.parse inside a multi-line try block", () => {
@@ -365,7 +366,7 @@ describe("checkJsonParseUnsafe", () => {
 		].join("\n");
 		const out = checkJsonParseUnsafe(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(9);
+		expect(nonNull(out[0]).line).toBe(9);
 	});
 
 	it("flags JSON.parse AFTER a try block has closed (tryDepth back to 0)", () => {
@@ -379,7 +380,7 @@ describe("checkJsonParseUnsafe", () => {
 		].join("\n");
 		const out = checkJsonParseUnsafe(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(6);
+		expect(nonNull(out[0]).line).toBe(6);
 	});
 
 	it("handles nested try blocks: JSON.parse inside inner try is safe", () => {
@@ -408,7 +409,7 @@ describe("checkJsonParseUnsafe", () => {
 		].join("\n");
 		const out = checkJsonParseUnsafe(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
+		expect(nonNull(out[0]).line).toBe(1);
 	});
 
 	it("returns [] for test files (gate)", () => {
@@ -436,15 +437,15 @@ describe("checkHardcodedTimeout", () => {
 		const code = "setTimeout(() => doThing(), 5000);";
 		const out = checkHardcodedTimeout(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
-		expect(out[0].text).toContain("setTimeout");
+		expect(nonNull(out[0]).line).toBe(1);
+		expect(nonNull(out[0]).text).toContain("setTimeout");
 	});
 
 	it("flags setInterval with a hardcoded delay >= 100ms", () => {
 		const code = "setInterval(poll, 1000);";
 		const out = checkHardcodedTimeout(code, TS);
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("setInterval");
+		expect(nonNull(out[0]).text).toContain("setInterval");
 	});
 
 	it("flags exactly at the 100ms boundary", () => {
@@ -483,8 +484,8 @@ describe("checkDisabledTests", () => {
 		const code = ["describe('x', () => {", "  it.skip('todo', () => {});", "});"].join("\n");
 		const out = checkDisabledTests(code, TEST);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(2);
-		expect(out[0].text).toContain("it.skip");
+		expect(nonNull(out[0]).line).toBe(2);
+		expect(nonNull(out[0]).text).toContain("it.skip");
 	});
 
 	it("flags describe.skip, test.skip, xit, xdescribe, xtest", () => {
@@ -524,8 +525,8 @@ describe("checkTargetBlankNoRel", () => {
 		const code = '<a href="x" target="_blank">link</a>';
 		const out = checkTargetBlankNoRel(code, TSX);
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
-		expect(out[0].text).toContain('target="_blank"');
+		expect(nonNull(out[0]).line).toBe(1);
+		expect(nonNull(out[0]).text).toContain('target="_blank"');
 	});
 
 	it("flags in JSX and HTML extensions too", () => {
@@ -565,7 +566,7 @@ describe("checkTargetBlankNoRel", () => {
 		].join("\n");
 		const out = checkTargetBlankNoRel(code, TSX);
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain('target="_blank"');
+		expect(nonNull(out[0]).text).toContain('target="_blank"');
 	});
 
 	it("returns [] for test files (gate)", () => {

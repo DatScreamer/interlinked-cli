@@ -36,6 +36,7 @@ vi.mock("node:fs", async () => {
 });
 
 import { checkUndefinedEnvVars } from "./env-vars.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Use a deep path so the parent-walk loop (max 10 hops) has room to walk.
 const SRC = "/repo/a/b/c/d/src/app.ts";
@@ -77,9 +78,9 @@ describe("checkUndefinedEnvVars", () => {
 			severity: "info",
 			file: SRC,
 		});
-		expect(res[0].message).toContain("src/app.ts references 1 env var(s)");
-		expect(res[0].message).toContain("SECRET_KEY");
-		expect(res[0].message).not.toContain("more");
+		expect(nonNull(res[0]).message).toContain("src/app.ts references 1 env var(s)");
+		expect(nonNull(res[0]).message).toContain("SECRET_KEY");
+		expect(nonNull(res[0]).message).not.toContain("more");
 	});
 
 	it("returns [] when every used var is declared in .env.example", () => {
@@ -109,8 +110,8 @@ describe("checkUndefinedEnvVars", () => {
 		envExample(ROOT_ENV, "X=1\n");
 		const res = checkUndefinedEnvVars(SRC, "src/app.ts");
 		expect(res).toHaveLength(1);
-		expect(res[0].message).toContain("CUSTOM_FLAG");
-		expect(res[0].message).not.toContain("NODE_ENV");
+		expect(nonNull(res[0]).message).toContain("CUSTOM_FLAG");
+		expect(nonNull(res[0]).message).not.toContain("NODE_ENV");
 	});
 
 	it("walks parent directories to locate .env.example higher in the tree", () => {
@@ -119,7 +120,7 @@ describe("checkUndefinedEnvVars", () => {
 		envExample(ROOT_ENV, "DECLARED=1\n");
 		const res = checkUndefinedEnvVars(SRC, "src/app.ts");
 		expect(res).toHaveLength(1);
-		expect(res[0].message).toContain("HIGH_VAR");
+		expect(nonNull(res[0]).message).toContain("HIGH_VAR");
 	});
 
 	it("truncates to 5 names and appends a '+N more' suffix for many undeclared vars", () => {
@@ -129,13 +130,13 @@ describe("checkUndefinedEnvVars", () => {
 		const res = checkUndefinedEnvVars(SRC, "src/app.ts");
 		expect(res).toHaveLength(1);
 		// 7 undeclared -> "references 7 env var(s)" + first 5 listed + "+2 more"
-		expect(res[0].message).toContain("references 7 env var(s)");
-		expect(res[0].message).toContain("+2 more");
-		expect(res[0].message).toContain("VAR_A");
-		expect(res[0].message).toContain("VAR_E");
+		expect(nonNull(res[0]).message).toContain("references 7 env var(s)");
+		expect(nonNull(res[0]).message).toContain("+2 more");
+		expect(nonNull(res[0]).message).toContain("VAR_A");
+		expect(nonNull(res[0]).message).toContain("VAR_E");
 		// 6th and 7th are not listed by name (only counted in "+2 more").
-		expect(res[0].message).not.toContain("VAR_F");
-		expect(res[0].message).not.toContain("VAR_G");
+		expect(nonNull(res[0]).message).not.toContain("VAR_F");
+		expect(nonNull(res[0]).message).not.toContain("VAR_G");
 	});
 
 	describe("diff-aware mode (event.tool_input present)", () => {
@@ -157,8 +158,8 @@ describe("checkUndefinedEnvVars", () => {
 				evt({ new_string: "const b = process.env.NEW_VAR;" }),
 			);
 			expect(res).toHaveLength(1);
-			expect(res[0].message).toContain("NEW_VAR");
-			expect(res[0].message).not.toContain("OLD_VAR");
+			expect(nonNull(res[0]).message).toContain("NEW_VAR");
+			expect(nonNull(res[0]).message).not.toContain("OLD_VAR");
 		});
 
 		it("falls back to tool_input.content when new_string is absent", () => {
@@ -170,8 +171,8 @@ describe("checkUndefinedEnvVars", () => {
 				evt({ content: "const b = process.env.WRITTEN_VAR;" }),
 			);
 			expect(res).toHaveLength(1);
-			expect(res[0].message).toContain("WRITTEN_VAR");
-			expect(res[0].message).not.toContain("OLD_VAR");
+			expect(nonNull(res[0]).message).toContain("WRITTEN_VAR");
+			expect(nonNull(res[0]).message).not.toContain("OLD_VAR");
 		});
 
 		it("returns [] when the edit introduces no env var references at all", () => {
@@ -226,7 +227,7 @@ describe("checkUndefinedEnvVars", () => {
 				evt({ new_string: "", content: "" }),
 			);
 			expect(res).toHaveLength(1);
-			expect(res[0].message).toContain("WHOLE_FILE_VAR");
+			expect(nonNull(res[0]).message).toContain("WHOLE_FILE_VAR");
 		});
 
 		it("treats a missing tool_input object as whole-file (event present, tool_input undefined)", () => {
@@ -240,7 +241,7 @@ describe("checkUndefinedEnvVars", () => {
 			} as unknown as HarnessEvent;
 			const res = checkUndefinedEnvVars(SRC, "src/app.ts", event);
 			expect(res).toHaveLength(1);
-			expect(res[0].message).toContain("NO_TOOLINPUT_VAR");
+			expect(nonNull(res[0]).message).toContain("NO_TOOLINPUT_VAR");
 		});
 	});
 
@@ -253,6 +254,6 @@ describe("checkUndefinedEnvVars", () => {
 		const res = checkUndefinedEnvVars(SRC, "src/app.ts");
 		// env-loader returns an empty Set, so SOME_VAR is undeclared -> flagged.
 		expect(res).toHaveLength(1);
-		expect(res[0].message).toContain("SOME_VAR");
+		expect(nonNull(res[0]).message).toContain("SOME_VAR");
 	});
 });

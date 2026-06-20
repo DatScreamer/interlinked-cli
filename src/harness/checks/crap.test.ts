@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FunctionCoverage } from "../coverage-final-reader.js";
 import { computeCrap, computeCrapForFile, crapScore } from "./crap.js";
 import type { FunctionComplexityEntry } from "./cyclomatic.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Fixture builders
@@ -116,7 +117,7 @@ describe("computeCrap", () => {
 			staleTolerance: "tag",
 		});
 		expect(findings).toHaveLength(1);
-		expect(findings[0].function).toBe("risky");
+		expect(nonNull(findings[0]).function).toBe("risky");
 	});
 
 	it("sorts findings by crap_score descending", () => {
@@ -167,7 +168,7 @@ describe("computeCrap", () => {
 			staleTolerance: "tag",
 		});
 		// Should match the coverage entry even though line drifted by 2.
-		expect(findings[0].coverage_pct).toBe(100);
+		expect(nonNull(findings[0]).coverage_pct).toBe(100);
 	});
 
 	it("treats unmatched functions as cov=0 (worst-case CRAP)", () => {
@@ -180,8 +181,8 @@ describe("computeCrap", () => {
 			threshold: 1,
 			staleTolerance: "tag",
 		});
-		expect(findings[0].coverage_pct).toBe(0);
-		expect(findings[0].crap_score).toBe(110); // comp=10, cov=0
+		expect(nonNull(findings[0]).coverage_pct).toBe(0);
+		expect(nonNull(findings[0]).crap_score).toBe(110); // comp=10, cov=0
 	});
 
 	it("falls back to line-slack match (name-agnostic) after a rename", () => {
@@ -195,7 +196,7 @@ describe("computeCrap", () => {
 			staleTolerance: "tag",
 		});
 		// Line-slack fallback triggers → picks up the 80% coverage.
-		expect(findings[0].coverage_pct).toBe(80);
+		expect(nonNull(findings[0]).coverage_pct).toBe(80);
 	});
 
 	it("sets stale=true when file is newer than coverage", () => {
@@ -208,7 +209,7 @@ describe("computeCrap", () => {
 			threshold: 1,
 			staleTolerance: "tag",
 		});
-		expect(findings[0].stale).toBe(true);
+		expect(nonNull(findings[0]).stale).toBe(true);
 	});
 
 	it("sets stale=false when file is older than coverage", () => {
@@ -221,7 +222,7 @@ describe("computeCrap", () => {
 			threshold: 1,
 			staleTolerance: "tag",
 		});
-		expect(findings[0].stale).toBe(false);
+		expect(nonNull(findings[0]).stale).toBe(false);
 	});
 
 	it("reports findings with stale=true when staleTolerance is `include`", () => {
@@ -235,7 +236,7 @@ describe("computeCrap", () => {
 			staleTolerance: "include",
 		});
 		expect(findings).toHaveLength(1);
-		expect(findings[0].stale).toBe(true);
+		expect(nonNull(findings[0]).stale).toBe(true);
 	});
 });
 
@@ -258,7 +259,7 @@ describe("computeCrapForFile", () => {
 			staleTolerance: "tag",
 		});
 		expect(findings).toHaveLength(1);
-		expect(findings[0].function).toBe("foo");
+		expect(nonNull(findings[0]).function).toBe("foo");
 	});
 
 	it("returns empty when perFile is undefined", () => {

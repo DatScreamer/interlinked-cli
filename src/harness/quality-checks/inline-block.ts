@@ -22,6 +22,7 @@ import {
 import { loadDisabledLibraries, runFootgunChecks } from "../library-footguns/registry.js";
 import type { DiffAwareConfig, HarnessEvent, PreEditBaseline } from "../types.js";
 import type { QualityCheckResult } from "./result-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Read-only context the inline-check block needs from the orchestrator. */
 export interface InlineBlockContext {
@@ -170,7 +171,7 @@ function checkTestFileBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 			severity: "warning",
 			message: `No test file found for ${filePath}`,
 			file: filePath,
-			detail: noTestFile[0].text,
+			detail: nonNull(noTestFile[0]).text,
 		},
 	];
 }
@@ -332,12 +333,12 @@ function checkFootgunBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 		const shown = bucket.slice(0, 5);
 		const detail = `${shown
 			.map((f) => `  L${f.match.line}: ${f.match.text}`)
-			.join("\n")}\n→ ${first.fixInstruction}`;
+			.join("\n")}\n→ ${nonNull(first).fixInstruction}`;
 		const overflow = bucket.length > 5 ? `\n  ... and ${bucket.length - 5} more` : "";
 		out.push({
 			name: id,
 			severity: "warning",
-			message: `${bucket.length} ${first.name} issue(s) in ${filePath} [${first.library}]`,
+			message: `${bucket.length} ${nonNull(first).name} issue(s) in ${filePath} [${nonNull(first).library}]`,
 			file: filePath,
 			detail: detail + overflow,
 		});

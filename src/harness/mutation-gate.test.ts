@@ -14,6 +14,7 @@ import {
 	mutationScore,
 	saveMutationBaseline,
 } from "./mutation-gate.js";
+import { nonNull } from "../lib/non-null.js";
 
 const DEFAULT_CONFIG: MutationGateConfig = {
 	enabled: true,
@@ -215,7 +216,7 @@ describe("compareMutation — ratchet (decrease detection)", () => {
 			config: DEFAULT_CONFIG,
 			repoRoot: "/repo",
 		});
-		expect(res.nextBaseline.files["src/foo.ts"].score).toBe(0.9);
+		expect(nonNull(res.nextBaseline.files["src/foo.ts"]).score).toBe(0.9);
 		expect(res.stats.files_improved).toBe(1);
 	});
 });

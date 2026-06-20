@@ -10,6 +10,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Checks — Opinionated Code Quality
@@ -41,7 +42,7 @@ export function checkBooleanTrap(content: string, filePath: string): InlineMatch
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		// Must have a function call on this line
 		if (!/\w\s*\(/.test(line)) continue;
@@ -49,7 +50,7 @@ export function checkBooleanTrap(content: string, filePath: string): InlineMatch
 		// Count boolean literals at top-level argument positions
 		if (countTopLevelBooleanArgs(line) < 2) continue;
 
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
@@ -125,13 +126,13 @@ export function checkFunctionArity(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		let funcName: string | null = null;
 		for (const pat of funcPatterns) {
 			const m = trimmed.match(pat);
 			if (m) {
-				funcName = m[1];
+				funcName = nonNull(m[1]);
 				break;
 			}
 		}
@@ -141,7 +142,7 @@ export function checkFunctionArity(content: string, filePath: string): InlineMat
 		const paramMatch = paramSig.match(/\(([^)]*)\)/);
 		if (!paramMatch) continue;
 
-		const paramStr = paramMatch[1].trim();
+		const paramStr = nonNull(paramMatch[1]).trim();
 		if (paramStr.length === 0) continue;
 
 		// Skip destructured single-param: function f({ a, b, c, d, e })
@@ -201,7 +202,7 @@ export function checkPositionalOptionalBoolean(
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!JS_TS_FUNC_PATTERNS.some((pat) => pat.test(trimmed))) continue;
 
 		const sig = collectFunctionSignature(strippedLines, i);
@@ -214,7 +215,7 @@ export function checkPositionalOptionalBoolean(
 			if (offender !== null) {
 				matches.push({
 					line: i + 1,
-					text: `[positional optional boolean: ${offender}] ${originalLines[i].trim().slice(0, 120)}`,
+					text: `[positional optional boolean: ${offender}] ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 				});
 				break; // one match per function is enough
 			}
@@ -251,7 +252,7 @@ export function checkManyOptionalParams(content: string, filePath: string): Inli
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!JS_TS_FUNC_PATTERNS.some((pat) => pat.test(trimmed))) continue;
 
 		const sig = collectFunctionSignature(strippedLines, i);
@@ -263,7 +264,7 @@ export function checkManyOptionalParams(content: string, filePath: string): Inli
 		if (optionalCount >= 3) {
 			matches.push({
 				line: i + 1,
-				text: `[${optionalCount} optional params → consider options object] ${originalLines[i].trim().slice(0, 100)}`,
+				text: `[${optionalCount} optional params → consider options object] ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 			});
 		}
 	}
@@ -330,8 +331,8 @@ function findPositionalOptionalBoolean(param: string): string | null {
 	}
 	const idMatch = stripped.match(/^(\w+)([\s\S]*)$/);
 	if (!idMatch) return null;
-	const name = idMatch[1];
-	const rest = idMatch[2].trim();
+	const name = nonNull(idMatch[1]);
+	const rest = nonNull(idMatch[2]).trim();
 	// `?: boolean` (no union — narrow to avoid FP on tri-state configs)
 	if (/^\?\s*:\s*boolean\s*$/.test(rest)) return name;
 	// `: boolean = (true|false)`
@@ -381,10 +382,10 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
 		if (matches.length >= 10) break;
 
 		// Find catch blocks
-		if (!/\bcatch\s*(?:\([^)]*\))?\s*\{/.test(strippedLines[i])) continue;
+		const catchLine = nonNull(strippedLines[i]);
+		if (!/\bcatch\s*(?:\([^)]*\))?\s*\{/.test(catchLine)) continue;
 
 		// Find the catch block's opening brace (skip the } from try block)
-		const catchLine = strippedLines[i];
 		const catchIdx = catchLine.search(/\bcatch\b/);
 		const catchOpenBrace = catchLine.indexOf("{", catchIdx);
 
@@ -395,7 +396,7 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
 		let started = false;
 
 		for (let j = i; j < Math.min(i + 8, strippedLines.length); j++) {
-			const line = strippedLines[j];
+			const line = nonNull(strippedLines[j]);
 			const startCol = j === i ? catchOpenBrace : 0;
 			for (let k = startCol; k < line.length; k++) {
 				if (line[k] === "{") {
@@ -407,7 +408,9 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
 			if (started) {
 				bodyLines.push(j === i ? line.slice(catchOpenBrace) : line);
 				originalBodyLines.push(
-					j === i ? originalLines[j].slice(catchOpenBrace) : originalLines[j],
+					j === i
+						? nonNull(originalLines[j]).slice(catchOpenBrace)
+						: nonNull(originalLines[j]),
 				);
 			}
 			if (started && braceDepth === 0) break;
@@ -434,7 +437,7 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
 		);
 		if (!returnMatch) continue;
 
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;

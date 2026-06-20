@@ -72,6 +72,7 @@ vi.mock("../lib/formatter.js", () => ({
 // the actual getOutputMode + output wiring rather than re-stubbing it.
 
 import { cleanCommand } from "./clean.js";
+import { nonNull } from "../lib/non-null.js";
 
 const HOOK_SESSIONS = "/repo/.interlinked/hooks/agent-sessions";
 const ACTIVITY = "/repo/.interlinked/activity.jsonl";
@@ -160,9 +161,9 @@ describe("clean — stale hook session files", () => {
 		const payload = lastJson();
 		const items = payload.stale_items as Array<{ type: string; path: string; age?: string }>;
 		expect(items).toHaveLength(1);
-		expect(items[0].type).toBe("session_file");
-		expect(items[0].path).toBe(`${HOOK_SESSIONS}/old.json`);
-		expect(items[0].age).toBe("1d"); // 30h -> floor(30/24)=1d
+		expect(nonNull(items[0]).type).toBe("session_file");
+		expect(nonNull(items[0]).path).toBe(`${HOOK_SESSIONS}/old.json`);
+		expect(nonNull(items[0]).age).toBe("1d"); // 30h -> floor(30/24)=1d
 		expect(payload.removed).toEqual([]);
 		expect(unlinked).toEqual([]);
 	});
@@ -189,7 +190,7 @@ describe("clean — stale hook session files", () => {
 		vfs.files = { [`${HOOK_SESSIONS}/h.json`]: { mtimeMs: NOW - 25 * 60 * 60 * 1000 } };
 		await cleanCommand({ json: true });
 		const items = lastJson().stale_items as Array<{ age?: string }>;
-		expect(items[0].age).toBe("1d"); // 25h -> 1d
+		expect(nonNull(items[0]).age).toBe("1d"); // 25h -> 1d
 	});
 
 	it("readdir throwing on hook sessions dir is swallowed (treated empty)", async () => {
@@ -221,8 +222,8 @@ describe("clean — large activity log", () => {
 		await cleanCommand({ json: true });
 		const items = lastJson().stale_items as Array<{ type: string; detail: string }>;
 		expect(items).toHaveLength(1);
-		expect(items[0].type).toBe("large_activity_log");
-		expect(items[0].detail).toContain("60.0 MB");
+		expect(nonNull(items[0]).type).toBe("large_activity_log");
+		expect(nonNull(items[0]).detail).toContain("60.0 MB");
 		expect(written).toEqual([]);
 	});
 
@@ -309,9 +310,9 @@ describe("clean — stale local sessions", () => {
 		await cleanCommand({ json: true });
 		const items = lastJson().stale_items as Array<{ type: string; path: string; age?: string }>;
 		expect(items).toHaveLength(1);
-		expect(items[0].type).toBe("stale_session");
-		expect(items[0].path).toBe(`${LOCAL_SESSIONS}/old.json`);
-		expect(items[0].age).toBe("2d");
+		expect(nonNull(items[0]).type).toBe("stale_session");
+		expect(nonNull(items[0]).path).toBe(`${LOCAL_SESSIONS}/old.json`);
+		expect(nonNull(items[0]).age).toBe("2d");
 		expect(unlinked).toEqual([]);
 	});
 
@@ -350,9 +351,9 @@ describe("clean — orphaned hook entries", () => {
 		await cleanCommand({ json: true });
 		const items = lastJson().stale_items as Array<{ type: string; detail: string }>;
 		expect(items).toHaveLength(1);
-		expect(items[0].type).toBe("orphaned_hook");
-		expect(items[0].detail).toContain("Claude Code");
-		expect(items[0].detail).toContain("/gone/interlinked-activity.mjs");
+		expect(nonNull(items[0]).type).toBe("orphaned_hook");
+		expect(nonNull(items[0]).detail).toContain("Claude Code");
+		expect(nonNull(items[0]).detail).toContain("/gone/interlinked-activity.mjs");
 	});
 
 	it("does NOT flag when referenced script exists", async () => {

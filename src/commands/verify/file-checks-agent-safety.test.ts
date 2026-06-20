@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
 import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function ctx(content: string, file = "/tmp/sample.ts"): FileCheckContext {
 	return { file, content, relPath: "sample.ts", cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -33,21 +34,21 @@ describe("runAgentSafetyChecks", () => {
 		const c = ctx('throw "boom";\n');
 		runAgentSafetyChecks(c);
 		expect(c.r.throwLiteral.length).toBeGreaterThan(0);
-		expect(c.r.throwLiteral[0].check).toBe("throw_literal");
+		expect(nonNull(c.r.throwLiteral[0]).check).toBe("throw_literal");
 	});
 
 	it("flags eval usage (eval_usage)", () => {
 		const c = ctx('const out = eval(userInput);\n');
 		runAgentSafetyChecks(c);
 		expect(c.r.evalUsage.length).toBeGreaterThan(0);
-		expect(c.r.evalUsage[0].check).toBe("eval_usage");
+		expect(nonNull(c.r.evalUsage[0]).check).toBe("eval_usage");
 	});
 
 	it("flags a silently-swallowed promise rejection (silent_promise_catch)", () => {
 		const c = ctx('fetch("/api").catch(() => {});\n');
 		runAgentSafetyChecks(c);
 		expect(c.r.silentPromiseSwallow.length).toBeGreaterThan(0);
-		expect(c.r.silentPromiseSwallow[0].check).toBe("silent_promise_catch");
+		expect(nonNull(c.r.silentPromiseSwallow[0]).check).toBe("silent_promise_catch");
 	});
 
 	it("produces the same throw_literal findings as the orchestrator (delegation)", () => {

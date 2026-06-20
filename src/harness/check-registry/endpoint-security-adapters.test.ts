@@ -26,6 +26,7 @@ import {
 	adaptEndpointMissingTenantFilter,
 	adaptEndpointSsrfShape,
 } from "./endpoint-security-adapters.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tmpRoot: string;
 
@@ -82,11 +83,11 @@ describe("endpoint-security-adapters: detector fires (positive case)", () => {
 		const matches = adaptEndpointAuthMissing(content, file);
 		expect(matches.length).toBeGreaterThan(0);
 		const m = matches[0];
-		expect(typeof m.line).toBe("number");
-		expect(typeof m.text).toBe("string");
+		expect(typeof nonNull(m).line).toBe("number");
+		expect(typeof nonNull(m).text).toBe("string");
 		// The detector's message embeds the endpoint method + path, so a
 		// minimum subject check is fine without pinning the exact wording.
-		expect(m.text.toLowerCase()).toContain("auth");
+		expect(nonNull(m).text.toLowerCase()).toContain("auth");
 	});
 
 	it("idor_shape fires when path param feeds a DB key with no auth context", () => {

@@ -9,6 +9,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { MATCH_LIMIT } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * Row 29: Java `Optional<T>....get()` without an `isPresent()` / `orElse()`
@@ -36,14 +37,14 @@ export function checkJavaOptionalGet(content: string, filePath: string): InlineM
 	const optionalNames = new Set<string>();
 	for (const line of strippedLines) {
 		const m = line.match(declRegex);
-		if (m) optionalNames.add(m[1]);
+		if (m) optionalNames.add(nonNull(m[1]));
 	}
 	if (optionalNames.size === 0) return [];
 
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		// Find `<name>.get()` references in this line.
 		for (const name of optionalNames) {
 			const callRe = new RegExp(`\\b${name}\\.get\\s*\\(\\s*\\)`);
@@ -61,7 +62,7 @@ export function checkJavaOptionalGet(content: string, filePath: string): InlineM
 			}
 			if (!guarded) {
 				for (let j = 0; j < i; j++) {
-					if (guardRe.test(strippedLines[j])) {
+					if (guardRe.test(nonNull(strippedLines[j]))) {
 						guarded = true;
 						break;
 					}
@@ -71,7 +72,7 @@ export function checkJavaOptionalGet(content: string, filePath: string): InlineM
 
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 			break; // one finding per line is enough
 		}
@@ -118,7 +119,7 @@ export function checkUnsafeFormatString(content: string, filePath: string): Inli
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const stripLine = strippedLines[i];
+		const stripLine = nonNull(strippedLines[i]);
 		if (
 			!onePosRe.test(stripLine) &&
 			!twoPosRe.test(stripLine) &&
@@ -126,7 +127,7 @@ export function checkUnsafeFormatString(content: string, filePath: string): Inli
 		) {
 			continue;
 		}
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }

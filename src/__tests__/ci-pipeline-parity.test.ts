@@ -41,6 +41,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
 const CI_WORKFLOW = resolve(REPO_ROOT, ".github", "workflows", "ci.yml");
@@ -126,7 +127,7 @@ function extractCiStepNames(yaml: string): string[] {
 	const stepRe = /^\s{6}- name:\s*(.+?)\s*$/gm;
 	let m: RegExpExecArray | null = stepRe.exec(yaml);
 	while (m !== null) {
-		names.push(m[1]);
+		names.push(nonNull(m[1]));
 		m = stepRe.exec(yaml);
 	}
 	return names;

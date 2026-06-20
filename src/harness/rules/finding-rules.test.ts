@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GuardRule } from "../types.js";
 import { findingRulesPath, getFindingRulesWatchPaths, loadFindingRules } from "./finding-rules.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let cwd: string;
 
@@ -59,8 +60,8 @@ describe("loadFindingRules", () => {
 		writeRules([baseRule({ id: "finding-nan-1" })]);
 		const rules = loadFindingRules(cwd);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].id).toBe("finding-nan-1");
-		expect(rules[0].action).toBe("warn");
+		expect(nonNull(rules[0]).id).toBe("finding-nan-1");
+		expect(nonNull(rules[0]).action).toBe("warn");
 	});
 
 	it("preserves finding source metadata for recurrence and CLI consumers", () => {
@@ -117,8 +118,8 @@ describe("loadFindingRules", () => {
 		writeRules([baseRule({ id: "finding-m" })]);
 		writeOverrides({ modifications: { "finding-m": { action: "block", severity: "high" } } });
 		const rule = loadFindingRules(cwd)[0];
-		expect(rule.action).toBe("block");
-		expect(rule.severity).toBe("high");
+		expect(nonNull(rule).action).toBe("block");
+		expect(nonNull(rule).severity).toBe("high");
 	});
 
 	it("skips rows without an id", () => {

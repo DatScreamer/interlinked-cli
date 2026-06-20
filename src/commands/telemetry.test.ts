@@ -131,6 +131,7 @@ vi.mock("../harness/telemetry-spool.js", () => ({
 
 // Real telemetry.ts under test (its node:* + spool deps are all mocked above).
 import { telemetryShowCommand } from "./telemetry.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- stdout capture -----------------------------------------------------
 let out: string;
@@ -258,7 +259,7 @@ describe("telemetryShowCommand — static json output", () => {
 		expect(payload.ok).toBe(true);
 		expect(payload.path).toBe(DEFAULT_PATH);
 		expect(payload.events).toHaveLength(1);
-		expect(payload.events[0].kind).toBe("check_finding");
+		expect(nonNull(payload.events[0]).kind).toBe("check_finding");
 	});
 
 	it("empty spool yields an empty events array in json mode", async () => {

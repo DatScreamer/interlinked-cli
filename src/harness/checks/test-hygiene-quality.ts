@@ -19,6 +19,7 @@ import {
 } from "./shared.js";
 import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
 import { blankRange, isCodeMatch, isSkippedOrTodoCall, maskCommentsAndStrings } from "./test-hygiene-masking.js";
+import { nonNull } from "../../lib/non-null.js";
 export { checkMockOnlyTest } from "./test-hygiene-quality-mock-only.js";
 
 const TEST_BLOCK_INTRO_RE =
@@ -194,7 +195,7 @@ export function checkDuplicateTestNames(content: string, filePath: string): Inli
 			m = TEST_BLOCK_INTRO_RE.exec(content);
 			continue;
 		}
-		const name = m[2].trim();
+		const name = nonNull(m[2]).trim();
 		if (name.length === 0) {
 			m = TEST_BLOCK_INTRO_RE.exec(content);
 			continue;
@@ -298,7 +299,7 @@ export function checkMockingTheSutSelf(content: string, filePath: string): Inlin
 	SUT_MOCK_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = SUT_MOCK_RE.exec(content);
 	while (m !== null && matches.length < MAX_MATCHES) {
-		const target = m[1];
+		const target = nonNull(m[1]);
 		if (mockTargetIsSut(target, sutBase)) {
 			const offset = m.index;
 			const lineIdx = (content.slice(0, offset).match(/\n/g) || []).length;
@@ -379,7 +380,7 @@ export function checkHappyPathOnlyTest(content: string, filePath: string): Inlin
 			firstCaseLine = (executableContent.slice(0, t.index).match(/\n/g) || []).length + 1;
 		}
 		caseCount++;
-		names.push(t[2]);
+		names.push(nonNull(t[2]));
 		t = TEST_BLOCK_INTRO_RE.exec(executableContent);
 	}
 	if (caseCount < MIN_CASES_FOR_HAPPY_PATH) return [];
@@ -388,7 +389,7 @@ export function checkHappyPathOnlyTest(content: string, filePath: string): Inlin
 	let d: RegExpExecArray | null = DESCRIBE_NAME_RE.exec(executableContent);
 	while (d !== null) {
 		if (isCodeMatch(executableMaskedContent, d.index)) {
-			names.push(d[2]);
+			names.push(nonNull(d[2]));
 		}
 		d = DESCRIBE_NAME_RE.exec(executableContent);
 	}
@@ -422,7 +423,7 @@ export function hasAnyProjectSourceImport(content: string): boolean {
 	const re = /(?:from|require)\s*\(?\s*["'](\.\.\/[^"']+)["']/g;
 	let m: RegExpExecArray | null = re.exec(content);
 	while (m !== null) {
-		const spec = m[1];
+		const spec = nonNull(m[1]);
 		const isTestImport = /\.(test|spec)\./.test(spec);
 		const isMockImport = /(?:^|\/)__mocks__\//.test(spec);
 		const isFixtureImport = /(?:^|\/)__fixtures__\//.test(spec);

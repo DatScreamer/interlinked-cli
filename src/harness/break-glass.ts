@@ -14,6 +14,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Case-insensitive match for the literal token `break glass`. Enforces a
  *  word boundary so false positives on things like `breakglass.com` don't
@@ -159,7 +160,7 @@ export function summarizeBreakGlass(
 	}
 	return {
 		recent_count: recent.length,
-		since: recent.length > 0 ? recent[0].ts : null,
+		since: recent.length > 0 ? nonNull(recent[0]).ts : null,
 		distinct_days: distinctDays.size,
 	};
 }

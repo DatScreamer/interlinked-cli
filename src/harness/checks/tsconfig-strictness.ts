@@ -34,6 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import type { InlineMatch } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Required strictness flags + their human-readable rationale. The order
  *  here is the order findings will be reported in, so it's chosen so the
@@ -217,7 +218,7 @@ function isInsideNodeModules(filePath: string): boolean {
 function findCompilerOptionsLine(content: string): number {
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].includes('"compilerOptions"')) return i + 1;
+		if (nonNull(lines[i]).includes('"compilerOptions"')) return i + 1;
 	}
 	return 1;
 }

@@ -22,6 +22,7 @@ import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
 import { classifyTestFailure, isLikelyTestFile } from "./test-classifier.js";
 import { runToolCheckLoop } from "./tool-check-loop.js";
 import { classifyDeterminism, formatQualityWarnings } from "./warning-formatter.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("quality-checks submodules (smoke)", () => {
 	it("secret-detection finds known token formats", () => {
@@ -112,7 +113,7 @@ describe("warning-formatter", () => {
 		const [out] = formatQualityWarnings([
 			{ name: "typescript", severity: "error", message: "boom", detail: "  L1: x" },
 		]);
-		const lines = out.split("\n");
+		const lines = nonNull(out).split("\n");
 		expect(lines[0]).toBe("[interlinked:typescript] [proven] boom");
 		expect(lines[1]).toBe("  L1: x");
 		expect(lines[2]).toMatch(/^→ /);

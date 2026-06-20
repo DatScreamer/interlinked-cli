@@ -24,6 +24,7 @@ import {
 	TEST_DISPATCHERS,
 	type TestDispatcherInput,
 } from "../quality-checks/test-dispatchers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const spawnSyncMock = vi.mocked(mockedSpawnSync);
 const existsSyncMock = vi.mocked(mockedExistsSync);
@@ -149,9 +150,9 @@ describe("runPytestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].name).toBe("affected_tests");
-		expect(out[0].file).toBe(filePath);
-		expect(out[0].message).toContain("pytest");
+		expect(nonNull(out[0]).name).toBe("affected_tests");
+		expect(nonNull(out[0]).file).toBe(filePath);
+		expect(nonNull(out[0]).message).toContain("pytest");
 	});
 });
 
@@ -200,7 +201,7 @@ describe("runCargoTestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("cargo test");
+		expect(nonNull(out[0]).message).toContain("cargo test");
 	});
 
 	it("skips silently when cargo missing (ENOENT)", () => {
@@ -261,7 +262,7 @@ describe("runGoTestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		const args = spawnSyncMock.mock.calls[0][1] as string[];
+		const args = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		expect(args[0]).toBe("test");
 		// Scopes to ./src/pkg — NOT ./... — so unrelated failing packages
 		// don't drown the agent in noise unrelated to the current edit.
@@ -307,7 +308,7 @@ describe("runGoTestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(filePath);
+		expect(nonNull(out[0]).file).toBe(filePath);
 	});
 });
 
@@ -335,7 +336,7 @@ describe("runVitestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("vitest --related");
+		expect(nonNull(out[0]).message).toContain("vitest --related");
 	});
 
 	it("classifies Cannot find module as pre-existing", () => {
@@ -371,7 +372,7 @@ describe("runVitestDispatcher", () => {
 		expect(out).toEqual([]);
 		// --related succeeded → convention fallback must NOT run (one spawn only).
 		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-		const firstArgs = spawnSyncMock.mock.calls[0][1] as string[];
+		const firstArgs = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		expect(firstArgs).toContain("--related");
 	});
 
@@ -422,7 +423,7 @@ describe("runVitestDispatcher", () => {
 		expect(out).toHaveLength(1);
 		// Convention runner was spawned via the default "npx vitest run" parts.
 		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
-		expect(spawnSyncMock.mock.calls[1][0]).toBe("npx");
+		expect(nonNull(spawnSyncMock.mock.calls[1])[0]).toBe("npx");
 	});
 
 	it("uses the absolute test path verbatim when the candidate is outside checkCwd", () => {
@@ -450,10 +451,10 @@ describe("runVitestDispatcher", () => {
 		});
 		expect(out).toHaveLength(1);
 		// The convention runner received the full absolute test path (not sliced).
-		const convArgs = spawnSyncMock.mock.calls[1][1] as string[];
+		const convArgs = nonNull(spawnSyncMock.mock.calls[1])[1] as string[];
 		expect(convArgs.some((a) => a === "/outside/proj/m.test.ts")).toBe(true);
 		// And the message embeds that absolute path.
-		expect(out[0].message).toContain("/outside/proj/m.test.ts");
+		expect(nonNull(out[0]).message).toContain("/outside/proj/m.test.ts");
 	});
 
 	it("returns empty when profile test_runner is not vitest", () => {
@@ -506,11 +507,11 @@ describe("runVitestDispatcher", () => {
 		expect(out).toHaveLength(1);
 		// Convention message embeds the discovered relative test path, NOT
 		// the "vitest --related" wording.
-		expect(out[0].message).toContain("src/conv.test.ts");
-		expect(out[0].message).not.toContain("--related");
+		expect(nonNull(out[0]).message).toContain("src/conv.test.ts");
+		expect(nonNull(out[0]).message).not.toContain("--related");
 		// Convention runner invoked with the profile command head ("npx").
 		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
-		const convArgs = spawnSyncMock.mock.calls[1][1] as string[];
+		const convArgs = nonNull(spawnSyncMock.mock.calls[1])[1] as string[];
 		expect(convArgs).toContain("--reporter=verbose");
 		expect(convArgs.some((a) => a.endsWith("conv.test.ts"))).toBe(true);
 	});
@@ -542,7 +543,7 @@ describe("runVitestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("src/err.test.ts");
+		expect(nonNull(out[0]).message).toContain("src/err.test.ts");
 	});
 
 	it("convention fallback skips silently when the runner binary is missing (ENOENT)", () => {
@@ -661,7 +662,7 @@ describe("runVitestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		const detail = out[0].detail;
+		const detail = nonNull(out[0]).detail;
 		expect(detail).toContain("stderr-line-A");
 		expect(detail).toContain("AssertionError: nope");
 		// stderr appears before the stdout assertion line in the combined output.
@@ -686,11 +687,11 @@ describe("runVitestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		const lines = out[0].detail.split("\n");
+		const lines = nonNull(out[0]).detail.split("\n");
 		expect(lines).toHaveLength(8);
 		// Early lines dropped, tail retained.
-		expect(out[0].detail).not.toContain("line-0");
-		expect(out[0].detail).toContain("AssertionError: boom");
+		expect(nonNull(out[0]).detail).not.toContain("line-0");
+		expect(nonNull(out[0]).detail).toContain("AssertionError: boom");
 	});
 });
 
@@ -711,7 +712,7 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		const args = spawnSyncMock.mock.calls[0][1] as string[];
+		const args = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		// relative("/repo","/repo") === "" → falls back to "."
 		expect(args).toContain(".");
 		expect(args).toEqual(["test", "-count=1", "."]);
@@ -728,7 +729,7 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		const args = spawnSyncMock.mock.calls[0][1] as string[];
+		const args = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		expect(args).toContain("./internal/svc");
 	});
 
@@ -745,10 +746,10 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		const args = spawnSyncMock.mock.calls[0][1] as string[];
+		const args = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		const pkgArg = args[2];
-		expect(pkgArg.startsWith("..")).toBe(true);
-		expect(pkgArg.startsWith("./..")).toBe(false);
+		expect(nonNull(pkgArg).startsWith("..")).toBe(true);
+		expect(nonNull(pkgArg).startsWith("./..")).toBe(false);
 	});
 
 	it("classifies a generic build failure (undefined symbol) as pre-existing", () => {
@@ -845,7 +846,7 @@ describe("runPytestDispatcher — additional branches", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].severity).toBe("warning");
+		expect(nonNull(out[0]).severity).toBe("warning");
 	});
 
 	it("relativizes the test path against checkCwd in the pytest invocation", () => {
@@ -860,10 +861,10 @@ describe("runPytestDispatcher — additional branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		const args = spawnSyncMock.mock.calls[0][1] as string[];
+		const args = nonNull(spawnSyncMock.mock.calls[0])[1] as string[];
 		// First existing candidate for src/rel.py is the sibling test_rel.py.
 		const relArg = args[args.length - 1];
-		expect(relArg.startsWith("/")).toBe(false);
+		expect(nonNull(relArg).startsWith("/")).toBe(false);
 		expect(relArg).toContain("rel");
 	});
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode } from "../types.js";
 import { checkLayerBoundaryViolations } from "./layer-boundary.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function moduleNode(id: string, file: string): ArtifactNode {
 	return {
@@ -57,8 +58,8 @@ describe("checkLayerBoundaryViolations", () => {
 			{ from: uiLayer.id, cannot_import: [dbLayer.id] },
 		]);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("layer_boundary_violation");
-		expect(findings[0].affected_files).toEqual(["src/db/b.ts"]);
+		expect(nonNull(findings[0]).name).toBe("layer_boundary_violation");
+		expect(nonNull(findings[0]).affected_files).toEqual(["src/db/b.ts"]);
 	});
 
 	it("does not flag an import when no forbidden relationship matches", () => {

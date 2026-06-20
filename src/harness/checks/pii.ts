@@ -8,6 +8,7 @@ import {
 	JS_TS_ALL_EXTS,
 	stripComments,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // PII Detection
@@ -121,7 +122,7 @@ export function checkPiiInSource(
 	for (const piiPattern of activePatterns) {
 		for (let i = 0; i < strippedLines.length; i++) {
 			if (matches.length >= 20) return matches;
-			const line = strippedLines[i];
+			const line = nonNull(strippedLines[i]);
 			if (!piiPattern.pattern.test(line)) continue;
 			// Check skip pattern for false positive suppression
 			if (piiPattern.skip?.test(line)) continue;
@@ -129,7 +130,7 @@ export function checkPiiInSource(
 			if (/format:|example:|e\.g\.|placeholder|XXXX|sample/i.test(line)) continue;
 			matches.push({
 				line: i + 1,
-				text: `[pii:${piiPattern.name}] ${originalLines[i].trim().slice(0, 120)}`,
+				text: `[pii:${piiPattern.name}] ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 	}
@@ -175,7 +176,7 @@ export function checkMixedErrorStrategy(content: string, filePath: string): Inli
 		/\breturn\s+\{[^}]*(?:success\s*:\s*false|error\s*:|err\s*:)|return\s+(?:null|undefined)\s*;?\s*\/\/.*error/i;
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 
 		// Detect function start
 		if (!inFunc && FUNC_START.test(line) && line.includes("{")) {
@@ -204,10 +205,10 @@ export function checkMixedErrorStrategy(content: string, filePath: string): Inli
 			if (funcDepth <= 0) {
 				if (throwLines.length > 0 && returnErrorLines.length > 0) {
 					// Report on the function start line
-					const funcLine = originalLines[funcStartLine].trim().slice(0, 120);
+					const funcLine = nonNull(originalLines[funcStartLine]).trim().slice(0, 120);
 					matches.push({
 						line: funcStartLine + 1,
-						text: `mixed error strategy: function both throws (L${throwLines[0] + 1}) and returns error object (L${returnErrorLines[0] + 1}): ${funcLine}`,
+						text: `mixed error strategy: function both throws (L${nonNull(throwLines[0]) + 1}) and returns error object (L${nonNull(returnErrorLines[0]) + 1}): ${funcLine}`,
 					});
 				}
 				inFunc = false;

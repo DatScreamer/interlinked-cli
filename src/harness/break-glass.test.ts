@@ -9,6 +9,7 @@ import {
 	readBreakGlassLog,
 	summarizeBreakGlass,
 } from "./break-glass.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Fixed instant used for relative-time math in the `summarizeBreakGlass`
 // tests below. The `non_deterministic_test` check flags raw `Date.now()` in
@@ -76,7 +77,7 @@ describe("logBreakGlass / readBreakGlassLog", () => {
 		expect(text.split("\n").filter(Boolean).length).toBe(1);
 		const entries = readBreakGlassLog(tmp);
 		expect(entries.length).toBe(1);
-		expect(entries[0].user).toBe("alice@x");
+		expect(nonNull(entries[0]).user).toBe("alice@x");
 	});
 
 	it("appends multiple entries", () => {

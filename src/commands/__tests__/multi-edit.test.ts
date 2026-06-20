@@ -40,6 +40,7 @@ import {
 	normalizeManifest,
 	runMultiEdit,
 } from "../multi-edit.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ───────────────────────────────────────────────
 // Test utilities — refine + return the narrowed result so tests remain
@@ -216,7 +217,7 @@ describe("normalizeManifest", () => {
 			"/tmp/foo.ts",
 		);
 		expect(batches).toHaveLength(1);
-		expect(batches[0].path).toBe("/tmp/foo.ts");
+		expect(nonNull(batches[0]).path).toBe("/tmp/foo.ts");
 	});
 
 	it("rejects single-file manifest without a path argument", () => {
@@ -236,7 +237,7 @@ describe("normalizeManifest", () => {
 			],
 		});
 		expect(batches).toHaveLength(2);
-		expect(batches[1].path).toBe("b.ts");
+		expect(nonNull(batches[1]).path).toBe("b.ts");
 	});
 
 	it("rejects multi-file manifest combined with a positional path", () => {

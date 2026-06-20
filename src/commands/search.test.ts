@@ -102,6 +102,7 @@ vi.mock("../lib/output.js", () => ({
 
 // Imported after the mocks are declared so the SUT binds to them.
 import { searchCommand } from "./search.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Test helpers
@@ -202,7 +203,7 @@ function withNativeTree(tree: Record<string, string[]>, files: Record<string, st
 		return {
 			isDirectory: () => isDir,
 			isFile: () => isFile,
-			size: isFile ? files[p].length : 0,
+			size: isFile ? nonNull(files[p]).length : 0,
 		};
 	});
 	mockReadFileSync.mockImplementation((p: string) => {
@@ -306,7 +307,7 @@ describe("searchCommand — ripgrep engine", () => {
 		);
 		searchCommand("needle", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].file).toBe("src/a.ts");
+		expect(nonNull(matches[0]).file).toBe("src/a.ts");
 	});
 
 	it("extracts the match line number", () => {
@@ -315,7 +316,7 @@ describe("searchCommand — ripgrep engine", () => {
 		);
 		searchCommand("needle", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].line).toBe(12);
+		expect(nonNull(matches[0]).line).toBe(12);
 	});
 
 	it("extracts the submatch column from the first submatch", () => {
@@ -324,14 +325,14 @@ describe("searchCommand — ripgrep engine", () => {
 		);
 		searchCommand("needle", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].column).toBe(6);
+		expect(nonNull(matches[0]).column).toBe(6);
 	});
 
 	it("strips the trailing newline from the match text", () => {
 		withRipgrep(`${rgMatch("/repo/a.ts", 1, "const needle = 1")}\n${rgSummary(1)}`);
 		searchCommand("needle", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].text).toBe("const needle = 1");
+		expect(nonNull(matches[0]).text).toBe("const needle = 1");
 	});
 
 	it("reports the engine, total, and searched-file count", () => {
@@ -372,7 +373,7 @@ describe("searchCommand — ripgrep engine", () => {
 		withRipgrep(stdout);
 		searchCommand("needle", { json: true, context: "2" });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].context_before).toEqual(["line before"]);
+		expect(nonNull(matches[0]).context_before).toEqual(["line before"]);
 	});
 
 	it("attaches trailing context to the preceding match (context_after)", () => {
@@ -384,7 +385,7 @@ describe("searchCommand — ripgrep engine", () => {
 		withRipgrep(stdout);
 		searchCommand("needle", { json: true, context: "2" });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].context_after).toEqual(["line after"]);
+		expect(nonNull(matches[0]).context_after).toEqual(["line after"]);
 	});
 
 	it("treats context beyond the window (or a different file) as leading for the next match", () => {
@@ -400,8 +401,8 @@ describe("searchCommand — ripgrep engine", () => {
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
 		// The far context becomes leading context for the second match, not
 		// trailing on the first.
-		expect(matches[0].context_after).toEqual([]);
-		expect(matches[1].context_before).toEqual(["far context"]);
+		expect(nonNull(matches[0]).context_after).toEqual([]);
+		expect(nonNull(matches[1]).context_before).toEqual(["far context"]);
 	});
 
 	it("skips malformed JSON lines without throwing", () => {
@@ -489,17 +490,17 @@ describe("searchCommand — native engine", () => {
 		expect(out.searched_files).toBe(2);
 		const matches = out.matches as Array<Record<string, unknown>>;
 		expect(matches).toHaveLength(1);
-		expect(matches[0].file).toBe("src/a.ts");
-		expect(matches[0].line).toBe(2);
-		expect(matches[0].text).toBe("found the needle");
+		expect(nonNull(matches[0]).file).toBe("src/a.ts");
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text).toBe("found the needle");
 	});
 
 	it("attaches before/after context windows from the file", () => {
 		withNativeTree({ "/repo": ["a.ts"] }, { "/repo/a.ts": "l1\nl2\nNEEDLE\nl4\nl5" });
 		searchCommand("NEEDLE", { json: true, context: "1" });
 		const m = (loggedJson().matches as Array<Record<string, unknown>>)[0];
-		expect(m.context_before).toEqual(["l2"]);
-		expect(m.context_after).toEqual(["l4"]);
+		expect(nonNull(m).context_before).toEqual(["l2"]);
+		expect(nonNull(m).context_after).toEqual(["l4"]);
 	});
 
 	it("skips SKIP_DIRS, dotfiles, non-searchable extensions, and oversized files", () => {
@@ -521,7 +522,7 @@ describe("searchCommand — native engine", () => {
 		expect(out.searched_files).toBe(1);
 		const matches = out.matches as Array<Record<string, unknown>>;
 		expect(matches).toHaveLength(1);
-		expect(matches[0].file).toBe("ok.ts");
+		expect(nonNull(matches[0]).file).toBe("ok.ts");
 	});
 
 	it("recovers when readdirSync throws (unreadable directory)", () => {
@@ -576,7 +577,7 @@ describe("searchCommand — native engine", () => {
 		const out = loggedJson();
 		// Only a.ts passes the *.ts glob.
 		expect(out.searched_files).toBe(1);
-		expect((out.matches as Array<Record<string, unknown>>)[0].file).toBe("a.ts");
+		expect(nonNull((out.matches as Array<Record<string, unknown>>)[0]).file).toBe("a.ts");
 	});
 
 	it("native truncates to the limit and flags truncated", () => {
@@ -594,7 +595,7 @@ describe("searchCommand — native engine", () => {
 		searchCommand("Needle", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toBe("Needle");
+		expect(nonNull(matches[0]).text).toBe("Needle");
 	});
 
 	it("case-insensitive when query is all lowercase (smart case on)", () => {
@@ -610,7 +611,7 @@ describe("searchCommand — native engine", () => {
 		searchCommand("a.c", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toBe("a.c");
+		expect(nonNull(matches[0]).text).toBe("a.c");
 	});
 
 	it("compiles a query with regex metacharacters without throwing", () => {
@@ -629,7 +630,7 @@ describe("searchCommand — native engine", () => {
 		searchCommand("a(|b", { json: true });
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toBe("a(|b");
+		expect(nonNull(matches[0]).text).toBe("a(|b");
 	});
 
 	it("ignores a directory entry that is neither a file nor a directory", () => {
@@ -646,7 +647,7 @@ describe("searchCommand — native engine", () => {
 		const out = loggedJson();
 		// Only the real file is searched; the special entry is ignored.
 		expect(out.searched_files).toBe(1);
-		expect((out.matches as Array<Record<string, unknown>>)[0].file).toBe("ok.ts");
+		expect(nonNull((out.matches as Array<Record<string, unknown>>)[0]).file).toBe("ok.ts");
 	});
 });
 
@@ -669,12 +670,12 @@ describe("searchCommand — multi-term queries", () => {
 		const rankings = out.rankings as Array<Record<string, unknown>>;
 		expect(rankings).toBeDefined();
 		// both.ts matches 2 terms → ranked above one.ts (1 term).
-		expect(rankings[0].file).toBe("both.ts");
-		expect(rankings[0].termsMatched).toBe(2);
-		expect(rankings[0].totalTerms).toBe(2);
-		expect(rankings[0].matchedTerms).toEqual(["oauth", "token"]);
-		expect(rankings[1].file).toBe("one.ts");
-		expect(rankings[1].termsMatched).toBe(1);
+		expect(nonNull(rankings[0]).file).toBe("both.ts");
+		expect(nonNull(rankings[0]).termsMatched).toBe(2);
+		expect(nonNull(rankings[0]).totalTerms).toBe(2);
+		expect(nonNull(rankings[0]).matchedTerms).toEqual(["oauth", "token"]);
+		expect(nonNull(rankings[1]).file).toBe("one.ts");
+		expect(nonNull(rankings[1]).termsMatched).toBe(1);
 	});
 
 	it("filters stop words so a query reduces to a single term (no ranking)", () => {
@@ -706,7 +707,7 @@ describe("searchCommand — multi-term queries", () => {
 		const out = loggedJson();
 		expect(out.query).toBe("oauth token");
 		expect(out.rankings).toBeDefined();
-		expect((out.rankings as Array<Record<string, unknown>>)[0].termsMatched).toBe(2);
+		expect(nonNull((out.rankings as Array<Record<string, unknown>>)[0]).termsMatched).toBe(2);
 	});
 });
 
@@ -921,7 +922,7 @@ describe("searchCommand — option parsing", () => {
 		expect(argv[argv.length - 1]).toBe("/somewhere");
 		// relative() against the path dir resolves the file cleanly.
 		const matches = loggedJson().matches as Array<Record<string, unknown>>;
-		expect(matches[0].file).toBe("a.ts");
+		expect(nonNull(matches[0]).file).toBe("a.ts");
 	});
 
 	it("defaults the search directory to process.cwd() when --path is absent", () => {
@@ -967,7 +968,7 @@ describe("searchCommand — ranking color bands", () => {
 		const files: Record<string, string> = {};
 		for (let i = 0; i < 12; i++) {
 			const name = `f${i}.ts`;
-			tree["/repo"].push(name);
+			nonNull(tree["/repo"]).push(name);
 			files[`/repo/${name}`] = "oauth token";
 		}
 		withNativeTree(tree, files);

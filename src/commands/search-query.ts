@@ -6,6 +6,8 @@
 // query splitting, OR-pattern building, and term-density file ranking.
 // Shared result/match/ranking types live here so siblings import one source.
 
+import { nonNull } from "../lib/non-null.js";
+
 // ===========================================
 // Types
 // ===========================================
@@ -162,8 +164,8 @@ export function rankFilesByTermDensity(matches: SearchMatch[], terms: string[]):
 		const allText = [...data.lines].join("\n").toLowerCase();
 		const matchedTerms: string[] = [];
 		for (let i = 0; i < lowerTerms.length; i++) {
-			if (allText.includes(lowerTerms[i])) {
-				matchedTerms.push(terms[i]);
+			if (allText.includes(nonNull(lowerTerms[i]))) {
+				matchedTerms.push(nonNull(terms[i]));
 			}
 		}
 

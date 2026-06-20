@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { extractEndpoints } from "./sveltekit.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("route-map/sveltekit.extractEndpoints", () => {
 	it("extracts GET/POST from src/routes/api/users/+server.ts", () => {
@@ -21,8 +22,8 @@ describe("route-map/sveltekit.extractEndpoints", () => {
 		const filePath = "/abs/src/routes/api/users/[id]/+server.ts";
 		const content = "export async function GET() { return new Response(''); }";
 		const [endpoint] = extractEndpoints(filePath, content);
-		expect(endpoint.path).toBe("/api/users/:id");
-		expect(endpoint.declared_params.map((p) => p.name)).toContain("id");
+		expect(nonNull(endpoint).path).toBe("/api/users/:id");
+		expect(nonNull(endpoint).declared_params.map((p) => p.name)).toContain("id");
 	});
 
 	it("returns [] when the file is not a SvelteKit route", () => {
@@ -37,6 +38,6 @@ describe("route-map/sveltekit.extractEndpoints", () => {
 	it("captures handler_symbol equal to the method name", () => {
 		const filePath = "/abs/src/routes/api/x/+server.ts";
 		const content = "export async function GET() { return new Response(''); }";
-		expect(extractEndpoints(filePath, content)[0].handler_symbol).toBe("GET");
+		expect(nonNull(extractEndpoints(filePath, content)[0]).handler_symbol).toBe("GET");
 	});
 });

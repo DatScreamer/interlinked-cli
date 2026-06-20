@@ -7,6 +7,7 @@ import {
 	parseDeadCodeJson,
 	runSupermodelDeadCode,
 } from "../supermodel-analyses.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // A representative `supermodel dead-code --output json` payload, matching
 // the api.DeadCodeResult schema in
@@ -84,7 +85,7 @@ describe("parseDeadCodeJson", () => {
 		});
 		const result = parseDeadCodeJson(json);
 		expect(result!.candidates).toHaveLength(1);
-		expect(result!.candidates[0].name).toBe("good");
+		expect(nonNull(result!.candidates[0]).name).toBe("good");
 	});
 
 	it("defaults confidence to low, line to 0, reason to empty when absent or invalid", () => {
@@ -92,9 +93,9 @@ describe("parseDeadCodeJson", () => {
 			deadCodeCandidates: [{ file: "a.ts", name: "x", confidence: "bogus" }],
 		});
 		const result = parseDeadCodeJson(json);
-		expect(result!.candidates[0].confidence).toBe("low");
-		expect(result!.candidates[0].line).toBe(0);
-		expect(result!.candidates[0].reason).toBe("");
+		expect(nonNull(result!.candidates[0]).confidence).toBe("low");
+		expect(nonNull(result!.candidates[0]).line).toBe(0);
+		expect(nonNull(result!.candidates[0]).reason).toBe("");
 	});
 
 	it("defaults totalDeclarations to 0 when metadata is absent", () => {

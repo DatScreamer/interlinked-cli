@@ -21,6 +21,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 /** Default doc-file globs. Editable via `commit_cadence.doc_globs` config.
  *  These are paths/patterns whose edits do NOT count toward "uncommitted
@@ -78,7 +79,7 @@ function compileGlob(glob: string): RegExp {
 	if (cached) return cached;
 	let re = "^";
 	for (let i = 0; i < glob.length; i++) {
-		const c = glob[i];
+		const c = nonNull(glob[i]);
 		if (c === "*" && glob[i + 1] === "*") {
 			re += ".*";
 			i++;

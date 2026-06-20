@@ -7,6 +7,7 @@ import {
 	checkMockOnlyTest,
 	checkTestMissingSutImport,
 } from "./test-hygiene-quality.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TEST = "src/lib/foo.test.ts";
 const SRC = "src/lib/foo.ts";
@@ -19,7 +20,7 @@ it("returns 404 when missing", () => { expect(b).toBe(2); });
 `;
 		const matches = checkDuplicateTestNames(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("returns 404 when missing");
+		expect(nonNull(matches[0]).text).toContain("returns 404 when missing");
 	});
 
 	it("flags duplicate test() and specify() too", () => {
@@ -67,7 +68,7 @@ describe("checkA", () => {
 `;
 		const matches = checkDuplicateTestNames(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("same describe scope");
+		expect(nonNull(matches[0]).text).toContain("same describe scope");
 	});
 
 	it("STILL fires when a nested describe duplicates a name from its own scope", () => {
@@ -220,7 +221,7 @@ describe("checkMockOnlyTest", () => {
 		});`;
 		const matches = checkMockOnlyTest(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("mock interactions");
+		expect(nonNull(matches[0]).text).toContain("mock interactions");
 	});
 
 	it("flags a block with multiple positive call assertions and no value check", () => {
@@ -320,7 +321,7 @@ describe("checkHappyPathOnlyTest", () => {
 		`;
 		const matches = checkHappyPathOnlyTest(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("never asserts a failure path");
+		expect(nonNull(matches[0]).text).toContain("never asserts a failure path");
 	});
 
 	it("flags a happy-only file using toEqual / toContain", () => {
@@ -386,7 +387,7 @@ describe("checkHappyPathOnlyTest", () => {
 		`;
 		const matches = checkHappyPathOnlyTest(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("never asserts a failure path");
+		expect(nonNull(matches[0]).text).toContain("never asserts a failure path");
 	});
 
 	it("does not count test-looking fixture strings or comments as real cases", () => {

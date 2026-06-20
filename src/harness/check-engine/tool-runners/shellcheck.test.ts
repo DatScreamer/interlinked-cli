@@ -11,6 +11,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 const runProcessAsyncMock = vi.fn();
@@ -185,9 +186,9 @@ describe("runShellcheck (sync)", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: jsonRelative() }));
 		const out = runShellcheck(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("scripts/deploy.sh");
-		expect(out[0].severity).toBe("error");
-		expect(out[0].ruleId).toBe("SC1009");
+		expect(nonNull(out[0]).file).toBe("scripts/deploy.sh");
+		expect(nonNull(out[0]).severity).toBe("error");
+		expect(nonNull(out[0]).ruleId).toBe("SC1009");
 	});
 
 	it("handles status === 1 with empty/undefined stdout via the '' fallback", () => {
@@ -276,8 +277,8 @@ describe("runShellcheckAsync", () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 1, stdout: jsonRelative() }));
 		const out = await runShellcheckAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe("scripts/deploy.sh");
-		expect(out[0].ruleId).toBe("SC1009");
+		expect(nonNull(out[0]).file).toBe("scripts/deploy.sh");
+		expect(nonNull(out[0]).ruleId).toBe("SC1009");
 	});
 
 	it("returns [] on code === 1 with empty stdout (parser yields no comments)", async () => {

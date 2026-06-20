@@ -29,6 +29,7 @@ import {
 	checkPlatformConditionalAssertion,
 	checkSilentDependencySkip,
 } from "./test-portability.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TEST_PATH = "src/feature.test.ts";
 
@@ -43,7 +44,7 @@ describe("checkPlatformConditionalAssertion", () => {
 		].join("\n");
 		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].text).toMatch(/platform/i);
+		expect(nonNull(matches[0]).text).toMatch(/platform/i);
 	});
 
 	it("fires on a 'macOS-only' comment without any gate", () => {
@@ -103,7 +104,7 @@ describe("checkPlatformConditionalAssertion — evidence tied to the narrated te
 		].join("\n");
 		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(6);
+		expect(nonNull(matches[0]).line).toBe(6);
 	});
 
 	it("fires when process.platform appears only in a comment (prose is not evidence)", () => {
@@ -195,7 +196,7 @@ describe("checkPlatformConditionalAssertion — gates must be platform-related (
 		].join("\n");
 		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(1);
+		expect(nonNull(matches[0]).line).toBe(1);
 	});
 
 	it("stays quiet when the gate condition mixes the platform in", () => {
@@ -240,7 +241,7 @@ describe("checkPlatformConditionalAssertion — gates must be platform-related (
 		].join("\n");
 		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 });
 
@@ -255,7 +256,7 @@ describe("checkPlatformConditionalAssertion — runtime skips are judged by thei
 		].join("\n");
 		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("fires when the dependency-guarded skip uses a braced consequent", () => {
@@ -303,8 +304,8 @@ describe("checkSilentDependencySkip", () => {
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(3);
-		expect(matches[0].text).toMatch(/skipIf/);
+		expect(nonNull(matches[0]).line).toBe(3);
+		expect(nonNull(matches[0]).text).toMatch(/skipIf/);
 	});
 
 	it("fires on camelCase availability flags and explicit null/false comparisons", () => {
@@ -362,7 +363,7 @@ describe("checkSilentDependencySkip — braced and multi-line consequents (revie
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("fires on the multi-line braced form", () => {
@@ -376,7 +377,7 @@ describe("checkSilentDependencySkip — braced and multi-line consequents (revie
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("fires when the block only logs before silently returning", () => {
@@ -461,7 +462,7 @@ describe("checkSilentDependencySkip — only inside test callbacks (review round
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(5);
+		expect(nonNull(matches[0]).line).toBe(5);
 	});
 
 	it("stays out of non-JS test files (callsite shapes are JS-specific)", () => {
@@ -481,7 +482,7 @@ describe("checkSilentDependencySkip — only inside test callbacks (review round
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(5);
+		expect(nonNull(matches[0]).line).toBe(5);
 	});
 });
 
@@ -556,7 +557,7 @@ describe("literal masking (review 2026-06)", () => {
 		].join("\n");
 		const matches = checkSilentDependencySkip(content, TEST_PATH);
 		expect(matches).toHaveLength(1);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 });
 

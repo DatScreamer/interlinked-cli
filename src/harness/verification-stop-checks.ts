@@ -23,6 +23,7 @@
 // branch's gating in lifecycle-stop-warnings.ts can mock one module.
 
 import { basename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import {
 	type CoverageObligation,
 	readOpenCoverageObligations,
@@ -384,7 +385,7 @@ export function formatBisectNotResetWarning(opts: {
 	let lastOp = -1;
 	let lastReset = -1;
 	for (let i = 0; i < opts.commandsRun.length; i++) {
-		const c = opts.commandsRun[i];
+		const c = nonNull(opts.commandsRun[i]);
 		if (BISECT_OP_RE.test(c)) lastOp = i;
 		if (BISECT_RESET_RE.test(c)) lastReset = i;
 	}

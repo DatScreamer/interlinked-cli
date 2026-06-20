@@ -19,6 +19,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { nonNull } from "../lib/non-null.js";
+
 // ---- Mock the conformance pipeline the driver delegates to ---------------
 vi.mock("./determinism-conformance.js", () => ({
 	// The driver imports these two as values; the third (`CorpusItem`) is a
@@ -139,7 +141,7 @@ describe("determinism-replay-driver main()", () => {
 
 		// stdout received exactly one JSON array of the canonical blobs.
 		expect(stdoutCapture).toHaveLength(1);
-		expect(JSON.parse(stdoutCapture[0])).toEqual(["CANON(1)", "CANON(1)"]);
+		expect(JSON.parse(nonNull(stdoutCapture[0]))).toEqual(["CANON(1)", "CANON(1)"]);
 		// Success path: no error, no non-zero exit.
 		expect(consoleErrArgs).toHaveLength(0);
 		expect(exitCodes).toHaveLength(0);
@@ -153,7 +155,7 @@ describe("determinism-replay-driver main()", () => {
 		await runDriverWith([JSON.stringify([{ path: "x.ts", content: "X" }])]);
 
 		expect(mRunPipeline).toHaveBeenCalledExactlyOnceWith("X", "x.ts");
-		expect(JSON.parse(stdoutCapture[0])).toEqual(["EMPTY"]);
+		expect(JSON.parse(nonNull(stdoutCapture[0]))).toEqual(["EMPTY"]);
 		expect(exitCodes).toHaveLength(0);
 	});
 
@@ -162,7 +164,7 @@ describe("determinism-replay-driver main()", () => {
 
 		expect(mRunPipeline).not.toHaveBeenCalled();
 		expect(mCanonicalize).not.toHaveBeenCalled();
-		expect(JSON.parse(stdoutCapture[0])).toEqual([]);
+		expect(JSON.parse(nonNull(stdoutCapture[0]))).toEqual([]);
 		expect(exitCodes).toHaveLength(0);
 	});
 
@@ -172,7 +174,7 @@ describe("determinism-replay-driver main()", () => {
 		await runDriverWith([Buffer.from("{ not json", "utf-8")]);
 
 		expect(consoleErrArgs).toHaveLength(1);
-		expect(consoleErrArgs[0][0]).toBeInstanceOf(Error);
+		expect(nonNull(consoleErrArgs[0])[0]).toBeInstanceOf(Error);
 		expect(exitCodes).toEqual([1]);
 		// Nothing was written to stdout on the failure path.
 		expect(stdoutCapture).toHaveLength(0);

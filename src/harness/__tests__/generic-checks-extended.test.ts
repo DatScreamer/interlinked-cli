@@ -45,6 +45,7 @@ import {
 	checkUntypedCatch,
 	checkUnvalidatedJsonBoundary,
 } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // checkManualFieldCopy
@@ -64,7 +65,7 @@ describe("checkManualFieldCopy", () => {
 		].join("\n");
 		const matches = checkManualFieldCopy(code, "attach.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("flags copies guarded by an inline if (...) — the attachOutcome shape", () => {
@@ -166,7 +167,7 @@ describe("checkUnreachableCode", () => {
 		const code = `function foo() {\n    return 42;\n    console.log("dead");\n}`;
 		const matches = checkUnreachableCode(code, "test.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 
 	it("does NOT flag closing brace after return", () => {
@@ -188,7 +189,7 @@ describe("checkUnreachableCode", () => {
 		const code = `function bar() {\n    throw new Error("fail");\n    cleanup();\n}`;
 		const matches = checkUnreachableCode(code, "util.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 
 	it("does NOT flag closing }; after return", () => {
@@ -280,7 +281,7 @@ describe("checkTrivialAssertions", () => {
 		const code = `it("works", () => {\n    expect(true).toBe(true);\n});`;
 		const matches = checkTrivialAssertions(code, "foo.test.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("Tautological");
+		expect(nonNull(matches[0]).text).toContain("Tautological");
 	});
 
 	it("detects expect(1).toBe(1)", () => {
@@ -329,7 +330,7 @@ describe("checkSuppressionDensity", () => {
 		const code = lines.join("\n");
 		const matches = checkSuppressionDensity(code, "util.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("suppression density");
+		expect(nonNull(matches[0]).text).toContain("suppression density");
 	});
 
 	it("does NOT flag file with low suppression density", () => {
@@ -1210,7 +1211,7 @@ describe("checkFloatingPromises", () => {
 		const code = "async function load() { return 1; }\n\nload();";
 		const matches = checkFloatingPromises(code, "app.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 
 	it("detects bare call to async arrow assignment", () => {
@@ -1795,7 +1796,7 @@ describe("checkFunctionArity", () => {
 			"function create(a: string, b: number, c: boolean, d: string, e: number) {\n  return a;\n}";
 		const matches = checkFunctionArity(code, "util.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("5 params");
+		expect(nonNull(matches[0]).text).toContain("5 params");
 	});
 
 	it("does NOT flag function with 4 parameters", () => {
@@ -1891,7 +1892,7 @@ describe("checkTestDescriptionQuality", () => {
 		const code = `it("works", () => {\n  expect(1).toBe(1);\n});`;
 		const matches = checkTestDescriptionQuality(code, "foo.test.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("vague test name");
+		expect(nonNull(matches[0]).text).toContain("vague test name");
 	});
 
 	it("detects all-noise-words test name", () => {
@@ -2005,7 +2006,7 @@ describe("checkGodFile", () => {
 		const code = exports + padding;
 		const matches = checkGodFile(code, "utils.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("god file");
+		expect(nonNull(matches[0]).text).toContain("god file");
 	});
 
 	it("does NOT flag a focused file (few exports, many lines)", () => {
@@ -2211,7 +2212,7 @@ describe("checkFlagArguments", () => {
 			"function deploy(app: string, force: boolean, dryRun: boolean) {\n  return app;\n}";
 		const matches = checkFlagArguments(code, "deploy.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("2 boolean params");
+		expect(nonNull(matches[0]).text).toContain("2 boolean params");
 	});
 
 	it("detects function with 3 boolean params", () => {
@@ -2219,7 +2220,7 @@ describe("checkFlagArguments", () => {
 			"export function configure(verbose: boolean, silent: boolean, strict: boolean) {\n  return;\n}";
 		const matches = checkFlagArguments(code, "config.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("3 boolean params");
+		expect(nonNull(matches[0]).text).toContain("3 boolean params");
 	});
 
 	it("does NOT flag function with 1 boolean param", () => {
@@ -2253,7 +2254,7 @@ describe("checkCommentedOutCode", () => {
 			"// const oldHandler = async (req) => {\n//     const data = await fetch(url);\n//     return data.json();\n// };";
 		const matches = checkCommentedOutCode(code, "handler.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("commented-out code");
+		expect(nonNull(matches[0]).text).toContain("commented-out code");
 	});
 
 	it("detects commented-out import block", () => {
@@ -2356,7 +2357,7 @@ describe("checkEmptyFunctionBody", () => {
 		const code = "export function processData() {}";
 		const matches = checkEmptyFunctionBody(code, "processor.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("empty function body");
+		expect(nonNull(matches[0]).text).toContain("empty function body");
 	});
 
 	it("detects function returning only null", () => {
@@ -2406,7 +2407,7 @@ describe("checkDeprecationNotice", () => {
 		const code = 'console.warn("This function is deprecated");';
 		const matches = checkDeprecationNotice(code, "api.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("deprecation ceremony");
+		expect(nonNull(matches[0]).text).toContain("deprecation ceremony");
 	});
 
 	it("detects console.log with removed message", () => {
@@ -2419,7 +2420,7 @@ describe("checkDeprecationNotice", () => {
 		const code = "/** @deprecated */\nexport function oldApi() {}";
 		const matches = checkDeprecationNotice(code, "api.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("@deprecated on empty/stub");
+		expect(nonNull(matches[0]).text).toContain("@deprecated on empty/stub");
 	});
 
 	it("does NOT flag @deprecated on function with real body", () => {
@@ -2443,7 +2444,7 @@ describe("checkOrphanedTestStub", () => {
 		const code = 'it("should process data", () => {});';
 		const matches = checkOrphanedTestStub(code, "data.test.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("empty test body");
+		expect(nonNull(matches[0]).text).toContain("empty test body");
 	});
 
 	it("detects test with only return", () => {
@@ -2482,7 +2483,7 @@ describe("checkDeletionComments", () => {
 		const code = "// Removed the old auth handler";
 		const matches = checkDeletionComments(code, "auth.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("deletion narration");
+		expect(nonNull(matches[0]).text).toContain("deletion narration");
 	});
 
 	it("detects 'No longer needed'", () => {
@@ -2549,7 +2550,7 @@ function handleRequest(input) {
 }`;
 		const matches = checkMixedErrorStrategy(code, "handler.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("mixed error strategy");
+		expect(nonNull(matches[0]).text).toContain("mixed error strategy");
 	});
 
 	it("detects function that throws and returns { error: }", () => {
@@ -2619,7 +2620,7 @@ function alsoClean(x) {
 }`;
 		const matches = checkMixedErrorStrategy(code, "utils.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("mixed");
+		expect(nonNull(matches[0]).text).toContain("mixed");
 	});
 
 	it("does NOT flag short files", () => {

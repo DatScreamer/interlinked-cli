@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode } from "../types.js";
 import { checkEnvKeyCompanions } from "./env-key-companions.js";
@@ -55,8 +56,8 @@ describe("checkEnvKeyCompanions", () => {
 
 		const findings = checkEnvKeyCompanions(g, [".env.example"]);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("env_key_companion_untouched");
-		expect(findings[0].affected_files).toEqual(["docs/config.md"]);
-		expect(findings[0].artifact_kind).toBe("env_key");
+		expect(nonNull(findings[0]).name).toBe("env_key_companion_untouched");
+		expect(nonNull(findings[0]).affected_files).toEqual(["docs/config.md"]);
+		expect(nonNull(findings[0]).artifact_kind).toBe("env_key");
 	});
 });

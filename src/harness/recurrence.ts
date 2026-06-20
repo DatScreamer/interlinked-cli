@@ -6,6 +6,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 export type RecurrenceKind =
 	| "harness_caught"
@@ -189,7 +190,7 @@ export function parseDurationMs(input: string): number | null {
 	const match = /^\s*(\d+)\s*([smhdw])\s*$/i.exec(input);
 	if (!match) return null;
 	const amount = Number(match[1]);
-	const unitMs = DURATION_UNITS_MS[match[2].toLowerCase()];
+	const unitMs = DURATION_UNITS_MS[nonNull(match[2]).toLowerCase()];
 	if (!Number.isFinite(amount) || !unitMs) return null;
 	return amount * unitMs;
 }

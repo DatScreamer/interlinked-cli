@@ -11,6 +11,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { isTestFile } from "../checks/shared.js";
 import { extractTemplateInterpolationExpressions, stripAllLiterals } from "../strip-helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Minimum content length before we bother scanning for prompt injections. */
 export const INJECTION_SCAN_MIN_CHARS = 10;
@@ -155,7 +156,7 @@ function collectPermissionsRedosJsdocWarnings(filePath: string, content: string)
 		jsdocMatch !== null;
 		jsdocMatch = singleLineJsdocRe.exec(content)
 	) {
-		if (jsdocMatch[1].includes("*/")) {
+		if (nonNull(jsdocMatch[1]).includes("*/")) {
 			const lineNum = content.slice(0, jsdocMatch.index).split("\n").length;
 			warnings.push(
 				`[interlinked:content-quality] JSDoc at line ${lineNum} in ${filePath} contains "*/" which prematurely closes the comment. Glob patterns like "**/*.ext" break parsers (tsc, biome, esbuild). Rephrase to avoid "*/" sequences.`,
@@ -254,7 +255,7 @@ function collectMarkerEvalWarnings(filePath: string, content: string): string[] 
 function collectInsecureRandomWarning(filePath: string, content: string): string | null {
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		if (!/\bMath\.random\b/.test(lines[i])) continue;
+		if (!/\bMath\.random\b/.test(nonNull(lines[i]))) continue;
 		const ctx = (i > 0 ? `${lines[i - 1]}\n` : "") + lines[i];
 		if (A3_SECURITY_CONTEXT.test(ctx)) {
 			return `[interlinked:content-quality] Math.random() used to derive a security-sensitive value in ${filePath} (line ${i + 1}). Use crypto.randomUUID() or crypto.getRandomValues() instead.`;
@@ -267,7 +268,7 @@ function collectInsecureRandomWarning(filePath: string, content: string): string
 function collectUnguardedJsonParseWarning(filePath: string, content: string): string | null {
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		if (!/\bJSON\.parse\s*\(/.test(lines[i])) continue;
+		if (!/\bJSON\.parse\s*\(/.test(nonNull(lines[i]))) continue;
 		const preceding = lines.slice(Math.max(0, i - 5), i + 1).join("\n");
 		if (!/\btry\s*\{/.test(preceding)) {
 			return `[interlinked:content-quality] JSON.parse() without try-catch at line ${i + 1} in ${filePath}. Wrap in try-catch to handle malformed input.`;

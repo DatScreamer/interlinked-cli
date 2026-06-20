@@ -13,6 +13,7 @@
 // class. These detectors are the deterministic equivalent for one
 // of the most-misused APIs in the Node / Workers ecosystem.
 
+import { nonNull } from "../../lib/non-null.js";
 import { getExtension, type InlineMatch, isGeneratedFile, isTestFile, JS_TS_EXTS } from "../checks/shared.js";
 import type { LibraryFootgunCheck } from "./types.js";
 
@@ -36,7 +37,7 @@ function detectNoTimeout(content: string, filePath: string): InlineMatch[] {
 	FETCH_CALL_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = FETCH_CALL_RE.exec(content);
 	while (m !== null) {
-		const args = m[1];
+		const args = nonNull(m[1]);
 		// Single-line argument check. Multi-line option objects (the
 		// hard case) we skip — the regex above only captures the first
 		// paren-group on a single line. False negatives are acceptable;

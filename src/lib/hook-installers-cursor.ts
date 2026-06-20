@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { buildHookCommand, isPlainObject } from "./hook-installers-shared.js";
 import { isInterlinkedHookEntry } from "./hook-ownership.js";
 import { CLIENT_CURSOR, INTERLINKED_MARKER } from "./hook-types.js";
+import { nonNull } from "./non-null.js";
 
 // Cursor IDE hook events. Cursor exposes the richest hook surface of the
 // supported clients (per https://cursor.com/docs/hooks): per-tool gates
@@ -194,7 +195,7 @@ export function uninstallCursorHooks(cwd: string): boolean {
 		} else {
 			// Drop empty arrays so the file is minimal post-uninstall.
 			for (const k of Object.keys(config.hooks)) {
-				if (config.hooks[k].length === 0) delete config.hooks[k];
+				if (nonNull(config.hooks[k]).length === 0) delete config.hooks[k];
 			}
 			writeFileSync(hooksPath, `${JSON.stringify(config, null, 2)}\n`);
 		}

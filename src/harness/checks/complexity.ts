@@ -8,6 +8,7 @@ import {
 	isTestFile,
 	stripForBraceScan,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Check: Function Complexity
@@ -61,7 +62,7 @@ const BRACE_FUNC_PATTERNS = [
 function matchBraceFuncName(trimmed: string): string | null {
 	for (const pat of BRACE_FUNC_PATTERNS) {
 		const m = trimmed.match(pat);
-		if (m) return m[1];
+		if (m) return nonNull(m[1]);
 	}
 	return null;
 }
@@ -74,7 +75,7 @@ function braceParamOverflow(lines: string[], i: number, trimmed: string): Inline
 	const paramSig = collectFunctionSignature(lines, i);
 	const paramMatch = paramSig.match(/\(([^)]*)\)/);
 	if (!paramMatch) return null;
-	const paramStr = paramMatch[1].trim();
+	const paramStr = nonNull(paramMatch[1]).trim();
 	if (paramStr.length === 0) return null;
 	const paramCount = countTopLevelCommas(paramStr);
 	if (paramCount < 6) return null;
@@ -84,7 +85,7 @@ function braceParamOverflow(lines: string[], i: number, trimmed: string): Inline
 /** Index of the first line at/after `i` (within a 10-line window) containing `{`, or -1. */
 function findBraceLine(lines: string[], i: number): number {
 	for (let k = i; k < Math.min(i + 10, lines.length); k++) {
-		if (lines[k].includes("{")) return k;
+		if (nonNull(lines[k]).includes("{")) return k;
 	}
 	return -1;
 }
@@ -105,7 +106,7 @@ function analyzeBraceBody(
 	let bodyStarted = false;
 
 	for (let j = braceLineIdx; j < lines.length; j++) {
-		const bodyLine = lines[j];
+		const bodyLine = nonNull(lines[j]);
 		for (const ch of bodyLine) {
 			if (ch === "{") {
 				depth++;
@@ -173,7 +174,7 @@ function checkComplexityBrace(
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 15) break;
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		const funcName = matchBraceFuncName(trimmed);
 		if (!funcName) continue;
@@ -204,11 +205,11 @@ function pythonParamOverflow(lines: string[], i: number, trimmed: string): Inlin
 	let j = i;
 	while (!paramLine.includes(")") && j < Math.min(i + 10, lines.length - 1)) {
 		j++;
-		paramLine += ` ${lines[j].trim()}`;
+		paramLine += ` ${nonNull(lines[j]).trim()}`;
 	}
 	const paramMatch = paramLine.match(/\(([^)]*)\)/);
 	if (!paramMatch) return null;
-	const params = paramMatch[1]
+	const params = nonNull(paramMatch[1])
 		.split(",")
 		.map((p) => p.trim())
 		.filter((p) => p.length > 0 && p !== "self" && p !== "cls");
@@ -231,7 +232,7 @@ function analyzePythonBody(
 	let maxNesting = 0;
 
 	for (let k = i + 1; k < lines.length; k++) {
-		const bodyLine = lines[k];
+		const bodyLine = nonNull(lines[k]);
 		if (bodyLine.trim() === "") continue;
 		const indent = bodyLine.search(/\S/);
 		if (indent <= headIndent) break;
@@ -254,7 +255,7 @@ function analyzePythonBody(
 function checkComplexityPython(lines: string[], matches: InlineMatch[]): void {
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= 15) break;
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 		const defMatch = trimmed.match(/^(?:async\s+)?def\s+(\w+)\s*\(/);
 		if (!defMatch) continue;
 
@@ -266,7 +267,7 @@ function checkComplexityPython(lines: string[], matches: InlineMatch[]): void {
 		}
 
 		// Analyze function body (indent-delimited).
-		const headIndent = lines[i].search(/\S/);
+		const headIndent = nonNull(lines[i]).search(/\S/);
 		if (headIndent < 0) continue;
 
 		const finding = braceBodyFinding(i, trimmed, analyzePythonBody(lines, i, headIndent));

@@ -32,6 +32,7 @@ import {
 	skillLeaveCommand,
 	skillListCommand,
 } from "./skill.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- fake socket helper -----------------------------------------------------
 
@@ -141,7 +142,7 @@ describe("skillEnterCommand", () => {
 		expect(out).toContain("ttl 30m");
 		// Payload framing: trailing newline + SkillEnter event with ttl_seconds.
 		expect(sock.written).toHaveLength(1);
-		const payload = JSON.parse(sock.written[0].trimEnd());
+		const payload = JSON.parse(nonNull(sock.written[0]).trimEnd());
 		expect(payload.hook_event).toBe("SkillEnter");
 		expect(payload.agent_source).toBe("cli");
 		expect(payload.tool_input).toMatchObject({ name: "deep-research", ttl_seconds: 1800 });
@@ -165,7 +166,7 @@ describe("skillEnterCommand", () => {
 	it("passes through --source and --session into the payload", async () => {
 		const sock = wireSuccessfulReply({ decision: "allow" });
 		await skillEnterCommand("review", { source: "manual", session: "sess-123" });
-		const payload = JSON.parse(sock.written[0].trimEnd());
+		const payload = JSON.parse(nonNull(sock.written[0]).trimEnd());
 		expect(payload.session_id).toBe("sess-123");
 		expect(payload.tool_input).toMatchObject({ name: "review", source: "manual" });
 		// No ttl → no ttl_seconds key.
@@ -175,7 +176,7 @@ describe("skillEnterCommand", () => {
 	it("defaults session_id to empty string when --session omitted", async () => {
 		const sock = wireSuccessfulReply({ decision: "allow" });
 		await skillEnterCommand("review", {});
-		const payload = JSON.parse(sock.written[0].trimEnd());
+		const payload = JSON.parse(nonNull(sock.written[0]).trimEnd());
 		expect(payload.session_id).toBe("");
 	});
 
@@ -211,7 +212,7 @@ describe("skillLeaveCommand", () => {
 		await skillLeaveCommand("deep-research", { session: "s1" });
 		expect(process.exitCode).toBe(0);
 		expect(logs.join("\n")).toContain("skill left: deep-research");
-		const payload = JSON.parse(sock.written[0].trimEnd());
+		const payload = JSON.parse(nonNull(sock.written[0]).trimEnd());
 		expect(payload.hook_event).toBe("SkillLeave");
 		expect(payload.session_id).toBe("s1");
 		expect(payload.tool_input).toEqual({ name: "deep-research" });
@@ -320,7 +321,7 @@ describe("skillListCommand", () => {
 	it("sends a SkillList event with the given session id", async () => {
 		const sock = wireSuccessfulReply({ additional_context: "[]" });
 		await skillListCommand({ session: "sx" });
-		const payload = JSON.parse(sock.written[0].trimEnd());
+		const payload = JSON.parse(nonNull(sock.written[0]).trimEnd());
 		expect(payload.hook_event).toBe("SkillList");
 		expect(payload.session_id).toBe("sx");
 		expect(payload.tool_input).toEqual({});

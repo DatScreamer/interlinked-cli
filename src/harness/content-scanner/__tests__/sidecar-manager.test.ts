@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidecarManager } from "../sidecar-manager.js";
 import type { SidecarManagerOptions } from "../sidecar-manager.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Fake child process
@@ -108,9 +109,9 @@ describe("SidecarManager — spawn args", () => {
 		await Promise.resolve();
 		expect(spawn).toHaveBeenCalledOnce();
 		const callArgs = spawn.mock.calls[0];
-		expect(callArgs[0]).toBe("python3");
-		expect(callArgs[1]).toEqual(["/tmp/fake-sidecar.py"]);
-		const sent = JSON.parse(child.stdinLines[0]);
+		expect(nonNull(callArgs)[0]).toBe("python3");
+		expect(nonNull(callArgs)[1]).toEqual(["/tmp/fake-sidecar.py"]);
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
 		child.respond({ id: sent.id, ok: true });
 		await p;
 	});
@@ -122,8 +123,8 @@ describe("SidecarManager — spawn args", () => {
 		await Promise.resolve();
 		expect(spawn).toHaveBeenCalledOnce();
 		const callArgs = spawn.mock.calls[0];
-		expect(callArgs[1]).toEqual(["/tmp/fake-sidecar.py", ...args]);
-		const sent = JSON.parse(child.stdinLines[0]);
+		expect(nonNull(callArgs)[1]).toEqual(["/tmp/fake-sidecar.py", ...args]);
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
 		child.respond({ id: sent.id, ok: true });
 		await p;
 	});
@@ -140,7 +141,7 @@ describe("SidecarManager — happy path", () => {
 		// Advance enough microtasks for the Promise chain to register the pending entry.
 		await Promise.resolve();
 		expect(child.stdinLines).toHaveLength(1);
-		const sent = JSON.parse(child.stdinLines[0]);
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
 		expect(sent.op).toBe("ping");
 		expect(typeof sent.id).toBe("string");
 
@@ -153,7 +154,7 @@ describe("SidecarManager — happy path", () => {
 		const { mgr, child } = makeManager();
 		const p = mgr.send({ op: "scan", text: "alice@example.com" });
 		await Promise.resolve();
-		const sent = JSON.parse(child.stdinLines[0]);
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
 		expect(sent.text).toBe("alice@example.com");
 
 		child.respond({
@@ -165,7 +166,7 @@ describe("SidecarManager — happy path", () => {
 		const resp = await p;
 		expect(resp.ok).toBe(true);
 		expect(resp.spans).toHaveLength(1);
-		expect(resp.spans?.[0].label).toBe("private_email");
+		expect(nonNull(resp.spans?.[0]).label).toBe("private_email");
 		expect(resp.redacted_text).toBe("<PRIVATE_EMAIL>");
 	});
 
@@ -193,7 +194,7 @@ describe("SidecarManager — timeouts", () => {
 
 		// Less than startup budget but more than scan budget — should still be pending.
 		await vi.advanceTimersByTimeAsync(200);
-		child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+		child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
 		const resp = await p;
 		expect(resp.ok).toBe(true);
 	});
@@ -203,7 +204,7 @@ describe("SidecarManager — timeouts", () => {
 		// First (warm-up) call completes fast.
 		const p1 = mgr.send({ op: "ping" });
 		await Promise.resolve();
-		child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+		child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
 		await p1;
 
 		// Second call — no response; should time out at scan_timeout_ms.
@@ -311,7 +312,7 @@ describe("SidecarManager — idle recovery", () => {
 		// First send boots the sidecar.
 		const p1 = mgr.send({ op: "ping" });
 		await Promise.resolve();
-		child1.respond({ id: JSON.parse(child1.stdinLines[0]).id, ok: true });
+		child1.respond({ id: JSON.parse(nonNull(child1.stdinLines[0])).id, ok: true });
 		expect((await p1).ok).toBe(true);
 		expect(mgr.getStatus().state).toBe("ready");
 
@@ -327,7 +328,7 @@ describe("SidecarManager — idle recovery", () => {
 		const p2 = mgr.send({ op: "ping" });
 		await Promise.resolve();
 		expect(spawn).toHaveBeenCalledTimes(2);
-		child2.respond({ id: JSON.parse(child2.stdinLines[0]).id, ok: true });
+		child2.respond({ id: JSON.parse(nonNull(child2.stdinLines[0])).id, ok: true });
 		expect((await p2).ok).toBe(true);
 		expect(mgr.getStatus().state).toBe("ready");
 	});
@@ -349,7 +350,7 @@ describe("SidecarManager — idle recovery", () => {
 		for (const child of [child1, child2, child3]) {
 			const p = mgr.send({ op: "ping" });
 			await Promise.resolve();
-			child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+			child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
 			expect((await p).ok).toBe(true);
 			expect(mgr.getStatus().restartCount).toBe(0);
 			// Fire idle close.
@@ -378,7 +379,7 @@ describe("SidecarManager — idle recovery", () => {
 		await Promise.resolve();
 		expect(statuses).toContain("spawning");
 
-		child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+		child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
 		await p;
 		expect(statuses).toContain("ready");
 

@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import { getExtension, type InlineMatch } from "./shared.js";
 import { extractModuleExportNames } from "./swift.js";
 
@@ -111,9 +112,9 @@ export function checkExportRipple(content: string, filePath: string, cwd: string
 		const importerLines = importerContent.split("\n");
 		const importerDir = dirname(join(cwd, importerRel));
 
-		for (let i = 0; i < importerLines.length; i++) {
+		for (const [i, importerLine] of importerLines.entries()) {
 			if (matches.length >= 15) break;
-			const trimmed = importerLines[i].trim();
+			const trimmed = importerLine.trim();
 
 			// Match: import { A, B, C } from "..." or import type { A } from "..."
 			const importMatch = trimmed.match(
@@ -121,7 +122,7 @@ export function checkExportRipple(content: string, filePath: string, cwd: string
 			);
 			if (!importMatch) continue;
 
-			const specifier = importMatch[2];
+			const specifier = nonNull(importMatch[2]);
 			// Only check relative imports
 			if (!specifier.startsWith(".") && !specifier.startsWith("@/")) continue;
 
@@ -137,11 +138,11 @@ export function checkExportRipple(content: string, filePath: string, cwd: string
 			if (resolvedImport !== targetNoExt) continue;
 
 			// Parse named imports
-			const namedImports = importMatch[1]
+			const namedImports = nonNull(importMatch[1])
 				.split(",")
 				.map((n) => {
 					const parts = n.trim().split(/\s+as\s+/);
-					return parts[0].trim().replace(/^type\s+/, ""); // Strip inline type prefix and 'as' alias
+					return nonNull(parts[0]).trim().replace(/^type\s+/, ""); // Strip inline type prefix and 'as' alias
 				})
 				.filter((n) => n.length > 0);
 

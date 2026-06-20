@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from "vitest";
 import { checkTestFileExists } from "./test-file-exists.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("checkTestFileExists — generator-output gate (FP refinement)", () => {
 	// Negative cases — these MUST be exempted.
@@ -59,7 +60,7 @@ describe("checkTestFileExists — generator-output gate (FP refinement)", () => 
 			code,
 		);
 		expect(out.length).toBe(1);
-		expect(out[0].text).toContain("no test file");
+		expect(nonNull(out[0]).text).toContain("no test file");
 	});
 
 	test("STILL flags when content is undefined (back-compat — no gate)", () => {

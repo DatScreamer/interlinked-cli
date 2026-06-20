@@ -21,6 +21,7 @@ import {
 	checkSameTypedPrimitiveParams,
 	checkTestDescriptionQuality,
 } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Checks — Opinionated Code Quality
@@ -90,7 +91,7 @@ describe("checkFunctionArity", () => {
 			"function create(a: string, b: number, c: boolean, d: string, e: number) {\n  return a;\n}";
 		const matches = checkFunctionArity(code, "util.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("5 params");
+		expect(nonNull(matches[0]).text).toContain("5 params");
 	});
 
 	it("does NOT flag function with 4 parameters", () => {
@@ -139,7 +140,7 @@ describe("checkPositionalOptionalBoolean", () => {
 		const code = "export function setUser(name: string, force?: boolean) {\n  return name;\n}";
 		const matches = checkPositionalOptionalBoolean(code, "user.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("force");
+		expect(nonNull(matches[0]).text).toContain("force");
 	});
 
 	it("detects `flag: boolean = false` (typed default)", () => {
@@ -147,14 +148,14 @@ describe("checkPositionalOptionalBoolean", () => {
 			"export function configure(host: string, verbose: boolean = false) {\n  return host;\n}";
 		const matches = checkPositionalOptionalBoolean(code, "cfg.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("verbose");
+		expect(nonNull(matches[0]).text).toContain("verbose");
 	});
 
 	it("detects `flag = false` (inferred default, no annotation)", () => {
 		const code = "function send(msg: string, retry = true) {\n  return msg;\n}";
 		const matches = checkPositionalOptionalBoolean(code, "send.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("retry");
+		expect(nonNull(matches[0]).text).toContain("retry");
 	});
 
 	it("detects positional optional boolean in arrow function", () => {
@@ -223,7 +224,7 @@ describe("checkManyOptionalParams", () => {
 			"export function build(name: string, a?: number, b?: string, c?: boolean) {\n  return name;\n}";
 		const matches = checkManyOptionalParams(code, "build.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("3 optional params");
+		expect(nonNull(matches[0]).text).toContain("3 optional params");
 	});
 
 	it("detects a mix of `?:` and `=` defaults adding up to 3", () => {
@@ -238,7 +239,7 @@ describe("checkManyOptionalParams", () => {
 			"export function create(name: string, a?: number, b?: number, c?: number, d?: number) {\n  return name;\n}";
 		const matches = checkManyOptionalParams(code, "create.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("4 optional params");
+		expect(nonNull(matches[0]).text).toContain("4 optional params");
 	});
 
 	// --- negative cases (must NOT fire) ---
@@ -343,7 +344,7 @@ describe("checkTestDescriptionQuality", () => {
 		const code = `it("works", () => {\n  expect(1).toBe(1);\n});`;
 		const matches = checkTestDescriptionQuality(code, "foo.test.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("vague test name");
+		expect(nonNull(matches[0]).text).toContain("vague test name");
 	});
 
 	it("detects all-noise-words test name", () => {
@@ -457,7 +458,7 @@ describe("checkGodFile", () => {
 		const code = exports + padding;
 		const matches = checkGodFile(code, "utils.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("god file");
+		expect(nonNull(matches[0]).text).toContain("god file");
 	});
 
 	it("does NOT flag a focused file (few exports, many lines)", () => {
@@ -663,7 +664,7 @@ describe("checkFlagArguments", () => {
 			"function deploy(app: string, force: boolean, dryRun: boolean) {\n  return app;\n}";
 		const matches = checkFlagArguments(code, "deploy.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("2 boolean params");
+		expect(nonNull(matches[0]).text).toContain("2 boolean params");
 	});
 
 	it("detects function with 3 boolean params", () => {
@@ -671,7 +672,7 @@ describe("checkFlagArguments", () => {
 			"export function configure(verbose: boolean, silent: boolean, strict: boolean) {\n  return;\n}";
 		const matches = checkFlagArguments(code, "config.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("3 boolean params");
+		expect(nonNull(matches[0]).text).toContain("3 boolean params");
 	});
 
 	it("does NOT flag function with 1 boolean param", () => {
@@ -705,7 +706,7 @@ describe("checkCommentedOutCode", () => {
 			"// const oldHandler = async (req) => {\n//     const data = await fetch(url);\n//     return data.json();\n// };";
 		const matches = checkCommentedOutCode(code, "handler.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("commented-out code");
+		expect(nonNull(matches[0]).text).toContain("commented-out code");
 	});
 
 	it("detects commented-out import block", () => {
@@ -854,18 +855,18 @@ describe("checkSameTypedPrimitiveParams", () => {
 		const code = `export function transfer(fromId: string, toId: string, amount: number) {\n  return amount;\n}`;
 		const matches = checkSameTypedPrimitiveParams(code, "transfers.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("string");
-		expect(matches[0].text).toContain("fromId");
-		expect(matches[0].text).toContain("toId");
+		expect(nonNull(matches[0]).text).toContain("string");
+		expect(nonNull(matches[0]).text).toContain("fromId");
+		expect(nonNull(matches[0]).text).toContain("toId");
 	});
 
 	it("flags exported function with two consecutive number params (names NOT in allowlist)", () => {
 		const code = `export function range(start: number, end: number) {\n  return end - start;\n}`;
 		const matches = checkSameTypedPrimitiveParams(code, "range.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("number");
-		expect(matches[0].text).toContain("start");
-		expect(matches[0].text).toContain("end");
+		expect(nonNull(matches[0]).text).toContain("number");
+		expect(nonNull(matches[0]).text).toContain("start");
+		expect(nonNull(matches[0]).text).toContain("end");
 	});
 
 	it("flags public method on an exported class", () => {
@@ -877,9 +878,9 @@ describe("checkSameTypedPrimitiveParams", () => {
 			"}";
 		const matches = checkSameTypedPrimitiveParams(code, "api.ts");
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("string");
-		expect(matches[0].text).toContain("url");
-		expect(matches[0].text).toContain("token");
+		expect(nonNull(matches[0]).text).toContain("string");
+		expect(nonNull(matches[0]).text).toContain("url");
+		expect(nonNull(matches[0]).text).toContain("token");
 	});
 
 	it("flags exported arrow function with two same-typed params", () => {
@@ -1016,6 +1017,6 @@ describe("checkSameTypedPrimitiveParams", () => {
 		// agent gets both nudges (struct param OR options object). Confirm
 		// the message tags `boolean`.
 		expect(matches.length).toBeGreaterThan(0);
-		expect(matches[0].text).toContain("boolean");
+		expect(nonNull(matches[0]).text).toContain("boolean");
 	});
 });

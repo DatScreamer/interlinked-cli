@@ -8,6 +8,7 @@ import {
 } from "../coverage-final-reader.js";
 import type { CrapFinding } from "./crap.js";
 import { computeCrapRisers, filterToRisers, snapshotCrap } from "./crap-baseline.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Helpers
@@ -160,7 +161,7 @@ describe("filterToRisers", () => {
 		];
 		const risers = filterToRisers(findings, baseline);
 		expect(risers).toHaveLength(1);
-		expect(risers[0].line).toBe(40);
+		expect(nonNull(risers[0]).line).toBe(40);
 	});
 
 	it("handles a renamed function as new (baseline keyed by name)", () => {
@@ -192,7 +193,7 @@ describe("filterToRisers", () => {
 		const findings = [mkFinding({ file: "src/a.ts", fn: "foo", line: 40, score: 150 })];
 		const risers = filterToRisers(findings, baseline);
 		expect(risers).toHaveLength(1);
-		expect(risers[0].crap_score).toBe(150);
+		expect(nonNull(risers[0]).crap_score).toBe(150);
 	});
 
 	// --- priorScoreFor drift-loop internals (reached via filterToRisers) ---
@@ -260,7 +261,7 @@ describe("filterToRisers", () => {
 		);
 		expect(tied).toEqual([]);
 		expect(rose).toHaveLength(1);
-		expect(rose[0].crap_score).toBe(60);
+		expect(nonNull(rose[0]).crap_score).toBe(60);
 	});
 });
 
@@ -357,11 +358,11 @@ describe("computeCrapRisers", () => {
 
 		expect(risers).toHaveLength(1);
 		const r = risers[0];
-		expect(r.function).toBe("gnarly");
-		expect(r.file).toBe("src/mod.ts");
-		expect(r.complexity).toBe(7);
-		expect(r.coverage_pct).toBe(20);
-		expect(r.crap_score).toBeCloseTo(32.088, 2);
+		expect(nonNull(r).function).toBe("gnarly");
+		expect(nonNull(r).file).toBe("src/mod.ts");
+		expect(nonNull(r).complexity).toBe(7);
+		expect(nonNull(r).coverage_pct).toBe(20);
+		expect(nonNull(r).crap_score).toBeCloseTo(32.088, 2);
 	});
 
 	it("returns [] when the edited file is absent from the coverage report", () => {
@@ -420,6 +421,6 @@ describe("computeCrapRisers", () => {
 		});
 
 		expect(risers).toHaveLength(1);
-		expect(risers[0].crap_score).toBeCloseTo(32.088, 2);
+		expect(nonNull(risers[0]).crap_score).toBeCloseTo(32.088, 2);
 	});
 });

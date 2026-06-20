@@ -5,6 +5,8 @@
 // interface-change-impact check can compare old vs new bodies and detect
 // shape changes without parsing the full AST.
 
+import { nonNull } from "../../lib/non-null.js";
+
 /**
  * Public API — consumed by ProjectGraph.indexFile.
  *
@@ -28,11 +30,11 @@ export function extractInterfaceBodies(content: string): Map<string, string> {
 			const typeMatch = trimmed.match(/^export\s+type\s+(\w+)\s*=\s*\{/);
 
 			if (ifaceMatch) {
-				currentName = ifaceMatch[1];
+				currentName = nonNull(ifaceMatch[1]);
 				braceDepth = 0;
 				body = "";
 			} else if (typeMatch) {
-				currentName = typeMatch[1];
+				currentName = nonNull(typeMatch[1]);
 				braceDepth = 0;
 				body = "";
 			}

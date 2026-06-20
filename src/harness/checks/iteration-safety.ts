@@ -8,6 +8,7 @@
 // mid-iter) and 2022034 (raw NaN crossing tagged-pointer boundary). See
 // docs/design/harness-firefox-bug-class-checks-plan.md.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -122,7 +123,7 @@ export function checkIteratorInvalidation(content: string, filePath: string): In
 	let m: RegExpExecArray | null;
 	const itHeader = new RegExp(ITERATOR_HEADER_RE.source, "g");
 	while ((m = itHeader.exec(stripped))) {
-		candidates.push({ collection: m[1], headerIdx: m.index + m[0].length });
+		candidates.push({ collection: nonNull(m[1]), headerIdx: m.index + m[0].length });
 	}
 	const fnHeader = new RegExp(FOREACH_HEADER_RE.source, "g");
 	while ((m = fnHeader.exec(stripped))) {
@@ -130,7 +131,7 @@ export function checkIteratorInvalidation(content: string, filePath: string): In
 		// finds mutations to it. `m[0]` ends with the call's "(", so its index
 		// is `headerIdx - 1`.
 		candidates.push({
-			collection: m[1],
+			collection: nonNull(m[1]),
 			headerIdx: m.index + m[0].length,
 			callParenIdx: m.index + m[0].length - 1,
 		});

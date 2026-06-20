@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // detectFixtureLeaks
@@ -49,8 +50,8 @@ describe("detectFixtureLeaks", () => {
 
 		const leaks = detectFixtureLeaks(dir);
 		expect(leaks).toHaveLength(1);
-		expect(leaks[0].file).toBe("src/lib/_case_a.ts");
-		expect(leaks[0].referencedBy).toBe("src/commands/__tests__/multi-edit.test.ts");
+		expect(nonNull(leaks[0]).file).toBe("src/lib/_case_a.ts");
+		expect(nonNull(leaks[0]).referencedBy).toBe("src/commands/__tests__/multi-edit.test.ts");
 	});
 
 	it("flags multiple leaks each pointing at their source test", () => {

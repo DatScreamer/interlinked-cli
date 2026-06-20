@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph } from "../artifact-graph.js";
 import type { ArtifactNode, Provenance } from "../types.js";
 import { checkPublicSymbolTestCase } from "./public-symbol-test-case.js";
@@ -101,9 +102,9 @@ describe("checkPublicSymbolTestCase", () => {
 
 		const findings = checkPublicSymbolTestCase(graph, ["src/foo.ts"], tmp);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("public_symbol_test_case_missing");
-		expect(findings[0].severity).toBe("warning");
-		expect(findings[0].message).toContain("Foo");
+		expect(nonNull(findings[0]).name).toBe("public_symbol_test_case_missing");
+		expect(nonNull(findings[0]).severity).toBe("warning");
+		expect(nonNull(findings[0]).message).toContain("Foo");
 	});
 
 	it("flags when the test file is missing from disk", () => {
@@ -115,7 +116,7 @@ describe("checkPublicSymbolTestCase", () => {
 
 		const findings = checkPublicSymbolTestCase(graph, ["src/foo.ts"], tmp);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].affected_files).toEqual(["src/foo.test.ts"]);
+		expect(nonNull(findings[0]).affected_files).toEqual(["src/foo.test.ts"]);
 	});
 
 	it("skips the rule entirely when the symbol has no companion tests", () => {
@@ -176,8 +177,8 @@ describe("checkPublicSymbolTestCase", () => {
 		writeFile("src/foo.test.ts", "describe('unrelated-declared', () => {});");
 
 		const findings = checkPublicSymbolTestCase(graph, ["src/foo.ts"], tmp);
-		expect(findings[0].determinism).toBe("fully_deterministic");
-		expect(findings[0].confidence).toBe(1.0);
+		expect(nonNull(findings[0]).determinism).toBe("fully_deterministic");
+		expect(nonNull(findings[0]).confidence).toBe(1.0);
 	});
 
 	it("marks determinism partially_deterministic when any side is inferred", () => {
@@ -188,7 +189,7 @@ describe("checkPublicSymbolTestCase", () => {
 		writeFile("src/foo.test.ts", "describe('unrelated-inferred', () => {});");
 
 		const findings = checkPublicSymbolTestCase(graph, ["src/foo.ts"], tmp);
-		expect(findings[0].determinism).toBe("partially_deterministic");
-		expect(findings[0].confidence).toBe(0.75);
+		expect(nonNull(findings[0]).determinism).toBe("partially_deterministic");
+		expect(nonNull(findings[0]).confidence).toBe(0.75);
 	});
 });

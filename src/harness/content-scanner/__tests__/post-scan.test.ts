@@ -3,6 +3,7 @@ import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../ty
 import { compileAllowlist } from "../allowlist.js";
 import { runPostToolScan } from "../post-scan.js";
 import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const NO_ALLOWLIST = compileAllowlist(undefined);
 
@@ -361,7 +362,7 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 			compiledAllowlist: NO_ALLOWLIST,
 		});
 		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
-		expect(scanSpy.mock.calls[0][0].text.length).toBe(50_000);
+		expect(nonNull(scanSpy.mock.calls[0])[0].text.length).toBe(50_000);
 	});
 
 	it("scans Grep tool results (not just Read)", async () => {

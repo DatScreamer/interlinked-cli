@@ -17,6 +17,7 @@ import {
 	stripCommentsAndStrings,
 	stripStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Detectors 6–11 live in a sibling module to keep this file under the line
 // cap. Re-exported here so existing importers (registry, verify, generic-checks)
@@ -146,7 +147,7 @@ function lineOrNeighborsHaveIncompletenessSignal(lines: string[], idx: number): 
 	const start = Math.max(0, idx - WEAK_CORROBORATION_WINDOW);
 	const end = Math.min(lines.length - 1, idx + WEAK_CORROBORATION_WINDOW);
 	for (let j = start; j <= end; j++) {
-		if (INCOMPLETENESS_SIGNAL_RE.test(lines[j])) return true;
+		if (INCOMPLETENESS_SIGNAL_RE.test(nonNull(lines[j]))) return true;
 	}
 	return false;
 }
@@ -166,7 +167,7 @@ export function checkAgentThumbprintProse(content: string, filePath: string): In
 
 	for (let i = 0; i < cleaned.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = COMMENT_BODY_RE.exec(cleaned[i]);
+		const m = COMMENT_BODY_RE.exec(nonNull(cleaned[i]));
 		const commentText = m?.[1];
 		if (!commentText) continue;
 
@@ -183,7 +184,7 @@ export function checkAgentThumbprintProse(content: string, filePath: string): In
 
 		matches.push({
 			line: i + 1,
-			text: `agent-thumbprint phrase in comment: ${original[i].trim().slice(0, 130)}`,
+			text: `agent-thumbprint phrase in comment: ${nonNull(original[i]).trim().slice(0, 130)}`,
 		});
 	}
 	return matches;
@@ -220,7 +221,7 @@ export function checkStubNotImplementedThrow(content: string, filePath: string):
 	NOT_IMPLEMENTED_MESSAGE_RE.lastIndex = 0;
 	let match: RegExpExecArray | null = NOT_IMPLEMENTED_MESSAGE_RE.exec(scan);
 	while (match !== null && matches.length < MAX_MATCHES) {
-		const message = match[1].trim();
+		const message = nonNull(match[1]).trim();
 		if (NOT_IMPLEMENTED_PHRASES.test(message)) {
 			const offset = match.index;
 			const lineIdx = (scan.slice(0, offset).match(/\n/g) || []).length;
@@ -234,7 +235,7 @@ export function checkStubNotImplementedThrow(content: string, filePath: string):
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (EMPTY_THROW_RE.test(lines[i])) {
+		if (EMPTY_THROW_RE.test(nonNull(lines[i]))) {
 			matches.push({
 				line: i + 1,
 				text: `throw new Error() with no message — supply a real message or delete the placeholder`,
@@ -265,10 +266,10 @@ export function checkDeadBranchLiteral(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (!DEAD_BRANCH_RE.test(strippedLines[i])) continue;
+		if (!DEAD_BRANCH_RE.test(nonNull(strippedLines[i]))) continue;
 		matches.push({
 			line: i + 1,
-			text: `dead branch literal: ${originalLines[i].trim().slice(0, 130)}`,
+			text: `dead branch literal: ${nonNull(originalLines[i]).trim().slice(0, 130)}`,
 		});
 	}
 	return matches;
@@ -342,7 +343,7 @@ export function checkFileLevelSuppression(content: string, filePath: string): In
 	const MAX_MATCHES = 3;
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const hit = findFileLevelDisable(lines[i]);
+		const hit = findFileLevelDisable(nonNull(lines[i]));
 		if (!hit) continue;
 		matches.push({
 			line: i + 1,
@@ -382,12 +383,12 @@ export function checkUntestableTimeInSource(content: string, filePath: string): 
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = UNTESTABLE_TIME_RE.exec(strippedLines[i]);
+		const m = UNTESTABLE_TIME_RE.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
 		const callName = m[0].replace(/\s+/g, "");
 		matches.push({
 			line: i + 1,
-			text: `untestable nondeterminism (${callName}): ${originalLines[i].trim().slice(0, 110)}`,
+			text: `untestable nondeterminism (${callName}): ${nonNull(originalLines[i]).trim().slice(0, 110)}`,
 		});
 	}
 	return matches;

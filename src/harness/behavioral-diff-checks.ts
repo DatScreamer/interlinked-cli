@@ -10,6 +10,7 @@ import { extname, basename as pathBasename } from "node:path";
 import { extractAddedLines, getStagedDiff } from "./behavioral-checks.js";
 import { checkReintroducesRemovedCode } from "./behavioral-diff-checks-reintro.js";
 import type { CheckResultEntry, SessionTrajectory } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Re-export so callers importing from this module path keep working.
 export { checkReintroducesRemovedCode };
@@ -179,7 +180,7 @@ export function parseCommitMessageFromBash(command: string): ParsedCommitMessage
 	if (!raw) return null;
 	const typeMatch = COMMIT_TYPE_RE.exec(raw);
 	if (!typeMatch) return null;
-	return { type: typeMatch[1].toLowerCase(), subject: typeMatch[2] };
+	return { type: nonNull(typeMatch[1]).toLowerCase(), subject: nonNull(typeMatch[2]) };
 }
 
 const PROD_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
@@ -248,7 +249,7 @@ function exportedNamesIn(text: string): Set<string> {
 	EXPORT_NAME_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = EXPORT_NAME_RE.exec(text);
 	while (m !== null) {
-		names.add(m[1]);
+		names.add(nonNull(m[1]));
 		m = EXPORT_NAME_RE.exec(text);
 	}
 	EXPORT_NAMED_LIST_RE.lastIndex = 0;
@@ -256,7 +257,7 @@ function exportedNamesIn(text: string): Set<string> {
 	while (n !== null) {
 		// Each entry is `Foo` or `Foo as Bar` — credit the public-facing
 		// alias (the right side of `as`) since that's the surface name.
-		for (const raw of n[1].split(",")) {
+		for (const raw of nonNull(n[1]).split(",")) {
 			const local = (raw.split(/\s+as\s+/i)[1] ?? raw).trim().replace(/^type\s+/, "");
 			if (local) names.add(local);
 		}

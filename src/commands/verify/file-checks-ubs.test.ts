@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runUbsChecks } from "./file-checks-ubs.js";
 import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function ctx(content: string, file = "/tmp/sample.ts", relPath = "sample.ts"): FileCheckContext {
 	return { file, content, relPath, cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -30,21 +31,21 @@ describe("runUbsChecks", () => {
 		const c = ctx('if (x == 5) { doThing(); }\n');
 		runUbsChecks(c);
 		expect(c.r.jsLooseEquality.length).toBeGreaterThan(0);
-		expect(c.r.jsLooseEquality[0].check).toBe("ubs_js_loose_equality");
+		expect(nonNull(c.r.jsLooseEquality[0]).check).toBe("ubs_js_loose_equality");
 	});
 
 	it("flags Python None equality (ubs_py_none_equality)", () => {
 		const c = ctx("if x == None:\n    pass\n", "/tmp/sample.py", "sample.py");
 		runUbsChecks(c);
 		expect(c.r.pyNoneEquality.length).toBeGreaterThan(0);
-		expect(c.r.pyNoneEquality[0].check).toBe("ubs_py_none_equality");
+		expect(nonNull(c.r.pyNoneEquality[0]).check).toBe("ubs_py_none_equality");
 	});
 
 	it("flags document.write (ubs_document_write)", () => {
 		const c = ctx('document.write("<p>hi</p>");\n');
 		runUbsChecks(c);
 		expect(c.r.documentWrite.length).toBeGreaterThan(0);
-		expect(c.r.documentWrite[0].check).toBe("ubs_document_write");
+		expect(nonNull(c.r.documentWrite[0]).check).toBe("ubs_document_write");
 	});
 
 	it("produces the same ubs_js_loose_equality findings as the orchestrator (delegation)", () => {

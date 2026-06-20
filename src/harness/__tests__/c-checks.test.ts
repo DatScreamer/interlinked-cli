@@ -6,6 +6,7 @@ import {
 	checkCUncheckedMalloc,
 	checkCUnsafeFunctions,
 } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // checkCUnsafeFunctions
@@ -16,7 +17,7 @@ describe("checkCUnsafeFunctions", () => {
 		const code = "#include <string.h>\nvoid f() { strcpy(dst, src); }";
 		const matches = checkCUnsafeFunctions(code, "util.c");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("detects strcat", () => {
@@ -29,7 +30,7 @@ describe("checkCUnsafeFunctions", () => {
 		const code = "char buf[64];\ngets(buf);";
 		const matches = checkCUnsafeFunctions(code, "io.c");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("detects sprintf", () => {
@@ -93,7 +94,7 @@ describe("checkCIncludeGuard", () => {
 		const code = "#include <stdio.h>\nvoid foo();";
 		const matches = checkCIncludeGuard(code, "foo.h");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(1);
+		expect(nonNull(matches[0]).line).toBe(1);
 	});
 
 	it("does NOT flag header with #pragma once", () => {
@@ -187,7 +188,7 @@ describe("checkCUncheckedMalloc", () => {
 		const code = "int *p = malloc(sizeof(int) * 10);\n*p = 42;";
 		const matches = checkCUncheckedMalloc(code, "alloc.c");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(1);
+		expect(nonNull(matches[0]).line).toBe(1);
 	});
 
 	it("does NOT flag malloc with null check on next line", () => {

@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import type { InlineMatch } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Fields whose removal would meaningfully break a published package. */
 const TOP_LEVEL_FIELDS = [
@@ -235,7 +236,7 @@ export function checkPackageJsonPublishInvariants(
 function findLineOfField(lines: string[], field: string): number {
 	const needle = `"${field}"`;
 	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].includes(needle)) return i + 1;
+		if (nonNull(lines[i]).includes(needle)) return i + 1;
 	}
 	return 0;
 }
@@ -258,7 +259,7 @@ export async function checkPackageJsonPublishInvariantsWithPublint(
 
 	// Skip publint if we already have a parse error — publint would reproduce
 	// the same complaint.
-	if (base.length === 1 && base[0].text.includes("not valid JSON")) return base;
+	if (base.length === 1 && nonNull(base[0]).text.includes("not valid JSON")) return base;
 
 	// Skip publint on private packages. Mirror the sync check's short-circuit.
 	const pre = safeReadJson(filePath);

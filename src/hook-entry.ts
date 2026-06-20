@@ -39,6 +39,7 @@ import {
 	findRepoRoot,
 } from "./hook-entry-daemon-gate.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
+import { nonNull } from "./lib/non-null.js";
 
 // Re-export for back-compat: tests import this from "./hook-entry.js".
 export { coldDaemonUnreachableBlockReason };
@@ -312,7 +313,7 @@ export function discoverSocket(cwd: string, sessionId: string): string | null {
 
 	const entries = safeReaddir(dir);
 	const socketFiles = entries.filter((n) => n.endsWith(".sock")).sort();
-	if (socketFiles.length > 0) return join(dir, socketFiles[0]);
+	if (socketFiles.length > 0) return join(dir, nonNull(socketFiles[0]));
 	return null;
 }
 
@@ -438,8 +439,7 @@ async function readStdinJson(): Promise<unknown> {
 
 function argOrEnv(flag: string): string | undefined {
 	const args = process.argv.slice(2);
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
+	for (const [i, a] of args.entries()) {
 		if (a === flag && i + 1 < args.length) return args[i + 1];
 		if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1);
 	}

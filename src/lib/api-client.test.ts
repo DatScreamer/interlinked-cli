@@ -4,6 +4,7 @@
 // every export is exercised against real outputs / throws.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "./non-null.js";
 
 const { mockResolveAuthToken, mockResolveAuthTokenWithRefresh, mockResolveConfig } = vi.hoisted(
 	() => ({
@@ -123,7 +124,7 @@ describe("ensureToken (via callTool side effects)", () => {
 		fetchMock.mockResolvedValue(makeRes({ json: { ok: 1 } }));
 		await c.callTool("t");
 		expect(mockResolveAuthTokenWithRefresh).not.toHaveBeenCalled();
-		const [, init] = fetchMock.mock.calls[0];
+		const [, init] = nonNull(fetchMock.mock.calls[0]);
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer explicit");
 	});
 
@@ -134,7 +135,7 @@ describe("ensureToken (via callTool side effects)", () => {
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
 		expect(mockResolveAuthTokenWithRefresh).toHaveBeenCalledWith("https://x");
-		const [, init] = fetchMock.mock.calls[0];
+		const [, init] = nonNull(fetchMock.mock.calls[0]);
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer refreshed");
 	});
 });
@@ -153,7 +154,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: { r: 1 } }));
 		await c.callTool("mytool", { extra: "v", workspace_key: "override" });
-		const [url, init] = fetchMock.mock.calls[0];
+		const [url, init] = nonNull(fetchMock.mock.calls[0]);
 		expect(url).toBe("https://x/api/ui/call");
 		expect(init.method).toBe("POST");
 		const body = JSON.parse(init.body as string);
@@ -170,7 +171,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
-		const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+		const body = JSON.parse(nonNull(fetchMock.mock.calls[0])[1].body as string);
 		expect(body.args.workspace_key).toBe("main");
 		expect(body.args.project_key).toBe("main");
 	});
@@ -179,7 +180,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk", workspaceId: "ws-99" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
-		const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+		const body = JSON.parse(nonNull(fetchMock.mock.calls[0])[1].body as string);
 		expect(body.workspace).toBe("ws-99");
 	});
 
@@ -188,7 +189,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
-		const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+		const body = JSON.parse(nonNull(fetchMock.mock.calls[0])[1].body as string);
 		expect(body).not.toHaveProperty("workspace");
 	});
 
@@ -196,7 +197,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "real" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
-		const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+		const headers = nonNull(fetchMock.mock.calls[0])[1].headers as Record<string, string>;
 		expect(headers.Authorization).toBe("Bearer real");
 		expect(headers["Content-Type"]).toBe("application/json");
 	});
@@ -205,7 +206,7 @@ describe("callTool", () => {
 		const c = new InterlinkedClient({ serverUrl: "http://localhost:8787", token: "real" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.callTool("t");
-		const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+		const headers = nonNull(fetchMock.mock.calls[0])[1].headers as Record<string, string>;
 		expect(headers).not.toHaveProperty("Authorization");
 	});
 
@@ -214,7 +215,7 @@ describe("callTool", () => {
 		fetchMock.mockResolvedValue(makeRes({ json: { ok: true } }));
 		const r = await c.callTool<{ ok: boolean }>("t");
 		expect(r.ok).toBe(true);
-		const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+		const headers = nonNull(fetchMock.mock.calls[0])[1].headers as Record<string, string>;
 		expect(headers).not.toHaveProperty("Authorization");
 	});
 
@@ -279,7 +280,7 @@ describe("fetchWorkspaces", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: { workspaces: [{ id: "1", name: "a" }] } }));
 		const ws = await c.fetchWorkspaces();
-		const [url, init] = fetchMock.mock.calls[0];
+		const [url, init] = nonNull(fetchMock.mock.calls[0]);
 		expect(url).toBe("https://x/api/workspaces");
 		expect(init.method).toBe("GET");
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tk");
@@ -290,7 +291,7 @@ describe("fetchWorkspaces", () => {
 		const c = new InterlinkedClient({ serverUrl: "http://127.0.0.1:8787" });
 		fetchMock.mockResolvedValue(makeRes({ json: { workspaces: [] } }));
 		await c.fetchWorkspaces();
-		const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+		const headers = nonNull(fetchMock.mock.calls[0])[1].headers as Record<string, string>;
 		expect(headers).not.toHaveProperty("Authorization");
 	});
 
@@ -325,7 +326,7 @@ describe("callTools", () => {
 		]);
 		expect(results).toEqual([{ a: 1 }, { b: 2 }]);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		const body2 = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+		const body2 = JSON.parse(nonNull(fetchMock.mock.calls[1])[1].body as string);
 		expect(body2.tool).toBe("second");
 	});
 
@@ -352,7 +353,7 @@ describe("postHookEvent", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.postHookEvent({ agent_name: "ag", event_type: "tool", tool_name: "Bash" });
-		const [url, init] = fetchMock.mock.calls[0];
+		const [url, init] = nonNull(fetchMock.mock.calls[0]);
 		expect(url).toBe("https://x/api/hooks/activity");
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tk");
 		const payload = JSON.parse(init.body as string);
@@ -369,7 +370,7 @@ describe("postHookEvent", () => {
 		const c = new InterlinkedClient({ serverUrl: "https://x", token: "tk" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.postHookEvent({ agent_name: "ag", event_type: "session_start" }, "lifecycle");
-		expect(fetchMock.mock.calls[0][0]).toBe("https://x/api/hooks/lifecycle");
+		expect(nonNull(fetchMock.mock.calls[0])[0]).toBe("https://x/api/hooks/lifecycle");
 	});
 
 	it("uses 'main' fallbacks and omits the auth header on a local dev server", async () => {
@@ -377,7 +378,7 @@ describe("postHookEvent", () => {
 		const c = new InterlinkedClient({ serverUrl: "http://localhost:8787" });
 		fetchMock.mockResolvedValue(makeRes({ json: {} }));
 		await c.postHookEvent({ agent_name: "ag", event_type: "tool" });
-		const [, init] = fetchMock.mock.calls[0];
+		const [, init] = nonNull(fetchMock.mock.calls[0]);
 		expect(init.headers).not.toHaveProperty("Authorization");
 		const payload = JSON.parse(init.body as string);
 		expect(payload.workspace_key).toBe("main");

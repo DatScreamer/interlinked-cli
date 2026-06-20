@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getDistilledRulesWatchPaths, loadDistilledRules } from "./distilled-rules.js";
+import { nonNull } from "../../lib/non-null.js";
 
 interface SamplePayload {
 	rules?: unknown[];
@@ -92,9 +93,9 @@ describe("loadDistilledRules", () => {
 		writeDistilled({ rules: [SAMPLE_RULE, SECOND_RULE] });
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(2);
-		expect(rules[0].id).toBe(SAMPLE_RULE.id);
-		expect(rules[0].action).toBe("block");
-		expect(rules[1].action).toBe("ask");
+		expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
+		expect(nonNull(rules[0]).action).toBe("block");
+		expect(nonNull(rules[1]).action).toBe("ask");
 	});
 
 	it("filters out rules whose source.group_id is in removed_groups[]", () => {
@@ -102,7 +103,7 @@ describe("loadDistilledRules", () => {
 		writeOverrides({ removed_groups: ["skill:tdd"] });
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].id).toBe(SAMPLE_RULE.id);
+		expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
 	});
 
 	it("filters out rules whose id is in removed_rule_ids[]", () => {
@@ -110,7 +111,7 @@ describe("loadDistilledRules", () => {
 		writeOverrides({ removed_rule_ids: [SAMPLE_RULE.id] });
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].id).toBe(SECOND_RULE.id);
+		expect(nonNull(rules[0]).id).toBe(SECOND_RULE.id);
 	});
 
 	it("flips enabled:false on rules in disabled_rule_ids[] but keeps them", () => {
@@ -133,8 +134,8 @@ describe("loadDistilledRules", () => {
 		});
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].action).toBe("ask");
-		expect(rules[0].severity).toBe("medium");
+		expect(nonNull(rules[0]).action).toBe("ask");
+		expect(nonNull(rules[0]).severity).toBe("medium");
 		// user_modified is a sidecar field; cast through unknown to read it
 		// without widening the GuardRule type for tests.
 		expect((rules[0] as unknown as { user_modified?: boolean }).user_modified).toBe(true);
@@ -158,14 +159,14 @@ describe("loadDistilledRules", () => {
 		);
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].action).toBe("block");
+		expect(nonNull(rules[0]).action).toBe("block");
 	});
 
 	it("skips entries with missing id rather than throwing", () => {
 		writeDistilled({ rules: [{ ...SAMPLE_RULE, id: undefined }, SECOND_RULE] });
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
-		expect(rules[0].id).toBe(SECOND_RULE.id);
+		expect(nonNull(rules[0]).id).toBe(SECOND_RULE.id);
 	});
 
 	it("removed_rule_ids takes precedence over modifications", () => {
@@ -189,7 +190,7 @@ describe("loadDistilledRules", () => {
 			);
 			const rules = loadDistilledRules(tmpRoot);
 			expect(rules).toHaveLength(1);
-			expect(rules[0].id).toBe(SAMPLE_RULE.id);
+			expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
 			expect(existsSync(join(tmpRoot, ".interlinked", "distilled-rules.json"))).toBe(true);
 			expect(existsSync(join(tmpRoot, ".interlinked", "compiled-rules.json"))).toBe(false);
 		});
@@ -205,7 +206,7 @@ describe("loadDistilledRules", () => {
 				JSON.stringify({ disabled_rule_ids: [SAMPLE_RULE.id] }),
 			);
 			const rules = loadDistilledRules(tmpRoot);
-			expect(rules[0].enabled).toBe(false);
+			expect(nonNull(rules[0]).enabled).toBe(false);
 			expect(
 				existsSync(join(tmpRoot, ".interlinked", "distilled-rules.overrides.json")),
 			).toBe(true);
@@ -226,7 +227,7 @@ describe("loadDistilledRules", () => {
 			);
 			const rules = loadDistilledRules(tmpRoot);
 			expect(rules).toHaveLength(1);
-			expect(rules[0].id).toBe(SAMPLE_RULE.id);
+			expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
 			// Legacy file is left in place when migration would clobber.
 			expect(existsSync(join(tmpRoot, ".interlinked", "compiled-rules.json"))).toBe(true);
 		});

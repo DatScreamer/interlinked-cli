@@ -19,6 +19,7 @@ import type {
 	CheckResult,
 	ToolAvailability,
 } from "../../harness/check-engine/types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ----- mocks --------------------------------------------------------------
 
@@ -214,7 +215,7 @@ describe("TOOLS_TO_RUN", () => {
 	});
 
 	it("exposes a structurally-typed ToolSpec", () => {
-		const sample: ToolSpec = TOOLS_TO_RUN[0];
+		const sample: ToolSpec = nonNull(TOOLS_TO_RUN[0]);
 		expect(sample).toHaveProperty("id");
 		expect(sample).toHaveProperty("cmd");
 	});

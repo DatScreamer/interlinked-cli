@@ -8,6 +8,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 export {
 	checkSwiftDelegateNotWeak,
@@ -64,14 +65,14 @@ export function checkSwiftFileIdOverFilePath(content: string, filePath: string):
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = originalLines[i].trimStart();
+		const trimmed = nonNull(originalLines[i]).trimStart();
 		// Skip Swift comment lines
 		if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
 			continue;
-		if (/#file(?:Path)?\b(?!ID|Literal)/.test(originalLines[i])) {
+		if (/#file(?:Path)?\b(?!ID|Literal)/.test(nonNull(originalLines[i]))) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -107,13 +108,13 @@ export function checkSwiftAbbreviations(content: string, filePath: string): Inli
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		const origLine = originalLines[i];
 
 		if (abbrPattern.test(line)) {
 			matches.push({
 				line: i + 1,
-				text: origLine.trim().slice(0, 150),
+				text: nonNull(origLine).trim().slice(0, 150),
 			});
 		}
 	}
@@ -150,7 +151,7 @@ export function checkSwiftUnhandledTaskError(content: string, filePath: string):
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		// Match Task { or Task.detached { on this line
 		if (!/\bTask\s*(?:\.\s*detached\s*)?\{/.test(line)) continue;
@@ -160,16 +161,16 @@ export function checkSwiftUnhandledTaskError(content: string, filePath: string):
 		let hasTry = false;
 		let hasDoCatch = false;
 		for (let j = i; j < Math.min(i + 30, strippedLines.length); j++) {
-			for (const ch of strippedLines[j]) {
+			const bodyLine = nonNull(strippedLines[j]);
+			for (const ch of bodyLine) {
 				if (ch === "{") depth++;
 				if (ch === "}") depth--;
 			}
-			if (/\btry\b/.test(strippedLines[j]) && !/\btry[?!]/.test(strippedLines[j]))
-				hasTry = true;
-			if (/\bdo\s*\{/.test(strippedLines[j])) {
+			if (/\btry\b/.test(bodyLine) && !/\btry[?!]/.test(bodyLine)) hasTry = true;
+			if (/\bdo\s*\{/.test(bodyLine)) {
 				// Look ahead for a matching catch within the task body
 				for (let k = j + 1; k < Math.min(i + 30, strippedLines.length); k++) {
-					if (/\bcatch\b/.test(strippedLines[k])) {
+					if (/\bcatch\b/.test(nonNull(strippedLines[k]))) {
 						hasDoCatch = true;
 						break;
 					}
@@ -181,7 +182,7 @@ export function checkSwiftUnhandledTaskError(content: string, filePath: string):
 		if (hasTry && !hasDoCatch) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -206,7 +207,7 @@ export function checkSwiftGlobalVarNoIsolation(content: string, filePath: string
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		for (const ch of line) {
 			if (ch === "{") braceDepth++;
@@ -220,14 +221,14 @@ export function checkSwiftGlobalVarNoIsolation(content: string, filePath: string
 		if (!/^\s*(?:public\s+|internal\s+|fileprivate\s+|private\s+)?var\s+\w/.test(line))
 			continue;
 		// Skip if it has @MainActor or other actor isolation
-		if (/@\w*Actor\b/.test(line) || /@\w*Actor\b/.test(strippedLines[Math.max(0, i - 1)]))
+		if (/@\w*Actor\b/.test(line) || /@\w*Actor\b/.test(nonNull(strippedLines[Math.max(0, i - 1)])))
 			continue;
 		// Skip let (immutable is fine)
 		if (/^\s*(?:public\s+|internal\s+|fileprivate\s+|private\s+)?let\s/.test(line)) continue;
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 
@@ -248,18 +249,19 @@ export function checkSwiftSelfInEscapingClosure(content: string, filePath: strin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 
 		// Match @escaping closure parameter declarations
 		if (!/@escaping/.test(line)) continue;
 
 		// Scan forward for closure body containing self. without [weak self] or [unowned self]
 		for (let j = i; j < Math.min(i + 20, strippedLines.length); j++) {
-			if (/\[\s*(?:weak|unowned)\s+self\s*\]/.test(strippedLines[j])) break;
-			if (/\bself\./.test(strippedLines[j]) && j > i) {
+			const scanLine = nonNull(strippedLines[j]);
+			if (/\[\s*(?:weak|unowned)\s+self\s*\]/.test(scanLine)) break;
+			if (/\bself\./.test(scanLine) && j > i) {
 				matches.push({
 					line: j + 1,
-					text: originalLines[j].trim().slice(0, 150),
+					text: nonNull(originalLines[j]).trim().slice(0, 150),
 				});
 				break;
 			}
@@ -332,7 +334,7 @@ export function parseEnvDocumentation(
 					const content = readFileSync(envPath, "utf-8");
 					for (const line of content.split("\n")) {
 						const m = line.match(/^#?\s*([A-Z][A-Z0-9_]+)\s*=/);
-						if (m) documented.add(m[1]);
+						if (m) documented.add(nonNull(m[1]));
 					}
 				} catch {
 					/* intentional: unreadable env docs should not break env discovery */
@@ -351,7 +353,7 @@ export function parseEnvDocumentation(
 				let inVars = false;
 				for (const line of content.split("\n")) {
 					const binding = line.match(/^\s*(?:binding|name)\s*=\s*"([A-Z][A-Z0-9_]+)"/);
-					if (binding) documented.add(binding[1]);
+					if (binding) documented.add(nonNull(binding[1]));
 					if (/^\[vars\]/.test(line.trim())) {
 						inVars = true;
 						continue;
@@ -362,16 +364,16 @@ export function parseEnvDocumentation(
 					}
 					if (inVars) {
 						const m = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/);
-						if (m) documented.add(m[1]);
+						if (m) documented.add(nonNull(m[1]));
 					}
 				}
 			} else {
 				// JSONC: look for keys that look like env vars
 				for (const line of content.split("\n")) {
 					const m = line.match(/"([A-Z][A-Z0-9_]+)"\s*:/);
-					if (m) documented.add(m[1]);
+					if (m) documented.add(nonNull(m[1]));
 					const binding = line.match(/"(?:binding|name)"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
-					if (binding) documented.add(binding[1]);
+					if (binding) documented.add(nonNull(binding[1]));
 				}
 			}
 		} catch {
@@ -410,12 +412,12 @@ export function parseEnvDocumentation(
 				const content = readFileSync(join(workflowDir, file), "utf-8");
 				// env: blocks
 				const envMatches = content.matchAll(/^\s+([A-Z][A-Z0-9_]+)\s*:/gm);
-				for (const m of envMatches) documented.add(m[1]);
+				for (const m of envMatches) documented.add(nonNull(m[1]));
 				// ${{ secrets.VAR }}
 				const secretMatches = content.matchAll(
 					/\$\{\{\s*secrets\.([A-Z][A-Z0-9_]+)\s*\}\}/g,
 				);
-				for (const m of secretMatches) documented.add(m[1]);
+				for (const m of secretMatches) documented.add(nonNull(m[1]));
 			}
 		} catch {
 			/* intentional: unreadable workflow files should not break env discovery */

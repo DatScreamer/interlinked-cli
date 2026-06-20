@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkErrorDispatchByInstanceof, checkLossyErrorRethrow } from "./error-handling.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 
@@ -15,7 +16,7 @@ describe("checkErrorDispatchByInstanceof — positive cases", () => {
 		].join("\n");
 		const out = checkErrorDispatchByInstanceof(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toMatch(/instanceof\s+Error/);
+		expect(nonNull(out[0]).text).toMatch(/instanceof\s+Error/);
 	});
 
 	it("flags `e instanceof TypeError`", () => {
@@ -216,7 +217,7 @@ describe("checkLossyErrorRethrow — positive cases", () => {
 		].join("\n");
 		const out = checkLossyErrorRethrow(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("without { cause: err }");
+		expect(nonNull(out[0]).text).toContain("without { cause: err }");
 	});
 
 	it("flags throw new TypeError with a template message but no cause", () => {

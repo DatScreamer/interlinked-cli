@@ -8,6 +8,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Deletion Hygiene — Zombie Code Detectors
@@ -40,8 +41,8 @@ export function checkNotImplementedStubs(content: string, filePath: string): Inl
 	// Match the original lines (we need the string content), but skip comment-only lines
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = originalLines[i];
-		const strippedLine = strippedLines[i].trim();
+		const line = nonNull(originalLines[i]);
+		const strippedLine = nonNull(strippedLines[i]).trim();
 
 		// Skip if the line is entirely a comment (stripped content is empty)
 		if (strippedLine.length === 0 && line.trim().length > 0) continue;
@@ -52,20 +53,20 @@ export function checkNotImplementedStubs(content: string, filePath: string): Inl
 				line,
 			)
 		) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 
 		// Pattern 2: throw "not implemented" (bare string throw)
 		if (/\bthrow\s+["'`](not\s*implemented|todo|stub)/i.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 
 		// Pattern 3: return with a TODO/FIXME comment indicating incomplete implementation
 		// e.g., `return null; // TODO: implement` or `return undefined; // FIXME`
 		if (/\breturn\s+(null|undefined)\s*;?\s*\/\/\s*(TODO|FIXME|HACK|XXX)\b/i.test(line)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 
@@ -88,7 +89,7 @@ function emptyFnCandidateName(line: string): string | null {
 	for (const pat of EMPTY_FN_PATTERNS) {
 		const m = line.match(pat);
 		if (m) {
-			funcName = m[1];
+			funcName = nonNull(m[1]);
 			break;
 		}
 	}
@@ -110,7 +111,7 @@ function collectEmptyFnBody(strippedLines: string[], startIndex: number): string
 	let braceDepth = 0;
 	let started = false;
 	for (let j = startIndex; j < Math.min(startIndex + 8, strippedLines.length); j++) {
-		for (const ch of strippedLines[j]) {
+		for (const ch of nonNull(strippedLines[j])) {
 			if (ch === "{") {
 				started = true;
 				braceDepth++;
@@ -118,7 +119,7 @@ function collectEmptyFnBody(strippedLines: string[], startIndex: number): string
 			if (ch === "}") braceDepth--;
 		}
 		if (started && j > startIndex) {
-			bodyContent = `${bodyContent}${strippedLines[j].trim()}\n`;
+			bodyContent = `${bodyContent}${nonNull(strippedLines[j]).trim()}\n`;
 		}
 		if (started && braceDepth === 0) break;
 	}
@@ -171,7 +172,7 @@ export function checkEmptyFunctionBody(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i].trim();
+		const line = nonNull(strippedLines[i]).trim();
 
 		const funcName = emptyFnCandidateName(line);
 		if (!funcName) continue;
@@ -180,7 +181,7 @@ export function checkEmptyFunctionBody(content: string, filePath: string): Inlin
 		if (isTrivialFnBody(bodyContent)) {
 			matches.push({
 				line: i + 1,
-				text: `[empty function body] ${originalLines[i].trim().slice(0, 120)}`,
+				text: `[empty function body] ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 	}
@@ -198,7 +199,7 @@ function countFnBodyLines(lines: string[], fnIndex: number): number {
 	let braceDepth = 0;
 	let bodyStarted = false;
 	for (let k = fnIndex; k < Math.min(fnIndex + 8, lines.length); k++) {
-		for (const ch of lines[k]) {
+		for (const ch of nonNull(lines[k])) {
 			if (ch === "{") {
 				bodyStarted = true;
 				braceDepth++;
@@ -206,7 +207,7 @@ function countFnBodyLines(lines: string[], fnIndex: number): number {
 			if (ch === "}") braceDepth--;
 		}
 		if (bodyStarted && k > fnIndex) {
-			const trimmedBody = lines[k].trim();
+			const trimmedBody = nonNull(lines[k]).trim();
 			if (trimmedBody.length > 0 && trimmedBody !== "}") bodyLines++;
 		}
 		if (bodyStarted && braceDepth === 0) break;
@@ -222,7 +223,7 @@ function countFnBodyLines(lines: string[], fnIndex: number): number {
  */
 function deprecatedTrivialFnLine(lines: string[], deprecatedIndex: number): string | null {
 	for (let j = deprecatedIndex + 1; j < Math.min(deprecatedIndex + 5, lines.length); j++) {
-		const nextLine = lines[j].trim();
+		const nextLine = nonNull(lines[j]).trim();
 		if (/^(export\s+)?(async\s+)?function\s+\w+|^\w+\s*\(/.test(nextLine)) {
 			return countFnBodyLines(lines, j) <= 1 ? nextLine : null;
 		}
@@ -252,7 +253,7 @@ export function checkDeprecationNotice(content: string, filePath: string): Inlin
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 
 		// Pattern 1: console.warn/log with "deprecated" or "removed" in the message
 		if (
@@ -262,7 +263,7 @@ export function checkDeprecationNotice(content: string, filePath: string): Inlin
 		) {
 			matches.push({
 				line: i + 1,
-				text: `[deprecation ceremony — just delete it] ${line.trim().slice(0, 120)}`,
+				text: `[deprecation ceremony — just delete it] ${nonNull(line).trim().slice(0, 120)}`,
 			});
 			continue;
 		}
@@ -292,7 +293,7 @@ function collectTestBody(strippedLines: string[], startIndex: number): string {
 	let bodyStarted = false;
 	let bodyContent = "";
 	for (let j = startIndex; j < Math.min(startIndex + 10, strippedLines.length); j++) {
-		for (const ch of strippedLines[j]) {
+		for (const ch of nonNull(strippedLines[j])) {
 			if (ch === "{") {
 				bodyStarted = true;
 				braceDepth++;
@@ -300,7 +301,7 @@ function collectTestBody(strippedLines: string[], startIndex: number): string {
 			if (ch === "}") braceDepth--;
 		}
 		if (bodyStarted && j > startIndex) {
-			bodyContent = `${bodyContent}${strippedLines[j].trim()} `;
+			bodyContent = `${bodyContent}${nonNull(strippedLines[j]).trim()} `;
 		}
 		if (bodyStarted && braceDepth <= 0) break;
 	}
@@ -352,7 +353,7 @@ export function checkOrphanedTestStub(content: string, filePath: string): Inline
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i].trim();
+		const line = nonNull(strippedLines[i]).trim();
 
 		if (!testOpenPattern.test(line)) continue;
 		if (skipPattern.test(line) || xPattern.test(line)) continue;
@@ -361,7 +362,7 @@ export function checkOrphanedTestStub(content: string, filePath: string): Inline
 		if (isEmptyTestBody(bodyContent)) {
 			matches.push({
 				line: i + 1,
-				text: `[empty test body — delete the test or implement it] ${originalLines[i].trim().slice(0, 100)}`,
+				text: `[empty test body — delete the test or implement it] ${nonNull(originalLines[i]).trim().slice(0, 100)}`,
 			});
 		}
 	}
@@ -419,7 +420,7 @@ export function checkDeletionComments(content: string, filePath: string): Inline
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 
 		// Must be a comment line
 		const commentMatch = line.match(commentPattern);
@@ -429,11 +430,11 @@ export function checkDeletionComments(content: string, filePath: string): Inline
 		if (skipPatterns.some((p) => p.test(line))) continue;
 
 		// Check if the comment narrates a deletion
-		const commentText = commentMatch[1];
+		const commentText = nonNull(commentMatch[1]);
 		if (deletionPatterns.some((p) => p.test(commentText))) {
 			matches.push({
 				line: i + 1,
-				text: `[deletion narration — git history records this] ${line.trim().slice(0, 120)}`,
+				text: `[deletion narration — git history records this] ${nonNull(line).trim().slice(0, 120)}`,
 			});
 		}
 	}

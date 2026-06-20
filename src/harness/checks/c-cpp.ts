@@ -2,6 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // C/C++ Checks
@@ -32,18 +33,18 @@ export function checkCUnsafeFunctions(content: string, filePath: string): Inline
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const m = unsafePattern.exec(strippedLines[i]);
+		const m = unsafePattern.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
 		// Ensure we didn't match the safe variant (strncpy, strncat, snprintf)
 		const funcName = m[1];
 		if (funcName === "strcpy" || funcName === "strcat" || funcName === "sprintf") {
 			// Check the character before the match is not 'n' (strncpy, strncat, snprintf)
-			const charBefore = m.index > 0 ? strippedLines[i][m.index - 1] : "";
+			const charBefore = m.index > 0 ? nonNull(strippedLines[i])[m.index - 1] : "";
 			if (charBefore === "n") continue;
 		}
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 
@@ -91,7 +92,7 @@ export function checkCStrcmpBooleanMisuse(content: string, filePath: string): In
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		if (!callPattern.test(line)) continue;
 		// Skip if there's a negation: if (!strcmp(...))
 		if (/\b(if|while)\s*\(\s*!\s*str[n]?cmp/.test(line)) continue;
@@ -99,7 +100,7 @@ export function checkCStrcmpBooleanMisuse(content: string, filePath: string): In
 		if (/str[n]?cmp\s*\([^)]*\)\s*(==|!=|<|>|<=|>=)/.test(line)) continue;
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 
@@ -122,16 +123,16 @@ export function checkCUncheckedMalloc(content: string, filePath: string): Inline
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const m = allocPattern.exec(strippedLines[i]);
+		const m = allocPattern.exec(nonNull(strippedLines[i]));
 		if (!m) continue;
-		const varName = m[1];
+		const varName = nonNull(m[1]);
 		// Only match simple C identifiers to avoid regex injection
 		if (!/^\w+$/.test(varName)) continue;
 		// Look ahead 3 lines for a null check on this variable
 		let hasNullCheck = false;
 		const lookAhead = Math.min(i + 4, strippedLines.length);
 		for (let j = i + 1; j < lookAhead; j++) {
-			const ahead = strippedLines[j];
+			const ahead = nonNull(strippedLines[j]);
 			// Common null-check patterns: if (!ptr), if (ptr == NULL), if (ptr != NULL), if (ptr)
 			if (
 				ahead.includes(varName) &&
@@ -144,7 +145,7 @@ export function checkCUncheckedMalloc(content: string, filePath: string): Inline
 		if (!hasNullCheck) {
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 		}
 	}
@@ -168,14 +169,14 @@ export function checkCSprintfUsage(content: string, filePath: string): InlineMat
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		if (!pattern.test(line)) continue;
 		// Ensure it's not snprintf by checking the char before 'sprintf'
 		const idx = line.search(/\bsprintf\s*\(/);
 		if (idx > 0 && line[idx - 1] === "n") continue;
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 

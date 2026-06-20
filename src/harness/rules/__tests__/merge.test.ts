@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { GuardRulesConfig, QualityCheckConfig } from "../../types.js";
 import { DEFAULT_CONFIG } from "../default-config.js";
 import { mergeLocalOverrides, mergeTeamRules } from "../merge.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function mkBaseConfig() {
 	// Use the full default config (deep-cloned) as the starting shape so we
@@ -42,7 +43,7 @@ describe("mergeTeamRules", () => {
 
 	it("blocks team config from changing `command` field on existing checks", () => {
 		const config = mkBaseConfig();
-		const originalCommand = config.quality_checks.typescript.command;
+		const originalCommand = nonNull(config.quality_checks.typescript).command;
 		mergeTeamRules(config, {
 			quality_checks: {
 				typescript: {
@@ -54,7 +55,7 @@ describe("mergeTeamRules", () => {
 				},
 			},
 		});
-		expect(config.quality_checks.typescript.command).toBe(originalCommand);
+		expect(nonNull(config.quality_checks.typescript).command).toBe(originalCommand);
 	});
 
 	it("allows team config to toggle safe fields (enabled, severity, timeout)", () => {
@@ -69,9 +70,9 @@ describe("mergeTeamRules", () => {
 				},
 			},
 		});
-		expect(config.quality_checks.typescript.enabled).toBe(false);
-		expect(config.quality_checks.typescript.severity).toBe("warning");
-		expect(config.quality_checks.typescript.timeout_ms).toBe(1000);
+		expect(nonNull(config.quality_checks.typescript).enabled).toBe(false);
+		expect(nonNull(config.quality_checks.typescript).severity).toBe("warning");
+		expect(nonNull(config.quality_checks.typescript).timeout_ms).toBe(1000);
 	});
 
 	it("applies team-level protected_files and rules", () => {
@@ -81,7 +82,7 @@ describe("mergeTeamRules", () => {
 			protected_files: [{ glob: "**/foo", operations: ["Write"], reason: "r" }],
 		});
 		expect(config.protected_files.length).toBe(1);
-		expect(config.protected_files[0].glob).toBe("**/foo");
+		expect(nonNull(config.protected_files[0]).glob).toBe("**/foo");
 	});
 
 	it("can disable the harness entirely via team config", () => {
@@ -125,7 +126,7 @@ describe("mergeTeamRules", () => {
 		mergeTeamRules(config, { rules: [teamRule] });
 		expect(config.rules).toHaveLength(1);
 		expect(config.rules).not.toHaveLength(before);
-		expect(config.rules[0].id).toBe("team-only");
+		expect(nonNull(config.rules[0]).id).toBe("team-only");
 	});
 
 	it("does NOT clobber enabled when team.enabled is true (only false disables)", () => {
@@ -146,7 +147,7 @@ describe("mergeTeamRules", () => {
 			file_reminders: [{ glob: "**/new", message: "new" }],
 		});
 		expect(config.file_reminders).toHaveLength(1);
-		expect(config.file_reminders[0].glob).toBe("**/new");
+		expect(nonNull(config.file_reminders[0]).glob).toBe("**/new");
 	});
 
 	it("deep-merges curl_mcp_detection (Object.assign keeps untouched fields)", () => {
@@ -167,20 +168,20 @@ describe("mergeTeamRules", () => {
 		// A malformed team entry must not throw and must leave the existing
 		// check untouched.
 		const config = mkBaseConfig();
-		const before = config.quality_checks.typescript.enabled;
+		const before = nonNull(config.quality_checks.typescript).enabled;
 		mergeTeamRules(config, {
 			quality_checks: {
 				typescript: null as unknown as QualityCheckConfig,
 			},
 		});
-		expect(config.quality_checks.typescript.enabled).toBe(before);
+		expect(nonNull(config.quality_checks.typescript).enabled).toBe(before);
 	});
 
 	it("skips an explicitly-undefined safe field rather than writing undefined", () => {
 		// Guard: `if (val !== undefined)`. Passing `{enabled: undefined}` for an
 		// existing check must NOT overwrite the real value with undefined.
 		const config = mkBaseConfig();
-		config.quality_checks.typescript.enabled = true;
+		nonNull(config.quality_checks.typescript).enabled = true;
 		mergeTeamRules(config, {
 			quality_checks: {
 				typescript: {
@@ -188,7 +189,7 @@ describe("mergeTeamRules", () => {
 				} as unknown as QualityCheckConfig,
 			},
 		});
-		expect(config.quality_checks.typescript.enabled).toBe(true);
+		expect(nonNull(config.quality_checks.typescript).enabled).toBe(true);
 	});
 
 	it("merges team error_memory via Object.assign", () => {
@@ -311,7 +312,7 @@ describe("mergeLocalOverrides", () => {
 				},
 			},
 		});
-		expect(config.quality_checks.typescript.command).toBe("my-custom-tsc");
+		expect(nonNull(config.quality_checks.typescript).command).toBe("my-custom-tsc");
 	});
 
 	it("appends content_scanner.allowlist entries instead of replacing them", () => {
@@ -419,15 +420,15 @@ describe("mergeLocalOverrides", () => {
 		// Branch: `if (config.quality_checks[key]) Object.assign(...)`. Only the
 		// supplied field changes; command and the rest survive.
 		const config = mkBaseConfig();
-		const originalCommand = config.quality_checks.typescript.command;
+		const originalCommand = nonNull(config.quality_checks.typescript).command;
 		mergeLocalOverrides(config, {
 			quality_checks: {
 				typescript: { enabled: false } as unknown as QualityCheckConfig,
 			},
 		});
-		expect(config.quality_checks.typescript.enabled).toBe(false);
+		expect(nonNull(config.quality_checks.typescript).enabled).toBe(false);
 		// Object.assign of a partial keeps the existing command.
-		expect(config.quality_checks.typescript.command).toBe(originalCommand);
+		expect(nonNull(config.quality_checks.typescript).command).toBe(originalCommand);
 	});
 
 	it("local overrides can ADD a brand-new quality check (trusted scope)", () => {

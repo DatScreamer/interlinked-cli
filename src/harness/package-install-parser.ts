@@ -70,6 +70,7 @@ import {
 	parseMaven,
 	parseNuget,
 } from "./package-install-parser-ecosystems.js";
+import { nonNull } from "../lib/non-null.js";
 
 const NPM_LIKE = new Set(["npm", "pnpm", "yarn", "bun"]);
 
@@ -108,7 +109,7 @@ function parseCdSegment(seg: string): string | null {
 	if (stripped.length < 2) return null;
 	if (stripped[0] !== "cd") return null;
 	let i = 1;
-	while (i < stripped.length && stripped[i].startsWith("-")) i++;
+	while (i < stripped.length && nonNull(stripped[i]).startsWith("-")) i++;
 	const target = stripped[i];
 	if (!target) return null;
 	return target;
@@ -193,7 +194,7 @@ const COMPOUND_REDIR_RE = /^(?:&|\d+)?(?:>>?|<<?<?|<>)\S+$/;
 export function stripRedirections(tokens: string[]): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < tokens.length; i++) {
-		const t = tokens[i];
+		const t = nonNull(tokens[i]);
 		if (PURE_REDIR_RE.test(t)) {
 			i++;
 			continue;
@@ -209,7 +210,7 @@ function tokenize(seg: string): string[] {
 	let buf = "";
 	let q: string | null = null;
 	for (let i = 0; i < seg.length; i++) {
-		const ch = seg[i];
+		const ch = nonNull(seg[i]);
 		if (q) {
 			if (ch === q && seg[i - 1] !== "\\") {
 				q = null;
@@ -250,7 +251,7 @@ function stripWrappers(tokens: string[]): StripResult {
 		envVars[assignment.slice(0, eq)] = assignment.slice(eq + 1);
 	};
 	while (out.length) {
-		const t = out[0];
+		const t = nonNull(out[0]);
 		if (
 			t === "sudo" ||
 			t === "exec" ||
@@ -284,7 +285,7 @@ function parseOneSegment(seg: string): InstallCommand | null {
 	if (tokens0.length === 0) return null;
 	const { tokens, envVars } = stripWrappers(tokens0);
 	if (tokens.length === 0) return null;
-	const bin = basenameNoExt(tokens[0]);
+	const bin = basenameNoExt(nonNull(tokens[0]));
 
 	if (NPM_LIKE.has(bin)) return parseNpmLike(bin, tokens, envVars);
 	if (bin === "pip" || bin === "pip3" || bin === "pipx")

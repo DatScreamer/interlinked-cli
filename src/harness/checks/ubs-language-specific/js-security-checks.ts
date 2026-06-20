@@ -11,6 +11,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { stripCommentsPreservingStrings } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // DOM/XSS & crypto security detectors live in the sibling leaf module.
 // Re-exported here so the public barrel (ubs-language-specific.ts) and the
@@ -84,16 +85,16 @@ export function checkEvalInputTainted(content: string, filePath: string): Inline
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		re.lastIndex = 0;
-		if (!re.test(strippedLines[i])) continue;
+		if (!re.test(nonNull(strippedLines[i]))) continue;
 		// 139-repo audit: respect Bandit `# noqa: S307 / S102` on the
 		// same line. Supermodel's mcpbr/custom_metrics.py:347 was the
 		// canonical case (sandboxed eval + intent comment). The check
 		// anchors on the call line, so a same-line noqa is sufficient
 		// (Python convention).
-		if (lineHasNoqaSuppression(originalLines[i], "ubs_eval_input_tainted")) continue;
+		if (lineHasNoqaSuppression(nonNull(originalLines[i]), "ubs_eval_input_tainted")) continue;
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -139,11 +140,11 @@ export function checkChildProcessExecUserInput(content: string, filePath: string
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
 		re.lastIndex = 0;
-		if (!re.test(strippedLines[i])) continue;
+		if (!re.test(nonNull(strippedLines[i]))) continue;
 		matchedLines.add(i + 1);
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 
@@ -157,7 +158,7 @@ export function checkChildProcessExecUserInput(content: string, filePath: string
 		matchedLines.add(lineNum);
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -216,7 +217,7 @@ export function checkMixedSyncAsyncFileApi(content: string, filePath: string): I
 		seenLines.add(lineNum);
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -367,7 +368,7 @@ export function checkCookieMissingSecurityFlags(content: string, filePath: strin
 		const lineNum = stripped.slice(0, idx).split("\n").length;
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 
@@ -384,7 +385,7 @@ export function checkCookieMissingSecurityFlags(content: string, filePath: strin
 		if (matches.some((match) => match.line === lineNum)) continue;
 		matches.push({
 			line: lineNum,
-			text: originalLines[lineNum - 1].trim().slice(0, 150),
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -421,10 +422,10 @@ export function checkLoggerFormatUserInput(content: string, filePath: string): I
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		if (!re.test(strippedLines[i])) continue;
+		if (!re.test(nonNull(strippedLines[i]))) continue;
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;

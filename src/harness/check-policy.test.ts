@@ -12,6 +12,7 @@ import {
 } from "./check-policy.js";
 import { CHECK_REGISTRY } from "./check-registry/registry.js";
 import type { CheckPhase, CheckRegistration } from "./check-registry/types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Build a deterministic check registration for phase-mapping tests. */
 function mockCheck(phase: CheckPhase, id = "mock_check"): CheckRegistration {
@@ -93,7 +94,7 @@ describe("loadCheckPolicy", () => {
 			}),
 		);
 		const policy = loadCheckPolicy(tmp);
-		expect(policy.checks.placeholder_test.action).toBe("block_preview");
+		expect(nonNull(policy.checks.placeholder_test).action).toBe("block_preview");
 	});
 
 	it("local 'overrides' key wins over team 'checks' key", () => {
@@ -106,7 +107,7 @@ describe("loadCheckPolicy", () => {
 			JSON.stringify({ overrides: { default_export: { action: "silent" } } }),
 		);
 		const policy = loadCheckPolicy(tmp);
-		expect(policy.checks.default_export.action).toBe("silent");
+		expect(nonNull(policy.checks.default_export).action).toBe("silent");
 	});
 
 	it("local overrides merge field-by-field rather than replacing wholesale", () => {
@@ -121,8 +122,8 @@ describe("loadCheckPolicy", () => {
 			JSON.stringify({ overrides: { sql_injection: { action: "warn_before" } } }),
 		);
 		const policy = loadCheckPolicy(tmp);
-		expect(policy.checks.sql_injection.action).toBe("warn_before");
-		expect(policy.checks.sql_injection.scope).toBe("touched_file");
+		expect(nonNull(policy.checks.sql_injection).action).toBe("warn_before");
+		expect(nonNull(policy.checks.sql_injection).scope).toBe("touched_file");
 	});
 
 	it("malformed JSON falls back to defaults without throwing", () => {
@@ -148,7 +149,7 @@ describe("loadCheckPolicy", () => {
 
 describe("resolveAction", () => {
 	it("falls back to registration default when no policy entry exists", () => {
-		const check = CHECK_REGISTRY[0];
+		const check = nonNull(CHECK_REGISTRY[0]);
 		const policy = { ...DEFAULT_POLICY, checks: {} };
 		const resolved = resolveAction(check, policy);
 		expect(resolved.source).toBe("default");
@@ -156,7 +157,7 @@ describe("resolveAction", () => {
 	});
 
 	it("uses policy entry when present and marks source as 'policy'", () => {
-		const check = CHECK_REGISTRY[0];
+		const check = nonNull(CHECK_REGISTRY[0]);
 		const policy = {
 			...DEFAULT_POLICY,
 			checks: { [check.id]: { action: "block_preview" as const } },
@@ -168,7 +169,7 @@ describe("resolveAction", () => {
 	});
 
 	it("resolved scope comes from entry when set, else defaults", () => {
-		const check = CHECK_REGISTRY[0];
+		const check = nonNull(CHECK_REGISTRY[0]);
 		const policy = {
 			...DEFAULT_POLICY,
 			defaults: { action: "warn_after" as const, scope: "diff" as const },

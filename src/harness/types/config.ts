@@ -3,15 +3,15 @@
 // Interlinked Harness — Guard Rules Configuration Types
 // ===========================================
 
-import type { GuardRule } from "./rules.js";
-import type { ClassifierConfig } from "./policy.js";
-import type { TaintTrackingConfig, OutputScanningConfig } from "./taint.js";
 import type {
-	ProjectWideCheckConfig,
-	StructuralChecksConfig,
 	ErrorMemoryConfig,
 	ErrorRecord,
+	ProjectWideCheckConfig,
+	StructuralChecksConfig,
 } from "./config-structural.js";
+import type { ClassifierConfig } from "./policy.js";
+import type { GuardRule } from "./rules.js";
+import type { OutputScanningConfig, TaintTrackingConfig } from "./taint.js";
 
 // ===========================================
 // Guard Rules Configuration
@@ -128,6 +128,8 @@ export interface PreEditBaseline {
 	asAnyCastCount: number;
 	/** Count of non-null assertions (`foo!.bar`) */
 	nonNullAssertionCount: number;
+	/** Count of unjustified casts (as X without a // SAFETY: comment) */
+	unjustifiedCastCount?: number;
 	/** Count of TODO / FIXME / HACK / XXX markers (Batch 7 ratchet). */
 	todoMarkerCount?: number;
 	/** Count of console.* statements (Batch 7 ratchet). */
@@ -405,9 +407,9 @@ export interface CommitCadenceConfig {
 // module (config-structural.ts) to keep this file under the per-file line
 // cap. Re-exported here so the public surface of ./config.ts is unchanged.
 export type {
-	ProjectWideCheckConfig,
-	StructuralChecksConfig,
 	ErrorMemoryConfig,
 	ErrorRecord,
+	ProjectWideCheckConfig,
+	StructuralChecksConfig,
 } from "./config-structural.js";
 

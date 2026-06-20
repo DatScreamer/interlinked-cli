@@ -13,6 +13,7 @@
 // but with higher base severity than typical heuristic checks.
 
 import type { Finding } from "./suggestion-scorer.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -261,10 +262,10 @@ export function checkOrphanedTests(
 		while (searchFrom < testFileContent.length) {
 			const idx = testFileContent.indexOf(symbol, searchFrom);
 			if (idx === -1) break;
-			const before = idx > 0 ? testFileContent[idx - 1] : " ";
+			const before = idx > 0 ? nonNull(testFileContent[idx - 1]) : " ";
 			const after =
 				idx + symbol.length < testFileContent.length
-					? testFileContent[idx + symbol.length]
+					? nonNull(testFileContent[idx + symbol.length])
 					: " ";
 			if (!isWordChar(before) && !isWordChar(after)) {
 				found = true;

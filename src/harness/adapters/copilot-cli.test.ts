@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HarnessDecision } from "../types.js";
 import type { UnifiedHookEvent } from "../unified-event.js";
 import { createCopilotCliAdapter } from "./copilot-cli.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const adapter = createCopilotCliAdapter();
 
@@ -78,10 +79,10 @@ describe("Copilot CLI renderSettingsFragment", () => {
 		const f = frag.fragment as {
 			hooks: Record<string, Array<{ bash: string }>>;
 		};
-		expect(f.hooks.preToolUse[0].bash).toContain("--runner 'copilot-cli'");
-		expect(f.hooks.preToolUse[0].bash).toContain("--event 'preToolUse'");
-		expect(f.hooks.preToolUse[0].bash).toContain("if test -f");
-		expect(f.hooks.preToolUse[0].bash).not.toContain("|| true");
+		expect(nonNull(nonNull(f.hooks.preToolUse)[0]).bash).toContain("--runner 'copilot-cli'");
+		expect(nonNull(nonNull(f.hooks.preToolUse)[0]).bash).toContain("--event 'preToolUse'");
+		expect(nonNull(nonNull(f.hooks.preToolUse)[0]).bash).toContain("if test -f");
+		expect(nonNull(nonNull(f.hooks.preToolUse)[0]).bash).not.toContain("|| true");
 	});
 });
 
@@ -347,10 +348,10 @@ describe("Copilot CLI renderSettingsFragment — full shape", () => {
 			const entries = f.hooks[ev];
 			expect(Array.isArray(entries)).toBe(true);
 			expect(entries).toHaveLength(1);
-			expect(entries[0].type).toBe("command");
-			expect(entries[0].bash).toContain(`--event '${ev}'`);
-			expect(entries[0].bash).toContain("node");
-			expect(entries[0].bash).toContain("/bin/hook");
+			expect(nonNull(nonNull(entries)[0]).type).toBe("command");
+			expect(nonNull(nonNull(entries)[0]).bash).toContain(`--event '${ev}'`);
+			expect(nonNull(nonNull(entries)[0]).bash).toContain("node");
+			expect(nonNull(nonNull(entries)[0]).bash).toContain("/bin/hook");
 		}
 	});
 
@@ -358,7 +359,7 @@ describe("Copilot CLI renderSettingsFragment — full shape", () => {
 		const frag = adapter.renderSettingsFragment("/weird/it's-here/hook", "project");
 		const f = frag.fragment as { hooks: Record<string, Array<{ bash: string }>> };
 		// The single quote is escaped via the '\'' shell idiom.
-		expect(f.hooks.preToolUse[0].bash).toContain("'\\''");
+		expect(nonNull(nonNull(f.hooks.preToolUse)[0]).bash).toContain("'\\''");
 	});
 });
 

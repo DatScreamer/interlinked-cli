@@ -13,6 +13,7 @@
 
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 export interface DaemonPaths {
 	socket: string;
@@ -119,7 +120,7 @@ function parseSessionIdFromFilename(name: string): string {
 	// Either "harness.pid" → "default", or "harness-<id>.pid" → "<id>"
 	if (name === "harness.pid") return "default";
 	const m = /^harness-(.+)\.pid$/.exec(name);
-	return m ? m[1] : "default";
+	return m ? nonNull(m[1]) : "default";
 }
 
 function readPidFile(path: string): number | null {

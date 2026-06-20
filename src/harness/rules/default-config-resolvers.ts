@@ -10,6 +10,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { nonNull } from "../../lib/non-null.js";
 import type { ProtectedFileRule } from "../types.js";
 
 /** Seconds in a week — used for the default error-memory expiry. */
@@ -34,7 +35,7 @@ function resolveDefaultOpfSidecarScript(): string {
 		const candidatePath = fileURLToPath(url);
 		if (existsSync(candidatePath)) return candidatePath;
 	}
-	return fileURLToPath(candidates[0]);
+	return fileURLToPath(nonNull(candidates[0]));
 }
 
 /** Resolve a shipped Viterbi calibration preset by filename across the same
@@ -57,7 +58,7 @@ function resolveDefaultOpfCalibrationPath(presetFileName: string): string {
 		const candidatePath = fileURLToPath(url);
 		if (existsSync(candidatePath)) return candidatePath;
 	}
-	return fileURLToPath(candidates[0]);
+	return fileURLToPath(nonNull(candidates[0]));
 }
 
 export const DEFAULT_OPF_SIDECAR_SCRIPT = resolveDefaultOpfSidecarScript();

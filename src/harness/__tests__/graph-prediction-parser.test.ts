@@ -14,6 +14,7 @@ import {
 	parseBarePrediction,
 	parseGraphPredictionsFromText,
 } from "../graph-prediction-parser.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("parseGraphPredictionsFromText — extraction", () => {
 	it("returns [] on text with no fenced blocks", () => {
@@ -47,10 +48,10 @@ describe("parseGraphPredictionsFromText — extraction", () => {
 		].join("\n");
 		const results = parseGraphPredictionsFromText(text);
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("src/foo.ts");
-		expect(results[0].deps?.imports).toEqual(["node:net"]);
-		expect(results[0].impact?.risk).toBe("low");
-		expect(results[0].impact?.direct).toBe(1);
+		expect(nonNull(results[0]).file).toBe("src/foo.ts");
+		expect(nonNull(results[0]).deps?.imports).toEqual(["node:net"]);
+		expect(nonNull(results[0]).impact?.risk).toBe("low");
+		expect(nonNull(results[0]).impact?.direct).toBe(1);
 	});
 
 	it("extracts multiple predictions emitted in one response", () => {
@@ -79,7 +80,7 @@ describe("parseGraphPredictionsFromText — extraction", () => {
 		const text = ["```", "graph_prediction:", "  file: src/foo.ts", "```"].join("\n");
 		const results = parseGraphPredictionsFromText(text);
 		expect(results).toHaveLength(1);
-		expect(results[0].file).toBe("src/foo.ts");
+		expect(nonNull(results[0]).file).toBe("src/foo.ts");
 	});
 
 	it("ignores fences that contain `graph_prediction` only as part of prose", () => {
@@ -111,8 +112,8 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.parse_status).toBe("ok");
-		expect(pred.deps?.imports).toEqual(["node:net", "./evaluator"]);
+		expect(nonNull(pred).parse_status).toBe("ok");
+		expect(nonNull(pred).deps?.imports).toEqual(["node:net", "./evaluator"]);
 	});
 
 	it("parses block-style imported_by + flow-style imports in the same prediction", () => {
@@ -129,8 +130,8 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.deps?.imports).toEqual(["node:net"]);
-		expect(pred.deps?.imported_by).toEqual(["src/index.ts", "src/runner.ts"]);
+		expect(nonNull(pred).deps?.imports).toEqual(["node:net"]);
+		expect(nonNull(pred).deps?.imported_by).toEqual(["src/index.ts", "src/runner.ts"]);
 	});
 
 	it("parses block-style callers/callees with arrow notation", () => {
@@ -147,8 +148,8 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.calls?.callers).toEqual(["Run ← init"]);
-		expect(pred.calls?.callees).toEqual(["Run → getGraph", "Run → extract"]);
+		expect(nonNull(pred).calls?.callers).toEqual(["Run ← init"]);
+		expect(nonNull(pred).calls?.callees).toEqual(["Run → getGraph", "Run → extract"]);
 	});
 
 	it("parses block-style domains/affects under impact", () => {
@@ -168,9 +169,9 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.impact?.domains).toEqual(["Server", "Lifecycle"]);
-		expect(pred.impact?.affects).toEqual(["src/index.ts"]);
-		expect(pred.impact?.direct).toBe(5);
+		expect(nonNull(pred).impact?.domains).toEqual(["Server", "Lifecycle"]);
+		expect(nonNull(pred).impact?.affects).toEqual(["src/index.ts"]);
+		expect(nonNull(pred).impact?.direct).toBe(5);
 	});
 
 	it("returns parse_failed on an orphan list item (no parent key with empty value)", () => {
@@ -182,8 +183,8 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.parse_status).toBe("parse_failed");
-		expect(pred.parse_error).toMatch(/orphan|no parent|list item/i);
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_error).toMatch(/orphan|no parent|list item/i);
 	});
 
 	it("returns parse_failed when block-style item indent doesn't exceed parent indent", () => {
@@ -198,7 +199,7 @@ describe("parseGraphPredictionsFromText — block-style YAML lists", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
 	});
 });
 
@@ -214,9 +215,9 @@ describe("parseGraphPredictionsFromText — section semantics", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.deps).not.toBeNull();
-		expect(pred.calls).toBeNull();
-		expect(pred.impact).toBeNull();
+		expect(nonNull(pred).deps).not.toBeNull();
+		expect(nonNull(pred).calls).toBeNull();
+		expect(nonNull(pred).impact).toBeNull();
 	});
 
 	it("preserves the `unknown` sentinel inside lists (abstention)", () => {
@@ -230,8 +231,8 @@ describe("parseGraphPredictionsFromText — section semantics", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.deps?.imports).toEqual(["a.ts", "unknown"]);
-		expect(pred.deps?.imported_by).toBe("unknown");
+		expect(nonNull(pred).deps?.imports).toEqual(["a.ts", "unknown"]);
+		expect(nonNull(pred).deps?.imported_by).toBe("unknown");
 	});
 
 	it("distinguishes empty list (`[]` = explicit absence) from `unknown`", () => {
@@ -245,8 +246,8 @@ describe("parseGraphPredictionsFromText — section semantics", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.deps?.imports).toEqual([]);
-		expect(pred.deps?.imported_by).toBe("unknown");
+		expect(nonNull(pred).deps?.imports).toEqual([]);
+		expect(nonNull(pred).deps?.imported_by).toBe("unknown");
 	});
 
 	it("accepts integer counts and `unknown` for impact.direct/transitive", () => {
@@ -263,8 +264,8 @@ describe("parseGraphPredictionsFromText — section semantics", () => {
 			"```",
 		].join("\n");
 		const [pred] = parseGraphPredictionsFromText(text);
-		expect(pred.impact?.direct).toBe(8);
-		expect(pred.impact?.transitive).toBe("unknown");
+		expect(nonNull(pred).impact?.direct).toBe(8);
+		expect(nonNull(pred).impact?.transitive).toBe("unknown");
 	});
 });
 
@@ -282,7 +283,7 @@ describe("parseGraphPredictionsFromText — format-cap enforcement", () => {
 		].join("\n");
 		const results = parseGraphPredictionsFromText(text);
 		expect(results).toHaveLength(1);
-		expect(results[0].parse_status).toBe("format_violation");
+		expect(nonNull(results[0]).parse_status).toBe("format_violation");
 	});
 
 	it("accepts a section at exactly 50 entries", () => {
@@ -297,7 +298,7 @@ describe("parseGraphPredictionsFromText — format-cap enforcement", () => {
 			"```",
 		].join("\n");
 		const results = parseGraphPredictionsFromText(text);
-		expect(results[0].parse_status).toBe("ok");
+		expect(nonNull(results[0]).parse_status).toBe("ok");
 	});
 
 	it("returns parse_failed marker on malformed YAML inside the block", () => {

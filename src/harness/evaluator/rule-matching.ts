@@ -19,6 +19,7 @@ import { extractScannableText } from "./spans.js";
 import { classifyToolExternality } from "./tool-classifiers.js";
 import { evaluateForbidsAfter, evaluateRequiresPrior } from "./temporal-matching.js";
 import { normalizeCommandWrappers } from "./wrapper-normalization.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Nested indexable object type for dot-path field traversal in rule pattern matching */
 interface Indexable {
@@ -234,12 +235,12 @@ export function getField(obj: Indexable, path: string): unknown {
 	const parts = path.split(".");
 	let current: Indexable = obj;
 	for (let i = 0; i < parts.length - 1; i++) {
-		const value = current[parts[i]];
+		const value = current[nonNull(parts[i])];
 		if (value == null || typeof value !== TYPEOF_OBJECT || Array.isArray(value))
 			return undefined;
 		current = value as Indexable;
 	}
-	return current[parts[parts.length - 1]];
+	return current[nonNull(parts[parts.length - 1])];
 }
 
 /** Public API — consumed by evaluator sub-modules to format the `reason` field
@@ -374,7 +375,7 @@ function extractGitPushBranch(cmd: string, acc: ResolvedTarget[]): void {
 	const tokens = tokenizeShell(cmd);
 	let i = 0;
 	while (i < tokens.length) {
-		const base = tokens[i].split("/").pop() || tokens[i];
+		const base = nonNull(tokens[i]).split("/").pop() || tokens[i];
 		if (base === "git") break;
 		i++;
 	}
@@ -384,12 +385,12 @@ function extractGitPushBranch(cmd: string, acc: ResolvedTarget[]): void {
 	if (j >= tokens.length) return;
 	const positionals: string[] = [];
 	for (let k = j + 1; k < tokens.length && positionals.length < 2; k++) {
-		const t = tokens[k];
+		const t = nonNull(tokens[k]);
 		if (t.startsWith(RM_FLAG_PREFIX)) continue;
 		positionals.push(t);
 	}
 	if (positionals.length >= 2) {
-		pushTarget(acc, "branch", positionals[1]);
+		pushTarget(acc, "branch", nonNull(positionals[1]));
 	}
 }
 

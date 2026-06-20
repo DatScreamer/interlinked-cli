@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Merge strategy literal compared in `mergeArrayField`.
 const STRATEGY_REPLACE_KEY = "replace-key" as const;
@@ -102,10 +103,11 @@ export function removeJsonPath(target: unknown, path: string): boolean {
 	const segments = parsePath(path);
 	let cursor: unknown = target;
 	for (let i = 0; i < segments.length - 1; i++) {
-		cursor = step(cursor, segments[i]);
+		cursor = step(cursor, nonNull(segments[i]));
 		if (cursor == null) return false;
 	}
 	const last = segments[segments.length - 1];
+	if (last === undefined) return false;
 	if (cursor == null) return false;
 	if (last.kind === "index") {
 		if (!Array.isArray(cursor)) return false;

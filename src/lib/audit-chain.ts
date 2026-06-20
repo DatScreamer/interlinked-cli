@@ -168,8 +168,8 @@ export function verifyAuditChain(cwd: string = process.cwd()): AuditVerifyResult
 	let expectedPrev = GENESIS_HASH;
 	let lastHash: string | undefined;
 
-	for (let i = 0; i < lines.length; i++) {
-		const raw = lines[i].trim();
+	for (const [i, rawLine] of lines.entries()) {
+		const raw = rawLine.trim();
 		if (!raw) continue;
 		totalEvents += 1;
 

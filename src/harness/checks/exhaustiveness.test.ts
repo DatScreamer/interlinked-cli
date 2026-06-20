@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { checkDiscriminatedUnionExhaustiveness } from "./exhaustiveness.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 
@@ -25,7 +26,7 @@ describe("checkDiscriminatedUnionExhaustiveness — positive cases", () => {
 		].join("\n");
 		const out = checkDiscriminatedUnionExhaustiveness(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("missing case");
+		expect(nonNull(out[0]).text).toContain("missing case");
 	});
 
 	it("flags a discriminated-union switch missing a kind", () => {
@@ -41,7 +42,7 @@ describe("checkDiscriminatedUnionExhaustiveness — positive cases", () => {
 		const out = checkDiscriminatedUnionExhaustiveness(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
 		// Should mention the missing tag.
-		expect(out[0].text).toContain("bar");
+		expect(nonNull(out[0]).text).toContain("bar");
 	});
 
 	it("flags a switch whose default is `break;` (no never assertion)", () => {
@@ -73,7 +74,7 @@ describe("checkDiscriminatedUnionExhaustiveness — positive cases", () => {
 		].join("\n");
 		const out = checkDiscriminatedUnionExhaustiveness(code, TS);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].text).toContain("pre_warn");
+		expect(nonNull(out[0]).text).toContain("pre_warn");
 	});
 });
 

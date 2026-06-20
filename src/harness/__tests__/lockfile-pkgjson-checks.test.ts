@@ -7,6 +7,7 @@ import {
 	checkLockfileDrift,
 	checkPackageJsonConsistency,
 } from "../quality-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Lockfile Drift Detection
@@ -303,9 +304,9 @@ describe("checkPackageJsonConsistency", () => {
 		});
 		const issues = checkPackageJsonConsistency(pkg);
 		expect(issues.length).toBe(1);
-		expect(issues[0].kind).toBe("duplicate");
-		expect(issues[0].pkg).toBe("lodash");
-		expect(issues[0].detail).toContain("both dependencies");
+		expect(nonNull(issues[0]).kind).toBe("duplicate");
+		expect(nonNull(issues[0]).pkg).toBe("lodash");
+		expect(nonNull(issues[0]).detail).toContain("both dependencies");
 	});
 
 	it("detects multiple duplicates", () => {
@@ -327,8 +328,8 @@ describe("checkPackageJsonConsistency", () => {
 		});
 		const issues = checkPackageJsonConsistency(pkg);
 		expect(issues.length).toBe(1);
-		expect(issues[0].kind).toBe("invalid_semver");
-		expect(issues[0].pkg).toBe("express");
+		expect(nonNull(issues[0]).kind).toBe("invalid_semver");
+		expect(nonNull(issues[0]).pkg).toBe("express");
 	});
 
 	it("accepts common valid version specifiers", () => {

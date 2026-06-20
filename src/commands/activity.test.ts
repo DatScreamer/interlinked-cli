@@ -28,6 +28,7 @@ vi.mock("../lib/local-activity.js", () => ({
 process.env.NO_COLOR = "1";
 
 import { activityCommand } from "./activity.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- console / exit capture ----------------------------------------------
 interface Captured {
@@ -167,7 +168,7 @@ describe("activityCommand — source precedence (JSON mode)", () => {
 		expect(payload.source).toBe("server");
 		expect(mockMergeAndDedup).not.toHaveBeenCalled();
 		expect(payload.events).toHaveLength(1);
-		expect(payload.events[0]._source).toBe("server");
+		expect(nonNull(payload.events[0])._source).toBe("server");
 	});
 
 	it("labels source 'local' and skips merge when the server is down", async () => {
@@ -180,7 +181,7 @@ describe("activityCommand — source precedence (JSON mode)", () => {
 		expect(payload.source).toBe("local");
 		expect(mockMergeAndDedup).not.toHaveBeenCalled();
 		expect(payload.events).toHaveLength(1);
-		expect(payload.events[0]._source).toBe("local");
+		expect(nonNull(payload.events[0])._source).toBe("local");
 	});
 
 	it("returns an empty set (source 'local') when server is down AND local is empty", async () => {
@@ -245,13 +246,13 @@ describe("activityCommand — --since duration filter", () => {
 		await activityCommand({ json: true, since: "1h", limit: "10" });
 
 		// readLocalActivity received a numeric `since` cutoff.
-		const callArg = mockReadLocalActivity.mock.calls[0][0] as { since?: number; limit: number };
+		const callArg = nonNull(mockReadLocalActivity.mock.calls[0])[0] as { since?: number; limit: number };
 		expect(callArg.since).toBe(Date.parse("2026-06-06T11:00:00.000Z"));
 		expect(callArg.limit).toBe(20); // limit * 2
 
 		const payload = lastJson(io);
 		expect(payload.events).toHaveLength(1);
-		expect(payload.events[0].agent_name).toBe("fresh");
+		expect(nonNull(payload.events[0]).agent_name).toBe("fresh");
 	});
 
 	it("keeps server rows that carry no timestamp at all (filter returns true)", async () => {
@@ -275,7 +276,7 @@ describe("activityCommand — --since duration filter", () => {
 		mockReadLocalActivity.mockReturnValue([]);
 		mockCallTool.mockResolvedValue({ events: [] });
 		await activityCommand({ json: true, limit: "10" });
-		const callArg = mockReadLocalActivity.mock.calls[0][0] as Record<string, unknown>;
+		const callArg = nonNull(mockReadLocalActivity.mock.calls[0])[0] as Record<string, unknown>;
 		expect(callArg).not.toHaveProperty("since");
 	});
 });
@@ -287,7 +288,7 @@ describe("activityCommand — agent filter wiring", () => {
 
 		await activityCommand({ json: true, agent: "agent-x", limit: "7" });
 
-		expect(mockReadLocalActivity.mock.calls[0][0]).toMatchObject({ agent: "agent-x" });
+		expect(nonNull(mockReadLocalActivity.mock.calls[0])[0]).toMatchObject({ agent: "agent-x" });
 		expect(mockCallTool).toHaveBeenCalledWith("query_activity_feed", {
 			limit: 14,
 			agent_name: "agent-x",
@@ -448,7 +449,7 @@ describe("activityCommand — localToActivity normalization", () => {
 			files_modified: ["src/app.ts"],
 			_source: "local",
 		});
-		expect((ev.tokens as Record<string, number>).input).toBe(10);
+		expect((nonNull(ev).tokens as Record<string, number>).input).toBe(10);
 	});
 
 	it("coalesces null tool/summary to null and drops absent optional fields", async () => {
@@ -459,8 +460,8 @@ describe("activityCommand — localToActivity normalization", () => {
 
 		await activityCommand({ json: true, limit: "10" });
 		const ev = lastJson(io).events[0];
-		expect(ev.tool_name).toBeNull();
-		expect(ev.tool_input_summary).toBeNull();
+		expect(nonNull(ev).tool_name).toBeNull();
+		expect(nonNull(ev).tool_input_summary).toBeNull();
 		// Optional fields were undefined on input → omitted from the object.
 		expect(ev).not.toHaveProperty("tokens");
 		expect(ev).not.toHaveProperty("duration_ms");
@@ -499,7 +500,7 @@ describe("activityCommand — defaults", () => {
 		mockCallTool.mockResolvedValue({ events: [] });
 
 		await activityCommand({});
-		expect(mockReadLocalActivity.mock.calls[0][0]).toMatchObject({ limit: 60 });
+		expect(nonNull(mockReadLocalActivity.mock.calls[0])[0]).toMatchObject({ limit: 60 });
 		expect(mockCallTool).toHaveBeenCalledWith("query_activity_feed", { limit: 60 });
 	});
 });

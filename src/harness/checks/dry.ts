@@ -27,6 +27,7 @@
 import { computeCyclomaticComplexity } from "./cyclomatic.js";
 import type { FunctionComplexityEntry } from "./cyclomatic.js";
 import { isTestFile, stripCommentsAndStrings } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Tuning constants
@@ -252,23 +253,23 @@ export function findClones(input: FindClonesInput): CloneFinding[] {
 		let best: { other: FunctionShingles; sim: number } | null = null;
 
 		const consider = (b: FunctionShingles): void => {
-			if (isSameFunction(a, b)) return;
-			const sim = jaccard(a.shingles, b.shingles);
+			if (isSameFunction(nonNull(a), b)) return;
+			const sim = jaccard(nonNull(a).shingles, b.shingles);
 			if (sim < threshold) return;
 			if (!best || sim > best.sim) best = { other: b, sim };
 		};
 
 		// (a) other functions in the edited file -- only j>i so each unordered
 		// pair is examined once.
-		for (let j = i + 1; j < edited.length; j++) consider(edited[j]);
+		for (let j = i + 1; j < edited.length; j++) consider(nonNull(edited[j]));
 		// (b) sibling-file candidates.
 		for (const c of candidates) consider(c);
 
 		if (best !== null) {
 			const b: { other: FunctionShingles; sim: number } = best;
 			findings.push({
-				name: a.name,
-				line: a.line,
+				name: nonNull(a).name,
+				line: nonNull(a).line,
 				otherName: b.other.name,
 				otherFile: b.other.file,
 				otherLine: b.other.line,

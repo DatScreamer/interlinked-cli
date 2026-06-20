@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getCollectionLiveness } from "../../../lib/collection/liveness.js";
 import { getCollectionPath } from "../../../lib/collection/writer.js";
+import { nonNull } from "../../../lib/non-null.js";
 import type { HarnessEvent } from "../../types.js";
 import { mapEventToCollectionInput, writeCollectionRecord } from "../collection-writer.js";
 
@@ -140,7 +141,7 @@ describe("writeCollectionRecord — end-to-end append", () => {
 		expect(existsSync(path)).toBe(true);
 		const lines = readFileSync(path, "utf-8").trim().split("\n");
 		expect(lines.length).toBe(1);
-		const rec = JSON.parse(lines[0]);
+		const rec = JSON.parse(nonNull(lines[0]));
 		expect(rec.schema).toBe("collection.v1");
 		expect(rec.provider_tool).toBe("Bash");
 		expect(rec.agent_name).toBe("agent-7");

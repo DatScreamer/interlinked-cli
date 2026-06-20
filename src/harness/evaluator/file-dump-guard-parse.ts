@@ -19,6 +19,8 @@
  * leaked its `-n 295` onto a leading `head`, reported as "`head` requesting
  * 295 lines" (observed 2026-06-12).
  */
+import { nonNull } from "../../lib/non-null.js";
+
 export function firstCommandGroup(command: string): string {
 	let q: '"' | "'" | "`" | null = null;
 	for (let i = 0; i < command.length; i++) {
@@ -80,7 +82,7 @@ export function tokenize(segment: string): string[] {
 	let buf = "";
 	let q: '"' | "'" | null = null;
 	for (let i = 0; i < segment.length; i++) {
-		const ch = segment[i];
+		const ch = nonNull(segment[i]);
 		if (q) {
 			if (ch === q) {
 				q = null;
@@ -109,7 +111,7 @@ export function tokenize(segment: string): string[] {
 /** Drops `sudo|exec|nohup|command`, `env VAR=val`, and bare `VAR=val` prefixes. */
 export function stripLeadingWrappers(tokens: string[]): void {
 	while (tokens.length > 0) {
-		const t = tokens[0];
+		const t = nonNull(tokens[0]);
 		if (t === "sudo" || t === "exec" || t === "nohup" || t === "command") {
 			tokens.shift();
 			continue;
@@ -175,7 +177,7 @@ export function hasOutputRedirect(command: string): boolean {
 /** Parses an optional `+`-prefixed leading integer from `s`, else `null`. */
 function parseLeadingInt(s: string): number | null {
 	const m = s.match(/^\+?(\d+)\b/);
-	return m ? parseInt(m[1], 10) : null;
+	return m ? parseInt(nonNull(m[1]), 10) : null;
 }
 
 /**
@@ -191,9 +193,9 @@ function flagCountAt(tokens: string[], i: number, flag: string, allowCombined: b
 		const next = tokens[i + 1];
 		return next === undefined ? null : parseLeadingInt(next);
 	}
-	if (t.startsWith(`${flag}=`)) return parseLeadingInt(t.slice(flag.length + 1));
-	if (allowCombined && t.length > flag.length && t.startsWith(flag) && /^\+?\d/.test(t[flag.length])) {
-		return parseLeadingInt(t.slice(flag.length));
+	if (nonNull(t).startsWith(`${flag}=`)) return parseLeadingInt(nonNull(t).slice(flag.length + 1));
+	if (allowCombined && nonNull(t).length > flag.length && nonNull(t).startsWith(flag) && /^\+?\d/.test(nonNull(nonNull(t)[flag.length]))) {
+		return parseLeadingInt(nonNull(t).slice(flag.length));
 	}
 	return null;
 }
@@ -201,7 +203,7 @@ function flagCountAt(tokens: string[], i: number, flag: string, allowCombined: b
 /** True when `t` carries a value for `flag` in any supported shape. */
 function tokenMatchesFlag(t: string, flag: string, allowCombined: boolean): boolean {
 	if (t === flag || t.startsWith(`${flag}=`)) return true;
-	return allowCombined && t.length > flag.length && t.startsWith(flag) && /^\+?\d/.test(t[flag.length]);
+	return allowCombined && t.length > flag.length && t.startsWith(flag) && /^\+?\d/.test(nonNull(t[flag.length]));
 }
 
 /**
@@ -211,7 +213,7 @@ function tokenMatchesFlag(t: string, flag: string, allowCombined: boolean): bool
 export function parseCountFlag(tokens: string[], shortFlag: "-n" | "-c"): number | null {
 	const longFlag = shortFlag === "-n" ? "--lines" : "--bytes";
 	for (let i = 1; i < tokens.length; i++) {
-		const t = tokens[i];
+		const t = nonNull(tokens[i]);
 		if (tokenMatchesFlag(t, shortFlag, /* allowCombined */ true)) {
 			return flagCountAt(tokens, i, shortFlag, true);
 		}

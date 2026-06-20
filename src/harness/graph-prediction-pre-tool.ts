@@ -44,6 +44,8 @@ import { extractAllEditedFilePaths } from "./server-tool-helpers.js";
 import { appendObservationRow } from "./graph-prediction-cache.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type { HarnessEvent } from "./types.js";
+import { basename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 // Sentinel handlers
 import {
@@ -156,7 +158,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 			decision: "allow",
 			observation:
 				classifications.length > 0
-					? { file_path: classifications[0].sourcePath, case: classifications[0].case }
+					? { file_path: nonNull(classifications[0]).sourcePath, case: nonNull(classifications[0]).case }
 					: undefined,
 		};
 	}
@@ -167,7 +169,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 			decision: "allow",
 			observation:
 				classifications.length > 0
-					? { file_path: classifications[0].sourcePath, case: classifications[0].case }
+					? { file_path: nonNull(classifications[0]).sourcePath, case: nonNull(classifications[0]).case }
 					: undefined,
 		};
 	}
@@ -178,7 +180,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 		return {
 			decision: "block",
 			reason: buildChallengeReason(missingTargets, classifications, event.session_id, cwd),
-			observation: { file_path: missingTargets[0].sourcePath, case: E_FRESH },
+			observation: { file_path: nonNull(missingTargets[0]).sourcePath, case: E_FRESH },
 		};
 	}
 
@@ -192,16 +194,16 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 	});
 	if (formatViolationTargets.length > 0) {
 		const first = formatViolationTargets[0];
-		const slug = basename(first.sourcePath).replace(/\.[^./]+$/, "");
+		const slug = basename(nonNull(first).sourcePath).replace(/\.[^./]+$/, "");
 		const reason = [
-			`[interlinked:graph-pred] Cached prediction for ${first.sourcePath} violated the format contract (per-section entry cap is 50).`,
+			`[interlinked:graph-pred] Cached prediction for ${nonNull(first).sourcePath} violated the format contract (per-section entry cap is 50).`,
 			"Narrow your prediction to the entries that matter most, or use `unknown` for any list you can't bound.",
 			`Re-submit by writing to .interlinked/predictions/incoming/${event.session_id}/${slug}.yaml`,
 		].join("\n");
 		return {
 			decision: "block",
 			reason,
-			observation: { file_path: first.sourcePath, case: E_FRESH },
+			observation: { file_path: nonNull(first).sourcePath, case: E_FRESH },
 		};
 	}
 
@@ -245,7 +247,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 				decision: "block",
 				reason: buildAckReason(flaggedNotAcked) + buildAckSentinelInstruction(flaggedNotAcked, event.session_id),
 				additional_context: buildRevealText(reconciled),
-				observation: { file_path: flaggedNotAcked[0].classification.sourcePath, case: E_FRESH },
+				observation: { file_path: nonNull(flaggedNotAcked[0]).classification.sourcePath, case: E_FRESH },
 			};
 		}
 	}
@@ -271,7 +273,7 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 				decision: "block",
 				reason: buildShardReadRequiredReason(needsRead),
 				additional_context: buildRevealText(reconciled),
-				observation: { file_path: needsRead[0].sourcePath, case: E_FRESH },
+				observation: { file_path: nonNull(needsRead[0]).sourcePath, case: E_FRESH },
 			};
 		}
 	}
@@ -288,13 +290,10 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 	return {
 		decision: "allow",
 		additional_context: reveal,
-		observation: { file_path: eFreshTargets[0].sourcePath, case: E_FRESH },
+		observation: { file_path: nonNull(eFreshTargets[0]).sourcePath, case: E_FRESH },
 	};
 }
 
 // ── Re-exports for consumers that imported from this module ──────────────────
 // These keep the public API surface identical after the extraction.
 export type { ReconciledTarget };
-
-// basename is used locally above — bring it in
-import { basename } from "node:path";

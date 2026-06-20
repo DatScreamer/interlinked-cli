@@ -17,6 +17,7 @@ vi.mock("node:fs", () => ({
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { ProjectGraph, parseExports, parseImports, tryResolveFile } from "../project-graph.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,7 +300,7 @@ describe("parseImports", () => {
 		);
 		const edges = parseImports(src, "/src/index.ts");
 		expect(edges.length).toBe(1);
-		expect(edges[0].symbols.sort()).toEqual(["alpha", "beta", "gamma"]);
+		expect(nonNull(edges[0]).symbols.sort()).toEqual(["alpha", "beta", "gamma"]);
 	});
 
 	it("parses import type { X }", () => {

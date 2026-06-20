@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isStrictTestFile } from "../../harness/checks/shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Flags with no test mention yet — tracked debt, may only shrink. */
 const PINNED_UNTESTED = new Set<string>([
@@ -65,7 +66,7 @@ describe("CLI spec surface — every registered option is exercised by a test", 
 	for (const file of sources) {
 		const content = readFileSync(file, "utf-8");
 		for (const m of content.matchAll(OPTION_CALL_RE)) {
-			const flag = m[1].match(LONG_FLAG_RE)?.[0];
+			const flag = nonNull(m[1]).match(LONG_FLAG_RE)?.[0];
 			if (flag) flags.add(flag);
 		}
 	}

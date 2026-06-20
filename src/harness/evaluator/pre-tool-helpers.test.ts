@@ -498,8 +498,9 @@ describe("getProjectSetupWarnings", () => {
 // ---------------------------------------------------------------------------
 describe("runTrajectoryDetector", () => {
 	function cfgWith(flags: string[]): SharedConfig {
-		const harness: Record<string, Record<string, boolean>> = { trajectory: {} };
-		for (const f of flags) harness.trajectory[f] = true;
+		const trajectory: Record<string, boolean> = {};
+		const harness: Record<string, Record<string, boolean>> = { trajectory };
+		for (const f of flags) trajectory[f] = true;
 		return { harness } as unknown as SharedConfig;
 	}
 

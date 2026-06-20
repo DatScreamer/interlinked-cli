@@ -10,6 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Types
@@ -54,11 +55,11 @@ export function scanInlineSuppressions(content: string): InlineSuppressions {
 	const result: InlineSuppressions = new Map();
 
 	for (let i = 0; i < lines.length; i++) {
-		const match = IGNORE_PATTERN.exec(lines[i]);
+		const match = IGNORE_PATTERN.exec(nonNull(lines[i]));
 		if (!match) continue;
 
 		// Extract check names: split on comma, strip reason after — or --
-		const raw = match[1].split(/\s+[—–-]{1,3}\s+/)[0];
+		const raw = nonNull(nonNull(match[1]).split(/\s+[—–-]{1,3}\s+/)[0]);
 		const checks = raw
 			.split(",")
 			.map((s) => s.trim().toLowerCase())
@@ -68,7 +69,7 @@ export function scanInlineSuppressions(content: string): InlineSuppressions {
 		// Find the next non-empty, non-comment line
 		let targetLine = i + 2; // default: next line (1-based)
 		for (let j = i + 1; j < lines.length; j++) {
-			const trimmed = lines[j].trim();
+			const trimmed = nonNull(lines[j]).trim();
 			if (trimmed && !trimmed.startsWith("//")) {
 				targetLine = j + 1; // 1-based
 				break;
@@ -127,7 +128,7 @@ export function scanInlineDeferrals(content: string): InlineDeferrals {
 	const result: InlineDeferrals = new Map();
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 
 		// Trailing form: marker on the SAME line as the offending code. The
 		// line itself is the target.
@@ -136,7 +137,7 @@ export function scanInlineDeferrals(content: string): InlineDeferrals {
 		if (!isCommentOnly) {
 			const trailing = TRAILING_DEFER_PATTERN.exec(line);
 			if (trailing) {
-				recordDeferral(result, i + 1, trailing[1]);
+				recordDeferral(result, i + 1, nonNull(trailing[1]));
 			}
 			continue;
 		}
@@ -146,13 +147,13 @@ export function scanInlineDeferrals(content: string): InlineDeferrals {
 		if (!above) continue;
 		let targetLine = i + 2; // default if no following line
 		for (let j = i + 1; j < lines.length; j++) {
-			const next = lines[j].trim();
+			const next = nonNull(lines[j]).trim();
 			if (next && !next.startsWith("//") && !next.startsWith("#")) {
 				targetLine = j + 1;
 				break;
 			}
 		}
-		recordDeferral(result, targetLine, above[1]);
+		recordDeferral(result, targetLine, nonNull(above[1]));
 	}
 
 	return result;
@@ -161,7 +162,7 @@ export function scanInlineDeferrals(content: string): InlineDeferrals {
 /** Parse "<check1>, <check2> -- reason text" into an entry on `result`. */
 function recordDeferral(result: InlineDeferrals, line: number, raw: string): void {
 	const dashSplit = raw.split(/\s+[—–-]{1,3}\s+/);
-	const checksRaw = dashSplit[0];
+	const checksRaw = nonNull(dashSplit[0]);
 	const reason = dashSplit[1]?.trim() ?? null;
 	const checks = checksRaw
 		.split(",")
@@ -274,7 +275,7 @@ function simpleGlobMatch(pattern: string, filePath: string): boolean {
 		} else if (p[i] === "?") {
 			regex += "[^/]";
 			i++;
-		} else if (REGEX_META_CHARS.has(p[i])) {
+		} else if (REGEX_META_CHARS.has(nonNull(p[i]))) {
 			regex += `\\${p[i]}`;
 			i++;
 		} else {
@@ -384,12 +385,10 @@ export function addSuppressions(
 	const now = new Date().toISOString();
 
 	for (const entry of entries) {
-		if (!data[entry.file]) {
-			data[entry.file] = {};
-		}
+		const fileEntries = (data[entry.file] ??= {});
 		// Only add if not already present
-		if (!data[entry.file][entry.check]) {
-			data[entry.file][entry.check] = {
+		if (!fileEntries[entry.check]) {
+			fileEntries[entry.check] = {
 				reason: entry.reason || "suppressed via CLI",
 				by: "cli",
 				at: now,

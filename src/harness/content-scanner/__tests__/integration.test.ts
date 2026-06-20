@@ -38,6 +38,7 @@ import type {
 	ScanFinding,
 	ScanRequest,
 } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Fixtures
@@ -220,7 +221,7 @@ describe("content-scanner end-to-end — OUTBOUND (PreToolUse attaches _contentS
 		expect(decision.decision).toBe("allow");
 		expect(decision._contentScan).toBeDefined();
 		expect(decision._contentScan?.hook).toBe("pre_write_edit");
-		expect(decision._contentScan?.parts[0].text).toContain("alice@example.com");
+		expect(nonNull(decision._contentScan?.parts[0]).text).toContain("alice@example.com");
 	});
 
 	it("attaches _contentScan for Bash commands", () => {

@@ -1,6 +1,7 @@
 // Placeholder test detection (stub/pending/TODO-body test cases).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -47,12 +48,12 @@ export function checkPlaceholderTests(content: string, filePath: string): Inline
 
 	// (1) .todo markers — fast single-line regex pass on stripped content.
 	const TODO_RE = /\b(?:it|test|describe)\.todo\s*\(/;
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (TODO_RE.test(strippedLines[i])) {
+		if (TODO_RE.test(line)) {
 			matches.push({
 				line: i + 1,
-				text: `.todo placeholder — write the test or delete the line: ${originalLines[i].trim().slice(0, 120)}`,
+				text: `.todo placeholder — write the test or delete the line: ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 	}
@@ -60,12 +61,12 @@ export function checkPlaceholderTests(content: string, filePath: string): Inline
 	// (2) Pending single-arg form: `it("name")` without a callback argument.
 	// Match `it(` or `test(` where the invocation closes after a single string literal.
 	const PENDING_RE = /^\s*(?:it|test)\s*\(\s*["'`][^"'`]*["'`]\s*\)\s*[;,]?\s*$/;
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
-		if (PENDING_RE.test(strippedLines[i])) {
+		if (PENDING_RE.test(line)) {
 			matches.push({
 				line: i + 1,
-				text: `Pending test (no body): ${originalLines[i].trim().slice(0, 120)}`,
+				text: `Pending test (no body): ${nonNull(originalLines[i]).trim().slice(0, 120)}`,
 			});
 		}
 	}
@@ -90,8 +91,8 @@ function scanTestBodies(
 	matches: InlineMatch[],
 	maxMatches: number,
 ): void {
-	for (let i = 0; i < strippedLines.length && matches.length < maxMatches; i++) {
-		const line = strippedLines[i];
+	for (const [i, line] of strippedLines.entries()) {
+		if (matches.length >= maxMatches) break;
 		const trimmed = line.trim();
 		if (!TEST_INTRO_RE.test(trimmed)) continue;
 		// Skip .only / .skip / .todo / .each — other checks own those.
@@ -107,7 +108,7 @@ function scanTestBodies(
 		// for TODO/FIXME markers between the opening and closing line inclusive.
 		let hasPlaceholderMarker = false;
 		for (let j = i; j <= body.endLine && !hasPlaceholderMarker; j++) {
-			if (PLACEHOLDER_BODY_MARKER_RE.test(originalLines[j])) hasPlaceholderMarker = true;
+			if (PLACEHOLDER_BODY_MARKER_RE.test(nonNull(originalLines[j]))) hasPlaceholderMarker = true;
 		}
 
 		const reason = hasPlaceholderMarker
@@ -115,7 +116,7 @@ function scanTestBodies(
 			: "Empty test body";
 		matches.push({
 			line: i + 1,
-			text: `${reason}: ${originalLines[i].trim().slice(0, 110)}`,
+			text: `${reason}: ${nonNull(originalLines[i]).trim().slice(0, 110)}`,
 		});
 	}
 }
@@ -136,7 +137,7 @@ function extractTestBody(
 	let openLine = -1;
 	let openCol = -1;
 	for (let i = startLine; i < strippedLines.length; i++) {
-		const col = strippedLines[i].indexOf("{");
+		const col = nonNull(strippedLines[i]).indexOf("{");
 		if (col !== -1) {
 			openLine = i;
 			openCol = col;
@@ -149,10 +150,10 @@ function extractTestBody(
 	let endLine = -1;
 	let endCol = -1;
 	outer: for (let i = openLine; i < strippedLines.length; i++) {
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		const startCol = i === openLine ? openCol + 1 : 0;
 		for (let j = startCol; j < line.length; j++) {
-			const ch = line[j];
+			const ch = nonNull(line[j]);
 			if (ch === "{") depth++;
 			else if (ch === "}") {
 				depth--;
@@ -168,9 +169,10 @@ function extractTestBody(
 
 	const parts: string[] = [];
 	for (let i = openLine; i <= endLine; i++) {
+		const sl = nonNull(strippedLines[i]);
 		const lo = i === openLine ? openCol + 1 : 0;
-		const hi = i === endLine ? endCol : strippedLines[i].length;
-		parts.push(strippedLines[i].slice(lo, hi));
+		const hi = i === endLine ? endCol : sl.length;
+		parts.push(sl.slice(lo, hi));
 	}
 	return { strippedText: parts.join("\n"), endLine };
 }

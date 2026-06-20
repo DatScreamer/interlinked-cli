@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { harvestPredictionsFromTranscript } from "../graph-prediction-stop-hook.js";
 import { findPredictionRow } from "../graph-prediction-cache.js";
 import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let dir: string;
 
@@ -77,7 +78,7 @@ describe("harvestPredictionsFromTranscript — happy path", () => {
 			transcriptPath,
 		});
 		expect(harvested.persisted).toHaveLength(1);
-		expect(harvested.persisted[0].case).toBe("E-fresh");
+		expect(nonNull(harvested.persisted[0]).case).toBe("E-fresh");
 
 		const row = findPredictionRow(dir, {
 			session_id: "sess-1",
@@ -115,7 +116,7 @@ describe("harvestPredictionsFromTranscript — non-E-fresh skip", () => {
 		});
 		expect(harvested.persisted).toHaveLength(0);
 		expect(harvested.skipped).toHaveLength(1);
-		expect(harvested.skipped[0].case).toBe("D");
+		expect(nonNull(harvested.skipped[0]).case).toBe("D");
 	});
 
 	it("skips predictions for E-stale files (shard older than source)", () => {
@@ -146,7 +147,7 @@ describe("harvestPredictionsFromTranscript — non-E-fresh skip", () => {
 			transcriptPath,
 		});
 		expect(harvested.persisted).toHaveLength(0);
-		expect(harvested.skipped[0].case).toBe("E-stale");
+		expect(nonNull(harvested.skipped[0]).case).toBe("E-stale");
 	});
 });
 

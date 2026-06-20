@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditVerifyResult } from "../lib/audit-chain.js";
 import { auditVerifyCommand } from "./audit.js";
+import { nonNull } from "../lib/non-null.js";
 
 // Identity formatter: strip ANSI from the equation so we assert on text.
 vi.mock("../lib/formatter.js", () => ({
@@ -108,7 +109,7 @@ describe("auditVerifyCommand — JSON output", () => {
 
 		// Exactly one console.log call in JSON mode.
 		expect(logged).toHaveLength(1);
-		const parsed = JSON.parse(logged[0]) as Record<string, unknown>;
+		const parsed = JSON.parse(nonNull(logged[0])) as Record<string, unknown>;
 		expect(parsed).toEqual({
 			valid: true,
 			total_events: 250,
@@ -131,7 +132,7 @@ describe("auditVerifyCommand — JSON output", () => {
 			baseResult({ guard_events: 3, chained_events: 1 }),
 		);
 		await auditVerifyCommand({ json: true });
-		const parsed = JSON.parse(logged[0]) as { coverage_pct: number };
+		const parsed = JSON.parse(nonNull(logged[0])) as { coverage_pct: number };
 		expect(parsed.coverage_pct).toBe(33);
 	});
 
@@ -140,7 +141,7 @@ describe("auditVerifyCommand — JSON output", () => {
 			baseResult({ guard_events: 0, chained_events: 0, last_hash: undefined }),
 		);
 		await auditVerifyCommand({ json: true });
-		const parsed = JSON.parse(logged[0]) as { coverage_pct: number | null };
+		const parsed = JSON.parse(nonNull(logged[0])) as { coverage_pct: number | null };
 		expect(parsed.coverage_pct).toBeNull();
 	});
 
@@ -158,7 +159,7 @@ describe("auditVerifyCommand — JSON output", () => {
 		expect(process.exitCode).toBe(1);
 		// Even in failure, JSON mode emits exactly the one JSON object.
 		expect(logged).toHaveLength(1);
-		expect(() => JSON.parse(logged[0])).not.toThrow();
+		expect(() => JSON.parse(nonNull(logged[0]))).not.toThrow();
 	});
 });
 

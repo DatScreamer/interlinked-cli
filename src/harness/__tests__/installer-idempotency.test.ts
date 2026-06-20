@@ -14,6 +14,7 @@ import { isInterlinkedHookEntry } from "../../lib/hook-ownership.js";
 import { installAllHooks } from "../../lib/hooks.js";
 import { installHooks } from "../installer.js";
 import type { RunnerId } from "../unified-event.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let base = "";
 let projectDir = "";
@@ -128,7 +129,7 @@ describe("installer idempotency — legacy then adapter", () => {
 
 		const pre = preToolUseEntries(claudeSettings(projectDir));
 		expect(pre.length).toBe(1);
-		const command = pre[0].hooks?.[0]?.command ?? "";
+		const command = nonNull(pre[0]).hooks?.[0]?.command ?? "";
 		// The legacy `.mjs` entry is gone; the survivor is the adapter entry.
 		expect(command).toContain("hook-entry.js");
 		expect(command).not.toContain("interlinked-activity");

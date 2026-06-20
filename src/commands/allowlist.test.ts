@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 
 // The admission screens (license + OSV advisory) are network-backed; the
 // command tests pin the screen LOGIC, so the network module is mocked
@@ -83,8 +84,8 @@ describe("addAllowlistCommand", () => {
 		const parsed = readAllowlistFile() as {
 			packages: { npm: Record<string, { approved_by: string; reason?: string }> };
 		};
-		expect(parsed.packages.npm.lodash.approved_by).toBe("qcody");
-		expect(parsed.packages.npm.lodash.reason).toBe("util");
+		expect(nonNull(parsed.packages.npm.lodash).approved_by).toBe("qcody");
+		expect(nonNull(parsed.packages.npm.lodash).reason).toBe("util");
 	});
 
 	it("rejects an unknown ecosystem", async () => {
@@ -125,7 +126,7 @@ describe("addAllowlistCommand — license screen", () => {
 		const parsed = readAllowlistFile() as {
 			packages: { npm: Record<string, { license?: string }> };
 		};
-		expect(parsed.packages.npm.lodash.license).toBe("MIT");
+		expect(nonNull(parsed.packages.npm.lodash).license).toBe("MIT");
 	});
 
 	it("refuses a license outside the SPDX allowlist without --force", async () => {
@@ -144,7 +145,7 @@ describe("addAllowlistCommand — license screen", () => {
 		const parsed = readAllowlistFile() as {
 			packages: { npm: Record<string, { license?: string }> };
 		};
-		expect(parsed.packages.npm["copyleft-pkg"].license).toBe("AGPL-3.0");
+		expect(nonNull(parsed.packages.npm["copyleft-pkg"]).license).toBe("AGPL-3.0");
 		expect(out).toMatch(/--force/);
 	});
 
@@ -166,7 +167,7 @@ describe("addAllowlistCommand — license screen", () => {
 		const parsed = readAllowlistFile() as {
 			packages: { npm: Record<string, { license?: string }> };
 		};
-		expect(parsed.packages.npm["agpl-ok-here"].license).toBe("AGPL-3.0");
+		expect(nonNull(parsed.packages.npm["agpl-ok-here"]).license).toBe("AGPL-3.0");
 	});
 
 	it("approves with a loud note when the license is unknown", async () => {
@@ -178,7 +179,7 @@ describe("addAllowlistCommand — license screen", () => {
 		const parsed = readAllowlistFile() as {
 			packages: { npm: Record<string, { license?: string }> };
 		};
-		expect(parsed.packages.npm["mystery-pkg"].license).toBeUndefined();
+		expect(nonNull(parsed.packages.npm["mystery-pkg"]).license).toBeUndefined();
 	});
 });
 
@@ -239,7 +240,7 @@ describe("addAllowlistCommand — advisory screen", () => {
 			packages: { go: Record<string, { license?: string }> };
 		};
 		expect(parsed.packages.go["github.com/pkg/errors"]).toBeDefined();
-		expect(parsed.packages.go["github.com/pkg/errors"].license).toBeUndefined();
+		expect(nonNull(parsed.packages.go["github.com/pkg/errors"]).license).toBeUndefined();
 	});
 
 	// Round 7 (finding 2026-06): OSV needs no registry metadata. An exact
@@ -351,10 +352,10 @@ describe("snapshotAllowlistCommand", () => {
 		};
 		expect(parsed.lockfile_snapshots["package.json"]).toBeDefined();
 		expect(parsed.lockfile_snapshots["package-lock.json"]).toBeDefined();
-		expect(parsed.lockfile_snapshots["package-lock.json"].sha256).toMatch(
+		expect(nonNull(parsed.lockfile_snapshots["package-lock.json"]).sha256).toMatch(
 			/^[a-f0-9]{64}$/,
 		);
-		expect(parsed.lockfile_snapshots["package-lock.json"].approved_by).toBe("qcody");
+		expect(nonNull(parsed.lockfile_snapshots["package-lock.json"]).approved_by).toBe("qcody");
 	});
 
 	it("supports --lockfile to snapshot a specific file only", () => {

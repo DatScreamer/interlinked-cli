@@ -8,6 +8,7 @@
 
 import type { JsonObject } from "../lib/json-types.js";
 import type { PolicyClassification } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 /**
  * Parse claude -p --output-format json output.
@@ -43,7 +44,7 @@ export function parseOpenAIResponse(data: JsonObject): PolicyClassification {
 		if (!choices || choices.length === 0) {
 			return { label: "allow", confidence: 0, reasoning: "No choices in response" };
 		}
-		const message = choices[0].message as JsonObject | undefined;
+		const message = nonNull(choices[0]).message as JsonObject | undefined;
 		return parseClassificationJson(String(message?.content || ""));
 	} catch {
 		return { label: "allow", confidence: 0, reasoning: "Failed to parse OpenAI response" };
@@ -59,7 +60,7 @@ export function parseAnthropicResponse(data: JsonObject): PolicyClassification {
 		if (!content || content.length === 0) {
 			return { label: "allow", confidence: 0, reasoning: "No content in response" };
 		}
-		return parseClassificationJson(String(content[0].text || ""));
+		return parseClassificationJson(String(nonNull(content[0]).text || ""));
 	} catch {
 		return { label: "allow", confidence: 0, reasoning: "Failed to parse Anthropic response" };
 	}
@@ -73,7 +74,7 @@ export function parseClassificationJson(text: string): PolicyClassification {
 		// Strip markdown code fences (claude -p wraps output in ```json ... ```)
 		let cleaned = text.trim();
 		const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-		if (fenceMatch) cleaned = fenceMatch[1].trim();
+		if (fenceMatch) cleaned = nonNull(fenceMatch[1]).trim();
 		const parsed = JSON.parse(cleaned) as JsonObject;
 		const compliant = parsed.compliant as boolean | undefined;
 		const confidence = Number(parsed.confidence) || 0;

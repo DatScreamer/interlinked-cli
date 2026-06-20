@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode } from "../types.js";
 import { checkPackageBoundaryViolations } from "./package-boundary.js";
@@ -72,7 +73,7 @@ describe("checkPackageBoundaryViolations", () => {
 
 		const findings = checkPackageBoundaryViolations(g);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].name).toBe("package_boundary_violation");
+		expect(nonNull(findings[0]).name).toBe("package_boundary_violation");
 	});
 
 	it("allows cross-package import when the target IS a declared entrypoint", () => {

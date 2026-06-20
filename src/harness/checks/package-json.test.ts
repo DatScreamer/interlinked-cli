@@ -14,6 +14,7 @@ import {
 	checkPackageJsonPublishInvariantsWithPublint,
 	checkPackageJsonScriptPaths,
 } from "./package-json.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // A "complete" pre-edit package.json with every field the check tracks.
 const FULL_PKG = {
@@ -111,7 +112,7 @@ describe("checkPackageJsonPublishInvariants", () => {
 			pkgPath,
 		);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("not valid JSON");
+		expect(nonNull(findings[0]).text).toContain("not valid JSON");
 	});
 
 	// Case 6
@@ -335,8 +336,8 @@ describe("checkPackageJsonScriptPaths", () => {
 		});
 		const findings = checkPackageJsonScriptPaths(content, pkgPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("test:custom");
-		expect(findings[0].text).toContain("structured-content-regression.mjs");
+		expect(nonNull(findings[0]).text).toContain("test:custom");
+		expect(nonNull(findings[0]).text).toContain("structured-content-regression.mjs");
 	});
 
 	it("passes when the referenced file exists", () => {
@@ -366,7 +367,7 @@ describe("checkPackageJsonScriptPaths", () => {
 		});
 		const findings = checkPackageJsonScriptPaths(content, pkgPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("tsconfig.build.json");
+		expect(nonNull(findings[0]).text).toContain("tsconfig.build.json");
 	});
 
 	it("flags `--config X.json` when the config doesn't exist", () => {
@@ -375,7 +376,7 @@ describe("checkPackageJsonScriptPaths", () => {
 		});
 		const findings = checkPackageJsonScriptPaths(content, pkgPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("vitest.config.ts");
+		expect(nonNull(findings[0]).text).toContain("vitest.config.ts");
 	});
 
 	it("does not double-report the same (script, ref) pair", () => {

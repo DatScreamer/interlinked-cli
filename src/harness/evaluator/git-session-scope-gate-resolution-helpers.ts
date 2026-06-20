@@ -17,6 +17,7 @@
 // each other. The main module imports the names it still references.
 
 import { execFileSync } from "node:child_process";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Shared timeout for the short-lived `git` invocations this gate runs. */
 export const GIT_TIMEOUT_MS = 3000;
@@ -95,10 +96,10 @@ function parsePorcelainPaths(
 	const entries = out.split("\0").filter((e) => e.length > 0);
 	for (let i = 0; i < entries.length; i++) {
 		const raw = entries[i];
-		if (raw.length < 3) continue;
-		const indexStatus = raw[0];
-		const worktreeStatus = raw[1];
-		const path = raw.slice(3);
+		if (nonNull(raw).length < 3) continue;
+		const indexStatus = nonNull(raw)[0];
+		const worktreeStatus = nonNull(raw)[1];
+		const path = nonNull(raw).slice(3);
 		if (indexStatus === "?" && worktreeStatus === "?") {
 			if (exclUntracked) continue;
 			paths.push(path);
@@ -160,7 +161,7 @@ export function stripCommitFlags(args: string[]): string[] {
 	const positional: string[] = [];
 	let sawDashDash = false;
 	for (let i = 0; i < args.length; i++) {
-		const tok = args[i];
+		const tok = nonNull(args[i]);
 		if (sawDashDash) {
 			positional.push(tok);
 			continue;
@@ -194,7 +195,7 @@ export function stripFlags(args: string[]): string[] {
 	const positional: string[] = [];
 	let sawDashDash = false;
 	for (let i = 0; i < args.length; i++) {
-		const tok = args[i];
+		const tok = nonNull(args[i]);
 		if (sawDashDash) {
 			positional.push(tok);
 			continue;

@@ -5,6 +5,7 @@
 import { stripRegexLiterals } from "../../strip-helpers.js";
 import { getExtension, type InlineMatch, isTestFile } from "../shared.js";
 import { MATCH_LIMIT, stripCommentsPreservingStrings } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_sql_string_concat` — SQL keyword in a quoted string immediately
@@ -72,7 +73,7 @@ export function checkSqlStringConcat(content: string, filePath: string): InlineM
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 		if (!sqlVerb.test(line) && !selectConcatPrefix.test(line)) continue;
 		if (!interpolation.test(line)) continue;
 		// Tightening: parameterized queries are safe — skip them.
@@ -263,8 +264,8 @@ function isRegexPatternLocalhostLine(originalLine: string): boolean {
  */
 function isPrevLineRegExpOpen(strippedLines: string[], i: number): boolean {
 	let prev = i - 1;
-	while (prev >= 0 && strippedLines[prev].trim() === "") prev--;
-	return prev >= 0 && /\bRegExp\s*\(\s*$/.test(strippedLines[prev]);
+	while (prev >= 0 && nonNull(strippedLines[prev]).trim() === "") prev--;
+	return prev >= 0 && /\bRegExp\s*\(\s*$/.test(nonNull(strippedLines[prev]));
 }
 
 /**
@@ -288,18 +289,18 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!LOCALHOST_ENDPOINT_RE.test(strippedLines[i])) continue;
+		if (!LOCALHOST_ENDPOINT_RE.test(nonNull(strippedLines[i]))) continue;
 		// Metadata strings, RegExp constructors, configurable defaults, and
 		// detection tests are not baked endpoints (see helper).
-		if (isExemptStrippedLocalhostLine(strippedLines[i])) continue;
+		if (isExemptStrippedLocalhostLine(nonNull(strippedLines[i]))) continue;
 		// Multi-line RegExp: the constructor is on one line and the literal
 		// argument is on the next. Skip when the previous non-empty line
 		// ends with `RegExp(` (its argument continuation).
 		if (isPrevLineRegExpOpen(strippedLines, i)) continue;
 		// Narrowed template-literal exemption: only skip when there's a
 		// pattern-building signal alongside the interpolated localhost.
-		if (isRegexPatternLocalhostLine(originalLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (isRegexPatternLocalhostLine(nonNull(originalLines[i]))) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }

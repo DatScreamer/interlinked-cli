@@ -6,6 +6,7 @@
 
 import { truncate } from "./formatter.js";
 import type { EventAttribution, TokenUsage } from "./local-activity.js";
+import { nonNull } from "./non-null.js";
 
 // ===========================================
 // Types
@@ -64,7 +65,7 @@ export function parseDuration(s: string): number {
 	}
 	const [, num, unit] = match;
 	const multipliers: Record<string, number> = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
-	return Number.parseInt(num, 10) * multipliers[unit];
+	return Number.parseInt(nonNull(num), 10) * nonNull(multipliers[nonNull(unit)]);
 }
 
 /** Token-count threshold at/above which we render in "k tok" (thousands) form. */

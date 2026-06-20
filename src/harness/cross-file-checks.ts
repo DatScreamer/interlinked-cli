@@ -7,6 +7,7 @@
 // Both run in runStructuralChecks on PostToolUse.
 
 import { readFileSync } from "node:fs";
+import { nonNull } from "../lib/non-null.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type { StructuralCheckResult } from "./types.js";
 
@@ -28,7 +29,7 @@ function lineOfOffset(content: string, offset: number): number {
 function collectDiscriminants(content: string): Set<string> {
 	const out = new Set<string>();
 	for (const m of content.matchAll(SWITCH_DISC)) {
-		if (DISC_TAIL.test(m[1])) out.add(m[1]);
+		if (DISC_TAIL.test(nonNull(m[1]))) out.add(nonNull(m[1]));
 	}
 	return out;
 }
@@ -81,7 +82,7 @@ const IMPL_EXTENDS = /\b(?:implements|extends)\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Z
 function mentionsAsImpl(content: string, name: string): boolean {
 	IMPL_EXTENDS.lastIndex = 0;
 	for (const m of content.matchAll(IMPL_EXTENDS)) {
-		const names = m[1].split(",").map((n) => n.trim());
+		const names = nonNull(m[1]).split(",").map((n) => n.trim());
 		if (names.includes(name)) return true;
 	}
 	return false;
@@ -113,7 +114,7 @@ export function checkSingleImplementationInterface(
 			check: "single_implementation_interface",
 			severity: "info",
 			message: `Interface \`${iface.name}\` has exactly one implementor (${graph.toRelative(
-				implementors[0],
+				nonNull(implementors[0]),
 			)}). Premature abstraction? Consider inlining or making it concrete.`,
 			file: filePath,
 			affectedFiles: implementors,

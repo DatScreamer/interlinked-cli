@@ -17,6 +17,7 @@ import {
 import type { CollectionAction, CollectionRecord } from "./collection/types.js";
 import { getCollectionPath } from "./collection/writer.js";
 import type { LocalActivityEvent } from "./local-activity-types.js";
+import { nonNull } from "./non-null.js";
 /** Best human label for a collection action: command / path / pattern / url. */
 function summarizeAction(action: CollectionAction | null): string | null {
 	if (!action) return null;
@@ -122,7 +123,7 @@ export function readRecentLines(path: string, maxLines: number): string[] {
 			carry = parts.shift() || "";
 
 			for (let i = parts.length - 1; i >= 0 && lines.length < maxLines; i--) {
-				const line = parts[i].trim();
+				const line = nonNull(parts[i]).trim();
 				if (line) {
 					lines.push(line);
 				}

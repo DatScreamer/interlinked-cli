@@ -62,6 +62,7 @@ vi.mock("../lib/formatter.js", () => {
 });
 
 import { workspaceListCommand, workspaceSwitchCommand } from "./workspace.js";
+import { nonNull } from "../lib/non-null.js";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -276,7 +277,7 @@ describe("workspaceSwitchCommand", () => {
 		await workspaceSwitchCommand("ws_new");
 
 		expect(mockUpdateLocalConfig).toHaveBeenCalledTimes(1);
-		const arg = mockUpdateLocalConfig.mock.calls[0][0] as {
+		const arg = nonNull(mockUpdateLocalConfig.mock.calls[0])[0] as {
 			workspace_id: string;
 			servers: Record<string, { workspace_id: string; server_url: string }>;
 		};
@@ -302,10 +303,10 @@ describe("workspaceSwitchCommand", () => {
 
 		await workspaceSwitchCommand("ws_new");
 
-		const arg = mockUpdateLocalConfig.mock.calls[0][0] as {
+		const arg = nonNull(mockUpdateLocalConfig.mock.calls[0])[0] as {
 			servers: Record<string, { workspace_id: string }>;
 		};
-		expect(arg.servers.production.workspace_id).toBe("ws_new");
+		expect(nonNull(arg.servers.production).workspace_id).toBe("ws_new");
 	});
 
 	it("falls back to a flat workspace_id update when there is no servers map", async () => {
@@ -315,7 +316,7 @@ describe("workspaceSwitchCommand", () => {
 		await workspaceSwitchCommand("ws_newtop");
 
 		expect(mockUpdateLocalConfig).toHaveBeenCalledTimes(1);
-		expect(mockUpdateLocalConfig.mock.calls[0][0]).toEqual({ workspace_id: "ws_newtop" });
+		expect(nonNull(mockUpdateLocalConfig.mock.calls[0])[0]).toEqual({ workspace_id: "ws_newtop" });
 		expect(lastLog()).toContain("Switched");
 	});
 
@@ -325,7 +326,7 @@ describe("workspaceSwitchCommand", () => {
 
 		await workspaceSwitchCommand("ws_newtop");
 
-		expect(mockUpdateLocalConfig.mock.calls[0][0]).toEqual({ workspace_id: "ws_newtop" });
+		expect(nonNull(mockUpdateLocalConfig.mock.calls[0])[0]).toEqual({ workspace_id: "ws_newtop" });
 	});
 
 	it("falls back to a flat update when the active server key has no entry in the servers map", async () => {
@@ -338,7 +339,7 @@ describe("workspaceSwitchCommand", () => {
 
 		await workspaceSwitchCommand("ws_newtop");
 
-		expect(mockUpdateLocalConfig.mock.calls[0][0]).toEqual({ workspace_id: "ws_newtop" });
+		expect(nonNull(mockUpdateLocalConfig.mock.calls[0])[0]).toEqual({ workspace_id: "ws_newtop" });
 	});
 
 	it("rejects an id that does not match the ws_<alnum> pattern and exits 1 (no fetch, no write)", async () => {

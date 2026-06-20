@@ -17,6 +17,7 @@ import {
 } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { getHookScriptPath, HOOK_SCRIPT_VERSION } from "../lib/hooks.js";
+import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { detectClients } from "../lib/settings.js";
 
@@ -36,7 +37,7 @@ function detectInstalledHookVersion(cwd: string): string | null {
 		// dropped the mode qualifier, making `0.1.0+mode-budget` look the
 		// same as `0.1.0+mode-ci`.
 		const match = content.match(/interlinked-hook-version:\s*(\S+)/);
-		return match ? match[1] : "unknown";
+		return match ? nonNull(match[1]) : "unknown";
 	} catch {
 		return null;
 	}

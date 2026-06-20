@@ -19,6 +19,8 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 
+import { nonNull } from "../lib/non-null.js";
+
 import {
 	cachePath,
 	filterDisabled,
@@ -152,7 +154,7 @@ export function findWrappersInContent(
 		re.lastIndex = 0;
 		let m: RegExpExecArray | null = re.exec(stripped);
 		while (m !== null) {
-			candidates.push({ name: m[1], declIdx: m.index });
+			candidates.push({ name: nonNull(m[1]), declIdx: m.index });
 			m = re.exec(stripped);
 		}
 	}

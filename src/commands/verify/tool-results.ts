@@ -34,6 +34,7 @@ import {
 	CQ_RESULT_KEYS,
 	emptyResults,
 } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by `verify.ts`.
@@ -66,8 +67,8 @@ function buildUndocumentedEnvIssues(
 		const fileCount = new Set(refs.map((ref) => ref.file)).size;
 		issues.push({
 			check: "undocumented_env_vars",
-			file: firstRef.file,
-			line: firstRef.line,
+			file: nonNull(firstRef).file,
+			line: nonNull(firstRef).line,
 			message: `env var "${envVar}" is undocumented (${refs.length} references across ${fileCount} files)`,
 		});
 	}

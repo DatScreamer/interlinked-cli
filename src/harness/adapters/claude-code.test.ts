@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { createClaudeCodeAdapter } from "./claude-code.js";
 
 const adapter = createClaudeCodeAdapter();
@@ -105,18 +106,19 @@ describe("Claude Code renderSettingsFragment", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
 		};
-		expect(fragment.hooks.PostToolUse[0].matcher).toBe("");
-		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("--runner 'claude-code'");
-		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("--event 'PostToolUse'");
-		expect(fragment.hooks.PostToolUse[0].hooks[0].command).toContain("if test -f");
-		expect(fragment.hooks.PostToolUse[0].hooks[0].command).not.toContain("|| true");
+		const post = nonNull(nonNull(fragment.hooks.PostToolUse)[0]);
+		expect(post.matcher).toBe("");
+		expect(nonNull(post.hooks[0]).command).toContain("--runner 'claude-code'");
+		expect(nonNull(post.hooks[0]).command).toContain("--event 'PostToolUse'");
+		expect(nonNull(post.hooks[0]).command).toContain("if test -f");
+		expect(nonNull(post.hooks[0]).command).not.toContain("|| true");
 	});
 
 	it("uses empty matcher for PreToolUse as well", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string }>>;
 		};
-		expect(fragment.hooks.PreToolUse[0].matcher).toBe("");
+		expect(nonNull(nonNull(fragment.hooks.PreToolUse)[0]).matcher).toBe("");
 	});
 
 	it("uses empty matcher for all events", () => {
@@ -124,7 +126,7 @@ describe("Claude Code renderSettingsFragment", () => {
 			hooks: Record<string, Array<{ matcher: string }>>;
 		};
 		for (const eventName of Object.keys(fragment.hooks)) {
-			expect(fragment.hooks[eventName][0].matcher).toBe("");
+			expect(nonNull(nonNull(fragment.hooks[eventName])[0]).matcher).toBe("");
 		}
 	});
 });

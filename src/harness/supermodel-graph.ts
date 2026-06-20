@@ -10,6 +10,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, resolve as resolvePath, sep } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 
 const MAX_SHARD_SIZE = 1024 * 1024;
 const DOMAIN_SEPARATOR = " · ";
@@ -136,7 +137,7 @@ export function parseGraphFile(
 
 	let cursor = 0;
 	while (cursor < rawLines.length) {
-		const t = rawLines[cursor].trim();
+		const t = nonNull(rawLines[cursor]).trim();
 		if (t === "" || t === "//go:build ignore" || t === "package ignore") {
 			cursor++;
 			continue;
@@ -145,7 +146,7 @@ export function parseGraphFile(
 	}
 	if (cursor >= rawLines.length) return null;
 
-	const firstLine = rawLines[cursor].trim();
+	const firstLine = nonNull(rawLines[cursor]).trim();
 	let prefix: string;
 	if (firstLine.startsWith("//")) prefix = "//";
 	else if (firstLine.startsWith("#")) prefix = "#";
@@ -153,7 +154,7 @@ export function parseGraphFile(
 
 	const stripped: string[] = [];
 	for (let i = cursor; i < rawLines.length; i++) {
-		const t = rawLines[i].trim();
+		const t = nonNull(rawLines[i]).trim();
 		if (t === "") {
 			stripped.push("");
 			continue;
@@ -254,15 +255,15 @@ function parseCalls(lines: string[]): CallsSection | null {
 		let file = "";
 		let lineNum = 0;
 		if (restTokens.length === 1) {
-			other = restTokens[0];
+			other = nonNull(restTokens[0]);
 		} else {
 			const last = restTokens[restTokens.length - 1];
-			const colonIdx = last.lastIndexOf(":");
+			const colonIdx = nonNull(last).lastIndexOf(":");
 			if (colonIdx !== -1) {
-				const linePart = last.slice(colonIdx + 1);
+				const linePart = nonNull(last).slice(colonIdx + 1);
 				const parsed = Number.parseInt(linePart, 10);
 				if (Number.isFinite(parsed)) {
-					file = last.slice(0, colonIdx);
+					file = nonNull(last).slice(0, colonIdx);
 					lineNum = parsed;
 					other = restTokens.slice(0, -1).join(" ");
 				} else {

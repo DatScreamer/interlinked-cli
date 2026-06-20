@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CapturedPlan } from "../../harness/types/plan.js";
 import { planListCommand, planShowCommand } from "../plan.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tmp = "";
 let previousExitCode: number | string | undefined;
@@ -159,8 +160,8 @@ describe("interlinked plan list", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].created_at_iso).toBe("2026-04-21T00:00:00.000Z");
-		expect(rows[0].steps).toHaveLength(3);
+		expect(nonNull(rows[0]).created_at_iso).toBe("2026-04-21T00:00:00.000Z");
+		expect(nonNull(rows[0]).steps).toHaveLength(3);
 	});
 
 	it("skips torn / malformed JSONL lines without crashing", async () => {
@@ -174,7 +175,7 @@ describe("interlinked plan list", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-broken");
+		expect(nonNull(rows[0]).session_id).toBe("sess-broken");
 	});
 });
 
@@ -486,7 +487,7 @@ describe("interlinked plan — defensive JSONL parsing", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].steps).toEqual([{ intent: "kept", status: "pending" }]);
+		expect(nonNull(rows[0]).steps).toEqual([{ intent: "kept", status: "pending" }]);
 	});
 
 	it("falls back to 'pending' for an unknown step status", async () => {
@@ -502,7 +503,7 @@ describe("interlinked plan — defensive JSONL parsing", () => {
 		);
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
-		expect(rows[0].steps[0].status).toBe("pending");
+		expect(nonNull(nonNull(rows[0]).steps[0]).status).toBe("pending");
 	});
 
 	it("falls back to 'pending' when step status is non-string", async () => {
@@ -518,7 +519,7 @@ describe("interlinked plan — defensive JSONL parsing", () => {
 		);
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
-		expect(rows[0].steps[0].status).toBe("pending");
+		expect(nonNull(nonNull(rows[0]).steps[0]).status).toBe("pending");
 	});
 
 	it("preserves valid tool_hint / target_hint and drops empty ones", async () => {
@@ -537,16 +538,16 @@ describe("interlinked plan — defensive JSONL parsing", () => {
 		);
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
-		expect(rows[0].steps[0]).toEqual({
+		expect(nonNull(rows[0]).steps[0]).toEqual({
 			intent: "with hints",
 			status: "pending",
 			tool_hint: "Write",
 			target_hint: "x.ts",
 		});
 		// Empty-string hints must NOT be set as keys (readString → null).
-		expect(rows[0].steps[1]).toEqual({ intent: "empty hints", status: "pending" });
-		expect("tool_hint" in rows[0].steps[1]).toBe(false);
-		expect("target_hint" in rows[0].steps[1]).toBe(false);
+		expect(nonNull(rows[0]).steps[1]).toEqual({ intent: "empty hints", status: "pending" });
+		expect("tool_hint" in nonNull(nonNull(rows[0]).steps[1])).toBe(false);
+		expect("target_hint" in nonNull(nonNull(rows[0]).steps[1])).toBe(false);
 	});
 
 	it("treats a non-array steps field as an empty step list", async () => {
@@ -563,7 +564,7 @@ describe("interlinked plan — defensive JSONL parsing", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].steps).toEqual([]);
+		expect(nonNull(rows[0]).steps).toEqual([]);
 	});
 
 	it("defaults created_at_step to 0 when absent or non-finite", async () => {
@@ -625,7 +626,7 @@ describe("interlinked plan list — directory walk edge cases", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-real");
+		expect(nonNull(rows[0]).session_id).toBe("sess-real");
 	});
 
 	it("skips a subdirectory whose name ends in .jsonl (not a file)", async () => {
@@ -635,7 +636,7 @@ describe("interlinked plan list — directory walk edge cases", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-ok");
+		expect(nonNull(rows[0]).session_id).toBe("sess-ok");
 	});
 
 	it("drops files that yield no parseable plan but keeps valid siblings", async () => {
@@ -644,7 +645,7 @@ describe("interlinked plan list — directory walk edge cases", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-good");
+		expect(nonNull(rows[0]).session_id).toBe("sess-good");
 	});
 
 	it("returns [] when the plans path exists but is a file, not a directory", async () => {
@@ -675,7 +676,7 @@ describe("interlinked plan list — directory walk edge cases", () => {
 		const captured = await captureStdio(() => planListCommand({ cwd: tmp, json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-live");
+		expect(nonNull(rows[0]).session_id).toBe("sess-live");
 	});
 });
 
@@ -765,7 +766,7 @@ describe("interlinked plan — defaults cwd to process.cwd()", () => {
 		const captured = await captureStdio(() => planListCommand({ json: true }));
 		const rows = JSON.parse(captured.stdout) as CapturedPlan[];
 		expect(rows).toHaveLength(1);
-		expect(rows[0].session_id).toBe("sess-cwd");
+		expect(nonNull(rows[0]).session_id).toBe("sess-cwd");
 	});
 
 	it("planShowCommand resolves plans relative to process.cwd() when cwd is omitted", async () => {

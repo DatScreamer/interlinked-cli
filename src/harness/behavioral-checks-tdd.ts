@@ -11,6 +11,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { isTypeOnlyModule } from "./checks/shared.js";
 import { isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 import type { CheckResultEntry, SessionTrajectory } from "./types.js";
@@ -403,10 +404,10 @@ function exportedSymbolsOf(sourceFile: string): string[] {
 	const names = new Set<string>();
 	const declRe =
 		/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|class|let|var|type|interface|enum)\s+([A-Za-z_$][\w$]*)/g;
-	for (const m of content.matchAll(declRe)) names.add(m[1]);
+	for (const m of content.matchAll(declRe)) names.add(nonNull(m[1]));
 	const listRe = /\bexport\s*\{([^}]*)\}/g;
 	for (const m of content.matchAll(listRe)) {
-		for (const part of m[1].split(",")) {
+		for (const part of nonNull(m[1]).split(",")) {
 			const exported = part.trim().split(/\s+as\s+/).pop()?.trim();
 			if (exported && /^[A-Za-z_$][\w$]*$/.test(exported)) names.add(exported);
 		}

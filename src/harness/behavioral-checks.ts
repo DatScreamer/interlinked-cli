@@ -11,6 +11,7 @@
 // for the per-file line cap). Their public API is re-exported below so all
 // importers see a single `behavioral-checks.js` surface.
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	checkTddCycleViolation,
 	checkTddGreenConfirmation,
@@ -163,7 +164,7 @@ function extractDetailLines(detail: string | undefined): number[] {
 	DETAIL_LINE_PREFIX_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = DETAIL_LINE_PREFIX_RE.exec(detail);
 	while (m !== null) {
-		const n = Number.parseInt(m[1], 10);
+		const n = Number.parseInt(nonNull(m[1]), 10);
 		if (Number.isFinite(n)) out.push(n);
 		m = DETAIL_LINE_PREFIX_RE.exec(detail);
 	}

@@ -18,6 +18,8 @@
 //      This avoids the bug where a backtick in a source file comment flips
 //      the parser into "inside template" mode and blanks out code after it.
 
+import { nonNull } from "../lib/non-null.js";
+
 // Re-exported from a sibling: the template-interpolation extraction cluster
 // was carved out to keep this module under the per-file line cap. External
 // importers (write-content-guards.ts, tests) keep importing it from here.
@@ -48,8 +50,8 @@ export function stripTemplateLiterals(content: string): string {
 	let i = 0;
 
 	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
+		const ch = nonNull(content[i]);
+		const next = content[i + 1] ?? "";
 
 		if (s.inLineComment) {
 			i = handleTplLineComment(ch, i, s);
@@ -219,8 +221,8 @@ export function stripComments(content: string): string {
 	let inTpl = false;
 
 	while (i < content.length) {
-		const ch = content[i];
-		const next = content[i + 1];
+		const ch = nonNull(content[i]);
+		const next = content[i + 1] ?? "";
 
 		if ((inString || inTpl) && ch === "\\" && i + 1 < content.length) {
 			out.push(ch, next);

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTsgoRunner, parseTsgoOutput, type TsgoRunner } from "./tsgo-runner.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -87,12 +88,12 @@ describe("parseTsgoOutput — form 1", () => {
 	it("parses parenthesized location format", () => {
 		const raw = `src/foo.ts(12,3): error TS2322: Type 'string' is not assignable to type 'number'.`;
 		const [diag] = parseTsgoOutput(raw, "src/foo.ts");
-		expect(diag.file).toBe("src/foo.ts");
-		expect(diag.line).toBe(12);
-		expect(diag.column).toBe(3);
-		expect(diag.severity).toBe("error");
-		expect(diag.code).toBe(2322);
-		expect(diag.message.startsWith("Type 'string'")).toBe(true);
+		expect(nonNull(diag).file).toBe("src/foo.ts");
+		expect(nonNull(diag).line).toBe(12);
+		expect(nonNull(diag).column).toBe(3);
+		expect(nonNull(diag).severity).toBe("error");
+		expect(nonNull(diag).code).toBe(2322);
+		expect(nonNull(diag).message.startsWith("Type 'string'")).toBe(true);
 	});
 });
 
@@ -100,9 +101,9 @@ describe("parseTsgoOutput — form 2", () => {
 	it("parses colon-colon-dash format", () => {
 		const raw = `src/foo.ts:5:9 - warning TS7006: Parameter 'x' implicitly has an 'any' type.`;
 		const [diag] = parseTsgoOutput(raw, "src/foo.ts");
-		expect(diag.severity).toBe("warning");
-		expect(diag.code).toBe(7006);
-		expect(diag.line).toBe(5);
+		expect(nonNull(diag).severity).toBe("warning");
+		expect(nonNull(diag).code).toBe(7006);
+		expect(nonNull(diag).line).toBe(5);
 	});
 });
 
@@ -213,7 +214,7 @@ describe("createTsgoRunner — warm watch: lazy spawn", () => {
 		const { "good.ts": good } = makeProject({ "good.ts": "export const a: number = 1;\n" });
 		const runner = createTsgoRunner();
 		expect(runner.stats().watch_process).toBe("not-started");
-		await runner.checkFile(good);
+		await runner.checkFile(nonNull(good));
 		// After a real TS check the warm child must have been started.
 		await waitFor(() => runner.stats().watch_process === "running", 12000);
 		expect(runner.stats().watch_process).toBe("running");
@@ -223,7 +224,7 @@ describe("createTsgoRunner — warm watch: lazy spawn", () => {
 	it("reports disabled when the warm path is turned off", async () => {
 		const { "good.ts": good } = makeProject({ "good.ts": "export const a: number = 1;\n" });
 		const runner = createTsgoRunner({ disableWatch: true });
-		await runner.checkFile(good);
+		await runner.checkFile(nonNull(good));
 		expect(runner.stats().watch_process).toBe("disabled");
 		disposeRunner(runner);
 	}, 20000);
@@ -236,11 +237,11 @@ describe("createTsgoRunner — warm watch: reuse + diagnostics", () => {
 			"b.ts": "export const b: number = 2;\n",
 		});
 		const runner = createTsgoRunner();
-		await runner.checkFile(paths["a.ts"]);
+		await runner.checkFile(nonNull(paths["a.ts"]));
 		await waitFor(() => runner.stats().watch_process === "running", 12000);
 		// A second check against the same project must keep using the warm
 		// child — still exactly one process, still "running".
-		await runner.checkFile(paths["b.ts"]);
+		await runner.checkFile(nonNull(paths["b.ts"]));
 		expect(runner.stats().watch_process).toBe("running");
 		disposeRunner(runner);
 	}, 20000);
@@ -250,7 +251,7 @@ describe("createTsgoRunner — warm watch: reuse + diagnostics", () => {
 			"bad.ts": "export const b: string = 123;\n",
 		});
 		const runner = createTsgoRunner();
-		const out = await runner.checkFile(bad);
+		const out = await runner.checkFile(nonNull(bad));
 		expect(runner.stats().watch_process).toBe("running");
 		// TS2322: number is not assignable to string.
 		expect(out.diagnostics.length).toBeGreaterThan(0);
@@ -263,7 +264,7 @@ describe("createTsgoRunner — warm watch: reuse + diagnostics", () => {
 			"clean.ts": "export const ok: number = 7;\n",
 		});
 		const runner = createTsgoRunner();
-		const out = await runner.checkFile(clean);
+		const out = await runner.checkFile(nonNull(clean));
 		expect(out.diagnostics).toEqual([]);
 		disposeRunner(runner);
 	}, 20000);
@@ -283,14 +284,14 @@ describe("createTsgoRunner — warm watch: idle eviction", () => {
 		// the warm first check (the idle timer is kept fresh while a check is
 		// in flight, then starts counting once checkFile() resolves).
 		const runner = createTsgoRunner({ watchIdleMs: 300 });
-		await runner.checkFile(paths["first.ts"]);
+		await runner.checkFile(nonNull(paths["first.ts"]));
 		// The first check spawned the watch child. With no further TS check the
 		// idle timer must evict it — reaching "idle-evicted" proves both the
 		// lazy spawn and the timer-based eviction.
 		await waitFor(() => runner.stats().watch_process === "idle-evicted", 8000);
 		expect(runner.stats().watch_process).toBe("idle-evicted");
 		// A genuine cache-miss check must lazily respawn a fresh watch child.
-		await runner.checkFile(paths["second.ts"]);
+		await runner.checkFile(nonNull(paths["second.ts"]));
 		expect(runner.stats().watch_process).toBe("running");
 		disposeRunner(runner);
 	}, 30000);
@@ -303,13 +304,13 @@ describe("createTsgoRunner — warm watch: crash resilience", () => {
 		// after spawn. The watch child's `exit` event must flip state to
 		// "crashed" and the runner must still return a (cold-fallback) result.
 		const runner = createTsgoRunner({ executable: "/bin/echo", timeoutMs: 400 });
-		const first = await runner.checkFile(good);
+		const first = await runner.checkFile(nonNull(good));
 		expect(first.diagnostics).toEqual([]); // graceful degradation, no throw
 		await waitFor(() => runner.stats().watch_process === "crashed", 5000);
 		expect(runner.stats().watch_process).toBe("crashed");
 		// A subsequent check must not throw either — it respawns (and that
 		// respawn crashes again, but the contract is "never throw, degrade").
-		const second = await runner.checkFile(good);
+		const second = await runner.checkFile(nonNull(good));
 		expect(second.diagnostics).toEqual([]);
 		disposeRunner(runner);
 	}, 20000);
@@ -326,7 +327,7 @@ describe("createTsgoRunner — warm watch: cold fallback detects errors", () => 
 			"bad.ts": "export const b: string = 123;\n",
 		});
 		const runner = createTsgoRunner({ disableWatch: true });
-		const out = await runner.checkFile(bad);
+		const out = await runner.checkFile(nonNull(bad));
 		expect(out.diagnostics.some((d) => d.code === 2322)).toBe(true);
 		expect(runner.stats().watch_process).toBe("disabled");
 		disposeRunner(runner);
@@ -337,8 +338,8 @@ describe("createTsgoRunner — warm watch: cache + dispose", () => {
 	it("keeps the (path,mtime,size) cache so an unchanged file stays cached", async () => {
 		const { "good.ts": good } = makeProject({ "good.ts": "export const a: number = 1;\n" });
 		const runner = createTsgoRunner();
-		const first = await runner.checkFile(good);
-		const second = await runner.checkFile(good);
+		const first = await runner.checkFile(nonNull(good));
+		const second = await runner.checkFile(nonNull(good));
 		expect(first.cached).toBe(false);
 		expect(second.cached).toBe(true); // warm path still feeds the cache
 		disposeRunner(runner);
@@ -347,7 +348,7 @@ describe("createTsgoRunner — warm watch: cache + dispose", () => {
 	it("dispose() tears the warm child down", async () => {
 		const { "good.ts": good } = makeProject({ "good.ts": "export const a: number = 1;\n" });
 		const runner = createTsgoRunner();
-		await runner.checkFile(good);
+		await runner.checkFile(nonNull(good));
 		await waitFor(() => runner.stats().watch_process === "running", 12000);
 		runner.dispose?.();
 		// After dispose the watcher map is cleared → back to "not-started".

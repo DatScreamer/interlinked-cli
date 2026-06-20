@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectWideSweepState, runProjectWideChecks } from "../quality-checks.js";
 import type { ProjectWideCheckConfig } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Mock the check engine so we don't spawn real subprocesses.
 // Extracting the engine stub into a named helper keeps the mock's top-level
@@ -169,8 +170,8 @@ describe("runProjectWideChecks", () => {
 
 	it("names findings with tool_project_wide suffix", () => {
 		const result = runProjectWideChecks(DEFAULT_CONFIG, state, "/project");
-		expect(result.findings[0].name).toBe("tsc_project_wide");
-		expect(result.findings[1].name).toBe("biome_project_wide");
+		expect(nonNull(result.findings[0]).name).toBe("tsc_project_wide");
+		expect(nonNull(result.findings[1]).name).toBe("biome_project_wide");
 	});
 });
 

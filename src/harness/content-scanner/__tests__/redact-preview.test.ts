@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	buildAskReason,
 	buildRedactedPreview,
@@ -123,7 +124,7 @@ describe("writePendingPrompt", () => {
 		const { request, findingsBySource } = simpleRequest();
 		writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
 		const files = readdirSync(join(tmp, ".interlinked", "scanner", "pending"));
-		const raw = readFileSync(join(tmp, ".interlinked", "scanner", "pending", files[0]), "utf-8");
+		const raw = readFileSync(join(tmp, ".interlinked", "scanner", "pending", nonNull(files[0])), "utf-8");
 		const parsed = JSON.parse(raw);
 		expect(parsed.tool_name).toBe("Write");
 		expect(parsed.parts[0].text).toBe("email alice@example.com");

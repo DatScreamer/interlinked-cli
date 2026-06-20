@@ -174,6 +174,7 @@ import {
 	structureScanCommand,
 	structureStatusCommand,
 } from "./structure.js";
+import { nonNull } from "../lib/non-null.js";
 
 // --- console capture ---------------------------------------------------
 let logged: string[];
@@ -542,8 +543,8 @@ describe("structureScanCommand", () => {
 			(call) => (call as unknown[])[1] === "artifact-nodes",
 		);
 		const payload = (nodesWrite as unknown[])[2] as CategoryCatalog;
-		expect(payload.items[0].local_id).toBe("noColon");
-		expect(payload.items[0].global_ref).toBe("noColon");
+		expect(nonNull(payload.items[0]).local_id).toBe("noColon");
+		expect(nonNull(payload.items[0]).global_ref).toBe("noColon");
 	});
 
 	it("catch path: extractor throwing sets exitCode 1 + structured error", async () => {

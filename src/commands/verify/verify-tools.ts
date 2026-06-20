@@ -20,6 +20,7 @@ import {
 	runToolWithSpinner,
 	SPINNER_FRAMES,
 } from "./streaming-output.js";
+import { nonNull } from "../../lib/non-null.js";
 
 export interface ToolSpec {
 	id: import("../../harness/check-engine/types.js").ToolId;
@@ -287,7 +288,7 @@ export async function streamExternalTools(args: StreamExternalToolsArgs): Promis
 	}
 
 	if (toolCount <= 1 && availableTools.length === 1 && !runDepAudit) {
-		const tool = availableTools[0];
+		const tool = nonNull(availableTools[0]);
 		const rawResults = await runToolWithSpinner({
 			label: tool.label,
 			cmd: tool.cmd,

@@ -33,6 +33,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { harnessStartCommand } from "./harness.js";
+import { nonNull } from "../lib/non-null.js";
 
 interface FakeChild extends EventEmitter {
 	pid: number;
@@ -80,10 +81,10 @@ describe("harness start daemon stderr handling", () => {
 		expect(mocks.openSync).toHaveBeenCalledWith("/repo/.interlinked/logs/daemon.log", "a");
 		expect(mocks.closeSync).toHaveBeenCalledWith(42);
 		expect(mocks.spawn).toHaveBeenCalledOnce();
-		expect(mocks.spawn.mock.calls[0][1]).toEqual(
+		expect(nonNull(mocks.spawn.mock.calls[0])[1]).toEqual(
 			expect.arrayContaining(["--protocol", "dual", "--session-id", "default"]),
 		);
-		expect(mocks.spawn.mock.calls[0][2]).toMatchObject({
+		expect(nonNull(mocks.spawn.mock.calls[0])[2]).toMatchObject({
 			cwd: "/repo",
 			detached: true,
 			stdio: ["ignore", "ignore", 42],

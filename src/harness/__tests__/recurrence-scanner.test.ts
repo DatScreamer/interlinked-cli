@@ -20,6 +20,7 @@ import {
 	scanFilesForDetector,
 	type ScanCodebaseFinding,
 } from "../recurrence-scanner.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("scanCodebaseForRecurrences", () => {
 	let dir: string;
@@ -133,7 +134,7 @@ describe("scanFilesForDetector", () => {
 		const out: DetectorFinding[] = [];
 		const lines = content.split("\n");
 		for (let i = 0; i < lines.length; i += 1) {
-			if (lines[i].includes("BAD")) {
+			if (nonNull(lines[i]).includes("BAD")) {
 				out.push({
 					check_id: "bad_line",
 					file,
@@ -183,7 +184,7 @@ describe("scanFilesForDetector", () => {
 		const out = scanFilesForDetector({
 			detector: badLineDetector,
 			files: ["/abs/a.ts", "/abs/b.ts", "/abs/c.ts"],
-			readFile: (p) => contents[p],
+			readFile: (p) => nonNull(contents[p]),
 		});
 		expect(out).toHaveLength(3);
 		const files = out.map((f) => f.file);
@@ -212,7 +213,7 @@ describe("scanFilesForDetector", () => {
 			});
 			// The exists.ts hit must come through; missing.ts must be skipped.
 			expect(out).toHaveLength(1);
-			expect(out[0].file).toBe("/abs/exists.ts");
+			expect(nonNull(out[0]).file).toBe("/abs/exists.ts");
 			// And the failure must have been logged.
 			expect(stderrWrites.some((s) => s.includes("missing.ts"))).toBe(true);
 			expect(stderrWrites.some((s) => s.includes("ENOENT"))).toBe(true);
@@ -241,7 +242,7 @@ describe("scanFilesForDetector", () => {
 			});
 			// The blowup is swallowed; ok.ts still produces a finding.
 			expect(out).toHaveLength(1);
-			expect(out[0].file).toBe("/abs/ok.ts");
+			expect(nonNull(out[0]).file).toBe("/abs/ok.ts");
 			expect(stderrWrites.some((s) => s.includes("blowup.ts"))).toBe(true);
 		} finally {
 			process.stderr.write = origWrite;

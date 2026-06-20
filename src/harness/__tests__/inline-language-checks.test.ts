@@ -4,6 +4,7 @@ import {
 	__test__,
 	runInlineLanguageChecks,
 } from "../quality-checks/inline-language-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Helper: run inline checks against a synthetic file on-disk path. The
 // filesystem never gets touched — runInlineLanguageChecks only reads
@@ -20,7 +21,7 @@ describe("runInlineLanguageChecks — Python", () => {
 		const results = run("/repo/src/m.py", src);
 		const bareExcepts = results.filter((r) => r.name === "python_bare_except");
 		expect(bareExcepts).toHaveLength(1);
-		expect(bareExcepts[0].message).toContain("m.py:4");
+		expect(nonNull(bareExcepts[0]).message).toContain("m.py:4");
 	});
 
 	it("does not flag `except Exception:`", async () => {

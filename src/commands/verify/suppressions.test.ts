@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { collectSuppressionFindings, findSuppressionMatch } from "./suppressions.js";
 import type { CodeQualityIssue } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("findSuppressionMatch", () => {
 	it("flags bare ts-ignore with no rationale", () => {
@@ -56,8 +57,8 @@ describe("collectSuppressionFindings", () => {
 		const out: CodeQualityIssue[] = [];
 		collectSuppressionFindings(content, "fixture.ts", out);
 		expect(out.length).toBeGreaterThanOrEqual(1);
-		expect(out[0].file).toBe("fixture.ts");
-		expect(out[0].check).toBe("suppressions");
+		expect(nonNull(out[0]).file).toBe("fixture.ts");
+		expect(nonNull(out[0]).check).toBe("suppressions");
 	});
 
 	it("does not flag # noqa inside a JS/TS string fixture", () => {

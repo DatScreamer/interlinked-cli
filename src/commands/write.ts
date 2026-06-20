@@ -30,6 +30,7 @@ import {
 	gateProposedContent,
 } from "../harness/content-gate.js";
 import { c } from "../lib/formatter.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** Options accepted by `interlinked write`. */
 export interface WriteCommandOptions {
@@ -185,7 +186,7 @@ function atomicWriteAll(entries: GateInputEntry[]): void {
 		}
 		// Phase 2: rename all temps into place.
 		for (let i = 0; i < entries.length; i++) {
-			renameSync(tmpPaths[i], entries[i].path);
+			renameSync(nonNull(tmpPaths[i]), nonNull(entries[i]).path);
 		}
 	} catch (err) {
 		// Best-effort cleanup of any temps left behind.

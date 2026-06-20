@@ -5,6 +5,7 @@ import {
 	buildGenericCheckMeta,
 } from "./builders.js";
 import { CHECK_REGISTRY } from "./registry.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function expectedAgentSafetyChecks(content: string): typeof CHECK_REGISTRY {
 	const lc = content.toLowerCase();
@@ -46,7 +47,7 @@ describe("buildAgentSafetyChecks", () => {
 		const [first] = buildAgentSafetyChecks("", "x.ts");
 		expect(first).toHaveProperty("name");
 		expect(first).toHaveProperty("severity");
-		expect(typeof first.fn).toBe("function");
+		expect(typeof nonNull(first).fn).toBe("function");
 	});
 
 	it("each built fn closes over the passed content + filePath", () => {

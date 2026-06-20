@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAllowlist } from "../../harness/package-allowlist.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const fetchRegistryMetadataMock = vi.fn();
 const fetchVersionMetadataMock = vi.fn();
@@ -139,7 +140,7 @@ describe("addAllowlistCommand — version-targeted screens", () => {
 		});
 
 		// Recorded with NO license (not the latest release's MIT), and the note says so.
-		expect(loadAllowlist(cwd).packages.npm["internal-widget-lib"].license).toBeUndefined();
+		expect(nonNull(loadAllowlist(cwd).packages.npm["internal-widget-lib"]).license).toBeUndefined();
 		expect(stdoutText()).toMatch(/license for pinned 1\.2\.3 unavailable/);
 	});
 });

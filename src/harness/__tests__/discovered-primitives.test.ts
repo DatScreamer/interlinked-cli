@@ -23,6 +23,7 @@ import {
 	refreshIfStale,
 	saveCache,
 } from "../discovered-primitives.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let tmp: string;
 
@@ -368,7 +369,7 @@ describe("refreshIfStale", () => {
 		// Now = 1s after cache — within any reasonable TTL.
 		const prims = refreshIfStale(tmp, 1_000_000_001_000, 60_000);
 		expect(prims).toHaveLength(1);
-		expect(prims[0].wrapperName).toBe("cachedWrapper");
+		expect(nonNull(prims[0]).wrapperName).toBe("cachedWrapper");
 	});
 
 	it("re-discovers when cache is older than TTL", () => {

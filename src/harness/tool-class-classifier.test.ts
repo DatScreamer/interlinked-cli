@@ -10,6 +10,7 @@ import {
 	loadOverrides,
 	parseOverrides,
 } from "./tool-class-classifier.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- Built-in rules -----------------------------------------------------------
 
@@ -189,7 +190,7 @@ describe("parseOverrides — command_substrings", () => {
 			command_substrings: [{ match: "yes", class: "read", reason: "fine" }],
 		});
 		expect(overrides.command_substrings.length).toBe(1);
-		expect(overrides.command_substrings[0].reason).toBe("fine");
+		expect(nonNull(overrides.command_substrings[0]).reason).toBe("fine");
 	});
 
 	it("drops entries missing the match string", () => {

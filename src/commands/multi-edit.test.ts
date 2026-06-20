@@ -93,6 +93,7 @@ import {
 	type NormalizeResult,
 	runMultiEdit,
 } from "./multi-edit.js";
+import { nonNull } from "../lib/non-null.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -283,7 +284,7 @@ describe("normalizeManifest root + dispatch", () => {
 			],
 		});
 		expect(batches).toHaveLength(2);
-		expect(batches[1].path).toBe("b.ts");
+		expect(nonNull(batches[1]).path).toBe("b.ts");
 	});
 });
 
@@ -420,8 +421,8 @@ describe("gateProposedContentInline (mocked overlays)", () => {
 		);
 		const failures = gateProposedContentInline([{ path: "/repo/a.ts", content: "x" }]);
 		expect(failures).toHaveLength(1);
-		expect(failures[0].tool).toBe("tsc");
-		expect(failures[0].code).toBe("tsc");
+		expect(nonNull(failures[0]).tool).toBe("tsc");
+		expect(nonNull(failures[0]).code).toBe("tsc");
 	});
 
 	it("drops non-blocking tsc findings (TS6133 unused) via the real classifier", () => {
@@ -503,7 +504,7 @@ describe("runMultiEdit (mocked gate + fs)", () => {
 		expect(result.ok).toBe(false);
 		expect(result.error_code).toBe(MULTI_EDIT_ERROR_CODES.GATE_REJECTED);
 		expect(result.gate_failures).toHaveLength(1);
-		expect(result.gate_failures?.[0].code).toBe("lint/x");
+		expect(nonNull(result.gate_failures?.[0]).code).toBe("lint/x");
 		// Gate rejected before any write.
 		expect(mockWriteFileSync).not.toHaveBeenCalled();
 	});

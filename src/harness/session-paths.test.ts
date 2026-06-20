@@ -9,6 +9,7 @@ import {
 	liveForeignDaemonPid,
 	sanitizeSessionId,
 } from "./session-paths.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -87,8 +88,8 @@ describe("discoverDaemons", () => {
 		writeFileSync(join(tmp, ".interlinked", "harness.pid"), `${process.pid}`);
 		const daemons = discoverDaemons(tmp);
 		expect(daemons.length).toBe(1);
-		expect(daemons[0].session_id).toBe("default");
-		expect(daemons[0].alive).toBe(true);
+		expect(nonNull(daemons[0]).session_id).toBe("default");
+		expect(nonNull(daemons[0]).alive).toBe(true);
 	});
 
 	it("finds per-session daemon PID files", () => {
@@ -103,7 +104,7 @@ describe("discoverDaemons", () => {
 	it("flags dead daemons via alive=false", () => {
 		writeFileSync(join(tmp, ".interlinked", "harness-dead.pid"), "999999999");
 		const daemons = discoverDaemons(tmp);
-		expect(daemons[0].alive).toBe(false);
+		expect(nonNull(daemons[0]).alive).toBe(false);
 	});
 });
 
@@ -115,7 +116,7 @@ describe("cleanupOrphans", () => {
 		writeFileSync(sockFile, "");
 		const cleaned = cleanupOrphans(tmp);
 		expect(cleaned.length).toBe(1);
-		expect(cleaned[0].session_id).toBe("dead");
+		expect(nonNull(cleaned[0]).session_id).toBe("dead");
 	});
 
 	it("leaves live daemons alone", () => {

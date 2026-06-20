@@ -10,6 +10,7 @@ import type {
 } from "../harness/structure/types.js";
 import { c } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 import {
 	acceptEnv,
 	acceptSymbols,
@@ -72,15 +73,15 @@ export async function structureInitCommand(opts: InitOpts): Promise<void> {
 
 		const dir = join(cwd, "interlinked");
 		const arts: Record<string, string> = {};
-		for (const cat of cats) arts[cat] = SCAFFOLDS[cat].file;
+		for (const cat of cats) arts[cat] = nonNull(SCAFFOLDS[cat]).file;
 		const cfg: JsonObject = { version: 1, mode };
 		if (Object.keys(arts).length > 0) cfg.artifacts = arts;
 
 		const files = [
 			{ path: join(dir, "structure.json"), data: cfg },
 			...cats.map((cat) => ({
-				path: join(dir, SCAFFOLDS[cat].file),
-				data: SCAFFOLDS[cat].content,
+				path: join(dir, nonNull(SCAFFOLDS[cat]).file),
+				data: nonNull(SCAFFOLDS[cat]).content,
 			})),
 		];
 		const names = files.map((f) => relTo(cwd, f.path));

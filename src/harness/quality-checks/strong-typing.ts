@@ -6,6 +6,7 @@
 // offenders without spinning up tsc.
 
 import { stripRegexLiterals } from "../strip-helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Patterns that match explicit `any` usage in TypeScript.
@@ -57,7 +58,7 @@ export function findAnyTypes(content: string): AnyTypeMatch[] {
 	const matches: AnyTypeMatch[] = [];
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		const trimmed = line.trim();
 
 		// Skip comment-only lines

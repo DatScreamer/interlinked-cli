@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { deriveSidecarScriptArgs, OpfLocalScanner, type SidecarLike } from "../opf-local.js";
 import type { SidecarStatus } from "../sidecar-manager.js";
 import type { ContentScannerConfig, ScannerStatus } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function makeConfig(): ContentScannerConfig {
 	return {
@@ -75,7 +76,7 @@ describe("OpfLocalScanner", () => {
 			end: 24,
 			source: "Write.content",
 		});
-		expect(findings[1].label).toBe("secret");
+		expect(nonNull(findings[1]).label).toBe("secret");
 		expect(send).toHaveBeenCalledWith(expect.objectContaining({ op: "scan", text: expect.any(String) }));
 	});
 

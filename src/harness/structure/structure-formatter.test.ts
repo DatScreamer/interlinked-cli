@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatStructureVerifyOutput, formatStructureWarnings } from "./structure-formatter.js";
 import type { StructureFinding } from "./types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function finding(overrides: Partial<StructureFinding> = {}): StructureFinding {
 	return {
@@ -57,7 +58,7 @@ describe("formatStructureVerifyOutput", () => {
 		});
 		expect(out.mode).toBe("minimal");
 		expect(out.findings.fully_deterministic).toBe(1);
-		expect(out.details[0].name).toBe("public_symbol_companion_untouched");
+		expect(nonNull(out.details[0]).name).toBe("public_symbol_companion_untouched");
 	});
 
 	it("mode defaults to 'minimal' when no config is provided", () => {

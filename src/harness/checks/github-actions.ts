@@ -4,6 +4,7 @@
 // expansion of untrusted GitHub-event payloads) is its own category.
 
 import { type InlineMatch, isTestFile, isVendoredOrFixturePath } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Path gate: any `.yml` / `.yaml` under a `.github/workflows/` directory. */
 function isGithubWorkflowPath(filePath: string): boolean {
@@ -51,7 +52,7 @@ export function checkGithubActionsInjection(content: string, filePath: string): 
 		const idx = m.index ?? 0;
 		const lineNum = content.slice(0, idx).split("\n").length;
 		if (matches.some((mx) => mx.line === lineNum)) continue;
-		matches.push({ line: lineNum, text: originalLines[lineNum - 1].trim().slice(0, 150) });
+		matches.push({ line: lineNum, text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150) });
 	}
 	return matches;
 }

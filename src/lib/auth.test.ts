@@ -72,6 +72,7 @@ import {
 	saveLoginTokens,
 } from "./auth.js";
 import type { ResolvedConfig } from "./config.js";
+import { nonNull } from "./non-null.js";
 
 const resolveConfigMock = vi.mocked(resolveConfig);
 const updateLocalConfigMock = vi.mocked(updateLocalConfig);
@@ -502,7 +503,7 @@ describe("resolveAuthTokenWithRefresh", () => {
 
 		// saveLoginTokens persisted the refreshed token.
 		expect(updateLocalConfigMock).toHaveBeenCalledTimes(1);
-		const updates = updateLocalConfigMock.mock.calls[0][0] as Record<string, unknown>;
+		const updates = nonNull(updateLocalConfigMock.mock.calls[0])[0] as Record<string, unknown>;
 		expect(updates.access_token).toBe("new-tok");
 		expect(updates.refresh_token).toBe("new-rt");
 	});
@@ -528,7 +529,7 @@ describe("resolveAuthTokenWithRefresh", () => {
 		expect(body).not.toContain("client_id");
 
 		// expires_in absent → token_expires_at cleared to undefined.
-		const updates = updateLocalConfigMock.mock.calls[0][0] as Record<string, unknown>;
+		const updates = nonNull(updateLocalConfigMock.mock.calls[0])[0] as Record<string, unknown>;
 		expect(updates.token_expires_at).toBeUndefined();
 		// refresh_token falls back to the original when server omits it.
 		expect(updates.refresh_token).toBe("rt");
@@ -612,7 +613,7 @@ describe("saveLoginTokens", () => {
 			"/proj",
 		);
 		expect(updateLocalConfigMock).toHaveBeenCalledTimes(1);
-		const [updates, cwd] = updateLocalConfigMock.mock.calls[0];
+		const [updates, cwd] = nonNull(updateLocalConfigMock.mock.calls[0]);
 		expect(cwd).toBe("/proj");
 		expect(updates).toMatchObject({
 			access_token: "a",
@@ -624,7 +625,7 @@ describe("saveLoginTokens", () => {
 
 	it("omits optional fields and clears expiry when only access_token is given", () => {
 		saveLoginTokens({ access_token: "only" });
-		const updates = updateLocalConfigMock.mock.calls[0][0] as Record<string, unknown>;
+		const updates = nonNull(updateLocalConfigMock.mock.calls[0])[0] as Record<string, unknown>;
 		expect(updates).toHaveProperty("access_token", "only");
 		expect(updates.token_expires_at).toBeUndefined();
 		expect(updates).not.toHaveProperty("oauth_client_id");

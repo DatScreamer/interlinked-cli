@@ -14,6 +14,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 const runProcessAsyncMock = vi.fn();
@@ -172,7 +173,7 @@ describe("runActionlint (sync)", () => {
 			column: 1,
 			message: "could not parse as YAML",
 		});
-		expect(out[0].ruleId).toBeUndefined();
+		expect(nonNull(out[0]).ruleId).toBeUndefined();
 	});
 
 	it("reads a diagnostic from stderr when stdout is undefined ('' fallback)", () => {
@@ -181,7 +182,7 @@ describe("runActionlint (sync)", () => {
 		);
 		const out = runActionlint(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].ruleId).toBe("expression");
+		expect(nonNull(out[0]).ruleId).toBe("expression");
 	});
 
 	it("returns [] on non-zero status with undefined stdout/stderr (parser yields nothing)", () => {
@@ -262,8 +263,8 @@ describe("runActionlintAsync", () => {
 		);
 		const out = await runActionlintAsync(input(fileScope()));
 		expect(out).toHaveLength(1);
-		expect(out[0].file).toBe(".github/workflows/ci.yml");
-		expect(out[0].ruleId).toBeUndefined();
+		expect(nonNull(out[0]).file).toBe(".github/workflows/ci.yml");
+		expect(nonNull(out[0]).ruleId).toBeUndefined();
 	});
 
 	it("returns [] on code === 1 with empty output (parser yields nothing)", async () => {

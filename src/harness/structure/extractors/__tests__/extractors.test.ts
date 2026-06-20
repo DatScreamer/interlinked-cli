@@ -14,6 +14,7 @@ import {
 	metadata as packageMetadata,
 } from "../package-extractor.js";
 import { extract as extractTests, metadata as testMetadata } from "../test-extractor.js";
+import { nonNull } from "../../../../lib/non-null.js";
 
 let tmpDir: string;
 
@@ -49,7 +50,7 @@ describe("module-extractor", () => {
 		write("src/real.ts", "");
 		const result = extractModules(tmpDir);
 		expect(result.nodes).toHaveLength(1);
-		expect(result.nodes[0].file).toBe("src/real.ts");
+		expect(nonNull(result.nodes[0]).file).toBe("src/real.ts");
 	});
 
 	it("has correct metadata", () => {
@@ -72,7 +73,7 @@ describe("package-extractor", () => {
 		write("src/index.ts", "");
 		const result = extractPackages(tmpDir);
 		expect(result.nodes).toHaveLength(1);
-		expect(result.nodes[0].label).toBe("root");
+		expect(nonNull(result.nodes[0]).label).toBe("root");
 	});
 
 	it("links modules to packages", () => {
@@ -140,8 +141,8 @@ describe("test-extractor", () => {
 		write("src/app.ts", "");
 		const result = extractTests(tmpDir);
 		expect(result.edges).toHaveLength(1);
-		expect(result.edges[0].kind).toBe("tests");
-		expect(result.edges[0].to).toBe("module:src-app");
+		expect(nonNull(result.edges[0]).kind).toBe("tests");
+		expect(nonNull(result.edges[0]).to).toBe("module:src-app");
 	});
 
 	it("discovers files under __tests__ directories", () => {
@@ -169,13 +170,13 @@ describe("docs-extractor", () => {
 	it("classifies README files as readme kind", () => {
 		write("README.md", "# Project");
 		const result = extractDocs(tmpDir);
-		expect(result.nodes[0].metadata?.doc_kind).toBe("readme");
+		expect(nonNull(result.nodes[0]).metadata?.doc_kind).toBe("readme");
 	});
 
 	it("classifies docs/ files as reference kind", () => {
 		write("docs/api.md", "# API");
 		const result = extractDocs(tmpDir);
-		expect(result.nodes[0].metadata?.doc_kind).toBe("reference");
+		expect(nonNull(result.nodes[0]).metadata?.doc_kind).toBe("reference");
 	});
 
 	it("has correct metadata", () => {
@@ -228,14 +229,14 @@ describe("config-extractor", () => {
 		write("src/app.ts", 'const val = config["app.secret"];');
 		const result = extractConfig(tmpDir);
 		expect(result.nodes).toHaveLength(1);
-		expect(result.nodes[0].label).toBe("app.secret");
+		expect(nonNull(result.nodes[0]).label).toBe("app.secret");
 	});
 
 	it("finds config.dotted.access patterns", () => {
 		write("src/app.ts", "const v = config.server.port;");
 		const result = extractConfig(tmpDir);
 		expect(result.nodes).toHaveLength(1);
-		expect(result.nodes[0].label).toBe("server.port");
+		expect(nonNull(result.nodes[0]).label).toBe("server.port");
 	});
 
 	it("has correct metadata", () => {

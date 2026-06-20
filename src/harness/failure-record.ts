@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { randomFillSync } from "node:crypto";
 
 import type { FailureRecord } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 const FAILURES_DIR = ".interlinked/failures";
 
@@ -64,9 +65,9 @@ export function mintFailureId(now: number = Date.now()): string {
 	bytes[5] = Number(ts & 0xffn);
 
 	// Byte 6: version 7 in the top 4 bits, random in the low 4.
-	bytes[6] = (bytes[6] & 0x0f) | 0x70;
+	bytes[6] = (nonNull(bytes[6]) & 0x0f) | 0x70;
 	// Byte 8: variant 10xx in the top 2 bits.
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	bytes[8] = (nonNull(bytes[8]) & 0x3f) | 0x80;
 
 	const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 	const formatted =
@@ -97,9 +98,9 @@ export function mintFailureIdFromTimestamp(timestampMs: number, randomBytes: Uin
 	bytes[3] = Number((ts >> 16n) & 0xffn);
 	bytes[4] = Number((ts >> 8n) & 0xffn);
 	bytes[5] = Number(ts & 0xffn);
-	for (let i = 0; i < 10; i++) bytes[6 + i] = randomBytes[i];
-	bytes[6] = (bytes[6] & 0x0f) | 0x70;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	for (let i = 0; i < 10; i++) bytes[6 + i] = nonNull(randomBytes[i]);
+	bytes[6] = (nonNull(bytes[6]) & 0x0f) | 0x70;
+	bytes[8] = (nonNull(bytes[8]) & 0x3f) | 0x80;
 	const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 	const formatted =
 		`${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-` +

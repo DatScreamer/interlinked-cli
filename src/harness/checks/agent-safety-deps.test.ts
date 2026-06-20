@@ -7,6 +7,7 @@ import {
 	checkSelfImport,
 	findWorkspaceRootFor,
 } from "./agent-safety-deps.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Smoke-test coverage for the agent-safety dependency-hygiene check family.
 // Deeper coverage lives in `src/harness/__tests__/generic-checks-extended-*.test.ts`
@@ -119,6 +120,6 @@ describe("checkPhantomDependencies — workspace awareness", () => {
 
 		const out = checkPhantomDependencies(join(fooDir, "package.json"));
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("totally-unused-pkg");
+		expect(nonNull(out[0]).text).toContain("totally-unused-pkg");
 	});
 });

@@ -139,6 +139,7 @@ import {
 	runStructureChecksPhase,
 } from "./post-tool-file-checks-phases.js";
 import { collectSuggestionFindings } from "./suggestion-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const mExistsSync = existsSync as unknown as Mock;
 const mReadFileSync = readFileSync as unknown as Mock;
@@ -367,7 +368,7 @@ describe("runQualityPhase", () => {
 			rules: makeRules({ quality_checks: { typescript: { enabled: true, file_types: [".ts"] } } }),
 		});
 		await call({ ctx, structuralConfig: sc({ smart_tsc: true }), exportChanged: true });
-		const opts = mRunQualityChecks.mock.calls[0][3];
+		const opts = nonNull(mRunQualityChecks.mock.calls[0])[3];
 		expect(opts.tscFilterFile).toBeUndefined();
 	});
 
@@ -481,7 +482,7 @@ describe("runQualityPhase", () => {
 	it("falls back to fully_deterministic determinism for an unknown check name", async () => {
 		mRunQualityChecks.mockResolvedValue([qres({ name: "totally_unknown_check_xyz" })]);
 		const { acc } = await call();
-		expect(acc.allCheckResults[0].determinism).toBe("fully_deterministic");
+		expect(nonNull(acc.allCheckResults[0]).determinism).toBe("fully_deterministic");
 	});
 
 	it("appends formatted warnings onto pre-existing decision.warnings", async () => {
@@ -853,7 +854,7 @@ describe("runScoredSuggestionsPhase", () => {
 		mCollectSuggestions.mockReturnValue([{ check: "c", severity: "warning", line: 1, message: "m" }]);
 		const event = ev({ tool_input: { file_path: FILE, old_string: "ZZZ-not-present" } });
 		callSugg({ event });
-		const opts = mScoreFindings.mock.calls[0][1];
+		const opts = nonNull(mScoreFindings.mock.calls[0])[1];
 		expect(opts.editStartLine).toBeUndefined();
 		expect(opts.editEndLine).toBeUndefined();
 	});

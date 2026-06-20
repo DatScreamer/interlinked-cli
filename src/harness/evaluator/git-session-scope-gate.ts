@@ -48,6 +48,7 @@ import {
 	stripCommitFlags,
 	stripFlags,
 } from "./git-session-scope-gate-resolution-helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /** Cap on how many files to list in the ask-reason — keep messages short
  *  so the agent's user prompt doesn't scroll off-screen. */
@@ -219,7 +220,7 @@ export function parseGitVerb(rawCommand: string): ParsedGitCommand | null {
 	// (`a && b`, `a; b`, `a | b`) are handled by the existing compound
 	// decomposer; if a chain starts with `git push`, only the push is
 	// examined here.
-	const firstSegment = cmd.split(/&&|\|\||;/, 1)[0].trim();
+	const firstSegment = nonNull(cmd.split(/&&|\|\||;/, 1)[0]).trim();
 	const tokens = shellSplit(firstSegment);
 	if (tokens.length === 0) return null;
 
@@ -227,7 +228,7 @@ export function parseGitVerb(rawCommand: string): ParsedGitCommand | null {
 	// commands; ignore for simplicity. The first token must be "git" or
 	// end in "/git" (allow absolute paths).
 	let i = 0;
-	const first = tokens[i];
+	const first = nonNull(tokens[i]);
 	if (first !== "git" && !/(^|\/)git$/.test(first)) return null;
 	i++;
 
@@ -239,11 +240,11 @@ export function parseGitVerb(rawCommand: string): ParsedGitCommand | null {
 			i += 2;
 			continue;
 		}
-		if (tok.startsWith("--git-dir=") || tok.startsWith("--work-tree=")) {
+		if (nonNull(tok).startsWith("--git-dir=") || nonNull(tok).startsWith("--work-tree=")) {
 			i++;
 			continue;
 		}
-		if (tok.startsWith("-")) {
+		if (nonNull(tok).startsWith("-")) {
 			// Some other global flag (e.g. `-p`); skip.
 			i++;
 			continue;
@@ -279,9 +280,9 @@ function shellSplit(input: string): string[] {
 	let inSingle = false;
 	let inDouble = false;
 	for (let i = 0; i < input.length; i++) {
-		const c = input[i];
+		const c = nonNull(input[i]);
 		if (c === "\\" && i + 1 < input.length && !inSingle) {
-			cur += input[i + 1];
+			cur += nonNull(input[i + 1]);
 			i++;
 			continue;
 		}

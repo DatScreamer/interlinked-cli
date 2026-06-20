@@ -8,6 +8,8 @@
 // handler-body string; no I/O, no daemon state. Extracted verbatim to
 // keep the main detector module under the per-file line cap.
 
+import { nonNull } from "../../lib/non-null.js";
+
 const PRISMA_WHERE_RE = /where\s*:\s*\{([^}]*)\}/g;
 const ORM_FILTER_RE = /\.(filter|where)\s*\(\s*([^)]*)\)/g;
 const SQL_WHERE_TEXT_RE = /WHERE\s+([^;]+?)(?:;|$|"|'|`|\)|ORDER|GROUP|LIMIT)/i;
@@ -22,14 +24,14 @@ export function collectWhereClauses(body: string): string[] {
 	const clauses: string[] = [];
 	PRISMA_WHERE_RE.lastIndex = 0;
 	for (let m = PRISMA_WHERE_RE.exec(body); m !== null; m = PRISMA_WHERE_RE.exec(body)) {
-		clauses.push(m[1]);
+		clauses.push(nonNull(m[1]));
 	}
 	ORM_FILTER_RE.lastIndex = 0;
 	for (let m = ORM_FILTER_RE.exec(body); m !== null; m = ORM_FILTER_RE.exec(body)) {
-		clauses.push(m[2]);
+		clauses.push(nonNull(m[2]));
 	}
 	const sqlMatch = SQL_WHERE_TEXT_RE.exec(body);
-	if (sqlMatch) clauses.push(sqlMatch[1]);
+	if (sqlMatch) clauses.push(nonNull(sqlMatch[1]));
 	return clauses;
 }
 
@@ -38,7 +40,7 @@ export function collectWhereClauses(body: string): string[] {
 export function referencesExemptTable(body: string, exemptTables: Set<string>): boolean {
 	TABLE_REF_RE.lastIndex = 0;
 	for (let m = TABLE_REF_RE.exec(body); m !== null; m = TABLE_REF_RE.exec(body)) {
-		const table = m[1].toLowerCase();
+		const table = nonNull(m[1]).toLowerCase();
 		// Strip Prisma-style trailing 's' so `prisma.session` matches `sessions`.
 		const singular = table.replace(/s$/, "");
 		if (exemptTables.has(table) || exemptTables.has(singular) || exemptTables.has(`${table}s`)) {
@@ -47,7 +49,7 @@ export function referencesExemptTable(body: string, exemptTables: Set<string>): 
 	}
 	SQLA_QUERY_RE.lastIndex = 0;
 	for (let m = SQLA_QUERY_RE.exec(body); m !== null; m = SQLA_QUERY_RE.exec(body)) {
-		const t = m[1].toLowerCase();
+		const t = nonNull(m[1]).toLowerCase();
 		if (exemptTables.has(t) || exemptTables.has(t.replace(/s$/, ""))) return true;
 	}
 	return false;

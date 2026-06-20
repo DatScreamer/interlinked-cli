@@ -22,6 +22,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { computeCyclomaticComplexity } from "./cyclomatic.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Force the regex-walker fallback: pretend `typescript` is unavailable so the
 // AST pass declines and `computeCyclomaticComplexity` calls `walkJsTs`.
@@ -38,10 +39,10 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("foo");
-		expect(entries[0].cyclomatic).toBe(1);
-		expect(entries[0].language).toBe("js_ts");
-		expect(entries[0].line).toBe(1);
+		expect(nonNull(entries[0]).name).toBe("foo");
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).language).toBe("js_ts");
+		expect(nonNull(entries[0]).line).toBe(1);
 	});
 
 	it("named function: counts if / for / while / catch keywords", () => {
@@ -59,7 +60,7 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		// base 1 + if + for + while + catch = 5
-		expect(entries[0].cyclomatic).toBe(5);
+		expect(nonNull(entries[0]).cyclomatic).toBe(5);
 	});
 
 	it("named function: counts `case` labels (JS_CASE_LABEL)", () => {
@@ -74,7 +75,7 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		// base 1 + 2 case labels (default excluded)
-		expect(entries[0].cyclomatic).toBe(3);
+		expect(nonNull(entries[0]).cyclomatic).toBe(3);
 	});
 
 	it("named function: counts ternary (JS_TERNARY) and &&/|| symbols", () => {
@@ -86,7 +87,7 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		// base 1 + && + || + ternary = 4
-		expect(entries[0].cyclomatic).toBe(4);
+		expect(nonNull(entries[0]).cyclomatic).toBe(4);
 	});
 
 	it("walker does NOT count `??` (the published-install degradation)", () => {
@@ -98,7 +99,7 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 
 	it("walker does NOT count `?.` optional chaining", () => {
@@ -108,7 +109,7 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 
 	it("detects an arrow function assigned to const (JS_ARROW_ASSIGNED)", () => {
@@ -119,8 +120,8 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("grade");
-		expect(entries[0].cyclomatic).toBe(2);
+		expect(nonNull(entries[0]).name).toBe("grade");
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
 	});
 
 	it("detects a class method (JS_METHOD_LINE)", () => {
@@ -168,9 +169,9 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			"src/foo.ts",
 		);
 		expect(entries).toHaveLength(1);
-		expect(entries[0].name).toBe("wrapper");
+		expect(nonNull(entries[0]).name).toBe("wrapper");
 		// base 1 + if + for + while = 4 (walker counts the keyword forms)
-		expect(entries[0].cyclomatic).toBe(4);
+		expect(nonNull(entries[0]).cyclomatic).toBe(4);
 	});
 
 	it("returns no entry when no function shape is detected (detectJsFunctionName null)", () => {
@@ -230,8 +231,8 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].line).toBe(1);
-		expect(entries[0].endLine).toBe(3);
+		expect(nonNull(entries[0]).line).toBe(1);
+		expect(nonNull(entries[0]).endLine).toBe(3);
 	});
 
 	it("ignores decision keywords inside comments and strings (stripForBraceScan)", () => {
@@ -243,6 +244,6 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 			}`,
 			"src/foo.ts",
 		);
-		expect(entries[0].cyclomatic).toBe(1);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
 });

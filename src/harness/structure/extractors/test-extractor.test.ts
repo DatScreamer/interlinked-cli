@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extract, metadata } from "./test-extractor.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 describe("test-extractor", () => {
 	let tmp: string;
@@ -47,8 +48,8 @@ describe("test-extractor", () => {
 		const { nodes, edges } = extract(tmp);
 		expect(nodes).toHaveLength(1);
 		expect(edges).toHaveLength(1);
-		expect(edges[0].kind).toBe("tests");
-		expect(edges[0].from).toContain("foo");
+		expect(nonNull(edges[0]).kind).toBe("tests");
+		expect(nonNull(edges[0]).from).toContain("foo");
 	});
 
 	it("skips node_modules", () => {

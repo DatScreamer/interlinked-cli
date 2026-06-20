@@ -9,6 +9,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Swift-Specific Checks (Apple API Design Guidelines + Memory Safety + Concurrency)
@@ -99,8 +100,8 @@ export function checkSwiftImplicitlyUnwrappedOptional(
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
-		const origLine = originalLines[i];
+		const line = nonNull(strippedLines[i]);
+		const origLine = nonNull(originalLines[i]);
 
 		// Skip @IBOutlet — standard UIKit pattern
 		if (/@IBOutlet/.test(origLine)) continue;
@@ -133,8 +134,8 @@ export function checkSwiftDelegateNotWeak(content: string, filePath: string): In
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
-		const origLine = originalLines[i];
+		const line = nonNull(strippedLines[i]);
+		const origLine = nonNull(originalLines[i]);
 
 		// Match: var delegate: SomeType (without weak keyword preceding)
 		if (/\bvar\s+\w*[Dd]elegate\s*:\s*\w/.test(line) && !/\bweak\s+var\b/.test(line)) {

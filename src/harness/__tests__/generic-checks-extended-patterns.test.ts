@@ -12,6 +12,7 @@ import {
 	checkSyncIoInAsync,
 	checkUnvalidatedJsonBoundary,
 } from "../generic-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("checkUnvalidatedJsonBoundary", () => {
 	// --- True positives ---
@@ -409,7 +410,7 @@ describe("checkFloatingPromises", () => {
 		const code = "async function load() { return 1; }\n\nload();";
 		const matches = checkFloatingPromises(code, "app.ts");
 		expect(matches.length).toBe(1);
-		expect(matches[0].line).toBe(3);
+		expect(nonNull(matches[0]).line).toBe(3);
 	});
 
 	it("detects bare call to async arrow assignment", () => {

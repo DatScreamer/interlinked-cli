@@ -21,6 +21,7 @@
 // counts. Future extension via the Phase A1 sanitizer registry's
 // `identity` bucket is left open via the `extraNames` option.
 
+import { nonNull } from "../lib/non-null.js";
 import type { AuthChainEntry, EndpointFramework } from "./types/session.js";
 
 /**
@@ -129,10 +130,10 @@ function detectExpressLikeChain(
 	// so `app.use('/admin', requireAuth)` is recognized.
 	const useRe = /\b(?:[A-Za-z_$][\w$]*)\.use\s*\(\s*(?:["'`][^"'`]*["'`]\s*,\s*)?([A-Za-z_$][\w$]*)/;
 	for (let i = 0; i < Math.min(lines.length, routeLine - 1); i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		const m = useRe.exec(line);
 		if (!m) continue;
-		const ident = m[1];
+		const ident = nonNull(m[1]);
 		if (!nameLooksLikeAuth(ident, extraNames)) continue;
 		entries.push({
 			name: ident,
@@ -166,10 +167,10 @@ function detectFastApiChain(
 	const end = Math.min(lines.length, start + 12);
 	const dependsRe = /Depends\s*\(\s*([A-Za-z_][\w]*)/g;
 	for (let i = start; i < end; i++) {
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 		dependsRe.lastIndex = 0;
 		for (let m = dependsRe.exec(line); m !== null; m = dependsRe.exec(line)) {
-			const ident = m[1];
+			const ident = nonNull(m[1]);
 			if (!nameLooksLikeAuth(ident, extraNames)) continue;
 			entries.push({
 				name: ident,

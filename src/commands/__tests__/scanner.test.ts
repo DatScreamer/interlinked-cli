@@ -13,6 +13,7 @@ import {
 	scannerStatusCommand,
 	scannerToggleCommand,
 } from "../scanner.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let workDir: string;
 let previousInterlinkedHome: string | undefined;
@@ -62,10 +63,10 @@ describe("interlinked scanner — enable/disable flow", () => {
 		const audit = readAuditLines();
 		expect(audit).toHaveLength(1);
 		// Going from (missing → false) is a no_change in terms of enablement.
-		expect(audit[0].action).toBe("no_change");
-		expect(audit[0].from).toBe(false);
-		expect(audit[0].to).toBe(false);
-		expect(audit[0].reason).toBe("testing");
+		expect(nonNull(audit[0]).action).toBe("no_change");
+		expect(nonNull(audit[0]).from).toBe(false);
+		expect(nonNull(audit[0]).to).toBe(false);
+		expect(nonNull(audit[0]).reason).toBe("testing");
 	});
 
 	it("scanner on after off persists enabled=true to local rules", async () => {
@@ -80,32 +81,32 @@ describe("interlinked scanner — enable/disable flow", () => {
 		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
 		const audit = readAuditLines();
 		expect(audit).toHaveLength(2);
-		expect(audit[1].action).toBe("enable");
+		expect(nonNull(audit[1]).action).toBe("enable");
 	});
 
 	it("scanner on after off records the from/to transition", async () => {
 		await scannerOffCommand({ json: true });
 		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
 		const audit = readAuditLines();
-		expect(audit[1].from).toBe(false);
-		expect(audit[1].to).toBe(true);
+		expect(nonNull(audit[1]).from).toBe(false);
+		expect(nonNull(audit[1]).to).toBe(true);
 	});
 
 	it("scanner on after off carries the reason through to the audit entry", async () => {
 		await scannerOffCommand({ json: true });
 		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
 		const audit = readAuditLines();
-		expect(audit[1].reason).toBe("re-enable for sensitive session");
+		expect(nonNull(audit[1]).reason).toBe("re-enable for sensitive session");
 	});
 
 	it("scanner on after off stamps the actor and an ISO timestamp", async () => {
 		await scannerOffCommand({ json: true });
 		await scannerOnCommand({ reason: "re-enable for sensitive session", json: true });
 		const audit = readAuditLines();
-		const actor = audit[1].actor as Record<string, unknown>;
+		const actor = nonNull(audit[1]).actor as Record<string, unknown>;
 		expect(actor.via).toBe("cli");
 		expect(typeof actor.user).toBe("string");
-		expect(audit[1].ts).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+		expect(nonNull(audit[1]).ts).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
 	});
 
 	it("toggle flips repeatedly and records each transition", async () => {
@@ -121,8 +122,8 @@ describe("interlinked scanner — enable/disable flow", () => {
 
 		const audit = readAuditLines();
 		expect(audit.map((e) => e.action)).toEqual(["enable", "disable", "enable", "disable"]);
-		expect(audit[1].reason).toBe("briefly off for debugging");
-		expect(audit[3].reason).toBe("ending session — disable");
+		expect(nonNull(audit[1]).reason).toBe("briefly off for debugging");
+		expect(nonNull(audit[3]).reason).toBe("ending session — disable");
 	});
 
 	it("preserves unrelated keys in guard-rules.local.json", async () => {

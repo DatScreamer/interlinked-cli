@@ -1,6 +1,7 @@
 // Markdown-specific checks.
 // A checks/<family>.ts module; the generic-checks.ts barrel re-exports it.
 
+import { nonNull } from "../../lib/non-null.js";
 import { getExtension, type InlineMatch } from "./shared.js";
 
 /** Markdown file extensions this family applies to. */
@@ -48,7 +49,7 @@ export function checkPlaceholderMarkdownLinks(
 	const scanLines = stripFencedCodeBlocks(content);
 	const originalLines = content.split("\n");
 	for (let i = 0; i < scanLines.length && matches.length < MAX_MATCHES; i++) {
-		if (PLACEHOLDER_LINK_RE.test(scanLines[i])) {
+		if (PLACEHOLDER_LINK_RE.test(nonNull(scanLines[i]))) {
 			matches.push({
 				line: i + 1,
 				text: (originalLines[i] ?? "").trim().slice(0, 150),

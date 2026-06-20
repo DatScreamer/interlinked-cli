@@ -22,6 +22,7 @@
 import type { InlineMatch } from "./check-registry/index.js";
 import { buildAgentSafetyChecks } from "./check-registry/index.js";
 import { stripCommentsAndStrings } from "./checks/shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 /** One finding, flattened from an InlineMatch plus its check's identity. */
 export interface ConformanceFinding {
@@ -125,18 +126,18 @@ export function classifyDivergence(
 		const fa = sa[i];
 		const fb = sb[i];
 		if (JSON.stringify(fa) === JSON.stringify(fb)) continue;
-		if (fa.text !== fb.text && (TIMESTAMP_RE.test(fa.text) || TIMESTAMP_RE.test(fb.text))) {
+		if (nonNull(fa).text !== nonNull(fb).text && (TIMESTAMP_RE.test(nonNull(fa).text) || TIMESTAMP_RE.test(nonNull(fb).text))) {
 			return {
 				kind: "timestamp",
-				detail: `${fa.check_id}: "${trunc(fa.text)}" vs "${trunc(fb.text)}"`,
+				detail: `${nonNull(fa).check_id}: "${trunc(nonNull(fa).text)}" vs "${trunc(nonNull(fb).text)}"`,
 			};
 		}
-		if (fa.text.includes(cwd) || fb.text.includes(cwd)) {
-			return { kind: "cwd_leak", detail: `${fa.check_id}: working-directory path in finding text` };
+		if (nonNull(fa).text.includes(cwd) || nonNull(fb).text.includes(cwd)) {
+			return { kind: "cwd_leak", detail: `${nonNull(fa).check_id}: working-directory path in finding text` };
 		}
 		return {
 			kind: "text",
-			detail: `${fa.check_id} L${fa.line}: "${trunc(fa.text)}" vs "${trunc(fb.text)}"`,
+			detail: `${nonNull(fa).check_id} L${nonNull(fa).line}: "${trunc(nonNull(fa).text)}" vs "${trunc(nonNull(fb).text)}"`,
 		};
 	}
 	return { kind: "none", detail: "no element-wise difference" };
@@ -286,8 +287,8 @@ export function scanDeterminismHazards(content: string): DeterminismHazard[] {
 	const raw = content.split("\n");
 	const hazards: DeterminismHazard[] = [];
 	for (let i = 0; i < stripped.length; i++) {
-		const sl = stripped[i];
-		const text = raw[i].trim().slice(0, 110);
+		const sl = nonNull(stripped[i]);
+		const text = nonNull(raw[i]).trim().slice(0, 110);
 		if (LOCALE_COMPARE_RE.test(sl)) hazards.push({ line: i + 1, kind: "locale_compare", text });
 		if (LOCALE_FORMAT_RE.test(sl)) hazards.push({ line: i + 1, kind: "locale_format", text });
 		if (READDIR_RE.test(sl) && !SORT_RE.test(sl)) {

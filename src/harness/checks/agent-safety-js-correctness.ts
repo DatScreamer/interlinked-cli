@@ -2,6 +2,7 @@
 // Deterministic regex/heuristic checks targeting common AI agent mistakes.
 // Extracted from agent-safety.ts to stay under the per-file line ceiling.
 
+import { nonNull } from "../../lib/non-null.js";
 import { stripTemplateLiterals } from "../strip-helpers.js";
 import {
 	getExtension,
@@ -28,15 +29,14 @@ export function checkNonNullAssertions(content: string, filePath: string): Inlin
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
 		// Match identifier! followed by . or [ or ) — but not !== or !=
 		if (/\w!\.|\w!\[|\w!\)/.test(line) && !/!==|!=/.test(line.replace(/\w!\./g, ""))) {
 			// Verify it's actually a non-null assertion (not a boolean negation)
 			const nnaMatch = line.match(/(\w+)!\s*[.[)]/);
 			if (nnaMatch) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}
 	}
@@ -143,9 +143,8 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		return true;
 	}
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
 
 		// `if (x === 2)` / `x !== "Order fulfilled successfully"`
 		const eqMatch = NUM_CMP.exec(line);
@@ -165,7 +164,7 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 					(dq !== undefined && isMagicString(dq)) ||
 					(sq !== undefined && isMagicString(sq));
 				if (hit) {
-					matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+					matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 					continue;
 				}
 			}
@@ -180,7 +179,7 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 				(dq !== undefined && isMagicString(dq)) ||
 				(sq !== undefined && isMagicString(sq));
 			if (hit) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}
 	}
@@ -228,16 +227,15 @@ export function checkBroadObjectTypes(content: string, filePath: string): Inline
 	// `: object` or `as object` — bare object type. Excludes `Object` (the wrapper).
 	const BARE_OBJECT = /(?::|\bas)\s+object\b/;
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
 		if (
 			RECORD_ANY.test(line) ||
 			INDEX_ANY.test(line) ||
 			BARE_FUNCTION.test(line) ||
 			BARE_OBJECT.test(line)
 		) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -256,25 +254,25 @@ export function checkEvalUsage(content: string, filePath: string): InlineMatch[]
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = line.trim();
 		// Direct eval — negative lookbehind `(?<![.\w])` so a member method
 		// named `eval` (`mathParser.eval(...)`, `vm.eval(...)`) or an
 		// identifier-suffixed call is not read as the global eval. Mirrors the
 		// sibling checkEvalInputTainted (js-security-checks.ts).
 		if (/(?<![.\w])eval\s*\(/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 		// new Function() — implied eval
 		if (/\bnew\s+Function\s*\(/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 		// setTimeout/setInterval with string argument (implied eval)
 		if (/\b(setTimeout|setInterval)\s*\(\s*['"`]/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -291,15 +289,15 @@ export function checkInnerHtmlUsage(content: string, filePath: string): InlineMa
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = line.trim();
 		// Skip lines that are regex patterns (detecting innerHTML vs using it)
 		if (/\/.*innerHTML.*\//.test(trimmed) || /\/.*dangerouslySet.*\//.test(trimmed)) continue;
 		// Skip lines that are .test() or .match() calls on the pattern
 		if (/\.test\(/.test(trimmed) || /\.match\(/.test(trimmed)) continue;
 		if (/dangerouslySetInnerHTML/.test(trimmed) || /\.innerHTML\s*=/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -353,9 +351,8 @@ export function checkJsLooseEquality(content: string, filePath: string): InlineM
 	const looseEqRe = /(^|[^=!<>])([!=]=)(?!=)/;
 
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
 		if (!looseEqRe.test(line)) continue;
 
 		// Plan 04 documented FP guard: `x == null` / `x != null`. Skip when
@@ -372,7 +369,7 @@ export function checkJsLooseEquality(content: string, filePath: string): InlineM
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -389,12 +386,12 @@ export function checkConstantCondition(content: string, filePath: string): Inlin
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = line.trim();
 		// if (true), if (false), if (0), if (1), if ("")
 		if (/\bif\s*\(\s*(true|false|0|1|"")\s*\)/.test(trimmed)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			continue;
 		}
 		// Ternary with constant: true ? x : y
@@ -402,7 +399,7 @@ export function checkConstantCondition(content: string, filePath: string): Inlin
 		// literal is the right-hand side of an operator, not the condition.
 		if (/\b(true|false)\s*\?\s*/.test(trimmed) && !/\/\//.test(trimmed)) {
 			if (!/[=!<>]\s*(true|false)\s*\?/.test(trimmed)) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}
 	}
@@ -421,15 +418,14 @@ export function checkUnsafeOptionalChaining(content: string, filePath: string): 
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
 		// Match (x?.y).z pattern
 		if (!/\([^)]*\?\.[^)]*\)\s*\./.test(line)) continue;
 		// Exclude safe patterns with fallback operators inside the parens
 		// (x?.foo || default).bar and (x?.foo ?? default).bar are safe
 		if (/\([^)]*\?\.[^)]*(\|\||&&|\?\?)[^)]*\)\s*\./.test(line)) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -444,14 +440,14 @@ export function checkNumberPrecisionLoss(content: string, filePath: string): Inl
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	const MAX_SAFE = 9007199254740991; // 2^53 - 1
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
 		// Find large integer literals (not BigInt with n suffix)
-		const nums = strippedLines[i].match(/\b(\d{16,})\b(?!n)/g);
+		const nums = line.match(/\b(\d{16,})\b(?!n)/g);
 		if (!nums) continue;
 		for (const num of nums) {
 			if (Number.parseInt(num, 10) > MAX_SAFE) {
-				matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 				break;
 			}
 		}

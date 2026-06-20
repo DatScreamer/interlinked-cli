@@ -8,6 +8,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile, isPyFile } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * Row 30: division by a variable identifier — the variable might be zero.
@@ -70,7 +71,7 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const line = strippedLines[i];
+		const line = nonNull(strippedLines[i]);
 		// Reset lastIndex defensively for the global regex.
 		divisionRegex.lastIndex = 0;
 		if (!divisionRegex.test(line)) continue;
@@ -88,7 +89,7 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 		// whose LHS is annotated/assigned as a Path (or whose
 		// neighborhood is a string literal — those are stripped to `""`
 		// already, so we look at the original line).
-		if (pathishNames && isPathDivisionLine(line, originalLines[i], pathishNames)) {
+		if (pathishNames && isPathDivisionLine(line, nonNull(originalLines[i]), pathishNames)) {
 			continue;
 		}
 
@@ -99,7 +100,7 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -149,10 +150,10 @@ function collectPathishNames(strippedSrc: string): Set<string> {
 	// `name: Path` / `name: pathlib.Path` annotations (function args
 	// AND assignment annotations).
 	const annotRe = /\b([A-Za-z_$][\w$]*)\s*:\s*(?:pathlib\s*\.\s*)?Path\b/g;
-	for (const m of strippedSrc.matchAll(annotRe)) names.add(m[1]);
+	for (const m of strippedSrc.matchAll(annotRe)) names.add(nonNull(m[1]));
 	// `name = Path(...)` / `name = pathlib.Path(...)`.
 	const assignRe = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:pathlib\s*\.\s*)?Path\s*\(/g;
-	for (const m of strippedSrc.matchAll(assignRe)) names.add(m[1]);
+	for (const m of strippedSrc.matchAll(assignRe)) names.add(nonNull(m[1]));
 	return names;
 }
 
@@ -176,7 +177,7 @@ function isPathDivisionLine(
 	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration
 	while ((m = re.exec(strippedLine)) !== null) {
 		foundAnyMatch = true;
-		const lhs = m[1];
+		const lhs = nonNull(m[1]);
 		if (pathishNames.has(lhs)) continue; // pathlib join — skip
 		anyNonPathDivision = true;
 	}

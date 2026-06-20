@@ -2,6 +2,7 @@
 // Extracted from generic-checks.ts.
 
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Index as Key Detection (React)
@@ -29,7 +30,7 @@ export function checkIndexAsKey(content: string, filePath: string): InlineMatch[
 	const templatePattern = /key=\{`[^`]*\$\{(i|idx|index|k)\}[^`]*`\}/;
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 		if (directPattern.test(trimmed) || templatePattern.test(trimmed)) {
 			// Look backwards for the .map() call to check if it's a static array.
 			// Patterns like [0,1,2].map, Array(n).fill().map, or "skeleton" in

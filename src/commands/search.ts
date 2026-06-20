@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import {
 	buildOrPattern,
@@ -286,14 +287,15 @@ function searchWithNative(
 
 		const lines = content.split("\n");
 		for (let i = 0; i < lines.length; i++) {
-			if (regex.test(lines[i])) {
+			const lineText = nonNull(lines[i]);
+			if (regex.test(lineText)) {
 				regex.lastIndex = 0; // Reset for next test
 				const { before, after } = sliceContextWindow(lines, i, opts.context);
 
 				matches.push({
 					file: relPath,
 					line: i + 1,
-					text: lines[i],
+					text: lineText,
 					context_before: before.length > 0 ? before : undefined,
 					context_after: after.length > 0 ? after : undefined,
 				});

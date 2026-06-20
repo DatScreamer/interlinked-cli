@@ -18,6 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { _resetRgPathCache, checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
 import { TrigramIndex } from "../trigram-index.js";
 import type { HarnessEvent } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 _resetRgPathCache();
 const RG = findRipgrep();
@@ -92,7 +93,7 @@ function parsePathLine(out: string): Set<string> {
 	for (const line of out.split("\n")) {
 		if (!line) continue;
 		const m = line.match(/^(.+?):(\d+):/);
-		if (m) set.add(`${m[1].replace(/^\.\//, "")}:${m[2]}`);
+		if (m) set.add(`${nonNull(m[1]).replace(/^\.\//, "")}:${m[2]}`);
 	}
 	return set;
 }

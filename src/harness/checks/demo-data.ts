@@ -41,6 +41,7 @@ import {
 // decomposed sibling (kept this module under the per-file line cap).
 // `checkPlaceholderDataInUi` is re-exported so the public surface is unchanged.
 import { lineHasNearbyDemoDirective } from "./demo-data-placeholder-ui.js";
+import { nonNull } from "../../lib/non-null.js";
 export { checkPlaceholderDataInUi } from "./demo-data-placeholder-ui.js";
 
 // ==========================================================================
@@ -124,7 +125,7 @@ export function checkDemoDataUnmarked(content: string, filePath: string): Inline
 
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const line = lines[i];
+		const line = nonNull(lines[i]);
 
 		// Pattern bank 1: SMELL_PATTERNS. Count all hits per line, not just
 		// the first — multi-declaration lines are common in seed/demo data.
@@ -137,7 +138,7 @@ export function checkDemoDataUnmarked(content: string, filePath: string): Inline
 			for (let h = 0; h < hits.length && matches.length < MAX_MATCHES; h++) {
 				matches.push({
 					line: i + 1,
-					text: `unmarked demo data (${pat.label}): ${hits[h].slice(0, 80)}. Mark with \`// @demo-data: <reason>\` directly above, or wrap with demoData() from the vendored runtime.`,
+					text: `unmarked demo data (${pat.label}): ${nonNull(hits[h]).slice(0, 80)}. Mark with \`// @demo-data: <reason>\` directly above, or wrap with demoData() from the vendored runtime.`,
 				});
 			}
 		}

@@ -44,6 +44,7 @@ import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { maxCyclomaticFor } from "../metric-caps.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Per-function cyclomatic cap — the agreed hard "bad" line. One number for now;
@@ -259,15 +260,15 @@ function complexityViolations(
 		for (let i = 0; i < afterOver.length; i++) {
 			const post = afterOver[i];
 			const baseline = beforeOverVals[i] ?? cap;
-			if (post.cyclomatic <= baseline) continue; // this rank held or reduced
-			const prior = post.name === ANON_FN ? undefined : beforeByName.get(post.name);
+			if (nonNull(post).cyclomatic <= baseline) continue; // this rank held or reduced
+			const prior = nonNull(post).name === ANON_FN ? undefined : beforeByName.get(nonNull(post).name);
 			const how =
-				prior !== undefined && prior < post.cyclomatic
+				prior !== undefined && prior < nonNull(post).cyclomatic
 					? `raised from ${prior}`
-					: post.name === ANON_FN
+					: nonNull(post).name === ANON_FN
 						? "new anonymous function over cap"
 						: "new over-cap function";
-			violations.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
+			violations.push(`${nonNull(post).name} (cyclomatic ${nonNull(post).cyclomatic}, ${how})`);
 		}
 	}
 

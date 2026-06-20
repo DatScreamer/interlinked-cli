@@ -22,6 +22,7 @@ import {
 } from "../package-allowlist.js";
 import type { Ecosystem, PackageSpec } from "../package-install-parser.js";
 import type { HarnessDecision } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 export interface ManifestEditInput {
 	filePath: string;
@@ -225,7 +226,7 @@ export function parsePipRequirementLine(line: string): { name: string; value: st
 	if (trimmed.startsWith("-")) return null; // pip flags
 	const m = trimmed.match(/^([A-Za-z0-9._-]+)/);
 	if (!m) return null;
-	return { name: m[1], value: trimmed };
+	return { name: nonNull(m[1]), value: trimmed };
 }
 
 /** Detect a TOML-inline-table or Ruby-hash dep value that points to a
@@ -300,16 +301,16 @@ export function extractPyprojectDeps(content: string): Map<string, string> {
 		const m = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+?)(?:\s*#.*)?$/);
 		if (!m) continue;
 		if (m[1] === "python") continue; // not a dep — Python version pin
-		deps.set(m[1], m[2]);
+		deps.set(nonNull(m[1]), nonNull(m[2]));
 	}
 	// project.dependencies = [ "a==1", "b" ]
 	const projectDepsMatch = content.match(/(?:^|\n)\s*dependencies\s*=\s*\[([\s\S]*?)\]/);
 	if (projectDepsMatch) {
-		const items = projectDepsMatch[1].match(/"([^"]+)"/g) || [];
+		const items = nonNull(projectDepsMatch[1]).match(/"([^"]+)"/g) || [];
 		for (const it of items) {
 			const inner = it.slice(1, -1);
 			const nm = inner.match(/^([A-Za-z0-9._-]+)/);
-			if (nm) deps.set(nm[1], inner);
+			if (nm) deps.set(nonNull(nm[1]), inner);
 		}
 	}
 	return deps;
@@ -336,7 +337,7 @@ export function extractCargoDeps(content: string): Map<string, string> {
 		if (!inBlock) continue;
 		if (line.startsWith("#") || !line) continue;
 		const m = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+?)(?:\s*#.*)?$/);
-		if (m) deps.set(m[1], m[2]);
+		if (m) deps.set(nonNull(m[1]), nonNull(m[2]));
 	}
 	return deps;
 }
@@ -373,7 +374,7 @@ export function extractGoModDeps(content: string): Map<string, string> {
 		const m = inBlock
 			? line.match(/^([^\s]+)\s+([^\s]+)/)
 			: line.match(/^require\s+([^\s]+)\s+([^\s]+)/);
-		if (m) deps.set(m[1], m[2]);
+		if (m) deps.set(nonNull(m[1]), nonNull(m[2]));
 	}
 	return deps;
 }
@@ -393,7 +394,7 @@ export function extractGemfileDeps(content: string): Map<string, string> {
 	const deps = new Map<string, string>();
 	const re = /^\s*gem\s+["']([A-Za-z0-9._-]+)["'](?:\s*,\s*(.+))?$/gm;
 	for (const m of content.matchAll(re)) {
-		deps.set(m[1], m[2] || "");
+		deps.set(nonNull(m[1]), m[2] || "");
 	}
 	return deps;
 }
@@ -451,10 +452,10 @@ function classifyManifestValue(_eco: Ecosystem, name: string, value: string): Pa
 	// install resolver, including outside the workspace. Treat as file_url
 	// (always blocked) so the allowlist gate fires.
 	const gitInline = value.match(/\bgit\s*[:=]\s*['"]?([^'"\s,}]+)/);
-	if (gitInline) return { kind: "git_url", url: gitInline[1] };
+	if (gitInline) return { kind: "git_url", url: nonNull(gitInline[1]) };
 	const pathInline = value.match(/\bpath\s*[:=]\s*['"]?([^'"\s,}]+)/);
-	if (pathInline) return { kind: "file_url", path: pathInline[1] };
+	if (pathInline) return { kind: "file_url", path: nonNull(pathInline[1]) };
 	const urlInline = value.match(/\burl\s*[:=]\s*['"]?(https?:\/\/[^'"\s,}]+)/);
-	if (urlInline) return { kind: "tarball_url", url: urlInline[1] };
+	if (urlInline) return { kind: "tarball_url", url: nonNull(urlInline[1]) };
 	return { kind: "registry", name };
 }

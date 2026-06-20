@@ -1,6 +1,7 @@
 // Sequential independent awaits detection (JS/TS).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import { getExtension, type InlineMatch, isTestFile, JS_TS_EXTS } from "./shared.js";
 
 // ===========================================
@@ -25,21 +26,21 @@ export function checkSequentialAwaits(content: string, filePath: string): Inline
 	let prevLineIdx = -1;
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 		const m = awaitPattern.exec(trimmed);
 		if (m) {
-			const varName = m[1];
-			const expr = m[2];
+			const varName = nonNull(m[1]);
+			const expr = nonNull(m[2]);
 			// Check if this await references the previous await's variable
 			if (prevVarName !== null && prevLineIdx === i - 1) {
 				if (!expr.includes(prevVarName)) {
 					// Skip interactive I/O — prompts must be sequential (output interleaves)
-					const prevExpr = lines[prevLineIdx].trim();
+					const prevExpr = nonNull(lines[prevLineIdx]).trim();
 					if (/\bprompt\s*\(|\breadline\b|\bquestion\s*\(/.test(prevExpr)) continue;
 					if (/\bprompt\s*\(|\breadline\b|\bquestion\s*\(/.test(expr)) continue;
 					matches.push({
 						line: prevLineIdx + 1,
-						text: `[sequential independent awaits — consider Promise.all] ${lines[prevLineIdx].trim().slice(0, 100)}`,
+						text: `[sequential independent awaits — consider Promise.all] ${nonNull(lines[prevLineIdx]).trim().slice(0, 100)}`,
 					});
 				}
 			}

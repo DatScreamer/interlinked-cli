@@ -5,6 +5,7 @@ import {
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 } from "./test-hygiene-isolation.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const TEST = "src/lib/foo.test.ts";
 const SRC = "src/lib/foo.ts";
@@ -14,7 +15,7 @@ describe("checkRealIoInTests", () => {
 		const code = `await fetch("https://api.example.com/users");`;
 		const matches = checkRealIoInTests(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("api.example.com");
+		expect(nonNull(matches[0]).text).toContain("api.example.com");
 	});
 
 	it("does not fire on localhost / 127.0.0.1", () => {
@@ -139,8 +140,8 @@ describe("checkTestSubprocessDefaultTimeout", () => {
 		].join("\n");
 		const matches = checkTestSubprocessDefaultTimeout(code, TEST);
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("known-slow subprocess");
-		expect(matches[0].line).toBe(2);
+		expect(nonNull(matches[0]).text).toContain("known-slow subprocess");
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 
 	it("flags a test() that spawnSyncs biome with no timeout", () => {

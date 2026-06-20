@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkFunctionComplexity } from "./complexity.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // Behavioral tests for the function-complexity detector.
 //
@@ -69,9 +70,9 @@ describe("checkFunctionComplexity — parameter overflow (brace languages)", () 
 	it("flags a function with exactly 6 parameters (threshold boundary)", () => {
 		const out = checkFunctionComplexity(tsFnWithParams(6), "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].line).toBe(1);
-		expect(out[0].text).toContain("[6 parameters]");
-		expect(out[0].text).toContain("vendorModelV6");
+		expect(nonNull(out[0]).line).toBe(1);
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("vendorModelV6");
 	});
 
 	it("does NOT flag a function with 5 parameters (just below threshold)", () => {
@@ -108,15 +109,15 @@ describe("checkFunctionComplexity — parameter overflow (brace languages)", () 
 			") {\n\treturn 0;\n}\n";
 		const out = checkFunctionComplexity(sig, "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 	});
 
 	it("flags an arrow-assigned const with 6 params via the const pattern", () => {
 		const sig = "const handler = (a, b, c, d, e, f) => {\n\treturn a;\n};\n";
 		const out = checkFunctionComplexity(sig, "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
-		expect(out[0].text).toContain("handler");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("handler");
 	});
 
 	it("does not crash and returns no finding when the signature has no parens to collect", () => {
@@ -143,8 +144,8 @@ describe("checkFunctionComplexity — nesting depth (brace languages)", () => {
 		// 5 nested `if` blocks inside the function body -> relative depth 5.
 		const out = checkFunctionComplexity(tsFnNested(5), "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[nesting depth 5]");
-		expect(out[0].text).toContain("deeplyNested");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 5]");
+		expect(nonNull(out[0]).text).toContain("deeplyNested");
 	});
 
 	it("does NOT flag nesting depth 4 (just below threshold)", () => {
@@ -170,8 +171,8 @@ describe("checkFunctionComplexity — branch count (brace languages)", () => {
 	it("flags 15 sibling if-statements as high complexity", () => {
 		const out = checkFunctionComplexity(tsFnBranches(15), "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
-		expect(out[0].text).toContain("[15 branches");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("[15 branches");
 	});
 
 	it("does NOT flag 14 sibling if-statements (below the 15 threshold)", () => {
@@ -188,7 +189,7 @@ describe("checkFunctionComplexity — branch count (brace languages)", () => {
 		const src = `function ternaryHeavy(x: number) {\n${body}\treturn x;\n}\n`;
 		const out = checkFunctionComplexity(src, "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
 	});
 
 	it("counts `else if` lines toward the branch total", () => {
@@ -201,7 +202,7 @@ describe("checkFunctionComplexity — branch count (brace languages)", () => {
 		const src = `function elseIfChain(x: number) {\n${body}}\n`;
 		const out = checkFunctionComplexity(src, "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
 	});
 
 	it("does NOT count case labels in a flat switch (depth < 3 exemption)", () => {
@@ -236,15 +237,15 @@ describe("checkFunctionComplexity — branch count (brace languages)", () => {
 			"}\n";
 		const out = checkFunctionComplexity(src, "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
 	});
 
 	it("prefers the nesting finding over the branch finding when both trip", () => {
 		// Deep nesting (>=5) AND many branches: nesting is reported first.
 		const out = checkFunctionComplexity(tsFnNested(6), "src/a.ts");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[nesting depth");
-		expect(out[0].text).not.toContain("branches —");
+		expect(nonNull(out[0]).text).toContain("[nesting depth");
+		expect(nonNull(out[0]).text).not.toContain("branches —");
 	});
 });
 
@@ -275,7 +276,7 @@ describe("checkFunctionComplexity — language dispatch", () => {
 			"func processGo(a int, b int, c int, d int, e int, f int) int {\n\treturn a\n}\n";
 		const out = checkFunctionComplexity(src, "src/main.go");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 	});
 
 	it("recognizes a Go method with a receiver and flags its deep body", () => {
@@ -294,8 +295,8 @@ describe("checkFunctionComplexity — language dispatch", () => {
 		const src = `func (r *Recv) doWork(x int) int {\n${body}}\n`;
 		const out = checkFunctionComplexity(src, "src/main.go");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[nesting depth 5]");
-		expect(out[0].text).toContain("doWork");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 5]");
+		expect(nonNull(out[0]).text).toContain("doWork");
 	});
 
 	it("analyzes Rust via the brace path (fn with deep nesting)", () => {
@@ -311,7 +312,7 @@ describe("checkFunctionComplexity — language dispatch", () => {
 		const src = `pub fn deep(x: i32) -> i32 {\n${body}}\n`;
 		const out = checkFunctionComplexity(src, "src/lib.rs");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[nesting depth 5]");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 5]");
 	});
 
 	it("analyzes Swift via the brace path", () => {
@@ -320,7 +321,7 @@ describe("checkFunctionComplexity — language dispatch", () => {
 			"func swiftFn(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int) -> Int {\n\treturn a\n}\n";
 		const out = checkFunctionComplexity(src, "src/App.swift");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 	});
 });
 
@@ -332,7 +333,7 @@ describe("checkFunctionComplexity — Python", () => {
 			"        return a\n";
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 		// self is dropped, so 6 (not 7) parameters reported.
 	});
 
@@ -351,7 +352,7 @@ describe("checkFunctionComplexity — Python", () => {
 		const src = "async def fetcher(a, b, c, d, e, f):\n    return a\n";
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 	});
 
 	it("joins a multi-line Python signature to count parameters across lines", () => {
@@ -367,7 +368,7 @@ describe("checkFunctionComplexity — Python", () => {
 			"    return a\n";
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[6 parameters]");
+		expect(nonNull(out[0]).text).toContain("[6 parameters]");
 	});
 
 	it("counts if/elif lines toward the Python branch total", () => {
@@ -379,7 +380,7 @@ describe("checkFunctionComplexity — Python", () => {
 		const src = `def branchy(x):\n${body}`;
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
 	});
 
 	it("counts Python `case` lines toward the branch total", () => {
@@ -390,7 +391,7 @@ describe("checkFunctionComplexity — Python", () => {
 		const src = `def matcher(x):\n${body}`;
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("branches — high complexity");
+		expect(nonNull(out[0]).text).toContain("branches — high complexity");
 	});
 
 	it("flags deep Python nesting at the depth-5 boundary", () => {
@@ -405,7 +406,7 @@ describe("checkFunctionComplexity — Python", () => {
 		const src = `def nest(x):\n${body}`;
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("[nesting depth 5]");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 5]");
 	});
 
 	it("does NOT flag Python nesting one level below the boundary", () => {
@@ -461,8 +462,8 @@ describe("checkFunctionComplexity — Python", () => {
 		// Only `second` should be flagged (nesting), `first` stays clean.
 		// 5 nested ifs -> leaf at level 6 (Python reports raw depth).
 		expect(out).toHaveLength(1);
-		expect(out[0].text).toContain("second");
-		expect(out[0].text).toContain("[nesting depth 6]");
+		expect(nonNull(out[0]).text).toContain("second");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 6]");
 	});
 
 	it("skips blank lines inside a Python body without breaking the walk", () => {
@@ -480,7 +481,7 @@ describe("checkFunctionComplexity — Python", () => {
 		const out = checkFunctionComplexity(src, "src/m.py");
 		expect(out).toHaveLength(1);
 		// 5 nested ifs -> leaf at level 6; blank lines between them are skipped.
-		expect(out[0].text).toContain("[nesting depth 6]");
+		expect(nonNull(out[0]).text).toContain("[nesting depth 6]");
 	});
 });
 

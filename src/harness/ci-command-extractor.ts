@@ -17,6 +17,8 @@
 /** One command pulled out of a CI/build file. `line` is 1-based and points at
  *  the instruction that introduced the command (the `run:` / `RUN` / recipe
  *  line), so a finding can be cited as `file:line`. */
+import { nonNull } from "../lib/non-null.js";
+
 export interface ExtractedCommand {
 	line: number;
 	command: string;
@@ -78,7 +80,7 @@ export function extractWorkflowCommands(content: string): ExtractedCommand[] {
 	const out: ExtractedCommand[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		const m = line.match(/^(\s*)(?:-\s+)?run:\s?(.*)$/);
+		const m = nonNull(line).match(/^(\s*)(?:-\s+)?run:\s?(.*)$/);
 		if (!m) continue;
 		const keyIndent = (m[1] as string).length;
 		const value = (m[2] as string).trim();
@@ -91,14 +93,14 @@ export function extractWorkflowCommands(content: string): ExtractedCommand[] {
 			let j = i + 1;
 			for (; j < lines.length; j++) {
 				const bl = lines[j];
-				if (bl.trim() === "") {
+				if (nonNull(bl).trim() === "") {
 					body.push("");
 					continue;
 				}
-				const ind = indentOf(bl);
+				const ind = indentOf(nonNull(bl));
 				if (ind <= keyIndent) break;
 				if (bodyIndent === -1) bodyIndent = ind;
-				body.push(bl.slice(Math.min(ind, bodyIndent)));
+				body.push(nonNull(bl).slice(Math.min(ind, bodyIndent)));
 			}
 			i = j - 1;
 			const joined = body.join("\n").replace(/\n+$/, "").trim();
@@ -140,13 +142,13 @@ export function extractDockerfileCommands(content: string): ExtractedCommand[] {
 	const lines = content.split("\n");
 	const out: ExtractedCommand[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const m = lines[i].match(/^\s*RUN\s+(.*)$/i);
+		const m = nonNull(lines[i]).match(/^\s*RUN\s+(.*)$/i);
 		if (!m) continue;
 		const startLine = i + 1;
 		let rest = m[1] as string;
 		// Join backslash continuations.
 		while (rest.endsWith("\\") && i + 1 < lines.length) {
-			rest = `${rest.slice(0, -1).trimEnd()} ${lines[i + 1].trim()}`;
+			rest = `${rest.slice(0, -1).trimEnd()} ${nonNull(lines[i + 1]).trim()}`;
 			i++;
 		}
 		const command = parseDockerRun(rest);
@@ -164,11 +166,11 @@ export function extractMakefileCommands(content: string): ExtractedCommand[] {
 	const lines = content.split("\n");
 	const out: ExtractedCommand[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		if (lines[i][0] !== "\t") continue;
+		if (nonNull(lines[i])[0] !== "\t") continue;
 		const startLine = i + 1;
-		let recipe = lines[i].slice(1);
+		let recipe = nonNull(lines[i]).slice(1);
 		while (recipe.endsWith("\\") && i + 1 < lines.length) {
-			recipe = `${recipe.slice(0, -1).trimEnd()} ${lines[i + 1].replace(/^\t/, "").trim()}`;
+			recipe = `${recipe.slice(0, -1).trimEnd()} ${nonNull(lines[i + 1]).replace(/^\t/, "").trim()}`;
 			i++;
 		}
 		const command = recipe.replace(/^[@\-+]+\s*/, "").trim();

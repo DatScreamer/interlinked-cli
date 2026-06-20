@@ -22,6 +22,7 @@ import {
 	checkExcessiveUseState,
 	checkInlineObjectProps,
 } from "./react.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // A non-source path that all detectors must skip via `isTestFile`.
 const TEST_PATH = "src/__tests__/Comp.tsx";
@@ -63,10 +64,10 @@ describe("checkExcessiveUseState", () => {
 		const found = checkExcessiveUseState(code, "src/Comp.tsx");
 		expect(found).toHaveLength(1);
 		// First useState is on line 2 (line 1 is the function declaration).
-		expect(found[0].line).toBe(2);
-		expect(found[0].text).toContain("8 useState hooks");
-		expect(found[0].text).toContain("useReducer");
-		expect(found[0].text).toContain("setS0");
+		expect(nonNull(found[0]).line).toBe(2);
+		expect(nonNull(found[0]).text).toContain("8 useState hooks");
+		expect(nonNull(found[0]).text).toContain("useReducer");
+		expect(nonNull(found[0]).text).toContain("setS0");
 	});
 
 	test("counts the generic form useState<T>(...) too", () => {
@@ -74,7 +75,7 @@ describe("checkExcessiveUseState", () => {
 		const code = ["export function Comp() {", ...hooks, "}"].join("\n");
 		const found = checkExcessiveUseState(code, "src/Widget.jsx");
 		expect(found).toHaveLength(1);
-		expect(found[0].text).toContain("9 useState hooks");
+		expect(nonNull(found[0]).text).toContain("9 useState hooks");
 	});
 
 	test("truncates the reported line to 100 chars", () => {
@@ -88,8 +89,8 @@ describe("checkExcessiveUseState", () => {
 		const found = checkExcessiveUseState(lines.join("\n"), "src/Comp.tsx");
 		expect(found).toHaveLength(1);
 		// Prefix "[N useState ...] " + 100-char slice of the trimmed line.
-		const sliceStart = found[0].text.indexOf("] ") + 2;
-		expect(found[0].text.slice(sliceStart).length).toBe(100);
+		const sliceStart = nonNull(found[0]).text.indexOf("] ") + 2;
+		expect(nonNull(found[0]).text.slice(sliceStart).length).toBe(100);
 	});
 });
 
@@ -185,8 +186,8 @@ describe("checkDangerouslySetInnerHTML — same-file static-string suppression",
 		].join("\n");
 		const found = checkDangerouslySetInnerHTML(code, "src/Comment.tsx");
 		expect(found).toHaveLength(1);
-		expect(found[0].line).toBe(2);
-		expect(found[0].text).toContain("dangerouslySetInnerHTML");
+		expect(nonNull(found[0]).line).toBe(2);
+		expect(nonNull(found[0]).text).toContain("dangerouslySetInnerHTML");
 	});
 
 	test("STILL flags template literal WITH `${...}` interpolation", () => {
@@ -298,7 +299,7 @@ describe("checkDirectDomAccess", () => {
 		const found = checkDirectDomAccess(code, "src/Comp.tsx");
 		expect(found).toHaveLength(4);
 		expect(found.map((m) => m.line)).toEqual([2, 3, 4, 5]);
-		expect(found[0].text).toContain("getElementById");
+		expect(nonNull(found[0]).text).toContain("getElementById");
 	});
 
 	test("does not match document access that lives only inside a string literal", () => {
@@ -420,9 +421,9 @@ describe("checkInlineObjectProps", () => {
 		const found = checkInlineObjectProps(code, "src/Comp.tsx");
 		expect(found).toHaveLength(1);
 		// Anchored at the first inline-object line (line 3).
-		expect(found[0].line).toBe(3);
-		expect(found[0].text).toContain("3 inline object props");
-		expect(found[0].text).toContain("useMemo");
+		expect(nonNull(found[0]).line).toBe(3);
+		expect(nonNull(found[0]).text).toContain("3 inline object props");
+		expect(nonNull(found[0]).text).toContain("useMemo");
 	});
 
 	test("aggregated count keeps climbing past the 10-match collection cap", () => {
@@ -433,7 +434,7 @@ describe("checkInlineObjectProps", () => {
 		const code = ["export function Comp() {", "  return <>", ...lines, "  </>;", "}"].join("\n");
 		const found = checkInlineObjectProps(code, "src/Comp.tsx");
 		expect(found).toHaveLength(1);
-		expect(found[0].text).toContain("13 inline object props");
+		expect(nonNull(found[0]).text).toContain("13 inline object props");
 	});
 
 	test("does not count inline-object syntax that lives only inside a string", () => {
@@ -482,6 +483,6 @@ describe("checkAsyncEventHandler", () => {
 		const found = checkAsyncEventHandler(code, "src/Comp.tsx");
 		expect(found).toHaveLength(2);
 		expect(found.map((m) => m.line)).toEqual([3, 4]);
-		expect(found[0].text).toContain("onSubmit");
+		expect(nonNull(found[0]).text).toContain("onSubmit");
 	});
 });

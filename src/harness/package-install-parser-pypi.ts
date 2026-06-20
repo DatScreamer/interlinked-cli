@@ -13,6 +13,7 @@ import type {
 } from "./package-install-parser-shared.js";
 
 import { envRegistryFor } from "./package-install-parser-shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================================
 // pip / pip3 / pipx
@@ -68,7 +69,7 @@ function scanPipFlags(args: string[]): PipFlagScan {
 			i++;
 			continue;
 		}
-		const m = a.match(/^(?:--index-url|--extra-index-url|-i)=(.+)$/);
+		const m = nonNull(a).match(/^(?:--index-url|--extra-index-url|-i)=(.+)$/);
 		if (m) {
 			customRegistry = m[1];
 			continue;
@@ -78,7 +79,7 @@ function scanPipFlags(args: string[]): PipFlagScan {
 			i++;
 			continue;
 		}
-		const mr = a.match(/^--requirement=(.+)$/);
+		const mr = nonNull(a).match(/^--requirement=(.+)$/);
 		if (mr) {
 			manifestFile = mr[1];
 			continue;
@@ -88,13 +89,13 @@ function scanPipFlags(args: string[]): PipFlagScan {
 			i++;
 			continue;
 		}
-		if (scanPipEditable(a, args[i + 1], positionals)) {
+		if (scanPipEditable(nonNull(a), args[i + 1], positionals)) {
 			i++;
 			continue;
 		}
-		const meq = a.match(/^--editable=(.+)$/);
+		const meq = nonNull(a).match(/^--editable=(.+)$/);
 		if (meq) {
-			positionals.push(meq[1]);
+			positionals.push(nonNull(meq[1]));
 			continue;
 		}
 		// ATTACHED short-option values — optparse-style pip accepts the value glued
@@ -103,7 +104,7 @@ function scanPipFlags(args: string[]): PipFlagScan {
 		// silently skipped, so `pip install -rhttps://evil/r.txt` looked like a
 		// bare manifest sync and the manifest/registry/editable signals were lost —
 		// the same attached-value class as the git `-mfix` finding (2026-06).
-		const glued = a.match(/^-([rice])(.+)$/);
+		const glued = nonNull(a).match(/^-([rice])(.+)$/);
 		if (glued) {
 			const value = glued[2] ?? "";
 			if (glued[1] === "r") manifestFile = value;
@@ -112,11 +113,11 @@ function scanPipFlags(args: string[]): PipFlagScan {
 			else positionals.push(value); // -e<spec>: the value IS the install spec
 			continue;
 		}
-		if (a.startsWith("-")) {
-			if (pipFlagConsumesValue(a, args[i + 1])) i++;
+		if (nonNull(a).startsWith("-")) {
+			if (pipFlagConsumesValue(nonNull(a), args[i + 1])) i++;
 			continue;
 		}
-		positionals.push(a);
+		positionals.push(nonNull(a));
 	}
 
 	return { positionals, customRegistry, manifestFile, fromConstraints };
@@ -199,7 +200,7 @@ export function classifyPipSpec(spec: string): PackageSpec {
 	)
 		return { kind: "local_path", path: spec };
 	const nameMatch = spec.match(/^([A-Za-z0-9._-]+)/);
-	const name = nameMatch ? nameMatch[1] : spec;
+	const name = nameMatch ? nonNull(nameMatch[1]) : spec;
 	// RETAIN the comparison operator (finding 2026-06): storing only the numeric
 	// portion let `requests~=2.31.0` / `>=2.31.0` / `!=2.31.0` reach the pin check
 	// as a bare `2.31.0` and pass as an exact pin, bypassing the supply-chain
@@ -233,8 +234,8 @@ export function parsePoetry(
 				i++;
 				continue;
 			}
-			if (a.startsWith("-")) continue;
-			positionals.push(a);
+			if (nonNull(a).startsWith("-")) continue;
+			positionals.push(nonNull(a));
 		}
 		if (!customRegistry) customRegistry = envRegistryFor("pypi", envVars);
 		return {

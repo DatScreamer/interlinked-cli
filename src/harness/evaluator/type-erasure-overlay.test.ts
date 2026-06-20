@@ -3,6 +3,7 @@ import {
 	STRICT_TYPING_RULE_ID,
 	evaluateTypeErasureOverlay,
 } from "./type-erasure-overlay.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("evaluateTypeErasureOverlay", () => {
 	it("exposes a stable rule id for block messages", () => {
@@ -32,8 +33,8 @@ describe("evaluateTypeErasureOverlay", () => {
 		const post = "const a = foo as any;\nconst b = 1;\nconst c = baz as any;\n";
 		const result = evaluateTypeErasureOverlay("/tmp/edit.ts", post, { preContent: pre });
 		expect(result.newFindings).toHaveLength(1);
-		expect(result.newFindings[0].ruleId).toBe("as_any");
-		expect(result.newFindings[0].line).toBe(3);
+		expect(nonNull(result.newFindings[0]).ruleId).toBe("as_any");
+		expect(nonNull(result.newFindings[0]).line).toBe(3);
 	});
 
 	it("does not flag matches that exist in both pre and post unchanged", () => {

@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getGitSourceFiles } from "./export-ripple.js";
 import { getExtension, type InlineMatch, isTestFile, JS_TS_EXTS } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Inverse verb-stem pairs whose round-trip law (`inverse(forward(x)) === x`) is
@@ -52,20 +53,20 @@ function extractExportedNames(content: string): ExportedName[] {
 	const lines = content.split("\n");
 	for (let i = 0; i < lines.length; i++) {
 		const t = lines[i];
-		let m = t.match(/^\s*export\s+(?:async\s+)?function\s+(\w+)\s*[<(]/);
+		let m = nonNull(t).match(/^\s*export\s+(?:async\s+)?function\s+(\w+)\s*[<(]/);
 		if (m) {
-			out.push({ name: m[1], line: i + 1 });
+			out.push({ name: nonNull(m[1]), line: i + 1 });
 			continue;
 		}
-		m = t.match(
+		m = nonNull(t).match(
 			/^\s*export\s+(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\()/,
 		);
 		if (m) {
-			out.push({ name: m[1], line: i + 1 });
+			out.push({ name: nonNull(m[1]), line: i + 1 });
 			continue;
 		}
-		m = t.match(/^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)\s*[<(]/);
-		if (m) out.push({ name: m[1], line: i + 1 });
+		m = nonNull(t).match(/^\s*export\s+default\s+(?:async\s+)?function\s+(\w+)\s*[<(]/);
+		if (m) out.push({ name: nonNull(m[1]), line: i + 1 });
 	}
 	return out;
 }
@@ -120,11 +121,11 @@ function findInversePairs(exported: ExportedName[]): InversePair[] {
 	for (const e of exported) {
 		const toM = e.name.match(/^to([A-Z]\w*)$/);
 		if (toM) {
-			toMap.set(toM[1].toLowerCase(), e);
+			toMap.set(nonNull(toM[1]).toLowerCase(), e);
 			continue;
 		}
 		const fromM = e.name.match(/^from([A-Z]\w*)$/);
-		if (fromM) fromMap.set(fromM[1].toLowerCase(), e);
+		if (fromM) fromMap.set(nonNull(fromM[1]).toLowerCase(), e);
 	}
 	for (const [rem, toFn] of toMap) {
 		const fromFn = fromMap.get(rem);

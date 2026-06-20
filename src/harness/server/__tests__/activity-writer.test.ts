@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readLocalActivity } from "../../../lib/local-activity.js";
+import { nonNull } from "../../../lib/non-null.js";
 import type { HarnessEvent } from "../../types.js";
 import { mapEventToActivityRecord, writeActivityRecord } from "../activity-writer.js";
 
@@ -132,10 +133,10 @@ describe("writeActivityRecord — round-trips through readLocalActivity", () => 
 		);
 		const events = readLocalActivity({ cwd: dir });
 		expect(events.length).toBe(1);
-		expect(events[0].type).toBe("tool_use_start");
-		expect(events[0].tool).toBe("Bash");
-		expect(events[0].summary).toBe("ls");
-		expect(events[0].session).toBe("round-trip");
+		expect(nonNull(events[0]).type).toBe("tool_use_start");
+		expect(nonNull(events[0]).tool).toBe("Bash");
+		expect(nonNull(events[0]).summary).toBe("ls");
+		expect(nonNull(events[0]).session).toBe("round-trip");
 	});
 
 	it("writes nothing for a lifecycle event", () => {

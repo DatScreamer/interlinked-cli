@@ -1,6 +1,7 @@
 // Missing return type annotations check.
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	collectFunctionSignature,
 	getExtension,
@@ -33,9 +34,8 @@ export function checkMissingReturnTypes(content: string, filePath: string): Inli
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 20) break;
-		const line = strippedLines[i];
 		const trimmed = line.trim();
 
 		// Pattern 1: export [async] function name(...)
@@ -50,7 +50,7 @@ export function checkMissingReturnTypes(content: string, filePath: string): Inli
 				if (!returnAnnotation || returnAnnotation.trim() === ":") {
 					matches.push({
 						line: i + 1,
-						text: originalLines[i].trim().slice(0, 150),
+						text: nonNull(originalLines[i]).trim().slice(0, 150),
 					});
 				}
 			}
@@ -74,7 +74,7 @@ export function checkMissingReturnTypes(content: string, filePath: string): Inli
 
 			matches.push({
 				line: i + 1,
-				text: originalLines[i].trim().slice(0, 150),
+				text: nonNull(originalLines[i]).trim().slice(0, 150),
 			});
 			continue;
 		}
@@ -95,7 +95,7 @@ export function checkMissingReturnTypes(content: string, filePath: string): Inli
 				if (!returnAnnotation || returnAnnotation.trim() === ":") {
 					matches.push({
 						line: i + 1,
-						text: originalLines[i].trim().slice(0, 150),
+						text: nonNull(originalLines[i]).trim().slice(0, 150),
 					});
 				}
 			}

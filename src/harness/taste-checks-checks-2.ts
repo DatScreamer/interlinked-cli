@@ -18,6 +18,7 @@ import {
 	push,
 	stripCommentsAndStrings,
 } from "./taste-checks-shared.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // 12. Commented-Out Code
@@ -142,7 +143,7 @@ function findControlFlowInBody(sLines: string[], start: number, end: number): nu
 	let depth = 0;
 	let seenOpen = false;
 	for (let j = start; j <= end; j++) {
-		const line = sLines[j];
+		const line = nonNull(sLines[j]);
 		// Check for a top-level conditional BEFORE counting braces on this
 		// line — the conditional typically precedes its opening `{`.
 		if (seenOpen && depth === 1 && j > start && CONTROL_FLOW_IN_TEST.test(line)) {
@@ -168,7 +169,7 @@ export function checkConditionalInTest(content: string, filePath: string): Inlin
 	const matches: InlineMatch[] = [];
 	let i = 0;
 	while (i < sLines.length && matches.length < 10) {
-		if (!isCountableTestStart(sLines[i])) {
+		if (!isCountableTestStart(nonNull(sLines[i]))) {
 			i++;
 			continue;
 		}
@@ -205,7 +206,7 @@ export function checkNonDeterministicTest(content: string, filePath: string): In
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		if (NON_DETERMINISTIC.test(sLines[i])) push(matches, i, lines, 10);
+		if (NON_DETERMINISTIC.test(nonNull(sLines[i]))) push(matches, i, lines, 10);
 	}
 	return matches;
 }
@@ -246,7 +247,7 @@ export function checkEmptyCatch(content: string, filePath: string): InlineMatch[
 		// flag when the scan-side body is whitespace-only (comments/strings/
 		// regex all stripped above). Real statements leave non-whitespace
 		// tokens in the scan content.
-		if (m[1].trim().length > 0) continue;
+		if (nonNull(m[1]).trim().length > 0) continue;
 		// Then check the ORIGINAL body text for an intentional-marker comment
 		// and skip if the developer explicitly documented the empty catch.
 		const offset = m.index ?? 0;
@@ -274,7 +275,7 @@ export function checkTestWithoutDescription(content: string, filePath: string): 
 	const sLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		const line = sLines[i];
+		const line = nonNull(sLines[i]);
 		if (TEST_EMPTY_DESC.test(line) || TEST_FN_FIRST.test(line)) {
 			push(matches, i, lines, 10);
 		}
@@ -297,7 +298,7 @@ export function checkAssertionRoulette(content: string, filePath: string): Inlin
 	const matches: InlineMatch[] = [];
 	let i = 0;
 	while (i < sLines.length && matches.length < 5) {
-		if (!isCountableTestStart(sLines[i])) {
+		if (!isCountableTestStart(nonNull(sLines[i]))) {
 			i++;
 			continue;
 		}

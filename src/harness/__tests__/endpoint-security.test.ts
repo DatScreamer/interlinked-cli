@@ -26,6 +26,7 @@ import { extractEndpoints as extractHonoEndpoints } from "../route-map/hono.js";
 import { defaultConfig } from "../security-config.js";
 import { validate as validateSanitizers } from "../sanitizer-registry.js";
 import type { Endpoint } from "../types/session.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const FILE = "/tmp/test-handler.ts";
 const PY_FILE = "/tmp/test-handler.py";
@@ -61,8 +62,8 @@ describe("checkEndpointAuthMissing (B1)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointAuthMissing(FILE, content, endpoints, CONFIG);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check_id).toBe("endpoint_auth_missing");
-		expect(findings[0].endpoint_path).toBe("/api/users/:id");
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_auth_missing");
+		expect(nonNull(findings[0]).endpoint_path).toBe("/api/users/:id");
 	});
 
 	it("fires on a Hono endpoint with no auth chain", () => {
@@ -74,7 +75,7 @@ describe("checkEndpointAuthMissing (B1)", () => {
 		const endpoints = extractHonoEndpoints(FILE, content);
 		const findings = checkEndpointAuthMissing(FILE, content, endpoints, CONFIG);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].endpoint_method).toBe("POST");
+		expect(nonNull(findings[0]).endpoint_method).toBe("POST");
 	});
 
 	it("fires on a FastAPI endpoint with no Depends() auth", () => {
@@ -100,7 +101,7 @@ describe("checkEndpointAuthMissing (B1)", () => {
 		].join("\n");
 		const endpoints = extractExpressEndpoints(FILE, content);
 		// Sanity-check: auth_chain populated by the express adapter
-		expect(endpoints[0].auth_chain.length).toBeGreaterThan(0);
+		expect(nonNull(endpoints[0]).auth_chain.length).toBeGreaterThan(0);
 		const findings = checkEndpointAuthMissing(FILE, content, endpoints, CONFIG);
 		expect(findings).toEqual([]);
 	});
@@ -174,7 +175,7 @@ describe("checkEndpointIdorShape (B2)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointIdorShape(FILE, content, endpoints, CONFIG);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check_id).toBe("endpoint_idor_shape");
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_idor_shape");
 	});
 
 	it("fires on Hono endpoint with c.req.param() flowing to findOne", () => {
@@ -255,7 +256,7 @@ describe("checkEndpointMissingTenantFilter (B3)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointMissingTenantFilter(FILE, content, endpoints, CONFIG);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check_id).toBe("endpoint_missing_tenant_filter");
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_missing_tenant_filter");
 	});
 
 	it("fires on Hono endpoint with raw SQL WHERE missing org_id", () => {
@@ -336,7 +337,7 @@ describe("checkEndpointSsrfShape (B4)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointSsrfShape(FILE, content, endpoints, CONFIG, SANITIZERS);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check_id).toBe("endpoint_ssrf_shape");
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_ssrf_shape");
 	});
 
 	it("fires when redirect param flows into axios.get()", () => {
@@ -419,7 +420,7 @@ describe("checkEndpointMassAssignment (B5)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointMassAssignment(FILE, content, endpoints, CONFIG);
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings[0].check_id).toBe("endpoint_mass_assignment");
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_mass_assignment");
 	});
 
 	it("fires on Express { ...req.body } as data of update()", () => {

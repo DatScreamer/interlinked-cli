@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerIndexCommand } from "./index-cmd.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Behavioral tests for `interlinked index`
@@ -154,7 +155,7 @@ describe("index build", () => {
 
 		// Build was invoked with parsed numeric options.
 		expect(h.build).toHaveBeenCalledTimes(1);
-		const buildArgs = h.build.mock.calls[0][0] as Record<string, unknown>;
+		const buildArgs = nonNull(h.build.mock.calls[0])[0] as Record<string, unknown>;
 		expect(buildArgs.cwd).toContain("/repo");
 		expect(buildArgs.maxFileSize).toBe(1_048_576); // default parsed via parseInt
 		expect(buildArgs.stopThreshold).toBe(0.4); // default parsed via parseFloat
@@ -162,7 +163,7 @@ describe("index build", () => {
 
 		// Index saved to the .interlinked dir under cwd.
 		expect(h.save).toHaveBeenCalledTimes(1);
-		expect(String(h.save.mock.calls[0][0])).toContain(".interlinked");
+		expect(String(nonNull(h.save.mock.calls[0])[0])).toContain(".interlinked");
 
 		const { stdout } = io.get();
 		expect(stdout).toContain("Building trigram index for");
@@ -188,7 +189,7 @@ describe("index build", () => {
 			"0.25",
 		);
 
-		const buildArgs = h.build.mock.calls[0][0] as Record<string, unknown>;
+		const buildArgs = nonNull(h.build.mock.calls[0])[0] as Record<string, unknown>;
 		expect(buildArgs.maxFileSize).toBe(2048);
 		expect(buildArgs.stopThreshold).toBe(0.25);
 	});
@@ -273,7 +274,7 @@ describe("index update", () => {
 		await runIndex("update", "--cwd", "/repo");
 
 		expect(h.save).toHaveBeenCalledTimes(1);
-		expect(String(h.save.mock.calls[0][0])).toContain(".interlinked");
+		expect(String(nonNull(h.save.mock.calls[0])[0])).toContain(".interlinked");
 		expect(io.get().stdout).toMatch(/Updated 7 files in [\d.]+s/);
 	});
 });

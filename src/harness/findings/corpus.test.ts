@@ -12,6 +12,7 @@ import {
 	recordFinding,
 	upsertFinding,
 } from "./corpus.js";
+import { nonNull } from "../../lib/non-null.js";
 
 let cwd: string;
 let home: string;
@@ -72,7 +73,7 @@ describe("makeFinding", () => {
 		expect(f.dedup_key).not.toBe("");
 		expect(f.times_observed).toBe(1);
 		expect(f.provenance).toHaveLength(1);
-		expect(f.provenance[0].provenance_completeness).toBe("anchored_sha");
+		expect(nonNull(f.provenance[0]).provenance_completeness).toBe("anchored_sha");
 		expect(f.source_runners).toEqual(["github-inline"]);
 		expect(f.check).toBeNull();
 		expect(f.category).toBe("security");
@@ -111,7 +112,7 @@ describe("makeFinding", () => {
 		expect(f.dedup_key).toBe("");
 		expect(f.severity).toBe("unknown");
 		expect(f.id).toMatch(/^some_class-/);
-		expect(f.provenance[0].provenance_completeness).toBe("unanchored");
+		expect(nonNull(f.provenance[0]).provenance_completeness).toBe("unanchored");
 	});
 });
 
@@ -124,7 +125,7 @@ describe("record + load round-trip", () => {
 		recordFinding(f, cwd, { mirrorGlobal: false });
 		const loaded = loadFindings(cwd);
 		expect(loaded).toHaveLength(1);
-		expect(loaded[0].id).toBe(f.id);
+		expect(nonNull(loaded[0]).id).toBe(f.id);
 	});
 	it("mirrors to the global corpus when enabled", () => {
 		const f = makeFinding({ bug_class: "c", message: "m", source_runner: "paste" }, cwd);
@@ -243,12 +244,12 @@ describe("foldByBugClass", () => {
 		);
 		const rows = foldByBugClass(loadFindings(cwd));
 		expect(rows).toHaveLength(1);
-		expect(rows[0].bug_class).toBe("nan_coercion_guard");
-		expect(rows[0].finding_count).toBe(2);
-		expect(rows[0].source_runners.sort()).toEqual(["github-inline", "paste"]);
-		expect(rows[0].weakest_completeness).toBe("anchored_line");
-		expect(rows[0].status_counts.candidate).toBe(2);
-		expect(rows[0].sample_files.sort()).toEqual(["a.ts", "b.ts"]);
+		expect(nonNull(rows[0]).bug_class).toBe("nan_coercion_guard");
+		expect(nonNull(rows[0]).finding_count).toBe(2);
+		expect(nonNull(rows[0]).source_runners.sort()).toEqual(["github-inline", "paste"]);
+		expect(nonNull(rows[0]).weakest_completeness).toBe("anchored_line");
+		expect(nonNull(rows[0]).status_counts.candidate).toBe(2);
+		expect(nonNull(rows[0]).sample_files.sort()).toEqual(["a.ts", "b.ts"]);
 	});
 	it("sorts classes by total observations descending", () => {
 		upsertFinding(makeFinding({ bug_class: "rare", message: "m", source_runner: "paste" }, cwd), cwd, {
@@ -265,6 +266,6 @@ describe("foldByBugClass", () => {
 			{ mirrorGlobal: false },
 		);
 		const rows = foldByBugClass(loadFindings(cwd));
-		expect(rows[0].bug_class).toBe("common");
+		expect(nonNull(rows[0]).bug_class).toBe("common");
 	});
 });

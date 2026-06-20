@@ -22,6 +22,7 @@
 // rules via .interlinked/guard-rules.local.json#disabled_rules.
 
 import type { GuardRule } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const RAILWAY_DESTRUCTIVE_VERBS = [
 	"delete",
@@ -42,11 +43,11 @@ const RAILWAY_VERB_WORD_BOUNDARY = `\\b(?:${RAILWAY_DESTRUCTIVE_VERBS.join("|")}
 // Case-sensitive lookbehind avoids false-positives on lowercase mid-word
 // occurrences (e.g. `splurge` does NOT match `Purge`).
 const RAILWAY_VERB_CAMEL_CASE = `(?<=[a-z])(?:${RAILWAY_DESTRUCTIVE_VERBS
-	.map((v) => v[0].toUpperCase() + v.slice(1))
+	.map((v) => nonNull(v[0]).toUpperCase() + v.slice(1))
 	.join("|")})\\w*`;
 
 const RAILWAY_VERB_UC_ALT = RAILWAY_DESTRUCTIVE_VERBS
-	.map((v) => v[0].toUpperCase() + v.slice(1))
+	.map((v) => nonNull(v[0]).toUpperCase() + v.slice(1))
 	.join("|");
 const RAILWAY_VERB_LC_ALT = RAILWAY_DESTRUCTIVE_VERBS.join("|");
 

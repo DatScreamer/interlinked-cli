@@ -6,6 +6,7 @@ import {
 	demoStateSummary,
 	mountDemoBanner,
 } from "./index.js";
+import { nonNull } from "../non-null.js";
 
 describe("demoData", () => {
 	beforeEach(() => __resetDemoRegistry());
@@ -20,9 +21,9 @@ describe("demoData", () => {
 		demoData("revenue", [{ x: 1 }], { reason: "API pending", ticket: "TICKET-9" });
 		const summary = demoStateSummary();
 		expect(summary.entries.length).toBe(1);
-		expect(summary.entries[0].key).toBe("revenue");
-		expect(summary.entries[0].reason).toBe("API pending");
-		expect(summary.entries[0].ticket).toBe("TICKET-9");
+		expect(nonNull(summary.entries[0]).key).toBe("revenue");
+		expect(nonNull(summary.entries[0]).reason).toBe("API pending");
+		expect(nonNull(summary.entries[0]).ticket).toBe("TICKET-9");
 	});
 
 	it("dedupes by key", () => {

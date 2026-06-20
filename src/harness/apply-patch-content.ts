@@ -20,6 +20,8 @@
 //   *** Delete File: path        (no body)
 //   *** End Patch
 
+import { nonNull } from "../lib/non-null.js";
+
 export type ApplyPatchOp = "add" | "update" | "delete";
 
 export interface ApplyPatchSection {
@@ -72,8 +74,8 @@ export function parseApplyPatchSections(raw: string): ApplyPatchSection[] {
 		const header = HEADER_RE.exec(line);
 		if (header) {
 			current = {
-				op: header[1].toLowerCase() as ApplyPatchOp,
-				path: header[2].trim(),
+				op: nonNull(header[1]).toLowerCase() as ApplyPatchOp,
+				path: nonNull(header[2]).trim(),
 				body: [],
 			};
 			sections.push(current);
@@ -81,7 +83,7 @@ export function parseApplyPatchSections(raw: string): ApplyPatchSection[] {
 		}
 		const move = MOVE_RE.exec(line);
 		if (move && current) {
-			const dest = move[1].trim();
+			const dest = nonNull(move[1]).trim();
 			// Remember the source path (to read before-content from + remove from the
 			// overlay) before retargeting to the destination. Only when it differs.
 			if (dest !== current.path) current.fromPath = current.path;
@@ -135,11 +137,11 @@ function applyUpdateHunks(before: string, body: string[]): string | null {
 		if (oldBlock.length === 0) return null; // pure insertion, no context → ambiguous position
 		const at = indexOfBlock(beforeLines, oldBlock, cursor);
 		if (at < 0) return null; // context not found at/after the cursor → bail
-		for (let i = cursor; i < at; i++) result.push(beforeLines[i]);
+		for (let i = cursor; i < at; i++) result.push(nonNull(beforeLines[i]));
 		for (const line of newBlock) result.push(line);
 		cursor = at + oldBlock.length;
 	}
-	for (let i = cursor; i < beforeLines.length; i++) result.push(beforeLines[i]);
+	for (let i = cursor; i < beforeLines.length; i++) result.push(nonNull(beforeLines[i]));
 	return result.join("\n");
 }
 

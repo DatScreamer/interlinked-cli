@@ -15,6 +15,7 @@
 // this file reaches the whole module standalone.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- ../lib/auth mock: scripted token resolution ----------------------
 const mockResolveAuthToken = vi.fn<(cwd?: string) => string | null>();
@@ -268,7 +269,7 @@ describe("cloudRecentCommand", () => {
 
 		// URL + auth header derived correctly
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		const [calledUrl, init] = fetchMock.mock.calls[0];
+		const [calledUrl, init] = nonNull(fetchMock.mock.calls[0]);
 		expect(calledUrl).toBe("https://cg.example/admin/recent?limit=7");
 		expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-123");
 		expect(init.signal).toBeInstanceOf(AbortSignal);

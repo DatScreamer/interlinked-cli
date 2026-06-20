@@ -23,6 +23,7 @@
 import { describe, expect, it } from "vitest";
 import type { InlineMatch } from "../shared.js";
 import { __resetTsCacheForTests, checkTypeSmuggling } from "../type-smuggling.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 const TEST_FILE = "src/lib/foo.test.ts";
@@ -39,7 +40,7 @@ describe("checkTypeSmuggling — positive cases", () => {
 		].join("\n");
 		const matches = checkTypeSmuggling(code, TS);
 		expect(matches.length).toBeGreaterThanOrEqual(1);
-		expect(matches[0].text).toContain("type-smuggling cast");
+		expect(nonNull(matches[0]).text).toContain("type-smuggling cast");
 	});
 
 	it("flags a cast between two distinct object shapes", () => {
@@ -52,7 +53,7 @@ describe("checkTypeSmuggling — positive cases", () => {
 		].join("\n");
 		const matches = checkTypeSmuggling(code, TS);
 		expect(matches.length).toBeGreaterThanOrEqual(1);
-		expect(matches[0].text).toContain("type-smuggling cast");
+		expect(nonNull(matches[0]).text).toContain("type-smuggling cast");
 	});
 
 	it("flags `as unknown as Specific` double-cast escape with a distinct message", () => {
@@ -229,6 +230,6 @@ describe("checkTypeSmuggling — runtime-loaded TypeScript", () => {
 		__resetTsCacheForTests();
 		const second = checkTypeSmuggling(code, TS);
 		expect(second.length).toBeGreaterThanOrEqual(1);
-		expect(second[0].text).toEqual(first[0].text);
+		expect(nonNull(second[0]).text).toEqual(nonNull(first[0]).text);
 	});
 });

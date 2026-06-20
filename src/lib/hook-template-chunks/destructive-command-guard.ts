@@ -48,7 +48,7 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 		let comment = false;
 		const backtick = String.fromCharCode(96);
 		for (let i = 0; i < value.length; i++) {
-			const ch = value[i];
+			const ch = value[i] ?? "";
 			if (comment) {
 				if (ch === "\n") {
 					comment = false;

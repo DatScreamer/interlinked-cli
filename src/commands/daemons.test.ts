@@ -9,6 +9,7 @@ import {
 	type RpcRequest,
 } from "../harness/daemon-protocol.js";
 import { daemonsCommand } from "./daemons.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 let originalCwd = "";
@@ -156,7 +157,7 @@ describe("daemons command", () => {
 		};
 		expect(payload.ok).toBe(true);
 		expect(payload.daemons.length).toBe(1);
-		expect(payload.daemons[0].session_id).toBe("json1");
+		expect(nonNull(payload.daemons[0]).session_id).toBe("json1");
 	});
 
 	it("JSON output marks a dead daemon with a health_error and no health", async () => {
@@ -173,9 +174,9 @@ describe("daemons command", () => {
 			}>;
 		};
 		const row = payload.daemons[0];
-		expect(row.alive).toBe(false);
-		expect(row.health).toBeNull();
-		expect(row.health_error).toBe("process not alive");
+		expect(nonNull(row).alive).toBe(false);
+		expect(nonNull(row).health).toBeNull();
+		expect(nonNull(row).health_error).toBe("process not alive");
 	});
 
 	it("cleanup removes orphan PID files", async () => {
@@ -260,14 +261,14 @@ describe("daemons command", () => {
 			}>;
 		};
 		const row = payload.daemons[0];
-		expect(row.session_id).toBe("livej");
-		expect(row.alive).toBe(true);
-		expect(row.pid).toBe(process.pid);
-		expect(row.health_error).toBeNull();
-		expect(row.health).not.toBeNull();
-		expect(row.health?.status).toBe("ready");
-		expect(row.health?.tsgo_status).toBe("ready");
-		expect(row.health?.protocol_version).toBe("1");
+		expect(nonNull(row).session_id).toBe("livej");
+		expect(nonNull(row).alive).toBe(true);
+		expect(nonNull(row).pid).toBe(process.pid);
+		expect(nonNull(row).health_error).toBeNull();
+		expect(nonNull(row).health).not.toBeNull();
+		expect(nonNull(row).health?.status).toBe("ready");
+		expect(nonNull(row).health?.tsgo_status).toBe("ready");
+		expect(nonNull(row).health?.protocol_version).toBe("1");
 	});
 
 	it("renders a degraded daemon with a starting tsgo status (non-ready arms)", async () => {
@@ -304,9 +305,9 @@ describe("daemons command", () => {
 			}>;
 		};
 		const row = payload.daemons[0];
-		expect(row.alive).toBe(true);
-		expect(row.health).toBeNull();
-		expect(row.health_error).toBe("boom-from-daemon");
+		expect(nonNull(row).alive).toBe(true);
+		expect(nonNull(row).health).toBeNull();
+		expect(nonNull(row).health_error).toBe("boom-from-daemon");
 
 		// And the human renderer shows "unreachable" for a live row without health.
 		// Use a fresh session id so the rebind lands on a clean socket path.
@@ -338,9 +339,9 @@ describe("daemons command", () => {
 			daemons: Array<{ health: DaemonHealth | null; health_error: string | null }>;
 		};
 		const row = payload.daemons[0];
-		expect(row.health).toBeNull();
+		expect(nonNull(row).health).toBeNull();
 		// Empty error message → `err || "unknown"` fallback.
-		expect(row.health_error).toBe("unknown");
+		expect(nonNull(row).health_error).toBe("unknown");
 	});
 
 	it("reports a live daemon as unreachable when the health RPC times out", async () => {
@@ -360,9 +361,9 @@ describe("daemons command", () => {
 			daemons: Array<{ alive: boolean; health: DaemonHealth | null; health_error: string | null }>;
 		};
 		const row = payload.daemons[0];
-		expect(row.alive).toBe(true);
-		expect(row.health).toBeNull();
-		expect(row.health_error).toBe("timeout");
+		expect(nonNull(row).alive).toBe(true);
+		expect(nonNull(row).health).toBeNull();
+		expect(nonNull(row).health_error).toBe("timeout");
 	});
 
 	it("uses the default 500ms health timeout when none is supplied", async () => {
@@ -400,9 +401,9 @@ describe("daemons command", () => {
 			daemons: Array<{ session_id: string; pid: number | null; alive: boolean }>;
 		};
 		const row = payload.daemons[0];
-		expect(row.session_id).toBe("nopidj");
-		expect(row.pid).toBeNull();
-		expect(row.alive).toBe(false);
+		expect(nonNull(row).session_id).toBe("nopidj");
+		expect(nonNull(row).pid).toBeNull();
+		expect(nonNull(row).alive).toBe(false);
 	});
 
 	it("pads a session id at or beyond the column width with a single trailing space", async () => {

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkClaudeSettingsPermissions,
 	checkProjectSetup,
@@ -46,8 +47,8 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 			tmp,
 		);
 		expect(issues).toHaveLength(1);
-		expect(issues[0].message).toContain("@cloudflare/workers-types");
-		expect(issues[0].fix).toContain("@cloudflare/workers-types");
+		expect(nonNull(issues[0]).message).toContain("@cloudflare/workers-types");
+		expect(nonNull(issues[0]).fix).toContain("@cloudflare/workers-types");
 	});
 
 	it("passes when scoped types[] entry IS in deps", () => {
@@ -71,9 +72,9 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 		writePkg({}, {});
 		const issues = checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp);
 		expect(issues).toHaveLength(1);
-		expect(issues[0].message).toContain("node");
-		expect(issues[0].message).toContain("@types/node");
-		expect(issues[0].fix).toBe("Run `npm i --save-dev @types/node`");
+		expect(nonNull(issues[0]).message).toContain("node");
+		expect(nonNull(issues[0]).message).toContain("@types/node");
+		expect(nonNull(issues[0]).fix).toBe("Run `npm i --save-dev @types/node`");
 	});
 
 	it("checks peer- and optional-dependencies too", () => {
@@ -272,7 +273,7 @@ describe("checkClaudeSettingsPermissions", () => {
 		);
 		const issues = checkClaudeSettingsPermissions(tmp);
 		expect(issues).toHaveLength(1);
-		expect(issues[0].file).toMatch(/settings\.local\.json$/);
+		expect(nonNull(issues[0]).file).toMatch(/settings\.local\.json$/);
 	});
 
 	it("surfaces a parse error as a single issue instead of crashing", () => {
@@ -280,6 +281,6 @@ describe("checkClaudeSettingsPermissions", () => {
 		writeFileSync(join(tmp, ".claude", "settings.json"), "{ not json");
 		const issues = checkClaudeSettingsPermissions(tmp);
 		expect(issues).toHaveLength(1);
-		expect(issues[0].message).toMatch(/not valid JSON/);
+		expect(nonNull(issues[0]).message).toMatch(/not valid JSON/);
 	});
 });

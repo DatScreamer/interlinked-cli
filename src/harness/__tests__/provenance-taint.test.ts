@@ -13,6 +13,8 @@
 //      field, defaulting to "local_read" for pre-provenance snapshots.
 
 import { describe, expect, it } from "vitest";
+import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { checkProvenanceTaintToExternalAction } from "../evaluator/taint-guards.js";
 import { SessionTracker } from "../session-state.js";
 import {
@@ -20,7 +22,6 @@ import {
 	DEFAULT_TAINT_CONFIG,
 	ratchetSensitivity,
 } from "../taint-tracker.js";
-import type { JsonObject } from "../../lib/json-types.js";
 import type { SessionTrajectory, TaintProvenance, TaintSource } from "../types.js";
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -148,21 +149,21 @@ describe("ratchetSensitivity — provenance field populated", () => {
 		);
 		expect(changed).toBe(true);
 		expect(session.taint_sources).toHaveLength(1);
-		expect(session.taint_sources[0].provenance).toBe("fetched_external");
+		expect(nonNull(session.taint_sources[0]).provenance).toBe("fetched_external");
 	});
 
 	it("infers provenance from filename when caller omits it (doc)", () => {
 		const session = makeSession();
 		ratchetSensitivity(session, "README.md", "Internal", DEFAULT_TAINT_CONFIG);
 		expect(session.taint_sources).toHaveLength(1);
-		expect(session.taint_sources[0].provenance).toBe("document_content");
+		expect(nonNull(session.taint_sources[0]).provenance).toBe("document_content");
 	});
 
 	it("infers provenance from filename when caller omits it (code)", () => {
 		const session = makeSession();
 		ratchetSensitivity(session, "src/foo.ts", "Internal", DEFAULT_TAINT_CONFIG);
 		expect(session.taint_sources).toHaveLength(1);
-		expect(session.taint_sources[0].provenance).toBe("local_read");
+		expect(nonNull(session.taint_sources[0]).provenance).toBe("local_read");
 	});
 
 	it("parses bracketed pseudo-filepaths from existing callers", () => {
@@ -174,7 +175,7 @@ describe("ratchetSensitivity — provenance field populated", () => {
 			"Confidential",
 			DEFAULT_TAINT_CONFIG,
 		);
-		expect(session.taint_sources[0].provenance).toBe("fetched_external");
+		expect(nonNull(session.taint_sources[0]).provenance).toBe("fetched_external");
 	});
 });
 
@@ -497,9 +498,9 @@ describe("SessionTracker serialize/hydrate — provenance round-trip", () => {
 		// Backward compat: every entry without provenance defaults to local_read.
 		expect(provenances).toEqual<TaintProvenance[]>(["local_read", "local_read"]);
 		// Other fields are preserved.
-		expect(restored?.taint_sources[0].file).toBe(".env");
-		expect(restored?.taint_sources[0].level).toBe("Confidential");
-		expect(restored?.taint_sources[1].file).toBe("cert.pem");
+		expect(nonNull(restored?.taint_sources[0]).file).toBe(".env");
+		expect(nonNull(restored?.taint_sources[0]).level).toBe("Confidential");
+		expect(nonNull(restored?.taint_sources[1]).file).toBe("cert.pem");
 	});
 
 	it("coerces malformed provenance values to local_read on hydrate", () => {
@@ -552,7 +553,7 @@ describe("SessionTracker serialize/hydrate — provenance round-trip", () => {
 		const restored = reader.hydrate(snapshot);
 		expect(restored).not.toBeNull();
 		expect(restored?.taint_sources).toHaveLength(2);
-		expect(restored?.taint_sources[0].provenance).toBe("local_read");
-		expect(restored?.taint_sources[1].provenance).toBe("local_read");
+		expect(nonNull(restored?.taint_sources[0]).provenance).toBe("local_read");
+		expect(nonNull(restored?.taint_sources[1]).provenance).toBe("local_read");
 	});
 });

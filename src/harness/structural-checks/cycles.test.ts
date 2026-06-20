@@ -4,6 +4,7 @@
 // renders it with toRelative, and packages it as one warning result.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
 import { checkImportCycles } from "./cycles.js";
 
@@ -39,7 +40,7 @@ describe("checkImportCycles", () => {
 		const results = checkImportCycles("/repo/src/a.ts", "src/a.ts", graph);
 
 		expect(results).toHaveLength(1);
-		const [r] = results;
+		const r = nonNull(results[0]);
 		expect(r.check).toBe("import_cycles");
 		expect(r.severity).toBe("warning");
 		expect(r.file).toBe("/repo/src/a.ts");
@@ -58,7 +59,7 @@ describe("checkImportCycles", () => {
 			toRelative: (f) => f.replace(/^\/abs\//, "rel/"),
 		});
 
-		const [r] = checkImportCycles("/abs/x.ts", "rel/x.ts", graph);
+		const r = nonNull(checkImportCycles("/abs/x.ts", "rel/x.ts", graph)[0]);
 
 		expect(r.message).toContain("rel/x.ts → rel/y.ts → rel/x.ts");
 	});
@@ -69,7 +70,7 @@ describe("checkImportCycles", () => {
 		const two = ["/repo/m.ts", "/repo/p.ts"];
 		const graph = fakeGraph({ cycles: [three, two] });
 
-		const [r] = checkImportCycles("/repo/m.ts", "m.ts", graph);
+		const r = nonNull(checkImportCycles("/repo/m.ts", "m.ts", graph)[0]);
 
 		expect(r.affectedFiles).toEqual(two);
 		expect(r.message).toContain("m.ts → p.ts");

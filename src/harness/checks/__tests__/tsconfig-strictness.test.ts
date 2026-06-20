@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkTsconfigStrictness } from "../tsconfig-strictness.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 // noUncheckedIndexedAccess is ADVISORY (never gated, see the check); these four
 // are the gated flags the default verify gate still demands.
@@ -65,9 +66,9 @@ describe("checkTsconfigStrictness — positive cases", () => {
 
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg, null, 2), configPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("exactOptionalPropertyTypes");
+		expect(nonNull(findings[0]).text).toContain("exactOptionalPropertyTypes");
 		// Confirms the "Not covered by strict" framing is in the message.
-		expect(findings[0].text).toContain("Not covered by `strict: true`");
+		expect(nonNull(findings[0]).text).toContain("Not covered by `strict: true`");
 	});
 
 	// Case 2
@@ -114,7 +115,7 @@ describe("checkTsconfigStrictness — positive cases", () => {
 
 		const findings = checkTsconfigStrictness(JSON.stringify(derived, null, 2), configPath);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].text).toContain("exactOptionalPropertyTypes");
+		expect(nonNull(findings[0]).text).toContain("exactOptionalPropertyTypes");
 	});
 });
 

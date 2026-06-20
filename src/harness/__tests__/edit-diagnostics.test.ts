@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
+import { nonNull } from "../../lib/non-null.js";
 
 describe("findClosestSpans", () => {
 	it("returns no matches when target is empty", () => {
@@ -19,8 +20,8 @@ describe("findClosestSpans", () => {
 		const target = "function foo () {";
 		const misses = findClosestSpans(content, target, 3);
 		expect(misses.length).toBeGreaterThan(0);
-		expect(misses[0].line).toBe(1);
-		expect(misses[0].similarity).toBeGreaterThan(0.7);
+		expect(nonNull(misses[0]).line).toBe(1);
+		expect(nonNull(misses[0]).similarity).toBeGreaterThan(0.7);
 	});
 
 	it("finds multi-line near miss with one differing line", () => {
@@ -38,8 +39,8 @@ describe("findClosestSpans", () => {
 			"\n",
 		);
 		const misses = findClosestSpans(content, target, 3);
-		expect(misses[0].line).toBe(1);
-		expect(misses[0].similarity).toBeGreaterThan(0.6);
+		expect(nonNull(misses[0]).line).toBe(1);
+		expect(nonNull(misses[0]).similarity).toBeGreaterThan(0.6);
 	});
 
 	it("returns up to N matches when several spans qualify", () => {
@@ -74,7 +75,7 @@ describe("findClosestSpans", () => {
 		// Three overlapping windows would all match; dedup should collapse them
 		// such that consecutive results don't overlap.
 		for (let i = 1; i < misses.length; i++) {
-			expect(Math.abs(misses[i].line - misses[i - 1].line)).toBeGreaterThanOrEqual(2);
+			expect(Math.abs(nonNull(misses[i]).line - nonNull(misses[i - 1]).line)).toBeGreaterThanOrEqual(2);
 		}
 	});
 
@@ -85,10 +86,10 @@ describe("findClosestSpans", () => {
 		].join("\n");
 		const target = "function foo(x: number): number { return x; }";
 		const misses = findClosestSpans(content, target, 2);
-		expect(misses[0].line).toBe(1);
-		expect(misses[0].similarity).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(1);
+		expect(nonNull(misses[0]).similarity).toBe(1);
 		if (misses.length > 1) {
-			expect(misses[0].similarity).toBeGreaterThan(misses[1].similarity);
+			expect(nonNull(misses[0]).similarity).toBeGreaterThan(nonNull(misses[1]).similarity);
 		}
 	});
 });

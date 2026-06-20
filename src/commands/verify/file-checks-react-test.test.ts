@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runReactAndTasteChecks } from "./file-checks-react-test.js";
 import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function ctx(content: string, file = "/tmp/sample.ts"): FileCheckContext {
 	return { file, content, relPath: "sample.ts", cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -30,7 +31,7 @@ describe("runReactAndTasteChecks", () => {
 		const c = ctx('const x = a ? (b ? 1 : 2) : (c ? 3 : 4);\n');
 		runReactAndTasteChecks(c);
 		expect(c.r.nestedTernaries.length).toBeGreaterThan(0);
-		expect(c.r.nestedTernaries[0].check).toBe("nested_ternaries");
+		expect(nonNull(c.r.nestedTernaries[0]).check).toBe("nested_ternaries");
 	});
 
 	it("flags an else-if chain (else_if_chain)", () => {
@@ -41,7 +42,7 @@ describe("runReactAndTasteChecks", () => {
 		);
 		runReactAndTasteChecks(c);
 		expect(c.r.elseIfChain.length).toBeGreaterThan(0);
-		expect(c.r.elseIfChain[0].check).toBe("else_if_chain");
+		expect(nonNull(c.r.elseIfChain[0]).check).toBe("else_if_chain");
 	});
 
 	it("produces the same nested_ternaries findings as the orchestrator (delegation)", () => {

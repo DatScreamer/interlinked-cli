@@ -14,6 +14,7 @@
 //      bytes written to stderr / the exact JSONL row appended.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- sibling mocks -----------------------------------------------------------
 vi.mock("./tool-results.js", () => ({
@@ -150,7 +151,7 @@ describe("emitVerifyRun", () => {
 
 	function lastRecord(): Record<string, unknown> {
 		expect(vi.mocked(appendFileSync)).toHaveBeenCalledTimes(1);
-		const [, payload] = vi.mocked(appendFileSync).mock.calls[0];
+		const [, payload] = nonNull(vi.mocked(appendFileSync).mock.calls[0]);
 		const text = String(payload);
 		expect(text.endsWith("\n")).toBe(true);
 		return JSON.parse(text) as Record<string, unknown>;
@@ -175,7 +176,7 @@ describe("emitVerifyRun", () => {
 			expect.stringContaining(".interlinked"),
 			{ recursive: true },
 		);
-		const [path] = vi.mocked(appendFileSync).mock.calls[0];
+		const [path] = nonNull(vi.mocked(appendFileSync).mock.calls[0]);
 		expect(String(path).endsWith(".interlinked/verify-runs.jsonl")).toBe(true);
 
 		const rec = lastRecord();

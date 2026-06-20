@@ -13,6 +13,7 @@ import {
 	JS_TS_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // --- 2. Import Hygiene ---
 
@@ -31,19 +32,19 @@ export function checkSelfImport(content: string, filePath: string): InlineMatch[
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 5) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!/^import\s/.test(trimmed)) continue;
 		// Match: from "./same-file" or from "./same-file.js"
 		const fromMatch = trimmed.match(/from\s+['"]([^'"]+)['"]/);
 		if (!fromMatch) continue;
 		const specifier = fromMatch[1];
-		if (!specifier.startsWith(".")) continue;
-		const importBase = specifier
+		if (!nonNull(specifier).startsWith(".")) continue;
+		const importBase = nonNull(specifier)
 			.split("/")
 			.pop()
 			?.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
 		if (importBase === base) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -138,12 +139,12 @@ export function checkExtraneousDependencies(content: string, filePath: string): 
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= 10) break;
-		const trimmed = strippedLines[i].trim();
+		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!/^import\s/.test(trimmed) && !/\brequire\s*\(/.test(trimmed)) continue;
 
 		const fromMatch = trimmed.match(/(?:from\s+|require\s*\(\s*)['"]([^'"]+)['"]/);
 		if (!fromMatch) continue;
-		const specifier = fromMatch[1];
+		const specifier = nonNull(fromMatch[1]);
 
 		// Skip relative imports, aliases (@/), and runtime protocol imports
 		if (specifier.startsWith(".") || specifier.startsWith("@/") || specifier.startsWith("#"))
@@ -154,10 +155,10 @@ export function checkExtraneousDependencies(content: string, filePath: string): 
 		// Extract package name (handle scoped packages @org/pkg)
 		const pkgName = specifier.startsWith("@")
 			? specifier.split("/").slice(0, 2).join("/")
-			: specifier.split("/")[0];
+			: nonNull(specifier.split("/")[0]);
 
 		if (!pkgDeps.has(pkgName)) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;

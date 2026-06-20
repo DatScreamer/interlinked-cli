@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../non-null.js";
 import { buildCollectionRecord } from "../builder.js";
 import type { CollectionRecord } from "../types.js";
 
@@ -327,9 +328,10 @@ describe("interlinked-capped output fixture", () => {
 
 		assertCollectionShape(rec);
 		expect(rec.fidelity.record.completeness).toBe("interlinked_capped");
-		expect(rec.fidelity.fields["observation.stdout"].interlinked_capped).toBe(true);
-		expect(rec.fidelity.fields["observation.stdout"].completeness).toBe("interlinked_capped");
-		expect(rec.fidelity.fields["observation.stdout"].provider_truncated).toBe("unknown");
+		const stdoutField = nonNull(rec.fidelity.fields["observation.stdout"]);
+		expect(stdoutField.interlinked_capped).toBe(true);
+		expect(stdoutField.completeness).toBe("interlinked_capped");
+		expect(stdoutField.provider_truncated).toBe("unknown");
 	});
 });
 

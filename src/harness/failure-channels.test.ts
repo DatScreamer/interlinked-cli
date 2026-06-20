@@ -56,6 +56,7 @@ import {
 } from "./failure-record.js";
 import { recordToolFailure } from "./recurrence.js";
 import { isFileTrackedAsWritten } from "./session-state.js";
+import { nonNull } from "../lib/non-null.js";
 
 const classifyFailureMock = vi.mocked(classifyFailure);
 const explainFailureMock = vi.mocked(explainFailure);
@@ -221,7 +222,7 @@ describe("runFailureChannels full pipeline", () => {
 		runFailureChannels({ event: makeEvent(), session: SESSION, cwd: "/repo" });
 
 		expect(writeFailureRecordMock).toHaveBeenCalledTimes(1);
-		const [record, cwdArg] = writeFailureRecordMock.mock.calls[0];
+		const [record, cwdArg] = nonNull(writeFailureRecordMock.mock.calls[0]);
 		expect(cwdArg).toBe("/repo");
 		expect(record).toMatchObject({
 			failure_id: "fail_fixed-id",
@@ -241,7 +242,7 @@ describe("runFailureChannels full pipeline", () => {
 	it("passes the bound provenance check through to assessRollbackFeasibility", () => {
 		runFailureChannels({ event: makeEvent(), session: SESSION, cwd: "/repo" });
 		expect(assessRollbackMock).toHaveBeenCalledTimes(1);
-		const [filePath, cwdArg, provenance] = assessRollbackMock.mock.calls[0];
+		const [filePath, cwdArg, provenance] = nonNull(assessRollbackMock.mock.calls[0]);
 		expect(filePath).toBe("src/foo.ts");
 		expect(cwdArg).toBe("/repo");
 		// Invoking the closure should delegate to the mocked session helper.
@@ -349,7 +350,7 @@ describe("runFailureChannels fail-open catches (safeRun)", () => {
 		);
 		expect(formatRollbackLineMock).not.toHaveBeenCalled();
 		// record.rollback is the undefined fallback.
-		const [record] = writeFailureRecordMock.mock.calls[0];
+		const [record] = nonNull(writeFailureRecordMock.mock.calls[0]);
 		expect(record.rollback).toBeUndefined();
 	});
 });
@@ -414,7 +415,7 @@ describe("runFailureChannels rollback gating", () => {
 			false,
 		);
 		// rollback assessment is still stored on the record.
-		const [record] = writeFailureRecordMock.mock.calls[0];
+		const [record] = nonNull(writeFailureRecordMock.mock.calls[0]);
 		expect(record.rollback).toEqual(SAFE_ROLLBACK);
 	});
 
@@ -556,7 +557,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBe("a.ts");
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBe("a.ts");
 	});
 
 	it("falls back to tool_input.path when file_path is absent", () => {
@@ -565,8 +566,8 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBe("b.ts");
-		expect(assessRollbackMock.mock.calls[0][0]).toBe("b.ts");
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBe("b.ts");
+		expect(nonNull(assessRollbackMock.mock.calls[0])[0]).toBe("b.ts");
 	});
 
 	it("treats a non-string file_path as absent and falls through to path", () => {
@@ -575,7 +576,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBe("b.ts");
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBe("b.ts");
 	});
 
 	it("treats an empty-string file_path as absent and falls through to path", () => {
@@ -584,7 +585,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBe("b.ts");
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBe("b.ts");
 	});
 
 	it("treats a non-string path as absent → undefined file (no rollback)", () => {
@@ -593,7 +594,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBeUndefined();
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBeUndefined();
 		expect(assessRollbackMock).not.toHaveBeenCalled();
 	});
 
@@ -603,7 +604,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBeUndefined();
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBeUndefined();
 	});
 
 	it("yields undefined file when tool_input itself is absent", () => {
@@ -612,7 +613,7 @@ describe("file-path extraction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].file).toBeUndefined();
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].file).toBeUndefined();
 	});
 });
 
@@ -621,7 +622,7 @@ describe("file-path extraction", () => {
 describe("toFailureEvent construction", () => {
 	it("forwards canonical diagnostic fields into the failure event", () => {
 		runFailureChannels({ event: makeEvent(), session: SESSION, cwd: "/repo" });
-		const passed = classifyFailureMock.mock.calls[0][0] as ToolFailureEvent;
+		const passed = nonNull(classifyFailureMock.mock.calls[0])[0] as ToolFailureEvent;
 		expect(passed).toMatchObject({
 			session_id: "sess-1",
 			agent_source: "claude",
@@ -646,7 +647,7 @@ describe("toFailureEvent construction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		const passed = classifyFailureMock.mock.calls[0][0] as ToolFailureEvent;
+		const passed = nonNull(classifyFailureMock.mock.calls[0])[0] as ToolFailureEvent;
 		expect(passed.tool_name).toBe("Write");
 	});
 
@@ -656,6 +657,6 @@ describe("toFailureEvent construction", () => {
 			session: SESSION,
 			cwd: "/repo",
 		});
-		expect(recordToolFailureMock.mock.calls[0][0].message).toBeUndefined();
+		expect(nonNull(recordToolFailureMock.mock.calls[0])[0].message).toBeUndefined();
 	});
 });

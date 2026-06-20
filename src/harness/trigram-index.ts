@@ -30,6 +30,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { getHeadCommit, getTrackedFiles } from "./trigram-git.js";
 import {
 	computeIndexStats,
@@ -113,7 +114,7 @@ export class TrigramIndex {
 		this.files = files;
 		this.fileToId = new Map();
 		for (let i = 0; i < files.length; i++) {
-			this.fileToId.set(files[i], i);
+			this.fileToId.set(nonNull(files[i]), i);
 		}
 		this.postings = postings;
 		this.stopTrigrams = stopTrigrams;
@@ -152,7 +153,7 @@ export class TrigramIndex {
 		const trigramCounts = new Map<number, number>(); // trigram → number of files containing it
 
 		for (let i = 0; i < filePaths.length; i++) {
-			const relPath = filePaths[i];
+			const relPath = nonNull(filePaths[i]);
 			if (shouldSkipFile(relPath)) continue;
 
 			const absPath = join(cwd, relPath);
@@ -199,7 +200,7 @@ export class TrigramIndex {
 		const files: string[] = [];
 
 		for (let fileId = 0; fileId < fileEntries.length; fileId++) {
-			const { path, masks } = fileEntries[fileId];
+			const { path, masks } = nonNull(fileEntries[fileId]);
 			files.push(path);
 
 			for (const [tri, m] of masks) {
@@ -328,7 +329,7 @@ export class TrigramIndex {
 				let masks: Map<number, { locMask: number; nextMask: number }> | null = null;
 				if (fileId < this.files.length) {
 					try {
-						const absPath = join(this.cwd, this.files[fileId]);
+						const absPath = join(this.cwd, nonNull(this.files[fileId]));
 						if (existsSync(absPath)) {
 							const content = readFileSync(absPath, "utf-8");
 							masks = extractTrigramsWithMasks(content);
@@ -389,11 +390,11 @@ export class TrigramIndex {
 			if (data.fileIds.length > 0) {
 				// Sort by fileId for binary search
 				const indices = data.fileIds.map((_, i) => i);
-				indices.sort((a, b) => data.fileIds[a] - data.fileIds[b]);
+				indices.sort((a, b) => nonNull(data.fileIds[a]) - nonNull(data.fileIds[b]));
 				this.postings.set(tri, {
-					fileIds: new Uint32Array(indices.map((i) => data.fileIds[i])),
-					locMasks: new Uint8Array(indices.map((i) => data.locMasks[i])),
-					nextMasks: new Uint8Array(indices.map((i) => data.nextMasks[i])),
+					fileIds: new Uint32Array(indices.map((i) => nonNull(data.fileIds[i]))),
+					locMasks: new Uint8Array(indices.map((i) => nonNull(data.locMasks[i]))),
+					nextMasks: new Uint8Array(indices.map((i) => nonNull(data.nextMasks[i]))),
 				});
 			}
 		}

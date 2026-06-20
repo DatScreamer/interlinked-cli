@@ -12,6 +12,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GrepAcceleratorConfig } from "./grep-accelerator.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Safe RegExp construction (ReDoS mitigation)
@@ -79,7 +80,7 @@ export function matchInProcess(opts: MatchOptions): RipgrepResult | null {
 		const fileLines = content.split("\n");
 		for (let lineNum = 0; lineNum < fileLines.length; lineNum++) {
 			regex.lastIndex = 0;
-			if (regex.test(fileLines[lineNum])) {
+			if (regex.test(nonNull(fileLines[lineNum]))) {
 				matchCount++;
 				// No per-file cap: the substitution must return the SAME matches as
 				// native rg. Completeness is enforced by the caller's truncation
@@ -217,7 +218,7 @@ export function compressGrepOutput(output: string): string {
 	// trailing capture, so a line matches this detector iff it parses below —
 	// which is why the first non-empty line always opens a group and the loop
 	// never sees a non-parsing line before one exists.
-	if (!lines[firstNonEmpty].match(/^(.+?):(\d+):/)) return output; // not content mode
+	if (!nonNull(lines[firstNonEmpty]).match(/^(.+?):(\d+):/)) return output; // not content mode
 
 	// One block of text per file, in first-seen order. A non-parsing line
 	// (separator, etc.) is appended verbatim to the current (always-open) block.
@@ -231,17 +232,19 @@ export function compressGrepOutput(output: string): string {
 		if (!m) {
 			// Non-parsing line: fold into the current block. The detector above
 			// guarantees the first iterated line parses, so a block always exists.
-			blocks[blocks.length - 1].lines.push(line);
+			nonNull(blocks[blocks.length - 1]).lines.push(line);
 			continue;
 		}
-		const [, filePath, lineNum, content] = m;
+		const filePath = nonNull(m[1]);
+		const lineNum = nonNull(m[2]);
+		const content = nonNull(m[3]);
 		let idx = indexByPath.get(filePath);
 		if (idx === undefined) {
 			idx = blocks.length;
 			indexByPath.set(filePath, idx);
 			blocks.push({ path: filePath, lines: [] });
 		}
-		blocks[idx].lines.push(`${lineNum}:${content}`);
+		nonNull(blocks[idx]).lines.push(`${lineNum}:${content}`);
 	}
 
 	// `path` header then its rows, blocks separated by a blank line.

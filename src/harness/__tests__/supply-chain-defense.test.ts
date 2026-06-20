@@ -26,6 +26,7 @@ import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
 import { scanSecrets, scanSupplyChain } from "../signatures.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -247,8 +248,8 @@ describe("checkPhantomDependencies", () => {
 
 		const matches = checkPhantomDependencies(join(tempDir, "package.json"));
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("plain-crypto-js");
-		expect(matches[0].text).toContain("Phantom dependency");
+		expect(nonNull(matches[0]).text).toContain("plain-crypto-js");
+		expect(nonNull(matches[0]).text).toContain("Phantom dependency");
 	});
 
 	it("does NOT flag dependencies that are imported", () => {
@@ -363,7 +364,7 @@ describe("checkPhantomDependencies", () => {
 		// The line containing "phantom-dep" should be reported
 		const lines = pkgContent.split("\n");
 		const expectedLine = lines.findIndex((l) => l.includes("phantom-dep")) + 1;
-		expect(matches[0].line).toBe(expectedLine);
+		expect(nonNull(matches[0]).line).toBe(expectedLine);
 	});
 
 	it("detects dep referenced in config files (not just .ts/.js)", () => {
@@ -766,8 +767,8 @@ describe("checkTyposquatDependencies", () => {
 		);
 		const matches = checkTyposquatDependencies(join(tempDir, "package.json"));
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("expresss");
-		expect(matches[0].text).toContain("express");
+		expect(nonNull(matches[0]).text).toContain("expresss");
+		expect(nonNull(matches[0]).text).toContain("express");
 	});
 
 	it("detects typosquatted lodash (lodashe)", () => {
@@ -777,7 +778,7 @@ describe("checkTyposquatDependencies", () => {
 		);
 		const matches = checkTyposquatDependencies(join(tempDir, "package.json"));
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("lodash");
+		expect(nonNull(matches[0]).text).toContain("lodash");
 	});
 
 	it("detects typosquatted axios (axois)", () => {
@@ -787,7 +788,7 @@ describe("checkTyposquatDependencies", () => {
 		);
 		const matches = checkTyposquatDependencies(join(tempDir, "package.json"));
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("axios");
+		expect(nonNull(matches[0]).text).toContain("axios");
 	});
 
 	it("does NOT flag legitimate popular package names", () => {
@@ -819,7 +820,7 @@ describe("checkTyposquatDependencies", () => {
 		);
 		const matches = checkTyposquatDependencies(join(tempDir, "package.json"));
 		expect(matches.length).toBe(1);
-		expect(matches[0].text).toContain("typescript");
+		expect(nonNull(matches[0]).text).toContain("typescript");
 	});
 
 	it("handles empty dependencies", () => {

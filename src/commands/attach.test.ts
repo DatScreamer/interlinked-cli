@@ -76,6 +76,7 @@ vi.mock("../lib/formatter.js", () => {
 });
 
 import { attachCommand } from "./attach.js";
+import { nonNull } from "../lib/non-null.js";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -237,7 +238,7 @@ describe("attachCommand --server and --workspace", () => {
 		await attachCommand({ workspace: "ws_new123", json: true });
 
 		expect(mockUpdateLocalConfig).toHaveBeenCalledTimes(1);
-		const arg = mockUpdateLocalConfig.mock.calls[0][0] as {
+		const arg = nonNull(mockUpdateLocalConfig.mock.calls[0])[0] as {
 			workspace_id: string;
 			servers: Record<string, { server_url: string; workspace_id: string }>;
 		};
@@ -254,10 +255,10 @@ describe("attachCommand --server and --workspace", () => {
 
 		await attachCommand({ workspace: "ws_new123", json: true });
 
-		const arg = mockUpdateLocalConfig.mock.calls[0][0] as {
+		const arg = nonNull(mockUpdateLocalConfig.mock.calls[0])[0] as {
 			servers: Record<string, { workspace_id: string }>;
 		};
-		expect(arg.servers.production.workspace_id).toBe("ws_new123");
+		expect(nonNull(arg.servers.production).workspace_id).toBe("ws_new123");
 	});
 
 	it("falls back to a flat workspace_id update when readLocalConfig returns null (|| {} branch)", async () => {

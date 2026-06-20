@@ -35,6 +35,7 @@ vi.mock("../lib/formatter.js", () => ({
 
 import type { LocalConfig } from "../lib/config.js";
 import { isConfigured, readLocalConfig, updateLocalConfig } from "../lib/config.js";
+import { nonNull } from "../lib/non-null.js";
 import { logoutCommand } from "./logout.js";
 
 const mockIsConfigured = vi.mocked(isConfigured);
@@ -54,7 +55,7 @@ function loggedText(): string {
 function jsonOut(): Record<string, unknown> {
 	const calls = logged();
 	expect(calls).toHaveLength(1);
-	return JSON.parse(calls[0]) as Record<string, unknown>;
+	return JSON.parse(nonNull(calls[0])) as Record<string, unknown>;
 }
 
 beforeEach(() => {
@@ -157,7 +158,7 @@ describe("logout — clears credentials (human output)", () => {
 
 		// Side-effect: auth fields cleared, agent_handle NOT cleared (no --all).
 		expect(mockUpdateLocalConfig).toHaveBeenCalledTimes(1);
-		const [updates, cwdArg] = mockUpdateLocalConfig.mock.calls[0];
+		const [updates, cwdArg] = nonNull(mockUpdateLocalConfig.mock.calls[0]);
 		expect(updates).toEqual({
 			access_token: undefined,
 			refresh_token: undefined,
@@ -221,7 +222,7 @@ describe("logout --all — clears agent handle", () => {
 
 		await logoutCommand({ all: true });
 
-		const [updates] = mockUpdateLocalConfig.mock.calls[0];
+		const [updates] = nonNull(mockUpdateLocalConfig.mock.calls[0]);
 		expect(updates).toEqual({
 			access_token: undefined,
 			refresh_token: undefined,
@@ -242,7 +243,7 @@ describe("logout --all — clears agent handle", () => {
 
 		await logoutCommand({ all: true });
 
-		const [updates] = mockUpdateLocalConfig.mock.calls[0];
+		const [updates] = nonNull(mockUpdateLocalConfig.mock.calls[0]);
 		expect("agent_handle" in updates).toBe(true);
 		expect(updates.agent_handle).toBeUndefined();
 

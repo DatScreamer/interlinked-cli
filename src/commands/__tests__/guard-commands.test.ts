@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Response shape interfaces
@@ -208,9 +209,9 @@ describe("guard check command", () => {
 		const output = lastLogAsJson(isGuardCheckOutput);
 		expect(output.clean).toBe(false);
 		expect(output.conflicts).toHaveLength(1);
-		expect(output.conflicts[0].file).toBe("src/auth/login.ts");
-		expect(output.conflicts[0].reserved_by).toBe("other-agent");
-		expect(output.conflicts[0].reservation_pattern).toBe("src/auth/**");
+		expect(nonNull(output.conflicts[0]).file).toBe("src/auth/login.ts");
+		expect(nonNull(output.conflicts[0]).reserved_by).toBe("other-agent");
+		expect(nonNull(output.conflicts[0]).reservation_pattern).toBe("src/auth/**");
 	});
 
 	it("excludes own reservations", async () => {
@@ -275,8 +276,8 @@ describe("guard check command", () => {
 
 		const output = lastLogAsJson(isGuardCheckOutput);
 		expect(output.conflicts).toHaveLength(2);
-		expect(output.conflicts[0].reserved_by).toBe("agent-a");
-		expect(output.conflicts[1].reserved_by).toBe("agent-b");
+		expect(nonNull(output.conflicts[0]).reserved_by).toBe("agent-a");
+		expect(nonNull(output.conflicts[1]).reserved_by).toBe("agent-b");
 		expect(output.files_checked).toBe(3);
 	});
 });

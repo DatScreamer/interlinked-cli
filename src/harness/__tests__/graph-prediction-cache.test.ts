@@ -7,17 +7,18 @@
 //
 // Cache key: {session_id, file_path, source_mtime, shard_mtime}.
 
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
-	appendPredictionRow,
 	appendObservationRow,
+	appendPredictionRow,
 	appendReconciliationRow,
 	findPredictionRow,
-	type GraphPredictionRow,
 	type GraphObservationRow,
+	type GraphPredictionRow,
 	type GraphReconciliationRow,
 } from "../graph-prediction-cache.js";
 
@@ -179,8 +180,8 @@ describe("appendReconciliationRow — predictions-vs-reality log", () => {
 		const path = join(dir, ".interlinked", "graph-reconciliations.jsonl");
 		const lines = readFileSync(path, "utf8").trim().split("\n");
 		expect(lines).toHaveLength(2);
-		const first = JSON.parse(lines[0]);
-		const second = JSON.parse(lines[1]);
+		const first = JSON.parse(nonNull(lines[0]));
+		const second = JSON.parse(nonNull(lines[1]));
 		expect(first.severity).toBe("high");
 		expect(first.triggers).toEqual(["risk_underestimated_low_to_high"]);
 		expect(second.severity).toBe("low");

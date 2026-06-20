@@ -8,6 +8,7 @@ import {
 	formatQualityWarnings,
 	stripStringLiterals,
 } from "../quality-checks.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // The word "any" appears throughout this file as test fixture data for the
 // quality-check functions under test. These are string literals fed to the
@@ -134,8 +135,8 @@ describe("findAnyTypes", () => {
 			].join("\n");
 			const result = findAnyTypes(content);
 			expect(result.length).toBe(2);
-			expect(result[0].line).toBe(2);
-			expect(result[1].line).toBe(4);
+			expect(nonNull(result[0]).line).toBe(2);
+			expect(nonNull(result[1]).line).toBe(4);
 		});
 	});
 
@@ -170,7 +171,7 @@ describe("findAnyTypes", () => {
 		it("prefers any over unknown when both present on same line", () => {
 			const result = findAnyTypes(`const x = (val as ${ANY}) as ${UNKNOWN};`);
 			expect(result.length).toBe(1);
-			expect(result[0].kind).toBe("any");
+			expect(nonNull(result[0]).kind).toBe("any");
 		});
 	});
 
@@ -326,7 +327,7 @@ describe("formatQualityWarnings — proven|heuristic determinism tag", () => {
 		const [out] = formatQualityWarnings([
 			{ name: "typescript", severity: "error", message: "main", detail: "  L10: foo" },
 		]);
-		const lines = out.split("\n");
+		const lines = nonNull(out).split("\n");
 		expect(lines[0]).toMatch(/^\[interlinked:typescript\] \[proven\] main$/);
 		expect(lines[1]).toBe("  L10: foo");
 		expect(lines[2]).toMatch(/^→ /); // instruction line

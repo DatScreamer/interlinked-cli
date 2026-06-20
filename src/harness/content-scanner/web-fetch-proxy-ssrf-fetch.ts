@@ -19,6 +19,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
+import { nonNull } from "../../lib/non-null.js";
 
 /** WebFetch can pull megabytes; cap the network wait at 30 s to keep the
  *  hook well under Claude Code's 5 s PreToolUse budget when the harness is
@@ -132,7 +133,7 @@ function isBlockedV6(addrRaw: string): boolean {
 	// Strip a zone-id suffix if any (`fe80::1%eth0` → `fe80::1`). `split`
 	// always yields ≥1 element, so `[0]` is a string (no nullish fallback
 	// needed — that dead branch is gone).
-	const addr = addrRaw.split("%")[0].toLowerCase();
+	const addr = nonNull(addrRaw.split("%")[0]).toLowerCase();
 	if (addr === "::" || addr === "::1") return true;
 	// IPv4-mapped (::ffff:a.b.c.d) → re-check against the V4 ranges.
 	if (addr.startsWith("::ffff:")) {
@@ -141,7 +142,7 @@ function isBlockedV6(addrRaw: string): boolean {
 	}
 	// fc00::/7 (unique-local) and fe80::/10 (link-local). `[0]` is again a
 	// guaranteed string from `split`.
-	const firstSegment = Number.parseInt(addr.split(":")[0], 16);
+	const firstSegment = Number.parseInt(nonNull(addr.split(":")[0]), 16);
 	if (Number.isNaN(firstSegment)) return true;
 	if ((firstSegment & 0xfe00) === 0xfc00) return true; // fc00::/7
 	if ((firstSegment & 0xffc0) === 0xfe80) return true; // fe80::/10

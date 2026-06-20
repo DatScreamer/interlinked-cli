@@ -8,6 +8,7 @@
 // of a Bash command). No module-private state — depends only on its argument
 // + imports.
 
+import { nonNull } from "../../lib/non-null.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { HarnessEvent } from "../types.js";
 
@@ -69,7 +70,7 @@ export function resolveEditedPaths(event: HarnessEvent): EditedPathResolution {
 		const cmd = (event.tool_input?.command as string) || "";
 		const editedFileMatch = cmd.match(BASH_EDITED_FILE_RE);
 		if (editedFileMatch) {
-			editedFilePath = editedFileMatch[1];
+			editedFilePath = nonNull(editedFileMatch[1]);
 			editedFilePaths = [editedFilePath];
 		}
 	} else if (isDirectFileEdit) {

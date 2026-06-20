@@ -14,6 +14,7 @@ import {
 } from "../lib/git-utils.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Types
@@ -142,10 +143,10 @@ export async function gitContextCommand(opts: { commit?: string; json?: boolean 
 				} else if (serverResult.bridge_events?.length) {
 					const evt = serverResult.bridge_events[0];
 					result.server = {
-						checkpoint: evt.checkpoint_id
-							? `#${evt.checkpoint_id} — "${evt.checkpoint_summary || ""}"`
+						checkpoint: nonNull(evt).checkpoint_id
+							? `#${nonNull(evt).checkpoint_id} — "${nonNull(evt).checkpoint_summary || ""}"`
 							: undefined,
-						agent: evt.agent_name || undefined,
+						agent: nonNull(evt).agent_name || undefined,
 						trailers: serverResult.trailers,
 					};
 				} else {

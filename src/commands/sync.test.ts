@@ -20,6 +20,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalActivityEvent, UnsyncedEvents } from "../lib/local-activity.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ---- ../lib/local-activity mock ---------------------------------------
 const mockGetLocalStats = vi.fn<() => { pending_sync: number } & Record<string, unknown>>();
@@ -588,7 +589,7 @@ describe("syncCommand — payload field mapping", () => {
 		const body = JSON.parse(fetchInit(0).body as string) as {
 			events: Record<string, unknown>[];
 		};
-		return body.events[0];
+		return nonNull(body.events[0]);
 	}
 
 	it("maps required fields with || fallbacks (agent/workspace/project)", async () => {

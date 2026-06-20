@@ -10,6 +10,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SidecarPoolOptions } from "../sidecar-pool.js";
 import { SidecarPool } from "../sidecar-pool.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 interface FakeChild extends EventEmitter {
 	stdin: PassThrough;
@@ -99,8 +100,8 @@ describe("SidecarPool — lazy spawn", () => {
 		const alive = children.length === 2; // first consumed
 		expect(alive).toBe(true);
 		// Respond using the child that was actually spawned (first in pool).
-		const spawned = spawn.mock.results[0].value as FakeChild;
-		spawned.respond({ id: JSON.parse(spawned.stdinLines[0]).id, ok: true });
+		const spawned = nonNull(spawn.mock.results[0]).value as FakeChild;
+		spawned.respond({ id: JSON.parse(nonNull(spawned.stdinLines[0])).id, ok: true });
 		await p;
 	});
 });
@@ -120,13 +121,13 @@ describe("SidecarPool — round-robin dispatch", () => {
 
 		expect(spawn).toHaveBeenCalledTimes(3);
 		// Each child got exactly one line written to its stdin.
-		expect(children[0].stdinLines).toHaveLength(1);
-		expect(children[1].stdinLines).toHaveLength(1);
-		expect(children[2].stdinLines).toHaveLength(1);
+		expect(nonNull(children[0]).stdinLines).toHaveLength(1);
+		expect(nonNull(children[1]).stdinLines).toHaveLength(1);
+		expect(nonNull(children[2]).stdinLines).toHaveLength(1);
 
-		children[0].respond({ id: JSON.parse(children[0].stdinLines[0]).id, ok: true });
-		children[1].respond({ id: JSON.parse(children[1].stdinLines[0]).id, ok: true });
-		children[2].respond({ id: JSON.parse(children[2].stdinLines[0]).id, ok: true });
+		nonNull(children[0]).respond({ id: JSON.parse(nonNull(nonNull(children[0]).stdinLines[0])).id, ok: true });
+		nonNull(children[1]).respond({ id: JSON.parse(nonNull(nonNull(children[1]).stdinLines[0])).id, ok: true });
+		nonNull(children[2]).respond({ id: JSON.parse(nonNull(nonNull(children[2]).stdinLines[0])).id, ok: true });
 		await Promise.all([p1, p2, p3]);
 	});
 
@@ -144,15 +145,15 @@ describe("SidecarPool — round-robin dispatch", () => {
 
 		expect(spawn).toHaveBeenCalledTimes(2);
 		// Child 0 should have received TWO lines (requests 1 and 3), child 1 one.
-		expect(children[0].stdinLines).toHaveLength(2);
-		expect(children[1].stdinLines).toHaveLength(1);
+		expect(nonNull(children[0]).stdinLines).toHaveLength(2);
+		expect(nonNull(children[1]).stdinLines).toHaveLength(1);
 
 		// Resolve all.
-		for (const line of children[0].stdinLines) {
-			children[0].respond({ id: JSON.parse(line).id, ok: true });
+		for (const line of nonNull(children[0]).stdinLines) {
+			nonNull(children[0]).respond({ id: JSON.parse(line).id, ok: true });
 		}
-		for (const line of children[1].stdinLines) {
-			children[1].respond({ id: JSON.parse(line).id, ok: true });
+		for (const line of nonNull(children[1]).stdinLines) {
+			nonNull(children[1]).respond({ id: JSON.parse(line).id, ok: true });
 		}
 		await Promise.all([p1, p2, p3]);
 	});
@@ -171,7 +172,7 @@ describe("SidecarPool — status aggregation", () => {
 		expect(statuses[0]).toBe("idle");
 		const p = pool.send({ op: "ping" });
 		await Promise.resolve();
-		child.respond({ id: JSON.parse(child.stdinLines[0]).id, ok: true });
+		child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
 		await p;
 
 		// The aggregate should transition through spawning→ready as the first
@@ -224,7 +225,7 @@ describe("SidecarPool — shutdown", () => {
 		const done = pool.shutdown();
 		await vi.advanceTimersByTimeAsync(1100);
 		await done;
-		expect(children[0].killed).toBe(true);
-		expect(children[1].killed).toBe(true);
+		expect(nonNull(children[0]).killed).toBe(true);
+		expect(nonNull(children[1]).killed).toBe(true);
 	});
 });

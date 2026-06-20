@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { nonNull } from "../../../lib/non-null.js";
 import { filterResultsToFile, parseCargoJson } from "../output-parsers.js";
 import type { CheckResult, ToolRunnerInput } from "../types.js";
 
@@ -93,8 +94,8 @@ export function parseRustfmtCheckOutput(output: string, projectRoot: string): Ch
 		results.push({
 			tool: "rustfmt",
 			severity: "warning",
-			file: relative(projectRoot, m[1]),
-			line: Number.parseInt(m[2], 10),
+			file: relative(projectRoot, nonNull(m[1])),
+			line: Number.parseInt(nonNull(m[2]), 10),
 			message: "not rustfmt-formatted — run `cargo fmt` (or `rustfmt <file>`)",
 		});
 	}
@@ -120,7 +121,7 @@ export function crateEditionFor(targetFile: string, projectRoot: string): string
 		try {
 			const manifest = readFileSync(join(dir, "Cargo.toml"), "utf-8");
 			const m = manifest.match(/^\s*edition\s*=\s*"(\d{4})"/m);
-			if (m && CARGO_EDITIONS.has(m[1])) return m[1];
+			if (m && CARGO_EDITIONS.has(nonNull(m[1]))) return nonNull(m[1]);
 		} catch (err) {
 			// A missing manifest at this level is expected — keep walking up. Any
 			// OTHER error (permissions, I/O) is genuinely exceptional: rethrow it

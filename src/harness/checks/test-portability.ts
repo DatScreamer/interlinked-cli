@@ -47,6 +47,7 @@
 //     Both checks are JS/TS-scoped — their gating idioms (skipIf, vitest
 //     ctx.skip) and callsite shapes are JS test-runner conventions.
 
+import { nonNull } from "../../lib/non-null.js";
 import { stripAllLiterals, stripLiteralsKeepComments } from "../strip-helpers.js";
 import { isJsTs, lineIdxForOffset } from "../taste-checks-shared.js";
 import { type InlineMatch, isStrictTestFile } from "./shared.js";
@@ -104,7 +105,7 @@ const IF_CONDITION_RE = /\bif\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
  *  block, or the bare statement up to `;` / end-of-line. */
 function consequentSpan(masked: string, afterCond: number): [number, number] {
 	let j = afterCond;
-	while (j < masked.length && /\s/.test(masked[j])) j++;
+	while (j < masked.length && /\s/.test(nonNull(masked[j]))) j++;
 	if (masked[j] === "{") {
 		const close = findConsequentClose(masked, j);
 		return [j, close === -1 ? masked.length : close + 1];
@@ -167,7 +168,7 @@ function identifierHasPlatformSegment(id: string): boolean {
 
 function platformConstantNames(masked: string): string[] {
 	const names: string[] = [];
-	for (const m of masked.matchAll(PLATFORM_CONST_DECL_RE)) names.push(m[1]);
+	for (const m of masked.matchAll(PLATFORM_CONST_DECL_RE)) names.push(nonNull(m[1]));
 	return names;
 }
 
@@ -197,7 +198,7 @@ function isPlatformCondition(condition: string, constNames: readonly string[]): 
  *  suite contains it. -1 means file-level prose. */
 function subjectBlockFor(blocks: TestBlock[], line: number): number {
 	const inner = innermostBlockAt(blocks, line);
-	if (inner !== -1 && blocks[inner].kind === "test") return inner;
+	if (inner !== -1 && nonNull(blocks[inner]).kind === "test") return inner;
 	const below = blockStartingWithin(blocks, line + 1, line + NARRATION_LOOKDOWN_LINES);
 	return below !== -1 ? below : inner;
 }
@@ -218,7 +219,7 @@ export function checkPlatformConditionalAssertion(
 	const commentView = stripLiteralsKeepComments(content).split("\n");
 	const narrated: number[] = [];
 	for (let i = 0; i < commentView.length; i++) {
-		const line = commentView[i];
+		const line = nonNull(commentView[i]);
 		if (!COMMENT_LINE_RE.test(line)) continue;
 		if (PLATFORM_NARRATION_RES.some((re) => re.test(line))) narrated.push(i);
 	}
@@ -240,7 +241,7 @@ export function checkPlatformConditionalAssertion(
 			// File-level prose: accept platform awareness anywhere in real code.
 			evidenced = hasPlatformEvidence(masked, constNames);
 		} else {
-			const b = blocks[subject];
+			const b = nonNull(blocks[subject]);
 			const slice = mLines.slice(b.startLine, b.endLine + 1).join("\n");
 			evidenced = gatedByChain(blocks, subject, platformGates) || hasPlatformEvidence(slice, constNames);
 		}
@@ -306,7 +307,7 @@ function findConsequentClose(masked: string, openBrace: number): number {
  *  assertion / throw anywhere in the block. */
 function consequentIsSilentSkip(masked: string, afterCond: number): boolean {
 	let j = afterCond;
-	while (j < masked.length && /\s/.test(masked[j])) j++;
+	while (j < masked.length && /\s/.test(nonNull(masked[j]))) j++;
 	if (masked.startsWith("return", j)) return isBareReturn(masked, j);
 	if (masked[j] === "{") {
 		const close = findConsequentClose(masked, j);

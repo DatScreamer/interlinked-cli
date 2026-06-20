@@ -8,6 +8,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 
@@ -62,12 +63,13 @@ export function checkSwiftHttpUrlLiteral(content: string, filePath: string): Inl
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const trimmed = originalLines[i].trimStart();
+		const line = nonNull(originalLines[i]);
+		const trimmed = line.trimStart();
 		if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
 			continue;
 		}
-		if (re.test(originalLines[i])) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (re.test(line)) {
+			matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -104,26 +106,26 @@ export function checkSwiftUserDefaultsForSecret(
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 		const trimmed = line.trimStart();
 		if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
 			continue;
 		}
 
 		const ap = appStorage.exec(line);
-		if (ap && SENSITIVE_KEY_RE.test(ap[1])) {
+		if (ap && SENSITIVE_KEY_RE.test(nonNull(ap[1]))) {
 			matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 			continue;
 		}
 
 		if (userDefaultsCall.test(line)) {
 			const forKey = /forKey\s*:\s*["']([^"']+)["']/.exec(line);
-			if (forKey && SENSITIVE_KEY_RE.test(forKey[1])) {
+			if (forKey && SENSITIVE_KEY_RE.test(nonNull(forKey[1]))) {
 				matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 				continue;
 			}
 			const subscript = /\[\s*["']([^"']+)["']\s*\]\s*=/.exec(line);
-			if (subscript && SENSITIVE_KEY_RE.test(subscript[1])) {
+			if (subscript && SENSITIVE_KEY_RE.test(nonNull(subscript[1]))) {
 				matches.push({ line: i + 1, text: line.trim().slice(0, 150) });
 			}
 		}
@@ -153,7 +155,7 @@ export function checkSwiftAtsArbitraryLoads(content: string, filePath: string): 
 
 	for (let i = 0; i < originalLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = originalLines[i];
+		const line = nonNull(originalLines[i]);
 		if (
 			!/<key>\s*(?:NSAllowsArbitraryLoads|NSExceptionAllowsInsecureHTTPLoads|NSAllowsArbitraryLoadsInWebContent|NSAllowsArbitraryLoadsForMedia)\s*<\/key>/.test(
 				line,
@@ -171,7 +173,7 @@ export function checkSwiftAtsArbitraryLoads(content: string, filePath: string): 
 			truthy = false;
 		} else {
 			for (let j = i + 1; j < Math.min(i + 4, originalLines.length); j++) {
-				const next = originalLines[j];
+				const next = nonNull(originalLines[j]);
 				if (TRUE_RE.test(next)) {
 					truthy = true;
 					break;

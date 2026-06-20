@@ -53,6 +53,7 @@ import {
 import { CLIENT_CLAUDE } from "./hook-types.js";
 import { buildHookScript } from "./hooks-template.js";
 import type { JsonObject } from "./json-types.js";
+import { nonNull } from "./non-null.js";
 import type { ClientName } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
@@ -116,7 +117,7 @@ function resolveHarnessModePreset(cwd: string): HarnessModePreset {
 	const mfPath = manifestPath(cwd);
 	if (existsSync(mfPath)) {
 		const entries = readManifest(mfPath);
-		activeRunner = entries.length > 0 ? entries[0].runner : undefined;
+		activeRunner = entries.length > 0 ? nonNull(entries[0]).runner : undefined;
 	}
 	const resolved = migrateLegacyMode(rawMode, activeRunner);
 	return getModePreset(resolved);

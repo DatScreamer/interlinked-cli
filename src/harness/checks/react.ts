@@ -8,6 +8,7 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // React/Frontend Checks
@@ -28,7 +29,7 @@ export function checkExcessiveUseState(content: string, filePath: string): Inlin
 	const WARNING_THRESHOLD = 8;
 
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 		if (/\buseState\s*[<(]/.test(trimmed)) {
 			count++;
 		}
@@ -36,10 +37,10 @@ export function checkExcessiveUseState(content: string, filePath: string): Inlin
 
 	if (count >= WARNING_THRESHOLD) {
 		for (let i = 0; i < lines.length; i++) {
-			if (/\buseState\s*[<(]/.test(lines[i].trim())) {
+			if (/\buseState\s*[<(]/.test(nonNull(lines[i]).trim())) {
 				matches.push({
 					line: i + 1,
-					text: `[${count} useState hooks — consider useReducer or splitting component] ${lines[i].trim().slice(0, 100)}`,
+					text: `[${count} useState hooks — consider useReducer or splitting component] ${nonNull(lines[i]).trim().slice(0, 100)}`,
 				});
 				break;
 			}
@@ -82,18 +83,18 @@ export function checkDangerouslySetInnerHTML(content: string, filePath: string):
 		// the variable name post-strip), but we still look at the
 		// original for context. Both forms are inspected via
 		// strippedLines for content-stable matching.
-		if (!DSIH_NAKED_RE.test(strippedLines[i])) continue;
+		if (!DSIH_NAKED_RE.test(nonNull(strippedLines[i]))) continue;
 
 		// Try to extract the identifier from the `__html: <id>` shape.
 		// If we find a same-file static-string declaration, suppress.
-		const inline = DSIH_INLINE_RE.exec(originalLines[i]);
+		const inline = DSIH_INLINE_RE.exec(nonNull(originalLines[i]));
 		if (inline?.[1] && isStaticStringConstant(content, inline[1])) {
 			continue;
 		}
 
 		matches.push({
 			line: i + 1,
-			text: originalLines[i].trim().slice(0, 150),
+			text: nonNull(originalLines[i]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -239,12 +240,12 @@ export function checkInlineObjectProps(content: string, filePath: string): Inlin
 	let count = 0;
 
 	for (let i = 0; i < strippedLines.length; i++) {
-		if (inlineObjPattern.test(strippedLines[i])) {
+		if (inlineObjPattern.test(nonNull(strippedLines[i]))) {
 			count++;
 			if (allMatches.length < 10) {
 				allMatches.push({
 					line: i + 1,
-					text: lines[i].trim().slice(0, 150),
+					text: nonNull(lines[i]).trim().slice(0, 150),
 				});
 			}
 		}
@@ -254,8 +255,8 @@ export function checkInlineObjectProps(content: string, filePath: string): Inlin
 
 	return [
 		{
-			line: allMatches[0].line,
-			text: `[${count} inline object props — creates new references every render, causing unnecessary re-renders. Extract to constants or useMemo] ${allMatches[0].text}`,
+			line: nonNull(allMatches[0]).line,
+			text: `[${count} inline object props — creates new references every render, causing unnecessary re-renders. Extract to constants or useMemo] ${nonNull(allMatches[0]).text}`,
 		},
 	];
 }

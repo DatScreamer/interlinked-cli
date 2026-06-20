@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addToAllowlist, loadAllowlist } from "../package-allowlist.js";
-import { evaluateManifestEdit } from "./manifest-edit-guard.js";
+import { evaluateManifestEdit, extractGoModDeps } from "./manifest-edit-guard.js";
 
 let workspace: string;
 
@@ -32,6 +32,31 @@ function newContent(scenario: EditScenario) {
 		cwd: workspace,
 	};
 }
+
+describe("extractGoModDeps", () => {
+	it("parses the block `require ( ... )` form", () => {
+		const goMod = `module example.com/app
+
+go 1.22
+
+require (
+	github.com/gin-gonic/gin v1.9.1
+	golang.org/x/sync v0.6.0
+)`;
+		const deps = extractGoModDeps(goMod);
+		expect(deps.get("github.com/gin-gonic/gin")).toBe("v1.9.1");
+		expect(deps.get("golang.org/x/sync")).toBe("v0.6.0");
+	});
+
+	it("parses the single-line `require X Y` form", () => {
+		const deps = extractGoModDeps("require github.com/pkg/errors v0.9.1");
+		expect(deps.get("github.com/pkg/errors")).toBe("v0.9.1");
+	});
+
+	it("returns an empty map for a go.mod with no require directives", () => {
+		expect(extractGoModDeps("module example.com/app\n\ngo 1.22\n").size).toBe(0);
+	});
+});
 
 describe("evaluateManifestEdit — package.json", () => {
 	it("blocks adding a new unapproved dep to dependencies", () => {

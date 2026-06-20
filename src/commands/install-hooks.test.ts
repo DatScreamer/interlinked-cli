@@ -23,6 +23,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
+import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 let originalCwd = "";
@@ -363,7 +364,7 @@ describe("install-hooks — scope parsing", () => {
 		const payload = JSON.parse(out) as { ok: boolean; entries: Array<{ settings_path: string }> };
 		expect(payload.ok).toBe(true);
 		// user scope targets ~/.claude/settings.json, not the project tmp dir.
-		expect(payload.entries[0].settings_path).not.toContain(tmp);
+		expect(nonNull(payload.entries[0]).settings_path).not.toContain(tmp);
 	});
 
 	it("warns and falls back to project on an unknown scope", async () => {
@@ -382,7 +383,7 @@ describe("install-hooks — scope parsing", () => {
 		stderrSpy.mockRestore();
 		const payload = JSON.parse(out) as { entries: Array<{ settings_path: string }> };
 		// project scope lands inside the project tmp dir.
-		expect(payload.entries[0].settings_path).toContain(tmp);
+		expect(nonNull(payload.entries[0]).settings_path).toContain(tmp);
 	});
 });
 

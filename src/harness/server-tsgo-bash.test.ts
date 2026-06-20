@@ -9,6 +9,7 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 
@@ -271,8 +272,8 @@ describe("tryTsgoRewrite", () => {
 		});
 		// log fires once: the acceleration banner.
 		expect(log).toHaveBeenCalledTimes(1);
-		expect(log.mock.calls[0][0]).toContain("tsgo acceleration:");
-		expect(log.mock.calls[0][0]).toContain("→");
+		expect(nonNull(log.mock.calls[0])[0]).toContain("tsgo acceleration:");
+		expect(nonNull(log.mock.calls[0])[0]).toContain("→");
 	});
 
 	it("rewrites bare `tsc` → `npx tsgo` (adds the npx prefix)", () => {
@@ -325,7 +326,7 @@ describe("tryTsgoRewrite", () => {
 		const out = tryTsgoRewrite({ tool_input: { command: "tsc" } }, "/r", log);
 		expect(out).toBeNull();
 		expect(log).toHaveBeenCalledTimes(2); // banner + "falling back"
-		expect(log.mock.calls[1][0]).toBe("tsgo exited 2, falling back to tsc");
+		expect(nonNull(log.mock.calls[1])[0]).toBe("tsgo exited 2, falling back to tsc");
 	});
 
 	it("treats a null exit status as 1 (the `?? 1` fallback) and falls back", () => {
@@ -336,7 +337,7 @@ describe("tryTsgoRewrite", () => {
 		const log = vi.fn();
 		const out = tryTsgoRewrite({ tool_input: { command: "tsc" } }, "/r", log);
 		expect(out).toBeNull();
-		expect(log.mock.calls[1][0]).toBe("tsgo exited 1, falling back to tsc");
+		expect(nonNull(log.mock.calls[1])[0]).toBe("tsgo exited 1, falling back to tsc");
 	});
 
 	it("returns null from the catch block when the rewrite spawnSync throws (Error)", () => {
@@ -348,7 +349,7 @@ describe("tryTsgoRewrite", () => {
 		const out = tryTsgoRewrite({ tool_input: { command: "tsc" } }, "/r", log);
 		expect(out).toBeNull();
 		expect(log).toHaveBeenCalledTimes(2);
-		expect(log.mock.calls[1][0]).toBe("tsgo acceleration failed: spawn blew up");
+		expect(nonNull(log.mock.calls[1])[0]).toBe("tsgo acceleration failed: spawn blew up");
 	});
 
 	it("returns null from the catch block when the thrown value is not an Error (String fallback)", () => {
@@ -360,7 +361,7 @@ describe("tryTsgoRewrite", () => {
 		const log = vi.fn();
 		const out = tryTsgoRewrite({ tool_input: { command: "tsc" } }, "/r", log);
 		expect(out).toBeNull();
-		expect(log.mock.calls[1][0]).toBe("tsgo acceleration failed: string failure");
+		expect(nonNull(log.mock.calls[1])[0]).toBe("tsgo acceleration failed: string failure");
 	});
 
 	it("handles a missing command (the `|| ''` fallback) — rewrites to empty `npx tsgo`-less string", () => {

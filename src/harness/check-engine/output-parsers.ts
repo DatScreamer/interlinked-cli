@@ -6,6 +6,7 @@
 
 import { relative } from "node:path";
 import type { AuditResult, CheckResult } from "./types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 // -------------------------------------------
 // TypeScript (tsc --noEmit --pretty false)
@@ -195,15 +196,15 @@ export function parseDocsCheckOutput(output: string): CheckResult[] {
 	const results: CheckResult[] = [];
 	const lines = output.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		const header = lines[i].match(/^\[docs:fail\]\s+(.+?):\s*(.+)$/);
+		const header = nonNull(lines[i]).match(/^\[docs:fail\]\s+(.+?):\s*(.+)$/);
 		if (!header) continue;
-		const file = header[1];
-		let message = header[2];
+		const file = nonNull(header[1]);
+		let message = nonNull(header[2]);
 		// Fold expected/actual lines into the message when present.
 		const exp = lines[i + 1]?.match(/^\s*expected:\s*(.+)$/);
 		const act = lines[i + 2]?.match(/^\s*actual:\s*(.+)$/);
 		if (exp && act) {
-			message = `${message} (expected ${exp[1].trim()}, actual ${act[1].trim()})`;
+			message = `${message} (expected ${nonNull(exp[1]).trim()}, actual ${nonNull(act[1]).trim()})`;
 		}
 		results.push({
 			tool: "docs-check",
@@ -373,10 +374,10 @@ export function parseActionlintOutput(output: string): CheckResult[] {
 			results.push({
 				tool: "actionlint",
 				severity: "warning",
-				file: match[1],
-				line: Number.parseInt(match[2], 10),
-				column: Number.parseInt(match[3], 10),
-				message: match[4].trim(),
+				file: nonNull(match[1]),
+				line: Number.parseInt(nonNull(match[2]), 10),
+				column: Number.parseInt(nonNull(match[3]), 10),
+				message: nonNull(match[4]).trim(),
 				ruleId: match[5],
 			});
 		}
@@ -422,7 +423,7 @@ export function parseTaploOutput(output: string, filePath?: string): CheckResult
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		// Format: "error[rule]: message" followed by "  --> file:line:col"
-		const errorMatch = line.match(/^error(?:\[(.+?)\])?:\s*(.+)/);
+		const errorMatch = nonNull(line).match(/^error(?:\[(.+?)\])?:\s*(.+)/);
 		if (errorMatch) {
 			let file = filePath || "";
 			let lineNum = 0;
@@ -431,9 +432,9 @@ export function parseTaploOutput(output: string, filePath?: string): CheckResult
 			const nextLine = lines[i + 1] || "";
 			const locMatch = nextLine.match(/^\s*-->\s*(.+?):(\d+):(\d+)/);
 			if (locMatch) {
-				file = locMatch[1];
-				lineNum = Number.parseInt(locMatch[2], 10);
-				col = Number.parseInt(locMatch[3], 10);
+				file = nonNull(locMatch[1]);
+				lineNum = Number.parseInt(nonNull(locMatch[2]), 10);
+				col = Number.parseInt(nonNull(locMatch[3]), 10);
 				i++; // skip the location line
 			}
 			results.push({
@@ -442,7 +443,7 @@ export function parseTaploOutput(output: string, filePath?: string): CheckResult
 				file,
 				line: lineNum,
 				column: col,
-				message: errorMatch[2].trim(),
+				message: nonNull(errorMatch[2]).trim(),
 				ruleId: errorMatch[1],
 			});
 		}

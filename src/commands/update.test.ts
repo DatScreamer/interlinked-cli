@@ -62,6 +62,7 @@ import {
 	resolveSourceRepoRoot,
 	updateCommand,
 } from "./update.js";
+import { nonNull } from "../lib/non-null.js";
 
 class ProcessExit extends Error {
 	constructor(public code: number) {
@@ -515,7 +516,7 @@ describe("update — JSON output", () => {
 		await updateCommand({ json: true });
 
 		const lines = logLines();
-		const start = JSON.parse(lines[0]);
+		const start = JSON.parse(nonNull(lines[0]));
 		expect(start).toMatchObject({
 			cli_root: CLI_ROOT,
 			repo_root: CLI_ROOT,
@@ -524,7 +525,7 @@ describe("update — JSON output", () => {
 			updating: true,
 		});
 
-		const success = JSON.parse(lines[lines.length - 1]);
+		const success = JSON.parse(nonNull(lines[lines.length - 1]));
 		expect(success).toMatchObject({
 			success: true,
 			version: "1.2.3",
@@ -556,7 +557,7 @@ describe("update — JSON output", () => {
 		await updateCommand({ json: true });
 
 		const lines = logLines();
-		const success = JSON.parse(lines[lines.length - 1]);
+		const success = JSON.parse(nonNull(lines[lines.length - 1]));
 		expect(success.pulled).toBe(true);
 	});
 });
@@ -666,7 +667,7 @@ describe("update — managed checkout (not a source install)", () => {
 		await updateCommand({ json: true });
 
 		const lines = logLines();
-		const success = JSON.parse(lines[lines.length - 1]);
+		const success = JSON.parse(nonNull(lines[lines.length - 1]));
 		expect(success).toMatchObject({
 			success: true,
 			linked: true,
@@ -925,7 +926,7 @@ describe("update — JSON mode suppresses human chrome on every soft-failure", (
 	/** Assert the trailing JSON success envelope plus zero human chrome. */
 	function expectCleanJsonSuccess(): void {
 		const lines = logLines();
-		const success = JSON.parse(lines[lines.length - 1]);
+		const success = JSON.parse(nonNull(lines[lines.length - 1]));
 		expect(success.success).toBe(true);
 		// No human progress strings leaked into stdout/console in JSON mode.
 		expect(stdoutText()).toBe("");

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpfHttpScanner } from "../opf-http.js";
 import type { ContentScannerConfig } from "../types.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 function makeConfig(overrides: Partial<ContentScannerConfig> = {}): ContentScannerConfig {
 	return {
@@ -74,7 +75,7 @@ describe("OpfHttpScanner — huggingface runtime", () => {
 		]);
 
 		expect(fetchFn).toHaveBeenCalledOnce();
-		const [url, init] = fetchFn.mock.calls[0];
+		const [url, init] = nonNull(fetchFn.mock.calls[0]);
 		expect(url).toBe(
 			"https://api-inference.huggingface.co/models/openai/gpt-oss-safeguard-20b",
 		);
@@ -139,7 +140,7 @@ describe("OpfHttpScanner — huggingface runtime", () => {
 		});
 		const findings = await scanner.scan({ text: "sk", source: "s" });
 		expect(findings).toHaveLength(1);
-		expect(findings[0].label).toBe("secret");
+		expect(nonNull(findings[0]).label).toBe("secret");
 	});
 
 	it("omits Authorization header when no API key is set", async () => {
@@ -149,7 +150,7 @@ describe("OpfHttpScanner — huggingface runtime", () => {
 			resolveEnv: () => undefined,
 		});
 		await scanner.scan({ text: "x", source: "s" });
-		const init = fetchFn.mock.calls[0][1];
+		const init = nonNull(fetchFn.mock.calls[0])[1];
 		expect(init?.headers).toMatchObject({ "Content-Type": "application/json" });
 		expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
 	});
@@ -166,7 +167,7 @@ describe("OpfHttpScanner — custom_http runtime", () => {
 			{ fetchFn, resolveEnv: () => undefined },
 		);
 		await scanner.scan({ text: "x", source: "s" });
-		const [url, init] = fetchFn.mock.calls[0];
+		const [url, init] = nonNull(fetchFn.mock.calls[0]);
 		expect(url).toBe("https://my-tgi.internal/scan");
 		expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
 	});
@@ -201,7 +202,7 @@ describe("OpfHttpScanner — custom_http runtime", () => {
 			},
 		);
 		await scanner.scan({ text: "x", source: "s" });
-		const init = fetchFn.mock.calls[0][1];
+		const init = nonNull(fetchFn.mock.calls[0])[1];
 		expect((init?.headers as Record<string, string>).Authorization).toBe(
 			"Bearer custom-secret-123",
 		);
@@ -242,7 +243,7 @@ describe("OpfHttpScanner — ready() probe", () => {
 		expect(await scanner.ready()).toBe(true);
 		// The probe sends an empty input — auth + routing exercised, ~zero cost.
 		expect(fetchFn).toHaveBeenCalledOnce();
-		expect(fetchFn.mock.calls[0][1]?.body).toBe(JSON.stringify({ inputs: "" }));
+		expect(nonNull(fetchFn.mock.calls[0])[1]?.body).toBe(JSON.stringify({ inputs: "" }));
 	});
 
 	it("returns false when the endpoint answers non-2xx", async () => {
@@ -361,7 +362,7 @@ describe("OpfHttpScanner — default DI seams (no test hooks supplied)", () => {
 				{ fetchFn },
 			);
 			await scanner.scan({ text: "x", source: "s" });
-			const init = fetchFn.mock.calls[0][1];
+			const init = nonNull(fetchFn.mock.calls[0])[1];
 			expect((init?.headers as Record<string, string>).Authorization).toBe(
 				"Bearer env-token-from-process",
 			);
@@ -382,7 +383,7 @@ describe("OpfHttpScanner — default DI seams (no test hooks supplied)", () => {
 			{ fetchFn },
 		);
 		await scanner.scan({ text: "x", source: "s" });
-		const init = fetchFn.mock.calls[0][1];
+		const init = nonNull(fetchFn.mock.calls[0])[1];
 		expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
 	});
 });
@@ -470,7 +471,7 @@ describe("OpfHttpScanner — caller AbortSignal is merged into the request", () 
 		expect(findings).toEqual([]);
 		expect(fetchFn).toHaveBeenCalledOnce();
 		// The signal handed to fetch must have been aborted by the timeout.
-		expect(fetchFn.mock.calls[0][1]?.signal?.aborted).toBe(true);
+		expect(nonNull(fetchFn.mock.calls[0])[1]?.signal?.aborted).toBe(true);
 	});
 
 	it("merges via the hand-rolled fallback when AbortSignal.any is unavailable (older runtimes)", async () => {

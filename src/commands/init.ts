@@ -40,6 +40,7 @@ import {
 	printProjectContext,
 	printServer,
 } from "./init-presentation.js";
+import { nonNull } from "../lib/non-null.js";
 
 // No hardcoded production default — the public distribution has no server
 // to point at. Users supply one via `--server`, and the probe/local
@@ -94,10 +95,10 @@ function deriveProjectFromGit(cwd: string): string | null {
 			const content = readFileSync(gitConfigPath, "utf-8");
 			const urlMatch = content.match(/url\s*=\s*(.+)/);
 			if (urlMatch) {
-				const url = urlMatch[1].trim();
+				const url = nonNull(urlMatch[1]).trim();
 				// Extract repo name from URL
 				const repoMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
-				if (repoMatch) return repoMatch[1];
+				if (repoMatch) return nonNull(repoMatch[1]);
 			}
 		} catch (_) {
 			/* intentional: unable to parse git config, fall through to directory name */

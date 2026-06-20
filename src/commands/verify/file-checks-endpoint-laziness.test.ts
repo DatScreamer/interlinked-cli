@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
 import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { nonNull } from "../../lib/non-null.js";
 
 function ctx(content: string, file = "/tmp/sample.ts"): FileCheckContext {
 	return { file, content, relPath: "sample.ts", cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -30,14 +31,14 @@ describe("runEndpointAndLazinessChecks", () => {
 		const c = ctx('function handler() { throw new Error("not implemented"); }\n');
 		runEndpointAndLazinessChecks(c);
 		expect(c.r.stubNotImplementedThrow.length).toBeGreaterThan(0);
-		expect(c.r.stubNotImplementedThrow[0].check).toBe("stub_not_implemented_throw");
+		expect(nonNull(c.r.stubNotImplementedThrow[0]).check).toBe("stub_not_implemented_throw");
 	});
 
 	it("flags a dead branch literal (dead_branch_literal)", () => {
 		const c = ctx('if (true) { doThing(); }\n');
 		runEndpointAndLazinessChecks(c);
 		expect(c.r.deadBranchLiteral.length).toBeGreaterThan(0);
-		expect(c.r.deadBranchLiteral[0].check).toBe("dead_branch_literal");
+		expect(nonNull(c.r.deadBranchLiteral[0]).check).toBe("dead_branch_literal");
 	});
 
 	it("produces the same dead_branch_literal findings as the orchestrator (delegation)", () => {

@@ -22,6 +22,7 @@ import {
 	parseBarePrediction,
 } from "./graph-prediction-parser.js";
 import type { HarnessEvent } from "./types.js";
+import { nonNull } from "../lib/non-null.js";
 
 // ── Re-exported types ────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ export function parseSentinelPath(filePath: string, cwd: string): SentinelMatch 
 	const rel = relative(expectedPrefix, abs);
 	const m = rel.match(/^([^/]+)\/[^/]+\.ya?ml$/);
 	if (!m) return null;
-	return { sessionId: m[1], absPath: abs };
+	return { sessionId: nonNull(m[1]), absPath: abs };
 }
 
 /** Match `.interlinked/predictions/ack/<session_id>/<slug>.yaml`. Same
@@ -73,7 +74,7 @@ export function parseSentinelAckPath(filePath: string, cwd: string): SentinelMat
 	const rel = relative(expectedPrefix, abs);
 	const m = rel.match(/^([^/]+)\/[^/]+\.ya?ml$/);
 	if (!m) return null;
-	return { sessionId: m[1], absPath: abs };
+	return { sessionId: nonNull(m[1]), absPath: abs };
 }
 
 // ── Ack submission ───────────────────────────────────────────────────────────
@@ -119,7 +120,7 @@ export function parseAckSubmission(yaml: string): ParsedAckSubmission {
 		}
 		const fileMatch = line.match(/^\s+file:\s*(.+?)\s*$/);
 		if (fileMatch) {
-			file = fileMatch[1].replace(/^["']|["']$/g, "");
+			file = nonNull(fileMatch[1]).replace(/^["']|["']$/g, "");
 			inTriggers = false;
 			continue;
 		}
@@ -129,7 +130,7 @@ export function parseAckSubmission(yaml: string): ParsedAckSubmission {
 		}
 		if (inTriggers) {
 			const itemMatch = line.match(/^\s+-\s+(.+?)\s*$/);
-			if (itemMatch) triggers.push(itemMatch[1].replace(/^["']|["']$/g, ""));
+			if (itemMatch) triggers.push(nonNull(itemMatch[1]).replace(/^["']|["']$/g, ""));
 			else if (/^\s+\S/.test(line)) inTriggers = false;
 		}
 	}

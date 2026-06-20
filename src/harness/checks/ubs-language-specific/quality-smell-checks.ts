@@ -10,6 +10,7 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile, isPyFile, MATCH_LIMIT } from "./_shared.js";
+import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_string_concat_in_loop` — `result += chunk` inside a loop is O(n²) in
@@ -32,7 +33,7 @@ function collectNumericVars(strippedLines: string[]): Set<string> {
 	const numericVars = new Set<string>();
 	for (const sl of strippedLines) {
 		for (const nm of sl.matchAll(/\b([A-Za-z_$]\w*)\s*=\s*-?\d/g)) {
-			numericVars.add(nm[1]);
+			numericVars.add(nonNull(nm[1]));
 		}
 	}
 	return numericVars;
@@ -64,8 +65,8 @@ function scanBraceConcatLine(
 	}
 	const concat =
 		state.loopDepth > 0 ? line.match(/\b([A-Za-z_$]\w*)\s*\+=\s*[A-Za-z_$"'`]/) : null;
-	if (concat && !numericVars.has(concat[1])) {
-		matches.push({ line: idx + 1, text: originalLines[idx].trim().slice(0, 150) });
+	if (concat && !numericVars.has(nonNull(concat[1]))) {
+		matches.push({ line: idx + 1, text: nonNull(originalLines[idx]).trim().slice(0, 150) });
 	}
 	// Roughly pop loop depth when braces close — heuristic only.
 	if (state.loopDepth > 0 && closeCount > openCount) {
@@ -87,9 +88,9 @@ export function checkUbsStringConcatInLoop(content: string, filePath: string): I
 	const numericVars = collectNumericVars(strippedLines);
 	const state: BraceLoopState = { loopDepth: 0 };
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, sl] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		scanBraceConcatLine(strippedLines[i], i, originalLines, numericVars, state, matches);
+		scanBraceConcatLine(sl, i, originalLines, numericVars, state, matches);
 	}
 	return matches;
 }
@@ -111,21 +112,21 @@ export function checkNumericComparisonChain(content: string, filePath: string): 
 	// contain `instanceof` or `compareTo`, flag the first line of the run.
 	let runStart = -1;
 	let runLen = 0;
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, sl] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
 		const has =
-			/\binstanceof\b/.test(strippedLines[i]) ||
-			/\bcompareTo\s*\(/.test(strippedLines[i]);
+			/\binstanceof\b/.test(sl) ||
+			/\bcompareTo\s*\(/.test(sl);
 		if (has) {
 			if (runStart === -1) runStart = i;
 			runLen++;
-		} else if (/^\s*[}\s]*$/.test(strippedLines[i])) {
+		} else if (/^\s*[}\s]*$/.test(sl)) {
 			// blank or brace-only line: tolerate inside a run
 		} else {
 			if (runLen >= 3 && runStart !== -1) {
 				matches.push({
 					line: runStart + 1,
-					text: originalLines[runStart].trim().slice(0, 150),
+					text: nonNull(originalLines[runStart]).trim().slice(0, 150),
 				});
 			}
 			runStart = -1;
@@ -135,7 +136,7 @@ export function checkNumericComparisonChain(content: string, filePath: string): 
 	if (runLen >= 3 && runStart !== -1 && matches.length < MATCH_LIMIT) {
 		matches.push({
 			line: runStart + 1,
-			text: originalLines[runStart].trim().slice(0, 150),
+			text: nonNull(originalLines[runStart]).trim().slice(0, 150),
 		});
 	}
 	return matches;
@@ -173,10 +174,10 @@ export function checkPrintDebugLeak(content: string, filePath: string): InlineMa
 
 	const re = /\b(?:console\.log|print|fmt\.Println)\s*\(/;
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, sl] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!re.test(strippedLines[i])) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		if (!re.test(sl)) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -212,12 +213,11 @@ export function checkMagicNumberNoConst(content: string, filePath: string): Inli
 	const re = /\b(?:const|let|var|final)\b\s*\w+\s*=\s*\d+/;
 	const magicRe = /(?<![\w.])\d{3,}(?:\.\d+)?\b/;
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
 		if (!magicRe.test(line)) continue;
 		if (re.test(line)) continue; // declaration with literal — fine
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }
@@ -234,14 +234,14 @@ function scanPyLargeFunctions(
 	originalLines: string[],
 ): InlineMatch[] {
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, sl] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const m = strippedLines[i].match(/^(\s*)def\s+\w+\s*\(/);
+		const m = sl.match(/^(\s*)def\s+\w+\s*\(/);
 		if (!m) continue;
-		const headerIndent = m[1].length;
+		const headerIndent = nonNull(m[1]).length;
 		const bodyLines = countPyBodyLines(strippedLines, i, headerIndent);
 		if (bodyLines >= LARGE_FUNCTION_LINE_LIMIT) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -258,7 +258,7 @@ function countPyBodyLines(
 ): number {
 	let bodyLines = 0;
 	for (let j = startIdx + 1; j < strippedLines.length; j++) {
-		const inner = strippedLines[j];
+		const inner = nonNull(strippedLines[j]);
 		if (inner.trim() === "") {
 			bodyLines++;
 			continue;
@@ -280,16 +280,16 @@ function scanCFamilyLargeFunctions(
 ): InlineMatch[] {
 	const headerRe = /\b(?:function\s+\w+|fn\s+\w+|func\s+\w+|\w+\s*=\s*\([^)]*\)\s*=>)/;
 	const matches: InlineMatch[] = [];
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, sl] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		if (!headerRe.test(strippedLines[i])) continue;
+		if (!headerRe.test(sl)) continue;
 		const openIdx = findOpeningBrace(strippedLines, i);
 		if (openIdx === -1) continue;
 		const endIdx = findBraceBalanceEnd(strippedLines, openIdx);
 		if (endIdx === -1) continue;
 		const bodyLines = endIdx - openIdx;
 		if (bodyLines >= LARGE_FUNCTION_LINE_LIMIT) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -301,7 +301,7 @@ function scanCFamilyLargeFunctions(
  */
 function findOpeningBrace(strippedLines: string[], startIdx: number): number {
 	for (let k = startIdx; k < Math.min(startIdx + 5, strippedLines.length); k++) {
-		if (strippedLines[k].includes("{")) return k;
+		if (nonNull(strippedLines[k]).includes("{")) return k;
 	}
 	return -1;
 }
@@ -313,8 +313,9 @@ function findOpeningBrace(strippedLines: string[], startIdx: number): number {
 function findBraceBalanceEnd(strippedLines: string[], openIdx: number): number {
 	let depth = 0;
 	for (let k = openIdx; k < strippedLines.length; k++) {
-		const opens = (strippedLines[k].match(/\{/g) || []).length;
-		const closes = (strippedLines[k].match(/\}/g) || []).length;
+		const sl = nonNull(strippedLines[k]);
+		const opens = (sl.match(/\{/g) || []).length;
+		const closes = (sl.match(/\}/g) || []).length;
 		depth += opens - closes;
 		if (depth === 0 && k > openIdx) return k;
 	}
@@ -371,9 +372,8 @@ export function checkDeeplyNestedCallback(content: string, filePath: string): In
 	let braceDepth = 0;
 	const funcOpenStack: number[] = [];
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
 
 		// Count function-opener occurrences on this line. We treat `function`,
 		// `function (`, and `=>` as candidates.
@@ -392,13 +392,13 @@ export function checkDeeplyNestedCallback(content: string, filePath: string): In
 		braceDepth += opens - closes;
 
 		// Pop funcs whose entry depth is now ≥ current.
-		while (funcOpenStack.length > 0 && funcOpenStack[funcOpenStack.length - 1] >= braceDepth) {
+		while (funcOpenStack.length > 0 && nonNull(funcOpenStack[funcOpenStack.length - 1]) >= braceDepth) {
 			funcOpenStack.pop();
 			funcDepth = funcOpenStack.length;
 		}
 
 		if (funcDepth >= NESTING_LIMIT) {
-			matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;
@@ -425,11 +425,10 @@ export function checkTimeFormatLocaleDep(content: string, filePath: string): Inl
 	// Java: DateTimeFormatter.ofLocalizedDate(...) without `.withLocale(`.
 	const javaRe = /\bDateTimeFormatter\.ofLocalized\w+\s*\([^)]*\)(?!\s*\.withLocale)/;
 
-	for (let i = 0; i < strippedLines.length; i++) {
+	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= MATCH_LIMIT) break;
-		const line = strippedLines[i];
 		if (ext === ".java" ? !javaRe.test(line) : !jsRe.test(line)) continue;
-		matches.push({ line: i + 1, text: originalLines[i].trim().slice(0, 150) });
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }

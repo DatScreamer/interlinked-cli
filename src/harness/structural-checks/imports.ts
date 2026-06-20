@@ -10,6 +10,7 @@ import type { JsonObject } from "../../lib/json-types.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol, StructuralCheckResult } from "../types.js";
 import { escapeRegex } from "./helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.
@@ -133,7 +134,7 @@ export function checkDeadImports(filePath: string, relPath: string): StructuralC
 
 	let importSectionEnded = false;
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trim();
+		const trimmed = nonNull(lines[i]).trim();
 
 		// Handle multiline imports
 		if (buffer) {
@@ -211,14 +212,14 @@ function processImportLine(line: string, bindings: Array<{ name: string }>): voi
 	// Named: import { a, b as c } from '...'  or  import type { ... }
 	const namedMatch = trimmed.match(/^import\s+(?:type\s+)?\{([^}]+)\}/);
 	if (namedMatch) {
-		const names = namedMatch[1]
+		const names = nonNull(namedMatch[1])
 			.split(",")
 			.map((s) => {
 				const parts = s
 					.trim()
 					.replace(/^type\s+/, "")
 					.split(/\s+as\s+/);
-				return parts[parts.length - 1].trim();
+				return nonNull(parts[parts.length - 1]).trim();
 			})
 			.filter(Boolean);
 		for (const name of names) {
@@ -232,7 +233,7 @@ function processImportLine(line: string, bindings: Array<{ name: string }>): voi
 	// Default: import Name from '...'
 	const defaultMatch = trimmed.match(/^import\s+(?:type\s+)?(\w+)\s+from/);
 	if (defaultMatch && defaultMatch[1] !== "type") {
-		bindings.push({ name: defaultMatch[1] });
+		bindings.push({ name: nonNull(defaultMatch[1]) });
 	}
 }
 
@@ -362,7 +363,7 @@ export function checkHallucinatedImports(
 		// Extract package name (handle scoped packages)
 		const pkgName = spec.startsWith("@")
 			? spec.split("/").slice(0, 2).join("/")
-			: spec.split("/")[0];
+			: nonNull(spec.split("/")[0]);
 
 		if (BUILTIN_MODULES.has(spec) || BUILTIN_MODULES.has(pkgName)) continue;
 		if (allDeps.has(pkgName)) continue;

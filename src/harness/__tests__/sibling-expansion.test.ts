@@ -7,6 +7,7 @@
 // closures in tests, not real detectors").
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
 import { expandEndpointDetectorSiblings } from "../sibling-expansion.js";
 
@@ -40,9 +41,9 @@ describe("expandEndpointDetectorSiblings", () => {
 			readFile: () => "// fake file contents",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe(original[0].message);
+		expect(nonNull(out[0]).message).toBe(nonNull(original[0]).message);
 		// Input must not have been mutated.
-		expect(original[0].message).toBe(`default message for endpoint_idor_shape at /abs/routes/users.ts:12`);
+		expect(nonNull(original[0]).message).toBe(`default message for endpoint_idor_shape at /abs/routes/users.ts:12`);
 	});
 
 	it("single finding with 2 siblings → first finding's message gets bundle suffix listing sibling lines", () => {
@@ -63,10 +64,10 @@ describe("expandEndpointDetectorSiblings", () => {
 			readFile: () => "// fake file contents",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toContain("IDOR shape at /users/:id");
-		expect(out[0].message).toContain("Same shape on 2 sibling endpoints in users.ts: 47, 89");
+		expect(nonNull(out[0]).message).toContain("IDOR shape at /users/:id");
+		expect(nonNull(out[0]).message).toContain("Same shape on 2 sibling endpoints in users.ts: 47, 89");
 		// Sibling-line list must be sorted ascending.
-		expect(out[0].message.indexOf("47")).toBeLessThan(out[0].message.indexOf("89"));
+		expect(nonNull(out[0]).message.indexOf("47")).toBeLessThan(nonNull(out[0]).message.indexOf("89"));
 	});
 
 	it("group with N pre-discovered findings + extra siblings on rescan → bundle counts only the NEW siblings, lists them sorted", () => {
@@ -86,8 +87,8 @@ describe("expandEndpointDetectorSiblings", () => {
 		});
 		expect(out).toHaveLength(2);
 		// Only the lead (index 0) gets the suffix — the second finding is untouched.
-		expect(out[0].message).toContain("Same shape on 2 sibling endpoints in r.ts: 30, 75");
-		expect(out[1].message).not.toContain("Same shape on");
+		expect(nonNull(out[0]).message).toContain("Same shape on 2 sibling endpoints in r.ts: 30, 75");
+		expect(nonNull(out[1]).message).not.toContain("Same shape on");
 	});
 
 	it("single sibling uses singular noun (1 sibling endpoint, not endpoints)", () => {
@@ -101,9 +102,9 @@ describe("expandEndpointDetectorSiblings", () => {
 			],
 			readFile: () => "// fake",
 		});
-		expect(out[0].message).toContain("Same shape on 1 sibling endpoint in x.ts: 42");
+		expect(nonNull(out[0]).message).toContain("Same shape on 1 sibling endpoint in x.ts: 42");
 		// Make sure we didn't say "endpoints" with the singular count.
-		expect(out[0].message).not.toContain("1 sibling endpoints");
+		expect(nonNull(out[0]).message).not.toContain("1 sibling endpoints");
 	});
 
 	it("two different check_ids in the same file → each group expanded independently, neither bleeds into the other", () => {
@@ -179,7 +180,7 @@ describe("expandEndpointDetectorSiblings", () => {
 			readFile: () => "// fake",
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe("original message");
+		expect(nonNull(out[0]).message).toBe("original message");
 	});
 
 	it("readFile throws → original findings returned unchanged, rescan is never called for that file", () => {
@@ -197,7 +198,7 @@ describe("expandEndpointDetectorSiblings", () => {
 			},
 		});
 		expect(out).toHaveLength(1);
-		expect(out[0].message).toBe(original[0].message);
+		expect(nonNull(out[0]).message).toBe(nonNull(original[0]).message);
 		expect(rescanCalled).toBe(false);
 	});
 
@@ -265,9 +266,9 @@ describe("expandEndpointDetectorSiblings", () => {
 			readFile: () => "// fake",
 		});
 		expect(out).toHaveLength(100);
-		expect(out[0].message).toContain("Same shape on 50 sibling endpoints");
+		expect(nonNull(out[0]).message).toContain("Same shape on 50 sibling endpoints");
 		// Subsequent findings unchanged — only the lead carries the bundle.
-		expect(out[1].message).not.toContain("Same shape on");
-		expect(out[99].message).not.toContain("Same shape on");
+		expect(nonNull(out[1]).message).not.toContain("Same shape on");
+		expect(nonNull(out[99]).message).not.toContain("Same shape on");
 	});
 });
