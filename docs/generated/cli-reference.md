@@ -28,7 +28,7 @@ Commands:
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
   daemons [options]                          List active harness daemons, PID liveness, socket paths, and health
-  disable [options]                          Remove hooks and optionally clean config
+  disable [options]                          Stand the harness down for this project (recorded); --uninstall to remove hooks + config
   doctor [options]                           Diagnose issues (local + server checks)
   enable [options]                           Install hooks + create .interlinked/ config
   env [options]                              Show supported environment variables and their current values
@@ -44,6 +44,7 @@ Commands:
   login [options]                            Authenticate with the server (opens browser)
   logout [options]                           Clear authentication credentials (preserves other config)
   logs [options]                             View local activity log (offline, no server needed)
+  mcp                                        Record mediated MCP server protocol traffic
   metrics [options]                          Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
@@ -786,11 +787,20 @@ Options:
 ```
 Usage: interlinked disable [options]
 
-Remove hooks and optionally clean config
+Stand the harness down for this project (recorded); --uninstall to remove hooks
++ config
 
 Options:
-  --keep-config  Preserve .interlinked/ config files
-  -h, --help     display help for command
+  --team              Write a committed marker (shared, shows in PR diffs)
+                      instead of a personal one
+  --reason <text>     Why the harness is being stood down (recorded in the
+                      audit log)
+  --until <duration>  Auto-expire the stand-down (e.g. 30m, 2h, 1d)
+  --by <name>         Who is standing it down (defaults to agent name / $USER)
+  --uninstall         Destructive teardown: remove hooks from all clients and
+                      delete .interlinked/
+  --keep-config       With --uninstall, preserve .interlinked/ config files
+  -h, --help          display help for command
 ```
 
 ### status
