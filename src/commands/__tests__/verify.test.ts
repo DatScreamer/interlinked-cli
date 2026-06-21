@@ -211,6 +211,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"untested_inverse_pair",
 				"default_export",
 				"duplicated_policy_constant",
+				"snapshot_hygiene",
 				"else_if_chain",
 				"files_without_test",
 				"flag_argument",

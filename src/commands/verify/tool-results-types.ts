@@ -91,6 +91,8 @@ export interface CodeQualityResults {
 	writeWithoutMkdir: CodeQualityIssue[];
 	/** Bare numeric literal duplicating a same-file named policy constant. */
 	duplicatedPolicyConstant: CodeQualityIssue[];
+	/** Snapshot-review artifact (*.snap.new / *.pending-snap) written — never commit. */
+	snapshotHygiene: CodeQualityIssue[];
 	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
 	gitignoredWrittenConfig: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];

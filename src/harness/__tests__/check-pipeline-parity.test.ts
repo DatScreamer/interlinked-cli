@@ -583,6 +583,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"arrayIterateeVariadicBuiltin",
 			"writeWithoutMkdir",
 			"duplicatedPolicyConstant",
+			"snapshotHygiene",
 			"gitignoredWrittenConfig",
 			"asyncPromiseExecutor",
 			"selfImports",

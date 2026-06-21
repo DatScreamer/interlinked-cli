@@ -61,6 +61,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"arrayIterateeVariadicBuiltin",
 	"writeWithoutMkdir",
 	"duplicatedPolicyConstant",
+	"snapshotHygiene",
 	"gitignoredWrittenConfig",
 	"asyncPromiseExecutor",
 	"selfImports",

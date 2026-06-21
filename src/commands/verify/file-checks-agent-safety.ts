@@ -25,6 +25,7 @@ import { detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js
 import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js";
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
 import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
+import { detectSnapshotHygiene } from "../../harness/checks/snapshot-hygiene.js";
 import {
 	coverageForFile,
 	loadCoverageFinal,
@@ -324,6 +325,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			relPath,
 			detectPolicyConstantDrift(content, file),
 		),
+	);
+	r.snapshotHygiene.push(
+		...toIssues("snapshot_hygiene", relPath, detectSnapshotHygiene(content, file)),
 	);
 	// gitignored_written_config — verify-only (3-arg detector needs git context).
 	// Backed by a `git check-ignore` resolver; fails open to "not ignored" off-git.

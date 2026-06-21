@@ -124,6 +124,9 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// excluded, yet domain values still collide. Advisory until the match can
 	// consult the literal's syntactic role.
 	"duplicated_policy_constant",
+	// snapshot_hygiene: zero-FP path match on *.snap.new / *.pending-snap review
+	// artifacts; test-integrity taste guard — periodic-sweep concern, not per-edit.
+	"snapshot_hygiene",
 	// gitignored_written_config: verify-only (needs `git check-ignore`). Real
 	// "this file can never be committed" bug class, but only statically-
 	// resolvable paths are flagged and the ephemeral-target exclusion list is

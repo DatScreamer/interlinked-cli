@@ -69,6 +69,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	snapshot_hygiene: {
+		name: "Snapshot Hygiene",
+		description:
+			"Detects a write whose target path is a snapshot-review artifact (jest/vitest `*.snap.new` or cargo-insta `*.pending-snap`) that must never be committed — the runner ignores it at test time, so committing it leaves a dangling artifact without satisfying the assertion",
+		tier: 1,
+		determinism: "heuristic",
+	},
 	gitignored_written_config: {
 		name: "Gitignored Written Config",
 		description:

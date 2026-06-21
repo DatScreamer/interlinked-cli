@@ -6,6 +6,7 @@
 import { detectWriteWithoutMkdir } from "../../checks/fs-write-safety.js";
 import { detectNaNCoercionGuards } from "../../checks/nan-coercion.js";
 import { detectPolicyConstantDrift } from "../../checks/policy-constant-drift.js";
+import { detectSnapshotHygiene } from "../../checks/snapshot-hygiene.js";
 import {
 	checkAwaitStateToctou,
 	checkBooleanTrap,
@@ -220,6 +221,22 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 			"A bare literal repeats the value of a named policy constant defined in the same file. Reference the constant (e.g. `MAX_RETRIES` instead of the bare `7`) so the two can't drift — when the cap changes, every use updates with it. Trivial numbers (0, 1, 2, 100, 1000, …) are already excluded, so a flagged literal is a genuine policy value.",
 		fn: detectPolicyConstantDrift,
 		resultsPropName: "duplicatedPolicyConstant",
+	},
+	{
+		id: "snapshot_hygiene",
+		phase: "post",
+		name: "Snapshot Hygiene",
+		description:
+			"Detects a write whose target path is a snapshot-review artifact that must never be committed — jest/vitest `*.snap.new` or cargo-insta `*.pending-snap` (including under __snapshots__/ and snapshots/). Committing one is the snapshot analog of leaving an `.only`/`.skip` behind: the runner ignores it at test time, so the assertion looks satisfied but isn't.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This is a snapshot-review artifact (`*.snap.new` / `*.pending-snap`), not an accepted snapshot. Runners write it on a mismatch and IGNORE it at test time, so committing it neither fixes the test nor lands a real snapshot. Regenerate the accepted snapshot through the runner instead: `vitest -u` (or `jest -u`) for `.snap.new`, `cargo insta accept` for `.pending-snap`.",
+		fn: detectSnapshotHygiene,
+		resultsPropName: "snapshotHygiene",
+		content_keywords: [],
 	},
 	{
 		id: "iterator_invalidation",

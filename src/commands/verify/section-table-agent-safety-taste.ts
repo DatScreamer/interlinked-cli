@@ -117,6 +117,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "snapshot hygiene",
+		key: "snapshotHygiene",
+		noun: "writes of snapshot-review artifacts (*.snap.new / *.pending-snap) that must not be committed",
+		passLabel: "no committed snapshot-review artifacts",
+		color: "33",
+	},
+	{
 		label: "gitignored written config",
 		key: "gitignoredWrittenConfig",
 		noun: "file-writes to a path excluded by .gitignore (no negation carve-out)",

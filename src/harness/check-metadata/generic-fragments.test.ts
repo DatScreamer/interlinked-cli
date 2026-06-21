@@ -70,6 +70,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"array_iteratee_variadic_builtin",
 			"write_without_mkdir",
 			"duplicated_policy_constant",
+			"snapshot_hygiene",
 			"gitignored_written_config",
 			"promise_reject_non_error",
 			"lossy_error_rethrow",
@@ -327,10 +328,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 190-key total", () => {
+	it("preserves the full 191-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(190);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(191);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(190);
+		expect(fragmentKeyTotal).toBe(191);
 	});
 });
