@@ -27,7 +27,7 @@ function isConfigFile(filePath: string): boolean {
 	return CONFIG_BASENAME_RE.test(filePath.replace(/\\/g, "/"));
 }
 
-function safeJsonParse(text: string): unknown {
+export function safeJsonParse(text: string): unknown {
 	if (!text) return null;
 	try {
 		// Tolerate JSONC (// comments and trailing commas) in tsconfig / biome.
@@ -234,7 +234,7 @@ export function detectConfigLoosening(
  * (e.g. `packages/api/tsconfig.json`) compare against their own HEAD
  * baseline, not the repo-root file with the same basename.
  */
-function readHeadVersion(file: string): string {
+export function readHeadVersion(file: string): string {
 	const fileDir = dirname(file);
 	try {
 		const top = spawnSync("git", ["-C", fileDir, "rev-parse", "--show-toplevel"], {
@@ -257,7 +257,7 @@ function readHeadVersion(file: string): string {
 	}
 }
 
-function readDiskContent(file: string, cwd: string | undefined): string | null {
+export function readDiskContent(file: string, cwd: string | undefined): string | null {
 	const abs = isAbsolute(file) ? file : resolve(cwd ?? process.cwd(), file);
 	if (!existsSync(abs)) return null;
 	try {

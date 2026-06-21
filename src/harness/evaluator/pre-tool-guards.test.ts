@@ -26,6 +26,7 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import {
+	evaluateBaselineIntegrityGate,
 	evaluateConfigLooseningGate,
 	evaluateEditOldStringGuard,
 	evaluateGitScopeGate,
@@ -933,6 +934,85 @@ describe("evaluateConfigLooseningGate", () => {
 						file_path: target,
 						content: JSON.stringify(
 							{ compilerOptions: { strict: true } },
+							null,
+							2,
+						),
+					},
+				}),
+				"Write",
+				[],
+			),
+		).toBeNull();
+	});
+});
+
+// ============================================================
+// evaluateBaselineIntegrityGate
+// ============================================================
+
+describe("evaluateBaselineIntegrityGate", () => {
+	it("blocks a Write that lowers a committed coverage baseline", () => {
+		const repoRoot = realpathSync(workspace);
+		initRepo(repoRoot);
+		mkdirSync(join(repoRoot, ".interlinked"), { recursive: true });
+		const target = join(repoRoot, ".interlinked", "coverage-baseline.json");
+		writeFileSync(
+			target,
+			JSON.stringify({ version: 1, files: { "src/a.ts": { lines_pct: 90 } } }, null, 2),
+		);
+		git(["add", "-f", ".interlinked/coverage-baseline.json"], repoRoot);
+		git(["commit", "-q", "-m", "add baseline"], repoRoot);
+		const d = evaluateBaselineIntegrityGate(
+			makeEvent({
+				cwd: repoRoot,
+				tool_name: "Write",
+				tool_input: {
+					file_path: target,
+					content: JSON.stringify(
+						{ version: 1, files: { "src/a.ts": { lines_pct: 10 } } },
+						null,
+						2,
+					),
+				},
+			}),
+			"Write",
+			["w"],
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.rule_id).toBe("baseline_integrity_gate");
+		expect(d?.warnings).toEqual(["w"]);
+	});
+
+	it("returns null for a non-file-write tool", () => {
+		expect(
+			evaluateBaselineIntegrityGate(
+				makeEvent({ tool_name: "Bash", tool_input: { command: "ls" } }),
+				"Bash",
+				[],
+			),
+		).toBeNull();
+	});
+
+	it("returns null when a baseline edit raises (tightens) coverage", () => {
+		const repoRoot = realpathSync(workspace);
+		initRepo(repoRoot);
+		mkdirSync(join(repoRoot, ".interlinked"), { recursive: true });
+		const target = join(repoRoot, ".interlinked", "coverage-baseline.json");
+		writeFileSync(
+			target,
+			JSON.stringify({ version: 1, files: { "src/a.ts": { lines_pct: 90 } } }, null, 2),
+		);
+		git(["add", "-f", ".interlinked/coverage-baseline.json"], repoRoot);
+		git(["commit", "-q", "-m", "add baseline"], repoRoot);
+		expect(
+			evaluateBaselineIntegrityGate(
+				makeEvent({
+					cwd: repoRoot,
+					tool_name: "Write",
+					tool_input: {
+						file_path: target,
+						content: JSON.stringify(
+							{ version: 1, files: { "src/a.ts": { lines_pct: 99 } } },
 							null,
 							2,
 						),

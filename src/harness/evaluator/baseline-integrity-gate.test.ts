@@ -1,0 +1,219 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { HarnessEvent } from "../types.js";
+import {
+	detectBaselineGaming,
+	evaluateBaselineIntegrityForEvent,
+} from "./baseline-integrity-gate.js";
+
+const alwaysExists = () => true;
+const neverExists = () => false;
+const COV = "/repo/.interlinked/coverage-baseline.json";
+const COV_EDIT = "/repo/.interlinked/coverage-edit-baseline.json";
+const MUT = "/repo/.interlinked/mutation-baseline.json";
+const LARGE = "/repo/.interlinked/large-files-baseline.json";
+const UNTESTED = "/repo/.interlinked/untested-files-baseline.json";
+const CAPS = "/repo/.interlinked/metric-caps.json";
+
+function detect(file: string, before: unknown, after: unknown, exists = alwaysExists) {
+	return detectBaselineGaming(file, JSON.stringify(before), JSON.stringify(after), exists);
+}
+
+describe("detectBaselineGaming — not a baseline file / no HEAD", () => {
+	it("ignores non-baseline files", () => {
+		expect(detectBaselineGaming("/repo/src/foo.ts", "a", "b")).toEqual([]);
+		expect(detectBaselineGaming("/repo/.interlinked/other.json", "{}", "{}")).toEqual([]);
+	});
+	it("returns [] for a brand-new baseline (no before text)", () => {
+		expect(detectBaselineGaming(COV, "", '{"files":{}}')).toEqual([]);
+	});
+	it("fails open on unparseable JSON", () => {
+		expect(detectBaselineGaming(COV, "{not json", '{"files":{}}')).toEqual([]);
+		expect(detectBaselineGaming(COV, '{"files":{}}', "{not json")).toEqual([]);
+	});
+});
+
+describe("coverage-baseline.json — values may only rise", () => {
+	const base = { version: 1, files: { "src/a.ts": { lines_pct: 90, branches_pct: 80 } } };
+	it("BLOCKS a lowered lines_pct", () => {
+		const f = detect(COV, base, { files: { "src/a.ts": { lines_pct: 50, branches_pct: 80 } } });
+		expect(f).toHaveLength(1);
+		expect(f[0]?.rule).toContain("lines_pct");
+	});
+	it("BLOCKS a lowered branches_pct", () => {
+		const f = detect(COV, base, { files: { "src/a.ts": { lines_pct: 90, branches_pct: 10 } } });
+		expect(f).toHaveLength(1);
+		expect(f[0]?.rule).toContain("branches_pct");
+	});
+	it("BLOCKS removing an entry whose source still exists", () => {
+		const f = detect(COV, base, { files: {} }, alwaysExists);
+		expect(f).toHaveLength(1);
+	});
+	it("ALLOWS removing an entry whose source was deleted", () => {
+		expect(detect(COV, base, { files: {} }, neverExists)).toEqual([]);
+	});
+	it("ALLOWS raising a pct and adding a new file", () => {
+		const after = {
+			files: { "src/a.ts": { lines_pct: 95, branches_pct: 85 }, "src/b.ts": { lines_pct: 1, branches_pct: 1 } },
+		};
+		expect(detect(COV, base, after)).toEqual([]);
+	});
+});
+
+describe("coverage-edit-baseline.json — flat map, values may only rise", () => {
+	it("BLOCKS a lowered value", () => {
+		expect(detect(COV_EDIT, { "src/a.ts": 0.9 }, { "src/a.ts": 0.4 })).toHaveLength(1);
+	});
+	it("ALLOWS a raised value and a new entry", () => {
+		expect(detect(COV_EDIT, { "src/a.ts": 0.9 }, { "src/a.ts": 0.95, "src/b.ts": 0.1 })).toEqual([]);
+	});
+	it("BLOCKS removing an entry whose source still exists", () => {
+		expect(detect(COV_EDIT, { "src/a.ts": 0.9 }, {}, alwaysExists)).toHaveLength(1);
+	});
+});
+
+describe("mutation-baseline.json — score/killed may only rise", () => {
+	const base = { version: 1, files: { "src/a.ts": { score: 0.8, killed: 10 } } };
+	it("BLOCKS a lowered score", () => {
+		expect(detect(MUT, base, { files: { "src/a.ts": { score: 0.5, killed: 10 } } })).toHaveLength(1);
+	});
+	it("BLOCKS a lowered killed count", () => {
+		expect(detect(MUT, base, { files: { "src/a.ts": { score: 0.8, killed: 3 } } })).toHaveLength(1);
+	});
+	it("ALLOWS a raised score", () => {
+		expect(detect(MUT, base, { files: { "src/a.ts": { score: 0.9, killed: 12 } } })).toEqual([]);
+	});
+});
+
+describe("large-files-baseline.json — cap tightens, grandfather counts shrink", () => {
+	const base = { version: 1, max_lines: 500, files: { "src/big.ts": 620 } };
+	it("BLOCKS raising max_lines", () => {
+		expect(detect(LARGE, base, { max_lines: 800, files: { "src/big.ts": 620 } })).toHaveLength(1);
+	});
+	it("BLOCKS raising a grandfather high-water count", () => {
+		expect(detect(LARGE, base, { max_lines: 500, files: { "src/big.ts": 700 } })).toHaveLength(1);
+	});
+	it("BLOCKS a new grandfather entry over the cap", () => {
+		const after = { max_lines: 500, files: { "src/big.ts": 620, "src/new.ts": 550 } };
+		expect(detect(LARGE, base, after)).toHaveLength(1);
+	});
+	it("ALLOWS lowering the cap, shrinking a count, resolving (removing) an entry, new under-cap entry", () => {
+		expect(detect(LARGE, base, { max_lines: 400, files: { "src/big.ts": 600 } })).toEqual([]);
+		expect(detect(LARGE, base, { max_lines: 500, files: {} })).toEqual([]);
+		expect(detect(LARGE, base, { max_lines: 500, files: { "src/big.ts": 620, "ok.ts": 100 } })).toEqual([]);
+	});
+});
+
+describe("untested-files-baseline.json — INVERTED: exemption list may only shrink", () => {
+	const base = { version: 1, min_coverage_pct: 60, files: ["src/a.ts"] };
+	it("BLOCKS lowering min_coverage_pct", () => {
+		expect(detect(UNTESTED, base, { min_coverage_pct: 30, files: ["src/a.ts"] })).toHaveLength(1);
+	});
+	it("BLOCKS adding a path to the exemption list", () => {
+		expect(detect(UNTESTED, base, { min_coverage_pct: 60, files: ["src/a.ts", "src/b.ts"] })).toHaveLength(1);
+	});
+	it("ALLOWS raising the floor and removing an exemption", () => {
+		expect(detect(UNTESTED, base, { min_coverage_pct: 80, files: [] })).toEqual([]);
+	});
+});
+
+describe("metric-caps.json — caps may only tighten", () => {
+	const base = { max_lines: 500, max_cyclomatic: 25, crap_threshold: 30, min_coverage: 60 };
+	it("BLOCKS raising max_cyclomatic", () => {
+		expect(detect(CAPS, base, { ...base, max_cyclomatic: 40 })).toHaveLength(1);
+	});
+	it("BLOCKS raising crap_threshold and max_lines", () => {
+		expect(detect(CAPS, base, { ...base, crap_threshold: 50, max_lines: 900 })).toHaveLength(2);
+	});
+	it("BLOCKS lowering min_coverage", () => {
+		expect(detect(CAPS, base, { ...base, min_coverage: 0 })).toHaveLength(1);
+	});
+	it("ALLOWS tightening every cap", () => {
+		expect(detect(CAPS, base, { max_lines: 400, max_cyclomatic: 20, crap_threshold: 25, min_coverage: 80 })).toEqual([]);
+	});
+});
+
+describe("default sourceExists (real fs)", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	});
+	it("blocks removal of an entry whose real source file exists", () => {
+		const root = mkdtempSync(join(tmpdir(), "bi-"));
+		dirs.push(root);
+		writeFileSync(join(root, "real.ts"), "export const x = 1;");
+		const file = join(root, ".interlinked", "coverage-baseline.json");
+		const before = JSON.stringify({ files: { "real.ts": { lines_pct: 90 } } });
+		// no injected predicate → uses makeDefaultSourceExists rooted at `root`
+		expect(detectBaselineGaming(file, before, JSON.stringify({ files: {} }))).toHaveLength(1);
+		// a phantom source → removal allowed
+		const before2 = JSON.stringify({ files: { "ghost.ts": { lines_pct: 90 } } });
+		expect(detectBaselineGaming(file, before2, JSON.stringify({ files: {} }))).toEqual([]);
+	});
+});
+
+function mkEvent(toolInput: Record<string, unknown>, cwd?: string): HarnessEvent {
+	return {
+		hook_event: "PreToolUse",
+		session_id: "t",
+		tool_name: "Write",
+		tool_input: toolInput,
+		cwd,
+	} as unknown as HarnessEvent;
+}
+
+describe("evaluateBaselineIntegrityForEvent", () => {
+	const lower = JSON.stringify({ files: { "src/a.ts": { lines_pct: 10 } } });
+	const head = JSON.stringify({ files: { "src/a.ts": { lines_pct: 90 } } });
+	const deps = { getDisk: () => head };
+
+	it("returns null for a non-baseline file", () => {
+		expect(evaluateBaselineIntegrityForEvent(mkEvent({ file_path: "/repo/src/a.ts", content: lower }), deps)).toBeNull();
+	});
+	it("respects the INTERLINKED_DISABLE_BASELINE_GUARD bypass", () => {
+		const prev = process.env.INTERLINKED_DISABLE_BASELINE_GUARD;
+		process.env.INTERLINKED_DISABLE_BASELINE_GUARD = "1";
+		try {
+			expect(evaluateBaselineIntegrityForEvent(mkEvent({ file_path: COV, content: lower }), deps)).toBeNull();
+		} finally {
+			if (prev === undefined) delete process.env.INTERLINKED_DISABLE_BASELINE_GUARD;
+			else process.env.INTERLINKED_DISABLE_BASELINE_GUARD = prev;
+		}
+	});
+	it("BLOCKS a Write that lowers a baseline", () => {
+		const d = evaluateBaselineIntegrityForEvent(mkEvent({ file_path: COV, content: lower }), deps);
+		expect(d?.decision).toBe("block");
+		expect(d?.rule_id).toBe("baseline_integrity_gate");
+	});
+	it("BLOCKS an Edit (old_string/new_string) that lowers a baseline", () => {
+		const d = evaluateBaselineIntegrityForEvent(
+			mkEvent({ file_path: COV, old_string: '"lines_pct":90', new_string: '"lines_pct":10' }),
+			{ getDisk: () => head },
+		);
+		expect(d?.decision).toBe("block");
+	});
+	it("BLOCKS a MultiEdit that lowers a baseline", () => {
+		const d = evaluateBaselineIntegrityForEvent(
+			mkEvent({ file_path: COV, edits: [{ old_string: '"lines_pct":90', new_string: '"lines_pct":10' }] }),
+			{ getDisk: () => head },
+		);
+		expect(d?.decision).toBe("block");
+	});
+	it("ALLOWS a Write that raises a baseline", () => {
+		const raise = JSON.stringify({ files: { "src/a.ts": { lines_pct: 99 } } });
+		expect(evaluateBaselineIntegrityForEvent(mkEvent({ file_path: COV, content: raise }), deps)).toBeNull();
+	});
+	it("fails open when the baseline does not exist yet", () => {
+		expect(evaluateBaselineIntegrityForEvent(mkEvent({ file_path: COV, content: lower }), { getDisk: () => null })).toBeNull();
+	});
+	it("fails open when an Edit cannot be reconstructed", () => {
+		expect(
+			evaluateBaselineIntegrityForEvent(
+				mkEvent({ file_path: COV, old_string: "absent", new_string: "x" }),
+				{ getDisk: () => head },
+			),
+		).toBeNull();
+	});
+});

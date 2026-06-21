@@ -36,6 +36,29 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import {
+	drainPendingSessionWarnings,
+	evaluateCurlMcpPhase,
+	evaluateDiagnosticsPhase,
+	evaluateMarkdownFirstPhase,
+	evaluateProjectSetupPhase,
+	evaluateStructuralContextPhase,
+	evaluateSupermodelGraphContext,
+	evaluateTrajectoryDetectorPhase,
+} from "./pre-tool-context-phases.js";
+import {
+	evaluateAutoReservation,
+	evaluateExfilPhase,
+	evaluateFileDumpPhase,
+	evaluateGraphPrediction,
+	evaluateLateSideEffects,
+	evaluateReadPhase,
+	evaluateSequenceAndLockdown,
+	evaluateTaintPhase,
+	evaluateWriteContent,
+	type PreToolCtx,
+} from "./pre-tool-decision-phases.js";
+import {
+	evaluateBaselineIntegrityGate,
 	evaluateConfigLooseningGate,
 	evaluateEditOldStringGuard,
 	evaluateGitScopeGate,
@@ -48,33 +71,11 @@ import {
 	evaluateTddGate,
 	evaluateWebFetchGuard,
 } from "./pre-tool-guards.js";
-import { evaluateDestructiveRules } from "./pre-tool-rules.js";
 import {
 	evaluatePreChecksSelfKillEnv,
 	evaluatePreChecksTail,
 } from "./pre-tool-phases.js";
-import {
-	drainPendingSessionWarnings,
-	evaluateCurlMcpPhase,
-	evaluateDiagnosticsPhase,
-	evaluateMarkdownFirstPhase,
-	evaluateProjectSetupPhase,
-	evaluateStructuralContextPhase,
-	evaluateSupermodelGraphContext,
-	evaluateTrajectoryDetectorPhase,
-} from "./pre-tool-context-phases.js";
-import {
-	type PreToolCtx,
-	evaluateAutoReservation,
-	evaluateExfilPhase,
-	evaluateFileDumpPhase,
-	evaluateGraphPrediction,
-	evaluateLateSideEffects,
-	evaluateReadPhase,
-	evaluateSequenceAndLockdown,
-	evaluateTaintPhase,
-	evaluateWriteContent,
-} from "./pre-tool-decision-phases.js";
+import { evaluateDestructiveRules } from "./pre-tool-rules.js";
 
 // `resetProjectSetupWarningsCache` lives in pre-tool-helpers.ts (next to the
 // cache it invalidates) but is re-exported here because server.ts and
@@ -160,6 +161,8 @@ export function evaluatePreToolUse(
 		() => evaluateTddGate(event, rules, session, toolName, warnings),
 		// Config-loosening gate — ask before strict-flag relaxations.
 		() => evaluateConfigLooseningGate(event, toolName, warnings),
+		// Baseline-integrity gate — block lowering a committed ratchet water-line.
+		() => evaluateBaselineIntegrityGate(event, toolName, warnings),
 		// Auto file reservation.
 		() =>
 			evaluateAutoReservation(event, session, toolName, toolInput, reservations, cohort, warnings),

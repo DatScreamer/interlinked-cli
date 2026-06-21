@@ -120,7 +120,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
-| `src/harness/quality-checks.ts` | PostToolUse: 32 checks across 8+ languages (tsc, biome, cargo, rustfmt, mypy, etc.) |
+| `src/harness/quality-checks.ts` | PostToolUse: 33 checks across 8+ languages (tsc, biome, cargo, rustfmt, mypy, ruff, etc.) |
 | `src/harness/server-bridge.ts` | Server coordination: reservation sync, guard event reporting |
 | `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
@@ -245,7 +245,7 @@ against current code, May 2026):
 | File | Contents |
 |------|----------|
 | `docs/generated/guard-rules.md` | All 105 built-in guard rules by category |
-| `docs/generated/quality-checks.md` | All 32 PostToolUse quality checks |
+| `docs/generated/quality-checks.md` | All 33 PostToolUse quality checks |
 | `docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
@@ -557,6 +557,33 @@ Skip the rubric for drive-by curiosity — it's specifically for the things
 that would otherwise become a paste-and-ask. See `docs/external-pulse/codewiki.md`
 for a worked example, including the "marketing-vs-reality" failure mode
 (read the load-bearing function in source, not the README).
+
+## Baseline-integrity gate (ratchet water-lines may only tighten)
+
+Spec: `docs/design/baseline-integrity-gate.md`. Every ratchet (coverage / mutation /
+per-edit-coverage / cyclomatic-slew / CRAP / line-cap / untested-file floor) decides
+by reading a committed water-line JSON under `.interlinked/`. The agent being gated
+has write access to those files, so lowering one is the canonical gate-gaming move —
+it defeats every ratchet at once. `src/harness/evaluator/baseline-integrity-gate.ts`
+(PreToolUse `block`, `rule_id: baseline_integrity_gate`, wired in `pre-tool.ts` via
+`evaluateBaselineIntegrityGate` in `pre-tool-guards.ts`) blocks a Write/Edit/MultiEdit
+that loosens any of `coverage-baseline.json`, `coverage-edit-baseline.json`,
+`mutation-baseline.json`, `large-files-baseline.json`, `untested-files-baseline.json`,
+`metric-caps.json`. **Direction is per-file and non-uniform** (see the doc's table):
+coverage/mutation values may only rise; caps (`max_*`/`crap_threshold`) may only
+tighten and `min_coverage` may only rise; `untested-files.files` is an *exemption
+list* so it may only shrink; `large-files` grandfather counts may only shrink.
+Compares against the **current on-disk** water-line (not git HEAD — most baselines are
+gitignored), which the hook sees pre-write. The harness's own ratchet raises go through
+internal `fs` writes (`coverage-ratchet.ts` etc.), never the edit tools, so they never
+hit the gate. Bypass an intentional reset with `INTERLINKED_DISABLE_BASELINE_GUARD=1`.
+A **commit-gate backstop** (`evaluator/commit-baseline-gate.ts`, wired in
+`pre-tool-pipeline.ts` before `runCommitGate`) closes the `apply_patch`/sub-agent hole
+for the 3 git-tracked/stageable baselines (large-files, untested-files, metric-caps):
+on a real `git commit` it diffs `git show HEAD:<f>` vs the staged blob through the same
+`detectBaselineGaming` detector. A sibling test-integrity check, `snapshot_hygiene`
+(`checks/snapshot-hygiene.ts`, advisory), blocks writing a `*.snap.new` / `*.pending-snap`
+snapshot-review artifact (the snapshot analog of leaving an `.only`/`.skip` behind).
 
 ## Monotonic metric ratchet (bounded per-edit growth, hard cap as backstop)
 

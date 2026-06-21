@@ -20,6 +20,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { evaluateBaselineIntegrityForEvent } from "./baseline-integrity-gate.js";
 import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { evaluateGitScopeGateSync } from "./git-session-scope-gate.js";
@@ -232,6 +233,25 @@ export function evaluateConfigLooseningGate(
 ): HarnessDecision | null {
 	if (isFileWrite(toolName)) {
 		const d = evaluateConfigLooseningForEvent(event);
+		if (d) return { ...d, warnings };
+	}
+	return null;
+}
+
+/**
+ * Baseline-integrity gate — block a Write/Edit/MultiEdit that loosens a
+ * committed ratchet water-line under `.interlinked/` (coverage / mutation /
+ * per-edit-coverage / large-files / untested-files / metric-caps). Water-lines
+ * may only move in the tightening direction; the harness raises them itself via
+ * internal writes, never the agent's edit tools. See baseline-integrity-gate.ts.
+ */
+export function evaluateBaselineIntegrityGate(
+	event: HarnessEvent,
+	toolName: string,
+	warnings: string[],
+): HarnessDecision | null {
+	if (isFileWrite(toolName)) {
+		const d = evaluateBaselineIntegrityForEvent(event);
 		if (d) return { ...d, warnings };
 	}
 	return null;

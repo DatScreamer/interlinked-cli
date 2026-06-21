@@ -19,13 +19,9 @@
 // of the file.
 
 import { readSharedConfig } from "../../lib/config.js";
-import { shouldCoordinate } from "../auto-coordinate.js";
-import { injectCoordinationWarnings } from "../auto-coordinate.js";
+import { injectCoordinationWarnings, shouldCoordinate } from "../auto-coordinate.js";
 import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
-import {
-	runCommitGate,
-	runCoverageWriteGate as runCoverageWriteGateExtracted,
-} from "./pre-tool-coverage-gates.js";
+import { runCommitBaselineGate } from "../evaluator/commit-baseline-gate.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import {
 	appendShadowLog,
@@ -36,11 +32,9 @@ import {
 } from "../policy-classifier.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import {
-	captureDiffAwareBaseline,
-	injectStructureContext,
-	runProjectWideGitGate,
-	runTddCommitGate,
-} from "./pre-tool-pipeline-stages.js";
+	runCommitGate,
+	runCoverageWriteGate as runCoverageWriteGateExtracted,
+} from "./pre-tool-coverage-gates.js";
 import {
 	runContentScanRequest,
 	runWebFetchProxy,
@@ -51,6 +45,12 @@ import {
 	runGrepAcceleration,
 	runTsgoAcceleration,
 } from "./pre-tool-pipeline-search.js";
+import {
+	captureDiffAwareBaseline,
+	injectStructureContext,
+	runProjectWideGitGate,
+	runTddCommitGate,
+} from "./pre-tool-pipeline-stages.js";
 import {
 	getAutoCoordState,
 	getGraphForFile,
@@ -352,6 +352,12 @@ export async function runPreToolPipeline(
 	// working tree and blocks a red bar / uncovered changed line / CRAP-over /
 	// cyclomatic-over. A pure no-op (returns null immediately) for non-commit
 	// commands and unless the repo opts in via `per_edit_coverage.enabled`.
+	// Commit-time baseline-integrity backstop (ALWAYS ON) — block a commit that
+	// stages a loosened git-tracked ratchet baseline. Cheap; runs before the
+	// config-gated coverage commit gate.
+	const commitBaselineDecision = runCommitBaselineGate(event, preDecision);
+	if (commitBaselineDecision) return commitBaselineDecision;
+
 	const commitDecision = await runCommitGate(ctx, event, preDecision);
 	if (commitDecision) return commitDecision;
 
