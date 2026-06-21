@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCatchAndLog,
 	checkDisabledTests,
@@ -7,7 +8,6 @@ import {
 	checkNestedTernaries,
 	checkTargetBlankNoRel,
 } from "./js-ts-general.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Non-test source paths the checks should actually run on.
 const TS = "src/lib/foo.ts";
@@ -410,6 +410,26 @@ describe("checkJsonParseUnsafe", () => {
 		const out = checkJsonParseUnsafe(code, TS);
 		expect(out).toHaveLength(1);
 		expect(nonNull(out[0]).line).toBe(1);
+	});
+
+	it("does not flag the safeJsonParse shape — regex .replace chain (with [}\\]] braces) between try and JSON.parse (B2 regression)", () => {
+		// The exact shape that produced a dogfood FP on config-loosening-gate.ts:
+		// a `try {`, a multi-line `.replace(...)` chain whose regex literals contain
+		// `}` / `]`, then `return JSON.parse(cleaned)`. The brace-counting depth
+		// tracker must not be fooled by braces inside the regex literals.
+		const code = [
+			"function safeJsonParse(text) {",
+			"  try {",
+			"    const cleaned = text",
+			"      .replace(/^\\s*\\/\\/.*$/gm, '')",
+			"      .replace(/,(\\s*[}\\]])/g, '$1');",
+			"    return JSON.parse(cleaned);",
+			"  } catch {",
+			"    return null;",
+			"  }",
+			"}",
+		].join("\n");
+		expect(checkJsonParseUnsafe(code, TS)).toEqual([]);
 	});
 
 	it("returns [] for test files (gate)", () => {

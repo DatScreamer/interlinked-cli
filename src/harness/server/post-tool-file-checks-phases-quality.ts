@@ -12,12 +12,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META } from "../check-metadata.js";
+import type { QualityCheckResult } from "../quality-checks/result-types.js";
 import {
 	findProjectRoot,
 	formatQualityWarnings,
 	type QualityCheckOptions,
 } from "../quality-checks.js";
-import type { QualityCheckResult } from "../quality-checks/result-types.js";
 import { isAcknowledged } from "../session-state.js";
 import { DEFAULT_TRIGGERS, expandSiblings } from "../sibling-expansion.js";
 import {
@@ -184,6 +184,12 @@ export function applyQualityDecision(
 	);
 	if (hasDeterministicErrors || hasPostToolAttention) {
 		decision.decision = "block";
+		// Bug B1: a PostToolUse block MUST carry a reason, else the hook renders the
+		// "no reason was attached — likely a harness bug" fallback. The action already
+		// ran; this is an attention channel, so surface the actual findings.
+		decision.reason ??=
+			(decision.warnings ?? []).join("\n") ||
+			"[interlinked] PostToolUse quality checks flagged a deterministic error.";
 	}
 
 	const outcome = hasDeterministicErrors

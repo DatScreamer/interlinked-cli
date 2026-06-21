@@ -118,6 +118,11 @@ export function applyStructuralFindings(
 	);
 	if (hasDeterministicActionable) {
 		decision.decision = "block";
+		// Bug B1: a PostToolUse block MUST carry a reason (else the hook shows the
+		// "no reason was attached" fallback). Surface the structural findings.
+		decision.reason ??=
+			(decision.warnings ?? []).join("\n") ||
+			"[interlinked] PostToolUse structural checks flagged a deterministic issue.";
 	}
 
 	log(`Structural issues: ${structuralResults.map((r) => r.check).join(", ")}`);
@@ -180,6 +185,10 @@ export function runImpactOrFallback(
 		// Critical impact blocks so the agent reads the warning
 		if (impactResult.severity === "critical") {
 			decision.decision = "block";
+			// Bug B1: a PostToolUse block MUST carry a reason.
+			decision.reason ??=
+				(decision.warnings ?? []).join("\n") ||
+				`[interlinked] Critical cross-file impact: ${impactResult.dependentCount} dependent(s), ${impactResult.breakingFiles.length} breaking file(s).`;
 		}
 
 		log(

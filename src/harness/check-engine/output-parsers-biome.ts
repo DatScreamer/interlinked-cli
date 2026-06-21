@@ -16,7 +16,9 @@ import type { CheckResult } from "./types.js";
 export function parseBiomeOutput(output: string): CheckResult[] {
 	const results: CheckResult[] = [];
 	for (const line of output.split("\n")) {
-		const match = line.match(/^(.+?):(\d+):(\d+)\s+(lint\S+|assist\S+|format|parse|syntax)\s/);
+		const match = line.match(
+			/^(.+?):(\d+):(\d+)\s+(lint\S+|assist\S+|suppressions\S+|format|parse|syntax)\s/,
+		);
 		if (match) {
 			const [, file, lineNo, col, rule] = match;
 			if (file === undefined || lineNo === undefined || col === undefined || rule === undefined) {

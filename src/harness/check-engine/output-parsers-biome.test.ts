@@ -4,8 +4,8 @@
 // clean — the poison-corpus check caught the fail-open on its first run.
 
 import { describe, expect, it } from "vitest";
-import { parseBiomeOutput } from "./output-parsers-biome.js";
 import { nonNull } from "../../lib/non-null.js";
+import { parseBiomeOutput } from "./output-parsers-biome.js";
 
 describe("parseBiomeOutput", () => {
 	it("parses lint-rule diagnostics as warnings", () => {
@@ -42,6 +42,29 @@ describe("parseBiomeOutput", () => {
 			column: 1,
 			ruleId: "assist/source/organizeImports",
 		});
+	});
+
+	it("parses SUPPRESSIONS diagnostics — unused biome-ignore (B3: was silently dropped, so an unused suppression produced exit 1 + zero parsed findings → the 'lint NOT validated' synthetic, masking a finding whole-repo `biome check` fails on)", () => {
+		const out = parseBiomeOutput(
+			"src/x.test.ts:47:1 suppressions/unused ━━━━━━━━━━━\n  ! Suppression comment has no effect.\n",
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			tool: "biome",
+			severity: "warning",
+			file: "src/x.test.ts",
+			line: 47,
+			column: 1,
+			ruleId: "suppressions/unused",
+		});
+	});
+
+	it("parses ASSIST diagnostics with the real ` FIXABLE ` token before the box chars", () => {
+		const out = parseBiomeOutput(
+			"src/a.ts:1:1 assist/source/organizeImports  FIXABLE  ━━━\n  × The imports and exports are not sorted.\n",
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ ruleId: "assist/source/organizeImports", severity: "warning" });
 	});
 
 	it("parses PARSE diagnostics as errors (round 6 — these were silently dropped)", () => {
