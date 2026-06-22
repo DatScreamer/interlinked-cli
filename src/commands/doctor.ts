@@ -4,13 +4,14 @@
 
 import { getClient } from "../lib/api-client.js";
 import { resolveAuthToken } from "../lib/auth.js";
-import { getConfigDir, resolveConfig } from "../lib/config.js";
 import { getCollectionLiveness } from "../lib/collection/liveness.js";
+import { getConfigDir, resolveConfig } from "../lib/config.js";
 import { c, divider, header } from "../lib/formatter.js";
 import { getOutputMode, output } from "../lib/output.js";
+import { thinkingCaptureCheck } from "./doctor-capture.js";
 import {
-	type CheckResult,
 	authTokenCheck,
+	type CheckResult,
 	clientHookChecks,
 	collectionLivenessCheck,
 	harnessChecks,
@@ -167,6 +168,11 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// up here instead of being discovered days later.
 	const liveness = getCollectionLiveness(cwd);
 	results.push({ name: "Data collection", ...collectionLivenessCheck(liveness) });
+
+	// 4d. Thinking-capture health — are recent tool calls carrying reasoning
+	// traces? Catches a silent regression of the live hook→daemon capture path
+	// (the class that went unnoticed for weeks before the live-capture port).
+	results.push(thinkingCaptureCheck(cwd));
 
 	// 4b. Hook script version check (only when the .interlinked hook exists)
 	results.push(...hookVersionChecks(cwd, opts.fix === true));

@@ -148,6 +148,8 @@ vi.mock("../lib/config.js", () => ({
 	hasLegacyConfig: mockHasLegacyConfig,
 	migrateLegacyConfig: mockMigrateLegacyConfig,
 	resolveConfig: mockResolveConfig,
+	// getActivityPath (via thinkingCaptureCheck) resolves through getDataDir.
+	getDataDir: (cwd: string) => `${cwd}/.interlinked`,
 }));
 
 vi.mock("../lib/auth.js", () => ({ resolveAuthToken: mockResolveAuthToken }));

@@ -173,4 +173,49 @@ describe("writeActivityRecord — round-trips through readLocalActivity", () => 
 		expect(tu?.thinking).not.toContain("sk-aaaaaaaaaaaaaaaaaaaaaaaa");
 		expect(tu?.model).toBe("claude-test-5");
 	});
+
+	// Parity guard: the active hook-entry → daemon path must capture the SAME
+	// field surface the old self-contained .mjs hook did. The thinking-capture
+	// regression happened because a capability present in one hook impl was
+	// silently absent in the active one. If a future edit drops any field below
+	// from the active capture path, this fails loudly.
+	it("capture completeness (parity guard): a tool_use_start record carries the full field set", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		const transcript = join(dir, "t.jsonl");
+		writeFileSync(
+			transcript,
+			`${JSON.stringify({ type: "assistant", message: { model: "model-x", content: [{ type: "thinking", thinking: "reasoning here" }] } })}\n`,
+		);
+		writeActivityRecord(
+			harnessEvent({
+				hook_event: "PreToolUse",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				tool_use_id: "tu_1",
+				cwd: dir,
+				session_id: "sess-x",
+				transcript_path: transcript,
+			}),
+			dir,
+		);
+		const rec = readLocalActivity({ cwd: dir }).find((e) => e.type === "tool_use_start") as
+			| Record<string, unknown>
+			| undefined;
+		const required = [
+			"schema_version",
+			"ts",
+			"type",
+			"tool",
+			"summary",
+			"session",
+			"hook",
+			"tool_input",
+			"tool_use_id",
+			"cwd",
+			"thinking",
+			"model",
+		];
+		const missing = required.filter((k) => rec?.[k] === undefined);
+		expect(missing).toEqual([]);
+	});
 });
