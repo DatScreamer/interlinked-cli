@@ -102,6 +102,7 @@ scripts/*
 # a fully-excluded parent directory.
 !scripts/setup-git-hooks.mjs
 !scripts/git-hooks/
+!scripts/backfill-thinking.mjs
 
 # Session-internal phase plans + work-in-progress design notes. The older
 # top-level docs/plans/*.md files (security-scanning-pillars, sondera-
