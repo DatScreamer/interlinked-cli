@@ -162,6 +162,14 @@ export const batchSections: readonly SectionSpec[] = [
 		passLabel: "all test files exercise a failure path",
 		color: "33",
 	},
+	{
+		label: "introverted tests",
+		key: "introvertedTest",
+		skipId: "introverted_test",
+		noun: "it() / test() blocks whose assertions never trace to a non-mocked system-under-test call",
+		passLabel: "no introverted tests",
+		color: "33",
+	},
 	// === Batch 5: cross-file ===
 	{
 		label: "empty-body handler",

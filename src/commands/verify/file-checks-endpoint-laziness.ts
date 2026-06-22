@@ -26,6 +26,7 @@ import {
 	checkFileLevelSuppression,
 	checkHappyPathOnlyTest,
 	checkHardcodedTimeoutInTests,
+	checkIntrovertedTest,
 	checkListenerPairing,
 	checkMigrationParity,
 	checkMockingTheSutSelf,
@@ -173,6 +174,9 @@ export function runEndpointAndLazinessChecks(ctx: FileCheckContext): void {
 	r.mockOnlyTest.push(...toIssues("mock_only_test", relPath, checkMockOnlyTest(content, file)));
 	r.happyPathOnlyTest.push(
 		...toIssues("happy_path_only_test", relPath, checkHappyPathOnlyTest(content, file)),
+	);
+	r.introvertedTest.push(
+		...toIssues("introverted_test", relPath, checkIntrovertedTest(content, file)),
 	);
 
 	// === Batch 5: cross-file checks ===

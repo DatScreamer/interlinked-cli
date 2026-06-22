@@ -209,6 +209,7 @@ const EXPECTED_KEY_ORDER = [
 	"testSubprocessDefaultTimeout",
 	"mockOnlyTest",
 	"happyPathOnlyTest",
+	"introvertedTest",
 	"emptyBodyHandler",
 	"listenerPairing",
 	"schemaTypeDrift",

@@ -11,6 +11,7 @@ import {
 	checkEmptyBodyHandler,
 	checkHappyPathOnlyTest,
 	checkHardcodedTimeoutInTests,
+	checkIntrovertedTest,
 	checkListenerPairing,
 	checkManualFieldCopy,
 	checkMigrationParity,
@@ -167,6 +168,22 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 			'Every test in this file asserts a success outcome — nothing exercises a failure path. A suite that can only observe success still passes when a regression breaks the error path, so it gives false confidence. Add at least one negative case: an invalid input, a thrown error, a rejected promise, or an assertion that something did NOT happen. Naming one test for the failure it covers (e.g. "rejects malformed input") also clears the check.',
 		fn: checkHappyPathOnlyTest,
 		resultsPropName: "happyPathOnlyTest",
+	},
+	{
+		id: "introverted_test",
+		phase: "post",
+		name: "Introverted Test",
+		description:
+			"Detects it() / test() blocks whose every assertion traces only to a literal, a test-local value, or a MOCKED symbol — never to a non-mocked system-under-test call/read. Static AST dataflow beneath mock_only_test / test_missing_sut_import (which check matcher KIND and the IMPORT); an introverted test is a guaranteed mutation survivor for the SUT it names.",
+		tier: 2,
+		determinism: "partially_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This test's assertions are decoupled from the code under test — they check a literal, test-local data, or a mock's return value, so the test stays green even if the SUT is broken (it cannot kill a mutant). Assert on a value RETURNED BY (or state CHANGED BY) a real call into the SUT; if you must mock a dependency, still assert on the SUT's own output, not the mock's. Tests with no single SUT import, or that reach the SUT only through an unresolved helper, are deliberately not flagged.",
+		fn: checkIntrovertedTest,
+		resultsPropName: "introvertedTest",
+		content_keywords: ["expect", "assert"],
 	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries; new-export orphan deferred)

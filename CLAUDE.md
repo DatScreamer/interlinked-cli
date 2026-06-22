@@ -186,6 +186,8 @@ resolver, so it sits in `VERIFY_ONLY_CHECKS`).
 | `duplicated_policy_constant` | `checks/policy-constant-drift.ts` | post | advisory | a bare numeric literal duplicating a same-file `DEFAULT_*`/`*_CAP`/`*_THRESHOLD` constant's value (drift — the literal won't follow the constant). |
 | `gitignored_written_config` | `checks/gitignored-write.ts` | (verify-only) | advisory | code writes a statically-resolvable config path that `.gitignore` excludes with no `!` carve-out → never committable. |
 
+**Test-quality (from external-pulse intake):** `introverted_test` (`checks/introverted-test.ts`, post, advisory) flags `it()/test()` blocks whose assertions never trace to a non-mocked system-under-test call/read — the static-dataflow layer beneath `mock_only_test` (matcher kind) and `test_missing_sut_import` (the import). SUT = the companion module only; it does not fire when the SUT is exercised in the body (directly or via a file-local factory helper). Ported from Uncle Bob's deintroverter4clj; intake at `docs/external-pulse/deintroverter.md`. Dogfood: 0/791 test files on landing.
+
 Shared patterns when adding another agent-quality check (verified
 against current code, May 2026):
 1. Detector in `src/harness/checks/<family>.ts` (a new family file or

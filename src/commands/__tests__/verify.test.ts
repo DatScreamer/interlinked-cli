@@ -282,9 +282,10 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"demo_data_unmarked",
 				// Test-hygiene heuristic — slow-subprocess flake detector.
 				"test_subprocess_default_timeout",
-				// Test-quality heuristics — mock-only + happy-path-only.
+				// Test-quality heuristics — mock-only + happy-path-only + introverted (no assertion reaches the SUT).
 				"mock_only_test",
 				"happy_path_only_test",
+				"introverted_test",
 				// Effect-TS lessons port (advisory until cross-realm-vs-single-realm
 				// FP rate is measured).
 				"error_dispatch_by_instanceof",

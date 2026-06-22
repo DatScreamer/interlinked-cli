@@ -230,6 +230,10 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// until dogfood FP rate is measured.
 	"mock_only_test",
 	"happy_path_only_test",
+	// introverted_test is a static AST dataflow heuristic — helper-inlining is
+	// v0-limited, so it stays silent on uncertainty but can still miss/over-fire
+	// on unusual SUT-reach patterns. PostToolUse-warn while the FP rate is watched.
+	"introverted_test",
 	// Error-dispatch-by-instanceof — Effect-TS lessons port
 	// (docs/design/effect-ts-harness-additions.md §2.1). `e instanceof Error`
 	// inside catch is fragile across realm boundaries — iframes, workers,

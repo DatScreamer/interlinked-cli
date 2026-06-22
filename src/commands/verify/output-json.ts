@@ -294,6 +294,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		// === Test-quality checks (2 entries) ===
 		mock_only_test: summarizeWithDetails(cq.mockOnlyTest),
 		happy_path_only_test: summarizeWithDetails(cq.happyPathOnlyTest),
+		introverted_test: summarizeWithDetails(cq.introvertedTest),
 		// === Batch 5: cross-file (4 entries) ===
 		empty_body_handler: summarizeWithDetails(cq.emptyBodyHandler),
 		listener_pairing: summarizeWithDetails(cq.listenerPairing),

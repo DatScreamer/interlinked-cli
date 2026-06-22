@@ -294,6 +294,8 @@ export interface CodeQualityResults {
 	mockOnlyTest: CodeQualityIssue[];
 	/** Test files with 3+ cases that never assert a failure path. */
 	happyPathOnlyTest: CodeQualityIssue[];
+	/** it()/test() blocks whose assertions never trace to a non-mocked SUT call/read. */
+	introvertedTest: CodeQualityIssue[];
 	// === Batch 5: cross-file (4 entries) ===
 	/** Handler-named functions with empty / no-op bodies. */
 	emptyBodyHandler: CodeQualityIssue[];

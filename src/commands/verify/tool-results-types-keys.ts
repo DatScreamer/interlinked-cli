@@ -193,6 +193,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	// Test-quality checks
 	"mockOnlyTest",
 	"happyPathOnlyTest",
+	"introvertedTest",
 	// Batch 5: cross-file
 	"emptyBodyHandler",
 	"listenerPairing",

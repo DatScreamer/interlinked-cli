@@ -160,6 +160,8 @@ export { checkImportFromOwnBarrel } from "./checks/imports.js";
 export { checkIndexAsKey } from "./checks/index-as-key.js";
 // ---- index-bounds ----
 export { checkIndexBoundsUnchecked } from "./checks/index-bounds.js";
+// ---- introverted-test (assertion → SUT provenance, 2026-06) ----
+export { checkIntrovertedTest } from "./checks/introverted-test.js";
 // ---- iteration-safety ----
 export {
 	checkFreshCollectionKeyLookup,
