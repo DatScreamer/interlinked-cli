@@ -76,6 +76,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	payload_field_casing: {
+		name: "Payload Field Casing",
+		description:
+			"Detects a raw hook-payload contract field (transcript_path/session_id/tool_use_id/…) read in one casing off a raw-payload variable with no other-casing fallback — cross-runner payloads deliver the same field as snake_case or camelCase, so a single-casing read silently goes undefined under the other (the thinking-capture regression class)",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	gitignored_written_config: {
 		name: "Gitignored Written Config",
 		description:

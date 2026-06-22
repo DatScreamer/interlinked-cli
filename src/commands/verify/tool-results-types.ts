@@ -93,6 +93,8 @@ export interface CodeQualityResults {
 	duplicatedPolicyConstant: CodeQualityIssue[];
 	/** Snapshot-review artifact (*.snap.new / *.pending-snap) written — never commit. */
 	snapshotHygiene: CodeQualityIssue[];
+	/** Raw hook-payload contract field read in one casing with no other-casing fallback. */
+	payloadFieldCasing: CodeQualityIssue[];
 	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
 	gitignoredWrittenConfig: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];

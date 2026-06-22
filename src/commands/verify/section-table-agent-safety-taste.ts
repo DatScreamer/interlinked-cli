@@ -124,6 +124,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "payload field casing",
+		key: "payloadFieldCasing",
+		noun: "raw hook-payload contract fields read in one casing with no other-casing fallback",
+		passLabel: "no single-casing raw-payload field reads",
+		color: "33",
+	},
+	{
 		label: "gitignored written config",
 		key: "gitignoredWrittenConfig",
 		noun: "file-writes to a path excluded by .gitignore (no negation carve-out)",

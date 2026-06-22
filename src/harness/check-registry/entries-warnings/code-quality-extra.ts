@@ -7,6 +7,7 @@ import {
 	detectArrayIterateeVariadicBuiltin,
 	detectReturnArrayPush,
 } from "../../checks/array-method-misuse.js";
+import { detectPayloadFieldCasing } from "../../checks/payload-casing.js";
 import {
 	checkExcessiveUseEffect,
 	checkFocusedTests,
@@ -210,5 +211,21 @@ export const CODE_QUALITY_ENTRIES_EXTRA: CheckRegistration[] = [
 		fn: detectArrayIterateeVariadicBuiltin,
 		resultsPropName: "arrayIterateeVariadicBuiltin",
 		content_keywords: ["parseInt"],
+	},
+	{
+		id: "payload_field_casing",
+		phase: "post",
+		name: "Payload Field Casing",
+		description:
+			"Detects reading a cross-runner hook-payload contract field (transcript_path, session_id, tool_use_id, …) off a raw-payload variable (rawInput/nativeJson/hookInput/payload/input) in ONE casing with no other-casing fallback on the same line. Hook payloads cross a runner boundary (Claude Code/Codex/Gemini/Copilot) where the same field arrives in both snake_case and camelCase; a single-casing read silently returns undefined when the other casing is delivered — the failure mode behind the thinking-capture regression.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This reads a raw hook-payload field in one casing only. Different runners (and versions) deliver the same field as snake_case OR camelCase, so a single-casing read goes silently undefined under the other. Add the other-casing fallback on the same expression, e.g. `rawInput.transcript_path ?? rawInput.transcriptPath`.",
+		fn: detectPayloadFieldCasing,
+		resultsPropName: "payloadFieldCasing",
+		content_keywords: ["rawInput", "nativeJson", "hookInput", "payload", "input"],
 	},
 ];

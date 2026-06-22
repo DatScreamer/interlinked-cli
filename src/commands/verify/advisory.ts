@@ -127,6 +127,10 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// snapshot_hygiene: zero-FP path match on *.snap.new / *.pending-snap review
 	// artifacts; test-integrity taste guard — periodic-sweep concern, not per-edit.
 	"snapshot_hygiene",
+	// payload_field_casing: heuristic shape match (raw-payload var + known contract
+	// field + missing other-casing fallback). Real cross-runner drift bug class, but a
+	// single-casing read is correct when only one runner is targeted. Advisory.
+	"payload_field_casing",
 	// gitignored_written_config: verify-only (needs `git check-ignore`). Real
 	// "this file can never be committed" bug class, but only statically-
 	// resolvable paths are flagged and the ephemeral-target exclusion list is

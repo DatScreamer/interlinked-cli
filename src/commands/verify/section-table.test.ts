@@ -67,6 +67,7 @@ const EXPECTED_KEY_ORDER = [
 	"writeWithoutMkdir",
 	"duplicatedPolicyConstant",
 	"snapshotHygiene",
+	"payloadFieldCasing",
 	"gitignoredWrittenConfig",
 	"asyncPromiseExecutor",
 	"selfImports",
