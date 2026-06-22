@@ -12,9 +12,12 @@
 // failure here never breaks the pipeline, and non-tool lifecycle events map to
 // null (they are recorded by other daemon branches).
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { resolveConfig } from "../../lib/config.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { appendActivityRecordOnly, type LocalActivityEvent } from "../../lib/local-activity.js";
+import { extractNewThinking, latestTranscriptModel, resolveTranscriptPath } from "../thinking-capture.js";
 import type { HarnessEvent } from "../types.js";
 
 /** Partition the hook event into a v5 activity `type`, or null for non-tool
@@ -88,7 +91,22 @@ export function mapEventToActivityRecord(
 export function writeActivityRecord(event: HarnessEvent, fallbackCwd: string): void {
 	try {
 		const rec = mapEventToActivityRecord(event, fallbackCwd);
-		if (rec) appendActivityRecordOnly(rec, event.cwd ?? fallbackCwd);
+		if (!rec) return;
+		// Live thinking capture: on a tool_use_start, attach the reasoning that
+		// preceded this tool call. The thin hook-entry path never replicated the
+		// old .mjs's extractNewThinking — this restores it daemon-side (the June-1
+		// regression). Scrubbed inside extractNewThinking; best-effort.
+		if (rec.type === "tool_use_start") {
+			const cwd = event.cwd ?? fallbackCwd;
+			const tp = resolveTranscriptPath(event.transcript_path, event.session_id, cwd, homedir());
+			if (tp) {
+				const thinking = extractNewThinking(tp, join(cwd, ".interlinked", "thinking-cursor.json"));
+				if (thinking) rec.thinking = thinking;
+				const model = latestTranscriptModel(tp);
+				if (model) rec.model = model;
+			}
+		}
+		appendActivityRecordOnly(rec, event.cwd ?? fallbackCwd);
 	} catch {
 		// Best-effort legacy mirror — a failed activity.jsonl write must never
 		// break the daemon pipeline; collection.jsonl is the canonical record.

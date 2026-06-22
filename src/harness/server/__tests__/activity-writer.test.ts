@@ -3,7 +3,7 @@
 // after the collection.jsonl migration. The round-trip cases drive the actual
 // reader (readLocalActivity) to prove the mirror is consumable, not just written.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -148,5 +148,29 @@ describe("writeActivityRecord — round-trips through readLocalActivity", () => 
 		expect(() =>
 			writeActivityRecord(harnessEvent({ hook_event: "PreToolUse", cwd: dir }), dir),
 		).not.toThrow();
+	});
+
+	it("attaches scrubbed thinking from the transcript to a tool_use_start record", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		const transcript = join(dir, "transcript.jsonl");
+		writeFileSync(
+			transcript,
+			`${JSON.stringify({ type: "assistant", message: { model: "claude-test-5", content: [{ type: "thinking", thinking: "the reasoning, secret sk-aaaaaaaaaaaaaaaaaaaaaaaa" }] } })}\n`,
+		);
+		writeActivityRecord(
+			harnessEvent({
+				hook_event: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: "x.ts" },
+				cwd: dir,
+				session_id: "think-rt",
+				transcript_path: transcript,
+			}),
+			dir,
+		);
+		const tu = readLocalActivity({ cwd: dir }).find((e) => e.type === "tool_use_start");
+		expect(tu?.thinking).toContain("the reasoning");
+		expect(tu?.thinking).not.toContain("sk-aaaaaaaaaaaaaaaaaaaaaaaa");
+		expect(tu?.model).toBe("claude-test-5");
 	});
 });

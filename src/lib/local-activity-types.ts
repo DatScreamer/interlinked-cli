@@ -54,6 +54,7 @@ export interface LocalActivityEvent {
 	permission_mode?: string;
 	transcript_path?: string;
 	model?: string;
+	thinking?: string;
 	source?: string;
 	agent_type?: string;
 	last_assistant_message?: string;
