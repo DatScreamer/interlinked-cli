@@ -584,6 +584,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"writeWithoutMkdir",
 			"duplicatedPolicyConstant",
 			"snapshotHygiene",
+			"designSlop",
 			"payloadFieldCasing",
 			"gitignoredWrittenConfig",
 			"asyncPromiseExecutor",

@@ -12,6 +12,13 @@ import type { SectionSpec } from "./section-table-types.js";
 /** Iteration-safety + taint + taste / structural / test-hygiene sections. */
 export const tasteStructuralSections: readonly SectionSpec[] = [
 	{
+		label: "design slop",
+		key: "designSlop",
+		noun: "AI-generated design tells (overused fonts, accent stripes, gradient text, AI palettes, bounce easing)",
+		passLabel: "no AI design tells",
+		color: "31",
+	},
+	{
 		label: "iterator invalidation",
 		key: "iteratorInvalidation",
 		noun: "collection mutations during iteration over the same collection",

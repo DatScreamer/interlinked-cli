@@ -83,6 +83,8 @@ export interface CodeQualityResults {
 	magicLiteralInConditional: CodeQualityIssue[];
 	/** NaN-from-coercion used unguarded in a relational comparison (fail-open). */
 	nanCoercionGuard: CodeQualityIssue[];
+	/** AI-generated design "tells" in frontend files (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, gray-on-color, broken images, copy tells). */
+	designSlop: CodeQualityIssue[];
 	/** Array#push()/unshift() return value (the new length) returned, bound, or arrow-returned. */
 	arrayPushReturnUsed: CodeQualityIssue[];
 	/** parseInt passed bare as a .map()/.flatMap()/Array.from iteratee (index → radix). */

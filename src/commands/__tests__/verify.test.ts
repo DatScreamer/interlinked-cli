@@ -212,6 +212,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"default_export",
 				"duplicated_policy_constant",
 				"snapshot_hygiene",
+				"design_slop",
 				"payload_field_casing",
 				"else_if_chain",
 				"files_without_test",

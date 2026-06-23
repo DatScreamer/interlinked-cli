@@ -21,6 +21,7 @@ import {
 } from "../../harness/checks/array-method-misuse.js";
 import { computeCrap } from "../../harness/checks/crap.js";
 import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
+import { detectDesignSlop } from "../../harness/checks/design-slop.js";
 import { detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js";
 import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js";
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
@@ -307,6 +308,7 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.nanCoercionGuard.push(
 		...toIssues("nan_coercion_guard", relPath, detectNaNCoercionGuards(content, file)),
 	);
+	r.designSlop.push(...toIssues("design_slop", relPath, detectDesignSlop(content, file)));
 	r.arrayPushReturnUsed.push(
 		...toIssues("array_push_return_used", relPath, detectReturnArrayPush(content, file)),
 	);

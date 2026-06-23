@@ -7,6 +7,7 @@ import {
 	detectArrayIterateeVariadicBuiltin,
 	detectReturnArrayPush,
 } from "../../checks/array-method-misuse.js";
+import { detectDesignSlop } from "../../checks/design-slop.js";
 import { detectPayloadFieldCasing } from "../../checks/payload-casing.js";
 import {
 	checkExcessiveUseEffect,
@@ -24,6 +25,22 @@ import {
 import type { CheckRegistration } from "../types.js";
 
 export const CODE_QUALITY_ENTRIES_EXTRA: CheckRegistration[] = [
+	{
+		id: "design_slop",
+		phase: "post",
+		name: "Design Slop",
+		description:
+			"Detects AI-generated frontend 'tells' in design-surface files (.html/.css/.jsx/.tsx/.vue/.svelte/.astro): overused fonts (Inter & friends), side-tab accent borders, gradient text, purple/violet AI palettes, bounce/elastic easing, gray-on-color text, broken/placeholder images, plus copy tells (em-dash overuse, marketing buzzwords). Ported from Impeccable's deterministic regex engine (Apache-2.0).",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This is an AI-generated design tell. Replace the flagged pattern with an intentional choice: a distinctive font, a subtler or removed accent border, a solid text color, a deliberate palette, exponential ease-out easing, a tint of the background instead of gray, a real image src, or plain product copy. These are taste levers (advisory) — address them when polishing UI.",
+		fn: detectDesignSlop,
+		resultsPropName: "designSlop",
+		content_keywords: [],
+	},
 	{
 		id: "excessive_use_effect",
 		phase: "post",

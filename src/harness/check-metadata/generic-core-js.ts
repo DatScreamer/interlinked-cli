@@ -76,6 +76,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	design_slop: {
+		name: "Design Slop",
+		description:
+			"Detects AI-generated frontend tells in design-surface files (overused fonts, side-tab accent borders, gradient text, purple/violet palettes, bounce easing, gray-on-color, broken images, em-dash/buzzword copy tells); ported from Impeccable (Apache-2.0)",
+		tier: 1,
+		determinism: "heuristic",
+	},
 	payload_field_casing: {
 		name: "Payload Field Casing",
 		description:

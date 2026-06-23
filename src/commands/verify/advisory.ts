@@ -127,6 +127,11 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// snapshot_hygiene: zero-FP path match on *.snap.new / *.pending-snap review
 	// artifacts; test-integrity taste guard — periodic-sweep concern, not per-edit.
 	"snapshot_hygiene",
+	// design_slop: AI-generated design tells (overused fonts, accent stripes,
+	// gradient text, bounce easing, buzzword copy) on frontend files. Pure taste
+	// levers in a new domain — belong in the deep-audit tier, never the default
+	// gate (e.g. the landing page deliberately uses Inter). Ported from Impeccable.
+	"design_slop",
 	// payload_field_casing: heuristic shape match (raw-payload var + known contract
 	// field + missing other-casing fallback). Real cross-runner drift bug class, but a
 	// single-casing read is correct when only one runner is targeted. Advisory.
