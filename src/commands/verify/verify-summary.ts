@@ -15,6 +15,10 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 
+import {
+	type CaseDivergenceFinding,
+	runCaseDivergenceCheck,
+} from "../../harness/case-divergence.js";
 import type { LockfileMultiplicityResult } from "../../harness/quality-checks/decision-surface.js";
 import type { DecisionSurfaceRatchetResult } from "../../harness/quality-checks/decision-surface-ratchet.js";
 import {
@@ -175,6 +179,40 @@ export function streamRegistryParity(cwd: string, allFlaggedFiles: Set<string>):
 	for (const f of findings) {
 		process.stderr.write(`    \x1b[31m✗\x1b[0m ${f.message}\n`);
 		allFlaggedFiles.add(f.source_file);
+	}
+}
+
+/**
+ * Public API — consumed by `verify.ts`. Advisory (only invoked under
+ * `--all-checks`). Reports identifiers that appear in two case spellings
+ * across the codebase. Best-effort: a thrown error is swallowed so a verify
+ * run never fails on this advisory pass.
+ */
+export function streamCaseDivergence(
+	cwd: string,
+	files: readonly string[],
+	allFlaggedFiles: Set<string>,
+): void {
+	let findings: CaseDivergenceFinding[];
+	try {
+		findings = runCaseDivergenceCheck(cwd, files);
+	} catch {
+		return;
+	}
+	if (findings.length === 0) return;
+	process.stderr.write("\n  \x1b[1mcase divergence\x1b[0m (advisory)\n");
+	for (const f of findings) {
+		process.stderr.write(`    \x1b[33m!\x1b[0m ${f.message}\n`);
+		for (const sp of f.spellings) {
+			const loc = sp.locs[0];
+			if (loc) {
+				const more = sp.locs.length > 1 ? ` (+${sp.locs.length - 1} more)` : "";
+				process.stderr.write(
+					`\x1b[2m         ${sp.name} — ${loc.file}:${loc.line} (${sp.style})${more}\x1b[0m\n`,
+				);
+			}
+		}
+		for (const file of f.files) allFlaggedFiles.add(file);
 	}
 }
 

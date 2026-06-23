@@ -67,6 +67,7 @@ import {
 import { streamExternalTools } from "./verify/verify-tools.js";
 import {
 	emitVerifyRun,
+	streamCaseDivergence,
 	streamDecisionSurfaceRatchet,
 	streamLockfileMultiplicity,
 	streamProjectSetup,
@@ -282,6 +283,7 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	streamRegistryParity(cwd, allFlaggedFiles);
 	streamLockfileMultiplicity(detectLockfileMultiplicity(cwd));
 	streamDecisionSurfaceRatchet(computeDecisionSurfaceRatchet(cwd));
+	if (opts.allChecks) streamCaseDivergence(cwd, files, allFlaggedFiles);
 
 	const cqStart = Date.now();
 	process.stderr.write("  \x1b[2mscanning files...\x1b[0m");

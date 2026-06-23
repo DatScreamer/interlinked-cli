@@ -24,6 +24,9 @@ vi.mock("./tool-results.js", () => ({
 vi.mock("../../harness/registry-parity.js", () => ({
 	runRegistryParityCheck: vi.fn(),
 }));
+vi.mock("../../harness/case-divergence.js", () => ({
+	runCaseDivergenceCheck: vi.fn(),
+}));
 vi.mock("../../harness/supermodel-analyses.js", () => ({
 	isSupermodelCliAvailable: vi.fn(),
 	runSupermodelDeadCode: vi.fn(),
@@ -40,6 +43,7 @@ vi.mock("node:child_process", () => ({
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { runCaseDivergenceCheck } from "../../harness/case-divergence.js";
 import type { ProjectSetupIssue } from "../../harness/checks/project-setup.js";
 import { runRegistryParityCheck } from "../../harness/registry-parity.js";
 import {
@@ -50,6 +54,7 @@ import {
 import { checkProjectSetup, runSuggestions } from "./tool-results.js";
 import {
 	emitVerifyRun,
+	streamCaseDivergence,
 	streamDecisionSurfaceRatchet,
 	streamLockfileMultiplicity,
 	streamProjectSetup,
@@ -335,6 +340,61 @@ describe("streamRegistryParity", () => {
 		});
 		streamRegistryParity("/repo", new Set<string>());
 		expect(out()).toContain("config error: raw string failure");
+	});
+});
+
+// =============================================================================
+describe("streamCaseDivergence", () => {
+	const finding = () => ({
+		core: "userid",
+		role: "value" as const,
+		message: '"userId" / "user_id" — same value name in 2 case spellings; reconcile to one',
+		files: ["a.ts", "b.ts"],
+		spellings: [
+			{
+				name: "userId",
+				style: "camelCase" as const,
+				locs: [
+					{ file: "a.ts", line: 1, kind: "const" as const },
+					{ file: "z.ts", line: 9, kind: "const" as const },
+				],
+			},
+			{
+				name: "user_id",
+				style: "snake_case" as const,
+				locs: [{ file: "b.ts", line: 2, kind: "function" as const }],
+			},
+		],
+	});
+
+	it("is silent when there are no findings (no header written)", () => {
+		vi.mocked(runCaseDivergenceCheck).mockReturnValue([]);
+		const flagged = new Set<string>();
+		streamCaseDivergence("/repo", [], flagged);
+		expect(out()).toBe("");
+		expect(flagged.size).toBe(0);
+	});
+
+	it("prints each finding with a +N-more hint and flags every involved file", () => {
+		vi.mocked(runCaseDivergenceCheck).mockReturnValue([finding()]);
+		const flagged = new Set<string>();
+		streamCaseDivergence("/repo", ["a.ts"], flagged);
+		const o = out();
+		expect(o).toContain("case divergence");
+		expect(o).toContain('"userId" / "user_id"');
+		expect(o).toContain("(+1 more)");
+		expect(flagged.has("a.ts")).toBe(true);
+		expect(flagged.has("b.ts")).toBe(true);
+	});
+
+	it("swallows a thrown error and stays silent", () => {
+		vi.mocked(runCaseDivergenceCheck).mockImplementation(() => {
+			throw new Error("boom");
+		});
+		const flagged = new Set<string>();
+		streamCaseDivergence("/repo", [], flagged);
+		expect(out()).toBe("");
+		expect(flagged.size).toBe(0);
 	});
 });
 

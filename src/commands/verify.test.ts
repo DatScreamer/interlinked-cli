@@ -176,6 +176,8 @@ const streamDecisionSurfaceRatchetMock = vi.fn<(r: unknown) => void>();
 const streamLockfileMultiplicityMock = vi.fn<(r: unknown) => void>();
 const streamProjectSetupMock = vi.fn<(cwd: string, flagged: Set<string>) => void>();
 const streamRegistryParityMock = vi.fn<(cwd: string, flagged: Set<string>) => void>();
+const streamCaseDivergenceMock =
+	vi.fn<(cwd: string, files: readonly string[], flagged: Set<string>) => void>();
 const streamSuggestionsSummaryMock = vi.fn<(files: string[], cwd: string) => void>();
 const streamSupermodelDeadCodeMock = vi.fn<(cwd: string, opts: unknown, f: Set<string>) => void>();
 const streamUndocumentedEnvVarsMock = vi.fn<(issues: unknown, f: Set<string>) => void>();
@@ -188,6 +190,7 @@ vi.mock("./verify/verify-summary.js", () => ({
 	streamLockfileMultiplicity: streamLockfileMultiplicityMock,
 	streamProjectSetup: streamProjectSetupMock,
 	streamRegistryParity: streamRegistryParityMock,
+	streamCaseDivergence: streamCaseDivergenceMock,
 	streamSuggestionsSummary: streamSuggestionsSummaryMock,
 	streamSupermodelDeadCode: streamSupermodelDeadCodeMock,
 	streamUndocumentedEnvVars: streamUndocumentedEnvVarsMock,
