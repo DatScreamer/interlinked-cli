@@ -396,6 +396,7 @@ Every check that legitimately can't fit Guardrails' budget:
 | Integration tests against staging | 10min–2hr | Customer test command in Sandbox + Mesh binding |
 | Deep prompt-injection scan | 1–10min | Per-message scan over session history; LLM-assisted |
 | SBOM + license + CVE graph | 1–10min | `cdxgen` + Snyk / OSV in Sandbox |
+| Rendered design audit (contrast / layout-overflow / touch-target) | 1–10min | Impeccable browser engine via Cloudflare Browser Rendering (`@cloudflare/puppeteer`) over a deployed preview — the rendered-DOM checks the local `design_slop` regex port and the `interlinked design` static path can't do; intake `docs/external-pulse/impeccable.md` |
 | Compliance reporting | 1–6hr | Long-running `step.do` with checkpointing |
 | Fleet anomaly detection | 10–30min | Cross-session pattern mining over Logpush data in R2 |
 | Audit log generation | 1–10min | Aggregation over Logpush + DO state → signed PDF |
