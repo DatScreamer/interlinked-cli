@@ -24,6 +24,10 @@
 //
 // Usage:
 //   node scripts/backfill-thinking.mjs [--dry-run] [--since <ISO>] [--reset]
+//   node scripts/backfill-thinking.mjs --all-tools [--reset]
+//     --all-tools: emit a tool_use_start for EVERY tool call (the full history),
+//     not just turns that had preceding thinking. Best for a fresh-install import
+//     of all past activity; pair with --reset to re-scan transcripts already seen.
 
 import {
 	appendFileSync,
@@ -75,6 +79,7 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
 const RESET = args.includes("--reset");
 const NO_SORT = args.includes("--no-sort");
+const ALL_TOOLS = args.includes("--all-tools");
 const sinceIdx = args.indexOf("--since");
 const SINCE = sinceIdx >= 0 ? args[sinceIdx + 1] : null;
 
@@ -226,7 +231,7 @@ for (const tpath of transcripts) {
 		const blocks = obj.message?.content;
 		if (!Array.isArray(blocks)) continue;
 
-		let firstTool = null;
+		const toolsInMsg = [];
 		for (const b of blocks) {
 			if (!b || typeof b !== "object") continue;
 			if (b.type === "thinking" && b.thinking) {
@@ -234,13 +239,19 @@ for (const tpath of transcripts) {
 				if (!pendTs) pendTs = obj.timestamp || obj.ts || null;
 				pendSession = obj.sessionId || sessionFromFile;
 				if (!pendModel) pendModel = obj.message?.model ?? null;
-			} else if (b.type === "tool_use" && !firstTool) {
-				firstTool = { id: b.id, name: b.name, input: b.input };
+			} else if (b.type === "tool_use") {
+				toolsInMsg.push({ id: b.id, name: b.name, input: b.input });
 			}
 		}
-		if (firstTool && pend.length > 0) {
-			// Attach the buffered thinking to the tool it preceded.
-			totalThinking += pend.length;
+		// Default (legacy): emit ONLY the first tool of a thinking-bearing turn, so
+		// the row mirrors what the old PreToolUse hook captured at that moment.
+		// --all-tools broadens to the FULL tool history: every tool_use becomes its
+		// own tool_use_start, the buffered thinking rides the first call, the rest
+		// carry empty thinking. (A message can hold parallel tool_use blocks.)
+		const toEmit = ALL_TOOLS ? toolsInMsg : pend.length > 0 && toolsInMsg.length > 0 ? [toolsInMsg[0]] : [];
+		for (let ti = 0; ti < toEmit.length; ti++) {
+			const tool = toEmit[ti];
+			if (ti === 0 && pend.length > 0) totalThinking += pend.length;
 			const rec = {
 				schema_version: 5,
 				ts: obj.timestamp || obj.ts || pendTs || new Date(0).toISOString(),
@@ -248,18 +259,20 @@ for (const tpath of transcripts) {
 				workspace_key: PROJECT_KEYS.workspace_key,
 				project_key: PROJECT_KEYS.project_key,
 				type: "tool_use_start",
-				tool: firstTool.name ?? null,
-				summary: summarize(firstTool.name, firstTool.input),
+				tool: tool.name ?? null,
+				summary: summarize(tool.name, tool.input),
 				session: obj.sessionId || sessionFromFile,
 				hook: "PreToolUse",
-				tool_input: firstTool.input ?? {},
+				tool_input: tool.input ?? {},
 				cwd: obj.cwd || cwd,
-				thinking: scrubText(pend.join("\n---\n")),
+				thinking: scrubText(ti === 0 ? pend.join("\n---\n") : ""),
 				source: "backfill-thinking",
 				model: obj.message?.model ?? pendModel ?? undefined,
 			};
-			if (firstTool.id) rec.tool_use_id = firstTool.id;
+			if (tool.id) rec.tool_use_id = tool.id;
 			emit(rec);
+		}
+		if (toEmit.length > 0) {
 			pend = [];
 			pendTs = null;
 			pendSession = null;
@@ -274,7 +287,7 @@ for (const tpath of transcripts) {
 
 if (DRY_RUN) {
 	console.log(
-		`[backfill] DRY RUN: would append ${totalRecords} record(s) carrying thinking ` +
+		`[backfill] DRY RUN: would append ${totalRecords} record(s)${ALL_TOOLS ? " (incl. every tool call)" : ""} carrying thinking ` +
 			`(${totalThinking} block(s)) across ${transcripts.length} transcript(s). ` +
 			`scrub hits: ${scrubHits}. keys: ${PROJECT_KEYS.workspace_key}/${PROJECT_KEYS.project_key}. No files written.`,
 	);
@@ -309,7 +322,7 @@ let sortedCount = 0;
 if (!NO_SORT) sortedCount = sortActivityByTs();
 
 console.log(
-	`[backfill] appended ${totalRecords} record(s) carrying thinking ` +
+	`[backfill] appended ${totalRecords} record(s)${ALL_TOOLS ? " (incl. every tool call)" : ""} carrying thinking ` +
 		`(${totalThinking} block(s)) to ${activityPath}. scrub hits: ${scrubHits}.` +
 		(NO_SORT ? " (--no-sort: not re-sorted)" : ` sorted ${sortedCount} line(s) by ts.`),
 );
