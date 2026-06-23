@@ -51,6 +51,7 @@ const EXPECTED_KEY_ORDER = [
 	"commentClaimsValidationMissing",
 	"commentClaimsIdempotentMutates",
 	"commentClaimsThrowsDoesnt",
+	"designSlop",
 	"iteratorInvalidation",
 	"freshCollectionKeyLookup",
 	"discriminatedUnionExhaustiveness",
