@@ -44,7 +44,17 @@ import { nonNull } from "./lib/non-null.js";
 // Re-export for back-compat: tests import this from "./hook-entry.js".
 export { coldDaemonUnreachableBlockReason };
 
-const DEFAULT_HOOK_TIMEOUT_MS = 2000;
+// Ceiling for non-PreToolUse events (PostToolUse + Stop/SessionStart/etc.). This
+// is a MAX wait, not a fixed delay: the daemon answers the instant it has a
+// verdict, so a small repo returns in ~1ms regardless. It only bites on a BIG
+// repo where the PostToolUse quality pass (tsc + biome + inline checks) is slow —
+// on mcp-client-bio a WARM edit measured ~2–3s (biome ~1.5s, tsc ~0.4s), which
+// clipped the old 2s ceiling and surfaced as "[interlinked] timeout; evaluator
+// skipped", making the harness look dead on every edit. A truly-down daemon
+// still fails fast via the separate connect timeout, so raising this only lets a
+// slow-but-working daemon finish (warnings still defer to next turn if it does
+// time out — e.g. the ~8s cold-start tsgo load on the first edit after a restart).
+const DEFAULT_HOOK_TIMEOUT_MS = 5000;
 
 // Hook-socket transport variants. The legacy server uses newline-delimited
 // JSON over a raw stream; the new server uses length-prefixed framing.
