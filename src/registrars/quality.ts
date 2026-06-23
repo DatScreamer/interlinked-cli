@@ -265,4 +265,22 @@ export function registerQualityCommands(program: Command): void {
 			const { mutationBaselineCommand } = await import("../commands/mutation.js");
 			mutationBaselineCommand(opts);
 		});
+
+	// ===========================================
+	// Design — wrap Impeccable's deterministic design-slop detector
+	// ===========================================
+	program
+		.command("design [path]")
+		.description(
+			"Run Impeccable's deterministic design-slop detector (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, broken images, copy tells) on frontend files. Requires the optional `impeccable` CLI on PATH; degrades gracefully when absent. The built-in `design_slop` check covers a regex subset natively.",
+		)
+		.option("--gpt", "Also report GPT-specific provider tells")
+		.option("--gemini", "Also report Gemini-specific provider tells")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.option("--full", "Detailed per-file output")
+		.action(async (path: string | undefined, opts: OptionValues) => {
+			const { designCommand } = await import("../commands/design.js");
+			designCommand(path, opts);
+		});
 }

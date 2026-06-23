@@ -23,6 +23,7 @@ const coverageBaselineCommand = vi.fn();
 const metricsCommand = vi.fn();
 const mutationCheckCommand = vi.fn();
 const mutationBaselineCommand = vi.fn();
+const designCommand = vi.fn();
 
 vi.mock("../commands/check.js", () => ({
 	checkCommand: (...args: unknown[]) => checkCommand(...args),
@@ -57,6 +58,9 @@ vi.mock("../commands/metrics.js", () => ({
 vi.mock("../commands/mutation.js", () => ({
 	mutationCheckCommand: (...args: unknown[]) => mutationCheckCommand(...args),
 	mutationBaselineCommand: (...args: unknown[]) => mutationBaselineCommand(...args),
+}));
+vi.mock("../commands/design.js", () => ({
+	designCommand: (...args: unknown[]) => designCommand(...args),
 }));
 
 function sub(program: Command, parent: string): Command {
@@ -98,6 +102,7 @@ describe("registerQualityCommands — structure", () => {
 			"coverage",
 			"mutation",
 			"metrics",
+			"design",
 		]) {
 			expect(top).toContain(name);
 		}
@@ -626,5 +631,22 @@ describe("mutation subcommands — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["mutation", "baseline"], { from: "user" });
 		expect(mutationBaselineCommand).toHaveBeenCalledWith({});
+	});
+});
+
+// ===========================================================================
+// design — action wiring (optional [path] arg; sync designCommand)
+// ===========================================================================
+describe("design — action wiring", () => {
+	it("forwards path + flags to designCommand", async () => {
+		const program = build();
+		await program.parseAsync(["design", "src/", "--gpt", "--gemini", "--json"], { from: "user" });
+		expect(designCommand).toHaveBeenCalledWith("src/", { gpt: true, gemini: true, json: true });
+	});
+
+	it("passes undefined path + empty opts by default", async () => {
+		const program = build();
+		await program.parseAsync(["design"], { from: "user" });
+		expect(designCommand).toHaveBeenCalledWith(undefined, {});
 	});
 });
