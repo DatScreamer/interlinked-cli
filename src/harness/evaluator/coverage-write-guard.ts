@@ -56,6 +56,7 @@ import {
 } from "../coverage-runner.js";
 import { selectAffectedTests } from "../coverage-test-selector.js";
 import type { DependencyView } from "../dependency-view.js";
+import { crapThresholdFor } from "../metric-caps.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import {
 	type CrapInput,
@@ -64,7 +65,6 @@ import {
 	decideCrap,
 } from "./coverage-crap-decision.js";
 import { type CoverageEditPlan, type CoverageTarget, coverageEditPlan } from "./coverage-edit-targets.js";
-import { crapThresholdFor } from "../metric-caps.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
 // `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
@@ -211,15 +211,19 @@ async function runOverlayAndDecide(
 
 	const overlay = deps.createOverlay(ctx.projectRoot, ctx.relPath, ctx.proposed, ctx.overlayFiles);
 	try {
-		const runOpts: { projectRoot: string; coverageDir: string; selectedTests?: string[] } = {
+		const runOpts: { projectRoot: string; coverageDir: string; selectedTests?: string[]; timeoutMs: number } = {
 			projectRoot: overlay.overlayRoot,
 			coverageDir: `${overlay.overlayRoot}/.interlinked/coverage`,
+			timeoutMs: ctx.budgetMs, // per-edit BUDGET, not the 120s suite default → an over-budget run defers (below), never hangs the daemon 2min
 		};
 		if (ctx.selectedTests && ctx.selectedTests.length > 0) {
 			runOpts.selectedTests = ctx.selectedTests;
 		}
 		const result = await runner.run(runOpts);
-		updateRuntimeEstimateMs(ctx.projectRoot, result.suiteMs, deps.clock);
+		// Budget estimate from FULL runs ONLY: a scoped subset's runtime isn't the full-suite cost the gate keys on; blending it erodes the estimate below budget → the next full route re-runs the whole suite + times out (the big-monorepo starvation).
+		if (runOpts.selectedTests === undefined) {
+			updateRuntimeEstimateMs(ctx.projectRoot, result.suiteMs, deps.clock);
+		}
 		// `ok:false` means the runner produced no parseable coverage — the most
 		// common real cause is a missing provider. Fail LOUD, not silent.
 		if (!result.ok) {

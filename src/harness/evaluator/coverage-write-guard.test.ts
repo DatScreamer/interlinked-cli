@@ -919,6 +919,42 @@ describe("checkCoverageWrite — budget gate", () => {
 		expect(ran()).toBe(true);
 		expect(readRuntimeEstimateMs(root)).toBe(1500);
 	});
+
+	it("caps the per-edit run at budget_ms, not the 120s suite default", async () => {
+		let capturedTimeout: number | undefined;
+		const runner: CoverageRunner = {
+			run: async (opts) => {
+				capturedTimeout = opts.timeoutMs;
+				return coverageResult("src/a.ts", [
+					{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
+				]);
+			},
+		};
+		await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function f() {\n  return 1;\n}\n"),
+			rules({ budget_ms: 25_000 }),
+			deps(runner),
+		);
+		expect(capturedTimeout).toBe(25_000);
+	});
+
+	it("does NOT seed the budget estimate from a scoped run (only full-suite cost counts)", async () => {
+		// A scoped run is fast by construction; folding its runtime into the rolling
+		// estimate erodes it below budget and re-opens the full-suite-timeout loop.
+		const view = stubDepView({
+			[join(root, "src/m.ts")]: [join(root, "src/m.test.ts")],
+		});
+		const { runner } = stubRunner(
+			coverageResult("src/m.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }], 1234),
+		);
+		await checkCoverageWrite(
+			writeEvent("src/m.ts", "export function f() {\n  return 1;\n}\n"),
+			rules(),
+			deps(runner),
+			view,
+		);
+		expect(readRuntimeEstimateMs(root)).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------
