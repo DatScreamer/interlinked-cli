@@ -6,6 +6,13 @@
 import type { CheckMeta } from "./types.js";
 
 export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
+	cjs_in_esm_module: {
+		name: "CommonJS in ES Module",
+		description:
+			"Detects require()/module.exports/__dirname/__filename in an ES module (import/export present or .mjs) - undefined under ESM, throws at runtime",
+		tier: 1,
+		determinism: "heuristic",
+	},
 	// Error severity — pattern-exact checks
 	misused_promises: {
 		name: "Misused Promises",

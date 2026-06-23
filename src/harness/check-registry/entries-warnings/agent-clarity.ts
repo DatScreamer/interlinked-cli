@@ -3,6 +3,7 @@
 // detectors (Mythos blog adaptation). Extracted from entries-warnings.ts —
 // re-exported there as part of WARNING_ENTRIES.
 
+import { detectCjsInEsm } from "../../checks/esm-cjs.js";
 import { detectWriteWithoutMkdir } from "../../checks/fs-write-safety.js";
 import { detectNaNCoercionGuards } from "../../checks/nan-coercion.js";
 import { detectPolicyConstantDrift } from "../../checks/policy-constant-drift.js";
@@ -40,6 +41,22 @@ import {
 import type { CheckRegistration } from "../types.js";
 
 export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
+	{
+		id: "cjs_in_esm_module",
+		phase: "post",
+		name: "CommonJS in ES Module",
+		description:
+			"Detects CommonJS constructs (require(...), module.exports, __dirname, __filename) in a file that is an ES module (top-level import/export, or a .mjs/.mts extension). These globals are undefined under ESM and throw on import - a silent class that type-checks and lints clean. Skips createRequire users, the import.meta.dirname dual pattern, and @codegen-data carriers.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This file is an ES module but uses a CommonJS construct that is undefined under ESM and throws on import. Replace require(...) with an import statement, module.exports with an export, and __dirname/__filename with import.meta.dirname or import.meta.url. If you genuinely need dynamic CommonJS, use createRequire(import.meta.url).",
+		fn: detectCjsInEsm,
+		resultsPropName: "cjsInEsm",
+		content_keywords: ["require(", "module.exports", "__dirname", "__filename"],
+	},
 	{
 		id: "default_export",
 		phase: "post",
