@@ -87,6 +87,14 @@ reference-repos/
 src/lib/_content_gate_fixtures/
 src/lib/_gate_inline_fixture.ts
 src/lib/_multi_edit_plumbing_*.ts
+# Random-suffix overlay/gate fixture trees that leak to src/ itself (the
+# project root, not src/lib/) when `interlinked write` or a gate self-test
+# creates a mkdtemp-style fixture dir and the cleanup is skipped (crash / early
+# return). The inner `_gate_*.ts` probe files ride inside these dirs. Anchored
+# on `_fixtures-` so it can NEVER match src/__tests__. Covers the three known
+# families: _content_gate_fixtures-*, _diff_overlay_fixtures-*,
+# _tsc_overlay_fixtures-*. (Root cause: the gate should remove its temp tree.)
+src/_*_fixtures-*/
 src/lib/_write_integration/
 
 # Discovery / scratch scripts in scripts/ are local-only by default. Files
