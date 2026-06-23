@@ -103,6 +103,8 @@ scripts/*
 !scripts/setup-git-hooks.mjs
 !scripts/git-hooks/
 !scripts/backfill-thinking.mjs
+!scripts/backfill-recovery.mjs
+!scripts/backfill-guard.mjs
 
 # Session-internal phase plans + work-in-progress design notes. The older
 # top-level docs/plans/*.md files (security-scanning-pillars, sondera-
