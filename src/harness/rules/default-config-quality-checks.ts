@@ -149,6 +149,14 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 		severity: "warning",
 		description: "Python linting with ruff",
 	},
+	ruff_format: {
+		enabled: true,
+		command: "ruff format --check",
+		file_types: [".py"],
+		timeout_ms: 5_000,
+		severity: "warning",
+		description: "Python formatting check with ruff",
+	},
 	cargo_check: {
 		enabled: true,
 		command: "cargo check --message-format=short",

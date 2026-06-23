@@ -6,8 +6,9 @@
 // under the per-file line cap. Re-exported from output-parsers.ts so all
 // existing import sites are unchanged.
 
-import type { AuditResult, CheckResult } from "./types.js";
+import { relative } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
+import type { AuditResult, CheckResult } from "./types.js";
 
 // -------------------------------------------
 // osv-scanner (osv-scanner --format=json)
@@ -190,13 +191,23 @@ export function parseRuffJson(output: string): CheckResult[] {
 		if (!Array.isArray(parsed)) return [];
 		const results: CheckResult[] = [];
 		for (const finding of parsed) {
+			// Ruff's JSON carries a `fix` object (with an `applicability` of
+			// "safe" | "unsafe" | "display") whenever the rule can auto-correct.
+			// Surface that to the agent so it knows a `ruff check --fix` will
+			// resolve the finding — detection-only (we never apply it), so this
+			// is compatible with the no-autofix-in-pipeline contract.
+			const fix = finding.fix;
+			const fixHint =
+				fix && typeof fix.applicability === "string"
+					? ` [${fix.applicability} autofix: \`ruff check --fix\`]`
+					: "";
 			results.push({
 				tool: "ruff",
 				severity: "warning",
 				file: finding.filename || "",
 				line: finding.row || finding.location?.row || 0,
 				column: finding.column || finding.location?.column,
-				message: `${finding.code}: ${finding.message}`,
+				message: `${finding.code}: ${finding.message}${fixHint}`,
 				ruleId: finding.code,
 			});
 		}
@@ -204,6 +215,31 @@ export function parseRuffJson(output: string): CheckResult[] {
 	} catch {
 		return [];
 	}
+}
+
+// -------------------------------------------
+// ruff format --check
+// -------------------------------------------
+// stdout lists every file that would change, one per line, then a count:
+//   Would reformat: path/to/file.py
+//   1 file would be reformatted
+// Each "Would reformat:" line becomes one finding; the trailing count summary
+// is ignored. Mirrors parseRustfmtCheckOutput.
+
+export function parseRuffFormatOutput(output: string, projectRoot: string): CheckResult[] {
+	const results: CheckResult[] = [];
+	for (const lineText of output.split("\n")) {
+		const m = lineText.match(/^Would reformat:\s*(.+?)\s*$/);
+		if (!m) continue;
+		results.push({
+			tool: "ruff-format",
+			severity: "warning",
+			file: relative(projectRoot, nonNull(m[1])),
+			line: 1,
+			message: "not ruff-formatted — run `ruff format`",
+		});
+	}
+	return results;
 }
 
 // -------------------------------------------

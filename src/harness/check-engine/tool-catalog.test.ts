@@ -30,6 +30,7 @@ describe("tool catalog — derived registry", () => {
 				"gitleaks",
 				"mypy",
 				"ruff",
+				"ruff-format",
 				"cargo-check",
 				"cargo-clippy",
 				"rustfmt",
@@ -60,7 +61,7 @@ describe("tool catalog — derived registry", () => {
 		]) {
 			expect(registry[unsafe]?.concurrencySafe).toBe(false);
 		}
-		for (const safe of ["tsc", "biome", "lizard", "shellcheck", "rustfmt"]) {
+		for (const safe of ["tsc", "biome", "lizard", "shellcheck", "rustfmt", "ruff-format"]) {
 			expect(registry[safe]?.concurrencySafe).toBe(true);
 		}
 	});
@@ -88,6 +89,7 @@ describe("tool catalog — derived config map", () => {
 			knip: "knip",
 			python_typecheck: "mypy",
 			ruff_lint: "ruff",
+			ruff_format: "ruff-format",
 			cargo_check: "cargo-check",
 			cargo_clippy: "cargo-clippy",
 			rustfmt_check: "rustfmt",
@@ -113,7 +115,7 @@ describe("tool catalog — derived extension dispatch", () => {
 		expect(ext[".ts"]).toEqual(["tsc", "biome", "oxlint"]);
 		expect(ext[".tsx"]).toEqual(["tsc", "biome", "oxlint"]);
 		expect(ext[".js"]).toEqual(["biome", "oxlint"]);
-		expect(ext[".py"]).toEqual(["mypy", "ruff"]);
+		expect(ext[".py"]).toEqual(["mypy", "ruff", "ruff-format"]);
 		expect(ext[".rs"]).toEqual(["cargo-check", "cargo-clippy", "rustfmt", "lizard"]);
 		expect(ext[".go"]).toEqual(["go-build", "golangci-lint", "lizard"]);
 		expect(ext[".c"]).toEqual(["c-compile", "clang-tidy", "lizard"]);

@@ -89,6 +89,13 @@ export const QUALITY_CHECK_META: Record<string, CheckMeta> = {
 		determinism: "fully_deterministic",
 		externality: "local_write",
 	},
+	ruff_format: {
+		name: "Ruff Format",
+		description: "Python formatting check (ruff format --check)",
+		tier: 1,
+		determinism: "fully_deterministic",
+		externality: "local_write",
+	},
 	cargo_check: {
 		name: "Cargo Check",
 		description: "Rust compilation check",

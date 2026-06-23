@@ -1,12 +1,13 @@
-// Behavioral unit tests for the Python tool runners (mypy + ruff, sync + async).
+// Behavioral unit tests for the Python tool runners (mypy + ruff lint + ruff
+// format, sync + async).
 //
 // Boundaries mocked at the module edge so the tests are deterministic and
 // never spawn a real `mypy` / `ruff` binary:
 //   • node:child_process `spawnSync` — drives the sync runners.
 //   • ../spawn-async.js `runProcessAsync` — drives the async runners.
-// The real parsers (parseMypyOutput / parseRuffJson) run unmocked, so we
-// exercise the actual text/JSON → CheckResult[] mapping rather than asserting
-// against a stubbed parser.
+// The real parsers (parseMypyOutput / parseRuffJson / parseRuffFormatOutput)
+// run unmocked, so we exercise the actual text/JSON → CheckResult[] mapping
+// rather than asserting against a stubbed parser.
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,10 +26,14 @@ vi.mock("../spawn-async.js", () => ({
 }));
 
 // Imported after the mocks are registered.
-const { runMypy, runRuff, runMypyAsync, runRuffAsync } = await import("./python.js");
+const { runMypy, runRuff, runRuffFormat, runMypyAsync, runRuffAsync, runRuffFormatAsync } =
+	await import("./python.js");
 
 const PROJECT_ROOT = "/work/repo";
 const TARGET = `${PROJECT_ROOT}/app/models.py`;
+
+// The S/B security+bugbear categories runRuff imposes on top of project config.
+const ENFORCED = ["--extend-select=S,B", "--extend-ignore=S101"];
 
 // ---------------------------------------------------------------------------
 // Tool output fixtures (real shapes the parsers consume).
@@ -61,6 +66,25 @@ function ruffJson(): string {
 			message: "Comparison to `None` should be `cond is None`",
 		},
 	]);
+}
+
+/** ruff JSON finding carrying an autofix — delta B surfaces its applicability. */
+function ruffJsonWithFix(): string {
+	return JSON.stringify([
+		{
+			filename: TARGET,
+			row: 7,
+			column: 4,
+			code: "F401",
+			message: "`os` imported but unused",
+			fix: { applicability: "safe", message: "Remove unused import `os`" },
+		},
+	]);
+}
+
+/** `ruff format --check` stdout for a file that would be reformatted. */
+function wouldReformat(file = TARGET): string {
+	return `Would reformat: ${file}\n1 file would be reformatted\n`;
 }
 
 function fileScope(overrides: Partial<CheckScope> = {}): CheckScope {
@@ -223,7 +247,7 @@ describe("runMypy (sync)", () => {
 // ===========================================================================
 
 describe("runRuff (sync)", () => {
-	it("invokes ruff check with json output + targetFile in file mode, cwd/timeout/pipes", () => {
+	it("invokes ruff check with json output + imposed S/B flags + targetFile in file mode", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
 		runRuff(input(fileScope(), 8_888));
 		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
@@ -233,7 +257,7 @@ describe("runRuff (sync)", () => {
 			Record<string, unknown>,
 		];
 		expect(cmd).toBe("ruff");
-		expect(args).toEqual(["check", "--output-format=json", TARGET]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, TARGET]);
 		expect(opts).toMatchObject({
 			cwd: PROJECT_ROOT,
 			timeout: 8_888,
@@ -246,7 +270,7 @@ describe("runRuff (sync)", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
 		runRuff(input(fileScope({ mode: "project" })));
 		const args = spawnSyncMock.mock.calls[0]?.[1] as string[];
-		expect(args).toEqual(["check", "--output-format=json", "."]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, "."]);
 	});
 
 	it("targets '.' when file mode but targetFile is missing", () => {
@@ -255,7 +279,7 @@ describe("runRuff (sync)", () => {
 		delete (scope as { targetFile?: string }).targetFile;
 		runRuff(input(scope));
 		const args = spawnSyncMock.mock.calls[0]?.[1] as string[];
-		expect(args).toEqual(["check", "--output-format=json", "."]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, "."]);
 	});
 
 	it("returns [] when ruff is not installed (ENOENT)", () => {
@@ -293,6 +317,21 @@ describe("runRuff (sync)", () => {
 		]);
 	});
 
+	it("appends a [safe autofix] hint when a finding carries a fix (delta B)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: ruffJsonWithFix() }));
+		const out = runRuff(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]?.message).toBe(
+			"F401: `os` imported but unused [safe autofix: `ruff check --fix`]",
+		);
+	});
+
+	it("does NOT add a fix hint when the finding has no fix (delta B gate)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: ruffJson() }));
+		const out = runRuff(input(fileScope()));
+		expect(out[0]?.message).toBe("F401: `os` imported but unused");
+	});
+
 	it("returns [] on status === 1 with empty stdout (the !output guard, pre-parse)", () => {
 		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: "" }));
 		expect(runRuff(input(fileScope()))).toEqual([]);
@@ -320,6 +359,17 @@ describe("runRuff (sync)", () => {
 		expect(runRuff(input(fileScope()))).toEqual([]);
 	});
 
+	it("surfaces a loud failure on exit >= 2 (ruff itself errored) — never reads clean", () => {
+		spawnSyncMock.mockReturnValue(
+			spawnResult({ status: 2, stderr: "error: unexpected argument '--nope'" }),
+		);
+		const out = runRuff(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]?.tool).toBe("ruff");
+		expect(out[0]?.message).toContain("ruff lint failed (exit 2)");
+		expect(out[0]?.message).toContain("lint NOT validated");
+	});
+
 	it("returns [] from the catch block when spawnSync throws", () => {
 		spawnSyncMock.mockImplementation(() => {
 			throw new Error("kaboom");
@@ -336,6 +386,81 @@ describe("runRuff (sync)", () => {
 			}),
 		);
 		expect(runRuff(input(fileScope()))).toHaveLength(2);
+	});
+});
+
+// ===========================================================================
+// runRuffFormat (sync) — delta A
+// ===========================================================================
+
+describe("runRuffFormat (sync)", () => {
+	it("invokes `ruff format --check <target>` in file mode with cwd/timeout/pipes", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+		runRuffFormat(input(fileScope(), 7_777));
+		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+		const [cmd, args, opts] = spawnSyncMock.mock.calls[0] as [
+			string,
+			string[],
+			Record<string, unknown>,
+		];
+		expect(cmd).toBe("ruff");
+		expect(args).toEqual(["format", "--check", TARGET]);
+		expect(opts).toMatchObject({ cwd: PROJECT_ROOT, timeout: 7_777, encoding: "utf-8" });
+	});
+
+	it("targets '.' in project mode", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+		runRuffFormat(input(fileScope({ mode: "project" })));
+		const args = spawnSyncMock.mock.calls[0]?.[1] as string[];
+		expect(args).toEqual(["format", "--check", "."]);
+	});
+
+	it("returns [] when ruff is not installed (ENOENT)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: null, error: enoent() }));
+		expect(runRuffFormat(input(fileScope()))).toEqual([]);
+	});
+
+	it("returns [] when status === 0 (already formatted)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 0, stdout: wouldReformat() }));
+		expect(runRuffFormat(input(fileScope()))).toEqual([]);
+	});
+
+	it("parses a `Would reformat:` line into a project-relative finding (status 1)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: wouldReformat() }));
+		const out = runRuffFormat(input(fileScope()));
+		expect(out).toEqual([
+			{
+				tool: "ruff-format",
+				severity: "warning",
+				file: "app/models.py",
+				line: 1,
+				message: "not ruff-formatted — run `ruff format`",
+			},
+		]);
+	});
+
+	it("emits a generic dirty finding on status 1 with no parseable line (never reads clean)", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: "" }));
+		const out = runRuffFormat(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]?.tool).toBe("ruff-format");
+		expect(out[0]?.file).toBe("app/models.py");
+		expect(out[0]?.message).toBe("not ruff-formatted — run `ruff format`");
+	});
+
+	it("surfaces a loud failure on exit >= 2", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 2, stderr: "error: bad flag" }));
+		const out = runRuffFormat(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]?.message).toContain("ruff format failed (exit 2)");
+		expect(out[0]?.message).toContain("format NOT validated");
+	});
+
+	it("returns [] from the catch block when spawnSync throws", () => {
+		spawnSyncMock.mockImplementation(() => {
+			throw new Error("kaboom");
+		});
+		expect(runRuffFormat(input(fileScope()))).toEqual([]);
 	});
 });
 
@@ -408,7 +533,7 @@ describe("runMypyAsync", () => {
 // ===========================================================================
 
 describe("runRuffAsync", () => {
-	it("invokes runProcessAsync with json output + targetFile in file mode, cwd/timeout", async () => {
+	it("invokes runProcessAsync with json output + imposed S/B flags + targetFile in file mode", async () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 0 }));
 		await runRuffAsync(input(fileScope(), 1_234));
 		expect(runProcessAsyncMock).toHaveBeenCalledTimes(1);
@@ -418,7 +543,7 @@ describe("runRuffAsync", () => {
 			Record<string, unknown>,
 		];
 		expect(cmd).toBe("ruff");
-		expect(args).toEqual(["check", "--output-format=json", TARGET]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, TARGET]);
 		expect(opts).toEqual({ cwd: PROJECT_ROOT, timeout: 1_234 });
 	});
 
@@ -426,7 +551,7 @@ describe("runRuffAsync", () => {
 		runProcessAsyncMock.mockResolvedValue(procResult({ code: 0 }));
 		await runRuffAsync(input(fileScope({ mode: "project" })));
 		const args = runProcessAsyncMock.mock.calls[0]?.[1] as string[];
-		expect(args).toEqual(["check", "--output-format=json", "."]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, "."]);
 	});
 
 	it("targets '.' when file mode but targetFile is missing", async () => {
@@ -435,7 +560,7 @@ describe("runRuffAsync", () => {
 		delete (scope as { targetFile?: string }).targetFile;
 		await runRuffAsync(input(scope));
 		const args = runProcessAsyncMock.mock.calls[0]?.[1] as string[];
-		expect(args).toEqual(["check", "--output-format=json", "."]);
+		expect(args).toEqual(["check", "--output-format=json", ...ENFORCED, "."]);
 	});
 
 	it("returns [] when code === null (process never started, e.g. ENOENT)", async () => {
@@ -471,5 +596,55 @@ describe("runRuffAsync", () => {
 			procResult({ code: 1, stdout: JSON.stringify({ not: "array" }) }),
 		);
 		expect(await runRuffAsync(input(fileScope()))).toEqual([]);
+	});
+
+	it("surfaces a loud failure on code >= 2", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: 2, stderr: "boom" }));
+		const out = await runRuffAsync(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]?.message).toContain("ruff lint failed (exit 2)");
+	});
+});
+
+// ===========================================================================
+// runRuffFormatAsync — delta A
+// ===========================================================================
+
+describe("runRuffFormatAsync", () => {
+	it("invokes runProcessAsync with `format --check` + target, cwd/timeout", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: 0 }));
+		await runRuffFormatAsync(input(fileScope(), 2_222));
+		expect(runProcessAsyncMock).toHaveBeenCalledTimes(1);
+		const [cmd, args, opts] = runProcessAsyncMock.mock.calls[0] as [
+			string,
+			string[],
+			Record<string, unknown>,
+		];
+		expect(cmd).toBe("ruff");
+		expect(args).toEqual(["format", "--check", TARGET]);
+		expect(opts).toEqual({ cwd: PROJECT_ROOT, timeout: 2_222 });
+	});
+
+	it("returns [] when code === null (ENOENT)", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: null, stdout: wouldReformat() }));
+		expect(await runRuffFormatAsync(input(fileScope()))).toEqual([]);
+	});
+
+	it("returns [] when code === 0 (already formatted)", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: 0 }));
+		expect(await runRuffFormatAsync(input(fileScope()))).toEqual([]);
+	});
+
+	it("parses a would-reformat finding on code 1", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: 1, stdout: wouldReformat() }));
+		const out = await runRuffFormatAsync(input(fileScope()));
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ tool: "ruff-format", file: "app/models.py", line: 1 });
+	});
+
+	it("surfaces a loud failure on code >= 2", async () => {
+		runProcessAsyncMock.mockResolvedValue(procResult({ code: 2, stderr: "bad" }));
+		const out = await runRuffFormatAsync(input(fileScope()));
+		expect(out[0]?.message).toContain("ruff format failed (exit 2)");
 	});
 });

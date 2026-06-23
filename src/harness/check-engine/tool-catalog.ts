@@ -37,7 +37,14 @@ import {
 import { runGoBuild, runGolangciLint } from "./tool-runners/go.js";
 import { runHadolint, runHadolintAsync } from "./tool-runners/hadolint.js";
 import { runLizard, runLizardAsync } from "./tool-runners/lizard.js";
-import { runMypy, runMypyAsync, runRuff, runRuffAsync } from "./tool-runners/python.js";
+import {
+	runMypy,
+	runMypyAsync,
+	runRuff,
+	runRuffAsync,
+	runRuffFormat,
+	runRuffFormatAsync,
+} from "./tool-runners/python.js";
 import { runCargoCheck, runCargoClippy, runRustfmtCheck } from "./tool-runners/rust.js";
 import { runShellcheck, runShellcheckAsync } from "./tool-runners/shellcheck.js";
 import { runSwiftBuild, runSwiftLint, runSwiftLintAsync } from "./tool-runners/swift.js";
@@ -138,6 +145,16 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 		extensions: [".py", ".pyi"],
 		runner: runRuff,
 		runnerAsync: runRuffAsync,
+		concurrencySafe: true,
+		versionCmd: ["ruff", "--version"],
+		versionRegex: /ruff\s+(\S+)/,
+	},
+	{
+		id: "ruff-format",
+		configNames: ["ruff_format"],
+		extensions: [".py", ".pyi"],
+		runner: runRuffFormat,
+		runnerAsync: runRuffFormatAsync,
 		concurrencySafe: true,
 		versionCmd: ["ruff", "--version"],
 		versionRegex: /ruff\s+(\S+)/,

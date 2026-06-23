@@ -260,6 +260,7 @@ const ALL_TOOL_IDS = [
 	"dep-audit",
 	"mypy",
 	"ruff",
+	"ruff-format",
 	"cargo-check",
 	"cargo-clippy",
 	"rustfmt",

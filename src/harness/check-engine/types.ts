@@ -12,6 +12,7 @@ export type ToolId =
 	| "dep-audit"
 	| "mypy"
 	| "ruff"
+	| "ruff-format"
 	| "cargo-check"
 	| "cargo-clippy"
 	| "rustfmt"

@@ -227,6 +227,7 @@ export {
 	parseOsvScannerJson,
 	parseMypyOutput,
 	parseRuffJson,
+	parseRuffFormatOutput,
 	parseCargoJson,
 	parseGoBuildOutput,
 	parseGolangciLintJson,

@@ -23,6 +23,7 @@ const CHECK_LANGUAGE_MAP: Record<string, LanguageId[]> = {
 	inline_language_checks: ["python", "rust", "go", "c_cpp", "java", "swift"],
 	python_typecheck: ["python"],
 	ruff_lint: ["python"],
+	ruff_format: ["python"],
 	cargo_check: ["rust"],
 	cargo_clippy: ["rust"],
 	rustfmt_check: ["rust"],

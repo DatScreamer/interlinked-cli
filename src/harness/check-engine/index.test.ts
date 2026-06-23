@@ -170,6 +170,8 @@ vi.mock("./tool-runners/python.js", () => ({
 	runMypyAsync: mkAsyncRunner("mypy"),
 	runRuff: mkSyncRunner("ruff"),
 	runRuffAsync: mkAsyncRunner("ruff"),
+	runRuffFormat: mkSyncRunner("ruff-format"),
+	runRuffFormatAsync: mkAsyncRunner("ruff-format"),
 }));
 
 vi.mock("./tool-runners/rust.js", () => ({
@@ -264,10 +266,10 @@ vi.mock("./pool.js", () => ({
 import {
 	CheckEngine,
 	configNameToToolId,
-	deduplicateResults,
 	type DeduplicationResult,
-	formatToolReport as reExportedFormatToolReport,
+	deduplicateResults,
 	getOrCreateEngine,
+	formatToolReport as reExportedFormatToolReport,
 } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -877,7 +879,7 @@ describe("CheckEngine.getDiagnostics", () => {
 		{ file: "/proj/a.jsx", tools: ["biome", "oxlint"] },
 		{ file: "/proj/a.mjs", tools: ["biome", "oxlint"] },
 		{ file: "/proj/a.cjs", tools: ["biome", "oxlint"] },
-		{ file: "/proj/a.pyi", tools: ["mypy", "ruff"] },
+		{ file: "/proj/a.pyi", tools: ["mypy", "ruff", "ruff-format"] },
 		{ file: "/proj/a.rs", tools: ["cargo-check", "cargo-clippy", "rustfmt"] },
 		{ file: "/proj/a.go", tools: ["go-build", "golangci-lint"] },
 		{ file: "/proj/a.c", tools: ["c-compile", "clang-tidy"] },
@@ -910,14 +912,15 @@ describe("CheckEngine.getDiagnostics", () => {
 	);
 
 	it("skips a dispatched tool that is available but has no registered runner", () => {
-		// .py dispatches to mypy + ruff; both are registered, so to hit the
-		// `if (!runner) continue` branch we use a language whose dispatch list
-		// includes a tool with a registry entry plus availability. Instead we
-		// assert the available-but-unavailable filter for ruff here and rely on
-		// the registry-miss branch being covered by the runChecks suite.
+		// .py dispatches to mypy + ruff + ruff-format; all are registered, so to
+		// hit the `if (!runner) continue` branch we use a language whose dispatch
+		// list includes a tool with a registry entry plus availability. Instead we
+		// assert the available-but-unavailable filter for the ruff tools here and
+		// rely on the registry-miss branch being covered by the runChecks suite.
 		const file = "/proj/app.py";
 		statTable.set(file, 9);
-		discoverSingleToolImpl = (id) => (id === "ruff" ? avail(id, false) : avail(id, true));
+		discoverSingleToolImpl = (id) =>
+			id === "ruff" || id === "ruff-format" ? avail(id, false) : avail(id, true);
 		syncOutputs.set("mypy", () => [result({ tool: "mypy", file: "app.py", line: 1 })]);
 		const eng = new CheckEngine(ROOT);
 		const out = eng.getDiagnostics(file);
