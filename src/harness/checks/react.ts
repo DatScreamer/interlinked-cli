@@ -1,6 +1,7 @@
 // React / frontend checks.
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,13 +9,10 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // React/Frontend Checks
 // ===========================================
-
-const _JS_TS_ALL_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts"];
 
 /** Detect excessive useState hooks (8+) — consider useReducer or splitting. */
 export function checkExcessiveUseState(content: string, filePath: string): InlineMatch[] {
