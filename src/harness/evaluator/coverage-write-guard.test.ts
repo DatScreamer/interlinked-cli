@@ -858,6 +858,55 @@ describe("checkCoverageWrite — budget gate", () => {
 		expect(lines[0]).toMatchObject({ kind: "coverage", reason: "budget_exceeded", file: "src/a.ts" });
 	});
 
+	it("over-budget scoped run (timed out: ok:false, suiteMs >= budget) records an obligation and allows", async () => {
+		// A run that burns the whole per-edit budget without a report is a timeout
+		// kill (the spawn is bounded at budget_ms), NOT a missing provider. Wide-fan-in
+		// scoped case: the affected set is correct but too slow to run in-band, so it
+		// must DEFER (commit-time obligation) rather than fail open.
+		const wide = join(root, "src/wide.ts");
+		const view = stubDepView({ [wide]: [join(root, "src/wide.test.ts")] }, new Set<string>([wide]));
+		const { runner } = stubRunner({
+			suiteMs: 26_000, // > budget_ms (25s): the over-budget / timeout signal
+			perFile: new Map(),
+			ok: false,
+			error: "suite did not run: spawnSync ETIMEDOUT",
+			testsPassed: null,
+		});
+		const decision = await checkCoverageWrite(
+			writeEvent("src/wide.ts", "export const x = 1;\n"),
+			rules({ budget_ms: 25_000 }),
+			deps(runner),
+			view,
+		);
+		expect(decision).toBeNull(); // allowed (deferred), not a loud-degrade or block
+		const lines = readObligations(root);
+		expect(lines.length).toBe(1);
+		expect(lines[0]).toMatchObject({ kind: "coverage", reason: "budget_exceeded", file: "src/wide.ts" });
+	});
+
+	it("FAST failure (ok:false, suiteMs under budget) still fails loud - allow-with-warning, NO obligation", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const wide = join(root, "src/wide.ts");
+		const view = stubDepView({ [wide]: [join(root, "src/wide.test.ts")] }, new Set<string>([wide]));
+		const { runner } = stubRunner({
+			suiteMs: 10, // a quick launch/parse failure, well under budget
+			perFile: new Map(),
+			ok: false,
+			error: "boom",
+			testsPassed: null,
+		});
+		const decision = await checkCoverageWrite(
+			writeEvent("src/wide.ts", "export const x = 1;\n"),
+			rules({ budget_ms: 25_000 }),
+			deps(runner),
+			view,
+		);
+		expect(decision?.decision).toBe("allow");
+		expect((decision?.warnings ?? []).join("\n")).toMatch(/could not run/);
+		expect(readObligations(root).length).toBe(0);
+		errSpy.mockRestore();
+	});
+
 	it("runs the suite and updates the estimate when under budget", async () => {
 		const { runner, ran } = stubRunner(
 			coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }], 1500),

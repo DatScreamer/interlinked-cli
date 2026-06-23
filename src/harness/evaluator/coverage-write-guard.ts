@@ -223,6 +223,17 @@ async function runOverlayAndDecide(
 		// `ok:false` means the runner produced no parseable coverage — the most
 		// common real cause is a missing provider. Fail LOUD, not silent.
 		if (!result.ok) {
+			// Over-budget (suiteMs >= budgetMs): the run was killed at the per-edit
+			// timeout (timeoutMs === budgetMs) before finishing - the wide-fan-in
+			// SCOPED case (a correct but too-slow affected-test set). Failing open here
+			// would let an edit that breaks a slow affected test through (caught only at
+			// pre-push); record a commit-time obligation instead, exactly like the full
+			// route's up-front budget defer, so the commit gate runs the affected tests
+			// before the change can be pushed. A FAST failure (suiteMs < budgetMs) is a
+			// real launch/parse failure (missing provider, ENOENT) - nothing to defer.
+			if (result.suiteMs >= ctx.budgetMs) {
+				return deferForBudget(ctx.projectRoot, ctx.relPath, event, result.suiteMs, ctx.budgetMs);
+			}
 			return loudRunnerUnavailable(ctx.relPath, ctx.language, result.error ?? "coverage run failed");
 		}
 
