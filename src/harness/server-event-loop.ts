@@ -44,7 +44,7 @@ export interface EventLoopDeps {
 	readonly resetIdleTimer: () => void;
 	readonly syncRuntimeIn: () => void;
 	readonly syncRuntimeOut: () => void;
-	readonly writeCollectionRecord: (event: HarnessEvent) => void;
+	readonly writeCollectionRecord: (event: HarnessEvent, decision?: HarnessDecision) => void;
 }
 
 /** The two entry points the socket servers invoke, plus the protocol-status
@@ -138,14 +138,14 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			// Evaluate based on hook type
 			if (isPreToolUse(event)) {
 				const local = await runPreToolPipeline(ctx, event, session);
-				writeCollectionRecord(event);
+				writeCollectionRecord(event, local);
 				return forwardCloudPreToolUse(event, local);
 			}
 
 			if (isPostToolUse(event)) {
 				try {
 					const decision = await runPostToolPipeline(ctx, event, session);
-					writeCollectionRecord(event);
+					writeCollectionRecord(event, decision);
 					return decision;
 				} catch (postErr) {
 					// PostToolUse runs AFTER the tool — the action already happened, so

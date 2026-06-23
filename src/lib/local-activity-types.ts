@@ -82,6 +82,22 @@ export interface LocalActivityEvent {
 	tool_output_bytes?: number;
 	git_head?: string;
 	git_branch?: string;
+
+	// v3 guard telemetry — the persisted PreToolUse/PostToolUse decision.
+	// Written daemon-side by `writeGuardDecisionRecord` (server/activity-writer.ts).
+	// collection.jsonl deliberately drops `guard_*` records (lib/collection/builder.ts),
+	// so activity.jsonl is the ONLY sink. This restores the 2026-06-01 regression
+	// where the self-contained-.mjs → thin-daemon port dropped `appendGuardDecision`
+	// and guard decisions stopped being recorded locally even though blocking
+	// kept working. `tool_use_id` lets a decision be joined to its `tool_use_start`
+	// (the action + the captured reasoning) for after-the-fact analysis.
+	guard_decision?: "allow" | "block" | "ask";
+	guard_rule_id?: string | null;
+	guard_severity?: string | null;
+	guard_category?: string | null;
+	guard_reason?: string | null;
+	guard_warnings?: string[] | null;
+	guard_harness_ms?: number;
 }
 
 export interface SubagentState {

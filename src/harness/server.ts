@@ -51,7 +51,7 @@ import { ProjectWideSweepState } from "./quality-checks.js";
 import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
-import { writeActivityRecord } from "./server/activity-writer.js";
+import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity-writer.js";
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import { installCrashResilience } from "./server/crash-resilience.js";
@@ -80,7 +80,7 @@ import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/ru
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
-import type { GuardRulesConfig, HarnessEvent, PreEditBaseline } from "./types.js";
+import type { GuardRulesConfig, HarnessDecision, HarnessEvent, PreEditBaseline } from "./types.js";
 
 // ===========================================
 // CLI Arguments
@@ -492,9 +492,13 @@ function syncRuntimeOut(): void {
  *  fallback: the canonical collection.v1 record (server/collection-writer.ts)
  *  and the legacy v5 activity.jsonl mirror (server/activity-writer.ts) that the
  *  CLI reader commands still consume. Both are best-effort and never throw. */
-function writeCollectionRecord(event: HarnessEvent): void {
+function writeCollectionRecord(event: HarnessEvent, decision?: HarnessDecision): void {
 	appendCollectionRecord(event, CWD);
 	writeActivityRecord(event, CWD);
+	// Persist the guard decision (PreToolUse block/ask, or any warnings) to
+	// activity.jsonl. collection.jsonl drops guard_* by design, so this is the
+	// only local sink — restores the 2026-06-01 guard-writer regression.
+	if (decision) writeGuardDecisionRecord(event, decision, CWD);
 }
 
 // ===========================================
