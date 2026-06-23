@@ -341,6 +341,12 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"process_env_outside_config",
 	"findTopLevelSideEffects",
 	"top_level_side_effect",
+	// cjs_in_esm_module (CommonJS-in-ESM): a default-gate edit-time correctness
+	// check. Load-bearing surface is WRITE TIME — the PostToolUse warning the
+	// moment an agent writes require()/module.exports/__dirname into an ESM file.
+	// Verify-side wiring (interface + init + push + streamCqSection) is a deferred
+	// follow-up, same rationale as checkPlaceholderMarkdownLinks above.
+	"cjs_in_esm_module",
 ]);
 
 // ===========================================

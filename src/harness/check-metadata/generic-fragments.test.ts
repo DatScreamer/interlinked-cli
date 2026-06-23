@@ -66,6 +66,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"broad_object_types",
 			"magic_literal_in_conditional",
 			"nan_coercion_guard",
+			"cjs_in_esm_module",
 			"array_push_return_used",
 			"array_iteratee_variadic_builtin",
 			"write_without_mkdir",
@@ -332,8 +333,8 @@ describe("GENERIC_CHECK_META composition", () => {
 
 	it("preserves the full 192-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(193);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(194);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(193);
+		expect(fragmentKeyTotal).toBe(194);
 	});
 });
