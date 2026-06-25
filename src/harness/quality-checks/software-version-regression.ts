@@ -9,7 +9,6 @@
 
 import { basename } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
-import { nonNull } from "../../lib/non-null.js";
 import {
 	classifyGenericKind,
 	isVersionRegression,
@@ -121,19 +120,72 @@ export function detectSoftwareVersionRegressions(
 		beforeByAnchor.set(ref.anchor, list);
 	}
 
+	const afterVersionsByAnchor = collectVersionsByAnchor(afterRefs);
 	const regressions: SoftwareVersionRegression[] = [];
 	const emitted = new Set<string>();
 	for (const after of afterRefs) {
-		const beforeList = beforeByAnchor.get(after.anchor);
-		if (!beforeList) continue;
-		const before = nonNull(beforeList[0]);
-		if (!isVersionRegression(before, after)) continue;
+		const before = regressionBaselineFor(after, beforeByAnchor, afterVersionsByAnchor);
+		if (!before) continue;
 		const key = `${after.anchor}\0${before.version}\0${after.version}`;
 		if (emitted.has(key)) continue;
 		emitted.add(key);
 		regressions.push({ before, after });
 	}
 	return regressions;
+}
+
+// Set of versions present per anchor in the after-content. Lets the regression
+// check tell a real downgrade (the higher version is GONE after the edit) from
+// a catalog that merely lists many versions side by side (all still present).
+function collectVersionsByAnchor(
+	refs: readonly SoftwareVersionReference[],
+): Map<string, Set<string>> {
+	const byAnchor = new Map<string, Set<string>>();
+	for (const ref of refs) {
+		const set = byAnchor.get(ref.anchor) ?? new Set<string>();
+		set.add(ref.version);
+		byAnchor.set(ref.anchor, set);
+	}
+	return byAnchor;
+}
+
+// The before-reference an `after` ref regressed FROM, or undefined when this is
+// not a regression. The two guards keep model CATALOGS from self-tripping: a
+// file listing many `{ id, name }` entries collapses every sibling into one
+// anchor (array indices are not tracked; a model's "family" is just its
+// provider), so the old "compare against the first before-ref" logic flagged
+// every lower-versioned sibling as a downgrade of the highest — even when the
+// catalog was byte-identical and only an unrelated line (e.g. a DEFAULT_MODEL_ID
+// pin) changed.
+function regressionBaselineFor(
+	after: SoftwareVersionReference,
+	beforeByAnchor: ReadonlyMap<string, SoftwareVersionReference[]>,
+	afterVersionsByAnchor: ReadonlyMap<string, Set<string>>,
+): SoftwareVersionReference | undefined {
+	const beforeList = beforeByAnchor.get(after.anchor);
+	if (!beforeList) return undefined;
+	// Unchanged: this exact version was already at this anchor, so the edit did
+	// not introduce it — it cannot be a regression.
+	if (beforeList.some((b) => b.version === after.version)) return undefined;
+	// Else require a strictly-higher version to have been REMOVED (a real
+	// replacement), not merely joined by a lower-versioned sibling.
+	return pickReplacedHigherBaseline(beforeList, after, afterVersionsByAnchor.get(after.anchor));
+}
+
+// Among one anchor's before-refs, the highest that is both strictly higher than
+// `after` and absent from the after-content (replaced, not just co-listed).
+function pickReplacedHigherBaseline(
+	beforeList: readonly SoftwareVersionReference[],
+	after: SoftwareVersionReference,
+	afterVersions: ReadonlySet<string> | undefined,
+): SoftwareVersionReference | undefined {
+	let best: SoftwareVersionReference | undefined;
+	for (const before of beforeList) {
+		if (afterVersions?.has(before.version)) continue;
+		if (!isVersionRegression(before, after)) continue;
+		if (!best || isVersionRegression(before, best)) best = before;
+	}
+	return best;
 }
 
 export function detectSoftwareVersionFreshnessConcerns(

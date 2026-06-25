@@ -2,14 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { QualityCheckConfig } from "../types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { formatQualityWarnings, runQualityChecks } from "../quality-checks.js";
+import type { QualityCheckConfig } from "../types.js";
 import {
 	collectSoftwareVersionReferences,
 	detectSoftwareVersionFreshnessConcerns,
 	detectSoftwareVersionRegressions,
 } from "./software-version-regression.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const SOFTWARE_VERSION_CHECKS: Record<string, QualityCheckConfig> = {
 	software_version_regression: {
@@ -89,6 +89,60 @@ describe("software version regression detector", () => {
 		);
 
 		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	// A model-catalog module lists many same-family entries at different
+	// versions. Every sibling collapses into one anchor (array indices are not
+	// tracked, and a model's "family" is its leading name token), so the
+	// detector used to compare each entry against whichever sibling was listed
+	// first and flag every lower-versioned one as a downgrade — even when the
+	// catalog was byte-identical and only an unrelated line changed. Synthetic
+	// names per the fixture policy: the anchor collision is the behavior under
+	// test, not any real product name.
+	const catalogOf = (...versions: string[]): string =>
+		[
+			"export const MODELS = [",
+			...versions.map((v) => `  { model: "${v}" },`),
+			"];",
+		].join("\n");
+
+	it("does not flag unchanged catalog entries when a newer sibling is added", () => {
+		const before = collectSoftwareVersionReferences(
+			catalogOf("vendor-model-v6", "vendor-model-v5", "vendor-model-v4"),
+			"src/lib/models.ts",
+		);
+		const after = collectSoftwareVersionReferences(
+			catalogOf("vendor-model-v7", "vendor-model-v6", "vendor-model-v5", "vendor-model-v4"),
+			"src/lib/models.ts",
+		);
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("does not flag adding a lower-versioned sibling while the higher one survives", () => {
+		const before = collectSoftwareVersionReferences(catalogOf("vendor-model-v6"), "src/lib/models.ts");
+		const after = collectSoftwareVersionReferences(
+			catalogOf("vendor-model-v6", "vendor-model-v4"),
+			"src/lib/models.ts",
+		);
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("still flags a genuine downgrade inside a catalog (higher version replaced by a lower one)", () => {
+		const before = collectSoftwareVersionReferences(
+			catalogOf("vendor-model-v6", "vendor-model-v4"),
+			"src/lib/models.ts",
+		);
+		const after = collectSoftwareVersionReferences(
+			catalogOf("vendor-model-v3", "vendor-model-v4"),
+			"src/lib/models.ts",
+		);
+
+		const downgrade = detectSoftwareVersionRegressions(before, after).find(
+			(r) => r.before.version === "vendor-model-v6" && r.after.version === "vendor-model-v3",
+		);
+		expect(downgrade).toBeDefined();
 	});
 
 	it("does not flag unchanged nested versions in a package-lock.json", () => {
