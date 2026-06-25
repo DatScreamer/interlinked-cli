@@ -224,7 +224,11 @@ export function readLastLatencyTimestamp(cwd: string): string | null {
 // Raw-socket query helper
 // ---------------------------------------------------------------------------
 
-export function queryHarness(cwd: string, event: JsonObject): Promise<JsonObject | null> {
+export function queryHarness(
+	cwd: string,
+	event: JsonObject,
+	timeoutMs = 2000,
+): Promise<JsonObject | null> {
 	return new Promise((resolve) => {
 		const socketPath = getSocketPath(cwd);
 		if (!existsSync(socketPath)) {
@@ -239,7 +243,7 @@ export function queryHarness(cwd: string, event: JsonObject): Promise<JsonObject
 				/* intentional: socket already destroyed or never connected */
 			}
 			resolve(null);
-		}, 2000);
+		}, timeoutMs);
 
 		const sock = createConnection(socketPath);
 		let data = "";

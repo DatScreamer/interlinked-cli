@@ -17,8 +17,10 @@
 //     type declarations, config files, standalone scripts).
 
 import { existsSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
+import { appendDebtTxn } from "../obligation-ledger-io.js";
+import type { ObligationTxn } from "../obligations.js";
 import type {
 	GuardRulesConfig,
 	HarnessDecision,
@@ -155,17 +157,31 @@ function extractPublicSurface(content: string | undefined): string[] {
 	return [...names];
 }
 
-/** Public API — consumed by `evaluator/pre-tool.ts` as a thin event-level
- *  wrapper around `evaluateTddNewFileGate`. Extracts `file_path`/`content`
- *  from the raw tool input so the call site stays a one-liner. */
+/**
+ * Public API — consumed by `evaluator/pre-tool.ts` as a thin event-level
+ * wrapper around `evaluateTddNewFileGate`. Extracts `file_path`/`content` from
+ * the raw tool input so the call site stays a one-liner, then routes the verdict
+ * through {@link downgradeNewFileBlockToDebt}.
+ *
+ * **Debt-mode downgrade.** When `per_edit_coverage.debt_mode` is on (now the
+ * default), a new-file block is converted into an *opened coverage debt* + allow
+ * instead of a hard stop: the agent may write a new source file and its test as
+ * two ordinary edits. The existing `applyDebtMode` machinery (which reads the
+ * ledger on subsequent edits) then handles the wander-block and the optimistic
+ * discharge when the companion test is edited — so we only OPEN the debt + allow
+ * here. When `debt_mode` is off the original hard block is returned unchanged.
+ * The `// interlinked-tdd: exempt` escape is honored upstream (the pure gate
+ * returns null for it), so an exempt file never reaches the debt branch.
+ */
 export function evaluateTddNewFileGateForEvent(
 	event: HarnessEvent,
 	rules: GuardRulesConfig,
 	session: SessionTrajectory | undefined,
 ): HarnessDecision | null {
 	const toolInput = event.tool_input || {};
-	return evaluateTddNewFileGate({
-		filePath: (toolInput.file_path as string) || (toolInput.path as string) || "",
+	const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
+	const block = evaluateTddNewFileGate({
+		filePath,
 		cwd: event.cwd,
 		session,
 		content:
@@ -173,6 +189,64 @@ export function evaluateTddNewFileGateForEvent(
 			(toolInput.new_string as string | undefined),
 		testFirstMode: rules.structural_checks?.test_first_mode,
 	});
+	return downgradeNewFileBlockToDebt(block, event, rules, filePath);
+}
+
+/**
+ * Convert a new-file hard block into an opened coverage debt + allow when
+ * `per_edit_coverage.debt_mode` is on; otherwise return the verdict (block /
+ * null / unrelated) untouched. Split out of {@link evaluateTddNewFileGateForEvent}
+ * so the wrapper stays a thin extract-and-call and the debt branch's
+ * conditionals live in one cohesive function.
+ */
+function downgradeNewFileBlockToDebt(
+	block: HarnessDecision | null,
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+	filePath: string,
+): HarnessDecision | null {
+	// Not a new-file block (allow / null / unrelated rule) ⇒ pass through.
+	if (!block || block.rule_id !== "tdd_new_file_gate") return block;
+	// Debt mode off ⇒ keep the historical hard block.
+	if (rules.per_edit_coverage?.debt_mode !== true) return block;
+	// No cwd ⇒ can't resolve the ledger path; fall back to the hard block.
+	const projectRoot = event.cwd;
+	if (!projectRoot) return block;
+	return openNewFileCoverageDebt(projectRoot, filePath, event.session_id);
+}
+
+/**
+ * Open a coverage debt for a newly-created, test-less source file and ALLOW the
+ * write. Uses the same ledger scheme as the per-edit gate: an `open`
+ * `ObligationTxn` keyed by `kind:"coverage"` + the repo-relative path, appended
+ * through {@link appendDebtTxn}. The obligation id is derived from kind+file
+ * inside the engine's `applyObligationTxn`, so the subsequent `applyDebtMode`
+ * calls discharge it when the companion test lands (optimistic) and block a
+ * wander away from it in the meantime — no reimplementation here.
+ */
+function openNewFileCoverageDebt(
+	projectRoot: string,
+	filePath: string,
+	sessionId: string,
+): HarnessDecision {
+	const relPath = relative(projectRoot, toAbsolute(filePath, projectRoot));
+	const txn: ObligationTxn = {
+		op: "open",
+		kind: "coverage",
+		file: relPath,
+		contentHash: "",
+		sessionId,
+		atMs: Date.now(),
+	};
+	appendDebtTxn(projectRoot, txn);
+	const companion = companionHintPath(relPath);
+	return {
+		decision: "allow",
+		warnings: [
+			`[interlinked:coverage] Opened coverage debt for ${relPath} — write its companion ` +
+				`test (${companion}) next; don't move to an unrelated file until it's covered.`,
+		],
+	};
 }
 
 function isExemptPath(p: string): boolean {

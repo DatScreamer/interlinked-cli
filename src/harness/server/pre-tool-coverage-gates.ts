@@ -25,6 +25,7 @@ import {
 	looksLikeApplyPatch,
 	parseApplyPatchSections,
 } from "../apply-patch-content.js";
+import { applyDebtMode } from "../coverage-debt-gate.js";
 import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
@@ -102,10 +103,15 @@ export async function runCoverageWriteGate(
 	preDecision: HarnessDecision,
 ): Promise<HarnessDecision | null> {
 	if (preDecision.decision !== "allow") return null;
-	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: default OFF
+	const coverageCfg = ctx.rules.per_edit_coverage;
+	if (!coverageCfg?.enabled) return null; // fast path: default OFF
 	// Source the dependency view from the daemon's existing graph so the gate can
 	// select only the affected tests (fast → fits the per-edit budget → enforces).
-	const decision = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
+	let decision = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
+	// Pair-scoped debt lifecycle (a pure no-op unless `per_edit_coverage.debt_mode`
+	// is on): downgrades a first uncovered-line block to opened debt, blocks a
+	// wander to an unrelated file, discharges on a companion-test edit.
+	decision = applyDebtMode(event, coverageCfg, decision);
 	if (!decision) return null;
 
 	if (decision.decision === "block") {

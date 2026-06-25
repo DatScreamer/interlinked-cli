@@ -333,6 +333,23 @@ export interface PerEditCoverageConfig {
 	 */
 	block_on_crap?: boolean;
 	/**
+	 * **Debt mode (pair-scoped TDD).** Default: false (opt-in). When on, the
+	 * uncovered-added-line block is replaced by the coverage-debt lifecycle
+	 * (`coverage-debt.ts` + `obligation-ledger-io.ts`): a first uncovered edit
+	 * OPENS debt and is ALLOWED; the agent may keep editing that source or its
+	 * companion test freely; an edit that wanders to an unrelated file while debt
+	 * is open is BLOCKED. Discharge is optimistic on a companion-test edit;
+	 * `commit-gate.ts` stays the ground-truth backstop. See
+	 * `docs/design/coverage-debt-tdd.md`.
+	 */
+	debt_mode?: boolean;
+	/**
+	 * Max concurrently-open coverage debts before an out-of-pair edit blocks
+	 * (only consulted when {@link debt_mode} is on). **Default: 1** (strict pair
+	 * rule); a larger value relaxes toward the commit backstop.
+	 */
+	debt_wip_limit?: number;
+	/**
 	 * CRAP score at/above which a touched function blocks the edit when
 	 * {@link block_on_crap} is on. **Default: 30** (the McCabe / SonarQube CRAP
 	 * cutoff — a cyclomatic-10 function at 0% coverage scores 110; the same

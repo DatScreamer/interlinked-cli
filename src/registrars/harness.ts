@@ -56,11 +56,19 @@ export function registerHarnessCommands(program: Command): void {
 		});
 
 	harnessCmd
-		.command("test <command>")
-		.description("Test a command against guard rules without executing")
-		.option("--tool <name>", "Tool name to simulate (default: Bash)", "Bash")
+		.command("test [command]")
+		.description(
+			"Fire a synthetic PreToolUse event at the running harness and show its decision. Default: a Bash command. Use --write/--edit to test a file operation.",
+		)
+		.option("--tool <name>", "Tool name to simulate for the positional command", "Bash")
+		.option("--write <file>", "Simulate a Write to <file> (pair with --from-file or --stdin)")
+		.option("--from-file <path>", "Read the proposed Write content from <path>")
+		.option("--stdin", "Read the proposed Write content from stdin")
+		.option("--edit <file>", "Simulate an Edit to <file> (pair with --old and --new)")
+		.option("--old <str>", "old_string for --edit")
+		.option("--new <str>", "new_string for --edit")
 		.option("--json", "Machine-readable output")
-		.action(async (command: string, opts: OptionValues) => {
+		.action(async (command: string | undefined, opts: OptionValues) => {
 			const { harnessTestCommand } = await import("../commands/harness.js");
 			await harnessTestCommand(command, opts);
 		});

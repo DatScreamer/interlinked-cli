@@ -90,9 +90,7 @@ function blockForUncovered(relPath: string, fn: FunctionCoverage): HarnessDecisi
 		reason:
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${fn.line} (function ` +
 			`\`${fn.name}\`) is executable but uncovered by the test suite after this edit. ` +
-			"Strict TDD: an edit must not add uncovered code. Add the test that exercises " +
-			"this code in the SAME edit (use `interlinked write --batch <manifest.json>` so the " +
-			"overlay sees test + code together → covered → allowed), then retry.",
+			"Add a test that exercises this code, then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
@@ -109,10 +107,8 @@ function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${line} is executable but ` +
-			"uncovered by the test suite after this edit. Strict TDD: an edit must not add " +
-			"uncovered code. Add the test that exercises this code in the SAME edit (use " +
-			"`interlinked write --batch <manifest.json>` so the overlay sees test + code " +
-			"together → covered → allowed), then retry.",
+			"uncovered by the test suite after this edit. Add a test that exercises this " +
+			"line, then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
@@ -138,9 +134,7 @@ export function blockForRedBar(relPath: string, failingTests: string[] | undefin
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: your edit to ${relPath} leaves the test suite RED ` +
-			`— ${failingTestPhrase(failingTests)}. Fix it in THIS edit (use ` +
-			"`interlinked write --batch <manifest.json>` so the overlay sees code + test " +
-			"together → suite green → allowed) before proceeding. " +
+			`— ${failingTestPhrase(failingTests)}. Fix the failing test(s) before proceeding. ` +
 			"Strict TDD: an edit may not save a transiently-red state.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
@@ -171,7 +165,7 @@ function blockForDrop(relPath: string, prior: number, now: number): HarnessDecis
 		reason:
 			`[interlinked:coverage] BLOCKED: this edit drops ${relPath} coverage from ` +
 			`${pct(prior)} to ${pct(now)}. Strict TDD: coverage must not decrease. Restore the ` +
-			"test(s) covering the changed code in this edit (`interlinked write --batch`), then retry.",
+			"test(s) covering the changed code, then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",

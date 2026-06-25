@@ -149,7 +149,18 @@ describe("registerHarnessCommands — structure", () => {
 			["--no-daemon", "--protocol", "--session-id", "--verbose", "--json"].sort(),
 		);
 		expect(optsFor("status")).toEqual(["--json"]);
-		expect(optsFor("test")).toEqual(["--tool", "--json"].sort());
+		expect(optsFor("test")).toEqual(
+			[
+				"--tool",
+				"--write",
+				"--from-file",
+				"--stdin",
+				"--edit",
+				"--old",
+				"--new",
+				"--json",
+			].sort(),
+		);
 		expect(optsFor("reap")).toEqual(["--force", "--all", "--json"].sort());
 		expect(optsFor("clean")).toEqual(["--json"]);
 		expect(optsFor("mode")).toEqual(["--json"]);
@@ -287,6 +298,33 @@ describe("harness lifecycle — action wiring", () => {
 			from: "user",
 		});
 		expect(harnessTestCommand).toHaveBeenCalledWith("cat secrets", { tool: "Read", json: true });
+	});
+
+	it("test forwards --write with --from-file (no positional command)", async () => {
+		const program = build();
+		await program.parseAsync(
+			["harness", "test", "--write", "out.ts", "--from-file", "/tmp/p.ts"],
+			{ from: "user" },
+		);
+		expect(harnessTestCommand).toHaveBeenCalledWith(undefined, {
+			tool: "Bash",
+			write: "out.ts",
+			fromFile: "/tmp/p.ts",
+		});
+	});
+
+	it("test forwards --edit with --old and --new", async () => {
+		const program = build();
+		await program.parseAsync(
+			["harness", "test", "--edit", "a.ts", "--old", "x", "--new", "y"],
+			{ from: "user" },
+		);
+		expect(harnessTestCommand).toHaveBeenCalledWith(undefined, {
+			tool: "Bash",
+			edit: "a.ts",
+			old: "x",
+			new: "y",
+		});
 	});
 
 	it("reap forwards --force --all --json", async () => {

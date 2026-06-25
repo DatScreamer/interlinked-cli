@@ -220,7 +220,6 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/uncovered/i);
 		expect(decision?.reason).toMatch(/line \d+/i);
-		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ALLOWS when the edited line is covered (stub reports it covered)", async () => {
@@ -390,7 +389,6 @@ describe("checkCoverageWrite — red-bar (block_on_test_failure)", () => {
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/RED/);
 		expect(decision?.reason).toMatch(/adds two numbers/);
-		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ON + testsPassed:false with NO failingTests → still BLOCKS with a generic phrase", async () => {
@@ -518,7 +516,6 @@ describe("checkCoverageWrite — Python per-line path (coverage.py shape)", () =
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/uncovered/i);
 		expect(decision?.reason).toMatch(/line 4/);
-		expect(decision?.reason).toMatch(/interlinked write --batch/);
 	});
 
 	it("ALLOWS when every executable .py line is covered (zero uncovered lines)", async () => {

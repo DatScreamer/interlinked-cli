@@ -9,8 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { SessionTrajectory } from "../types.js";
-import { evaluateTddNewFileGate } from "./tdd-new-file-gate.js";
+import { readOpenDebts } from "../obligation-ledger-io.js";
+import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
+import { evaluateTddNewFileGate, evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 
 let tmp: string;
 
@@ -287,5 +288,104 @@ describe("evaluateTddNewFileGate — non-source extensions", () => {
 			testFirstMode: "enforce",
 		});
 		expect(decision).toBeNull();
+	});
+});
+
+// ===========================================
+// Event wrapper — debt-mode downgrade
+// ===========================================
+// When `per_edit_coverage.debt_mode` is on (now the default), a would-be
+// new-file BLOCK is downgraded to an opened coverage debt + allow, so an agent
+// can write a new source file then its companion test as two ordinary edits
+// (the "Pair B" case). With debt_mode off the historical hard block is
+// preserved. The `// interlinked-tdd: exempt` escape still allows with no debt.
+// These exercise `evaluateTddNewFileGateForEvent`, which both resolves the
+// block AND appends the open txn to `.interlinked/obligations.jsonl` under cwd.
+
+function rulesFor(debtMode: boolean | undefined): GuardRulesConfig {
+	// SAFETY: the wrapper reads only `structural_checks.test_first_mode` and
+	// `per_edit_coverage.debt_mode`; every other GuardRulesConfig field is
+	// unused on this path, so a two-field stand-in is sufficient for the test.
+	return {
+		structural_checks: { test_first_mode: "enforce" },
+		per_edit_coverage: debtMode === undefined ? undefined : { debt_mode: debtMode },
+	} as unknown as GuardRulesConfig;
+}
+
+function writeEvent(absPath: string, content: string | undefined): HarnessEvent {
+	return {
+		hook_event: "PreToolUse",
+		session_id: "sess-1",
+		agent_source: "claude",
+		tool_name: "Write",
+		tool_input: content === undefined ? { file_path: absPath } : { file_path: absPath, content },
+		cwd: tmp,
+		timestamp: "t",
+	};
+}
+
+describe("evaluateTddNewFileGateForEvent — debt-mode downgrade", () => {
+	it("debt_mode ON: allows the new test-less source AND opens a coverage debt for it", () => {
+		const abs = join(tmp, "src/foo.ts");
+		const decision = evaluateTddNewFileGateForEvent(
+			writeEvent(abs, "export const x = 1;\n"),
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.[0]).toMatch(/Opened coverage debt for src\/foo\.ts/);
+		expect(decision?.warnings?.[0]).toMatch(/companion test \(src\/foo\.test\.ts\)/);
+
+		const debts = readOpenDebts(tmp);
+		expect(debts).toHaveLength(1);
+		expect(debts[0]?.file).toBe("src/foo.ts");
+		expect(debts[0]?.kind).toBe("coverage");
+	});
+
+	it("debt_mode OFF: still hard-blocks the new test-less source (unchanged) and opens no debt", () => {
+		const abs = join(tmp, "src/foo.ts");
+		const decision = evaluateTddNewFileGateForEvent(
+			writeEvent(abs, "export const x = 1;\n"),
+			rulesFor(false),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/companion test/i);
+		expect(decision?.rule_id).toBe("tdd_new_file_gate");
+		expect(readOpenDebts(tmp)).toHaveLength(0);
+	});
+
+	it("debt_mode default-absent: hard-blocks (no per_edit_coverage config means no downgrade)", () => {
+		const abs = join(tmp, "src/foo.ts");
+		const decision = evaluateTddNewFileGateForEvent(
+			writeEvent(abs, "export const x = 1;\n"),
+			rulesFor(undefined),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(readOpenDebts(tmp)).toHaveLength(0);
+	});
+
+	it("exempt directive: allows with no block and no debt even when debt_mode is on", () => {
+		const abs = join(tmp, "src/wrapper.ts");
+		const decision = evaluateTddNewFileGateForEvent(
+			writeEvent(abs, "// interlinked-tdd: exempt\nexport const x = 1;\n"),
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision).toBeNull();
+		expect(readOpenDebts(tmp)).toHaveLength(0);
+	});
+
+	it("debt_mode ON but companion already on disk: allows with no block and no debt", () => {
+		writeFileSync(join(tmp, "src/foo.test.ts"), "import './foo.js';\n");
+		const abs = join(tmp, "src/foo.ts");
+		const decision = evaluateTddNewFileGateForEvent(
+			writeEvent(abs, "export const x = 1;\n"),
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision).toBeNull();
+		expect(readOpenDebts(tmp)).toHaveLength(0);
 	});
 });

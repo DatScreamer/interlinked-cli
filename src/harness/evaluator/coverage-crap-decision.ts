@@ -160,8 +160,7 @@ function blockForCrap(relPath: string, worst: CrapViolation): HarnessDecision {
 			`(cyclomatic ${worst.cyclomatic}, coverage ${cov}%) — it is BOTH complex AND ` +
 			"under-covered. CRAP = cyclomatic² · (1 − coverage)³ + cyclomatic, checked after " +
 			"the coverage gate. Reduce complexity (decompose the function) OR add coverage " +
-			"(exercise its branches) in this edit (use `interlinked write --batch` so the overlay sees code + " +
-			"test together), then retry.\n" +
+			"(exercise its branches), then retry.\n" +
 			"This CRAP threshold is per-repo configurable: `interlinked caps set crap <n>` " +
 			"(`interlinked caps explain crap` for what it measures).",
 		rule_id: "per-edit-coverage",

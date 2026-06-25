@@ -4,9 +4,22 @@
 
 import { existsSync } from "node:fs";
 import { distStaleness, stalenessWarning } from "../harness/build-staleness.js";
+import { c, header, kvLine } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
-import { c, header, kvLine } from "../lib/formatter.js";
+// Lifecycle/status helpers extracted to a sibling to hold this file under the
+// per-file line cap. Behavior is byte-identical; these are the same functions
+// the start / restart / status commands have always called.
+import {
+	buildHarnessSpawnArgs,
+	cleanStaleRestartFiles,
+	daemonizeHarness,
+	framedSocketLines,
+	inlineJsonRestartStart,
+	protocolStatusLines,
+	startHarnessForeground,
+	stopRunningHarnessForRestart,
+} from "./harness-lifecycle-helpers.js";
 import {
 	ensureDistFresh,
 	getFramedSocketPath,
@@ -24,21 +37,17 @@ import {
 	readProtocolStatus,
 	readRssMb,
 } from "./harness-status-helpers.js";
-
-// Lifecycle/status helpers extracted to a sibling to hold this file under the
-// per-file line cap. Behavior is byte-identical; these are the same functions
-// the start / restart / status commands have always called.
 import {
-	buildHarnessSpawnArgs,
-	cleanStaleRestartFiles,
-	daemonizeHarness,
-	framedSocketLines,
-	inlineJsonRestartStart,
-	protocolStatusLines,
-	startHarnessForeground,
-	stopRunningHarnessForRestart,
-} from "./harness-lifecycle-helpers.js";
+	buildHarnessTestEvent,
+	type HarnessTestOpts,
+	resolveHarnessTestInput,
+} from "./harness-test-event.js";
 
+export type {
+	OrphanCandidate,
+	ReapOptions,
+	ReapResult,
+} from "./harness-process.js";
 // Re-export the process/orphan-management surface so existing importers of
 // `./harness.js` (init, enable, doctor, harness-reap, harness-clean, skill,
 // index, tests) keep a byte-for-byte-identical public API after the split.
@@ -48,11 +57,6 @@ export {
 	isHarnessRunning,
 	readActiveHarnessPid,
 	reapOrphanHarnesses,
-} from "./harness-process.js";
-export type {
-	OrphanCandidate,
-	ReapOptions,
-	ReapResult,
 } from "./harness-process.js";
 
 /** Delay after SIGTERM to let the harness process exit cleanly before we check its status. */
@@ -331,36 +335,33 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 // ===========================================
 
 export async function harnessTestCommand(
-	command: string,
-	opts: {
-		tool?: string;
-		json?: boolean;
-	},
+	command: string | undefined,
+	opts: HarnessTestOpts,
 ): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
 
 	try {
-		const toolName = opts.tool || "Bash";
-		const toolInput: JsonObject =
-			toolName === "Bash" || toolName === "Shell" ? { command } : { file_path: command };
-
-		const testEvent = {
-			hook_event: "PreToolUse" as const,
-			session_id: "cli-test",
-			agent_source: "claude" as const,
-			agent_name: "test",
-			tool_name: toolName,
-			tool_input: toolInput,
-			timestamp: new Date().toISOString(),
-		};
+		// Resolve flags (--write/--edit/positional) + any --from-file/--stdin
+		// content into a synthetic PreToolUse event. Pure construction lives in
+		// ./harness-test-event.js so the flag→event mapping is unit-tested
+		// without a live socket.
+		const input = await resolveHarnessTestInput(command, opts, cwd);
+		const { toolName, displayLabel, event } = buildHarnessTestEvent(input);
+		// Gates that resolve the ledger / overlay (coverage debt, new-file debt)
+		// need the project root; without it they fail closed. The builder omits it
+		// (it's pure / cwd-free), so stamp it on the event here before sending.
+		event.cwd = cwd;
 
 		// Try harness first
 		const socketExists = existsSync(getSocketPath(cwd));
 		let decision: JsonObject | null = null;
 
 		if (socketExists) {
-			decision = await queryHarness(cwd, testEvent);
+			// A Write/Edit event can trigger the coverage overlay (vitest), which
+			// takes seconds — far past the 2s status-ping default. `harness test`
+			// is interactive, so wait for the real gate to finish.
+			decision = await queryHarness(cwd, event, 60_000);
 		}
 
 		if (!decision) {
@@ -385,7 +386,7 @@ export async function harnessTestCommand(
 				const lines: string[] = [];
 				const blocked = resolvedDecision.decision === "block";
 				lines.push(
-					`${blocked ? c.red("BLOCKED") : c.green("ALLOWED")} ${c.dim(`${toolName}:`)} ${command}`,
+					`${blocked ? c.red("BLOCKED") : c.green("ALLOWED")} ${c.dim(`${toolName}:`)} ${displayLabel}`,
 				);
 				if (resolvedDecision.reason) {
 					lines.push(`  ${resolvedDecision.reason}`);

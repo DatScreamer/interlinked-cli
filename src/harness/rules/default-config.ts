@@ -380,5 +380,12 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// guard-rules.local.json (`"per_edit_coverage": { "block_on_crap": false }`).
 		block_on_crap: true,
 		crap_threshold: 30,
+		// Pair-scoped debt lifecycle — DEFAULT ON (2026-06): the uncovered-added-
+		// line BLOCK becomes a coverage "debt" — the edit is ALLOWED, debt opens,
+		// and you stay free to edit that source or its companion test until it's
+		// covered; only a wander to an unrelated file (or commit) blocks. Opt out
+		// via `"per_edit_coverage": { "debt_mode": false }`. See coverage-debt-gate.ts
+		// and docs/design/coverage-debt-tdd.md.
+		debt_mode: true,
 	},
 };
