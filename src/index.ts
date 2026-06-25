@@ -27,6 +27,7 @@ import { registerQualityCommands } from "./registrars/quality.js";
 import { registerSetupCommands } from "./registrars/setup.js";
 import { registerSponsorCommands } from "./registrars/sponsor.js";
 import { registerSupplyChainCommands } from "./registrars/supply-chain.js";
+import { registerVizCommands } from "./registrars/viz.js";
 
 const program = new Command();
 
@@ -84,6 +85,7 @@ registerSponsorCommands(program);
 registerIndexCommand(program);
 registerCiCommand(program);
 registerCompactCommand(program);
+registerVizCommands(program);
 
 program
 	.command("version")
