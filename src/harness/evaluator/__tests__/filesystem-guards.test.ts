@@ -155,4 +155,75 @@ describe("evaluateRepoConfinement", () => {
 		).toBe("block");
 		expect(evaluateRepoConfinement({ rawPath: "src/ok.ts", cwd: tmpDir, allowlist: [] })).toBeNull();
 	});
+
+	// --- Session scratchpad carve-out (ephemeral + session-scoped + host-sanctioned) ---
+	// The host provisions `<temp-root>/.../<session-id>/scratchpad/` for this run.
+	// Allowed only when all three hold, so it never becomes a blanket /tmp escape.
+
+	const SESSION_ID = "1afa076e-599d-46a5-b4ed-bcdb558eff4d";
+	const OTHER_SESSION = "00000000-aaaa-bbbb-cccc-000000000000";
+	const scratchpadPath = (sessionId: string, ...tail: string[]): string =>
+		join(tmpdir(), "claude-501", "-Users-x-repo", sessionId, "scratchpad", ...tail);
+
+	it("permits writes to this session's host-provisioned scratchpad", () => {
+		expect(
+			evaluateRepoConfinement({
+				rawPath: scratchpadPath(SESSION_ID, "repro.ts"),
+				cwd: tmpDir,
+				allowlist: [],
+				sessionId: SESSION_ID,
+			}),
+		).toBeNull();
+	});
+
+	it("permits writes nested deeper inside the session scratchpad", () => {
+		expect(
+			evaluateRepoConfinement({
+				rawPath: scratchpadPath(SESSION_ID, "sub", "dir", "out.json"),
+				cwd: tmpDir,
+				allowlist: [],
+				sessionId: SESSION_ID,
+			}),
+		).toBeNull();
+	});
+
+	it("blocks a scratchpad belonging to a DIFFERENT session", () => {
+		const decision = evaluateRepoConfinement({
+			rawPath: scratchpadPath(OTHER_SESSION, "x.ts"),
+			cwd: tmpDir,
+			allowlist: [],
+			sessionId: SESSION_ID,
+		});
+		expect(decision?.rule_id).toBe("builtin-repo-confinement");
+	});
+
+	it("blocks a scratchpad-shaped path outside any ephemeral temp root", () => {
+		const decision = evaluateRepoConfinement({
+			rawPath: join("/opt", "notreal", SESSION_ID, "scratchpad", "x.ts"),
+			cwd: tmpDir,
+			allowlist: [],
+			sessionId: SESSION_ID,
+		});
+		expect(decision?.decision).toBe("block");
+	});
+
+	it("blocks a temp path under the session id that is NOT the scratchpad subtree", () => {
+		const decision = evaluateRepoConfinement({
+			rawPath: join(tmpdir(), "claude-501", "-Users-x-repo", SESSION_ID, "transcript", "x.ts"),
+			cwd: tmpDir,
+			allowlist: [],
+			sessionId: SESSION_ID,
+		});
+		expect(decision?.decision).toBe("block");
+	});
+
+	it("does not turn the temp dir into a blanket escape when the event has no session id", () => {
+		const decision = evaluateRepoConfinement({
+			rawPath: scratchpadPath(SESSION_ID, "x.ts"),
+			cwd: tmpDir,
+			allowlist: [],
+			// sessionId omitted — the carve-out must not fire.
+		});
+		expect(decision?.decision).toBe("block");
+	});
 });

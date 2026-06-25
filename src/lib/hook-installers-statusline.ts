@@ -64,9 +64,16 @@ ROOT=""
 PID=""
 DIR="$PWD"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if [ -S "$DIR/.interlinked/harness.sock" ] || [ -d "$DIR/.interlinked" ]; then
+    # Resolve to a real, CONFIGURED harness root — one with a committed/local
+    # config or a live socket — not just the nearest .interlinked dir. A bare
+    # .interlinked with neither is an orphan (stray artifacts left in a subdir
+    # by a past run / sub-project); treating it as a root made the statusline
+    # render the healthy root daemon as "offline" whenever $PWD was under such a
+    # subdir. Skip orphans and keep walking up to the configured root.
+    IL="$DIR/.interlinked"
+    if [ -f "$IL/config.json" ] || [ -f "$IL/config.local.json" ] || [ -S "$IL/harness.sock" ] || [ -S "$IL/harness-default.sock" ]; then
         ROOT="$DIR"
-        [ -f "$DIR/.interlinked/harness.pid" ] && PID=$(cat "$DIR/.interlinked/harness.pid" 2>/dev/null)
+        [ -f "$IL/harness.pid" ] && PID=$(cat "$IL/harness.pid" 2>/dev/null)
         break
     fi
     P=$(dirname "$DIR")
@@ -111,13 +118,36 @@ if [ -n "$PID" ] && ps -p "$PID" > /dev/null 2>&1; then
     ALIVE=1
 fi
 
+# Debounce transient restart windows. A self-healing respawn (or a SessionStart
+# relaunch) leaves harness.pid pointing at a dead process for ~1-3s; without a
+# grace period the statusline paints the full "bypassing guardrails" alarm on
+# that blip even though the cold-path gate is already blocking edits fail-closed.
+# Track how long the daemon has looked down via a marker file: under the grace
+# window show a calm "restarting" row; only past it the real outage alarm.
+DOWN_MARK="$ID/.statusline-down-since"
+DOWN_GRACE_SECS=6
 if [ "$ALIVE" = "0" ]; then
+    NOW=$(date +%s)
+    SINCE="$NOW"
+    if [ -f "$DOWN_MARK" ]; then
+        SINCE=$(cat "$DOWN_MARK" 2>/dev/null || echo "$NOW")
+    else
+        echo "$NOW" > "$DOWN_MARK" 2>/dev/null
+    fi
+    case "$SINCE" in *[!0-9]*) SINCE="$NOW";; esac
+    if [ "$((NOW - SINCE))" -lt "$DOWN_GRACE_SECS" ]; then
+        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness restarting…\${RESET}"
+        LINE2="\${DIM}auto-recovering — edits blocked until it's back\${RESET}"
+        printf '%s\\n%s' "$LINE1" "$LINE2"
+        exit 0
+    fi
     BRAND="\${RED}\${BOLD}◆ interlinked\${RESET}"
     LINE1="\${BRAND}\${SEP}\${YELLOW}▼ harness offline\${RESET}\${SEP}\${RED}Claude is bypassing guardrails\${RESET}"
     LINE2="\${CYAN}↻ interlinked harness start\${RESET}"
     printf '%s\\n%s' "$LINE1" "$LINE2"
     exit 0
 fi
+rm -f "$DOWN_MARK" 2>/dev/null
 
 # --- Snapshot fields (with sensible defaults for missing keys) ---
 SMODE=$(read_snap sync_mode realtime)

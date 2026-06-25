@@ -35,6 +35,12 @@ const ASSETS = [
 		from: "src/harness/checks/data/npm-popular-packages.json",
 		to: "dist/checks/data/npm-popular-packages.json",
 	},
+	// The viz dashboard — a self-contained HTML asset served by `interlinked viz`
+	// at runtime via `resolveVizAsset` (which probes `dist/viz/index.html`).
+	{
+		from: "src/lib/viz/web/index.html",
+		to: "dist/viz/index.html",
+	},
 ];
 
 for (const asset of ASSETS) {

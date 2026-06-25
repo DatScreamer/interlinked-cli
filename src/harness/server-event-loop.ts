@@ -15,6 +15,7 @@
 // without behavior change — startup order and side effects are identical.
 
 import type { JsonObject } from "../lib/json-types.js";
+import { appendCheckResults } from "./check-results-sink.js";
 import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { toLegacyHarnessEvent } from "./legacy-client.js";
@@ -146,6 +147,9 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 				try {
 					const decision = await runPostToolPipeline(ctx, event, session);
 					writeCollectionRecord(event, decision);
+					// Fire-and-forget faithful per-call record for the viz BASELINE filmstrip.
+					// Runs AFTER the decision is returned to the hook — never blocks the tool loop.
+					appendCheckResults(CWD, event, decision);
 					return decision;
 				} catch (postErr) {
 					// PostToolUse runs AFTER the tool — the action already happened, so
