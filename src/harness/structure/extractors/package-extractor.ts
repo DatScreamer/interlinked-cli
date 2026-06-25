@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
-import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import { resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const PACKAGE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
 
@@ -51,6 +51,7 @@ interface WalkContext {
 	repoRoot: string;
 	results: Array<{ relDir: string; file: string }>;
 	budget: WalkBudget;
+	ignoredDirs?: ReadonlySet<string>;
 }
 
 function findPackages(dir: string, ctx: WalkContext): void {
@@ -64,8 +65,9 @@ function findPackages(dir: string, ctx: WalkContext): void {
 		// Hard cap: stop descending/iterating once the entry or time budget trips.
 		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
-			if (SKIP_DIRS.has(entry.name)) continue;
-			findPackages(path.join(dir, entry.name), ctx);
+			const sub = path.join(dir, entry.name);
+			if (SKIP_DIRS.has(entry.name) || ctx.ignoredDirs?.has(sub)) continue;
+			findPackages(sub, ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile() && PACKAGE_MARKERS.includes(entry.name)) {
 			const relDir = path.relative(ctx.repoRoot, dir) || ".";
@@ -80,7 +82,7 @@ export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget(
 	const edges: ArtifactEdge[] = [];
 	const packages: Array<{ relDir: string; file: string }> = [];
 
-	findPackages(repoRoot, { repoRoot, results: packages, budget });
+	findPackages(repoRoot, { repoRoot, results: packages, budget, ignoredDirs: resolveIgnoredDirs(repoRoot) });
 	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 
 	if (packages.length === 0) {

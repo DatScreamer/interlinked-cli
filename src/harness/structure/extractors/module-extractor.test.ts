@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,5 +62,23 @@ describe("module-extractor", () => {
 	it("returns empty nodes for an empty directory", () => {
 		const { nodes } = extract(tmp);
 		expect(nodes).toEqual([]);
+	});
+
+	it("honors .gitignore — a gitignored directory is not walked", () => {
+		// The defense that stops the daemon OOM-ing on large monorepos: a
+		// project's own heavy non-source trees (gitignored model weights, build
+		// output under a custom name) are pruned via `git ls-files`, not a
+		// hardcoded basename. Needs a real working tree — no commit required,
+		// `--others --ignored` reads the index-free working state.
+		execFileSync("git", ["init", "-q"], { cwd: tmp });
+		writeFileSync(join(tmp, ".gitignore"), "ignored-data/\n");
+		mkdirSync(join(tmp, "ignored-data"), { recursive: true });
+		writeFileSync(join(tmp, "ignored-data", "weights.ts"), "export const w = 1;");
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, "src", "real.ts"), "export const r = 1;");
+
+		const { nodes } = extract(tmp);
+		expect(nodes.some((n) => n.label === "src/real.ts")).toBe(true);
+		expect(nodes.some((n) => n.label.includes("ignored-data"))).toBe(false);
 	});
 });

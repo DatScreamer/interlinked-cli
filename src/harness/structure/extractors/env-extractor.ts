@@ -8,7 +8,7 @@ import { nonNull } from "../../../lib/non-null.js";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
-import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import { resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([
 	".ts",
@@ -116,6 +116,7 @@ interface WalkContext {
 	repoRoot: string;
 	envKeys: EnvKeyMap;
 	budget: WalkBudget;
+	ignoredDirs?: ReadonlySet<string>;
 }
 
 function walkDir(dir: string, ctx: WalkContext): void {
@@ -129,8 +130,9 @@ function walkDir(dir: string, ctx: WalkContext): void {
 		// Hard cap: stop descending/iterating once the entry or time budget trips.
 		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
-			if (SKIP_DIRS.has(entry.name)) continue;
-			walkDir(path.join(dir, entry.name), ctx);
+			const sub = path.join(dir, entry.name);
+			if (SKIP_DIRS.has(entry.name) || ctx.ignoredDirs?.has(sub)) continue;
+			walkDir(sub, ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const ext = path.extname(entry.name);
@@ -168,7 +170,7 @@ function scanEnvExample(repoRoot: string, envKeys: EnvKeyMap): void {
 export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const envKeys: EnvKeyMap = new Map();
 	scanEnvExample(repoRoot, envKeys);
-	walkDir(repoRoot, { repoRoot, envKeys, budget });
+	walkDir(repoRoot, { repoRoot, envKeys, budget, ignoredDirs: resolveIgnoredDirs(repoRoot) });
 	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	const nodes: ArtifactNode[] = [];
 	for (const [key, info] of envKeys) {

@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, DocKind, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
-import { SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import { resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const DOC_EXTENSIONS = new Set([".md", ".mdx", ".rst"]);
 
@@ -36,6 +36,7 @@ interface WalkContext {
 	repoRoot: string;
 	nodes: ArtifactNode[];
 	budget: WalkBudget;
+	ignoredDirs?: ReadonlySet<string>;
 }
 
 /** Classify ONE file into its doc node, if it is one. Pure path/name logic (no
@@ -75,8 +76,9 @@ function walkDir(dir: string, ctx: WalkContext): void {
 		// Hard cap: stop descending/iterating once the entry or time budget trips.
 		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
-			if (SKIP_DIRS.has(entry.name)) continue;
-			walkDir(path.join(dir, entry.name), ctx);
+			const sub = path.join(dir, entry.name);
+			if (SKIP_DIRS.has(entry.name) || ctx.ignoredDirs?.has(sub)) continue;
+			walkDir(sub, ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {
 			const relPath = path.relative(ctx.repoRoot, path.join(dir, entry.name));
@@ -87,7 +89,7 @@ function walkDir(dir: string, ctx: WalkContext): void {
 
 export function extract(repoRoot: string, budget: WalkBudget = createWalkBudget()): ExtractorResult {
 	const nodes: ArtifactNode[] = [];
-	walkDir(repoRoot, { repoRoot, nodes, budget });
+	walkDir(repoRoot, { repoRoot, nodes, budget, ignoredDirs: resolveIgnoredDirs(repoRoot) });
 	if (budget.truncated) warnWalkTruncated(metadata.name, repoRoot);
 	return { nodes, edges: [] };
 }
