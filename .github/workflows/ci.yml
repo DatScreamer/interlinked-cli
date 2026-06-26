@@ -31,7 +31,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS dropped from cloud CI: it bills 10x and was largely redundant
+        # with the local pre-push gate (devs run the full suite on macOS before
+        # every push) plus `npm run ci:local`. The cloud's irreplaceable leg is
+        # Linux — it catches the ripgrep/spawn divergences noted below — so keep
+        # ubuntu. Re-add macos-latest here if a Mac-only regression slips through.
+        os: [ubuntu-latest]
         node: ["22"]
     steps:
       - name: Checkout
@@ -60,10 +65,10 @@ jobs:
           fi
           rg --version
 
-      # OS-independent gates run on ubuntu only (1x) instead of also on the
-      # macOS runner (10x) — tsc/docs/publint/attw/pack are deterministic across
-      # platforms, so the macОS copies were pure billed-minute waste. macOS still
-      # runs the OS-sensitive legs (test, build, install smokes).
+      # OS-independent gates stay Linux-scoped so they remain 1x even if a macOS
+      # leg is re-added later (tsc/docs/publint/attw/pack are deterministic across
+      # platforms). macOS coverage now comes from the local pre-push gate +
+      # `npm run ci:local`, not a 10x-billed cloud runner.
       - name: Typecheck
         if: runner.os == 'Linux'
         run: npm run typecheck:stable
@@ -91,26 +96,7 @@ jobs:
         run: npm pack --dry-run
 
       - name: Tarball install smoke test
-        run: |
-          set -euo pipefail
-          npm pack --pack-destination /tmp
-          TARBALL=$(ls /tmp/interlinked-cli-*.tgz | head -n 1)
-          echo "Installing: $TARBALL"
-          SMOKE_DIR=$(mktemp -d)
-          cd "$SMOKE_DIR"
-          npm init -y >/dev/null
-          npm install --no-save "$TARBALL"
-          INTERLINKED=./node_modules/.bin/interlinked
-          HOOK=./node_modules/.bin/interlinked-hook
-          "$INTERLINKED" --version
-          "$INTERLINKED" --help | head -5
-          "$INTERLINKED" install-hooks --runner claude-code --mode balanced --json
-          test -f .claude/settings.json
-          grep -q -- "--runner 'claude-code'" .claude/settings.json
-          printf '{"session_id":"smoke","cwd":"%s","tool_name":"Read","tool_input":{"file_path":"README.md"}}' "$PWD" \
-            | "$HOOK" --runner claude-code --event PreToolUse
-          mkdir -p src
-          "$INTERLINKED" write src/smoke.ts --stdin --json <<< 'export const smoke: number = 1;'
+        run: bash scripts/smoke-tarball-install.sh
 
       - name: Onboarding smoke test (git-clone install path)
         env:

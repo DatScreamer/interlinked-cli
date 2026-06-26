@@ -26,6 +26,7 @@ zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 protected_branch_re='^(main|master)$'
 should_run=0
 docs_only=1
+pkg_touched=0
 while read -r local_ref local_sha remote_ref remote_sha; do
 	[ -z "$local_ref" ] && continue
 	# Deletion: local_sha is all-zeros. Skip.
@@ -51,6 +52,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		if [ "$remote_sha" = "$zero" ]; then
 			# New branch being created on the remote — no diff base.
 			docs_only=0
+			pkg_touched=1
 		elif diff_files="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)"; then
 			# `git diff` exited 0. Empty diff or any non-md file → full gate.
 			# Otherwise (every changed path ends in .md) leave docs_only=1.
@@ -58,11 +60,19 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 				|| printf '%s\n' "$diff_files" | grep -qvE '\.md$'; then
 				docs_only=0
 			fi
+			# Package-surface change → also run the build + distribution smokes
+			# (build / publint / attw / pack / install / onboarding). Ordinary
+			# source/test pushes skip them so they stay fast; the cloud ubuntu
+			# leg is the backstop either way.
+			if printf '%s\n' "$diff_files" | grep -qE '^(package(-lock)?\.json|\.npmignore|tsup\.config|src/index\.ts|src/hook-entry\.ts|src/harness/server\.ts|src/lib/demo-runtime/|scripts/(fix-dist-dts|copy-runtime-assets|ci-packaging|ci-local|smoke-tarball-install|smoke-onboarding)\.)'; then
+				pkg_touched=1
+			fi
 		else
 			# `git diff` failed — typically a shallow / pruned clone where
 			# remote_sha is no longer reachable locally. We have no idea
 			# what's actually being pushed, so don't trust the fast-path.
 			docs_only=0
+			pkg_touched=1
 		fi
 	fi
 done
@@ -160,6 +170,26 @@ if [ "$test_status" -ne 0 ]; then
 	echo "   Fix the failing tests above before pushing, or bypass with:"
 	echo "     git push --no-verify   (use sparingly — same risk as red CI)"
 	exit 1
+fi
+
+# Package-surface pushes also run the build + distribution smokes (the CI steps
+# beyond typecheck/docs/test). Shared with `npm run ci:local` via
+# scripts/ci-packaging.sh so local and cloud can't drift. Ordinary source/test
+# pushes skip this (pkg_touched stayed 0) so they don't pay the extra ~90s.
+if [ "$pkg_touched" -eq 1 ]; then
+	echo "[pre-push] Package surface changed — running build + distribution smokes..."
+	set +e
+	bash scripts/ci-packaging.sh
+	pkg_status=$?
+	set -e
+	if [ "$pkg_status" -ne 0 ]; then
+		echo ""
+		echo "❌ pre-push: packaging / smoke checks failed (exit $pkg_status). Push blocked."
+		echo "   Reproduce with 'npm run ci:local', or bypass with:"
+		echo "     git push --no-verify   (use sparingly — same risk as red CI)"
+		exit 1
+	fi
+	echo "[pre-push] ✓ build + packaging smokes pass"
 fi
 
 echo "[pre-push] ✓ typecheck + tests pass — pushing"

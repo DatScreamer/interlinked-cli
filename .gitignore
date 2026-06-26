@@ -113,6 +113,12 @@ scripts/*
 !scripts/backfill-thinking.mjs
 !scripts/backfill-recovery.mjs
 !scripts/backfill-guard.mjs
+# Local-CI tooling — referenced by .github/workflows/ci.yml and the pre-push
+# hook, so these must ship: a fresh checkout without them breaks CI's tarball
+# smoke step and the hook's packaging gate.
+!scripts/ci-local.sh
+!scripts/ci-packaging.sh
+!scripts/smoke-tarball-install.sh
 
 # Session-internal phase plans + work-in-progress design notes. The older
 # top-level docs/plans/*.md files (security-scanning-pillars, sondera-
