@@ -46,6 +46,19 @@ describe("applyDebtMode — pair A (source then test, two ordinary edits)", () =
 		expect(e2).toBeNull();
 		expect(readOpenDebts(root)).toHaveLength(0);
 	});
+
+	it("discharges a decomposed-sibling debt when its UMBRELLA test is edited", () => {
+		// Debt opens on a decomposed sibling…
+		const e1 = applyDebtMode(edit("src/evaluator/foo-bar.ts"), cfg(), uncovered("src/evaluator/foo-bar.ts"));
+		expect(e1?.decision).toBe("allow");
+		expect(readOpenDebts(root)).toHaveLength(1);
+
+		// …and editing the umbrella test under __tests__/ (NOT the co-located
+		// sibling) discharges it via the umbrella-pair rule.
+		const e2 = applyDebtMode(edit("src/evaluator/__tests__/foo.test.ts"), cfg(), null);
+		expect(e2).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(0);
+	});
 });
 
 describe("applyDebtMode — wandering blocks", () => {

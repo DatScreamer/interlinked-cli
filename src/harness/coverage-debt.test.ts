@@ -3,6 +3,7 @@ import {
 	type CoverageDebtInput,
 	decideCoverageDebt,
 	expectedCompanionTest,
+	inSamePair,
 	isUncoveredBlock,
 	pairStem,
 } from "./coverage-debt.js";
@@ -46,6 +47,43 @@ describe("pairStem", () => {
 
 	it("keeps unrelated files distinct", () => {
 		expect(pairStem("src/bar.ts")).not.toBe(pairStem("src/foo.ts"));
+	});
+});
+
+describe("inSamePair", () => {
+	it("pairs a source with its co-located test (exact stem)", () => {
+		expect(inSamePair("src/foo.ts", "src/foo.test.ts")).toBe(true);
+		expect(inSamePair("src/a/b/foo.ts", "src/a/b/foo.spec.tsx")).toBe(true);
+	});
+
+	it("pairs a decomposed source with its same-dir umbrella test (order-independent)", () => {
+		expect(inSamePair("src/foo.test.ts", "src/foo-bar.ts")).toBe(true);
+		expect(inSamePair("src/foo-bar.ts", "src/foo.test.ts")).toBe(true);
+	});
+
+	it("pairs a decomposed source with an umbrella test under __tests__/ (the reported case)", () => {
+		expect(
+			inSamePair(
+				"src/harness/evaluator/__tests__/write-content-guards.test.ts",
+				"src/harness/evaluator/write-content-guards-content-quality.ts",
+			),
+		).toBe(true);
+	});
+
+	it("does NOT pair across different directories", () => {
+		expect(inSamePair("src/a/__tests__/foo.test.ts", "src/b/foo-bar.ts")).toBe(false);
+	});
+
+	it("does NOT pair unrelated files", () => {
+		expect(inSamePair("src/bar.ts", "src/foo.ts")).toBe(false);
+	});
+
+	it("requires a hyphen boundary — foo.test.ts does not cover foobar.ts", () => {
+		expect(inSamePair("src/foo.test.ts", "src/foobar.ts")).toBe(false);
+	});
+
+	it("does NOT pair two sources via the umbrella rule (needs exactly one test side)", () => {
+		expect(inSamePair("src/foo-a.ts", "src/foo-b.ts")).toBe(false);
 	});
 });
 
@@ -126,6 +164,17 @@ describe("decideCoverageDebt — wandering out of the pair blocks", () => {
 		const out = run({ editedFile: "src/bar.ts", baseDecision: uncovered("src/bar.ts"), openDebts: [debt("src/foo.ts")], wipLimit: 3 });
 		expect(out.decision?.decision).toBe("allow"); // under the WIP limit — not a wander
 		expect(out.txns[0]).toMatchObject({ op: "open", file: "src/bar.ts" });
+	});
+
+	it("does NOT block editing an UMBRELLA test for a decomposed-sibling debt (the reported case)", () => {
+		// Debt on a decomposed sibling; the edit targets the umbrella test under
+		// __tests__/. The umbrella-pair rule keeps this in-pair → no wander block.
+		const out = run({
+			editedFile: "src/harness/evaluator/__tests__/write-content-guards.test.ts",
+			baseDecision: null,
+			openDebts: [debt("src/harness/evaluator/write-content-guards-content-quality.ts")],
+		});
+		expect(out.decision).toBeNull(); // in-pair via umbrella → allowed
 	});
 });
 

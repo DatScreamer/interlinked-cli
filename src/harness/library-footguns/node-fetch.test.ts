@@ -99,6 +99,37 @@ describe("node_fetch_no_timeout", () => {
 		const content = `fetch("https://x/y");`;
 		expect(fg.detect(content, "src/client.mts").length).toBeGreaterThan(0);
 	});
+
+	// ── String/comment FP guards (regression: fetch() in prose, not code) ──
+
+	it("does NOT fire on fetch() that appears only inside a string literal", () => {
+		const content = `const help = "call fetch(url) without a timeout and it hangs";`;
+		expect(fg.detect(content, "src/help.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on fetch() inside a line comment", () => {
+		const content = ["// example: fetch(url) with no signal", "const x = 1;"].join("\n");
+		expect(fg.detect(content, "src/c.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on fetch() inside a block comment", () => {
+		const content = ["/* do not call fetch(url) directly here */", "const y = 2;"].join("\n");
+		expect(fg.detect(content, "src/b.ts")).toEqual([]);
+	});
+
+	it("still fires on a real bare fetch even when a string elsewhere mentions fetch()", () => {
+		// The key regression: the prose mention on line 1 must be ignored while
+		// the real call on line 2 still fires — with the correct line number
+		// (computed over stripped content) and the ORIGINAL line as display text.
+		const content = [
+			'const note = "remember: fetch() needs a timeout";',
+			'const r = await fetch("https://api/x");',
+		].join("\n");
+		const matches = fg.detect(content, "src/mixed.ts");
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.line).toBe(2);
+		expect(matches[0]?.text).toBe('const r = await fetch("https://api/x");');
+	});
 });
 
 describe("node_fetch_no_ok_check", () => {
@@ -190,6 +221,11 @@ describe("node_fetch_no_ok_check", () => {
 		const matches = fg.detect(content, "src/two.ts");
 		expect(matches).toHaveLength(2);
 		expect(matches.map((mch) => mch.line)).toEqual([1, 3]);
+	});
+
+	it("does NOT fire on a fetch-then-json shape quoted inside a string", () => {
+		const content = `const doc = "use fetch(u).then(r => r.json()) carefully";`;
+		expect(fg.detect(content, "src/doc.ts")).toEqual([]);
 	});
 });
 

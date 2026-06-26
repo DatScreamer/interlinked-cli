@@ -113,6 +113,7 @@ vi.mock("./suggestion-checks.js", async (importOriginal) => ({
 
 // Bind to the mocked exports so each test can re-program return values.
 import { existsSync, readFileSync } from "node:fs";
+import { nonNull } from "../../lib/non-null.js";
 import { checkAssertionDensity, runBehavioralChecks } from "../behavioral-checks.js";
 import {
 	countSuppressionDirectives,
@@ -139,7 +140,6 @@ import {
 	runStructureChecksPhase,
 } from "./post-tool-file-checks-phases.js";
 import { collectSuggestionFindings } from "./suggestion-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const mExistsSync = existsSync as unknown as Mock;
 const mReadFileSync = readFileSync as unknown as Mock;
@@ -483,6 +483,37 @@ describe("runQualityPhase", () => {
 		mRunQualityChecks.mockResolvedValue([qres({ name: "totally_unknown_check_xyz" })]);
 		const { acc } = await call();
 		expect(nonNull(acc.allCheckResults[0]).determinism).toBe("fully_deterministic");
+	});
+
+	it("resolves a library-footgun check to heuristic determinism (matches the agent tag)", async () => {
+		// Regression: the sink used to default footgun checks to fully_deterministic
+		// ("proven") while the agent-facing tag classified them heuristic. They must
+		// agree — node_fetch_no_timeout is a regex-shape footgun, so: heuristic.
+		mRunQualityChecks.mockResolvedValue([qres({ name: "node_fetch_no_timeout" })]);
+		const { acc } = await call();
+		expect(nonNull(acc.allCheckResults[0]).determinism).toBe("heuristic");
+	});
+
+	it("composes the block reason with blocking findings first and the advisory tail demoted", async () => {
+		mRunQualityChecks.mockResolvedValue([
+			qres({ name: "strong_typing", severity: "warning" }),
+			qres({ name: "typescript", severity: "error" }),
+		]);
+		const { decision } = await call();
+		expect(decision.decision).toBe("block");
+		const reason = nonNull(decision.reason);
+		expect(reason).toContain("— Advisory findings");
+		// Blocking (typescript) leads; the advisory (strong_typing) sits after the
+		// separator — one deterministic error no longer buries it.
+		expect(reason.indexOf("[q] typescript")).toBeLessThan(reason.indexOf("— Advisory findings"));
+		expect(reason.indexOf("— Advisory findings")).toBeLessThan(reason.indexOf("[q] strong_typing"));
+	});
+
+	it("omits the advisory separator from the block reason when every finding blocks", async () => {
+		mRunQualityChecks.mockResolvedValue([qres({ name: "typescript", severity: "error" })]);
+		const { decision } = await call();
+		expect(decision.decision).toBe("block");
+		expect(nonNull(decision.reason)).not.toContain("— Advisory findings");
 	});
 
 	it("appends formatted warnings onto pre-existing decision.warnings", async () => {

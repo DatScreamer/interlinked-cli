@@ -14,7 +14,14 @@
 // of the most-misused APIs in the Node / Workers ecosystem.
 
 import { nonNull } from "../../lib/non-null.js";
-import { getExtension, type InlineMatch, isGeneratedFile, isTestFile, JS_TS_EXTS } from "../checks/shared.js";
+import {
+	getExtension,
+	type InlineMatch,
+	isGeneratedFile,
+	isTestFile,
+	JS_TS_EXTS,
+	stripCommentsAndStrings,
+} from "../checks/shared.js";
 import type { LibraryFootgunCheck } from "./types.js";
 
 const FETCH_CALL_RE = /(?<![.\w$])fetch\s*\(([^)]*)\)/g;
@@ -34,8 +41,15 @@ function detectNoTimeout(content: string, filePath: string): InlineMatch[] {
 	if (shouldSkip(filePath, content)) return [];
 	const out: InlineMatch[] = [];
 	const lines = content.split("\n");
+	// Match against comment/string-stripped content so a `fetch(` that exists
+	// only inside a string literal or comment — e.g. prose telling the user
+	// "don't write raw fetch()" — cannot fire. stripCommentsAndStrings
+	// preserves line count (string interiors collapse but newlines stay), so
+	// counting newlines up to the match still yields the correct 1-based line;
+	// the displayed text is read from the ORIGINAL line.
+	const scan = stripCommentsAndStrings(content);
 	FETCH_CALL_RE.lastIndex = 0;
-	let m: RegExpExecArray | null = FETCH_CALL_RE.exec(content);
+	let m: RegExpExecArray | null = FETCH_CALL_RE.exec(scan);
 	while (m !== null) {
 		const args = nonNull(m[1]);
 		// Single-line argument check. Multi-line option objects (the
@@ -43,13 +57,13 @@ function detectNoTimeout(content: string, filePath: string): InlineMatch[] {
 		// paren-group on a single line. False negatives are acceptable;
 		// false positives on real timeout configs are not.
 		if (!/\b(?:signal|AbortSignal|timeout)\b/.test(args)) {
-			const lineNo = content.slice(0, m.index).split("\n").length;
+			const lineNo = scan.slice(0, m.index).split("\n").length;
 			out.push({
 				line: lineNo,
 				text: (lines[lineNo - 1] || "").trim().slice(0, 150),
 			});
 		}
-		m = FETCH_CALL_RE.exec(content);
+		m = FETCH_CALL_RE.exec(scan);
 	}
 	return out;
 }
@@ -62,23 +76,27 @@ function detectNoOkCheck(content: string, filePath: string): InlineMatch[] {
 	if (shouldSkip(filePath, content)) return [];
 	const out: InlineMatch[] = [];
 	const lines = content.split("\n");
+	// Strip comments/strings first (see detectNoTimeout) so a fetch-then-json
+	// shape quoted inside a string or comment cannot fire. The `.ok` window is
+	// scanned over the same stripped text — `.ok` is code, so it survives.
+	const scan = stripCommentsAndStrings(content);
 	FETCH_THEN_JSON_RE.lastIndex = 0;
-	let m: RegExpExecArray | null = FETCH_THEN_JSON_RE.exec(content);
+	let m: RegExpExecArray | null = FETCH_THEN_JSON_RE.exec(scan);
 	while (m !== null) {
 		// Inspect the 200-char window around the match for an `.ok`
 		// reference. Tolerant — false negative is OK; the false-positive
 		// cost of flagging legit `if (r.ok)` patterns is higher.
 		const windowStart = Math.max(0, m.index - 100);
-		const windowEnd = Math.min(content.length, m.index + m[0].length + 100);
-		const window = content.slice(windowStart, windowEnd);
+		const windowEnd = Math.min(scan.length, m.index + m[0].length + 100);
+		const window = scan.slice(windowStart, windowEnd);
 		if (!/\.ok\b/.test(window)) {
-			const lineNo = content.slice(0, m.index).split("\n").length;
+			const lineNo = scan.slice(0, m.index).split("\n").length;
 			out.push({
 				line: lineNo,
 				text: (lines[lineNo - 1] || "").trim().slice(0, 150),
 			});
 		}
-		m = FETCH_THEN_JSON_RE.exec(content);
+		m = FETCH_THEN_JSON_RE.exec(scan);
 	}
 	return out;
 }

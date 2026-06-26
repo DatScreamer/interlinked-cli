@@ -8,6 +8,7 @@
 // how to fix it properly (no suppressions, no shortcuts).
 
 import { buildCheckInstructions, buildGenericCheckMeta } from "../check-registry/index.js";
+import { getAllFootguns } from "../library-footguns/registry.js";
 import { PROVEN_TOOL_CHECKS, TOOL_CHECK_INSTRUCTIONS } from "./instructions.js";
 import type { QualityCheckResult } from "./result-types.js";
 
@@ -28,6 +29,13 @@ const REGISTRY_DETERMINISM: Record<
 	Object.entries(buildGenericCheckMeta()).map(([id, meta]) => [id, meta.determinism]),
 );
 
+// Library-footgun checks (node_fetch_no_timeout, redis_*, d1_*, …) are
+// regex/AST-shape detectors — heuristic by construction (see
+// library-footguns/types.ts). They live outside CHECK_REGISTRY and the tool
+// maps, so without this they'd classify as `null` (untagged) here while the
+// check-results sink defaulted them to "proven" — the two surfaces disagreed.
+const FOOTGUN_IDS: ReadonlySet<string> = new Set(getAllFootguns().map((f) => f.id));
+
 /**
  * Lopopolo's "proven vs heuristic" framing surfaced to the agent. Returns
  * the tag to inline into the warning message, or `null` when we don't know
@@ -40,13 +48,15 @@ const REGISTRY_DETERMINISM: Record<
  * 3. Tool check present in TOOL_CHECK_INSTRUCTIONS but not in the proven
  *    set → "heuristic" (default for non-tool checks: pattern-matched, not
  *    behavior-verified).
- * 4. Anything else (id not registered anywhere we know of) → null (no tag).
+ * 4. Library-footgun check → "heuristic" (regex/AST shape, not behaviour-verified).
+ * 5. Anything else (id not registered anywhere we know of) → null (no tag).
  */
 export function classifyDeterminism(checkId: string): "proven" | "heuristic" | null {
 	const registry = REGISTRY_DETERMINISM[checkId];
 	if (registry) return registry === "fully_deterministic" ? "proven" : "heuristic";
 	if (PROVEN_TOOL_CHECKS.has(checkId)) return "proven";
 	if (checkId in TOOL_CHECK_INSTRUCTIONS) return "heuristic";
+	if (FOOTGUN_IDS.has(checkId)) return "heuristic";
 	return null;
 }
 

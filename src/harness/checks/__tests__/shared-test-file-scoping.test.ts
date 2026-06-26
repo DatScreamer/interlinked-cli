@@ -36,6 +36,18 @@ describe("isTestFile harness-internals scoping (Plan 08 review fix)", () => {
 				"/path/to/interlinked-cli/src/harness/checks/ubs-language-specific.ts",
 			),
 		).toBe(true);
+		// The decomposed write-content-guards-*.ts family — each guard module holds
+		// detection patterns (chmod / CORS / eval / JSON.parse) AS DATA. Both the
+		// orchestrator AND its `-content-quality` sibling must be exempt (regression:
+		// the old pattern ended in a `.` so it matched only write-content-guards.ts).
+		expect(
+			isTestFile("/path/to/interlinked-cli/src/harness/evaluator/write-content-guards.ts"),
+		).toBe(true);
+		expect(
+			isTestFile(
+				"/path/to/interlinked-cli/src/harness/evaluator/write-content-guards-content-quality.ts",
+			),
+		).toBe(true);
 	});
 
 	it("does NOT exempt harness-named directories in user projects", () => {
@@ -51,6 +63,13 @@ describe("isTestFile harness-internals scoping (Plan 08 review fix)", () => {
 		).toBe(false);
 		expect(
 			isTestFile("/var/www/app/harness/check-metadata.ts"),
+		).toBe(false);
+		// A user project with its own write-content-guards-content-quality.ts is
+		// real code, not interlinked's detector source — it must still be scanned.
+		expect(
+			isTestFile(
+				"/Users/alice/my-project/src/harness/evaluator/write-content-guards-content-quality.ts",
+			),
 		).toBe(false);
 	});
 

@@ -14,6 +14,7 @@ import { join, relative } from "node:path";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META } from "../check-metadata.js";
 import type { QualityCheckResult } from "../quality-checks/result-types.js";
 import {
+	classifyDeterminism,
 	findProjectRoot,
 	formatQualityWarnings,
 	type QualityCheckOptions,
@@ -150,7 +151,12 @@ export function collectQualityResultEntries(
 			determinism:
 				QUALITY_CHECK_META[r.name]?.determinism ??
 				GENERIC_CHECK_META[r.name]?.determinism ??
-				"fully_deterministic",
+				// Align the fallback with the agent-facing tag (classifyDeterminism):
+				// footgun / known-heuristic checks resolve to "heuristic" here too, so
+				// the check-results sink and the [proven]/[heuristic] tag stop
+				// disagreeing. Genuinely-unknown ids keep the conservative
+				// fully_deterministic default (no emitted check is truly unregistered).
+				(classifyDeterminism(r.name) === "heuristic" ? "heuristic" : "fully_deterministic"),
 		});
 	}
 }
@@ -166,35 +172,50 @@ export function applyQualityDecision(
 	decision: HarnessDecision,
 ): void {
 	if (qualityResults.length === 0) return;
-	const warnings = formatQualityWarnings(qualityResults);
-	decision.warnings = [...(decision.warnings || []), ...warnings];
+	decision.warnings = [
+		...(decision.warnings || []),
+		...formatQualityWarnings(qualityResults),
+	];
 
-	// Block only on fully_deterministic quality checks with error severity.
-	// Heuristic checks (strong_typing, prompt_injection, freshness-sensitive
-	// references) are advisory only, except software_version_regression:
-	// PostToolUse returns `decision: "block"` for compatibility even though
-	// the mutation already landed. Treat it as an attention-required channel.
-	const hasDeterministicErrors = qualityResults.some(
+	// Block only on fully_deterministic quality checks with error severity, plus
+	// the software_version_regression attention channel (PostToolUse returns
+	// `block` for compatibility even though the mutation already landed). Every
+	// heuristic check (strong_typing, magic numbers, taste smells) is advisory.
+	const isBlockingResult = (r: QualityCheckResult): boolean =>
+		(r.severity === "error" &&
+			QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic") ||
+		r.name === "software_version_regression";
+
+	const blocking = qualityResults.filter(isBlockingResult);
+	const advisory = qualityResults.filter((r) => !isBlockingResult(r));
+
+	if (blocking.length > 0) {
+		decision.decision = "block";
+		// Compose the block reason so the actionable (blocking) findings lead and
+		// the advisory pile is demoted into a clearly-labelled tail. Without the
+		// split, one deterministic error drags the whole heuristic list into the
+		// human-visible block reason and buries the thing that must be fixed.
+		// Bug B1: a PostToolUse block MUST carry a reason, else the hook renders
+		// the "no reason was attached" fallback.
+		const blockingText =
+			formatQualityWarnings(blocking).join("\n\n") ||
+			"[interlinked] PostToolUse quality checks flagged a deterministic error.";
+		const advisoryText = formatQualityWarnings(advisory).join("\n\n");
+		decision.reason ??= advisoryText
+			? `${blockingText}\n\n— Advisory findings (not blocking; address when convenient) —\n\n${advisoryText}`
+			: blockingText;
+	}
+
+	// Outcome label for the daemon log: a deterministic error is a hard block;
+	// software_version_regression alone is the softer "attention" channel.
+	const hasDeterministicError = qualityResults.some(
 		(r) =>
 			r.severity === "error" &&
 			QUALITY_CHECK_META[r.name]?.determinism === "fully_deterministic",
 	);
-	const hasPostToolAttention = qualityResults.some(
-		(r) => r.name === "software_version_regression",
-	);
-	if (hasDeterministicErrors || hasPostToolAttention) {
-		decision.decision = "block";
-		// Bug B1: a PostToolUse block MUST carry a reason, else the hook renders the
-		// "no reason was attached — likely a harness bug" fallback. The action already
-		// ran; this is an attention channel, so surface the actual findings.
-		decision.reason ??=
-			(decision.warnings ?? []).join("\n") ||
-			"[interlinked] PostToolUse quality checks flagged a deterministic error.";
-	}
-
-	const outcome = hasDeterministicErrors
+	const outcome = hasDeterministicError
 		? "blocking"
-		: hasPostToolAttention
+		: blocking.length > 0
 			? "post-tool attention required"
 			: "advisory";
 	ctx.log(

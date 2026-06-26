@@ -9,9 +9,10 @@
 // callers append the returned strings to their warning list.
 
 import { isAbsolute, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
+import { checkJsonParseUnsafe } from "../checks/js-ts-general.js";
 import { isTestFile } from "../checks/shared.js";
 import { extractTemplateInterpolationExpressions, stripAllLiterals } from "../strip-helpers.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Minimum content length before we bother scanning for prompt injections. */
 export const INJECTION_SCAN_MIN_CHARS = 10;
@@ -264,17 +265,16 @@ function collectInsecureRandomWarning(filePath: string, content: string): string
 	return null;
 }
 
-/** A5: the first JSON.parse() call not preceded (within 5 lines) by a `try {`. */
+/** A5: the first JSON.parse() not protected by an enclosing try block. Delegates
+ *  to the brace-tracked `checkJsonParseUnsafe` (strips comments/strings, tracks
+ *  try-depth) so a parse guarded by an enclosing-function try — even when the
+ *  catch sits many lines below — is not flagged, and a JSON.parse appearing only
+ *  inside a string or comment is ignored. The previous "is there a try in the 5
+ *  lines above" heuristic false-flagged both shapes. */
 function collectUnguardedJsonParseWarning(filePath: string, content: string): string | null {
-	const lines = content.split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		if (!/\bJSON\.parse\s*\(/.test(nonNull(lines[i]))) continue;
-		const preceding = lines.slice(Math.max(0, i - 5), i + 1).join("\n");
-		if (!/\btry\s*\{/.test(preceding)) {
-			return `[interlinked:content-quality] JSON.parse() without try-catch at line ${i + 1} in ${filePath}. Wrap in try-catch to handle malformed input.`;
-		}
-	}
-	return null;
+	const [first] = checkJsonParseUnsafe(content, filePath);
+	if (!first) return null;
+	return `[interlinked:content-quality] JSON.parse() without try-catch at line ${first.line} in ${filePath}. Wrap in try-catch to handle malformed input.`;
 }
 
 /** A3-A6 runtime-risk heuristics: insecure Math.random(), A4 floating promises

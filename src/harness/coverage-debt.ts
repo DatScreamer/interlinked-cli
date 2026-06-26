@@ -26,6 +26,44 @@ export function pairStem(relPath: string): string {
 	return relPath.replace(/\.(test|spec)\.[cm]?[jt]sx?$/i, "").replace(/\.[cm]?[jt]sx?$/i, "");
 }
 
+const TEST_INFIX_RX = /\.(test|spec)\.[cm]?[jt]sx?$/i;
+const CODE_EXT_RX = /\.[cm]?[jt]sx?$/i;
+
+/** Split a path into (directory, basename-stem, isTest). A trailing `/__tests__`
+ *  segment is stripped from the directory so an umbrella test under `__tests__/`
+ *  resolves to the same directory as the sources it covers. */
+function pairParts(relPath: string): { dir: string; stem: string; isTest: boolean } {
+	const isTest = TEST_INFIX_RX.test(relPath);
+	const noInfix = relPath.replace(TEST_INFIX_RX, "").replace(CODE_EXT_RX, "");
+	const slash = noInfix.lastIndexOf("/");
+	const dir = (slash >= 0 ? noInfix.slice(0, slash) : "").replace(/\/__tests__$/, "");
+	const stem = slash >= 0 ? noInfix.slice(slash + 1) : noInfix;
+	return { dir, stem, isTest };
+}
+
+/**
+ * True iff two paths belong to the same coverage pair. Beyond the exact stem
+ * match (`src/foo.ts` ↔ `src/foo.test.ts`), this also pairs a DECOMPOSED source
+ * with its UMBRELLA test: `foo-bar.ts` is covered by `foo.test.ts` when they
+ * share a directory (or the test lives in that directory's `__tests__/`) and the
+ * test's stem is a hyphen-delimited prefix of the source's stem. Decomposing
+ * `foo.ts` into `foo-*.ts` siblings otherwise stranded each from the umbrella
+ * test that exercises it (`__tests__/write-content-guards.test.ts` no longer
+ * paired with `write-content-guards-content-quality.ts`). Optimistic by the same
+ * contract as the rest of debt mode — the commit gate is the ground-truth backstop.
+ */
+export function inSamePair(a: string, b: string): boolean {
+	if (pairStem(a) === pairStem(b)) return true;
+	const pa = pairParts(a);
+	const pb = pairParts(b);
+	if (pa.dir !== pb.dir) return false;
+	// Exactly one side must be a test; its stem prefixes the source side's stem.
+	const test = pa.isTest && !pb.isTest ? pa : pb.isTest && !pa.isTest ? pb : null;
+	const src = test === pa ? pb : test === pb ? pa : null;
+	if (!test || !src) return false;
+	return src.stem.startsWith(`${test.stem}-`);
+}
+
 /** The conventional co-located test path for a source file (`src/foo.ts` →
  *  `src/foo.test.ts`) — named in the block message so the agent knows where to go. */
 export function expectedCompanionTest(source: string): string {
@@ -115,7 +153,7 @@ export function decideCoverageDebt(input: CoverageDebtInput): CoverageDebtOutcom
 	// 2. Pair rule (WIP-limited): editing inside any open pair is always free; an
 	//    edit outside every open pair is a "wander", blocked once the number of
 	//    concurrently-open debts is at the WIP limit (default 1 = strict pair rule).
-	const inSomePair = stillOpen.some((d) => pairStem(editedFile) === pairStem(d.file));
+	const inSomePair = stillOpen.some((d) => inSamePair(editedFile, d.file));
 	const oldest = stillOpen[0];
 	if (!inSomePair && oldest && stillOpen.length >= wipLimit) {
 		return { decision: blockForWander(oldest), txns };

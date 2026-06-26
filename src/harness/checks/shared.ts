@@ -172,7 +172,12 @@ function isHarnessInternalDataFile(filePath: string): boolean {
 		// scans only ever false-positive on them. Covers shared.ts (home of
 		// this very exemption) too.
 		normalized.includes("/harness/checks/") ||
-		normalized.includes("/harness/evaluator/write-content-guards.") ||
+		// `write-content-guards.ts` was decomposed into `write-content-guards-*.ts`
+		// siblings (e.g. `-content-quality`). Match the whole family (no trailing
+		// dot) so every guard module — each holding chmod / CORS / eval / JSON.parse
+		// patterns AS DATA — is exempt, not just the orchestrator. Without this, the
+		// decomposed `-content-quality.ts` self-FPs on its own detection literals.
+		normalized.includes("/harness/evaluator/write-content-guards") ||
 		// signatures.ts re-exports the rule tables; signatures-patterns.ts is
 		// where the PI regexes + descriptions actually live (e.g. the
 		// `/ignore (all )?(previous|prior|above) (instructions?...)/` literal

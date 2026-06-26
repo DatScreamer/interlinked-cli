@@ -975,7 +975,11 @@ ${PROVIDER_RESPONSES_CHUNK}
                 const responseType = isBlockingPostDecision ? "post_block" : "post_warn";
                 const responsePayload = isBlockingPostDecision
                     ? {
-                        reason: issueList + "\\n\\nFix the issues above by changing the actual code.",
+                        // Prefer the harness-composed reason (blocking findings first,
+                        // advisory tail demoted) so one deterministic error doesn't bury
+                        // the actionable item under the heuristic pile. Fall back to the
+                        // flat warning list for non-quality blocks that set no reason.
+                        reason: (postResult.reason || issueList) + "\\n\\nFix the issues above by changing the actual code.",
                     }
                     : {
                         reason: issueList,

@@ -10,7 +10,7 @@
 // only a two-line call. See `docs/design/coverage-debt-tdd.md`.
 
 import { relative, resolve } from "node:path";
-import { decideCoverageDebt, isUncoveredBlock, pairStem } from "./coverage-debt.js";
+import { decideCoverageDebt, inSamePair, isUncoveredBlock } from "./coverage-debt.js";
 import { appendDebtTxn, readOpenDebts } from "./obligation-ledger-io.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
@@ -54,10 +54,12 @@ export function applyDebtMode(
 	if (openDebts.length === 0 && !isUncoveredBlock(baseDecision)) return baseDecision; // nothing to do
 
 	// Optimistic discharge: editing a debt's companion test is taken to cover it.
+	// `inSamePair` accepts both the co-located sibling AND an umbrella test (e.g.
+	// `__tests__/foo.test.ts` for a decomposed `foo-bar.ts`).
 	const rechecks = new Map<string, boolean>();
 	if (TEST_RX.test(editedFile)) {
 		for (const d of openDebts) {
-			if (pairStem(d.file) === pairStem(editedFile)) rechecks.set(d.file, true);
+			if (inSamePair(editedFile, d.file)) rechecks.set(d.file, true);
 		}
 	}
 
