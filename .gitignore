@@ -96,6 +96,12 @@ src/lib/_multi_edit_plumbing_*.ts
 # _tsc_overlay_fixtures-*. (Root cause: the gate should remove its temp tree.)
 src/_*_fixtures-*/
 src/lib/_write_integration/
+# Same leak class at the REPO ROOT (not just src/): the multi-edit gate self-test
+# / MultiEdit warmup writes `_multi_edit_fixtures-<rand>/` at the project root and
+# skips cleanup, so a fresh one reappears the instant the prior is deleted. Root-
+# anchored (leading slash) so it can never match src/__tests__ or similar.
+# (Root cause, same as the src/ block: the self-test should remove its temp tree.)
+/_*_fixtures-*/
 
 # Discovery / scratch scripts in scripts/ are local-only by default. Files
 # already tracked here (build/CI: copy-runtime-assets, generate-docs,

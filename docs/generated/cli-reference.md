@@ -28,6 +28,7 @@ Commands:
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
   daemons [options]                          List active harness daemons, PID liveness, socket paths, and health
+  design [options] [path]                    Run Impeccable's deterministic design-slop detector (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, broken images, copy tells) on frontend files. Requires the optional `impeccable` CLI on PATH; degrades gracefully when absent. The built-in `design_slop` check covers a regex subset natively.
   disable [options]                          Stand the harness down for this project (recorded); --uninstall to remove hooks + config
   doctor [options]                           Diagnose issues (local + server checks)
   enable [options]                           Install hooks + create .interlinked/ config
@@ -72,6 +73,7 @@ Commands:
   update|upgrade [options]                   Clone or pull from GitHub, rebuild, and link the CLI
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
   version                                    Show Interlinked CLI + server version
+  viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
   watch [options]                            Monitor server for pending work (messages, tasks, agents)
   workspace                                  Registry workspace management (ws_ IDs)
   write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.
@@ -230,8 +232,12 @@ Commands:
                             config changes)
   status [options]          Show harness status, loaded rules, and active
                             agents
-  test [options] <command>  Test a command against guard rules without
-                            executing
+  checks [options]          Show the authoritative check inventory — per-family
+                            counts + total (static; no daemon needed)
+  test [options] [command]  Fire a synthetic PreToolUse event at the running
+                            harness and show its decision. Default: a Bash
+                            command. Use --write/--edit to test a file
+                            operation.
   reap [options]            List (default) or kill orphan harness daemons.
                             --force to SIGTERM. --all also targets the active
                             daemon.
@@ -304,14 +310,23 @@ Options:
 ### harness test
 
 ```
-Usage: interlinked harness test [options] <command>
+Usage: interlinked harness test [options] [command]
 
-Test a command against guard rules without executing
+Fire a synthetic PreToolUse event at the running harness and show its decision.
+Default: a Bash command. Use --write/--edit to test a file operation.
 
 Options:
-  --tool <name>  Tool name to simulate (default: Bash) (default: "Bash")
-  --json         Machine-readable output
-  -h, --help     display help for command
+  --tool <name>       Tool name to simulate for the positional command
+                      (default: "Bash")
+  --write <file>      Simulate a Write to <file> (pair with --from-file or
+                      --stdin)
+  --from-file <path>  Read the proposed Write content from <path>
+  --stdin             Read the proposed Write content from stdin
+  --edit <file>       Simulate an Edit to <file> (pair with --old and --new)
+  --old <str>         old_string for --edit
+  --new <str>         new_string for --edit
+  --json              Machine-readable output
+  -h, --help          display help for command
 ```
 
 ## Checkpoint

@@ -13,7 +13,10 @@ const FAST_MOVING_FIXTURE_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }>
 	{ label: "OpenAI numbered o-series model alias", re: /\bo[0-9](?:-[A-Za-z0-9_.-]+)?\b/i },
 	{
 		label: "Anthropic numbered Claude family alias",
-		re: /\bclaude-(?:opus|sonnet|haiku)-[0-9][A-Za-z0-9_.-]*\b/i,
+		// Families enumerated (not `[a-z]+`) so synthetic fixtures like `claude-test-5`
+		// stay allowed; fable/mythos added ahead of those models' release so tests
+		// can't start encoding their real names either.
+		re: /\bclaude-(?:opus|sonnet|haiku|fable|mythos)-[0-9][A-Za-z0-9_.-]*\b/i,
 	},
 	{ label: "Google numbered Gemini model alias", re: /\bgemini-[0-9][A-Za-z0-9_.-]*\b/i },
 	{

@@ -98,17 +98,17 @@ vi.mock("../lib/api-client.js", () => ({
 import { resolveAuthToken } from "../lib/auth.js";
 import { initConfig, updateLocalConfig } from "../lib/config.js";
 import {
-	HOOK_SCRIPT_VERSION,
 	findProjectRoot,
+	HOOK_SCRIPT_VERSION,
 	installAllHooks,
 	writeHookScript,
 } from "../lib/hooks.js";
+import { nonNull } from "../lib/non-null.js";
 import { ensureRemoteOnboarding } from "../lib/onboarding.js";
 import { detectClients } from "../lib/settings.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 import { initCommand } from "./init.js";
 import { loginCommand } from "./login.js";
-import { nonNull } from "../lib/non-null.js";
 
 const mocks = {
 	resolveAuthToken: vi.mocked(resolveAuthToken),
@@ -807,8 +807,9 @@ describe("health check", () => {
 	});
 
 	it("treats a missing agents field as zero online", async () => {
-		callToolImpl = (name) =>
-			name === "health_check" ? Promise.resolve({}) : Promise.resolve({});
+		// Every tool call resolves to an empty object — including a missing
+		// `agents` field, which must read as zero online.
+		callToolImpl = () => Promise.resolve({});
 		await initCommand({ server: "http://localhost:8787", agent: "bot" });
 		expect(logged()).toContain("Ready! Connected to local server as bot.");
 	});

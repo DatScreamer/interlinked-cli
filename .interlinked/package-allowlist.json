@@ -3,9 +3,10 @@
   "packages": {
     "npm": {
       "wrangler": {
-        "approved_at": "2026-05-28T12:40:14.494Z",
-        "approved_by": "qcody",
-        "reason": "Cloudflare Workers CLI; updating to latest for cloud governor work"
+        "approved_at": "2026-06-27T22:48:29.109Z",
+        "approved_by": "quentincody",
+        "reason": "per-edit mutation cloud Worker (Sandbox runner / deploy)",
+        "license": "MIT OR Apache-2.0"
       },
       "typescript": {
         "approved_at": "2026-05-28T13:03:11.959Z",
@@ -13,9 +14,10 @@
         "reason": "Cloud Worker TypeScript compilation"
       },
       "@cloudflare/workers-types": {
-        "approved_at": "2026-05-28T13:03:15.355Z",
-        "approved_by": "qcody",
-        "reason": "Cloudflare Workers TS types for cloud governor"
+        "approved_at": "2026-06-27T22:48:27.994Z",
+        "approved_by": "quentincody",
+        "reason": "per-edit mutation cloud Worker (Sandbox runner / deploy)",
+        "license": "MIT OR Apache-2.0"
       },
       "vitest": {
         "approved_at": "2026-05-28T13:06:03.114Z",
@@ -26,12 +28,22 @@
         "approved_at": "2026-06-01T16:25:26.684Z",
         "approved_by": "qcody",
         "reason": "vitest v8 coverage provider — keystone for CRAP + coverage ratchet (local-first test-quality enforcement)"
+      },
+      "@cloudflare/sandbox": {
+        "approved_at": "2026-06-27T22:48:27.332Z",
+        "approved_by": "quentincody",
+        "reason": "per-edit mutation cloud Worker (Sandbox runner / deploy)",
+        "license": "Apache-2.0"
       }
     },
     "pypi": {},
     "cargo": {},
     "rubygems": {},
-    "go": {}
+    "go": {},
+    "composer": {},
+    "maven": {},
+    "gradle": {},
+    "nuget": {}
   },
   "lockfile_snapshots": {}
 }
