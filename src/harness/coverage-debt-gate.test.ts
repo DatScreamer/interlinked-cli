@@ -27,6 +27,11 @@ function bashEvent(): HarnessEvent {
 	return { hook_event: "PreToolUse", session_id: "s", agent_source: "claude", tool_name: "Bash", tool_input: { command: "ls" }, cwd: root, timestamp: "t" };
 }
 
+/** A read-only Read carries `file_path` just like an Edit, but mutates nothing. */
+function readEvent(file: string): HarnessEvent {
+	return { hook_event: "PreToolUse", session_id: "s", agent_source: "claude", tool_name: "Read", tool_input: { file_path: join(root, file) }, cwd: root, timestamp: "t" };
+}
+
 const uncovered = (file: string): HarnessDecision => ({
 	decision: "block",
 	reason: `[interlinked:coverage] BLOCKED: ${file} line 5 is executable but uncovered by the test suite after this edit.`,
@@ -75,6 +80,17 @@ describe("applyDebtMode — wandering blocks", () => {
 		expect(out?.decision).toBe("allow");
 		expect(readOpenDebts(root)).toHaveLength(2);
 	});
+
+	it("does NOT block a read-only Read of an unrelated file while debt is open", () => {
+		// Open a debt on foo.ts, then READ an unrelated file. A read edits nothing,
+		// so it must pass through — not be mis-read as an edit that "wanders" away
+		// from the open pair (regression: the debt-lock was gating read-only calls).
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		expect(readOpenDebts(root)).toHaveLength(1);
+		const out = applyDebtMode(readEvent("src/bar.ts"), cfg(), null);
+		expect(out).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(1); // debt untouched by the read
+	});
 });
 
 describe("applyDebtMode — pass-through (no debt logic)", () => {
@@ -97,5 +113,33 @@ describe("applyDebtMode — pass-through (no debt logic)", () => {
 		const base = uncovered("src/foo.ts");
 		expect(applyDebtMode(edit("src/foo.ts"), cfg({ debt_mode: false }), base)).toBe(base);
 		expect(readOpenDebts(root)).toHaveLength(0);
+	});
+});
+
+describe("applyDebtMode — non-Claude edit verbs (canonical isFileWrite, not a hand-rolled set)", () => {
+	// Copilot / Codex / Gemini emit str_replace / edit_file / … instead of
+	// Write / Edit / MultiEdit. The hand-rolled set silently dropped them, so
+	// debt-mode detection never engaged for those agents (baseline-review finding).
+	const nonClaudeEdit = (file: string, toolName: string): HarnessEvent => ({
+		hook_event: "PreToolUse",
+		session_id: "s",
+		agent_source: "codex",
+		tool_name: toolName,
+		tool_input: { file_path: join(root, file) },
+		cwd: root,
+		timestamp: "t",
+	});
+
+	it("treats a str_replace edit as an edit (opens debt; pre-fix it fell through to the raw block)", () => {
+		const out = applyDebtMode(nonClaudeEdit("src/foo.ts", "str_replace"), cfg(), uncovered("src/foo.ts"));
+		expect(out?.decision).toBe("allow");
+		expect(readOpenDebts(root)).toHaveLength(1);
+	});
+
+	it("treats an edit_file wander as an edit (blocks while a debt is open)", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		const out = applyDebtMode(nonClaudeEdit("src/bar.ts", "edit_file"), cfg(), null);
+		expect(out?.decision).toBe("block");
+		expect(out?.reason).toContain("src/foo.ts");
 	});
 });

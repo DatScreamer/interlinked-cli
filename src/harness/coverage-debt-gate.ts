@@ -11,6 +11,7 @@
 
 import { relative, resolve } from "node:path";
 import { decideCoverageDebt, inSamePair, isUncoveredBlock } from "./coverage-debt.js";
+import { isFileWrite } from "./evaluator/tool-classifiers.js";
 import { appendDebtTxn, readOpenDebts } from "./obligation-ledger-io.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
@@ -23,9 +24,18 @@ function strField(input: Record<string, unknown>, key: string): string {
 	return typeof v === "string" ? v : "";
 }
 
-/** Repo-relative path of the edited code file, or null for a non-file / non-code
- *  event (apply_patch is deferred — debt mode v1 gates named single-file edits). */
+/** Repo-relative path of the edited code file, or null for a non-mutating /
+ *  non-file / non-code event. Uses the canonical `isFileWrite` classifier so
+ *  EVERY agent's write verb counts — Claude's Write/Edit/MultiEdit AND the
+ *  Copilot/Gemini/Codex forms (write_file/edit_file/str_replace/create/…), not
+ *  just Claude's (the hand-rolled set silently dropped debt-mode detection for
+ *  non-Claude agents; found in the 2026 baseline review). A read-only
+ *  `Read`/`Grep`/`Glob` is NOT a write, so it returns null and bypasses the
+ *  wander rule entirely (found 2026-06-28: the debt-lock was false-gating
+ *  read-only calls). apply_patch carries no `file_path`, so debt mode v1 gates
+ *  named single-file edits only. */
 function editedCodeFile(event: HarnessEvent, projectRoot: string): string | null {
+	if (!isFileWrite(event.tool_name)) return null;
 	const input = event.tool_input ?? {};
 	const named = strField(input, "file_path") || strField(input, "path");
 	if (!named) return null;
