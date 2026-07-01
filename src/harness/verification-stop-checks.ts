@@ -32,24 +32,26 @@ import {
 // sibling so this file stays under the per-file line cap. Re-exported here so
 // the module's public surface (and its tests) is unchanged.
 import type { VerificationSignal } from "./verification-stop-checks-predicates.js";
+
+export type {
+	FormatDocMarkerDriftOpts,
+	StubKind,
+	StubMatch,
+	VerificationSignal,
+} from "./verification-stop-checks-predicates.js";
 export {
 	classifyBrowserToolName,
 	classifyVerificationCommand,
 	countCodeFilesEdited,
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
+	countVerifyCommands,
 	formatDocMarkerDriftWarning,
 	isCodeFile,
 	isDocFactSourceFile,
 	isUiFile,
-	scanForStubs,
 	STUB_INTRODUCED_CAP,
-} from "./verification-stop-checks-predicates.js";
-export type {
-	FormatDocMarkerDriftOpts,
-	StubKind,
-	StubMatch,
-	VerificationSignal,
+	scanForStubs,
 } from "./verification-stop-checks-predicates.js";
 
 // ---------------------------------------------------------------------------
@@ -57,8 +59,18 @@ export type {
 // ---------------------------------------------------------------------------
 
 export interface FormatUnverifiedCodeOpts {
-	/** Distinct code files written this session. */
+	/** Distinct code files written this session — the denominator of the
+	 *  verify-to-edit cadence ratio. Code-scoped and de-duplicated (files ≤
+	 *  edits), so the ratio runs conservative: it under-reports cadence
+	 *  slightly and therefore errs toward *not* firing. */
 	codeFilesEdited: number;
+	/** Count of correctness-grade verification commands (tsc / test / lint /
+	 *  build / the full verify suite) observed in the session's Bash
+	 *  `commands_run` — the numerator of the cadence ratio. Distinct from
+	 *  `verificationObserved`, which is the set of distinct signal *kinds*
+	 *  (fifty `tsc` runs collapse to `{typecheck}`); the ratio needs the raw
+	 *  invocation count. Derive it with `countVerifyCommands`. */
+	verifyCommandCount: number;
 	/** Verification signals observed this session. */
 	verificationObserved: ReadonlySet<string>;
 }
@@ -77,33 +89,63 @@ const INDIVIDUAL_CORRECTNESS_SIGNALS: readonly VerificationSignal[] = [
 	"build",
 ];
 
-/** Correctness-grade signals — any one satisfies the unverified-code check.
- *  `verify-suite` is the strongest signal (covers tsc + biome + lint +
- *  secrets + SAST + docs:check at once), but a standalone tsc/test/lint/
- *  build still satisfies the check on its own — the nudge fires only
- *  when none of these were observed. */
-const CORRECTNESS_SIGNALS: readonly string[] = [
-	...INDIVIDUAL_CORRECTNESS_SIGNALS,
-	VERIFY_SUITE_SIGNAL,
-];
+/** Minimum distinct code files edited before the unverified-code nudge
+ *  engages. Below this the session is too small to judge verification
+ *  cadence — a one/two-file touch-up doesn't warrant a "you didn't verify"
+ *  reflection. Replaces the old raw `codeFilesEdited > 0` trigger. */
+const UNVERIFIED_MIN_CODE_FILES = 5;
+
+/** Verify-commands-per-code-file floor. The Fable-corpus study
+ *  (docs/design/fable-corpus-extraction.md §A) measured the best released
+ *  models at ~0.5–1.0 verification commands per substantive code edit
+ *  (Fable-5 0.58, Opus-4-8 0.90–0.99); the anti-pattern is ~0. We nudge only
+ *  an order of magnitude below that floor — a session whose verify:code-file
+ *  ratio is under this verified far less than the best agents do. */
+const UNVERIFIED_VERIFY_RATIO_FLOOR = 0.1;
 
 /**
- * Public — Stop-time nudge when the session has code-file edits but
- * the agent never ran a typechecker / tests / linter / build. Returns
- * null when satisfied (no warning needed).
+ * Public — Stop-time nudge when the session edited a non-trivial number of
+ * code files but verified them far below the best-model cadence. Returns null
+ * when satisfied (no warning needed).
  *
- * Wording is deliberately reflective ("before stopping, run …") rather
- * than imperative — this is a stderr nudge, not a force-retry deny.
+ * Calibrated (fable-corpus §A) rather than a raw count: fires when the
+ * verify-to-edit ratio (`verifyCommandCount / codeFilesEdited`) is under
+ * `UNVERIFIED_VERIFY_RATIO_FLOOR` AND at least `UNVERIFIED_MIN_CODE_FILES` code
+ * files were touched. A single full `interlinked verify` run satisfies
+ * categorically — it is the canonical CI mirror — regardless of the raw ratio.
+ *
+ * Wording is deliberately reflective ("before stopping, run …") rather than
+ * imperative — this is a stderr nudge, not a force-retry deny.
  */
 export function formatUnverifiedCodeWarning(opts: FormatUnverifiedCodeOpts): string | null {
-	if (opts.codeFilesEdited === 0) return null;
-	if (CORRECTNESS_SIGNALS.some((k) => opts.verificationObserved.has(k))) return null;
+	const { codeFilesEdited } = opts;
+	// Too small a session to judge cadence — don't nag a one/two-file touch-up.
+	if (codeFilesEdited < UNVERIFIED_MIN_CODE_FILES) return null;
+	// A full verify-suite run is categorical verification (tsc + biome + lint +
+	// secrets + SAST + docs:check at once); one satisfies regardless of ratio.
+	if (opts.verificationObserved.has(VERIFY_SUITE_SIGNAL)) return null;
+	// Floor the (bounded/truncatable) commands_run count by the DURABLE count of
+	// distinct correctness kinds observed, so a long session whose verifier
+	// invocations scrolled out of the ring never reports "no invocation observed"
+	// (nor a spuriously-0 ratio) when the persistent signal set proves they ran
+	// (baseline-review finding, 2026). Still conservative: errs toward not firing.
+	const observedKinds = INDIVIDUAL_CORRECTNESS_SIGNALS.filter((s) =>
+		opts.verificationObserved.has(s),
+	).length;
+	const verifyCount = Math.max(opts.verifyCommandCount, observedKinds);
+	const ratio = verifyCount / codeFilesEdited;
+	if (ratio >= UNVERIFIED_VERIFY_RATIO_FLOOR) return null;
+	const observed =
+		verifyCount === 0
+			? "no tsc / test / lint / build invocation observed"
+			: `only ${verifyCount} verification command(s) observed`;
 	return (
-		`[interlinked:verify-before-stop] Stopping with ${opts.codeFilesEdited} code file edit(s) ` +
-		"and no verification this session — no tsc / test / lint / build invocation observed. " +
-		"Before stopping, run the project's typecheck or tests " +
-		"(e.g., `npx tsc --noEmit`, `bun run test`, or the project's verify command) " +
-		"to confirm the edits actually compile and pass. Don't claim done on unverified work."
+		`[interlinked:verify-before-stop] Stopping with ${codeFilesEdited} code file edit(s) ` +
+		`and ${observed} — a verify-to-edit cadence of ${ratio.toFixed(2)}, well below the ` +
+		"~0.5–1.0 verifications per edit the best agents sustain. Before stopping, run the " +
+		"project's typecheck or tests (e.g., `npx tsc --noEmit`, `bun run test`, or the project's " +
+		"verify command) to confirm the edits actually compile and pass. Don't claim done on " +
+		"unverified work."
 	);
 }
 

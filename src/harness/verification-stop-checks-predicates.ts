@@ -101,6 +101,40 @@ export function classifyVerificationCommand(cmd: string): VerificationSignal | n
 	return null;
 }
 
+/** The correctness-grade `VerificationSignal` kinds — the subset of
+ *  {@link classifyVerificationCommand}'s outputs that prove the code was
+ *  actually *checked* (typecheck / test / lint / build / the full verify
+ *  suite). The `browser` / `dev-server` kinds are excluded: they prove a
+ *  page loaded, not that the code compiles or its tests pass. */
+const CORRECTNESS_COMMAND_KINDS: ReadonlySet<VerificationSignal> = new Set([
+	"typecheck",
+	"test",
+	"lint",
+	"build",
+	"verify-suite",
+]);
+
+/**
+ * Public — count the correctness-grade verification commands in a session's
+ * Bash `commands_run` list. This is the numerator of the verify-to-edit
+ * cadence ratio the unverified-code Stop nudge gates on.
+ *
+ * Distinct from the `verification_observed` Set, which records the distinct
+ * signal *kinds* — one `tsc` run and fifty `tsc` runs both collapse to
+ * `{typecheck}`. The cadence ratio needs raw invocation *count*, so it can
+ * reflect how *often* the agent verified (the Fable-corpus §A metric: the
+ * best released models sustain ~0.5–1.0 verifications per code edit), not
+ * merely *whether* it verified once.
+ */
+export function countVerifyCommands(commands: readonly string[]): number {
+	let count = 0;
+	for (const cmd of commands) {
+		const kind = classifyVerificationCommand(cmd);
+		if (kind !== null && CORRECTNESS_COMMAND_KINDS.has(kind)) count++;
+	}
+	return count;
+}
+
 /**
  * Public predicate — classify a tool name (typically an MCP-prefixed
  * tool) into a browser-interaction signal. Treats both `chrome-devtools`

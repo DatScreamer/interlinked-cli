@@ -29,6 +29,9 @@ vi.mock("../verification-stop-checks.js", () => ({
 	countCodeFilesEdited: vi.fn(),
 	countDocFactSourcesEdited: vi.fn(),
 	countUiFilesEdited: vi.fn(),
+	// Default 0 verify commands; `vi.clearAllMocks()` in beforeEach preserves
+	// this implementation. Override per-test via vi.mocked() if a case needs it.
+	countVerifyCommands: vi.fn(() => 0),
 	formatBisectNotResetWarning: vi.fn(),
 	formatDeferredCoverageWarning: vi.fn(),
 	formatDocMarkerDriftWarning: vi.fn(),
@@ -433,6 +436,7 @@ describe("buildVerificationStopWarnings", () => {
 		expect(out).toContain("UNVERIFIED");
 		expect(mFormatUnverifiedCodeWarning).toHaveBeenCalledWith({
 			codeFilesEdited: 3,
+			verifyCommandCount: 0,
 			verificationObserved: session.verification_observed,
 		});
 		expect(logLines.some((l) => l.includes("unverified-code (3 files, signals=tsc)"))).toBe(
@@ -451,6 +455,40 @@ describe("buildVerificationStopWarnings", () => {
 		expect(out).toContain("VERIFY-NOT-RUN");
 		// signals=none branch of the log join (empty Set -> "" -> "none").
 		expect(logLines.some((l) => l.includes("verify-suite-not-run") && l.includes("signals=none"))).toBe(true);
+	});
+
+	// --- single-nudge invariant: the two verify-before-stop cadence nudges never co-emit ---
+
+	it("suppresses verify-not-run when unverified-code already fired (no double nudge)", () => {
+		const ctx = makeCtx({
+			rules: vscRules({ warn_unverified_code: true, warn_verify_not_run: true }),
+		});
+		const session = makeSession({ verification_observed: new Set(["typecheck"]) });
+		mCountCodeFilesEdited.mockReturnValue(20);
+		mFormatUnverifiedCodeWarning.mockReturnValue("UNVERIFIED");
+		mFormatVerifyNotRunWarning.mockReturnValue("VERIFY-NOT-RUN");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(out).toContain("UNVERIFIED");
+		expect(out).not.toContain("VERIFY-NOT-RUN");
+		// The stronger nudge fired, so verify-not-run must not even be computed.
+		expect(mFormatVerifyNotRunWarning).not.toHaveBeenCalled();
+	});
+
+	it("still runs verify-not-run when unverified-code did NOT fire", () => {
+		const ctx = makeCtx({
+			rules: vscRules({ warn_unverified_code: true, warn_verify_not_run: true }),
+		});
+		const session = makeSession({ verification_observed: new Set(["typecheck"]) });
+		mCountCodeFilesEdited.mockReturnValue(5);
+		mFormatUnverifiedCodeWarning.mockReturnValue(null); // unverified-code stays quiet
+		mFormatVerifyNotRunWarning.mockReturnValue("VERIFY-NOT-RUN");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
+
+		expect(out).toContain("VERIFY-NOT-RUN");
+		expect(mFormatVerifyNotRunWarning).toHaveBeenCalled();
 	});
 
 	it("includes the ui-not-interacted warning when its flag is on and formatter fires (+logs)", () => {
@@ -654,7 +692,11 @@ describe("buildVerificationStopWarnings", () => {
 
 		// Order matches the pushIfNotNull call sequence in the source.
 		// warn_unresolved_red is off (vscRules default) so it's absent here.
-		expect(out).toEqual(["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9"]);
+		// W2 (verify-not-run) is absent by the single-nudge invariant: W1
+		// (unverified-code) fired, which suppresses verify-not-run so the two
+		// verify-before-stop cadence nudges never co-emit (see the dedicated
+		// mutual-exclusion tests above).
+		expect(out).toEqual(["W1", "W3", "W4", "W5", "W6", "W7", "W8", "W9"]);
 	});
 
 	// --- warn_unresolved_red gated wrapper (checkUnresolvedRed) -------------

@@ -12,6 +12,32 @@ Terminology:
 
 Source of truth for the CLI is `QuentinCody/interlinked-cli`; current installs run from a linked source checkout. It has a single **required** runtime dependency (`commander`) and zero external dependencies for formatting/output. Two **optionalDependencies** (installed by default; the CLI's core hooks/activity work without them): `typescript` — the JS compiler API the AST-accurate cyclomatic/CRAP gate parses with (the `tsgo` native-port binary has **no importable JS API**, so it can't substitute; TS 7's replacement is an out-of-process gRPC API, stable ~7.1) — and `@typescript/native-preview` (`tsgo`), which accelerates `npm run typecheck`. When `typescript` is absent (`--omit=optional`), the complexity gate degrades to the regex walker and says so loudly (`astComplexityAvailable()`; daemon-startup warning).
 
+## Working effectively in this repo (best-model profile)
+
+These four habits are **measured, not asserted** — derived from the best released
+models' actual behavior on this repo (17 Fable-5 sessions + Opus-4-8; the per-edit
+cyclomatic hit-rate is identical across them at ~0.015/edit, so the profile is
+model-agnostic). Full analysis and numbers: `docs/design/fable-corpus-extraction.md`.
+The harness gates already nudge toward these; adopting them pre-emptively skips the
+block→retry round-trip.
+
+- **Decompose-first.** For naturally-branchy functions — data-shape parsers, summary
+  loaders, multi-screen policy handlers — extract cohesive sub-blocks into named
+  helpers *as you write*, not after the cyclomatic gate blocks you. The best model
+  needed this nudge every time it hit the gate and complied every time, always
+  producing the better decomposed design; pre-empting it is strictly faster. The
+  orchestrator drops under the cap and each extracted helper becomes independently
+  testable — a coverage win too.
+- **Prefer `Edit` over `Write`** when changing existing code — surgical edits, not
+  file rewrites (best-model Edit:Write ≈ 6:1). Full rewrites lose context and trip
+  the read/edit-balance and blast-radius detectors.
+- **Verify after substantive edits.** Run the project's test / typecheck / build at
+  ~0.5–1.0 verifier runs per code edit (the best-model floor; the anti-pattern is
+  ~0). The Stop-event nudge fires when a session's verify-to-edit ratio runs far
+  below this floor.
+- **Concise out, deep in.** Terse user-facing messages; deep private reasoning. The
+  best model thought ~6× more than it spoke and still shipped ~580-char messages.
+
 ## Commands
 
 ```bash
@@ -106,6 +132,7 @@ npx tsx src/harness/server.ts --verbose    # Start harness (dev mode)
 interlinked harness start                  # Start as daemon
 interlinked harness stop                   # Stop daemon
 interlinked harness status                 # Show status + loaded rules
+interlinked harness checks                 # Authoritative check inventory (per-family counts + total)
 interlinked harness test "rm -rf /"        # Test command against rules
 npm run docs                               # Regenerate reference docs
 ```
@@ -126,6 +153,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
 | `src/harness/grep-accelerator.ts` | PreToolUse grep acceleration: index query + block-and-answer |
 | `src/harness/large-file-policy.ts` | Per-file line cap: threshold, `isCappableFile` predicate, baseline loader, ratchet verdict |
+| `src/harness/check-inventory.ts` | **Single source of truth for "how many checks."** `getCheckInventory()` derives per-family counts (inline `CHECK_REGISTRY` / sequence / structural / tool-quality / suggestion / behavioral — disjoint) live from each registry; pinned by `check-inventory.test.ts`; surfaced by `interlinked harness checks`. `GENERIC_CHECK_META` is the doc-view of a subset of the inline family, NOT a count — never sum it. Guard rules (`BUILTIN_RULES`) are a separate primitive, pinned by docs-freshness. |
 | `src/harness/evaluator/complexity-pulse.ts` | Ambient per-edit cyclomatic telemetry: the strict gate's observer stashes its already-paid before/after parses at PreToolUse; PostToolUse emits one `[interlinked:cyclomatic]` line per edited code file (ΣCC + max + per-fn Δ; absolutes on stash miss). Same population as the gate (cappable files). Live probe: `node .interlinked/e2e-pulse-probe.mjs` (flip `per_edit_coverage` off first or expect overlay-run latency). |
 
 **Harness source files (analysis):**

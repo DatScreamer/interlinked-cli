@@ -19,6 +19,7 @@ import {
 	countCodeFilesEdited,
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
+	countVerifyCommands,
 	formatBisectNotResetWarning,
 	formatDeferredCoverageWarning,
 	formatDocMarkerDriftWarning,
@@ -96,15 +97,17 @@ export function buildVerificationStopWarnings(
 	if (!vsc?.enabled || !session) return [];
 	const verificationObserved = session.verification_observed ?? new Set<string>();
 	const warnings: string[] = [];
+	const unverifiedCode = vsc.warn_unverified_code
+		? checkUnverifiedCode(ctx, session, verificationObserved)
+		: null;
+	pushIfNotNull(warnings, unverifiedCode);
+	// Single-nudge invariant: verify-not-run ("ran individual tools but not the
+	// full suite") and unverified-code ("cadence far below floor") are both
+	// [interlinked:verify-before-stop] lines; when the stronger unverified-code
+	// nudge already fired, emitting both double-nudges the same concern. Defer.
 	pushIfNotNull(
 		warnings,
-		vsc.warn_unverified_code
-			? checkUnverifiedCode(ctx, session, verificationObserved)
-			: null,
-	);
-	pushIfNotNull(
-		warnings,
-		vsc.warn_verify_not_run
+		vsc.warn_verify_not_run && unverifiedCode === null
 			? checkVerifyNotRun(ctx, session, verificationObserved)
 			: null,
 	);
@@ -152,13 +155,18 @@ function checkCodeFileVerification(opts: {
 	verificationObserved: Set<string>;
 	formatter: (input: {
 		codeFilesEdited: number;
+		verifyCommandCount: number;
 		verificationObserved: Set<string>;
 	}) => string | null;
 	logTag: string;
 }): string | null {
 	const { ctx, session, verificationObserved, formatter, logTag } = opts;
 	const codeFilesEdited = countCodeFilesEdited(session.files_written);
-	const warning = formatter({ codeFilesEdited, verificationObserved });
+	// Raw count of correctness-grade verify commands (tsc/test/lint/build/suite)
+	// — the numerator of the cadence ratio the unverified-code nudge gates on.
+	// `formatVerifyNotRunWarning` ignores it; only the ratio nudge reads it.
+	const verifyCommandCount = countVerifyCommands(session.commands_run);
+	const warning = formatter({ codeFilesEdited, verifyCommandCount, verificationObserved });
 	if (warning === null) return null;
 	ctx.log(
 		`Verify-before-stop: ${logTag} (${codeFilesEdited} files, signals=${[...verificationObserved].join(",") || "none"})`,

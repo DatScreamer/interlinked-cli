@@ -9,6 +9,7 @@ import {
 	countCodeFilesEdited,
 	countDocFactSourcesEdited,
 	countUiFilesEdited,
+	countVerifyCommands,
 	formatBisectNotResetWarning,
 	formatDeferredCoverageWarning,
 	formatDocMarkerDriftWarning,
@@ -22,8 +23,8 @@ import {
 	isDocFactSourceFile,
 	isUiFile,
 	readDeferredCoverageObligations,
-	scanForStubs,
 	STUB_INTRODUCED_CAP,
+	scanForStubs,
 } from "../verification-stop-checks.js";
 
 describe("classifyVerificationCommand", () => {
@@ -114,6 +115,37 @@ describe("classifyVerificationCommand", () => {
 		// Both should still register as a verify-suite signal.
 		expect(classifyVerificationCommand("node dist/index.js verify")).toBe("verify-suite");
 		expect(classifyVerificationCommand("npx tsx src/index.ts verify")).toBe("verify-suite");
+	});
+});
+
+describe("countVerifyCommands", () => {
+	it("counts each correctness-grade command as a raw invocation (not distinct kinds)", () => {
+		// Two tsc runs + one test + one suite = 4, even though the distinct-signal
+		// Set would collapse the two tsc runs to a single `typecheck` kind — the
+		// cadence ratio needs the raw count, which is exactly what this returns.
+		expect(
+			countVerifyCommands([
+				"tsc --noEmit",
+				"tsc -p tsconfig.json",
+				"npx vitest run",
+				"interlinked verify",
+			]),
+		).toBe(4);
+	});
+
+	it("excludes dev-server / browser signals and unrelated commands", () => {
+		expect(
+			countVerifyCommands([
+				"npm run dev", // dev-server — proves a page loaded, not correctness
+				"npx playwright test", // browser — likewise excluded
+				"git status", // unrelated
+				"ls -la", // unrelated
+			]),
+		).toBe(0);
+	});
+
+	it("returns 0 for an empty command list", () => {
+		expect(countVerifyCommands([])).toBe(0);
 	});
 });
 
@@ -248,46 +280,127 @@ describe("scanForStubs", () => {
 	});
 });
 
-describe("formatUnverifiedCodeWarning", () => {
+describe("formatUnverifiedCodeWarning (verify-to-edit cadence)", () => {
+	// Calibrated against docs/design/fable-corpus-extraction.md §A: the best
+	// released models sustain ~0.5–1.0 verify commands per code edit, so the
+	// nudge fires only well below that (ratio < 0.1) once a non-trivial number
+	// of code files were touched — not on a raw "any edits, no verify" trigger.
+
+	// --- no-fire cases ---
+
 	it("returns null when no code files were edited", () => {
 		expect(
 			formatUnverifiedCodeWarning({
 				codeFilesEdited: 0,
+				verifyCommandCount: 0,
 				verificationObserved: new Set(),
 			}),
 		).toBeNull();
 	});
 
-	it("returns null when any correctness signal was observed", () => {
-		for (const signal of ["typecheck", "test", "lint", "build"]) {
+	it("returns null below the minimum code-file count, even with zero verification", () => {
+		// The old raw `> 0` trigger fired here; the calibrated nudge stays quiet
+		// on a one/two/four-file touch-up — too little signal to judge cadence.
+		for (const codeFilesEdited of [1, 2, 4]) {
 			expect(
 				formatUnverifiedCodeWarning({
-					codeFilesEdited: 3,
-					verificationObserved: new Set([signal]),
+					codeFilesEdited,
+					verifyCommandCount: 0,
+					verificationObserved: new Set(["dev-server"]),
 				}),
 			).toBeNull();
 		}
 	});
 
-	it("returns null when only dev-server / browser signals seen (not correctness)", () => {
-		// Hitting only the dev server doesn't prove the code typechecks or tests pass.
-		// This is the case the unverified-code check exists to catch.
+	it("returns null when the verify-to-edit ratio meets the floor", () => {
+		// 1 verify command over 5 files = 0.20, at/above the 0.1 floor.
 		expect(
 			formatUnverifiedCodeWarning({
-				codeFilesEdited: 1,
-				verificationObserved: new Set(["dev-server"]),
+				codeFilesEdited: 5,
+				verifyCommandCount: 1,
+				verificationObserved: new Set(["typecheck"]),
 			}),
-		).not.toBeNull();
+		).toBeNull();
 	});
 
-	it("warns with the file count when unverified", () => {
+	it("returns null when the full verify suite ran, regardless of a sub-floor ratio", () => {
+		// One `interlinked verify` over 30 files is 0.03 raw, but the suite is the
+		// canonical CI mirror — categorical verification — so it satisfies.
+		expect(
+			formatUnverifiedCodeWarning({
+				codeFilesEdited: 30,
+				verifyCommandCount: 1,
+				verificationObserved: new Set(["verify-suite"]),
+			}),
+		).toBeNull();
+	});
+
+	// --- fire cases ---
+
+	it("fires at exactly the minimum file count with zero verification", () => {
 		const msg = formatUnverifiedCodeWarning({
-			codeFilesEdited: 4,
+			codeFilesEdited: 5,
+			verifyCommandCount: 0,
 			verificationObserved: new Set(),
 		});
-		expect(msg).toMatch(/4 code file edit\(s\)/);
-		expect(msg).toMatch(/tsc \/ test \/ lint \/ build/);
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/5 code file edit\(s\)/);
+		expect(msg).toMatch(/no tsc \/ test \/ lint \/ build invocation observed/);
+		expect(msg).toMatch(/cadence of 0\.00/);
+		expect(msg).toMatch(/0\.5.*1\.0/); // cites the empirical best-model floor
 		expect(msg).toMatch(/Don't claim done on unverified work/);
+	});
+
+	it("fires when verification is an order of magnitude below the floor", () => {
+		// 1 verify command over 20 files = 0.05.
+		const msg = formatUnverifiedCodeWarning({
+			codeFilesEdited: 20,
+			verifyCommandCount: 1,
+			verificationObserved: new Set(["typecheck"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/only 1 verification command\(s\) observed/);
+		expect(msg).toMatch(/cadence of 0\.05/);
+	});
+
+	it("fires on a large unverified session where only the dev server was touched", () => {
+		// Hitting only the dev server doesn't prove the code typechecks or tests
+		// pass — the case this nudge exists to catch, now gated on edit volume.
+		const msg = formatUnverifiedCodeWarning({
+			codeFilesEdited: 12,
+			verifyCommandCount: 0,
+			verificationObserved: new Set(["dev-server"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/12 code file edit\(s\)/);
+	});
+
+	// --- durable-signal flooring (message must never contradict the truth) ---
+
+	it("does NOT report 'no invocation' when the durable signal set proves verifiers ran", () => {
+		// A long session ran tsc + tests, but their invocations scrolled out of the
+		// bounded commands_run ring so verifyCommandCount is 0. The durable
+		// verification_observed set proves they ran — the message must not claim zero.
+		const msg = formatUnverifiedCodeWarning({
+			codeFilesEdited: 25,
+			verifyCommandCount: 0,
+			verificationObserved: new Set(["typecheck", "test"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).not.toMatch(/no tsc \/ test \/ lint \/ build invocation observed/);
+		// Numerator floored by the 2 durable correctness kinds → ratio 2/25 = 0.08.
+		expect(msg).toMatch(/only 2 verification command\(s\) observed/);
+		expect(msg).toMatch(/cadence of 0\.08/);
+	});
+
+	it("still reports 'no invocation' when the durable set shows no correctness signal", () => {
+		const msg = formatUnverifiedCodeWarning({
+			codeFilesEdited: 25,
+			verifyCommandCount: 0,
+			verificationObserved: new Set(["dev-server"]),
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toMatch(/no tsc \/ test \/ lint \/ build invocation observed/);
 	});
 });
 
