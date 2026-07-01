@@ -675,6 +675,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"documentWrite",
 			"outerHtmlAssignment",
 			"insertAdjacentHtml",
+			"identicalConditionalBranches",
 			// Phase B endpoint-security pack (2026-05) — aggregated under the
 			// same convention as the rest of the warning families. Promoted to
 			// individual JSON destructuring later if downstream tooling needs

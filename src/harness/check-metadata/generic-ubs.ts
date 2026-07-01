@@ -339,4 +339,11 @@ export const GENERIC_UBS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	identical_conditional_branches: {
+		name: "Identical Conditional Branches",
+		description:
+			"Detects an if/else or ternary whose branches are identical after comment/whitespace normalization — the condition has no effect. Brace-delimited languages; string literals preserved so differing literals stay distinct. Mirrors SonarQube S3923 / Clippy if_same_then_else.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
 };

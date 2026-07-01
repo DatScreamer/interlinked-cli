@@ -65,8 +65,10 @@ export function checkExportSurface(
 			.map((f) => graph.toRelative(f))
 			.join(", ");
 		const more = affectedFiles.length > 6 ? ` and ${affectedFiles.length - 6} more` : "";
-		// Hub modules get error severity; others get warning
-		const severity = role === "hub" ? "error" : "error";
+		// A removed export breaks its importers regardless of module role, so
+		// every export-surface removal is an error (hubs only differ in the
+		// "(hub module)" message annotation below).
+		const severity = "error";
 
 		results.push({
 			check: "export_surface",

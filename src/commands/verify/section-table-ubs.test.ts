@@ -32,7 +32,9 @@ describe("ubsSections", () => {
 		expect(keys).toContain("weakHash");
 	});
 
-	it("ends with the D.2 pattern-parity XSS sinks", () => {
-		expect(ubsSections.at(-1)?.key).toBe("insertAdjacentHtml");
+	it("ends with the identical-conditional-branches universal bug shape", () => {
+		expect(ubsSections.at(-1)?.key).toBe("identicalConditionalBranches");
+		// the D.2 pattern-parity XSS sinks remain (now just before it)
+		expect(ubsSections.map((s) => s.key)).toContain("insertAdjacentHtml");
 	});
 });

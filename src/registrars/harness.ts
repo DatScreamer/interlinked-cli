@@ -56,6 +56,19 @@ export function registerHarnessCommands(program: Command): void {
 		});
 
 	harnessCmd
+		.command("checks")
+		.description(
+			"Show the authoritative check inventory — per-family counts + total (static; no daemon needed)",
+		)
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.option("--full", "Include each count's authoritative source")
+		.action(async (opts: OptionValues) => {
+			const { harnessChecksCommand } = await import("../commands/harness-checks.js");
+			harnessChecksCommand(opts);
+		});
+
+	harnessCmd
 		.command("test [command]")
 		.description(
 			"Fire a synthetic PreToolUse event at the running harness and show its decision. Default: a Bash command. Use --write/--edit to test a file operation.",

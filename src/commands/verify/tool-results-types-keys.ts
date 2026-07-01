@@ -221,6 +221,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"documentWrite",
 	"outerHtmlAssignment",
 	"insertAdjacentHtml",
+	"identicalConditionalBranches",
 	// Phase B endpoint-security pack (2026-05)
 	"endpointAuthMissing",
 	"endpointIdorShape",

@@ -122,7 +122,7 @@ describe("registerHarnessCommands — structure", () => {
 				.commands.map((c) => c.name())
 				.sort(),
 		).toEqual(
-			["clean", "latency", "mode", "reap", "restart", "start", "status", "stop", "test"].sort(),
+			["checks", "clean", "latency", "mode", "reap", "restart", "start", "status", "stop", "test"].sort(),
 		);
 	});
 
@@ -165,6 +165,7 @@ describe("registerHarnessCommands — structure", () => {
 		expect(optsFor("clean")).toEqual(["--json"]);
 		expect(optsFor("mode")).toEqual(["--json"]);
 		expect(optsFor("latency")).toEqual(["--json", "--by-tool"].sort());
+		expect(optsFor("checks")).toEqual(["--json", "--short", "--full"].sort());
 	});
 
 	it("wires the documented options on each scanner subcommand", () => {

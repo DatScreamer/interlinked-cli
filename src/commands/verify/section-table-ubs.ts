@@ -343,4 +343,11 @@ export const ubsSections: readonly SectionSpec[] = [
 		passLabel: "no insertAdjacentHTML calls",
 		color: "33",
 	},
+	{
+		label: "identical conditional branches",
+		key: "identicalConditionalBranches",
+		noun: "if/else or ternary with identical branches (condition has no effect)",
+		passLabel: "no identical-branch conditionals",
+		color: "33",
+	},
 ];

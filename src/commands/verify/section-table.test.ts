@@ -188,6 +188,7 @@ const EXPECTED_KEY_ORDER = [
 	"documentWrite",
 	"outerHtmlAssignment",
 	"insertAdjacentHtml",
+	"identicalConditionalBranches",
 	// batchSections
 	"agentThumbprintProse",
 	"stubNotImplementedThrow",

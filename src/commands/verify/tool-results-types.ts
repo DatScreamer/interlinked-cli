@@ -345,6 +345,8 @@ export interface CodeQualityResults {
 	outerHtmlAssignment: CodeQualityIssue[];
 	/** `.insertAdjacentHTML(...)` — XSS sink. */
 	insertAdjacentHtml: CodeQualityIssue[];
+	/** if/else or ternary whose branches are identical — the condition has no effect. */
+	identicalConditionalBranches: CodeQualityIssue[];
 	// === Phase B endpoint-security pack (2026-05) ===
 	/** HTTP endpoint with no recognized auth middleware (per-framework heuristic). */
 	endpointAuthMissing: CodeQualityIssue[];

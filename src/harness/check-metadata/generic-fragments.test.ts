@@ -7,7 +7,7 @@
 // between fragments). It then pins the composition invariants the spread
 // depends on: fragment key sets are pairwise disjoint (a duplicate key would
 // be silently dropped), and the composed GENERIC_CHECK_META equals the union
-// of all fragments with the expected total of 177 keys.
+// of all fragments with the expected total of 195 keys.
 
 import { describe, expect, it } from "vitest";
 import { GENERIC_CHECK_META } from "./generic.js";
@@ -192,6 +192,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"ubs_document_write",
 			"ubs_outer_html_assignment",
 			"ubs_insert_adjacent_html",
+			"identical_conditional_branches",
 		],
 	},
 	"generic-agent-laziness": {
@@ -331,10 +332,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 192-key total", () => {
+	it("preserves the full 195-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(194);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(195);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(194);
+		expect(fragmentKeyTotal).toBe(195);
 	});
 });

@@ -7,6 +7,7 @@
 // the D.2 pattern-parity expansion. Behaviour-preserving: same checks, same
 // per-bucket order.
 
+import { checkIdenticalBranches } from "../../harness/checks/identical-branches.js";
 import {
 	checkAesEcbMode,
 	checkChildProcessExecUserInput,
@@ -18,8 +19,8 @@ import {
 	checkEvalInputTainted,
 	checkFloatEquality,
 	checkGithubActionsInjection,
-	checkGoShellInjection,
 	checkGoroutineNoWaitgroup,
+	checkGoShellInjection,
 	checkInsertAdjacentHtml,
 	checkJavaOptionalGet,
 	checkJsLooseEquality,
@@ -309,6 +310,13 @@ export function runUbsChecks(ctx: FileCheckContext): void {
 			"ubs_insert_adjacent_html",
 			relPath,
 			checkInsertAdjacentHtml(content, file),
+		),
+	);
+	r.identicalConditionalBranches.push(
+		...toIssues(
+			"identical_conditional_branches",
+			relPath,
+			checkIdenticalBranches(content, file),
 		),
 	);
 }
