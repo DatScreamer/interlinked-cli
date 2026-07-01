@@ -315,65 +315,19 @@ export const planVsTrajectoryDrift: SequenceDetector = {
 	},
 };
 
-// ============================================================
-// §3.5 network_after_user_input_url_match
-// ============================================================
-
-/**
- * Fires when a recent UserPromptSubmit / fetched-content surfaced URL(s)
- * AND the candidate is a Bash network call whose target host matches one
- * of those URLs. Reads `trajectory.recent_user_urls` (Set<string> of
- * hostnames or full URLs). Detection is destination-matches-tainted-content,
- * not content-inspection — the indirect-prompt-injection shape per
- * [[reference_sondera_architecture]] trajectory-taint.
- */
-export const networkAfterUserInputUrlMatch: SequenceDetector = {
-	id: "network_after_user_input_url_match",
-	description:
-		"Network call to a host named in recent user-input / fetched content",
-	family: "injection",
-	phase: "pre_warn",
-	default_enabled: true,
-	determinism: "fully_deterministic",
-	fn: (trajectory, candidate) => {
-		const recent = trajectory.recent_user_urls;
-		if (!recent || recent.size === 0) return [];
-		if (!isBashCandidate(candidate.tool_name)) return [];
-		const cmd = getCommand(candidate.tool_input);
-		if (!cmd) return [];
-		if (!isExternalNetworkCommand(cmd)) return [];
-		const cmdHosts = extractHostnames(cmd);
-		if (cmdHosts.length === 0) return [];
-		const matches: string[] = [];
-		for (const host of cmdHosts) {
-			for (const known of recent) {
-				if (known === host) {
-					matches.push(host);
-					break;
-				}
-				// Substring match — `recent_user_urls` may carry full URLs;
-				// the host extracted from the command is just the hostname.
-				if (known.includes(host) || host.includes(known)) {
-					matches.push(host);
-					break;
-				}
-			}
-		}
-		if (matches.length === 0) return [];
-		return [
-			{
-				prior_event_count: recent.size,
-				prior_summary: `${recent.size} URL(s) extracted from recent user input`,
-				message:
-					`Network call to ${matches.slice(0, 3).join(", ")} — host(s) named in recent user ` +
-					"input or fetched content. The textbook indirect-injection shape (execute fetched " +
-					"content against a target named in fetched content). Re-confirm the destination, or " +
-					"acknowledge with `// interlinked: defer network_after_user_input_url_match -- <reason>`.",
-				evidence: matches.slice(0, 3),
-			},
-		];
-	},
-};
+// NOTE — a `network_after_user_input_url_match` detector lived here until
+// 2026-06-26. It was removed because it was sourced from the *user's own
+// prompt* (`session.recent_user_urls`, populated at UserPromptSubmit) and so
+// fired only when the agent made a network call to a host the user had
+// explicitly named — i.e. an authorized destination, never the
+// indirect-injection shape it advertised. The genuine "network call to a host
+// that appeared in *fetched* content" signal is not yet tracked (taint sources
+// carry `<WebFetch-response>` pseudo-paths, not hosts); the adjacent real
+// shapes are covered by `lethal_trifecta_structural`,
+// `github_issue_body_then_action`, `fetched_external_then_secret_read`, and
+// `plan_vs_trajectory_drift`. A correct version would extract hosts from
+// WebFetch/WebSearch/MCP *output* and treat user-named hosts as a suppressing
+// allowlist — see docs/design/trajectory-sequence-detectors.md §3.5.
 
 export const INJECTION_DETECTORS: ReadonlyArray<SequenceDetector> = [
 	lethalTrifectaStructural,
@@ -381,5 +335,4 @@ export const INJECTION_DETECTORS: ReadonlyArray<SequenceDetector> = [
 	exfilToPublicWriteable,
 	githubIssueBodyThenAction,
 	planVsTrajectoryDrift,
-	networkAfterUserInputUrlMatch,
 ];

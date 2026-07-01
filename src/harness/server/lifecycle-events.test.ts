@@ -297,102 +297,6 @@ describe("Stop-event pattern rescan wiring", () => {
 	});
 });
 
-// ─────────────────────────────────────────────────────────────────────────
-// UserPromptSubmit → recent_user_urls population.
-//
-// The §3.5 detector (`network_after_user_input_url_match`) is inert until
-// `session.recent_user_urls` is populated; the UserPromptSubmit handler
-// extracts URLs from `event.prompt` and stashes both the full URL and the
-// parsed hostname so the detector can substring-match a Bash candidate's
-// target host against it.
-// ─────────────────────────────────────────────────────────────────────────
-
-describe("handleLifecycleEvent — UserPromptSubmit recent_user_urls population", () => {
-	function promptEvt(prompt: string | undefined): HarnessEvent {
-		return {
-			hook_event: "UserPromptSubmit",
-			session_id: "s",
-			agent_source: "claude",
-			timestamp: "2026-05-27T00:00:00.000Z",
-			...(prompt !== undefined ? { prompt } : {}),
-		};
-	}
-
-	it("extracts two distinct hostnames from a prompt carrying two URLs", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(
-			ctx,
-			promptEvt(
-				"Please fetch https://example.com/path and also https://api.other.org/v1/x",
-			),
-			session,
-		);
-		expect(session.recent_user_urls?.has("example.com")).toBe(true);
-		expect(session.recent_user_urls?.has("api.other.org")).toBe(true);
-	});
-
-	it("stashes the full URL alongside the hostname", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(
-			ctx,
-			promptEvt("see https://example.com/some/path"),
-			session,
-		);
-		expect(session.recent_user_urls?.has("https://example.com/some/path")).toBe(true);
-		expect(session.recent_user_urls?.has("example.com")).toBe(true);
-	});
-
-	it("lowercases extracted hostnames", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(
-			ctx,
-			promptEvt("see https://API.Example.COM/x"),
-			session,
-		);
-		expect(session.recent_user_urls?.has("api.example.com")).toBe(true);
-	});
-
-	it("leaves recent_user_urls undefined or empty when prompt has no URL", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(
-			ctx,
-			promptEvt("please refactor the helper module"),
-			session,
-		);
-		const urls = session.recent_user_urls;
-		expect(urls === undefined || urls.size === 0).toBe(true);
-	});
-
-	it("leaves recent_user_urls untouched when event.prompt is absent", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(ctx, promptEvt(undefined), session);
-		expect(session.recent_user_urls).toBeUndefined();
-	});
-
-	it("caps the Set at 100 entries (drops oldest)", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		// 80 unique hostnames → 160 entries (URL + host) → cap kicks in.
-		const urls: string[] = [];
-		for (let i = 0; i < 80; i++) urls.push(`https://h${i}.example.com/x`);
-		await handleLifecycleEvent(ctx, promptEvt(urls.join(" ")), session);
-		expect(session.recent_user_urls?.size).toBeLessThanOrEqual(100);
-	});
-
-	it("accumulates URLs across multiple UserPromptSubmit events", async () => {
-		const ctx = makeCtx();
-		const session = ctx.sessions.recordEvent(promptEvt(undefined));
-		await handleLifecycleEvent(ctx, promptEvt("see https://first.example.com"), session);
-		await handleLifecycleEvent(ctx, promptEvt("then https://second.example.com"), session);
-		expect(session.recent_user_urls?.has("first.example.com")).toBe(true);
-		expect(session.recent_user_urls?.has("second.example.com")).toBe(true);
-	});
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BEHAVIORAL BRANCH SUITES (mocked-helper style)
@@ -1068,46 +972,10 @@ describe("UserPromptSubmit handler — branch coverage", () => {
 		expect(mScanUserPrompt).not.toHaveBeenCalled();
 	});
 
-	it("records recent user URLs with parsed hostnames when a prompt is present", async () => {
-		const session = bSession();
-		await ups(bCtx(), { prompt: "see https://example.com/p and http://Foo.Bar/x" }, session);
-		const urls = session.recent_user_urls as Set<string>;
-		expect(urls.has("https://example.com/p")).toBe(true);
-		expect(urls.has("example.com")).toBe(true);
-		expect(urls.has("foo.bar")).toBe(true);
-	});
-
-	it("adds the URL but no host when hostname parsing throws (parseHostnameLowercase catch arm)", async () => {
-		const session = bSession();
-		// `http://[bad` matches the URL regex but `new URL(...)` throws, so
-		// parseHostnameLowercase returns null: the full URL is still stashed,
-		// no hostname entry is created.
-		await ups(bCtx(), { prompt: "ping http://[bad now" }, session);
-		const urls = session.recent_user_urls as Set<string>;
-		expect(urls.has("http://[bad")).toBe(true);
-		// Exactly one entry — the URL, with no derived host alongside it.
-		expect(urls.size).toBe(1);
-	});
-
-	it("caps recent_user_urls and keeps the freshest entries", async () => {
-		const pre = new Set<string>(Array.from({ length: 100 }, (_v, i) => `old-${i}.example`));
-		const session = bSession({ recent_user_urls: pre });
-		await ups(bCtx(), { prompt: "new https://fresh.example/z" }, session);
-		const urls = session.recent_user_urls as Set<string>;
-		expect(urls.size).toBeLessThanOrEqual(100);
-		expect(urls.has("fresh.example")).toBe(true);
-	});
-
-	it("does not initialize recent_user_urls when there is no prompt", async () => {
-		const session = bSession();
-		await ups(bCtx(), {}, session);
-		expect(session.recent_user_urls).toBeUndefined();
-	});
-
-	it("skips both the plan-capture and recent-URL stashing when the session is absent", async () => {
+	it("skips plan-capture when the session is absent", async () => {
 		// The handler's `session?` param is optional; passing it absent exercises
-		// the `if (session)` / `if (event.prompt && session)` false branches —
-		// the scanner still runs, but neither session-bound side effect fires.
+		// the `if (session)` false branch — the scanner still runs, but the
+		// session-bound plan-capture side effect does not fire.
 		const ctx = bCtx({
 			rules: { plan_capture: { enabled: true, parse_userprompt: true } },
 		});

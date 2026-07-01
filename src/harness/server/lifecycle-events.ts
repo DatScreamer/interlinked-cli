@@ -30,10 +30,6 @@ import {
 } from "../../lib/settings-validator.js";
 import type { CohortManager } from "../cohort.js";
 import { scanUserPrompt } from "../content-scanner/prompt-scan.js";
-import {
-	detectPlanDrift,
-	formatPlanDriftWarning,
-} from "../plan-drift.js";
 import { resetProjectSetupWarningsCache } from "../evaluator/pre-tool.js";
 import { computeEffectivenessSummary } from "../feedback-effectiveness.js";
 import { refreshPriorityIfStale as refreshFilePriorityIfStale } from "../file-priority.js";
@@ -43,6 +39,14 @@ import {
 	maybeCaptureFromPreToolUse,
 	maybeCaptureFromUserPromptSubmit,
 } from "../plan-capture.js";
+import {
+	detectPlanDrift,
+	formatPlanDriftWarning,
+} from "../plan-drift.js";
+import {
+	formatSequenceFinding,
+	runSequenceDetectorsForPhase,
+} from "../sequence-checks/index.js";
 import { sanitizeSessionId } from "../session-paths.js";
 import {
 	getActiveSkills,
@@ -50,25 +54,21 @@ import {
 	recordSkillLeave,
 	type SessionTracker,
 } from "../session-state.js";
-import {
-	formatSequenceFinding,
-	runSequenceDetectorsForPhase,
-} from "../sequence-checks/index.js";
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
-import type { ServerRuntime } from "./runtime-context.js";
-import {
-	buildCommitCadenceNudge,
-	buildVerificationStopWarnings,
-} from "./lifecycle-stop-warnings.js";
 import {
 	handleSkillEnter,
 	handleSkillLeave,
 	handleSkillList,
 	handleSubagentStop,
-	recordRecentUserUrls,
 } from "./lifecycle-events-handlers.js";
+import {
+	buildCommitCadenceNudge,
+	buildVerificationStopWarnings,
+} from "./lifecycle-stop-warnings.js";
+import type { ServerRuntime } from "./runtime-context.js";
+
 // Re-exported so `import { resolveParentSessionId } from "./lifecycle-events.js"`
 // keeps working for existing consumers/tests after the helper move.
 export { resolveParentSessionId } from "./lifecycle-events-handlers.js";
@@ -336,14 +336,6 @@ async function handleUserPromptSubmit(
 			);
 			return { decision: "allow", redacted_prompt: scanResult.redacted };
 		}
-	}
-	// Sequence-detector input: feed §3.5 (network_after_user_input_url_match).
-	// Extract URLs + hostnames from the raw prompt and stash them on the
-	// session so subsequent Bash network calls can be matched against them.
-	// Cap kept small (RECENT_USER_URLS_CAP) so a many-link prompt doesn't
-	// balloon the in-memory trajectory state.
-	if (event.prompt && session) {
-		recordRecentUserUrls(session, event.prompt);
 	}
 	return { decision: "allow" };
 }
