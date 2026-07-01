@@ -6,8 +6,7 @@
 // and §3.18 magic-literal-cross-file detectors have non-empty input.
 // Best-effort: bounded ring buffer + per-edit literal cap so a runaway
 // agent can't blow the trajectory's memory footprint. The detectors read
-// these maps directly; recent_user_urls is populated separately from
-// `lifecycle-events.ts::handleUserPromptSubmit`.
+// these maps directly.
 //
 // Lifted out of session-state.ts to keep that file under the per-file line
 // cap. The helpers SessionTracker.recordEvent drives (recordRecentLineEdit,

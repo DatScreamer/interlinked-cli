@@ -31,6 +31,7 @@ import {
 } from "./server/protocol-status.js";
 import type { ServerRuntime } from "./server/runtime-context.js";
 import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
+import { captureTimeline } from "./timeline-capture.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
 
@@ -127,6 +128,12 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		// otherwise be lost on a daemon restart even though `recordEvent` mutated
 		// state that *was* captured. See `evaluateEventLine`'s try/finally.
 		const session = sessions.recordEvent(event);
+
+		// Live timeline capture: drain the transcript (new records since the
+		// cursor) into .interlinked/timeline.jsonl on EVERY event. Runs for Stop /
+		// SessionEnd too — that's what captures a turn's final assistant message,
+		// which fires no PreToolUse. Best-effort / fail-open (never throws).
+		captureTimeline(event, CWD);
 
 		syncRuntimeIn();
 		try {

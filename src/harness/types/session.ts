@@ -227,14 +227,6 @@ export interface SessionTrajectory {
 	 * hydration safety.
 	 */
 	literal_occurrences?: Map<string, Set<string>> | undefined;
-	/**
-	 * URLs / hostnames extracted from UserPromptSubmit events this session.
-	 * Consumed by `network_after_user_input_url_match` (sequence-checks
-	 * §3.5) to detect the "execute fetched content against a target named
-	 * in fetched content" indirect-injection shape. Populated at
-	 * UserPromptSubmit in `lifecycle-events.ts`. Optional for hydration safety.
-	 */
-	recent_user_urls?: Set<string>;
 }
 
 // ===========================================
