@@ -82,6 +82,7 @@ vi.mock("../coverage-discharge.js", () => ({
 vi.mock("./pre-tool-coverage-gates.js", () => ({
 	runCoverageWriteGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
 	runCommitGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
+	runMutationWriteGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
 }));
 
 vi.mock("../grep-accelerator.js", () => ({
@@ -142,12 +143,12 @@ import { decideFromFindings } from "../content-scanner/policy.js";
 import { buildAskReason, writePendingPrompt } from "../content-scanner/redact-preview.js";
 import { fetchAndScan } from "../content-scanner/web-fetch-proxy.js";
 import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
-import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
+import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
-import { runCommitGate, runCoverageWriteGate } from "./pre-tool-coverage-gates.js";
 import { appendShadowLog, callClassifier } from "../policy-classifier.js";
 import { isBashTsc, tryTsgoRewrite } from "../server-tsgo-bash.js";
+import { runCommitGate, runCoverageWriteGate } from "./pre-tool-coverage-gates.js";
 import {
 	captureDiffAwareBaseline,
 	injectStructureContext,

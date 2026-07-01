@@ -34,6 +34,7 @@ import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.
 import {
 	runCommitGate,
 	runCoverageWriteGate as runCoverageWriteGateExtracted,
+	runMutationWriteGate,
 } from "./pre-tool-coverage-gates.js";
 import {
 	runContentScanRequest,
@@ -345,6 +346,13 @@ export async function runPreToolPipeline(
 	// in via `per_edit_coverage.enabled`.
 	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
 	if (coverageDecision) return coverageDecision;
+
+	// --- Per-edit mutation gate (config-gated, DEFAULT OFF) ---
+	// Capability-aware (spec §12): a no-op until `per_edit_mutation.enabled`; runs
+	// the mutation runner (null until the cloud Sandbox runner is wired → honest
+	// not-measured) and short-circuits on a measured block.
+	const mutationDecision = await runMutationWriteGate(ctx, event, preDecision);
+	if (mutationDecision) return mutationDecision;
 
 	// --- Commit-time quality gate (config-gated, DEFAULT OFF) ---
 	// The hard gate for repos whose suite is too big for per-edit enforcement:

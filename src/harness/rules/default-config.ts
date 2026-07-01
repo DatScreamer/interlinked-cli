@@ -388,4 +388,12 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// and docs/design/coverage-debt-tdd.md.
 		debt_mode: true,
 	},
+	// Per-edit mutation gate (spec §4 / §12). DEFAULT OFF — opt IN per repo. The
+	// cloud Sandbox runner is not yet wired, so an opted-in repo gets an honest
+	// `[mutation:not-measured]` warning rather than a forged clean pass.
+	per_edit_mutation: {
+		enabled: false,
+		mode: "block",
+		unavailable_behavior: "allow_unmeasured",
+	},
 };

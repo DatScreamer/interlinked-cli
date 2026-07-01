@@ -35,6 +35,9 @@ export const PROVEN_TOOL_CHECKS: ReadonlySet<string> = new Set([
 	"dependency_audit",
 	"secrets_in_source",
 	"affected_tests",
+	// Mutation engine (Stryker et al.) ran the actual suite against real mutants —
+	// a measured survivor/kill is proven, not a regex shape (spec §9).
+	"per-edit-mutation",
 	// Parser-driven file-state checks
 	"lockfile_drift",
 	"package_json_consistency",

@@ -217,3 +217,21 @@ describe("evaluateBaselineIntegrityForEvent", () => {
 		).toBeNull();
 	});
 });
+
+describe("mutation-manifest accepted-survivor set may only shrink (spec §7)", () => {
+	const MUT_MANIFEST = "/repo/.interlinked/mutation-manifest.json";
+	const mm = (status: string) => ({ version: 1, files: { "a.ts": { sym1: { mutants: { m1: { status } } } } } });
+
+	it("blocks hand-adding a survived/equivalent entry to silence the gate", () => {
+		const findings = detect(MUT_MANIFEST, mm("killed"), mm("survived"));
+		expect(findings.some((f) => f.rule.includes("accepted-survivor-added"))).toBe(true);
+	});
+
+	it("allows shrinking the accepted set (survived → killed)", () => {
+		expect(detect(MUT_MANIFEST, mm("survived"), mm("killed"))).toEqual([]);
+	});
+
+	it("allows an unchanged manifest", () => {
+		expect(detect(MUT_MANIFEST, mm("survived"), mm("survived"))).toEqual([]);
+	});
+});

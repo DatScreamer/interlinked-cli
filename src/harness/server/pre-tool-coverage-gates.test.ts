@@ -16,12 +16,29 @@ vi.mock("../evaluator/commit-gate.js", () => ({
 	checkCommitGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
 }));
 
+vi.mock("../mutation/gate.js", () => ({
+	runPerEditMutationGate: vi.fn(async (): Promise<HarnessDecision | null> => null),
+}));
+
+vi.mock("../mutation/manifest.js", () => ({
+	loadManifest: vi.fn(() => null),
+	emptyManifest: vi.fn(() => ({ mutants: [] })),
+}));
+
+vi.mock("../mutation/cloud-runner.js", () => ({
+	createCloudMutationRunner: vi.fn(() => ({ runOverlay: vi.fn() })),
+}));
+
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
-import { runCommitGate, runCoverageWriteGate } from "./pre-tool-coverage-gates.js";
+import { createCloudMutationRunner } from "../mutation/cloud-runner.js";
+import { runPerEditMutationGate } from "../mutation/gate.js";
+import { runCommitGate, runCoverageWriteGate, runMutationWriteGate } from "./pre-tool-coverage-gates.js";
 
 const mCheckCoverage = checkCoverageWrite as unknown as Mock;
 const mCheckCommit = checkCommitGate as unknown as Mock;
+const mMutation = runPerEditMutationGate as unknown as Mock;
+const mCreateRunner = createCloudMutationRunner as unknown as Mock;
 
 function ev(partial: Partial<HarnessEvent> = {}): HarnessEvent {
 	return {
@@ -42,6 +59,13 @@ function ctxWith(perEditEnabled: boolean): ServerRuntime {
 	return { rules } as unknown as ServerRuntime;
 }
 
+function ctxMutation(cfg: unknown): ServerRuntime {
+	return {
+		rules: { per_edit_mutation: cfg } as unknown as GuardRulesConfig,
+		cwd: "/tmp/harness-mutation-test",
+	} as unknown as ServerRuntime;
+}
+
 function allow(warnings?: string[]): HarnessDecision {
 	return warnings ? { decision: "allow", warnings } : { decision: "allow" };
 }
@@ -50,6 +74,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mCheckCoverage.mockResolvedValue(null);
 	mCheckCommit.mockResolvedValue(null);
+	mMutation.mockResolvedValue(null);
+	mCreateRunner.mockReturnValue({ runOverlay: vi.fn() });
 });
 
 afterEach(() => {
@@ -204,5 +230,93 @@ describe("runCommitGate", () => {
 		);
 		expect(decision).toBeNull();
 		expect(mCheckCommit).toHaveBeenCalledOnce();
+	});
+});
+
+describe("runMutationWriteGate", () => {
+	it("no-op (gate never called) when the pre-decision is already a block", async () => {
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			{ decision: "block", reason: "upstream" },
+		);
+		expect(decision).toBeNull();
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("no-op (default OFF, gate never called) when per_edit_mutation is absent", async () => {
+		const decision = await runMutationWriteGate(ctxMutation(undefined), ev({ tool_name: "Write" }), allow());
+		expect(decision).toBeNull();
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("no-op when per_edit_mutation is present but disabled (the inert default path)", async () => {
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: false, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("enabled + no runner_url: runs the gate with a NULL runner and builds no cloud runner", async () => {
+		mMutation.mockResolvedValue(null);
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mMutation).toHaveBeenCalledOnce();
+		expect(mMutation.mock.calls[0]?.[0]?.runner).toBeNull();
+		expect(mCreateRunner).not.toHaveBeenCalled();
+	});
+
+	it("enabled + runner_url: lazily builds the cloud runner and passes it to the gate", async () => {
+		mMutation.mockResolvedValue(null);
+		await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block", runner_url: "https://runner.example" }),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		expect(mCreateRunner).toHaveBeenCalledOnce();
+		expect(mMutation.mock.calls[0]?.[0]?.runner).not.toBeNull();
+	});
+
+	it("returns the gate's block, merging pre-decision warnings onto it", async () => {
+		mMutation.mockResolvedValue({ decision: "block", reason: "[mutation] survivor", warnings: ["MUT"] });
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			allow(["PRE"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.warnings).toEqual(["PRE", "MUT"]);
+	});
+
+	it("merges a not-measured allow's warning onto preDecision and continues (null)", async () => {
+		const MUT_WARN = "[mutation:not-measured] cloud runner unavailable";
+		mMutation.mockResolvedValue({ decision: "allow", warnings: [MUT_WARN] });
+		const preDecision = allow();
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			preDecision,
+		);
+		expect(decision).toBeNull();
+		expect(preDecision.warnings).toEqual([MUT_WARN]);
+	});
+
+	it("a bare allow with no warnings is a clean continue (no spurious warning)", async () => {
+		mMutation.mockResolvedValue({ decision: "allow" });
+		const preDecision = allow();
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write" }),
+			preDecision,
+		);
+		expect(decision).toBeNull();
+		expect(preDecision.warnings).toBeUndefined();
 	});
 });

@@ -19,6 +19,7 @@
 // a no-op for non-commit Bash, so an opted-in repo pays the commit cost only on
 // an actual `git commit`. Neither throws (each underlying check fails open).
 
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
 	extractApplyPatchRaw,
@@ -29,6 +30,8 @@ import { applyDebtMode } from "../coverage-debt-gate.js";
 import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
+import { runPerEditMutationGate } from "../mutation/gate.js";
+import { emptyManifest, loadManifest } from "../mutation/manifest.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 
@@ -164,4 +167,63 @@ export async function runCommitGate(
 		commitDecision.warnings = [...preDecision.warnings, ...(commitDecision.warnings ?? [])];
 	}
 	return commitDecision;
+}
+
+function readDiskSafe(path: string): string | null {
+	try {
+		return readFileSync(path, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+const MUTATION_PLACEHOLDER_META = {
+	engine: "stryker",
+	engineVersion: "0",
+	dependencyGraphVersion: "0",
+	environmentHash: "0",
+	authoritativeAt: new Date(0).toISOString(),
+};
+
+/**
+ * Per-edit mutation gate (config-gated, DEFAULT OFF; spec §4 / §12). A no-op
+ * unless `per_edit_mutation.enabled`. The runner is null until the cloud Sandbox
+ * runner is wired, so an opted-in repo honestly gets `[mutation:not-measured]`
+ * rather than a forged clean pass. Never throws (the gate fails open internally).
+ */
+export async function runMutationWriteGate(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	preDecision: HarnessDecision,
+): Promise<HarnessDecision | null> {
+	if (preDecision.decision !== "allow") return null;
+	const cfg = ctx.rules.per_edit_mutation;
+	if (!cfg?.enabled) return null; // fast path: default OFF
+	const baseManifest = loadManifest(resolve(ctx.cwd, ".interlinked")) ?? emptyManifest(MUTATION_PLACEHOLDER_META);
+	// Wire the cloud Sandbox runner when a URL is configured; a lazy dynamic import
+	// keeps it off the default-off hot path. Absent URL → null → honest not-measured.
+	const runner = cfg.runner_url
+		? (await import("../mutation/cloud-runner.js")).createCloudMutationRunner(
+				{ url: cfg.runner_url, token: cfg.token, timeoutMs: 25_000 },
+				(u, init) => fetch(u, init),
+			)
+		: null;
+	const decision = await runPerEditMutationGate({
+		toolName: event.tool_name ?? "",
+		toolInput: event.tool_input,
+		config: cfg,
+		runner,
+		baseManifest,
+		readDisk: (file) => readDiskSafe(resolve(ctx.cwd, file)),
+		at: new Date().toISOString(),
+	});
+	if (!decision) return null;
+	if (decision.decision === "block") {
+		decision.warnings = mergeWarnings(preDecision.warnings, decision.warnings);
+		return decision;
+	}
+	if (decision.warnings && decision.warnings.length > 0) {
+		preDecision.warnings = mergeWarnings(preDecision.warnings, decision.warnings);
+	}
+	return null;
 }

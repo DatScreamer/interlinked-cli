@@ -38,10 +38,11 @@ type BaselineKind =
 	| "mutation"
 	| "large-files"
 	| "untested-files"
-	| "metric-caps";
+	| "metric-caps"
+	| "mutation-manifest";
 
 const BASELINE_RE =
-	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|large-files-baseline|untested-files-baseline|metric-caps)\.json$/;
+	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps)\.json$/;
 
 const KIND_MAP: Record<string, BaselineKind> = {
 	"coverage-baseline": "coverage",
@@ -50,6 +51,7 @@ const KIND_MAP: Record<string, BaselineKind> = {
 	"large-files-baseline": "large-files",
 	"untested-files-baseline": "untested-files",
 	"metric-caps": "metric-caps",
+	"mutation-manifest": "mutation-manifest",
 };
 
 function baselineKind(filePath: string): BaselineKind | null {
@@ -228,6 +230,43 @@ function detectMetricCaps(file: string, before: unknown, after: unknown): Baseli
 	return out;
 }
 
+// The mutation-manifest's accepted-survivor set (mutants with status survived /
+// equivalent) may only SHRINK across a hand-edit (spec §7 of
+// docs/design/per-edit-cloud-mutation-testing.md). A mutation run / the reviewed
+// `interlinked mutation` CLI records survivors via internal fs writes (bypassing
+// this gate); a hand-edit that ADDS one is the gate-gaming move.
+function acceptedSurvivorSet(manifest: unknown): Set<string> {
+	const out = new Set<string>();
+	for (const symbolsRaw of Object.values(asObj(asObj(manifest).files))) {
+		for (const symRaw of Object.values(asObj(symbolsRaw))) {
+			for (const [mutantId, mRaw] of Object.entries(asObj(asObj(symRaw).mutants))) {
+				const status = asObj(mRaw).status;
+				if (status === "survived" || status === "equivalent") out.add(mutantId);
+			}
+		}
+	}
+	return out;
+}
+
+export function detectMutationManifest(file: string, before: unknown, after: unknown): BaselineGamingFinding[] {
+	const out: BaselineGamingFinding[] = [];
+	const beforeAccepted = acceptedSurvivorSet(before);
+	for (const mutantId of acceptedSurvivorSet(after)) {
+		if (!beforeAccepted.has(mutantId)) {
+			out.push(
+				fmt(
+					file,
+					`accepted-survivor-added:${mutantId}`,
+					undefined,
+					mutantId,
+					`mutant ${mutantId} was hand-added to the accepted-survivor set. New survivors/equivalents may only enter via a mutation run or the reviewed \`interlinked mutation\` CLI (internal writes); a hand-edit silences the gate. The accepted set may only shrink.`,
+				),
+			);
+		}
+	}
+	return out;
+}
+
 /**
  * Public API — pure detector. Returns the loosening findings for a proposed
  * edit to a `.interlinked/` ratchet baseline (empty for non-baseline files,
@@ -259,6 +298,8 @@ export function detectBaselineGaming(
 			return detectUntestedFiles(filePath, before, after);
 		case "metric-caps":
 			return detectMetricCaps(filePath, before, after);
+		case "mutation-manifest":
+			return detectMutationManifest(filePath, before, after);
 	}
 }
 

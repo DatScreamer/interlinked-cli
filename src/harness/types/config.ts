@@ -257,6 +257,8 @@ export interface GuardRulesConfig {
 	 *  DEFAULT ON — opt-OUT per repo (enabled:false). See PerEditCoverageConfig and
 	 *  `evaluator/coverage-write-guard.ts`. */
 	per_edit_coverage?: PerEditCoverageConfig;
+	/** Per-edit mutation gate (DEFAULT OFF; capability-aware — spec §12; see mutation/gate.ts). */
+	per_edit_mutation?: import("../mutation/gate.js").PerEditMutationConfig;
 }
 
 /** Plan-capture configuration. Master toggle + structured-userprompt parser
