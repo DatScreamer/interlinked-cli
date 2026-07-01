@@ -43,7 +43,6 @@ Updated as PRs land.
 | `exfil_to_public_writeable` (§3.14) | injection | pre_block | `injection.ts` | on |
 | `github_issue_body_then_action` (§3.13) | injection | pre_warn | `injection.ts` | on |
 | `plan_vs_trajectory_drift` (§3.15) | injection | pre_warn | `injection.ts` | on |
-| `network_after_user_input_url_match` (§3.5) | injection | pre_warn | `injection.ts` | on |
 | `magic_literal_cross_file_proliferation` (§3.18) | quality | stop | `quality.ts` | on |
 | `coverage_silent_regression` (§3.20) | quality | stop | `quality.ts` | on |
 | `add_then_revert_loop` (§3.21) | quality | pre_warn | `quality.ts` | on |

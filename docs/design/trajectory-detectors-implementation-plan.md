@@ -489,7 +489,7 @@ interface SessionTrajectory {
 }
 ```
 
-Populated at SessionStart / UserPromptSubmit by scanning the prompt body for URLs. Consumed at PreToolUse by `network_after_user_input_url_match` (§3.5).
+Populated at SessionStart / UserPromptSubmit by scanning the prompt body for URLs. Consumed at PreToolUse by `network_after_user_input_url_match` (§3.5). **(Removed 2026-06-26 — the detector fired only on hosts the user had named in their own prompt, i.e. authorized destinations, so it was a pure false-positive generator. The detector, the `recent_user_urls` field, and this population path were all removed. See `trajectory-sequence-detectors.md` §3.5 for the correct fetched-content design.)**
 
 ### 8.4 What does NOT need extension
 

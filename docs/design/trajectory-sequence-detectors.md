@@ -104,13 +104,27 @@ Four loosely-grouped families (the numbering is flat; the groupings are a readin
 
 **Cross-session implementation:** requires bounded read of `activity.jsonl` — outside the per-session in-memory model. Implementation note: only the last N events (capped, e.g., 500) need to be loaded; bounded I/O. Cache the load across calls within a Stop turn.
 
-### 3.5 `network_after_user_input_url_match` (pre_warn)
+### 3.5 `network_after_user_input_url_match` (REMOVED 2026-06-26)
 
-**Fires when:** a recent `UserPromptSubmit` event contained URL(s) AND/OR `WebFetch`/`WebSearch` output AND the candidate is a non-local network call whose target host matches a URL in the user-input or fetched content.
+**Status:** removed. The shipped implementation sourced its URL set *solely* from
+the user's own prompt (`session.recent_user_urls`, populated at
+`UserPromptSubmit`), so it fired only when the agent made a network call to a
+host the **user had explicitly named** — an authorized destination, never the
+indirect-injection shape it advertised. As written it was a pure
+false-positive generator (it flagged e.g. `git clone <url-the-user-pasted>`),
+and the spec above already conceded that "use this URL the user gave me" is
+legitimate. The fetched-content half it was *meant* to cover was never built:
+taint sources carry `<WebFetch-response>` pseudo-paths, not the hosts named
+inside the fetched body.
 
-**Why pre_warn:** the "use this URL the user gave me" pattern is legitimate, but executing fetched content against a target *named in* fetched content is the textbook indirect-prompt-injection shape ([[reference_sondera_architecture]] trajectory-taint).
-
-**Implementation hook:** taint provenance already tracks `fetched_external` and `user_provided`; this detector adds the "destination matches tainted content" axis.
+**The correct version (future work):** track hosts that appear in *untrusted
+fetched output* (WebFetch / WebSearch / MCP-remote response bodies) as a
+distinct suspicion set, fire when a non-local network call targets one of those
+hosts, and treat *user-named* hosts as a **suppressing authorization allowlist**
+(the inverse of the old polarity). Until that extraction exists, the adjacent
+real shapes are covered by §3.11 `lethal_trifecta_structural`, §3.12
+`fetched_external_then_secret_read`, §3.13 `github_issue_body_then_action`, and
+§3.15 `plan_vs_trajectory_drift`.
 
 ### 3.6 `subagent_diverged_edit` (stop)
 
@@ -180,7 +194,7 @@ The central injection-defense detector. Fires when the trajectory satisfies all 
 
 **Why pre_warn:** "use this URL/path/command the user gave me via gh CLI" is sometimes legitimate, but executing instructions extracted from a GitHub issue body is the textbook indirect-injection-via-credibility-signaling shape. The harness can detect the destination-matches-content shape deterministically; whether the content is *intended* as an instruction is for the operator to confirm.
 
-**Relationship to §3.5:** §3.5 (`network_after_user_input_url_match`) covers the WebFetch/WebSearch path. This detector covers the gh-CLI path, which today doesn't get a WebFetch-style provenance tag (see §10).
+**Relationship to §3.5:** §3.5 was removed (it only ever fired on user-named hosts; see its entry). The general "network call to a host named in WebFetch/WebSearch output" path it was meant to cover is unbuilt. This detector covers the gh-CLI path, which today doesn't get a WebFetch-style provenance tag (see §10).
 
 ### 3.14 `exfil_to_public_writeable` (pre_block on deterministic surfaces, pre_warn on ambiguous)
 
@@ -302,7 +316,7 @@ Same registry pattern as the content detectors (per the agent-quality checks con
 {
     "sequence_detectors": {
         "enabled": true,
-        "disabled_ids": ["network_after_user_input_url_match"],
+        "disabled_ids": ["plan_vs_trajectory_drift"],
         "block_to_warn_downgrade": ["secret_read_then_network_call"]
     }
 }
