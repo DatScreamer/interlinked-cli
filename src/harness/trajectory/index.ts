@@ -13,14 +13,19 @@
 
 import { CHURN_RULES } from "./rules-churn.js";
 import { SECURITY_RULES } from "./rules-security.js";
+import { VERIFICATION_RULES } from "./rules-verification.js";
 import { applyEvent } from "./state.js";
 import type { ToolEvent, TrajectoryRule, TrajectoryState, Verdict } from "./types.js";
 
 export { createState } from "./state.js";
 export type { ToolEvent, TrajectoryState, Verdict } from "./types.js";
 
-/** Every wired trajectory rule (churn + security families), in evaluation order. */
-export const TRAJECTORY_RULES: ReadonlyArray<TrajectoryRule> = [...CHURN_RULES, ...SECURITY_RULES];
+/** Every wired trajectory rule (churn + security + verification families), in evaluation order. */
+export const TRAJECTORY_RULES: ReadonlyArray<TrajectoryRule> = [
+	...CHURN_RULES,
+	...SECURITY_RULES,
+	...VERIFICATION_RULES,
+];
 
 /**
  * Fold `event` into `state`, then evaluate every rule against the folded state.
