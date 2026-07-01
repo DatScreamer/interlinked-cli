@@ -396,4 +396,7 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		mode: "block",
 		unavailable_behavior: "allow_unmeasured",
 	},
+	trajectory_shadow: {
+		enabled: true,
+	},
 };

@@ -30,6 +30,7 @@ import {
 	writeProtocolStatus as persistProtocolStatus,
 } from "./server/protocol-status.js";
 import type { ServerRuntime } from "./server/runtime-context.js";
+import { mergeTrajectoryShadow } from "./server/trajectory-shadow.js";
 import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
 import { captureTimeline } from "./timeline-capture.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
@@ -146,6 +147,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			// Evaluate based on hook type
 			if (isPreToolUse(event)) {
 				const local = await runPreToolPipeline(ctx, event, session);
+				mergeTrajectoryShadow(event, local, ctx.rules);
 				writeCollectionRecord(event, local);
 				return forwardCloudPreToolUse(event, local);
 			}
@@ -153,6 +155,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			if (isPostToolUse(event)) {
 				try {
 					const decision = await runPostToolPipeline(ctx, event, session);
+					mergeTrajectoryShadow(event, decision, ctx.rules);
 					writeCollectionRecord(event, decision);
 					// Fire-and-forget faithful per-call record for the viz BASELINE filmstrip.
 					// Runs AFTER the decision is returned to the hook — never blocks the tool loop.

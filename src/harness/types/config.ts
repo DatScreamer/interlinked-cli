@@ -259,6 +259,10 @@ export interface GuardRulesConfig {
 	per_edit_coverage?: PerEditCoverageConfig;
 	/** Per-edit mutation gate (DEFAULT OFF; capability-aware — spec §12; see mutation/gate.ts). */
 	per_edit_mutation?: import("../mutation/gate.js").PerEditMutationConfig;
+	/** Next-gen trajectory engine in SHADOW mode (DEFAULT ON): every firing rule
+	 *  surfaces as a non-blocking `[interlinked:trajectory]` metric, never blocks.
+	 *  See `server/trajectory-shadow.ts`. Set enabled:false to silence. */
+	trajectory_shadow?: { enabled: boolean };
 }
 
 /** Plan-capture configuration. Master toggle + structured-userprompt parser
