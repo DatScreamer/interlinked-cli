@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { type MutationGateContext, type MutationRunner, type PerEditMutationConfig, runPerEditMutationGate } from "./gate.js";
+import {
+	type FileOverlay,
+	type MutationGateContext,
+	type MutationRunner,
+	type PerEditMutationConfig,
+	runPerEditMutationGate,
+} from "./gate.js";
 import { emptyManifest } from "./manifest.js";
 import type { AdaptedMutant } from "./stryker-adapter.js";
-import type { TestRunResult } from "./types.js";
+import type { MutationManifest, MutationReceipt, TestRunResult } from "./types.js";
 
 const FILE = "src/x.ts";
 const CONTENT = "function bar(x: number): boolean { return x > 0; }\n";
@@ -109,5 +115,67 @@ describe("runPerEditMutationGate", () => {
 		const throwing: MutationRunner = { available: () => true, run: () => Promise.reject(new Error("boom")) };
 		const d = await runPerEditMutationGate(ctx({ runner: throwing }));
 		expect(d?.warnings?.[0]).toContain("not-measured");
+	});
+
+	it("ships the full overlay set: primary first, companion test read from disk (spec §7)", async () => {
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		// ctx's readDisk returns content for every path — so the companion test
+		// "exists" on local disk and must travel with the edit.
+		await runPerEditMutationGate(ctx({ runner: capturing }));
+		expect(captured?.map((o) => o.path)).toEqual([FILE, "src/x.test.ts"]);
+		expect(captured?.[0]?.content).toBe(CONTENT);
+	});
+});
+
+describe("runPerEditMutationGate — manifest/receipt persistence (spec §4/§12)", () => {
+	function persistSpy(): { calls: Array<{ generation: number; overlayHash: string }>; persist: (m: MutationManifest, r: MutationReceipt) => void } {
+		const calls: Array<{ generation: number; overlayHash: string }> = [];
+		return { calls, persist: (m, r) => calls.push({ generation: m.generation, overlayHash: r.overlayHash }) };
+	}
+
+	it("persists the refreshed manifest + receipt on a measured-clean allow", async () => {
+		const spy = persistSpy();
+		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist: spy.persist }));
+		expect(d?.decision).toBe("allow");
+		expect(spy.calls).toHaveLength(1);
+		expect(spy.calls[0]?.generation).toBe(1); // bumped from the empty manifest's 0
+		expect(spy.calls[0]?.overlayHash).toHaveLength(64); // receipt bound to the overlay
+	});
+
+	it("does NOT persist on a survivor block", async () => {
+		const spy = persistSpy();
+		const d = await runPerEditMutationGate(ctx({ persist: spy.persist }));
+		expect(d?.decision).toBe("block");
+		expect(spy.calls).toHaveLength(0);
+	});
+
+	it("does NOT persist when warn-mode downgrades a dirty run to allow", async () => {
+		const spy = persistSpy();
+		const d = await runPerEditMutationGate(ctx({ config: cfg({ mode: "warn" }), persist: spy.persist }));
+		expect(d?.decision).toBe("allow"); // downgraded on the wire…
+		expect(spy.calls).toHaveLength(0); // …but the OUTCOME was dirty → no refresh
+	});
+
+	it("does NOT persist on a not-measured allow", async () => {
+		const spy = persistSpy();
+		const d = await runPerEditMutationGate(ctx({ runner: null, persist: spy.persist }));
+		expect(d?.decision).toBe("allow");
+		expect(spy.calls).toHaveLength(0);
+	});
+
+	it("surfaces a persistence failure as a warning — the allow stands", async () => {
+		const persist = () => {
+			throw new Error("disk full");
+		};
+		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist }));
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.some((w) => w.includes("persistence failed") && w.includes("disk full"))).toBe(true);
 	});
 });

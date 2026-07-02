@@ -6,14 +6,16 @@
 // coverage index: a generation-stamped snapshot of per-symbol hashes + per-mutant
 // statuses. Pure functions apart from the JSON load/save.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SymbolHashEntry } from "./identity.js";
+import { freshInstability, mutantIdsChurned, updateInstability } from "./instability.js";
 import type {
 	MutantIdentity,
 	MutantRecord,
 	MutantStatus,
 	MutationManifest,
+	MutationReceipt,
 	StableId,
 	SymbolRecord,
 } from "./types.js";
@@ -146,4 +148,103 @@ export function computeNewSurvivors(
 		if (isNewSurvivor) out.push(toRecord(id, m.status, firstSeen));
 	}
 	return out;
+}
+
+// ============================================================
+// Measured-run refresh + receipt persistence (spec §4/§12)
+// ============================================================
+
+/** Consecutive stable runs required before a quarantined symbol's identity is
+ *  trusted (BLOCK-capable) again. Mirrors the coverage index's quarantine model. */
+export const QUARANTINE_STABILITY_THRESHOLD = 3;
+
+interface RefreshSymbolArgs {
+	prev: SymbolRecord | undefined;
+	symbolId: StableId;
+	entry: SymbolHashEntry;
+	ms: MeasuredMutant[];
+	at: string;
+	threshold: number;
+}
+
+function refreshSymbol(args: RefreshSymbolArgs): SymbolRecord {
+	const { prev, symbolId, entry, ms, at, threshold } = args;
+	// Differential runs skip unchanged symbols: no fresh measurements + same hash
+	// → carry the prior record forward verbatim (don't discard knowledge).
+	if (ms.length === 0 && prev && prev.symbolHash === entry.symbolHash) return prev;
+	const mutants: Record<StableId, MutantRecord> = {};
+	for (const m of ms) {
+		const firstSeen = prev?.mutants[m.identity.mutantId]?.firstSeen ?? at;
+		mutants[m.identity.mutantId] = toRecord(m.identity, m.status, firstSeen);
+	}
+	// Identity churn only counts against an UNCHANGED hash — a changed symbol is
+	// EXPECTED to mint new mutant ids (spec §6 of the identity spec).
+	const churned =
+		prev !== undefined &&
+		prev.symbolHash === entry.symbolHash &&
+		mutantIdsChurned(prev, new Set(Object.keys(mutants)));
+	const instability = updateInstability(prev?.instability ?? freshInstability(), { churned, at, threshold });
+	return { symbolId, qualifiedName: entry.qualifiedName, symbolHash: entry.symbolHash, mutants, instability };
+}
+
+export interface MeasuredRunArgs {
+	base: MutationManifest;
+	file: string;
+	overlayHashes: Map<StableId, SymbolHashEntry>;
+	measured: MeasuredMutant[];
+	at: string;
+	/** Stable runs to clear a quarantine; defaults to {@link QUARANTINE_STABILITY_THRESHOLD}. */
+	stabilityThreshold?: number;
+}
+
+/**
+ * Fold a measured-clean run into the next manifest snapshot: fresh statuses +
+ * hashes for every symbol in the overlay, `firstSeen` preserved across runs,
+ * instability updated (churn under an unchanged hash → quarantine), symbols no
+ * longer present dropped, generation bumped. Pure — the caller persists it, and
+ * ONLY on a measured-clean allow (a dirty run must not launder the manifest).
+ */
+export function applyMeasuredRun(args: MeasuredRunArgs): MutationManifest {
+	const { base, file, overlayHashes, measured, at } = args;
+	const threshold = args.stabilityThreshold ?? QUARANTINE_STABILITY_THRESHOLD;
+	const prevFile = base.files[file] ?? {};
+	const bySymbol = new Map<StableId, MeasuredMutant[]>();
+	for (const m of measured) {
+		const list = bySymbol.get(m.identity.symbolId) ?? [];
+		list.push(m);
+		bySymbol.set(m.identity.symbolId, list);
+	}
+	const nextFile: Record<StableId, SymbolRecord> = {};
+	for (const [symbolId, entry] of overlayHashes) {
+		nextFile[symbolId] = refreshSymbol({
+			prev: prevFile[symbolId],
+			symbolId,
+			entry,
+			ms: bySymbol.get(symbolId) ?? [],
+			at,
+			threshold,
+		});
+	}
+	return { ...base, generation: base.generation + 1, authoritativeAt: at, files: { ...base.files, [file]: nextFile } };
+}
+
+export function mutationReceiptsPath(dir: string): string {
+	return join(dir, "mutation-receipts.jsonl");
+}
+
+/** Append one receipt line (measured-clean passes only — spec §9/§12). */
+export function appendReceipt(dir: string, receipt: MutationReceipt): void {
+	const path = mutationReceiptsPath(dir);
+	mkdirSync(dirname(path), { recursive: true });
+	appendFileSync(path, `${JSON.stringify(receipt)}\n`, "utf-8");
+}
+
+/** fs persister for a measured-clean pass: manifest snapshot + receipt line. */
+export function makeManifestPersister(
+	dir: string,
+): (manifest: MutationManifest, receipt: MutationReceipt) => void {
+	return (manifest, receipt) => {
+		saveManifest(dir, manifest);
+		appendReceipt(dir, receipt);
+	};
 }

@@ -23,6 +23,9 @@ vi.mock("../mutation/gate.js", () => ({
 vi.mock("../mutation/manifest.js", () => ({
 	loadManifest: vi.fn(() => null),
 	emptyManifest: vi.fn(() => ({ mutants: [] })),
+	// The wiring hands the gate a real fs persister (measured-clean passes save
+	// the manifest + append a receipt); a noop factory keeps these tests disk-free.
+	makeManifestPersister: vi.fn(() => vi.fn()),
 }));
 
 vi.mock("../mutation/cloud-runner.js", () => ({

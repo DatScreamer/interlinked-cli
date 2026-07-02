@@ -89,6 +89,30 @@ describe("evaluateMutation", () => {
 		expect(m.changedSiteCount).toBeGreaterThan(m.siteCountThreshold);
 	});
 
+	it("returns a refreshed manifest ONLY on a measured-clean allow (generation bumped)", () => {
+		const clean = measured(evalWith(emptyManifest(META), [adaptedGt("killed")]));
+		expect(clean.decision).toBe("allow");
+		expect(clean.refreshedManifest?.generation).toBe(1);
+		expect(Object.keys(clean.refreshedManifest?.files[FILE] ?? {})).not.toHaveLength(0);
+	});
+
+	it("returns NO refreshed manifest on a block (dirty run cannot launder the manifest)", () => {
+		const dirty = measured(evalWith(emptyManifest(META), [adaptedGt("survived")]));
+		expect(dirty.decision).toBe("block");
+		expect(dirty.refreshedManifest).toBeUndefined();
+	});
+
+	it("closes the loop: a clean pass's manifest makes the next run's same-content survivor pre-existing", () => {
+		// Run 1: killed mutant → clean → refreshed manifest persisted (simulated).
+		const first = measured(evalWith(emptyManifest(META), [adaptedGt("killed")]));
+		const persisted = first.refreshedManifest;
+		if (!persisted) throw new Error("expected a refreshed manifest");
+		// Run 2: SAME content, now the engine reports a survivor. The symbol hash
+		// matches the persisted manifest → unchanged region → no block.
+		const second = measured(evalWith(persisted, [adaptedGt("survived")]));
+		expect(second.decision).toBe("allow");
+	});
+
 	it("blocks a red overlay suite even when the mutant is killed (spec §7 red/green)", () => {
 		const m = measured(evalWith(emptyManifest(META), [adaptedGt("killed")], 50, { overlayGreen: false, redWitnessSatisfied: null }));
 		expect(m.decision).toBe("block");

@@ -31,7 +31,7 @@ import { type DependencyView, resolveDependencyView } from "../dependency-view.j
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
-import { emptyManifest, loadManifest } from "../mutation/manifest.js";
+import { emptyManifest, loadManifest, makeManifestPersister } from "../mutation/manifest.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 
@@ -199,12 +199,13 @@ export async function runMutationWriteGate(
 	if (preDecision.decision !== "allow") return null;
 	const cfg = ctx.rules.per_edit_mutation;
 	if (!cfg?.enabled) return null; // fast path: default OFF
-	const baseManifest = loadManifest(resolve(ctx.cwd, ".interlinked")) ?? emptyManifest(MUTATION_PLACEHOLDER_META);
+	const interlinkedDir = resolve(ctx.cwd, ".interlinked");
+	const baseManifest = loadManifest(interlinkedDir) ?? emptyManifest(MUTATION_PLACEHOLDER_META);
 	// Wire the cloud Sandbox runner when a URL is configured; a lazy dynamic import
 	// keeps it off the default-off hot path. Absent URL → null → honest not-measured.
 	const runner = cfg.runner_url
 		? (await import("../mutation/cloud-runner.js")).createCloudMutationRunner(
-				{ url: cfg.runner_url, token: cfg.token, timeoutMs: 25_000 },
+				{ url: cfg.runner_url, token: cfg.token, timeoutMs: cfg.budget_ms ?? 25_000 },
 				(u, init) => fetch(u, init),
 			)
 		: null;
@@ -215,6 +216,9 @@ export async function runMutationWriteGate(
 		runner,
 		baseManifest,
 		readDisk: (file) => readDiskSafe(resolve(ctx.cwd, file)),
+		// Measured-clean passes persist the refreshed manifest + a receipt line
+		// (spec §4/§12); the gate itself guarantees dirty/unmeasured runs never do.
+		persist: makeManifestPersister(interlinkedDir),
 		at: new Date().toISOString(),
 	});
 	if (!decision) return null;

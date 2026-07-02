@@ -76,4 +76,29 @@ describe("createCloudMutationRunner", () => {
 		expect(captured.headers?.authorization).toBe("Bearer T");
 		expect(captured.body).toContain("OVERLAY");
 	});
+
+	it("carries the full overlay set on the wire when provided (spec §7)", async () => {
+		let body: string | undefined;
+		const spy: FetchLike = (_url, init) => {
+			body = init.body;
+			return Promise.resolve(resp(REPORT));
+		};
+		const overlays = [
+			{ path: "src/f.ts", content: "SRC" },
+			{ path: "src/f.test.ts", content: "TEST" },
+		];
+		await createCloudMutationRunner(CFG, spy).run("src/f.ts", "SRC", overlays);
+		const parsed = JSON.parse(body ?? "{}");
+		expect(parsed.overlays).toEqual(overlays);
+	});
+
+	it("omits the overlays key entirely when not provided (older-Worker back-compat)", async () => {
+		let body: string | undefined;
+		const spy: FetchLike = (_url, init) => {
+			body = init.body;
+			return Promise.resolve(resp(REPORT));
+		};
+		await createCloudMutationRunner(CFG, spy).run("src/f.ts", "SRC");
+		expect(JSON.parse(body ?? "{}")).not.toHaveProperty("overlays");
+	});
 });

@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { computeSymbolHashes, deriveIdentities } from "./identity.js";
 import {
 	acceptedSurvivors,
+	applyMeasuredRun,
 	changedSymbols,
 	computeNewSurvivors,
 	type MeasuredMutant,
@@ -118,6 +119,18 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 	const redWitnessFailed = input.testRun?.redWitnessSatisfied === false;
 	const decision =
 		suiteRed || oversize || newSurvivors.length > 0 || uncoveredSites.length > 0 ? "block" : "allow";
+	// Manifest refresh is earned ONLY by a measured-clean pass — a dirty run must
+	// not launder the manifest, and an unavailable run never reaches here (§4/§12).
+	const refreshedManifest =
+		decision === "allow"
+			? applyMeasuredRun({
+					base: input.baseManifest,
+					file: input.file,
+					overlayHashes,
+					measured,
+					at: input.at,
+				})
+			: undefined;
 	return {
 		kind: "measured",
 		decision,
@@ -128,5 +141,6 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 		siteCountThreshold: input.siteCountThreshold,
 		suiteRed,
 		redWitnessFailed,
+		refreshedManifest,
 	};
 }

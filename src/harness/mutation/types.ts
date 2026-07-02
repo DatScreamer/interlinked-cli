@@ -163,6 +163,11 @@ export type MutationGateOutcome =
 			/** RED-witness (spec §7): a newly-added test did NOT fail on the base — a
 			 *  weak/tautological test. WARN, never a block. */
 			redWitnessFailed?: boolean;
+			/** Present ONLY on a measured-clean allow: the refreshed manifest snapshot
+			 *  for the caller to persist. Never present on a block or an unavailable
+			 *  outcome — a dirty or unmeasured run must not launder the manifest
+			 *  (spec §4/§12). */
+			refreshedManifest?: MutationManifest | undefined;
 	  }
 	| {
 			kind: "unavailable";

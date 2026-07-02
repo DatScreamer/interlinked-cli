@@ -1,6 +1,17 @@
 # Per-edit, in-session cloud mutation testing
 
-**Status:** design proposal, 2026-06-27 (rev. 5 — **default policy + config**
+**Status:** SHIPPED except deliberate deferrals, 2026-07-02 — daemon gate live
+(`per_edit_mutation`, shipped default-off + `budget_ms` knob; dogfooded
+warn-mode in this repo), identity + manifest + receipts persisted on
+measured-clean, §6 site-count + §7 red/green + RED-witness wired end-to-end
+(the Worker emits `testRun`; the overlay set ships the companion test), cloud
+Worker deployed + token-gated + e2e-verified (fixture repo: witness
+satisfied/unmet, suite-red short-circuit). Deferred: Artifacts provisioner
+(§10 stop-line), Mode-C fan-out, in-Sandbox scoped test selection (big-suite
+repos stay honestly not-measured). Probe: `.interlinked/e2e-mutation-gate.mts`.
+Original proposal below, unchanged:
+
+**Proposal status was:** design proposal, 2026-06-27 (rev. 5 — **default policy + config**
 (`per_edit_mutation`: default-on, capability-aware, agent cannot override; §12).
 rev. 4 **availability
 model**: hard-on-evidence, fail-open-on-capability — an unmeasured allow never

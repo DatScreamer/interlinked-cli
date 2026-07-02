@@ -55,14 +55,16 @@ function parseTestRun(body: unknown): TestRunResult | undefined {
 export function createCloudMutationRunner(config: CloudRunnerConfig, fetchImpl: FetchLike): MutationRunner {
 	return {
 		available: () => config.url.length > 0,
-		run: async (file, overlayContent) => {
+		run: async (file, overlayContent, overlays) => {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), config.timeoutMs);
 			try {
 				const res = await fetchImpl(config.url, {
 					method: "POST",
 					headers: headersFor(config),
-					body: JSON.stringify({ file, overlayContent }),
+					// `overlays` (full proposed state incl. the companion test) is
+					// omitted when absent — an older Worker just ignores it.
+					body: JSON.stringify({ file, overlayContent, overlays }),
 					signal: controller.signal,
 				});
 				if (!res.ok) throw new Error(`mutation runner HTTP ${res.status}`);
