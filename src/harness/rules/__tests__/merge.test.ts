@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { GuardRulesConfig, QualityCheckConfig } from "../../types.js";
 import { DEFAULT_CONFIG } from "../default-config.js";
 import { mergeLocalOverrides, mergeTeamRules } from "../merge.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function mkBaseConfig() {
 	// Use the full default config (deep-cloned) as the starting shape so we
@@ -590,6 +590,37 @@ describe("mergeLocalOverrides", () => {
 		>;
 		mergeLocalOverrides(config, { per_edit_coverage: pec });
 		expect(config.per_edit_coverage).toBe(pec);
+	});
+
+	it("merges a partial per_edit_mutation override onto the default block (found live 2026-07-02)", () => {
+		// Same silently-dropped class as per_edit_coverage above: the dogfood flip
+		// `{"per_edit_mutation": {"enabled": true, "runner_url": …}}` in
+		// guard-rules.local.json left the daemon on pure defaults until the merge
+		// branch existed.
+		const config = mkBaseConfig();
+		config.per_edit_mutation = {
+			enabled: false,
+			mode: "block",
+			unavailable_behavior: "allow_unmeasured",
+		} as unknown as NonNullable<GuardRulesConfig["per_edit_mutation"]>;
+		mergeLocalOverrides(config, {
+			per_edit_mutation: { enabled: true, runner_url: "https://runner.example" } as unknown as NonNullable<
+				GuardRulesConfig["per_edit_mutation"]
+			>,
+		});
+		expect(config.per_edit_mutation?.enabled).toBe(true); // flip honored
+		expect(config.per_edit_mutation?.runner_url).toBe("https://runner.example");
+		expect(config.per_edit_mutation?.mode).toBe("block"); // other knobs survive the partial
+	});
+
+	it("assigns per_edit_mutation wholesale when the base lacks it", () => {
+		const config = mkBaseConfig();
+		clearProp(config, "per_edit_mutation");
+		const pem = { enabled: true } as unknown as NonNullable<
+			GuardRulesConfig["per_edit_mutation"]
+		>;
+		mergeLocalOverrides(config, { per_edit_mutation: pem });
+		expect(config.per_edit_mutation).toBe(pem);
 	});
 
 	it("is a no-op when local config is empty", () => {

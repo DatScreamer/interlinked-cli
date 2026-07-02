@@ -198,6 +198,30 @@ export function mergeLocalOverrides(
 			config.per_edit_coverage = local.per_edit_coverage;
 		}
 	}
+	// Per-edit mutation gate (spec §12). Same silently-dropped bug class as the
+	// three branches above — the key existed in GuardRulesConfig + default-config
+	// but never merged, so `{"per_edit_mutation": {"enabled": true, …}}` in
+	// guard-rules.local.json left the daemon on pure defaults (found live
+	// 2026-07-02 flipping the dogfood flag). Shallow-merged so a partial override
+	// keeps the other knobs (mode / unavailable_behavior / runner_url / token).
+	if (local.per_edit_mutation) {
+		if (config.per_edit_mutation) {
+			Object.assign(config.per_edit_mutation, local.per_edit_mutation);
+		} else {
+			config.per_edit_mutation = local.per_edit_mutation;
+		}
+	}
+	// Trajectory-engine shadow mode (default ON in default-config). FIFTH instance
+	// of the silently-dropped class, caught by the merge-parity check while it was
+	// being written: the advertised off-switch `{"trajectory_shadow": {"enabled":
+	// false}}` in guard-rules.local.json reached no merge branch.
+	if (local.trajectory_shadow) {
+		if (config.trajectory_shadow) {
+			Object.assign(config.trajectory_shadow, local.trajectory_shadow);
+		} else {
+			config.trajectory_shadow = local.trajectory_shadow;
+		}
+	}
 }
 
 /** Deep-merge overrides for the content scanner config. Nested blocks
