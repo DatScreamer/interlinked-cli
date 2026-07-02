@@ -1,0 +1,23 @@
+{
+	"$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+	"_comment": "Per-edit mutation engine config (spec: docs/design/per-edit-cloud-mutation-testing.md). Auto-loaded by bare `npx stryker run` — including inside the cloud mutation Worker's Sandbox, whose runner does `stryker run --mutate <file>`. ignorePatterns MUST exclude .interlinked/: Stryker sandboxes by copying the tree and crashes on the harness's Unix socket (found live 2026-07-02). The vitest configFile keeps the per-mutant suite scoped so runs stay in seconds.",
+	"testRunner": "vitest",
+	"vitest": {
+		"configFile": "vitest.stryker.config.ts"
+	},
+	"mutate": ["src/harness/mutation/instability.ts"],
+	"ignorePatterns": [
+		".interlinked",
+		"dist",
+		"cloud",
+		"docs",
+		"reports",
+		"skills",
+		"scripts",
+		"*.log"
+	],
+	"reporters": ["json", "clear-text"],
+	"coverageAnalysis": "perTest",
+	"incremental": false,
+	"logLevel": "info"
+}

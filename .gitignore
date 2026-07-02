@@ -8,9 +8,11 @@ node_modules/
 pnpm-lock.yaml
 yarn.lock
 
-# Coverage + mutation reports
+# Coverage + mutation reports (+ Stryker's sandbox workdir/log)
 coverage/
 reports/
+.stryker-tmp/
+stryker.log
 
 # Editor / IDE noise
 .DS_Store

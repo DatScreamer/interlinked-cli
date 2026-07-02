@@ -20,9 +20,10 @@
         "license": "MIT OR Apache-2.0"
       },
       "vitest": {
-        "approved_at": "2026-05-28T13:06:03.114Z",
+        "approved_at": "2026-07-01T21:39:49.019Z",
         "approved_by": "qcody",
-        "reason": "Cloud Worker unit tests"
+        "reason": "per-edit mutation engine (target-repo devDep)",
+        "license": "MIT"
       },
       "@vitest/coverage-v8": {
         "approved_at": "2026-06-01T16:25:26.684Z",
@@ -33,6 +34,18 @@
         "approved_at": "2026-06-27T22:48:27.332Z",
         "approved_by": "quentincody",
         "reason": "per-edit mutation cloud Worker (Sandbox runner / deploy)",
+        "license": "Apache-2.0"
+      },
+      "@stryker-mutator/core": {
+        "approved_at": "2026-07-01T21:39:47.341Z",
+        "approved_by": "qcody",
+        "reason": "per-edit mutation engine (target-repo devDep)",
+        "license": "Apache-2.0"
+      },
+      "@stryker-mutator/vitest-runner": {
+        "approved_at": "2026-07-01T21:39:48.226Z",
+        "approved_by": "qcody",
+        "reason": "per-edit mutation engine (target-repo devDep)",
         "license": "Apache-2.0"
       }
     },

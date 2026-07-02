@@ -29,6 +29,22 @@ describe("mutantIdsChurned", () => {
 	it("is true on a membership difference at equal size", () => {
 		expect(mutantIdsChurned(symbolWithMutants(["a", "b"]), new Set(["a", "c"]))).toBe(true);
 	});
+	it("is true when recorded ids are a strict SUBSET of current (new ids appeared)", () => {
+		// Every recorded id still present, but the fresh derivation minted extras.
+		// Kills the size-guard mutant (condition → false falls through to the
+		// membership loop, which sees no missing ids and wrongly reports stable) —
+		// found live by Stryker 2026-07-02.
+		expect(mutantIdsChurned(symbolWithMutants(["a"]), new Set(["a", "b"]))).toBe(true);
+	});
+});
+
+describe("freshInstability", () => {
+	it("starts un-quarantined with zero stable runs and no events", () => {
+		// Pins the full initial shape — a fresh symbol must be BLOCK-capable
+		// immediately (quarantined:false). Kills the `false→true` literal mutant
+		// found live by Stryker 2026-07-02.
+		expect(freshInstability()).toEqual({ events: [], consecutiveStableRuns: 0, quarantined: false });
+	});
 });
 
 describe("updateInstability", () => {
