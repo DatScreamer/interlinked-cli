@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	checkAssertionStrengthWeakening,
 	checkClockMockAdded,
@@ -11,10 +12,10 @@ import {
 	checkDoneWithoutVerify,
 	checkReintroducesRemovedCode,
 	checkTestBlockCountRegression,
+	checkTestTimeoutInflation,
 	parseCommitMessageFromBash,
 } from "./behavioral-diff-checks.js";
 import type { SessionTrajectory } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ==========================================================================
 // parseCommitMessageFromBash — pure-function unit tests
@@ -410,5 +411,104 @@ describe("checkDoneWithoutVerify", () => {
 	it("still fires when one source file is mixed with docs", () => {
 		const session = makeSession(["README.md", "src/lib/foo.ts"]);
 		expect(checkDoneWithoutVerify(session).length).toBe(1);
+	});
+});
+
+describe("checkTestTimeoutInflation", () => {
+	// ── Positive (must fire) ──────────────────────────────────────────────
+
+	it("P1: flags a raised { timeout: N } options-object literal", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("slow", { timeout: 5000 }, async () => { await work(); });\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("slow", { timeout: 30000 }, async () => { await work(); });\n`,
+		);
+		const results = checkTestTimeoutInflation(makeSession(["foo.test.ts"]));
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).name).toBe("test_timeout_inflation");
+		expect(nonNull(results[0]).message).toContain("5000ms → 30000ms");
+	});
+
+	it("P2: flags a raised it() third-arg timeout (closing `}, N)` shape)", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("slow", async () => {\n  await work();\n}, 5000);\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("slow", async () => {\n  await work();\n}, 20000);\n`,
+		);
+		const results = checkTestTimeoutInflation(makeSession(["foo.test.ts"]));
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).message).toContain("5000ms → 20000ms");
+	});
+
+	it("P3: flags a raised vi.setConfig testTimeout", () => {
+		commitInitial(
+			"foo.test.ts",
+			`vi.setConfig({ testTimeout: 5000 });\nit("a", () => {});\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`vi.setConfig({ testTimeout: 60000 });\nit("a", () => {});\n`,
+		);
+		const results = checkTestTimeoutInflation(makeSession(["foo.test.ts"]));
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).message).toContain("5000ms → 60000ms");
+		expect(nonNull(results[0]).message).toContain("testTimeout config");
+	});
+
+	// ── Negative (must NOT fire) ──────────────────────────────────────────
+
+	it("N1: does not fire when a brand-new test with a timeout is added", () => {
+		commitInitial("foo.test.ts", `it("a", () => {});\n`);
+		stageEdit(
+			"foo.test.ts",
+			`it("a", () => {});\nit("b", { timeout: 30000 }, async () => { await work(); });\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	it("N2: does not fire when a timeout is decreased", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("slow", { timeout: 30000 }, async () => { await work(); });\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("slow", { timeout: 5000 }, async () => { await work(); });\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	it("N3: does not fire when the timeout is unchanged and other lines move", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("slow", { timeout: 5000 }, async () => { await work(); });\nit("b", () => {});\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("slow", { timeout: 5000 }, async () => { await work(); });\nit("b", () => { expect(1).toBe(1); });\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	it("N4: does not fire on a timeout in a newly-created test file", () => {
+		// Repo needs a HEAD for the diff; create it from an unrelated file.
+		commitInitial("other.test.ts", `it("x", () => {});\n`);
+		stageEdit(
+			"foo.test.ts",
+			`it("slow", { timeout: 30000 }, async () => { await work(); });\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	it("N5: does not fire on production source files", () => {
+		commitInitial("client.ts", `export const opts = { timeout: 5000 };\n`);
+		stageEdit("client.ts", `export const opts = { timeout: 30000 };\n`);
+		expect(checkTestTimeoutInflation(makeSession(["client.ts"]))).toEqual([]);
 	});
 });

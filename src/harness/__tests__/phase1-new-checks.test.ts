@@ -247,12 +247,12 @@ describe("checkLoggerFormatUserInput", () => {
 		expect(checkLoggerFormatUserInput(code, "src/h.ts").length).toBeGreaterThan(0);
 	});
 
-	it("does NOT fire on logger.info(\"static message\")", () => {
+	it("does NOT fire on logger.info('static message') — literal format string", () => {
 		const code = "logger.info('static message');";
 		expect(checkLoggerFormatUserInput(code, "src/h.ts")).toEqual([]);
 	});
 
-	it("does NOT fire on logger.info(\"msg\", userInput) — userInput is structured arg, not format", () => {
+	it("does NOT fire on logger.info('msg', userInput) — userInput is structured arg, not format", () => {
 		const code = "logger.info('msg', { userInput });";
 		expect(checkLoggerFormatUserInput(code, "src/h.ts")).toEqual([]);
 	});

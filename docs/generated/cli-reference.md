@@ -14,6 +14,7 @@ Options:
 
 Commands:
   activity [options]                         Recent activity feed
+  adopt [options]                            Bootstrap all ratchet baselines + trigram index from the repo's current state
   allowlist                                  Manage the supply-chain package allowlist (.interlinked/package-allowlist.json)
   attach [options]                           Attach local CLI settings to workspace/agent and link remote identity
   audit                                      Verify tamper-evidence of the guard-decision audit chain in activity.jsonl
@@ -28,6 +29,7 @@ Commands:
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
   daemons [options]                          List active harness daemons, PID liveness, socket paths, and health
+  debt                                       Inspect pair-scoped TDD debts (coverage / red_suite) from the obligation ledger
   design [options] [path]                    Run Impeccable's deterministic design-slop detector (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, broken images, copy tells) on frontend files. Requires the optional `impeccable` CLI on PATH; degrades gracefully when absent. The built-in `design_slop` check covers a regex subset natively.
   disable [options]                          Stand the harness down for this project (recorded); --uninstall to remove hooks + config
   doctor [options]                           Diagnose issues (local + server checks)
@@ -234,6 +236,9 @@ Commands:
                             agents
   checks [options]          Show the authoritative check inventory — per-family
                             counts + total (static; no daemon needed)
+  health [options]          Check-health report from the recurrence log:
+                            repeat-rate per check id, probation candidates
+                            (demotion signal)
   test [options] [command]  Fire a synthetic PreToolUse event at the running
                             harness and show its decision. Default: a Bash
                             command. Use --write/--edit to test a file

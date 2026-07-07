@@ -106,6 +106,15 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"unjustified_cast",
 			"process_env_outside_config",
 			"top_level_side_effect",
+			"unawaited_async_assertion",
+			"timeout_unit_mismatch",
+			"numeric_sort_without_comparator",
+			"implicit_switch_fallthrough",
+			"contradictory_nullness_chain",
+			"json_stringify_error",
+			"catch_rewrap_loses_cause",
+			"resource_handle_leak",
+			"jsdoc_param_drift",
 		],
 	},
 	"generic-react-warnings": {
@@ -332,10 +341,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 195-key total", () => {
+	it("preserves the full 204-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(195);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(204);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(195);
+		expect(fragmentKeyTotal).toBe(204);
 	});
 });

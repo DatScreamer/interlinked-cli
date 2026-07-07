@@ -141,6 +141,19 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// resolvable paths are flagged and the ephemeral-target exclusion list is
 	// heuristic. Advisory until path resolution covers more shapes.
 	"gitignored_written_config",
+	// readme_script_drift: verify-only sibling (needs a package.json scripts
+	// resolver walking up from the markdown file — 3-arg, outside the registry
+	// contract). Extraction is deterministic but nearest-manifest resolution is
+	// heuristic in monorepos. Advisory, same posture as gitignored_written_config.
+	"readme_script_drift",
+	// contradictory_nullness_chain: exact syntax match, but the a?.b! pattern is
+	// occasionally intentional under checked-elsewhere invariants — low- not
+	// zero-FP. Advisory until cross-repo calibration measures the FP rate.
+	"contradictory_nullness_chain",
+	// resource_handle_leak: handle-ownership heuristics; long-lived
+	// process-lifetime handles are legitimate. Per effect-ts-harness-additions
+	// §2.5: start advisory, ratchet to default after cross-repo FP calibration.
+	"resource_handle_leak",
 	// Unvalidated JSON boundary: real agent-quality issue, but the heuristic
 	// "assign + property-access before schema parse" over-flags idiomatic
 	// patterns where the parsed value is typed via a separate cast. Advisory

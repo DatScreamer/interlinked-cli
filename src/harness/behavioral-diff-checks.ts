@@ -7,13 +7,14 @@
 // alongside the existing commit gates in `server.ts`.
 
 import { extname, basename as pathBasename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { extractAddedLines, getStagedDiff } from "./behavioral-checks.js";
 import { checkReintroducesRemovedCode } from "./behavioral-diff-checks-reintro.js";
+import { checkTestTimeoutInflation } from "./behavioral-diff-checks-timeouts.js";
 import type { CheckResultEntry, SessionTrajectory } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 // Re-export so callers importing from this module path keep working.
-export { checkReintroducesRemovedCode };
+export { checkReintroducesRemovedCode, checkTestTimeoutInflation };
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
 

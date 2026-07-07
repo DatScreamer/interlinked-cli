@@ -312,4 +312,68 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	// ---- quality-frontier wave (2026-07-06) — see docs/design/quality-frontier-2026-07.md ----
+	unawaited_async_assertion: {
+		name: "Unawaited Async Assertion",
+		description:
+			"Detects a statement-position expect(...).rejects/.resolves chain in a test with no leading await/return/void — the matcher promise floats and the test silently passes",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	timeout_unit_mismatch: {
+		name: "Timeout Unit Mismatch",
+		description:
+			"Detects a seconds-named identifier passed directly as the setTimeout/setInterval delay (ms expected, fires ~1000x early), or an ms-named identifier multiplied by 1000 at the call site",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	numeric_sort_without_comparator: {
+		name: "Numeric Sort Without Comparator",
+		description:
+			"Detects .sort() with no comparator on a provably-numeric receiver (numeric array literal or number[] annotation) — default sort is lexicographic, [10, 9, 1] → [1, 10, 9]",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	implicit_switch_fallthrough: {
+		name: "Implicit Switch Fallthrough",
+		description:
+			"Detects a non-empty switch case not ending in break/return/throw/continue while a following clause exists, with no falls-through comment (TS AST; skips when typescript is absent)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	contradictory_nullness_chain: {
+		name: "Contradictory Nullness Chain",
+		description:
+			"Detects an optional chain immediately non-null asserted on the same chain (a?.b!.c) — the ! contradicts the ?.; typically churn from appeasing tsc",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	json_stringify_error: {
+		name: "JSON.stringify of Caught Error",
+		description:
+			"Detects JSON.stringify(<catch binding>) passed bare — Error own-props are non-enumerable so the output is {} and the log loses message/name/stack",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	catch_rewrap_loses_cause: {
+		name: "Catch Rewrap Loses Cause",
+		description:
+			"Detects new Error(...) in a catch that references the caught binding only via string coercion, with no { cause } and no bare-argument pass — stack and cause chain destroyed",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	resource_handle_leak: {
+		name: "Resource Handle Leak",
+		description:
+			"Detects an fs.openSync fd / fs.createWriteStream binding never closed/ended/destroyed and never handed off — leaks on every path (narrow zero-noise slice)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	jsdoc_param_drift: {
+		name: "JSDoc Param Drift",
+		description:
+			"Detects a JSDoc @param tag naming a parameter that does not exist on the documented function (TS AST; destructured/rest/dotted params and overloads exempt)",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 };

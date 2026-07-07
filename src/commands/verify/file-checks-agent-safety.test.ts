@@ -5,11 +5,14 @@
 // `runPerFileChecks` is asserted to delegate to these helpers (same findings,
 // same order) via an equivalence check.
 
-import { describe, expect, it } from "vitest";
-import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
-import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
-import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
+import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
+import { runAgentSafetyChecks, runCrapCheck } from "./file-checks-agent-safety.js";
+import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
 function ctx(content: string, file = "/tmp/sample.ts"): FileCheckContext {
 	return { file, content, relPath: "sample.ts", cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -74,5 +77,68 @@ describe("runCrapCheck", () => {
 		const c = ctx('function f() { return 1; }\n');
 		expect(() => runCrapCheck(c)).not.toThrow();
 		expect(c.r.crap).toHaveLength(0);
+	});
+});
+
+// readme_script_drift wiring — a real tmp repo with a package.json so the
+// production `resolveNearestPackageScripts` resolver runs end-to-end.
+describe("runAgentSafetyChecks — readme_script_drift fixture repo", () => {
+	const tmpDirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** Tmp repo whose package.json declares exactly one script: `build`. */
+	function makeRepo(): string {
+		const dir = mkdtempSync(join(tmpdir(), "readme-drift-repo-"));
+		tmpDirs.push(dir);
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "fixture", scripts: { build: "tsup" } }),
+			"utf-8",
+		);
+		return dir;
+	}
+
+	function runOnReadme(repo: string, markdown: string): CodeQualityResults {
+		const file = join(repo, "README.md");
+		writeFileSync(file, markdown, "utf-8");
+		const c: FileCheckContext = {
+			file,
+			content: markdown,
+			relPath: "README.md",
+			cwd: repo,
+			r: emptyResults(),
+			piiOpts: {},
+		};
+		runAgentSafetyChecks(c);
+		return c.r;
+	}
+
+	it("fires on a README referencing an npm script missing from package.json", () => {
+		const r = runOnReadme(makeRepo(), "Ship with `npm run deploy`.\n");
+		expect(r.readmeScriptDrift.length).toBe(1);
+		expect(nonNull(r.readmeScriptDrift[0]).check).toBe("readme_script_drift");
+		expect(nonNull(r.readmeScriptDrift[0]).message).toContain('"deploy"');
+	});
+
+	it("does not fire when the referenced script exists", () => {
+		const r = runOnReadme(makeRepo(), "Build with `npm run build`.\n");
+		expect(r.readmeScriptDrift).toHaveLength(0);
+	});
+
+	it("does not fire on non-markdown files (detector self-filters)", () => {
+		const repo = makeRepo();
+		const c: FileCheckContext = {
+			file: join(repo, "notes.ts"),
+			content: '// Run `npm run deploy` first\n',
+			relPath: "notes.ts",
+			cwd: repo,
+			r: emptyResults(),
+			piiOpts: {},
+		};
+		runAgentSafetyChecks(c);
+		expect(c.r.readmeScriptDrift).toHaveLength(0);
 	});
 });

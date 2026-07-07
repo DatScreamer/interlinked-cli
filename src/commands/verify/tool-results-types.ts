@@ -83,6 +83,8 @@ export interface CodeQualityResults {
 	magicLiteralInConditional: CodeQualityIssue[];
 	/** NaN-from-coercion used unguarded in a relational comparison (fail-open). */
 	nanCoercionGuard: CodeQualityIssue[];
+	/** expect(...).rejects/.resolves chain not awaited/returned in a test (silently-passing test). */
+	unawaitedAsyncAssertion: CodeQualityIssue[];
 	/** AI-generated design "tells" in frontend files (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, gray-on-color, broken images, copy tells). */
 	designSlop: CodeQualityIssue[];
 	/** Array#push()/unshift() return value (the new length) returned, bound, or arrow-returned. */
@@ -99,6 +101,8 @@ export interface CodeQualityResults {
 	payloadFieldCasing: CodeQualityIssue[];
 	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
 	gitignoredWrittenConfig: CodeQualityIssue[];
+	/** Verify-only: markdown `npm run <script>` / `npm test` referencing a script absent from package.json. */
+	readmeScriptDrift: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];
 	selfImports: CodeQualityIssue[];
 	extraneousDeps: CodeQualityIssue[];

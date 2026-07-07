@@ -24,6 +24,7 @@ import {
 	checkDoneWithoutVerify,
 	checkReintroducesRemovedCode,
 	checkTestBlockCountRegression,
+	checkTestTimeoutInflation,
 	parseCommitMessageFromBash,
 } from "../behavioral-diff-checks.js";
 import { snapshotCrap } from "../checks/crap-baseline.js";
@@ -80,6 +81,7 @@ export function runTddCommitGate(
 			...checkDisabledTestDelta(session),
 			...checkTestBlockCountRegression(session),
 			...checkAssertionStrengthWeakening(session),
+			...checkTestTimeoutInflation(session),
 			...checkClockMockAdded(session),
 			...checkConventionalCommitCoherence(session, commitMessage),
 			// Batch 4: trajectory commit gates.

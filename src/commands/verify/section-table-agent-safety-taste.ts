@@ -96,6 +96,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "unawaited async assertion",
+		key: "unawaitedAsyncAssertion",
+		noun: "expect(...).rejects/.resolves chains not awaited or returned",
+		passLabel: "no floating async assertions in tests",
+		color: "31",
+	},
+	{
 		label: "array push return used",
 		key: "arrayPushReturnUsed",
 		noun: "push()/unshift() return values (the new length) used as a value",
@@ -142,6 +149,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		key: "gitignoredWrittenConfig",
 		noun: "file-writes to a path excluded by .gitignore (no negation carve-out)",
 		passLabel: "no writes to gitignored paths",
+		color: "33",
+	},
+	{
+		label: "readme script drift",
+		key: "readmeScriptDrift",
+		noun: "markdown npm-run references to scripts missing from package.json",
+		passLabel: "no stale npm-script references in docs",
 		color: "33",
 	},
 	{

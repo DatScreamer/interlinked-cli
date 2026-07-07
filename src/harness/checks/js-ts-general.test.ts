@@ -230,7 +230,7 @@ describe("checkCatchAndLog", () => {
 		expect(nonNull(out[0]).line).toBe(4);
 	});
 
-	it("returns [] for test files (gate)", () => {
+	it("returns [] for catch-and-log in test files (gate)", () => {
 		const code = ["try { x(); } catch (e) {", "  console.error(e);", "}"].join("\n");
 		expect(checkCatchAndLog(code, TEST)).toEqual([]);
 	});
@@ -589,7 +589,7 @@ describe("checkTargetBlankNoRel", () => {
 		expect(nonNull(out[0]).text).toContain('target="_blank"');
 	});
 
-	it("returns [] for test files (gate)", () => {
+	it("returns [] for target=_blank in test files (gate)", () => {
 		const code = '<a target="_blank">x</a>';
 		expect(checkTargetBlankNoRel(code, "src/ui/Comp.test.tsx")).toEqual([]);
 	});

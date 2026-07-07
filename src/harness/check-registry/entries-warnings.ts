@@ -15,6 +15,7 @@ import { AGENT_CLARITY_ENTRIES } from "./entries-warnings/agent-clarity.js";
 import { AGENT_LAZINESS_ENTRIES } from "./entries-warnings/agent-laziness.js";
 import { CODE_QUALITY_ENTRIES } from "./entries-warnings/code-quality.js";
 import { ENDPOINT_SECURITY_ENTRIES } from "./entries-warnings/endpoint-security.js";
+import { QUALITY_FRONTIER_ENTRIES } from "./entries-warnings/quality-frontier.js";
 import { TEST_AND_DEMO_ENTRIES } from "./entries-warnings/test-and-demo.js";
 import { UBS_ENTRIES } from "./entries-warnings/ubs-checks.js";
 import type { CheckRegistration } from "./types.js";
@@ -24,6 +25,7 @@ export {
 	AGENT_LAZINESS_ENTRIES,
 	CODE_QUALITY_ENTRIES,
 	ENDPOINT_SECURITY_ENTRIES,
+	QUALITY_FRONTIER_ENTRIES,
 	TEST_AND_DEMO_ENTRIES,
 	UBS_ENTRIES,
 };
@@ -35,4 +37,5 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 	...AGENT_LAZINESS_ENTRIES,
 	...TEST_AND_DEMO_ENTRIES,
 	...ENDPOINT_SECURITY_ENTRIES,
+	...QUALITY_FRONTIER_ENTRIES,
 ];

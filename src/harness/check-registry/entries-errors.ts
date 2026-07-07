@@ -1,6 +1,7 @@
 // Pre-block, severity=error checks for correctness/security issues with zero
 // false-positive risk. See check-registry/types.ts for CheckPhase semantics.
 
+import { detectUnawaitedAsyncAssertions } from "../checks/test-async-assertions.js";
 import {
 	checkAsyncPromiseExecutor,
 	checkChildProcessExecUserInput,
@@ -397,5 +398,21 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 		fn: checkYamlUnsafeLoad,
 		resultsPropName: "yamlUnsafeLoad",
 		content_keywords: ["yaml.load", "yaml.unsafe_load"],
+	},
+	{
+		id: "unawaited_async_assertion",
+		phase: "pre_block",
+		name: "Unawaited Async Assertion",
+		description:
+			"Detects a statement-position expect(...).rejects/.resolves chain in a test file with no leading await/return/void — the matcher promise floats, so the assertion never reports and the test silently passes regardless of behavior. Awaited, returned, void-prefixed, and assigned-then-awaited forms are exempt (zero-FP by construction on stripped, paren-balanced content).",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"An unawaited expect(...).rejects/.resolves chain is a floating promise — vitest/jest cannot fail the test when the matcher fails. Prefix it with await (inside an async test), or return it from the test callback. If the chain is stored first, await the stored promise before the test ends.",
+		fn: detectUnawaitedAsyncAssertions,
+		resultsPropName: "unawaitedAsyncAssertion",
+		content_keywords: [".rejects", ".resolves"],
 	},
 ];

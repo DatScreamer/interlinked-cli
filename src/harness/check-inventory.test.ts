@@ -17,14 +17,14 @@ import { ALL_SEQUENCE_DETECTORS } from "./sequence-checks/registry.js";
 // the record. If a count changes without a matching update, this test fails
 // loudly — that is the whole point: the number can never silently drift.
 const EXPECTED_BY_FAMILY: Record<string, number> = {
-	inline: 217,
+	inline: 226, // +9 quality-frontier wave 2026-07-06 (8 warnings + unawaited_async_assertion)
 	sequence: 23,
 	structural: 25,
 	tool_quality: 33,
 	suggestion: 29,
-	behavioral: 8,
+	behavioral: 9, // +test_timeout_inflation (commit-gate behavioral diff check, 2026-07-06)
 };
-const EXPECTED_TOTAL = 334;
+const EXPECTED_TOTAL = 344;
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.

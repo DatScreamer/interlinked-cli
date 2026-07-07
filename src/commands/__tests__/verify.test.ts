@@ -304,6 +304,11 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"unjustified_cast",
 				"process_env_outside_config",
 				"top_level_side_effect",
+				// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling +
+				// two low-not-zero-FP heuristics pending cross-repo calibration.
+				"readme_script_drift",
+				"contradictory_nullness_chain",
+				"resource_handle_leak",
 			].sort(),
 		);
 	});

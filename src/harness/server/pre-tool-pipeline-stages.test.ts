@@ -33,6 +33,7 @@ vi.mock("../behavioral-diff-checks.js", () => ({
 	checkDoneWithoutVerify: vi.fn(() => [] as CheckResultEntry[]),
 	checkReintroducesRemovedCode: vi.fn(() => [] as CheckResultEntry[]),
 	checkTestBlockCountRegression: vi.fn(() => [] as CheckResultEntry[]),
+	checkTestTimeoutInflation: vi.fn(() => [] as CheckResultEntry[]),
 	parseCommitMessageFromBash: vi.fn(() => null),
 }));
 

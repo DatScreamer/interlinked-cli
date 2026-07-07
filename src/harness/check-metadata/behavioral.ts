@@ -57,4 +57,11 @@ export const BEHAVIORAL_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "partially_deterministic",
 	},
+	test_timeout_inflation: {
+		name: "Test Timeout Inflation",
+		description:
+			"An existing test-timeout literal ({timeout: N}, it() third-arg, or testTimeout config) is raised in the staged diff — buying wall-clock instead of fixing slowness or flakiness",
+		tier: 1,
+		determinism: "heuristic",
+	},
 };

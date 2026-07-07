@@ -27,7 +27,12 @@ import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
 import { detectPayloadFieldCasing } from "../../harness/checks/payload-casing.js";
 import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
+import {
+	detectReadmeScriptDrift,
+	resolveNearestPackageScripts,
+} from "../../harness/checks/readme-script-drift.js";
 import { detectSnapshotHygiene } from "../../harness/checks/snapshot-hygiene.js";
+import { detectUnawaitedAsyncAssertions } from "../../harness/checks/test-async-assertions.js";
 import {
 	coverageForFile,
 	loadCoverageFinal,
@@ -308,6 +313,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.nanCoercionGuard.push(
 		...toIssues("nan_coercion_guard", relPath, detectNaNCoercionGuards(content, file)),
 	);
+	r.unawaitedAsyncAssertion.push(
+		...toIssues("unawaited_async_assertion", relPath, detectUnawaitedAsyncAssertions(content, file)),
+	);
 	r.designSlop.push(...toIssues("design_slop", relPath, detectDesignSlop(content, file)));
 	r.arrayPushReturnUsed.push(
 		...toIssues("array_push_return_used", relPath, detectReturnArrayPush(content, file)),
@@ -342,6 +350,20 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			"gitignored_written_config",
 			relPath,
 			detectGitignoredWrites(content, file, makeGitIgnoreResolver(cwd, file)),
+		),
+	);
+	// readme_script_drift — verify-only sibling of gitignored_written_config
+	// (3-arg detector needs a package.json scripts resolver). Markdown files
+	// enter the per-file battery via the broad discovery universe; the detector
+	// self-filters to .md/.markdown, so every other file no-ops here. The
+	// resolver walks up from the markdown file, stopping at the verify cwd.
+	r.readmeScriptDrift.push(
+		...toIssues(
+			"readme_script_drift",
+			relPath,
+			detectReadmeScriptDrift(content, file, (markdownPath) =>
+				resolveNearestPackageScripts(markdownPath, cwd),
+			),
 		),
 	);
 	r.asyncPromiseExecutor.push(

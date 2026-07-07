@@ -264,6 +264,14 @@ const VERIFY_ONLY_CHECKS = new Set([
 	// file-checks-agent-safety.ts (toIssues call) with the git-backed resolver;
 	// no registry entry, hence this exception. Also in DEFAULT_ADVISORY_SKIPS.
 	"gitignored_written_config",
+	// readme_script_drift: verify-only sibling of gitignored_written_config —
+	// the detector is 3-arg (content, filePath, getScripts); it needs a
+	// package.json `scripts` resolver walking up from the markdown file, which
+	// the registry's uniform (content, filePath) => InlineMatch[] contract
+	// can't supply. Wired in file-checks-agent-safety.ts with
+	// resolveNearestPackageScripts; no registry entry. Also in
+	// DEFAULT_ADVISORY_SKIPS.
+	"readme_script_drift",
 	// Cross-file checks that need full project scan
 	"checkExportRipple",
 	"checkProjectSetup",
@@ -585,6 +593,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"boundaryCopyNoRevalidation",
 			"magicLiteralInConditional",
 			"nanCoercionGuard",
+			"unawaitedAsyncAssertion",
 			"arrayPushReturnUsed",
 			"arrayIterateeVariadicBuiltin",
 			"writeWithoutMkdir",
@@ -593,6 +602,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"designSlop",
 			"payloadFieldCasing",
 			"gitignoredWrittenConfig",
+			"readmeScriptDrift",
 			"asyncPromiseExecutor",
 			"selfImports",
 			"extraneousDeps",
