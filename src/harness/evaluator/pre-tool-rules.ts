@@ -161,6 +161,21 @@ function evaluateRuleLoop(
  * from the inline block. Returns a `block` decision when a Bash command writes
  * to a tracked source file via redirect/tee, else `null`.
  */
+/** WARN-ONLY steer (2026-07-07): an out-of-repo code-file write gets pointed
+ *  at <repo>/scratch/ — the sanctioned session-script home (gated + greppable).
+ *  Ungoverned temp scripts are the workaround gradient the operator flagged;
+ *  the steer is a nudge, never a block (system paths stay writable). */
+function warnOutOfRepoCodeWrite(cmd: string, projectRoot: string, warnings: string[]): void {
+	const anywhere = detectBashCodeFileWrite(cmd);
+	if (!anywhere) return;
+	if (detectBashCodeFileWrite(cmd, projectRoot)) return; // in-repo → block path owns it
+	warnings.push(
+		`[interlinked:scratch] This command writes a code file outside the repo (${anywhere.target}). ` +
+			`Session/agent scripts belong in <repo>/scratch/ — gitignored but quality-gated and ` +
+			`rg-searchable (see scratch/README.md).`,
+	);
+}
+
 function evaluateBashRoutedWrite(
 	toolName: string,
 	cmd: string,
@@ -170,7 +185,9 @@ function evaluateBashRoutedWrite(
 	if (isBash(toolName) && cmd) {
 		// Root-confined (2026-07-06): only writes landing INSIDE the guarded
 		// project count as tracked source files — scratchpad//tmp/out-of-repo
-		// targets pass through (measured dogfood FP on a scratchpad probe).
+		// targets pass through (measured dogfood FP on a scratchpad probe),
+		// with a warn-only scratch/ steer (2026-07-07).
+		if (projectRoot) warnOutOfRepoCodeWrite(cmd, projectRoot, warnings);
 		const redirectHit = detectBashCodeFileWrite(cmd, projectRoot);
 		if (redirectHit) {
 			return {

@@ -48,6 +48,11 @@ const EXEMPT_PATH_RES: readonly RegExp[] = [
 	/(^|\/)\.interlinked\//,
 	/(^|\/)node_modules\//,
 	/(^|\/)scripts\//, // one-off build/release scripts
+	// Session/agent scratch scripts (gitignored, rg-searchable via .ignore
+	// negation). First-class for content-quality/security/caps gates, but
+	// companion tests are not demanded — requiring TDD for one-off scripts
+	// just pushes agents back to ungoverned /tmp (operator decision 2026-07-07).
+	/(^|\/)scratch\//,
 	/\.config\.tsx?$/, // vite.config.ts / vitest.config.ts / tsup.config.ts / ...
 	// Static-site / deploy-artifact directories — Workers, landing pages,
 	// docs sites. These ship as deployed bundles, not as application source,

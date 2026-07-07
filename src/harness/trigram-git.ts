@@ -45,6 +45,28 @@ export function getTrackedFiles(cwd: string): string[] {
 			void err; /* intentional: non-fatal — hooks dir may not exist */
 		}
 
+		// Also include gitignored scratch/ files — the sanctioned home for
+		// session/agent scripts (operator decision 2026-07-07: scratch work is
+		// first-class — gated, greppable via the root .ignore negation, and
+		// indexed here so the grep ACCELERATOR sees what plain rg now sees).
+		try {
+			const extra = execSync("git ls-files -z --others -- scratch/", {
+				cwd,
+				encoding: "buffer",
+				timeout: 5_000,
+				maxBuffer: 5 * 1024 * 1024,
+			});
+			const untracked = extra
+				.toString("utf-8")
+				.split("\0")
+				.filter((f) => f.length > 0);
+			if (untracked.length > 0) {
+				tracked.push(...untracked);
+			}
+		} catch (err) {
+			void err; /* intentional: non-fatal — scratch dir may not exist */
+		}
+
 		return tracked;
 	} catch {
 		// Fallback: walk filesystem (limited to 2 levels for safety)

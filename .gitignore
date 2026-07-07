@@ -138,6 +138,13 @@ docs/plans/*/
 # Local manual-test scratch space and harness logs.
 .scratch/
 
+# Sanctioned session/agent-script home (see scratch/README.md): local-only
+# like the host scratchpad it replaces, but — unlike it — gated by the
+# harness's quality checks and kept searchable (root .ignore negation for rg;
+# explicit trigram-index inclusion). Only the README is committed.
+scratch/*
+!scratch/README.md
+
 # Wrangler local-dev cache (per-Worker; lives under landing/ for the
 # landing-page Worker and any future Workers added to the repo).
 .wrangler/

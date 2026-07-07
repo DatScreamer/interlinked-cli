@@ -48,3 +48,45 @@ describe("evaluateDestructiveRules — bash-code-file-write-bypass", () => {
 		expect(decision?.rule_id).not.toBe("bash-code-file-write-bypass");
 	});
 });
+
+describe("evaluateDestructiveRules — out-of-repo scratch/ steer (warn-only, 2026-07-07)", () => {
+	function bashEventWithCwd(command: string): HarnessEvent {
+		return { ...bashEvent(command), cwd: "/Users/dev/project" } as HarnessEvent;
+	}
+
+	it("warns (never blocks) on a code-file write outside the repo, steering to scratch/", () => {
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd("echo x > /tmp/probe.mts"),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(decision?.rule_id).not.toBe("bash-code-file-write-bypass");
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(true);
+		expect(warnings.join("\n")).toContain("scratch/");
+	});
+
+	it("does NOT emit the steer for an in-repo code write (the block path owns it)", () => {
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd("echo x > src/foo.ts"),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(decision?.rule_id).toBe("bash-code-file-write-bypass");
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(false);
+	});
+
+	it("does NOT emit the steer for non-code out-of-repo writes", () => {
+		const warnings: string[] = [];
+		evaluateDestructiveRules(
+			bashEventWithCwd("echo x > /tmp/notes.txt"),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(false);
+	});
+});

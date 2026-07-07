@@ -1,0 +1,7 @@
+# Search-tool overrides (ripgrep/ag read this; git does not).
+# scratch/ is gitignored (session/agent scripts) but must stay SEARCHABLE —
+# rg gives .ignore higher precedence than .gitignore, so this negation
+# re-includes it for rg/grep while git keeps ignoring it. The trigram index
+# includes scratch/ explicitly (trigram-git.ts) for the same reason.
+!scratch/
+!scratch/**

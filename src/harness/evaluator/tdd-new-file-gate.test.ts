@@ -152,6 +152,7 @@ describe("evaluateTddNewFileGate — exempt paths", () => {
 		["__mocks__/ nested file", "src/__mocks__/foo.ts"],
 		["config file", "vite.config.ts"],
 		["scripts/ file", "scripts/release.ts"],
+		["scratch/ session script (2026-07-07 sanctioned scratch home)", "scratch/2026-07-07-probe/bucketize.ts"],
 		["dist artifact", "dist/bundle.ts"],
 		[".claude hook artifact", ".claude/hooks/activity.ts"],
 		[".interlinked runtime", ".interlinked/harness/foo.ts"],
