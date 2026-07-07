@@ -34,12 +34,8 @@
 // Every dependency (CoverageRunner factory, overlay factory, clock) is injected
 // via `CoverageWriteDeps` so the unit tests stub them and NO real suite runs.
 
-import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
-import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import {
-	type CoverageObligation,
 	readRuntimeEstimateMs,
-	recordCoverageObligation,
 	updateRuntimeEstimateMs,
 	writeFileCoverageBaseline,
 } from "../coverage-obligation-ledger.js";
@@ -51,7 +47,6 @@ import {
 import {
 	type CoverageLanguage,
 	type CoverageRunner,
-	coverageLanguageForPath,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
 import { selectAffectedTests } from "../coverage-test-selector.js";
@@ -63,13 +58,12 @@ import {
 	type CyclomaticAnalyzer,
 	DEFAULT_CRAP_THRESHOLD,
 	decideCrap,
+	defaultCyclomaticFor,
 } from "./coverage-crap-decision.js";
 import { type CoverageEditPlan, type CoverageTarget, coverageEditPlan } from "./coverage-edit-targets.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
-// `CyclomaticAnalyzer` (the per-function cyclomatic counter for CRAP) now lives
-// with the CRAP decision; re-exported here so this module's public surface is
-// unchanged for existing importers.
+// Re-exported so this module's public surface is unchanged for existing importers.
 export type { CyclomaticAnalyzer } from "./coverage-crap-decision.js";
 
 /** Injectable seams so unit tests run with NO real suite / overlay / analyzer. */
@@ -82,24 +76,11 @@ export interface CoverageWriteDeps {
 	clock: () => number;
 	/**
 	 * The per-function cyclomatic analyzer for a language, or null to skip CRAP for
-	 * it. Default: the in-process TS AST for js/ts, radon for python — the same
+	 * it. Default: `defaultCyclomaticFor` (coverage-crap-decision.ts) — the same
 	 * analyzers the strict cyclomatic PreToolUse gate uses. Injected so the CRAP
 	 * tests supply a deterministic stub instead of spawning radon / loading TS.
 	 */
 	cyclomaticFor: (language: CoverageLanguage) => CyclomaticAnalyzer | null;
-}
-
-/** The real cyclomatic analyzer for a coverage language, or null to skip CRAP. */
-function defaultCyclomaticFor(language: CoverageLanguage): CyclomaticAnalyzer | null {
-	switch (language) {
-		case "js":
-		case "ts":
-			return computeCyclomaticAst;
-		case "python":
-			return computeCyclomaticPython;
-		default:
-			return null;
-	}
 }
 
 /** Production defaults — the real runner factory, overlay mirror, clock, analyzer. */
@@ -111,14 +92,10 @@ const DEFAULT_DEPS: CoverageWriteDeps = {
 };
 
 // The uncovered-added-line / coverage-drop / red-bar DECISION helpers live in
-// ./coverage-write-decision.ts — extracted verbatim to keep this module under
-// the per-file line cap when the delete-only path landed (finding 2026-06).
-// The import sits at the extraction site (top-level imports hoist) so the move
-// is one contiguous replacement; nothing about the decision flow changed.
+// ./coverage-write-decision.ts — extracted verbatim (finding 2026-06).
 import {
 	blockForRedBar,
 	decideFromCoverage,
-	failingTestPhrase,
 } from "./coverage-write-decision.js";
 
 // EVIDENCE-AUTHORITY CONTRACT (finding 2): there is deliberately NO
@@ -143,6 +120,7 @@ import {
 	deferForBudget,
 	loudDegrade,
 	loudRunnerUnavailable,
+	profileRunnerFastPath,
 } from "./coverage-write-guard-degrade.js";
 import {
 	decideForDeletionOnly,
@@ -204,9 +182,10 @@ async function runOverlayAndDecide(
 ): Promise<HarnessDecision | null> {
 	const runner = deps.runnerFor(ctx.language);
 	// Gate is ON for this language but no runner could be built → fail LOUD
-	// (missing provider?), never silent. Allow (can't-measure ≠ deny).
+	// (missing provider?), never silent — once per daemon for this repo+language
+	// (runner absence is a stable repo property). Allow (can't-measure ≠ deny).
 	if (!runner) {
-		return loudRunnerUnavailable(ctx.relPath, ctx.language, `no coverage runner for ${ctx.language}`);
+		return loudRunnerUnavailable(ctx, `no coverage runner for ${ctx.language}`);
 	}
 
 	const overlay = deps.createOverlay(ctx.projectRoot, ctx.relPath, ctx.proposed, ctx.overlayFiles);
@@ -238,7 +217,7 @@ async function runOverlayAndDecide(
 			if (result.suiteMs >= ctx.budgetMs) {
 				return deferForBudget(ctx.projectRoot, ctx.relPath, event, result.suiteMs, ctx.budgetMs);
 			}
-			return loudRunnerUnavailable(ctx.relPath, ctx.language, result.error ?? "coverage run failed");
+			return loudRunnerUnavailable(ctx, result.error ?? "coverage run failed");
 		}
 
 		// Red bar before coverage: a FAILING suite is a harder failure than a
@@ -366,6 +345,15 @@ export async function checkCoverageWrite(
 	if (!isFileWrite(event.tool_name)) return null;
 
 	const projectRoot = event.cwd || process.cwd();
+	// EARLY repo-profile fast-path (foreign-shaped repos): when the edited file's
+	// language is gated but the detected repo profile has NO supported runner for
+	// it, every overlay run could only end in the runner-unavailable warning — so
+	// skip the overlay entirely, warning ONCE per daemon (then silent allows).
+	// `undefined` = no fast-path (runner detected, ungated language, or a profile
+	// detection error, which yields the conservative runners-true profile) — the
+	// gate proceeds byte-identically to before.
+	const fastPath = profileRunnerFastPath(event, cfg, projectRoot);
+	if (fastPath !== undefined) return fastPath;
 	// Plan = the production files to GATE (targets) + ALL files to MATERIALIZE in the
 	// overlay (the patch's tests/siblings). For an apply_patch the whole ATOMIC patch
 	// is overlaid, so a code+test patch is not falsely reported uncovered (finding

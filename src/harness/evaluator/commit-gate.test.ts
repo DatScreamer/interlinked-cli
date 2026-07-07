@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
-import type { CoverageRunResult, CoverageRunner } from "../coverage-runner.js";
+import type { CoverageRunner, CoverageRunResult } from "../coverage-runner.js";
+import { writeSuiteBaseline } from "../suite-baseline.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import {
-	checkCommitGate,
 	COMMIT_RUN_TIMEOUT_MS,
 	type CommitGateDeps,
+	checkCommitGate,
 	defaultGitChangedFiles,
 	defaultResolveRepoRoot,
 	parseGitCommit,
@@ -1410,5 +1411,123 @@ describe("checkCommitGate — config opt-outs honored at commit time", () => {
 		const decision = await checkCommitGate(commitEvent('git commit -m "drop"'), rules(), d);
 		expect(decision).toBeNull();
 		expect(discharged).toEqual(["src/gone.ts"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkCommitGate — suite-baseline-aware red bar (foreign repos arrive with a
+// pre-existing red suite; only NEW failures beyond the recorded baseline block)
+// ---------------------------------------------------------------------------
+
+describe("checkCommitGate — pre-existing red tolerated via the suite baseline", () => {
+	/** A red run over a fully-covered changed file, so ONLY the red-bar axis decides. */
+	function redResult(failing: string[]): CoverageRunResult {
+		return coverageResult(
+			"src/a.ts",
+			[{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }],
+			{ testsPassed: false, failingTests: failing },
+		);
+	}
+
+	function recordBaseline(green: boolean, failing: string[]): void {
+		writeSuiteBaseline(root, {
+			recorded_at: "2026-07-01T00:00:00.000Z",
+			language: "typescript",
+			green,
+			failing_tests: failing,
+		});
+	}
+
+	it("ALLOWS a red suite whose failures exactly match the recorded red baseline (warning, no discharge)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		recordBaseline(false, ["old flake"]);
+		const discharged: string[] = [];
+		const d: CommitGateDeps = {
+			...deps(stubRunner(redResult(["old flake"])).runner, ["src/a.ts"]),
+			recordDischarge: (_root, file) => {
+				discharged.push(file);
+			},
+		};
+		const decision = await checkCommitGate(commitEvent('git commit -m "x"'), rules(), d);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.join("\n")).toMatch(/pre-existing per the recorded suite baseline/);
+		expect(discharged).toEqual([]); // a red bar must never discharge a deferred obligation
+	});
+
+	it("ALLOWS when the baseline's failing set is a SUPERSET of the current failures", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		recordBaseline(false, ["a fails", "b fails", "c fails"]);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult(["b fails"])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.join("\n")).toMatch(/not blocking on the red bar/);
+	});
+
+	it("BLOCKS on one NEW failure, naming exactly it — with the tolerated count + re-record reminder", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		recordBaseline(false, ["old flake"]);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult(["old flake", "brand new regression"])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/failing test\(s\): brand new regression/);
+		expect(decision?.reason).not.toMatch(/old flake/); // the inherited failure is NOT named as new
+		expect(decision?.reason).toMatch(/1 pre-existing failure\(s\) were tolerated/);
+		expect(decision?.reason).toMatch(/interlinked adopt --suite-baseline/);
+		expect(decision?.rule_id).toBe("commit-gate");
+	});
+
+	it("BLOCKS a red suite when the recorded baseline is GREEN (historical behavior unchanged)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		recordBaseline(true, []);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult(["boom"])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/a commit must not capture a red bar/);
+		expect(decision?.reason).not.toMatch(/pre-existing/);
+	});
+
+	it("BLOCKS a red suite when NO baseline is recorded (historical behavior unchanged)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult(["boom"])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/a commit must not capture a red bar/);
+	});
+
+	it("BLOCKS a red suite when the baseline file is malformed (fails toward the historical block)", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		mkdirSync(join(root, ".interlinked"), { recursive: true });
+		writeFileSync(join(root, ".interlinked", "suite-baseline.json"), '{"green": "nope"}', "utf-8");
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult(["boom"])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/a commit must not capture a red bar/);
+	});
+
+	it("BLOCKS an UNNAMED red (no failing-test names) even under a red baseline — unmatchable", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		recordBaseline(false, ["old flake"]);
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x"'),
+			rules(),
+			deps(stubRunner(redResult([])).runner, ["src/a.ts"]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/a commit must not capture a red bar/);
 	});
 });

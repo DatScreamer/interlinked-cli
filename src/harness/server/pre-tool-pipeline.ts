@@ -339,11 +339,11 @@ export async function runPreToolPipeline(
 		noteCoverageSuiteRunStart(event.session_id, event.timestamp);
 	}
 
-	// --- Per-edit coverage gate (config-gated, DEFAULT OFF) ---
+	// --- Per-edit coverage gate (config-gated; shipped default is ON since 2026-06) ---
 	// The expensive apply-before-disk overlay+suite check. Placed after the
 	// synchronous cheap checks; short-circuits the rest of the async pipeline on
-	// a coverage block. A no-op (returns null immediately) unless the repo opts
-	// in via `per_edit_coverage.enabled`.
+	// a coverage block. A no-op (returns null immediately) when the repo opts
+	// out via guard-rules.local.json (`per_edit_coverage.enabled: false`).
 	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
 	if (coverageDecision) return coverageDecision;
 
@@ -354,12 +354,12 @@ export async function runPreToolPipeline(
 	const mutationDecision = await runMutationWriteGate(ctx, event, preDecision);
 	if (mutationDecision) return mutationDecision;
 
-	// --- Commit-time quality gate (config-gated, DEFAULT OFF) ---
+	// --- Commit-time quality gate (config-gated; shipped default is ON since 2026-06) ---
 	// The hard gate for repos whose suite is too big for per-edit enforcement:
 	// on a real `git commit` Bash call it runs the FULL suite + coverage on the
 	// working tree and blocks a red bar / uncovered changed line / CRAP-over /
 	// cyclomatic-over. A pure no-op (returns null immediately) for non-commit
-	// commands and unless the repo opts in via `per_edit_coverage.enabled`.
+	// commands and when the repo opts out via `per_edit_coverage.enabled: false`.
 	// Commit-time baseline-integrity backstop (ALWAYS ON) — block a commit that
 	// stages a loosened git-tracked ratchet baseline. Cheap; runs before the
 	// config-gated coverage commit gate.

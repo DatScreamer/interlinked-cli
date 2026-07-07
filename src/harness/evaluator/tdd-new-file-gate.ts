@@ -17,10 +17,11 @@
 //     type declarations, config files, standalone scripts).
 
 import { existsSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
 import { appendDebtTxn } from "../obligation-ledger-io.js";
 import type { ObligationTxn } from "../obligations.js";
+import { getRepoProfile } from "../repo-profile.js";
 import type {
 	GuardRulesConfig,
 	HarnessDecision,
@@ -86,7 +87,8 @@ export function evaluateTddNewFileGate(args: TddNewFileGateArgs): HarnessDecisio
 	// "enforce_all" rollout.
 	if (existsSync(abs)) return null;
 
-	const candidates = companionTestCandidates(abs);
+	const projectRoot = args.cwd || process.cwd();
+	const candidates = companionTestCandidates(abs, projectRoot);
 	for (const candidate of candidates) {
 		if (existsSync(candidate)) return null;
 	}
@@ -97,20 +99,56 @@ export function evaluateTddNewFileGate(args: TddNewFileGateArgs): HarnessDecisio
 		}
 	}
 
+	return missingCompanionVerdict(args, candidates, projectRoot);
+}
+
+/**
+ * Build the "no companion test" verdict once the gate has decided to fire.
+ *
+ * Layout-conditional severity (portability — external assessment 2026-07-06):
+ * the gate was written against this repo's colocated-vitest workflow and, on a
+ * repo with NO test files anywhere (`testLayout === "none"`), a hard block is
+ * pure noise — that repo never opted into TDD, and there is no existing test
+ * convention the agent could follow. On such repos the same message is emitted
+ * as an allow+warning instead (never a block, never an opened debt — see the
+ * pass-through guard in {@link downgradeNewFileBlockToDebt}). Colocated and
+ * separate-tree repos DID opt in (they have tests) and keep the historical
+ * hard-block semantics byte-for-byte. The demotion lives here, inside the
+ * gate, not as config mutation, so a repo that later grows its first test file
+ * re-enters enforce mode automatically on the next profile detection.
+ */
+function missingCompanionVerdict(
+	args: TddNewFileGateArgs,
+	candidates: string[],
+	projectRoot: string,
+): HarnessDecision {
 	const hint = companionHintPath(args.filePath);
 	const surface = extractPublicSurface(args.content);
 	const surfaceLine = surface.length > 0
 		? ` Public surface to test (extracted from your content): ${surface.join(", ")}.`
 		: "";
+	const body =
+		`new source file "${args.filePath}" has no companion test. ` +
+		`Red/green TDD is enforced for new .ts/.tsx files. ` +
+		`Create ${hint} first with a failing test, then write the implementation. ` +
+		`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.)` +
+		surfaceLine +
+		` If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`;
+	if (getRepoProfile(projectRoot).testLayout === "none") {
+		return {
+			decision: "allow",
+			warnings: [
+				`[interlinked:tdd] ${body} (Advisory only: this repo has no test files, so TDD ` +
+					`enforcement is demoted to a warning here.)`,
+			],
+			rule_id: "tdd_new_file_gate",
+			severity: "low",
+			category: "tdd",
+		};
+	}
 	return {
 		decision: "block",
-		reason:
-			`BLOCKED: new source file "${args.filePath}" has no companion test. ` +
-			`Red/green TDD is enforced for new .ts/.tsx files. ` +
-			`Create ${hint} first with a failing test, then write the implementation. ` +
-			`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.)` +
-			surfaceLine +
-			` If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`,
+		reason: `BLOCKED: ${body}`,
 		rule_id: "tdd_new_file_gate",
 		severity: "high",
 		category: "tdd",
@@ -187,6 +225,10 @@ export function evaluateTddNewFileGateForEvent(
 		content:
 			(toolInput.content as string | undefined) ??
 			(toolInput.new_string as string | undefined),
+		// NOTE: keyed off `structural_checks.test_first_mode` alone — DELIBERATELY
+		// independent of `structural_checks.enabled` (the 2026-07-06 portability
+		// review flagged the surprise; independence is preserved for back-compat:
+		// repos that disabled structural checks still expect the TDD gate to run).
 		testFirstMode: rules.structural_checks?.test_first_mode,
 	});
 	return downgradeNewFileBlockToDebt(block, event, rules, filePath);
@@ -206,7 +248,10 @@ function downgradeNewFileBlockToDebt(
 	filePath: string,
 ): HarnessDecision | null {
 	// Not a new-file block (allow / null / unrelated rule) ⇒ pass through.
-	if (!block || block.rule_id !== "tdd_new_file_gate") return block;
+	// The layout-"none" portability demotion returns an ALLOW+warning that
+	// carries this same rule_id — the decision check keeps it a pure warning
+	// (never converted into an opened debt).
+	if (!block || block.rule_id !== "tdd_new_file_gate" || block.decision !== "block") return block;
 	// Debt mode off ⇒ keep the historical hard block.
 	if (rules.per_edit_coverage?.debt_mode !== true) return block;
 	// No cwd ⇒ can't resolve the ledger path; fall back to the hard block.
@@ -291,17 +336,75 @@ function toAbsolute(filePath: string, cwd: string | undefined): string {
 
 /** The ordered list of companion test paths we look for. First hit wins.
  *  Exported as the single source of truth for "where a file's companion test
- *  lives" — consumed by the new-file gate here and the `metrics` scan. */
-export function companionTestCandidates(srcAbs: string): string[] {
+ *  lives" — consumed by the new-file gate here and the `metrics` scan.
+ *
+ *  When `projectRoot` is provided AND the detected repo profile says tests
+ *  live in a separate tree, mirrored candidates under each detected test root
+ *  are appended (see {@link separateTreeCandidates}). Callers that omit
+ *  `projectRoot` — and every colocated-layout repo — get exactly the
+ *  historical colocated set, byte-for-byte. */
+export function companionTestCandidates(srcAbs: string, projectRoot?: string): string[] {
 	const dir = dirname(srcAbs);
 	const ext = extname(srcAbs);
 	const base = basename(srcAbs, ext);
-	return [
+	// Colocated conventions (always searched — the historical set):
+	//   <dir>/foo.test.ts        — sibling test file
+	//   <dir>/__tests__/foo.test.ts — sibling __tests__ folder
+	//   ... plus the .spec variants of both.
+	const candidates = [
 		join(dir, `${base}.test${ext}`),
 		join(dir, "__tests__", `${base}.test${ext}`),
 		join(dir, `${base}.spec${ext}`),
 		join(dir, "__tests__", `${base}.spec${ext}`),
 	];
+	if (projectRoot !== undefined) {
+		candidates.push(...separateTreeCandidates(srcAbs, resolve(projectRoot), base, ext));
+	}
+	// Dedupe (a source file living inside a test root can make a mirrored
+	// candidate collide with a colocated one) while preserving search order.
+	return [...new Set(candidates)];
+}
+
+/** Both companion-test filename suffixes we recognize. */
+const COMPANION_SUFFIXES = ["test", "spec"] as const;
+
+/**
+ * Mirror-convention candidates for separate-test-tree repos (portability —
+ * external assessment 2026-07-06). For source `src/lib/foo.ts` with detected
+ * test root `tests`, we search, per suffix (`.test` / `.spec`):
+ *   1. Full-path mirror:           tests/src/lib/foo.test.ts
+ *      (the test tree replicates the entire source path)
+ *   2. First-segment-stripped mirror: tests/lib/foo.test.ts
+ *      (the common convention where the test tree mirrors everything under
+ *      `src/` without repeating the `src` segment)
+ *   3. Flat:                       tests/foo.test.ts
+ *      (small repos dump all tests directly in the test root)
+ * Only consulted when the repo profile detects `testLayout === "separate-tree"`;
+ * on colocated / no-test repos this returns [] so the historical candidate set
+ * is unchanged.
+ */
+function separateTreeCandidates(
+	srcAbs: string,
+	projectRoot: string,
+	base: string,
+	ext: string,
+): string[] {
+	const profile = getRepoProfile(projectRoot);
+	if (profile.testLayout !== "separate-tree") return [];
+	const relDir = dirname(relative(projectRoot, srcAbs));
+	// Source outside the project root — no mirror path to derive.
+	if (relDir.startsWith("..") || isAbsolute(relDir)) return [];
+	const out: string[] = [];
+	for (const testRoot of profile.testDirRoots) {
+		for (const suffix of COMPANION_SUFFIXES) {
+			const file = `${base}.${suffix}${ext}`;
+			if (relDir !== ".") out.push(join(projectRoot, testRoot, relDir, file));
+			const stripped = relDir === "." ? "" : relDir.split(sep).slice(1).join(sep);
+			if (stripped !== "") out.push(join(projectRoot, testRoot, stripped, file));
+			out.push(join(projectRoot, testRoot, file));
+		}
+	}
+	return out;
 }
 
 /** Agents see a friendly relative path, not the resolved absolute one. */

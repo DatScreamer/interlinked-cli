@@ -13,6 +13,7 @@ import {
 import type { CoverageOverlay } from "../coverage-overlay.js";
 import type { CoverageRunner, CoverageRunResult } from "../coverage-runner.js";
 import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
+import { resetRepoProfileCache } from "../repo-profile.js";
 import { DEFAULT_CONFIG } from "../rules/default-config.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import {
@@ -24,10 +25,23 @@ let root: string;
 
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "interlinked-cov-guard-"));
+	// The gate is repo-profile-aware (2026-07-06): without a detectable runner
+	// it skips with a once-per-session notice instead of running the overlay.
+	// These fixtures inject stub runners via deps, so declare vitest in the
+	// fixture manifest to keep the profile's runner check satisfied — and reset
+	// the per-root memo both ways so no cross-suite cache leaks.
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({ name: "cov-guard-fixture", devDependencies: { vitest: "^3.0.0" } }),
+		"utf-8",
+	);
+	writeFileSync(join(root, "pytest.ini"), "[pytest]\n", "utf-8");
+	resetRepoProfileCache();
 });
 
 afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
+	resetRepoProfileCache();
 });
 
 // ---------------------------------------------------------------------------

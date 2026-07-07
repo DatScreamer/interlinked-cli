@@ -17,7 +17,10 @@
 
 import { computeCrap, crapScore } from "../checks/crap.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
+import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
+import type { CoverageLanguage } from "../coverage-runner.js";
 import type { HarnessDecision } from "../types.js";
 
 /**
@@ -34,6 +37,24 @@ export type CyclomaticAnalyzer = (
 
 /** Default CRAP cutoff — the McCabe/SonarQube convention (cyclomatic-10 @ 0% = 110). */
 export const DEFAULT_CRAP_THRESHOLD = 30;
+
+/**
+ * The real cyclomatic analyzer for a coverage language, or null to skip CRAP for
+ * it: the in-process TS AST for js/ts, radon for python — the same analyzers the
+ * strict cyclomatic PreToolUse gate uses. Lives here (not in the guard) so the
+ * guard stays under the line cap and the mapping has one home.
+ */
+export function defaultCyclomaticFor(language: CoverageLanguage): CyclomaticAnalyzer | null {
+	switch (language) {
+		case "js":
+		case "ts":
+			return computeCyclomaticAst;
+		case "python":
+			return computeCyclomaticPython;
+		default:
+			return null;
+	}
+}
 
 /** One CRAP violation for an edited function — drives the block message. */
 interface CrapViolation {

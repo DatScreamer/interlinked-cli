@@ -10,6 +10,7 @@
 
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
+import { newFailures, readSuiteBaseline } from "../suite-baseline.js";
 import type { HarnessDecision } from "../types.js";
 import {
 	type ChangedSource,
@@ -141,6 +142,63 @@ export function blockForRedBar(failingTests: string[], warnings: string[]): Harn
 		},
 		warnings,
 	);
+}
+
+/** Build the red-bar block for NEW failures beyond a recorded red baseline. */
+function blockForNewRedBar(
+	fresh: string[],
+	toleratedCount: number,
+	warnings: string[],
+): HarnessDecision {
+	return withWarnings(
+		{
+			decision: "block",
+			reason:
+				"[interlinked:commit-gate] BLOCKED: the full test suite is RED with NEW " +
+				`failure(s) beyond the recorded suite baseline — ${failingTestPhrase(fresh)}. ` +
+				`${toleratedCount} pre-existing failure(s) were tolerated per the recorded ` +
+				"baseline. Fix the NEW failing test(s) before committing; once the suite is " +
+				"green, re-record the baseline with `interlinked adopt --suite-baseline`.",
+			rule_id: "commit-gate",
+			severity: "high",
+			category: "coverage",
+		},
+		warnings,
+	);
+}
+
+/**
+ * Red-bar decision, aware of a recorded suite baseline (foreign repos arrive
+ * with pre-existing red — see `suite-baseline.ts`). Returns a block decision,
+ * or null to tolerate the red bar (a one-line NOTE is pushed onto `warnings`;
+ * the caller proceeds to the scan — the other gate axes are untouched).
+ *
+ *   - No baseline / green baseline → the historical unconditional block
+ *     (byte-identical to the pre-baseline behavior).
+ *   - UNNAMED red (the runner reported red without failure names) → block:
+ *     it cannot be matched against the baseline, so fail toward blocking.
+ *   - Red baseline → subtract the inherited failures; only NEW failures
+ *     block (naming them), all-inherited red is tolerated with a warning.
+ */
+export function decideRedBar(
+	failingTests: string[],
+	warnings: string[],
+	projectRoot: string,
+): HarnessDecision | null {
+	const baseline = readSuiteBaseline(projectRoot);
+	if (baseline === null || baseline.green || failingTests.length === 0) {
+		return blockForRedBar(failingTests, warnings);
+	}
+	const fresh = newFailures(failingTests, baseline);
+	if (fresh.length > 0) {
+		return blockForNewRedBar(fresh, failingTests.length - fresh.length, warnings);
+	}
+	warnings.push(
+		`[interlinked:commit-gate] NOTE: the full suite is RED but all ${failingTests.length} ` +
+			"failure(s) are pre-existing per the recorded suite baseline — not blocking on the " +
+			"red bar. Re-record after greening: `interlinked adopt --suite-baseline`.",
+	);
+	return null;
 }
 
 /** Build the violations commit block, naming each violation. */

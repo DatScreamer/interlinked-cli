@@ -1,10 +1,13 @@
 // ===========================================
 // PreToolUse pipeline — coverage / commit gate phases
 // ===========================================
-// The two config-gated (DEFAULT OFF) coverage phase helpers, extracted from
+// The two config-gated coverage phase helpers, extracted from
 // `pre-tool-pipeline.ts` so the orchestrator stays under the per-file line cap.
-// Both gate on `rules.per_edit_coverage.enabled` and short-circuit the pipeline
-// with a block decision when they fire:
+// Shipped default is ON — all four test-quality gates (coverage, red/green,
+// CRAP, cyclomatic) enforce out of the box since 2026-06; a repo opts out via
+// `.interlinked/guard-rules.local.json` (`"per_edit_coverage": { "enabled":
+// false }`). Both gate on `rules.per_edit_coverage.enabled` and short-circuit
+// the pipeline with a block decision when they fire:
 //
 //   - runCoverageWriteGate — the per-EDIT gate. On a code-file Write/Edit it
 //     applies the proposed content to an apply-before-disk overlay, runs the
@@ -15,9 +18,10 @@
 //     uncovered changed line / CRAP-over / cyclomatic-over. The hard gate for
 //     repos whose suite is too big for per-edit enforcement. See `commit-gate.ts`.
 //
-// Both are pure no-ops when the feature is off; `checkCommitGate` is additionally
-// a no-op for non-commit Bash, so an opted-in repo pays the commit cost only on
-// an actual `git commit`. Neither throws (each underlying check fails open).
+// The phase helpers remain pure no-ops when the feature is disabled;
+// `checkCommitGate` is additionally a no-op for non-commit Bash, so an enabled
+// repo pays the commit cost only on an actual `git commit`. Neither throws
+// (each underlying check fails open).
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -78,12 +82,13 @@ function depViewForEvent(ctx: ServerRuntime, event: HarnessEvent): DependencyVie
 }
 
 /**
- * Per-edit coverage gate (config-gated, DEFAULT OFF). The expensive,
- * apply-before-disk overlay+suite check — placed AFTER the synchronous
- * `evaluatePreToolUse` cheap checks. Runs only when the pre-decision is `allow`
- * (a block already short-circuited) and `rules.per_edit_coverage.enabled` is
- * true; `checkCoverageWrite` itself is a pure no-op otherwise, so a repo that
- * does not opt in pays zero cost.
+ * Per-edit coverage gate (config-gated; shipped default is ON — all four
+ * test-quality gates enforce out of the box since 2026-06, and a repo opts out
+ * via guard-rules.local.json). The expensive, apply-before-disk overlay+suite
+ * check — placed AFTER the synchronous `evaluatePreToolUse` cheap checks. Runs
+ * only when the pre-decision is `allow` (a block already short-circuited) and
+ * `rules.per_edit_coverage.enabled` is true; `checkCoverageWrite` itself is a
+ * pure no-op otherwise, so an opted-out repo pays zero cost.
  *
  * The guard returns one of three shapes, each propagated to the agent:
  *   - a `block` → returned (short-circuits the pipeline), merging any warnings
@@ -107,7 +112,7 @@ export async function runCoverageWriteGate(
 ): Promise<HarnessDecision | null> {
 	if (preDecision.decision !== "allow") return null;
 	const coverageCfg = ctx.rules.per_edit_coverage;
-	if (!coverageCfg?.enabled) return null; // fast path: default OFF
+	if (!coverageCfg?.enabled) return null; // fast path: repo opted out (shipped default is ON)
 	// Source the dependency view from the daemon's existing graph so the gate can
 	// select only the affected tests (fast → fits the per-edit budget → enforces).
 	let decision = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
@@ -140,14 +145,15 @@ function mergeWarnings(a: string[] | undefined, b: string[] | undefined): string
 }
 
 /**
- * Commit-time quality gate (config-gated, DEFAULT OFF). Intercepts a real
+ * Commit-time quality gate (config-gated; shipped default is ON since 2026-06 —
+ * a repo opts out via guard-rules.local.json). Intercepts a real
  * `git commit` Bash call and runs the FULL suite + coverage on the working tree,
  * BLOCKING the commit on a red bar / uncovered changed line / CRAP-over /
  * cyclomatic-over. This is the hard gate for repos whose suite is too big for the
  * per-edit `runCoverageWriteGate` (they defer per-edit and enforce here instead).
  * Placed AFTER the cheap synchronous checks, like the per-edit gate, and gated on
  * the SAME `per_edit_coverage.enabled` flag — `checkCommitGate` is itself a pure
- * no-op for non-commit commands, so a repo that has opted into coverage pays this
+ * no-op for non-commit commands, so a coverage-enabled repo pays this
  * cost only on an actual `git commit`. Returns a block carrying any accumulated
  * warnings, or null (continue). Never throws (the gate fails open internally).
  */
@@ -158,7 +164,7 @@ export async function runCommitGate(
 ): Promise<HarnessDecision | null> {
 	if (preDecision.decision !== "allow") return null;
 	if (event.tool_name !== "Bash") return null; // only the Bash path can carry a commit
-	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: default OFF
+	if (!ctx.rules.per_edit_coverage?.enabled) return null; // fast path: repo opted out (shipped default is ON)
 	const commitDecision = await checkCommitGate(event, ctx.rules);
 	if (!commitDecision) return null;
 	// Merge any warnings already accumulated on the running decision (e.g. the

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { addToAllowlist } from "../package-allowlist.js";
+import { resetRepoProfileCache } from "../repo-profile.js";
 import { SessionTracker } from "../session-state.js";
 import type {
 	GuardRulesConfig,
@@ -269,7 +270,7 @@ describe("evaluatePackageInstallGuard", () => {
 		).toBeNull();
 	});
 
-	it("returns null for a non-Bash tool", () => {
+	it("package-install guard returns null for a non-Bash tool", () => {
 		expect(
 			evaluatePackageInstallGuard(makeEvent(), "Write", {
 				command: "npm install evil",
@@ -277,7 +278,7 @@ describe("evaluatePackageInstallGuard", () => {
 		).toBeNull();
 	});
 
-	it("returns null for an empty command", () => {
+	it("package-install guard returns null for an empty command", () => {
 		expect(
 			evaluatePackageInstallGuard(makeEvent(), "Bash", { command: "" }),
 		).toBeNull();
@@ -434,7 +435,7 @@ describe("evaluateGitScopeGate", () => {
 		).toBeNull();
 	});
 
-	it("returns null for a non-Bash tool", () => {
+	it("git-scope gate returns null for a non-Bash tool", () => {
 		expect(
 			evaluateGitScopeGate(
 				makeEvent(),
@@ -447,7 +448,7 @@ describe("evaluateGitScopeGate", () => {
 		).toBeNull();
 	});
 
-	it("returns null for an empty command", () => {
+	it("git-scope gate returns null for an empty command", () => {
 		expect(
 			evaluateGitScopeGate(
 				makeEvent(),
@@ -791,6 +792,20 @@ describe("evaluateTddGate", () => {
 			} as unknown as GuardRulesConfig["structural_checks"],
 		});
 	}
+
+	// The gate is repo-profile-aware (2026-07-06): a repo with NO tests at all
+	// demotes enforce → warn (it never opted into TDD). These integration
+	// fixtures therefore seed one colocated test so the workspace reads as a
+	// TDD-shaped (colocated) repo, and reset the per-root profile memo both
+	// ways so no other suite's cache leaks in.
+	beforeEach(() => {
+		mkdirSync(join(workspace, "src"), { recursive: true });
+		writeFileSync(join(workspace, "src", "existing.test.ts"), "it('x', () => {});\n", "utf-8");
+		resetRepoProfileCache();
+	});
+	afterEach(() => {
+		resetRepoProfileCache();
+	});
 
 	it("blocks a new source file with no companion test (enforce mode)", () => {
 		const target = join(workspace, "src", "feature.ts");

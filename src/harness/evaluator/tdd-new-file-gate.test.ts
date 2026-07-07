@@ -10,8 +10,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { readOpenDebts } from "../obligation-ledger-io.js";
+import { resetRepoProfileCache } from "../repo-profile.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
-import { evaluateTddNewFileGate, evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
+import {
+	companionTestCandidates,
+	evaluateTddNewFileGate,
+	evaluateTddNewFileGateForEvent,
+} from "./tdd-new-file-gate.js";
 
 let tmp: string;
 
@@ -43,10 +48,18 @@ function makeSession(writtenAbs: string[] = []): SessionTrajectory {
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "tdd-gate-"));
 	mkdirSync(join(tmp, "src"), { recursive: true });
+	// The gate is now repo-profile aware. Seed one unrelated colocated test
+	// file so this shared fixture profiles as `testLayout: "colocated"` — the
+	// layout every historical expectation below was written against. (An empty
+	// tmpdir would profile as "none", which demotes the gate to warn-only.)
+	// The marker matches no companion candidate of any file gated in these tests.
+	writeFileSync(join(tmp, "repo-shape.spec.ts"), "");
+	resetRepoProfileCache();
 });
 
 afterEach(() => {
 	rmSync(tmp, { recursive: true, force: true });
+	resetRepoProfileCache();
 });
 
 describe("evaluateTddNewFileGate — mode gating", () => {
@@ -387,5 +400,232 @@ describe("evaluateTddNewFileGateForEvent — debt-mode downgrade", () => {
 		);
 		expect(decision).toBeNull();
 		expect(readOpenDebts(tmp)).toHaveLength(0);
+	});
+});
+
+// ===========================================
+// Repo-profile conditional enforcement (portability, 2026-07-06)
+// ===========================================
+// Foreign-shaped repos: separate test trees get mirrored companion candidates;
+// repos with no tests at all get warn-only demotion. Colocated repos (every
+// fixture above) keep the historical behavior byte-for-byte.
+
+/** A fresh repo root per test so `getRepoProfile`'s memo never sees stale layout. */
+function makeRepo(prefix: string): string {
+	const repo = mkdtempSync(join(tmpdir(), prefix));
+	mkdirSync(join(repo, "src/lib"), { recursive: true });
+	return repo;
+}
+
+function gateAt(repo: string, rel: string) {
+	return evaluateTddNewFileGate({
+		filePath: join(repo, rel),
+		cwd: repo,
+		session: undefined,
+		testFirstMode: "enforce",
+	});
+}
+
+describe("evaluateTddNewFileGate — separate-tree layout (mirrored candidates)", () => {
+	let repo: string;
+
+	beforeEach(() => {
+		repo = makeRepo("tdd-gate-sep-");
+		resetRepoProfileCache();
+	});
+
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+		resetRepoProfileCache();
+	});
+
+	it("allows when the first-segment-stripped mirror exists (tests/lib/foo.test.ts)", () => {
+		mkdirSync(join(repo, "tests/lib"), { recursive: true });
+		writeFileSync(join(repo, "tests/lib/foo.test.ts"), "");
+		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+
+	it("allows when the full-path mirror exists (tests/src/lib/foo.test.ts)", () => {
+		mkdirSync(join(repo, "tests/src/lib"), { recursive: true });
+		writeFileSync(join(repo, "tests/src/lib/foo.test.ts"), "");
+		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+
+	it("allows when a flat test-root candidate exists (tests/foo.test.ts)", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/foo.test.ts"), "");
+		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+
+	it("allows a .spec mirror under a `test/` root (test/lib/foo.spec.ts)", () => {
+		mkdirSync(join(repo, "test/lib"), { recursive: true });
+		writeFileSync(join(repo, "test/lib/foo.spec.ts"), "");
+		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+
+	it("still blocks when the separate tree has tests but no mirror for this file", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/other.test.ts"), "");
+		const decision = gateAt(repo, "src/lib/foo.ts");
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("tdd_new_file_gate");
+		// The block message advertises the mirrored candidates it searched.
+		expect(decision?.reason).toContain(join("tests", "lib", "foo.test.ts"));
+		expect(decision?.reason).toContain(join("tests", "src", "lib", "foo.test.ts"));
+	});
+
+	it("still honors a colocated companion in a separate-tree repo (union, not replacement)", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/other.test.ts"), "");
+		writeFileSync(join(repo, "src/lib/foo.test.ts"), "");
+		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+});
+
+describe("companionTestCandidates — profile-conditional shapes", () => {
+	let repo: string;
+
+	beforeEach(() => {
+		repo = makeRepo("tdd-cand-");
+		resetRepoProfileCache();
+	});
+
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+		resetRepoProfileCache();
+	});
+
+	it("without a projectRoot: exactly the historical four colocated candidates", () => {
+		const abs = join(repo, "src/lib/foo.ts");
+		expect(companionTestCandidates(abs)).toEqual([
+			join(repo, "src/lib/foo.test.ts"),
+			join(repo, "src/lib/__tests__/foo.test.ts"),
+			join(repo, "src/lib/foo.spec.ts"),
+			join(repo, "src/lib/__tests__/foo.spec.ts"),
+		]);
+	});
+
+	it("colocated repo with projectRoot: still exactly the historical four", () => {
+		writeFileSync(join(repo, "src/lib/existing.test.ts"), "");
+		const abs = join(repo, "src/lib/foo.ts");
+		expect(companionTestCandidates(abs, repo)).toEqual(companionTestCandidates(abs));
+	});
+
+	it("separate-tree repo: appends full-mirror, stripped-mirror, and flat shapes per root", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/other.test.ts"), "");
+		const abs = join(repo, "src/lib/foo.ts");
+		const candidates = companionTestCandidates(abs, repo);
+		// Historical colocated set is preserved as the head of the list.
+		expect(candidates.slice(0, 4)).toEqual(companionTestCandidates(abs));
+		expect(candidates).toContain(join(repo, "tests/src/lib/foo.test.ts"));
+		expect(candidates).toContain(join(repo, "tests/lib/foo.test.ts"));
+		expect(candidates).toContain(join(repo, "tests/foo.test.ts"));
+		expect(candidates).toContain(join(repo, "tests/lib/foo.spec.ts"));
+	});
+});
+
+describe("evaluateTddNewFileGate — layout 'none' demotes to warn-only", () => {
+	let repo: string;
+
+	beforeEach(() => {
+		// No test files anywhere: this repo never opted into TDD.
+		repo = makeRepo("tdd-gate-none-");
+		resetRepoProfileCache();
+	});
+
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+		resetRepoProfileCache();
+	});
+
+	it("emits an allow+warning instead of a block", () => {
+		const decision = gateAt(repo, "src/lib/foo.ts");
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.reason).toBeUndefined();
+		expect(decision?.rule_id).toBe("tdd_new_file_gate");
+		expect(decision?.warnings).toHaveLength(1);
+		expect(decision?.warnings?.[0]).toMatch(/no companion test/);
+		expect(decision?.warnings?.[0]).toMatch(/demoted to a warning/);
+	});
+
+	it("event wrapper + debt_mode ON: warns and opens NO debt", () => {
+		const decision = evaluateTddNewFileGateForEvent(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-none",
+				agent_source: "claude",
+				tool_name: "Write",
+				tool_input: { file_path: join(repo, "src/lib/foo.ts"), content: "export const x = 1;\n" },
+				cwd: repo,
+				timestamp: "t",
+			},
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.[0]).toMatch(/no companion test/);
+		expect(readOpenDebts(repo)).toHaveLength(0);
+	});
+
+	it("event wrapper + debt_mode OFF: still warn-only, never a hard block", () => {
+		const decision = evaluateTddNewFileGateForEvent(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-none",
+				agent_source: "claude",
+				tool_name: "Write",
+				tool_input: { file_path: join(repo, "src/lib/foo.ts"), content: "export const x = 1;\n" },
+				cwd: repo,
+				timestamp: "t",
+			},
+			rulesFor(false),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(readOpenDebts(repo)).toHaveLength(0);
+	});
+
+	it("a repo that grows its first test file re-enters enforce mode (fresh profile)", () => {
+		writeFileSync(join(repo, "src/lib/existing.test.ts"), "");
+		resetRepoProfileCache();
+		const decision = gateAt(repo, "src/lib/foo.ts");
+		expect(decision?.decision).toBe("block");
+	});
+});
+
+describe("evaluateTddNewFileGate — profile error path (conservative fallback)", () => {
+	it("hard-blocks as before when profile detection cannot read the root", () => {
+		// A nonexistent cwd makes the profile walk throw ENOENT, which yields
+		// the fail-toward-enforcement profile (colocated) — current behavior.
+		const missingRoot = join(tmpdir(), `tdd-gate-missing-${Date.now()}`, "nope");
+		resetRepoProfileCache();
+		const decision = evaluateTddNewFileGate({
+			filePath: join(missingRoot, "src/foo.ts"),
+			cwd: missingRoot,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/companion test/i);
+		resetRepoProfileCache();
+	});
+});
+
+describe("evaluateTddNewFileGate — colocated repo byte-identity", () => {
+	it("candidate list in the block message stays exactly the historical four", () => {
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		const searched = /\(Searched: (.*?)\.\)/.exec(decision?.reason ?? "");
+		expect(searched?.[1]?.split(", ")).toEqual([
+			"src/foo.test.ts",
+			"src/__tests__/foo.test.ts",
+			"src/foo.spec.ts",
+			"src/__tests__/foo.spec.ts",
+		]);
 	});
 });

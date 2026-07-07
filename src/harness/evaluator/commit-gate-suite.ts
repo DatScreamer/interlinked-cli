@@ -17,9 +17,9 @@ import { maxCyclomaticFor } from "../metric-caps.js";
 import type { HarnessDecision } from "../types.js";
 import type { GitChangedFilesFn } from "./commit-gate-changes.js";
 import {
-	blockForRedBar,
 	blockForViolations,
 	type CyclomaticAnalyzer,
+	decideRedBar,
 	failingTestPhrase,
 	loudDegrade,
 	scanFile,
@@ -224,12 +224,25 @@ export async function runSuiteAndScan(
 	// the red run's coverage — under-reporting can only ADD violations, never hide
 	// one — while the clean-pass discharge below is withheld.
 	if (outcome.anyRed) {
-		if (ctx.blockOnTestFailure) return blockForRedBar(outcome.failingTests, ctx.warnings);
-		ctx.warnings.push(
-			"[interlinked:commit-gate] NOTE: the full suite is RED " +
-				`(${failingTestPhrase(outcome.failingTests)}) but block_on_test_failure is off — ` +
-				"not blocking on the red bar.",
-		);
+		if (ctx.blockOnTestFailure) {
+			// Baseline-aware: pre-existing red (recorded at adopt time — foreign repos
+			// arrive with a red suite) does not block wholesale; only NEW failures do.
+			// No baseline / green baseline keeps the historical unconditional block.
+			// The baseline lives under the REAL repo root's `.interlinked/`
+			// (`ledgerRoot`), never a materialized snapshot that omits it.
+			const redDecision = decideRedBar(
+				outcome.failingTests,
+				ctx.warnings,
+				ctx.ledgerRoot ?? ctx.projectRoot,
+			);
+			if (redDecision) return redDecision;
+		} else {
+			ctx.warnings.push(
+				"[interlinked:commit-gate] NOTE: the full suite is RED " +
+					`(${failingTestPhrase(outcome.failingTests)}) but block_on_test_failure is off — ` +
+					"not blocking on the red bar.",
+			);
+		}
 	}
 
 	const violations = collectViolations(ctx, outcome.perFile, deps);
