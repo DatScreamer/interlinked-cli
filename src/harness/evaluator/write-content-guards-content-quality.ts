@@ -236,8 +236,13 @@ function collectAssertionAndLogWarnings(
  *  `:` or `(` (the `// TODO:` / `/* FIXME(alice):` shapes). */
 function collectMarkerEvalWarnings(filePath: string, content: string): string[] {
 	const warnings: string[] = [];
+	// A marker immediately preceded by a backtick/quote/backslash is DOCUMENTING
+	// the pattern (a detector's own `TODO:` example or a /TODO/ regex literal), not
+	// a real task marker — the negative lookbehind excludes those. Fixes the FP
+	// where a TODO/FIXME detector's own source flagged its detection strings
+	// (e.g. verification-stop-checks-predicates.ts's `// \`TODO:\` / \`TODO(name):\``).
 	const taskMarkerPattern = new RegExp(
-		"(?:\\/\\/|\\/\\*|\\*)(?:\\s*(?:TODO|FIXME|HACK|XXX)\\b|[^\\n]*?\\b(?:TODO|FIXME|HACK|XXX)\\s*[:(])",
+		"(?:\\/\\/|\\/\\*|\\*)(?:\\s*(?<![`'\"\\\\])(?:TODO|FIXME|HACK|XXX)\\b|[^\\n]*?(?<![`'\"\\\\])\\b(?:TODO|FIXME|HACK|XXX)\\s*[:(])",
 		"g",
 	);
 	const taskMarkers = (content.match(taskMarkerPattern) || []).length;
