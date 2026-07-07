@@ -34,7 +34,17 @@ const LONG_FLAG_RE = /--[A-Za-z][\w-]*/;
 
 function walk(dir: string, out: string[]): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) {
+		// Skip node_modules/dist/dotfiles, and single-underscore transient fixture
+		// trees (_*_fixtures-*, _gate_*, _write_integration, _multi_edit_*): they are
+		// gitignored, created/destroyed by other tests, and reading one mid-walk
+		// caused an intermittent ENOENT flake under the concurrent full suite.
+		// `__tests__` (double underscore) is kept — the audit needs those test files.
+		if (
+			entry.name === "node_modules" ||
+			entry.name === "dist" ||
+			entry.name.startsWith(".") ||
+			(entry.name.startsWith("_") && !entry.name.startsWith("__"))
+		) {
 			continue;
 		}
 		const full = join(dir, entry.name);

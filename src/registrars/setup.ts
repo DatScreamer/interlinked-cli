@@ -26,6 +26,19 @@ interface ViewOpts extends JsonOpts {
 
 export function registerSetupCommands(program: Command): void {
 	program
+		.command("reload")
+		.description(
+			"One-command dogfood loop: rebuild the CLI from its source checkout, refresh this repo's hooks, restart the daemon — reporting only what actually changed",
+		)
+		.option("--force", "Restart the daemon even when nothing changed")
+		.option("--no-build", "Skip the CLI rebuild (hook refresh + conditional restart only)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: { force?: boolean; build?: boolean; json?: boolean }) => {
+			const { reloadCommand } = await import("../commands/reload.js");
+			await reloadCommand(opts);
+		});
+
+	program
 		.command("clean")
 		.description("Remove stale data")
 		.option("--dry-run", "Show what would be removed (default)")

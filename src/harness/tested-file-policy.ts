@@ -22,7 +22,7 @@
 // actually tested" question; the two advisory checks stay as-is for the deep
 // `--all-checks` audit.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 import { isGeneratedFile } from "./checks/shared.js";
@@ -152,6 +152,31 @@ function normalizeBaseline(raw: unknown): UntestedFilesBaseline | null {
 /** Clear the memoized baseline (after writing/regenerating the file). */
 export function resetUntestedFilesBaselineCache(): void {
 	baselineCache = new Map();
+}
+
+/**
+ * Persist a baseline to `.interlinked/untested-files-baseline.json` for `cwd`.
+ * The writer half of `loadUntestedFilesBaseline` (mirrors
+ * `large-file-policy.ts::saveLargeFileBaseline` — the two orphan water-lines
+ * gained their creation path together). Used by `interlinked adopt`, the
+ * human-invoked bootstrap: plain `fs` writes from the CLI process never pass
+ * through the PreToolUse baseline-integrity gate.
+ *
+ * The exemption Set serializes as a sorted array (the on-disk schema
+ * `normalizeBaseline` reads back), so re-runs produce stable, diff-friendly
+ * output. The loader cache is invalidated so a subsequent
+ * `loadUntestedFilesBaseline` in the same process sees the new state.
+ */
+export function saveUntestedFilesBaseline(cwd: string, baseline: UntestedFilesBaseline): void {
+	const path = join(cwd, UNTESTED_BASELINE_REL);
+	mkdirSync(dirname(path), { recursive: true });
+	const payload = {
+		version: baseline.version,
+		min_coverage_pct: baseline.min_coverage_pct,
+		files: [...baseline.files].map((f) => f.replace(/\\/g, "/")).sort(),
+	};
+	writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+	resetUntestedFilesBaselineCache();
 }
 
 /** The active coverage threshold for `cwd` (baseline override, else default). */

@@ -140,6 +140,10 @@ vi.mock("../lib/formatter.js", () => ({
 
 vi.mock("./doctor-system.js", () => ({ runSystemChecks: mockRunSystemChecks }));
 vi.mock("./harness.js", () => ({ isHarnessRunning: mockIsHarnessRunning }));
+// Adoption-artifact rows are covered by adopt.test.ts; stubbed empty here so
+// these fixtures keep their pre-adopt output shape (no warn row from the
+// host repo's missing baselines leaking into unrelated expectations).
+vi.mock("./adopt.js", () => ({ adoptionArtifactChecks: () => [] }));
 
 vi.mock("../lib/config.js", () => ({
 	getConfigDir: mockGetConfigDir,

@@ -8,6 +8,7 @@ import { getCollectionLiveness } from "../lib/collection/liveness.js";
 import { getConfigDir, resolveConfig } from "../lib/config.js";
 import { c, divider, header } from "../lib/formatter.js";
 import { getOutputMode, output } from "../lib/output.js";
+import { adoptionArtifactChecks } from "./adopt.js";
 import { thinkingCaptureCheck } from "./doctor-capture.js";
 import {
 	authTokenCheck,
@@ -202,6 +203,12 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// Harness Checks (9–11): Node runtime + harness server + guard rules
 	// ===========================================
 	results.push(...harnessChecks(cwd, configDir));
+
+	// 12. Adoption artifacts — are the ratchet baselines + trigram index
+	// present (and the coverage baseline non-empty)? Missing artifacts mean
+	// verify screams on legacy repos and the ratchets are inert; the fix is
+	// one command: `interlinked adopt`.
+	results.push(...adoptionArtifactChecks(cwd));
 
 	// ===========================================
 	// Server Checks (need auth)
