@@ -4,6 +4,7 @@
 // checkFloatingPromises, checkSyncIoInAsync.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkBroadObjectTypes,
 	checkFloatingPromises,
@@ -12,7 +13,6 @@ import {
 	checkSyncIoInAsync,
 	checkUnvalidatedJsonBoundary,
 } from "../generic-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("checkUnvalidatedJsonBoundary", () => {
 	// --- True positives ---
@@ -138,7 +138,7 @@ describe("checkPromiseRejectNonError", () => {
 		expect(checkPromiseRejectNonError(code, "x.ts")).toEqual([]);
 	});
 
-	it("does NOT flag in test files", () => {
+	it("does NOT flag Promise.reject(string) in test files", () => {
 		const code = 'Promise.reject("expected failure");';
 		expect(checkPromiseRejectNonError(code, "x.test.ts")).toEqual([]);
 	});
@@ -331,7 +331,7 @@ describe("checkBroadObjectTypes", () => {
 		expect(checkBroadObjectTypes(code, "inspect.ts")).toEqual([]);
 	});
 
-	it("does NOT flag in test files", () => {
+	it("does NOT flag Record<string, any> in test files", () => {
 		const code = "export type Props = Record<string, any>;";
 		expect(checkBroadObjectTypes(code, "props.test.ts")).toEqual([]);
 	});

@@ -1,0 +1,12 @@
+{
+	"slug": "cross-file-rename",
+	"prompt": "Rename the function computeTotal to calculateTotal across this repo: its definition in src/order.js, every import and call site (see src/report.js), and the tests. Then run npm test to confirm the suite still passes.",
+	"repo_shape": "colocated-tdd",
+	"success_check": {
+		"type": "file_contains",
+		"path": "src/report.js",
+		"pattern": "calculateTotal"
+	},
+	"timeout_s": 600,
+	"stresses": "multi-file coordinated edits, import-resolution / blast-radius structural checks"
+}

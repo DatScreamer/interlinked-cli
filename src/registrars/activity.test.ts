@@ -206,11 +206,11 @@ describe("registerActivityCommands — structure", () => {
 		expect(sub(program, "explain").opts()).toMatchObject({ since: "1h" });
 	});
 
-	it("requires a file positional for `trace import`", () => {
+	it("requires a file positional for `trace import`", async () => {
 		const trace = sub(build(), "trace");
 		// The `import <file>` declaration makes the arg required; parsing without
 		// it throws under exitOverride rather than silently forwarding undefined.
-		expect(() => trace.parseAsync(["import"], { from: "user" })).rejects.toThrow();
+		await expect(() => trace.parseAsync(["import"], { from: "user" })).rejects.toThrow();
 		expect(traceImportCommand).not.toHaveBeenCalled();
 	});
 });

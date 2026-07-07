@@ -1,0 +1,11 @@
+{
+	"slug": "scratchpad-script",
+	"prompt": "Write a small throwaway script scripts/count-lines.mjs that prints the total number of lines across index.js and every .js file under lib/, then run it with node and report the number it prints.",
+	"repo_shape": "no-tests",
+	"success_check": {
+		"type": "command_exits_zero",
+		"command": "node scripts/count-lines.mjs"
+	},
+	"timeout_s": 600,
+	"stresses": "ad-hoc tooling writes outside src/, bash + node execution"
+}

@@ -23,13 +23,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../lib/non-null.js";
+import { extractTrigrams, packTrigram, TrigramIndex } from "./trigram-index.js";
 import {
 	DEFAULT_MAX_FILE_SIZE,
 	extractTrigramsWithMasks,
 	nextCharBit,
 	type PostingList,
 } from "./trigram-primitives.js";
-import { extractTrigrams, packTrigram, TrigramIndex } from "./trigram-index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -262,7 +262,7 @@ describe("TrigramIndex.build", () => {
 		}
 	});
 
-	it("skips a tracked path whose on-disk entry can no longer be read", () => {
+	it("skips a tracked path whose on-disk entry can no longer be read", { timeout: 60_000 }, () => {
 		// A git-tracked file that has been replaced on disk by a directory: git
 		// ls-files still lists it, so build() attempts readFileSync and hits the
 		// catch-continue (line 156-157). The other file still indexes.

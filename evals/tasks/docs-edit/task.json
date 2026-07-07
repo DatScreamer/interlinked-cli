@@ -1,0 +1,12 @@
+{
+	"slug": "docs-edit",
+	"prompt": "Add an '## Installation' section to README.md documenting two steps: cloning the repo and running node index.js greet <name>. Keep the existing content intact.",
+	"repo_shape": "no-tests",
+	"success_check": {
+		"type": "file_contains",
+		"path": "README.md",
+		"pattern": "## Installation"
+	},
+	"timeout_s": 420,
+	"stresses": "docs-only edit — must stay friction-free (no code gates should fire)"
+}

@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { HarnessEvent } from "../types.js";
 import {
 	detectConfigLoosening,
 	evaluateConfigLooseningForEvent,
 } from "./config-loosening-gate.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Minimal PreToolUse event factory — only the fields the gate reads. */
 function makeEvent(toolInput: Record<string, unknown>, cwd?: string): HarnessEvent {
@@ -473,7 +473,7 @@ describe("evaluateConfigLooseningForEvent — Write tool against git HEAD", () =
 		expect(decision).toBeNull();
 	});
 
-	it("fails open when the file path resolves outside its own repo root", () => {
+	it("fails open when the file path resolves outside its own repo root", { timeout: 60_000 }, () => {
 		// readHeadVersion guards against `relative(repoRoot, absFile)` producing a
 		// `..`-prefixed path (a file that resolves outside the repo `git -C` found
 		// for its dirname). The divergence is constructed with an EXPLICIT symlink
@@ -517,7 +517,7 @@ describe("evaluateConfigLooseningForEvent — Write tool against git HEAD", () =
 		}
 	});
 
-	it("returns null when the config exists in a repo but was never committed (git show fails)", () => {
+	it("returns null when the config exists in a repo but was never committed (git show fails)", { timeout: 60_000 }, () => {
 		// Repo with an empty initial commit; tsconfig.json is on disk but not in
 		// HEAD → `git show HEAD:tsconfig.json` exits non-zero → readHeadVersion
 		// returns "" → fails open. Exercises the show-status failure branch

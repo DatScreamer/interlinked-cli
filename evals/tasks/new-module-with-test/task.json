@@ -1,0 +1,12 @@
+{
+	"slug": "new-module-with-test",
+	"prompt": "Create a new module src/stats.js exporting mean(numbers) — the arithmetic mean of an array of numbers, returning 0 for an empty array — plus a colocated test file src/stats.test.js covering both the normal and the empty case. Then run npm test and make sure the whole suite passes.",
+	"repo_shape": "colocated-tdd",
+	"success_check": {
+		"type": "file_contains",
+		"path": "src/stats.test.js",
+		"pattern": "mean"
+	},
+	"timeout_s": 600,
+	"stresses": "new-file TDD flow (tdd_new_file_gate, per-edit coverage), verify-after-edit"
+}

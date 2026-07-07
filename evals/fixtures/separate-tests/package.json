@@ -1,0 +1,10 @@
+{
+	"name": "fixture-separate-tests",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"//": "No declared deps on purpose: the eval driver symlinks the interlinked-cli repo's node_modules into each fixture copy so `vitest` resolves offline, with no install step and no supply-chain-gate interaction. NOTE: tests/calc.test.js fails as committed — the fix-failing-test eval task asks the agent to fix src/calc.js.",
+	"scripts": {
+		"test": "vitest run"
+	}
+}

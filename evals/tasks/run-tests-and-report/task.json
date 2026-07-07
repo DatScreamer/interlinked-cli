@@ -1,0 +1,12 @@
+{
+	"slug": "run-tests-and-report",
+	"prompt": "Run the test suite with npm test. Then create TESTS.md at the repo root summarizing the run: how many test files and tests ran, whether the suite passed or failed (write the word PASS or FAIL in capitals), and one sentence on overall health.",
+	"repo_shape": "colocated-tdd",
+	"success_check": {
+		"type": "file_contains",
+		"path": "TESTS.md",
+		"pattern": "PASS|FAIL"
+	},
+	"timeout_s": 600,
+	"stresses": "verification-only flow plus a markdown report write (no source edits)"
+}

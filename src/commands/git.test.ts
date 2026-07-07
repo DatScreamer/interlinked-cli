@@ -130,7 +130,7 @@ describe("gitContextCommand — guard + error branches", () => {
 		expect(parsed.error).toContain("Not a git repository");
 	});
 
-	it("stringifies a non-Error throw in the outer catch (String(err) branch)", async () => {
+	it("gitContextCommand stringifies a non-Error throw in the outer catch (String(err) branch)", async () => {
 		// A non-Error rejection from a local git helper hits the outer catch's
 		// `err instanceof Error ? err.message : String(err)` else-branch.
 		mockGetCurrentBranch.mockImplementation(() => {
@@ -448,7 +448,7 @@ describe("gitLinkCheckpointCommand — guard + resolution errors", () => {
 		expect(mockCallTool).toHaveBeenCalledTimes(1);
 	});
 
-	it("stringifies a non-Error throw in the outer catch (String(err) branch)", async () => {
+	it("gitLinkCheckpointCommand stringifies a non-Error throw in the outer catch (String(err) branch)", async () => {
 		// getCurrentBranch runs inside the outer try (after the repo/SHA guards);
 		// a non-Error throw exercises the catch's `String(err)` else-branch.
 		mockGetCurrentBranch.mockImplementation(() => {

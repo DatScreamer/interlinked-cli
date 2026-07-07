@@ -119,6 +119,7 @@ describe("loadRecentWorkspaceEvents", () => {
 
 		// Rewrite the log with different content. mtimeMs must advance so the
 		// cached entry is treated as stale.
+		// interlinked-ignore: hardcoded_timeout_in_tests — waits out filesystem mtime resolution so the rewrite gets a distinct mtimeMs; not a flaky race
 		await new Promise((r) => setTimeout(r, 12));
 		writeLog([
 			{ hook_event: "PreToolUse", session_id: "s1", timestamp: "2026-05-27T00:00:01Z" },

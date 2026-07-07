@@ -1,0 +1,11 @@
+{
+	"slug": "three-file-scaffold",
+	"prompt": "Scaffold a models layer in this repo: create src/models/user.js exporting makeUser(name, email), src/models/post.js exporting makePost(title, authorId), and src/models/index.js re-exporting both modules. Plain ESM, no external dependencies, keep each file small.",
+	"repo_shape": "no-tests",
+	"success_check": {
+		"type": "file_exists",
+		"paths": ["src/models/user.js", "src/models/post.js", "src/models/index.js"]
+	},
+	"timeout_s": 600,
+	"stresses": "new-file burst — wander-rule / trajectory stressor (three related new files in sequence)"
+}

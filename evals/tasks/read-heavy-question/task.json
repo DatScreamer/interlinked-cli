@@ -1,0 +1,12 @@
+{
+	"slug": "read-heavy-question",
+	"prompt": "This repo is a small Python package. Read the modules under app/ and the tests, then determine which function is responsible for removing surrounding double quotes from a field value. Create ANSWER.md at the repo root containing the module path and the function name (for example: app/somefile.py :: some_function).",
+	"repo_shape": "python",
+	"success_check": {
+		"type": "file_contains",
+		"path": "ANSWER.md",
+		"pattern": "unquote"
+	},
+	"timeout_s": 420,
+	"stresses": "read/grep-heavy exploration (grep accelerator, file-dump guards), minimal writes"
+}

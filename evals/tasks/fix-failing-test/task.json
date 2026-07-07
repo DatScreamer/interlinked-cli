@@ -1,0 +1,11 @@
+{
+	"slug": "fix-failing-test",
+	"prompt": "The test suite in this repo currently fails. Run npm test, find the bug in the source code (the tests are correct — do not modify anything under tests/), fix it, and re-run npm test until everything passes.",
+	"repo_shape": "separate-tests",
+	"success_check": {
+		"type": "command_exits_zero",
+		"command": "npm test"
+	},
+	"timeout_s": 600,
+	"stresses": "red-state editing (red-bar / wander rules), edit→verify loop"
+}

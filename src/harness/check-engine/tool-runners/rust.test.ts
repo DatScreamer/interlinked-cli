@@ -20,8 +20,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
 import { nonNull } from "../../../lib/non-null.js";
+import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
 
 const spawnSyncMock = vi.fn();
 
@@ -463,7 +463,7 @@ describe("runRustfmtCheck", () => {
 		expect(nonNull(out[0]).message).toContain("unclosed delimiter");
 	});
 
-	it("returns [] from the catch block when spawnSync throws", () => {
+	it("returns [] from runRustfmtCheck's catch block when spawnSync throws", () => {
 		spawnSyncMock.mockImplementation(() => {
 			throw new Error("boom");
 		});

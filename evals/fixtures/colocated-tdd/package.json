@@ -1,0 +1,10 @@
+{
+	"name": "fixture-colocated-tdd",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"//": "No declared deps on purpose: the eval driver symlinks the interlinked-cli repo's node_modules into each fixture copy so `vitest` resolves offline, with no install step and no supply-chain-gate interaction.",
+	"scripts": {
+		"test": "vitest run"
+	}
+}

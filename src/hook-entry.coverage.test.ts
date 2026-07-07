@@ -1048,6 +1048,7 @@ async function runDirectRunInProcess(
 		if (options.emitStdinError) {
 			void (async () => {
 				for (let i = 0; i < 200 && fakeStdin.listenerCount("error") === 0; i++) {
+					// interlinked-ignore: hardcoded_timeout_in_tests — bounded 5ms poll of a deterministic predicate (listener attached), not a naked sleep
 					await new Promise<void>((r) => setTimeout(r, 5));
 				}
 				fakeStdin.emit("error", new Error("synthetic stdin failure"));
@@ -1089,6 +1090,7 @@ async function runDirectRunInProcess(
 async function waitForExit(cap: DirectRunCapture, expectExit: boolean): Promise<void> {
 	const maxIters = expectExit ? 200 : 5;
 	for (let i = 0; i < maxIters && cap.exitCode === undefined; i++) {
+		// interlinked-ignore: hardcoded_timeout_in_tests — bounded 5ms poll of a deterministic predicate (stubbed exit fired), not a naked sleep
 		await new Promise<void>((r) => setTimeout(r, 5));
 	}
 }
