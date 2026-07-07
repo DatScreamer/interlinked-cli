@@ -123,6 +123,23 @@ export function registerQualityCommands(program: Command): void {
 			await writeCommand(path, opts);
 		});
 
+	// `interlinked verify-changeset` — the agent-callable self-gate: preview the
+	// enforced content-quality gate over a PROPOSED changeset WITHOUT writing.
+	// Preview-not-bypass — reports only; the real Write/Edit gate still enforces.
+	program
+		.command("verify-changeset")
+		.description(
+			"Preview the content-quality gate (pre_block + biome + tsc diff-overlay) over a PROPOSED changeset WITHOUT writing — the agent-callable self-gate. Input JSON {version:1, changes:[{path,content}|{path,old_string,new_string}|{path,edits}]} via --file or --stdin.",
+		)
+		.option("--file <changeset>", "Path to a changeset JSON file")
+		.option("--stdin", "Read the changeset JSON from stdin")
+		.option("--warnings", "Also surface pre_warn advisories (default: match the enforced gate)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { verifyChangesetCommand } = await import("../commands/verify-changeset.js");
+			await verifyChangesetCommand(opts);
+		});
+
 	// Structure: generic artifact structure management
 	const structCmd = program
 		.command("structure")
