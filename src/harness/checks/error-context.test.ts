@@ -167,6 +167,32 @@ try {
 		const findings = detectCatchRewrapLosesCause(content, FILE);
 		expect(findings.length).toBe(1);
 	});
+
+	it("fires on a bare .toString() coercion of the binding (no concat)", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error(err.toString());
+}
+`.trim();
+		const findings = detectCatchRewrapLosesCause(content, FILE);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).text).toMatch(/catch_rewrap_loses_cause/);
+	});
+
+	it("fires on a bare property read into the wrapper (new Error(err.message), no cause)", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error(err.message);
+}
+`.trim();
+		const findings = detectCatchRewrapLosesCause(content, FILE);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).text).toMatch(/catch_rewrap_loses_cause/);
+	});
 });
 
 describe("detectCatchRewrapLosesCause — negative cases (must NOT fire)", () => {
@@ -243,6 +269,17 @@ try {
   run();
 } catch (err) {
   throw new Error("the err field was rejected", { cause: err });
+}
+`.trim();
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("does not fire on new Error(err.message, { cause: err }) — property read but cause preserved", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error(err.message, { cause: err });
 }
 `.trim();
 		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);

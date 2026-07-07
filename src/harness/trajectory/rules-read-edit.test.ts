@@ -52,6 +52,14 @@ function reads(n: number, prefix = "src/other"): ToolEvent[] {
 	return out;
 }
 
+/** n distinct reads each in its OWN directory — a directory-dispersed,
+ *  low-dependency-density run (the "lost" fan-out the read-storm rule targets). */
+function scatteredReads(n: number): ToolEvent[] {
+	const out: ToolEvent[] = [];
+	for (let i = 0; i < n; i++) out.push(read(`/repo/pkg${i}/mod.ts`));
+	return out;
+}
+
 // ============================================================
 // reb_blind_edit_unread_file
 // ============================================================
@@ -122,9 +130,9 @@ describe("reb_cold_start_first_edit_zero_reads (positive: fires)", () => {
 		expect(v?.ruleId).toBe("reb_cold_start_first_edit_zero_reads");
 	});
 
-	it("fires for a MultiEdit as the first edit", () => {
+	it("fires for a multi-line MultiEdit as the first edit", () => {
 		const v = run(rebColdStartFirstEditZeroReads, [
-			ev("PostToolUse", "MultiEdit", { file_path: "/repo/src/x.ts", old_string: "a", new_string: "b" }),
+			ev("PostToolUse", "MultiEdit", { file_path: "/repo/src/x.ts", old_string: "a\nb", new_string: "c\nd" }),
 		]);
 		expect(v?.ruleId).toBe("reb_cold_start_first_edit_zero_reads");
 	});
@@ -157,6 +165,13 @@ describe("reb_cold_start_first_edit_zero_reads (negative: stays silent)", () => 
 				ev("PostToolUse", "Write", { file_path: "/repo/src/new.ts", content: "a" }),
 			]),
 		).toBeNull();
+	});
+
+	it("does NOT fire on a single-line first edit (verbatim/targeted patch — fully specified upfront)", () => {
+		// The post-compaction/resume FP: the first action is a locatable one-line
+		// replacement the user/continuation summary specified verbatim. The catalog
+		// FP-guard suppresses it; a multi-line first edit would still fire.
+		expect(run(rebColdStartFirstEditZeroReads, [edit("/repo/src/x.ts", "const a = 1;")])).toBeNull();
 	});
 });
 
@@ -220,23 +235,23 @@ describe("reb_read_recency_decay_edit (negative: stays silent)", () => {
 // ============================================================
 
 describe("reb_read_storm_no_edit (positive: fires)", () => {
-	it("fires on the 10th distinct Read with no edit in the run", () => {
-		const v = run(rebReadStormNoEdit, reads(10));
+	it("fires on the 10th distinct Read across unrelated directories with no edit", () => {
+		const v = run(rebReadStormNoEdit, scatteredReads(10));
 		expect(v?.ruleId).toBe("reb_read_storm_no_edit");
 		expect(v?.action).toBe("silent_metric");
 	});
 
 	it("fires when the run starts fresh after an edit", () => {
-		const v = run(rebReadStormNoEdit, [edit("/repo/src/x.ts"), ...reads(10, "src/post")]);
+		const v = run(rebReadStormNoEdit, [edit("/repo/src/x.ts"), ...scatteredReads(10)]);
 		expect(v?.ruleId).toBe("reb_read_storm_no_edit");
 	});
 
 	it("fires once at the crossing even with an interspersed re-read", () => {
 		// 9 distinct + 1 re-read of the first (no fire) + a 10th distinct → fires on the 10th.
 		const v = run(rebReadStormNoEdit, [
-			...reads(9),
-			read("/repo/src/other0.ts"),
-			read("/repo/src/tenth.ts"),
+			...scatteredReads(9),
+			read("/repo/pkg0/mod.ts"),
+			read("/repo/pkgTenth/mod.ts"),
 		]);
 		expect(v?.ruleId).toBe("reb_read_storm_no_edit");
 	});
@@ -257,6 +272,15 @@ describe("reb_read_storm_no_edit (negative: stays silent)", () => {
 
 	it("does NOT re-fire past the crossing (11th distinct read is silent)", () => {
 		expect(run(rebReadStormNoEdit, reads(11))).toBeNull();
+	});
+
+	it("does NOT fire on a coherent same-directory cluster (high dependency density)", () => {
+		// 10 distinct reads confined to one module directory — a focused, related
+		// survey, not a scattered "lost" fan-out. The dependency-density proxy
+		// (directory co-location) suppresses it even though 10 distinct files were read.
+		const cluster: ToolEvent[] = [];
+		for (let i = 0; i < 10; i++) cluster.push(read(`/repo/src/mod/part${i}.ts`));
+		expect(run(rebReadStormNoEdit, cluster)).toBeNull();
 	});
 });
 

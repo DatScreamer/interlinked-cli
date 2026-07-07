@@ -100,16 +100,39 @@ export function trackTestRun(event: HarnessEvent, session: SessionTrajectory, cw
 	recordTestRunCycle(session, testRunFile, passed);
 }
 
-/** A test command that ran the WHOLE suite (no specific test file targeted):
- *  `detectTestRunFile` either recognizes the runner but resolves no file
- *  (`ALL_TESTS_SENTINEL` — e.g. bare `vitest run`, `npm test`) or doesn't
- *  know the runner at all (null — e.g. `bun test`, bare `mocha`), which for
- *  a command `classifyVerificationCommand` already called a test run still
- *  means "no file argument". The cwd is only used to absolutize a *matched*
- *  file path, so any value works for this yes/no predicate. */
+/** A per-file test-FILE argument for a runner `detectTestRunFile` doesn't
+ *  parse: a token shaped like a test/spec source file — a `.test.` / `.spec.` /
+ *  `_test.` / `_spec.` marker inside a dotted filename (`foo.test.ts`,
+ *  `spec/user_spec.rb`, `bar_test.ts`). The token can't span an `=`, so flag
+ *  VALUES (`--reporter-options file=out.test.xml`) and bare option words
+ *  (`--reporter spec`) never match, and the trailing `.ext` keeps a bare
+ *  directory (`mocha test/`) or grep pattern from matching. Mirrors the
+ *  `.test`/`.spec` filename shape `detectTestRunFile` keys on for vitest/jest,
+ *  extended with `_spec`/`_test` for rspec / bun / deno. */
+const PER_FILE_TEST_ARG_RE = /(?:^|\s)[^\s=]*[._](?:test|spec)\.[A-Za-z0-9]+/;
+
+/** A test command that ran the WHOLE suite (no specific test file targeted).
+ *  For a command `classifyVerificationCommand` already called a test run,
+ *  `detectTestRunFile` returns one of three things:
+ *   - a resolved file path → per-file (NOT whole suite).
+ *   - `ALL_TESTS_SENTINEL` → a runner it parses run with no file (bare
+ *     `vitest run`, `npm test`) → whole suite.
+ *   - null → a runner it doesn't parse (`mocha`, `bun test`, `ava`,
+ *     `deno test`, `tap`, `rspec`). Here a bare whole-suite run and an
+ *     explicit per-file run are indistinguishable to `detectTestRunFile`
+ *     (both null), so scan the command directly for a per-file test-file
+ *     argument — matching how vitest/jest per-file runs are already detected
+ *     there. Without this a per-file run of those runners was misread as
+ *     whole-suite, so a per-file green could clear (or a per-file red
+ *     spuriously set) the whole-suite red axis.
+ *  The cwd only absolutizes a *matched* path, so any value works here. */
 function isWholeSuiteTestCommand(cmd: string): boolean {
 	const target = detectTestRunFile(cmd, "/");
-	return target === null || target === ALL_TESTS_SENTINEL;
+	if (target === ALL_TESTS_SENTINEL) return true;
+	if (target !== null) return false; // a resolved per-file path
+	// Runner `detectTestRunFile` doesn't parse: whole-suite unless the command
+	// carries an explicit per-file test argument.
+	return !PER_FILE_TEST_ARG_RE.test(cmd);
 }
 
 /** Narrow a Bash command to an observed verification-check kind

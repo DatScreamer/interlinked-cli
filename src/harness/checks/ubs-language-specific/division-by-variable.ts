@@ -42,25 +42,26 @@ import { isJsTsFile, isPyFile } from "./_shared.js";
  * terminators, end-of-line comments, and division-looking content inside
  * string literals do not contribute matches.
  *
- * FP-recon 2026-07: beyond the same-line guard, the detector runs a
- * divisor-anchored DOMINATING-GUARD scan over a bounded lookback window
- * (`GUARD_LOOKBACK_LINES`). A division is suppressed when a preceding
- * line provably dominates it with the divisor named literally:
- *   1. EARLY-EXIT GUARD — `if (n === 0) return;` / `if (!n) throw …` /
- *      Python `if not n: return`, verified straight-line-dominating by a
- *      brace walk (the guard's enclosing block must not close before the
- *      division) or, for Python, by indentation.
- *   2. STILL-OPEN ENCLOSING POSITIVE GUARD — `if (n !== 0) {` /
- *      `if (n > 0) {` / bare-truthy `if (n) {`, verified still open at
- *      the division by the same brace walk (a closed sibling block does
- *      NOT suppress); Python uses indentation dominance.
- *   3. NONZERO ASSIGNMENT — nearest preceding `n = Math.max(1, …)`,
- *      `n = … || 1`, `n ||= 1`, or `n = <nonzero literal>`, with no
- *      interleaving re-assignment of the divisor.
- * Any nearer re-assignment of the divisor that is not a nonzero shape
- * aborts the scan (the guard above it no longer holds). Per the FN-averse
- * contract below, every suppression names the divisor (or its object
- * head) — a generic "an if exists above" never suppresses.
+ * Guard-based suppression is SAME-LINE ONLY — there is deliberately no
+ * multi-line lookback or dominating-guard analysis. A brace-walk /
+ * indentation-dominance scan over preceding lines was considered and
+ * rejected: it would risk false-suppressing a real division-by-zero, the
+ * FN failure mode `lineHasZeroGuard`'s contract below flags as the one
+ * that defeats the check (missing an FP is fine; hiding a real bug is
+ * not). A match is dropped only when its OWN line also carries a
+ * zero-guard in one of the shapes `lineHasZeroGuard` recognizes: the
+ * Python ternary (`a / n if n > 0 else 0`), the parenthesized
+ * `if (n != 0)`, the JS/Go conditional (`n > 0 ? a / n : 0`), or the
+ * `n && a / n` short-circuit. A guard on a PRECEDING line — an early-exit
+ * `if (n === 0) return;`, an enclosing `if (n !== 0) { … }`, or an
+ * upstream `n = n || 1` — does NOT suppress; those divisions still fire.
+ *
+ * Python path joins (`base / "sub"`, where `/` is
+ * `pathlib.Path.__truediv__` rather than division) get two dedicated
+ * suppressions: a match whose LHS is a name annotated `: Path` or
+ * assigned `Path(...)` anywhere in the file (`collectPathishNames` +
+ * `isPathDivisionLine`), and any line carrying an `os.path.join(...)`
+ * call.
  */
 export function checkDivisionByVariable(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);

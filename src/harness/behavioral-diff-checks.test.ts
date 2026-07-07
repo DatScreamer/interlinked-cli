@@ -511,4 +511,62 @@ describe("checkTestTimeoutInflation", () => {
 		stageEdit("client.ts", `export const opts = { timeout: 30000 };\n`);
 		expect(checkTestTimeoutInflation(makeSession(["client.ts"]))).toEqual([]);
 	});
+
+	// Finding (a): removed→added literals must pair by TEST IDENTITY, not by
+	// position within a hunk. Deleting one test's timeout and adding a
+	// different, larger one in the SAME hunk is not an inflation of an
+	// existing test. (Old positional pairing falsely reported 5000→30000.)
+	it("N6: does not fire when one test's timeout is deleted and a different, larger one is added in the same hunk", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("alpha", { timeout: 5000 }, async () => { await work(); });\nit("keep", () => { expect(1).toBe(1); });\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("keep", () => { expect(1).toBe(1); });\nit("beta", { timeout: 30000 }, async () => { await work(); });\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	// Finding (b): only TEST-FRAMEWORK timeouts count. A raised `timeout: N`
+	// on an arbitrary options object inside a test body (no it/test/describe
+	// call on that line) is not a framework timeout. (Old code matched any
+	// `timeout: N` and falsely reported 5000→30000.)
+	it("N7: does not fire when a non-framework `timeout: N` object literal is raised inside a test body", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("fetch", async () => {\n  const client = makeClient({ timeout: 5000 });\n  await client.get();\n});\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("fetch", async () => {\n  const client = makeClient({ timeout: 30000 });\n  await client.get();\n});\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	// Finding (b): the `}, N)` third-arg shape must close the TEST callback,
+	// not a nested setTimeout/setInterval. (Old code matched any `}, N)` and
+	// falsely reported a raised nested-setTimeout delay.)
+	it("N8: does not fire when a nested setTimeout delay is raised inside a test", () => {
+		commitInitial(
+			"foo.test.ts",
+			`it("waits", () => {\n  setTimeout(() => {\n    finish();\n  }, 5000);\n});\n`,
+		);
+		stageEdit(
+			"foo.test.ts",
+			`it("waits", () => {\n  setTimeout(() => {\n    finish();\n  }, 30000);\n});\n`,
+		);
+		expect(checkTestTimeoutInflation(makeSession(["foo.test.ts"]))).toEqual([]);
+	});
+
+	// Finding (b) positive completion: jest.setTimeout(N) is a framework
+	// context and a raise must still fire.
+	it("P4: flags a raised jest.setTimeout(N) global timeout", () => {
+		commitInitial("foo.test.ts", `jest.setTimeout(5000);\nit("a", () => {});\n`);
+		stageEdit("foo.test.ts", `jest.setTimeout(60000);\nit("a", () => {});\n`);
+		const results = checkTestTimeoutInflation(makeSession(["foo.test.ts"]));
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).message).toContain("5000ms → 60000ms");
+		expect(nonNull(results[0]).message).toContain("jest.setTimeout");
+	});
 });

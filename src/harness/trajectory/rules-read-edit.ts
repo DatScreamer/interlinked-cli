@@ -116,6 +116,16 @@ export const rebColdStartFirstEditZeroReads: TrajectoryRule = (state, event) => 
 	if (!isPostSurgicalEdit(event)) return null;
 	if (sessionHasOriented(state)) return null;
 	if (editRecordsExceed(state, 1)) return null; // not the first edit
+	// Catalog FP-guard ("suppress compaction/continuation marker + verbatim user
+	// patch") — the common post-compaction/resume case where the agent applies a
+	// fully-specified patch cold. Lifecycle markers (SessionStart/PreCompact) are
+	// filtered before the shadow engine (server/trajectory-shadow.ts), so the
+	// computable proxy is the verbatim/targeted-patch SHAPE: a single-line
+	// old_string is a locatable, fully-specified replacement — the same "not
+	// unseen" carve-out reb_blind_edit_unread_file applies, and the "change fully
+	// specified upfront" exception this rule's own message already names. A
+	// multi-line first edit (a substantial unseen region) still fires.
+	if (!(event.input.old_string ?? "").includes("\n")) return null;
 	return nudge(
 		"reb_cold_start_first_edit_zero_reads",
 		"low",
@@ -173,6 +183,32 @@ export const rebReadRecencyDecayEdit: TrajectoryRule = (state, event) => {
 // legitimate survey (hence metric-only, per the catalog's FP note). Fires
 // exactly once per run, at the 10th distinct file.
 const READ_STORM_DISTINCT = 10;
+
+/** Parent directory of a path (pure string math; "" when it has no separator). */
+function dirOf(path: string): string {
+	const idx = path.lastIndexOf("/");
+	return idx >= 0 ? path.slice(0, idx) : "";
+}
+
+/**
+ * The largest number of `files` sharing a single parent directory. The shadow
+ * engine has no import graph, so directory co-location is the closest computable
+ * proxy for the catalog's "dependency density" condition: a run dominated by one
+ * module directory is a focused, likely-related survey (HIGH density), whereas a
+ * run with no dominant directory is the scattered, low-density "lost" shape.
+ */
+function maxSameDirCount(files: Iterable<string>): number {
+	const byDir = new Map<string, number>();
+	let max = 0;
+	for (const f of files) {
+		const dir = dirOf(f);
+		const n = (byDir.get(dir) ?? 0) + 1;
+		byDir.set(dir, n);
+		if (n > max) max = n;
+	}
+	return max;
+}
+
 export const rebReadStormNoEdit: TrajectoryRule = (state, event) => {
 	if (event.hook !== "PostToolUse" || event.tool !== "Read") return null;
 	const file = event.input.file_path;
@@ -190,6 +226,12 @@ export const rebReadStormNoEdit: TrajectoryRule = (state, event) => {
 		distinct.add(e.input.file_path);
 	}
 	if (distinct.size !== READ_STORM_DISTINCT) return null;
+	// Catalog FP-guard: fire only on a LOW-dependency-density run (unrelated
+	// reads) — a coherent module survey is a legitimate, deliberate exploration.
+	// Proxy (no import graph in the shadow engine): suppress when a strict
+	// majority of the distinct reads share one directory (a dominant module ⇒
+	// the reads are related). Only a directory-dispersed run survives.
+	if (maxSameDirCount(distinct) * 2 > distinct.size) return null;
 	return metric(
 		"reb_read_storm_no_edit",
 		`${READ_STORM_DISTINCT} distinct files read in a row with no edit. A long survey can be ` +

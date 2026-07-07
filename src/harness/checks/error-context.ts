@@ -8,8 +8,9 @@
 //                                 the log line is `{}` (message/stack lost).
 //   - catch_rewrap_loses_cause  — new *Error in a catch that references the
 //                                 caught binding ONLY via string coercion
-//                                 (concat / String() / template interpolation)
-//                                 — the cause chain and stack are destroyed.
+//                                 (concat / String() / .toString() / template
+//                                 interpolation / bare property read) — the
+//                                 cause chain and stack are destroyed.
 //                                 Complementary slice to lossy_error_rethrow
 //                                 in error-handling.ts, which covers the
 //                                 "binding not referenced at all" case.
@@ -259,7 +260,14 @@ function classifyBindingRefs(
 		else if (isInsideTemplateExpr(before)) lossy++;
 		else if (/\bString\s*\(\s*$/.test(before)) lossy++;
 		else if (/\+\s*$/.test(before) || /^(?:\s*\.\s*\w+)?\s*\+/.test(after)) lossy++;
-		else preserving++; // bare arg / property access / options-object value
+		// A bare property/method read — `err.message`, `err.toString()`,
+		// `err.stack` — coerces the binding to one of its values and drops the
+		// Error object, so the stack and .cause chain are lost just as with
+		// String()/concat. Requires the ref be immediately followed by `.<member>`;
+		// a bare `err` (passed to the ctor / an options value) stays preserving,
+		// and any `{ cause: err }` alongside pushes preserving>0 → no fire.
+		else if (/^\s*\.\s*[A-Za-z_$][\w$]*/.test(after)) lossy++;
+		else preserving++; // bare arg / options-object value
 		m = refRe.exec(args);
 	}
 	return { lossy, preserving };
@@ -304,8 +312,9 @@ function matchParenEnd(code: string, start: number, limit: number): number {
 
 /**
  * Detect a NEW `*Error` constructed inside `catch (<id>)` that references the
- * caught binding ONLY via string coercion (concat / String() / template
- * interpolation) — no `{ cause: <id> }`, no bare `<id>` constructor argument.
+ * caught binding ONLY via string coercion (concat / String() / `.toString()` /
+ * template interpolation / bare property read) — no `{ cause: <id> }`, no bare
+ * `<id>` constructor argument.
  *
  * Check id: `catch_rewrap_loses_cause`
  *

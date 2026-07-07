@@ -657,6 +657,69 @@ describe("observed-check outcome tracking", () => {
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.observed_checks?.size).toBe(0);
 	});
+
+	// --- per-file runs of runners detectTestRunFile doesn't parse (regression
+	// for the finding: mocha / bun test / ava / deno test / tap / rspec).
+	// classifyVerificationCommand calls these "test", but detectTestRunFile
+	// returns null whether or not a file is targeted, so a per-file run used to
+	// be misread as whole-suite — a per-file green could clear a genuine
+	// whole-suite red, and a per-file red could spuriously set it. detectTestRunFile
+	// is mocked to null here (the default), mirroring its real behavior for these
+	// runners; classifyVerificationCommand + isWholeSuiteTestCommand run for real.
+	describe("per-file runs of unparsed runners don't touch the whole-suite axis", () => {
+		const CASES: ReadonlyArray<{ runner: string; perFile: string; whole: string }> = [
+			{ runner: "mocha", perFile: "mocha test/user.test.js", whole: "mocha" },
+			{ runner: "bun test", perFile: "bun test ./src/user.test.ts", whole: "bun test" },
+			{ runner: "ava", perFile: "ava test/user.test.js", whole: "ava" },
+			{ runner: "deno test", perFile: "deno test src/user_test.ts", whole: "deno test" },
+			{ runner: "tap", perFile: "tap test/user.test.js", whole: "tap" },
+			{ runner: "rspec", perFile: "rspec spec/models/user_spec.rb", whole: "rspec" },
+		];
+
+		for (const { runner, perFile, whole } of CASES) {
+			it(`drops a per-file ${runner} RED run from the whole-suite axis`, async () => {
+				mDetectTestRun.mockReturnValue(null); // real behavior: runner not parsed
+				const session = obsSession();
+				const event = ev({
+					tool_name: "Bash",
+					tool_outcome: "error",
+					tool_input: { command: perFile },
+				});
+				await runPostToolPipeline(makeCtx(), event, session);
+				// Per-file red must NOT spuriously set the whole-suite axis.
+				expect(session.observed_checks?.size).toBe(0);
+			});
+
+			it(`a per-file ${runner} GREEN run does NOT clear a whole-suite red`, async () => {
+				mDetectTestRun.mockReturnValue(null);
+				const session = obsSession({
+					observed_checks: new Map([
+						["test-suite", { kind: "test-suite", status: "red", red_at: 1 }],
+					]),
+				});
+				const event = ev({
+					tool_name: "Bash",
+					tool_outcome: "success",
+					tool_input: { command: perFile },
+				});
+				await runPostToolPipeline(makeCtx(), event, session);
+				// The whole-suite red survives — a per-file green is not the suite.
+				expect(session.observed_checks?.get("test-suite")?.status).toBe("red");
+			});
+
+			it(`still records test-suite=red for a bare (whole-suite) ${runner} run`, async () => {
+				mDetectTestRun.mockReturnValue(null);
+				const session = obsSession();
+				const event = ev({
+					tool_name: "Bash",
+					tool_outcome: "error",
+					tool_input: { command: whole },
+				});
+				await runPostToolPipeline(makeCtx(), event, session);
+				expect(session.observed_checks?.get("test-suite")?.status).toBe("red");
+			});
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

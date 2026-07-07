@@ -29,6 +29,17 @@ describe("ubs-language-specific/division-by-variable", () => {
 		expect(checkDivisionByVariable(code, "stats.py")).toEqual([]);
 	});
 
+	it("does NOT suppress on a preceding-line guard — guard scan is same-line only", () => {
+		// Pins the honest doc: there is no multi-line GUARD_LOOKBACK_LINES /
+		// dominating-guard scan (an early-exit `if (n === 0) return;` on a
+		// preceding line was once documented as suppressing, but was never
+		// implemented). Guard-based suppression is same-line only, so a
+		// division whose sole guard sits above it still fires. This forces any
+		// future lookback implementation to update the doc + this pin together.
+		const code = "function f(n) {\n  if (n === 0) return 0;\n  return total / n;\n}";
+		expect(checkDivisionByVariable(code, "calc.ts").length).toBeGreaterThan(0);
+	});
+
 	it("skips a pathlib Path-join (`base / 'sub'`)", () => {
 		const code = "base = Path('/tmp')\ntarget = base / sub";
 		expect(checkDivisionByVariable(code, "paths.py")).toEqual([]);
