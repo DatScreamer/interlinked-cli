@@ -12,9 +12,9 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckResult, CheckScope, ToolRunnerInput } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 const runProcessAsyncMock = vi.fn();
@@ -104,6 +104,20 @@ beforeEach(() => {
 	unlinkSyncMock.mockReset();
 	// Default: a biome.json exists at the project root (first probe hits).
 	existsSyncMock.mockReturnValue(true);
+});
+
+describe("runBiome — .claude/ tooling exclusion", () => {
+	it("returns [] without spawning for a .claude/workflows target (file mode)", () => {
+		const out = runBiome(input(fileScope({ targetFile: ".claude/workflows/cross-repo.js" })));
+		expect(out).toEqual([]);
+		expect(spawnSyncMock).not.toHaveBeenCalled();
+	});
+	it("still runs biome for an ordinary source target", () => {
+		spawnSyncMock.mockReturnValue(spawnResult({ status: 1, stdout: biomeLintFinding() }));
+		const out = runBiome(input(fileScope({ targetFile: "src/app.ts" })));
+		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+		expect(out.length).toBeGreaterThan(0);
+	});
 });
 
 // ---------------------------------------------------------------------------

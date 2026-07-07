@@ -157,6 +157,70 @@ describe("collectContentQualityWarnings — console.log entrypoint exemption", (
 	});
 });
 
+describe("collectContentQualityWarnings — scoping fixes (2026-07 dogfood)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "il-cq-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	// #1 hardcoded-URL heuristic: exempt .claude/workflows tooling scripts.
+	const FOUR_URLS =
+		'const r = ["https://github.com/a/b","https://github.com/c/d","https://github.com/e/f","https://github.com/g/h"];\n';
+	const urlHits = (filePath: string): string[] =>
+		collectContentQualityWarnings(filePath, FOUR_URLS, "/repo").filter((w) => w.includes("hardcoded URLs"));
+	it("does NOT flag hardcoded URLs in a .claude/workflows script", () => {
+		expect(urlHits("/repo/.claude/workflows/cross-repo.js")).toEqual([]);
+	});
+	it("does NOT flag hardcoded URLs in a session-persisted .claude/**/workflows script", () => {
+		expect(urlHits("/home/u/.claude/projects/x/workflows/scripts/wf.js")).toEqual([]);
+	});
+	it("STILL flags hardcoded URLs in an ordinary source file", () => {
+		expect(urlHits("/repo/src/net.ts").length).toBe(1);
+	});
+
+	// #2 task-marker heuristic: a marker documented inside backticks/quotes (a
+	// detector's own patterns) is not a real marker; a genuine // TODO: still is.
+	const markerHits = (content: string): string[] =>
+		collectContentQualityWarnings("/repo/src/detector.ts", content, "/repo").filter((w) =>
+			w.includes("task marker"),
+		);
+	it("does NOT flag markers documented inside backticks in a comment", () => {
+		expect(markerHits("// matches \x60TODO:\x60 / \x60TODO(x):\x60 / \x60FIXME\x60\nexport const a = 1;\n")).toEqual([]);
+	});
+	it("does NOT flag markers inside a quoted string in a comment", () => {
+		expect(markerHits('// the "TODO:" and "FIXME" detector kinds\nexport const a = 1;\n')).toEqual([]);
+	});
+	it("STILL flags a genuine // TODO: comment", () => {
+		expect(markerHits("// TODO: wire this up\nexport const a = 1;\n").length).toBe(1);
+	});
+	it("STILL flags a genuine // FIXME comment", () => {
+		expect(markerHits("// FIXME broken here\nexport const a = 1;\n").length).toBe(1);
+	});
+
+	// #3 console.log heuristic: exempt CLI command modules of a bin package.
+	const THREE_LOGS = 'console.log("a");\nconsole.log("b");\nconsole.log("c");\nexport const n = 1;\n';
+	const logHits = (filePath: string, cwd: string): string[] =>
+		collectContentQualityWarnings(filePath, THREE_LOGS, cwd).filter((w) => w.includes("console.log statements"));
+	it("does NOT flag a commands/ module when the package declares a bin", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "t", bin: "./cli.js" }));
+		mkdirSync(join(dir, "src", "commands"), { recursive: true });
+		expect(logHits(join(dir, "src", "commands", "reload.ts"), dir)).toEqual([]);
+	});
+	it("STILL flags a commands/ module when the package has NO bin (not a CLI)", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "t" }));
+		mkdirSync(join(dir, "src", "commands"), { recursive: true });
+		expect(logHits(join(dir, "src", "commands", "svc.ts"), dir).length).toBe(1);
+	});
+	it("STILL flags a non-commands module in a bin package", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "t", bin: "./cli.js" }));
+		mkdirSync(join(dir, "src", "lib"), { recursive: true });
+		expect(logHits(join(dir, "src", "lib", "util.ts"), dir).length).toBe(1);
+	});
+});
+
 // Field report 2026-07-06: A4 flagged statement-position calls whose rejection
 // IS handled at the call site by a `.catch(...)` on a LATER line of the same
 // chain (multi-line chains). Same-line handling was already exempt.

@@ -193,3 +193,41 @@ function packageBinIncludes(pkgPath: string, pkgDir: string, absFile: string): b
 		return false; // unreadable/malformed package.json — no exemption
 	}
 }
+
+/** Whether `filePath` is a CLI COMMAND module: it lives under a `commands/`
+ *  (or `cli`/`cmd`) directory AND the nearest package.json declares a non-null
+ *  `bin`. Such a module's console.log IS the CLI's output surface (like the bin
+ *  entrypoint itself); the `bin` requirement scopes the exemption to real CLIs,
+ *  not any project that merely has a `commands/` folder. */
+export function isCliCommandModule(filePath: string, cwd?: string): boolean {
+	const norm = filePath.replace(/\\/g, "/");
+	if (!/(^|\/)(?:commands|cli|cmd)\//.test(norm)) return false;
+	return nearestPackageDeclaresBin(filePath, cwd);
+}
+
+/** Walk up to the nearest package.json and report whether it declares a `bin`. */
+function nearestPackageDeclaresBin(filePath: string, cwd?: string): boolean {
+	let abs: string;
+	if (isAbsolute(filePath)) abs = filePath;
+	else if (cwd) abs = resolve(cwd, filePath);
+	else return false;
+	let dir = dirname(abs);
+	for (let depth = 0; depth < BIN_LOOKUP_MAX_DEPTH; depth++) {
+		const pkgPath = join(dir, "package.json");
+		if (existsSync(pkgPath)) return packageDeclaresBin(pkgPath);
+		const parent = dirname(dir);
+		if (parent === dir) return false;
+		dir = parent;
+	}
+	return false;
+}
+
+/** True when the package.json at `pkgPath` has a non-null `bin` field. */
+function packageDeclaresBin(pkgPath: string): boolean {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		return typeof raw === "object" && raw !== null && (raw as { bin?: unknown }).bin != null;
+	} catch {
+		return false;
+	}
+}

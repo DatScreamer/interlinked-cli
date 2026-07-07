@@ -11,7 +11,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
 import { checkJsonParseUnsafe } from "../checks/js-ts-general.js";
-import { isCliEntrypoint } from "../checks/language-agnostic.js";
+import { isCliCommandModule, isCliEntrypoint } from "../checks/language-agnostic.js";
 import { isTestFile } from "../checks/shared.js";
 import { extractTemplateInterpolationExpressions, stripAllLiterals } from "../strip-helpers.js";
 
@@ -386,7 +386,7 @@ function collectTsJsQualityWarnings(
 ): string[] {
 	const codeOnly = stripCommentsAndStrings(content);
 	return [
-		...collectAssertionAndLogWarnings(filePath, codeOnly, isCliEntrypoint(filePath, content, cwd)),
+		...collectAssertionAndLogWarnings(filePath, codeOnly, isCliEntrypoint(filePath, content, cwd) || isCliCommandModule(filePath, cwd)),
 		...collectMarkerEvalWarnings(filePath, content),
 		...collectRuntimeRiskWarnings(filePath, content, codeOnly),
 	];

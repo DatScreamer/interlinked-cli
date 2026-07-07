@@ -36,9 +36,21 @@ function biomeFailureResult(status: number | null): CheckResult {
 	};
 }
 
+/** `.claude/` tooling files (workflow scripts with top-level await/return that
+ *  biome's parser rejects — "file does not parse") are never shipped source, so
+ *  file-mode biome skips them, mirroring tsc's isFileInTscScope exclusion. */
+function isClaudeToolingFile(scope: ToolRunnerInput["scope"]): boolean {
+	return (
+		scope.mode === "file" &&
+		!!scope.targetFile &&
+		/(^|\/)\.claude\//.test(scope.targetFile.replace(/\\/g, "/"))
+	);
+}
+
 export function runBiome(input: ToolRunnerInput): CheckResult[] {
 	const { scope, timeoutMs } = input;
 	if (!findBiomeConfig(scope.projectRoot)) return [];
+	if (isClaudeToolingFile(scope)) return [];
 
 	try {
 		// In file mode, check the single file; in project mode, check everything.
