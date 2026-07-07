@@ -6,9 +6,11 @@ import { nonNull } from "../../lib/non-null.js";
 import { formatQualityWarnings, runQualityChecks } from "../quality-checks.js";
 import type { QualityCheckConfig } from "../types.js";
 import {
+	anchorFamilyOf,
 	collectSoftwareVersionReferences,
 	detectSoftwareVersionFreshnessConcerns,
 	detectSoftwareVersionRegressions,
+	type SoftwareVersionReference,
 } from "./software-version-regression.js";
 
 const SOFTWARE_VERSION_CHECKS: Record<string, QualityCheckConfig> = {
@@ -200,6 +202,127 @@ describe("software version regression detector", () => {
 			(r) => r.before.version === "2.0.0" && r.after.version === "1.0.0",
 		);
 		expect(lodashDowngrade).toBeDefined();
+	});
+
+	// A version-like string that has a fixed value in one location while a
+	// DIFFERENT location holds a lower one used to cross-pair whenever both
+	// locations collapsed to one anchor (anonymous scopes all pushed a bare
+	// "{}"). Deleting/editing the higher-versioned block then read as a
+	// downgrade of the surviving one — the registry-metadata.test.ts FP.
+	it("does not flag deleting one it()-block while editing a sibling's version fixture (test file)", () => {
+		const blockA = [
+			'it("uses the pinned metadata", () => {',
+			'  expect(meta).toEqual({ version: "4.17.21" });',
+			"});",
+		].join("\n");
+		const blockB = (v: string) =>
+			[
+				'it("uses the legacy pin", () => {',
+				`  expect(meta).toEqual({ version: "${v}" });`,
+				"});",
+			].join("\n");
+		const before = collectSoftwareVersionReferences(
+			`${blockA}\n${blockB("1.0.0")}\n`,
+			"src/harness/registry-metadata.test.ts",
+		);
+		const after = collectSoftwareVersionReferences(
+			`${blockB("1.0.1")}\n`,
+			"src/harness/registry-metadata.test.ts",
+		);
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("does not flag removing a function whose sibling function pins a different version (src file)", () => {
+		const seedDemo = ["function seedDemo() {", '  return { version: "3.0.0" };', "}"].join("\n");
+		const seedLegacy = (v: string) =>
+			["function seedLegacy() {", `  return { version: "${v}" };`, "}"].join("\n");
+		const before = collectSoftwareVersionReferences(
+			`${seedDemo}\n${seedLegacy("1.0.0")}\n`,
+			"src/lib/seeds.ts",
+		);
+		const after = collectSoftwareVersionReferences(`${seedLegacy("1.2.0")}\n`, "src/lib/seeds.ts");
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("does not flag an unrelated edit in a test file pinning versions in different it()-blocks", () => {
+		const blocks = (unrelated: number) =>
+			[
+				'it("high", () => {',
+				'  run({ sdk_version: "5.0.0" });',
+				"});",
+				'it("low", () => {',
+				'  run({ sdk_version: "2.0.0" });',
+				"});",
+				`const unrelated = ${unrelated};`,
+			].join("\n");
+		const before = collectSoftwareVersionReferences(blocks(1), "src/lib/registry.test.ts");
+		const after = collectSoftwareVersionReferences(blocks(2), "src/lib/registry.test.ts");
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("does not flag a version that moved to a counter-shifted sibling anchor (family survival)", () => {
+		const entry = (v: string) => ["registry.push({", `  version: "${v}",`, "});"].join("\n");
+		const before = collectSoftwareVersionReferences(entry("5.0.0"), "src/lib/registry.ts");
+		// A lower-versioned sibling inserted ABOVE shifts the survivor from
+		// `fn:push` to `fn:push#1`; the 5.0.0 must still count as present.
+		const after = collectSoftwareVersionReferences(
+			`${entry("2.0.0")}\n${entry("5.0.0")}`,
+			"src/lib/registry.ts",
+		);
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("still flags an in-place model downgrade in a test file (model refs survive the test-file skip)", () => {
+		const before = collectSoftwareVersionReferences(
+			'const model = "vendor-model-v6";\n',
+			"src/lib/models.test.ts",
+		);
+		const after = collectSoftwareVersionReferences(
+			'const model = "vendor-model-v4";\n',
+			"src/lib/models.test.ts",
+		);
+
+		const regressions = detectSoftwareVersionRegressions(before, after);
+
+		expect(regressions).toHaveLength(1);
+		expect(nonNull(regressions[0]).before.version).toBe("vendor-model-v6");
+	});
+
+	// Line-proximity backstop: residual anchor collisions (same key twice in
+	// ONE scope) sit far apart; a real replacement lands near the old line.
+	const refAt = (version: string, line: number): SoftwareVersionReference => ({
+		anchor: "generic:version@id:cfg",
+		label: "version",
+		kind: "generic",
+		version,
+		line,
+		text: `version: "${version}"`,
+	});
+
+	it("does not pair same-anchor refs more than 15 lines apart (proximity backstop)", () => {
+		const before = [refAt("5.0.0", 3)];
+		const after = [refAt("2.0.0", 60)];
+
+		expect(detectSoftwareVersionRegressions(before, after)).toEqual([]);
+	});
+
+	it("still pairs same-anchor refs within the proximity window", () => {
+		const before = [refAt("5.0.0", 3)];
+		const after = [refAt("2.0.0", 5)];
+
+		expect(detectSoftwareVersionRegressions(before, after)).toHaveLength(1);
+	});
+
+	it("strips only counter suffixes when grouping anchors into families", () => {
+		expect(anchorFamilyOf("generic:version@fn:push#1")).toBe("generic:version@fn:push");
+		expect(anchorFamilyOf("generic:version@describe:bug ~1.{}#2")).toBe(
+			"generic:version@describe:bug ~1.{}",
+		);
+		expect(anchorFamilyOf("package:lodash")).toBe("package:lodash");
 	});
 
 	it("flags newly introduced freshness-sensitive model refs without claiming they are deprecated", () => {

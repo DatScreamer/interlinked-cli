@@ -34,6 +34,24 @@ function shouldSkip(filePath: string, content: string): boolean {
 	return false;
 }
 
+/** True when the call forwards a caller-supplied init/options value —
+ *  `fetch(u, init)`, `fetch(u, opts ?? {})`, or `fetch(...args)`. A
+ *  pass-through adapter lambda like `(u, init) => fetch(u, init)` cannot
+ *  know whether `init` carries a signal; the timeout obligation belongs to
+ *  the caller, so flagging the adapter is a false positive. Only
+ *  object-literal inits lacking signal/timeout, or bare `fetch(url)`, are
+ *  provable misses. */
+function isInitPassThrough(args: string): boolean {
+	const parts = args.split(",").map((p) => p.trim());
+	// `fetch(...args)` — full argument forwarding.
+	if (parts.length === 1 && /^\.\.\.[\w$]+$/.test(nonNull(parts[0]))) return true;
+	if (parts.length < 2) return false;
+	// Second argument is a bare identifier (optionally spread / defaulted
+	// with `?? {}` / `|| {}`), not an object literal — it can carry `signal`.
+	const second = nonNull(parts[1]);
+	return /^(?:\.\.\.)?[\w$]+(?:\s*(?:\?\?|\|\|)\s*(?:[\w$]+|\{\s*\}))?$/.test(second);
+}
+
 /** Detect `fetch(url)` calls whose argument list does not mention
  *  `signal`, `AbortSignal`, or `timeout`. Bare `fetch(url)` with no
  *  options object hangs indefinitely on a stalled server. */
@@ -56,7 +74,7 @@ function detectNoTimeout(content: string, filePath: string): InlineMatch[] {
 		// hard case) we skip — the regex above only captures the first
 		// paren-group on a single line. False negatives are acceptable;
 		// false positives on real timeout configs are not.
-		if (!/\b(?:signal|AbortSignal|timeout)\b/.test(args)) {
+		if (!/\b(?:signal|AbortSignal|timeout)\b/.test(args) && !isInitPassThrough(args)) {
 			const lineNo = scan.slice(0, m.index).split("\n").length;
 			out.push({
 				line: lineNo,

@@ -10,23 +10,22 @@
 // That makes these unit tests trivially fast (sub-50ms total).
 
 import { describe, expect, it } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkEndpointAuthMissing,
 	checkEndpointIdorShape,
 	checkEndpointMassAssignment,
 	checkEndpointMissingTenantFilter,
 	checkEndpointSsrfShape,
-	runAllEndpointSecurityChecks,
 	type DetectorFinding,
+	runAllEndpointSecurityChecks,
 } from "../checks/endpoint-security.js";
 import { extractEndpoints as extractExpressEndpoints } from "../route-map/express.js";
 import { extractEndpoints as extractFastapiEndpoints } from "../route-map/fastapi.js";
 import { extractEndpoints as extractHonoEndpoints } from "../route-map/hono.js";
-import { defaultConfig } from "../security-config.js";
 import { validate as validateSanitizers } from "../sanitizer-registry.js";
+import { defaultConfig } from "../security-config.js";
 import type { Endpoint } from "../types/session.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const FILE = "/tmp/test-handler.ts";
 const PY_FILE = "/tmp/test-handler.py";
@@ -514,5 +513,80 @@ describe("runAllEndpointSecurityChecks()", () => {
 		expect(checkIds.has("endpoint_auth_missing")).toBe(true);
 		expect(checkIds.has("endpoint_idor_shape")).toBe(true);
 		expect(checkIds.has("endpoint_mass_assignment")).toBe(true);
+	});
+});
+
+// ---------- Family gate: test/fixture exemption (2026-07 noise review) ----------
+//
+// The family fired ~57 findings on this repo's own test files and
+// route-extraction fixtures — route-shaped code deliberately embedded as
+// detector test cases. Test files, fixture trees, and vendored code are not
+// deployable endpoints; the shared `isEndpointSecurityExemptFile` gate must
+// silence ALL five detectors there while real source stays fully in scope.
+
+describe("endpoint-security family gate — test/fixture exemption", () => {
+	// A fixture that trips auth_missing + idor_shape + mass_assignment when
+	// it lives in deployable source.
+	const VULNERABLE = [
+		"app.post('/api/admin/users/:id', async (req, res) => {",
+		"  const found = await prisma.user.findUnique({ where: { id: req.params.id } });",
+		"  const updated = await prisma.user.update({",
+		"    where: { id: req.params.id },",
+		"    data: req.body,",
+		"  });",
+		"  res.json(updated);",
+		"});",
+	].join("\n");
+
+	function findingsAt(path: string): DetectorFinding[] {
+		const endpoints = extractExpressEndpoints(path, VULNERABLE);
+		return runAllEndpointSecurityChecks(path, VULNERABLE, endpoints, CONFIG, SANITIZERS);
+	}
+
+	// --- must NOT fire (exempt surfaces) ---
+	it("does NOT fire on a *.test.ts file embedding a vulnerable route", () => {
+		expect(findingsAt("src/routes/users.test.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a route-extraction fixture under __tests__/", () => {
+		expect(findingsAt("src/harness/__tests__/fixtures/route-extraction/mcp/server.ts")).toEqual(
+			[],
+		);
+	});
+
+	it("does NOT fire on a __fixtures__/ tree", () => {
+		expect(findingsAt("src/routes/__fixtures__/vulnerable-server.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on vendored / example trees", () => {
+		expect(findingsAt("vendor/express-app/routes.js")).toEqual([]);
+		expect(findingsAt("examples/api/users.ts")).toEqual([]);
+	});
+
+	// --- must STILL fire (real deployable source) ---
+	it("still fires all three findings on ordinary route source", () => {
+		const checkIds = new Set(findingsAt("src/routes/users.ts").map((f) => f.check_id));
+		expect(checkIds.has("endpoint_auth_missing")).toBe(true);
+		expect(checkIds.has("endpoint_idor_shape")).toBe(true);
+		expect(checkIds.has("endpoint_mass_assignment")).toBe(true);
+	});
+
+	it("still fires on a top-level server file (test-ish substrings don't exempt)", () => {
+		expect(findingsAt("src/latest/server.ts").length).toBeGreaterThan(0);
+	});
+
+	it("still fires on a FastAPI source module (Python path)", () => {
+		const content = [
+			"from fastapi import FastAPI",
+			"app = FastAPI()",
+			"",
+			"@app.get('/api/items/{item_id}')",
+			"def get_item(item_id: int):",
+			"    return {'id': item_id}",
+		].join("\n");
+		const path = "app/main.py";
+		const endpoints = extractFastapiEndpoints(path, content);
+		const findings = checkEndpointAuthMissing(path, content, endpoints, CONFIG);
+		expect(findings.length).toBeGreaterThan(0);
 	});
 });

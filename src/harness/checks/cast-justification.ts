@@ -16,7 +16,7 @@
 // detected — they are indistinguishable from generics/JSX without full parsing.
 
 import type { InlineMatch } from "./shared.js";
-import { stripCommentsAndStrings } from "./shared.js";
+import { getExtension, JS_TS_EXTS, stripCommentsAndStrings } from "./shared.js";
 
 /** `as <Type>` assertion, excluding the always-safe `as const`. */
 const CAST_RE = /\bas\s+(?!const\b)[A-Za-z_$][\w$]*/;
@@ -49,11 +49,23 @@ function isModuleAliasLine(raw: string): boolean {
 /**
  * Find type-assertion casts that lack a `// SAFETY:` justification.
  *
+ * Gated to JS/TS source files — `as`-casts are a TypeScript construct, and
+ * running the regex over prose (markdown design docs quoting `as any`,
+ * fenced code blocks) produced recurring false positives (recurrence log:
+ * 19 hits on a single .md file). The counter below is exempt from the gate
+ * because its callers only capture baselines for code files.
+ *
  * @param content - The source text to scan.
- * @param _filePath - The file path (unused; kept for the check-registry signature).
+ * @param filePath - The file path; non-JS/TS extensions are skipped.
  * @returns One match per line carrying an unjustified cast.
  */
-export function findUnjustifiedCasts(content: string, _filePath: string): InlineMatch[] {
+export function findUnjustifiedCasts(content: string, filePath: string): InlineMatch[] {
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	return scanUnjustifiedCasts(content);
+}
+
+/** Extension-agnostic scan shared by the check and the ratchet counter. */
+function scanUnjustifiedCasts(content: string): InlineMatch[] {
 	const rawLines = content.split("\n");
 	const strippedLines = stripCommentsAndStrings(content).split("\n");
 	const out: InlineMatch[] = [];
@@ -75,5 +87,5 @@ export function findUnjustifiedCasts(content: string, _filePath: string): Inline
  * @returns The number of lines with at least one unjustified cast.
  */
 export function countUnjustifiedCasts(content: string): number {
-	return findUnjustifiedCasts(content, "").length;
+	return scanUnjustifiedCasts(content).length;
 }

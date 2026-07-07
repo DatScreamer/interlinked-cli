@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkDuplicateTestNames,
 	checkHappyPathOnlyTest,
@@ -7,7 +8,6 @@ import {
 	checkMockOnlyTest,
 	checkTestMissingSutImport,
 } from "./test-hygiene-quality.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TEST = "src/lib/foo.test.ts";
 const SRC = "src/lib/foo.ts";
@@ -112,6 +112,29 @@ describe("checkDuplicateTestNames — comment / string / data-file FP regression
 		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
 	});
 
+	it("does not read a member call like re.test('foo.ts') as a test declaration", () => {
+		// The skip-paths.test.ts FP: `expect(re.test("foo.ts"))` repeated inside
+		// one describe matched `\btest(` — `\b` matches after a dot.
+		const code = [
+			`describe("globToRegex", () => {`,
+			`\tit("star matches", () => {`,
+			`\t\tconst re = globToRegex("*.ts");`,
+			`\t\texpect(re.test("foo.ts")).toBe(true);`,
+			`\t});`,
+			`\tit("globstar matches", () => {`,
+			`\t\tconst re = globToRegex("**/foo.ts");`,
+			`\t\texpect(re.test("foo.ts")).toBe(true);`,
+			`\t});`,
+			`});`,
+		].join("\n");
+		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
+	});
+
+	it("does not read obj.it('x') member calls as it() declarations", () => {
+		const code = `describe("d", () => {\n\tharness.it("x");\n\tharness.it("x");\n\tit("real", () => {});\n});`;
+		expect(checkDuplicateTestNames(code, TEST)).toEqual([]);
+	});
+
 	it("still flags a genuine duplicate in real code (no over-suppression)", () => {
 		const code = `describe("d", () => {\n\tit("dup", () => {});\n\tit("dup", () => {});\n});`;
 		expect(checkDuplicateTestNames(code, TEST)).toHaveLength(1);
@@ -182,6 +205,21 @@ it("works", () => { expect(foo()).toBe(1); });
 		// The original "performative test" bug class — a foo.test.ts that
 		// imports something else from the same directory is still flagged.
 		const code = `import { bar } from "./bar.js";`;
+		expect(checkTestMissingSutImport(code, TEST)).not.toEqual([]);
+	});
+
+	it("STILL fires with THREE same-directory sibling imports but no companion", () => {
+		// Regression: the multi-module carve-out (exemption c) must count only
+		// cross-directory (`../`) imports. A foo.test.ts importing 3 same-dir
+		// siblings but not ./foo is still the misnamed-test shape — counting
+		// `./` toward the >=3 threshold re-admitted this bug class (false
+		// negative). Same-directory-only imports must NOT grant the exemption.
+		const code = `
+import { bar } from "./bar.js";
+import { baz } from "./baz.js";
+import { qux } from "./qux.js";
+it("does a thing", () => {});
+`;
 		expect(checkTestMissingSutImport(code, TEST)).not.toEqual([]);
 	});
 

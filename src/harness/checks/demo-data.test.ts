@@ -98,6 +98,77 @@ try { return await fetch("/api"); } catch { return defaultData; }
 		const code = `try { fetch(); } catch { return [{a:1}]; }`;
 		expect(checkSilentDemoFallback(code, TEST)).toEqual([]);
 	});
+
+	// FP refinement (2026-07): a catch that SURFACES the error in a
+	// structured result (`return { ok: false, error: err.message }`) is
+	// error handling, not a silent demo fallback. Only fire when the catch
+	// hides the failure entirely.
+
+	it("does not fire when the catch returns a literal embedding the error binding", () => {
+		const code = `
+async function check() {
+  try {
+    return await fetch("/api/health").then(r => r.json());
+  } catch (e) {
+    return { status: "fail", message: e.message };
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when the catch returns an ok:false / error-field result", () => {
+		const code = `
+async function load() {
+  try {
+    return await api.getUsers();
+  } catch {
+    return { ok: false, error: "upstream unavailable" };
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when the catch logs before returning a literal", () => {
+		const code = `
+async function load() {
+  try {
+    return await client.list();
+  } catch (err) {
+    console.error("list failed", err);
+    return [];
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("STILL fires when the error binding is captured but never used", () => {
+		const code = `
+async function loadItems() {
+  try {
+    return await fetch("/api/items").then(r => r.json());
+  } catch (e) {
+    return [{ id: 1, title: "Sample item" }];
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS).length).toBe(1);
+	});
+
+	it("STILL fires when the returned literal has no error/fail field", () => {
+		const code = `
+async function loadStats() {
+  try {
+    return await api.stats();
+  } catch {
+    return { visits: 1200, conversions: 34 };
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS).length).toBe(1);
+	});
 });
 
 describe("checkDemoRuntimeMissingBanner", () => {

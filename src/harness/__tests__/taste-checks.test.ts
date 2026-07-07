@@ -105,6 +105,56 @@ describe("checkPrivateMemberTestAccess", () => {
 		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts").length).toBe(1);
 	});
 
+	it("flags (x as any)._field mutation", () => {
+		const content = "(obj as any)._internalState = 5;";
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts").length).toBe(1);
+	});
+
+	it("flags (x as unknown as T).method() reaching past the public API", () => {
+		const content = "(repo as unknown as { flush(): void }).flush();";
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts").length).toBe(1);
+	});
+
+	it("flags dunder member calls", () => {
+		const content = "instance.__secretHelper();";
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts").length).toBe(1);
+	});
+
+	it("flags bracket-literal dunder access (branch reads unstripped strings)", () => {
+		// Regression: this alternative used to scan string-stripped content, so
+		// `svc["__privateMap"]` became `svc[""]` and could never match.
+		const content = 'svc["__privateMap"].set("k", 1);';
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts").length).toBe(1);
+	});
+
+	it("allows vitest mock introspection through an as-any cast", () => {
+		const content = 'expect((fetchMock as any).mock.calls[0][0]).toContain("/api/hooks");';
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("allows host-global stubbing through an as-any cast", () => {
+		const content = "(globalThis as any).fetch = vi.fn();";
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("allows mock-API chains through an as-unknown-as cast", () => {
+		const content = [
+			'(readFileSync as unknown as Mock).mockReturnValue("{}");',
+			"(readFileSync as unknown as Mock).mockClear();",
+		].join("\n");
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("allows plain as-unknown-as type coercion without accessor", () => {
+		const content = "const s = undefined as unknown as string;";
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("allows runtime-conventional dunders and commented bracket access", () => {
+		const content = 'obj.__proto__ = fake;\n// svc["__private"] example in a comment';
+		expect(checkPrivateMemberTestAccess(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
 	it("ignores non-test files", () => {
 		const content = "(x as any).y";
 		expect(checkPrivateMemberTestAccess(content, "/src/foo.ts")).toEqual([]);

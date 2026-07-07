@@ -2,13 +2,13 @@
 // Extracted from ubs-language-specific.ts during the 1500-line decomposition.
 // Cross-language, advisory by default (high FP rate).
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile, isPyFile } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * Row 30: division by a variable identifier — the variable might be zero.
@@ -41,6 +41,26 @@ import { nonNull } from "../../../lib/non-null.js";
  * The detector strips comments and strings first, so `*\/` block-comment
  * terminators, end-of-line comments, and division-looking content inside
  * string literals do not contribute matches.
+ *
+ * FP-recon 2026-07: beyond the same-line guard, the detector runs a
+ * divisor-anchored DOMINATING-GUARD scan over a bounded lookback window
+ * (`GUARD_LOOKBACK_LINES`). A division is suppressed when a preceding
+ * line provably dominates it with the divisor named literally:
+ *   1. EARLY-EXIT GUARD — `if (n === 0) return;` / `if (!n) throw …` /
+ *      Python `if not n: return`, verified straight-line-dominating by a
+ *      brace walk (the guard's enclosing block must not close before the
+ *      division) or, for Python, by indentation.
+ *   2. STILL-OPEN ENCLOSING POSITIVE GUARD — `if (n !== 0) {` /
+ *      `if (n > 0) {` / bare-truthy `if (n) {`, verified still open at
+ *      the division by the same brace walk (a closed sibling block does
+ *      NOT suppress); Python uses indentation dominance.
+ *   3. NONZERO ASSIGNMENT — nearest preceding `n = Math.max(1, …)`,
+ *      `n = … || 1`, `n ||= 1`, or `n = <nonzero literal>`, with no
+ *      interleaving re-assignment of the divisor.
+ * Any nearer re-assignment of the divisor that is not a nonzero shape
+ * aborts the scan (the guard above it no longer holds). Per the FN-averse
+ * contract below, every suppression names the divisor (or its object
+ * head) — a generic "an if exists above" never suppresses.
  */
 export function checkDivisionByVariable(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
@@ -64,7 +84,8 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 	// in the same file. Python's `pathlib.Path.__truediv__` overloads `/`
 	// for path joins — `path / "subdir"` is NOT division. The 53 hits in
 	// alter/cc-autopipe-source were all of this shape.
-	const pathishNames = isPyFile(ext) ? collectPathishNames(stripped) : null;
+	const python = isPyFile(ext);
+	const pathishNames = python ? collectPathishNames(stripped) : null;
 
 	const divisionRegex = /(?:^|[^\w$])([a-zA-Z_$]\w*)\s+\/\s+([a-zA-Z_$]\w*)/g;
 
@@ -171,11 +192,9 @@ function isPathDivisionLine(
 ): boolean {
 	// Re-run the regex globally to inspect every match.
 	const re = /(?:^|[^\w$])([a-zA-Z_$]\w*)\s+\/\s+([a-zA-Z_$]\w*)/g;
-	let m: RegExpExecArray | null;
 	let anyNonPathDivision = false;
 	let foundAnyMatch = false;
-	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex iteration
-	while ((m = re.exec(strippedLine)) !== null) {
+	for (const m of strippedLine.matchAll(re)) {
 		foundAnyMatch = true;
 		const lhs = nonNull(m[1]);
 		if (pathishNames.has(lhs)) continue; // pathlib join — skip

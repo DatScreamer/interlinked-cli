@@ -1,12 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	DEFAULT_TRIGGERS,
 	type FileReader,
 	type SiblingTrigger,
 	type TrigramIndexLike,
 	expandSiblings,
+	resetSiblingDedupForTests,
 } from "./sibling-expansion.js";
-import { nonNull } from "../lib/non-null.js";
 
 function makeIndex(byAnchor: Record<string, string[]>): TrigramIndexLike {
 	return {
@@ -26,6 +27,12 @@ function makeReader(files: Record<string, string>): FileReader {
 }
 
 describe("expandSiblings", () => {
+	// The module-level dedup memory persists across calls by design
+	// (daemon-lifetime scope); clear it so each test is isolated.
+	beforeEach(() => {
+		resetSiblingDedupForTests();
+	});
+
 	it("returns no siblings when there are no triggers", () => {
 		const out = expandSiblings({
 			triggers: [],
@@ -218,5 +225,127 @@ describe("expandSiblings", () => {
 		});
 		expect(out.length).toBe(1);
 		expect(nonNull(out[0]).file).toBe("docs/examples/sample.ts");
+	});
+
+	// FP refinement (2026-07): dogfood recurrence data showed 2,205
+	// `unvalidated_json_sibling` events collapsing to 10 unique messages —
+	// the fan-out re-fired identically on every edit and fired on test files
+	// and one-off scripts (scripts/*.mjs, __tests__/*.test.ts).
+
+	describe("test/script path exemption", () => {
+		it("does NOT emit a sibling for JSON.parse in a *.test.ts file", () => {
+			const out = expandSiblings({
+				triggers: [{ name: "unvalidated_json_boundary", file: "/repo/src/origin.ts" }],
+				index: makeIndex({
+					"JSON.parse": ["src/commands/__tests__/activity-workspace-regressions.test.ts"],
+				}),
+				reader: makeReader({
+					"src/commands/__tests__/activity-workspace-regressions.test.ts":
+						"const parsed = JSON.parse(stdout);\n",
+				}),
+				cwd: "/repo",
+			});
+			expect(out).toEqual([]);
+		});
+
+		it("does NOT emit a sibling for a scripts/ one-off", () => {
+			const out = expandSiblings({
+				triggers: [{ name: "unvalidated_json_boundary", file: "/repo/src/origin.ts" }],
+				index: makeIndex({ "JSON.parse": ["scripts/discover-yc-oss-repos.mjs"] }),
+				reader: makeReader({
+					"scripts/discover-yc-oss-repos.mjs": "const data = JSON.parse(body);\n",
+				}),
+				cwd: "/repo",
+			});
+			expect(out).toEqual([]);
+		});
+
+		it("does NOT emit a sibling for .interlinked/ probes or bare .mjs one-offs", () => {
+			const out = expandSiblings({
+				triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+				index: makeIndex({ "as any": [".interlinked/e2e-probe.mjs", "one-off-codemod.mjs"] }),
+				reader: makeReader({
+					".interlinked/e2e-probe.mjs": "const x = z as any;\n",
+					"one-off-codemod.mjs": "const y = q as any;\n",
+				}),
+				cwd: "/repo",
+			});
+			expect(out).toEqual([]);
+		});
+
+		it("STILL emits siblings for real source files alongside exempt paths", () => {
+			const out = expandSiblings({
+				triggers: [{ name: "unvalidated_json_boundary", file: "/repo/src/origin.ts" }],
+				index: makeIndex({
+					"JSON.parse": ["scripts/scan.mjs", "src/lib/loader.ts"],
+				}),
+				reader: makeReader({
+					"scripts/scan.mjs": "JSON.parse(a);\n",
+					"src/lib/loader.ts": "const cfg = JSON.parse(raw);\n",
+				}),
+				cwd: "/repo",
+			});
+			expect(out.length).toBe(1);
+			expect(nonNull(out[0]).file).toBe("src/lib/loader.ts");
+		});
+
+		it("a directory merely NAMED like a script marker does not exempt (myscripts/)", () => {
+			// Slash-boundary check: `myscripts/` is not `scripts/`.
+			const out = expandSiblings({
+				triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+				index: makeIndex({ "as any": ["myscripts/helper.ts"] }),
+				reader: makeReader({ "myscripts/helper.ts": "const x = z as any;\n" }),
+				cwd: "/repo",
+			});
+			expect(out.length).toBe(1);
+		});
+	});
+
+	describe("cross-edit dedup", () => {
+		it("does not re-emit the same (rule, file, line, message) on a second call", () => {
+			const args = {
+				triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+				index: makeIndex({ "as any": ["src/repeat.ts"] }),
+				reader: makeReader({ "src/repeat.ts": "const x = z as any;\n" }),
+				cwd: "/repo",
+			};
+			expect(expandSiblings(args).length).toBe(1);
+			// Same content, same finding — second edit must not repeat it.
+			expect(expandSiblings(args)).toEqual([]);
+		});
+
+		it("re-emits when the flagged content changes (message embeds the snippet)", () => {
+			const index = makeIndex({ "as any": ["src/changing.ts"] });
+			const triggers = [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }];
+			const first = expandSiblings({
+				triggers,
+				index,
+				reader: makeReader({ "src/changing.ts": "const a = one as any;\n" }),
+				cwd: "/repo",
+			});
+			expect(first.length).toBe(1);
+			const second = expandSiblings({
+				triggers,
+				index,
+				reader: makeReader({ "src/changing.ts": "const b = two as any;\n" }),
+				cwd: "/repo",
+			});
+			expect(second.length).toBe(1);
+			expect(nonNull(second[0]).message).not.toBe(nonNull(first[0]).message);
+		});
+
+		it("an injected emittedKeys set isolates dedup scope from the module default", () => {
+			const args = {
+				triggers: [{ name: "as_any_ratchet", file: "/repo/src/origin.ts" }],
+				index: makeIndex({ "as any": ["src/scoped.ts"] }),
+				reader: makeReader({ "src/scoped.ts": "const x = z as any;\n" }),
+				cwd: "/repo",
+			};
+			expect(expandSiblings({ ...args, emittedKeys: new Set<string>() }).length).toBe(1);
+			// Fresh injected set: no memory of the previous call.
+			expect(expandSiblings({ ...args, emittedKeys: new Set<string>() }).length).toBe(1);
+			// Module default set was never touched by the injected calls.
+			expect(expandSiblings(args).length).toBe(1);
+		});
 	});
 });

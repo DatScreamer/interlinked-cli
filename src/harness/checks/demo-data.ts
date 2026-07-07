@@ -29,6 +29,11 @@
 // All directives use the `// @demo-data: <reason>` convention; the reason
 // is required (empty `@demo-data:` doesn't suppress).
 
+import { nonNull } from "../../lib/non-null.js";
+// `lineHasNearbyDemoDirective` and `checkPlaceholderDataInUi` live in the
+// decomposed sibling (kept this module under the per-file line cap).
+// `checkPlaceholderDataInUi` is re-exported so the public surface is unchanged.
+import { lineHasNearbyDemoDirective } from "./demo-data-placeholder-ui.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -37,11 +42,6 @@ import {
 	stripComments,
 } from "./shared.js";
 
-// `lineHasNearbyDemoDirective` and `checkPlaceholderDataInUi` live in the
-// decomposed sibling (kept this module under the per-file line cap).
-// `checkPlaceholderDataInUi` is re-exported so the public surface is unchanged.
-import { lineHasNearbyDemoDirective } from "./demo-data-placeholder-ui.js";
-import { nonNull } from "../../lib/non-null.js";
 export { checkPlaceholderDataInUi } from "./demo-data-placeholder-ui.js";
 
 // ==========================================================================
@@ -167,6 +167,27 @@ const ASYNC_REAL_CALL_RE =
 	/\b(?:await\s+)?(?:fetch|axios\s*\.\s*\w+|client\.\w+|api\.\w+|http\s*\.\s*\w+)\s*\(/;
 const LITERAL_FALLBACK_RE = /^\s*return\s+[[{]/;
 
+// Signals that a catch block SURFACES the failure rather than hiding it.
+// `return { ok: false, error: err.message }` is error handling, not a
+// silent demo fallback — the check only targets catches where the caller
+// cannot tell the upstream failed.
+const CATCH_LOG_RE = /\b(?:console\s*\.\s*\w+|logger\s*\.\s*\w+|(?:this|ctx)\s*\.\s*log)\s*\(/;
+const CATCH_ERROR_FIELD_RE =
+	/\b(?:ok\s*:\s*false|success\s*:\s*false|(?:error|err|errors)\s*:|status\s*:\s*["'`](?:fail|failed|error))/;
+
+/** True when the catch body hides the failure entirely: no rethrow, no
+ *  logging, no reference to the caught error binding, and no error/fail
+ *  field in whatever it returns. Only then is a literal fallback "silent". */
+function catchHidesFailure(catchBody: string, errBinding: string | undefined): boolean {
+	if (/\bthrow\b/.test(catchBody)) return false;
+	if (CATCH_LOG_RE.test(catchBody)) return false;
+	if (CATCH_ERROR_FIELD_RE.test(catchBody)) return false;
+	// Any use of the caught error binding (err.message, String(e), passing
+	// it to a reporter) counts as surfacing it.
+	if (errBinding && new RegExp(`\\b${errBinding}\\b`).test(catchBody)) return false;
+	return true;
+}
+
 /** Public API — flags `try { real call } catch { return literal }` patterns. */
 export function checkSilentDemoFallback(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
@@ -188,7 +209,7 @@ export function checkSilentDemoFallback(content: string, filePath: string): Inli
 		}
 		// The `catch` clause should immediately follow the try block.
 		const afterTry = tryBlock.endOffset;
-		const catchMatch = /^\s*catch(?:\s*\([^)]*\))?\s*\{/.exec(stripped.slice(afterTry));
+		const catchMatch = /^\s*catch(?:\s*\(\s*([\w$]+)[^)]*\))?\s*\{/.exec(stripped.slice(afterTry));
 		if (!catchMatch) {
 			m = tryRe.exec(stripped);
 			continue;
@@ -204,8 +225,11 @@ export function checkSilentDemoFallback(content: string, filePath: string): Inli
 		const catchReturnsLiteral = catchBlock.body
 			.split("\n")
 			.some((line) => LITERAL_FALLBACK_RE.test(line));
+		// Only "silent" when the catch neither rethrows, logs, references the
+		// error binding, nor embeds an error/fail field in the returned value.
+		const errBinding = catchMatch[1];
 
-		if (tryHasRealCall && catchReturnsLiteral) {
+		if (tryHasRealCall && catchReturnsLiteral && catchHidesFailure(catchBlock.body, errBinding)) {
 			const lineIdx = (stripped.slice(0, tryStart).match(/\n/g) || []).length;
 			matches.push({
 				line: lineIdx + 1,

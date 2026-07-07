@@ -117,6 +117,41 @@ describe("node_fetch_no_timeout", () => {
 		expect(fg.detect(content, "src/b.ts")).toEqual([]);
 	});
 
+	// ── Pass-through adapter FP guard (regression: `(u, init) => fetch(u, init)`) ──
+	// An injectable fetcher adapter merely forwards a caller-supplied init;
+	// the timeout/signal obligation belongs to the caller, not the adapter.
+
+	it("does NOT fire on a pass-through adapter lambda (u, init) => fetch(u, init)", () => {
+		const content = `const fetcher = (u, init) => fetch(u, init);`;
+		expect(fg.detect(content, "src/adapter.ts")).toEqual([]);
+	});
+
+	it("does NOT fire when the forwarded init is defaulted with ?? {}", () => {
+		const content = `const fetcher = (u, init) => fetch(u, init ?? {});`;
+		expect(fg.detect(content, "src/adapter.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on full argument forwarding fetch(...args)", () => {
+		const content = `const fetcher = (...args) => fetch(...args);`;
+		expect(fg.detect(content, "src/adapter.ts")).toEqual([]);
+	});
+
+	it("STILL fires on an object-literal init lacking signal/timeout", () => {
+		const content = `await fetch(url, { method: "POST", body });`;
+		const matches = fg.detect(content, "src/client.ts");
+		expect(matches).toHaveLength(1);
+	});
+
+	it("STILL fires on bare fetch(url) even inside an arrow wrapper", () => {
+		const content = `const get = (u) => fetch(u);`;
+		expect(fg.detect(content, "src/wrapper.ts")).toHaveLength(1);
+	});
+
+	it("STILL fires when the second arg is an object literal spread of an identifier without signal", () => {
+		const content = `await fetch(url, { ...base, method: "GET" });`;
+		expect(fg.detect(content, "src/client.ts")).toHaveLength(1);
+	});
+
 	it("still fires on a real bare fetch even when a string elsewhere mentions fetch()", () => {
 		// The key regression: the prose mention on line 1 must be ignored while
 		// the real call on line 2 still fires — with the correct line number

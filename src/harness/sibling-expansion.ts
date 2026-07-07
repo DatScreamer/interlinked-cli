@@ -22,9 +22,10 @@
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import type { DetectorFinding } from "./checks/endpoint-security.js";
-import { decomposePattern } from "./regex-trigrams.js";
 import { nonNull } from "../lib/non-null.js";
+import type { DetectorFinding } from "./checks/endpoint-security.js";
+import { isTestFile } from "./checks/shared.js";
+import { decomposePattern } from "./regex-trigrams.js";
 
 /** A single sibling instance discovered for a triggered finding. */
 export interface SiblingFinding {
@@ -93,6 +94,9 @@ export interface ExpandSiblingsArgs {
 	maxSiblingsPerTrigger?: number;
 	/** Cap on candidate files inspected per trigger (default 30). */
 	maxCandidates?: number;
+	/** Cross-edit dedup memory: keys of already-emitted sibling rows.
+	 *  Defaults to a module-level set (daemon-lifetime scope). */
+	emittedKeys?: Set<string>;
 }
 
 const DEFAULT_MAX_SIBLINGS_PER_TRIGGER = 3;
@@ -116,6 +120,39 @@ function isDocFile(path: string): boolean {
 	return DOC_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+// One-off script / tool-state trees. A `JSON.parse` on a captured stdout
+// string in a test, or in a `scripts/*.mjs` codemod / probe, is legitimate
+// boundary handling — nobody is going to route a throwaway script through a
+// schema validator, and the sibling suggestion just repeats forever
+// (dogfood data: 2,205 `unvalidated_json_sibling` events collapsing to 10
+// unique messages, dominated by scripts/ and __tests__ paths). Mirrors the
+// repo's existing script-path conventions: `scripts/`, `.interlinked/`
+// (probes + tool state), and bare `.mjs` one-offs.
+const SCRIPT_PATH_RE = /(^|\/)(?:scripts|\.interlinked)\//;
+
+/** True when a candidate path is a test file or a one-off script — code we
+ *  deliberately do not nag with sibling suggestions. */
+function isExemptSiblingPath(path: string): boolean {
+	const normalized = path.replace(/\\/g, "/");
+	if (isTestFile(normalized)) return true;
+	if (SCRIPT_PATH_RE.test(normalized)) return true;
+	return normalized.endsWith(".mjs");
+}
+
+// Cross-edit dedup: the fan-out re-runs on EVERY triggering edit in a
+// session, and without memory it re-emits the same 3 sibling rows each
+// time. Key includes the message (which embeds the matched-line snippet),
+// so if the flagged content changes the row re-emits; unchanged content is
+// reported once per daemon lifetime. Module-level by design — the harness
+// daemon is the session scope here. Tests inject their own set via
+// `emittedKeys` or call the reset helper.
+const defaultEmittedSiblingKeys = new Set<string>();
+
+/** Test hook — clears the module-level cross-edit dedup memory. */
+export function resetSiblingDedupForTests(): void {
+	defaultEmittedSiblingKeys.clear();
+}
+
 /** Public API — return sibling rows for every applicable trigger.
  *
  *  Triggers with the same `name` are deduped (same fan-out is computed
@@ -127,6 +164,7 @@ export function expandSiblings(args: ExpandSiblingsArgs): SiblingFinding[] {
 	const specByName = new Map(specs.map((s) => [s.triggerName, s]));
 	const maxSiblings = args.maxSiblingsPerTrigger ?? DEFAULT_MAX_SIBLINGS_PER_TRIGGER;
 	const maxCandidates = args.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+	const emittedKeys = args.emittedKeys ?? defaultEmittedSiblingKeys;
 
 	const triggerNames = new Set<string>();
 	const originFiles = new Set<string>();
@@ -155,6 +193,9 @@ export function expandSiblings(args: ExpandSiblingsArgs): SiblingFinding[] {
 			// as lintable source — skip them so a `JSON.parse` in a fenced
 			// block in `docs/design/*.md` is never emitted as a sibling.
 			if (isDocFile(candidatePath)) continue;
+			// Test files and one-off scripts parse JSON / cast freely by
+			// nature — suggesting schema validators there is pure noise.
+			if (isExemptSiblingPath(candidatePath)) continue;
 
 			const content = args.reader.read(candidatePath);
 			if (content === undefined) continue;
@@ -162,12 +203,19 @@ export function expandSiblings(args: ExpandSiblingsArgs): SiblingFinding[] {
 			const match = findFirstMatch(content, spec.pattern);
 			if (!match) continue;
 
+			const message = spec.messageTemplate(candidatePath, match.line, match.snippet);
+			// Cross-edit dedup: identical (rule, file, line, message) —
+			// message embeds the snippet, so unchanged content emits once.
+			const dedupKey = `${spec.siblingRuleId}|${candidatePath}|${match.line}|${message}`;
+			if (emittedKeys.has(dedupKey)) continue;
+			emittedKeys.add(dedupKey);
+
 			out.push({
 				triggerName: spec.triggerName,
 				siblingRuleId: spec.siblingRuleId,
 				file: candidatePath,
 				line: match.line,
-				message: spec.messageTemplate(candidatePath, match.line, match.snippet),
+				message,
 			});
 			emittedForTrigger++;
 		}

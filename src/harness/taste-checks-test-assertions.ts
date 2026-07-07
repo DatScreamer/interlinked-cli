@@ -7,6 +7,7 @@
 // ./taste-checks-shared.js; this module re-exports through taste-checks.ts so
 // existing importers keep importing from "../taste-checks.js" unchanged.
 
+import { nonNull } from "../lib/non-null.js";
 import { stripComments } from "./strip-helpers.js";
 import {
 	findBlockEnd,
@@ -17,7 +18,6 @@ import {
 	push,
 	stripCommentsAndStrings,
 } from "./taste-checks-shared.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // 1. Assertion-Free Tests
@@ -159,32 +159,98 @@ export function checkMockingTheSUT(content: string, filePath: string): InlineMat
 // Uncle Bob, "Test Contra-variance" (2017)
 // ===========================================
 
-const PRIVATE_TEST_ACCESS =
-	/\(\s*[A-Za-z_$][\w$]*\s+as\s+any\s*\)\s*\.|\(\s*[A-Za-z_$][\w$]*\s+as\s+unknown\s+as\s+|[A-Za-z_$][\w$]*\s*\[\s*["']_{2,}[^"']*["']\s*\]|\.\s*_{2,}[A-Za-z_$][\w$]*\s*[(=.]/;
+// `(x as any).privateThing` in a test reaches past the public API — EXCEPT when
+// the accessed surface is itself public API of a different contract: vitest/jest
+// mock introspection (`(fetchMock as any).mock.calls[0][0]` — the mock's own
+// documented API, not the SUT's internals) or host-global stubbing
+// (`(globalThis as any).fetch = vi.fn()` — environment setup, not privacy
+// violation). Both were repo-wide FP idioms (2026-07 recon).
+const MOCK_API_AFTER =
+	/^\s*\.\s*(?:mock|calls|mockClear|mockReset|mockRestore|mockName|getMockName|mockImplementation(?:Once)?|mockReturnValue(?:Once)?|mockResolvedValue(?:Once)?|mockRejectedValue(?:Once)?|mockReturnThis)\b/;
 
-// Casts like `undefined as unknown as string` are plain type coercions — the
-// result isn't used to REACH INTO private members. Flag only when the `as
-// unknown as` form is followed by a member-access (`.`) or call (`(`) on
-// the cast result, which is the actual "reach past public API" pattern.
-const PRIVATE_ACCESS_POST = /\)\s*\.|\)\s*\[/;
+const HOST_GLOBALS = new Set([
+	"globalThis",
+	"window",
+	"global",
+	"self",
+	"process",
+	"console",
+	"document",
+	"navigator",
+]);
+
+// Dunders that are runtime/module-system conventions, not privacy markers.
+const RUNTIME_DUNDERS = new Set(["__proto__", "__esModule", "__dirname", "__filename"]);
+
+const CAST_ANY_ACCESS = /\(\s*([A-Za-z_$][\w$]*)\s+as\s+any\s*\)\s*(?=\.)/g;
+// The `as unknown as <Type>` form: the type text is unbounded (it may contain
+// parens, e.g. `{ flush(): void }`), so the accessor is located separately —
+// a `)` followed by `.` or `[` somewhere after the cast keywords.
+const CAST_UNKNOWN_START = /\(\s*([A-Za-z_$][\w$]*)\s+as\s+unknown\s+as\s+/g;
+const CAST_UNKNOWN_ACCESSOR = /\)(?=\s*[.[])/;
+const DUNDER_MEMBER = /\.\s*(_{2,}[A-Za-z_$][\w$]*)\s*[(=.]/g;
+// Runs against the ORIGINAL (comment-stripped only) line: the main scan strips
+// string CONTENTS, which turned `svc["__private"]` into `svc[""]` and made
+// this alternative dead code (2026-07 recon). Strings must stay intact here.
+const BRACKET_PRIVATE = /[A-Za-z_$][\w$]*\s*\[\s*["']_{2,}[^"']*["']\s*\]/;
+
+/** True when a cast-then-access is mock-API introspection or host-global
+ *  stubbing rather than a reach into the SUT's private members.
+ *  `tail` starts at the character after the cast's closing paren. */
+function isExemptCastAccess(ident: string, tail: string): boolean {
+	return HOST_GLOBALS.has(ident) || MOCK_API_AFTER.test(tail);
+}
+
+/** Any non-exempt `(x as any).member` on this (string-stripped) line? */
+function hasCastAnyViolation(line: string): boolean {
+	for (const m of line.matchAll(CAST_ANY_ACCESS)) {
+		const tail = line.slice((m.index ?? 0) + m[0].length);
+		if (!isExemptCastAccess(nonNull(m[1]), tail)) return true;
+	}
+	return false;
+}
+
+/** Any non-exempt `(x as unknown as T).member` on this line? Casts like
+ *  `undefined as unknown as string` are plain type coercions — the result
+ *  isn't used to REACH INTO private members, so an accessor after the
+ *  closing paren is required. */
+function hasCastUnknownViolation(line: string): boolean {
+	for (const m of line.matchAll(CAST_UNKNOWN_START)) {
+		const after = line.slice((m.index ?? 0) + m[0].length);
+		const close = CAST_UNKNOWN_ACCESSOR.exec(after);
+		if (!close) continue;
+		const tail = after.slice((close.index ?? 0) + 1);
+		if (!isExemptCastAccess(nonNull(m[1]), tail)) return true;
+	}
+	return false;
+}
+
+/** Any `.__member(`/`=`/`.` access that isn't a runtime-conventional dunder? */
+function hasDunderViolation(line: string): boolean {
+	for (const m of line.matchAll(DUNDER_MEMBER)) {
+		if (!RUNTIME_DUNDERS.has(nonNull(m[1]))) return true;
+	}
+	return false;
+}
 
 export function checkPrivateMemberTestAccess(content: string, filePath: string): InlineMatch[] {
 	if (!isTestFile(filePath) || !isJsTs(filePath)) return [];
 	const stripped = stripCommentsAndStrings(content);
+	// Comment-stripped copy with strings INTACT for the bracket-literal branch
+	// (both strippers are line-preserving, so indices align).
+	const commentFree = stripComments(content);
 	const lines = content.split("\n");
 	const sLines = stripped.split("\n");
+	const cLines = commentFree.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		const line = nonNull(sLines[i]);
-		const m = PRIVATE_TEST_ACCESS.exec(line);
-		if (!m) continue;
-		// If the match was the `as unknown as` cast form, require it to be
-		// followed by `.` or `[` (accessor) to count as private-member access.
-		if (m[0].includes("as unknown as")) {
-			const after = nonNull(line).slice((m.index ?? 0) + m[0].length);
-			if (!PRIVATE_ACCESS_POST.test(after)) continue;
-		}
-		push(matches, i, lines, 10);
+		const sLine = nonNull(sLines[i]);
+		const fires =
+			hasCastAnyViolation(sLine) ||
+			hasCastUnknownViolation(sLine) ||
+			hasDunderViolation(sLine) ||
+			BRACKET_PRIVATE.test(nonNull(cLines[i]));
+		if (fires) push(matches, i, lines, 10);
 	}
 	return matches;
 }

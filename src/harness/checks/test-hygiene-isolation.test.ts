@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkHardcodedTimeoutInTests,
 	checkRealIoInTests,
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 } from "./test-hygiene-isolation.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TEST = "src/lib/foo.test.ts";
 const SRC = "src/lib/foo.ts";
@@ -108,6 +108,69 @@ it("a", () => { const t = Date.now(); });
 
 	it("does not fire in non-test files", () => {
 		expect(checkTestNondeterminism(`Date.now();`, SRC)).toEqual([]);
+	});
+
+	// --- FP refinements (2026-07): elapsed-time pairs, setSystemTime files,
+	// --- unique fixture-name building.
+
+	it("does not fire on the elapsed-time benchmark pair (Date.now() - start)", () => {
+		const code = [
+			'it("handles long strings efficiently", () => {',
+			"  const start = Date.now();",
+			"  const trigrams = extractTrigrams(longString);",
+			"  const elapsed = Date.now() - start;",
+			"  expect(elapsed).toBeLessThan(500);",
+			"});",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire on a performance.now() elapsed pair either", () => {
+		const code = [
+			"const t0 = performance.now();",
+			"run();",
+			"expect(performance.now() - t0).toBeLessThan(100);",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire anywhere in a file that installs vi.setSystemTime", () => {
+		const code = [
+			"beforeAll(() => { vi.setSystemTime(new Date(2026, 1, 1)); });",
+			'it("a", () => { const t = Date.now(); expect(fmt(t)).toBe("2026-02-01"); });',
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire on Date.now() concatenated into a unique fixture path", () => {
+		const code = `const dir = join(tmpdir(), "fixture-" + Date.now()); mkdirSync(dir, { recursive: true });`;
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("does not fire on randomUUID() interpolated into a fixture name", () => {
+		// Single-line template interpolations are blanked by the stripper, so
+		// build a concat form + an interpolated form; neither may fire.
+		const code = [
+			'const sessionId = "sess-" + crypto.randomUUID();',
+			"const file = join(dir, `run-${Date.now()}.jsonl`);",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("STILL flags a lone Date.now() with no elapsed subtraction", () => {
+		expect(
+			checkTestNondeterminism(`it("a", () => { const t = Date.now(); use(t); });`, TEST).length,
+		).toBe(1);
+	});
+
+	it("STILL flags Date.now() flowing into an asserted value", () => {
+		const code = `it("a", () => { expect(Date.now()).toBeGreaterThan(record.ts); });`;
+		expect(checkTestNondeterminism(code, TEST).length).toBe(1);
+	});
+
+	it("STILL flags a string-built id that is asserted on the same line", () => {
+		const code = `expect(makeKey("k-" + Math.random())).toBe(expected);`;
+		expect(checkTestNondeterminism(code, TEST).length).toBe(1);
 	});
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkAgentThumbprintProse,
 	checkDeadBranchLiteral,
@@ -12,7 +13,6 @@ import {
 	checkUnionWidenedWithString,
 	checkUntestableTimeInSource,
 } from "./agent-laziness.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 const TEST = "src/lib/foo.test.ts";
@@ -134,6 +134,46 @@ function fetchConfig() {
   // in production this reads from the config service
   return {};
 }`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	// FP refinement (2026-07): "placeholder value" and bare "for now" demoted
+	// from STRONG to WEAK — UI-attribute prose and rationale-bearing scoping
+	// notes are documentation, not confessions. The corroboration scan strips
+	// the weak phrase from the hit line so it can't self-corroborate.
+
+	it("does NOT flag 'placeholder value' in UI-attribute prose", () => {
+		const code = `// update the placeholder value when the locale changes`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("does NOT flag a rationale-bearing 'For now, …' scoping note", () => {
+		const code = `// For now, only npm is covered — see docs/roadmap.md for the Kotlin plan`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("does NOT flag 'aria-placeholder' design-system prose", () => {
+		const code = `// aria-placeholder text comes from the design system`;
+		expect(checkAgentThumbprintProse(code, TS)).toEqual([]);
+	});
+
+	it("STILL flags 'placeholder value' when corroborated by a TODO", () => {
+		const code = `const label = ""; // placeholder value — TODO wire real i18n`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags a bare trailing '// for now' confession", () => {
+		const code = `const limit = 1; // for now`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags a confession verb before 'for now' ('faked … for now')", () => {
+		const code = `// faked the auth check for now`;
+		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
+	});
+
+	it("STILL flags 'hardcoded for now'", () => {
+		const code = `const url = "http://localhost"; // hardcoded for now`;
 		expect(checkAgentThumbprintProse(code, TS).length).toBeGreaterThan(0);
 	});
 });
@@ -561,8 +601,13 @@ describe("checkUnboundedPromiseAll", () => {
 });
 
 describe("checkSyncIoOnHotPath", () => {
+	// Every positive fixture carries CONCRETE server evidence (a framework
+	// import, or node:http + createServer) — since the 2026-07 refinement the
+	// classifier requires it before any hot-path match.
+
 	it("flags readFileSync inside a handlers/ file", () => {
 		const code = `
+import express from "express";
 import { readFileSync } from "node:fs";
 export async function handle(req: Request): Promise<Response> {
   const data = readFileSync("/etc/config");
@@ -574,15 +619,18 @@ export async function handle(req: Request): Promise<Response> {
 
 	it("flags execSync inside a routes/ file", () => {
 		const code = `
+import { Hono } from "hono";
 import { execSync } from "node:child_process";
 export function get(req) { execSync("ls"); }
 `;
 		expect(checkSyncIoOnHotPath(code, "src/routes/foo.ts").length).toBe(1);
 	});
 
-	it("flags sync I/O when file declares a handler-named function", () => {
+	it("flags sync I/O when a node:http server file declares a handler-named function", () => {
 		const code = `
+import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
+const server = createServer((req, res) => handleRequest(req));
 export async function handleRequest(req) { readFileSync("x"); }
 `;
 		expect(checkSyncIoOnHotPath(code, "src/lib/server.ts").length).toBe(1);
@@ -615,6 +663,7 @@ export function loadConfig() { return readFileSync("config.json"); }
 
 	it("STILL flags a file declaring `function get(` (bare-verb route handler)", () => {
 		const code = `
+import fastify from "fastify";
 import { readFileSync } from "node:fs";
 export function get(req) { return readFileSync("x"); }
 `;
@@ -624,6 +673,7 @@ export function get(req) { return readFileSync("x"); }
 
 	it("STILL flags an arrow handler named exactly `post`", () => {
 		const code = `
+import Koa from "koa";
 import { writeFileSync } from "node:fs";
 export const post = async (req) => { writeFileSync("x", req.body); };
 `;
@@ -632,11 +682,53 @@ export const post = async (req) => { writeFileSync("x", req.body); };
 
 	it("STILL flags sync I/O in a handlers/ directory regardless of fn name", () => {
 		const code = `
+import express from "express";
 import { readdirSync } from "node:fs";
 export function listEntries() { return readdirSync("/data"); }
 `;
-		// Directory match alone makes this a hot path.
+		// Directory match (plus server evidence) makes this a hot path.
 		expect(checkSyncIoOnHotPath(code, "src/handlers/list.ts").length).toBe(1);
+	});
+
+	// FP refinement (2026-07, verify-noise run): filename / function-shape
+	// heuristics alone misclassified non-HTTP harness files (daemon loops,
+	// gate evaluators, runner wrappers whose comments merely mention "route")
+	// as hot paths. The file must now show concrete server evidence — an
+	// HTTP-framework import, or node:http paired with a createServer( call.
+
+	it("does NOT fire on a runner file whose comments merely mention 'route'", () => {
+		// tsgo-runner.ts shape: no HTTP server anywhere, just prose.
+		const code = `
+// This wrapper does NOT route through the daemon socket.
+import { readFileSync } from "node:fs";
+export function handleTypecheck(file: string) { return readFileSync(file); }
+`;
+		expect(checkSyncIoOnHotPath(code, "src/harness/tsgo-runner.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a node:http CLIENT (http.request, no createServer)", () => {
+		// session-daemon shape: imports node:http to CALL a server, not run one.
+		const code = `
+import http from "node:http";
+import { readFileSync } from "node:fs";
+export function post(path: string) {
+  const body = readFileSync(path);
+  http.request({ path, method: "POST" }).end(body);
+}
+`;
+		expect(checkSyncIoOnHotPath(code, "src/harness/session-daemon.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a gate evaluator with a handler-shaped function name", () => {
+		// config-loosening-gate shape: handleX/onX names, zero HTTP imports.
+		const code = `
+import { statSync } from "node:fs";
+export function handleGateDecision(file: string) { return statSync(file); }
+export const onRequestBlocked = (reason: string) => statSync(reason);
+`;
+		expect(
+			checkSyncIoOnHotPath(code, "src/harness/evaluator/config-loosening-gate.ts"),
+		).toEqual([]);
 	});
 
 	it("does NOT fire on a camelCase getter named `getActivityPath`", () => {

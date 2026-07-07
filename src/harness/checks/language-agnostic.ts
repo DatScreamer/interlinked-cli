@@ -2,6 +2,8 @@
 // Extracted from generic-checks.ts. (The per-file line cap moved to
 // harness/large-file-policy.ts — the single source of truth for file size.)
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	getExtension,
 	type InlineMatch,
@@ -52,6 +54,9 @@ export function checkConsoleDebug(content: string, filePath: string): InlineMatc
 	// wizard.go` (Supermodel, 13 fmt.Println — interactive wizard) and
 	// tutorial fixtures intentionally print example output.
 	if (isScriptOrCliPath(filePath)) return [];
+	// Shebang / package.json-bin entrypoints (field report 2026-07-06): a
+	// file invoked as a command prints its output via console.log by design.
+	if (isCliEntrypoint(filePath, content)) return [];
 
 	const normalized = filePath.replace(/\\/g, "/");
 	// Skip server entry points and scripts — console.log is the correct logging
@@ -117,4 +122,74 @@ export function checkConsoleDebug(content: string, filePath: string): InlineMatc
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	return scanLinesStripped(originalLines, strippedLines, pattern, 10);
+}
+
+// ===========================================
+// CLI-entrypoint detection (console.log IS the output)
+// ===========================================
+
+/** Ancestor-walk bound for the nearest-package.json search. */
+const BIN_LOOKUP_MAX_DEPTH = 40;
+
+/**
+ * CLI-entrypoint predicate for output-oriented checks: a file whose
+ * `console.log` IS its output rather than leftover debug logging
+ * (field report 2026-07-06). True when any of:
+ *   (a) the first line is a shebang (`#!...`),
+ *   (b) the file is a target of the nearest package.json `bin` map
+ *       (string or object form), or
+ *   (c) the path has a `scripts/` or `bin/` segment.
+ * `cwd` resolves relative paths for (b); without it a relative path skips
+ * the bin lookup (the shebang and path-segment tests still apply). Shared by
+ * `checkConsoleDebug` (registry `console_statements`, also run by verify)
+ * and the write-guard content-quality console heuristic, so every surface
+ * inherits the same exemption.
+ */
+export function isCliEntrypoint(filePath: string, content: string, cwd?: string): boolean {
+	if (content.startsWith("#!")) return true;
+	const norm = filePath.replace(/\\/g, "/");
+	if (/(^|\/)(?:scripts|bin)\//.test(norm)) return true;
+	return isPackageBinTarget(filePath, cwd);
+}
+
+/** Walk up from the file's directory to the NEAREST package.json and test
+ *  whether any of its `bin` entries resolves to the file. Fail-soft: no
+ *  package.json found, unreadable, or malformed all mean "not a bin target". */
+function isPackageBinTarget(filePath: string, cwd?: string): boolean {
+	let abs: string;
+	if (isAbsolute(filePath)) abs = filePath;
+	else if (cwd) abs = resolve(cwd, filePath);
+	else return false;
+	let dir = dirname(abs);
+	for (let depth = 0; depth < BIN_LOOKUP_MAX_DEPTH; depth++) {
+		const pkgPath = join(dir, "package.json");
+		if (existsSync(pkgPath)) return packageBinIncludes(pkgPath, dir, abs);
+		const parent = dirname(dir);
+		if (parent === dir) return false; // filesystem root
+		dir = parent;
+	}
+	return false;
+}
+
+/** The `bin` field's target paths: string form is a single target, object
+ *  form maps command names to targets. Anything else contributes none. */
+function binTargets(bin: unknown): string[] {
+	if (typeof bin === "string") return [bin];
+	if (typeof bin === "object" && bin !== null) {
+		return Object.values(bin).filter((v): v is string => typeof v === "string");
+	}
+	return [];
+}
+
+/** Whether the package.json at `pkgPath` declares a `bin` entry (string or
+ *  object form) that resolves to `absFile`. */
+function packageBinIncludes(pkgPath: string, pkgDir: string, absFile: string): boolean {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		if (typeof raw !== "object" || raw === null) return false;
+		const bin = (raw as { bin?: unknown }).bin;
+		return binTargets(bin).some((t) => resolve(pkgDir, t) === resolve(absFile));
+	} catch {
+		return false; // unreadable/malformed package.json — no exemption
+	}
 }

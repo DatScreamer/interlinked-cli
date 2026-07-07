@@ -6,6 +6,7 @@
 // all <1ms per file. Each detector documents its FP triggers and the exact
 // scope where it fires.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -17,7 +18,6 @@ import {
 	stripCommentsAndStrings,
 	stripStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Detectors 6–11 live in a sibling module to keep this file under the line
 // cap. Re-exported here so existing importers (registry, verify, generic-checks)
@@ -65,16 +65,24 @@ const BIOME_IGNORE_ALL_TOKEN = `biome-ignore-${"all"}`;
 
 const STRONG_THUMBPRINT_PHRASES: readonly RegExp[] = [
 	/\bin\s+(?:a\s+)?real\s+(?:implementation|production|app|application|world|system|environment|deployment|version|scenario)\b/i,
-	/\bfor\s+now\b/i,
+	// Bare "for now" is WEAK (rationale-bearing scoping notes — "For now,
+	// only npm is covered — see the roadmap" — are documentation, not
+	// abandonment). Two shapes stay STRONG: a confession verb right before
+	// it ("faked … for now"), and a trailing comment that says nothing BUT
+	// "for now" (`x = 1; // for now`).
+	/\b(?:hardcoded?|stub(?:bed)?|mock(?:ed)?|faked?|skip(?:ped)?|disabled?|left|good\s+enough|works?)\s+.{0,20}for\s+now\b/i,
+	/^for\s+now\s*[.!…]*$/i,
 	/\breal\s+(?:code|implementation|version|api|backend|service)\s+would\b/i,
 	/\b(?:proper|actual)\s+implementation\b/i,
 	// `placeholder` only when it self-describes the code ("this is a
 	// placeholder", "temporary placeholder", "placeholder implementation").
 	// Bare "placeholder" appears in legitimate prose constantly (input
 	// placeholders, doc text) — known over-fire, see project memory
-	// `agent_thumbprint_overfires_placeholder`.
+	// `agent_thumbprint_overfires_placeholder`. "placeholder value" is WEAK,
+	// not strong — it is legitimate UI-attribute prose (an <input>
+	// placeholder is a real DOM concept, not a confession).
 	/\b(?:this\s+is\s+(?:a|just\s+a)\s+|just\s+a\s+|temporary\s+|simple\s+)placeholder\b/i,
-	/\bplaceholder\s+(?:implementation|value|for\s+now|until)\b/i,
+	/\bplaceholder\s+(?:implementation|for\s+now|until)\b/i,
 	/\bsimplified\s+(?:version|for\s+now)\b/i,
 	/\bTODO\s*:?\s*(?:actually\s+|properly\s+)?(?:implement|wire\s*up|hook\s*up|connect)\b/i,
 	/\b(?:should|will|would)\s+(?:eventually|actually)\s+(?:be|use|call|fetch|connect)\b/i,
@@ -92,7 +100,25 @@ const STRONG_THUMBPRINT_PHRASES: readonly RegExp[] = [
 const WEAK_THUMBPRINT_PHRASES: readonly RegExp[] = [
 	/\bin\s+production\b(?!\s*(?:builds?|mode|environment\s+only))/i,
 	/\bin\s+practice\b/i,
+	// Demoted from STRONG (2026-07): both appear in legitimate prose — UI
+	// placeholder attributes and scoping notes — so they need corroboration.
+	// Both also appear inside INCOMPLETENESS_SIGNAL_RE, so the corroboration
+	// scan strips the weak phrase from the hit line first (see
+	// `stripWeakPhrases`) — a weak phrase can never corroborate itself.
+	/\bplaceholder\s+value\b/i,
+	/\bfor\s+now\b/i,
 ];
+
+/** Blank every weak-phrase occurrence so the corroboration scan can't be
+ *  satisfied by the very phrase that needs corroborating ("for now" and
+ *  "placeholder" are also incompleteness signals). */
+function stripWeakPhrases(text: string): string {
+	let out = text;
+	for (const re of WEAK_THUMBPRINT_PHRASES) {
+		out = out.replace(new RegExp(re.source, `${re.flags}g`), " ");
+	}
+	return out;
+}
 
 // An incompleteness signal: separate evidence that the surrounding code is
 // a stub / unfinished / abandoned. A weak phrase fires only when one of
@@ -142,12 +168,16 @@ function commentMatchesWeakThumbprint(commentText: string): boolean {
 /** Scan the hit line plus ±WEAK_CORROBORATION_WINDOW neighbours for an
  *  incompleteness signal. `lines` is the comment-marker-preserving,
  *  string-stripped view so a signal inside a string literal can't satisfy
- *  corroboration, while a signal in a neighbouring comment still can. */
+ *  corroboration, while a signal in a neighbouring comment still can. The
+ *  hit line itself is tested with its weak phrases blanked so a weak phrase
+ *  that doubles as a signal ("for now", "placeholder value") can't
+ *  self-corroborate. */
 function lineOrNeighborsHaveIncompletenessSignal(lines: string[], idx: number): boolean {
 	const start = Math.max(0, idx - WEAK_CORROBORATION_WINDOW);
 	const end = Math.min(lines.length - 1, idx + WEAK_CORROBORATION_WINDOW);
 	for (let j = start; j <= end; j++) {
-		if (INCOMPLETENESS_SIGNAL_RE.test(nonNull(lines[j]))) return true;
+		const text = j === idx ? stripWeakPhrases(nonNull(lines[j])) : nonNull(lines[j]);
+		if (INCOMPLETENESS_SIGNAL_RE.test(text)) return true;
 	}
 	return false;
 }

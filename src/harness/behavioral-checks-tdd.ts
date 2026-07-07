@@ -12,23 +12,26 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, basename as pathBasename } from "node:path";
 import { nonNull } from "../lib/non-null.js";
-import { isTypeOnlyModule } from "./checks/shared.js";
-import { isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
-import type { CheckResultEntry, SessionTrajectory } from "./types.js";
 import { checkAssertionDensity, countAssertions } from "./behavioral-checks-tdd-assertions.js";
 import {
 	checkProdTestLocRatio,
 	gitNumstatDelta,
 	type LocDelta,
 } from "./behavioral-checks-tdd-loc-ratio.js";
+import { isTypeOnlyModule } from "./checks/shared.js";
+import { isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
+import type { CheckResultEntry, SessionTrajectory } from "./types.js";
 
-export { checkAssertionDensity, countAssertions };
-export { checkProdTestLocRatio, gitNumstatDelta };
 export type { LocDelta };
+export { checkAssertionDensity, checkProdTestLocRatio, countAssertions, gitNumstatDelta };
 
 // ---- Helpers ----
 
-const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
+// The last alternation covers a file literally named `test.ts` / `spec.mjs`
+// (no `.test.` infix) — without it a scratch file called exactly test.ts is
+// classified as implementation and told to write a test for itself
+// (recurrence log: 7 tdd_cycle_violation events on bare "test.ts").
+const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\/|(?:^|\/)(?:test|spec)\.[cm]?[jt]sx?$/;
 
 // Source-code extensions where TDD cycle tracking is meaningful. The cycle
 // state machine and the "write a failing test first" nudge are about CODE

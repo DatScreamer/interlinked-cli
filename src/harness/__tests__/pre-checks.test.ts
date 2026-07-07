@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -147,5 +147,123 @@ describe("checkLargeFileLineCountWrite", () => {
 		expect(
 			checkLargeFileLineCountWrite({ file_path: file("x.ts"), patch: "@@ -1 +1 @@" }, dir),
 		).toBeNull();
+	});
+
+	// --- Comment-only growth (field report 2026-07-06): raw lines may grow
+	// --- past the cap when the net added lines are entirely comments/blank.
+
+	it("allows an Edit that adds only // comment lines to an over-cap file", () => {
+		const path = file("comment-grow.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{
+				file_path: path,
+				old_string: "const x = 1;",
+				new_string: "const x = 1;\n// why: field-report clarification\n// see docs/design",
+			},
+			dir,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("allows an Edit that adds a multi-line /* */ block comment to an over-cap file", () => {
+		const path = file("block-comment-grow.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{
+				file_path: path,
+				old_string: "const x = 1;",
+				new_string: "const x = 1;\n/*\n * rationale paragraph\n */",
+			},
+			dir,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("allows a Write that grows an over-cap file by blank + comment lines only", () => {
+		const path = file("write-comments.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, content: `${lines(CAP + 100)}\n\n// trailing note\n// second note` },
+			dir,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("allows a comment line to carry an at-cap file over the raw cap", () => {
+		const path = file("at-cap.ts");
+		writeFileSync(path, lines(CAP));
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, old_string: "const x = 1;", new_string: "const x = 1;\n// clarifier" },
+			dir,
+		);
+		expect(result).toBeNull();
+	});
+
+	// Pins the grandfather interaction: comment-only growth is allowed WITHOUT
+	// raising the recorded ceiling — the gate never touches the baseline file
+	// (ceilings only shrink; the verify-side large_files check still judges
+	// raw lines against the recorded ceiling).
+	it("comment-only growth on a grandfathered file is allowed and leaves the baseline untouched", () => {
+		const path = file("grandfathered.ts");
+		const recorded = CAP + 300;
+		writeFileSync(path, lines(recorded));
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		const baselinePath = join(dir, ".interlinked", "large-files-baseline.json");
+		const baselineJson = JSON.stringify({
+			version: 1,
+			max_lines: CAP,
+			files: { "grandfathered.ts": recorded },
+		});
+		writeFileSync(baselinePath, baselineJson);
+		resetLargeFileBaselineCache();
+		const result = checkLargeFileLineCountWrite(
+			{
+				file_path: path,
+				old_string: "const x = 1;",
+				new_string: "const x = 1;\n// note past ceiling",
+			},
+			dir,
+		);
+		expect(result).toBeNull();
+		expect(readFileSync(baselinePath, "utf-8")).toBe(baselineJson); // ceiling not raised
+	});
+
+	it("still blocks an Edit that adds a single CODE line to an over-cap file", () => {
+		const path = file("code-grow.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, old_string: "const x = 1;", new_string: "const x = 1;\nconst y = 2;" },
+			dir,
+		);
+		expect(result?.block).toBeDefined();
+	});
+
+	it("still blocks a MIXED edit (comments + code) whose code line count grows", () => {
+		const path = file("mixed-grow.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{
+				file_path: path,
+				old_string: "const x = 1;",
+				new_string: "const x = 1;\n// explains y\nconst y = 2;",
+			},
+			dir,
+		);
+		expect(result?.block).toBeDefined();
+	});
+
+	it("still blocks comment-laundered code: template-literal data lines count as code", () => {
+		const path = file("tpl-grow.ts");
+		writeFileSync(path, lines(CAP + 100));
+		const result = checkLargeFileLineCountWrite(
+			{
+				file_path: path,
+				old_string: "const x = 1;",
+				new_string: "const x = 1;\nconst tpl = `\n  data row 1\n  data row 2\n`;",
+			},
+			dir,
+		);
+		expect(result?.block).toBeDefined();
 	});
 });

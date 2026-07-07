@@ -9,6 +9,7 @@
 // Public symbols are re-exported from `test-hygiene.ts` (the barrel) so the
 // check registry and every importer stay unchanged.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -17,13 +18,15 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
 import { blankRange, isCodeMatch, isSkippedOrTodoCall, maskCommentsAndStrings } from "./test-hygiene-masking.js";
-import { nonNull } from "../../lib/non-null.js";
+import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
+
 export { checkMockOnlyTest } from "./test-hygiene-quality-mock-only.js";
 
+// `(?<![.\w$])` (not plain `\b`) so member calls like `re.test("foo.ts")` /
+// `obj.it('x')` never read as test declarations — `\b` matches after a dot.
 const TEST_BLOCK_INTRO_RE =
-	/\b(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*\(\s*(["'`])([^"'`]*)\1/g;
+	/(?<![.\w$])(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*\(\s*(["'`])([^"'`]*)\1/g;
 
 /** Length-preserving code mask for checkDuplicateTestNames: blanks TS comments
  *  AND string-literal interiors with spaces, keeping every offset aligned with
@@ -250,10 +253,13 @@ export function checkTestMissingSutImport(content: string, filePath: string): In
 	// kind, optional ./ ../, optional path prefix, basename, optional .js.
 	const escaped = sutBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const importPattern = new RegExp(
-		`(?:from|require)\\s*\\(?\\s*["']\\.{1,2}\\/(?:[^"']*\\/)?${escaped}(?:\\.(?:js|ts|tsx|mjs|cjs))?["']`,
+		`(?:from|require|import)\\s*\\(?\\s*["']\\.{1,2}\\/(?:[^"']*\\/)?${escaped}(?:\\.(?:js|ts|tsx|mjs|cjs))?["']`,
 	);
 	if (importPattern.test(content)) return [];
 	if (hasAnyProjectSourceImport(content)) return [];
+	// 2026-07 refinements — subprocess-run SUTs, regression suites, multi-module
+	// suites (helpers at file end, next to hasAnyProjectSourceImport).
+	if (isExemptFromSutPairing(content, sutBase, escaped)) return [];
 
 	return [
 		{
@@ -435,4 +441,66 @@ export function hasAnyProjectSourceImport(content: string): boolean {
 		m = re.exec(content);
 	}
 	return false;
+}
+
+// --- checkTestMissingSutImport FP refinements (2026-07, verify-noise run) ---
+// Defined at file end for the same diff-overlay reason as
+// hasAnyProjectSourceImport above. Three shapes where the companion-module
+// assumption breaks:
+// (a) codemod / script tests exercise the SUT via SUBPROCESS
+//     (`spawnSync("node", ["scripts/foo.mjs"])`) rather than import — the
+//     companion path appearing in a string, in a file that spawns
+//     subprocesses, is import-equivalent;
+// (b) deliberately cross-cutting regression suites (cli-bugs.test.ts,
+//     activity-workspace-regressions.test.ts) are NAMED for what they are —
+//     a *bugs* / *regressions* basename has no companion module by design;
+// (c) multi-module suites importing 3+ distinct CROSS-DIRECTORY (`../`)
+//     project source modules are clearly testing SOMETHING real — the
+//     misnamed-test bug class this check exists for imports zero or one.
+//     Same-directory (`./`) siblings do NOT count toward this (see
+//     countDistinctProjectImports): a foo.test.ts that imports `./bar`,
+//     `./baz`, `./qux` but not `./foo` is still misnamed.
+
+const REGRESSION_SUITE_NAME_RE = /(?:^|[-._])(?:regressions?|bugs?)(?:[-._]|$)/i;
+const SUBPROCESS_CALL_RE =
+	/\b(?:execSync|spawnSync|execFileSync|execFile|exec|spawn|fork)\s*\(/;
+const MIN_MULTI_MODULE_IMPORTS = 3;
+
+/** True when the file spawns subprocesses AND names the companion module's
+ *  file (`<sutBase>.<src ext>`) inside a string — running the SUT as a child
+ *  process instead of importing it (the codemod-script test shape). */
+function invokesSutAsSubprocess(content: string, escapedSutBase: string): boolean {
+	if (!SUBPROCESS_CALL_RE.test(stripCommentsAndStrings(content))) return false;
+	const pathInString = new RegExp(
+		`["'\`][^"'\`]*\\b${escapedSutBase}\\.(?:m?[jt]sx?|cjs)\\b`,
+	);
+	return pathInString.test(content);
+}
+
+/** Count distinct CROSS-DIRECTORY (`../`) project-source relative imports
+ *  (static, dynamic `import()`, or require) — test/mock/fixture/asset
+ *  specifiers excluded. Same-directory (`./`) imports are deliberately NOT
+ *  counted (mirrors hasAnyProjectSourceImport's `../`-only scope): a
+ *  `foo.test.ts` importing 3 same-dir siblings but not `./foo` is still the
+ *  misnamed-test shape this check exists to catch, so it must not clear the
+ *  multi-module carve-out. */
+function countDistinctProjectImports(content: string): number {
+	const re = /(?:from|require|import)\s*\(?\s*["'](\.\.\/[^"']+)["']/g;
+	const specs = new Set<string>();
+	for (const m of content.matchAll(re)) {
+		const spec = nonNull(m[1]);
+		const isNonSourceImport =
+			/\.(test|spec)\./.test(spec) ||
+			/(?:^|\/)(?:__mocks__|__fixtures__)\//.test(spec) ||
+			/\.(?:json|css|scss|less|html|svg|png|jpg|jpeg|gif|md)$/i.test(spec);
+		if (!isNonSourceImport) specs.add(spec);
+	}
+	return specs.size;
+}
+
+/** Bundle of the 2026-07 exemptions — see the block comment above. */
+function isExemptFromSutPairing(content: string, sutBase: string, escaped: string): boolean {
+	if (REGRESSION_SUITE_NAME_RE.test(sutBase)) return true;
+	if (invokesSutAsSubprocess(content, escaped)) return true;
+	return countDistinctProjectImports(content) >= MIN_MULTI_MODULE_IMPORTS;
 }

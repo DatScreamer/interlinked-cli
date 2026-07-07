@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkDomainSensitiveTestNudge,
 	checkPersistentWarningEscalation,
@@ -7,7 +8,6 @@ import {
 	runBehavioralChecks,
 } from "../behavioral-checks.js";
 import type { CheckResultEntry, SessionTrajectory } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -365,11 +365,12 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 	it("FP: pre-existing finding (lines from `lines[]`) FAR from a real edit does NOT escalate", () => {
 		// Finding fired on lines 18 + 655 (recovered from a detail block); the
 		// agent's edit touched lines 298-318. None within ±3. No escalation.
-		const session = makeSession({ warnings_issued: priorRecord("missing_return_types", [18]) });
+		// (Default-gate check name — the tier gate must not be what suppresses it.)
+		const session = makeSession({ warnings_issued: priorRecord("nan_coercion_guard", [18]) });
 		const out = checkPersistentWarningEscalation(
 			session,
 			"src/foo.ts",
-			[{ name: "missing_return_types", lines: [18, 655] }],
+			[{ name: "nan_coercion_guard", lines: [18, 655] }],
 			new Set([298, 299, 300, 301, 302, 318]),
 		);
 		expect(out).toEqual([]);
@@ -390,11 +391,11 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 	});
 
 	it("FP: multi-line finding where EVERY line is far from the edit does NOT escalate", () => {
-		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional", [248]) });
+		const session = makeSession({ warnings_issued: priorRecord("floating_promises", [248]) });
 		const out = checkPersistentWarningEscalation(
 			session,
 			"src/foo.ts",
-			[{ name: "magic_literal_in_conditional", lines: [248, 254, 277, 300] }],
+			[{ name: "floating_promises", lines: [248, 254, 277, 300] }],
 			new Set([700, 701, 702]),
 		);
 		expect(out).toEqual([]);
@@ -403,15 +404,120 @@ describe("checkPersistentWarningEscalation — diff-aware refinement", () => {
 	it("TP preserved: a finding on a line the edit ADDED still escalates (lines[] near edit)", () => {
 		// The agent edited line 252 and a finding sits on line 254 (within ±3),
 		// so the agent IS responsible — the persistent nag must still fire.
-		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional", [254]) });
+		// (Default-gate check id: floating_promises is not advisory-tier.)
+		const session = makeSession({ warnings_issued: priorRecord("floating_promises", [254]) });
 		const out = checkPersistentWarningEscalation(
 			session,
 			"src/foo.ts",
-			[{ name: "magic_literal_in_conditional", lines: [254] }],
+			[{ name: "floating_promises", lines: [254] }],
 			new Set([252]),
 		);
 		expect(out).toHaveLength(1);
 		expect(nonNull(out[0]).name).toBe("persistent_warning_escalation");
+	});
+});
+
+// ===========================================
+// 5c. checkPersistentWarningEscalation — tier gate (noise governance 2026-07)
+// ===========================================
+//
+// persistent_warning_escalation was 18% of the dogfood recurrence log,
+// dominated by advisory-tier heuristics (magic_literal_in_conditional,
+// complexity, ubs_*) the agent often cannot legitimately fix. The tier gate
+// restricts amplification to default-gate, proven-or-low-FP findings:
+// advisory ids and heuristic-determinism findings never escalate.
+
+describe("checkPersistentWarningEscalation — advisory/heuristic tier gate", () => {
+	function repeatedRecord(checkName: string, issueCount: number) {
+		return new Map([
+			[
+				`src/foo.ts::${checkName}`,
+				{
+					check_name: checkName,
+					issue_count: issueCount,
+					first_issued_at: 1,
+					last_issued_at: issueCount,
+					resolved: false,
+				},
+			],
+		]);
+	}
+
+	it("advisory-tier check repeated 5x does NOT escalate (legacy string path)", () => {
+		const session = makeSession({
+			warnings_issued: repeatedRecord("magic_literal_in_conditional", 5),
+		});
+		const out = checkPersistentWarningEscalation(session, "src/foo.ts", [
+			"magic_literal_in_conditional",
+		]);
+		expect(out).toEqual([]);
+	});
+
+	it("advisory-tier check does NOT escalate even when its line IS near the edit", () => {
+		// Proximity alone must not resurrect an advisory finding.
+		const session = makeSession({ warnings_issued: repeatedRecord("complexity", 5) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "complexity", lines: [100], determinism: "heuristic" }],
+			new Set([100]),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("advisory UBS heuristic (ubs_magic_number_no_const) does NOT escalate", () => {
+		const session = makeSession({
+			warnings_issued: repeatedRecord("ubs_magic_number_no_const", 8),
+		});
+		const out = checkPersistentWarningEscalation(session, "src/foo.ts", [
+			"ubs_magic_number_no_const",
+		]);
+		expect(out).toEqual([]);
+	});
+
+	it("heuristic-determinism finding does NOT escalate even for a non-advisory id", () => {
+		// unvalidated_json_sibling is not in the advisory set, but the finding
+		// itself is tagged heuristic — the determinism arm of the gate holds.
+		const session = makeSession({
+			warnings_issued: repeatedRecord("unvalidated_json_sibling", 5),
+		});
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "unvalidated_json_sibling", lines: [64], determinism: "heuristic" }],
+			new Set([64]),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("default-gate proven warning (typescript) repeated still escalates as before", () => {
+		const session = makeSession({ warnings_issued: repeatedRecord("typescript", 5) });
+		const out = checkPersistentWarningEscalation(session, "src/foo.ts", ["typescript"]);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).severity).toBe("error");
+		expect(nonNull(out[0]).message).toContain("typescript");
+	});
+
+	it("default-gate fully_deterministic finding near the edit still escalates", () => {
+		const session = makeSession({ warnings_issued: repeatedRecord("nan_coercion_guard", 2) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "nan_coercion_guard", lines: [40], determinism: "fully_deterministic" }],
+			new Set([41]),
+		);
+		expect(out).toHaveLength(1);
+	});
+
+	it("partially_deterministic default-gate finding stays eligible", () => {
+		const session = makeSession({ warnings_issued: repeatedRecord("import_resolution", 3) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: "import_resolution", lines: [12], determinism: "partially_deterministic" }],
+			new Set([12]),
+		);
+		expect(out).toHaveLength(1);
 	});
 });
 
@@ -440,7 +546,13 @@ describe("runBehavioralChecks — persistent escalation attribution (detail-line
 		]);
 	}
 
-	function findingWithDetail(name: string, detail: string): CheckResultEntry {
+	// Default-gate determinism so the tier gate is not what suppresses the
+	// finding — these cases pin the detail-line attribution path itself.
+	function findingWithDetail(
+		name: string,
+		detail: string,
+		determinism: CheckResultEntry["determinism"] = "fully_deterministic",
+	): CheckResultEntry {
 		return {
 			source: "quality",
 			name,
@@ -448,13 +560,13 @@ describe("runBehavioralChecks — persistent escalation attribution (detail-line
 			message: `${name} fired`,
 			file: "src/foo.ts",
 			detail,
-			determinism: "heuristic",
+			determinism,
 		};
 	}
 
 	it("FP: pre-existing finding whose detail lines are FAR from the edit does NOT escalate", () => {
 		const session = makeSession({
-			warnings_issued: priorRecord("missing_return_types"),
+			warnings_issued: priorRecord("nan_coercion_guard"),
 			tdd_cycles: new Map(), // no TDD interference
 		});
 		// Detail block in the harness's canonical `  L<n>: ...` format.
@@ -462,7 +574,7 @@ describe("runBehavioralChecks — persistent escalation attribution (detail-line
 		const out = runBehavioralChecks(
 			session,
 			"src/foo.ts",
-			[findingWithDetail("missing_return_types", detail)],
+			[findingWithDetail("nan_coercion_guard", detail)],
 			undefined,
 			undefined,
 			new Set([298, 299, 300]), // edit touched an unrelated region
@@ -484,17 +596,31 @@ describe("runBehavioralChecks — persistent escalation attribution (detail-line
 	});
 
 	it("TP preserved: a finding whose detail line is NEAR the edit still escalates", () => {
-		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional") });
-		const detail = "  L254: if (cycle.state === 2) return;";
+		const session = makeSession({ warnings_issued: priorRecord("floating_promises") });
+		const detail = "  L254: void fireAndForget();";
 		const out = runBehavioralChecks(
 			session,
 			"src/foo.ts",
-			[findingWithDetail("magic_literal_in_conditional", detail)],
+			[findingWithDetail("floating_promises", detail)],
 			undefined,
 			undefined,
 			new Set([252, 253, 254, 255]), // edit landed on the finding's line
 		);
 		const esc = out.filter((r) => r.name === "persistent_warning_escalation");
 		expect(esc).toHaveLength(1);
+	});
+
+	it("tier gate holds on the production path: heuristic finding near the edit does NOT escalate", () => {
+		const session = makeSession({ warnings_issued: priorRecord("magic_literal_in_conditional") });
+		const detail = "  L254: if (cycle.state === 2) return;";
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[findingWithDetail("magic_literal_in_conditional", detail, "heuristic")],
+			undefined,
+			undefined,
+			new Set([252, 253, 254, 255]),
+		);
+		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
 	});
 });

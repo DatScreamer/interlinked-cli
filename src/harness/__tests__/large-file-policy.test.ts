@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+	countCodeLines,
 	countLines,
 	DEFAULT_MAX_LINES,
 	evaluateLargeFile,
@@ -39,6 +40,36 @@ describe("countLines", () => {
 		// Trailing newline yields an empty last segment — consistent with the
 		// long-standing checkLargeFile definition.
 		expect(countLines("a\nb\n")).toBe(3);
+	});
+});
+
+describe("countCodeLines", () => {
+	it("counts pure code lines like countLines", () => {
+		expect(countCodeLines("const a = 1;\nconst b = 2;")).toBe(2);
+	});
+
+	it("excludes blank and //-comment lines", () => {
+		const content = ["const a = 1;", "", "// a note", "   ", "const b = 2;"].join("\n");
+		expect(countCodeLines(content)).toBe(2);
+		expect(countLines(content)).toBe(5);
+	});
+
+	it("excludes multi-line block-comment spans", () => {
+		const content = ["/**", " * docs", " * more docs", " */", "export const x = 1;"].join("\n");
+		expect(countCodeLines(content)).toBe(1);
+	});
+
+	it("counts a line with trailing comment as code, and a comment-then-code line as code", () => {
+		expect(countCodeLines("doWork(); // why")).toBe(1);
+		expect(countCodeLines("/* pre */ doWork();")).toBe(1);
+	});
+
+	it("treats string/template content as code — comment markers inside literals do not strip", () => {
+		// A template-literal data table is the module's bulk; its lines are code.
+		const content = ['const tpl = "// not a comment";', "const big = `", "  /* data line 1", "  data line 2 */", "`;"].join(
+			"\n",
+		);
+		expect(countCodeLines(content)).toBe(5);
 	});
 });
 
@@ -153,6 +184,24 @@ describe("evaluateLargeFile", () => {
 		});
 		expect(verdict.overCap).toBe(true);
 		expect(verdict.grandfathered).toBe(false); // ratchet violated by growth
+	});
+
+	// Pins the comment-only-growth interaction (field report 2026-07-06): the
+	// recorded grandfather ceiling tracks RAW lines and is never raised, even
+	// though the PreToolUse gate now allows comment-only growth past it. A
+	// grandfathered file whose raw count exceeds its ceiling — comments or not —
+	// reads as not-grandfathered here, so sustained comment growth surfaces in
+	// verify's large_files check. Remedy: decompose the file; never raise the
+	// ceiling (the baseline-integrity gate blocks raises anyway).
+	it("judges the grandfather ceiling on RAW lines even when growth was comment-only", () => {
+		const verdict = evaluateLargeFile({
+			relPath: "src/harness/server.ts",
+			lines: 3747 + 3, // e.g. three doc-comment lines past the recorded ceiling
+			baseline,
+		});
+		expect(verdict.overCap).toBe(true);
+		expect(verdict.grandfathered).toBe(false);
+		expect(verdict.ceiling).toBe(3747); // the ceiling itself did not move
 	});
 
 	it("treats a shrunk-under-cap baselined file as simply passing", () => {

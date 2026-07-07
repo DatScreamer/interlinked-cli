@@ -9,6 +9,7 @@
 //
 // The main file re-exports these so existing importers keep working.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -18,7 +19,6 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ==========================================================================
 // 6. `as unknown as X` double cast
@@ -323,7 +323,30 @@ const HOT_PATH_ARROW_RE = new RegExp(
 const SYNC_IO_RE =
 	/\b(?:readFileSync|writeFileSync|appendFileSync|execSync|spawnSync|statSync|lstatSync|mkdirSync|readdirSync|unlinkSync|rmSync|copyFileSync|renameSync|chmodSync|openSync|closeSync|realpathSync)\s*\(/;
 
+// Refinement (2026-07): filename / function-shape heuristics alone
+// misclassified non-HTTP files as hot paths (daemon loops, gate evaluators,
+// runner wrappers whose comments merely mention "route"). A file is only an
+// HTTP hot path when it shows CONCRETE server evidence: an HTTP-framework
+// import (express / fastify / koa / hono / restify / polka), or a node:http(s)
+// import paired with an actual `createServer(` call — importing node:http for
+// a CLIENT (`http.request`) is not serving traffic.
+const HTTP_FRAMEWORK_IMPORT_RE =
+	/(?:from\s*|require\s*\(\s*)["'](?:express|fastify|koa|@koa\/[^"']+|hono(?:\/[^"']+)?|@hono\/[^"']+|restify|polka)["']/;
+const NODE_HTTP_IMPORT_RE = /(?:from\s*|require\s*\(\s*)["'](?:node:)?https?["']/;
+const CREATE_SERVER_CALL_RE = /\bcreateServer\s*\(/;
+
+/** True when the file demonstrably runs an HTTP server — the precondition for
+ *  any hot-path classification. Import specifiers are string literals, so this
+ *  reads the ORIGINAL content. */
+function fileHasHttpServerEvidence(content: string): boolean {
+	if (HTTP_FRAMEWORK_IMPORT_RE.test(content)) return true;
+	return NODE_HTTP_IMPORT_RE.test(content) && CREATE_SERVER_CALL_RE.test(content);
+}
+
 function fileLooksLikeHotPath(content: string, filePath: string): boolean {
+	// No HTTP server in the file → nothing here is a request hot path,
+	// regardless of what the directory or function names look like.
+	if (!fileHasHttpServerEvidence(content)) return false;
 	const norm = filePath.replace(/\\/g, "/");
 	if (HOT_PATH_DIR_RE.test(norm)) return true;
 	return HOT_PATH_FN_NAME_RE.test(content) || HOT_PATH_ARROW_RE.test(content);

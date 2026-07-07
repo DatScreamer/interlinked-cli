@@ -11,6 +11,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
 import { checkJsonParseUnsafe } from "../checks/js-ts-general.js";
+import { isCliEntrypoint } from "../checks/language-agnostic.js";
 import { isTestFile } from "../checks/shared.js";
 import { extractTemplateInterpolationExpressions, stripAllLiterals } from "../strip-helpers.js";
 
@@ -54,6 +55,12 @@ const A3_SECURITY_CONTEXT =
  */
 export function isContentScanExempt(filePath: string, cwd: string | undefined): boolean {
 	const normalized = filePath.replace(/\\/g, "/");
+	// `.claude/workflows/` (and the session-persisted `.claude/**/workflows/`)
+	// hold Workflow-sandbox orchestration scripts: top-level await/return, plus
+	// example-URL arrays that are CONFIGURABLE defaults (args.repos overrides).
+	// They are tooling, not shipped modules — the URL / ReDoS / task-marker
+	// content-quality heuristics only ever false-fire on them.
+	if (/\.claude\/(?:[^/]+\/)*workflows\//.test(normalized)) return true;
 	if (/\.(md|mdx|markdown|txt|rst|adoc)$/i.test(normalized)) return true;
 	if (/\.(config|fixture)\.\w+$/.test(normalized)) return true;
 	if (isTestFile(normalized)) return true;
@@ -88,7 +95,7 @@ export function collectContentQualityWarnings(
 
 	// TS/JS content checks
 	if (JS_TS_EXTENSIONS.test(filePath) && content.length > INJECTION_SCAN_MIN_CHARS) {
-		warnings.push(...collectTsJsQualityWarnings(filePath, content));
+		warnings.push(...collectTsJsQualityWarnings(filePath, content, cwd));
 	}
 
 	// Cross-language A7-A11 heuristics.
@@ -182,10 +189,14 @@ function stripCommentsAndStrings(content: string): string {
 }
 
 /** as-any / as-unknown unsafe assertions + console.log debug logging. Both
- *  scan the comment-/string-stripped `codeOnly` view so only real code counts. */
+ *  scan the comment-/string-stripped `codeOnly` view so only real code counts.
+ *  `cliEntrypoint` (see `isCliEntrypoint`) mutes ONLY the console.log warning:
+ *  an entrypoint's console.log IS its output, but its `as any` casts are still
+ *  casts. */
 function collectAssertionAndLogWarnings(
 	filePath: string,
 	codeOnly: string,
+	cliEntrypoint: boolean,
 ): string[] {
 	const warnings: string[] = [];
 	const asAnyCount = (codeOnly.match(/\bas\s+any\b/g) || []).length;
@@ -198,8 +209,10 @@ function collectAssertionAndLogWarnings(
 			`[interlinked:content-quality] ${parts.join(" + ")} assertion(s) in ${filePath}. Prefer proper typing (interfaces, generics, branded types).`,
 		);
 	}
-	// console.log left in production code (not test files)
-	if (!/\.(test|spec)\.\w+$/.test(filePath)) {
+	// console.log left in production code (not test files, not CLI entrypoints —
+	// shebang / package.json-bin target / scripts|bin path segment — whose
+	// console.log is the program's output; field report 2026-07-06)
+	if (!/\.(test|spec)\.\w+$/.test(filePath) && !cliEntrypoint) {
 		const consoleLogs = (codeOnly.match(/\bconsole\.(log|debug|info)\b/g) || []).length;
 		if (consoleLogs > 2) {
 			warnings.push(
@@ -277,6 +290,61 @@ function collectUnguardedJsonParseWarning(filePath: string, content: string): st
 	return `[interlinked:content-quality] JSON.parse() without try-catch at line ${first.line} in ${filePath}. Wrap in try-catch to handle malformed input.`;
 }
 
+/** Upper bound on continuation lines scanned for one statement's chain. */
+const CHAIN_SCAN_MAX_LINES = 200;
+
+/** Net `(`/`[`/`{` minus `)`/`]`/`}` on a stripped line — bracket characters
+ *  inside strings/comments are already blanked in the caller's stripped view. */
+function bracketDelta(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "(" || ch === "[" || ch === "{") delta++;
+		else if (ch === ")" || ch === "]" || ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
+ * Whether the statement starting at `lines[i]` is rejection-handled on a
+ * LATER line of its own chain — a continuation line carrying `.catch(` or
+ * `.finally(`. Continuation = lines while brackets remain open, plus
+ * `.method(...)` chain segments (next non-blank line starting with `.`).
+ * A same-line `main().catch(...)` is already exempted by the A4 regex; this
+ * covers the multi-line form (field report 2026-07-06). `.then(`-only
+ * continuations stay flagged — .then alone does not handle rejection.
+ */
+function chainHandledOnLaterLine(lines: string[], i: number): boolean {
+	let depth = bracketDelta(nonNull(lines[i]));
+	for (let j = i + 1; j < lines.length && j - i <= CHAIN_SCAN_MAX_LINES; j++) {
+		const line = nonNull(lines[j]);
+		const trimmed = line.trim();
+		if (depth <= 0) {
+			if (trimmed === "") continue;
+			if (!trimmed.startsWith(".")) return false; // statement ended, no handler
+		}
+		if (/\.(?:catch|finally)\s*\(/.test(line)) return true;
+		depth += bracketDelta(line);
+	}
+	return false;
+}
+
+/** A4: floating promises — async-named calls at statement position without
+ *  await/void/return, no `.then/.catch/.finally` on the same line, and no
+ *  `.catch(`/`.finally(` on a continuation line of the same chain. */
+function collectFloatingPromiseWarning(filePath: string, codeOnly: string): string | null {
+	const floatingLineRe =
+		/^\s*(?!.*\b(?:await|void|return)\b)(?!.*\.(?:then|catch|finally)\s*\().*\b\w*(?:Async|async)\w*\s*\(/;
+	const lines = codeOnly.split("\n");
+	let count = 0;
+	for (let i = 0; i < lines.length; i++) {
+		if (!floatingLineRe.test(nonNull(lines[i]))) continue;
+		if (chainHandledOnLaterLine(lines, i)) continue;
+		count++;
+	}
+	if (count === 0) return null;
+	return `[interlinked:content-quality] ${count} potential floating promise(s) in ${filePath}. Add await, void, or .catch() to handle rejections.`;
+}
+
 /** A3-A6 runtime-risk heuristics: insecure Math.random(), A4 floating promises
  *  (async-named calls without await/void/return/.then/.catch), A5 unguarded
  *  JSON.parse(), and A6 mixed import/require module systems. */
@@ -288,15 +356,10 @@ function collectRuntimeRiskWarnings(
 	const warnings: string[] = [];
 	const insecureRandom = collectInsecureRandomWarning(filePath, content);
 	if (insecureRandom !== null) warnings.push(insecureRandom);
-	// A4: Floating promises — async-named calls without await/void/return/.then/.catch
-	const floatingPromisePattern =
-		/^\s*(?!.*\b(await|void|return)\b)(?!.*\.(then|catch|finally)\s*\().*\b\w*(Async|async)\w*\s*\(/gm;
-	const floatingMatches = codeOnly.match(floatingPromisePattern);
-	if (floatingMatches && floatingMatches.length > 0) {
-		warnings.push(
-			`[interlinked:content-quality] ${floatingMatches.length} potential floating promise(s) in ${filePath}. Add await, void, or .catch() to handle rejections.`,
-		);
-	}
+	// A4: Floating promises — chain-aware across lines: a multi-line
+	// `main()\n  .catch(...)` chain is handled at the call site, not floating.
+	const floatingWarning = collectFloatingPromiseWarning(filePath, codeOnly);
+	if (floatingWarning !== null) warnings.push(floatingWarning);
 	const unguardedParse = collectUnguardedJsonParseWarning(filePath, content);
 	if (unguardedParse !== null) warnings.push(unguardedParse);
 	// A6: Import/require mixing
@@ -309,11 +372,16 @@ function collectRuntimeRiskWarnings(
 }
 
 /** TS/JS-specific content-quality heuristics (A2-A6 plus the older as-any /
- *  console.log set). Thin orchestrator over the per-family collectors. */
-function collectTsJsQualityWarnings(filePath: string, content: string): string[] {
+ *  console.log set). Thin orchestrator over the per-family collectors. `cwd`
+ *  resolves relative paths for the entrypoint bin-map lookup. */
+function collectTsJsQualityWarnings(
+	filePath: string,
+	content: string,
+	cwd: string | undefined,
+): string[] {
 	const codeOnly = stripCommentsAndStrings(content);
 	return [
-		...collectAssertionAndLogWarnings(filePath, codeOnly),
+		...collectAssertionAndLogWarnings(filePath, codeOnly, isCliEntrypoint(filePath, content, cwd)),
 		...collectMarkerEvalWarnings(filePath, content),
 		...collectRuntimeRiskWarnings(filePath, content, codeOnly),
 	];

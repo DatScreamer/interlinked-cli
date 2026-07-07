@@ -48,6 +48,33 @@ describe("checkFloatingPromises — regression guards", () => {
 		const out = checkFloatingPromises(src, "src/foo.ts");
 		expect(out.length).toBeGreaterThanOrEqual(1);
 	});
+
+	// Caller-handled entrypoint invocations (field report 2026-07-06): the
+	// `main().catch(...)` shape — same line or a continuation line — is
+	// handled at the call site and must not fire; the bare `main();` must.
+	it("still flags a bare entrypoint call to an in-file async function", () => {
+		const src = ["async function main() { return; }", "main();"].join("\n");
+		expect(checkFloatingPromises(src, "src/index.ts").length).toBe(1);
+	});
+
+	it("does not flag main() handled by .catch on the same line", () => {
+		const src = [
+			"async function main() { return; }",
+			"main().catch((err) => { console.error(err); });",
+		].join("\n");
+		expect(checkFloatingPromises(src, "src/index.ts")).toEqual([]);
+	});
+
+	it("does not flag main() whose .catch sits on the next chain line", () => {
+		const src = [
+			"async function main() { return; }",
+			"main()",
+			"  .catch((err) => {",
+			"    console.error(err);",
+			"  });",
+		].join("\n");
+		expect(checkFloatingPromises(src, "src/index.ts")).toEqual([]);
+	});
 });
 
 describe("agent-safety async check surface — smoke", () => {

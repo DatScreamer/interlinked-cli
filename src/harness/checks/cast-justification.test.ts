@@ -32,6 +32,30 @@ describe("findUnjustifiedCasts", () => {
 	it("does not flag cast-like text inside a string literal", () => {
 		expect(n('const label = "treat this as Foo, please";')).toBe(0);
 	});
+
+	// ── file-extension gate: `as`-casts are a TS construct ───────────────────
+	it("does not fire on a markdown design doc discussing `as any`", () => {
+		const doc = [
+			"# Design memo",
+			"Avoid `foo as any` — cast it as Config after validating.",
+			"```ts",
+			"const c = data as Config;",
+			"```",
+		].join("\n");
+		expect(findUnjustifiedCasts(doc, "docs/design/per-edit-cloud-mutation-testing.md")).toEqual(
+			[],
+		);
+	});
+	it("does not fire on a .txt or .yaml file containing cast-shaped text", () => {
+		expect(findUnjustifiedCasts("value as Foo", "notes.txt")).toEqual([]);
+		expect(findUnjustifiedCasts("run: echo data as Config", ".github/workflows/ci.yaml")).toEqual(
+			[],
+		);
+	});
+	it("still fires on .tsx and .mts code files", () => {
+		expect(findUnjustifiedCasts("const x = foo as Bar;", "src/App.tsx").length).toBe(1);
+		expect(findUnjustifiedCasts("const x = foo as Bar;", "src/util.mts").length).toBe(1);
+	});
 });
 
 describe("countUnjustifiedCasts", () => {

@@ -9,6 +9,12 @@
 
 import { basename } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { isTestFile } from "../checks/shared.js";
+import {
+	freshnessConcernForRef,
+	referenceIdentity,
+} from "./software-version-regression-freshness.js";
+import { computeObjectPathByLine as computeScopedObjectPathByLine } from "./software-version-regression-object-path.js";
 import {
 	classifyGenericKind,
 	isVersionRegression,
@@ -17,10 +23,6 @@ import {
 	modelFamilyOf,
 	modelProviderOf,
 } from "./software-version-regression-version-parse.js";
-import {
-	freshnessConcernForRef,
-	referenceIdentity,
-} from "./software-version-regression-freshness.js";
 
 export interface SoftwareVersionReference {
 	anchor: string;
@@ -89,7 +91,8 @@ export function collectSoftwareVersionReferences(
 	}
 
 	const lines = content.split("\n");
-	const pathByLine = computeObjectPathByLine(content, lines.length);
+	const pathByLine = computeScopedObjectPathByLine(content, lines.length);
+	const testFile = isTestFile(filePath);
 	for (const [i, line] of lines.entries()) {
 		const lineNo = i + 1;
 
@@ -102,6 +105,11 @@ export function collectSoftwareVersionReferences(
 		}
 
 		for (const ref of collectGenericAssignmentRefs(line, lineNo, pathByLine[i] ?? "")) {
+			// Test fixtures pin arbitrary versions by design — comparing
+			// them across edits is meaningless (the registry-metadata.test.ts
+			// cross-block FP). Keep only model refs (freshness still applies);
+			// the manifest/Docker/action collectors above are unaffected.
+			if (testFile && ref.kind !== "model") continue;
 			collectLineRef(refs, seen, ref);
 		}
 	}
@@ -120,11 +128,11 @@ export function detectSoftwareVersionRegressions(
 		beforeByAnchor.set(ref.anchor, list);
 	}
 
-	const afterVersionsByAnchor = collectVersionsByAnchor(afterRefs);
+	const afterVersionsByFamily = collectVersionsByAnchorFamily(afterRefs);
 	const regressions: SoftwareVersionRegression[] = [];
 	const emitted = new Set<string>();
 	for (const after of afterRefs) {
-		const before = regressionBaselineFor(after, beforeByAnchor, afterVersionsByAnchor);
+		const before = regressionBaselineFor(after, beforeByAnchor, afterVersionsByFamily);
 		if (!before) continue;
 		const key = `${after.anchor}\0${before.version}\0${after.version}`;
 		if (emitted.has(key)) continue;
@@ -134,19 +142,30 @@ export function detectSoftwareVersionRegressions(
 	return regressions;
 }
 
-// Set of versions present per anchor in the after-content. Lets the regression
-// check tell a real downgrade (the higher version is GONE after the edit) from
-// a catalog that merely lists many versions side by side (all still present).
-function collectVersionsByAnchor(
+// The scoped object-path walker disambiguates anonymous sibling scopes with a
+// `#n` occurrence counter (see software-version-regression-object-path.ts).
+// Stripping the counter recovers the pre-disambiguation "family": an edit that
+// inserts a sibling above shifts downstream counters, so survival checks must
+// look family-wide or a version that merely MOVED anchors reads as removed.
+export function anchorFamilyOf(anchor: string): string {
+	return anchor.replace(/#\d+/g, "");
+}
+
+// Set of versions present per anchor FAMILY in the after-content. Lets the
+// regression check tell a real downgrade (the higher version is GONE after the
+// edit) from a catalog that merely lists many versions side by side (all still
+// present, possibly under counter-shifted sibling anchors).
+function collectVersionsByAnchorFamily(
 	refs: readonly SoftwareVersionReference[],
 ): Map<string, Set<string>> {
-	const byAnchor = new Map<string, Set<string>>();
+	const byFamily = new Map<string, Set<string>>();
 	for (const ref of refs) {
-		const set = byAnchor.get(ref.anchor) ?? new Set<string>();
+		const family = anchorFamilyOf(ref.anchor);
+		const set = byFamily.get(family) ?? new Set<string>();
 		set.add(ref.version);
-		byAnchor.set(ref.anchor, set);
+		byFamily.set(family, set);
 	}
-	return byAnchor;
+	return byFamily;
 }
 
 // The before-reference an `after` ref regressed FROM, or undefined when this is
@@ -160,7 +179,7 @@ function collectVersionsByAnchor(
 function regressionBaselineFor(
 	after: SoftwareVersionReference,
 	beforeByAnchor: ReadonlyMap<string, SoftwareVersionReference[]>,
-	afterVersionsByAnchor: ReadonlyMap<string, Set<string>>,
+	afterVersionsByFamily: ReadonlyMap<string, Set<string>>,
 ): SoftwareVersionReference | undefined {
 	const beforeList = beforeByAnchor.get(after.anchor);
 	if (!beforeList) return undefined;
@@ -168,12 +187,24 @@ function regressionBaselineFor(
 	// not introduce it — it cannot be a regression.
 	if (beforeList.some((b) => b.version === after.version)) return undefined;
 	// Else require a strictly-higher version to have been REMOVED (a real
-	// replacement), not merely joined by a lower-versioned sibling.
-	return pickReplacedHigherBaseline(beforeList, after, afterVersionsByAnchor.get(after.anchor));
+	// replacement, checked family-wide so counter-shifted siblings still count
+	// as surviving), not merely joined by a lower-versioned sibling.
+	return pickReplacedHigherBaseline(
+		beforeList,
+		after,
+		afterVersionsByFamily.get(anchorFamilyOf(after.anchor)),
+	);
 }
 
-// Among one anchor's before-refs, the highest that is both strictly higher than
-// `after` and absent from the after-content (replaced, not just co-listed).
+// Real replacements are in-place: the new version lands on (or near) the line
+// the old one occupied. Residual anchor collisions — two same-key versions
+// inside ONE scope, duplicate it()-titles — sit far apart, so a generous
+// window screens them without touching genuine downgrades.
+const MAX_REGRESSION_LINE_DISTANCE = 15;
+
+// Among one anchor's before-refs, the highest that is strictly higher than
+// `after`, absent from the after-content (replaced, not just co-listed), and
+// near enough in the file to plausibly be the same reference.
 function pickReplacedHigherBaseline(
 	beforeList: readonly SoftwareVersionReference[],
 	after: SoftwareVersionReference,
@@ -182,6 +213,7 @@ function pickReplacedHigherBaseline(
 	let best: SoftwareVersionReference | undefined;
 	for (const before of beforeList) {
 		if (afterVersions?.has(before.version)) continue;
+		if (Math.abs(before.line - after.line) > MAX_REGRESSION_LINE_DISTANCE) continue;
 		if (!isVersionRegression(before, after)) continue;
 		if (!best || isVersionRegression(before, best)) best = before;
 	}
@@ -408,65 +440,6 @@ function collectGenericAssignmentRefs(
 		}
 	}
 	return refs;
-}
-
-// Walk content once tracking object/array nesting so each line gets a parent
-// key chain (e.g. "dependencies.lodash"). Without this, every "version" key in
-// a lockfile maps to the same anchor and unchanged nested versions are wrongly
-// compared against the first occurrence.
-function computeObjectPathByLine(content: string, lineCount: number): string[] {
-	const out = new Array<string>(lineCount).fill("");
-	const stack: string[] = [];
-	let lastKey: string | undefined;
-	let lineIndex = 0;
-	let inString = false;
-	let stringQuote = "";
-	let stringStart = -1;
-	let escape = false;
-
-	for (let i = 0; i < content.length; i++) {
-		const ch = content[i];
-
-		if (ch === "\n") {
-			out[lineIndex] = stack.join(".");
-			lineIndex++;
-			if (lineIndex >= lineCount) break;
-			continue;
-		}
-
-		if (inString) {
-			if (escape) {
-				escape = false;
-			} else if (ch === "\\") {
-				escape = true;
-			} else if (ch === stringQuote) {
-				inString = false;
-				const literal = content.slice(stringStart + 1, i);
-				let j = i + 1;
-				while (j < content.length && (content[j] === " " || content[j] === "\t")) j++;
-				if (content[j] === ":") lastKey = literal;
-			}
-			continue;
-		}
-
-		if (ch === '"' || ch === "'") {
-			inString = true;
-			stringQuote = ch;
-			stringStart = i;
-			continue;
-		}
-
-		if (ch === "{" || ch === "[") {
-			stack.push(lastKey ?? (ch === "[" ? "[]" : "{}"));
-			lastKey = undefined;
-		} else if (ch === "}" || ch === "]") {
-			stack.pop();
-			lastKey = undefined;
-		}
-	}
-
-	if (lineIndex < lineCount) out[lineIndex] = stack.join(".");
-	return out;
 }
 
 function collectLineRef(

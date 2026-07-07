@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkTddCommitGate,
 	checkTddCycleViolation,
@@ -9,7 +10,6 @@ import {
 	checkTddRegression,
 } from "../behavioral-checks.js";
 import type { SessionTrajectory, TddCycle } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -151,6 +151,39 @@ describe("checkTddCycleViolation", () => {
 		session.tdd_cycles.set(cycle.source_file, cycle);
 
 		expect(checkTddCycleViolation(session, cycle.source_file)).toBeNull();
+	});
+
+	// Regression (recurrence log): a file literally named `test.ts` — no
+	// `.test.` infix — was classified as implementation and told to write a
+	// test for itself. The basename alternation in TEST_FILE_RE covers it.
+	it("does NOT fire for a file literally named test.ts (basename edge)", () => {
+		const session = makeSession();
+		for (const path of ["test.ts", "/scratch/test.ts", "spec.mjs"]) {
+			const cycle = makeCycle({
+				source_file: path,
+				test_file: null,
+				impl_edits_before_test: 5,
+				state: "no_test",
+			});
+			session.tdd_cycles.set(path, cycle);
+			expect(checkTddCycleViolation(session, path)).toBeNull();
+		}
+	});
+
+	it("STILL fires for implementation files whose name merely contains 'test'", () => {
+		const session = makeSession();
+		// "contest.ts" / "latest.ts" are NOT test files — the basename
+		// alternation requires test./spec. at a path-segment boundary.
+		for (const path of ["/project/src/contest.ts", "/project/src/latest.ts"]) {
+			const cycle = makeCycle({
+				source_file: path,
+				test_file: null,
+				impl_edits_before_test: 5,
+				state: "no_test",
+			});
+			session.tdd_cycles.set(path, cycle);
+			expect(checkTddCycleViolation(session, path)).not.toBeNull();
+		}
 	});
 });
 

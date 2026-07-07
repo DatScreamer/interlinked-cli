@@ -9,7 +9,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
-import { countLines, isCappableFile, maxLinesFor } from "./large-file-policy.js";
+import { countCodeLines, isCappableFile, maxLinesFor } from "./large-file-policy.js";
+import { projectLineCount } from "./line-count-projection.js";
 import type { SessionTrajectory } from "./types.js";
 
 const MS_PER_SECOND = 1000;
@@ -344,104 +345,19 @@ export function checkConcurrentEdit(
 // parsers, no shared module state). Re-exported here so existing importers
 // keep resolving `detectBashCodeFileWrite` from this module unchanged.
 export { detectBashCodeFileWrite } from "./pre-checks-bash-write-detect.js";
+
 // ===========================================
 // Check 6: Large-file line-count cap (ratchet)
 // ===========================================
 // Blocks a Write/Edit that would push a hand-written code file PAST the
 // per-file line cap, or grow a file that is ALREADY past it. Edits that
-// hold or shrink an over-cap file are always allowed, so an oversized file
-// can be refactored down. Generated, test, .d.ts and non-code files are
-// exempt (see large-file-policy.ts). Fail-open on any uncertainty (an
-// unreadable file, an unprojectable tool shape) — a size cap must never
-// wedge an agent mid-task.
-
-interface LineCountProjection {
-	/** File line count before the edit (0 for a brand-new file). */
-	before: number;
-	/** Projected line count after the edit. */
-	after: number;
-	/** Content used for the cappable-file predicate: the new content for a
-	 *  fresh Write, or the current file for an Edit/MultiEdit. */
-	content: string;
-}
-
-/** Count non-overlapping occurrences of `needle` in `haystack`. */
-function countOccurrences(haystack: string, needle: string): number {
-	if (needle.length === 0) return 0;
-	let count = 0;
-	let idx = haystack.indexOf(needle);
-	while (idx !== -1) {
-		count++;
-		idx = haystack.indexOf(needle, idx + needle.length);
-	}
-	return count;
-}
-
-/** Read the current file: 0 lines / empty text for a not-yet-existing file,
- *  null when the file exists but can't be read (caller then fails open). */
-function readCurrentFile(filePath: string): { lines: number; text: string } | null {
-	try {
-		if (!existsSync(filePath)) return { lines: 0, text: "" };
-		const text = readFileSync(filePath, "utf-8");
-		return { lines: countLines(text), text };
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Project a file's line count after a Write/Edit/MultiEdit. Returns null
- * for tool shapes that can't be projected precisely (apply_patch,
- * NotebookEdit) or when the current file can't be read — callers fail open.
- */
-function projectLineCount(toolInput: JsonObject, filePath: string): LineCountProjection | null {
-	// Write — the full new content is provided.
-	if (typeof toolInput.content === "string") {
-		const current = readCurrentFile(filePath);
-		if (!current) return null;
-		return {
-			before: current.lines,
-			after: countLines(toolInput.content),
-			content: toolInput.content,
-		};
-	}
-
-	// Edit — a single old/new replacement.
-	if (typeof toolInput.old_string === "string" && typeof toolInput.new_string === "string") {
-		const current = readCurrentFile(filePath);
-		if (!current || current.lines === 0) return null; // Edit needs an existing file
-		const occurrences =
-			toolInput.replace_all === true
-				? countOccurrences(current.text, toolInput.old_string)
-				: 1;
-		if (occurrences === 0) return null; // old_string absent — the tool itself will error
-		const lineDelta =
-			(countLines(toolInput.new_string) - countLines(toolInput.old_string)) * occurrences;
-		return { before: current.lines, after: current.lines + lineDelta, content: current.text };
-	}
-
-	// MultiEdit — a sequence of edits applied in order.
-	if (Array.isArray(toolInput.edits)) {
-		const current = readCurrentFile(filePath);
-		if (!current || current.lines === 0) return null;
-		let lineDelta = 0;
-		for (const raw of toolInput.edits) {
-			if (typeof raw !== "object" || raw === null) continue;
-			const edit = raw as JsonObject;
-			if (typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
-				continue;
-			}
-			const occurrences =
-				edit.replace_all === true
-					? countOccurrences(current.text, edit.old_string)
-					: 1;
-			lineDelta += (countLines(edit.new_string) - countLines(edit.old_string)) * occurrences;
-		}
-		return { before: current.lines, after: current.lines + lineDelta, content: current.text };
-	}
-
-	return null; // apply_patch / NotebookEdit / unknown shape — fail open
-}
+// hold or shrink an over-cap file are always allowed (so an oversized file
+// can be refactored down), and so is comment-only growth (docs, not code).
+// Generated, test, .d.ts and non-code files are exempt (see
+// large-file-policy.ts). The Write/Edit/MultiEdit projection lives in
+// line-count-projection.ts. Fail-open on any uncertainty (an unreadable
+// file, an unprojectable tool shape) — a size cap must never wedge an
+// agent mid-task.
 
 /**
  * The PreToolUse half of the per-file line cap. Returns a `block` when a
@@ -469,6 +385,22 @@ export function checkLargeFileLineCountWrite(
 	const cap = maxLinesFor(cwd);
 	if (after <= cap) return null; // result is within the cap
 	if (after <= before) return null; // not growing — refactoring down is always allowed
+
+	// Comment-only growth (field report 2026-07-06): an edit whose net added
+	// lines are entirely comments/blank grows the RAW count but not the CODE
+	// count — documentation, not code growth — and is always allowed, even on
+	// an over-cap or grandfathered file. DELIBERATE grandfather interaction:
+	// the recorded ceiling in large-files-baseline.json keeps tracking RAW
+	// lines and is NOT raised by this allowance (ceilings may only shrink —
+	// the baseline-integrity gate enforces that), so sustained comment growth
+	// past a recorded ceiling surfaces in verify's large_files check instead.
+	// See large-file-policy.ts::countCodeLines.
+	if (
+		projection.afterText !== null &&
+		countCodeLines(projection.afterText) <= countCodeLines(projection.beforeText)
+	) {
+		return null;
+	}
 
 	const action = before === 0 ? `create ${filePath} at` : `grow ${filePath} to`;
 	const alreadyOver =

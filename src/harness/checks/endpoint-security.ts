@@ -21,11 +21,19 @@ import { nonNull } from "../../lib/non-null.js";
 import { isSanitized, type SanitizerRegistry } from "../sanitizer-registry.js";
 import type { SecurityConfig } from "../security-config.js";
 import type { Endpoint } from "../types/session.js";
+import { isEndpointSecurityExemptFile } from "./endpoint-security-exemptions.js";
 import {
 	collectWhereClauses,
 	queryIsDynamic,
 	referencesExemptTable,
 } from "./endpoint-security-tenant-helpers.js";
+
+// Family-level FP gate (2026-07 noise review): test files, fixture trees,
+// and vendored code are not deployable endpoints — every detector below
+// early-returns on them. Rationale + predicate live in
+// `endpoint-security-exemptions.ts`; re-exported here so the family's
+// public surface stays on this module.
+export { isEndpointSecurityExemptFile } from "./endpoint-security-exemptions.js";
 
 /** A single detector finding. Mirrors the shape `verify` consumes; pass
  * 2 will wrap it in the canonical registry envelope. */
@@ -114,6 +122,7 @@ export function checkEndpointAuthMissing(
 	endpoints: Endpoint[],
 	config: SecurityConfig,
 ): DetectorFinding[] {
+	if (isEndpointSecurityExemptFile(file)) return [];
 	const findings: DetectorFinding[] = [];
 	const exemptPaths = new Set(config.endpoint_auth_missing.exempt_paths);
 	const hasMountLevelAuth = scanForMountLevelAuth(content);
@@ -176,6 +185,7 @@ export function checkEndpointIdorShape(
 	endpoints: Endpoint[],
 	config: SecurityConfig,
 ): DetectorFinding[] {
+	if (isEndpointSecurityExemptFile(file)) return [];
 	const findings: DetectorFinding[] = [];
 	const authIdents = config.endpoint_idor_shape.auth_context_identifiers;
 
@@ -251,6 +261,7 @@ export function checkEndpointMissingTenantFilter(
 	endpoints: Endpoint[],
 	config: SecurityConfig,
 ): DetectorFinding[] {
+	if (isEndpointSecurityExemptFile(file)) return [];
 	const findings: DetectorFinding[] = [];
 	const tenantCols = config.endpoint_missing_tenant_filter.tenant_columns;
 	const exemptTables = new Set(
@@ -318,6 +329,7 @@ export function checkEndpointSsrfShape(
 	config: SecurityConfig,
 	sanitizers: SanitizerRegistry,
 ): DetectorFinding[] {
+	if (isEndpointSecurityExemptFile(file)) return [];
 	const findings: DetectorFinding[] = [];
 	const exemptPaths = new Set(config.endpoint_ssrf_shape.exempt_paths);
 
@@ -417,6 +429,7 @@ export function checkEndpointMassAssignment(
 	endpoints: Endpoint[],
 	_config: SecurityConfig,
 ): DetectorFinding[] {
+	if (isEndpointSecurityExemptFile(file)) return [];
 	const findings: DetectorFinding[] = [];
 
 	for (const endpoint of endpoints) {

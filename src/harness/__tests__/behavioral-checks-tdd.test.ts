@@ -9,6 +9,7 @@ import {
 	checkProdDeltaWithoutTestDelta,
 	checkProdTestLocRatio,
 	checkTddCommitGate,
+	checkTddCycleViolation,
 	checkTppLeapfrog,
 	countAssertions,
 	gitNumstatDelta,
@@ -877,5 +878,54 @@ describe("gitNumstatDelta", () => {
 		const { prodLoc, testLoc } = gitNumstatDelta(dir);
 		expect(prodLoc).toBe(0);
 		expect(testLoc).toBe(0);
+	});
+});
+
+// ===========================================
+// FP-fix regression: TEST_FILE_RE bare-basename edge
+// ===========================================
+// A scratch file literally named `test.ts` (no `.test.` infix) was
+// classified as implementation code and told to write a test for itself
+// (recurrence log: 7 tdd_cycle_violation events on bare "test.ts").
+
+describe("checkTddCycleViolation — bare test.ts basename", () => {
+	function sessionWithNoTestCycle(file: string): SessionTrajectory {
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 3,
+		};
+		return makeSession({ tdd_cycles: new Map([[file, cycle]]) });
+	}
+
+	it("does NOT flag a file literally named test.ts", () => {
+		const file = "test.ts";
+		expect(checkTddCycleViolation(sessionWithNoTestCycle(file), file)).toBeNull();
+	});
+
+	it("does NOT flag a nested scratch/spec.mts (bare spec basename)", () => {
+		const file = "scratch/spec.mts";
+		expect(checkTddCycleViolation(sessionWithNoTestCycle(file), file)).toBeNull();
+	});
+
+	it("does NOT flag conventional test paths (foo.test.ts / __tests__/)", () => {
+		for (const file of ["src/foo.test.ts", "src/__tests__/foo.ts"]) {
+			expect(checkTddCycleViolation(sessionWithNoTestCycle(file), file)).toBeNull();
+		}
+	});
+
+	it("STILL flags an implementation file with 3 untested edits", () => {
+		const file = "src/widgets/foo.ts";
+		const result = checkTddCycleViolation(sessionWithNoTestCycle(file), file);
+		expect(result?.name).toBe("tdd_cycle_violation");
+	});
+
+	it("STILL flags a file whose name merely contains 'test' (contest.ts)", () => {
+		// Guard against over-broad basename matching: `contest.ts` is
+		// implementation code, not a test file.
+		const file = "src/contest.ts";
+		const result = checkTddCycleViolation(sessionWithNoTestCycle(file), file);
+		expect(result?.name).toBe("tdd_cycle_violation");
 	});
 });

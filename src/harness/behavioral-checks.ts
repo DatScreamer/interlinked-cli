@@ -12,13 +12,15 @@
 // importers see a single `behavioral-checks.js` surface.
 
 import { nonNull } from "../lib/non-null.js";
+import { ADVISORY_CHECK_IDS } from "./advisory-check-ids.js";
 import {
 	checkTddCycleViolation,
 	checkTddGreenConfirmation,
 	checkTddRegression,
 } from "./behavioral-checks-tdd.js";
-import type { CheckResultEntry, SessionTrajectory } from "./types.js";
+import type { CheckResultEntry, Determinism, SessionTrajectory } from "./types.js";
 
+export type { LocDelta } from "./behavioral-checks-tdd.js";
 // Re-export the TDD-cycle / commit-gate / assertion-density public surface so
 // every existing importer of `behavioral-checks.js` is unchanged.
 export {
@@ -35,7 +37,6 @@ export {
 	getStagedDiff,
 	gitNumstatDelta,
 } from "./behavioral-checks-tdd.js";
-export type { LocDelta } from "./behavioral-checks-tdd.js";
 
 // ---- Helpers ----
 
@@ -191,8 +192,11 @@ function editedLineWithinRadius(
  * addresses the FP class where pre-existing findings (already in HEAD before
  * the session started) re-fire on every edit and the escalation amplifies the
  * noise without value. The agent is only responsible for a finding when its
- * edit actually touched the finding's line. Three gates:
+ * edit actually touched the finding's line. Four gates (gate 0 added 2026-07):
  *
+ *  0. **Tier gate** — only default-gate, proven-or-low-FP checks escalate.
+ *     Advisory-tier ids (`ADVISORY_CHECK_IDS`) and heuristic-determinism
+ *     findings are excluded entirely; see `isEscalationEligible`.
  *  1. **Edited-line attribution (fail-CLOSED when edit data is present)** —
  *     when `editedLines` is provided, escalate a finding only if at least one
  *     of its lines is within `±PROXIMITY_RADIUS` of a line the agent's
@@ -224,6 +228,58 @@ export interface EscalationFinding {
 	line?: number | undefined;
 	/** All lines this check fired on, recovered from the `detail` block. */
 	lines?: number[] | undefined;
+	/** The underlying check's determinism tag (used by the tier gate). */
+	determinism?: Determinism | undefined;
+}
+
+/** Per-check aggregation of the escalation inputs: every finding line plus
+ * the check's determinism tag (first tag seen wins — a check id maps to one
+ * registry entry, so mixed tags don't occur in practice). */
+interface EscalationGroup {
+	lines: number[];
+	determinism?: Determinism | undefined;
+}
+
+/** Group current findings by check name; collect every line number per
+ * check (from both the single `line` slot and the `lines[]` array) and
+ * the check's determinism tag. Legacy `string` entries contribute the
+ * name only. */
+function groupEscalationInputs(
+	currentResults: ReadonlyArray<string | EscalationFinding>,
+): Map<string, EscalationGroup> {
+	const groups = new Map<string, EscalationGroup>();
+	for (const r of currentResults) {
+		const name = typeof r === "string" ? r : r.name;
+		let group = groups.get(name);
+		if (!group) {
+			group = { lines: [] };
+			groups.set(name, group);
+		}
+		if (typeof r === "string") continue;
+		if (group.determinism === undefined) group.determinism = r.determinism;
+		if (typeof r.line === "number" && Number.isFinite(r.line)) group.lines.push(r.line);
+		if (Array.isArray(r.lines)) {
+			for (const l of r.lines) {
+				if (typeof l === "number" && Number.isFinite(l)) group.lines.push(l);
+			}
+		}
+	}
+	return groups;
+}
+
+/**
+ * Tier gate (noise governance, 2026-07 recurrence mining): escalation may
+ * amplify only default-gate, proven-or-low-FP findings. Advisory-tier check
+ * ids and heuristic-determinism findings are excluded — 18% of the dogfood
+ * recurrence log was `persistent_warning_escalation`, dominated by advisory
+ * heuristics (magic_literal_in_conditional, complexity, ubs_*) the agent
+ * often cannot legitimately "fix"; a persisting FP must never become an
+ * error. Unknown determinism (legacy string callers, tool-check names like
+ * "typescript") stays eligible so those callers keep their old behavior.
+ */
+function isEscalationEligible(name: string, determinism: Determinism | undefined): boolean {
+	if (ADVISORY_CHECK_IDS.has(name)) return false;
+	return determinism !== "heuristic";
 }
 
 export function checkPersistentWarningEscalation(
@@ -234,26 +290,13 @@ export function checkPersistentWarningEscalation(
 ): CheckResultEntry[] {
 	const escalated: CheckResultEntry[] = [];
 	const PROXIMITY_RADIUS = 3;
-
-	// Group current findings by check name; collect every line number per
-	// check (from both the single `line` slot and the `lines[]` array).
-	const linesByCheck = new Map<string, number[]>();
-	for (const r of currentResults) {
-		const name = typeof r === "string" ? r : r.name;
-		if (!linesByCheck.has(name)) linesByCheck.set(name, []);
-		const list = linesByCheck.get(name);
-		if (!list || typeof r === "string") continue;
-		if (typeof r.line === "number" && Number.isFinite(r.line)) list.push(r.line);
-		if (Array.isArray(r.lines)) {
-			for (const l of r.lines) {
-				if (typeof l === "number" && Number.isFinite(l)) list.push(l);
-			}
-		}
-	}
-
+	const groups = groupEscalationInputs(currentResults);
 	const haveEditData = editedLines !== undefined && editedLines.size > 0;
 
-	for (const [name, currentLines] of linesByCheck) {
+	for (const [name, group] of groups) {
+		// Tier gate: never amplify advisory-tier / heuristic findings.
+		if (!isEscalationEligible(name, group.determinism)) continue;
+		const currentLines = group.lines;
 		const key = `${filePath}::${name}`;
 		const record = session.warnings_issued.get(key);
 		if (!record || record.issue_count < 1) continue;
@@ -335,6 +378,7 @@ export function runBehavioralChecks(
 		name: r.name,
 		line: r.line,
 		lines: extractDetailLines(r.detail),
+		determinism: r.determinism,
 	}));
 	const escalations = checkPersistentWarningEscalation(
 		session,

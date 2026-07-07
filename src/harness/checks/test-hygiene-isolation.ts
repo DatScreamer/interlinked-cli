@@ -116,6 +116,73 @@ const TEST_NONDETERMINISM_RE =
 const MOCK_SETUP_LINE_RE =
 	/\b(?:vi|jest)\s*\.\s*(?:setSystemTime|useFakeTimers|useRealTimers|spyOn|mock)\b/;
 
+// --- FP refinements (2026-07, from the verify-noise calibration run) ---
+//
+// (a) Elapsed-time measurement: `const start = Date.now(); …; Date.now() - start`
+//     subtracts two reads — the wall-clock value never flows into an assertion
+//     as an absolute, and fake timers would DEFEAT a perf-budget benchmark.
+//     Both the anchor assignment and the subtraction line are exempt.
+// (b) File-level fake clock: vi.setSystemTime pins Date at the global level
+//     just like useFakeTimers — either directive suppresses the whole file.
+// (c) Unique fixture names: Date.now()/randomUUID concatenated into a string
+//     (tmp-dir suffixes, session ids) is identity generation, not a value the
+//     test asserts on. Lines that ALSO assert keep firing.
+
+const FAKE_CLOCK_FILE_RE =
+	/\b(?:vi|jest)\s*\.\s*(?:useFakeTimers|setSystemTime)\b/;
+
+// `const t0 = Date.now()` / `let start = performance.now()` — candidate anchors.
+const TIMER_ANCHOR_ASSIGN_RE =
+	/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:Date|performance)\s*\.\s*now\s*\(\s*\)/g;
+
+/** Idents assigned from Date.now()/performance.now() that the file later
+ *  subtracts from a second read (`Date.now() - t0`) — the elapsed-time shape. */
+function collectElapsedTimeAnchors(stripped: string): Set<string> {
+	const anchors = new Set<string>();
+	for (const m of stripped.matchAll(TIMER_ANCHOR_ASSIGN_RE)) {
+		const ident = nonNull(m[1]);
+		const escaped = ident.replace(/\$/g, "\\$");
+		const subtraction = new RegExp(
+			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
+		);
+		if (subtraction.test(stripped)) anchors.add(ident);
+	}
+	return anchors;
+}
+
+/** True when the line is one half of an elapsed-time pair: the anchor
+ *  assignment (`const t0 = Date.now()`) or the delta (`Date.now() - t0`). */
+function isElapsedTimeLine(strippedLine: string, anchors: ReadonlySet<string>): boolean {
+	for (const ident of anchors) {
+		const escaped = ident.replace(/\$/g, "\\$");
+		const assign = new RegExp(
+			`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:Date|performance)\\s*\\.\\s*now\\s*\\(`,
+		);
+		const delta = new RegExp(
+			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
+		);
+		if (assign.test(strippedLine) || delta.test(strippedLine)) return true;
+	}
+	return false;
+}
+
+// The nondeterminism call chain, as it appears mid-expression.
+const NONDET_CALL_FRAG = String.raw`(?:Date\s*\.\s*now|Math\s*\.\s*random|crypto\s*\.\s*randomUUID|randomUUID|performance\s*\.\s*now)\s*\(`;
+// String-adjacency on the ORIGINAL line (the stripped view blanks literals):
+// a quoted literal concatenated with the call, or the call inside a `${…}`
+// template interpolation — the unique-fixture-name shape.
+const UNIQUE_NAME_BUILD_RE = new RegExp(
+	`["'\`]\\s*\\+\\s*[^;]{0,60}${NONDET_CALL_FRAG}|${NONDET_CALL_FRAG}[^;]{0,60}\\+\\s*["'\`]|\\$\\{[^{}]{0,80}${NONDET_CALL_FRAG}`,
+);
+const LINE_ASSERTS_RE = /\bexpect\s*\(|\bassert(?:\.\w+)?\s*\(/;
+
+/** True when the call on this line only builds a unique name string (path /
+ *  session-id suffix) and the line asserts nothing — identity, not behavior. */
+function isUniqueNameBuilderLine(originalLine: string): boolean {
+	if (LINE_ASSERTS_RE.test(originalLine)) return false;
+	return UNIQUE_NAME_BUILD_RE.test(originalLine);
+}
+
 /** Public API — flags Date.now / Math.random in test code without mocking. */
 export function checkTestNondeterminism(content: string, filePath: string): InlineMatch[] {
 	if (!isStrictTestFile(filePath)) return [];
@@ -127,15 +194,19 @@ export function checkTestNondeterminism(content: string, filePath: string): Inli
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 5;
 
-	// If the file uses fake-timers, Date.now is mocked at the global level —
-	// suppress the check entirely for that file.
-	if (/\bvi\s*\.\s*useFakeTimers\b|\bjest\s*\.\s*useFakeTimers\b/.test(stripped)) return [];
+	// If the file installs a fake clock (useFakeTimers / setSystemTime), Date
+	// is mocked at the global level — suppress the check entirely for the file.
+	if (FAKE_CLOCK_FILE_RE.test(stripped)) return [];
+
+	const elapsedAnchors = collectElapsedTimeAnchors(stripped);
 
 	for (const [i, strippedLine] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
 		if (MOCK_SETUP_LINE_RE.test(strippedLine)) continue;
 		const m = TEST_NONDETERMINISM_RE.exec(strippedLine);
 		if (!m) continue;
+		if (isElapsedTimeLine(strippedLine, elapsedAnchors)) continue;
+		if (isUniqueNameBuilderLine(nonNull(original[i]))) continue;
 		matches.push({
 			line: i + 1,
 			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${nonNull(original[i]).trim().slice(0, 80)}`,
