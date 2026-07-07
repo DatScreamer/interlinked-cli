@@ -142,7 +142,9 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			// Skill* / UserPromptSubmit): a non-null decision is an early return,
 			// null means fall through to the Pre/Post evaluation path.
 			const lifecycleDecision = await handleLifecycleEvent(ctx, event, session);
-			if (lifecycleDecision) return lifecycleDecision;
+			// Shadow-eval lifecycle events too (Stop carries the obligation-ledger
+			// inventory). Metric-only: appends warnings, never alters the decision.
+			if (lifecycleDecision) { mergeTrajectoryShadow(event, lifecycleDecision, ctx.rules); return lifecycleDecision; }
 
 			// Evaluate based on hook type
 			if (isPreToolUse(event)) {

@@ -89,6 +89,27 @@ describe("largeFilesStep", () => {
 		expect(baseline.files).toEqual({ "src/a.ts": 620 });
 	});
 
+	it("does NOT grow the grandfather set on a re-run: a newly-over-cap file is refused", () => {
+		// First adoption grandfathers the current over-cap file.
+		largeFilesStep(cwd, scanWith({ overCap: new Map([["src/a.ts", 700]]) }), false);
+		// b.ts went over cap AFTER the first adoption — grandfathering it would
+		// pre-authorize a new over-cap file (the loosening the baseline-integrity
+		// gate blocks on the agent path). A re-run REFUSES it instead of growing.
+		const result = largeFilesStep(
+			cwd,
+			scanWith({
+				overCap: new Map([
+					["src/a.ts", 700],
+					["src/b.ts", 900],
+				]),
+			}),
+			false,
+		);
+		const baseline = readJson(".interlinked/large-files-baseline.json");
+		expect(baseline.files).toEqual({ "src/a.ts": 700 }); // b.ts NOT grandfathered
+		expect(result.detail).toContain("REFUSED");
+	});
+
 	it("writes nothing under dry-run", () => {
 		const result = largeFilesStep(cwd, scanWith({ overCap: new Map([["src/a.ts", 700]]) }), true);
 		expect(result.action).toBe("would-write");
@@ -104,12 +125,23 @@ describe("untestedFilesStep", () => {
 		expect(baseline.min_coverage_pct).toBe(DEFAULT_MIN_COVERAGE_PCT);
 	});
 
-	it("reports added and dropped entries across a refresh", () => {
-		untestedFilesStep(cwd, scanWith({ untested: ["src/old.ts"] }), false);
-		const result = untestedFilesStep(cwd, scanWith({ untested: ["src/new.ts"] }), false);
-		expect(result.detail).toContain("(1 new, 1 dropped)");
+	it("does NOT grow the exemption list on a re-run: keeps still-untested exemptions, refuses new offenders", () => {
+		// First adoption bootstraps the current offenders.
+		untestedFilesStep(cwd, scanWith({ untested: ["src/keep.ts", "src/fixed.ts"] }), false);
+		// Re-run: keep.ts is still untested (stays); fixed.ts gained a test (drops
+		// off — a safe shrink); new.ts became untested AFTER the first adoption.
+		// Exempting a newly-appeared offender loosens the coverage floor, so the
+		// re-run REFUSES it — the list may shrink but never grow. (adopt writes via
+		// plain fs and bypasses the baseline-integrity gate, so the rule lives here.)
+		const result = untestedFilesStep(
+			cwd,
+			scanWith({ untested: ["src/keep.ts", "src/new.ts"] }),
+			false,
+		);
 		const baseline = readJson(".interlinked/untested-files-baseline.json");
-		expect(baseline.files).toEqual(["src/new.ts"]);
+		expect(baseline.files).toEqual(["src/keep.ts"]); // new.ts NOT added; fixed.ts dropped
+		expect(result.detail).toContain("(0 new, 1 dropped)");
+		expect(result.detail).toContain("1 new offender(s) REFUSED");
 	});
 
 	it("preserves an existing threshold verbatim", () => {

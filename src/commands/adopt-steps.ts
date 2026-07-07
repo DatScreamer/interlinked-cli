@@ -105,15 +105,40 @@ export function buildIndexStep(cwd: string, dryRun: boolean): AdoptStepResult {
 // Step 2 — large-files grandfather list
 // ===========================================
 
-export function largeFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): AdoptStepResult {
-	const existing = loadLargeFileBaseline(cwd);
+/** The regenerated grandfather map + the two counts the detail line reports:
+ *  `keptTighter` files held at a smaller recorded ceiling, and `refused` NEW
+ *  over-cap files a re-run withheld (always 0 on first adoption). */
+interface GrandfatherPlan {
+	files: Record<string, number>;
+	keptTighter: number;
+	refused: number;
+}
+
+/**
+ * Regenerate the grandfather map from the scan, honoring the ratchet direction.
+ *
+ * First adoption (`existing === null`) grandfathers every over-cap file. A
+ * RE-RUN must NOT GROW the set: a file that went over-cap AFTER the first
+ * adoption is a NEW offender, and grandfathering it pre-authorizes an over-cap
+ * file — the exact loosening the baseline-integrity gate blocks on the agent
+ * Write path. Adopt writes via plain `fs` and bypasses that gate, so the
+ * no-grow rule is enforced HERE: such a file is REFUSED (decompose it under the
+ * cap instead). An already-recorded file's ceiling may only shrink — a file
+ * that grew past it keeps the TIGHTER recorded count.
+ */
+function planGrandfather(
+	existing: LargeFileBaseline | null,
+	overCap: Map<string, number>,
+): GrandfatherPlan {
 	const files: Record<string, number> = {};
 	let keptTighter = 0;
-	for (const [rel, lines] of scan.overCap) {
+	let refused = 0;
+	for (const [rel, lines] of overCap) {
 		const recorded = existing?.files[rel];
-		// Direction rule: a grandfather count may only shrink. If the file
-		// grew past its recorded ceiling, regeneration keeps the TIGHTER
-		// recorded count (the file is over its ceiling and must shrink back).
+		if (existing && recorded === undefined) {
+			refused++; // re-run: a new over-cap offender — do not grandfather it
+			continue;
+		}
 		if (recorded !== undefined && recorded < lines) {
 			files[rel] = recorded;
 			keptTighter++;
@@ -121,6 +146,12 @@ export function largeFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): Ad
 			files[rel] = lines;
 		}
 	}
+	return { files, keptTighter, refused };
+}
+
+export function largeFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): AdoptStepResult {
+	const existing = loadLargeFileBaseline(cwd);
+	const { files, keptTighter, refused } = planGrandfather(existing, scan.overCap);
 	const next: LargeFileBaseline = {
 		version: existing?.version ?? 1,
 		// max_lines is preserved verbatim — adopt records offenders, it never
@@ -128,14 +159,18 @@ export function largeFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): Ad
 		max_lines: existing?.max_lines ?? DEFAULT_MAX_LINES,
 		files,
 	};
+	if (!dryRun) saveLargeFileBaseline(cwd, next);
 	const tighterNote =
 		keptTighter > 0 ? `; ${keptTighter} kept at their tighter recorded count` : "";
-	if (!dryRun) saveLargeFileBaseline(cwd, next);
+	const refusedNote =
+		refused > 0
+			? `; ${refused} new over-cap file(s) REFUSED (a re-run cannot grow the grandfather set — decompose them)`
+			: "";
 	return {
 		step: "large_files",
 		label: "Large-files grandfather list",
 		action: dryRun ? "would-write" : "written",
-		detail: `${scan.overCap.size} file(s) over ${scan.maxLines} lines grandfathered${tighterNote}`,
+		detail: `${Object.keys(files).length} file(s) over ${scan.maxLines} lines grandfathered${tighterNote}${refusedNote}`,
 		kept_tighter: keptTighter,
 	};
 }
@@ -144,15 +179,43 @@ export function largeFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): Ad
 // Step 3 — untested-files exemption list
 // ===========================================
 
+/** The regenerated exemption set + the counts the detail line reports:
+ *  `added` files bootstrapped on first adoption (always 0 on a re-run, which
+ *  never adds), `dropped` entries that gained a test/coverage, and `refused`
+ *  NEW untested files a re-run withheld. */
+interface ExemptionPlan {
+	files: Set<string>;
+	added: number;
+	dropped: number;
+	refused: number;
+}
+
+/**
+ * Regenerate the untested-files exemption set, honoring the ratchet direction.
+ *
+ * First adoption (`existing === null`) exempts every currently-untested file. A
+ * RE-RUN must NOT GROW the list: a file that became untested AFTER the first
+ * adoption is a NEW offender, and exempting it loosens the coverage floor — the
+ * exact loosening the baseline-integrity gate blocks on the agent Write path.
+ * Adopt writes via plain `fs` and bypasses that gate, so the no-grow rule is
+ * enforced HERE: such a file is REFUSED (cover it instead). Entries whose files
+ * gained a test/coverage drop off — a safe shrink.
+ */
+function planExemptions(
+	existing: UntestedFilesBaseline | null,
+	scanned: Set<string>,
+): ExemptionPlan {
+	if (!existing) return { files: scanned, added: scanned.size, dropped: 0, refused: 0 };
+	// Re-run: keep only still-untested files that were already exempted.
+	const files = new Set([...scanned].filter((f) => existing.files.has(f)));
+	const dropped = [...existing.files].filter((f) => !scanned.has(f)).length;
+	const refused = [...scanned].filter((f) => !existing.files.has(f)).length;
+	return { files, added: 0, dropped, refused };
+}
+
 export function untestedFilesStep(cwd: string, scan: RepoScan, dryRun: boolean): AdoptStepResult {
 	const existing = loadUntestedFilesBaseline(cwd);
-	const files = new Set(scan.untested);
-	// The exemption list is direction-safe by construction: entries whose
-	// files gained tests simply drop out (tighter); files that are still
-	// untested stay. New offenders are added — that IS the refresh semantics
-	// of a human-invoked re-adopt.
-	const dropped = existing ? [...existing.files].filter((f) => !files.has(f)).length : 0;
-	const added = existing ? [...files].filter((f) => !existing.files.has(f)).length : files.size;
+	const { files, added, dropped, refused } = planExemptions(existing, new Set(scan.untested));
 	const next: UntestedFilesBaseline = {
 		version: existing?.version ?? 1,
 		// Preserved verbatim, like max_lines above — adopt never moves thresholds.
@@ -160,11 +223,15 @@ export function untestedFilesStep(cwd: string, scan: RepoScan, dryRun: boolean):
 		files,
 	};
 	if (!dryRun) saveUntestedFilesBaseline(cwd, next);
+	const refusedNote =
+		refused > 0
+			? `; ${refused} new offender(s) REFUSED (a re-run cannot grow the exemption list — cover them)`
+			: "";
 	return {
 		step: "untested_files",
 		label: "Untested-files exemption list",
 		action: dryRun ? "would-write" : "written",
-		detail: `${files.size} untested file(s) exempted (${added} new, ${dropped} dropped)`,
+		detail: `${files.size} untested file(s) exempted (${added} new, ${dropped} dropped)${refusedNote}`,
 	};
 }
 

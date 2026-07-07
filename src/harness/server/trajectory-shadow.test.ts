@@ -71,14 +71,31 @@ describe("trajectoryShadowWarnings", () => {
 		).toEqual([]);
 	});
 
-	it("ignores non-tool events such as Stop (negative path)", () => {
+	it("ignores non-forwarded lifecycle events such as SessionStart (negative path)", () => {
+		const sessionStart: HarnessEvent = {
+			hook_event: "SessionStart",
+			session_id: "sess-1",
+			agent_source: "claude",
+			timestamp: "2026-07-01T00:00:00.000Z",
+		};
+		expect(trajectoryShadowWarnings(sessionStart, ALLOW, CONFIG_ON)).toEqual([]);
+	});
+
+	it("forwards Stop events so the Stop-gated obligation inventory can fire", () => {
+		// Open an obligation (a TODO the session never closes), then Stop.
+		trajectoryShadowWarnings(
+			postEdit({ file: "/z.ts", from: "x", to: "// TODO wire this", step: "1" }),
+			ALLOW,
+			CONFIG_ON,
+		);
 		const stop: HarnessEvent = {
 			hook_event: "Stop",
 			session_id: "sess-1",
 			agent_source: "claude",
 			timestamp: "2026-07-01T00:00:00.000Z",
 		};
-		expect(trajectoryShadowWarnings(stop, ALLOW, CONFIG_ON)).toEqual([]);
+		const warnings = trajectoryShadowWarnings(stop, ALLOW, CONFIG_ON);
+		expect(warnings.some((w) => w.includes("obl_net_open_at_stop"))).toBe(true);
 	});
 });
 

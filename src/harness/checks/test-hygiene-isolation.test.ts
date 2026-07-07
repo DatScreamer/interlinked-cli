@@ -172,6 +172,36 @@ it("a", () => { const t = Date.now(); });
 		const code = `expect(makeKey("k-" + Math.random())).toBe(expected);`;
 		expect(checkTestNondeterminism(code, TEST).length).toBe(1);
 	});
+
+	it("STILL flags a nondeterministic value captured then asserted on a LATER line", () => {
+		// Regression: the unique-name exemption must not let a stringified
+		// Date.now()/random escape merely because it was bound on a NON-asserting
+		// line. Here `stamp` flows into a later `expect(...).toBe(stamp)`, so the
+		// test checks a nondeterministic value and the capture line must fire.
+		const code = [
+			'it("a", () => {',
+			'  const stamp = "t-" + Date.now();',
+			"  const result = build();",
+			"  expect(result.stamp).toBe(stamp);",
+			"});",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST).length).toBe(1);
+	});
+
+	it("still exempts a unique-name concat whose id feeds only setup, never an assertion", () => {
+		// Same `const X = "…" + Date.now()` shape as the case above, but `dir` is
+		// used only for identity (mkdir / loader input) and is never referenced on
+		// an assertion line — genuine unique-name use, so it stays exempt.
+		const code = [
+			'it("a", () => {',
+			'  const dir = "run-" + Date.now();',
+			"  mkdirSync(dir, { recursive: true });",
+			"  const result = loadFrom(dir);",
+			"  expect(result.ok).toBe(true);",
+			"});",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
 });
 
 describe("checkHardcodedTimeoutInTests", () => {

@@ -103,7 +103,15 @@ export function trajectoryShadowWarnings(
 ): string[] {
 	try {
 		if (config?.trajectory_shadow?.enabled !== true) return [];
-		if (event.hook_event !== "PreToolUse" && event.hook_event !== "PostToolUse") return [];
+		// PreToolUse/PostToolUse carry the tool-call rules; Stop carries the
+		// obligation-ledger inventory (obl_net_open_at_stop). Other lifecycle events
+		// (SessionStart/End, Subagent*, Skill*, UserPromptSubmit) have no rule.
+		if (
+			event.hook_event !== "PreToolUse" &&
+			event.hook_event !== "PostToolUse" &&
+			event.hook_event !== "Stop"
+		)
+			return [];
 		if (!event.session_id) return [];
 		const state = getState(event.session_id);
 		return evaluateTrajectory(state, toToolEvent(event, decision)).map(formatTrajectoryVerdict);

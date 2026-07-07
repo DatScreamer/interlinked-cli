@@ -176,11 +176,45 @@ const UNIQUE_NAME_BUILD_RE = new RegExp(
 );
 const LINE_ASSERTS_RE = /\bexpect\s*\(|\bassert(?:\.\w+)?\s*\(/;
 
+// `const id = …` / `let x = …` — the identifier a unique-name line binds the
+// nondeterministic value into. Only a simple single-binding assignment; a shape
+// we can't name conservatively yields null (which keeps the exemption).
+const CAPTURE_ASSIGN_RE = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/;
+
+/** The identifier a `const/let/var IDENT = …` line binds, or null. */
+function capturedIdent(originalLine: string): string | null {
+	const m = CAPTURE_ASSIGN_RE.exec(originalLine);
+	return m ? nonNull(m[1]) : null;
+}
+
+/** True when `ident` appears as a standalone reference (not a `.prop` access nor
+ *  a substring of a longer name) on any of the given assertion lines. */
+function identReferencedInAssertions(ident: string, assertLines: readonly string[]): boolean {
+	const escaped = ident.replace(/[$]/g, "\\$");
+	const refRe = new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`);
+	return assertLines.some((line) => refRe.test(line));
+}
+
+/** True when this line binds the nondeterministic value into an identifier that
+ *  a later assertion references — i.e. the value flows into an assertion. */
+function capturedValueIsAsserted(originalLine: string, assertLines: readonly string[]): boolean {
+	const ident = capturedIdent(originalLine);
+	return ident !== null && identReferencedInAssertions(ident, assertLines);
+}
+
 /** True when the call on this line only builds a unique name string (path /
- *  session-id suffix) and the line asserts nothing — identity, not behavior. */
-function isUniqueNameBuilderLine(originalLine: string): boolean {
+ *  session-id suffix) and that value is never asserted — identity, not behavior.
+ *  A value captured here and referenced on a LATER assertion line is NOT exempt:
+ *  the test then checks a nondeterministic value (the flake this check exists to
+ *  catch), and a non-asserting capture line is no license to escape. */
+function isUniqueNameBuilderLine(
+	originalLine: string,
+	assertLines: readonly string[],
+): boolean {
 	if (LINE_ASSERTS_RE.test(originalLine)) return false;
-	return UNIQUE_NAME_BUILD_RE.test(originalLine);
+	if (!UNIQUE_NAME_BUILD_RE.test(originalLine)) return false;
+	if (capturedValueIsAsserted(originalLine, assertLines)) return false;
+	return true;
 }
 
 /** Public API — flags Date.now / Math.random in test code without mocking. */
@@ -199,6 +233,10 @@ export function checkTestNondeterminism(content: string, filePath: string): Inli
 	if (FAKE_CLOCK_FILE_RE.test(stripped)) return [];
 
 	const elapsedAnchors = collectElapsedTimeAnchors(stripped);
+	// Assertion lines (stripped, so string contents can't masquerade as idents) —
+	// a unique-name capture whose bound identifier is referenced here is NOT the
+	// identity-only shape the exemption is for; the nondet value flows into a check.
+	const assertLines = strippedLines.filter((line) => LINE_ASSERTS_RE.test(line));
 
 	for (const [i, strippedLine] of strippedLines.entries()) {
 		if (matches.length >= MAX_MATCHES) break;
@@ -206,7 +244,7 @@ export function checkTestNondeterminism(content: string, filePath: string): Inli
 		const m = TEST_NONDETERMINISM_RE.exec(strippedLine);
 		if (!m) continue;
 		if (isElapsedTimeLine(strippedLine, elapsedAnchors)) continue;
-		if (isUniqueNameBuilderLine(nonNull(original[i]))) continue;
+		if (isUniqueNameBuilderLine(nonNull(original[i]), assertLines)) continue;
 		matches.push({
 			line: i + 1,
 			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${nonNull(original[i]).trim().slice(0, 80)}`,
