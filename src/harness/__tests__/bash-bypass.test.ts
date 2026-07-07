@@ -248,4 +248,52 @@ describe("detectBashCodeFileWrite", () => {
 			expect(hit).not.toBeNull();
 		});
 	});
+
+	describe("root confinement (2026-07-06 dogfood FP: scratchpad probe blocked as 'tracked')", () => {
+		const ROOT = "/Users/dev/project";
+
+		it("allows a redirect to an out-of-repo scratchpad path when a root is provided", () => {
+			const hit = detectBashCodeFileWrite(
+				"printf 'x' > /private/tmp/claude-501/session/scratchpad/probe.mts",
+				ROOT,
+			);
+			expect(hit).toBeNull();
+		});
+
+		it("allows tee / cp / dd landing outside the project root", () => {
+			expect(detectBashCodeFileWrite("make | tee /tmp/build-log.ts", ROOT)).toBeNull();
+			expect(detectBashCodeFileWrite("cp src/a.ts /tmp/elsewhere/a.ts", ROOT)).toBeNull();
+			expect(detectBashCodeFileWrite("dd if=src/a.ts of=/tmp/out.ts", ROOT)).toBeNull();
+		});
+
+		it("treats ~ as the home directory, not a repo-relative path", () => {
+			expect(detectBashCodeFileWrite("echo hi > ~/notes/snippet.ts", ROOT)).toBeNull();
+		});
+
+		it("still blocks in-repo targets — relative and absolute forms", () => {
+			expect(detectBashCodeFileWrite("echo bad > src/foo.ts", ROOT)?.target).toBe("src/foo.ts");
+			expect(detectBashCodeFileWrite(`echo bad > ${ROOT}/src/foo.ts`, ROOT)?.target).toBe(
+				`${ROOT}/src/foo.ts`,
+			);
+		});
+
+		it("still blocks the second segment when the first writes out-of-repo", () => {
+			const hit = detectBashCodeFileWrite(
+				"echo a > /tmp/scratch.ts && echo b > src/real.ts",
+				ROOT,
+			);
+			expect(hit?.target).toBe("src/real.ts");
+		});
+
+		it("preserves the historical conservative reach when no root is available", () => {
+			expect(detectBashCodeFileWrite("echo x > /tmp/anywhere.ts")).not.toBeNull();
+		});
+
+		it("does not let a path-traversal target dodge the guard", () => {
+			// Resolves back INSIDE the root → still blocked.
+			expect(
+				detectBashCodeFileWrite(`echo x > ${ROOT}/../project/src/foo.ts`, ROOT),
+			).not.toBeNull();
+		});
+	});
 });

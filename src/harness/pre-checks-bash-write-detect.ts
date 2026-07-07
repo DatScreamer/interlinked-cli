@@ -10,10 +10,30 @@
 // a message asking the agent to use the Write tool instead.
 
 /** File extensions the harness's content-gate checks care about. */
+import { homedir } from "node:os";
+import { isAbsolute, resolve, sep } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 
 const CODE_FILE_EXT_RE =
 	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
+
+/**
+ * True when the write target lands INSIDE the guarded project root — the only
+ * territory the content-quality gates protect. A code-extension file in the
+ * session scratchpad, /tmp, or any other out-of-repo path is NOT a "tracked
+ * source file", and blocking it was a measured false positive (2026-07-06
+ * dogfood: a scratchpad .mts probe script). `~` is expanded (bash would);
+ * with no root available the guard keeps its historical conservative reach.
+ */
+function withinGuardedRoot(target: string, projectRoot: string | undefined): boolean {
+	if (!projectRoot) return true; // no root context ⇒ preserve old behavior
+	const expanded = target === "~" || target.startsWith("~/")
+		? resolve(homedir(), target.slice(2))
+		: target;
+	const abs = isAbsolute(expanded) ? resolve(expanded) : resolve(projectRoot, expanded);
+	const root = resolve(projectRoot);
+	return abs === root || abs.startsWith(root + sep);
+}
 
 /** Supermodel `.graph.*` shards are owned by Supermodel's daemon —
  *  always treat them as protected regardless of the inner extension. */
@@ -66,18 +86,11 @@ function parseRedirectTarget(
  */
 const CONTENT_GATE_ROUTED_RE = /\binterlinked\s+write\b/;
 
-export function detectBashCodeFileWrite(cmd: string): { target: string; mechanism: string } | null {
-	if (!cmd) return null;
+type WriteHit = { target: string; mechanism: string };
 
-	// Normalize: strip CR/LF, collapse whitespace (but keep order)
-	const normalized = cmd.replace(/[\r\n]+/g, " ");
-
-	// Fast path: `interlinked write` self-gates. Let it through.
-	if (CONTENT_GATE_ROUTED_RE.test(normalized)) return null;
-
-	// 1. Shell redirection operators: `> file` and `>> file`.
-	//    Scan for `>` not inside a quoted string. Ignore `2>`, `&>`, `>&` forms
-	//    (those are fd redirection, not file writes).
+/** Mechanism 1 — shell redirection operators: `> file` and `>> file`. Scans
+ *  for `>` not inside a quoted string; ignores `2>`, `&>`, `>&` fd forms. */
+function scanRedirects(normalized: string, inRoot: (t: string) => boolean): WriteHit | null {
 	const redirRe = /(?<![0-9&])(>>?)(?![&])/g;
 	const stripped = stripQuotedStrings(normalized);
 	for (const m of stripped.matchAll(redirRe)) {
@@ -86,58 +99,88 @@ export function detectBashCodeFileWrite(cmd: string): { target: string; mechanis
 		const hit = parseRedirectTarget(normalized, idx, op);
 		if (!hit) continue;
 		if (!CODE_FILE_EXT_RE.test(hit.target)) continue;
+		if (!inRoot(hit.target)) continue;
 		return hit;
 	}
+	return null;
+}
 
-	// 2. tee: `... | tee <file>` (also `tee -a`, `tee --append`).
+/** Mechanism 2 — tee: `... | tee <file>` (also `tee -a`, `tee --append`). */
+function scanTee(normalized: string, inRoot: (t: string) => boolean): WriteHit | null {
 	const teeMatch = normalized.match(
 		/\btee\s+(?:-a\s+|--append\s+)?(?:--\s+)?(['"]?)([^\s'"|&]+)\1/,
 	);
-	if (teeMatch) {
-		const target = nonNull(teeMatch[2]);
-		if (CODE_FILE_EXT_RE.test(target)) {
-			return { target, mechanism: "tee" };
-		}
+	if (!teeMatch) return null;
+	const target = nonNull(teeMatch[2]);
+	if (CODE_FILE_EXT_RE.test(target) && inRoot(target)) {
+		return { target, mechanism: "tee" };
 	}
+	return null;
+}
 
-	// 3. sed -i (in-place edit).
-	const sedInPlace = detectSedInPlaceEdit(normalized);
-	if (sedInPlace) {
-		return sedInPlace;
-	}
-
-	// 4. Inline interpreter calls that call writeFileSync / open+write.
-	//    node -e "..." / python -c "..." / python3 -c "..." / ruby -e "..."
+/** Mechanism 4 — inline interpreter scripts that call writeFileSync / open+write:
+ *  node -e "..." / python -c "..." / ruby -e "..." etc. */
+function scanInlineInterpreter(
+	normalized: string,
+	inRoot: (t: string) => boolean,
+): WriteHit | null {
 	const inlineInterp = normalized.match(
 		/\b(node|python3?|ruby|perl|deno|bun)\s+(?:--[a-zA-Z0-9=_-]+\s+)*-[ec]\s+(["'])([\s\S]*?)\2/,
 	);
-	if (inlineInterp) {
-		const script = inlineInterp[3];
-		// Look for `writeFileSync('foo.ts', ...)` / `open('foo.ts','w')`
-		const writeArg =
-			nonNull(script).match(/writeFile(?:Sync)?\s*\(\s*['"]([^'"]+)['"]/) ??
-			nonNull(script).match(/open\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"][aw]/) ??
-			nonNull(script).match(/fs\.writeFile\s*\(\s*['"]([^'"]+)['"]/);
-		if (writeArg && CODE_FILE_EXT_RE.test(nonNull(writeArg[1]))) {
-			return {
-				target: nonNull(writeArg[1]),
-				mechanism: `inline ${inlineInterp[1]} -${inlineInterp[0].includes("-c ") ? "c" : "e"} script`,
-			};
-		}
+	if (!inlineInterp) return null;
+	const script = inlineInterp[3];
+	// Look for `writeFileSync('foo.ts', ...)` / `open('foo.ts','w')`
+	const writeArg =
+		nonNull(script).match(/writeFile(?:Sync)?\s*\(\s*['"]([^'"]+)['"]/) ??
+		nonNull(script).match(/open\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"][aw]/) ??
+		nonNull(script).match(/fs\.writeFile\s*\(\s*['"]([^'"]+)['"]/);
+	if (writeArg && CODE_FILE_EXT_RE.test(nonNull(writeArg[1])) && inRoot(nonNull(writeArg[1]))) {
+		return {
+			target: nonNull(writeArg[1]),
+			mechanism: `inline ${inlineInterp[1]} -${inlineInterp[0].includes("-c ") ? "c" : "e"} script`,
+		};
 	}
+	return null;
+}
 
-	// 5. File-moving verbs that land bytes in a target path:
-	//    cp / mv / ln (hard or symlink) / install / rsync / scp.
-	//    All follow the shape `<verb> [flags...] <src> <dst>` — destination
-	//    is the LAST positional argument. Detect via segment-walk so the
-	//    flag count doesn't tilt the regex.
+export function detectBashCodeFileWrite(
+	cmd: string,
+	projectRoot?: string,
+): WriteHit | null {
+	if (!cmd) return null;
+	// Root confinement (2026-07-06): only targets landing INSIDE the guarded
+	// project are the content gates' territory — a code-extension path in the
+	// session scratchpad / /tmp / anywhere out-of-repo is not a tracked source
+	// file (measured dogfood FP). No root context ⇒ historical behavior.
+	const inRoot = (target: string): boolean => withinGuardedRoot(target, projectRoot);
+
+	// Normalize: strip CR/LF, collapse whitespace (but keep order)
+	const normalized = cmd.replace(/[\r\n]+/g, " ");
+
+	// Fast path: `interlinked write` self-gates. Let it through.
+	if (CONTENT_GATE_ROUTED_RE.test(normalized)) return null;
+
+	const redirect = scanRedirects(normalized, inRoot);
+	if (redirect) return redirect;
+
+	const tee = scanTee(normalized, inRoot);
+	if (tee) return tee;
+
+	// sed -i (in-place edit).
+	const sedInPlace = detectSedInPlaceEdit(normalized);
+	if (sedInPlace && inRoot(sedInPlace.target)) return sedInPlace;
+
+	const inline = scanInlineInterpreter(normalized, inRoot);
+	if (inline) return inline;
+
+	// File-moving verbs (cp/mv/ln/install/rsync/scp): destination is the LAST
+	// positional argument; segment-walk so flag count doesn't tilt the regex.
 	const fileMoveHit = detectFileMoveToProtected(normalized);
-	if (fileMoveHit) return fileMoveHit;
+	if (fileMoveHit && inRoot(fileMoveHit.target)) return fileMoveHit;
 
-	// 6. dd if=<src> of=<dst> — block-level copy. Destination is in the
-	//    `of=` arg, not the last positional.
+	// dd if=<src> of=<dst> — destination is in the `of=` arg.
 	const ddHit = detectDdWriteToProtected(normalized);
-	if (ddHit) return ddHit;
+	if (ddHit && inRoot(ddHit.target)) return ddHit;
 
 	return null;
 }

@@ -165,9 +165,13 @@ function evaluateBashRoutedWrite(
 	toolName: string,
 	cmd: string,
 	warnings: string[],
+	projectRoot?: string,
 ): HarnessDecision | null {
 	if (isBash(toolName) && cmd) {
-		const redirectHit = detectBashCodeFileWrite(cmd);
+		// Root-confined (2026-07-06): only writes landing INSIDE the guarded
+		// project count as tracked source files — scratchpad//tmp/out-of-repo
+		// targets pass through (measured dogfood FP on a scratchpad probe).
+		const redirectHit = detectBashCodeFileWrite(cmd, projectRoot);
 		if (redirectHit) {
 			return {
 				decision: "block",
@@ -310,7 +314,7 @@ export function evaluateDestructiveRules(
 	);
 	if (ruleDecision) return ruleDecision;
 
-	const bashWriteDecision = evaluateBashRoutedWrite(toolName, cmd, warnings);
+	const bashWriteDecision = evaluateBashRoutedWrite(toolName, cmd, warnings, event.cwd);
 	if (bashWriteDecision) return bashWriteDecision;
 
 	return evaluateCompoundDecomposition(rules, session, toolName, cmd, toolInput, warnings);
