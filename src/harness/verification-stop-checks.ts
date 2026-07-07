@@ -282,8 +282,9 @@ export function formatTddRegressionWarning(opts: {
 }
 
 export interface FormatUnresolvedRedOpts {
-	/** Non-test checks (typecheck/build/lint) observed red and never cleared
-	 *  to green this session. `detail` is an optional command snippet. */
+	/** Checks (typecheck/build/lint, plus `test-suite` for whole-suite test
+	 *  runs) observed red and never cleared to green this session. `detail`
+	 *  is an optional command snippet. */
 	redChecks: ReadonlyArray<{ kind: string; detail?: string | undefined }>;
 	/** Source files whose tests went red this session and stayed red (the
 	 *  stayed-red case — the green→red `regression` case is handled
@@ -295,8 +296,10 @@ export interface FormatUnresolvedRedOpts {
 /**
  * Public — Stop-time reflection nudge when the session OBSERVED a check or
  * test go red and ended without it going green again. Two inputs:
- *   - `redChecks`: non-test verification (tsc / build / lint) that failed
- *     and was never seen passing afterward (from `observed_checks`).
+ *   - `redChecks`: verification checks (tsc / build / lint, plus the
+ *     whole-suite `test-suite` axis — a bare `vitest run` / `npm test`)
+ *     that failed and were never seen passing afterward (from
+ *     `observed_checks`).
  *   - `redTests`: TDD cycles still in the `red` state at Stop — a test that
  *     failed and never went green (NOT the green→red regression, which the
  *     companion `formatTddRegressionWarning` already covers).

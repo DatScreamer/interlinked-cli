@@ -24,6 +24,7 @@ import {
 	isVerifyCommand,
 	normalizeCommand,
 	sha256,
+	splitSegments,
 } from "./helpers.js";
 import {
 	commandReadsSecretPath,
@@ -67,6 +68,9 @@ export function createState(session: string): TrajectoryState {
 		worktreeSnapshots: [],
 		seedFiles: [],
 		recentEvents: [],
+		fileReadSteps: new Map(),
+		readCount: 0,
+		searchCount: 0,
 		secretsRead: new Set(),
 		lastSecretReadStep: 0,
 		downloadedScripts: new Map(),
@@ -88,6 +92,7 @@ export function applyEvent(state: TrajectoryState, event: ToolEvent): Trajectory
 	if (isEditEvent(event)) foldEdit(state, event);
 	else if (isBashEvent(event)) foldBash(state, event);
 	else if (event.tool === "Read") foldRead(state, event);
+	else if (event.tool === "Grep" || event.tool === "Glob") state.searchCount += 1;
 	return state;
 }
 
@@ -195,6 +200,9 @@ function foldBash(state: TrajectoryState, event: ToolEvent): void {
 	if (!cmd) return;
 	const failed = event.toolOutcome === "fail";
 
+	// A failed cat/grep displayed no content, so it earns no pseudo-read credit.
+	if (!failed) foldBashReadBalance(state, cmd);
+
 	if (isDisruptCommand(cmd)) {
 		state.lastDisruptStep = state.stepCount;
 		state.commandFailures.clear();
@@ -262,14 +270,58 @@ function foldFamilyRerun(state: TrajectoryState, cmd: string, failed: boolean): 
 }
 
 // ===========================================
-// Read folds
+// Read folds (+ Family 9 read/edit-balance substrate)
 // ===========================================
 
 function foldRead(state: TrajectoryState, event: ToolEvent): void {
 	const file = event.input.file_path;
-	if (file && isSecretPath(file)) {
+	if (!file) return;
+	state.readCount += 1;
+	recordRead(state, file);
+	if (isSecretPath(file)) {
 		state.secretsRead.add(file);
 		state.lastSecretReadStep = state.stepCount;
+	}
+}
+
+const FILE_READ_CAP = 512;
+
+/** Record a read (or bash pseudo-read) of `path` at the current step, evicting
+ *  the oldest entry once the map is full (insertion order = age). */
+function recordRead(state: TrajectoryState, path: string): void {
+	if (!state.fileReadSteps.has(path) && state.fileReadSteps.size >= FILE_READ_CAP) {
+		const oldest = state.fileReadSteps.keys().next().value;
+		if (oldest !== undefined) state.fileReadSteps.delete(oldest);
+	}
+	state.fileReadSteps.set(path, state.stepCount);
+}
+
+/** Bash verbs whose segment is a search (counts toward `searchCount`). */
+const SEARCH_VERBS: ReadonlySet<string> = new Set(["grep", "rg", "fd", "find", "ag", "ack"]);
+/** Bash verbs that display file content (a pseudo-read of the named paths). */
+const INSPECT_VERBS: ReadonlySet<string> = new Set([
+	"cat", "head", "tail", "sed", "awk", "less", "more", "bat",
+]);
+
+/**
+ * Family 9 substrate, bash side: a grep/rg/fd/find segment counts as a search;
+ * a search or inspect segment NAMING a path token records a pseudo-read of
+ * that path (the agent saw the content / hit). Over-recording (e.g. a grep
+ * PATTERN that looks path-ish) only ever suppresses the read/edit-balance
+ * rules, so loose token matching is FP-safe by construction.
+ */
+function foldBashReadBalance(state: TrajectoryState, cmd: string): void {
+	for (const seg of splitSegments(cmd)) {
+		const toks = seg.split(/\s+/).filter((t) => t.length > 0);
+		const head = ((toks[0] ?? "").split("/").pop() ?? "").toLowerCase();
+		const isSearch = SEARCH_VERBS.has(head);
+		if (isSearch) state.searchCount += 1;
+		if (!isSearch && !INSPECT_VERBS.has(head)) continue;
+		for (const raw of toks.slice(1)) {
+			const t = raw.replace(/^['"]|['"]$/g, "");
+			if (t.startsWith("-")) continue;
+			if (t.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(t)) recordRead(state, t);
+		}
 	}
 }
 

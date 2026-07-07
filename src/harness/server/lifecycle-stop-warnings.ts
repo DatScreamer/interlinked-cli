@@ -8,13 +8,23 @@
 // buildPatternRescanWarnings, the sequence detectors, and calls into
 // this module) — keeping test source-text assertions intact.
 
-import { formatStopNudge, readSessionTokens } from "../commit-cadence.js";
+import { readFileSync } from "node:fs";
+import {
+	collectWipCommitSubjects,
+	formatStopNudge,
+	formatWipCommitsNudge,
+	readSessionTokens,
+} from "../commit-cadence.js";
 import {
 	detectDeadOnArrival,
 	formatDeadOnArrivalWarning,
 } from "../dead-on-arrival.js";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
+import {
+	detectUntestedExports,
+	formatUntestedExportsWarning,
+} from "../untested-exports-stop-check.js";
 import {
 	countCodeFilesEdited,
 	countDocFactSourcesEdited,
@@ -31,7 +41,7 @@ import {
 	formatVerifyNotRunWarning,
 	readDeferredCoverageObligations,
 } from "../verification-stop-checks.js";
-import type { ServerRuntime } from "./runtime-context.js";
+import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 
 /** TDD-cycle state value that signals "test went green earlier this session
  *  and is now red again." Extracted constant so the conditional reads as
@@ -81,10 +91,11 @@ export function buildCommitCadenceNudge(
 	return nudge;
 }
 
-/** Verification-before-stop nudges — eleven independent reflection
+/** Verification-before-stop nudges — thirteen independent reflection
  *  warnings keyed off `verification_observed`, `observed_checks`,
- *  `stubs_introduced`, `tdd_cycles`, `commands_run`, and `files_written`
- *  session fields, plus the deferred coverage-obligation ledger read by
+ *  `stubs_introduced`, `tdd_cycles`, `commands_run`, `files_written`,
+ *  and `git_session_baseline` session fields, plus the deferred
+ *  coverage-obligation ledger read by
  *  `session_id`. All stderr-only; none block. See
  *  docs/external-pulse/failproofai.md §"smarter Stop hooks" for the design
  *  rationale and docs/design/stop-event-checks.md for the tier-2/3 backlog. */
@@ -135,6 +146,8 @@ export function buildVerificationStopWarnings(
 		ctx.rules.per_edit_coverage?.enabled ? checkDeferredCoverage(ctx, session) : null,
 	);
 	pushIfNotNull(warnings, checkBisectNotReset(ctx, session));
+	pushIfNotNull(warnings, checkWipCommits(ctx, event, session));
+	pushIfNotNull(warnings, checkUntestedExports(ctx, event, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
 	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
 	return warnings;
@@ -306,6 +319,65 @@ function checkDeferredCoverage(ctx: ServerRuntime, session: SessionTrajectory): 
 	const warning = formatDeferredCoverageWarning({ obligations });
 	if (warning === null) return null;
 	ctx.log(`Verify-before-stop: deferred-coverage (${obligations.length} unmet)`);
+	return warning;
+}
+
+/** A Bash command that plausibly created a commit — the cheap pre-gate that
+ *  keeps the WIP-commit git shell-out off read-only sessions. Loose on
+ *  purpose (a false match just costs one `git log` whose range is empty). */
+const GIT_COMMIT_CMD_RE = /\bgit\b[^\n|]*\bcommit\b/;
+
+/** WIP-commit cleanup nudge (Stop backlog 3B) — the session created commits
+ *  whose subjects read as scratch (`wip` / `fixup` / `tmp` / …). The range is
+ *  `git_session_baseline.head_sha..HEAD` (session-start HEAD), so only THIS
+ *  session's commits count; autosquash `fixup!`/`squash!` markers are
+ *  excluded in the detector. Gated to sessions that ran a git-commit-shaped
+ *  command so read-only Stops never shell out. Reflection only; never
+ *  blocks, never suggests pushing. */
+function checkWipCommits(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+): string | null {
+	const baselineSha = session.git_session_baseline?.head_sha;
+	if (!baselineSha) return null;
+	if (!session.commands_run.some((c) => GIT_COMMIT_CMD_RE.test(c))) return null;
+	const wipSubjects = collectWipCommitSubjects(event.cwd || ctx.cwd, baselineSha);
+	const warning = formatWipCommitsNudge({ wipSubjects });
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: wip-commits (${wipSubjects.length})`);
+	return warning;
+}
+
+/** Untested-exports reflection nudge (Stop backlog 3D) — a source file
+ *  written this session whose exported symbols no test file references,
+ *  cross-referenced through the daemon's cached project graph. The graph
+ *  provider is LAZY: the detector only asks for it when the session wrote at
+ *  least one eligible code file, so read-only Stops never pay graph-build
+ *  cost. Every "can't tell" path (file not indexed, unreadable test
+ *  dependent, graph init failure) fails open to silence — and the warning
+ *  itself names the TDD carve-out. Reflection only; never blocks. */
+function checkUntestedExports(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+): string | null {
+	const cwd = event.cwd || ctx.cwd;
+	const hits = detectUntestedExports({
+		filesWritten: session.files_written,
+		cwd,
+		getGraph: () => getGraphForFile(ctx, cwd),
+		readFile: (path) => {
+			try {
+				return readFileSync(path, "utf-8");
+			} catch {
+				return null; // unreadable dependent → detector fails open
+			}
+		},
+	});
+	const warning = formatUntestedExportsWarning(hits, cwd);
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: untested-exports (${hits.length} files)`);
 	return warning;
 }
 

@@ -122,7 +122,19 @@ describe("registerHarnessCommands — structure", () => {
 				.commands.map((c) => c.name())
 				.sort(),
 		).toEqual(
-			["checks", "clean", "latency", "mode", "reap", "restart", "start", "status", "stop", "test"].sort(),
+			[
+				"checks",
+				"clean",
+				"health",
+				"latency",
+				"mode",
+				"reap",
+				"restart",
+				"start",
+				"status",
+				"stop",
+				"test",
+			].sort(),
 		);
 	});
 

@@ -19,6 +19,7 @@
 // /notes, CLAUDE.md, AGENTS.md, PLAN*.md). Editing transient planning
 // scratch shouldn't trigger a commit nudge.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { nonNull } from "../lib/non-null.js";
@@ -240,4 +241,88 @@ export function formatMidSessionBackstop(opts: FormatMidSessionBackstopOpts): st
 
 function formatTokenK(tokens: number): string {
 	return `${Math.round(tokens / 1000)}k`;
+}
+
+// ---------------------------------------------------------------------------
+// WIP-commit cleanup nudge (Stop backlog 3B, stop-event-checks.md)
+// ---------------------------------------------------------------------------
+// The commit-cadence Stop nudge above pushes agents to commit MORE often,
+// which increases the small-commit count — this is its cleanup counterweight:
+// at Stop, commits the session created whose subject reads as scratch
+// ("wip", "fixup", "tmp"…) earn a one-line "clean up before PR" reflection.
+// Same contract as every Stop nudge: string | null, stderr-only, never blocks.
+
+/** Commit subjects that read as WIP scratch. Anchored to the START of the
+ *  subject — "fix wip detection" is a legitimate message about wip, not a
+ *  wip commit. */
+const WIP_SUBJECT_RE = /^(?:wip|fixup|tmp|temp|squash)\b/i;
+
+/** Autosquash markers `fixup! <subject>` / `squash! <subject>` are excluded:
+ *  they are DELIBERATE `git rebase -i --autosquash` inputs, not forgotten
+ *  scratch (the known-FP case the design doc names). */
+const AUTOSQUASH_PREFIX_RE = /^(?:fixup|squash)!/i;
+
+/** Public API — pure predicate: does this commit subject read as a WIP-style
+ *  scratch commit worth cleaning up before a PR? */
+export function isWipCommitSubject(subject: string): boolean {
+	const s = subject.trim();
+	if (AUTOSQUASH_PREFIX_RE.test(s)) return false;
+	return WIP_SUBJECT_RE.test(s);
+}
+
+/**
+ * Public API — the WIP-style commit subjects the session created: `git log
+ * <baselineHeadSha>..HEAD` subjects filtered through {@link isWipCommitSubject}.
+ * The baseline sha is the session-start HEAD from `git_session_baseline`, so
+ * the range is exactly "commits made since this session began".
+ *
+ * Called once at Stop (never per-event — the Stop branch's latency budget
+ * covers a git shell-out, per stop-event-checks.md §design principle 3).
+ * Total: any git failure (not a repo, unborn HEAD, sha gone after a rebase)
+ * returns [] rather than throwing.
+ */
+export function collectWipCommitSubjects(cwd: string, baselineHeadSha: string): string[] {
+	if (!baselineHeadSha) return [];
+	let out: string;
+	try {
+		out = execFileSync("git", ["log", "--format=%s", `${baselineHeadSha}..HEAD`], {
+			cwd,
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+	} catch {
+		return [];
+	}
+	return out
+		.split("\n")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0 && isWipCommitSubject(s));
+}
+
+export interface FormatWipCommitsNudgeOpts {
+	/** WIP-style commit subjects from {@link collectWipCommitSubjects}. */
+	wipSubjects: readonly string[];
+	maxShown?: number;
+}
+
+/**
+ * Public API — one-line Stop nudge listing the session's WIP-style commits,
+ * or null when there are none. Suggests `git rebase -i` cleanup before a PR
+ * and — consistent with every commit-cadence nudge — explicitly does NOT
+ * suggest pushing.
+ */
+export function formatWipCommitsNudge(opts: FormatWipCommitsNudgeOpts): string | null {
+	if (opts.wipSubjects.length === 0) return null;
+	const max = opts.maxShown ?? 3;
+	const shown = opts.wipSubjects
+		.slice(0, max)
+		.map((s) => `"${s}"`)
+		.join(", ");
+	const more = opts.wipSubjects.length > max ? ", ..." : "";
+	return (
+		`[interlinked:commit-cadence] This session created ${opts.wipSubjects.length} WIP-style ` +
+		`commit(s) (${shown}${more}) — squash/reword them (\`git rebase -i\`) before opening a PR. ` +
+		"Don't push — leave that to the user."
+	);
 }

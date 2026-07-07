@@ -14,7 +14,11 @@ import {
 	dischargeObligationsAfterGreenRun,
 	isCoverageSuiteCommand,
 } from "../coverage-discharge.js";
-import { detectTestRunFile, recordTestRunCycle } from "../server-tdd-cycle.js";
+import {
+	ALL_TESTS_SENTINEL,
+	detectTestRunFile,
+	recordTestRunCycle,
+} from "../server-tdd-cycle.js";
 import type {
 	HarnessDecision,
 	HarnessEvent,
@@ -72,13 +76,23 @@ export function updateTrigramDirtyLayer(ctx: ServerRuntime, event: HarnessEvent)
 /**
  * Test-run tracking: when the tool was a test-runner command, record pass/fail
  * for the detected test file on the session and advance the TDD cycle state.
+ *
+ * Pass/fail uses the shared tool_outcome-first classifier
+ * ({@link classifyObservedOutcome}) — the old `hook_event !==
+ * "PostToolUseFailure"` rule mis-counted a folded `tool_outcome === "error"`
+ * on a regular PostToolUse as PASSED (the documented latent bug the
+ * observed-check tracker was written to avoid). A "neither" outcome
+ * (interrupted run, or no outcome/failure marker at all) records nothing:
+ * an unproven run must not flip a cycle green OR red.
  */
 export function trackTestRun(event: HarnessEvent, session: SessionTrajectory, cwd: string): void {
 	if (!session) return;
 	const cmd = (event.tool_input?.command as string) || "";
 	const testRunFile = detectTestRunFile(cmd, cwd);
 	if (!testRunFile) return;
-	const passed = event.hook_event !== "PostToolUseFailure";
+	const outcome = classifyObservedOutcome(event);
+	if (outcome === "neither") return;
+	const passed = outcome === "green";
 	session.test_runs.set(testRunFile, {
 		status: passed ? "pass" : "fail",
 		at_step: session.tool_call_count,
@@ -86,15 +100,30 @@ export function trackTestRun(event: HarnessEvent, session: SessionTrajectory, cw
 	recordTestRunCycle(session, testRunFile, passed);
 }
 
-/** Narrow a Bash command to a non-test verification-check kind
- *  (typecheck / build / lint), or null. Reuses the shared
- *  `classifyVerificationCommand` classifier and intentionally drops
- *  `test` (covered by the TDD cycle), `dev-server` / `browser` (not
- *  pass/fail signals), and `verify-suite` (its own aggregate axis, not
- *  one of the three red/green check kinds). */
+/** A test command that ran the WHOLE suite (no specific test file targeted):
+ *  `detectTestRunFile` either recognizes the runner but resolves no file
+ *  (`ALL_TESTS_SENTINEL` — e.g. bare `vitest run`, `npm test`) or doesn't
+ *  know the runner at all (null — e.g. `bun test`, bare `mocha`), which for
+ *  a command `classifyVerificationCommand` already called a test run still
+ *  means "no file argument". The cwd is only used to absolutize a *matched*
+ *  file path, so any value works for this yes/no predicate. */
+function isWholeSuiteTestCommand(cmd: string): boolean {
+	const target = detectTestRunFile(cmd, "/");
+	return target === null || target === ALL_TESTS_SENTINEL;
+}
+
+/** Narrow a Bash command to an observed verification-check kind
+ *  (typecheck / build / lint / test-suite), or null. Reuses the shared
+ *  `classifyVerificationCommand` classifier. A `test` signal maps to
+ *  `test-suite` ONLY for whole-suite runs — per-file test runs are
+ *  intentionally dropped (the TDD cycle owns per-file red/green, and
+ *  double-tracking would double-report the same red at Stop).
+ *  `dev-server` / `browser` (not pass/fail signals) and `verify-suite`
+ *  (its own aggregate axis) stay dropped. */
 function observedCheckKindFor(cmd: string): ObservedCheck["kind"] | null {
 	const signal = classifyVerificationCommand(cmd);
 	if (signal === "typecheck" || signal === "build" || signal === "lint") return signal;
+	if (signal === "test" && isWholeSuiteTestCommand(cmd)) return "test-suite";
 	return null;
 }
 
@@ -147,11 +176,13 @@ function applyObservedOutcome(
 }
 
 /**
- * Observed-check outcome tracking: when the completed tool was a non-test
- * verification command (tsc / build / lint), record whether it went red or
- * green so the Stop `unresolved-red` nudge can fire on a check that ended the
- * session red. The non-test analogue of {@link trackTestRun}. Interrupted
- * runs (and unmarked commands with no failure signal) record nothing.
+ * Observed-check outcome tracking: when the completed tool was a
+ * verification command (tsc / build / lint, or a WHOLE-suite test run —
+ * `vitest run` / `npm test` with no file argument), record whether it went
+ * red or green so the Stop `unresolved-red` nudge can fire on a check that
+ * ended the session red. The check-level analogue of {@link trackTestRun}
+ * (which owns per-file test runs via the TDD cycle). Interrupted runs (and
+ * unmarked commands with no failure signal) record nothing.
  */
 export function trackVerificationOutcome(event: HarnessEvent, session: SessionTrajectory): void {
 	if (!session) return;

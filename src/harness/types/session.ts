@@ -149,16 +149,17 @@ export interface SessionTrajectory {
 	 */
 	verification_observed?: Set<string>;
 	/**
-	 * Observed-outcome tracking for non-test verification commands
-	 * (typecheck / build / lint), keyed by check kind. Distinct from
+	 * Observed-outcome tracking for verification commands (typecheck /
+	 * build / lint, plus `test-suite` for whole-suite test runs the
+	 * per-file TDD cycle can't key), keyed by check kind. Distinct from
 	 * `verification_observed` (which records intent — "the agent ran a
 	 * typechecker") — this records the *result* — "the typechecker went
 	 * red and never went green again." Populated by
 	 * `trackVerificationOutcome` in `server/post-tool-pipeline.ts` from a
 	 * completed Bash PostToolUse; read at Stop by the `unresolved-red`
-	 * reflection nudge (the non-test analogue of the TDD stayed-red /
-	 * regression nudges, which cover test reds). Optional so hand-built
-	 * test fixtures and older snapshots hydrate cleanly. See
+	 * reflection nudge (the check-level analogue of the TDD stayed-red /
+	 * regression nudges, which cover per-file test reds). Optional so
+	 * hand-built test fixtures and older snapshots hydrate cleanly. See
 	 * `verification-stop-checks.ts::formatUnresolvedRedWarning`.
 	 */
 	observed_checks?: Map<string, ObservedCheck>;
@@ -179,9 +180,10 @@ export interface SessionTrajectory {
 	 * separately persisted append-only to
 	 * `.interlinked/plans/<session_id>.jsonl`; this field mirrors the
 	 * newest entry for fast in-memory access. Optional so test fixtures
-	 * with bare-bones session shapes don't need to wire it in. Future
-	 * Tier 2 cloud Plan/Policy Approver and the local plan-drift Stop
-	 * nudge (item #6) read this field.
+	 * with bare-bones session shapes don't need to wire it in. Read by
+	 * the shipped plan-drift Stop nudge (`plan-drift.ts`, wired via
+	 * `server/lifecycle-events.ts`); the Tier 2 cloud Plan/Policy
+	 * Approver is the remaining future consumer.
 	 */
 	declared_plan?: import("./plan.js").CapturedPlan | undefined;
 	/**
@@ -234,12 +236,17 @@ export interface SessionTrajectory {
 // ===========================================
 
 /**
- * Last observed red/green outcome of one non-test verification check
- * (typecheck / build / lint) this session. The non-test analogue of
- * {@link TddCycle} (which tracks the test red/green cycle). Stored in
- * `SessionTrajectory.observed_checks` keyed by `kind`; read at Stop by
- * `formatUnresolvedRedWarning` to nudge when a check went red and the
- * session ended without it going green.
+ * Last observed red/green outcome of one verification check this session:
+ * the non-test axes (typecheck / build / lint) plus `test-suite` — a
+ * whole-suite test run (`vitest run` / `npm test` with no file argument),
+ * which the per-file {@link TddCycle} tracker cannot key (no target file).
+ * Stored in `SessionTrajectory.observed_checks` keyed by `kind`; read at
+ * Stop by `formatUnresolvedRedWarning` to nudge when a check went red and
+ * the session ended without it going green.
+ *
+ * Per-file test runs are deliberately NOT tracked here — the TDD cycle
+ * (`tdd_cycles`) owns per-file red/green, and double-tracking would make
+ * the unresolved-red nudge report the same red twice.
  *
  * `last-status-wins`: a later green clears a prior red (sets `status:
  * "green"`, records `green_at`); a later red after a green re-reds it.
@@ -247,8 +254,8 @@ export interface SessionTrajectory {
  * exactOptionalPropertyTypes) when absent.
  */
 export interface ObservedCheck {
-	/** Which non-test verification axis this entry tracks. */
-	kind: "typecheck" | "build" | "lint";
+	/** Which verification axis this entry tracks. */
+	kind: "typecheck" | "build" | "lint" | "test-suite";
 	/** Last observed outcome: `red` (failed) or `green` (passed). */
 	status: "red" | "green";
 	/** tool_call_count when the check most recently went red. */
@@ -370,10 +377,10 @@ export interface PendingCompletion {
 // ===========================================
 
 export type {
-	EndpointFramework,
 	AuthChainEntry,
-	ParamSpec,
 	Endpoint,
+	EndpointFramework,
+	ParamSpec,
 	RouteInfo,
 } from "./session-endpoint.js";
 

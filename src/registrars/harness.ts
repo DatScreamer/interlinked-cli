@@ -69,6 +69,19 @@ export function registerHarnessCommands(program: Command): void {
 		});
 
 	harnessCmd
+		.command("health")
+		.description(
+			"Check-health report from the recurrence log: repeat-rate per check id, probation candidates (demotion signal)",
+		)
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.option("--full", "Show every check id (default: top 25 by repeat-rate)")
+		.action(async (opts: OptionValues) => {
+			const { harnessHealthCommand } = await import("../commands/harness.js");
+			await harnessHealthCommand(opts);
+		});
+
+	harnessCmd
 		.command("test [command]")
 		.description(
 			"Fire a synthetic PreToolUse event at the running harness and show its decision. Default: a Bash command. Use --write/--edit to test a file operation.",

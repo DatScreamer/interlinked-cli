@@ -20,8 +20,8 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
-import { runPostToolPipeline } from "./post-tool-pipeline.js";
 import type { PerFileCheckCtx } from "./post-tool-file-checks.js";
+import { runPostToolPipeline } from "./post-tool-pipeline.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +63,8 @@ vi.mock("../failure-channels.js", () => ({
 }));
 
 vi.mock("../server-tdd-cycle.js", () => ({
+	// Real sentinel value (the whole-suite branch compares against it).
+	ALL_TESTS_SENTINEL: "__all_tests__",
 	detectTestRunFile: vi.fn(() => null),
 	recordTestRunCycle: vi.fn(),
 }));
@@ -377,10 +379,14 @@ describe("deferred-coverage discharge on an observed GREEN coverage run (finding
 });
 
 describe("test-run tracking", () => {
-	it("records a pass + drives the TDD cycle when a test runner is detected", async () => {
+	it("records a pass + drives the TDD cycle when a test runner completes green", async () => {
 		mDetectTestRun.mockReturnValue("src/x.test.ts");
 		const session = makeSession();
-		const event = ev({ tool_name: "Bash", tool_input: { command: "vitest run x" } });
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "success",
+			tool_input: { command: "vitest run x" },
+		});
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "pass", at_step: 3 });
 		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", true);
@@ -397,6 +403,42 @@ describe("test-run tracking", () => {
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "fail", at_step: 3 });
 		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false);
+	});
+
+	it("records a fail for a folded tool_outcome=error on a regular PostToolUse (bug fix: was mis-counted as pass)", async () => {
+		mDetectTestRun.mockReturnValue("src/x.test.ts");
+		const session = makeSession();
+		const event = ev({
+			hook_event: "PostToolUse",
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "vitest run x" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "fail", at_step: 3 });
+		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false);
+	});
+
+	it("records NOTHING for an interrupted test run (neither pass nor fail)", async () => {
+		mDetectTestRun.mockReturnValue("src/x.test.ts");
+		const session = makeSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "interrupted",
+			tool_input: { command: "vitest run x" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.test_runs.size).toBe(0);
+		expect(mRecordTestRunCycle).not.toHaveBeenCalled();
+	});
+
+	it("records NOTHING when the outcome is unproven (no tool_outcome, no failure marker)", async () => {
+		mDetectTestRun.mockReturnValue("src/x.test.ts");
+		const session = makeSession();
+		const event = ev({ tool_name: "Bash", tool_input: { command: "vitest run x" } });
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.test_runs.size).toBe(0);
+		expect(mRecordTestRunCycle).not.toHaveBeenCalled();
 	});
 
 	it("does nothing when no test runner is detected", async () => {
@@ -523,6 +565,94 @@ describe("observed-check outcome tracking", () => {
 			tool_name: "Bash",
 			exit_code: 0,
 			tool_input: { command: "tsc --noEmit" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.size).toBe(0);
+	});
+
+	// --- whole-suite test runs → the `test-suite` observed check (backlog 3A) --
+
+	it("records test-suite=red when a bare `vitest run` (whole suite) fails", async () => {
+		mDetectTestRun.mockReturnValue("__all_tests__");
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "npx vitest run" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		const entry = session.observed_checks?.get("test-suite");
+		expect(entry?.status).toBe("red");
+		expect(entry?.kind).toBe("test-suite");
+		expect(entry?.detail).toContain("npx vitest run");
+	});
+
+	it("records test-suite=red for an unknown-runner suite command (`bun test`, detect=null)", async () => {
+		// classifyVerificationCommand says "test" but detectTestRunFile doesn't
+		// know the runner — still a whole-suite run (no file argument).
+		mDetectTestRun.mockReturnValue(null);
+		const session = obsSession();
+		const event = ev({
+			hook_event: "PostToolUseFailure",
+			tool_name: "Bash",
+			tool_input: { command: "bun test" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.get("test-suite")?.status).toBe("red");
+	});
+
+	it("flips a prior test-suite red to green when a later whole-suite run passes", async () => {
+		mDetectTestRun.mockReturnValue("__all_tests__");
+		const session = obsSession({
+			observed_checks: new Map([
+				["test-suite", { kind: "test-suite", status: "red", red_at: 1 }],
+			]),
+		});
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "success",
+			tool_input: { command: "npm test" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		const entry = session.observed_checks?.get("test-suite");
+		expect(entry?.status).toBe("green");
+		expect(entry?.green_at).toBe(3);
+		expect(entry?.red_at).toBe(1); // preserved for audit
+	});
+
+	it("does NOT record test-suite for a per-file test run (the TDD cycle owns per-file red/green)", async () => {
+		mDetectTestRun.mockReturnValue("/repo/src/x.test.ts");
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "error",
+			tool_input: { command: "npx vitest run src/x.test.ts" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.size).toBe(0);
+		// The per-file path still flows through trackTestRun.
+		expect(session.test_runs.get("/repo/src/x.test.ts")?.status).toBe("fail");
+	});
+
+	it("records NOTHING for an interrupted whole-suite run", async () => {
+		mDetectTestRun.mockReturnValue("__all_tests__");
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			tool_outcome: "interrupted",
+			tool_input: { command: "npx vitest run" },
+		});
+		await runPostToolPipeline(makeCtx(), event, session);
+		expect(session.observed_checks?.size).toBe(0);
+	});
+
+	it("records NOTHING for an unproven whole-suite run (no outcome, no failure marker)", async () => {
+		mDetectTestRun.mockReturnValue("__all_tests__");
+		const session = obsSession();
+		const event = ev({
+			tool_name: "Bash",
+			exit_code: 0,
+			tool_input: { command: "npx vitest run" },
 		});
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.observed_checks?.size).toBe(0);

@@ -732,6 +732,16 @@ describe("formatUnresolvedRedWarning", () => {
 		expect(msg).toMatch(/1 check\/test that went red/);
 	});
 
+	it("fires for a red whole-suite test run (kind test-suite + command detail) — backlog 3A", () => {
+		const msg = formatUnresolvedRedWarning({
+			redChecks: [{ kind: "test-suite", detail: "npx vitest run" }],
+			redTests: [],
+		});
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("- test-suite (npx vitest run)");
+		expect(msg).toMatch(/1 check\/test that went red/);
+	});
+
 	it("fires for a red check with no detail (kind only, no empty parens)", () => {
 		const msg = formatUnresolvedRedWarning({ redChecks: [{ kind: "build" }], redTests: [] });
 		expect(msg).not.toBeNull();

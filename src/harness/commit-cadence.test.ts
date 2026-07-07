@@ -1,12 +1,16 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	collectWipCommitSubjects,
 	DEFAULT_DOC_GLOBS,
 	formatMidSessionBackstop,
 	formatStopNudge,
+	formatWipCommitsNudge,
 	isDocFile,
+	isWipCommitSubject,
 	readSessionTokens,
 } from "./commit-cadence.js";
 
@@ -192,5 +196,130 @@ describe("formatMidSessionBackstop", () => {
 		expect(msg!).toContain("41 distinct code file");
 		expect(msg!).toContain("Commit incrementally");
 		expect(msg!).toContain("Don't push");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// WIP-commit cleanup nudge (Stop backlog 3B)
+// ---------------------------------------------------------------------------
+
+describe("isWipCommitSubject", () => {
+	it("fires on subjects starting with wip / fixup / tmp (case-insensitive)", () => {
+		expect(isWipCommitSubject("wip")).toBe(true);
+		expect(isWipCommitSubject("WIP: half-done parser")).toBe(true);
+		expect(isWipCommitSubject("fixup lint errors")).toBe(true);
+		expect(isWipCommitSubject("tmp checkpoint before rebase")).toBe(true);
+	});
+
+	it("fires on temp / squash prefixes and tolerates leading whitespace", () => {
+		expect(isWipCommitSubject("temp: stash of debug state")).toBe(true);
+		expect(isWipCommitSubject("  squash me into previous")).toBe(true);
+	});
+
+	it("does NOT fire when the marker word appears mid-subject", () => {
+		expect(isWipCommitSubject("fix wip detection in commit-cadence")).toBe(false);
+		expect(isWipCommitSubject("remove tmp files from dist")).toBe(false);
+	});
+
+	it("does NOT fire on ordinary conventional-commit subjects", () => {
+		expect(isWipCommitSubject("feat(harness): add wip-commit stop nudge")).toBe(false);
+		expect(isWipCommitSubject("fix: handle empty baseline sha")).toBe(false);
+	});
+
+	it("does NOT fire on words that merely start with a marker (wipe, template)", () => {
+		// \b after the marker: `wipe`/`template` are not `wip`/`temp`.
+		expect(isWipCommitSubject("wipe stale cache entries on boot")).toBe(false);
+		expect(isWipCommitSubject("template the sponsor row renderer")).toBe(false);
+	});
+
+	it("excludes deliberate autosquash fixup!/squash! markers (the known-FP case)", () => {
+		expect(isWipCommitSubject("fixup! feat: add parser")).toBe(false);
+		expect(isWipCommitSubject("squash! fix: rounding")).toBe(false);
+	});
+});
+
+describe("collectWipCommitSubjects", () => {
+	let repo: string;
+
+	function git(...args: string[]): string {
+		return execFileSync("git", args, { cwd: repo, encoding: "utf-8" }).trim();
+	}
+
+	function commit(subject: string): void {
+		writeFileSync(join(repo, "a.txt"), `${subject}\n`);
+		git("add", "a.txt");
+		git("commit", "-q", "-m", subject);
+	}
+
+	beforeEach(() => {
+		repo = mkdtempSync(join(tmpdir(), "wip-commits-"));
+		git("init", "-q");
+		git("config", "user.email", "t@example.com");
+		git("config", "user.name", "t");
+		commit("feat: baseline commit");
+	});
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	it("returns only WIP-style subjects committed after the baseline sha", () => {
+		const baseline = git("rev-parse", "HEAD");
+		commit("wip: half-done thing");
+		commit("feat: a real commit");
+		commit("tmp checkpoint");
+		// git log is newest-first.
+		expect(collectWipCommitSubjects(repo, baseline)).toEqual([
+			"tmp checkpoint",
+			"wip: half-done thing",
+		]);
+	});
+
+	it("returns [] when the session made no commits (empty range)", () => {
+		const baseline = git("rev-parse", "HEAD");
+		expect(collectWipCommitSubjects(repo, baseline)).toEqual([]);
+	});
+
+	it("does not count pre-baseline WIP commits", () => {
+		commit("wip: pre-session scratch");
+		const baseline = git("rev-parse", "HEAD");
+		commit("feat: session work");
+		expect(collectWipCommitSubjects(repo, baseline)).toEqual([]);
+	});
+
+	it("returns [] for an empty baseline sha without shelling out", () => {
+		expect(collectWipCommitSubjects(repo, "")).toEqual([]);
+	});
+
+	it("returns [] (never throws) when git fails — unknown sha / not a repo", () => {
+		expect(
+			collectWipCommitSubjects(repo, "0000000000000000000000000000000000000000"),
+		).toEqual([]);
+		expect(collectWipCommitSubjects(tmpdir(), "abc123")).toEqual([]);
+	});
+});
+
+describe("formatWipCommitsNudge", () => {
+	it("returns null when there are no WIP subjects", () => {
+		expect(formatWipCommitsNudge({ wipSubjects: [] })).toBeNull();
+	});
+
+	it("emits a one-line nudge listing the subjects, rebase hint, and no-push stance", () => {
+		const msg = formatWipCommitsNudge({ wipSubjects: ["wip: parser", "tmp checkpoint"] });
+		expect(msg!).toContain("[interlinked:commit-cadence]");
+		expect(msg!).toContain("2 WIP-style commit(s)");
+		expect(msg!).toContain('"wip: parser"');
+		expect(msg!).toContain("git rebase -i");
+		expect(msg!).toContain("Don't push");
+		expect(msg!).not.toContain("\n");
+	});
+
+	it("truncates the subject list past maxShown with an ellipsis", () => {
+		const msg = formatWipCommitsNudge({
+			wipSubjects: ["wip 1", "wip 2", "wip 3", "wip 4"],
+		});
+		expect(msg!).toContain("4 WIP-style commit(s)");
+		expect(msg!).toContain('"wip 3"');
+		expect(msg!).not.toContain('"wip 4"');
+		expect(msg!).toContain(", ...");
 	});
 });

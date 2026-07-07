@@ -14,7 +14,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Mock every imported helper module ------------------------------------
 
 vi.mock("../commit-cadence.js", () => ({
+	collectWipCommitSubjects: vi.fn(),
 	formatStopNudge: vi.fn(),
+	formatWipCommitsNudge: vi.fn(),
 	readSessionTokens: vi.fn(),
 }));
 vi.mock("../dead-on-arrival.js", () => ({
@@ -24,6 +26,10 @@ vi.mock("../dead-on-arrival.js", () => ({
 vi.mock("../fixture-leak.js", () => ({
 	detectFixtureLeaks: vi.fn(),
 	formatFixtureLeakWarning: vi.fn(),
+}));
+vi.mock("../untested-exports-stop-check.js", () => ({
+	detectUntestedExports: vi.fn(),
+	formatUntestedExportsWarning: vi.fn(),
 }));
 vi.mock("../verification-stop-checks.js", () => ({
 	countCodeFilesEdited: vi.fn(),
@@ -44,13 +50,22 @@ vi.mock("../verification-stop-checks.js", () => ({
 	readDeferredCoverageObligations: vi.fn(),
 }));
 
-import { formatStopNudge, readSessionTokens } from "../commit-cadence.js";
+import {
+	collectWipCommitSubjects,
+	formatStopNudge,
+	formatWipCommitsNudge,
+	readSessionTokens,
+} from "../commit-cadence.js";
 import {
 	detectDeadOnArrival,
 	formatDeadOnArrivalWarning,
 } from "../dead-on-arrival.js";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
+import {
+	detectUntestedExports,
+	formatUntestedExportsWarning,
+} from "../untested-exports-stop-check.js";
 import {
 	countCodeFilesEdited,
 	countDocFactSourcesEdited,
@@ -76,6 +91,10 @@ import type { ServerRuntime } from "./runtime-context.js";
 // Typed handles to the mocked functions.
 const mFormatStopNudge = vi.mocked(formatStopNudge);
 const mReadSessionTokens = vi.mocked(readSessionTokens);
+const mCollectWipCommitSubjects = vi.mocked(collectWipCommitSubjects);
+const mFormatWipCommitsNudge = vi.mocked(formatWipCommitsNudge);
+const mDetectUntestedExports = vi.mocked(detectUntestedExports);
+const mFormatUntestedExportsWarning = vi.mocked(formatUntestedExportsWarning);
 const mDetectDeadOnArrival = vi.mocked(detectDeadOnArrival);
 const mFormatDeadOnArrivalWarning = vi.mocked(formatDeadOnArrivalWarning);
 const mDetectFixtureLeaks = vi.mocked(detectFixtureLeaks);
@@ -144,6 +163,10 @@ beforeEach(() => {
 	// each branch test isolate a single firing path.
 	mFormatStopNudge.mockReturnValue(null);
 	mReadSessionTokens.mockReturnValue(null);
+	mCollectWipCommitSubjects.mockReturnValue([]);
+	mFormatWipCommitsNudge.mockReturnValue(null);
+	mDetectUntestedExports.mockReturnValue([]);
+	mFormatUntestedExportsWarning.mockReturnValue(null);
 	mDetectDeadOnArrival.mockReturnValue([]);
 	mFormatDeadOnArrivalWarning.mockReturnValue(null);
 	mDetectFixtureLeaks.mockReturnValue([]);
@@ -781,6 +804,115 @@ describe("buildVerificationStopWarnings", () => {
 		buildVerificationStopWarnings(ctx, makeEvent(), session);
 
 		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({ redChecks: [], redTests: [] });
+	});
+
+	// --- WIP-commit cleanup nudge wiring (checkWipCommits, backlog 3B) ------
+
+	/** Session that committed this session: baseline sha + a git-commit command. */
+	function wipSession(over: Record<string, unknown> = {}): SessionTrajectory {
+		return makeSession({
+			git_session_baseline: { head_sha: "abc123" },
+			commands_run: ["git commit -m 'wip'"],
+			...over,
+		});
+	}
+
+	it("includes the wip-commits nudge when the session committed and WIP subjects exist (+logs)", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		mCollectWipCommitSubjects.mockReturnValue(["wip: parser", "tmp checkpoint"]);
+		mFormatWipCommitsNudge.mockReturnValue("WIP-COMMITS");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent({ cwd: "/ev" }), wipSession());
+
+		expect(out).toContain("WIP-COMMITS");
+		// event.cwd is preferred over ctx.cwd; range starts at the baseline sha.
+		expect(mCollectWipCommitSubjects).toHaveBeenCalledWith("/ev", "abc123");
+		expect(mFormatWipCommitsNudge).toHaveBeenCalledWith({
+			wipSubjects: ["wip: parser", "tmp checkpoint"],
+		});
+		expect(logLines.some((l) => l.includes("wip-commits (2)"))).toBe(true);
+	});
+
+	it("falls back to ctx.cwd for wip-commits when event.cwd is absent", () => {
+		const ctx = makeCtx({ cwd: "/ctx-wip", rules: vscRules() });
+		mFormatWipCommitsNudge.mockReturnValue(null);
+
+		buildVerificationStopWarnings(ctx, makeEvent({}), wipSession());
+
+		expect(mCollectWipCommitSubjects).toHaveBeenCalledWith("/ctx-wip", "abc123");
+	});
+
+	it("never shells out when the session has no git_session_baseline", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		const session = wipSession({ git_session_baseline: undefined });
+
+		expect(buildVerificationStopWarnings(ctx, makeEvent(), session)).toEqual([]);
+		expect(mCollectWipCommitSubjects).not.toHaveBeenCalled();
+	});
+
+	it("never shells out when no git-commit-shaped command ran this session (read-only Stop)", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		const session = wipSession({ commands_run: ["git status", "npx vitest run"] });
+
+		expect(buildVerificationStopWarnings(ctx, makeEvent(), session)).toEqual([]);
+		expect(mCollectWipCommitSubjects).not.toHaveBeenCalled();
+	});
+
+	it("does not push / log when the wip-commits formatter returns null (no WIP subjects)", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		mCollectWipCommitSubjects.mockReturnValue([]);
+		mFormatWipCommitsNudge.mockReturnValue(null);
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), wipSession());
+
+		expect(out).toEqual([]);
+		expect(logLines.some((l) => l.includes("wip-commits"))).toBe(false);
+	});
+
+	// --- untested-exports nudge wiring (checkUntestedExports, backlog 3D) ---
+
+	it("includes the untested-exports warning when detector + formatter fire (+logs)", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		const hits = [{ sourcePath: "/ev/src/thing.ts", symbols: ["doThing"] }];
+		mDetectUntestedExports.mockReturnValue(hits);
+		mFormatUntestedExportsWarning.mockReturnValue("UNTESTED-EXPORTS");
+
+		const session = makeSession({ files_written: new Set(["/ev/src/thing.ts"]) });
+		const out = buildVerificationStopWarnings(ctx, makeEvent({ cwd: "/ev" }), session);
+
+		expect(out).toContain("UNTESTED-EXPORTS");
+		// event.cwd is preferred; files_written + a lazy graph provider are passed.
+		expect(mDetectUntestedExports).toHaveBeenCalledWith(
+			expect.objectContaining({
+				cwd: "/ev",
+				filesWritten: session.files_written,
+				getGraph: expect.any(Function),
+				readFile: expect.any(Function),
+			}),
+		);
+		expect(mFormatUntestedExportsWarning).toHaveBeenCalledWith(hits, "/ev");
+		expect(logLines.some((l) => l.includes("untested-exports (1 files)"))).toBe(true);
+	});
+
+	it("falls back to ctx.cwd for untested-exports when event.cwd is absent", () => {
+		const ctx = makeCtx({ cwd: "/ctx-untested", rules: vscRules() });
+
+		buildVerificationStopWarnings(ctx, makeEvent({}), makeSession());
+
+		expect(mDetectUntestedExports).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd: "/ctx-untested" }),
+		);
+	});
+
+	it("does not push / log when the untested-exports formatter returns null", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		mDetectUntestedExports.mockReturnValue([]);
+		mFormatUntestedExportsWarning.mockReturnValue(null);
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).toEqual([]);
+		expect(logLines.some((l) => l.includes("untested-exports"))).toBe(false);
 	});
 
 	// --- per_edit_coverage-gated wrapper (checkDeferredCoverage) ------------

@@ -43,6 +43,10 @@ import {
 	resolveHarnessTestInput,
 } from "./harness-test-event.js";
 
+// `interlinked harness health` — check-health governance report (Tricorder-
+// style demotion signal over the recurrence log). Implementation lives in a
+// sibling to hold this file under the per-file line cap.
+export { harnessHealthCommand } from "./harness-health.js";
 export type {
 	OrphanCandidate,
 	ReapOptions,

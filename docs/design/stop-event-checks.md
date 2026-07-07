@@ -16,18 +16,32 @@ Three corollaries:
 
 Reference for the failproofai shape we *didn't* take: `docs/external-pulse/failproofai.md` §"smarter Stop hooks."
 
-## Tier 1 — shipped 2026-05-11
+## Tier 1 — shipped (2026-05-11, extended through 2026-07)
 
-Code: `src/harness/verification-stop-checks.ts`, wired into `src/harness/server.ts` Stop / SessionEnd branch. Tests: `src/harness/__tests__/verification-stop-checks.test.ts`. Config: `verification_stop_checks` in `rules/default-config.ts` (default-on per kind, all stderr-only).
+Orchestration: `src/harness/server/lifecycle-stop-warnings.ts` (`buildStopWarnings` → `buildCommitCadenceNudge` + `buildVerificationStopWarnings`), called from the Stop branch in `server/lifecycle-events.ts::handleStop` (which also runs the plan-drift nudge directly). Formatters: `verification-stop-checks.ts`, `commit-cadence.ts`, `dead-on-arrival.ts`, `fixture-leak.ts`, `plan-drift.ts`. Tests: `src/harness/server/lifecycle-stop-warnings.test.ts` (wiring) + per-formatter suites (`__tests__/verification-stop-checks.test.ts`, `commit-cadence.test.ts`, …). Config: `verification_stop_checks` / `commit_cadence` / `plan_capture` in `rules/default-config.ts`. All stderr-only; none block.
 
-| Detector | Signal | Fires when |
+The original 2026-05-11 set was three detectors; the shipped set has grown to fourteen nudges:
+
+| Nudge | Gate | Fires when |
 |---|---|---|
-| `warn_unverified_code` | `verification_observed` Set tracks Bash commands matching tsc / vitest / cargo test / pytest / biome / eslint / npm run build / etc. | Session has code-file edits AND no correctness signal (typecheck / test / lint / build) was observed |
-| `warn_ui_not_interacted` | same set tracks browser MCP (`mcp__chrome-devtools__*` / `mcp__playwright__browser_*`) and dev-server starts | Session has UI-file edits (.tsx / .jsx / .html / .css / .vue / .svelte / .astro) AND neither browser nor dev-server was observed |
-| `warn_stubs_introduced` | `stubs_introduced` array populated at PostToolUse by `scanForStubs(content/new_string)` | Array is non-empty (TODO / FIXME / `throw new Error("not implemented")` / `it.skip(` / `xdescribe(` matches) |
+| commit-cadence (`formatStopNudge`) | `commit_cadence.enabled` | Too many uncommitted code-file edits this session (wording escalates by token band; never says push) |
+| unverified-code | `warn_unverified_code` | Code edits with the verify-to-edit ratio far below the measured best-model floor (0.1) |
+| verify-not-run | `warn_verify_not_run` | Individual tools ran but never the full verify suite; suppressed when unverified-code already fired (single-nudge invariant) |
+| ui-not-interacted | `warn_ui_not_interacted` | UI-file edits (.tsx / .html / .css / …) with neither browser MCP nor dev-server observed |
+| stubs-introduced | `warn_stubs_introduced` | `stubs_introduced` non-empty (TODO / FIXME / `throw new Error("not implemented")` / `it.skip(` / `xdescribe(`) |
+| fixture-leaks | `warn_fixture_leaks` | Untracked orphan test fixtures left under `src/` after a test's cleanup didn't run |
+| tdd-regression | always-on | A TDD cycle ended the session in `regression` state (went green, then red again) |
+| unresolved-red | `warn_unresolved_red` | A check observed red never went green again: typecheck / build / lint via `observed_checks`, per-file test reds via `tdd_cycles`, and — since 2026-07 — whole-suite test runs via the `test-suite` observed-check kind (backlog 3A, now closed) |
+| deferred-coverage | `per_edit_coverage.enabled` | The per-edit coverage gate deferred obligations that are still open at Stop (claimed-done coverage nothing ever ran) |
+| bisect-not-reset | always-on | A `git bisect` started this session with no `bisect reset` after it |
+| wip-commits | always-on (skips sessions with no baseline sha or no git-commit command) | The session created commits whose subjects read as scratch (`wip` / `fixup` / `tmp` / `temp` / `squash`); suggests `git rebase -i` before a PR (backlog 3B, now closed) |
+| dead-on-arrival | always-on | A file edited this session whose fresh graph shard shows zero dependents and no callers (stays silent on stale/missing shards) |
+| doc-marker-drift | always-on | Gen-markered doc fact sources edited without a `docs:build` run |
+| plan-drift (lifecycle-events.ts) | `plan_capture` | Session trajectory diverged from the `declared_plan` captured at PreToolUse / UserPromptSubmit |
 
-Signal capture lives in two places:
+Signal capture lives close to the event, never in the Stop branch:
 - `session-state.ts::recordEvent` — `classifyVerificationCommand(command)` on Bash + `classifyBrowserToolName(tool_name)` on MCP browser tools. Captures intent to verify (a failed `bun test` still counts — the agent did engage the verifier).
+- `server/post-tool-pipeline-tracking.ts` — observed *outcomes*: `trackTestRun` (per-file test red/green → `test_runs` + `tdd_cycles`) and `trackVerificationOutcome` (typecheck / build / lint / whole-suite `test-suite` red/green → `observed_checks`), both classified via `classifyObservedOutcome` (tool_outcome-first; interrupted/unproven runs record nothing).
 - `evaluator/post-tool.ts::recordStubsIntroduced` — scans `tool_input.content` (Write), `new_string` (Edit), and `edits[].new_string` (MultiEdit) on every `isFileWrite` event. One match per kind per call; capped at `STUB_INTRODUCED_CAP = 50` total per session.
 
 ## Tier 2 — reluctance-to-push (deferred)
@@ -58,36 +72,27 @@ These are direct inversions of failproofai's push-now bias. Each is a determinis
 
 Explicit non-feature. Documented here so future readers don't propose it again.
 
-## Tier 3 — cleanup-before-stop (deferred)
+## Tier 3 — cleanup-before-stop (3A/3B/3D shipped 2026-07; 3C deferred)
 
-Quality signals beyond the verification axis. Lower priority than Tier 2.
+Quality signals beyond the verification axis.
 
-### 3A. Last test invocation failed
+### 3A. Last test invocation failed — SHIPPED 2026-07
 
-**Signal:** parse `session.test_runs` (already tracked in `session-state.ts`) for the most recent entry with `status === "fail"`. If no subsequent successful run of the same file → warn.
+Per-file test reds were already covered (stayed-red `tdd_cycles` flow through `formatUnresolvedRedWarning`); the gap was whole-suite runs (`vitest run` / `npm test` with no file arg), which neither `test_runs` nor `observed_checks` tracked. Closed by extending `ObservedCheck.kind` with `test-suite`: `observedCheckKindFor` (`server/post-tool-pipeline-tracking.ts`) now maps a `test` verification signal to `test-suite` when `detectTestRunFile` resolves no specific file (either the `ALL_TESTS_SENTINEL` or an unrecognized runner). Per-file runs stay deliberately excluded — the TDD cycle owns per-file red/green, and double-tracking would report the same red twice. The existing unresolved-red Stop nudge renders the new kind with no formatter change. Same landing also fixed the latent `trackTestRun` pass/fail bug (a folded `tool_outcome === "error"` on a regular PostToolUse counted as PASSED) by reusing `classifyObservedOutcome`.
 
-**Warning:** `"Last test run on <file> failed at step N. Either fix the failure or document the regression before stopping."`
+### 3B. Session has many small experimental commits — SHIPPED 2026-07
 
-**Why this is Tier 3, not Tier 1:** `test_runs` only tracks runs where the agent invoked a test file directly. The signal misses `bun run test` (whole-suite) entirely. Would need broader test-output parsing to be reliable.
-
-### 3B. Session has many small experimental commits
-
-**Signal:** `git log <base>..HEAD --oneline` + regex on commit messages for `\b(wip|fixup|squash|tmp|debug|scratch)\b`. Count.
-
-**Warning:** `"Branch has N WIP-style commits since <base>. Consider \`git rebase -i\` to clean up before opening a PR."` Note: still doesn't suggest pushing.
-
-**Open questions:**
-- False positives on legitimate `fixup!` commits the agent is intentionally leaving for an autosquash.
+`collectWipCommitSubjects` + `formatWipCommitsNudge` (`commit-cadence.ts`), wired as `checkWipCommits` in `lifecycle-stop-warnings.ts`. Range is `git_session_baseline.head_sha..HEAD` so only this session's commits count; the subject regex is anchored to the start (`fix wip detection` is not a wip commit); deliberate autosquash `fixup!`/`squash!` markers are excluded (the FP the open question named); the git shell-out is gated behind a git-commit-shaped entry in `commands_run` so read-only Stops never fork. Still doesn't suggest pushing.
 
 ### 3C. Debug toggle left on
 
 **Signal:** trajectory-level — detect Write/Edit events that set `DEBUG=true`, `verbose: true`, `console.log(`, or known logger boilerplate without a subsequent Edit reverting. Expensive to do reliably; current confidence is too low to ship.
 
-### 3D. New exported symbol with no test importing it
+### 3D. New exported symbol with no test importing it — SHIPPED 2026-07
 
 **Signal:** cross-reference `session.files_written` against the project graph (`project-graph.ts`). For each exported symbol introduced this session, check whether any `*.test.{ts,js}` file references it. We have impact-analysis machinery for this already.
 
-**Why this is Tier 3:** needs project-graph staleness handling (was the graph refreshed since the agent's edits?) and the signal has high FPs in early TDD — an exported symbol can legitimately not have a test yet if the test file is the next thing the agent will write.
+Shipped as `detectUntestedExports` + `formatUntestedExportsWarning` (`untested-exports-stop-check.ts`), wired as `checkUntestedExports` in `lifecycle-stop-warnings.ts`. The graph provider is injected and LAZY — `getGraphForFile` is only invoked when the session wrote at least one eligible code file (graph-indexable source, not a test, not `.d.ts`), so read-only Stops never pay graph-build cost. Coverage evidence = a word-boundary reference to the symbol in any *test-file dependent* of the written module (per the daemon's cached project graph, which PostToolUse keeps refreshed via `updateFile`). The staleness + early-TDD FP concerns are handled by failing open on every "can't tell" path (file not indexed, no named exports, unreadable test dependent, graph init throw) and by the warning text naming the TDD carve-out explicitly ("a reminder, not a block"). Reflection only; stderr; never blocks.
 
 ## Implementation patterns to reuse
 
@@ -95,7 +100,7 @@ When picking up any of these, mirror the existing scaffolding:
 
 - **Pure formatter file:** `src/harness/<concern>-stop-checks.ts` exporting `formatXxxWarning(opts): string | null` functions. Pattern is in `commit-cadence.ts` and `verification-stop-checks.ts`.
 - **Config interface:** add a `XxxStopChecksConfig` to `types.ts::GuardRulesConfig`, default-on in `rules/default-config.ts`. Per-kind boolean flags + master `enabled` toggle.
-- **Signal capture lives close to the event:** trajectory-only signals in `session-state.ts::recordEvent`; content-bearing signals (`tool_input.content` / `new_string` / `edits`) in `evaluator/post-tool.ts`. Stop-branch (`server.ts:666`) only *reads* — never scans content there.
+- **Signal capture lives close to the event:** trajectory-only signals in `session-state.ts::recordEvent`; observed red/green outcomes in `server/post-tool-pipeline-tracking.ts`; content-bearing signals (`tool_input.content` / `new_string` / `edits`) in `evaluator/post-tool.ts`. The Stop branch (`server/lifecycle-stop-warnings.ts`, called from `server/lifecycle-events.ts::handleStop`) only *reads* — never scans content there (a Stop-time `git log` / working-tree scan is fine per corollary 3).
 - **Test pattern:** mirror `commit-cadence.test.ts` and `verification-stop-checks.test.ts` — pure-function unit tests for each formatter with positive and negative cases per axis. No e2e harness wiring needed at this layer.
 
 ## What we explicitly rejected from failproofai
