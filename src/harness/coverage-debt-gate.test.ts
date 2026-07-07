@@ -38,6 +38,13 @@ const uncovered = (file: string): HarnessDecision => ({
 	rule_id: "per-edit-coverage",
 });
 
+/** Mirrors coverage-write-decision's red-bar block verbatim enough to match. */
+const redBar = (file: string): HarnessDecision => ({
+	decision: "block",
+	reason: `[interlinked:coverage] BLOCKED: your edit to ${file} leaves the test suite RED — 1 test is failing. Fix the failing test(s) before proceeding. Strict TDD: an edit may not save a transiently-red state.`,
+	rule_id: "per-edit-coverage",
+});
+
 describe("applyDebtMode — pair A (source then test, two ordinary edits)", () => {
 	it("opens debt + allows the first uncovered source edit, then discharges on the test", () => {
 		// Edit 1 — uncovered source. OLD harness blocked here; now it ALLOWS.
@@ -90,6 +97,106 @@ describe("applyDebtMode — wandering blocks", () => {
 		const out = applyDebtMode(readEvent("src/bar.ts"), cfg(), null);
 		expect(out).toBeNull();
 		expect(readOpenDebts(root)).toHaveLength(1); // debt untouched by the read
+	});
+});
+
+describe("applyDebtMode — red debt (the red→green loop, twin of coverage debt)", () => {
+	it("downgrades a red-bar block to allow + opens a red_suite debt", () => {
+		const out = applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		expect(out?.decision).toBe("allow");
+		expect(out?.warnings?.[0]).toContain("red debt opened");
+		const open = readOpenDebts(root);
+		expect(open).toHaveLength(1);
+		expect(open[0]?.kind).toBe("red_suite");
+	});
+
+	it("keeps ONE debt across same-pair red iterations (source and test edits)", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		// Still red after another source edit…
+		expect(applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"))?.decision).toBe("allow");
+		// …and after a companion-test edit that is itself still red.
+		expect(applyDebtMode(edit("src/foo.test.ts"), cfg(), redBar("src/foo.test.ts"))?.decision).toBe("allow");
+		expect(readOpenDebts(root)).toHaveLength(1);
+	});
+
+	it("blocks a wander to an unrelated file while the suite is red", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		const out = applyDebtMode(edit("src/bar.ts"), cfg(), null);
+		expect(out?.decision).toBe("block");
+		expect(out?.reason).toContain("test suite is RED");
+		expect(out?.reason).toContain("src/foo.ts");
+	});
+
+	it("discharges the red debt on the next same-pair non-red run", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		// The fix lands: overlay run no longer red (base verdict clean).
+		const out = applyDebtMode(edit("src/foo.ts"), cfg(), null);
+		expect(out).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(0);
+		// …and the agent is free to move on.
+		expect(applyDebtMode(edit("src/bar.ts"), cfg(), null)).toBeNull();
+	});
+
+	it("a companion-test edit whose own verdict is STILL RED keeps the red debt open", () => {
+		// The discharge key is the VERDICT, not the edit: a same-pair edit that
+		// still comes back red continues the debt. (A non-red verdict — even one
+		// with no run behind it — discharges; see the null-verdict test below.)
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		applyDebtMode(edit("src/foo.test.ts"), cfg(), redBar("src/foo.test.ts"));
+		expect(readOpenDebts(root)).toHaveLength(1);
+	});
+
+	it("a companion-test edit with a NULL verdict (no run) DOES discharge the red debt", () => {
+		// Deliberate optimism, pinned: red discharge keys on "verdict is not red",
+		// NOT on "a suite actually ran". Pure-test-file plans are ungated (null
+		// verdict), a budget defer returns null, a degrade allows — all read as
+		// non-red, exactly like the happy path (source edit whose overlay runs
+		// clean → null). The commit gate is the ground-truth backstop that
+		// re-runs the suite. See docs/design/coverage-debt-tdd.md § Red debt.
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		expect(readOpenDebts(root)).toHaveLength(1);
+		const out = applyDebtMode(edit("src/foo.test.ts"), cfg(), null);
+		expect(out).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(0);
+	});
+
+	it("a pass-through BLOCK (e.g. CRAP) does NOT discharge the red debt — the edit never lands", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		const crap: HarnessDecision = {
+			decision: "block",
+			reason: "[interlinked:coverage] BLOCKED: this edit leaves `fn` with CRAP 42 (threshold 30).",
+			rule_id: "per-edit-coverage",
+		};
+		const out = applyDebtMode(edit("src/foo.ts"), cfg(), crap);
+		expect(out?.decision).toBe("block"); // refused → disk unchanged
+		expect(readOpenDebts(root)).toHaveLength(1); // red debt survives
+	});
+
+	it("ONE companion-test edit discharges BOTH a coverage debt and a red debt on the same file", () => {
+		// Regression (id-keyed discharge): the discharged set was keyed by FILE,
+		// so the recheck-discharged coverage debt hid the same file's red debt
+		// from foldRedBar and it survived this call.
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts")); // coverage debt opens
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts")); // red debt joins it
+		expect(readOpenDebts(root)).toHaveLength(2);
+		const out = applyDebtMode(edit("src/foo.test.ts"), cfg(), null);
+		expect(out).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(0); // both gone in one call
+	});
+
+	it("red discharge and coverage open can land on the SAME edit (green but uncovered)", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), redBar("src/foo.ts"));
+		const out = applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		expect(out?.decision).toBe("allow"); // uncovered → coverage debt, not a block
+		const open = readOpenDebts(root);
+		expect(open).toHaveLength(1);
+		expect(open[0]?.kind).toBe("coverage"); // red retired, coverage opened
+	});
+
+	it("debt_mode off preserves the strict red-bar unchanged", () => {
+		const base = redBar("src/foo.ts");
+		expect(applyDebtMode(edit("src/foo.ts"), cfg({ debt_mode: false }), base)).toBe(base);
+		expect(readOpenDebts(root)).toHaveLength(0);
 	});
 });
 

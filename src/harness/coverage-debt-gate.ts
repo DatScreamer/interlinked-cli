@@ -10,7 +10,7 @@
 // only a two-line call. See `docs/design/coverage-debt-tdd.md`.
 
 import { relative, resolve } from "node:path";
-import { decideCoverageDebt, inSamePair, isUncoveredBlock } from "./coverage-debt.js";
+import { decideCoverageDebt, inSamePair, isRedBarBlock, isUncoveredBlock } from "./coverage-debt.js";
 import { isFileWrite } from "./evaluator/tool-classifiers.js";
 import { appendDebtTxn, readOpenDebts } from "./obligation-ledger-io.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
@@ -61,7 +61,11 @@ export function applyDebtMode(
 	if (!editedFile) return baseDecision; // non-file / non-code → untouched
 
 	const openDebts = readOpenDebts(projectRoot);
-	if (openDebts.length === 0 && !isUncoveredBlock(baseDecision)) return baseDecision; // nothing to do
+	// Nothing to do only when NO debt is open and the verdict is neither of the
+	// two debt-shaped blocks (uncovered → coverage debt, red-bar → red debt).
+	if (openDebts.length === 0 && !isUncoveredBlock(baseDecision) && !isRedBarBlock(baseDecision)) {
+		return baseDecision;
+	}
 
 	// Optimistic discharge: editing a debt's companion test is taken to cover it.
 	// `inSamePair` accepts both the co-located sibling AND an umbrella test (e.g.

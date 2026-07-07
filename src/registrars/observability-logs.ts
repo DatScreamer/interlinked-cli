@@ -1,8 +1,9 @@
 // ===========================================
 // Observability-log registrars — append-only state inspection: recurrence
 // aggregation, trajectory snapshots/replay, the hash-chained audit log,
-// captured agent plans, and cloud-governor verdicts. All read-only views
-// over locally-recorded JSONL streams.
+// captured agent plans, cloud-governor verdicts, and the TDD obligation
+// ledger (debt). Views over locally-recorded JSONL streams; the only writers
+// are explicit human actions (recurrence flag / scan --record, debt resolve).
 // ===========================================
 
 import { type Command, type OptionValues } from "commander";
@@ -188,5 +189,49 @@ export function registerObservabilityLogCommands(program: Command): void {
 				limit,
 				...(opts.json !== undefined ? { json: opts.json } : {}),
 			});
+		});
+
+	// ===========================================
+	// debt — inspect the pair-scoped TDD obligation ledger
+	// (.interlinked/obligations.jsonl): open coverage / red_suite debts, the
+	// per-file transition history, and a human-override resolve. Phase 3 of
+	// docs/design/coverage-debt-tdd.md.
+	// ===========================================
+	const debtCmd = program
+		.command("debt")
+		.description("Inspect pair-scoped TDD debts (coverage / red_suite) from the obligation ledger");
+
+	debtCmd
+		.command("list")
+		.description("Show open debts (kind, file, opened-at, session)")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.option("--full", "Detailed output")
+		.action(async (opts: OptionValues) => {
+			const { debtListCommand } = await import("../commands/debt.js");
+			await debtListCommand(opts);
+		});
+
+	debtCmd
+		.command("show <file>")
+		.description("Full transition history for one file's obligations")
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (file: string, opts: OptionValues) => {
+			const { debtShowCommand } = await import("../commands/debt.js");
+			await debtShowCommand(file, opts);
+		});
+
+	debtCmd
+		.command("resolve <file>")
+		.description(
+			"Discharge every open debt on a file (human override — the commit gate remains the ground-truth backstop)",
+		)
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (file: string, opts: OptionValues) => {
+			const { debtResolveCommand } = await import("../commands/debt.js");
+			await debtResolveCommand(file, opts);
 		});
 }

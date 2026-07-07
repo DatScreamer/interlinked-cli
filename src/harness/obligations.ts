@@ -20,8 +20,10 @@
 
 /** The metric an obligation enforces. `coverage` ships today; `mutation` is
  *  designed-in (cloud-async discharge) and rides the same machine by
- *  descriptor — adding it is a registration, not an engine change. */
-export type ObligationKind = "coverage" | "mutation";
+ *  descriptor — adding it is a registration, not an engine change.
+ *  `red_suite` = the red-bar as a debt: the edited pair's overlay run left the
+ *  suite RED; iterate that pair to green (the red→green loop), don't wander. */
+export type ObligationKind = "coverage" | "mutation" | "red_suite";
 
 /** Where a discharge originated. `local` = an in-process overlay run;
  *  `observed` = harvested from the agent's own test run; `cloud` = an async
@@ -263,9 +265,22 @@ export const MUTATION_DESCRIPTOR: MetricDescriptor = {
 	staleAfterEdits: null,
 };
 
+/** Red suite: the red-bar as a pair-scoped debt (the twin of coverage debt —
+ *  same "block, but not too soon, and never for staying in the pair" rule).
+ *  Opens when an edit's overlay run leaves the suite RED; discharges from the
+ *  next same-pair overlay run that is not red; the commit gate is the
+ *  ground-truth backstop. */
+export const RED_SUITE_DESCRIPTOR: MetricDescriptor = {
+	kind: "red_suite",
+	dischargeSources: ["local", "observed"],
+	enforcementCadence: "trajectory",
+	staleAfterEdits: DEFAULT_STALE_AFTER_EDITS,
+};
+
 export const METRIC_DESCRIPTORS: Record<ObligationKind, MetricDescriptor> = {
 	coverage: COVERAGE_DESCRIPTOR,
 	mutation: MUTATION_DESCRIPTOR,
+	red_suite: RED_SUITE_DESCRIPTOR,
 };
 
 type OpenTxn = Extract<ObligationTxn, { op: "open" }>;
@@ -273,7 +288,7 @@ type DischargeTxn = Extract<ObligationTxn, { op: "discharge" }>;
 type EscalateTxn = Extract<ObligationTxn, { op: "escalate" }>;
 
 function isObligationKind(v: unknown): v is ObligationKind {
-	return v === "coverage" || v === "mutation";
+	return v === "coverage" || v === "mutation" || v === "red_suite";
 }
 
 function isDischargeSource(v: unknown): v is DischargeSource {

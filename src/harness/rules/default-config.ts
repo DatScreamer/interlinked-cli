@@ -347,10 +347,13 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		//   - No test tooling at all: the guard fail-opens (loud warning, never a
 		//     block) — "can't measure" is treated as allow, not deny.
 		//
-		// Strict-TDD implication: because block_on_test_failure refuses any edit
-		// that leaves the suite red, you write the code and the test that keeps the
-		// bar green TOGETHER in one `interlinked write --batch` — you cannot save a transiently-red
-		// intermediate state. See docs/design/per-edit-coverage-enforcement.md.
+		// Red/green implication: with debt_mode on (default), an edit that leaves
+		// the suite red opens a `red_suite` DEBT instead of blocking — the
+		// red→green loop (failing test first, then the fix; or a behavior change
+		// whose source + tests move across edits) proceeds file-at-a-time, and
+		// only wandering to an unrelated file while red blocks. The old
+		// "write code + test together in one `interlinked write --batch`" dance is
+		// retired (2026-07). See docs/design/per-edit-coverage-enforcement.md.
 		enabled: true,
 		mode: "block",
 		budget_ms: 25_000,
@@ -359,15 +362,17 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// only the tests that transitively import the edited file, so a slow,
 		// multi-language suite still fits the per-edit budget and enforces in-band.
 		languages: ["js", "ts", "python"],
-		// Red-bar (per-edit strict TDD) enforcement — DEFAULT ON (flipped together
-		// with `enabled` / `block_on_crap`). Every edit must keep ALL tests green:
-		// an overlay run that leaves the suite RED (a test failed) is refused before
-		// the real write, naming the failing test. Write code + the test that holds
-		// the suite green together in one `interlinked write --batch` — you cannot save a
-		// transiently-red state. A repo opts out via guard-rules.local.json
-		// (`"per_edit_coverage": { "block_on_test_failure": false }`), and an
-		// indeterminate/unavailable runner still fail-opens (treated like "can't
-		// measure"), so opting out restores the old fail-open coverage-only path.
+		// Red-bar (per-edit red/green) enforcement — DEFAULT ON (flipped together
+		// with `enabled` / `block_on_crap`). An overlay run that leaves the suite
+		// RED produces the red verdict, naming the failing test. Under debt_mode
+		// (default) that verdict is DEBT-SHAPED, not a hard stop: the edit lands,
+		// a `red_suite` debt opens on the pair, in-pair iteration stays free, and
+		// only a wander to an unrelated file while red blocks (commit gate =
+		// ground-truth backstop). With debt_mode off the old strict behavior
+		// returns (any red-leaving edit refused). A repo opts out entirely via
+		// guard-rules.local.json (`"per_edit_coverage": { "block_on_test_failure":
+		// false }`), and an indeterminate/unavailable runner still fail-opens
+		// (treated like "can't measure").
 		block_on_test_failure: true,
 		// CRAP (Change Risk Anti-Patterns) per-edit gate — DEFAULT ON (flipped
 		// together with `enabled` / `block_on_test_failure`). The 4th per-edit
@@ -380,11 +385,13 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// guard-rules.local.json (`"per_edit_coverage": { "block_on_crap": false }`).
 		block_on_crap: true,
 		crap_threshold: 30,
-		// Pair-scoped debt lifecycle — DEFAULT ON (2026-06): the uncovered-added-
-		// line BLOCK becomes a coverage "debt" — the edit is ALLOWED, debt opens,
+		// Pair-scoped debt lifecycle — DEFAULT ON (2026-06; red twin 2026-07): the
+		// uncovered-added-line BLOCK becomes a `coverage` debt and the red-bar
+		// BLOCK becomes a `red_suite` debt — the edit is ALLOWED, the debt opens,
 		// and you stay free to edit that source or its companion test until it's
-		// covered; only a wander to an unrelated file (or commit) blocks. Opt out
-		// via `"per_edit_coverage": { "debt_mode": false }`. See coverage-debt-gate.ts
+		// covered / green again; only a wander to an unrelated file (or commit)
+		// blocks. Opt out via `"per_edit_coverage": { "debt_mode": false }` (which
+		// restores STRICT uncovered + red blocking). See coverage-debt-gate.ts
 		// and docs/design/coverage-debt-tdd.md.
 		debt_mode: true,
 	},

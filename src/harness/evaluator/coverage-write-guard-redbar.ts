@@ -18,6 +18,7 @@
 // obligation lands on the language-aware commit gate), and fail-open. No behavior
 // changed — same text, same control flow.
 
+import { RED_BAR_MARKER } from "../coverage-debt.js";
 import {
 	readRuntimeEstimateMs,
 	updateRuntimeEstimateMs,
@@ -25,8 +26,8 @@ import {
 import type { OverlayFile } from "../coverage-overlay.js";
 import { type CoverageLanguage, coverageLanguageForPath } from "../coverage-runner.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
-import { failingTestPhrase } from "./coverage-write-decision.js";
 import type { CoverageEditPlan } from "./coverage-edit-targets.js";
+import { failingTestPhrase } from "./coverage-write-decision.js";
 import type { CoverageWriteDeps } from "./coverage-write-guard.js";
 import {
 	deferForBudget,
@@ -63,8 +64,11 @@ function gatedSectionsByLanguage(
 	return byLanguage;
 }
 
-/** The red-bar block for a deletion that breaks the suite. */
-function blockForDeletionRedBar(
+/** The red-bar block for a deletion that breaks the suite. Interpolates
+ *  {@link RED_BAR_MARKER} deliberately: under debt_mode this verdict folds into
+ *  the pair's `red_suite` debt like any other red bar. Exported for the
+ *  producer↔matcher pin test in coverage-debt.test.ts. */
+export function blockForDeletionRedBar(
 	relPaths: string[],
 	failingTests: string[] | undefined,
 ): HarnessDecision {
@@ -72,7 +76,7 @@ function blockForDeletionRedBar(
 	return {
 		decision: "block",
 		reason:
-			`[interlinked:coverage] BLOCKED: deleting ${shown} leaves the test suite RED — ` +
+			`[interlinked:coverage] BLOCKED: deleting ${shown} ${RED_BAR_MARKER} — ` +
 			`${failingTestPhrase(failingTests)}. Other code still depends on what this patch ` +
 			"removes; update or remove the dependents in the SAME patch (the overlay sees the " +
 			"whole patch together), then retry.",
@@ -83,8 +87,12 @@ function blockForDeletionRedBar(
 }
 
 /** The red-bar block for a cross-ecosystem section (a language no target's
- *  runner serves) that breaks ITS suite. */
-function blockForCrossSuiteRedBar(
+ *  runner serves) that breaks ITS suite. Deliberately does NOT interpolate
+ *  {@link RED_BAR_MARKER} ("leave the ${language} test suite RED" ≠ the
+ *  marker): cross-ecosystem breakage is not the edited pair's red→green loop,
+ *  so debt-mode must NOT fold it — it stays a hard block. Exported for the
+ *  producer↔matcher pin test in coverage-debt.test.ts. */
+export function blockForCrossSuiteRedBar(
 	language: CoverageLanguage,
 	relPaths: string[],
 	failingTests: string[] | undefined,
@@ -136,7 +144,10 @@ async function runRedBarSuites(
 		for (const [language, sections] of entries) {
 			const runner = deps.runnerFor(language);
 			if (!runner) {
-				return loudRunnerUnavailable(anchor.relPath, language, `no coverage runner for ${language}`);
+				return loudRunnerUnavailable(
+					{ projectRoot, relPath: anchor.relPath, language },
+					`no coverage runner for ${language}`,
+				);
 			}
 			const key = runner.id ?? language;
 			if (ranKeys.has(key)) continue;
@@ -147,7 +158,10 @@ async function runRedBarSuites(
 			});
 			updateRuntimeEstimateMs(projectRoot, result.suiteMs, deps.clock);
 			if (!result.ok) {
-				return loudRunnerUnavailable(anchor.relPath, language, result.error ?? "coverage run failed");
+				return loudRunnerUnavailable(
+					{ projectRoot, relPath: anchor.relPath, language },
+					result.error ?? "coverage run failed",
+				);
 			}
 			if (result.testsPassed === false) {
 				return block(

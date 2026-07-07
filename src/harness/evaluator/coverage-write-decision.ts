@@ -7,6 +7,7 @@
 // config. Import from coverage-write-guard.ts unless you specifically need the
 // decision pieces in isolation (the delete-only path does).
 
+import { RED_BAR_MARKER, UNCOVERED_MARKER } from "../coverage-debt.js";
 import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
 import { readFileCoverageBaseline } from "../coverage-obligation-ledger.js";
 import { minCoverageFor } from "../metric-caps.js";
@@ -83,13 +84,15 @@ function uncoveredAddedFunction(
 	return null;
 }
 
-/** The actionable strict-TDD block for an uncovered added line. */
+/** The actionable strict-TDD block for an uncovered added line. Interpolates
+ *  {@link UNCOVERED_MARKER} — the phrase debt-mode's `isUncoveredBlock`
+ *  recognizes this verdict by. */
 function blockForUncovered(relPath: string, fn: FunctionCoverage): HarnessDecision {
 	return {
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${fn.line} (function ` +
-			`\`${fn.name}\`) is executable but uncovered by the test suite after this edit. ` +
+			`\`${fn.name}\`) is executable but ${UNCOVERED_MARKER} after this edit. ` +
 			"Add a test that exercises this code, then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
@@ -107,7 +110,7 @@ function blockForUncoveredLine(relPath: string, line: number): HarnessDecision {
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: ${relPath} line ${line} is executable but ` +
-			"uncovered by the test suite after this edit. Add a test that exercises this " +
+			`${UNCOVERED_MARKER} after this edit. Add a test that exercises this ` +
 			"line, then retry.",
 		rule_id: "per-edit-coverage",
 		severity: "medium",
@@ -127,13 +130,15 @@ export function failingTestPhrase(failingTests: string[] | undefined): string {
  * The red-bar (strict per-edit TDD) block: the overlay ran the suite and it came
  * back RED (`testsPassed === false`). A failing suite is a harder failure than a
  * coverage gap, so this fires BEFORE the uncovered-line / drop decision and names
- * the failing test(s) so the fix is actionable.
+ * the failing test(s) so the fix is actionable. Interpolates
+ * {@link RED_BAR_MARKER} — the phrase debt-mode's `isRedBarBlock` folds this
+ * verdict into a `red_suite` debt by.
  */
 export function blockForRedBar(relPath: string, failingTests: string[] | undefined): HarnessDecision {
 	return {
 		decision: "block",
 		reason:
-			`[interlinked:coverage] BLOCKED: your edit to ${relPath} leaves the test suite RED ` +
+			`[interlinked:coverage] BLOCKED: your edit to ${relPath} ${RED_BAR_MARKER} ` +
 			`— ${failingTestPhrase(failingTests)}. Fix the failing test(s) before proceeding. ` +
 			"Strict TDD: an edit may not save a transiently-red state.",
 		rule_id: "per-edit-coverage",

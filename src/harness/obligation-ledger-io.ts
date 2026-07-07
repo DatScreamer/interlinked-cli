@@ -10,8 +10,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	METRIC_DESCRIPTORS,
 	type Obligation,
+	type ObligationKind,
 	type ObligationTxn,
+	obligationId,
 	openObligations,
 	parseObligationTxn,
 	replayObligations,
@@ -34,9 +37,11 @@ export function appendDebtTxn(projectRoot: string, txn: ObligationTxn): void {
 	}
 }
 
-/** The currently-open COVERAGE debts, netted over the append-only log. Total —
- *  a missing / unreadable / torn ledger reads as no debts (fail-open). */
-export function readOpenDebts(projectRoot: string): Obligation[] {
+/** Every parsed transition in the ledger, in append order — the raw history
+ *  the `interlinked debt show` inspection renders. Total — a missing /
+ *  unreadable ledger reads as no transitions, and a torn / foreign line is
+ *  skipped (fail-open, same contract as `readOpenDebts`). */
+export function readDebtTxns(projectRoot: string): ObligationTxn[] {
 	const path = ledgerPath(projectRoot);
 	if (!existsSync(path)) return [];
 	try {
@@ -47,10 +52,38 @@ export function readOpenDebts(projectRoot: string): Obligation[] {
 			const parsed = parseObligationTxn(safeJsonParse(line));
 			if (parsed) txns.push(parsed);
 		}
-		return openObligations(replayObligations(txns), "coverage");
+		return txns;
 	} catch {
 		return []; // unreadable (e.g. the path is a directory) → fail-open
 	}
+}
+
+/** True when a transition belongs to `file`'s obligations: an `open` names the
+ *  file directly; a `discharge`/`escalate` carries only the obligation id, so
+ *  it matches when the id is `kind:file` (file-level) or `kind:file:start-end`
+ *  (region-level) for any registered kind — derived via `obligationId`, never
+ *  re-parsed by hand. */
+function txnTouchesFile(txn: ObligationTxn, file: string): boolean {
+	if (txn.op === "open") return txn.file === file;
+	for (const kind of Object.keys(METRIC_DESCRIPTORS) as ObligationKind[]) {
+		const base = obligationId(kind, file);
+		if (txn.id === base || txn.id.startsWith(`${base}:`)) return true;
+	}
+	return false;
+}
+
+/** The full transition history for ONE file's obligations, in append order —
+ *  what `interlinked debt show <file>` prints. */
+export function readDebtTxnsForFile(projectRoot: string, file: string): ObligationTxn[] {
+	return readDebtTxns(projectRoot).filter((txn) => txnTouchesFile(txn, file));
+}
+
+/** The currently-open pair-scoped debts (coverage + red_suite — the two kinds
+ *  the per-edit wander rule enforces), netted over the append-only log. Total —
+ *  a missing / unreadable / torn ledger reads as no debts (fail-open). */
+export function readOpenDebts(projectRoot: string): Obligation[] {
+	const state = replayObligations(readDebtTxns(projectRoot));
+	return [...openObligations(state, "coverage"), ...openObligations(state, "red_suite")];
 }
 
 function safeJsonParse(line: string): unknown {

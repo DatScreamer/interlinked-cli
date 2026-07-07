@@ -106,3 +106,45 @@ already runs.
 4. Flip the flag in this repo; dogfood pairs A–C live. ← Phase 2c.
 5. `interlinked debt list/show/resolve` inspection. ← Phase 3.
 6. Mutation `kind` over the same ledger (cloud-async discharge). ← Phase 4.
+
+## Red debt — the red-bar's twin (landed 2026-07)
+
+The original scope stopped at the uncovered verdict: the red-bar
+(`block_on_test_failure`) stayed STRICT, and its documented workflow was "write
+the code and the test together in one `interlinked write --batch`". In practice
+that forced agents into a scratchpad+batch dance for every behavior change
+(source and tests must move together, so landing either alone was refused as a
+"transiently-red state") — the exact too-soon blocking this doc's principle
+("you may always make progress; you may not *bank* it") was written to end.
+
+Red debt closes the gap by reusing the machine unchanged:
+
+- **Kind** `red_suite` (registered descriptor: local/observed discharge,
+  trajectory cadence, coverage's staleness default).
+- **Open**: a red-bar verdict downgrades to ALLOW + opens the pair's red debt
+  (`foldRedBar` in `coverage-debt.ts`); same-pair red iterations don't
+  double-open. Landing the failing test FIRST is the canonical opener — the
+  red→green loop is progress, not a violation.
+- **Free while red**: any edit inside the pair (source or companion test).
+- **Blocked while red**: wandering to an unrelated file (`blockForWander`, now
+  kind-aware) — and the commit gate remains the ground-truth backstop.
+- **Discharge**: optimistic, like every debt-mode discharge — ANY same-pair
+  edit that LANDS with a non-red base verdict discharges the pair's red debt
+  (`foldRedBar`). That includes verdicts produced WITHOUT a suite run: a
+  pure-test-file edit (ungated plan → null verdict), a budget defer (null),
+  and a loud degrade (allow-with-warnings) all read as non-red. This optimism
+  is LOAD-BEARING — the happy path (a source edit whose overlay runs clean
+  returns the same null verdict) rides the identical null-discharge — and the
+  commit gate is the ground-truth backstop that actually re-runs the suite.
+  A non-red verdict can also be an uncovered one, which then opens its own
+  `coverage` debt on the same edit (red retired, coverage opened). The one
+  non-red shape that does NOT discharge is a pass-through BLOCK (drop / floor /
+  CRAP): the edit is refused, nothing lands, so the pair is exactly as red as
+  before.
+- **Off-switch**: `debt_mode: false` restores strict red blocking;
+  `block_on_test_failure: false` removes red verdicts entirely.
+
+`readOpenDebts` now nets both pair-scoped kinds, so the wander rule and the
+WIP limit are shared across coverage + red debts. Regression suites:
+`coverage-debt.test.ts` (pure fold) + `coverage-debt-gate.test.ts` (ledger
+lifecycle, wander, mixed red→uncovered handoff, strict-mode preservation).

@@ -3,10 +3,18 @@ import {
 	type CoverageDebtInput,
 	decideCoverageDebt,
 	expectedCompanionTest,
+	expectedSourceOfTest,
 	inSamePair,
+	isRedBarBlock,
 	isUncoveredBlock,
 	pairStem,
 } from "./coverage-debt.js";
+import type { PerFileCoverage } from "./coverage-final-reader.js";
+import { blockForRedBar, decideFromCoverage } from "./evaluator/coverage-write-decision.js";
+import {
+	blockForCrossSuiteRedBar,
+	blockForDeletionRedBar,
+} from "./evaluator/coverage-write-guard-redbar.js";
 import { type Obligation, obligationId } from "./obligations.js";
 import type { HarnessDecision } from "./types.js";
 
@@ -27,9 +35,25 @@ function uncovered(file: string): HarnessDecision {
 	};
 }
 
-/** A red-bar block — a DIFFERENT failure that must still pass through. */
+/** A red-bar block — the SECOND verdict debt-mode downgrades (red_suite debt). */
 function redBar(): HarnessDecision {
 	return { decision: "block", reason: "[interlinked:coverage] BLOCKED: your edit leaves the test suite RED.", rule_id: "per-edit-coverage", severity: "medium", category: "coverage" };
+}
+
+function redDebt(file: string): Obligation {
+	return { id: obligationId("red_suite", file), kind: "red_suite", file, contentHash: "", status: "open", sessionId: "s", openedAtMs: 1 };
+}
+
+/** A non-red, non-uncovered PASS-THROUGH block (the CRAP / drop / floor class):
+ *  debt mode forwards it untouched, so the edit is refused and never lands. */
+function crapBlock(file: string): HarnessDecision {
+	return {
+		decision: "block",
+		reason: `[interlinked:coverage] BLOCKED: this edit leaves \`fn\` in ${file} with CRAP 42 (threshold 30). Reduce complexity or add coverage.`,
+		rule_id: "per-edit-coverage",
+		severity: "medium",
+		category: "coverage",
+	};
 }
 
 function run(over: Partial<CoverageDebtInput>): ReturnType<typeof decideCoverageDebt> {
@@ -94,6 +118,13 @@ describe("expectedCompanionTest", () => {
 	});
 });
 
+describe("expectedSourceOfTest", () => {
+	it("strips the test/spec infix to name the pair's source side", () => {
+		expect(expectedSourceOfTest("src/foo.test.ts")).toBe("src/foo.ts");
+		expect(expectedSourceOfTest("src/a/b.spec.tsx")).toBe("src/a/b.tsx");
+	});
+});
+
 // ----- isUncoveredBlock ---------------------------------------------------
 
 describe("isUncoveredBlock", () => {
@@ -143,6 +174,23 @@ describe("decideCoverageDebt — staying in the pair discharges", () => {
 		expect(out.txns).toHaveLength(0); // introverted test — not rechecked-covered
 		expect(out.decision).toBeNull(); // still in-pair, so allowed to keep trying
 	});
+
+	it("discharges a coverage debt AND a same-file red debt in ONE companion-test call (id-keyed)", () => {
+		// Regression: the discharged set was keyed by FILE, so recheck-discharging
+		// the coverage debt also filtered the same file's red debt out of
+		// `stillOpen`, and foldRedBar could not discharge it in the same call.
+		const out = run({
+			editedFile: "src/foo.test.ts",
+			baseDecision: null,
+			openDebts: [debt("src/foo.ts"), redDebt("src/foo.ts")],
+			rechecks: new Map([["src/foo.ts", true]]),
+		});
+		expect(out.decision).toBeNull();
+		expect(out.txns).toEqual([
+			{ op: "discharge", id: obligationId("coverage", "src/foo.ts"), source: "local", atMs: 1 },
+			{ op: "discharge", id: obligationId("red_suite", "src/foo.ts"), source: "local", atMs: 1 },
+		]);
+	});
 });
 
 describe("decideCoverageDebt — wandering out of the pair blocks", () => {
@@ -178,17 +226,124 @@ describe("decideCoverageDebt — wandering out of the pair blocks", () => {
 	});
 });
 
-describe("decideCoverageDebt — unrelated verdicts pass through", () => {
-	it("a red-bar block is never downgraded to debt — passes through unchanged", () => {
-		const base = redBar();
-		const out = run({ editedFile: "src/foo.ts", baseDecision: base });
-		expect(out.decision).toBe(base); // same object, untouched
-		expect(out.txns).toHaveLength(0);
+describe("decideCoverageDebt — red-bar fold (the red→green loop)", () => {
+	it("downgrades a red-bar block to allow + opens a red_suite debt (policy reversal, 2026-07)", () => {
+		// The old rule ("red-bar passes through — write code + test together in one
+		// batch") forced the scratchpad+batch dance for behavior changes. Red is
+		// now the coverage debt's twin: progress allowed, wandering blocked.
+		const out = run({ editedFile: "src/foo.ts", baseDecision: redBar() });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("red debt opened");
+		expect(out.txns).toEqual([
+			{ op: "open", kind: "red_suite", file: "src/foo.ts", contentHash: "", sessionId: "s", atMs: 1 },
+		]);
 	});
 
+	it("does not double-open across same-pair red iterations", () => {
+		const out = run({ editedFile: "src/foo.test.ts", baseDecision: redBar(), openDebts: [redDebt("src/foo.ts")] });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.txns).toHaveLength(0); // the pair's red debt already stands
+	});
+
+	it("discharges the pair's red debt on any non-red verdict", () => {
+		const out = run({ editedFile: "src/foo.ts", baseDecision: null, openDebts: [redDebt("src/foo.ts")] });
+		expect(out.decision).toBeNull();
+		expect(out.txns).toEqual([
+			{ op: "discharge", id: obligationId("red_suite", "src/foo.ts"), source: "local", atMs: 1 },
+		]);
+	});
+
+	it("does NOT discharge the red debt on a pass-through block — that edit never lands", () => {
+		// A CRAP / drop / floor block REFUSES the edit: disk is unchanged, so its
+		// non-red overlay run proves nothing about the pair being green.
+		const out = run({ editedFile: "src/foo.ts", baseDecision: crapBlock("src/foo.ts"), openDebts: [redDebt("src/foo.ts")] });
+		expect(out.decision?.decision).toBe("block"); // the block passes through untouched
+		expect(out.txns).toHaveLength(0); // and the red debt survives (no discharge txn)
+	});
+});
+
+describe("decideCoverageDebt — a debt opened ON the test file names the pair correctly", () => {
+	// The red→green loop's canonical FIRST edit is the failing test itself. A
+	// debt whose file is a test path must name its SOURCE counterpart — not
+	// derive `foo.test.test.ts` by appending another `.test` infix.
+	it("red debt opened by the failing-TEST-first edit points at the source side", () => {
+		const open = run({ editedFile: "src/foo.test.ts", baseDecision: redBar() });
+		expect(open.decision?.decision).toBe("allow");
+		expect(open.decision?.warnings?.[0]).toContain("its source (src/foo.ts)");
+		expect(open.decision?.warnings?.[0]).not.toContain(".test.test.");
+	});
+
+	it("the wander block for a test-file RED debt names the pair's source side", () => {
+		const out = run({ editedFile: "src/bar.ts", baseDecision: null, openDebts: [redDebt("src/foo.test.ts")] });
+		expect(out.decision?.decision).toBe("block");
+		expect(out.decision?.reason).toContain("src/foo.test.ts");
+		expect(out.decision?.reason).toContain("its source (src/foo.ts)");
+		expect(out.decision?.reason).not.toContain(".test.test.");
+	});
+
+	it("the wander block for a test-file COVERAGE debt names the pair's source side", () => {
+		const out = run({ editedFile: "src/bar.ts", baseDecision: null, openDebts: [debt("src/foo.test.ts")] });
+		expect(out.decision?.decision).toBe("block");
+		expect(out.decision?.reason).toContain("cover its source (src/foo.ts)");
+		expect(out.decision?.reason).not.toContain(".test.test.");
+	});
+
+	it("a coverage debt opened on a test file phrases the nudge around its source", () => {
+		const out = run({ editedFile: "src/foo.test.ts", baseDecision: uncovered("src/foo.test.ts") });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("cover its source (src/foo.ts) next");
+		expect(out.decision?.warnings?.[0]).not.toContain(".test.test.");
+	});
+});
+
+describe("decideCoverageDebt — unrelated verdicts pass through", () => {
 	it("a clean edit with no open debt is a plain allow (null)", () => {
 		const out = run({ editedFile: "src/foo.ts", baseDecision: null });
 		expect(out.decision).toBeNull();
 		expect(out.txns).toHaveLength(0);
+	});
+});
+
+// ----- verdict markers: the REAL producers and the matchers stay coupled -----
+// The producers interpolate UNCOVERED_MARKER / RED_BAR_MARKER from this module,
+// so this pin is structural — a reworded producer either keeps matching or
+// fails here, never silently stops folding into debt.
+
+describe("verdict markers — real producer reasons satisfy the debt-mode matchers", () => {
+	it("the per-edit red-bar producer's reason satisfies isRedBarBlock", () => {
+		expect(isRedBarBlock(blockForRedBar("src/m.ts", ["t1"]))).toBe(true);
+	});
+
+	it("the deletion red-bar producer's reason satisfies isRedBarBlock (deliberate: it folds too)", () => {
+		// A landed deletion that breaks dependents is the same red→green loop —
+		// under debt_mode it opens the pair's red debt instead of hard-blocking.
+		expect(isRedBarBlock(blockForDeletionRedBar(["src/m.ts"], ["t1"]))).toBe(true);
+	});
+
+	it("both uncovered producers' reasons satisfy isUncoveredBlock", () => {
+		const out: { now?: number } = {};
+		// Per-function path (istanbul / JS): an uncovered function → blockForUncovered.
+		const fnCov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			functions: [{ name: "f", line: 5, endLine: 9, hits: 0, statement_pct: 0 }],
+		};
+		expect(isUncoveredBlock(decideFromCoverage("/nonexistent", "src/m.ts", fnCov, undefined, out))).toBe(true);
+		// Per-line path (coverage.py): an uncovered line → blockForUncoveredLine.
+		const lineCov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			functions: [],
+			coveredLines: new Set([1]),
+			uncoveredLines: new Set([5]),
+		};
+		expect(isUncoveredBlock(decideFromCoverage("/nonexistent", "src/m.ts", lineCov, undefined, out))).toBe(true);
+	});
+
+	it("blockForCrossSuiteRedBar's reason does NOT satisfy isRedBarBlock — deliberately", () => {
+		// Cross-ecosystem breakage ("leave the ${language} test suite RED") is not
+		// the edited pair's red→green loop: debt-mode must NOT fold it into a
+		// red_suite debt — it stays a hard block, backstopped by the commit gate.
+		expect(isRedBarBlock(blockForCrossSuiteRedBar("python", ["x.py"], undefined))).toBe(false);
 	});
 });

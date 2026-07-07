@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerObservabilityLogCommands } from "./observability-logs.js";
 import { nonNull } from "../lib/non-null.js";
+import { registerObservabilityLogCommands } from "./observability-logs.js";
 
 // ---------------------------------------------------------------------------
 // Mock every lazily-`import()`-ed command implementation the registrar wires.
@@ -32,6 +32,9 @@ const auditVerifyCommand = vi.fn();
 const planListCommand = vi.fn();
 const planShowCommand = vi.fn();
 const cloudRecentCommand = vi.fn();
+const debtListCommand = vi.fn();
+const debtShowCommand = vi.fn();
+const debtResolveCommand = vi.fn();
 
 vi.mock(`../commands/recurrence.js`, () => ({
 	recurrenceListCommand: (...a: unknown[]) => recurrenceListCommand(...a),
@@ -54,6 +57,11 @@ vi.mock(`../commands/plan.js`, () => ({
 }));
 vi.mock(`../commands/cloud.js`, () => ({
 	cloudRecentCommand: (...a: unknown[]) => cloudRecentCommand(...a),
+}));
+vi.mock(`../commands/debt.js`, () => ({
+	debtListCommand: (...a: unknown[]) => debtListCommand(...a),
+	debtShowCommand: (...a: unknown[]) => debtShowCommand(...a),
+	debtResolveCommand: (...a: unknown[]) => debtResolveCommand(...a),
 }));
 
 function build(): Command {
@@ -116,7 +124,7 @@ describe("registerObservabilityLogCommands — structure", () => {
 	it("registers the append-only log inspection groups with descriptions", () => {
 		const program = build();
 		const top = names(program);
-		for (const name of ["recurrence", "trajectory", "audit", "plan", "cloud"]) {
+		for (const name of ["recurrence", "trajectory", "audit", "plan", "cloud", "debt"]) {
 			expect(top).toContain(name);
 		}
 		expect(sub(program, "recurrence").description()).toContain("repeating agent behaviors");
@@ -124,6 +132,7 @@ describe("registerObservabilityLogCommands — structure", () => {
 		expect(sub(program, "audit").description()).toContain("tamper-evidence");
 		expect(sub(program, "plan").description()).toContain("agent-emitted plans");
 		expect(sub(program, "cloud").description()).toContain("cloud governor");
+		expect(sub(program, "debt").description()).toContain("obligation ledger");
 	});
 
 	it("registers recurrence subcommands", () => {
@@ -133,12 +142,13 @@ describe("registerObservabilityLogCommands — structure", () => {
 		);
 	});
 
-	it("registers trajectory + audit + plan + cloud subcommands", () => {
+	it("registers trajectory + audit + plan + cloud + debt subcommands", () => {
 		const program = build();
 		expect(names(sub(program, "trajectory")).sort()).toEqual(["list", "replay", "show"].sort());
 		expect(names(sub(program, "audit"))).toEqual(["verify"]);
 		expect(names(sub(program, "plan")).sort()).toEqual(["list", "show"].sort());
 		expect(names(sub(program, "cloud"))).toEqual(["recent"]);
+		expect(names(sub(program, "debt")).sort()).toEqual(["list", "resolve", "show"].sort());
 	});
 
 	it("marks `plan list` as the default subcommand of plan", () => {
@@ -191,6 +201,23 @@ describe("registerObservabilityLogCommands — structure", () => {
 		expect(longOpts(child(sub(program, "plan"), "show"))).toEqual(["--cwd", "--json"].sort());
 		expect(longOpts(child(sub(program, "cloud"), "recent"))).toEqual(
 			["--cwd", "--json", "--limit"].sort(),
+		);
+	});
+
+	it("wires the documented options on debt list + show + resolve", () => {
+		const program = build();
+		const debt = sub(program, "debt");
+		expect(longOpts(child(debt, "list"))).toEqual(["--cwd", "--full", "--json", "--short"].sort());
+		expect(longOpts(child(debt, "show"))).toEqual(["--cwd", "--json"].sort());
+		expect(longOpts(child(debt, "resolve"))).toEqual(["--cwd", "--json"].sort());
+	});
+
+	it("debt resolve's help names the commit gate as the ground-truth backstop", () => {
+		// The human-override semantics must stay visible in `--help` — resolving a
+		// debt clears the wander block, not the commit-time re-measurement.
+		const program = build();
+		expect(child(sub(program, "debt"), "resolve").description()).toContain(
+			"commit gate remains the ground-truth backstop",
 		);
 	});
 
@@ -447,5 +474,43 @@ describe("cloud recent action — branches", () => {
 		await program.parseAsync(["cloud", "recent"], { from: "user" });
 		expect(typeof nonNull(cloudRecentCommand.mock.calls[0])[0].limit).toBe("number");
 		expect(nonNull(cloudRecentCommand.mock.calls[0])[0].limit).toBe(20);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// debt — list forwards opts; show/resolve forward the file positional + opts.
+// ---------------------------------------------------------------------------
+describe("debt actions — wiring", () => {
+	it("list forwards the full option spread (--json/--short/--full/--cwd)", async () => {
+		const program = build();
+		await program.parseAsync(["debt", "list", "--cwd", "/d", "--json"], { from: "user" });
+		expect(debtListCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(debtListCommand.mock.calls[0])[0]).toMatchObject({ cwd: "/d", json: true });
+	});
+
+	it("list forwards --short and --full as booleans", async () => {
+		const program = build();
+		await program.parseAsync(["debt", "list", "--short"], { from: "user" });
+		expect(nonNull(debtListCommand.mock.calls[0])[0]).toMatchObject({ short: true });
+		await program.parseAsync(["debt", "list", "--full"], { from: "user" });
+		expect(nonNull(debtListCommand.mock.calls[1])[0]).toMatchObject({ full: true });
+	});
+
+	it("show forwards the file positional and opts", async () => {
+		const program = build();
+		await program.parseAsync(["debt", "show", "src/foo.ts", "--cwd", "/d", "--json"], {
+			from: "user",
+		});
+		expect(debtShowCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(debtShowCommand.mock.calls[0])[0]).toBe("src/foo.ts");
+		expect(nonNull(debtShowCommand.mock.calls[0])[1]).toMatchObject({ cwd: "/d", json: true });
+	});
+
+	it("resolve forwards the file positional and opts", async () => {
+		const program = build();
+		await program.parseAsync(["debt", "resolve", "src/foo.ts", "--json"], { from: "user" });
+		expect(debtResolveCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(debtResolveCommand.mock.calls[0])[0]).toBe("src/foo.ts");
+		expect(nonNull(debtResolveCommand.mock.calls[0])[1]).toMatchObject({ json: true });
 	});
 });
