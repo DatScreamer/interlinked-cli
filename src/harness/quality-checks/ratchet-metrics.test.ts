@@ -59,6 +59,19 @@ describe("ratchet-metrics — existing counters", () => {
 	it("counts suppression directives", () => {
 		expect(countSuppressionDirectives("// @ts-ignore\n// eslint-disable\n")).toBe(2);
 	});
+
+	it("counts the harness's own interlinked-ignore directive", () => {
+		// The self-gaming hole: interlinked-ignore fully suppresses a finding
+		// (suppressions.ts) yet was not counted, so silencing via the harness's
+		// own directive bypassed the ratchet that counted every third-party one.
+		expect(
+			countSuppressionDirectives("// interlinked-ignore: nan_coercion_guard — fixture\n"),
+		).toBe(1);
+		// `interlinked: defer` stays visible by design — deliberately NOT counted.
+		expect(countSuppressionDirectives("// interlinked: defer complexity -- big refactor\n")).toBe(
+			0,
+		);
+	});
 });
 
 describe("countTypeDensity", () => {

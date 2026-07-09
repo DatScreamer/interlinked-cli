@@ -9,7 +9,13 @@
 import { nonNull } from "../../lib/non-null.js";
 import { stripAllLiterals } from "../strip-helpers.js";
 
-const SUPPRESSION_PATTERN = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore/g;
+// `interlinked-ignore` is the harness's OWN fully-suppressing directive
+// (suppressions.ts) — leaving it uncounted meant an agent could silence
+// unlimited interlinked findings without tripping any ratchet, while the same
+// move via @ts-ignore was counted. `interlinked: defer` is deliberately NOT
+// counted: defers keep the finding visible and are loud audit signal by design.
+const SUPPRESSION_PATTERN =
+	/@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore|interlinked-ignore/g;
 const AS_ANY_PATTERN = /\bas\s+any\b/g;
 // Non-null assertion: identifier followed by `!` then `.`, `[`, `(`, or `)` —
 // the positions that distinguish a type assertion from boolean negation /
@@ -20,8 +26,8 @@ const NON_NULL_ASSERTION_PATTERN = /\w!\s*[.[()]/g;
 /**
  * Public API — consumed by quality-checks.runQualityChecks and verify.ts.
  *
- * Count suppression directives in file content (@ts-expect-error, @ts-expect-error,
- * @ts-nocheck, eslint-disable, biome-ignore).
+ * Count suppression directives in file content (@ts-ignore, @ts-expect-error,
+ * @ts-nocheck, eslint-disable, biome-ignore, interlinked-ignore).
  */
 export function countSuppressionDirectives(content: string): number {
 	return (content.match(SUPPRESSION_PATTERN) || []).length;

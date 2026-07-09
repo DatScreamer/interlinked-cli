@@ -11,7 +11,13 @@
 // holder (also defined here). Moved verbatim; the orchestrator in pre-tool.ts
 // imports them.
 
+import { resolve } from "node:path";
 import type { SharedConfig } from "../../lib/config.js";
+import {
+	extractApplyPatchRaw,
+	looksLikeApplyPatch,
+	parseApplyPatchSections,
+} from "../apply-patch-content.js";
 import type { CohortManager } from "../cohort.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
 import type { ContentScanRequest } from "../content-scanner/types.js";
@@ -21,21 +27,33 @@ import {
 	DEFAULT_LOCKDOWN_CONFIG,
 	evaluateLockdown,
 } from "../lockdown-policy.js";
+import type { ProjectGraph } from "../project-graph.js";
+import type { ReservationManager } from "../reservations.js";
 import {
 	formatSequenceFinding,
 	runSequenceDetectorsForPhase,
 } from "../sequence-checks/index.js";
-import type { ProjectGraph } from "../project-graph.js";
-import type { ReservationManager } from "../reservations.js";
 import type {
 	EscalationRequest,
 	GuardRulesConfig,
 	HarnessDecision,
 	HarnessEvent,
+	ReservationConflict,
 	SessionTrajectory,
 } from "../types.js";
-import type { ToolInput } from "./pre-tool-context-phases.js";
 import { evaluateFileDumpGuard } from "./file-dump-guard.js";
+import type { ToolInput } from "./pre-tool-context-phases.js";
+import {
+	evaluateExfilGuards,
+	evaluateReadGuards,
+	isGraphPredictionEnabled,
+	readGraphPredictionMode,
+} from "./pre-tool-helpers.js";
+import {
+	computePostInjectionEscalation,
+	evaluateErrorMemory,
+	evaluatePermissionPatternDetection,
+} from "./pre-tool-phases.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
 import {
 	isBash,
@@ -43,17 +61,6 @@ import {
 	isReadOperation,
 } from "./tool-classifiers.js";
 import { evaluateWriteContentGuards } from "./write-content-guards.js";
-import {
-	computePostInjectionEscalation,
-	evaluateErrorMemory,
-	evaluatePermissionPatternDetection,
-} from "./pre-tool-phases.js";
-import {
-	evaluateExfilGuards,
-	evaluateReadGuards,
-	isGraphPredictionEnabled,
-	readGraphPredictionMode,
-} from "./pre-tool-helpers.js";
 
 /**
  * Mutable pipeline state that spans phases of `evaluatePreToolUse`. Extracting
@@ -132,9 +139,53 @@ export function evaluateSequenceAndLockdown(
 }
 
 /**
- * Auto file reservation. On a remote-cohort conflict, returns a block decision
- * carrying the reservation detail; on a same-agent conflict, appends a note.
- * Returns a `HarnessDecision` to short-circuit, else `null`.
+ * Every path a write-class tool call will mutate. Write/Edit-shaped tools name
+ * their target in `file_path`/`path`; `apply_patch` (Codex's edit primitive)
+ * carries a patch envelope with NO named path, so the section paths — and the
+ * `*** Move to:` source paths, which are also mutated — must be parsed out.
+ * Before this fallback existed, apply_patch writes took no lease at all
+ * (defect 0, docs/design/cohort-git-discipline.md): a Claude and a Codex
+ * session in one tree were unprotected by construction.
+ */
+function writeTargetPaths(event: HarnessEvent, toolInput: ToolInput): string[] {
+	const named = (toolInput.file_path as string) || (toolInput.path as string) || "";
+	if (named) return [named];
+	const raw = extractApplyPatchRaw(toolInput as Record<string, unknown>);
+	if (!raw || !looksLikeApplyPatch(raw)) return [];
+	const cwd = event.cwd || process.cwd();
+	const targets = new Set<string>();
+	for (const section of parseApplyPatchSections(raw)) {
+		targets.add(resolve(cwd, section.path));
+		if (section.fromPath) targets.add(resolve(cwd, section.fromPath));
+	}
+	return [...targets];
+}
+
+/** Block decision for a write into a remote agent's live reservation. */
+function blockForRemoteReservation(
+	filePath: string,
+	conflict: ReservationConflict,
+	warnings: string[],
+): HarnessDecision {
+	return {
+		decision: "block",
+		reason: `File reserved by ${conflict.agent_name}${conflict.human ? ` (${conflict.human})` : ""}. Expires ${conflict.expires_at || "soon"}. Coordinate via MCP messages.`,
+		reservation: {
+			action: "conflict",
+			file: filePath,
+			holder: conflict.agent_name,
+			expires_at: conflict.expires_at,
+		},
+		warnings,
+	};
+}
+
+/**
+ * Auto file reservation over EVERY path the call mutates (one for Write/Edit,
+ * all section paths for apply_patch). On a remote-cohort conflict, returns a
+ * block decision carrying the reservation detail; on a local sibling-agent
+ * conflict, appends a note (escalation to block is the cohort-discipline
+ * plan's §4.4). Returns a `HarnessDecision` to short-circuit, else `null`.
  */
 export function evaluateAutoReservation(
 	event: HarnessEvent,
@@ -146,27 +197,19 @@ export function evaluateAutoReservation(
 	warnings: string[],
 ): HarnessDecision | null {
 	if (!isFileWrite(toolName)) return null;
-	const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
-	if (!filePath) return null;
+	const paths = writeTargetPaths(event, toolInput);
+	if (paths.length === 0) return null;
 	const agentName = event.agent_name || session?.agent_name || "unknown";
-	const conflict = reservations.checkAndReserve(filePath, agentName, cohort);
-	if (!conflict) return null;
-	if (conflict.cohort === "remote") {
-		return {
-			decision: "block",
-			reason: `File reserved by ${conflict.agent_name}${conflict.human ? ` (${conflict.human})` : ""}. Expires ${conflict.expires_at || "soon"}. Coordinate via MCP messages.`,
-			reservation: {
-				action: "conflict",
-				file: filePath,
-				holder: conflict.agent_name,
-				expires_at: conflict.expires_at,
-			},
-			warnings,
-		};
+	for (const filePath of paths) {
+		const conflict = reservations.checkAndReserve(filePath, agentName, cohort);
+		if (!conflict) continue;
+		if (conflict.cohort === "remote") {
+			return blockForRemoteReservation(filePath, conflict, warnings);
+		}
+		warnings.push(
+			`[interlinked] Note: sibling agent "${conflict.agent_name}" holds a live reservation on ${filePath} (auto-releases ~30s after that agent goes idle).`,
+		);
 	}
-	warnings.push(
-		`[interlinked] Note: Your agent "${conflict.agent_name}" also has ${filePath} reserved.`,
-	);
 	return null;
 }
 
