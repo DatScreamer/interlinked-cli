@@ -33,6 +33,13 @@ export const ubsSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "ubs rust debug_assert side effect",
+		key: "rustDebugAssertSideEffect",
+		noun: "Rust debug_assert* arguments with release-erased side effects",
+		passLabel: "no side effects hidden in debug_assert*",
+		color: "33",
+	},
+	{
 		label: "ubs division by variable",
 		key: "divisionByVariable",
 		noun: "divisions by an identifier (advisory)",

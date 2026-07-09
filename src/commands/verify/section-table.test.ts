@@ -146,6 +146,7 @@ const EXPECTED_KEY_ORDER = [
 	"jsLooseEquality",
 	"floatEquality",
 	"javaOptionalGet",
+	"rustDebugAssertSideEffect",
 	"divisionByVariable",
 	"mutexLockUnwrap",
 	"subprocessShellTrue",

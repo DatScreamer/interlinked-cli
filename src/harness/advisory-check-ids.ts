@@ -93,6 +93,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"error_dispatch_by_instanceof",
 	"crap",
 	// UBS heuristic tier
+	"ubs_rust_debug_assert_side_effect",
 	"ubs_division_by_variable",
 	"ubs_magic_number_no_const",
 	"ubs_print_debug_leak",

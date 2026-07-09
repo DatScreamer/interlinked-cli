@@ -23,6 +23,7 @@ import {
 	checkPrintDebugLeak,
 	checkPyMutableDefaultArg,
 	checkRegexInLoopNoCompile,
+	checkRustDebugAssertSideEffects,
 	checkSqlEscapeHatchNonLiteral,
 	checkSqlStringConcat,
 	checkTempfileMktempRace,
@@ -85,6 +86,22 @@ export const UBS_ENTRIES: CheckRegistration[] = [
 		fn: checkJavaOptionalGet,
 		resultsPropName: "javaOptionalGet",
 		content_keywords: ["Optional"],
+	},
+	{
+		id: "ubs_rust_debug_assert_side_effect",
+		phase: "post",
+		name: "Rust debug_assert side effect",
+		description:
+			"Detects Rust `debug_assert!` / `debug_assert_eq!` / `debug_assert_ne!` arguments that contain a try operator, assignment, or mutating-looking call. Release builds erase debug_assert evaluation, so side effects inside it silently disappear.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Move side effects out of `debug_assert*` before the assertion. Compute the value first, propagate any `?` error normally, and assert only on the already-computed result. In release builds Rust removes `debug_assert*` argument evaluation entirely, so mutating calls like `insert_*()` or fallible calls with `?` would never run.",
+		fn: checkRustDebugAssertSideEffects,
+		resultsPropName: "rustDebugAssertSideEffect",
+		content_keywords: ["debug_assert"],
 	},
 	{
 		id: "ubs_division_by_variable",

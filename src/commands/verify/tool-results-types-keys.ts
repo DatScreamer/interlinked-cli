@@ -141,6 +141,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"jsLooseEquality",
 	"floatEquality",
 	"javaOptionalGet",
+	"rustDebugAssertSideEffect",
 	"divisionByVariable",
 	"mutexLockUnwrap",
 	"subprocessShellTrue",

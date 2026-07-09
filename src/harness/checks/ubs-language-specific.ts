@@ -73,6 +73,7 @@ export {
 	checkGoroutineNoWaitgroup,
 	checkGoShellInjection,
 	checkMutexLockUnwrap,
+	checkRustDebugAssertSideEffects,
 } from "./ubs-language-specific/rust-go-checks.js";
 
 // ---- Java / C-family checks ----

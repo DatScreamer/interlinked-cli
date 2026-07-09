@@ -54,6 +54,7 @@ Commands:
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
   plan                                       Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts
   recurrence                                 Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)
+  reload [options]                           One-command dogfood loop: rebuild the CLI from its source checkout, refresh this repo's hooks, restart the daemon — reporting only what actually changed
   reminder                                   File reminder management (warnings when files are touched)
   reset [options]                            Nuclear: clear all local state
   resume [options] [checkpoint-id]           Resume from latest or specified checkpoint with context
@@ -74,6 +75,7 @@ Commands:
   uninstall-hooks [options]                  Remove hooks previously installed via install-hooks (manifest-driven)
   update|upgrade [options]                   Clone or pull from GitHub, rebuild, and link the CLI
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
+  verify-changeset [options]                 Preview the content-quality gate (pre_block + biome + tsc diff-overlay) over a PROPOSED changeset WITHOUT writing — the agent-callable self-gate. Input JSON {version:1, changes:[{path,content}|{path,old_string,new_string}|{path,edits}]} via --file or --stdin.
   version                                    Show Interlinked CLI + server version
   viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
   watch [options]                            Monitor server for pending work (messages, tasks, agents)

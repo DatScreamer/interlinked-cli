@@ -41,6 +41,19 @@ describe("runUbsChecks", () => {
 		expect(nonNull(c.r.pyNoneEquality[0]).check).toBe("ubs_py_none_equality");
 	});
 
+	it("flags Rust debug_assert side effects (ubs_rust_debug_assert_side_effect)", () => {
+		const c = ctx(
+			"fn f(queue: &mut Vec<u8>) { debug_assert_eq!(queue.pop(), Some(1)); }\n",
+			"/tmp/sample.rs",
+			"sample.rs",
+		);
+		runUbsChecks(c);
+		expect(c.r.rustDebugAssertSideEffect.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.rustDebugAssertSideEffect[0]).check).toBe(
+			"ubs_rust_debug_assert_side_effect",
+		);
+	});
+
 	it("flags document.write (ubs_document_write)", () => {
 		const c = ctx('document.write("<p>hi</p>");\n');
 		runUbsChecks(c);

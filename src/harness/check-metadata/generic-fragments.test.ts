@@ -157,6 +157,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"ubs_js_loose_equality",
 			"ubs_float_equality",
 			"ubs_java_optional_get",
+			"ubs_rust_debug_assert_side_effect",
 			"ubs_division_by_variable",
 			"ubs_mutex_lock_unwrap",
 			"ubs_subprocess_shell_true",
@@ -341,10 +342,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 204-key total", () => {
+	it("preserves the full 205-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(204);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(205);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(204);
+		expect(fragmentKeyTotal).toBe(205);
 	});
 });

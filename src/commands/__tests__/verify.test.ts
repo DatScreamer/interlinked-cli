@@ -249,6 +249,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"ubs_numeric_comparison_chain",
 				"ubs_print_debug_leak",
 				"ubs_regex_in_loop_no_compile",
+				"ubs_rust_debug_assert_side_effect",
 				"ubs_string_concat_in_loop",
 				"ubs_time_format_locale_dep",
 				"unvalidated_json_boundary",

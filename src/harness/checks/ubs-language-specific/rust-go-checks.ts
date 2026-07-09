@@ -46,6 +46,79 @@ export function checkMutexLockUnwrap(content: string, filePath: string): InlineM
 	return matches;
 }
 
+// ===========================================
+// Rust — debug_assert side effects
+// ===========================================
+
+const RUST_SIDE_EFFECT_CALL_RE =
+	/\b(?:insert|push|pop|remove|delete|set|write|send|close|open|spawn|create|update|clear|append|extend|retain|sort|reserve|truncate|drain|take|swap|store|alloc|free|unpin|pin|register|unregister|detach|resize|reset|start|stop|commit|rollback|flush|emit|notify|mark|invalidate)(?:_[a-z0-9_]+)?\s*(?:::<[^>]*>\s*)?\(/;
+
+function matchingParenIndex(text: string, openIndex: number): number {
+	let depth = 0;
+	for (let i = openIndex; i < text.length; i++) {
+		const ch = text[i];
+		if (ch === "(") {
+			depth++;
+		} else if (ch === ")") {
+			depth--;
+			if (depth === 0) return i;
+		}
+	}
+	return -1;
+}
+
+function hasRustAssignment(body: string): boolean {
+	return /(?:^|[^=!<>])(?:<<=|>>=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=(?!=|>))/.test(body);
+}
+
+function hasRustTryOperator(body: string): boolean {
+	return /(?:^|[^:?])\?(?![?=])/.test(body);
+}
+
+function rustDebugAssertBodyHasSideEffect(body: string): boolean {
+	return hasRustTryOperator(body) || hasRustAssignment(body) || RUST_SIDE_EFFECT_CALL_RE.test(body);
+}
+
+/**
+ * Detect side effects hidden inside Rust `debug_assert*` macros.
+ *
+ * Rust erases `debug_assert!`, `debug_assert_eq!`, and `debug_assert_ne!` in
+ * optimized release builds, including any work needed to evaluate their
+ * arguments. This catches the porting-regression class where a mutating call
+ * or fallible operation accidentally runs only in debug builds.
+ */
+export function checkRustDebugAssertSideEffects(
+	content: string,
+	filePath: string,
+): InlineMatch[] {
+	if (getExtension(filePath) !== ".rs") return [];
+	if (isTestFile(filePath)) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+	const re = /\bdebug_assert(?:_eq|_ne)?!\s*\(/g;
+
+	for (const m of stripped.matchAll(re)) {
+		if (matches.length >= MATCH_LIMIT) break;
+		const start = m.index ?? 0;
+		const openIndex = start + m[0].lastIndexOf("(");
+		const closeIndex = matchingParenIndex(stripped, openIndex);
+		if (closeIndex === -1) continue;
+
+		const body = stripped.slice(openIndex + 1, closeIndex);
+		if (!rustDebugAssertBodyHasSideEffect(body)) continue;
+
+		const lineNum = stripped.slice(0, start).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
+		});
+	}
+
+	return matches;
+}
+
 /**
  * `ubs_goroutine_no_waitgroup` — Go `go func() { ... }()` started without an
  * accompanying `wg.Add` / `wg.Done` pair (or other synchronization context).

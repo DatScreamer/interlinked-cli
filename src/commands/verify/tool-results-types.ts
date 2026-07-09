@@ -190,6 +190,8 @@ export interface CodeQualityResults {
 	floatEquality: CodeQualityIssue[];
 	/** Row 29: Java `Optional<T>....get()` without an isPresent/orElse guard. */
 	javaOptionalGet: CodeQualityIssue[];
+	/** Bun Rust-port class: `debug_assert*` arguments whose side effects disappear in release. */
+	rustDebugAssertSideEffect: CodeQualityIssue[];
 	/** Row 30: `expr / identifier` — divisor might be zero (advisory). */
 	divisionByVariable: CodeQualityIssue[];
 	// === UBS Plan 04 — rows 22–26 (critical-tier) ===

@@ -40,6 +40,7 @@ import {
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
 	checkRegexInLoopNoCompile,
+	checkRustDebugAssertSideEffects,
 	checkScriptWithoutSri,
 	checkShelveOpen,
 	checkSqlEscapeHatchNonLiteral,
@@ -77,6 +78,13 @@ export function runUbsChecks(ctx: FileCheckContext): void {
 	);
 	r.javaOptionalGet.push(
 		...toIssues("ubs_java_optional_get", relPath, checkJavaOptionalGet(content, file)),
+	);
+	r.rustDebugAssertSideEffect.push(
+		...toIssues(
+			"ubs_rust_debug_assert_side_effect",
+			relPath,
+			checkRustDebugAssertSideEffects(content, file),
+		),
 	);
 	r.divisionByVariable.push(
 		...toIssues(

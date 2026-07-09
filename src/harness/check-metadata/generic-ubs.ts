@@ -28,6 +28,13 @@ export const GENERIC_UBS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	ubs_rust_debug_assert_side_effect: {
+		name: "Rust debug_assert side effect",
+		description:
+			"Detects Rust debug_assert* arguments with a try operator, assignment, or mutating-looking call — release builds erase debug_assert evaluation.",
+		tier: 1,
+		determinism: "heuristic",
+	},
 	ubs_division_by_variable: {
 		name: "UBS Division by Variable",
 		description:

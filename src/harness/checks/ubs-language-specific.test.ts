@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
 	checkDivisionByVariable,
 	checkJavaOptionalGet,
+	checkRustDebugAssertSideEffects,
 } from "./ubs-language-specific.js";
 
 describe("ubs-language-specific (smoke)", () => {
@@ -26,6 +27,60 @@ describe("ubs-language-specific (smoke)", () => {
 
 	it("checkDivisionByVariable does not flag division by a numeric literal", () => {
 		expect(checkDivisionByVariable("const r = a / 2;", "calc.ts")).toEqual([]);
+	});
+
+	it("checkRustDebugAssertSideEffects flags fallible mutating work inside debug_assert", () => {
+		const code = [
+			"fn refresh(dev: &mut Dev) -> Result<()> {",
+			"    debug_assert!(dev.client_graph.insert_stale(&dev.import_source, false)? == react_refresh_index);",
+			"    Ok(())",
+			"}",
+		].join("\n");
+		expect(checkRustDebugAssertSideEffects(code, "src/dev.rs")).toEqual([
+			{
+				line: 2,
+				text: "debug_assert!(dev.client_graph.insert_stale(&dev.import_source, false)? == react_refresh_index);",
+			},
+		]);
+	});
+
+	it("checkRustDebugAssertSideEffects flags mutating calls in debug_assert_eq", () => {
+		const code = "fn f(queue: &mut Vec<u8>) { debug_assert_eq!(queue.pop(), Some(1)); }";
+		expect(checkRustDebugAssertSideEffects(code, "src/queue.rs").length).toBe(1);
+	});
+
+	it("checkRustDebugAssertSideEffects ignores ordinary predicate-only assertions", () => {
+		const code = [
+			"fn f(items: &[u8], state: State) {",
+			"    debug_assert!(items.is_empty());",
+			"    debug_assert!(path.starts_with(\"/\"));",
+			"    debug_assert!(cfg.settings().len() > 0);",
+			"    debug_assert!(slot.taken().is_none());",
+			"    debug_assert!(out.writer().is_ok());",
+			"    debug_assert!(conn.closed());",
+			"    debug_assert!(file.opened());",
+			"    debug_assert!(event.created_at().is_some());",
+			"    debug_assert!(queue.popped());",
+			"    debug_assert!(matches!(state, State::Ready));",
+			"}",
+		].join("\n");
+		expect(checkRustDebugAssertSideEffects(code, "src/predicate.rs")).toEqual([]);
+	});
+
+	it("checkRustDebugAssertSideEffects ignores comments, strings, non-Rust files, and tests", () => {
+		const code = [
+			"// debug_assert!(queue.pop());",
+			"const MSG: &str = \"debug_assert!(queue.pop())\";",
+			"fn f(queue: &mut Vec<u8>) { debug_assert!(queue.pop().is_some()); }",
+		].join("\n");
+		expect(checkRustDebugAssertSideEffects(code, "src/main.rs")).toEqual([
+			{
+				line: 3,
+				text: "fn f(queue: &mut Vec<u8>) { debug_assert!(queue.pop().is_some()); }",
+			},
+		]);
+		expect(checkRustDebugAssertSideEffects(code, "src/main.ts")).toEqual([]);
+		expect(checkRustDebugAssertSideEffects(code, "project/tests/main.rs")).toEqual([]);
 	});
 
 	// Regression: markdown table separators like `▲/▼/○` and prose alternation

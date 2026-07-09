@@ -269,6 +269,12 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// until coverage is regenerated. Advisory until threshold+match tolerance
 	// are calibrated against real data.
 	"crap",
+	// Rust debug_assert side-effect detector — high-value Bun regression class,
+	// but the v1 detector uses mutating-looking verb names (`insert_*`, `pop`,
+	// `set_*`, etc.) and the try operator as a proxy for release-erased work.
+	// Keep advisory until Rust AST/HIR support can distinguish pure predicates
+	// from actual state changes.
+	"ubs_rust_debug_assert_side_effect",
 	// UBS division-by-variable (row 30 of Plan 04 phase matrix) — v1 detector
 	// "finds division-by-identifier, surfaces, accepts some FPs" per §4.3.
 	// Regex literals (`/pattern/i`), URL paths embedded in template literals

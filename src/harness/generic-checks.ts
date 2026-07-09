@@ -363,6 +363,7 @@ export {
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
 	checkRegexInLoopNoCompile,
+	checkRustDebugAssertSideEffects,
 	checkScriptWithoutSri,
 	checkShelveOpen,
 	checkSqlEscapeHatchNonLiteral,

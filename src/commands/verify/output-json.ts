@@ -232,6 +232,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_js_loose_equality: summarizeWithDetails(cq.jsLooseEquality),
 		ubs_float_equality: summarizeWithDetails(cq.floatEquality),
 		ubs_java_optional_get: summarizeWithDetails(cq.javaOptionalGet),
+		ubs_rust_debug_assert_side_effect: summarizeWithDetails(cq.rustDebugAssertSideEffect),
 		ubs_division_by_variable: summarizeWithDetails(cq.divisionByVariable),
 		// === UBS Plan 04 — rows 22–26 (critical-tier) ===
 		ubs_mutex_lock_unwrap: summarizeWithDetails(cq.mutexLockUnwrap),
