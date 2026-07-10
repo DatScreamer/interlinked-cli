@@ -64,4 +64,18 @@ export const BEHAVIORAL_CHECK_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	assertion_count_regression: {
+		name: "Assertion Count Regression",
+		description:
+			"Staged test files net-removed assertions while production source changed — a deleted expect() weakens the oracle exactly when it should tighten (test-oracle-integrity.md)",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	assertion_value_swap: {
+		name: "Assertion Value Swap",
+		description:
+			"Same subject and matcher with a different expected value in one staged diff (toBe(5) → toBe(6)) — legitimate when the spec changed, the highest-signal line to review when it didn't; info-only, never blocks",
+		tier: 1,
+		determinism: "heuristic",
+	},
 };

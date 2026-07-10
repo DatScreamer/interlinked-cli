@@ -234,9 +234,57 @@ const NOT_IMPLEMENTED_PHRASES =
 	/^(?:not\s+(?:yet\s+)?implemented|unimplemented|method\s+not\s+implemented|to\s+be\s+implemented|coming\s+soon|stub|TODO|wip|work\s+in\s+progress|not\s+ready|placeholder)$/i;
 const EMPTY_THROW_RE = /\bthrow\s+new\s+(?:[A-Z][\w$]*\s*)?Error\s*\(\s*\)/;
 
-/** Public API — flags `throw new Error("not implemented")` and variants. */
+// Python: a bare `raise NotImplementedError` is a stub — UNLESS it implements
+// an @abstractmethod contract, where raising is the correct body. Scanned on
+// string-stripped content so docstrings mentioning the pattern don't count.
+const PY_ABSTRACT_RE = /@(?:abc\.)?abstractmethod\b/;
+const PY_RAISE_NI_RE = /^\s*raise\s+NotImplementedError\b/;
+
+function pythonStubMatches(content: string): InlineMatch[] {
+	const lines = stripCommentsAndStrings(content).split("\n");
+	const out: InlineMatch[] = [];
+	for (let i = 0; i < lines.length && out.length < 5; i++) {
+		if (!PY_RAISE_NI_RE.test(lines[i] ?? "")) continue;
+		const lookback = lines.slice(Math.max(0, i - 3), i).join("\n");
+		if (PY_ABSTRACT_RE.test(lookback)) continue;
+		out.push({
+			line: i + 1,
+			text: "raise NotImplementedError outside an @abstractmethod — finish the implementation or mark the method abstract",
+		});
+	}
+	return out;
+}
+
+// Rust: `unimplemented!()` and `panic!("not implemented"/"TODO"/…)` are the
+// stub-to-satisfy-the-compiler move Bun hit at scale ("Claude interpreted
+// 'get all the crates to compile' as 'stub out the functions'"). `todo!()`
+// is deliberately NOT matched here — rust_todo_macro (language-profiles)
+// already owns it, and double-reporting one macro helps nobody.
+const RUST_STUB_RE =
+	/\bunimplemented!\s*\(|\bpanic!\s*\(\s*"(?:not (?:yet )?implemented|todo|unimplemented|stub)/i;
+
+function rustStubMatches(content: string): InlineMatch[] {
+	// stripComments (not …AndStrings): the panic! message text must survive.
+	const lines = stripComments(content).split("\n");
+	const out: InlineMatch[] = [];
+	for (let i = 0; i < lines.length && out.length < 5; i++) {
+		if (!RUST_STUB_RE.test(lines[i] ?? "")) continue;
+		out.push({
+			line: i + 1,
+			text: "unimplemented!()/panic!(\"not implemented\") stub — finish the implementation or return a typed error",
+		});
+	}
+	return out;
+}
+
+/** Public API — flags `throw new Error("not implemented")` and variants (JS/TS),
+ *  `raise NotImplementedError` outside @abstractmethod (Python), and
+ *  `unimplemented!()`/`panic!("not implemented")` (Rust). */
 export function checkStubNotImplementedThrow(content: string, filePath: string): InlineMatch[] {
 	if (isTestFile(filePath)) return [];
+	const polyglotExt = getExtension(filePath);
+	if (polyglotExt === ".py") return pythonStubMatches(content);
+	if (polyglotExt === ".rs") return rustStubMatches(content);
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 
 	const matches: InlineMatch[] = [];

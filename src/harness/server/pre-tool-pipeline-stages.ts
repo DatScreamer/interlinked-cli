@@ -17,7 +17,9 @@ import {
 	checkTppLeapfrog,
 } from "../behavioral-checks.js";
 import {
+	checkAssertionCountRegression,
 	checkAssertionStrengthWeakening,
+	checkAssertionValueSwap,
 	checkClockMockAdded,
 	checkConventionalCommitCoherence,
 	checkDisabledTestDelta,
@@ -79,8 +81,11 @@ export function runTddCommitGate(
 			...checkTppLeapfrog(session),
 			// Batch 3: diff-aware commit gates.
 			...checkDisabledTestDelta(session),
-			...checkTestBlockCountRegression(session),
+			...checkTestBlockCountRegression(session, undefined, commitMessage?.type ?? null),
 			...checkAssertionStrengthWeakening(session),
+			// Test-oracle integrity (docs/design/test-oracle-integrity.md §4.3).
+			...checkAssertionCountRegression(session),
+			...checkAssertionValueSwap(session),
 			...checkTestTimeoutInflation(session),
 			...checkClockMockAdded(session),
 			...checkConventionalCommitCoherence(session, commitMessage),

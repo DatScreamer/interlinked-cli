@@ -1,0 +1,6 @@
+{
+	"version": 1,
+	"max_skipped": 0,
+	"_comment": "Skipped-tests water-line — '0 tests skipped or deleted' (docs/design/test-oracle-integrity.md). max_skipped may only tighten; grandfather counts may only shrink; goal end-state is an empty files map. Counted by countSkippedTests (test-skip-markers.ts) — unconditional skips only.",
+	"files": {}
+}

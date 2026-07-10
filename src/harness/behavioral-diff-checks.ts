@@ -65,51 +65,18 @@ export function checkDisabledTestDelta(session: SessionTrajectory): CheckResultE
 }
 
 // ==========================================================================
-// 2. Test-block count regression
+// 2. Test-block count regression — MOVED to behavioral-diff-checks-oracle.ts
 // ==========================================================================
-// File's `it()` / `test()` / `specify()` count is lower than HEAD. The
-// agent deleted tests instead of fixing them.
-
-const TEST_BLOCK_INTRO_RE =
-	/\b(?:it|test|specify)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|todo|failing|sequential))*\s*\(\s*['"`]/;
-
-function countTestBlocks(text: string): number {
-	const re = new RegExp(TEST_BLOCK_INTRO_RE.source, "g");
-	const matches = text.match(re);
-	return matches ? matches.length : 0;
-}
-
-/** Public API — flags test files whose `it()` / `test()` count dropped. */
-export function checkTestBlockCountRegression(
-	session: SessionTrajectory,
-): CheckResultEntry[] {
-	const results: CheckResultEntry[] = [];
-	for (const file of session.files_written) {
-		if (!TEST_FILE_RE.test(file)) continue;
-		const diff = getStagedDiff(file);
-		if (!diff) continue;
-		// Count test-intro lines on `+` vs `-` halves. A net-negative count
-		// means tests were removed rather than added.
-		let plus = 0;
-		let minus = 0;
-		for (const line of diff.split("\n")) {
-			if (line.startsWith("+++") || line.startsWith("---")) continue;
-			if (line.startsWith("+") && TEST_BLOCK_INTRO_RE.test(line)) plus++;
-			else if (line.startsWith("-") && TEST_BLOCK_INTRO_RE.test(line)) minus++;
-		}
-		const net = plus - minus;
-		if (net >= 0) continue;
-		results.push({
-			source: "structural",
-			name: "test_block_count_regression",
-			severity: "warning",
-			message: `${basename(file)} removed ${-net} more test block(s) than it added (-${minus}, +${plus}). If a test is wrong, fix it; if the SUT moved, move the test. Don't drop coverage to make the suite pass.`,
-			file,
-			determinism: "fully_deterministic",
-		});
-	}
-	return results;
-}
+// Rewritten 2026-07 (docs/design/test-oracle-integrity.md §4.1): commit-scoped
+// and SUT-conditioned, with `severity: "error"` only on the unexplained-loss
+// branch. Re-exported here so existing importers (pre-tool-pipeline-stages,
+// tests) keep resolving from this module. The oracle sibling also hosts the
+// two new checks; this file sits at the line cap.
+export {
+	checkAssertionCountRegression,
+	checkAssertionValueSwap,
+	checkTestBlockCountRegression,
+} from "./behavioral-diff-checks-oracle.js";
 
 // ==========================================================================
 // 3. Assertion-strength weakening

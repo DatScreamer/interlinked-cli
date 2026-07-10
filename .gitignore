@@ -166,6 +166,10 @@ scratch/*
 # is carved out of the .interlinked/* ignore like the other team-shared configs.
 !.interlinked/metric-caps.json
 !.interlinked/untested-files-baseline.json
+# Skipped-tests water-line ("0 tests skipped or deleted" — docs/design/
+# test-oracle-integrity.md). Committed policy: skips drifting up must surface
+# in PR diffs; protected by baseline_integrity_gate + the commit backstop.
+!.interlinked/skipped-tests-baseline.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json

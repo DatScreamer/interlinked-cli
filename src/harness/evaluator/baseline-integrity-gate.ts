@@ -39,10 +39,11 @@ type BaselineKind =
 	| "large-files"
 	| "untested-files"
 	| "metric-caps"
-	| "mutation-manifest";
+	| "mutation-manifest"
+	| "skipped-tests";
 
 const BASELINE_RE =
-	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps)\.json$/;
+	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps|skipped-tests-baseline)\.json$/;
 
 const KIND_MAP: Record<string, BaselineKind> = {
 	"coverage-baseline": "coverage",
@@ -52,6 +53,7 @@ const KIND_MAP: Record<string, BaselineKind> = {
 	"untested-files-baseline": "untested-files",
 	"metric-caps": "metric-caps",
 	"mutation-manifest": "mutation-manifest",
+	"skipped-tests-baseline": "skipped-tests",
 };
 
 function baselineKind(filePath: string): BaselineKind | null {
@@ -192,6 +194,61 @@ function detectLargeFiles(file: string, before: unknown, after: unknown): Baseli
 	return out;
 }
 
+// The skipped-tests water-line (docs/design/test-oracle-integrity.md §4.2):
+// the test suite is the oracle every other ratchet depends on, and skips are
+// how an agent quietly erodes it. Same directions as large-files: the global
+// cap may only tighten, a grandfather ceiling may only shrink, and a NEW
+// grandfather entry above the cap pre-authorizes new skips — blocked.
+function detectSkippedTests(file: string, before: unknown, after: unknown): BaselineGamingFinding[] {
+	const out: BaselineGamingFinding[] = [];
+	const b = asObj(before);
+	const a = asObj(after);
+	const bMax = b.max_skipped;
+	const aMax = a.max_skipped;
+	if (isNum(bMax) && isNum(aMax) && aMax > bMax) {
+		out.push(
+			fmt(
+				file,
+				"max_skipped",
+				bMax,
+				aMax,
+				`skipped-tests max_skipped raised ${bMax}→${aMax}. The skip cap may only tighten — fix or delete the skipped test instead.`,
+			),
+		);
+	}
+	const effMax = isNum(aMax) ? aMax : Number.POSITIVE_INFINITY;
+	const bFiles = asObj(b.files);
+	const aFiles = asObj(a.files);
+	for (const [path, bcRaw] of Object.entries(bFiles)) {
+		const ac = aFiles[path];
+		if (isNum(bcRaw) && isNum(ac) && ac > bcRaw) {
+			out.push(
+				fmt(
+					file,
+					`grandfather:${path}`,
+					bcRaw,
+					ac,
+					`skipped-tests grandfather for ${path} raised ${bcRaw}→${ac}. A grandfathered file may re-enable tests, never skip more.`,
+				),
+			);
+		}
+	}
+	for (const [path, acRaw] of Object.entries(aFiles)) {
+		if (!(path in bFiles) && isNum(acRaw) && acRaw > effMax) {
+			out.push(
+				fmt(
+					file,
+					`grandfather-new:${path}`,
+					undefined,
+					acRaw,
+					`new skipped-tests grandfather entry ${path}=${acRaw} exceeds the cap (${effMax}). That pre-authorizes new skips — re-enable the tests instead.`,
+				),
+			);
+		}
+	}
+	return out;
+}
+
 function detectUntestedFiles(file: string, before: unknown, after: unknown): BaselineGamingFinding[] {
 	const out: BaselineGamingFinding[] = [];
 	const b = asObj(before);
@@ -300,6 +357,8 @@ export function detectBaselineGaming(
 			return detectMetricCaps(filePath, before, after);
 		case "mutation-manifest":
 			return detectMutationManifest(filePath, before, after);
+		case "skipped-tests":
+			return detectSkippedTests(filePath, before, after);
 	}
 }
 

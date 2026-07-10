@@ -16,6 +16,7 @@ const MUT = "/repo/.interlinked/mutation-baseline.json";
 const LARGE = "/repo/.interlinked/large-files-baseline.json";
 const UNTESTED = "/repo/.interlinked/untested-files-baseline.json";
 const CAPS = "/repo/.interlinked/metric-caps.json";
+const SKIPPED = "/repo/.interlinked/skipped-tests-baseline.json";
 
 function detect(file: string, before: unknown, after: unknown, exists = alwaysExists) {
 	return detectBaselineGaming(file, JSON.stringify(before), JSON.stringify(after), exists);
@@ -116,6 +117,25 @@ describe("untested-files-baseline.json — INVERTED: exemption list may only shr
 	});
 	it("ALLOWS raising the floor and removing an exemption", () => {
 		expect(detect(UNTESTED, base, { min_coverage_pct: 80, files: [] })).toEqual([]);
+	});
+});
+
+describe("skipped-tests-baseline.json — skip cap tightens, grandfather counts shrink", () => {
+	const base = { version: 1, max_skipped: 0, files: { "src/legacy.test.ts": 3 } };
+	it("BLOCKS raising max_skipped", () => {
+		expect(detect(SKIPPED, base, { max_skipped: 2, files: { "src/legacy.test.ts": 3 } })).toHaveLength(1);
+	});
+	it("BLOCKS raising a grandfather skip ceiling", () => {
+		expect(detect(SKIPPED, base, { max_skipped: 0, files: { "src/legacy.test.ts": 5 } })).toHaveLength(1);
+	});
+	it("BLOCKS a new grandfather entry above the cap", () => {
+		const after = { max_skipped: 0, files: { "src/legacy.test.ts": 3, "src/new.test.ts": 1 } };
+		expect(detect(SKIPPED, base, after)).toHaveLength(1);
+	});
+	it("ALLOWS shrinking a ceiling, resolving an entry, and holding steady", () => {
+		expect(detect(SKIPPED, base, { max_skipped: 0, files: { "src/legacy.test.ts": 1 } })).toEqual([]);
+		expect(detect(SKIPPED, base, { max_skipped: 0, files: {} })).toEqual([]);
+		expect(detect(SKIPPED, base, base)).toEqual([]);
 	});
 });
 

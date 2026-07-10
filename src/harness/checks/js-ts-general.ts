@@ -1,6 +1,7 @@
 // JS/TS general checks (nested ternaries, catch-and-log, JSON parsing, etc).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
+import { findSkipMarkers } from "./test-skip-markers.js";
 
 // ===========================================
 // JS/TS General Checks
@@ -261,21 +262,15 @@ export function checkHardcodedTimeout(content: string, filePath: string): Inline
 	return matches;
 }
 
-/** Detect disabled/skipped tests — remove .skip or re-enable. */
+/**
+ * Detect disabled/skipped tests — remove .skip / #[ignore] / @pytest.mark.skip
+ * or re-enable. Polyglot since 2026-07 (Bun test-oracle work): the marker table
+ * lives in test-skip-markers.ts, shared with the skipped-tests water-line so
+ * the check and the baseline can never disagree about what a "skip" is.
+ * JS/TS behavior is unchanged (same pattern, same per-file cap).
+ */
 export function checkDisabledTests(content: string, filePath: string): InlineMatch[] {
-	if (!isTestFile(filePath)) return [];
-	const ext = getExtension(filePath);
-	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
-
-	const stripped = stripCommentsAndStrings(content);
-	const originalLines = content.split("\n");
-	const strippedLines = stripped.split("\n");
-	return scanLinesStripped(
-		originalLines,
-		strippedLines,
-		/\b(?:it\.skip|describe\.skip|test\.skip|xit|xdescribe|xtest)\s*\(/,
-		15,
-	);
+	return findSkipMarkers(content, filePath);
 }
 
 /** Detect target="_blank" without rel="noopener noreferrer" — tabnabbing risk. */

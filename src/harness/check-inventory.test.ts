@@ -22,9 +22,9 @@ const EXPECTED_BY_FAMILY: Record<string, number> = {
 	structural: 25,
 	tool_quality: 33,
 	suggestion: 29,
-	behavioral: 9, // +test_timeout_inflation (commit-gate behavioral diff check, 2026-07-06)
+	behavioral: 11, // +assertion_count_regression, +assertion_value_swap (test-oracle integrity, 2026-07-09)
 };
-const EXPECTED_TOTAL = 345;
+const EXPECTED_TOTAL = 347;
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.

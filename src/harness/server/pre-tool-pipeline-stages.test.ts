@@ -26,7 +26,9 @@ vi.mock("../behavioral-checks.js", () => ({
 
 // ---- Mock behavioral-diff-checks.js (batch 3 + batch 4 commit gates) ----
 vi.mock("../behavioral-diff-checks.js", () => ({
+	checkAssertionCountRegression: vi.fn(() => [] as CheckResultEntry[]),
 	checkAssertionStrengthWeakening: vi.fn(() => [] as CheckResultEntry[]),
+	checkAssertionValueSwap: vi.fn(() => [] as CheckResultEntry[]),
 	checkClockMockAdded: vi.fn(() => [] as CheckResultEntry[]),
 	checkConventionalCommitCoherence: vi.fn(() => [] as CheckResultEntry[]),
 	checkDisabledTestDelta: vi.fn(() => [] as CheckResultEntry[]),

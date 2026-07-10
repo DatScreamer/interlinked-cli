@@ -208,6 +208,58 @@ function c() { throw new Error("coming soon"); }
 		expect(checkStubNotImplementedThrow(code, TS)).toEqual([]);
 	});
 
+	it("Python: flags bare raise NotImplementedError as a stub", () => {
+		const code = "def handler(self, event):\n    raise NotImplementedError\n";
+		const matches = checkStubNotImplementedThrow(code, "src/app.py");
+		expect(matches.map((m) => m.line)).toEqual([2]);
+	});
+
+	it("Python: does NOT flag raise NotImplementedError under @abstractmethod", () => {
+		const code = [
+			"class Base:",
+			"    @abstractmethod",
+			"    def handler(self, event):",
+			"        raise NotImplementedError",
+			"    @abc.abstractmethod",
+			"    def other(self):",
+			"        raise NotImplementedError",
+		].join("\n");
+		expect(checkStubNotImplementedThrow(code, "src/base.py")).toEqual([]);
+	});
+
+	it("Python: does NOT count docstring mentions", () => {
+		const code = 'def f():\n    """May raise NotImplementedError in subclasses."""\n    return 1\n';
+		expect(checkStubNotImplementedThrow(code, "src/doc.py")).toEqual([]);
+	});
+
+	it("Rust: flags unimplemented!() and panic!(\"not implemented\")", () => {
+		const code = [
+			"fn a() { unimplemented!() }",
+			'fn b() { panic!("not implemented") }',
+			'fn c() { panic!("TODO: wire this") }',
+		].join("\n");
+		const matches = checkStubNotImplementedThrow(code, "src/lib.rs");
+		expect(matches.map((m) => m.line)).toEqual([1, 2, 3]);
+	});
+
+	it("Rust: does NOT flag todo!() (rust_todo_macro owns it) nor real panics", () => {
+		const code = [
+			"fn a() { todo!() }",
+			'fn b() { panic!("invariant violated: len {} != cap {}", len, cap) }',
+			'// prose: unimplemented!() belongs elsewhere',
+		].join("\n");
+		expect(checkStubNotImplementedThrow(code, "src/lib.rs")).toEqual([]);
+	});
+
+	it("Python/Rust stubs in test files are exempt", () => {
+		expect(
+			checkStubNotImplementedThrow("raise NotImplementedError", "tests/test_x.py"),
+		).toEqual([]);
+		expect(
+			checkStubNotImplementedThrow("fn a() { unimplemented!() }", "project/tests/util.rs"),
+		).toEqual([]);
+	});
+
 	it("skips test files", () => {
 		expect(
 			checkStubNotImplementedThrow(`throw new Error("not implemented");`, TEST),

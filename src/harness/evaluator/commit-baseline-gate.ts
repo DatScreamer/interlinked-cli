@@ -28,6 +28,7 @@ const TRACKED_BASELINES = [
 	".interlinked/large-files-baseline.json",
 	".interlinked/untested-files-baseline.json",
 	".interlinked/metric-caps.json",
+	".interlinked/skipped-tests-baseline.json",
 ] as const;
 
 const GIT_TIMEOUT_MS = 1_500;
