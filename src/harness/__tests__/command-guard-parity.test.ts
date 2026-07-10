@@ -6,7 +6,7 @@
 // This test is the gate for removing the old hook.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CohortManager } from "../cohort.js";
+import { CohortManager, setActiveCohort } from "../cohort.js";
 import { evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
@@ -375,6 +375,51 @@ describe("command-guard-hook.ts parity with harness", () => {
 			expect(runGuard("git clone https://example.com/x/y.git /tmp/reference")).toBe(
 				"allow",
 			);
+		});
+	});
+
+	// Cohort git discipline (builtin-rules-cohort.ts): the whole design rests
+	// on the solo path paying nothing — every rule dormant at 1 agent, live at
+	// 2+ via the active_agent_count_at_least predicate (provider-fed).
+	describe("cohort git discipline — dormant solo, live at 2 agents", () => {
+		// add -A / commit -a are deliberately NOT here: git-session-scope-gate
+		// owns them with per-file ownership (ask), a strictly finer gate.
+		const COHORT_GATED = ["git stash", "git stash pop", "git rebase main", "git checkout main"];
+
+		function joinProviderAgents(names: string[]): void {
+			const provider = new CohortManager();
+			for (const name of names) {
+				provider.agentJoined({
+					hook_event: "SessionStart",
+					session_id: `s-${name}`,
+					agent_source: "claude",
+					agent_name: name,
+					timestamp: new Date().toISOString(),
+				});
+			}
+			setActiveCohort(provider);
+		}
+
+		afterEach(() => setActiveCohort(null));
+
+		it("solo agent: every cohort-gated command stays allowed", () => {
+			joinProviderAgents(["only-agent"]);
+			for (const cmd of COHORT_GATED) {
+				expect(runGuard(cmd), `expected solo "${cmd}" to be allowed`).toBe("allow");
+			}
+		});
+
+		it("two active agents: every cohort-gated command blocks", () => {
+			joinProviderAgents(["alpha", "beta"]);
+			for (const cmd of COHORT_GATED) {
+				expect(runGuard(cmd), `expected cohort "${cmd}" to be blocked`).toBe("block");
+			}
+		});
+
+		it("two active agents: named-path staging/committing and read-only stash stay allowed", () => {
+			joinProviderAgents(["alpha", "beta"]);
+			expect(runGuard("git stash list")).toBe("allow");
+			expect(runGuard("git checkout -b feature/x")).toBe("allow");
 		});
 	});
 });

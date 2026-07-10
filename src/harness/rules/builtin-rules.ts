@@ -7,6 +7,7 @@
 // and makes it easier to audit / extend a specific domain.
 
 import type { GuardRule } from "../types.js";
+import { COHORT_DISCIPLINE_RULES } from "./builtin-rules-cohort.js";
 import { DATABASE_AND_CLOUD_RULES } from "./builtin-rules-database.js";
 import { DESTRUCTIVE_HTTP_RULES } from "./builtin-rules-destructive-http.js";
 import { DESTRUCTIVE_V1_EXTRA_RULES } from "./builtin-rules-extras.js";
@@ -45,6 +46,11 @@ export const BUILTIN_RULES: GuardRule[] = [
 	// MCP_DESTRUCTIVE_RULES / DESTRUCTIVE_HTTP_RULES so these refined
 	// command-shape rules trump the generic catch-all that follow.
 	...DESTRUCTIVE_V1_EXTRA_RULES,
+	// Cohort git discipline (Bun 64-agent lesson) — predicate-gated, dormant
+	// below 2 active agents. Placed after the unconditional git blocks
+	// (reset --hard, stash drop) so the always-on rule wins the shared shapes,
+	// and before the generic catch-alls.
+	...COHORT_DISCIPLINE_RULES,
 	...MCP_DESTRUCTIVE_RULES,
 	...DESTRUCTIVE_HTTP_RULES,
 	...LANGUAGE_DESTRUCTIVE_RULES,

@@ -91,7 +91,13 @@ export class CohortManager {
 		}
 	}
 
-	/** Update last_event_at on any activity */
+	/** Update last_event_at on any activity. An UNKNOWN agent implicitly joins:
+	 *  cohort state is in-memory, so a daemon restart empties it and a
+	 *  mid-flight session would otherwise never re-register (its SessionStart
+	 *  already happened) — leaving every cohort-gated surface dormant until
+	 *  the next session. Tool traffic IS the liveness signal. Synthetic probe
+	 *  sessions that join this way self-heal: detectLostAgents flips silent
+	 *  agents to "lost" after 5 minutes. */
 	recordActivity(event: HarnessEvent): void {
 		const agent = this.findByEvent(event);
 		if (agent) {
@@ -99,6 +105,10 @@ export class CohortManager {
 			if (agent.status !== "active") {
 				agent.status = "active";
 			}
+			return;
+		}
+		if (event.agent_name || event.session_id) {
+			this.agentJoined(event);
 		}
 	}
 
@@ -181,4 +191,40 @@ export class CohortManager {
 		}
 		return undefined;
 	}
+}
+
+// ===========================================
+// Active-cohort provider + lineage
+// ===========================================
+// The daemon owns exactly ONE CohortManager (server.ts). Guard surfaces that
+// need cohort state — the active_when `active_agent_count_at_least` predicate,
+// inferAgentRole's lineage lookup, the local-lease escalation — read it via
+// this provider instead of threading a parameter through pre-tool.ts /
+// pre-tool-rules.ts, which are high-contention seams other workstreams edit
+// concurrently. Set once at server startup; tests set/clear it directly.
+
+let activeCohort: CohortManager | null = null;
+
+/** Public API — server startup (and tests) install the daemon's cohort here. */
+export function setActiveCohort(cohort: CohortManager | null): void {
+	activeCohort = cohort;
+}
+
+/** Public API — the daemon's cohort, or null when no daemon context exists. */
+export function getActiveCohort(): CohortManager | null {
+	return activeCohort;
+}
+
+/**
+ * Public API — true when `a` and `b` are a parent↔child pair (either
+ * direction). A main agent and the subagent it delegated to legitimately
+ * touch the same files; the cohort-discipline escalation exempts them.
+ * Unknown agents return false — callers must treat "either agent unknown"
+ * as lineage-UNKNOWN and fail open (feedback_safety_continuity: a missed
+ * SubagentStart must not turn ordinary delegation into a block).
+ */
+export function isLineage(cohort: CohortManager, a: string, b: string): boolean {
+	const agentA = cohort.getAgent(a);
+	const agentB = cohort.getAgent(b);
+	return agentA?.parent_agent === b || agentB?.parent_agent === a;
 }

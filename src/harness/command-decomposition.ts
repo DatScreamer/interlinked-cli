@@ -5,6 +5,8 @@
 // guard rule evaluation, and classifies env var prefixes as safe/dangerous.
 
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
+import { type CohortManager, getActiveCohort } from "./cohort.js";
 import { classifySpans } from "./evaluator/spans.js";
 import type {
 	AgentRole,
@@ -14,7 +16,6 @@ import type {
 	ToolConcurrencyClass,
 } from "./types.js";
 import { DANGEROUS_ENV_VARS, SAFE_ENV_VARS } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Compound Command Decomposition
@@ -429,10 +430,26 @@ export function classifyToolConcurrency(toolName: string): ToolConcurrencyClass 
 // Agent Role Inference
 // ===========================================
 
+/**
+ * True when the cohort knows this event's agent as somebody's child. The wire
+ * fields (`parent_agent`, `agent_type`) are populated only on Subagent
+ * lifecycle envelopes — an ordinary PreToolUse tool call from inside a
+ * subagent carries none of them, which left `applies_to_roles` a dead lever
+ * at gate time (docs/design/cohort-git-discipline.md §3.3). The cohort DOES
+ * know the lineage (SubagentStart recorded `parent_agent`), so ask it first;
+ * falls back to the active-cohort provider when no cohort is passed.
+ */
+function cohortKnowsAsSubagent(event: HarnessEvent, cohort?: CohortManager | null): boolean {
+	const cohortView = cohort ?? getActiveCohort();
+	if (!event.agent_name || !cohortView) return false;
+	return Boolean(cohortView.getAgent(event.agent_name)?.parent_agent);
+}
+
 /** Infer agent role from event context when not explicitly set */
-export function inferAgentRole(event: HarnessEvent): AgentRole {
+export function inferAgentRole(event: HarnessEvent, cohort?: CohortManager | null): AgentRole {
 	if (event.agent_role) return event.agent_role;
 
+	if (cohortKnowsAsSubagent(event, cohort)) return "subagent";
 	if (event.parent_agent) return "subagent";
 	if (event.hook_event === "SubagentStart" || event.hook_event === "SubagentStop")
 		return "subagent";

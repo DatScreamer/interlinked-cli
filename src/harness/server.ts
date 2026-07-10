@@ -32,7 +32,7 @@ import {
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
-import { CohortManager } from "./cohort.js";
+import { CohortManager, setActiveCohort } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner } from "./content-scanner/types.js";
@@ -183,7 +183,7 @@ const MS_PER_MINUTE = 60_000;
 // ===========================================
 
 let rules: GuardRulesConfig = loadRules(CWD);
-const cohort = new CohortManager();
+const cohort = new CohortManager(); setActiveCohort(cohort); // provider: see cohort.ts
 const sessions = new SessionTracker();
 
 // --- Statusline status-file writers ---

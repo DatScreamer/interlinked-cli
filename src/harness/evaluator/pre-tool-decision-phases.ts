@@ -18,7 +18,7 @@ import {
 	looksLikeApplyPatch,
 	parseApplyPatchSections,
 } from "../apply-patch-content.js";
-import type { CohortManager } from "../cohort.js";
+import { type CohortManager, isLineage } from "../cohort.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
 import type { ContentScanRequest } from "../content-scanner/types.js";
 import type { ErrorHistory } from "../error-history.js";
@@ -181,6 +181,42 @@ function blockForRemoteReservation(
 }
 
 /**
+ * Local sibling-lease escalation (docs/design/cohort-git-discipline.md §4.4).
+ * A LOCAL conflict blocks only when the coordination story is fully known:
+ * ≥2 agents active, BOTH agents known to the cohort, and they are not a
+ * parent↔child pair (delegation legitimately shares files). Anything unknown
+ * fails OPEN to a warning — these are coordination rules, not security rules
+ * (feedback_safety_continuity), and the lease self-heals (~30s idle
+ * auto-release, 5min TTL, lost-agent sweep). One-command escape:
+ * INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK=1. (Config-file knob deferred —
+ * types/config.ts is under concurrent edit; see the design doc.)
+ */
+function decideLocalLeaseConflict(
+	filePath: string,
+	agentName: string,
+	conflict: ReservationConflict,
+	cohort: CohortManager,
+	warnings: string[],
+): HarnessDecision | null {
+	if (process.env.INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK === "1") return null;
+	const bothKnown = Boolean(cohort.getAgent(agentName) && cohort.getAgent(conflict.agent_name));
+	if (!bothKnown) return null;
+	if (isLineage(cohort, agentName, conflict.agent_name)) return null;
+	if (cohort.getCounts().active < 2) return null;
+	return {
+		decision: "block",
+		reason: `File held by sibling agent ${conflict.agent_name} (live lease, same machine). It auto-releases ~30s after that agent goes idle (TTL ${conflict.expires_at || "5min"}) — retry shortly, or coordinate. Two agents interleaving writes on one file is the lost-update case leasing exists for. One-command escape: INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK=1.`,
+		reservation: {
+			action: "conflict",
+			file: filePath,
+			holder: conflict.agent_name,
+			expires_at: conflict.expires_at,
+		},
+		warnings,
+	};
+}
+
+/**
  * Auto file reservation over EVERY path the call mutates (one for Write/Edit,
  * all section paths for apply_patch). On a remote-cohort conflict, returns a
  * block decision carrying the reservation detail; on a local sibling-agent
@@ -206,6 +242,8 @@ export function evaluateAutoReservation(
 		if (conflict.cohort === "remote") {
 			return blockForRemoteReservation(filePath, conflict, warnings);
 		}
+		const siblingBlock = decideLocalLeaseConflict(filePath, agentName, conflict, cohort, warnings);
+		if (siblingBlock) return siblingBlock;
 		warnings.push(
 			`[interlinked] Note: sibling agent "${conflict.agent_name}" holds a live reservation on ${filePath} (auto-releases ~30s after that agent goes idle).`,
 		);

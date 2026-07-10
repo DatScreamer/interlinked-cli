@@ -18,12 +18,14 @@
 // evaluation so dormant rules short-circuit without spending regex cycles.
 // See docs/design/harness-active-when-scoping.md.
 
+import { getActiveCohort } from "../cohort.js";
 import type {
 	ActiveWhen,
 	AfterCommandSpec,
 	GuardRule,
 	HarnessEvent,
 	PhaseSpec,
+	SessionPredicateSpec,
 	SessionTrajectory,
 } from "../types.js";
 
@@ -73,15 +75,41 @@ export function evaluateActiveWhen(
 		return false;
 	}
 	if (aw.predicate) {
-		// Generic escape-hatch predicates are not implemented in v1. Fail
-		// safely: a rule referencing an unknown predicate stays dormant
-		// rather than firing on every call. The /enforce skill mandates
-		// that distilled rules using `predicate` also set action="ask",
-		// so a dormant predicate degrades to "no-op", which is correct.
-		return false;
+		return evaluatePredicateAxis(aw.predicate);
 	}
 
 	return true;
+}
+
+// Named session predicates. An UNKNOWN predicate name keeps the v1 contract:
+// the rule stays dormant rather than firing on every call (the /enforce skill
+// mandates distilled predicate rules also set action="ask", so dormancy
+// degrades to no-op). Registered names evaluate live.
+const SESSION_PREDICATES: Record<string, (args: SessionPredicateSpec["args"]) => boolean> = {
+	/**
+	 * ≥N agents currently ACTIVE in this daemon's cohort. The
+	 * cohort-discipline rule pack (builtin-rules-cohort.ts) keys on 2: a solo
+	 * agent's `git stash`/`git add -A` sweeps up only its own work, so those
+	 * rules stay dormant and the common case pays nothing — the reason the
+	 * command is bad is unnamed-file blast radius, and only with a sibling
+	 * present does that radius cover someone else's work
+	 * (docs/design/cohort-git-discipline.md §1).
+	 * No cohort provider (daemon-less evaluation, cold fallback) → false:
+	 * these are coordination rules, not security rules — they fail OPEN
+	 * (feedback_safety_continuity).
+	 */
+	active_agent_count_at_least: (args) => {
+		const want = typeof args?.count === "number" ? args.count : 2;
+		const cohort = getActiveCohort();
+		if (!cohort) return false;
+		return cohort.getCounts().active >= want;
+	},
+};
+
+function evaluatePredicateAxis(spec: SessionPredicateSpec): boolean {
+	const impl = SESSION_PREDICATES[spec.name];
+	if (!impl) return false;
+	return impl(spec.args);
 }
 
 function evaluateSkillAxis(

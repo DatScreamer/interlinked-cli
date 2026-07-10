@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GuardRule, HarnessEvent, SessionTrajectory } from "../types.js";
+import { CohortManager, setActiveCohort } from "../cohort.js";
 import { recordSkillEnter } from "../session-state.js";
+import type { GuardRule, HarnessEvent, SessionTrajectory } from "../types.js";
 import { describeActiveWhen, evaluateActiveWhen } from "./active-when.js";
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -263,6 +264,51 @@ describe("evaluateActiveWhen — AND across axes", () => {
 			},
 		});
 		expect(evaluateActiveWhen(oneFailing, session, event)).toBe(false);
+	});
+});
+
+describe("evaluateActiveWhen — predicate axis (active_agent_count_at_least)", () => {
+	function joinAgent(cohort: CohortManager, name: string): void {
+		cohort.agentJoined(
+			makeEvent({ hook_event: "SessionStart", agent_name: name, session_id: `s-${name}` }),
+		);
+	}
+	const predicateRule = makeRule({
+		active_when: { predicate: { name: "active_agent_count_at_least", args: { count: 2 } } },
+	});
+
+	afterEach(() => {
+		setActiveCohort(null);
+	});
+
+	it("stays dormant for unknown predicate names (v1 contract preserved)", () => {
+		const rule = makeRule({ active_when: { predicate: { name: "no_such_predicate" } } });
+		expect(evaluateActiveWhen(rule, makeSession(), makeEvent())).toBe(false);
+	});
+
+	it("stays dormant with no cohort provider (daemon-less / cold fallback — fail open)", () => {
+		expect(evaluateActiveWhen(predicateRule, makeSession(), makeEvent())).toBe(false);
+	});
+
+	it("stays dormant for a solo agent, activates at 2 active agents", () => {
+		const cohort = new CohortManager();
+		setActiveCohort(cohort);
+		joinAgent(cohort, "alpha");
+		expect(evaluateActiveWhen(predicateRule, makeSession(), makeEvent())).toBe(false);
+		joinAgent(cohort, "beta");
+		expect(evaluateActiveWhen(predicateRule, makeSession(), makeEvent())).toBe(true);
+	});
+
+	it("defaults the count arg to 2 when omitted", () => {
+		const rule = makeRule({
+			active_when: { predicate: { name: "active_agent_count_at_least" } },
+		});
+		const cohort = new CohortManager();
+		setActiveCohort(cohort);
+		joinAgent(cohort, "alpha");
+		expect(evaluateActiveWhen(rule, makeSession(), makeEvent())).toBe(false);
+		joinAgent(cohort, "beta");
+		expect(evaluateActiveWhen(rule, makeSession(), makeEvent())).toBe(true);
 	});
 });
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CohortManager } from "./cohort.js";
+import { CohortManager, getActiveCohort, isLineage, setActiveCohort } from "./cohort.js";
 import type { HarnessEvent } from "./types.js";
 
 // All of `cohort.ts`'s nondeterminism is `Date.now()` (synthetic-id suffix in
@@ -287,10 +287,18 @@ describe("CohortManager.recordActivity", () => {
 		expect(a?.last_event_at).toBe("2026-06-06T14:00:00.000Z");
 	});
 
-	it("is a no-op when no agent matches", () => {
+	it("implicitly JOINS an unknown agent (daemon-restart recovery, 2026-07-10)", () => {
+		// Cohort state is in-memory: a daemon restart empties it, and a
+		// mid-flight session's SessionStart already happened — without implicit
+		// re-join every cohort-gated surface stays dormant until the NEXT
+		// session. Tool traffic is the liveness signal.
 		const c = new CohortManager();
-		c.recordActivity(ev({ agent_name: "nobody", session_id: "nope" }));
-		expect(c.getAllAgents()).toHaveLength(0);
+		c.recordActivity(ev({ agent_name: "restarted-into-us", session_id: "s-mid-flight" }));
+		expect(c.getAgent("restarted-into-us")?.status).toBe("active");
+		expect(c.getCounts()).toEqual({ active: 1, idle: 0, lost: 0 });
+		// Known agents still take the update path, not a duplicate join.
+		c.recordActivity(ev({ agent_name: "restarted-into-us", session_id: "s-mid-flight" }));
+		expect(c.getAllAgents()).toHaveLength(1);
 	});
 });
 
@@ -485,5 +493,44 @@ describe("CohortManager.findByEvent (via public methods)", () => {
 		// No name match, no session match => findByEvent undefined => no mutation.
 		c.recordActivity(ev({ agent_name: "zzz", session_id: "zzz-sess", timestamp: "2026-06-06T18:00:00.000Z" }));
 		expect(c.getAgent("alice")?.last_event_at).toBe(before);
+	});
+});
+
+describe("active-cohort provider", () => {
+	afterEach(() => setActiveCohort(null));
+
+	it("set/get/clear round-trips", () => {
+		expect(getActiveCohort()).toBeNull();
+		const c = new CohortManager();
+		setActiveCohort(c);
+		expect(getActiveCohort()).toBe(c);
+		setActiveCohort(null);
+		expect(getActiveCohort()).toBeNull();
+	});
+});
+
+describe("isLineage", () => {
+	it("true for parent↔child in either direction", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "main", session_id: "s-main" }));
+		c.subagentJoined(
+			ev({
+				hook_event: "SubagentStart",
+				agent_name: "explorer-1",
+				session_id: "s-sub",
+				tool_input: { parent_agent_name: "main" },
+			}),
+		);
+		expect(isLineage(c, "main", "explorer-1")).toBe(true);
+		expect(isLineage(c, "explorer-1", "main")).toBe(true);
+	});
+
+	it("false for unrelated siblings and for unknown agents", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alpha", session_id: "s-a" }));
+		c.agentJoined(ev({ agent_name: "beta", session_id: "s-b" }));
+		expect(isLineage(c, "alpha", "beta")).toBe(false);
+		expect(isLineage(c, "alpha", "ghost")).toBe(false);
+		expect(isLineage(c, "ghost", "phantom")).toBe(false);
 	});
 });

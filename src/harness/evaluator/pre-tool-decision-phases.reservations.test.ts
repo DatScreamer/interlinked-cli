@@ -144,6 +144,77 @@ describe("evaluateAutoReservation — apply_patch leasing (defect 0)", () => {
 		expect(isLeased(reservations, cohort, `${CWD}/plain prose, no directives`)).toBe(false);
 	});
 
+	it("BLOCKS a local sibling conflict at >=2 active agents (lineage exempt, env-escapable)", () => {
+		const reservations = new ReservationManager();
+		const cohort = new CohortManager();
+		const join = (name: string) =>
+			cohort.agentJoined({
+				hook_event: "SessionStart",
+				session_id: `s-${name}`,
+				agent_source: "claude",
+				agent_name: name,
+				timestamp: "2026-07-10T00:00:00Z",
+			});
+		join("codex-session");
+		join("sibling-agent");
+		reservations.checkAndReserve(`${CWD}/src/a.ts`, "sibling-agent", cohort);
+
+		const decision = evaluate(patchEvent(TWO_FILE_PATCH), reservations, cohort);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain("sibling agent sibling-agent");
+		expect(decision?.reason).toContain("INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK");
+
+		// Env escape downgrades to the warning path.
+		process.env.INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK = "1";
+		try {
+			const reservations2 = new ReservationManager();
+			reservations2.checkAndReserve(`${CWD}/src/a.ts`, "sibling-agent", cohort);
+			expect(evaluate(patchEvent(TWO_FILE_PATCH), reservations2, cohort)).toBeNull();
+		} finally {
+			delete process.env.INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK;
+		}
+	});
+
+	it("does NOT block a parent↔child pair, an unknown-lineage agent, or a solo cohort", () => {
+		const reservations = new ReservationManager();
+		const cohort = new CohortManager();
+		cohort.agentJoined({
+			hook_event: "SessionStart",
+			session_id: "s-main",
+			agent_source: "claude",
+			agent_name: "main",
+			timestamp: "2026-07-10T00:00:00Z",
+		});
+		cohort.subagentJoined({
+			hook_event: "SubagentStart",
+			session_id: "s-sub",
+			agent_source: "claude",
+			agent_name: "codex-session",
+			tool_input: { parent_agent_name: "main" },
+			timestamp: "2026-07-10T00:00:00Z",
+		});
+		// Parent holds the lease; the child (codex-session) writes → lineage → warn only.
+		reservations.checkAndReserve(`${CWD}/src/a.ts`, "main", cohort);
+		const warnings: string[] = [];
+		expect(evaluate(patchEvent(TWO_FILE_PATCH), reservations, cohort, warnings)).toBeNull();
+		expect(warnings.length).toBeGreaterThan(0);
+
+		// Unknown caller (never joined) → lineage unknown → fail open to warn.
+		const reservations2 = new ReservationManager();
+		const soloCohort = new CohortManager();
+		soloCohort.agentJoined({
+			hook_event: "SessionStart",
+			session_id: "s-holder",
+			agent_source: "claude",
+			agent_name: "holder",
+			timestamp: "2026-07-10T00:00:00Z",
+		});
+		reservations2.checkAndReserve(`${CWD}/src/a.ts`, "holder", soloCohort);
+		expect(
+			evaluate(patchEvent(TWO_FILE_PATCH, "never-joined"), reservations2, soloCohort),
+		).toBeNull();
+	});
+
 	it("ignores non-write tools entirely", () => {
 		const reservations = new ReservationManager();
 		const cohort = new CohortManager();

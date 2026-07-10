@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_RULES } from "../builtin-rules.js";
+import { COHORT_DISCIPLINE_RULES } from "../builtin-rules-cohort.js";
 import { DATABASE_AND_CLOUD_RULES } from "../builtin-rules-database.js";
 import { DESTRUCTIVE_HTTP_RULES } from "../builtin-rules-destructive-http.js";
 import { DESTRUCTIVE_V1_EXTRA_RULES } from "../builtin-rules-extras.js";
@@ -17,6 +18,7 @@ import { SUPERMODEL_RULES } from "../builtin-rules-supermodel.js";
 describe("builtin-rules", () => {
 	it("aggregates all category rules", () => {
 		const expectedCount =
+			COHORT_DISCIPLINE_RULES.length +
 			PROCESS_AND_FILESYSTEM_RULES.length +
 			RESOURCE_BOMB_RULES.length +
 			DATABASE_AND_CLOUD_RULES.length +
