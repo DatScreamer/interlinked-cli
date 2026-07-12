@@ -74,6 +74,7 @@ export type {
 	ErrorRecord,
 	PlanCaptureConfig,
 	GitSessionScopeGateConfig,
+	ScratchpadArchiveConfig,
 } from "./types/config.js";
 
 // --- captured agent plans ---

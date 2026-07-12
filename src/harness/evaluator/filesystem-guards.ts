@@ -43,6 +43,24 @@ const EPHEMERAL_TEMP_ROOTS: readonly string[] = (() => {
 	return [...roots];
 })();
 
+/** True when `resolvedPath` (already canonicalized) sits under a recognized
+ *  ephemeral temp root. Shared by the confinement carve-out and the
+ *  scratchpad-write policy (tmp-secrets scan) in scratchpad-write-guard.ts. */
+export function isEphemeralTempPath(resolvedPath: string): boolean {
+	return EPHEMERAL_TEMP_ROOTS.some((root) =>
+		resolvedPath.startsWith(root.endsWith(sep) ? root : `${root}${sep}`),
+	);
+}
+
+/** Canonical absolute form of a write target: absolutize against `cwd`, then
+ *  realpath (defeating symlink escapes) with a new-file fallback. The one
+ *  resolver every path-policy guard shares so their containment decisions
+ *  can't drift. */
+export function resolveWriteTargetPath(rawPath: string, cwd: string): string {
+	const absPath = isAbsolute(rawPath) ? resolve(rawPath) : resolve(cwd, rawPath);
+	return realpathOrSelf(absPath);
+}
+
 // The session scratchpad is the one out-of-repo location a coding host BOTH
 // provisions for the agent AND scopes to this exact run — an ephemeral temp
 // subtree shaped like `<temp-root>/.../<session-id>/scratchpad/...`. Blocking
@@ -54,12 +72,13 @@ const EPHEMERAL_TEMP_ROOTS: readonly string[] = (() => {
 //   • ephemeral      — under a recognized temp root (realpath-compared),
 //   • session-scoped — the unguessable session id is a path segment,
 //   • host-sanctioned — a `scratchpad` segment nested under that session dir.
-function sessionScratchpadAllows(resolvedPath: string, sessionId: string | undefined): boolean {
+// Exported for the scratchpad-write policy guard (same triad, different verb).
+export function sessionScratchpadAllows(
+	resolvedPath: string,
+	sessionId: string | undefined,
+): boolean {
 	if (!sessionId) return false;
-	const underTempRoot = EPHEMERAL_TEMP_ROOTS.some((root) =>
-		resolvedPath.startsWith(root.endsWith(sep) ? root : `${root}${sep}`),
-	);
-	if (!underTempRoot) return false;
+	if (!isEphemeralTempPath(resolvedPath)) return false;
 	const segments = resolvedPath.split(sep);
 	const sessionIdx = segments.indexOf(sessionId);
 	// scratchpad must sit BELOW the session dir, i.e. `<session-id>/scratchpad/`.
@@ -116,10 +135,9 @@ export function evaluateRepoConfinement(args: {
 	sessionId?: string;
 }): HarnessDecision | null {
 	const { rawPath, cwd, allowlist, linkedProjects = [], sessionId } = args;
-	const absPath = isAbsolute(rawPath) ? resolve(rawPath) : resolve(cwd, rawPath);
 	// realpath canonicalizes existing targets (defeating symlink escapes); a
 	// brand-new file falls back to its absolute path.
-	const resolvedPath = realpathOrSelf(absPath);
+	const resolvedPath = resolveWriteTargetPath(rawPath, cwd);
 	const cwdNormalized = cwd.endsWith("/") ? cwd : `${cwd}/`;
 	if (resolvedPath.startsWith(cwdNormalized) || resolvedPath === cwd) return null;
 

@@ -103,6 +103,14 @@ const LOCAL_PROBES = {
 		override: { trajectory_shadow: { enabled: !tsEnabled } },
 		changed: (c) => c.trajectory_shadow?.enabled === !tsEnabled,
 	},
+	scratchpad_guard: {
+		override: { scratchpad_guard: { code_write_mode: "warn" } },
+		changed: (c) => c.scratchpad_guard?.code_write_mode === "warn",
+	},
+	scratchpad_archive: {
+		override: { scratchpad_archive: { enabled: false } },
+		changed: (c) => c.scratchpad_archive?.enabled === false,
+	},
 } as const satisfies Partial<Record<keyof GuardRulesConfig, LocalProbe>>;
 
 /** Deliberately NOT local-mergeable. Every entry carries the WHY — moving a key

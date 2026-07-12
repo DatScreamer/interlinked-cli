@@ -1,0 +1,315 @@
+// ===========================================
+// SessionEnd scratchpad archive sweep
+// ===========================================
+// The host provisions an ephemeral, session-scoped scratchpad
+// (`<temp-root>/claude-<uid>/<cwd-slug>/<session-id>/scratchpad`) and its
+// system prompt directs ALL temporary work there — probe scripts, analysis
+// outputs, extracted packages. The OS purges that tree (reboot + periodic tmp
+// cleaning), which throws away the session's lab notebook. This sweep runs on
+// SessionEnd and copies what's worth keeping into
+// `.interlinked/scratchpad-archive/` — content-addressed blobs plus a
+// per-session manifest — so the artifacts join the rest of the local corpus
+// (activity/collection JSONL, trajectories) for audit and training use.
+//
+// Contract: never blocks, never throws — any failure logs and returns null.
+// Bounded work: per-file cap, total-bytes budget, file-count cap, dir and
+// extension excludes (node_modules, package/, *.tgz, binaries). Everything
+// skipped is recorded in the manifest — no silent truncation.
+
+import { createHash } from "node:crypto";
+import {
+	type Dirent,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { sanitizeSessionId } from "./session-paths.js";
+import type { GuardRulesConfig, ScratchpadArchiveConfig } from "./types.js";
+
+export interface ScratchpadArchiveSkip {
+	path: string;
+	reason:
+		| "excluded-dir"
+		| "excluded-extension"
+		| "too-large"
+		| "binary"
+		| "symlink"
+		| "budget-exhausted"
+		| "file-cap"
+		| "unreadable";
+}
+
+export interface ScratchpadArchiveSummary {
+	sessionId: string;
+	sourceDir: string;
+	manifestPath: string;
+	fileCount: number;
+	totalBytes: number;
+	truncated: boolean;
+	skipped: ScratchpadArchiveSkip[];
+}
+
+const DEFAULT_MAX_FILE_BYTES = 1024 * 1024; // 1 MiB
+const DEFAULT_MAX_TOTAL_BYTES = 24 * 1024 * 1024; // 24 MiB
+const DEFAULT_MAX_FILES = 2000;
+/** Skip entries recorded in the manifest are capped so a pathological tree
+ *  (extracted node_modules) can't bloat the manifest itself. */
+const SKIP_LIST_CAP = 200;
+/** Third-party bulk and build output — never the session's own work. The
+ *  `package` entry is npm's tarball extraction root (`npm pack` + `tar xzf`). */
+const EXCLUDED_DIR_NAMES = new Set([
+	"node_modules",
+	".git",
+	"package",
+	"dist",
+	"build",
+	".cache",
+	".npm",
+	".venv",
+	"__pycache__",
+]);
+const EXCLUDED_EXT_RE = /\.(tgz|tar|gz|zip|br|7z|dmg|iso)$/i;
+const BINARY_SNIFF_BYTES = 8192;
+
+/** Candidate scratchpad locations for this (cwd, session) pair, following the
+ *  coding host's layout: `<temp-root>/claude-<uid>/<cwd-slug>/<session-id>/scratchpad`.
+ *  Returns [] when no uid is available (non-POSIX host — the layout is
+ *  uid-keyed, so there is nothing to derive). */
+export function deriveScratchpadCandidates(opts: {
+	cwd: string;
+	sessionId: string;
+	uid: number | undefined;
+}): string[] {
+	if (opts.uid === undefined) return [];
+	const slug = opts.cwd.replace(/\//g, "-");
+	const roots = new Set<string>();
+	for (const base of [tmpdir(), "/tmp", "/private/tmp"]) {
+		try {
+			roots.add(realpathSync(base));
+		} catch {
+			roots.add(base);
+		}
+	}
+	return [...roots].map((root) =>
+		join(root, `claude-${opts.uid}`, slug, opts.sessionId, "scratchpad"),
+	);
+}
+
+type WalkResult = { files: string[]; skipped: ScratchpadArchiveSkip[] };
+
+/** Route one directory entry into the walk's files / skips / pending-dirs. */
+function classifyWalkEntry(
+	entry: Dirent,
+	relPath: string,
+	out: WalkResult,
+	pending: string[],
+): void {
+	if (entry.isSymbolicLink()) {
+		out.skipped.push({ path: relPath, reason: "symlink" });
+		return;
+	}
+	if (entry.isDirectory()) {
+		if (EXCLUDED_DIR_NAMES.has(entry.name)) {
+			out.skipped.push({ path: relPath, reason: "excluded-dir" });
+		} else {
+			pending.push(relPath);
+		}
+		return;
+	}
+	if (entry.isFile()) out.files.push(relPath);
+}
+
+/** Enumerate archivable files (relative paths) under `sourceDir`, recording
+ *  symlink / excluded-dir skips. Enumeration is bounded: it stops once the
+ *  candidate list is comfortably past the file cap. */
+function collectCandidateFiles(sourceDir: string, maxFiles: number): WalkResult {
+	const out: WalkResult = { files: [], skipped: [] };
+	const pending: string[] = [""];
+	const scanCeiling = maxFiles + SKIP_LIST_CAP;
+	while (pending.length > 0 && out.files.length <= scanCeiling) {
+		const relDir = pending.pop() ?? "";
+		for (const entry of readdirSync(join(sourceDir, relDir), { withFileTypes: true })) {
+			const relPath = relDir ? join(relDir, entry.name) : entry.name;
+			classifyWalkEntry(entry, relPath, out, pending);
+		}
+	}
+	out.files.sort();
+	return out;
+}
+
+type ArchiveBudget = {
+	maxFileBytes: number;
+	maxTotalBytes: number;
+	maxFiles: number;
+};
+
+type ManifestEntry = { path: string; size: number; sha256: string };
+
+/** Classify-and-copy one candidate file into the blob store. Returns the
+ *  manifest entry, a skip record, or "stop" when the total budget is spent. */
+function archiveOneFile(opts: {
+	sourceDir: string;
+	blobsDir: string;
+	relPath: string;
+	budget: ArchiveBudget;
+	totalSoFar: number;
+}): { entry?: ManifestEntry; skip?: ScratchpadArchiveSkip; stop?: boolean } {
+	const { sourceDir, blobsDir, relPath, budget, totalSoFar } = opts;
+	let size: number;
+	try {
+		size = statSync(join(sourceDir, relPath)).size;
+	} catch {
+		return { skip: { path: relPath, reason: "unreadable" } };
+	}
+	if (EXCLUDED_EXT_RE.test(relPath)) {
+		return { skip: { path: relPath, reason: "excluded-extension" } };
+	}
+	if (size > budget.maxFileBytes) {
+		return { skip: { path: relPath, reason: "too-large" } };
+	}
+	if (totalSoFar + size > budget.maxTotalBytes) {
+		return { skip: { path: relPath, reason: "budget-exhausted" }, stop: true };
+	}
+	let content: Buffer;
+	try {
+		content = readFileSync(join(sourceDir, relPath));
+	} catch {
+		return { skip: { path: relPath, reason: "unreadable" } };
+	}
+	if (content.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
+		return { skip: { path: relPath, reason: "binary" } };
+	}
+	const sha256 = createHash("sha256").update(content).digest("hex");
+	const blobPath = join(blobsDir, sha256);
+	if (!existsSync(blobPath)) {
+		writeFileSync(blobPath, content);
+	}
+	return { entry: { path: relPath, size, sha256 } };
+}
+
+/** Archive one scratchpad directory into `destRoot` (blobs + manifest).
+ *  Pure-ish core shared by the SessionEnd wiring and tests; returns null when
+ *  the source doesn't exist or isn't a directory. `clock` is injectable for
+ *  deterministic tests (defaults to the real time). */
+export function archiveScratchpadDir(opts: {
+	sourceDir: string;
+	destRoot: string;
+	sessionId: string;
+	config?: ScratchpadArchiveConfig | undefined;
+	clock?: () => string;
+}): ScratchpadArchiveSummary | null {
+	const { sourceDir, destRoot, sessionId, config } = opts;
+	try {
+		if (!statSync(sourceDir).isDirectory()) return null;
+	} catch {
+		return null;
+	}
+	const budget: ArchiveBudget = {
+		maxFileBytes: config?.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES,
+		maxTotalBytes: config?.max_total_bytes ?? DEFAULT_MAX_TOTAL_BYTES,
+		maxFiles: config?.max_files ?? DEFAULT_MAX_FILES,
+	};
+	const blobsDir = join(destRoot, "blobs");
+	mkdirSync(blobsDir, { recursive: true });
+
+	const walk = collectCandidateFiles(sourceDir, budget.maxFiles);
+	const skipped: ScratchpadArchiveSkip[] = [...walk.skipped];
+	const entries: ManifestEntry[] = [];
+	let totalBytes = 0;
+	let truncated = false;
+	for (const relPath of walk.files) {
+		if (entries.length >= budget.maxFiles) {
+			skipped.push({ path: relPath, reason: "file-cap" });
+			truncated = true;
+			continue;
+		}
+		const result = archiveOneFile({ sourceDir, blobsDir, relPath, budget, totalSoFar: totalBytes });
+		if (result.entry) {
+			entries.push(result.entry);
+			totalBytes += result.entry.size;
+		}
+		if (result.skip && skipped.length < SKIP_LIST_CAP) skipped.push(result.skip);
+		if (result.stop) truncated = true;
+	}
+
+	const safeId = sanitizeSessionId(sessionId) || "unknown-session";
+	const manifestPath = join(destRoot, `${safeId}.manifest.json`);
+	const manifest = {
+		schema: "scratchpad-archive.v1",
+		session_id: sessionId,
+		source_dir: sourceDir,
+		archived_at: (opts.clock ?? (() => new Date().toISOString()))(),
+		file_count: entries.length,
+		total_bytes: totalBytes,
+		truncated,
+		files: entries,
+		skipped,
+	};
+	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+	return {
+		sessionId,
+		sourceDir,
+		manifestPath,
+		fileCount: entries.length,
+		totalBytes,
+		truncated,
+		skipped,
+	};
+}
+
+/** Locate this session's scratchpad (host layout) and archive it under
+ *  `.interlinked/scratchpad-archive/`. Null when no scratchpad exists. */
+function archiveSessionScratchpad(opts: {
+	cwd: string;
+	sessionId: string;
+	config?: ScratchpadArchiveConfig | undefined;
+}): ScratchpadArchiveSummary | null {
+	const uid = process.getuid?.();
+	const sourceDir = deriveScratchpadCandidates({
+		cwd: opts.cwd,
+		sessionId: opts.sessionId,
+		uid,
+	}).find((c) => existsSync(c));
+	if (!sourceDir) return null;
+	return archiveScratchpadDir({
+		sourceDir,
+		destRoot: join(opts.cwd, ".interlinked", "scratchpad-archive"),
+		sessionId: opts.sessionId,
+		config: opts.config,
+	});
+}
+
+/** SessionEnd wiring: enabled-check + never-throw wrapper around
+ *  {@link archiveSessionScratchpad}. Public API — consumed by
+ *  server/lifecycle-events.ts on every SessionEnd. */
+export function runSessionEndScratchpadArchive(opts: {
+	cwd: string;
+	sessionId: string;
+	rules: GuardRulesConfig;
+	log: (msg: string) => void;
+}): void {
+	if (opts.rules.scratchpad_archive?.enabled === false) return;
+	try {
+		const summary = archiveSessionScratchpad({
+			cwd: opts.cwd,
+			sessionId: opts.sessionId,
+			config: opts.rules.scratchpad_archive,
+		});
+		if (summary) {
+			opts.log(
+				`Scratchpad archived: ${summary.fileCount} file(s), ${summary.totalBytes} bytes` +
+					`${summary.truncated ? " (truncated)" : ""} → ${summary.manifestPath}`,
+			);
+		}
+	} catch (err) {
+		opts.log(
+			`Scratchpad archive failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+}

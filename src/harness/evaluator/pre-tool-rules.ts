@@ -15,7 +15,7 @@ import {
 	inferAgentRole,
 	ruleAppliesToRole,
 } from "../command-decomposition.js";
-import { detectBashCodeFileWrite } from "../pre-checks.js";
+import { detectBashCodeFileWrite, resolveBashWriteTarget } from "../pre-checks.js";
 import type {
 	GuardRule,
 	GuardRulesConfig,
@@ -24,8 +24,14 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { evaluateActiveWhen } from "./active-when.js";
+import { sessionScratchpadAllows } from "./filesystem-guards.js";
 import { commandKeywordTokens, shouldEvaluateByKeywords } from "./keyword-quick-reject.js";
 import { formatAskReason, formatAskSystemMessage, formatReason, matchesRule, shouldEvaluateRule } from "./rule-matching.js";
+import {
+	buildScratchpadCodeReason,
+	isScratchGuardDisabled,
+	scratchpadCodeWriteMode,
+} from "./scratchpad-write-guard.js";
 import { isBash } from "./tool-classifiers.js";
 
 const SOFT_BLOCK_KEY_MAX = 120;
@@ -161,33 +167,76 @@ function evaluateRuleLoop(
  * from the inline block. Returns a `block` decision when a Bash command writes
  * to a tracked source file via redirect/tee, else `null`.
  */
-/** WARN-ONLY steer (2026-07-07): an out-of-repo code-file write gets pointed
- *  at <repo>/scratch/ — the sanctioned session-script home (gated + greppable).
- *  Ungoverned temp scripts are the workaround gradient the operator flagged;
- *  the steer is a nudge, never a block (system paths stay writable). */
-function warnOutOfRepoCodeWrite(cmd: string, projectRoot: string, warnings: string[]): void {
-	const anywhere = detectBashCodeFileWrite(cmd);
-	if (!anywhere) return;
-	if (detectBashCodeFileWrite(cmd, projectRoot)) return; // in-repo → block path owns it
-	warnings.push(
+/** Scratch-placement steer (warn-only 2026-07-07; upgraded 2026-07-09): an
+ *  out-of-repo code-file write is pointed at <repo>/scratch/ — the sanctioned
+ *  session-script home (gated + greppable). When the resolved target is THIS
+ *  session's scratchpad and `scratchpad_guard.code_write_mode` is "block"
+ *  (the default), the write is blocked with the same redirect the Write/Edit
+ *  path uses (scratchpad-write-guard.ts); every other out-of-repo path keeps
+ *  the warn-only nudge (system paths stay writable). Mode "off" silences both. */
+function steerOutOfRepoCodeWrite(opts: {
+	cmd: string;
+	projectRoot: string;
+	sessionId: string | undefined;
+	rules: GuardRulesConfig;
+	warnings: string[];
+}): HarnessDecision | null {
+	const anywhere = detectBashCodeFileWrite(opts.cmd);
+	if (!anywhere) return null;
+	if (detectBashCodeFileWrite(opts.cmd, opts.projectRoot)) return null; // in-repo → block path owns it
+	const mode = scratchpadCodeWriteMode(opts.rules);
+	if (mode === "off") return null;
+	const resolved = resolveBashWriteTarget(opts.cmd, anywhere.target, opts.projectRoot);
+	if (
+		mode === "block" &&
+		!isScratchGuardDisabled() &&
+		resolved !== null &&
+		sessionScratchpadAllows(resolved, opts.sessionId)
+	) {
+		return {
+			decision: "block",
+			reason: buildScratchpadCodeReason({
+				target: anywhere.target,
+				projectRoot: opts.projectRoot,
+			}),
+			warnings: opts.warnings,
+			rule_id: "builtin-scratchpad-code-write",
+			severity: "medium",
+			category: "harness-integrity",
+		};
+	}
+	opts.warnings.push(
 		`[interlinked:scratch] This command writes a code file outside the repo (${anywhere.target}). ` +
 			`Session/agent scripts belong in <repo>/scratch/ — gitignored but quality-gated and ` +
 			`rg-searchable (see scratch/README.md).`,
 	);
+	return null;
 }
 
 function evaluateBashRoutedWrite(
 	toolName: string,
 	cmd: string,
 	warnings: string[],
+	rules: GuardRulesConfig,
+	sessionId: string | undefined,
 	projectRoot?: string,
 ): HarnessDecision | null {
 	if (isBash(toolName) && cmd) {
 		// Root-confined (2026-07-06): only writes landing INSIDE the guarded
 		// project count as tracked source files — scratchpad//tmp/out-of-repo
 		// targets pass through (measured dogfood FP on a scratchpad probe),
-		// with a warn-only scratch/ steer (2026-07-07).
-		if (projectRoot) warnOutOfRepoCodeWrite(cmd, projectRoot, warnings);
+		// with a scratch/ steer: warn-only for arbitrary out-of-repo paths,
+		// block-with-redirect for this session's scratchpad (2026-07-09).
+		if (projectRoot) {
+			const placement = steerOutOfRepoCodeWrite({
+				cmd,
+				projectRoot,
+				sessionId,
+				rules,
+				warnings,
+			});
+			if (placement) return placement;
+		}
 		const redirectHit = detectBashCodeFileWrite(cmd, projectRoot);
 		if (redirectHit) {
 			return {
@@ -331,7 +380,14 @@ export function evaluateDestructiveRules(
 	);
 	if (ruleDecision) return ruleDecision;
 
-	const bashWriteDecision = evaluateBashRoutedWrite(toolName, cmd, warnings, event.cwd);
+	const bashWriteDecision = evaluateBashRoutedWrite(
+		toolName,
+		cmd,
+		warnings,
+		rules,
+		event.session_id,
+		event.cwd,
+	);
 	if (bashWriteDecision) return bashWriteDecision;
 
 	return evaluateCompoundDecomposition(rules, session, toolName, cmd, toolInput, warnings);

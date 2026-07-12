@@ -344,7 +344,10 @@ export function checkConcurrentEdit(
 // Extracted to ./pre-checks-bash-write-detect.ts (leaf cluster of pure shell
 // parsers, no shared module state). Re-exported here so existing importers
 // keep resolving `detectBashCodeFileWrite` from this module unchanged.
-export { detectBashCodeFileWrite } from "./pre-checks-bash-write-detect.js";
+export {
+	detectBashCodeFileWrite,
+	resolveBashWriteTarget,
+} from "./pre-checks-bash-write-detect.js";
 
 // ===========================================
 // Check 6: Large-file line-count cap (ratchet)

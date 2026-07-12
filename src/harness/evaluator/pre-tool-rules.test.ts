@@ -90,3 +90,77 @@ describe("evaluateDestructiveRules — out-of-repo scratch/ steer (warn-only, 20
 		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(false);
 	});
 });
+
+describe("evaluateDestructiveRules — scratchpad code-write block (2026-07-09)", () => {
+	// The fixture session id must appear as a path segment for the
+	// session-scratchpad triad to match (see sessionScratchpadAllows).
+	const SCRATCHPAD = "/tmp/claude-501/-Users-dev-project/pre-tool-rules-test/scratchpad";
+
+	function bashEventWithCwd(command: string): HarnessEvent {
+		return { ...bashEvent(command), cwd: "/Users/dev/project" } as HarnessEvent;
+	}
+
+	it("blocks a redirect into THIS session's scratchpad with the scratch/ redirect", () => {
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd(`echo x > ${SCRATCHPAD}/probe.ts`),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("builtin-scratchpad-code-write");
+		expect(decision?.reason).toContain("scratch/");
+	});
+
+	it("blocks the $VAR form once the assignment resolves to the scratchpad", () => {
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd(`SCRATCH=${SCRATCHPAD} && cat > $SCRATCH/draft.ts <<'EOF'\nx\nEOF`),
+			getDefaultConfig(),
+			undefined,
+			[],
+		);
+		expect(decision?.rule_id).toBe("builtin-scratchpad-code-write");
+	});
+
+	it("keeps the warn-only steer for a DIFFERENT session's scratchpad", () => {
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd("echo x > /tmp/claude-501/-Users-dev-project/other-session/scratchpad/probe.ts"),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(decision?.rule_id).not.toBe("builtin-scratchpad-code-write");
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(true);
+	});
+
+	it("keeps the warn-only steer for non-scratchpad out-of-repo code writes", () => {
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEventWithCwd("echo x > /tmp/probe.mts"),
+			getDefaultConfig(),
+			undefined,
+			warnings,
+		);
+		expect(decision?.rule_id).not.toBe("builtin-scratchpad-code-write");
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(true);
+	});
+
+	it("honors the INTERLINKED_DISABLE_SCRATCH_GUARD escape hatch (warn instead)", () => {
+		process.env.INTERLINKED_DISABLE_SCRATCH_GUARD = "1";
+		try {
+			const warnings: string[] = [];
+			const decision = evaluateDestructiveRules(
+				bashEventWithCwd(`echo x > ${SCRATCHPAD}/probe.ts`),
+				getDefaultConfig(),
+				undefined,
+				warnings,
+			);
+			expect(decision?.rule_id).not.toBe("builtin-scratchpad-code-write");
+			expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(true);
+		} finally {
+			delete process.env.INTERLINKED_DISABLE_SCRATCH_GUARD;
+		}
+	});
+});

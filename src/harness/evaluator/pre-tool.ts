@@ -76,6 +76,7 @@ import {
 	evaluatePreChecksTail,
 } from "./pre-tool-phases.js";
 import { evaluateDestructiveRules } from "./pre-tool-rules.js";
+import { evaluateScratchpadWriteGuard } from "./scratchpad-write-guard.js";
 
 // `resetProjectSetupWarningsCache` lives in pre-tool-helpers.ts (next to the
 // cache it invalidates) but is re-exported here because server.ts and
@@ -155,6 +156,10 @@ export function evaluatePreToolUse(
 		() => evaluateDestructiveRules(event, rules, session, warnings),
 		// Protected files.
 		() => evaluateProtectedFilesGuard(toolName, toolInput, rules, warnings),
+		// Scratchpad/temp write policy — tmp-secrets block + authored-code
+		// placement steer. MUST precede repo confinement, whose session-
+		// scratchpad carve-out would otherwise allow these uninspected.
+		() => evaluateScratchpadWriteGuard(event, toolName, toolInput, rules, warnings),
 		// Repo confinement — block writes outside CWD.
 		() => evaluateRepoConfinementGuard(event, toolName, toolInput, rules, warnings),
 		// TDD gate — block new non-test .ts/.tsx without a companion test.

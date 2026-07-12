@@ -43,6 +43,7 @@ import {
 	detectPlanDrift,
 	formatPlanDriftWarning,
 } from "../plan-drift.js";
+import { runSessionEndScratchpadArchive } from "../scratchpad-archive.js";
 import {
 	formatSequenceFinding,
 	runSequenceDetectorsForPhase,
@@ -57,6 +58,7 @@ import {
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
+import { captureAgentEvent } from "./agent-event-capture.js";
 import {
 	handleSkillEnter,
 	handleSkillLeave,
@@ -118,10 +120,20 @@ export async function handleLifecycleEvent(
 			return handleUserPromptSubmit(ctx, event, session);
 		case "SubagentStart":
 			cohort.subagentJoined(event);
+			captureAgentEvent(event, ctx.cwd, log);
 			log(`Subagent joined: ${event.agent_name || "unnamed"}`);
 			return null;
 		case "SubagentStop":
 			handleSubagentStop(ctx, event);
+			// Durable capture: the subagent's RESULT (last_assistant_message /
+			// transcript tail) → collection.jsonl, + its transcript → timeline.
+			// Without this, a spawned agent's answer exists nowhere under
+			// .interlinked/ (background results fire no other hook).
+			captureAgentEvent(event, ctx.cwd, log);
+			return null;
+		case "TaskCompleted":
+			cohort.recordActivity(event);
+			captureAgentEvent(event, ctx.cwd, log);
 			return null;
 		case "SkillEnter":
 			return handleSkillEnter(ctx, event, session);
@@ -245,6 +257,14 @@ async function handleSessionStart(
  */
 function handleSessionEnd(ctx: ServerRuntime, event: HarnessEvent): HarnessDecision {
 	const { sessions } = ctx;
+	// Archive the session scratchpad before the OS purges it (scratchpad-
+	// governance Phase 1). Never-throw by contract; bounded by config caps.
+	runSessionEndScratchpadArchive({
+		cwd: ctx.cwd,
+		sessionId: event.session_id,
+		rules: ctx.rules,
+		log: ctx.log,
+	});
 	sessions.remove(event.session_id);
 	ctx.asyncFindings.clearSession(event.session_id);
 	deleteLiveSnapshot(ctx.cwd, event.session_id);

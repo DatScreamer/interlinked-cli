@@ -121,6 +121,23 @@ cap is a coarse proxy; the `complexity` / `cyclomatic` checks do the fine-graine
 "is this file bad" work, which is why the enforced line number sits well above
 the ~300–500-line aspirational module size.
 
+## Scratchpad governance (added 2026-07-09)
+
+The host session scratchpad (`<temp-root>/claude-<uid>/<slug>/<session-id>/scratchpad`)
+is allowed by repo-confinement (the June triad carve-out) but governed by intent:
+
+| Intent | Policy | Where |
+|---|---|---|
+| Agent-authored CODE (probes, drafts) | **Block-with-redirect to `<repo>/scratch/`** (default; `scratchpad_guard.code_write_mode: "warn"\|"off"` softens; `INTERLINKED_DISABLE_SCRATCH_GUARD=1` one-command bypass). Covers Write/Edit AND bash redirect/tee — bash targets are resolved through same-command `VAR=` assignments and `cd` hops (`resolveBashWriteTarget`). | `evaluator/scratchpad-write-guard.ts`, steer in `evaluator/pre-tool-rules.ts` |
+| Secrets to ANY ephemeral temp path | **Block unconditionally** (`builtin-tmp-secrets`; temp paths sit outside protected-file globs but are the classic exfil-staging surface). Escape hatch does NOT apply. | same guard |
+| Downloads / extractions / non-code bulk | Allowed — belongs out-of-repo (in-tree it would poison rg + the trigram index) | — |
+| Everything left at session end | **Archived** into `.interlinked/scratchpad-archive/` (content-addressed blobs + per-session manifest; caps + excludes recorded, no silent truncation; `scratchpad_archive` config, default ON) | `scratchpad-archive.ts`, wired in `server/lifecycle-events.ts` SessionEnd |
+
+`interlinked scratch init|status` provisions `scratch/` in any repo (README +
+`.gitignore` carve-out + `.ignore` search negation — `src/commands/scratch.ts`).
+Both config sections are locally overridable (classified in `rules/merge.ts` +
+pinned by `merge-parity.test.ts`).
+
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 
 The CLI includes a **local harness server** (`src/harness/`) that runs on Node.js and evaluates agent actions via a Unix socket. Full documentation: `cli/docs/harness.md`. Auto-generated reference docs: `cli/docs/generated/`.
@@ -156,6 +173,7 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/mutation/` | Per-edit mutation gate (spec `docs/design/per-edit-cloud-mutation-testing.md`): stable mutant identity, `mutation-manifest.json` + receipts, survivor-diff invariant, ChangeSet overlays, cloud runner client. Config `per_edit_mutation` (default off; `budget_ms` caps the runner round-trip). Engine scaffolding: root `stryker.conf.json` (MUST ignore `.interlinked/` — Stryker's tree-copy crashes on the harness socket) + `vitest.stryker.config.ts`. Probe: `npx tsx .interlinked/e2e-mutation-gate.mts`. The older per-file score ratchet (`mutation-gate.ts`, `interlinked mutation check`) is a separate, coarser system. |
 | `src/harness/check-inventory.ts` | **Single source of truth for "how many checks."** `getCheckInventory()` derives per-family counts (inline `CHECK_REGISTRY` / sequence / structural / tool-quality / suggestion / behavioral — disjoint) live from each registry; pinned by `check-inventory.test.ts`; surfaced by `interlinked harness checks`. `GENERIC_CHECK_META` is the doc-view of a subset of the inline family, NOT a count — never sum it. Guard rules (`BUILTIN_RULES`) are a separate primitive, pinned by docs-freshness. |
 | `src/harness/evaluator/complexity-pulse.ts` | Ambient per-edit cyclomatic telemetry: the strict gate's observer stashes its already-paid before/after parses at PreToolUse; PostToolUse emits one `[interlinked:cyclomatic]` line per edited code file (ΣCC + max + per-fn Δ; absolutes on stash miss). Same population as the gate (cappable files). Live probe: `node .interlinked/e2e-pulse-probe.mjs` (flip `per_edit_coverage` off first or expect overlay-run latency). |
+| `src/harness/server/agent-event-capture.ts` | Subagent/parallel-agent result capture (2026-07): SubagentStart/SubagentStop/TaskCompleted → `agent_event` records in collection.jsonl. The final message comes from the hook payload or a bounded tail-read of the agent's transcript (scrubbed, 64KB cap) — SubagentStop is the ONLY hook carrying a background agent's result (the queue-notification delivery fires no hook). Also one-shot drains the agent's own transcript into timeline.jsonl (`agent_id`-attributed) with a 750ms re-drain covering the runner's post-Stop flush race. Surfaced by `interlinked logs --type subagent_stop`. |
 
 **Harness source files (analysis):**
 | File | Purpose |
@@ -305,6 +323,7 @@ against current code, May 2026):
 - Quality checks (tsc, lint, etc.) run on PostToolUse only — they need the file on disk and full project context
 - Structural checks (export surface, import resolution, etc.) also run on PostToolUse
 - Diff-aware filtering suppresses pre-existing findings, only reporting issues introduced by the current edit
+- `pre_block` registry checks are likewise **introduced-only** at both write gates (shared semantics in `src/harness/pre-block-gate.ts`): a finding blocks only when the edit adds it vs the on-disk baseline (multiset over normalized line text); pre-existing findings surface as warnings instead of bricking the file for unrelated edits. Inline `// interlinked-ignore: <check> — reason` directives and `.interlinked/verify-suppressions.json` entries are honored at pre-block time (same grammar as PostToolUse/verify; ratcheted, auditable)
 - Secrets detection runs on BOTH PreToolUse (in file content) and PostToolUse (re-check)
 
 ## Findings carry a determinism tag

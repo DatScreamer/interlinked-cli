@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 
-const CODE_FILE_EXT_RE =
+export const CODE_FILE_EXT_RE =
 	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
 
 /**
@@ -24,15 +24,114 @@ const CODE_FILE_EXT_RE =
  * source file", and blocking it was a measured false positive (2026-07-06
  * dogfood: a scratchpad .mts probe script). `~` is expanded (bash would);
  * with no root available the guard keeps its historical conservative reach.
+ * A target that cannot be resolved (leading `$VAR` with no same-command
+ * assignment) is NOT provably in-root, so it passes through (2026-07-09
+ * dogfood FP: `> $SCRATCH/schema-draft.ts` was literal-resolved to
+ * `<root>/$SCRATCH/…` and blocked as a tracked source file).
  */
-function withinGuardedRoot(target: string, projectRoot: string | undefined): boolean {
+function withinGuardedRoot(
+	target: string,
+	projectRoot: string | undefined,
+	vars: ReadonlyMap<string, string>,
+	base: string | undefined,
+): boolean {
 	if (!projectRoot) return true; // no root context ⇒ preserve old behavior
-	const expanded = target === "~" || target.startsWith("~/")
-		? resolve(homedir(), target.slice(2))
-		: target;
-	const abs = isAbsolute(expanded) ? resolve(expanded) : resolve(projectRoot, expanded);
+	const abs = resolveTargetForRootCheck(target, vars, base ?? projectRoot);
+	if (abs === null) return false;
 	const root = resolve(projectRoot);
 	return abs === root || abs.startsWith(root + sep);
+}
+
+/** Absolutize a redirect/verb target the way the shell would: expand a
+ *  leading `$VAR`/`${VAR}`, expand `~`, then resolve relative paths against
+ *  `base` (the project root, or the last same-command `cd` destination).
+ *  Returns null when the leading variable has no known value. */
+function resolveTargetForRootCheck(
+	target: string,
+	vars: ReadonlyMap<string, string>,
+	base: string,
+): string | null {
+	const expanded = expandLeadingVariable(target, vars);
+	if (expanded === null) return null;
+	if (expanded === "~" || expanded.startsWith("~/")) {
+		return resolve(homedir(), expanded.slice(2));
+	}
+	return isAbsolute(expanded) ? resolve(expanded) : resolve(base, expanded);
+}
+
+/** Expand a LEADING `$VAR` / `${VAR}` in a target using same-command
+ *  assignments (plus stable process-env prefixes seeded by
+ *  {@link collectShellAssignments}). Returns the target unchanged when it
+ *  doesn't start with a variable, and null when it does but the variable is
+ *  unknown — command substitution, cross-call exports, and arithmetic are
+ *  deliberately not modeled. */
+function expandLeadingVariable(
+	target: string,
+	vars: ReadonlyMap<string, string>,
+): string | null {
+	const m = target.match(/^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
+	if (!m) return target;
+	const name = m[1] ?? m[2];
+	const value = name !== undefined ? vars.get(name) : undefined;
+	if (value === undefined || value === "") return null;
+	return value + target.slice(m[0].length);
+}
+
+/** Simple same-command `VAR=value` assignments, seeded with the stable
+ *  process-env prefixes (`$HOME`, `$TMPDIR`) a target may start with. Values
+ *  keep quotes stripped; escaped quotes inside a value are not modeled (a
+ *  mis-parse only fail-opens a quality gate). Later assignments win, matching
+ *  shell evaluation order for the straight-line commands agents write. */
+function collectShellAssignments(cmd: string): Map<string, string> {
+	const vars = new Map<string, string>();
+	for (const name of ["HOME", "TMPDIR"]) {
+		const v = process.env[name];
+		if (v) vars.set(name, v);
+	}
+	const re = /(?:^|[\s;&|({])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)/g;
+	for (const m of cmd.matchAll(re)) {
+		vars.set(nonNull(m[1]), stripOuterQuotes(nonNull(m[2])));
+	}
+	return vars;
+}
+
+/** The directory a RELATIVE target resolves against, following same-command
+ *  `cd` hops (`cd /tmp/x && echo hi > probe.ts` writes /tmp/x/probe.ts, not
+ *  <root>/probe.ts — the cd-into-scratchpad pattern). Position-insensitive:
+ *  the last `cd` wins for every target in the command. The prefix class
+ *  admits a bare-space prefix (newlines are collapsed to spaces upstream,
+ *  erasing the separator), so `echo cd /x` can false-match — the error
+ *  direction is a missed block on a quality gate, accepted. */
+function resolveCdBase(
+	cmd: string,
+	vars: ReadonlyMap<string, string>,
+	projectRoot: string,
+): string {
+	let base = resolve(projectRoot);
+	const re = /(?:^|[\s;&|])cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g;
+	for (const m of cmd.matchAll(re)) {
+		const rawTarget = m[1] ?? m[2] ?? m[3];
+		if (rawTarget === undefined || rawTarget === "-") continue;
+		const next = resolveTargetForRootCheck(rawTarget, vars, base);
+		if (next !== null) base = next;
+	}
+	return base;
+}
+
+/** Public resolver for a detected bash write target: same-command `VAR=`
+ *  expansion + `cd`-hop base + absolutization, exactly as the in-root
+ *  containment check sees it. Consumers (the scratchpad placement steer in
+ *  pre-tool-rules.ts) get the canonical absolute path, or null when the
+ *  target is unresolvable (unknown leading variable). */
+export function resolveBashWriteTarget(
+	cmd: string,
+	target: string,
+	projectRoot: string,
+): string | null {
+	const normalized = cmd.replace(/[\r\n]+/g, " ");
+	const vars = collectShellAssignments(normalized);
+	const base = resolveCdBase(normalized, vars, projectRoot);
+	return resolveTargetForRootCheck(target, vars, base);
 }
 
 /** Supermodel `.graph.*` shards are owned by Supermodel's daemon —
@@ -148,17 +247,23 @@ export function detectBashCodeFileWrite(
 	projectRoot?: string,
 ): WriteHit | null {
 	if (!cmd) return null;
-	// Root confinement (2026-07-06): only targets landing INSIDE the guarded
-	// project are the content gates' territory — a code-extension path in the
-	// session scratchpad / /tmp / anywhere out-of-repo is not a tracked source
-	// file (measured dogfood FP). No root context ⇒ historical behavior.
-	const inRoot = (target: string): boolean => withinGuardedRoot(target, projectRoot);
-
 	// Normalize: strip CR/LF, collapse whitespace (but keep order)
 	const normalized = cmd.replace(/[\r\n]+/g, " ");
 
 	// Fast path: `interlinked write` self-gates. Let it through.
 	if (CONTENT_GATE_ROUTED_RE.test(normalized)) return null;
+
+	// Root confinement (2026-07-06): only targets landing INSIDE the guarded
+	// project are the content gates' territory — a code-extension path in the
+	// session scratchpad / /tmp / anywhere out-of-repo is not a tracked source
+	// file (measured dogfood FP). Targets are resolved the way the shell
+	// would — same-command `VAR=` assignments and `cd` hops (2026-07-09 FP:
+	// `> $SCRATCH/x.ts`) — before containment. No root context ⇒ historical
+	// behavior.
+	const vars = collectShellAssignments(normalized);
+	const cdBase = projectRoot ? resolveCdBase(normalized, vars, projectRoot) : undefined;
+	const inRoot = (target: string): boolean =>
+		withinGuardedRoot(target, projectRoot, vars, cdBase);
 
 	const redirect = scanRedirects(normalized, inRoot);
 	if (redirect) return redirect;

@@ -263,6 +263,32 @@ export interface GuardRulesConfig {
 	 *  surfaces as a non-blocking `[interlinked:trajectory]` metric, never blocks.
 	 *  See `server/trajectory-shadow.ts`. Set enabled:false to silence. */
 	trajectory_shadow?: { enabled: boolean };
+	/** Session-scratchpad write policy (the host-provisioned
+	 *  `<temp-root>/…/<session-id>/scratchpad`). `code_write_mode` governs
+	 *  agent-AUTHORED code-extension writes there: "block" (default) redirects
+	 *  them to <repo>/scratch/ — gated, searchable, durable — "warn" nudges
+	 *  only, "off" disables. Non-code writes (downloads, extractions, outputs)
+	 *  are always allowed; the mandatory tmp-secrets scan is separate and not
+	 *  governed by this mode. See `evaluator/scratchpad-write-guard.ts`. */
+	scratchpad_guard?: { code_write_mode?: "block" | "warn" | "off" };
+	/** SessionEnd scratchpad archive sweep (DEFAULT ON) — content-addressed
+	 *  copy of the session scratchpad into `.interlinked/scratchpad-archive/`
+	 *  before the OS purges it. See `scratchpad-archive.ts`. */
+	scratchpad_archive?: ScratchpadArchiveConfig;
+}
+
+/** SessionEnd scratchpad archive sweep settings. Caps exist so a session that
+ *  extracted a package tree can't bloat `.interlinked/` — everything skipped
+ *  is recorded in the manifest (no silent truncation). */
+export interface ScratchpadArchiveConfig {
+	/** Default: true. */
+	enabled?: boolean;
+	/** Per-file size ceiling in bytes (default 1 MiB). */
+	max_file_bytes?: number;
+	/** Total copied-bytes budget per session (default 24 MiB). */
+	max_total_bytes?: number;
+	/** Maximum files archived per session (default 2000). */
+	max_files?: number;
 }
 
 /** Plan-capture configuration. Master toggle + structured-userprompt parser

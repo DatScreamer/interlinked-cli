@@ -296,4 +296,52 @@ describe("detectBashCodeFileWrite", () => {
 			).not.toBeNull();
 		});
 	});
+
+	describe("variable + cd resolution (2026-07-09 dogfood FP: `> $SCRATCH/x.ts` blocked as tracked)", () => {
+		const ROOT = "/Users/dev/project";
+		const SCRATCHPAD = "/private/tmp/claude-501/-Users-dev-project/sess-1/scratchpad";
+
+		it("expands a same-command assignment pointing OUT of the repo (the real block)", () => {
+			const cmd = `SCRATCH=${SCRATCHPAD}\nmkdir -p $SCRATCH\ncat > $SCRATCH/schema-draft.ts <<'EOF'\nexport {};\nEOF`;
+			expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+		});
+
+		it("expands the ${VAR} braces form the same way", () => {
+			const cmd = `SCRATCH="${SCRATCHPAD}" && echo x > \${SCRATCH}/probe.mts`;
+			expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+		});
+
+		it("still blocks when the variable expands INTO the repo", () => {
+			const hit = detectBashCodeFileWrite("SRC=src && echo bad > $SRC/index.ts", ROOT);
+			expect(hit?.target).toBe("$SRC/index.ts");
+		});
+
+		it("treats an unresolvable variable as not provably in-root (passes through)", () => {
+			expect(detectBashCodeFileWrite("echo x > $UNKNOWN_DIR/probe.ts", ROOT)).toBeNull();
+		});
+
+		it("keeps the no-root conservative reach for variable targets", () => {
+			expect(detectBashCodeFileWrite("echo x > $ANYWHERE/a.ts")).not.toBeNull();
+		});
+
+		it("expands $HOME from the process environment", () => {
+			// Out of the repo whether HOME resolves (real home) or not (unresolvable).
+			expect(detectBashCodeFileWrite("echo hi > $HOME/notes/snippet.ts", ROOT)).toBeNull();
+		});
+
+		it("resolves relative targets against a same-command cd OUT of the repo", () => {
+			const cmd = `cd ${SCRATCHPAD} && echo x > probe.ts`;
+			expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+		});
+
+		it("follows cd $VAR into an out-of-repo dir", () => {
+			const cmd = `SCRATCH=${SCRATCHPAD}\ncd $SCRATCH\necho x > probe.ts`;
+			expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+		});
+
+		it("still blocks a relative write after cd to an in-repo subdirectory", () => {
+			const hit = detectBashCodeFileWrite("cd src && echo bad > util.ts", ROOT);
+			expect(hit?.target).toBe("util.ts");
+		});
+	});
 });

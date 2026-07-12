@@ -154,22 +154,10 @@ export function mergeLocalOverrides(
 	}
 	// Plan-capture (PB&J Free-CLI item #2) — local can toggle the master
 	// switch and the structured-userprompt parser flag.
-	if (local.plan_capture) {
-		if (config.plan_capture) {
-			Object.assign(config.plan_capture, local.plan_capture);
-		} else {
-			config.plan_capture = local.plan_capture;
-		}
-	}
+	mergeOptionalSection(config, local, "plan_capture");
 	// Git session-scope gate (PB&J Free-CLI item #7) — local can flip the
 	// gate on/off and choose ask vs block mode.
-	if (local.git_session_scope_gate) {
-		if (config.git_session_scope_gate) {
-			Object.assign(config.git_session_scope_gate, local.git_session_scope_gate);
-		} else {
-			config.git_session_scope_gate = local.git_session_scope_gate;
-		}
-	}
+	mergeOptionalSection(config, local, "git_session_scope_gate");
 	// Linked workspace roots — sibling project dirs the agent may also write to
 	// (the multi-repo workspace model; see docs/design/linked-workspace.md).
 	// LOCAL-ONLY by design: this WIDENS write-confinement, so it must be the
@@ -187,40 +175,43 @@ export function mergeLocalOverrides(
 	}
 	// Per-edit coverage / red-green / CRAP gates. These are DEFAULT ON and the ONLY
 	// documented opt-out is `{"per_edit_coverage": {"enabled": false}}` in
-	// guard-rules.local.json (default-config.ts) — but without this branch the
-	// override was silently dropped and the default-on HARD GATES could not be
-	// disabled as advertised. Shallow-merged so a partial `{enabled:false}` keeps the
-	// other knobs (mode / budget_ms / languages / block_on_*).
-	if (local.per_edit_coverage) {
-		if (config.per_edit_coverage) {
-			Object.assign(config.per_edit_coverage, local.per_edit_coverage);
-		} else {
-			config.per_edit_coverage = local.per_edit_coverage;
-		}
-	}
-	// Per-edit mutation gate (spec §12). Same silently-dropped bug class as the
-	// three branches above — the key existed in GuardRulesConfig + default-config
-	// but never merged, so `{"per_edit_mutation": {"enabled": true, …}}` in
-	// guard-rules.local.json left the daemon on pure defaults (found live
-	// 2026-07-02 flipping the dogfood flag). Shallow-merged so a partial override
-	// keeps the other knobs (mode / unavailable_behavior / runner_url / token).
-	if (local.per_edit_mutation) {
-		if (config.per_edit_mutation) {
-			Object.assign(config.per_edit_mutation, local.per_edit_mutation);
-		} else {
-			config.per_edit_mutation = local.per_edit_mutation;
-		}
-	}
-	// Trajectory-engine shadow mode (default ON in default-config). FIFTH instance
-	// of the silently-dropped class, caught by the merge-parity check while it was
-	// being written: the advertised off-switch `{"trajectory_shadow": {"enabled":
-	// false}}` in guard-rules.local.json reached no merge branch.
-	if (local.trajectory_shadow) {
-		if (config.trajectory_shadow) {
-			Object.assign(config.trajectory_shadow, local.trajectory_shadow);
-		} else {
-			config.trajectory_shadow = local.trajectory_shadow;
-		}
+	// guard-rules.local.json (default-config.ts). Shallow-merged so a partial
+	// `{enabled:false}` keeps the other knobs (mode / budget_ms / languages /
+	// block_on_*).
+	mergeOptionalSection(config, local, "per_edit_coverage");
+	// Per-edit mutation gate (spec §12) — same silently-dropped bug class
+	// (found live 2026-07-02 flipping the dogfood flag).
+	mergeOptionalSection(config, local, "per_edit_mutation");
+	// Trajectory-engine shadow mode (default ON) — FIFTH instance of the
+	// silently-dropped class, caught by the merge-parity check as it was written.
+	mergeOptionalSection(config, local, "trajectory_shadow");
+	// Scratchpad write policy (block default) — the documented per-dev softening
+	// path is `{"scratchpad_guard": {"code_write_mode": "warn"}}` in
+	// guard-rules.local.json; classified at introduction so the override works
+	// on day one.
+	mergeOptionalSection(config, local, "scratchpad_guard");
+	// SessionEnd scratchpad archive (default ON) — local can disable or tune
+	// the caps; shallow-merged so a partial override keeps the other knobs.
+	mergeOptionalSection(config, local, "scratchpad_archive");
+}
+
+/** Shallow-merge one optional config section: assign into the existing
+ *  section, or install the local override when the default had none. The
+ *  shared shape of the recurring "key added to GuardRulesConfig but never
+ *  merged" bug class — see the merge-parity test for the classification. */
+function mergeOptionalSection<K extends keyof GuardRulesConfig>(
+	config: GuardRulesConfig,
+	local: Partial<GuardRulesConfig>,
+	key: K,
+): void {
+	const override = local[key];
+	if (!override) return;
+	if (config[key]) {
+		// SAFETY: both sides are the same optional-section object type for K;
+		// the truthy check above guarantees a real object target.
+		Object.assign(config[key] as object, override);
+	} else {
+		config[key] = override;
 	}
 }
 
