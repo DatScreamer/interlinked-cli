@@ -8,6 +8,7 @@ import {
 	isRedBarBlock,
 	isUncoveredBlock,
 	pairStem,
+	relatedToDebt,
 } from "./coverage-debt.js";
 import type { PerFileCoverage } from "./coverage-final-reader.js";
 import { blockForRedBar, decideFromCoverage } from "./evaluator/coverage-write-decision.js";
@@ -301,6 +302,197 @@ describe("decideCoverageDebt — unrelated verdicts pass through", () => {
 		const out = run({ editedFile: "src/foo.ts", baseDecision: null });
 		expect(out.decision).toBeNull();
 		expect(out.txns).toHaveLength(0);
+	});
+});
+
+// ----- failure-evidence relatedness (the genomics/themes class, 2026-07) -----
+// A red episode's ground truth is WHICH TESTS FAIL, not filename convention.
+// The reported false block: editing genomics.ts broke server-counts.test.ts
+// (non-colocated, imports both genomics.ts AND themes.ts); the fix genuinely
+// lives in themes.ts, but the pair rule read that as a wander and the block
+// message named a genomics.test.ts that does not exist.
+
+/** A red debt carrying the failing tests its opening run reported. */
+function redDebtWith(file: string, failing: string[]): Obligation {
+	return { ...redDebt(file), failingTestFiles: failing };
+}
+
+/** A red-bar verdict carrying parsed failing-test files (the producer shape). */
+function redBarWith(failing: string[]): HarnessDecision {
+	return { ...redBar(), failing_test_files: failing };
+}
+
+const GENOMICS = "cf/server/lib/curated/genomics.ts";
+const THEMES = "cf/src/lib/themes.ts";
+const COUNTS_TEST = "cf/src/lib/server-counts.test.ts";
+
+describe("relatedToDebt — pair ∨ failing-test identity ∨ affected-test cone", () => {
+	const d = redDebtWith(GENOMICS, [COUNTS_TEST]);
+
+	it("keeps the filename pair related (legacy, no evidence needed)", () => {
+		expect(relatedToDebt("cf/server/lib/curated/genomics.test.ts", d)).toBe(true);
+	});
+
+	it("relates the failing test file itself — non-colocated, no graph needed", () => {
+		expect(relatedToDebt(COUNTS_TEST, d)).toBe(true);
+		expect(relatedToDebt(COUNTS_TEST, d, null)).toBe(true);
+	});
+
+	it("relates a file whose affected-test selection reaches a failing test (themes.ts)", () => {
+		expect(relatedToDebt(THEMES, d, new Set([COUNTS_TEST]))).toBe(true);
+	});
+
+	it("does NOT relate when the affected set misses every failing test", () => {
+		expect(relatedToDebt("cf/src/other/feature.ts", d, new Set(["cf/src/other/feature.test.ts"]))).toBe(false);
+	});
+
+	it("does NOT relate beyond the pair when selection is unknown (null) — unknown never widens", () => {
+		expect(relatedToDebt(THEMES, d, null)).toBe(false);
+		expect(relatedToDebt(THEMES, d)).toBe(false);
+	});
+
+	it("reduces to the pair rule for a debt without evidence (coverage debts)", () => {
+		expect(relatedToDebt(THEMES, redDebt(GENOMICS), new Set([COUNTS_TEST]))).toBe(false);
+		expect(relatedToDebt(THEMES, debt(GENOMICS), new Set([COUNTS_TEST]))).toBe(false);
+	});
+});
+
+describe("decideCoverageDebt — the atomic cross-module change is not a wander", () => {
+	const open = [redDebtWith(GENOMICS, [COUNTS_TEST])];
+
+	it("allows the in-cone themes.ts edit while red (still-red verdict continues the episode)", () => {
+		const out = run({
+			editedFile: THEMES,
+			baseDecision: redBarWith([COUNTS_TEST]),
+			openDebts: open,
+			affectedTests: new Set([COUNTS_TEST]),
+		});
+		expect(out.decision?.decision).toBe("allow");
+		// Same episode continued: no second red debt stacked on themes.ts.
+		expect(out.txns.filter((t) => t.op === "open")).toHaveLength(0);
+	});
+
+	it("discharges the red debt when the in-cone edit lands with a non-red verdict", () => {
+		const out = run({
+			editedFile: THEMES,
+			baseDecision: null,
+			openDebts: open,
+			affectedTests: new Set([COUNTS_TEST]),
+		});
+		expect(out.decision).toBeNull();
+		expect(out.txns).toEqual([
+			{ op: "discharge", id: obligationId("red_suite", GENOMICS), source: "local", atMs: 1 },
+		]);
+	});
+
+	it("allows editing the failing test file itself and discharges on its landing non-red verdict", () => {
+		const out = run({ editedFile: COUNTS_TEST, baseDecision: null, openDebts: open });
+		expect(out.decision).toBeNull();
+		expect(out.txns[0]).toMatchObject({ op: "discharge", id: obligationId("red_suite", GENOMICS) });
+	});
+
+	it("still blocks a genuinely unrelated edit while red — and names the real failing test", () => {
+		const out = run({
+			editedFile: "cf/src/other/feature.ts",
+			baseDecision: null,
+			openDebts: open,
+			affectedTests: new Set(["cf/src/other/feature.test.ts"]),
+		});
+		expect(out.decision?.decision).toBe("block");
+		expect(out.decision?.reason).toContain(COUNTS_TEST);
+		expect(out.decision?.reason).not.toContain("genomics.test.ts"); // no phantom companion
+		expect(out.decision?.reason).toContain("debt_wip_limit"); // the recorded escape is discoverable
+	});
+
+	it("still blocks without a graph answer when nothing else relates (unknown never widens)", () => {
+		const out = run({ editedFile: THEMES, baseDecision: null, openDebts: open, affectedTests: null });
+		expect(out.decision?.decision).toBe("block");
+	});
+});
+
+describe("decideCoverageDebt — red evidence lifecycle", () => {
+	it("records failing test files on a fresh red debt", () => {
+		const out = run({ editedFile: GENOMICS, baseDecision: redBarWith([COUNTS_TEST]) });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain(COUNTS_TEST);
+		expect(out.txns).toEqual([
+			{
+				op: "open",
+				kind: "red_suite",
+				file: GENOMICS,
+				contentHash: "",
+				sessionId: "s",
+				atMs: 1,
+				failingTestFiles: [COUNTS_TEST],
+			},
+		]);
+	});
+
+	it("refreshes the recorded set when a related red run reports different failures", () => {
+		const out = run({
+			editedFile: GENOMICS,
+			baseDecision: redBarWith([COUNTS_TEST, "cf/src/lib/themes.test.ts"]),
+			openDebts: [redDebtWith(GENOMICS, [COUNTS_TEST])],
+		});
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.txns).toEqual([
+			{
+				op: "open",
+				kind: "red_suite",
+				file: GENOMICS,
+				contentHash: "",
+				sessionId: "s",
+				atMs: 1,
+				failingTestFiles: [COUNTS_TEST, "cf/src/lib/themes.test.ts"],
+			},
+		]);
+	});
+
+	it("does NOT re-open when the failing set is unchanged (no ledger spam)", () => {
+		const out = run({
+			editedFile: GENOMICS,
+			baseDecision: redBarWith([COUNTS_TEST]),
+			openDebts: [redDebtWith(GENOMICS, [COUNTS_TEST])],
+		});
+		expect(out.txns).toHaveLength(0);
+	});
+
+	it("keeps the recorded set when the new red run parsed nothing (no evidence ≠ new evidence)", () => {
+		const out = run({
+			editedFile: GENOMICS,
+			baseDecision: redBar(),
+			openDebts: [redDebtWith(GENOMICS, [COUNTS_TEST])],
+		});
+		expect(out.txns).toHaveLength(0);
+	});
+});
+
+describe("wander-block message — companion existence honesty", () => {
+	it("omits a phantom companion and points at the suite output when the probe says missing", () => {
+		const out = run({
+			editedFile: "src/bar.ts",
+			baseDecision: null,
+			openDebts: [redDebt(GENOMICS)],
+			fileExists: () => false,
+		});
+		expect(out.decision?.decision).toBe("block");
+		expect(out.decision?.reason).toContain("no cf/server/lib/curated/genomics.test.ts exists");
+		expect(out.decision?.reason).not.toContain("or its test (cf/server/lib/curated/genomics.test.ts)");
+	});
+
+	it("names the companion when it exists", () => {
+		const out = run({
+			editedFile: "src/bar.ts",
+			baseDecision: null,
+			openDebts: [redDebt(GENOMICS)],
+			fileExists: () => true,
+		});
+		expect(out.decision?.reason).toContain("its test (cf/server/lib/curated/genomics.test.ts)");
+	});
+
+	it("keeps legacy naming when no probe is supplied (pure callers)", () => {
+		const out = run({ editedFile: "src/bar.ts", baseDecision: null, openDebts: [redDebt(GENOMICS)] });
+		expect(out.decision?.reason).toContain("its test (cf/server/lib/curated/genomics.test.ts)");
 	});
 });
 

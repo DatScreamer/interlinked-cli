@@ -135,4 +135,14 @@ describe("red-bar message rendering", () => {
 		expect(d.reason).toContain("t1");
 		expect(d.rule_id).toBe("per-edit-coverage");
 	});
+
+	it("blockForRedBar attaches failing test FILES as structured evidence (debt-mode's cone seed)", () => {
+		const d = blockForRedBar("src/m.ts", ["t1"], ["lib/counts.test.ts"]);
+		expect(d.failing_test_files).toEqual(["lib/counts.test.ts"]);
+	});
+
+	it("blockForRedBar keeps the field absent when no files parsed (exactOptionalPropertyTypes)", () => {
+		expect("failing_test_files" in blockForRedBar("src/m.ts", ["t1"])).toBe(false);
+		expect("failing_test_files" in blockForRedBar("src/m.ts", ["t1"], [])).toBe(false);
+	});
 });

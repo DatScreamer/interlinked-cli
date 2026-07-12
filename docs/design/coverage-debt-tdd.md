@@ -148,3 +148,68 @@ Red debt closes the gap by reusing the machine unchanged:
 WIP limit are shared across coverage + red debts. Regression suites:
 `coverage-debt.test.ts` (pure fold) + `coverage-debt-gate.test.ts` (ledger
 lifecycle, wander, mixed red→uncovered handoff, strict-mode preservation).
+
+## Failure-evidence relatedness — the red episode's cone (landed 2026-07-10)
+
+The pair rule alone mis-modeled a legitimate class of change (found live in
+`mcp-client-bio`): editing `curated/genomics.ts` broke a NON-colocated test,
+`lib/server-counts.test.ts`, which imports both `genomics.ts` **and**
+`themes.ts` (a hardcoded cross-module count that must move in lockstep). The
+only single-file edits that green the suite are "revert genomics" or "fix
+themes" — and the wander rule blocked the themes edit both ways, while the
+block message named a `genomics.test.ts` that does not exist. The gate made a
+correct atomic two-file change impossible through ordinary edits.
+
+The root cause: a red episode's ground truth is **which tests fail**, but the
+debt recorded only which file was being edited when the suite went red, and
+"related" was answered by filename convention. The fix connects three things
+the system already had:
+
+1. **Capture** — the overlay runners already parsed failing-test *names*
+   (message sugar); they now also parse failing-test **files**
+   (`parseVitestFailingTestFiles` / `parsePytestFailingTestFiles`,
+   `CoverageRunResult.failingTestFiles`, widening-only, capped at 20).
+2. **Carry** — the red-bar producers attach them to the verdict as
+   `HarnessDecision.failing_test_files` (typed, structural — the field twin of
+   the `RED_BAR_MARKER` phrase), and `foldRedBar` records them on the
+   `red_suite` obligation (`Obligation.failingTestFiles`). A related red run
+   whose failing set MOVED re-opens the debt with the new set (staleness
+   anchors preserved); an empty parse keeps the recorded set.
+3. **Relate** — `relatedToDebt(editedFile, debt, affectedTests)` is now the
+   relatedness relation everywhere (wander check, episode-continue, discharge):
+   filename pair ∨ `editedFile` IS a recorded failing test ∨ the edited file's
+   affected-test selection intersects the recorded failing tests. The affected
+   set comes from the SAME `selectAffectedTests` reverse-import walk the gate
+   already scopes suite runs with, over the daemon's existing `ProjectGraph`
+   (`affectedTestsForEdit` in `coverage-debt-gate.ts`; the pipeline hands the
+   same `DependencyView` to `checkCoverageWrite` and `applyDebtMode`).
+
+Properties worth pinning:
+
+- **Widening-only.** Evidence can only ALLOW edits the pair rule would have
+  blocked, never block ones it allowed; an unknown selection (`null` — no
+  view, file not in graph, truncated walk) falls back to the strict legacy
+  shape. Poisoned/garbled parse rows therefore cannot tighten the gate, and
+  the commit gate remains the ground-truth backstop.
+- **The cross-module flow works end-to-end**: genomics edit → red debt opens
+  with `[server-counts.test.ts]`; themes edit → in-cone (its affected tests
+  include the failing test) → allowed; when it lands non-red the episode
+  discharges. Editing the failing test itself is related by identity — no
+  graph needed.
+- **Messages tell the truth**: a red wander block names the recorded failing
+  test files (paths that actually ran RED), only names a conventional
+  companion that exists (`fileExists` probe; the phantom-`genomics.test.ts`
+  fix), and always names the recorded escape
+  (`per_edit_coverage.debt_wip_limit` / `debt_mode` in
+  `.interlinked/guard-rules.local.json`) — the answer to "the gate mis-models
+  my change and there is no discoverable bypass".
+- **Blind spot, accepted**: graph-invisible coupling (dynamic import, shared
+  fixtures read via fs) won't land in the cone — the edit still blocks, with
+  the escape named. The relation is deterministic
+  (`feedback_harness_deterministic_only`) and cheap (one cached-graph BFS per
+  gated edit, computed only while an evidence-bearing red debt is open).
+
+A sibling artifact-level pin, `__tests__/dist-bypass-advertisement.test.ts`,
+scans the BUILT bundles for `set X=1` bypass advertisements and requires the
+literal `INTERLINKED_*` name — the "set n=1" (minified identifier) failure
+mode reported alongside the false block.

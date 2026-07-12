@@ -69,6 +69,13 @@ export type ObligationTxn =
 			/** Monotonic edit counter at open time — the staleness clock the
 			 *  trajectory gate compares against (window is configurable). */
 			editSeq?: number;
+			/** `red_suite` only: the failing test FILES the red run reported
+			 *  (repo-relative, best-effort parsed) — the episode's evidence.
+			 *  Debt relatedness widens to any file these tests exercise, so a
+			 *  legitimate cross-module fix isn't blocked as a "wander". A
+			 *  re-open of the same debt REPLACES the list (the latest red run
+			 *  is the episode's current truth). */
+			failingTestFiles?: string[];
 	  }
 	| {
 			op: "discharge";
@@ -105,6 +112,8 @@ export interface Obligation {
 	witness?: string | undefined;
 	/** Surviving mutants from the last escalate (mutation only). */
 	survivors?: MutationSurvivor[] | undefined;
+	/** `red_suite` only: failing test files from the opening/latest red run. */
+	failingTestFiles?: string[] | undefined;
 }
 
 /** Current netted state: id → obligation. A `Map` mutated in place by
@@ -152,6 +161,9 @@ export function applyObligationTxn(state: ObligationState, txn: ObligationTxn): 
 				editSeq: anchor.editSeq,
 				// A new open invalidates any prior measurement.
 				survivors: undefined,
+				// Latest red run's evidence REPLACES the old (absent ⇒ cleared):
+				// a stale failing-test list must not keep widening relatedness.
+				failingTestFiles: txn.failingTestFiles,
 			});
 			return;
 		}
@@ -302,9 +314,14 @@ function isRegion(v: unknown): boolean {
 	return typeof r.start === "number" && typeof r.end === "number";
 }
 
+function isStringArray(v: unknown): v is string[] {
+	return Array.isArray(v) && v.every((entry) => typeof entry === "string");
+}
+
 function isOpenRow(row: Record<string, unknown>): row is OpenTxn {
 	if (row.op !== "open") return false;
 	if (row.region !== undefined && !isRegion(row.region)) return false;
+	if (row.failingTestFiles !== undefined && !isStringArray(row.failingTestFiles)) return false;
 	return (
 		isObligationKind(row.kind) &&
 		typeof row.file === "string" &&

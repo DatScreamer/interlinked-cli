@@ -348,3 +348,50 @@ describe("replay invariants (fast-check)", () => {
 		expect(serialize(once)).toEqual(serialize(twice));
 	});
 });
+
+describe("red_suite failing-test evidence (open txn field)", () => {
+	function openRed(failing?: string[]): ObligationTxn {
+		return {
+			op: "open",
+			kind: "red_suite",
+			file: "src/a.ts",
+			contentHash: "",
+			sessionId: "s1",
+			atMs: 1,
+			...(failing ? { failingTestFiles: failing } : {}),
+		};
+	}
+
+	it("carries the evidence onto the netted obligation", () => {
+		const state = replayObligations([openRed(["lib/counts.test.ts"])]);
+		expect(openObligations(state)[0]?.failingTestFiles).toEqual(["lib/counts.test.ts"]);
+	});
+
+	it("a re-open REPLACES the evidence (latest red run is the truth) while keeping the openedAtMs anchor", () => {
+		const later: ObligationTxn = { ...openRed(["lib/b.test.ts"]), atMs: 9 } as ObligationTxn;
+		const state = replayObligations([openRed(["lib/a.test.ts"]), later]);
+		const ob = openObligations(state)[0];
+		expect(ob?.failingTestFiles).toEqual(["lib/b.test.ts"]);
+		expect(ob?.openedAtMs).toBe(1); // continuous-open staleness anchor preserved
+	});
+
+	it("a re-open WITHOUT evidence clears the stale list", () => {
+		const state = replayObligations([openRed(["lib/a.test.ts"]), openRed()]);
+		expect(openObligations(state)[0]?.failingTestFiles).toBeUndefined();
+	});
+
+	it("parseObligationTxn accepts a well-formed failingTestFiles row and rejects malformed ones", () => {
+		const good = {
+			op: "open",
+			kind: "red_suite",
+			file: "f.ts",
+			contentHash: "",
+			sessionId: "s",
+			atMs: 1,
+			failingTestFiles: ["t.test.ts"],
+		};
+		expect(parseObligationTxn(good)).toEqual(good);
+		expect(parseObligationTxn({ ...good, failingTestFiles: [42] })).toBeNull();
+		expect(parseObligationTxn({ ...good, failingTestFiles: "t.test.ts" })).toBeNull();
+	});
+});

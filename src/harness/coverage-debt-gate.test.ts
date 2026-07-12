@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyDebtMode } from "./coverage-debt-gate.js";
+import type { DependencyView } from "./dependency-view.js";
 import { readOpenDebts } from "./obligation-ledger-io.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
@@ -248,5 +249,93 @@ describe("applyDebtMode — non-Claude edit verbs (canonical isFileWrite, not a 
 		const out = applyDebtMode(nonClaudeEdit("src/bar.ts", "edit_file"), cfg(), null);
 		expect(out?.decision).toBe("block");
 		expect(out?.reason).toContain("src/foo.ts");
+	});
+});
+
+describe("applyDebtMode — failure-evidence relatedness (genomics/themes, end-to-end glue)", () => {
+	// The reported false block, replayed through the REAL ledger + a stub
+	// dependency view: editing curated/genomics.ts broke lib/server-counts.test.ts
+	// (non-colocated; it imports genomics.ts AND themes.ts). The fix lives in
+	// themes.ts — under the pair rule a "wander", under evidence relatedness the
+	// same red episode.
+	const GENOMICS = "server/curated/genomics.ts";
+	const THEMES = "lib/themes.ts";
+	const COUNTS_TEST = "lib/server-counts.test.ts";
+
+	/** A red-bar verdict carrying the failing-test files the runner parsed. */
+	const redBarWith = (file: string, failing: string[]): HarnessDecision => ({
+		...redBar(file),
+		failing_test_files: failing,
+	});
+
+	/** Internal-shaped view over an absolute-path reverse-import edge map. */
+	const view = (edges: Record<string, string[]>): DependencyView => ({
+		answerScope: "repo",
+		source: "internal",
+		getDependents: (f) => edges[f] ?? [],
+		hasFile: (f) => f in edges,
+		classifyModule: () => "leaf",
+		getBlastRadius: () => ({ direct: 0, transitive: 0, domains: [] }),
+		getCallers: () => [],
+	});
+
+	/** themes.ts and genomics.ts are both imported by the counts test. */
+	const repoView = (): DependencyView =>
+		view({
+			[join(root, THEMES)]: [join(root, COUNTS_TEST)],
+			[join(root, GENOMICS)]: [join(root, COUNTS_TEST)],
+			[join(root, COUNTS_TEST)]: [],
+		});
+
+	it("records the failing-test evidence on the opened red debt", () => {
+		const out = applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		expect(out?.decision).toBe("allow");
+		const debts = readOpenDebts(root);
+		expect(debts).toHaveLength(1);
+		expect(debts[0]?.failingTestFiles).toEqual([COUNTS_TEST]);
+	});
+
+	it("allows the cross-module themes.ts edit while red (the reported false block)", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		const out = applyDebtMode(edit(THEMES), cfg(), null, repoView());
+		expect(out).toBeNull(); // in-cone landing edit — allowed, and the episode discharges
+		expect(readOpenDebts(root)).toHaveLength(0);
+	});
+
+	it("keeps the episode open (no stacked debt) when the in-cone edit is still red", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		const out = applyDebtMode(edit(THEMES), cfg(), redBarWith(THEMES, [COUNTS_TEST]), repoView());
+		expect(out?.decision).toBe("allow");
+		const debts = readOpenDebts(root);
+		expect(debts).toHaveLength(1);
+		expect(debts[0]?.file).toBe(GENOMICS);
+	});
+
+	it("allows editing the non-colocated failing test itself — no graph required", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		const out = applyDebtMode(edit(COUNTS_TEST), cfg(), null);
+		expect(out).toBeNull();
+	});
+
+	it("still blocks a genuinely unrelated edit, naming the real failing test — not a phantom companion", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		const out = applyDebtMode(edit("lib/unrelated.ts"), cfg(), null, repoView());
+		expect(out?.decision).toBe("block");
+		expect(out?.reason).toContain("test suite is RED");
+		expect(out?.reason).toContain(COUNTS_TEST);
+		expect(out?.reason).not.toContain("genomics.test.ts");
+		expect(out?.reason).toContain("debt_wip_limit"); // discoverable, recorded escape
+	});
+
+	it("falls back to the strict pair rule when no dependency view is available (unknown never widens)", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
+		const out = applyDebtMode(edit(THEMES), cfg(), null);
+		expect(out?.decision).toBe("block");
+	});
+
+	it("evidence survives the ledger round-trip (JSONL write → readOpenDebts)", () => {
+		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST, "lib/other.test.ts"]));
+		const debts = readOpenDebts(root);
+		expect(debts[0]?.failingTestFiles).toEqual([COUNTS_TEST, "lib/other.test.ts"]);
 	});
 });

@@ -132,9 +132,16 @@ export function failingTestPhrase(failingTests: string[] | undefined): string {
  * coverage gap, so this fires BEFORE the uncovered-line / drop decision and names
  * the failing test(s) so the fix is actionable. Interpolates
  * {@link RED_BAR_MARKER} — the phrase debt-mode's `isRedBarBlock` folds this
- * verdict into a `red_suite` debt by.
+ * verdict into a `red_suite` debt by. `failingTestFiles` (when the runner parsed
+ * them) ride the decision as `failing_test_files`, the structured evidence debt
+ * mode records so red-episode relatedness follows the actual failure, not just
+ * filename convention.
  */
-export function blockForRedBar(relPath: string, failingTests: string[] | undefined): HarnessDecision {
+export function blockForRedBar(
+	relPath: string,
+	failingTests: string[] | undefined,
+	failingTestFiles?: string[] | undefined,
+): HarnessDecision {
 	return {
 		decision: "block",
 		reason:
@@ -144,6 +151,9 @@ export function blockForRedBar(relPath: string, failingTests: string[] | undefin
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
+		...(failingTestFiles && failingTestFiles.length > 0
+			? { failing_test_files: failingTestFiles }
+			: {}),
 	};
 }
 

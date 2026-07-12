@@ -226,7 +226,7 @@ async function runOverlayAndDecide(
 		// determine) falls through to the coverage decision — fail-open on the
 		// pass/fail axis, exactly like the coverage block's runner-unavailable path.
 		if (ctx.blockOnTestFailure && result.testsPassed === false) {
-			return blockForRedBar(ctx.relPath, result.failingTests);
+			return blockForRedBar(ctx.relPath, result.failingTests, result.failingTestFiles);
 		}
 
 		const cov = result.perFile.get(ctx.relPath);

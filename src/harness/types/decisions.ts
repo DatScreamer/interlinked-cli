@@ -33,6 +33,16 @@ export interface HarnessDecision {
 	severity?: "critical" | "high" | "medium" | "low" | undefined;
 	/** Category of the matched rule (for grouping in dashboards) */
 	category?: string | undefined;
+	/**
+	 * Failing test FILES (repo-relative, best-effort parsed from the suite
+	 * output) attached by the per-edit red-bar producers. Debt mode records
+	 * these on the `red_suite` obligation as the red episode's evidence, so
+	 * "related file" can be answered from the failure itself (any file the
+	 * failing tests exercise) instead of filename convention alone. The typed
+	 * field keeps the producer↔consumer coupling structural, like the
+	 * RED_BAR_MARKER reason phrase it rides alongside.
+	 */
+	failing_test_files?: string[] | undefined;
 	/** Structured results from all checks (quality, structural, suggestions) */
 	check_results?: CheckResultEntry[];
 	/** Checks that were skipped with structured reasons */

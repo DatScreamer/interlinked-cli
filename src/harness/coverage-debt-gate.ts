@@ -9,10 +9,14 @@
 // final verdict. Self-contained + unit-tested so the live pipeline file gains
 // only a two-line call. See `docs/design/coverage-debt-tdd.md`.
 
+import { existsSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { decideCoverageDebt, inSamePair, isRedBarBlock, isUncoveredBlock } from "./coverage-debt.js";
+import { selectAffectedTests } from "./coverage-test-selector.js";
+import type { DependencyView } from "./dependency-view.js";
 import { isFileWrite } from "./evaluator/tool-classifiers.js";
 import { appendDebtTxn, readOpenDebts } from "./obligation-ledger-io.js";
+import type { Obligation } from "./obligations.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
@@ -44,15 +48,50 @@ function editedCodeFile(event: HarnessEvent, projectRoot: string): string | null
 }
 
 /**
+ * Affected-test selection for the edited file — the failure-evidence cone's
+ * graph half. Computed ONLY when some open red debt actually carries
+ * failing-test evidence the cone check could intersect (a pure read over the
+ * daemon's existing `ProjectGraph`, the same `selectAffectedTests` walk the
+ * gate scopes suite runs with — never a second graph build). Returns null for
+ * "unknown" (no view, no evidence, file not in graph, truncated walk, any
+ * error): relatedness then falls back to the filename pair + failing-test
+ * identity, the strict legacy shape — unknown must never WIDEN.
+ */
+function affectedTestsForEdit(
+	editedFile: string,
+	projectRoot: string,
+	depView: DependencyView | undefined,
+	openDebts: Obligation[],
+): ReadonlySet<string> | null {
+	if (!depView) return null;
+	const hasEvidence = openDebts.some(
+		(d) => d.kind === "red_suite" && (d.failingTestFiles?.length ?? 0) > 0,
+	);
+	if (!hasEvidence) return null;
+	try {
+		const selected = selectAffectedTests({ editedRelPath: editedFile, projectRoot, depView });
+		return selected === null ? null : new Set(selected);
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Apply the pair-scoped debt lifecycle to a base coverage verdict. A pure
  * pass-through (returns `baseDecision`) for non-file / non-code events and for a
  * clean edit with no open debt. Otherwise opens / discharges / blocks per
- * `decideCoverageDebt` and persists the transitions to the ledger.
+ * `decideCoverageDebt` and persists the transitions to the ledger. `depView`
+ * (the daemon's already-built dependency view, when the caller has one) powers
+ * failure-evidence relatedness: while the suite is red, any file that can
+ * influence a recorded failing test is part of the red→green loop, not a
+ * wander — the atomic cross-module change the filename-pair rule alone
+ * mis-blocked (mcp-client-bio, 2026-07).
  */
 export function applyDebtMode(
 	event: HarnessEvent,
 	cfg: PerEditCoverageConfig,
 	baseDecision: HarnessDecision | null,
+	depView?: DependencyView,
 ): HarnessDecision | null {
 	if (cfg.debt_mode !== true) return baseDecision; // off ⇒ pure pass-through
 	const projectRoot = event.cwd;
@@ -85,6 +124,10 @@ export function applyDebtMode(
 		wipLimit: cfg.debt_wip_limit ?? 1,
 		sessionId: event.session_id,
 		atMs: Date.now(),
+		affectedTests: affectedTestsForEdit(editedFile, projectRoot, depView, openDebts),
+		// Message accuracy: name a conventional companion test only if it exists
+		// (the phantom `genomics.test.ts` failure mode).
+		fileExists: (rel) => existsSync(resolve(projectRoot, rel)),
 	});
 	for (const txn of outcome.txns) appendDebtTxn(projectRoot, txn);
 	return outcome.decision;

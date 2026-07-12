@@ -379,7 +379,10 @@ class FakeProjectGraph {
 	allFiles = vi.fn(() => []);
 }
 
-vi.mock("./cohort.js", () => ({ CohortManager: FakeCohortManager }));
+// setActiveCohort: server.ts registers its CohortManager as the process-wide
+// active cohort at startup (cohort git discipline, 2475022) — the mock must
+// export it or every bootstrap test dies at module scope.
+vi.mock("./cohort.js", () => ({ CohortManager: FakeCohortManager, setActiveCohort: vi.fn() }));
 vi.mock("./session-state.js", () => ({ SessionTracker: FakeSessionTracker }));
 vi.mock("./reservations.js", () => ({ ReservationManager: FakeReservationManager }));
 vi.mock("./error-history.js", () => ({ ErrorHistory: FakeErrorHistory }));

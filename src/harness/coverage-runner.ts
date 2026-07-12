@@ -55,12 +55,14 @@ import {
 	defaultJsTestCommand,
 	defaultPythonTestCommand,
 } from "./coverage-runner-commands.js";
+import { parseCoveragePyJson } from "./coverage-runner-coverage-py.js";
 import {
+	parsePytestFailingTestFiles,
 	parsePytestFailingTests,
+	parseVitestFailingTestFiles,
 	parseVitestFailingTests,
 	withFailingTests,
 } from "./coverage-runner-failing-tests.js";
-import { parseCoveragePyJson } from "./coverage-runner-coverage-py.js";
 
 // Re-export the report filenames + default suite commands moved to
 // coverage-runner-commands.ts so the public surface is unchanged.
@@ -166,6 +168,16 @@ export interface CoverageRunResult {
 	 * pass/fail; these names are message sugar only.
 	 */
 	failingTests?: string[];
+	/**
+	 * The failing test FILES (as the runner printed them — relative to its cwd,
+	 * which for overlay runs mirrors the repo root), best-effort parsed from the
+	 * same output. Absent unless `testsPassed === false` and at least one row
+	 * parsed. Load-bearing only to WIDEN: debt mode records these on the
+	 * `red_suite` obligation so an edit that can influence a failing test is
+	 * recognized as part of the red→green loop; a missed/garbled path merely
+	 * falls back to the filename-pair rule. The exit code still owns pass/fail.
+	 */
+	failingTestFiles?: string[];
 }
 
 /**
@@ -206,7 +218,15 @@ export interface SpawnOutcome {
 export type SpawnFn = (
 	command: string,
 	args: string[],
-	options: { cwd: string; timeout: number; encoding: "utf-8" },
+	options: {
+		cwd: string;
+		timeout: number;
+		encoding: "utf-8";
+		/** Extra environment merged OVER process.env (added for runtime-oracle
+		 *  jobs, e.g. `node --expose-gc` probes needing NODE_OPTIONS; absent =
+		 *  inherit unchanged — the historical behavior). */
+		env?: Record<string, string>;
+	},
 ) => Promise<SpawnOutcome>;
 
 /** Default per-run timeout (ms). A fast greenfield suite fits comfortably. */
@@ -235,6 +255,7 @@ const defaultSpawn: SpawnFn = (command, args, options) =>
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
 				cwd: options.cwd,
+				...(options.env ? { env: { ...process.env, ...options.env } } : {}),
 			});
 		} catch (err) {
 			resolveOutcome({
@@ -400,7 +421,8 @@ export class JsCoverageRunner implements CoverageRunner {
 		}
 		const testsPassed = testsPassedFromStatus(outcome.result.status, 1);
 		const result: CoverageRunResult = { suiteMs: outcome.suiteMs, perFile, ok: true, testsPassed };
-		return withFailingTests(result, parseVitestFailingTests(spawnText(outcome.result)));
+		const text = spawnText(outcome.result);
+		return withFailingTests(result, parseVitestFailingTests(text), parseVitestFailingTestFiles(text));
 	}
 }
 
@@ -443,7 +465,8 @@ export class PythonCoverageRunner implements CoverageRunner {
 		}
 		const testsPassed = testsPassedFromStatus(outcome.result.status, 1);
 		const result: CoverageRunResult = { suiteMs: outcome.suiteMs, perFile, ok: true, testsPassed };
-		return withFailingTests(result, parsePytestFailingTests(spawnText(outcome.result)));
+		const text = spawnText(outcome.result);
+		return withFailingTests(result, parsePytestFailingTests(text), parsePytestFailingTestFiles(text));
 	}
 }
 

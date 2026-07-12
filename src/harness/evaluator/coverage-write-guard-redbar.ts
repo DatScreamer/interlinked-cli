@@ -66,11 +66,13 @@ function gatedSectionsByLanguage(
 
 /** The red-bar block for a deletion that breaks the suite. Interpolates
  *  {@link RED_BAR_MARKER} deliberately: under debt_mode this verdict folds into
- *  the pair's `red_suite` debt like any other red bar. Exported for the
- *  producer↔matcher pin test in coverage-debt.test.ts. */
+ *  the pair's `red_suite` debt like any other red bar — so it also carries the
+ *  failing test FILES as `failing_test_files`, the evidence that debt records.
+ *  Exported for the producer↔matcher pin test in coverage-debt.test.ts. */
 export function blockForDeletionRedBar(
 	relPaths: string[],
 	failingTests: string[] | undefined,
+	failingTestFiles?: string[] | undefined,
 ): HarnessDecision {
 	const shown = relPaths.slice(0, 3).join(", ") + (relPaths.length > 3 ? ", …" : "");
 	return {
@@ -83,6 +85,9 @@ export function blockForDeletionRedBar(
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
+		...(failingTestFiles && failingTestFiles.length > 0
+			? { failing_test_files: failingTestFiles }
+			: {}),
 	};
 }
 
@@ -125,6 +130,7 @@ async function runRedBarSuites(
 		language: CoverageLanguage,
 		relPaths: string[],
 		failingTests: string[] | undefined,
+		failingTestFiles?: string[] | undefined,
 	) => HarnessDecision,
 ): Promise<HarnessDecision | null> {
 	const entries = [...byLanguage.entries()];
@@ -168,6 +174,7 @@ async function runRedBarSuites(
 					language,
 					sections.map((s) => s.relPath),
 					result.failingTests,
+					result.failingTestFiles,
 				);
 			}
 		}
@@ -216,12 +223,13 @@ export async function decideForDeletionOnly(
 			language: CoverageLanguage,
 			relPaths: string[],
 			failingTests: string[] | undefined,
+			failingTestFiles?: string[] | undefined,
 		): HarnessDecision => {
 			const dels = deletions
 				.filter((d) => coverageLanguageForPath(d.relPath) === language)
 				.map((d) => d.relPath);
 			return dels.length > 0
-				? blockForDeletionRedBar(dels, failingTests)
+				? blockForDeletionRedBar(dels, failingTests, failingTestFiles)
 				: blockForCrossSuiteRedBar(language, relPaths, failingTests);
 		};
 		return await runRedBarSuites(gatedSectionsByLanguage(plan, cfg), plan, projectRoot, deps, block);

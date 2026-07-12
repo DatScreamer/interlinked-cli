@@ -115,11 +115,14 @@ export async function runCoverageWriteGate(
 	if (!coverageCfg?.enabled) return null; // fast path: repo opted out (shipped default is ON)
 	// Source the dependency view from the daemon's existing graph so the gate can
 	// select only the affected tests (fast → fits the per-edit budget → enforces).
-	let decision = await checkCoverageWrite(event, ctx.rules, undefined, depViewForEvent(ctx, event));
+	const depView = depViewForEvent(ctx, event);
+	let decision = await checkCoverageWrite(event, ctx.rules, undefined, depView);
 	// Pair-scoped debt lifecycle (a pure no-op unless `per_edit_coverage.debt_mode`
 	// is on): downgrades a first uncovered-line block to opened debt, blocks a
-	// wander to an unrelated file, discharges on a companion-test edit.
-	decision = applyDebtMode(event, coverageCfg, decision);
+	// wander outside the debt's work, discharges on a companion-test edit. The
+	// SAME dependency view powers failure-evidence relatedness: while red, an
+	// edit that can influence a recorded failing test is never a "wander".
+	decision = applyDebtMode(event, coverageCfg, decision, depView);
 	if (!decision) return null;
 
 	if (decision.decision === "block") {
