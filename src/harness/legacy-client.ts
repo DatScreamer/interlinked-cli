@@ -113,9 +113,7 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	copyString(raw, out, "model");
 	copyString(raw, out, "transcript_path");
 	copyString(raw, out, "tool_use_id");
-	copyString(raw, out, "parent_agent");
-	copyString(raw, out, "subagent_id");
-	copyString(raw, out, "agent_type");
+	copySubagentContext(raw, out);
 	const filesModified = readStringArray(raw.files_modified);
 	if (filesModified) out.files_modified = filesModified;
 
@@ -141,8 +139,12 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 			out.prompt = action.text;
 			break;
 		case "session_lifecycle":
-		case "other":
 			break;
+		case "other": {
+			const scalars = pickLifecycleScalars(raw);
+			if (scalars) out.tool_input = scalars;
+			break;
+		}
 	}
 
 	if (out.tool_input === undefined) {
@@ -285,6 +287,51 @@ function fileOpToToolInput(action: {
 	});
 }
 
+/** Lifecycle payload scalars worth carrying for `other`-kind events
+ *  (TaskCompleted, TeammateIdle, PermissionRequest, ...): task/teammate
+ *  identity plus subagent parent-session linkage. The adapter path otherwise
+ *  drops these — the native payload keeps them top-level, not in tool_input. */
+const LIFECYCLE_SCALAR_KEYS = [
+	"task_id",
+	"task_subject",
+	"task_description",
+	"teammate_name",
+	"team_name",
+	"parent_session_id",
+	"agent_id",
+] as const;
+
+/** Pick the present lifecycle scalars off a native payload; null when none. */
+function pickLifecycleScalars(raw: JsonObject): JsonObject | null {
+	const out: JsonObject = {};
+	for (const key of LIFECYCLE_SCALAR_KEYS) {
+		const value = raw[key];
+		if (typeof value === "string" && value) out[key] = value;
+	}
+	return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Copy the subagent-lifecycle context fields onto the legacy event, mapping
+ *  Claude Code's native names (`agent_id`, `parent_agent_name`) to the
+ *  harness's canonical `subagent_id` / `parent_agent` when the canonical keys
+ *  are absent — without the fallback, the daemon's cohort linkage and
+ *  agent-event capture see undefined for claude-code Subagent* events. */
+function copySubagentContext(raw: JsonObject, out: HarnessEvent): void {
+	copyString(raw, out, "parent_agent");
+	copyString(raw, out, "subagent_id");
+	copyString(raw, out, "agent_type");
+	copyString(raw, out, "last_assistant_message");
+	copyString(raw, out, "agent_transcript_path");
+	if (out.subagent_id === undefined) {
+		const agentId = readString(raw.agent_id);
+		if (agentId) out.subagent_id = agentId;
+	}
+	if (out.parent_agent === undefined) {
+		const parentName = readString(raw.parent_agent_name);
+		if (parentName) out.parent_agent = parentName;
+	}
+}
+
 function copyString(
 	raw: JsonObject,
 	out: HarnessEvent,
@@ -294,7 +341,9 @@ function copyString(
 		| "tool_use_id"
 		| "parent_agent"
 		| "subagent_id"
-		| "agent_type",
+		| "agent_type"
+		| "last_assistant_message"
+		| "agent_transcript_path",
 ): void {
 	const value = raw[key];
 	if (typeof value !== "string") return;
@@ -316,6 +365,12 @@ function copyString(
 			return;
 		case "agent_type":
 			out.agent_type = value;
+			return;
+		case "last_assistant_message":
+			out.last_assistant_message = value;
+			return;
+		case "agent_transcript_path":
+			out.agent_transcript_path = value;
 			return;
 	}
 }

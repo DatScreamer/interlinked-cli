@@ -14,10 +14,11 @@ import {
 	readSync,
 	statSync,
 } from "node:fs";
-import type { CollectionAction, CollectionRecord } from "./collection/types.js";
+import type { AgentEventRecord, CollectionAction, CollectionRecord } from "./collection/types.js";
 import { getCollectionPath } from "./collection/writer.js";
 import type { LocalActivityEvent } from "./local-activity-types.js";
 import { nonNull } from "./non-null.js";
+
 /** Best human label for a collection action: command / path / pattern / url. */
 function summarizeAction(action: CollectionAction | null): string | null {
 	if (!action) return null;
@@ -39,6 +40,47 @@ function summarizeAction(action: CollectionAction | null): string | null {
 		str(a.tool) ??
 		null
 	);
+}
+
+/** Display-summary cap for an agent's final message in the activity view.
+ *  The FULL message stays on the collection record; this only bounds the
+ *  one-line `summary` column. */
+const AGENT_SUMMARY_MAX_CHARS = 200;
+
+/** Hook-event label for each agent_event, for the display `hook` column. */
+const AGENT_EVENT_HOOKS: Record<AgentEventRecord["event"], string> = {
+	subagent_start: "SubagentStart",
+	subagent_stop: "SubagentStop",
+	task_completed: "TaskCompleted",
+};
+
+/** Project one collection.v1 agent_event record to a v5 LocalActivityEvent —
+ *  the projection that makes subagent results visible to `interlinked
+ *  activity` / `logs` (type filters: subagent_start / subagent_stop /
+ *  task_completed). */
+function agentEventToActivity(rec: AgentEventRecord): LocalActivityEvent {
+	const fullSummary = rec.last_assistant_message ?? rec.task?.task_subject ?? null;
+	const summary =
+		fullSummary && fullSummary.length > AGENT_SUMMARY_MAX_CHARS
+			? fullSummary.slice(0, AGENT_SUMMARY_MAX_CHARS)
+			: fullSummary;
+	const ev: LocalActivityEvent = {
+		schema_version: 5,
+		ts: rec.ts,
+		agent: rec.agent_name ?? rec.provider ?? "unknown",
+		type: rec.event,
+		tool: rec.agent_type,
+		summary,
+		session: rec.session_id,
+		hook: AGENT_EVENT_HOOKS[rec.event],
+	};
+	if (rec.cwd) ev.cwd = rec.cwd;
+	if (rec.subagent_id) ev.subagent_id = rec.subagent_id;
+	if (rec.parent_agent) ev.parent_agent = rec.parent_agent;
+	if (rec.agent_type) ev.agent_type = rec.agent_type;
+	if (rec.last_assistant_message) ev.last_assistant_message = rec.last_assistant_message;
+	if (rec.agent_transcript_path) ev.agent_transcript_path = rec.agent_transcript_path;
+	return ev;
 }
 
 /** Project one collection.v1 record to a v5 LocalActivityEvent. */
@@ -81,7 +123,11 @@ export function readCollectionActivity(opts?: {
 	const events: LocalActivityEvent[] = [];
 	for (const line of readRecentLines(path, scanLineBudget)) {
 		try {
-			const ev = collectionToActivity(JSON.parse(line) as CollectionRecord);
+			const parsed = JSON.parse(line) as CollectionRecord | AgentEventRecord;
+			const ev =
+				parsed.kind === "agent_event"
+					? agentEventToActivity(parsed)
+					: collectionToActivity(parsed);
 			if (opts?.since && new Date(ev.ts).getTime() < opts.since) break;
 			if (opts?.agent && ev.agent !== opts.agent) continue;
 			if (opts?.type && ev.type !== opts.type) continue;

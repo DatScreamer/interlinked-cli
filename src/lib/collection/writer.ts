@@ -6,13 +6,13 @@
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { CollectionRecord } from "./types.js";
+import type { AgentEventRecord, CollectionRecord } from "./types.js";
 
 export function getCollectionPath(cwd: string): string {
 	return join(cwd, ".interlinked", "collection.jsonl");
 }
 
-export function appendCollection(record: CollectionRecord, cwd: string): void {
+export function appendCollection(record: CollectionRecord | AgentEventRecord, cwd: string): void {
 	try {
 		const filePath = getCollectionPath(cwd);
 		const dir = join(cwd, ".interlinked");

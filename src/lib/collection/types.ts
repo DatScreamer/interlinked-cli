@@ -240,6 +240,50 @@ export interface GitContext {
 
 // --- The record ---
 
+// --- Agent lifecycle events (subagents / parallel agents / teammate tasks) ---
+
+/** Which lifecycle hook produced an `agent_event` record. */
+export type AgentEventName = "subagent_start" | "subagent_stop" | "task_completed";
+
+/** Where a subagent's final message was recovered from: the hook payload's
+ *  `last_assistant_message`, or a tail-read of the agent's own transcript
+ *  when the payload omitted it. */
+export type AgentMessageSource = "payload" | "transcript";
+
+/**
+ * A subagent / parallel-agent lifecycle record. This is the durable copy of
+ * what a spawned agent RETURNED — background-agent results are delivered to
+ * the parent over a queue-notification channel that fires no hook, so the
+ * SubagentStop payload (or the agent's transcript) is the only capturable
+ * copy. `agent_transcript_path` points at the full per-agent transcript
+ * (`~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl`).
+ */
+export interface AgentEventRecord {
+	schema: "collection.v1";
+	kind: "agent_event";
+	ts: string;
+	session_id: string | null;
+	agent_name: string | null;
+	provider: string;
+	event: AgentEventName;
+	subagent_id: string | null;
+	agent_type: string | null;
+	parent_agent: string | null;
+	agent_transcript_path: string | null;
+	/** The subagent's final assistant message — its result text. Secrets +
+	 *  PII scrubbed (natural-language field, parity with prompt/thinking). */
+	last_assistant_message: string | null;
+	message_source: AgentMessageSource | null;
+	/** TaskCompleted context (teammate/task-list lifecycle); null otherwise. */
+	task: {
+		task_id: string | null;
+		task_subject: string | null;
+		teammate_name: string | null;
+		team_name: string | null;
+	} | null;
+	cwd: string | null;
+}
+
 export interface CollectionRecord {
 	schema: "collection.v1";
 	kind: "tool_event";

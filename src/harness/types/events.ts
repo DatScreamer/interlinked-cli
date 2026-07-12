@@ -116,6 +116,13 @@ export interface HarnessEvent {
 	parent_agent?: string;
 	subagent_id?: string;
 	agent_type?: string;
+	/** SubagentStop payload — the subagent's final assistant message (its
+	 *  RESULT text). Claude Code sends this on SubagentStop; absent elsewhere. */
+	last_assistant_message?: string;
+	/** SubagentStop/SubagentStart payload — path to the SUBAGENT's own
+	 *  transcript JSONL (`<session-dir>/subagents/agent-<id>.jsonl`), distinct
+	 *  from `transcript_path` (the parent session's transcript). */
+	agent_transcript_path?: string;
 
 	/** UserPromptSubmit payload — the raw user prompt text. The hook copies it
 	 *  verbatim so the harness can scan for PII before the hook persists the

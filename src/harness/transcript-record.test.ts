@@ -75,6 +75,23 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs[0]?.text).toBe("boom");
 	});
 
+	it("carries a sidechain entry's agentId as agent_id (subagent attribution)", () => {
+		const entry = {
+			...assistant([{ type: "text", text: "subagent result" }]),
+			agentId: "af2124f",
+			isSidechain: true,
+		};
+		const recs = parseTranscriptEntry(entry);
+		expect(recs).toHaveLength(1);
+		expect(recs[0]?.agent_id).toBe("af2124f");
+	});
+
+	it("leaves agent_id undefined for main-session entries (JSON round-trip drops it)", () => {
+		const recs = parseTranscriptEntry(assistant([{ type: "text", text: "main turn" }]));
+		expect(recs[0]?.agent_id).toBeUndefined();
+		expect(JSON.parse(JSON.stringify(recs[0]))).not.toHaveProperty("agent_id");
+	});
+
 	it("decomposes a multi-block assistant turn into ordered records (seq = block index)", () => {
 		const recs = parseTranscriptEntry(
 			assistant([

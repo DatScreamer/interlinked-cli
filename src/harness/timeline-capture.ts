@@ -123,3 +123,42 @@ export function captureTimeline(event: HarnessEvent, fallbackCwd: string): void 
 		void err; // best-effort capture — never break the daemon pipeline
 	}
 }
+
+/** Read cap for a one-shot transcript drain. A subagent transcript is
+ *  typically well under 1MB; anything past this cap reads only the TAIL
+ *  (newest entries win — the final result message is what capture exists
+ *  for). Keeps a pathological transcript from stalling the daemon. */
+export const MAX_ONESHOT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * One-shot drain of a SUBAGENT transcript into timeline.jsonl. Unlike
+ * `captureTimeline` this does NOT touch the per-cwd cursor — the cursor
+ * tracks the MAIN session transcript, and pointing it at an agent file
+ * would force a full re-read of the main transcript on the next event.
+ * Subagent transcripts are separate files (`<session>/subagents/agent-*.jsonl`)
+ * that the main cursor never visits, so a full-file read + the daemon-lifetime
+ * dedup set gives idempotency without cursor state. Fires on SubagentStop —
+ * once per agent (a re-fire after agent resume re-reads and appends only the
+ * new records). Best-effort / fail-open. Returns the number of records
+ * appended (0 on any failure).
+ */
+export function captureAgentTranscript(agentTranscriptPath: string | undefined, cwd: string): number {
+	try {
+		if (!agentTranscriptPath || !existsSync(agentTranscriptPath)) return 0;
+		const size = statSync(agentTranscriptPath).size;
+		const offset = Math.max(0, size - MAX_ONESHOT_TRANSCRIPT_BYTES);
+		const fd = openSync(agentTranscriptPath, "r");
+		const buf = Buffer.alloc(size - offset);
+		readSync(fd, buf, 0, buf.length, offset);
+		closeSync(fd);
+		let text = buf.toString("utf-8");
+		// A tail read may start mid-line; drop the partial first line.
+		if (offset > 0) text = text.slice(text.indexOf("\n") + 1);
+		const fresh = filterFresh(parseTranscriptText(text), seenKeys(cwd));
+		if (fresh.length > 0) appendTimelineRecords(fresh, cwd);
+		return fresh.length;
+	} catch (err) {
+		void err; // best-effort capture — never break the daemon pipeline
+		return 0;
+	}
+}

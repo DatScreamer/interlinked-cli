@@ -2,7 +2,12 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { boundKeySet, captureTimeline, MAX_SEEN_KEYS_PER_CWD } from "./timeline-capture.js";
+import {
+	boundKeySet,
+	captureAgentTranscript,
+	captureTimeline,
+	MAX_SEEN_KEYS_PER_CWD,
+} from "./timeline-capture.js";
 import { timelinePath, writeTimeline } from "./timeline-writer.js";
 import type { HarnessEvent } from "./types/events.js";
 
@@ -109,6 +114,57 @@ describe("captureTimeline (live drain)", () => {
 		captureTimeline(event, bare);
 		expect(existsSync(timelinePath(bare))).toBe(false);
 		rmSync(bare, { recursive: true, force: true });
+	});
+});
+
+describe("captureAgentTranscript (one-shot subagent drain)", () => {
+	let cwd: string;
+
+	function agentLine(uuid: string, text: string, agentId: string): string {
+		return `${JSON.stringify({
+			type: "assistant",
+			uuid,
+			timestamp: "2026-07-09T10:00:00.000Z",
+			sessionId: "S",
+			agentId,
+			message: { model: "claude-test-5", content: [{ type: "text", text }] },
+		})}\n`;
+	}
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "tlc-agent-"));
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("drains an agent transcript with agent_id attribution, without touching the main cursor", () => {
+		const agentTranscript = join(cwd, "agent-z9.jsonl");
+		writeFileSync(agentTranscript, agentLine("az1", "agent result", "z9"));
+		const drained = captureAgentTranscript(agentTranscript, cwd);
+		expect(drained).toBe(1);
+		expect(existsSync(join(cwd, ".interlinked", "timeline-cursor.json"))).toBe(false);
+		const rows = readFileSync(timelinePath(cwd), "utf-8")
+			.trim()
+			.split("\n")
+			// SAFETY: our own timeline JSONL, written one line above.
+			.map((l) => JSON.parse(l) as { text?: string; agent_id?: string });
+		expect(rows).toEqual([expect.objectContaining({ text: "agent result", agent_id: "z9" })]);
+	});
+
+	it("is idempotent — a second drain appends nothing", () => {
+		const agentTranscript = join(cwd, "agent-z9.jsonl");
+		writeFileSync(agentTranscript, agentLine("az1", "agent result", "z9"));
+		expect(captureAgentTranscript(agentTranscript, cwd)).toBe(1);
+		expect(captureAgentTranscript(agentTranscript, cwd)).toBe(0);
+		expect(timelineTexts(cwd)).toEqual(["agent result"]);
+	});
+
+	it("returns 0 for a missing or undefined path", () => {
+		expect(captureAgentTranscript(undefined, cwd)).toBe(0);
+		expect(captureAgentTranscript(join(cwd, "nope.jsonl"), cwd)).toBe(0);
+		expect(existsSync(timelinePath(cwd))).toBe(false);
 	});
 });
 

@@ -45,6 +45,11 @@ export interface TimelineRecord {
 	seq: number;
 	category: TimelineCategory;
 	role: "user" | "assistant";
+	/** Subagent attribution: the `agentId` a sidechain transcript entry
+	 *  carries (absent for main-session turns). Sidechain entries keep the
+	 *  PARENT's sessionId, so this is the only field that distinguishes a
+	 *  subagent's turns from the parent's in the merged timeline. */
+	agent_id?: string | undefined;
 	model?: string | undefined;
 	text?: string | undefined;
 	tool_name?: string | undefined;
@@ -58,7 +63,7 @@ export interface TimelineRecord {
 }
 
 /** The shared per-entry fields every record off one transcript line inherits. */
-type RecordBase = Pick<TimelineRecord, "schema" | "ts" | "session" | "uuid" | "cwd" | "git_branch" | "version">;
+type RecordBase = Pick<TimelineRecord, "schema" | "ts" | "session" | "uuid" | "agent_id" | "cwd" | "git_branch" | "version">;
 
 /** Structural view of a transcript JSONL entry — only the fields we read. */
 interface TranscriptEntry {
@@ -66,6 +71,7 @@ interface TranscriptEntry {
 	uuid?: string;
 	timestamp?: string;
 	sessionId?: string;
+	agentId?: string;
 	cwd?: string;
 	gitBranch?: string;
 	version?: string;
@@ -178,6 +184,7 @@ export function parseTranscriptEntry(entry: unknown): TimelineRecord[] {
 		ts: e.timestamp,
 		session: e.sessionId,
 		uuid: e.uuid,
+		agent_id: e.agentId,
 		cwd: e.cwd,
 		git_branch: e.gitBranch,
 		version: e.version,

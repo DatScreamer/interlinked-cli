@@ -373,6 +373,71 @@ describe("toLegacyHarnessEvent base mapping", () => {
 		expect(legacy.agent_type).toBe("researcher");
 	});
 
+	it("copies subagent result fields (last_assistant_message / agent_transcript_path)", () => {
+		const ev = makeEvent({
+			runner_native_event: "SubagentStop",
+			phase: "subagent-stop",
+			action: { kind: "other", subkind: "SubagentStop", data: {} },
+			raw: {
+				last_assistant_message: "There are 3 R's in Strawberry.",
+				agent_transcript_path: "/proj/sess/subagents/agent-af.jsonl",
+			},
+		});
+		const legacy = toLegacyHarnessEvent(ev);
+		expect(legacy.hook_event).toBe("SubagentStop");
+		expect(legacy.last_assistant_message).toBe("There are 3 R's in Strawberry.");
+		expect(legacy.agent_transcript_path).toBe("/proj/sess/subagents/agent-af.jsonl");
+	});
+
+	it("maps Claude-native agent_id / parent_agent_name onto subagent_id / parent_agent", () => {
+		const ev = makeEvent({
+			runner_native_event: "SubagentStop",
+			phase: "subagent-stop",
+			action: { kind: "other", subkind: "SubagentStop", data: {} },
+			raw: { agent_id: "af2124f", parent_agent_name: "Lead-Alpha", agent_type: "Explore" },
+		});
+		const legacy = toLegacyHarnessEvent(ev);
+		expect(legacy.subagent_id).toBe("af2124f");
+		expect(legacy.parent_agent).toBe("Lead-Alpha");
+		expect(legacy.agent_type).toBe("Explore");
+	});
+
+	it("canonical subagent_id / parent_agent win over the native-name fallbacks", () => {
+		const ev = makeEvent({
+			raw: {
+				subagent_id: "canonical-id",
+				agent_id: "native-id",
+				parent_agent: "canonical-parent",
+				parent_agent_name: "native-parent",
+			},
+		});
+		const legacy = toLegacyHarnessEvent(ev);
+		expect(legacy.subagent_id).toBe("canonical-id");
+		expect(legacy.parent_agent).toBe("canonical-parent");
+	});
+
+	it("carries lifecycle scalars into tool_input for other-kind events (TaskCompleted)", () => {
+		const ev = makeEvent({
+			runner_native_event: "TaskCompleted",
+			phase: "other",
+			action: { kind: "other", subkind: "TaskCompleted", data: {} },
+			raw: { task_id: "t1", task_subject: "ship it", teammate_name: "w2", ignored_key: "x" },
+		});
+		const legacy = toLegacyHarnessEvent(ev);
+		expect(legacy.hook_event).toBe("TaskCompleted");
+		expect(legacy.tool_input).toEqual({ task_id: "t1", task_subject: "ship it", teammate_name: "w2" });
+	});
+
+	it("leaves tool_input absent for other-kind events with no lifecycle scalars", () => {
+		const ev = makeEvent({
+			runner_native_event: "Notification",
+			phase: "notification",
+			action: { kind: "other", subkind: "Notification", data: {} },
+			raw: { message: "hello" },
+		});
+		expect(toLegacyHarnessEvent(ev).tool_input).toBeUndefined();
+	});
+
 	it("skips optional string fields when present but not string-typed", () => {
 		const ev = makeEvent({
 			raw: {
