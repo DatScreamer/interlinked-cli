@@ -276,7 +276,7 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 		phase: "pre_block",
 		name: "Hardcoded Localhost",
 		description:
-			"Detects `localhost` / `127.0.0.1` baked into source outside of test/config/example/dev paths and outside of non-source extensions (.md/.txt/.yaml/.json/etc.).",
+			"Detects `localhost` / `127.0.0.1` baked into source outside of test/config/example/dev paths and outside of non-source extensions (.md/.txt/.yaml/.json/etc.). Dev-gated lines are exempt: a dev-named identifier on the line (`config.devPort`, `DEV_URL`) or a dev-gated conditional within the previous three lines (`if (devMode)`, `NODE_ENV` checks) marks a declared local-dev value, not a leaked default.",
 		tier: 1,
 		determinism: "fully_deterministic",
 		severity: "error",

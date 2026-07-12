@@ -29,6 +29,12 @@ import {
 	evaluateTscDiffOverlay,
 	isTscFindingBlocking,
 } from "./diff-overlay.js";
+import {
+	lineList,
+	resolveDiskBaseline,
+	runPreBlockRegistryGate,
+	suppressionHint,
+} from "./pre-block-gate.js";
 import { findProjectRoot } from "./quality-checks.js";
 
 // ───────────────────────────────────────────────────────────────
@@ -126,26 +132,44 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 			opts.projectRoot ?? findProjectRoot(path, process.cwd()) ?? process.cwd();
 
 		// -------------------------------------------
-		// 1. pre_block registry
+		// 1. pre_block registry — introduced-only vs the on-disk snapshot,
+		//    suppression-aware (shared semantics with the PreToolUse write
+		//    guard; see pre-block-gate.ts). A pre-existing finding is a
+		//    warning, not a transaction-killer; a new-file write has no
+		//    baseline, so every finding is introduced (strict) — matching
+		//    how steps 2-3 treat new files.
 		// -------------------------------------------
-		const preBlockChecks = buildAgentSafetyChecks(content, path, "pre_block");
 		const instructions = buildCheckInstructions();
-		for (const check of preBlockChecks) {
-			const matches = check.fn();
-			if (matches.length === 0) continue;
-			const first = nonNull(matches[0]);
-			const hint = instructions[check.name];
-			failures.push({
-				path,
-				tool: "pre_block",
-				code: check.name,
-				line: first.line,
-				message: `${matches.length} violation(s) at ${matches
-					.map((m) => `L${m.line}`)
-					.join(", ")}`,
-				severity: "error",
-				...(hint !== undefined ? { hint } : {}),
-			});
+		const preBlockOutcomes = runPreBlockRegistryGate({
+			content,
+			filePath: path,
+			baselineContent: resolveDiskBaseline(path),
+			projectRoot,
+		});
+		for (const o of preBlockOutcomes) {
+			if (o.introduced.length > 0) {
+				failures.push({
+					path,
+					tool: "pre_block",
+					code: o.checkId,
+					line: nonNull(o.introduced[0]).line,
+					message: `introduces ${o.introduced.length} violation(s) at ${lineList(o.introduced)}`,
+					severity: "error",
+					hint: [o.instruction, suppressionHint(o.checkId)].filter(Boolean).join(" "),
+				});
+			}
+			if (o.preexisting.length > 0) {
+				failures.push({
+					path,
+					tool: "pre_block",
+					code: o.checkId,
+					line: nonNull(o.preexisting[0]).line,
+					message:
+						`${o.preexisting.length} pre-existing violation(s) at ${lineList(o.preexisting)} ` +
+						"(already on disk — not introduced by this write)",
+					severity: "warning",
+				});
+			}
 		}
 
 		// -------------------------------------------

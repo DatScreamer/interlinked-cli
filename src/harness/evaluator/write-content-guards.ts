@@ -15,6 +15,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { describeReason, findMalformedRulesIn, suggestRuleFix } from "../../lib/settings-validator.js";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "../check-registry/index.js";
 import {
@@ -23,6 +24,12 @@ import {
 	isTscFindingBlocking,
 } from "../diff-overlay.js";
 import { resolveProposedContent } from "../overlay-content.js";
+import {
+	preBlockIntroducedBlock,
+	preexistingPreBlockWarnings,
+	resolveDiskBaseline,
+	runPreBlockRegistryGate,
+} from "../pre-block-gate.js";
 import { findProjectRoot } from "../quality-checks.js";
 import { scanPromptInjection } from "../signatures.js";
 import type {
@@ -33,15 +40,14 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import {
-	STRICT_TYPING_RULE_ID,
 	evaluateTypeErasureOverlay,
+	STRICT_TYPING_RULE_ID,
 } from "./type-erasure-overlay.js";
 import {
-	INJECTION_SCAN_MIN_CHARS,
 	collectContentQualityWarnings,
+	INJECTION_SCAN_MIN_CHARS,
 	isContentScanExempt,
 } from "./write-content-guards-content-quality.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Extension regex for binary file formats we block text editors from writing to. */
 const BINARY_FILE_EXTENSIONS =
@@ -311,37 +317,32 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 	// ─────────────────────────────────────────────
 	// PreToolUse registry gate — phase: "pre_block"
 	// ─────────────────────────────────────────────
-	// Fully-deterministic, zero-FP errors. Blocks the write and forces
-	// the agent to fix ALL instances of the rule in the target file
-	// before retrying — not just the line it was editing.
-	//
-	// Phase B.4 — pass `preEditContent` so the diff-classifier can skip
-	// warning-severity detectors on non-semantic edits. pre_block detectors
-	// are all severity=error (e.g. eval_usage, promise_reject_non_error)
-	// and STILL run regardless of diff_class, so a credential leaked into
-	// a comment / quoted string is still caught.
+	// Deterministic error-class checks, INTRODUCED-ONLY: a finding blocks
+	// only when THIS edit adds it relative to the on-disk baseline (multiset
+	// over normalized line text — shared semantics in pre-block-gate.ts,
+	// matching the biome/tsc diff-overlays below). A pre-existing finding
+	// surfaces as a warning instead of bricking the file for every unrelated
+	// future edit (the bio-orchestrator wall, 2026-07: one legacy match at
+	// L49 made a ~1,100-line registry file un-editable). Inline
+	// `// interlinked-ignore: <check> — reason` directives and
+	// .interlinked/verify-suppressions.json entries are honored — the same
+	// suppression grammar PostToolUse and verify already use, so "this line
+	// is deliberate" finally has a pre-block answer.
 	function preBlockRegistryGuard(): HarnessDecision | null {
-		const preBlockChecks = buildAgentSafetyChecks(content, filePath, "pre_block", preEditContent);
 		void postEditContent; // reserved for future hunk-granular pre_block
-		const instructions = buildCheckInstructions();
-		for (const check of preBlockChecks) {
-			const matches = check.fn();
-			if (matches.length === 0) continue;
-			const lineList = matches.map((m) => `L${m.line}`).join(", ");
-			const instruction = instructions[check.name] || "";
-			return {
-				decision: "block",
-				reason:
-					`BLOCKED by pre-block rule [${check.name}]. ` +
-					`${filePath} contains ${matches.length} violation(s) at ${lineList}. ` +
-					"Fix ALL instances of this rule in this file before retrying your edit — " +
-					`not just the line you were changing.\n${instruction}`,
-				warnings,
-				rule_id: check.name,
-				severity: "high",
-				category: "pre-block",
-			};
-		}
+		const outcomes = runPreBlockRegistryGate({
+			content,
+			filePath,
+			// Full on-disk file — NOT preEditContent, which for an Edit is the
+			// old_string snippet and would misread every out-of-snippet
+			// pre-existing finding as introduced.
+			baselineContent: resolveDiskBaseline(filePath),
+			projectRoot:
+				findProjectRoot(filePath, event.cwd || process.cwd()) || event.cwd || process.cwd(),
+		});
+		const blocking = outcomes.find((o) => o.introduced.length > 0);
+		if (blocking) return preBlockIntroducedBlock(blocking, filePath, warnings);
+		warnings.push(...preexistingPreBlockWarnings(outcomes, filePath));
 		return null;
 	}
 	const preBlockDecision = preBlockRegistryGuard();

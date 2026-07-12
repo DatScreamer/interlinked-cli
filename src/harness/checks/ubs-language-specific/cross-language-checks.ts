@@ -2,10 +2,10 @@
 // ubs-language-specific.ts during the 1500-line decomposition. Each function
 // returns InlineMatch[]. Multi-language; ext-gated per check.
 
+import { nonNull } from "../../../lib/non-null.js";
 import { stripRegexLiterals } from "../../strip-helpers.js";
 import { getExtension, type InlineMatch, isTestFile } from "../shared.js";
 import { MATCH_LIMIT, stripCommentsPreservingStrings } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_sql_string_concat` — SQL keyword in a quoted string immediately
@@ -268,6 +268,40 @@ function isPrevLineRegExpOpen(strippedLines: string[], i: number): boolean {
 	return prev >= 0 && /\bRegExp\s*\(\s*$/.test(nonNull(strippedLines[prev]));
 }
 
+// A dev-shaped identifier or environment gate: `devPort` / `devMode` /
+// `dev_mode` / `DEV_URL` / `isDev` / `config.dev` / `NODE_ENV` /
+// `import.meta.env.DEV`. `dev` must end at a word or case boundary, so
+// `deviceUrl` / `developer` do NOT match.
+const DEV_TOKEN_RE =
+	/\b(?:is_?[Dd]ev\w*|dev(?:[_A-Z][A-Za-z0-9_]*)?\b|DEV(?:_[A-Z0-9_]+)?\b|\w+\.dev\b|NODE_ENV|import\.meta\.env\.DEV)/;
+
+/** Branch shape — the guard half of a dev-gated conditional. */
+const BRANCH_SHAPE_RE = /\bif\b|\bswitch\b|\bcase\b|\?|&&|\|\|/;
+
+/**
+ * Dev-gated localhost is a DECLARED local-dev value, not a leaked default —
+ * exactly the shape this check's own fix_instruction endorses ("a clear
+ * default for local dev"). True when the endpoint line itself names a dev
+ * token, or when one of the previous three non-empty stripped lines is a
+ * dev-gated conditional (dev token + branch shape). The canonical FP this
+ * exempts (mcp-client-bio, 2026-07 — a guarded dev-mode resolver):
+ *     if (devMode && config.devPort) {
+ *       return `http://localhost:${config.devPort}/mcp`;
+ *     }
+ * Runs on comment-stripped lines, so prose mentions of "dev" cannot exempt.
+ */
+function isDevGuardedLocalhostLine(strippedLines: string[], i: number): boolean {
+	if (DEV_TOKEN_RE.test(nonNull(strippedLines[i]))) return true;
+	let seen = 0;
+	for (let j = i - 1; j >= 0 && seen < 3; j--) {
+		const line = nonNull(strippedLines[j]);
+		if (line.trim() === "") continue;
+		seen++;
+		if (DEV_TOKEN_RE.test(line) && BRANCH_SHAPE_RE.test(line)) return true;
+	}
+	return false;
+}
+
 /**
  * `ubs_hardcoded_localhost` — `localhost` / `127.0.0.1` baked into source
  * outside of test/config/example files. Often committed dev defaults that
@@ -300,6 +334,9 @@ export function checkUbsHardcodedLocalhost(content: string, filePath: string): I
 		// Narrowed template-literal exemption: only skip when there's a
 		// pattern-building signal alongside the interpolated localhost.
 		if (isRegexPatternLocalhostLine(nonNull(originalLines[i]))) continue;
+		// Dev-gated line or guarding conditional: a declared dev-mode value,
+		// not a leaked default (see helper).
+		if (isDevGuardedLocalhostLine(strippedLines, i)) continue;
 		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;

@@ -66,7 +66,11 @@ describe("evaluatePreToolUse — content checks", () => {
 			expect(result.decision).toBe("block");
 			expect(result.rule_id).toBe("eval_usage");
 			expect(result.reason).toContain("eval_usage");
-			expect(result.reason).toContain("Fix ALL instances");
+			// Introduced-only semantics (pre-block-gate.ts): a new file has no
+			// baseline, so the finding is INTRODUCED; the message names the
+			// auditable per-line escape instead of "fix ALL instances".
+			expect(result.reason).toContain("INTRODUCES");
+			expect(result.reason).toContain("interlinked-ignore: eval_usage");
 		});
 
 		it("A6: warns on mixed import/require", () => {

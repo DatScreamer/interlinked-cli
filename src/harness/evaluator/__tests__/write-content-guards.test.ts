@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
  *  `src/harness/evaluator/__tests__/`). Used to prove the package-root-scoped
  *  harness-data exemption recognizes the detector's own pattern files. */
 const PKG_HARNESS_DIR = fileURLToPath(new URL("../..", import.meta.url));
+
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../types.js";
 import {
 	buildTscDiffOverlayBlockReason,
@@ -848,5 +849,80 @@ describe("buildTscDiffOverlayBlockReason — coordinated-refactor guidance", () 
 		const reason = buildTscDiffOverlayBlockReason("Write", [ts2304(10, "FOO")], FILE);
 		expect(reason).toMatch(/sequence them through an intermediate that still compiles/);
 		expect(reason).toMatch(/transactional multi-edit primitive/);
+	});
+});
+
+describe("evaluateWriteContentGuards — pre_block introduced-only (the bio-orchestrator wall)", () => {
+	// The daemon-path pin for pre-block-gate.ts: one pre-existing flagged line
+	// must never brick a file for unrelated edits; only findings THIS edit
+	// introduces block, and the inline interlinked-ignore directive is honored.
+	let root: string;
+	let file: string;
+	const EXISTING = ['export function run(src: string): unknown {', "\treturn eval(src);", "}", ""].join(
+		"\n",
+	);
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "wcg-preblock-"));
+		mkdirSync(join(root, "src"), { recursive: true });
+		file = join(root, "src", "runner.ts");
+		writeFileSync(file, EXISTING);
+	});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	function writeEvent(content: string): ReturnType<typeof evaluateWriteContentGuards> {
+		return evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: file, content },
+			event: makeEvent({ tool_name: "Write", cwd: root }),
+			rules: makeRules(),
+			session: makeSession(),
+			pendingEscalation: undefined,
+		});
+	}
+
+	it("allows an unrelated addition to a file with a pre-existing violation, warning instead", () => {
+		const out = writeEvent(`${EXISTING}export const NEW_ENTRY = { id: "x" };\n`);
+		expect(out.kind).toBe("ok");
+		const warns = out.kind === "ok" ? out.warnings : [];
+		const preexisting = warns.find((w) => w.includes("[interlinked:pre-block]"));
+		expect(preexisting).toContain("pre-existing");
+		expect(preexisting).toContain("eval_usage");
+	});
+
+	it("blocks an edit that INTRODUCES a new violation, naming only the introduced line", () => {
+		const out = writeEvent(`${EXISTING}const risky = eval(process.argv[2] ?? "");\n`);
+		expect(out.kind).toBe("block");
+		const reason = out.kind === "block" ? (out.decision.reason ?? "") : "";
+		expect(reason).toContain("INTRODUCES 1 violation(s) at L4");
+		expect(reason).toContain("pre-existing instance(s) at L2 did not block");
+		expect(reason).toContain("interlinked-ignore: eval_usage");
+	});
+
+	it("honors an inline interlinked-ignore directive on the introduced line", () => {
+		const out = writeEvent(
+			`${EXISTING}// interlinked-ignore: eval_usage — vetted sandbox input\n` +
+				`const vetted = eval(process.argv[3] ?? "");\n`,
+		);
+		expect(out.kind).toBe("ok");
+	});
+
+	it("stays strict for a brand-new file (no baseline): a violation blocks", () => {
+		const fresh = join(root, "src", "fresh.ts");
+		const out = evaluateWriteContentGuards({
+			toolName: "Write",
+			toolInput: { file_path: fresh, content: 'const x = eval(process.argv[2] ?? "");\n' },
+			event: makeEvent({ tool_name: "Write", cwd: root }),
+			rules: makeRules(),
+			session: makeSession(),
+			pendingEscalation: undefined,
+		});
+		expect(out.kind).toBe("block");
+	});
+
+	it("an identical rewrite of a violating file does not block (idempotence)", () => {
+		const out = writeEvent(EXISTING);
+		expect(out.kind).toBe("ok");
 	});
 });

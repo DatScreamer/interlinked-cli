@@ -62,6 +62,7 @@ vi.mock("../diff-overlay.js", async () => {
 	return { ...actual, evaluateBiomeDiffOverlay: wrapBiome, evaluateTscDiffOverlay: wrapTsc };
 });
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	formatGateResult,
 	GATE_SEVERITY_ERROR,
@@ -69,7 +70,6 @@ import {
 	gateProposedContent,
 	readOnDiskOrUndefined,
 } from "../content-gate.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
 // `src/harness/__tests__`), and that is exactly the `projectRoot` the gate is
@@ -234,40 +234,67 @@ describe("gateProposedContent", () => {
 		expect(result.failures).toEqual([]);
 	});
 
-	it("pre_block failure: eval() trips the pre_block registry as an error", () => {
-		// Disk content === proposed content, so biome/tsc diff-overlays produce
-		// no NEW findings; only the pre_block phase (which runs on the proposed
-		// content directly) fires.
+	it("pre_block failure: an INTRODUCED eval() trips the registry as an error", () => {
+		// Disk carries one eval; the proposal adds a SECOND, distinct one. Only
+		// the introduced line is a transaction-killer (introduced-only
+		// semantics, pre-block-gate.ts); the pre-existing one rides along as a
+		// warning. The introduced line is line 5 of the proposal.
+		const proposed = `${PRE_BLOCK_CONTENT}const risky = eval(process.argv[2] ?? "");\n`;
+		const result = gateProposedContent([{ path: PRE_BLOCK_FIXTURE, content: proposed }], {
+			projectRoot: CLI_ROOT,
+		});
+		expect(result.ok).toBe(false);
+		const preBlock = result.failures.filter((f) => f.tool === "pre_block");
+		const evalFail = preBlock.find((f) => f.code === "eval_usage" && f.severity === "error");
+		expect(evalFail).toBeDefined();
+		const nonNull = evalFail as NonNullable<typeof evalFail>;
+		// The error names ONLY the introduced line, not the pre-existing L3.
+		expect(nonNull.line).toBe(5);
+		expect(nonNull.message).toMatch(/introduces 1 violation\(s\) at L5/);
+		// hint = registry fix_instruction + the suppression escape.
+		expect(typeof nonNull.hint).toBe("string");
+		expect(nonNull.hint as string).toContain("interlinked-ignore: eval_usage");
+		// The pre-existing on-disk instance surfaces as a non-blocking warning.
+		const preexisting = preBlock.find((f) => f.severity === GATE_SEVERITY_WARNING);
+		expect(preexisting?.message).toMatch(/pre-existing violation\(s\) at L3/);
+	});
+
+	it("pre_block pre-existing-only: rewriting the file unchanged WARNS but does not block", () => {
+		// Disk content === proposed content: the eval() is pre-existing, so the
+		// introduced-only gate must not brick the file (the bio-orchestrator
+		// wall — one legacy finding blocking every unrelated future edit).
 		const result = gateProposedContent(
 			[{ path: PRE_BLOCK_FIXTURE, content: PRE_BLOCK_CONTENT }],
 			{ projectRoot: CLI_ROOT },
 		);
-		expect(result.ok).toBe(false);
+		expect(result.ok).toBe(true);
 		const preBlock = result.failures.filter((f) => f.tool === "pre_block");
-		expect(preBlock.length).toBeGreaterThan(0);
-		const evalFail = preBlock.find((f) => f.code === "eval_usage");
-		expect(evalFail).toBeDefined();
-		const nonNull = evalFail as NonNullable<typeof evalFail>;
-		expect(nonNull.severity).toBe(GATE_SEVERITY_ERROR);
-		// Line of the eval() call (3rd line of PRE_BLOCK_CONTENT).
-		expect(nonNull.line).toBe(3);
-		// The message enumerates each violation's line as "L<n>".
-		expect(nonNull.message).toMatch(/violation\(s\) at L3/);
-		// hint is wired from the registry's fix_instruction (eval_usage has one).
-		expect(typeof nonNull.hint).toBe("string");
-		expect((nonNull.hint as string).length).toBeGreaterThan(0);
-		// No biome/tsc noise because proposed === on-disk.
-		expect(result.failures.filter((f) => f.tool === "biome")).toEqual([]);
-		expect(result.failures.filter((f) => f.tool === "tsc")).toEqual([]);
+		expect(preBlock).toHaveLength(1);
+		expect(preBlock[0]?.severity).toBe(GATE_SEVERITY_WARNING);
+		expect(preBlock[0]?.message).toContain("pre-existing");
+	});
+
+	it("pre_block suppression: an inline interlinked-ignore directive exempts an introduced line", () => {
+		const proposed =
+			`${PRE_BLOCK_CONTENT}// interlinked-ignore: eval_usage — sandboxed REPL, input is vetted\n` +
+			`const vetted = eval(process.argv[3] ?? "");\n`;
+		const result = gateProposedContent([{ path: PRE_BLOCK_FIXTURE, content: proposed }], {
+			projectRoot: CLI_ROOT,
+		});
+		// The introduced eval is suppressed; the pre-existing one still warns.
+		expect(result.failures.filter((f) => f.tool === "pre_block" && f.severity === "error")).toEqual(
+			[],
+		);
+		expect(result.ok).toBe(true);
 	});
 
 	it("projectRoot omitted: falls back to findProjectRoot/cwd and still gates", () => {
 		// No projectRoot option → the gate computes it per-entry. The fixture
-		// lives under the CLI tree, so findProjectRoot resolves a real root; the
-		// pre_block check still fires on the eval() content. Exercises the
+		// lives under the CLI tree, so findProjectRoot resolves a real root; an
+		// INTRODUCED eval() still blocks. Exercises the
 		// `opts.projectRoot ?? findProjectRoot(...) ?? cwd` fallback chain.
 		const result = gateProposedContent([
-			{ path: PRE_BLOCK_FIXTURE, content: PRE_BLOCK_CONTENT },
+			{ path: PRE_BLOCK_FIXTURE, content: `${PRE_BLOCK_CONTENT}const x = eval(input);\n` },
 		]);
 		expect(result.ok).toBe(false);
 		expect(result.failures.some((f) => f.tool === "pre_block" && f.code === "eval_usage")).toBe(

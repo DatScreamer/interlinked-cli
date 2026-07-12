@@ -89,6 +89,75 @@ describe("checkUbsHardcodedLocalhost", () => {
 		expect(matches.length).toBeGreaterThan(0);
 	});
 
+	// --- Dev-gated exemption (the mcp-client-bio resolver FP, 2026-07) ---
+	// A localhost endpoint on a line that names a dev token, or under a
+	// dev-gated conditional within the previous three non-empty lines, is a
+	// DECLARED local-dev value — not a leaked default.
+
+	it("does NOT fire on a guarded dev-mode resolver branch (the reported false positive)", () => {
+		const code = [
+			"function resolveServerUrl(config: ServerConfig, devMode: boolean): string {",
+			"  if (devMode && config.devPort) {",
+			"    return `http://localhost:${config.devPort}/mcp`;",
+			"  }",
+			"  return config.url;",
+			"}",
+		].join("\n");
+		expect(
+			checkUbsHardcodedLocalhost(code, "servers/bio-orchestrator/src/bio/servers.ts"),
+		).toEqual([]);
+	});
+
+	it("does NOT fire when the guarding conditional (within 3 lines) names a dev token", () => {
+		const code = [
+			"if (isDev) {",
+			"  // route everything locally",
+			'  url = "http://localhost:3000";',
+			"}",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/router.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a NODE_ENV-gated ternary on the same line", () => {
+		const code =
+			'const base = process.env.NODE_ENV !== "production" ? "http://localhost:8787" : PROD_URL;\n';
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/base.ts")).toEqual([]);
+	});
+
+	it("does NOT fire when the line itself names a DEV_ constant", () => {
+		const code = 'registerServer(DEV_GATEWAY, "http://127.0.0.1:8080/gateway");\n';
+		expect(checkUbsHardcodedLocalhost(code, "src/lib/register.ts")).toEqual([]);
+	});
+
+	it("STILL fires when the nearby identifier merely starts with dev- letters (deviceUrl)", () => {
+		const code = 'const deviceUrl = "http://localhost:3000/devices";\n';
+		const matches = checkUbsHardcodedLocalhost(code, "src/lib/devices.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("STILL fires on an unguarded endpoint even when a dev-gated block exists earlier", () => {
+		const code = [
+			"if (devMode) {",
+			'  a = "http://localhost:1111";',
+			"}",
+			"const x = 1;",
+			"const y = 2;",
+			"const z = 3;",
+			'const leaked = "http://localhost:9999/api";',
+		].join("\n");
+		const matches = checkUbsHardcodedLocalhost(code, "src/lib/mixed.ts");
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.line).toBe(7);
+	});
+
+	it("STILL fires when the preceding dev mention is not a conditional guard", () => {
+		// `devNote` is on the previous line but a plain assignment — the
+		// window rule requires a branch shape alongside the dev token.
+		const code = ['const devNote = "see docs";', 'const url = "http://localhost:4000";'].join("\n");
+		const matches = checkUbsHardcodedLocalhost(code, "src/lib/notes.ts");
+		expect(matches).toHaveLength(1);
+	});
+
 	// --- Configurable-default / detection-test exemptions ---
 	// A localhost literal that is a *configurable default* or a *detection
 	// test* is not a baked endpoint — it is the shape the check's own
