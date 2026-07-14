@@ -45,6 +45,7 @@ const DOCS = [
 	join(ROOT, "landing/public/index.html"),
 	join(ROOT, "README.md"),
 	join(ROOT, "CLAUDE.md"),
+	join(ROOT, "docs/harness.md"),
 ];
 
 // Map gen-marker NAME → how to compute its expected value from
@@ -58,6 +59,9 @@ const DOCS = [
 // local activity.jsonl + Claude Code transcripts).
 const GEN_MARKERS = {
 	builtin_rule_count: ({ facts }) => String(facts.builtin_rule_count),
+	builtin_rule_category_count: ({ facts }) => String(facts.builtin_rule_category_count),
+	quality_check_count: ({ facts }) => String(facts.quality_check_count),
+	structural_check_count: ({ facts }) => String(facts.structural_check_count),
 	runner_count: ({ facts }) => String(facts.runner_count),
 	runners_inline: ({ facts }) => facts.runners_inline,
 	mode_names_inline: ({ facts }) => facts.mode_names_inline,

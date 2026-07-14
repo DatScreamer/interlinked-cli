@@ -40,6 +40,7 @@ function extractBuiltinRules() {
 		.sort();
 	const reasons = {};
 	const ids = [];
+	const categories = new Set();
 	for (const file of files) {
 		const text = readFileSync(join(dir, file), "utf8");
 		// Walk every `{` block, looking for { id: "...", ..., reason: "...", ... }.
@@ -51,9 +52,28 @@ function extractBuiltinRules() {
 			ids.push(id);
 			const reasonMatch = block.match(/\breason:\s*["']([^"']+)["']/);
 			if (reasonMatch) reasons[id] = reasonMatch[1];
+			const categoryMatch = block.match(/\bcategory:\s*["']([^"']+)["']/);
+			if (categoryMatch) categories.add(categoryMatch[1]);
 		}
 	}
-	return { count: ids.length, ids, reasons };
+	return { count: ids.length, ids, reasons, categoryCount: categories.size };
+}
+
+// ---------------------------------------------------------------------
+// Check-family counts — from the freshness-pinned generated reference docs
+// ---------------------------------------------------------------------
+// docs/generated/*.md are auto-generated from the check registries and
+// pinned to source by docs-freshness.test.ts (CI fails on drift) — so their
+// headline counts ARE the registry counts, extractable without importing TS
+// (keeps this extractor dependency-free; importing dist would trust a
+// possibly-stale build, per the update-check precedent above).
+function extractGeneratedCheckCount(rel) {
+	const text = read(rel);
+	const m = text.match(/^(\d+) [\w-]+ checks that run after file edits\.$/m);
+	if (!m) {
+		throw new Error(`headline check count not found in ${rel} — did its generated format change?`);
+	}
+	return Number.parseInt(m[1], 10);
 }
 
 // ---------------------------------------------------------------------
@@ -165,6 +185,9 @@ const facts = {
 	builtin_rule_count: builtin.count,
 	builtin_rule_ids: builtin.ids,
 	builtin_rule_reasons: builtin.reasons,
+	builtin_rule_category_count: builtin.categoryCount,
+	quality_check_count: extractGeneratedCheckCount("docs/generated/quality-checks.md"),
+	structural_check_count: extractGeneratedCheckCount("docs/generated/structural-checks.md"),
 	runner_count: runners.count,
 	runner_keys: runners.keys,
 	runner_display: runners.display,
