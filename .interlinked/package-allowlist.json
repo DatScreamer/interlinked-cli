@@ -47,6 +47,12 @@
         "approved_by": "qcody",
         "reason": "per-edit mutation engine (target-repo devDep)",
         "license": "Apache-2.0"
+      },
+      "@rolldown/binding-darwin-arm64": {
+        "approved_at": "2026-07-13T14:20:25.214Z",
+        "approved_by": "claude (npm optional-deps bug workaround)",
+        "reason": "native binding dropped by npm/cli#4828; exact-pin matching installed rolldown",
+        "license": "MIT"
       }
     },
     "pypi": {},
@@ -58,5 +64,16 @@
     "gradle": {},
     "nuget": {}
   },
-  "lockfile_snapshots": {}
+  "lockfile_snapshots": {
+    "package.json": {
+      "sha256": "712a907c43312bd1e770f93f494bf5e178a1d1ef56ce3f83119314e5d81345b6",
+      "approved_at": "2026-07-13T14:19:45.319Z",
+      "approved_by": "claude (post-pull approval)"
+    },
+    "package-lock.json": {
+      "sha256": "f571bba3b9783c1f9c4b81f10c4ef756bb38e6b30faef7d18fd834283682fa94",
+      "approved_at": "2026-07-13T14:19:45.320Z",
+      "approved_by": "claude (post-pull approval)"
+    }
+  }
 }
