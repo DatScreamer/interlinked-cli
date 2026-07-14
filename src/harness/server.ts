@@ -29,7 +29,7 @@ import {
 	type AutoCoordinationState,
 	DEFAULT_AUTO_COORDINATION_CONFIG,
 } from "./auto-coordinate.js";
-import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
+import { startBuildRefreshWatcher } from "./build-refresh.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
 import { CohortManager, setActiveCohort } from "./cohort.js";
@@ -769,8 +769,7 @@ logAlways(
 	}),
 );
 
-const __staleWarn = stalenessWarning(runningBuildStaleness(import.meta.url));
-if (__staleWarn) logAlways(__staleWarn);
+startBuildRefreshWatcher({ moduleUrl: import.meta.url, cwd: CWD, lastActivityMs: () => lastHookEventAtMs, log: logAlways });
 
 // Write initial classifier status for statusline
 writeClassifierStatus(computeClassifierStatusLine(rules));
