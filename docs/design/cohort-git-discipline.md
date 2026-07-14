@@ -1,6 +1,6 @@
 # Cohort git discipline — making the multi-agent guard actually guard
 
-**Status:** Plan, 2026-07-09. Not built. Sourced from `docs/external-pulse/bun-in-rust.md` §2.6.
+**Status:** Shipped — defect 0 fixed 2026-07-09 (6d29859, `apply_patch` writes lease their section paths); predicate-gated blast-radius rules + local-lease escalation shipped 2026-07-10 (2475022). Planned 2026-07-09; sourced from `docs/external-pulse/bun-in-rust.md` §2.6.
 
 **Stance (operator, 2026-07-09).** *Two or more agents on one working tree is the normal state
 of things, not a bug.* File reservations exist so two agents don't hold the same file at the
@@ -324,7 +324,9 @@ Then 4.1 + 4.2 (the axis and the role fix) — pure capability, they gate nothin
 `getCounts` / `applies_to_roles` live. Then 4.3 (the rules), destructive-first: `stash`,
 `rebase`, `checkout` before `add -A` / `commit -a`.
 
-**Defect 0 is now confirmed, not an open question.** Fix it first:
+**Defect 0 is now confirmed, not an open question.** *(Fixed 2026-07-09 in
+6d29859 — `evaluateAutoReservation` recovers apply_patch section paths and
+leases each; regression tests cover the multi-section shape.)* Fix it first:
 `evaluateAutoReservation` must recover paths via `editedFileForEvent` (or
 `extractApplyPatchRaw` + `parseApplyPatchSections` directly) and lease **every** section path,
 not just one. Regression test: a Codex-shaped `apply_patch` event with two file sections takes

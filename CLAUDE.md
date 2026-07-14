@@ -160,11 +160,11 @@ npm run docs                               # Regenerate reference docs
 | `src/harness/types.ts` | All type definitions |
 | `src/harness/server.ts` | Node.js Unix socket server (main entry, `node:net`) |
 | `src/harness/evaluator.ts` | Guard evaluation: PreToolUse blocking + PostToolUse feedback |
-| `src/harness/rules-loader.ts` | 105 built-in rules + JSON config + hot-reload |
+| `src/harness/rules-loader.ts` | <!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> built-in rules + JSON config + hot-reload |
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
-| `src/harness/quality-checks.ts` | PostToolUse: 33 checks across 8+ languages (tsc, biome, cargo, rustfmt, mypy, ruff, etc.) |
+| `src/harness/quality-checks.ts` | PostToolUse: <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> checks across 8+ languages (tsc, biome, cargo, rustfmt, mypy, ruff, etc.) |
 | `src/harness/server-bridge.ts` | Server coordination: reservation sync, guard event reporting |
 | `src/harness/trigram-index.ts` | Trigram search index: build, query, serialize, dirty layer |
 | `src/harness/regex-trigrams.ts` | Regex → trigram decomposition, rg command parsing |
@@ -293,9 +293,9 @@ against current code, May 2026):
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `docs/generated/guard-rules.md` | All 105 built-in guard rules by category |
-| `docs/generated/quality-checks.md` | All 33 PostToolUse quality checks |
-| `docs/generated/structural-checks.md` | All 25 structural checks by tier |
+| `docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> built-in guard rules by category |
+| `docs/generated/quality-checks.md` | All <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> PostToolUse quality checks |
+| `docs/generated/structural-checks.md` | All <!-- gen:structural_check_count -->25<!-- /gen:structural_check_count --> structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
 **How guard evaluation works:**
@@ -675,7 +675,7 @@ scoped overlay + affected-test set, kept ≤25s by small files.
 ## Testing
 
 ```bash
-npx vitest run                                          # All 765 tests
+npx vitest run                                          # Full suite (~20k tests; count drifts — don't pin it here)
 npx vitest run src/harness/__tests__/evaluator.test.ts  # Harness guard tests
 npx vitest run src/commands/__tests__/cli-bugs.test.ts  # CLI regression tests
 ```

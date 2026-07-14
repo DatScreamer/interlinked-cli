@@ -1,6 +1,6 @@
 # Test-oracle integrity — "0 tests skipped or deleted", made mechanical
 
-**Status:** Plan, 2026-07-09. Not built. Sourced from `docs/external-pulse/bun-in-rust.md` §2.5.
+**Status:** Shipped 2026-07-10 (d249a4a) — polyglot skip/stub markers, SUT-conditioned deletion gate, committed skipped-tests water-line. Planned 2026-07-09; sourced from `docs/external-pulse/bun-in-rust.md` §2.5.
 
 **The invariant.** Bun's rewrite replaced 535,496 lines of Zig with Rust and changed the
 test suite by exactly nothing: *"0 tests skipped or deleted."* The suite is written in

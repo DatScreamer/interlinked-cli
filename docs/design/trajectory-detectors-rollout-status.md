@@ -6,6 +6,15 @@ Status doc tracking the trajectory sequence-detector rollout against the plan
 in [`trajectory-detectors-implementation-plan.md`](trajectory-detectors-implementation-plan.md).
 Updated as PRs land.
 
+> **Disambiguation (2026-07-13):** this doc covers the ENFORCING
+> sequence-detector system (`src/harness/sequence-checks/`, 23 detectors).
+> The newer shadow-mode trajectory rules ENGINE (`src/harness/trajectory/`,
+> families F1–F11) is a separate system documented in
+> [`deterministic-trajectory-rules.md`](deterministic-trajectory-rules.md);
+> its F5 security rules deliberately stay shadow-only while the detectors
+> here enforce. The dedupe map in `src/harness/trajectory/index.ts` keeps
+> the two from double-firing.
+
 ## Shipped this session
 
 ### PR1 — Framework + Bash provenance + inspection commands

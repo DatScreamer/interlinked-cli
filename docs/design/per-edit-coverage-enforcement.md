@@ -83,15 +83,19 @@ suite actually covers.
    `src/harness/coverage-obligation-ledger.ts` (rolling suite-runtime estimate +
    per-file coverage baseline + `coverage-obligations.jsonl`). Wired into
    `server/pre-tool-pipeline.ts` after the cheap checks, behind the config flag.
-   **Config-gated, DEFAULT OFF** (`per_edit_coverage` in `types/config.ts` +
-   `rules/default-config.ts`); a repo that does not opt in pays zero cost. The
+   **Config-gated.** Shipped default-off, then flipped **DEFAULT ON globally**
+   in 13ac428 (2026-06-10) — all four gates, every repo, opt-out via
+   `per_edit_coverage` in `types/config.ts` + `rules/default-config.ts`. The
    block reason is strict-TDD ("line N uncovered — add its test in this edit via
    MultiEdit"). Over-budget → record a deferred obligation + allow (commit-time
    enforcement is step 5b).
 4. Python `coverage.py` runner impl.
 5. Commit-time defer: (a) the obligation-RECORD half landed with step 3 (the
-   budget-gate appends to `coverage-obligations.jsonl`); (b) the commit-time
-   ENFORCEMENT that consumes those obligations is still pending.
+   budget-gate appends to `coverage-obligations.jsonl`); (b) commit-time
+   ENFORCEMENT shipped as the commit-intercept gate (626afc9,
+   `evaluator/commit-gate.ts`) — it re-verifies the full working tree at
+   `git commit` rather than consuming the deferred records one-by-one; the
+   Stop-event backstop (70a96a1) nudges on obligations deferred mid-session.
 6. Config + docs + tests (≥3 positive / ≥3 negative per component) — landed with
    step 3 for the coverage lane.
 

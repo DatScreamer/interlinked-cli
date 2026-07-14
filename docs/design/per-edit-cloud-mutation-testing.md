@@ -294,6 +294,13 @@ nothing on the gated path; Artifacts is a one-interface swap.
 
 ## 12. Availability model & default policy — hard-on-evidence, fail-open-on-capability
 
+> **Shipped-state note (2026-07-13):** the daemon currently ships
+> `per_edit_mutation.enabled: false` (`rules/default-config.ts`) — see the
+> Status header. The default-on policy below is the design TARGET, gated on
+> the cloud runner path (Artifacts provisioner, §10) being generally
+> available. The governance lock (`allow_agent_override: false`) applies
+> whenever the gate is enabled.
+
 > **Per-edit mutation is default-on and hard-gating when measured. Availability is a
 > capability question, not an agent choice.** Users may choose local-only/free
 > operation or disable cloud mutation, but **agents cannot downgrade mutation

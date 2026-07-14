@@ -61,8 +61,10 @@ export const oblConflictMarkerPersisted: TrajectoryRule = (state, event) => {
 // ============================================================
 // The net-open obligation ledger (opened-minus-closed TODO/stub/disabled-test/
 // conflict-marker lines), surfaced once at Stop as a calm inventory. Self-gates
-// to Stop events; the shadow normalizer currently forwards only PreToolUse /
-// PostToolUse, so this fires only once Stop events reach the engine.
+// to Stop events; the shadow normalizer forwards PreToolUse / PostToolUse /
+// Stop (Stop forwarding added in 31b0a54), so this fires at each Stop. Note it
+// nets over the bounded `recentEvents` window (last 64 events), not the whole
+// session.
 export const oblNetOpenAtStop: TrajectoryRule = (state, event) => {
 	if (event.hook !== "Stop") return null;
 	const text = formatOpenObligations(state.recentEvents);
