@@ -25,6 +25,7 @@ export {
 	checkRecursiveWalkerLstat,
 	checkTlsVerifyDisabled,
 	checkWeakHash,
+	checkWeakRandom,
 } from "./agent-safety-crypto.js";
 // --- 2. Import Hygiene / Dependency Safety ---
 export {

@@ -18,6 +18,7 @@ import {
 	checkPackageJsonPublishInvariants,
 	checkPromiseRejectNonError,
 	checkPyNoneEquality,
+	checkPythonAssertTautology,
 	checkSelfImport,
 	checkShelveOpen,
 	checkSubprocessShellTrue,
@@ -398,6 +399,25 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 		fn: checkYamlUnsafeLoad,
 		resultsPropName: "yamlUnsafeLoad",
 		content_keywords: ["yaml.load", "yaml.unsafe_load"],
+	},
+	{
+		// DW test-adoption P0.5 class-breadth (2026-07-17): the pytest `assert
+		// (cond, "msg")` tautology. Zero-FP deterministic (flat parenthesized tuple
+		// only) → pre_block/error.
+		id: "ubs_python_assert_tautology",
+		phase: "pre_block",
+		name: "Python assert tautology",
+		description:
+			'Detects `assert (cond, "msg")` — the parentheses make a 2-tuple, which is always truthy, so the assertion NEVER fails (the author meant `assert cond, "msg"`). Function calls (`assert isinstance(x, int)`) and tuple comparisons (`assert (a, b) == c`) are not matched.',
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			'Drop the parentheses: `assert cond, "msg"`. As written the assertion tests a non-empty tuple, which is always true — it silently passes for every input, giving false confidence.',
+		fn: checkPythonAssertTautology,
+		resultsPropName: "pythonAssertTautology",
+		content_keywords: ["assert"],
 	},
 	{
 		id: "unawaited_async_assertion",

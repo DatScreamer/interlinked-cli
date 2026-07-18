@@ -141,11 +141,12 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// resolvable paths are flagged and the ephemeral-target exclusion list is
 	// heuristic. Advisory until path resolution covers more shapes.
 	"gitignored_written_config",
-	// readme_script_drift: verify-only sibling (needs a package.json scripts
-	// resolver walking up from the markdown file — 3-arg, outside the registry
-	// contract). Extraction is deterministic but nearest-manifest resolution is
-	// heuristic in monorepos. Advisory, same posture as gitignored_written_config.
+	// readme_script_drift: verify-only sibling (3-arg — needs a package.json
+	// scripts resolver). Deterministic extraction, heuristic nearest-manifest
+	// resolution in monorepos. Advisory, like gitignored_written_config.
 	"readme_script_drift",
+	// spec_path_ref: verify-only 3-arg fs resolver; heuristic present-tense gate. Advisory.
+	"spec_path_ref",
 	// contradictory_nullness_chain: exact syntax match, but the a?.b! pattern is
 	// occasionally intentional under checked-elsewhere invariants — low- not
 	// zero-FP. Advisory until cross-repo calibration measures the FP rate.

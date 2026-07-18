@@ -12,6 +12,7 @@ import {
 	checkCAssertSideEffects,
 	checkJavaAssertSideEffects,
 	checkPythonAssertSideEffects,
+	checkPythonAssertTautology,
 	detectAssertSideEffect,
 } from "./assert-side-effects.js";
 
@@ -533,5 +534,31 @@ describe("checkJavaAssertSideEffects — negative (must NOT fire)", () => {
 			"}",
 		].join("\n");
 		expect(checkJavaAssertSideEffects(live, JAVA_PATH).map((m) => m.line)).toEqual([5]);
+	});
+});
+
+describe("checkPythonAssertTautology (ubs_python_assert_tautology)", () => {
+	const PY = "src/thing.py";
+
+	it("fires on the always-true parenthesized-tuple assert (test files included)", () => {
+		expect(checkPythonAssertTautology('assert (x == 1, "should be 1")', PY)).toHaveLength(1);
+		expect(checkPythonAssertTautology('assert (result, "must be truthy")', PY)).toHaveLength(1);
+		expect(checkPythonAssertTautology('assert (a == b, f"got {a}")', "tests/test_x.py")).toHaveLength(1);
+	});
+
+	it("does NOT fire on the correct form or a single parenthesized expr", () => {
+		expect(checkPythonAssertTautology('assert x == 1, "should be 1"', PY)).toEqual([]);
+		expect(checkPythonAssertTautology("assert (x == 1)", PY)).toEqual([]);
+	});
+
+	it("does NOT fire on function/isinstance calls or tuple comparisons", () => {
+		expect(checkPythonAssertTautology("assert isinstance(x, int)", PY)).toEqual([]);
+		expect(checkPythonAssertTautology("assert func(a, b)", PY)).toEqual([]);
+		expect(checkPythonAssertTautology("assert (a, b) == expected", PY)).toEqual([]);
+	});
+
+	it("does NOT fire in comments/strings or wrong extension", () => {
+		expect(checkPythonAssertTautology('# assert (x, "msg") was a bug', PY)).toEqual([]);
+		expect(checkPythonAssertTautology('assert (x == 1, "msg")', "src/thing.ts")).toEqual([]);
 	});
 });

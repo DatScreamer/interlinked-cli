@@ -142,3 +142,46 @@ describe("runAgentSafetyChecks — readme_script_drift fixture repo", () => {
 		expect(c.r.readmeScriptDrift).toHaveLength(0);
 	});
 });
+
+// spec_path_ref wiring (round-2 #25) — proves the 3-arg detector fires through
+// the production battery with the real existsSync-backed resolver, not only in
+// its direct unit tests.
+describe("runAgentSafetyChecks — spec_path_ref fixture repo", () => {
+	const tmpDirs: string[] = [];
+	afterEach(() => {
+		for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	});
+
+	function runOnDoc(markdown: string, seedExistingPath?: string): CodeQualityResults {
+		const dir = mkdtempSync(join(tmpdir(), "spec-pathref-repo-"));
+		tmpDirs.push(dir);
+		if (seedExistingPath) writeFileSync(join(dir, seedExistingPath), "seed", "utf-8");
+		const file = join(dir, "PLAN.md");
+		writeFileSync(file, markdown, "utf-8");
+		const c: FileCheckContext = {
+			file,
+			content: markdown,
+			relPath: "PLAN.md",
+			cwd: dir,
+			r: emptyResults(),
+			piiOpts: {},
+		};
+		runAgentSafetyChecks(c);
+		return c.r;
+	}
+
+	it("fires on a present-tense claim that a missing path exists in-repo", () => {
+		const r = runOnDoc("# Plan\nThe full `invariants.toml` exists in-repo today.\n");
+		expect(r.specPathRef.length).toBe(1);
+		expect(nonNull(r.specPathRef[0]).check).toBe("spec_path_ref");
+		expect(nonNull(r.specPathRef[0]).message).toContain("invariants.toml");
+	});
+
+	it("stays quiet when the claimed path actually exists (resolver end-to-end)", () => {
+		const r = runOnDoc(
+			"# Plan\nThe full `invariants.toml` exists in-repo today.\n",
+			"invariants.toml",
+		);
+		expect(r.specPathRef).toHaveLength(0);
+	});
+});

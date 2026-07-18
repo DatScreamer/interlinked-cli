@@ -328,16 +328,25 @@ export const CODE_QUALITY_ENTRIES: CheckRegistration[] = [
 		resultsPropName: "hardcodedTimeout",
 	},
 	{
+		// Promoted pre_warn → pre_block (2026-07-17, DW test-adoption P0.3a): the
+		// skip-marker sibling of the already-pre_block `focused_tests`. Introducing
+		// an UNCONDITIONAL skip in the same edit that changes prod is a test-signal
+		// sabotage vector, so it blocks — but only INTRODUCED skips (the pre-block
+		// gate is introduced-only; pre-existing repo skips surface as warnings), and
+		// `findSkipMarkers` is conservative-by-construction (skipif / cfg_attr /
+		// testing.Short are exempt), so this stays zero-FP. Escape: an
+		// `// interlinked-ignore: disabled_tests — <reason>` directive.
 		id: "disabled_tests",
-		phase: "pre_warn",
+		phase: "pre_block",
 		name: "Disabled Tests",
-		description: "Detects skipped tests (it.skip, xit, xdescribe)",
-		tier: 2,
+		description:
+			"Detects newly-introduced unconditional test skips (it.skip/xit/xdescribe, @pytest.mark.skip, #[ignore], t.Skip)",
+		tier: 1,
 		determinism: "fully_deterministic",
-		severity: "warning",
+		severity: "error",
 		pipeline: "agent_safety",
 		fix_instruction:
-			"Remove it.skip/xit/xdescribe markers. Disabled tests become stale and mask regressions.",
+			"Remove the skip marker — a disabled test masks regressions. If the skip is genuinely temporary, add `// interlinked-ignore: disabled_tests — <reason>` (audited).",
 		fn: checkDisabledTests,
 		resultsPropName: "disabledTests",
 	},

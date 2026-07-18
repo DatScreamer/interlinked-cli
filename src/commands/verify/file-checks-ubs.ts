@@ -55,6 +55,7 @@ import {
 	checkUncheckedRedirect,
 	checkUnsafeFormatString,
 	checkWeakHash,
+	checkWeakRandom,
 	checkXmlExternalEntity,
 	checkYamlUnsafeLoad,
 } from "../../harness/generic-checks.js";
@@ -112,6 +113,7 @@ export function runUbsChecks(ctx: FileCheckContext): void {
 		...toIssues("ubs_py_none_equality", relPath, checkPyNoneEquality(content, file)),
 	);
 	r.weakHash.push(...toIssues("ubs_weak_hash", relPath, checkWeakHash(content, file)));
+	r.weakRandom.push(...toIssues("ubs_weak_random_security", relPath, checkWeakRandom(content, file)));
 	// Plan 04 D.1 partial — high-leverage backlog
 	r.evalInputTainted.push(
 		...toIssues(

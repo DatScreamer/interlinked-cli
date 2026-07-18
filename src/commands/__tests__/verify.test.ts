@@ -308,6 +308,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling +
 				// two low-not-zero-FP heuristics pending cross-repo calibration.
 				"readme_script_drift",
+				"spec_path_ref",
 				"contradictory_nullness_chain",
 				"resource_handle_leak",
 			].sort(),

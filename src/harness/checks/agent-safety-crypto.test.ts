@@ -4,6 +4,7 @@ import {
 	checkRecursiveWalkerLstat,
 	checkTlsVerifyDisabled,
 	checkWeakHash,
+	checkWeakRandom,
 } from "./agent-safety-crypto.js";
 
 // Smoke-test coverage for the agent-safety crypto / TLS / filesystem-safety
@@ -123,5 +124,34 @@ describe("checkRecursiveWalkerLstat", () => {
 	it("does NOT run on non-JS/TS files", () => {
 		const out = checkRecursiveWalkerLstat(recursiveWalkerStatSync, "src/walker.py");
 		expect(out).toEqual([]);
+	});
+});
+
+describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
+	it("fires on Python random.<fn> generating a security value (camelCase/snake aware)", () => {
+		expect(checkWeakRandom("otp = random.randint(100000, 999999)  # user otp", "src/a.py")).toHaveLength(1);
+		expect(checkWeakRandom("password = ''.join(random.choice(alphabet) for _ in range(16))", "src/a.py")).toHaveLength(1);
+		expect(checkWeakRandom("resetToken = random.random()", "src/a.py")).toHaveLength(1);
+	});
+
+	it("does NOT fire on non-security random (sampling, indices)", () => {
+		expect(checkWeakRandom("idx = random.randint(0, len(items) - 1)", "src/a.py")).toEqual([]);
+		expect(checkWeakRandom("pick = random.choice(variants)  # a/b bucketing", "src/a.py")).toEqual([]);
+	});
+
+	it("does NOT fire on SECURE Python forms even in a security context", () => {
+		expect(checkWeakRandom("secret = secrets.token_hex(16)", "src/a.py")).toEqual([]);
+		expect(checkWeakRandom("nonce = random.SystemRandom().randint(0, 1_000_000)", "src/a.py")).toEqual([]);
+	});
+
+	it("does NOT run on JS/TS — the A3 content-quality write-guard owns Math.random()", () => {
+		expect(checkWeakRandom("const resetToken = Math.random().toString(36).slice(2);", "src/a.ts")).toEqual([]);
+		expect(checkWeakRandom("const nonce = Math.random();", "src/a.js")).toEqual([]);
+	});
+
+	it("does NOT fire inside test files or comments/strings", () => {
+		expect(checkWeakRandom("token = random.random()", "tests/test_a.py")).toEqual([]);
+		expect(checkWeakRandom("# legacy: token = random.random() was unsafe", "src/a.py")).toEqual([]);
+		expect(checkWeakRandom('doc = "use random.random for the token"', "src/a.py")).toEqual([]);
 	});
 });

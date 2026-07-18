@@ -103,6 +103,8 @@ export interface CodeQualityResults {
 	gitignoredWrittenConfig: CodeQualityIssue[];
 	/** Verify-only: markdown `npm run <script>` / `npm test` referencing a script absent from package.json. */
 	readmeScriptDrift: CodeQualityIssue[];
+	/** Verify-only: present-tense claim that a path exists in-repo when the working tree lacks it (Sol D-3). */
+	specPathRef: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];
 	selfImports: CodeQualityIssue[];
 	extraneousDeps: CodeQualityIssue[];
@@ -337,6 +339,8 @@ export interface CodeQualityResults {
 	pickleWrapperLoad: CodeQualityIssue[];
 	/** AES in ECB mode (Python / Node / Go shapes). */
 	aesEcbMode: CodeQualityIssue[];
+	/** Weak (non-crypto) RNG generating a security value — ubs_weak_random_security. */
+	weakRandom: CodeQualityIssue[];
 	/** Node deprecated createCipher / createDecipher (no IV). */
 	nodeCreateCipher: CodeQualityIssue[];
 	/** External `<script src>` without `integrity=` (SRI). */

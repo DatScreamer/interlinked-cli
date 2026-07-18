@@ -104,6 +104,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	spec_path_ref: {
+		name: "Spec Path Ref",
+		description:
+			"Detects a present-tense claim that a path exists in-repo (\"the full `invariants.toml` exists in-repo\") when the working tree lacks it (Sol D-3). Future-tense and unknown-tense mentions never fire. Verify-only (needs a filesystem resolver).",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	promise_reject_non_error: {
 		name: "Promise.reject with non-Error",
 		description:
@@ -269,8 +276,9 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 	},
 	disabled_tests: {
 		name: "Disabled Tests",
-		description: "Detects skipped tests (it.skip, xit, xdescribe)",
-		tier: 2,
+		description:
+			"Detects newly-introduced unconditional test skips (it.skip/xit/xdescribe, @pytest.mark.skip, #[ignore], t.Skip)",
+		tier: 1,
 		determinism: "fully_deterministic",
 	},
 	snapshot_overuse: {

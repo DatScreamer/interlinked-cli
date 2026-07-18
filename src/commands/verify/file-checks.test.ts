@@ -119,6 +119,7 @@ function makeEmptyResults(): CodeQualityResults {
 		"tlsVerifyDisabled",
 		"pyNoneEquality",
 		"weakHash",
+		"weakRandom",
 		// Plan 04 Phase-1 UBS warning/post tier (rows 27–30)
 		"jsLooseEquality",
 		"floatEquality",

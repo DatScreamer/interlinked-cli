@@ -32,6 +32,7 @@ import {
 	resolveNearestPackageScripts,
 } from "../../harness/checks/readme-script-drift.js";
 import { detectSnapshotHygiene } from "../../harness/checks/snapshot-hygiene.js";
+import { checkSpecPathRef } from "../../harness/checks/spec-structure.js";
 import { detectUnawaitedAsyncAssertions } from "../../harness/checks/test-async-assertions.js";
 import {
 	coverageForFile,
@@ -364,6 +365,16 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			detectReadmeScriptDrift(content, file, (markdownPath) =>
 				resolveNearestPackageScripts(markdownPath, cwd),
 			),
+		),
+	);
+	// spec_path_ref — verify-only (3-arg detector needs a filesystem resolver).
+	// Fires on present-tense claims that a path exists in-repo when it does not
+	// (Sol D-3). The resolver checks the working tree relative to the verify cwd.
+	r.specPathRef.push(
+		...toIssues(
+			"spec_path_ref",
+			relPath,
+			checkSpecPathRef(content, file, (target) => existsSync(resolve(cwd, target))),
 		),
 	);
 	r.asyncPromiseExecutor.push(

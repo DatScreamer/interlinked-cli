@@ -75,6 +75,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"design_slop",
 			"payload_field_casing",
 			"gitignored_written_config",
+			"spec_path_ref",
 			"promise_reject_non_error",
 			"lossy_error_rethrow",
 			"import_from_own_barrel",
@@ -195,6 +196,9 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"ubs_torch_unsafe_load",
 			"ubs_pickle_wrapper_load",
 			"ubs_aes_ecb_mode",
+			"ubs_weak_random_security",
+			"ubs_archive_extract_traversal",
+			"ubs_python_assert_tautology",
 			"ubs_node_create_cipher",
 			"ubs_script_without_sri",
 			"ubs_go_shell_injection",
@@ -251,6 +255,14 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"placeholder_data_in_ui",
 			"placeholder_markdown_link",
 			"manual_field_copy",
+			"spec_dangling_anchor",
+			"spec_numbering",
+			"spec_count_claim",
+			"spec_pitfall",
+			"spec_claim_untagged",
+			"spec_capacity_claim",
+			"spec_table_sum",
+			"spec_stage_order",
 		],
 	},
 	"generic-endpoint": {
@@ -342,10 +354,10 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 205-key total", () => {
+	it("preserves the full 217-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(205);
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(217);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(205);
+		expect(fragmentKeyTotal).toBe(217);
 	});
 });

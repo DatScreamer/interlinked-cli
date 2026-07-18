@@ -50,4 +50,60 @@ export const GENERIC_DEMO_DATA_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	spec_dangling_anchor: {
+		name: "Spec Dangling Anchor",
+		description:
+			"Detects same-file references that resolve to nothing: [text](#slug) with no matching heading, §N.N refs in section-numbered docs with no such heading, and Appendix X refs with no such appendix. Docs without numbered headings or appendices never fire.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	spec_numbering: {
+		name: "Spec Registry Numbering",
+		description:
+			"Detects numbering defects in ID registries (FG-INV-xx / B7 style): an id defined twice, or small gaps in a definition registry (renumber residue). Gaps are computed over definition sites only — prose citing a sparse subset never fires.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	spec_count_claim: {
+		name: "Spec Count Claim Drift",
+		description:
+			"Detects a stated count or ID range disagreeing with the ids enumerated in the same file — \"six bets\" above a B1..B7 table. Fires only when the claim binds to a namespace by same-line or heading-section co-occurrence.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
+	spec_pitfall: {
+		name: "Spec Pitfall Lexicon",
+		description:
+			"Curated recurring spec falsehoods seeded from external audit corpora (exactly-once to external sinks, in-house crypto, forbid+allow, truncated-hash identity, post-filter visibility, self-oracle validation, float byte-identity). Same-line co-occurrence with hedge exemptions; citation-backed.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	spec_claim_untagged: {
+		name: "Spec Claim Untagged",
+		description:
+			"Guarantee-verb sentences without a [claim: …] class tag, only in files that already opted into claim tagging — the audit-recommended claim taxonomy as a per-file nudge.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	spec_capacity_claim: {
+		name: "Spec Capacity Claim",
+		description:
+			"An N-bit field discussed with reuse/counter vocabulary and no wrap/widen/prohibition statement — the bounded-field wraparound class, emitted as a pointed obligation with the computed wrap point.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	spec_table_sum: {
+		name: "Spec Table Sum",
+		description:
+			"Recomputes Total/Sum rows in markdown tables against their numeric columns — layout/cost tables whose totals drifted from their rows.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	spec_stage_order: {
+		name: "Spec Stage Order",
+		description:
+			"Workstream/gate sequencing defects in W/G-staged plans: forward dependencies (a stage needing a later stage) and backward constraints (a later stage changing what an earlier one fixed) — the Sol workstream class.",
+		tier: 1,
+		determinism: "partially_deterministic",
+	},
 };

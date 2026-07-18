@@ -83,6 +83,13 @@ export const ubsSections: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "ubs weak random for security",
+		key: "weakRandom",
+		noun: "predictable PRNG output used as a token / key / nonce / salt / password",
+		passLabel: "no weak RNG for secrets",
+		color: "31",
+	},
+	{
 		label: "ubs eval input tainted",
 		key: "evalInputTainted",
 		noun: "eval / Function / exec / compile invoked with non-literal first arg",

@@ -159,6 +159,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "spec path ref",
+		key: "specPathRef",
+		noun: "present-tense claims that a path exists in-repo when the tree lacks it",
+		passLabel: "no false present-tense path-existence claims",
+		color: "33",
+	},
+	{
 		label: "async promise executor",
 		key: "asyncPromiseExecutor",
 		noun: "async Promise constructors",

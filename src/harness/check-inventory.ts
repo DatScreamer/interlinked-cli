@@ -30,6 +30,7 @@ import {
 } from "./check-metadata.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
 import { ALL_SEQUENCE_DETECTORS } from "./sequence-checks/registry.js";
+import { SPEC_LEDGER_CHECK_KINDS } from "./spec/ledger-drift.js";
 
 /** One disjoint family of checks, counted from its authoritative source. */
 export interface CheckFamily {
@@ -63,6 +64,10 @@ export function getCheckInventory(): CheckInventory {
 	const toolQualityIds = Object.keys(QUALITY_CHECK_META);
 	const suggestionIds = Object.keys(SUGGESTION_CHECK_META);
 	const behavioralIds = Object.keys(BEHAVIORAL_CHECK_META);
+	// Cross-file spec-ledger checks emit CheckResultEntry with source "spec"
+	// from the PostToolUse ledger phase — distinct from the inline spec_*
+	// checks in CHECK_REGISTRY, and prefixed here to stay id-disjoint.
+	const specLedgerIds = SPEC_LEDGER_CHECK_KINDS.map((k) => `spec_${k}`);
 
 	const families: CheckFamily[] = [
 		{
@@ -101,6 +106,12 @@ export function getCheckInventory(): CheckInventory {
 			count: behavioralIds.length,
 			source: "check-metadata · BEHAVIORAL_CHECK_META",
 		},
+		{
+			key: "spec_ledger",
+			label: 'Cross-file spec-ledger checks (PostToolUse, source "spec")',
+			count: specLedgerIds.length,
+			source: "spec/ledger-drift · SPEC_LEDGER_CHECK_KINDS",
+		},
 	];
 	// DISTINCT check ids across families — a shared id (e.g. dead_exports's inline
 	// + structural variants) is counted once, so the total can never double-count.
@@ -111,6 +122,7 @@ export function getCheckInventory(): CheckInventory {
 		...toolQualityIds,
 		...suggestionIds,
 		...behavioralIds,
+		...specLedgerIds,
 	]).size;
 	return { families, total };
 }

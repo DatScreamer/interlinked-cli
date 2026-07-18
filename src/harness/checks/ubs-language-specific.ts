@@ -21,6 +21,34 @@
 //   ubs-language-specific/java-c-checks.ts        — Java / C-family checks
 //   ubs-language-specific/cross-language-checks.ts — SQL concat, hardcoded host
 
+
+// ---- Cross-language checks ----
+export {
+	checkSqlEscapeHatchNonLiteral,
+	checkSqlStringConcat,
+	checkUbsHardcodedLocalhost,
+} from "./ubs-language-specific/cross-language-checks.js";
+// ---- `ubs_division_by_variable` (Row 30) ----
+export { checkDivisionByVariable } from "./ubs-language-specific/division-by-variable.js";
+// ---- Java / C-family checks ----
+export {
+	checkJavaOptionalGet,
+	checkUnsafeFormatString,
+} from "./ubs-language-specific/java-c-checks.js";
+// ---- JS/TS injection & security checks ----
+export {
+	checkChildProcessExecUserInput,
+	checkCookieMissingSecurityFlags,
+	checkDocumentWrite,
+	checkEvalInputTainted,
+	checkInsertAdjacentHtml,
+	checkLoggerFormatUserInput,
+	checkMixedSyncAsyncFileApi,
+	checkNodeCreateCipher,
+	checkOuterHtmlAssignment,
+	checkScriptWithoutSri,
+	checkUncheckedRedirect,
+} from "./ubs-language-specific/js-security-checks.js";
 // ---- Python-language checks ----
 export {
 	checkMarshalLoad,
@@ -37,25 +65,8 @@ export {
 	checkXmlExternalEntity,
 	checkYamlUnsafeLoad,
 } from "./ubs-language-specific/python-checks.js";
-
-// ---- JS/TS injection & security checks ----
-export {
-	checkChildProcessExecUserInput,
-	checkCookieMissingSecurityFlags,
-	checkDocumentWrite,
-	checkEvalInputTainted,
-	checkInsertAdjacentHtml,
-	checkLoggerFormatUserInput,
-	checkMixedSyncAsyncFileApi,
-	checkNodeCreateCipher,
-	checkOuterHtmlAssignment,
-	checkScriptWithoutSri,
-	checkUncheckedRedirect,
-} from "./ubs-language-specific/js-security-checks.js";
-
-// ---- `ubs_division_by_variable` (Row 30) ----
-export { checkDivisionByVariable } from "./ubs-language-specific/division-by-variable.js";
-
+// ---- Python temporal-correctness checks ----
+export { checkNaiveDatetime } from "./ubs-language-specific/python-datetime-checks.js";
 // ---- Generic quality / code-smell checks ----
 export {
 	checkDeeplyNestedCallback,
@@ -66,7 +77,6 @@ export {
 	checkTimeFormatLocaleDep,
 	checkUbsStringConcatInLoop,
 } from "./ubs-language-specific/quality-smell-checks.js";
-
 // ---- Rust / Go checks ----
 export {
 	checkDeferInLoop,
@@ -75,16 +85,3 @@ export {
 	checkMutexLockUnwrap,
 	checkRustDebugAssertSideEffects,
 } from "./ubs-language-specific/rust-go-checks.js";
-
-// ---- Java / C-family checks ----
-export {
-	checkJavaOptionalGet,
-	checkUnsafeFormatString,
-} from "./ubs-language-specific/java-c-checks.js";
-
-// ---- Cross-language checks ----
-export {
-	checkSqlEscapeHatchNonLiteral,
-	checkSqlStringConcat,
-	checkUbsHardcodedLocalhost,
-} from "./ubs-language-specific/cross-language-checks.js";

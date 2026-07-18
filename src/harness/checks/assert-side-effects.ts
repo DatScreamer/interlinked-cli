@@ -378,6 +378,39 @@ export function checkPythonAssertSideEffects(
 	return matches;
 }
 
+// ─── Python — `ubs_python_assert_tautology` ──────────────────────────────────
+
+/** `assert (cond, "msg")` — the parens make a 2-tuple, which is always truthy,
+ *  so the assertion NEVER fails (the classic pytest footgun; the author meant
+ *  `assert cond, "msg"`). `[^()]+` on both sides keeps it to FLAT asserts, so
+ *  `assert isinstance(x, int)` / `assert func(a, b)` (calls) and
+ *  `assert (a, b) == c` (tuple comparison) are NOT matched — zero-FP. Matched on
+ *  the strings-blanked view so a mention in a docstring/string never fires. */
+const PY_ASSERT_TAUTOLOGY_RE = /^\s*assert\s*\(\s*[^()]+,\s*[^()]+\)\s*$/;
+
+const PY_TAUTOLOGY_MESSAGE =
+	'ubs_python_assert_tautology: `assert (cond, "msg")` asserts a non-empty TUPLE — always truthy, so this assertion can never fail. Drop the parentheses: `assert cond, "msg"`.';
+
+/** Detect the always-true parenthesized-tuple `assert (cond, msg)`. Test files
+ *  are IN scope — this pytest footgun lives in test code. */
+export function checkPythonAssertTautology(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".py") return [];
+	// NOT isExemptFile: test files are IN scope (this pytest footgun lives there);
+	// only vendored/generated code is exempt.
+	if (isVendoredOrFixturePath(filePath) || isGeneratedFile(content)) return [];
+
+	const stripped = blankTripleQuotedBlocks(stripCommentsAndStrings(content), PY_TRIPLE_QUOTES);
+	const strippedLines = stripped.split("\n");
+	const rawLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+	for (let i = 0; i < strippedLines.length && matches.length < MAX_MATCHES_PER_FILE; i++) {
+		if (PY_ASSERT_TAUTOLOGY_RE.test(strippedLines[i] ?? "")) {
+			recordMatch(matches, rawLines, i + 1, PY_TAUTOLOGY_MESSAGE);
+		}
+	}
+	return matches;
+}
+
 // ─── Java — `ubs_java_assert_side_effect` ─────────────────────────────────────
 
 /**

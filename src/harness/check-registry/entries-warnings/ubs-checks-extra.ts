@@ -6,19 +6,100 @@
 
 import {
 	checkAesEcbMode,
+	checkArchiveExtractTraversal,
 	checkDocumentWrite,
 	checkGithubActionsInjection,
 	checkGoShellInjection,
 	checkInsertAdjacentHtml,
+	checkNaiveDatetime,
 	checkNodeCreateCipher,
 	checkOuterHtmlAssignment,
 	checkPickleWrapperLoad,
+	checkRedosCatastrophic,
+	checkRustTestDeterminism,
 	checkScriptWithoutSri,
 	checkTorchUnsafeLoad,
+	checkWeakRandom,
 } from "../../generic-checks.js";
 import type { CheckRegistration } from "../types.js";
 
 export const UBS_ENTRIES_EXTRA: CheckRegistration[] = [
+	{
+		// DW test-adoption P0.4 (2026-07-17): the RUST half of the determinism
+		// ban-list (JS/TS `test_nondeterminism` already ships). post/warning —
+		// heuristic span detection, so not a block.
+		id: "rust_test_nondeterminism",
+		phase: "post",
+		name: "Rust test nondeterminism",
+		description:
+			"Detects `thread_rng()` / `Uuid::new_v4()` inside a Rust test span (a `tests/` file or a `#[cfg(test)]` module) — OS-entropy sources make tests flaky and non-replayable. Production randomness outside test spans is not flagged.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Seed the RNG deterministically in tests: `StdRng::seed_from_u64(SEED)` instead of `thread_rng()`, and a fixed/derived id instead of `Uuid::new_v4()`. A seeded test fails reproducibly and replays.",
+		fn: checkRustTestDeterminism,
+		resultsPropName: "rustTestNondeterminism",
+		content_keywords: ["thread_rng", "new_v4"],
+	},
+	{
+		// DW class-breadth (2026-07-17): temporal-correctness class — a NEW class
+		// beyond the security-focused UBS detectors. Heuristic (naive now() has
+		// legit uses) → advisory. utcnow/utcfromtimestamp are naive AND deprecated.
+		id: "ubs_naive_datetime",
+		phase: "post",
+		name: "Timezone-naive datetime",
+		description:
+			"Detects `datetime.utcnow()` / `datetime.utcfromtimestamp()` (naive AND deprecated since 3.12) and `datetime.now()` with no tz argument (naive local time) — the classic 'wrong in prod / wrong for other users' bug class. `datetime.now(tz)` is not flagged.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Use timezone-aware datetimes: `datetime.now(timezone.utc)` instead of `datetime.utcnow()` / `datetime.now()`, and pass `tz=` to `fromtimestamp`. Store and compare in UTC; convert to local only for display.",
+		fn: checkNaiveDatetime,
+		resultsPropName: "naiveDatetime",
+		content_keywords: ["utcnow", "utcfromtimestamp", "datetime.now"],
+	},
+	{
+		// DW class-breadth (2026-07-17): algorithmic-complexity / DoS class. A
+		// quantified group whose body is also quantified — (a+)+ — backtracks
+		// exponentially. Body-extracted (not raw code) → no arithmetic FP.
+		id: "redos_catastrophic",
+		phase: "post",
+		name: "Catastrophic regex backtracking (ReDoS)",
+		description:
+			"Detects a nested-quantifier regex — `(a+)+`, `(\\d*)*`, `([a-z]+)*` — in a JS regex literal / `new RegExp(...)` or a Python `re.<fn>(...)`. Adversarial input makes it match in exponential time (a DoS vector). Only the extracted regex body is tested, so arithmetic like `(x+1)*2` is not flagged.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Remove the nested quantifier: rewrite `(a+)+` as `a+`, bound the inner repetition, or use a possessive quantifier / atomic group (or a linear-time engine like RE2). Validate against a pathological input in a test.",
+		fn: checkRedosCatastrophic,
+		resultsPropName: "redosCatastrophic",
+		content_keywords: ["+)+", "*)*", "+)*", "*)+"],
+	},
+	{
+		// DW test-adoption P0.5 class-breadth (2026-07-17): zip-slip / CVE-2007-4559.
+		// pre_warn/error — the unguarded extractall/extract call is the smell (low FP);
+		// warn not block, since extracting a TRUSTED archive is legitimate.
+		id: "ubs_archive_extract_traversal",
+		phase: "pre_warn",
+		name: "Unsanitized archive extraction (zip-slip)",
+		description:
+			"Detects an archive extracted without member-path validation: Python `.extractall()` with no `filter=` (3.12+ sanitizer), Node `tar.x`/`tar.extract`, adm-zip `.extractAllTo()`. A crafted `../` entry writes outside the target dir (CVE-2007-4559).",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Validate every member path before writing. Python 3.12+: pass `filter='data'` (or `tarfile.data_filter`) to `extractall`. Otherwise resolve each entry against the target dir and reject any that escapes it (`os.path.realpath`/`path.resolve` + a `startsWith(targetDir)` check). Node: use `tar`'s `filter`/`onentry` guard or validate `entry.path` before extraction.",
+		fn: checkArchiveExtractTraversal,
+		resultsPropName: "archiveExtractTraversal",
+		content_keywords: ["extractall", "extractAllTo", "tar.x", "tar.extract"],
+	},
 	{
 		id: "ubs_aes_ecb_mode",
 		phase: "pre_warn",
@@ -34,6 +115,29 @@ export const UBS_ENTRIES_EXTRA: CheckRegistration[] = [
 		fn: checkAesEcbMode,
 		resultsPropName: "aesEcbMode",
 		content_keywords: ["ECB", "ecb"],
+	},
+	{
+		// DW test-adoption P0.5 flagship (2026-07-17): the weak-RANDOM crypto class,
+		// the gap alongside our weak-HASH + AES-ECB. PYTHON scope — the JS
+		// `Math.random()` case is owned by the A3 content-quality write-guard, so
+		// matching it here too would double-warn. security-context-gated (fires
+		// only when a `random.<fn>()` call shares a line with a secret/token/nonce/
+		// key term) to keep FP low. Promote toward pre_block later (the path
+		// ubs_hardcoded_localhost took) once a calibration run confirms the FP floor.
+		id: "ubs_weak_random_security",
+		phase: "post",
+		name: "Weak Random for Security",
+		description:
+			"Detects Python's `random.<fn>()` PRNG generating a security-bearing value — token / key / nonce / salt / password / OTP / IV. The Mersenne-Twister PRNG is predictable, so an attacker who observes a few outputs can predict the rest. (JS `Math.random()` is covered by the A3 content-quality write-guard.)",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Use a cryptographically-secure RNG for security values: `crypto.randomBytes` / `crypto.getRandomValues` (JS) or the `secrets` module (Python). `Math.random()` and `random.*` are seeded from predictable state and must not back tokens, keys, nonces, salts, passwords, OTPs, or IVs.",
+		fn: checkWeakRandom,
+		resultsPropName: "weakRandom",
+		content_keywords: ["random"],
 	},
 	{
 		id: "ubs_torch_unsafe_load",

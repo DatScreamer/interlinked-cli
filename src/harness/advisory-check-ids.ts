@@ -60,6 +60,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	// low-not-zero-FP heuristics pending cross-repo calibration (mirrors the
 	// rationale comments in src/commands/verify/advisory.ts).
 	"readme_script_drift",
+	"spec_path_ref",
 	"contradictory_nullness_chain",
 	"resource_handle_leak",
 	"unvalidated_json_boundary",

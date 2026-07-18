@@ -9,6 +9,7 @@ import {
 } from "./check-metadata.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
 import { ALL_SEQUENCE_DETECTORS } from "./sequence-checks/registry.js";
+import { SPEC_LEDGER_CHECK_KINDS } from "./spec/ledger-drift.js";
 
 // ===========================================================================
 // PINNED per-family check counts — the audit trail for "how many checks".
@@ -17,14 +18,15 @@ import { ALL_SEQUENCE_DETECTORS } from "./sequence-checks/registry.js";
 // the record. If a count changes without a matching update, this test fails
 // loudly — that is the whole point: the number can never silently drift.
 const EXPECTED_BY_FAMILY: Record<string, number> = {
-	inline: 227, // +1 Rust debug_assert side-effect detector (Bun Rust-port regression class, 2026-07-09)
+	inline: 241, // +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
 	sequence: 23,
 	structural: 25,
 	tool_quality: 33,
 	suggestion: 29,
 	behavioral: 11, // +assertion_count_regression, +assertion_value_swap (test-oracle integrity, 2026-07-09)
+	spec_ledger: 5, // cross-file ledger kinds emitting source "spec" (deep-round #10, 2026-07-16)
 };
-const EXPECTED_TOTAL = 347;
+const EXPECTED_TOTAL = 366;
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.
@@ -35,6 +37,7 @@ const FAMILY_IDS: Record<string, string[]> = {
 	tool_quality: Object.keys(QUALITY_CHECK_META),
 	suggestion: Object.keys(SUGGESTION_CHECK_META),
 	behavioral: Object.keys(BEHAVIORAL_CHECK_META),
+	spec_ledger: SPEC_LEDGER_CHECK_KINDS.map((k) => `spec_${k}`),
 };
 
 describe("check inventory — single source of truth for check counts", () => {

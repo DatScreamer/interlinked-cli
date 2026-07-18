@@ -297,6 +297,27 @@ export const GENERIC_UBS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	ubs_weak_random_security: {
+		name: "Weak Random for Security",
+		description:
+			"Detects Python's `random.<fn>()` PRNG generating a security value (token / key / nonce / salt / password / OTP / IV) — predictable, unsafe for secrets. (JS Math.random is covered by the A3 content-quality write-guard.)",
+		tier: 2,
+		determinism: "heuristic",
+	},
+	ubs_archive_extract_traversal: {
+		name: "Unsanitized archive extraction (zip-slip)",
+		description:
+			"Detects an archive extracted without member-path validation (Python `extractall` with no `filter=`, Node `tar.x`/`tar.extract`/adm-zip `extractAllTo`) — a crafted `../` entry escapes the target dir (CVE-2007-4559).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	ubs_python_assert_tautology: {
+		name: "Python assert tautology",
+		description:
+			'Detects `assert (cond, "msg")` — the parentheses make an always-truthy 2-tuple, so the assertion never fails (the author meant `assert cond, "msg"`).',
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	ubs_node_create_cipher: {
 		name: "Node deprecated createCipher",
 		description:

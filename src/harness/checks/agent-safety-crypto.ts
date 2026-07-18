@@ -2,6 +2,7 @@
 // Deterministic regex/heuristic checks targeting common AI agent mistakes.
 // Extracted from agent-safety.ts to stay under the per-file line ceiling.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,6 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Row 24 — `ubs_tls_verify_disabled` (cross-language)
@@ -159,6 +159,73 @@ export function checkWeakHash(content: string, filePath: string): InlineMatch[] 
 		if (fired && !flagged.has(i)) {
 			flagged.add(i);
 			matches.push({ line: i + 1, text: (originalLines[i] ?? "").trim().slice(0, 150) });
+		}
+	}
+	return matches;
+}
+
+// ===========================================
+// `ubs_weak_random_security` (cross-language) — DW test-adoption P0.5 flagship
+// ===========================================
+
+/** Security-context terms that, when present on the same line as a weak RNG
+ *  call, turn "harmless jitter/sampling" into "a secret from a predictable
+ *  PRNG". Matched against a CAMEL/SNAKE-NORMALIZED line (see
+ *  {@link lineHasSecurityContext}) so `resetToken`, `apiKey`, `sessionId` all
+ *  expose their term. `seed` is absent (seeding is a determinism idiom); bare
+ *  `key` is absent (FP on `primaryKey`/`keyboard`) — only the `api key` /
+ *  `private key` / `secret key` compounds count. */
+const SECURITY_TERMS_RE =
+	/\b(?:secret|token|password|passwd|passphrase|nonce|salt|otp|csrf|credential|apikey|api key|private key|secret key|session token|session id|sessionid|iv)\b/;
+
+/** True when a code line's identifiers carry a security-context term. Splits
+ *  camelCase and snake/kebab into words first so compound identifiers match. */
+function lineHasSecurityContext(codeLine: string): boolean {
+	const normalized = codeLine
+		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+		.replace(/[_-]+/g, " ")
+		.toLowerCase();
+	return SECURITY_TERMS_RE.test(normalized);
+}
+
+/**
+ * `ubs_weak_random_security` — Python's `random.*` module used to generate a
+ * security-bearing value (token / key / nonce / salt / password / OTP / IV).
+ * `random.*` is a Mersenne-Twister PRNG seeded from predictable state, so an
+ * attacker who observes a few outputs can predict the rest — fine for jitter or
+ * sampling, unsafe for anything the security model relies on.
+ *
+ * SCOPE: Python only. The JS `Math.random()`-for-security case is owned by the
+ * A3 content-quality write-guard (`evaluator/write-content-guards-content-quality.ts`,
+ * `collectInsecureRandomWarning`) — matching it here too would double-warn.
+ * This closes the Python gap A3 never covered AND gives it a `verify` surface.
+ *
+ * FP control: fires ONLY when a `random.<weakFn>()` call AND a security-context
+ * term share a line (post / warning / default). `secrets.*` and
+ * `random.SystemRandom()` (the secure forms) are not matched. Test files are
+ * exempt (fixtures generate throwaway ids freely). Companion: the secure
+ * replacement is the `secrets` module.
+ */
+export function checkWeakRandom(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	if (getExtension(filePath) !== ".py") return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	// Python module-level `random.<weakFn>()`. `secrets.*` and
+	// `random.SystemRandom()` (the secure forms) are not matched.
+	const weakRandomRe =
+		/\brandom\.(?:random|randint|randrange|choice|choices|getrandbits|sample|shuffle|uniform)\s*\(/;
+
+	const matches: InlineMatch[] = [];
+	const flagged = new Set<number>();
+	for (let i = 0; i < strippedLines.length; i++) {
+		if (matches.length >= 10) break;
+		const line = strippedLines[i] ?? "";
+		if (weakRandomRe.test(line) && lineHasSecurityContext(line) && !flagged.has(i)) {
+			flagged.add(i);
+			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 		}
 	}
 	return matches;

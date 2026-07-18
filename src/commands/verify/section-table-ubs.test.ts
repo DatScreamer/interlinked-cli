@@ -30,6 +30,7 @@ describe("ubsSections", () => {
 		expect(keys).toContain("subprocessShellTrue");
 		expect(keys).toContain("pickleUntrustedLoad");
 		expect(keys).toContain("weakHash");
+		expect(keys).toContain("weakRandom");
 	});
 
 	it("ends with the identical-conditional-branches universal bug shape", () => {

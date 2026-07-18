@@ -173,8 +173,11 @@ export function checkPickleUntrustedLoad(content: string, filePath: string): Inl
 	const strippedLines = stripped.split("\n");
 	const matches: InlineMatch[] = [];
 	// `pickle` / `Pickle` / `cPickle` / `cloudpickle` / `dill` — all share the
-	// arbitrary-`__reduce__`-execution surface on `.load(s)`.
-	const re = /\b(?:c?[Pp]ickle|cPickle|cloudpickle|dill)\.loads?\s*\(/;
+	// arbitrary-`__reduce__`-execution surface on `.load(s)`. `jsonpickle.decode`
+	// (DW P0.5 class-breadth, 2026-07-17) is the same risk via a different API:
+	// it reconstructs arbitrary Python objects from `py/object` tags.
+	const re =
+		/\b(?:c?[Pp]ickle|cPickle|cloudpickle|dill)\.loads?\s*\(|\bjsonpickle\.decode\s*\(/;
 
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
@@ -397,7 +400,10 @@ export function checkYamlUnsafeLoad(content: string, filePath: string): InlineMa
 	// string, `Loader=yaml.SafeLoader`), the call is the safe form. No word
 	// boundary on `Safe` so `CSafeLoader` (where the C is a word-char prefix)
 	// is recognized.
-	const loadRe = /\byaml\.load\s*\((?![^)\n]{0,200}Safe)/g;
+	// `yaml.load(` AND `yaml.load_all(` (the multi-document form) without a
+	// Safe-class Loader (DW P0.5 class-breadth: load_all parity, 2026-07-17).
+	// `yaml.safe_load_all` is exempt — "yaml." must sit immediately before "load".
+	const loadRe = /\byaml\.load(?:_all)?\s*\((?![^)\n]{0,200}Safe)/g;
 	for (const m of stripped.matchAll(loadRe)) {
 		if (matches.length >= MATCH_LIMIT) break;
 		const idx = m.index ?? 0;

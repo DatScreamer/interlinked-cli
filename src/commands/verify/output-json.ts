@@ -240,6 +240,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_tls_verify_disabled: summarizeWithDetails(cq.tlsVerifyDisabled),
 		ubs_py_none_equality: summarizeWithDetails(cq.pyNoneEquality),
 		ubs_weak_hash: summarizeWithDetails(cq.weakHash),
+		ubs_weak_random_security: summarizeWithDetails(cq.weakRandom),
 		// === Plan 04 D.1 partial ===
 		ubs_eval_input_tainted: summarizeWithDetails(cq.evalInputTainted),
 		ubs_sql_string_concat: summarizeWithDetails(cq.sqlStringConcat),
