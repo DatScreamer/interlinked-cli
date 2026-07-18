@@ -1,0 +1,186 @@
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ingestReviewReport } from "../../commands/findings.js";
+import {
+	loadReconciliation,
+	reconciliationStateOf,
+} from "../spec/reconciliation.js";
+import {
+	boundedAdd,
+	disputedGroundWarning,
+	openReviewFindings,
+	recordReviewFindingTouches,
+	resetReviewReconcileCacheForTesting,
+	runReviewReconcilePhase,
+	scanDisputedGroundRead,
+} from "./review-reconcile-phase.js";
+
+const roots: string[] = [];
+afterEach(() => {
+	for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+});
+beforeEach(() => resetReviewReconcileCacheForTesting());
+
+function repoWithFindings(): string {
+	// realpath: macOS tmpdir is a symlink (/var → /private/var); the read
+	// scanner compares against process.cwd(), which returns the real path.
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "recon-phase-")));
+	roots.push(cwd);
+	const report = join(cwd, "review.md");
+	writeFileSync(
+		report,
+		"1. [high] [docs/plan.md:5] The commit ordering is wrong.\n2. [low] Unanchored judgment.\nTOTAL: 2\n",
+	);
+	ingestReviewReport(report, "sol", cwd);
+	return cwd;
+}
+
+describe("boundedAdd (round-2 #36)", () => {
+	it("clears the set at the cap so it cannot grow unbounded", () => {
+		const set = new Set<string>();
+		for (let i = 0; i < 5; i++) boundedAdd(set, `k${i}`, 3);
+		// At size 3 the 4th add cleared it; final size ≤ cap.
+		expect(set.size).toBeLessThanOrEqual(3);
+		expect(set.has("k4")).toBe(true);
+	});
+});
+
+describe("review reconciliation hooks", () => {
+	it("invalidates its cache when an external process changes the state files (deep-round #13)", () => {
+		const cwd = repoWithFindings();
+		expect(openReviewFindings(cwd)).toHaveLength(2); // warm the cache
+		// Simulate an external `interlinked findings ack` process: append a
+		// reconciliation txn directly, changing the sidecar's mtime.
+		const first = openReviewFindings(cwd)[0];
+		expect(first).toBeDefined();
+		if (!first) return;
+		// Small delay so mtimeMs actually advances, then ack out-of-band.
+		const recon = join(cwd, ".interlinked", "findings", "reconciliation.jsonl");
+		writeFileSync(
+			recon,
+			`${JSON.stringify({ finding_id: first.id, action: "acked", by: "ext", ts: "2026-07-16T00:00:00Z" })}\n`,
+		);
+		// Next read sees the new mtime and reloads — the acked finding is gone.
+		expect(openReviewFindings(cwd).some((f) => f.id === first.id)).toBe(false);
+	});
+
+	it("an edit to the finding's file records a touch (never 'resolved')", () => {
+		const cwd = repoWithFindings();
+		expect(openReviewFindings(cwd)).toHaveLength(2);
+		recordReviewFindingTouches(cwd, "s1", join(cwd, "docs/plan.md"));
+		const recon = loadReconciliation(cwd);
+		const anchored = openReviewFindings(cwd);
+		// The anchored finding left the open set; the unanchored one remains.
+		expect(anchored).toHaveLength(1);
+		expect(anchored[0]?.file).not.toBe("docs/plan.md");
+		const touchedId = [...recon.keys()][0];
+		expect(touchedId && reconciliationStateOf(recon, touchedId)).toBe("touched");
+	});
+
+	it("disputed-ground warns once per session+MODE+file (round-5 #5)", () => {
+		const cwd = repoWithFindings();
+		const w1 = disputedGroundWarning(cwd, "s1", join(cwd, "docs/plan.md"), "read");
+		expect(w1).toContain("disputed-ground");
+		expect(w1).toContain("docs/plan.md");
+		expect(w1).toContain("ack");
+		// An earlier read must NOT swallow the later, more consequential
+		// write warning — separate anti-compounding channels.
+		expect(
+			disputedGroundWarning(cwd, "s1", join(cwd, "docs/plan.md"), "write"),
+		).toContain("building on disputed ground");
+		// But each channel nags at most once.
+		expect(
+			disputedGroundWarning(cwd, "s1", join(cwd, "docs/plan.md"), "read"),
+		).toBeNull();
+		expect(
+			disputedGroundWarning(cwd, "s1", join(cwd, "docs/plan.md"), "write"),
+		).toBeNull();
+	});
+
+	it("a ranged read only disputes findings its range overlaps (round-5 #6)", () => {
+		const cwd = repoWithFindings();
+		// Finding cites docs/plan.md:5 — a read of lines 100-200 is clean.
+		expect(
+			disputedGroundWarning(cwd, "s7", join(cwd, "docs/plan.md"), "read", {
+				start: 100,
+				end: 200,
+			}),
+		).toBeNull();
+		// A read covering line 5 warns.
+		expect(
+			disputedGroundWarning(cwd, "s7", join(cwd, "docs/plan.md"), "read", {
+				start: 1,
+				end: 20,
+			}),
+		).toContain("disputed-ground");
+	});
+
+	it("span-aware touches skip line-anchored findings outside edited ranges (round-5 #1)", () => {
+		const cwd = repoWithFindings();
+		// Edit far from the cited line 5: the anchored finding stays open.
+		recordReviewFindingTouches(cwd, "s8", join(cwd, "docs/plan.md"), [
+			{ start: 400, end: 420 },
+		]);
+		expect(openReviewFindings(cwd).some((f) => f.file === "docs/plan.md")).toBe(
+			true,
+		);
+		// An overlapping edit (±3 slack) records the touch.
+		recordReviewFindingTouches(cwd, "s8", join(cwd, "docs/plan.md"), [
+			{ start: 4, end: 6 },
+		]);
+		expect(openReviewFindings(cwd).some((f) => f.file === "docs/plan.md")).toBe(
+			false,
+		);
+	});
+
+	it("the write phase touches findings and appends one warning", () => {
+		const cwd = repoWithFindings();
+		const decision: { warnings?: string[] } = {};
+		runReviewReconcilePhase(cwd, "s1", join(cwd, "docs/plan.md"), true, decision);
+		expect(decision.warnings?.[0]).toContain("disputed-ground");
+		expect(openReviewFindings(cwd).some((f) => f.file === "docs/plan.md")).toBe(false);
+		// Out-of-repo / non-repo edits are inert.
+		const d2: { warnings?: string[] } = {};
+		runReviewReconcilePhase(cwd, "s1", "", false, d2);
+		expect(d2.warnings).toBeUndefined();
+	});
+
+	it("the read scanner warns via the PostToolUse evaluator shape", () => {
+		const cwd = repoWithFindings();
+		const prevCwd = process.cwd();
+		process.chdir(cwd);
+		try {
+			// SAFETY: the scanner reads only tool_name/tool_input/session_id.
+			const warnings = scanDisputedGroundRead({
+				hook_event: "PostToolUse",
+				session_id: "s9",
+				tool_name: "Read",
+				tool_input: { file_path: join(cwd, "docs/plan.md") },
+			} as never);
+			expect(warnings[0]).toContain("reading from disputed ground");
+			expect(
+				scanDisputedGroundRead({
+					hook_event: "PostToolUse",
+					session_id: "s9",
+					tool_name: "Bash",
+					tool_input: { command: "ls" },
+				} as never),
+			).toEqual([]);
+		} finally {
+			process.chdir(prevCwd);
+		}
+	});
+
+	it("stays silent for clean files, out-of-repo paths, and empty corpora", () => {
+		const cwd = repoWithFindings();
+		expect(disputedGroundWarning(cwd, "s1", join(cwd, "other.md"), "read")).toBeNull();
+		expect(disputedGroundWarning(cwd, "s1", "/etc/passwd", "read")).toBeNull();
+		const empty = mkdtempSync(join(tmpdir(), "recon-empty-"));
+		roots.push(empty);
+		expect(
+			disputedGroundWarning(empty, "s1", join(empty, "a.md"), "read"),
+		).toBeNull();
+	});
+});

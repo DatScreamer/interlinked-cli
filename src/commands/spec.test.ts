@@ -1,0 +1,78 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Command } from "commander";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerSpecCommands } from "./spec.js";
+
+const roots: string[] = [];
+afterEach(() => {
+	for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+});
+
+describe("interlinked spec agenda", () => {
+	it("writes the review-agenda artifact for the repo's markdown corpus", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "spec-cli-")));
+		roots.push(cwd);
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(cwd, "PLAN.md"),
+			// FG-INV sits under its OWN heading so "## The seven bets" binds only to
+			// B — a shared section would spuriously bind "bet"→FG-INV (sol-max #14).
+			"## The seven bets\n- B1 a\n- B2 b\n- B3 c\n- B4 d\n- B5 e\n- B6 f\n- B7 g\n## Invariants\n| FG-INV-01 | x |\n| FG-INV-02 | y |",
+		);
+		writeFileSync(
+			join(cwd, "README.md"),
+			// "Six bets" on its OWN line: co-locating it with the FG-INV ids would
+			// bind "bet"→FG-INV by same-line co-occurrence and re-poison the noun.
+			"Six bets do the work.\nFG-INV-01 and FG-INV-02 both apply here.",
+		);
+		const prev = process.cwd();
+		process.chdir(cwd);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const program = new Command();
+			registerSpecCommands(program);
+			await program.parseAsync(["node", "interlinked", "spec", "agenda"]);
+		} finally {
+			process.chdir(prev);
+			log.mockRestore();
+		}
+		const path = join(cwd, ".interlinked", "review-agenda.md");
+		expect(existsSync(path)).toBe(true);
+		const agenda = readFileSync(path, "utf8");
+		expect(agenda).toContain("# Review agenda");
+		expect(agenda).toContain("Compose-checks");
+		expect(agenda).toContain("FG-INV");
+		expect(agenda).toContain("Six bets");
+	});
+});
+
+describe("interlinked spec invariants", () => {
+	it("extracts a markdown registry into a taxonomy artifact", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "spec-inv-")));
+		roots.push(cwd);
+		writeFileSync(
+			join(cwd, "plan.md"),
+			"| **FG-INV-18** | indexes never authoritative |\nThe commit stream MUST remain sole truth for recovery.",
+		);
+		const prev = process.cwd();
+		process.chdir(cwd);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const program = new Command();
+			registerSpecCommands(program);
+			await program.parseAsync(["node", "interlinked", "spec", "invariants", "plan.md"]);
+		} finally {
+			process.chdir(prev);
+			log.mockRestore();
+		}
+		const artifact = readFileSync(
+			join(cwd, ".interlinked", "policies", "plan.md.invariants.md"),
+			"utf8",
+		);
+		expect(artifact).toContain("FG-INV-18");
+		expect(artifact).toContain("doctrine");
+		expect(artifact).toContain("sole truth");
+	});
+});

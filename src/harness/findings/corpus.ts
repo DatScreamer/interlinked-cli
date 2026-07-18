@@ -82,6 +82,14 @@ export interface Finding {
 	first_seen: string;
 	last_seen: string;
 	distilled?: FindingDistilled | undefined;
+	/** LG-6 content anchor (anchor-liveness.ts): sha256 of the trailing-ws-
+	 *  normalized context window around `line`, captured from the live tree at
+	 *  ingest. Absent on legacy/unanchored rows — consumers fail open. */
+	anchor_span_sha256?: string | undefined;
+	/** The context window's verbatim lines (anchor line ± radius, clamped). */
+	anchor_context?: string[] | undefined;
+	/** Tree stamp at capture: `<sha>` or `<sha>+dirty`; absent outside git. */
+	anchor_tree?: string | undefined;
 }
 
 const INTERLINKED_DIR = ".interlinked";
@@ -277,6 +285,19 @@ export function getFinding(id: string, cwd: string, opts: LoadOpts = {}): Findin
 	return loadFindings(cwd, opts).find((f) => f.id === id) ?? null;
 }
 
+/** Anchor-field merge policy: existing wins (a verify --write re-anchor must
+ *  not be clobbered by a re-ingest); a first capture fills legacy rows in. */
+function carryAnchor(
+	existing: Finding,
+	incoming: Finding,
+): Pick<Finding, "anchor_span_sha256" | "anchor_context" | "anchor_tree"> {
+	return {
+		anchor_span_sha256: existing.anchor_span_sha256 ?? incoming.anchor_span_sha256,
+		anchor_context: existing.anchor_context ?? incoming.anchor_context,
+		anchor_tree: existing.anchor_tree ?? incoming.anchor_tree,
+	};
+}
+
 function mergeFindings(existing: Finding, incoming: Finding): Finding {
 	const byProv = new Map<string, FindingProvenance>();
 	for (const p of existing.provenance) byProv.set(p.provenance_id, p);
@@ -296,6 +317,7 @@ function mergeFindings(existing: Finding, incoming: Finding): Finding {
 		source_runners: [...new Set(provenance.map((p) => p.source_runner))].sort(),
 		first_seen,
 		last_seen,
+		...carryAnchor(existing, incoming),
 	};
 }
 
