@@ -81,8 +81,12 @@ Hand-written code modules are capped at **<!-- gen:line_cap -->500<!-- /gen:line
 decomposing each over-cap module into a re-exporting public entry + sibling
 helpers as the cap dropped). `src/harness/large-file-policy.ts` is the single
 source of truth — the threshold, the `isCappableFile` predicate (`.interlinked/`
-tool-state / generated / `@codegen-data` / test / `.d.ts` / non-code files are
-exempt), the baseline loader, the one canonical line counter (`countLines`), and
+tool-state / root `scratch/` probe dir / generated / `@codegen-data` / test /
+`.d.ts` / non-code files are exempt; `isCappableFile` is also the ONE
+product-code domain definition the coverage-targeting and debt-focus gates
+consult, added 2026-07-17 after two gates disagreed about `scratch/`), the
+baseline loader, the one canonical line counter (`countLines`; the
+comment-aware `countCodeLines` lives in `code-line-count.ts`, re-exported), and
 the ratchet verdict. The number above is gen-markered: `extract-doc-facts.mjs`
 reads `DEFAULT_MAX_LINES` and `npm run docs:check` (CI) fails if this prose
 drifts from it — run `npm run docs:build` after ratcheting to refresh it.

@@ -32,10 +32,12 @@ Commands:
   debt                                       Inspect pair-scoped TDD debts (coverage / red_suite) from the obligation ledger
   design [options] [path]                    Run Impeccable's deterministic design-slop detector (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, broken images, copy tells) on frontend files. Requires the optional `impeccable` CLI on PATH; degrades gracefully when absent. The built-in `design_slop` check covers a regex subset natively.
   disable [options]                          Stand the harness down for this project (recorded); --uninstall to remove hooks + config
+  doctest [options]                          Run doctest-tagged (```bash doctest) code blocks in docs and verify they exit 0
   doctor [options]                           Diagnose issues (local + server checks)
   enable [options]                           Install hooks + create .interlinked/ config
   env [options]                              Show supported environment variables and their current values
   explain [options]                          Reconstruct what happened (narrative view)
+  findings                                   Ingest external review findings and drive them to closure
   git                                        Git bridge: metadata, trailers, and notes
   guard                                      File reservation enforcement via git hooks
   handoff [options] <from-agent> <to-agent>  Explicit agent-to-agent handoff with context transfer
@@ -65,6 +67,7 @@ Commands:
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate
   skill                                      Skill marker management (scopes distilled rules via active_when)
+  spec                                       Spec-substrate utilities (fact ledger, review agenda)
   sponsor                                    Opt-in sponsor slot on the statusline (free-sponsor phase)
   status [options]                           Dashboard: local sessions, recent activity, sync status
   structure                                  Generic artifact structure management (manifests, catalogs, adoption)
@@ -78,11 +81,7 @@ Commands:
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
   verify-changeset [options]                 Preview the content-quality gate (pre_block + biome + tsc diff-overlay) over a PROPOSED changeset WITHOUT writing — the agent-callable self-gate. Input JSON {version:1, changes:[{path,content}|{path,old_string,new_string}|{path,edits}]} via --file or --stdin.
   version                                    Show Interlinked CLI + server version
-  viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
-  watch [options]                            Monitor server for pending work (messages, tasks, agents)
-  workspace                                  Registry workspace management (ws_ IDs)
-  write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.
-  help [command]                             display help for command
+  viz                                        Baseline-
 ```
 
 ## Structure

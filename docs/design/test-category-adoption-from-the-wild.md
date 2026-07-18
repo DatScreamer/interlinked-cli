@@ -1,6 +1,12 @@
 # Test-Category Adoption From the Wild — Jeff Emanuel (`Dicklesworthstone`) Taxonomy → Interlinked Harness
 
 **Status:** research record + adoption architecture. v2, 2026-06-06.
+**v3 fresh-sweep addendum (2026-07-17, §13):** 46 repos re-surveyed via 4 parallel
+agents; consolidated ~39-type taxonomy, June→July deltas (mutation-score gating
+GONE, statistical/anytime-valid machinery exploded, claim-gates hardened to
+Sigstore attestations), his per-edit affordability levers (RCH offload,
+narrowest-proof routing, determinism-as-prerequisite), and the updated per-edit
+mapping against the now-LIVE overlay path (150s budget, 2026-07-17).
 **Supersedes** the first draft's "PreToolUse can't run tests" framing. v2 adds the
 inference-time execution architecture (apply-before-disk dual-lane PreToolUse), the
 per-edit cost router, the good-citizen resource governor, and the single-agent-local /
@@ -616,3 +622,116 @@ files ban `thread_rng`/`Uuid::new_v4`. CRAP: **none** (zero markers across 174 r
   `feedback_safety_continuity`, `project_maximal_local_enforcement`,
   `project_supervisor_pattern`, `project_proof_of_enforcement_bft_extensibility`,
   `project_posttooluse_visibility`, `reference_product_phase_model`.
+
+---
+
+## 13. v3 fresh sweep (2026-07-17) — deltas, consolidated taxonomy, per-edit mapping
+
+Method: 4 parallel agents over 46 repos (14 franken-fleet, 22 agent-infra, 5
+small tools, doctrine sources), reading test FILE CONTENTS + AGENTS.md/CI, not
+just trees. All repos pushed 2026-07-17 — this is same-day state.
+
+### 13.1 June → July deltas
+
+- **Classic mutation-score gating is GONE.** June's `cargo-mutants` gates
+  (franken_node) have no successors; zero mutation config in 36 repos checked.
+  What survives is *meta*-mutation: `asupersync/src/lab/meta/mutation.rs`
+  mutates CODE to verify the invariant ORACLES catch it — oracle validation,
+  not score ratcheting. (CRAP: still zero, everywhere.)
+- **Loom/Miri shrank** (loom: asupersync/frankenterm/mcp_mail only; Miri:
+  fastapi_rust only); replaced in the fleet by DPOR/Mazurkiewicz exploration
+  inside his own deterministic lab runtime.
+- **Statistical verification exploded**: split-conformal calibrators,
+  anytime-valid e-processes, SPRT/Hoeffding, sequential-FDR, bootstrap-CI IR
+  metrics (sqlite, ocr, libc, scipy, search, frankenterm, frankentui).
+- **Claim-gates hardened**: proof-lane manifests tying every README claim to a
+  verified artifact, claim-language gates blocking wording stronger than proven
+  state, mock-leak/zero-placeholder release gates, Sigstore-signed attestation
+  self-tests, release certification requiring pinned OpenPGP signers.
+- **RaptorQ durability sidecars** on test artifacts (8 repos) — evidence must
+  survive bit-rot.
+- New cadence primitives: per-crate CONTRACT.md files (127 in frankensim),
+  verification-coverage ledger with realism ranks R0–R3 (mcp_mail_rust: "do
+  not claim a stub-only lane closes a user-facing path"), "retry-pass is
+  still a flake signal", failure-forensics bundles per failed gate.
+
+### 13.2 Consolidated type set (~39, deduplicated across all 4 sweeps)
+
+**Input generation:** unit (happy/edge/error triad mandated in every
+AGENTS.md) · property-based · fuzzing (committed corpora, crash→`repro_*.rs`
+promotion, nightly campaigns, deterministic budgeted fuzz) · metamorphic ·
+adversarial/red-team (red/blue coevolution, compromise-rate gates, bypass
+corpora) · multi-seed determinism sweeps (`#[lab_test(seeds=A..B)]`).
+**Oracles:** golden/snapshot as reviewed contracts (env-flag regen + mandatory
+diff review) · differential vs live reference impl (C SQLite, real
+NumPy/pandas, byte-for-byte redis-server, host libc, debugfs, Node+Bun
+lockstep, TS oracle w/ 25.8k artifacts, weekly vs Go beads) · spec/protocol
+conformance (Test262, SLT, RFC6330, h2spec, MCP, OpenAPI, emulator profiles) ·
+first-class invariant oracles over execution traces (asupersync's ~24) ·
+contract/schema-drift tests · round-trip · corpus-driven TP/FP classification
+with FP budgets (UBS, DCG) · numerical AD vs finite differences ·
+optimization-isomorphism proofs (conformance-green + flamegraph evidence).
+**Runtime/robustness:** crash-recovery (WAL truncation at every byte, SIGKILL,
+bit-flip) · chaos/fault-injection incl. LDFI · interleaving exploration
+(loom/DPOR) · sanitizer campaigns (separate lanes) · Go `-race` · soak/stress
+(24h fuzz, 30-agent gauntlets) · determinism/replay (byte-identical gates,
+run-twice divergence panics, VCR cassettes, crashpack minimization) ·
+memory-leak budgets · perf-regression gates (committed baselines, budgets.toml,
+competitor benches; perf reports refused without green parity receipt).
+**Statistical/formal:** conformal/e-process/SPRT/FDR calibrated alarms · Lean4
+(w/ theorem↔test traceability maps), TLA+, Stateright, bounded model checking,
+build-time SOS/Cholesky certificates · compile-fail (trybuild) · oracle-validation
+mutation.
+**Integrity/anti-gaming:** claim/doc-drift-as-test · policy-as-test (no-mock
+scanners w/ allowlists, forbidden-deps tests) · coverage floors + flake
+budgets · test-harness self-tests + realism-ranked verification ledgers.
+**Pipeline ends:** e2e scenario suites w/ forensic JSONL (hundreds of shell
+scripts; no-mocks doctrine) · TUI/PTY/VHS/browser+axe e2e · smoke/installer/
+release-integrity (fresh-clone-build, checksums, minisign/Sigstore) ·
+doc-example execution · eval-style quality gates (semantic-similarity
+thresholds) · CVE regression arenas (real CVEs in Docker) · bash-layer tricks
+(sed-extract+eval single functions, heredoc-JS extraction into modules,
+PATH-shim fakes, TAP frameworks, exit-77 skip convention).
+
+### 13.3 His per-edit affordability levers (the actual squeeze answer)
+
+1. **Narrowest-proof-first routing** — `TESTING_FOR_AGENTS.md` decision tree:
+   every claim maps to the cheapest sufficient test shape; "add the narrowest
+   unit or lab proof first. Only then run broader gates."
+2. **RCH remote offload** — a PreToolUse hook classifying build/test commands
+   in ms and executing on an 8-worker fleet; fail-open, `RCH_REQUIRE_REMOTE=1`
+   proof lanes where local fallback is recorded as degraded, never green.
+3. **Determinism as prerequisite** — fixed seeds, virtual time, replay commands
+   in every closeout: what makes big suites cacheable and re-runnable.
+4. **Tests as free labor** — agents author/maintain all suites ("hundreds and
+   hundreds… it's free!"); scale: frankenterm 57k+, numpy 8.1k, pandas 7.9k.
+5. Tiering everywhere: `-short`/quick scripts per edit, full at commit,
+   nightly/dispatch gauntlets (45m–480m) for the heavy tail.
+
+### 13.4 Updated per-edit mapping (against the live 150s overlay path)
+
+Already ours per-edit: scoped unit+integration w/ coverage, red/green debt,
+CRAP, cyclomatic, line-cap, TDD-new-file, ratchets, secrets/SAST.
+**Fits the 150s box now (run-if-exists tier, next to build):** doc-tests of
+touched modules · bounded-N property tests on affected files · golden/snapshot
+of affected · flake double-run of new/changed tests (his "retry = flake
+signal") · deterministic 60s fuzz-smoke on touched parser targets (his PR
+pattern) · TP/FP corpus runs for detector-shaped code · contract/schema-drift
+tests scoped to the edit · compile-fail suites.
+**Commit gate:** no-mock scanner (their pattern; we have `introverted_test` —
+extend to a mock-ban policy check) · flake budget · claim/doc-drift (we have
+docs-freshness/gen-facts; extend toward proof-lane manifests).
+**Stop:** fresh-eyes self-review loop ≈ our Stop reflections; "landing the
+plane" checklist ≈ commit-cadence + verification-stop-checks.
+**Nightly/cloud (not per-edit):** fuzz campaigns, sanitizers, soak,
+differential-vs-reference, bench gates, formal — his cadence agrees with our
+§6 routing; the cloud lane (§5.4) is his RCH, generalized.
+**Migration-precondition pattern (ports):** capture reference behavior as
+fixtures FIRST (oracle-capture scripts), differential harness = the spec,
+divergence ledgers (`DISCREPANCIES.md`) + parity matrices as living state;
+"Extract spec from legacy → implement from spec → never translate
+line-by-line." Maps onto our spec-audit harness as a future "conformance kit"
+primitive.
+
+Raw sweep reports: session transcripts 2026-07-17 (4 agents, ~1,900 lines);
+re-run prompts preserved in the conversation record.
