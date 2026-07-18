@@ -3,6 +3,7 @@
 // invariants") that the checks bind to an ID namespace. Pure functions over
 // one file's lines; no dependency on the id/range extractors.
 
+import { hasUnicodeWordGlue, stripEmphasis } from "./emphasis-strip.js";
 import type { CountClaim } from "./types.js";
 
 const WORD_NUMBERS: Record<string, number> = {
@@ -186,13 +187,25 @@ function parseCountMatch(
  * pure-quantity nouns ("three times") out. Broad-by-design: unbound claims
  * are inert; only namespace-bound nouns ever produce findings.
  */
+/** One regex match → claim, rejecting a match glued to a Unicode letter/digit
+ *  on either side — the ASCII `\b`/guards can't see it, so "ésix bets" / "six
+ *  betsé" would truncate out of a larger word (round-7 #3). */
+function matchToClaim(line: string, m: RegExpMatchArray, lineNo: number): CountClaim | null {
+	const start = m.index ?? 0;
+	if (hasUnicodeWordGlue(line, start, start + (m[0]?.length ?? 0))) return null;
+	return parseCountMatch(m, lineNo);
+}
+
 export function extractCountClaims(lines: string[]): CountClaim[] {
 	const out: CountClaim[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i] ?? "";
+		// Scan the emphasis-STRIPPED line so a formatted term is seen as it
+		// renders — "**six** bets" / "_six bets_" are "six bets" claims (round-7
+		// #2). Same paired-only stripping the id/range extractors use.
+		const line = stripEmphasis(lines[i] ?? "");
 		COUNT_CLAIM_RE.lastIndex = 0;
 		for (const m of line.matchAll(COUNT_CLAIM_RE)) {
-			const claim = parseCountMatch(m, i + 1);
+			const claim = matchToClaim(line, m, i + 1);
 			if (claim) out.push(claim);
 		}
 	}

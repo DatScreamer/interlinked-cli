@@ -2,14 +2,28 @@
 // (spec-facts substrate). Feeds spec_dangling_anchor / spec_xref_integrity
 // (docs/design/spec-audit-runtime-checks.md §3.3, class B3).
 
-import { decodeEntities as decodeEntitiesShared } from "./entity-names.js";
-import { maskInlineIgnorable, withCommentBlockLines } from "./extract-refs-masking.js";
+import { stripEmphasis } from "./emphasis-strip.js";
+import { decodeEntitiesRaw } from "./entity-names.js";
+import { MD_LINK_RE } from "./extract-refs-link-grammar.js";
+import {
+	maskInlineIgnorable,
+	sameLineCommentBlockLines,
+	withCommentBlockLines,
+} from "./extract-refs-masking.js";
+import { collectRefDefinitionLabels, githubSlug } from "./extract-refs-slug.js";
 import type { AnchorLink, HeadingInfo, SectionRef } from "./types.js";
+
+// githubSlug and its inline-render pipeline live in extract-refs-slug.ts
+// (line-cap split; round-7 #14/#16). Re-exported so consumers keep ONE import
+// surface, and used here directly for heading slugging.
+export { githubSlug };
 
 // CommonMark permits up to 3 leading spaces before an ATX heading (sol-max #23);
 // 4+ is indented code, not a heading. The opening run may also end the line —
 // "#" alone is a valid EMPTY heading (round-6 #11).
-const HEADING_RE = /^ {0,3}(#{1,6})(?:\s+(.*))?$/;
+// The separator after the # run is space/tab ONLY — GFM does not treat NBSP as
+// a structural heading separator (round-7 #12), so "# Title" is a paragraph.
+const HEADING_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/;
 
 /** Validate a dotted section-number token ("7", "7.3", "7.3.1") captured by
  *  the flat scan patterns. Split-based — no regex, provably linear. */
@@ -22,58 +36,6 @@ function asSectionNumber(token: string | undefined): string | undefined {
 		(p) => p.length > 0 && [...p].every((c) => c >= "0" && c <= "9"),
 	);
 	return allNumeric ? trimmed : undefined;
-}
-
-/** GitHub-style anchor slug (lowercase, punctuation stripped, spaces to -).
- *  Public substrate API — checks and the ledger resolve anchors through it.
- *  Entity decoding lives in entity-names.ts (line-cap split; round-6 #12 keeps
- *  named and numeric references on ONE glyph filter). */
-export function githubSlug(text: string): string {
-	// GitHub slugs the RENDERED heading text (round-2 #23): a link
-	// "[Install](url)" renders as "Install", HTML comments render NOTHING and
-	// are removed outright — space-masking would hyphenate (round-6 #13) — raw
-	// tags are dropped (sol-max #21: "<em>API</em>" → "api"), entities decode,
-	// and each whitespace char becomes one hyphen — GitHub does NOT collapse
-	// runs. The tag pattern matches only real HTML tags (`</?name …>`), so a
-	// `<https://…>` autolink is NOT deleted (sol-max #11).
-	return decodeEntitiesShared(
-		renderInline(text)
-			.replace(/<!--[^\n]{0,2000}?-->/g, "")
-			.replace(/<\/?[a-z][a-z0-9]*(?:\s[^>\n]{0,200})?>/gi, ""),
-	)
-		.toLowerCase()
-		.replace(/[`*_~[\]()]/g, "")
-		.replace(/[^\p{L}\p{N}\s-]/gu, "")
-		.trim()
-		.replace(/\s/g, "-");
-}
-
-/** Reduce inline markdown to its rendered text: link `[text](url)` → text,
- *  image `![alt](url)` → alt, autolinks/code kept as-is minus delimiters. The
- *  label scan is O(bound·n) from every `[`, so a bracket-only line carrying NO
- *  link/ref delimiter at all skips both replaces via a cheap substring guard
- *  (round-5 #2): "[".repeat(320k) drops from ~1.6s to one linear pass. The
- *  destination admits balanced parens (≤2 levels) plus an angle `<…>` form so a
- *  heading link `[API](docs/a(b).md)` renders as `API`, not `API.md)` (round-5
- *  #14), with `[^\S\n]`-bounded whitespace around dest and title — CommonMark
- *  allows spaces there, and JS `\s` (incl. nbsp) minus newline preserves what
- *  the old `[^)\n]` accepted (adversarial-verify amendment). Label bound 256
- *  keeps the guarded worst case (a line with BOTH delimiters) under budget;
- *  heading link TEXT longer than that is left unreduced (rare — link text is
- *  short). */
-function renderInline(text: string): string {
-	let out = text;
-	if (out.includes("](")) {
-		// links/images → text; balanced-paren / angle dest, bounded title
-		out = out.replace(
-			/!?\[([^\]\n]{0,256})\]\([^\S\n]{0,64}(?:<[^<>\n]{0,4096}>|(?:[^()\s]|\((?:[^()\s]|\([^()\s]{0,512}\)){0,512}\)){0,4096})(?:[^\S\n]{1,64}(?:"[^"\n]{0,2000}"|'[^'\n]{0,2000}'|\([^()\n]{0,2000}\)))?[^\S\n]{0,64}\)/g,
-			"$1",
-		);
-	}
-	if (out.includes("][")) {
-		out = out.replace(/!?\[([^\]\n]{0,256})\]\[[^\]\n]{0,256}\]/g, "$1"); // reference links → text
-	}
-	return out;
 }
 
 /** Replace inline-code spans AND same-line HTML comments with equal-length
@@ -107,8 +69,10 @@ function headingAppendixLetter(text: string): string | undefined {
  *  text line. At most 3 leading spaces — 4+ is indented code, not an underline
  *  (sol-max #13). */
 function setextLevel(line: string): 1 | 2 | null {
-	if (/^ {0,3}=+\s*$/.test(line)) return 1;
-	if (/^ {0,3}-+\s*$/.test(line)) return 2;
+	// Trailing whitespace is space/tab only — NBSP is not GFM structural
+	// underline whitespace (round-7 #12).
+	if (/^ {0,3}=+[ \t]*$/.test(line)) return 1;
+	if (/^ {0,3}-+[ \t]*$/.test(line)) return 2;
 	return null;
 }
 
@@ -193,6 +157,42 @@ function joinSetextText(lines: string[], i: number, j: number): string {
 /** One ATX or Setext heading resolved from line `i`, or null. Returns the
  *  text, level, and the number of extra lines (paragraph continuations +
  *  underline) the heading consumed after `i`. */
+/** A run-START line that is not setext-able paragraph text because it OPENS a
+ *  different block: a link-reference definition ("[label]: dest") or an HTML
+ *  block (a "<name"/"</name" tag opener). Checked ONLY at the run's first line
+ *  (round-7 #18): "[foo]: /url\n---" and "<div>\n---" emit no heading, while an
+ *  interior LRD/HTML line ("A\n[foo]: /url\nB\n---") still FOLDS — putting this
+ *  in isSetextTextEligible instead would break the whole-paragraph fold and
+ *  re-introduce the round-5 #15 truncated-suffix bug. Because eligibility is
+ *  unchanged, a following "<div>\nbar" keeps bar as a run CONTINUATION, not a
+ *  fresh run-start, so the multi-line HTML block yields no phantom "bar". */
+/** CommonMark HTML-block type-6 tag names (§4.6). A line opening with one of
+ *  these is a block, not paragraph text. Inline tags (em, strong, a, code,
+ *  span, br, img…) are deliberately absent. */
+const HTML_BLOCK_TAG_RE = new RegExp(
+	`^ {0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \\t/>]|$)`,
+	"i",
+);
+
+/** A line that is a COMPLETE standalone HTML tag (open or close), only
+ *  whitespace to end-of-line — CommonMark type-7 HTML block (§4.6). "<em>text"
+ *  is NOT one (text follows the tag), so it stays paragraph text (round-7 #14). */
+const HTML_STANDALONE_TAG_RE =
+	/^ {0,3}(?:<[a-z][a-z0-9-]*(?:\s[^<>]{0,1000})?\/?>|<\/[a-z][a-z0-9-]*\s{0,100}>)[ \t]*$/i;
+
+/** A run-START line that is not setext-able paragraph text because it OPENS a
+ *  different block: a COMPLETE link-reference definition ("[label]: dest" — the
+ *  destination is required, so "[foo]:" alone stays a paragraph, round-7 #13),
+ *  or an HTML block (a type-6 block tag or a complete standalone tag — but not
+ *  an inline tag with trailing text, round-7 #14). */
+function opensNonParagraphBlock(line: string): boolean {
+	// Link-reference definition: label ends at the FIRST unescaped "]", no nested
+	// "[" (§4.7), and a NON-EMPTY destination must follow the colon (round-7 #13).
+	// Friedl-unrolled + bounded ⇒ ReDoS-safe.
+	if (/^ {0,3}\[(?:[^[\]\\]|\\.){0,999}\]:[ \t]*\S/.test(line)) return true;
+	return HTML_BLOCK_TAG_RE.test(line) || HTML_STANDALONE_TAG_RE.test(line);
+}
+
 function headingAt(
 	lines: string[],
 	i: number,
@@ -206,6 +206,7 @@ function headingAt(
 	// run's FIRST line only (sol-max #14, round-5 #15).
 	if (!isSetextTextEligible(line)) return null;
 	if (!isSetextRunStart(lines, i, fencedLines)) return null;
+	if (opensNonParagraphBlock(line)) return null; // LRD / HTML block, not a heading (round-7 #18)
 	const j = setextTextRunEnd(lines, i, fencedLines);
 	if (j + 1 >= lines.length || fencedLines.has(j + 2)) return null;
 	const level = setextLevel(lines[j + 1] ?? "");
@@ -221,6 +222,11 @@ export function extractHeadings(
 	// Whole-line HTML comment blocks are hidden content — no headings inside
 	// (round-5 #20). Line-level only: block decisions still read RAW lines.
 	const skip = withCommentBlockLines(lines, fencedLines);
+	// Undefined reference links render literally (round-7 #16): collect the
+	// file's "[label]: dest" definitions once so githubSlug reduces "[t][ref]"
+	// only when ref is defined. Skip fenced/comment-hidden lines — a def there
+	// activates nothing (round-7 #18).
+	const refLabels = collectRefDefinitionLabels(lines, skip);
 	// Dedup against ALL previously emitted slugs (sol-max #18): "Setup / Setup-1 /
 	// Setup" advances the third to "setup-2". The per-base suffix RESUMES where it
 	// last stopped instead of restarting at 1, so N identical headings cost O(N),
@@ -230,7 +236,7 @@ export function extractHeadings(
 	for (let i = 0; i < lines.length; i++) {
 		const h = headingAt(lines, i, skip);
 		if (!h) continue;
-		const base = githubSlug(h.text);
+		const base = githubSlug(h.text, refLabels);
 		let slug = base;
 		let n = nextN.get(base) ?? 1;
 		while (used.has(slug)) {
@@ -239,8 +245,13 @@ export function extractHeadings(
 		}
 		nextN.set(base, n);
 		used.add(slug);
-		const sectionNumber = headingSectionNumber(h.text);
-		const appendixLetter = headingAppendixLetter(h.text);
+		// Number/appendix metadata reads the RENDERED heading text, so emphasis
+		// around the number ("## **7.3 Phantoms**", "## *Appendix C*") doesn't
+		// hide it (round-7 #11). Link-wrapped numbers ("[7.3](url)") are a
+		// documented residual — link reduction lives in the slug pipeline.
+		const metaText = stripEmphasis(h.text);
+		const sectionNumber = headingSectionNumber(metaText);
+		const appendixLetter = headingAppendixLetter(metaText);
 		out.push({
 			line: i + 1,
 			level: h.level,
@@ -360,6 +371,17 @@ function headingOccupiedLines(lines: string[], fencedLines: Set<number>): Set<nu
 
 /** Prose references to sections/appendices (heading lines excluded).
  *  Public substrate API — consumed by spec_dangling_anchor. */
+/** Blank the `(destination "title")` of every inline link (column-preserving),
+ *  keeping the link TEXT — a "§9" or "Appendix C" inside a URL or title is not a
+ *  visible prose reference and must not seed a dangling-section finding
+ *  (round-7 #16). Bounded classes ⇒ ReDoS-safe. */
+function blankLinkTargets(line: string): string {
+	return line.replace(
+		/(!?\[[^\]\n]{0,1000}\])(\([^)\n]{0,2000}\))/g,
+		(_, label: string, target: string) => label + " ".repeat(target.length),
+	);
+}
+
 export function extractSectionRefs(
 	lines: string[],
 	fencedLines: Set<number>,
@@ -369,36 +391,19 @@ export function extractSectionRefs(
 	const out: SectionRef[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		if (skip.has(i + 1) || headingLines.has(i + 1)) continue;
-		// Blank inline code + same-line comments so a literal `§9` example or a
-		// commented-out §ref is not a live ref (sol-max #17, round-5 #20).
-		out.push(...refsOnLine(blankInlineCode(lines[i] ?? ""), i + 1));
+		// Blank inline code + same-line comments (sol-max #17, round-5 #20) AND
+		// link destinations/titles (round-7 #16) so a literal or in-URL §ref is
+		// not read as a live reference.
+		out.push(...refsOnLine(blankLinkTargets(blankInlineCode(lines[i] ?? "")), i + 1));
 	}
 	return out;
 }
 
-// [text](target) and ![alt](target). Targets with a scheme (http:, mailto:) are
-// external and skipped; "#slug" is a same-file anchor; anything else is a relative
-// path with an optional "#anchor". Char classes are BOUNDED (round-2 #1): an
-// unbounded `[^\]]*` scanned to EOL from every `[` is O(n²). The LABEL bound is
-// 512 (round-5 #2/#23) — it is the ReDoS-critical class scanned from every `[`,
-// floored by the round-4 501-char-label test. The label admits an escaped
-// bracket via an unrolled `\.`-tail (round-5 #19, `[a\]b](x)` — the lead class
-// excludes `\`, the tail starts with it, so the two are disjoint); `(?<!\\)`
-// rejects an escaped-open `\[x](y)`. The destination stays ONE capture group
-// (extractAnchorLinks reads m[1]): either an angle `<…>` form (round-5 #19) or a
-// bare dest that (a) may not start with `<` (round-5 #22), (b) admits ≤2 levels
-// of balanced parens with EVERY inner class bounded so no single atom is
-// unbounded (round-5 #23; 3+ levels are a noted residual), then re-capped by
-// total length in classifyLinkTarget. Whitespace around dest/title uses
-// `[^\S\n]` (JS whitespace minus newline, incl. nbsp — what the old `\s+`
-// separator accepted) bounded to 64 (adversarial-verify amendment); the title
-// accepts quoted OR parenthesized forms (round-5 #19).
-// The opening guard is PARITY-aware (round-6 #21): `\[` after an EVEN run of
-// backslashes is link-active ("\\[x](y)" renders one literal backslash then a
-// LINK), while an odd run escapes it. Variable-length lookbehind, linear —
-// each candidate `[` scans its own preceding backslash run once.
-const MD_LINK_RE =
-	/!?(?<=(?:^|[^\\])(?:\\\\)*)\[[^\]\n\\]{0,512}(?:\\.[^\]\n\\]{0,512}){0,64}\]\([^\S\n]{0,64}(<[^<>\n]{0,4096}>|(?!<)(?:[^()\s]|\((?:[^()\s]|\([^()\s]{0,512}\)){0,512}\)){1,4096})(?:[^\S\n]{1,64}(?:"[^"\n]{0,2000}"|'[^'\n]{0,2000}'|\([^()\n]{0,2000}\)))?[^\S\n]{0,64}\)/g;
+// [text](target) and ![alt](target); targets with a scheme (http:, mailto:)
+// are external and skipped; "#slug" is a same-file anchor; anything else is a
+// relative path with an optional "#anchor". MD_LINK_RE itself (ONE capture
+// group — m[1] = dest) and the shared escape-aware label grammar live in
+// extract-refs-link-grammar.ts (round-7 #15/#20 + line-cap split).
 const SCHEME_RE = /^[a-z][a-z0-9+.-]{0,63}:/i;
 
 /** Normalize a captured link destination, or null for external/degenerate. An
@@ -420,6 +425,10 @@ function resolveLinkDest(target: string): string | null {
 	// classification: "http\://example.com" renders as the external URL, not a
 	// local file named "http\:…" (round-6 #22). ASCII punctuation only.
 	dest = dest.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+	// Entity references decode before scheme/fragment interpretation too, so
+	// "h&#116;tp://…" is the external URL "http://…", not a local file, and an
+	// anchor keeps its decoded text (round-7 #17).
+	dest = decodeEntitiesRaw(dest);
 	if (SCHEME_RE.test(dest)) return null; // external scheme (http:, mailto:, …)
 	if (dest.startsWith("//")) return null; // scheme-relative → external
 	return dest;
@@ -456,12 +465,20 @@ export function extractAnchorLinks(
 ): AnchorLink[] {
 	const out: AnchorLink[] = [];
 	const skip = withCommentBlockLines(lines, fencedLines); // hidden comment blocks (round-5 #20)
+	// A one-line HTML comment block ("<!-- x --> tail") renders its tail as
+	// LITERAL text, so links there are not links (round-7 #26). Refs still
+	// read these lines (visible text) — this set is links-only.
+	const linksHidden = sameLineCommentBlockLines(lines, fencedLines);
 	for (let i = 0; i < lines.length; i++) {
-		if (skip.has(i + 1)) continue;
+		if (skip.has(i + 1) || linksHidden.has(i + 1)) continue;
 		// Blank inline-code spans (any backtick-run length) so a literal
 		// `[plan](missing.md)` example is not read as a live link (sol-max #19).
 		const original = lines[i] ?? "";
 		const line = blankInlineCode(original);
+		// Every MD_LINK_RE match contains a literal `](` (the pattern's `\]\(`),
+		// so a line without it cannot hold a link — skip the per-`[` label scan
+		// entirely (round-7 #20; same guard renderInline uses, round-5 #2).
+		if (!line.includes("](")) continue;
 		for (const m of line.matchAll(MD_LINK_RE)) {
 			// Masking is column-preserving, so provenance slices the ORIGINAL
 			// source — diagnostics must quote verbatim text, not the mask

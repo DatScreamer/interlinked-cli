@@ -8,6 +8,7 @@
 // numeric guards, endpoint-prefix agreement on ranges, first-on-line
 // definition credit, bounded gap enumeration, comma-grouped counts.
 
+import { hasUnicodeWordGlue, stripEmphasis } from "./emphasis-strip.js";
 import type {
 	IdNamespace,
 	LooseId,
@@ -111,27 +112,41 @@ function isValidHit(style: "dashed" | "compact", prefix: string, num: number): b
 	return style === "dashed" ? isValidDashedPrefix(prefix) : true;
 }
 
+/** Record the leftmost RAW id-token column per line. Fed from EVERY regex
+ *  match BEFORE validity/glue/span filtering (round-7 #4): a filtered leading
+ *  token ("| HTTP-200 | see REQ-1 |") still occupies first position, so a
+ *  trailing reference cannot inherit definition credit. */
+function updateMinCol(
+	firstColByLine: Map<number, number>,
+	line: number,
+	col: number,
+): void {
+	const cur = firstColByLine.get(line);
+	if (cur === undefined || col < cur) firstColByLine.set(line, col);
+}
+
 function collectHits(
 	lines: string[],
 	re: RegExp,
 	style: "dashed" | "compact",
+	firstColByLine: Map<number, number>,
 ): RawHit[] {
 	const hits: RawHit[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] ?? "";
 		re.lastIndex = 0;
 		for (const m of line.matchAll(re)) {
+			const col = m.index ?? 0;
+			const id = m[0] ?? "";
+			updateMinCol(firstColByLine, i + 1, col);
+			// The ASCII lookarounds cannot see Unicode glue ("éREQ-1",
+			// "REQ-1é", combining marks, astral letters) — post-filter by
+			// whole code point instead of bloating the regex (round-7 #2).
+			if (hasUnicodeWordGlue(line, col, col + id.length)) continue;
 			const prefix = m[1] ?? "";
 			const num = Number(m[2]);
 			if (!isValidHit(style, prefix, num)) continue;
-			hits.push({
-				prefix,
-				num,
-				id: m[0] ?? "",
-				line: i + 1,
-				col: m.index ?? 0,
-				style,
-			});
+			hits.push({ prefix, num, id, line: i + 1, col, style });
 		}
 	}
 	return hits;
@@ -212,16 +227,6 @@ function buildNamespace(
 	};
 }
 
-/** Min token column per line across ALL hits — first-on-line detection. */
-function computeFirstCols(hits: RawHit[]): Map<number, number> {
-	const firstColByLine = new Map<number, number>();
-	for (const h of hits) {
-		const cur = firstColByLine.get(h.line);
-		if (cur === undefined || h.col < cur) firstColByLine.set(h.line, h.col);
-	}
-	return firstColByLine;
-}
-
 /** Group hits by (style, prefix). */
 function groupByPrefix(hits: RawHit[]): Map<string, RawHit[]> {
 	const groups = new Map<string, RawHit[]>();
@@ -251,7 +256,44 @@ function rangeSpansByLine(
 		if (arr) arr.push(span);
 		else spans.set(c.line, [span]);
 	}
+	// Sort + merge each line's spans once so membership tests binary-search —
+	// a line repeating thousands of claims made every hit scan every span
+	// (quadratic; ~1.6s on 30k claims one line — round-7 #3).
+	for (const [line, arr] of spans) spans.set(line, sortAndMergeSpans(arr));
 	return spans;
+}
+
+/** Sort spans by start and merge overlaps into disjoint intervals. Claims from
+ *  one regex pass are already sorted and disjoint; caller-supplied claim sets
+ *  are not guaranteed to be. */
+function sortAndMergeSpans(
+	spans: Array<[number, number]>,
+): Array<[number, number]> {
+	spans.sort((a, b) => a[0] - b[0]);
+	const merged: Array<[number, number]> = [];
+	for (const [s, e] of spans) {
+		const last = merged[merged.length - 1];
+		if (last !== undefined && s <= last[1]) {
+			if (e > last[1]) last[1] = e;
+		} else {
+			merged.push([s, e]);
+		}
+	}
+	return merged;
+}
+
+/** Binary search over sorted disjoint spans: is `col` inside any of them? */
+function inSortedSpan(spans: Array<[number, number]>, col: number): boolean {
+	let lo = 0;
+	let hi = spans.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		const [s, e] = spans[mid] ?? [0, 0];
+		if (col < s) hi = mid - 1;
+		else if (col >= e) lo = mid + 1;
+		else return true;
+	}
+	return false;
 }
 
 /** Whether a token at (line,col) falls inside any range-claim span. */
@@ -261,25 +303,28 @@ function inRangeSpan(
 	spans: Map<number, Array<[number, number]>>,
 ): boolean {
 	const lineSpans = spans.get(line);
-	return lineSpans ? lineSpans.some(([s, e]) => col >= s && col < e) : false;
+	return lineSpans ? inSortedSpan(lineSpans, col) : false;
 }
 
 /** Id hits over the emphasis-STRIPPED lines with range-claim endpoints excluded,
  *  plus the first-column map (both in stripped coordinates, so span exclusion and
- *  first-on-line credit stay consistent — sol-max #1). Shared by the namespace and
- *  loose-id extractors. Definition-shape is still judged on the RAW line by the
- *  callers, so a bold-leading "**FG-INV-18**" definition is not lost. */
+ *  first-on-line credit stay consistent — sol-max #1). The first-column map is
+ *  fed from every RAW regex match, not just surviving hits (round-7 #4). Shared
+ *  by the namespace and loose-id extractors. Definition-shape is still judged on
+ *  the RAW line by the callers, so a bold-leading "**FG-INV-18**" definition is
+ *  not lost. */
 function spanFilteredHits(
 	lines: string[],
 	rangeClaims?: RangeClaim[],
 ): { hits: RawHit[]; firstColByLine: Map<number, number> } {
 	const stripped = lines.map(stripEmphasis);
 	const spans = rangeSpansByLine(rangeClaims ?? extractRangeClaims(lines));
+	const firstColByLine = new Map<number, number>();
 	const hits = [
-		...collectHits(stripped, DASHED_ID_RE, "dashed"),
-		...collectHits(stripped, COMPACT_ID_RE, "compact"),
+		...collectHits(stripped, DASHED_ID_RE, "dashed", firstColByLine),
+		...collectHits(stripped, COMPACT_ID_RE, "compact", firstColByLine),
 	].filter((h) => !inRangeSpan(h.line, h.col, spans));
-	return { hits, firstColByLine: computeFirstCols(hits) };
+	return { hits, firstColByLine };
 }
 
 /**
@@ -341,18 +386,10 @@ export function extractLooseDefinedIds(
 // so existing importers keep resolving them from extract-ids.js.
 export { extractCountClaims } from "./extract-counts.js";
 
-/** Emphasis characters stripped before range scanning so "**FG-INV-01**
- *  through **FG-INV-20**" still parses. `*` and `` ` `` are always emphasis, but
- *  `_` is emphasis ONLY at a word boundary — an INTRAWORD underscore ("B_1") is
- *  literal per CommonMark and must survive, or the underscore id-guards are
- *  nullified (sol-max #5). A BACKSLASH-ESCAPED underscore ("\_B1") is likewise
- *  literal, not a delimiter, so both alternatives exclude a preceding backslash —
- *  otherwise stripping it left "B1" exposed as a fabricated id (sol-max #7). */
-function stripEmphasis(line: string): string {
-	return line
-		.replace(/[*`]/g, "")
-		.replace(/(?<!\\)_(?![0-9A-Za-z])|(?<![0-9A-Za-z\\])_/g, "");
-}
+// stripEmphasis moved to emphasis-strip.ts (round-7 #5): only PAIRED
+// `*`/backtick runs are removed now — unpaired markers are literal per
+// CommonMark, and unconditional deletion fabricated ids ("- A*1" -> "A1",
+// "A*1 through A*9" -> a range).
 
 // Leading lookbehind prevents mid-token starts ("...FG-)INV-01" can never
 // begin a claim); the endpoint must repeat the SAME prefix (dashed or
@@ -368,8 +405,11 @@ function stripEmphasis(line: string): string {
 // — the underscore id-guards apply here too (sol-max #6). The final guard also
 // rejects a dash so "A1 through A9-extra" cannot truncate into A1..A9
 // (round-6 #6), mirroring the id regexes' numeric-terminal contract.
+// Word operators (through/thru/to) require surrounding whitespace so a single
+// token "A1toA9" is NOT read as a range (round-7 #6); symbol operators (–, —, …,
+// ..., ..) are self-delimiting and allow optional spacing.
 const RANGE_CLAIM_RE =
-	/(?<![A-Za-z0-9_-])([A-Z][A-Z0-9-]{0,30}?)-?(\d{1,4})(?!\.?\d)\s*(?:through|thru|to|–|—|…|\.\.\.|\.\.)\s*(?:\1-(\d{1,4})|\1(\d{1,4})|(?<![A-Za-z0-9_-])(\d{1,4}))(?!\.?\d)(?![0-9A-Za-z_-])/g;
+	/(?<![A-Za-z0-9_-])([A-Z][A-Z0-9-]{0,30}?)-?(\d{1,4})(?!\.?\d)(?:\s+(?:through|thru|to)\s+|\s*(?:–|—|…|\.\.\.|\.\.)\s*)(?:\1-(\d{1,4})|\1(\d{1,4})|(?<![A-Za-z0-9_-])(\d{1,4}))(?!\.?\d)(?![0-9A-Za-z_-])/g;
 
 /** Validate one range-claim regex match; null when it is not a real claim. */
 function parseRangeMatch(
@@ -400,13 +440,22 @@ function parseRangeMatch(
  * namespace census max. `toExplicit` records whether the upper endpoint
  * repeated the prefix or was bare shorthand ("through 20").
  */
+/** One regex match → range claim, rejecting a match glued to a Unicode
+ *  letter/digit on either side (round-7 #5 — the ASCII lookarounds can't see
+ *  it). */
+function rangeMatchToClaim(line: string, m: RegExpMatchArray, lineNo: number): RangeClaim | null {
+	const start = m.index ?? 0;
+	if (hasUnicodeWordGlue(line, start, start + (m[0]?.length ?? 0))) return null;
+	return parseRangeMatch(m, lineNo);
+}
+
 export function extractRangeClaims(lines: string[]): RangeClaim[] {
 	const out: RangeClaim[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const line = stripEmphasis(lines[i] ?? "");
 		RANGE_CLAIM_RE.lastIndex = 0;
 		for (const m of line.matchAll(RANGE_CLAIM_RE)) {
-			const claim = parseRangeMatch(m, i + 1);
+			const claim = rangeMatchToClaim(line, m, i + 1);
 			if (claim) out.push(claim);
 		}
 	}

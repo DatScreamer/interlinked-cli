@@ -95,36 +95,46 @@ function slugGlyph(ch: string): string {
 	return /[\p{L}0-9-]/u.test(ch) ? ch : "";
 }
 
-/** Resolve one entity-reference match for the slug pipeline. A recognized name
- *  or numeric reference decoding to a LETTER/digit/hyphen renders into the
- *  slug ("Caf&eacute;" keeps its é); symbol/whitespace glyphs map to "" —
- *  GitHub's slugger strips them, and decoding `&nbsp;`→" " or `&frac12;`→"½"
- *  for real would hyphenate or keep what GitHub removes (round-5 #13, round-6
- *  #12). An UNRECOGNIZED name stays literal so it slugs as text
- *  (`&bogus;`→"bogus"), matching a browser rendering an undefined reference.
- *  `Object.hasOwn` gates the lookup so `&constructor;` cannot resolve through
- *  the prototype. */
+/** Entity/numeric-reference matcher; group 1 decimal, 2 hex, 3 name. */
+const ENTITY_RE = /&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z][a-z0-9]{0,30}));/gi;
+
+/** Resolve one entity match through `filter` (the glyph transform: slug-strip
+ *  vs identity). The curated table is lowercase and case-FOLDED, so a valid
+ *  uppercase variant ("&Eacute;"→É) decodes — at the cost of also accepting an
+ *  invalid arbitrary casing ("&eAcUtE;"), a documented residual (round-7 #28):
+ *  distinguishing valid from invalid casings needs the full case-sensitive
+ *  HTML5 name table, deliberately not carried. `Object.hasOwn` gates the lookup
+ *  so `&constructor;` cannot resolve through the prototype. */
 function decodeEntityMatch(
 	whole: string,
 	dec: string | undefined,
 	hex: string | undefined,
 	name: string | undefined,
+	filter: (ch: string) => string,
 ): string {
-	if (dec !== undefined) return slugGlyph(codePoint(Number(dec)));
-	if (hex !== undefined) return slugGlyph(codePoint(Number.parseInt(hex, 16)));
+	if (dec !== undefined) return filter(codePoint(Number(dec)));
+	if (hex !== undefined) return filter(codePoint(Number.parseInt(hex, 16)));
 	const key = String(name).toLowerCase();
 	const mapped = Object.hasOwn(NAMED_ENTITIES, key) ? NAMED_ENTITIES[key] : undefined;
-	if (mapped === undefined) return whole;
-	return slugGlyph(mapped);
+	return mapped === undefined ? whole : filter(mapped);
 }
 
-/** Decode the HTML entities GitHub decodes before slugging — NUMERIC (`&#38;`,
- *  `&#x26;`) plus the curated named table — in ONE linear pass (sol-max #21,
- *  round-5 #13). Single-pass also means an entity assembled BY decoding
- *  (`&amp;copy;` → the text "&copy;") is not re-decoded, matching CommonMark. */
+/** SLUG-view decode — the entities GitHub decodes before slugging, in ONE
+ *  linear pass (sol-max #21, round-5 #13): recognized references become their
+ *  glyph then slug-filter (letters survive, symbol/whitespace → ""), unknown
+ *  references stay literal. Single-pass, so an entity assembled BY decoding
+ *  (`&amp;copy;`) is not re-decoded, matching CommonMark. */
 export function decodeEntities(text: string): string {
-	return text.replace(
-		/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z][a-z0-9]{0,30}));/gi,
-		(whole, dec, hex, name) => decodeEntityMatch(whole, dec, hex, name),
+	return text.replace(ENTITY_RE, (whole, dec, hex, name) =>
+		decodeEntityMatch(whole, dec, hex, name, slugGlyph),
+	);
+}
+
+/** RAW decode — recognized references become their ACTUAL character (unknown
+ *  literal). Used to interpret a link destination before scheme/fragment
+ *  classification: "h&#116;tp://…" is the URL "http://…" (round-7 #17). */
+export function decodeEntitiesRaw(text: string): string {
+	return text.replace(ENTITY_RE, (whole, dec, hex, name) =>
+		decodeEntityMatch(whole, dec, hex, name, (ch) => ch),
 	);
 }

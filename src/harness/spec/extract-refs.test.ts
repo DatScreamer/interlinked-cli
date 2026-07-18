@@ -228,8 +228,11 @@ describe("link grammar (round-5 #2/#14/#19/#21/#22/#23)", () => {
 
 	it("renders real links, refs, and images through the delimiter guard (#2)", () => {
 		expect(githubSlug("[Install](https://example.com) now")).toBe("install-now");
+		// An UNDEFINED reference link renders literally (round-7 #16) — the old
+		// "text-a-more" pin encoded that bug. The DEFINED case is pinned in the
+		// extract-refs-slug round-7 suite.
 		expect(extractHeadings(lines("# text [a][ref] more"), noFences)[0]?.slug).toBe(
-			"text-a-more",
+			"text-aref-more",
 		);
 		expect(extractHeadings(lines("# ![img](x.png) caption"), noFences)[0]?.slug).toBe(
 			"img-caption",
@@ -277,7 +280,10 @@ describe("link grammar (round-5 #2/#14/#19/#21/#22/#23)", () => {
 		expect(extractHeadings(lines("# [API](docs/x.md ) note"), noFences)[0]?.slug).toBe(
 			"api-note",
 		);
-		expect(targets('[x](a.md "T")')).toEqual(["a.md"]);
+		expect(targets('[x](a.md "T")')).toEqual(["a.md"]);
+		// NBSP is NOT a legal link separator (round-7 #24): a link whose only
+		// dest/title separator is U+00A0 renders literally, not as a link.
+		expect(targets('[x](a.md "T")')).toEqual([]);
 	});
 
 	it("treats scheme-relative // targets as external (#21) but keeps real paths", () => {
@@ -442,5 +448,91 @@ describe("Setext structure (round-5 #15/#16)", () => {
 		expect(
 			extractHeadings(["   three space", "==="], noFences).map((h) => [h.text, h.level]),
 		).toEqual([["three space", 1]]);
+	});
+});
+
+describe("shared link-label grammar + bounded scans (round-7 #15/#20)", () => {
+	const targets = (s: string) =>
+		extractAnchorLinks([s], noFences).map((l) => l.targetFile);
+
+	it("keeps extracting labels that mix long runs and escapes (#20)", () => {
+		expect(targets(`[${"a".repeat(400)}\\]${"b".repeat(80)}](x.md)`)).toEqual(["x.md"]);
+		expect(targets("[a\\]b\\]c](x.md)")).toEqual(["x.md"]);
+		expect(targets("[a\\[b](x.md)")).toEqual(["x.md"]);
+	});
+
+	it("bounds TOTAL label work: escape-segment bombs and bracket floods run linear (#20)", () => {
+		const start = Date.now();
+		expect(extractAnchorLinks([("[".repeat(512) + "\\x").repeat(200)], noFences)).toEqual([]);
+		expect(extractAnchorLinks([("[".repeat(512) + "\\x").repeat(622)], noFences)).toEqual([]);
+		expect(extractAnchorLinks(["[".repeat(320_000)], noFences)).toEqual([]);
+		expect(Date.now() - start).toBeLessThan(500);
+	});
+
+	it("still finds a real link after an escape-bomb prefix, on the regex path (#20)", () => {
+		const start = Date.now();
+		expect(targets(`${("[".repeat(512) + "\\x").repeat(200)}](y)`)).toEqual(["y"]);
+		expect(Date.now() - start).toBeLessThan(500);
+	});
+
+	it("holds the regex path under budget at 240k brackets with a real tail link (#20)", () => {
+		const start = Date.now();
+		expect(targets(`${"[".repeat(240_000)}](y)`)).toEqual(["y"]);
+		expect(Date.now() - start).toBeLessThan(500);
+	});
+
+	it("rejects labels past the 512-unit total bound, trailing escapes, escaped openers (#20)", () => {
+		expect(extractAnchorLinks([`[${"a".repeat(600)}](x.md)`], noFences)).toEqual([]);
+		expect(extractAnchorLinks(["[a\\](x.md)"], noFences)).toEqual([]);
+		expect(extractAnchorLinks(["\\[a\\]b](x.md)"], noFences)).toEqual([]);
+	});
+
+	it("keeps opener parity linear on 320k backslash runs (#20 measurement)", () => {
+		const start = Date.now();
+		expect(extractAnchorLinks(["\\".repeat(320_000)], noFences)).toEqual([]);
+		expect(targets(`${"\\".repeat(320_000)}[x](y)`)).toEqual(["y"]);
+		expect(extractAnchorLinks([`${"\\".repeat(319_999)}[x](y)`], noFences)).toEqual([]);
+		expect(Date.now() - start).toBeLessThan(500);
+	});
+
+	it("slugs escaped-bracket labels as their rendered text (#15)", () => {
+		expect(githubSlug("[a\\]b](x.md)")).toBe("ab");
+		expect(extractHeadings(["# [a\\]b](x.md) note"], noFences)[0]?.slug).toBe("ab-note");
+		expect(githubSlug("[a\\]b][ref]")).toBe("ab");
+	});
+
+	it("leaves non-link bracket text unreduced; masks still win (#15)", () => {
+		expect(githubSlug("[a\\](x.md)")).toBe("axmd");
+		expect(githubSlug("plain [brackets] text")).toBe("plain-brackets-text");
+		expect(extractAnchorLinks(["`[a\\]b](x.md)`"], noFences)).toEqual([]);
+	});
+});
+
+describe("round-7 review batch (refs / links / slug)", () => {
+	const tgt = (s: string) => extractAnchorLinks([s], noFences).map((l) => l.targetFile);
+
+	it("reads section-number/appendix metadata through heading emphasis (#11)", () => {
+		expect(extractHeadings(lines("## **7.3 Phantoms**"), noFences)[0]?.sectionNumber).toBe("7.3");
+		expect(extractHeadings(lines("## *Appendix C*"), noFences)[0]?.appendixLetter).toBe("C");
+	});
+
+	it("does not read a §ref/appendix inside a link destination or title (#16)", () => {
+		expect(extractSectionRefs(["see [x](https://e.com/#§9)"], noFences)).toEqual([]);
+		expect(extractSectionRefs(['[x](foo "Appendix C")'], noFences)).toEqual([]);
+		expect(extractSectionRefs(["see §9 in [x](y)"], noFences).map((r) => r.ref)).toEqual(["9"]);
+	});
+
+	it("entity-decodes a link destination before classifying it (#17)", () => {
+		expect(extractAnchorLinks(["[x](h&#116;tp://example.com)"], noFences)).toEqual([]); // → external
+		expect(extractAnchorLinks(["[x](#caf&eacute;)"], noFences)[0]?.anchor).toBe("café");
+	});
+
+	it("accepts an escaped structural paren in a destination (#23)", () => {
+		expect(tgt("[x](foo\\(bar)")).toEqual(["foo(bar"]);
+	});
+
+	it("strips self-closing and hyphenated custom tags from slugs (#25)", () => {
+		expect(githubSlug("A<br/>B")).toBe("ab");
+		expect(githubSlug("<x-y>API</x-y>")).toBe("api");
 	});
 });

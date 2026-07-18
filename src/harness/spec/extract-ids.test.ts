@@ -126,6 +126,27 @@ describe("id extraction hardening (sol-max batch 1)", () => {
 	it("rejects an underscore-extended noun token (round-6 #9)", () => {
 		expect(extractCountClaims(["six widgets_case"])).toEqual([]);
 	});
+
+	it("does not fabricate a range from an unpaired leading underscore (round-7 #4)", () => {
+		expect(extractRangeClaims(["_A1 through A9"])).toEqual([]);
+	});
+
+	it("reads count claims through emphasis on individual terms (round-7 #2)", () => {
+		expect(extractCountClaims(["**six** bets"])[0]?.value).toBe(6);
+		expect(extractCountClaims(["_six bets_"])[0]?.value).toBe(6);
+	});
+
+	it("rejects count/range claims glued to Unicode word chars (round-7 #3/#5)", () => {
+		expect(extractCountClaims(["ésix bets"])).toEqual([]);
+		expect(extractCountClaims(["six betsé"])).toEqual([]);
+		expect(extractRangeClaims(["éA1 through A9"])).toEqual([]);
+		expect(extractRangeClaims(["A1 through A9é"])).toEqual([]);
+	});
+
+	it("requires whitespace around a word range operator (round-7 #6)", () => {
+		expect(extractRangeClaims(["A1toA9"])).toEqual([]);
+		expect(extractRangeClaims(["A1 to A9"]).length).toBe(1);
+	});
 });
 
 describe("extractIdNamespaces", () => {
@@ -479,5 +500,118 @@ describe("acceptance corpus (Sol D-1 / D-2 extraction fidelity)", () => {
 		expect(range).toEqual([
 			expect.objectContaining({ prefix: "FG-INV", from: 1, to: 20, line: 3 }),
 		]);
+	});
+});
+
+describe("id extraction hardening (round-7 ids-deep)", () => {
+	it("does not harvest ids glued to Unicode words (round-7 #2)", () => {
+		expect(extractIdNamespaces(["éREQ-1 éREQ-2"])).toEqual([]);
+		expect(extractIdNamespaces(["REQ-1é REQ-2é"])).toEqual([]);
+		expect(extractIdNamespaces(["𝐀B1 𝐀B2 𝐀B3"])).toEqual([]);
+		expect(extractIdNamespaces(["B1́ B2́ B3́"])).toEqual([]);
+	});
+
+	it("keeps ASCII-delimited and punctuation-adjacent ids (round-7 #2)", () => {
+		expect(extractIdNamespaces(["REQ-1 REQ-2"])[0]?.prefix).toBe("REQ");
+		expect(
+			extractIdNamespaces(["(REQ-1) (REQ-2)"])[0]?.ids.map((i) => i.num),
+		).toEqual([1, 2]);
+		expect(extractIdNamespaces(["B1, B2, B7."])[0]?.uniqueCount).toBe(3);
+	});
+
+	it("treats an unpaired low surrogate as boundary, not glue (round-7 #2)", () => {
+		const ns = extractIdNamespaces(["x\uDC00REQ-1 x\uDC00REQ-2"]);
+		expect(ns[0]?.ids.map((i) => i.num)).toEqual([1, 2]);
+	});
+
+	it("stays near-linear when one line repeats thousands of range claims (round-7 #3)", () => {
+		const line = "A-1 through A-2; ".repeat(30_000);
+		const start = Date.now();
+		expect(extractIdNamespaces([line])).toEqual([]);
+		expect(Date.now() - start).toBeLessThan(1500);
+	});
+
+	it("keeps outside-span ids with multiple claims on one line (round-7 #3)", () => {
+		const ns = extractIdNamespaces([
+			"| X-01 | X-04 through X-06; X-07 through X-09 |",
+			"| X-02 | r |",
+		]);
+		expect(ns[0]?.ids.map((i) => i.num)).toEqual([1, 2]);
+	});
+
+	it("handles caller-supplied unsorted and overlapping spans (round-7 #3)", () => {
+		const mk = (col: number, raw: string) => ({
+			prefix: "X",
+			style: "dashed" as const,
+			from: 2,
+			to: 3,
+			toExplicit: true,
+			raw,
+			line: 1,
+			col,
+		});
+		// Unsorted + overlapping spans: [12,18) then [9,14). X-01 (col 2) stays;
+		// X-02 (col 9) and X-03 (col 14) are excluded.
+		const ns = extractIdNamespaces(
+			["| X-01 | X-02 X-03 |", "| X-05 | r |"],
+			[mk(12, "X-03 x"), mk(9, "X-02 ")],
+		);
+		expect(ns[0]?.ids.map((i) => i.num)).toEqual([1, 5]);
+	});
+
+	it("filtered leading tokens still block trailing definition credit (round-7 #4)", () => {
+		const ns = extractIdNamespaces(["| HTTP-200 | see REQ-1 |", "| REQ-2 | b |"]);
+		const reqs = ns[0]?.ids ?? [];
+		expect(reqs.find((i) => i.num === 1)?.defSites).toEqual([]);
+		expect(reqs.find((i) => i.num === 2)?.defSites).toEqual([2]);
+	});
+
+	it("a year-filtered leading token blocks def credit too (round-7 #4)", () => {
+		const ns = extractIdNamespaces(["| CVE-2024 | REQ-1 note |", "- REQ-2 x"]);
+		expect(ns[0]?.ids.find((i) => i.num === 1)?.defSites).toEqual([]);
+	});
+
+	it("a glue-rejected leading token blocks def credit (round-7 #2+#4)", () => {
+		const ns = extractIdNamespaces(["| éREQ-9 | REQ-1 |", "| REQ-2 | b |"]);
+		expect(ns[0]?.ids.find((i) => i.num === 1)?.defSites).toEqual([]);
+	});
+
+	it("blocks loose-id credit behind a filtered leader (round-7 #4)", () => {
+		expect(extractLooseDefinedIds(["| HTTP-200 | see B7 |"])).toEqual([]);
+	});
+
+	it("still credits a valid leading id (round-7 #4 negative)", () => {
+		const ns = extractIdNamespaces(["| REQ-1 | uses HTTP-200 |", "| REQ-2 | b |"]);
+		expect(ns[0]?.ids.find((i) => i.num === 1)?.defSites).toEqual([1]);
+		expect(extractLooseDefinedIds(["- B7 first"]).map((l) => l.num)).toEqual([7]);
+	});
+
+	it("keeps lone emphasis markers literal so deletion cannot fabricate ids (round-7 #5)", () => {
+		expect(extractIdNamespaces(["- A*1", "- A*2", "- A*3"])).toEqual([]);
+		expect(extractRangeClaims(["A*1 through A*9"])).toEqual([]);
+		expect(extractIdNamespaces(["- A`1", "- A`2", "- A`3"])).toEqual([]);
+		expect(extractRangeClaims(["A`1 through A`9"])).toEqual([]);
+	});
+
+	it("still strips word-edge paired emphasis and code spans (round-7 #5 negative)", () => {
+		expect(extractRangeClaims(["**FG-INV-01** through **FG-INV-20** hold"])).toEqual([
+			expect.objectContaining({ from: 1, to: 20 }),
+		]);
+		expect(extractRangeClaims(["`FG-INV-01` through `FG-INV-20` hold"])).toEqual([
+			expect.objectContaining({ from: 1, to: 20 }),
+		]);
+		const ns = extractIdNamespaces(["| *REQ-1* | a |", "| *REQ-2* | b |"]);
+		expect(ns[0]?.ids.map((i) => i.num)).toEqual([1, 2]);
+	});
+
+	it("unbalanced marker runs stay literal without hiding real ids (round-7 #5)", () => {
+		const ns = extractIdNamespaces(["**REQ-1* x", "**REQ-2* y"]);
+		expect(ns[0]?.ids.map((i) => i.num)).toEqual([1, 2]);
+	});
+
+	it("code-span pairing is next-equal-run; inner runs stay literal (round-7 #5)", () => {
+		expect(
+			extractRangeClaims(["``FG-INV-01`` through ``FG-INV-20`` hold"]),
+		).toEqual([expect.objectContaining({ from: 1, to: 20 })]);
 	});
 });

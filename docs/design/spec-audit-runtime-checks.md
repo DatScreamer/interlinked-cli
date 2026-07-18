@@ -13,6 +13,13 @@ plus the cross-file ledger's `spec` result source, `interlinked findings` and
 `interlinked spec agenda|invariants` CLIs), and the Codex subscription review
 loop (`.interlinked/codex-review-loop.mjs`, auto-ingesting; raw rounds archived
 under `docs/codex-reviews/`). Built under seven adversarial Codex review rounds.
+The extractor substrate (`extract-ids`/`extract-counts`/`extract-refs*`/
+`binding`/`emphasis-strip`) is CommonMark-hardened through those rounds: every
+regex is ReDoS-bounded by executed probe (the round-7 link-label quadratic went
+8.4 s → 0 ms), Unicode boundaries are astral- and combining-mark-safe, code
+spans / HTML comments / Setext / reference links follow spec precedence, and
+namespace-binding is memoized sub-cubic. Rounds 5–7 were designed and
+adversarially verified by multi-agent workflows before landing.
 Statusline share (§11.1): the snapshot **data plane** ships — `spec_facts_total`
 and `review_findings_open` keys are written by the daemon and pinned by tests; the
 bash row-1 render segment is deferred behind a decomposition of

@@ -54,18 +54,6 @@ function sectionEnds(facts: SpecFacts): Map<number, number> {
 	return ends;
 }
 
-/** Whether any of `lines` falls inside the section (headingLine, end]. */
-function sectionContainsLine(
-	headingLine: number,
-	end: number,
-	lines: Set<number>,
-): boolean {
-	for (const line of lines) {
-		if (line > headingLine && line <= end) return true;
-	}
-	return false;
-}
-
 /** Smallest value in a set, by iteration — `Math.min(...set)` overflows the call
  *  stack on a large registry (sol-max #9: ~130k defined ids is valid markdown). */
 function minOf(nums: Set<number>): number {
@@ -74,56 +62,132 @@ function minOf(nums: Set<number>): number {
 	return m;
 }
 
-/** Whole-word noun match — substring matching would let "operations" bind
- *  "operation" claims to unrelated registries (Codex round-4 #7). */
-function headingNamesNoun(headingText: string, claim: CountClaim): boolean {
-	const words = headingText.toLowerCase().split(/[^a-z]+/);
-	return words.includes(claim.noun) || words.includes(claim.nounSingular);
+/** Lines where same-line claim↔id proximity is ambiguous — computed once per
+ *  file and memoized. Two shapes: a line carrying MORE THAN ONE count claim
+ *  ("six bets B1…B6 and four gates G1…G4" would cross-bind bet↔G and gate↔B —
+ *  sol-max round-5 #10), and a line where ids of MORE THAN ONE namespace appear
+ *  ("Six bets B1…B6 use gates G1…G3" has one claim but two candidate
+ *  registries, and the noun could name either — round-7 #28). On such lines
+ *  binding must come from the heading path instead. */
+const ambiguousLineCache = new WeakMap<SpecFacts, Set<number>>();
+function ambiguousClaimLines(facts: SpecFacts): Set<number> {
+	const cached = ambiguousLineCache.get(facts);
+	if (cached) return cached;
+	const ambiguous = new Set<number>();
+	const claimsOnLine = new Map<number, number>();
+	for (const c of facts.countClaims) {
+		const n = (claimsOnLine.get(c.line) ?? 0) + 1;
+		claimsOnLine.set(c.line, n);
+		if (n > 1) ambiguous.add(c.line);
+	}
+	addMultiNamespaceLines(facts, ambiguous);
+	ambiguousLineCache.set(facts, ambiguous);
+	return ambiguous;
 }
 
-/** Lines carrying more than one count claim. The same-line proximity signal is
- *  ambiguous there — "six bets B1…B6 and four gates G1…G4" would cross-bind bet↔G
- *  and gate↔B — so on such lines binding must come from the heading path instead
- *  (sol-max round-5 #10). Computed once per file. */
-function multiClaimLines(facts: SpecFacts): Set<number> {
-	const counts = new Map<number, number>();
-	for (const c of facts.countClaims) counts.set(c.line, (counts.get(c.line) ?? 0) + 1);
-	const multi = new Set<number>();
-	for (const [line, n] of counts) if (n > 1) multi.add(line);
-	return multi;
+/** Add lines on which ids from two or more distinct namespaces appear. */
+function addMultiNamespaceLines(facts: SpecFacts, ambiguous: Set<number>): void {
+	const namespacesOnLine = new Map<number, number>();
+	for (const ns of facts.namespaces) {
+		for (const line of idLineSet(ns)) {
+			const n = (namespacesOnLine.get(line) ?? 0) + 1;
+			namespacesOnLine.set(line, n);
+			if (n > 1) ambiguous.add(line);
+		}
+	}
 }
 
-/** The owning heading of a namespace's defined ids, or null — the value hoisted
- *  out of the per-claim loop so binding is O(namespaces·headings), not cubic
- *  (sol-max round-5 #1). */
-function ownerOf(facts: SpecFacts, defLines: Set<number>, ends: Map<number, number>): Heading | null {
+/** Strong-majority containment: the owner's section must hold at least two def
+ *  lines for every one outside it (3·inside ≥ 2·total, integer-exact). ALL
+ *  would break the common benign stray — one changelog/appendix row re-defining
+ *  an id outside the registry section — while a genuine two-section split
+ *  (1-in/2-out, 1/1, 2/2) never reaches the bar. `>= owner.line`, not `>`: the
+ *  heading line is itself a valid definition site ("## Bets B1" — sol-max
+ *  round-5 #11). */
+function ownerSectionCoversDefs(
+	owner: Heading,
+	end: number,
+	defLines: Set<number>,
+): boolean {
+	let inside = 0;
+	for (const line of defLines) {
+		if (line >= owner.line && line <= end) inside++;
+	}
+	return 3 * inside >= 2 * defLines.size;
+}
+
+/** Registry noun of the heading OWNING this namespace's definitions, or null.
+ *  Owner = the deepest heading above the EARLIEST def whose section spans it
+ *  (sol-max #10/#11), VETOED unless that section also contains a strong
+ *  majority of ALL def lines (round-7 #27): a registry whose definitions
+ *  straddle sections has no unambiguous owner, and the earliest-def heading
+ *  must not bind it ("## Bets / - X1 / ## Gates / - X2 / - X3" names no
+ *  owner). Only the owner's REGISTRY noun — first eligible plural, the same
+ *  rule heading-derived binding uses — may name a claim (round-7 #29);
+ *  returning the resolved noun rather than the heading makes any other match
+ *  structurally impossible. */
+function ownerNounOf(facts: SpecFacts, defLines: Set<number>): string | null {
 	if (defLines.size === 0) return null;
-	// Only the DEEPEST heading owning the defs may name the claim's noun (sol-max
-	// #7): an ancestor section ("# Six protocol requirements") also contains them
-	// but does not name the registry.
-	return deepestOwnerHeading(facts, minOf(defLines), ends);
+	const ends = sectionEnds(facts);
+	const owner = deepestOwnerHeading(facts, minOf(defLines), ends);
+	if (!owner) return null;
+	const end = ends.get(owner.line) ?? facts.lineCount;
+	if (!ownerSectionCoversDefs(owner, end, defLines)) return null;
+	// Bind from the RENDERED heading (its slug), not raw markdown: a link
+	// destination or HTML comment in the heading ("## [Registry](bets.md)",
+	// "## <!-- owners --> Bets") is not visible naming evidence (round-7 #10).
+	return headingRegistryNoun(owner.slug);
 }
 
-/** Per-claim bind test given the namespace's precomputed owning heading and the
- *  file's ambiguous (multi-claim) lines. Shared by the public predicate and the
- *  internal binding loop so the two can never drift. */
+/** Memoized ownerNounOf, keyed per facts by the defLines SET IDENTITY. The
+ *  checks path (checks/spec-structure.ts) calls the public predicate once per
+ *  namespace×claim but builds idLines/defLines ONCE per namespace, so after
+ *  the first claim every lookup is O(1) — 300 namespaces × 300 claims ran
+ *  ~981ms unmemoized (round-7 #30). A caller that rebuilds the Set per call
+ *  simply misses the memo (old cost, same result). Values are string|null, so
+ *  `undefined` from .get() unambiguously means "absent". WeakMaps keep both
+ *  the facts and the Sets collectable. */
+const ownerNounCache = new WeakMap<SpecFacts, WeakMap<Set<number>, string | null>>();
+function ownerNounFor(facts: SpecFacts, defLines: Set<number>): string | null {
+	let byDefs = ownerNounCache.get(facts);
+	if (!byDefs) {
+		byDefs = new WeakMap();
+		ownerNounCache.set(facts, byDefs);
+	}
+	const hit = byDefs.get(defLines);
+	if (hit !== undefined) return hit;
+	const noun = ownerNounOf(facts, defLines);
+	byDefs.set(defLines, noun);
+	return noun;
+}
+
+/** Per-claim bind test given the namespace's precomputed owner registry noun
+ *  and the file's ambiguous lines. Shared by the public predicate and the
+ *  internal binding loop so the two can never drift. The heading path accepts
+ *  ONLY the owner's registry noun: a secondary heading noun ("owners" in
+ *  "## Bets and owners") must not bind, or a stray "six owners" claim
+ *  fabricates drift against the B census (round-7 #29). */
 function claimBindsGivenOwner(
 	claim: CountClaim,
 	idLines: Set<number>,
-	owner: Heading | null,
+	ownerNoun: string | null,
 	ambiguousLines: Set<number>,
 ): boolean {
 	if (idLines.has(claim.line) && !ambiguousLines.has(claim.line)) return true;
-	return owner !== null && headingNamesNoun(owner.text, claim);
+	return ownerNoun !== null && ownerNoun === claim.nounSingular;
 }
 
 /**
  * A count-claim noun binds to a namespace when they co-occur on one UNAMBIGUOUS
- * line (a line with a single claim — sol-max #10), or when a heading names the
- * noun and the namespace's DEFINED ids sit in that heading's section ("## The six
- * bets" over the B1..B7 table). The heading path requires DEFINITION sites
- * (sol-max #9) so a retired-list mention ("## Six bets\nB1, B2 were removed")
- * does not bind — consistent with heading-derived binding below.
+ * line (single claim AND single namespace present — sol-max #10, round-7 #28),
+ * or when the noun IS the registry noun of the heading owning the namespace's
+ * DEFINED ids ("## The six bets" over the B1..B7 table). The heading path
+ * requires DEFINITION sites (sol-max #9) so a retired-list mention does not
+ * bind, and a strong majority of them inside the owner's section (round-7
+ * #27). Owner resolution and the ambiguity set are memoized per facts
+ * (round-7 #30): the checks path's namespace×claim loop pays O(1) per call
+ * after the first when it reuses one defLines Set per namespace
+ * (checks/spec-structure.ts does).
  */
 export function claimBindsToNamespace(
 	claim: CountClaim,
@@ -131,8 +195,8 @@ export function claimBindsToNamespace(
 	idLines: Set<number>,
 	defLines: Set<number>,
 ): boolean {
-	const owner = ownerOf(facts, defLines, sectionEnds(facts));
-	return claimBindsGivenOwner(claim, idLines, owner, multiClaimLines(facts));
+	const ownerNoun = ownerNounFor(facts, defLines);
+	return claimBindsGivenOwner(claim, idLines, ownerNoun, ambiguousClaimLines(facts));
 }
 
 /** Headings whose plural word is almost never a registry noun. */
@@ -187,23 +251,6 @@ function deepestOwnerHeading(
 	return owner;
 }
 
-/** Bind the registry noun of the deepest heading owning this namespace's
- *  defined ids (sol-max #10/#11). */
-function appendHeadingBindings(
-	facts: SpecFacts,
-	ns: IdNamespace,
-	key: string,
-	bind: (noun: string, key: string) => void,
-	ends: Map<number, number>,
-): void {
-	const defLines = defLineSet(ns);
-	if (defLines.size === 0) return;
-	const owner = deepestOwnerHeading(facts, minOf(defLines), ends);
-	if (!owner) return;
-	const noun = headingRegistryNoun(owner.text);
-	if (noun) bind(noun, key);
-}
-
 /**
  * Noun→namespace binding evidence within one file: which (style-qualified)
  * namespace prefixes each claim noun binds to. The ledger merges these per
@@ -217,21 +264,25 @@ export function localNounBindings(facts: SpecFacts): Map<string, Set<string>> {
 		if (set) set.add(key);
 		else bindings.set(noun, new Set([key]));
 	};
-	const ends = sectionEnds(facts);
-	const ambiguousLines = multiClaimLines(facts);
+	const ambiguousLines = ambiguousClaimLines(facts);
 	for (const ns of facts.namespaces) {
 		if (ns.uniqueCount < 2) continue;
 		const idLines = idLineSet(ns);
-		// Owner computed ONCE per namespace (invariant across claims) — the fix for
-		// the cubic namespace×claim×heading blowup (sol-max round-5 #1).
-		const owner = ownerOf(facts, defLineSet(ns), ends);
+		// Owner noun resolved ONCE per namespace (invariant across claims) — the
+		// fix for the cubic namespace×claim×heading blowup (sol-max round-5 #1) —
+		// and SHARED with the heading-derived binding below, so the count-claim
+		// path and the heading path can never disagree on the noun (round-7 #29).
+		const ownerNoun = ownerNounFor(facts, defLineSet(ns));
 		const key = `${ns.style} ${ns.prefix}`;
 		for (const claim of facts.countClaims) {
-			if (claimBindsGivenOwner(claim, idLines, owner, ambiguousLines)) {
+			if (claimBindsGivenOwner(claim, idLines, ownerNoun, ambiguousLines)) {
 				bind(claim.nounSingular, key);
 			}
 		}
-		appendHeadingBindings(facts, ns, key, bind, ends);
+		// Heading-derived binding (sol-max #10/#11): the owner's registry noun
+		// binds even without a local count claim, so a plain "## Bets" registry
+		// reaches a cross-file "six bets" claim.
+		if (ownerNoun) bind(ownerNoun, key);
 	}
 	return bindings;
 }

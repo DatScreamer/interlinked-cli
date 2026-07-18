@@ -119,3 +119,166 @@ describe("binding hardening (sol-max round 5)", () => {
 		expect(Date.now() - start).toBeLessThan(2000);
 	});
 });
+
+describe("binding hardening (round 7)", () => {
+	const bind = (text: string) =>
+		[...localNounBindings(facts(text))].map(([k, v]) => `${k}=>${[...v].join(",")}`);
+
+	it("does not bind a heading when the registry's definitions straddle two sections (#27)", () => {
+		expect(bind("## Bets\n- X1\n## Gates\n- X2\n- X3\nSix bets.")).toEqual([]);
+	});
+
+	it("public predicate rejects a straddled owner too (#27)", () => {
+		const f = facts("## Bets\n- X1\n## Gates\n- X2\n- X3\nSix bets.");
+		const ns = f.namespaces[0];
+		const claim = f.countClaims[0];
+		expect(ns && claim ? claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns)) : null).toBe(false);
+	});
+
+	it("does not bind on an even two-section split (#27)", () => {
+		expect(bind("## Bets\n- X1\n- X2\n## Gates\n- X3\n- X4\nFour bets.")).toEqual([]);
+	});
+
+	it("still binds with one stray definition outside the owner section (#27)", () => {
+		// 3-in/1-out is a strong majority — the changelog-recap shape keeps binding.
+		expect(bind("## Bets\n- B1 a\n- B2 b\n- B3 c\n## Changelog\n- B3 was revised")).toEqual([
+			"bet=>compact B",
+		]);
+	});
+
+	it("keeps binding a fully-contained registry with prose mentions elsewhere (#27)", () => {
+		expect(bind("## Bets\n- B1 a\n- B2 b\n- B3 c\n## Other\nB1 is neat.\nThree bets.")).toEqual([
+			"bet=>compact B",
+		]);
+	});
+
+	it("binds a fully-contained dashed registry (#27)", () => {
+		expect(bind("## Reqs\n- REQ-1 a\n- REQ-2 b\nTwo reqs.")).toEqual(["req=>dashed REQ"]);
+	});
+
+	it("does not bind a claim on a line carrying ids of two namespaces (#28)", () => {
+		const b = localNounBindings(facts("Six bets B1 B2 B3 B4 B5 B6 use gates G1 G2 G3."));
+		expect(b.get("bet")?.has("compact G") ?? false).toBe(false);
+		expect(b.get("bet")?.has("compact B") ?? false).toBe(false);
+	});
+
+	it("public predicate treats the one-claim two-namespace line as ambiguous (#28)", () => {
+		const f = facts("Six bets B1 B2 B3 B4 B5 B6 use gates G1 G2 G3.");
+		expect(f.namespaces.length).toBe(2);
+		const claim = f.countClaims[0];
+		for (const ns of f.namespaces) {
+			expect(claim && claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(false);
+		}
+	});
+
+	it("same-line binding still works with a single namespace on the line (#28)", () => {
+		expect(bind("Six bets B1 B2 B3 B4 B5 B6 anchor the plan.")).toEqual(["bet=>compact B"]);
+	});
+
+	it("an ambiguous line falls back to the heading path (#28)", () => {
+		expect(
+			bind(["## Bets", "- B1 a", "- B2 b", "- B3 c", "Six bets B1 B2 use gates G1 G2 G3."].join("\n")),
+		).toEqual(["bet=>compact B"]);
+	});
+
+	it("claims on separate single-namespace lines bind independently (#28)", () => {
+		expect(bind("Six bets B1 B2 B3.\nFour gates G1 G2 G3.")).toEqual([
+			"bet=>compact B",
+			"gate=>compact G",
+		]);
+	});
+
+	it("does not bind a count claim to a secondary heading noun (#29)", () => {
+		expect(bind("## Bets and owners\n- B1 a\n- B2 b\n- B3 c\nSix owners run these.")).toEqual([
+			"bet=>compact B",
+		]);
+	});
+
+	it("does not fabricate drift from a secondary noun that names another registry (#29)", () => {
+		expect(bind("## Bets and gates\n- B1 a\n- B2 b\n- B3 c\nSix gates.")).toEqual(["bet=>compact B"]);
+	});
+
+	it("binds a claim that names the heading's registry noun (#29)", () => {
+		expect(bind("## Bets and owners\n- B1 a\n- B2 b\n- B3 c\nSix bets are placed.")).toEqual([
+			"bet=>compact B",
+		]);
+	});
+
+	it("matches claim and heading through shared singularization (#29)", () => {
+		expect(bind("## Indexes\n- IDX-1 a\n- IDX-2 b\nTwo indices exist.")).toEqual(["index=>dashed IDX"]);
+	});
+
+	it("does not bind a claim noun absent from the heading (#29)", () => {
+		expect(bind("## Bets\n- B1 a\n- B2 b\n- B3 c\nSix widgets exist.")).toEqual(["bet=>compact B"]);
+	});
+
+	it("evaluates 300 namespaces x 300 claims through the public predicate in bounded time (#30)", () => {
+		const parts: string[] = [];
+		for (let i = 0; i < 300; i++) {
+			const p =
+				String.fromCharCode(65 + (i % 26)) +
+				String.fromCharCode(65 + (Math.floor(i / 26) % 26)) +
+				String.fromCharCode(65 + (Math.floor(i / 676) % 26));
+			parts.push(`## Zone ${p}`, `- ${p}-1 x`, `- ${p}-2 y`);
+		}
+		for (let i = 0; i < 300; i++) parts.push("three gadgets here");
+		const f = facts(parts.join("\n"));
+		const start = Date.now();
+		for (const ns of f.namespaces) {
+			const idLines = idLineSet(ns);
+			const defLines = defLineSet(ns);
+			for (const claim of f.countClaims) claimBindsToNamespace(claim, f, idLines, defLines);
+		}
+		// Current unmemoized code runs this in ~1460ms; the memoized path measured 6ms.
+		expect(Date.now() - start).toBeLessThan(500);
+	});
+
+	it("memoized and fresh-set public calls agree (#30)", () => {
+		const f = facts("## The six bets\n- B1 a\n- B2 b\n- B7 c");
+		const ns = f.namespaces[0];
+		const claim = f.countClaims[0];
+		expect(ns).toBeDefined();
+		if (!ns || !claim) return;
+		const defLines = defLineSet(ns);
+		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(true);
+		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(true);
+		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(true);
+	});
+
+	it("memoization does not leak across facts objects (#30)", () => {
+		const doc = "## Bets\n- X1\n## Gates\n- X2\n- X3\nSix bets.";
+		const run = (f: ReturnType<typeof facts>): boolean | null => {
+			const ns = f.namespaces[0];
+			const claim = f.countClaims[0];
+			return ns && claim ? claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns)) : null;
+		};
+		expect(run(facts(doc))).toBe(false);
+		expect(run(facts(doc))).toBe(false);
+	});
+
+	it("negative verdicts stay stable under repeated memoized queries (#30)", () => {
+		// "## Core" has no plural registry noun, so the stored-null memo path is hit.
+		const f = facts("## Core\n- C1 x\n- C2 y\n- C3 z\nThree cores.");
+		const ns = f.namespaces[0];
+		const claim = f.countClaims[0];
+		expect(ns).toBeDefined();
+		if (!ns || !claim) return;
+		const defLines = defLineSet(ns);
+		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(false);
+		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(false);
+		expect(localNounBindings(f).size).toBe(0);
+	});
+});
+
+describe("heading binding uses rendered text, not raw markdown (round-7 #10)", () => {
+	const bind = (text: string) =>
+		[...localNounBindings(facts(text))].map(([k, v]) => `${k}=>${[...v].join(",")}`);
+
+	it("does not bind a noun from a link destination in the heading", () => {
+		expect(bind("## [Registry](bets.md)\n- B1 a\n- B2 b\n- B3 c")).toEqual([]);
+	});
+
+	it("does not bind a noun from an HTML comment in the heading", () => {
+		expect(bind("## <!-- owners --> Bets\n- B1 a\n- B2 b\n- B3 c")).toEqual(["bet=>compact B"]);
+	});
+});
