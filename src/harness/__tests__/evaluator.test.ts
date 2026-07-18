@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CohortManager } from "../cohort.js";
 import { evaluatePostToolUse, evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
@@ -85,6 +88,68 @@ describe("evaluatePreToolUse", () => {
 		cohort = new CohortManager();
 		reservations = new ReservationManager();
 		session = makeSession();
+	});
+
+	// ===========================================
+	// Gate-level allow decisions must not swallow downstream gates
+	// ===========================================
+	// Found live 2026-07-15: the TDD gate's debt-mode ALLOW (new test-less
+	// source file → open coverage debt + allow) was treated as a terminal
+	// pipeline decision, so a brand-new file skipped every later gate —
+	// line cap, cyclomatic, content checks, auto-reservation, taint.
+
+	describe("gate-level allow does not short-circuit later gates", () => {
+		let dir: string;
+
+		beforeEach(() => {
+			dir = mkdtempSync(join(tmpdir(), "interlinked-tddallow-"));
+			mkdirSync(join(dir, "src"), { recursive: true });
+			mkdirSync(join(dir, ".interlinked"), { recursive: true });
+			// Seed a colocated test so the repo profile is NOT layout-"none"
+			// (a no-tests-anywhere repo demotes the TDD gate to advisory —
+			// repo-profile.ts — which is a different sub-branch than the
+			// debt-mode downgrade this regression pins).
+			writeFileSync(join(dir, "src", "seed.ts"), "export const seed = 1;\n");
+			writeFileSync(join(dir, "src", "seed.test.ts"), 'import "./seed.js";\n');
+		});
+
+		afterEach(() => {
+			rmSync(dir, { recursive: true, force: true });
+		});
+
+		function tddDebtRules(): GuardRulesConfig {
+			const r = getDefaultConfig();
+			r.rules = loadRules(process.cwd()).rules;
+			if (r.structural_checks) r.structural_checks.test_first_mode = "enforce";
+			if (r.per_edit_coverage) r.per_edit_coverage.debt_mode = true;
+			return r;
+		}
+
+		it("TDD debt-mode allow no longer bypasses the per-file line cap", () => {
+			const content = Array.from({ length: 600 }, (_, i) => `const x${i} = ${i};`).join("\n");
+			const event = makeEvent({
+				cwd: dir,
+				tool_name: "Write",
+				tool_input: { file_path: join(dir, "src", "big-new.ts"), content },
+			});
+			const result = evaluatePreToolUse(event, tddDebtRules(), session, reservations, cohort);
+			expect(result.decision).toBe("block");
+			expect(result.reason).toContain("-line cap");
+		});
+
+		it("merges the opened-debt warning instead of clobbering it (small new file)", () => {
+			const event = makeEvent({
+				cwd: dir,
+				tool_name: "Write",
+				tool_input: {
+					file_path: join(dir, "src", "small-new.ts"),
+					content: "export const ok = 1;\n",
+				},
+			});
+			const result = evaluatePreToolUse(event, tddDebtRules(), session, reservations, cohort);
+			expect(result.decision).toBe("allow");
+			expect(result.warnings?.some((w) => w.includes("Opened coverage debt"))).toBe(true);
+		});
 	});
 
 	// ===========================================

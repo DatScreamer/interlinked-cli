@@ -22,6 +22,7 @@ import { readSharedConfig } from "../../lib/config.js";
 import { injectCoordinationWarnings, shouldCoordinate } from "../auto-coordinate.js";
 import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
 import { runCommitBaselineGate } from "../evaluator/commit-baseline-gate.js";
+import { runCommitLaunderingGate } from "../evaluator/commit-laundering-gate.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import {
 	appendShadowLog,
@@ -366,6 +367,14 @@ export async function runPreToolPipeline(
 	const commitBaselineDecision = runCommitBaselineGate(event, preDecision);
 	if (commitBaselineDecision) return commitBaselineDecision;
 
+	// Workaround-laundering block (P3 §5.2 — the single outflow escalation of the
+	// P1 shadow detectors): block a commit whose staged content still carries a
+	// violation of a rule that blocked THIS session. Introduced-only + fail-open,
+	// so a legitimately fixed commit never blocks. Cheap (git shows, no suite) →
+	// runs before the full commit gate.
+	const launderingDecision = runCommitLaunderingGate(event, session, { nowMs: Date.now() });
+	if (launderingDecision) return launderingDecision;
+
 	const commitDecision = await runCommitGate(ctx, event, preDecision);
 	if (commitDecision) return commitDecision;
 
@@ -424,7 +433,8 @@ export async function runPreToolPipeline(
 	const grepDecision = runGrepAcceleration(ctx, event, preDecision, searchFlags);
 	if (grepDecision) return grepDecision;
 
-	// For search tools that weren't accelerated, add index status as a warning.
+	// For applicable searches backed by a loaded index, add health status as a
+	// warning. Missing/disabled indexes silently fall through to native search.
 	emitIndexStatusWarning(ctx, event, preDecision, searchFlags);
 
 	// --- tsgo acceleration: rewrite tsc → tsgo when available ---

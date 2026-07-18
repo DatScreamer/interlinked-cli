@@ -624,11 +624,29 @@ describe("post-write file warnings", () => {
 	it("warns when a written code file exceeds the line cap", () => {
 		const big = Array.from({ length: 900 }, (_, i) => `export const v${i} = ${i};`).join("\n");
 		const p = write("big.ts", big);
-		const ws = warningsOf(makeWriteEvent(p));
+		// cwd: the file must live INSIDE the guarded root — the cap is repo
+		// policy and root-confined (out-of-root files are exempt, next test).
+		const ws = warningsOf({ ...makeWriteEvent(p), cwd: dir });
 		const hit = ws.find((w) => w.includes("[interlinked:file-size]"));
 		expect(hit).toBeDefined();
 		expect(hit).toContain("900 lines");
 		expect(hit).toContain("500-line cap");
+	});
+
+	it("does not warn for an over-cap file OUTSIDE the guarded root (scratchpad artifact)", () => {
+		const big = Array.from({ length: 900 }, (_, i) => `<p>row ${i}</p>`).join("\n");
+		const p = write("scratchpad-artifact.html", big);
+		const otherRepo = mkdtempSync(join(tmpdir(), "interlinked-pwf-root-"));
+		try {
+			// Guarded root is a DIFFERENT tree than the written file: the cap is
+			// that repo's maintainability policy and must not govern session
+			// scratchpad / tmp artifacts (observed live 2026-07-15: a 586-line
+			// self-contained HTML artifact blocked by a 500-line cap).
+			const ws = warningsOf({ ...makeWriteEvent(p), cwd: otherRepo });
+			expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
+		} finally {
+			rmSync(otherRepo, { recursive: true, force: true });
+		}
 	});
 
 	it("does not warn for an exempt test file even when oversized", () => {
@@ -778,11 +796,26 @@ describe("read file-size warning", () => {
 		const big = Array.from({ length: 850 }, (_, i) => `export const r${i} = ${i};`).join("\n");
 		const p = join(dir, "huge.ts");
 		writeFileSync(p, big);
-		const ws = warningsOf(makeEvent({ tool_name: "Read", tool_input: { file_path: p } }));
+		// cwd anchors the guarded root — the read nudge is root-confined like
+		// the write gate (the cap is repo policy, not a global file opinion).
+		const ws = warningsOf(makeEvent({ tool_name: "Read", tool_input: { file_path: p }, cwd: dir }));
 		const hit = ws.find((w) => w.includes("[interlinked:file-size]"));
 		expect(hit).toBeDefined();
 		expect(hit).toContain("850 lines");
 		expect(hit).toContain("consider refactoring");
+	});
+
+	it("does not nudge when reading an oversized file outside the guarded root", () => {
+		const big = Array.from({ length: 850 }, (_, i) => `export const r${i} = ${i};`).join("\n");
+		const p = join(dir, "huge.ts");
+		writeFileSync(p, big);
+		const otherRepo = mkdtempSync(join(tmpdir(), "interlinked-read-root-"));
+		try {
+			const ws = warningsOf(makeEvent({ tool_name: "Read", tool_input: { file_path: p }, cwd: otherRepo }));
+			expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
+		} finally {
+			rmSync(otherRepo, { recursive: true, force: true });
+		}
 	});
 
 	it("does not nudge when reading an exempt test file", () => {
@@ -847,7 +880,9 @@ describe("edit near-miss diagnostics", () => {
 		const hit = ws.find((w) => w.includes("[interlinked:edit-near-miss]"));
 		expect(hit).toBeDefined();
 		expect(hit).toContain("old_string not found");
-		expect(hit).toContain("Closest matches");
+		expect(hit).toContain("Closest match");
+		// One-round-trip rescue: the CURRENT line ships verbatim in the warning.
+		expect(hit).toContain("export function computeTotal(items: number[]): number {");
 	});
 
 	it("does not warn when old_string IS present in the file", () => {

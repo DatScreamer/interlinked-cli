@@ -9,6 +9,7 @@
 //   stdout `{ "hookSpecificOutput": { "additionalContext": "..." } }` — passes with note
 //   exit 0 + no stdout = allow
 
+import { hookTimeoutSecondsFor } from "../../lib/hook-timeouts.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
@@ -115,10 +116,17 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 			const hooks: Record<string, unknown[]> = {};
 			for (const event of NATIVE_EVENTS) {
 				const hookCommand = buildHookCommand(binaryPath, "claude-code", event);
+				// Per-event timeout (seconds; lib/hook-timeouts.ts is the single
+				// source): PreToolUse must outlast the per-edit coverage overlay,
+				// PostToolUse the full quality pass — Claude Code's 60s default
+				// killed the hook after the run's cost was already paid.
+				const timeout = hookTimeoutSecondsFor(event);
 				hooks[event] = [
 					{
 						matcher: "",
-						hooks: [{ type: "command", command: hookCommand }],
+						hooks: [
+							{ type: "command", command: hookCommand, ...(timeout !== undefined ? { timeout } : {}) },
+						],
 					},
 				];
 			}

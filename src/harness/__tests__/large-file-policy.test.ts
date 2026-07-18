@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import {
 	DEFAULT_MAX_LINES,
 	evaluateLargeFile,
 	isCappableFile,
+	isInsideRoot,
 	isTestOrSpecPath,
 	type LargeFileBaseline,
 	loadLargeFileBaseline,
@@ -113,6 +114,30 @@ describe("isCappableFile", () => {
 		expect(isCappableFile({ filePath: "config/data.json", content })).toBe(false);
 	});
 
+	it("exempts the repo-provisioned root scratch/ probe dir (2026-07-17)", () => {
+		expect(isCappableFile({ filePath: "scratch/probe.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "scratch/sub/draft.mjs", content })).toBe(false);
+		// Absolute form is exempt only when the root identifies it as ROOT-level.
+		expect(isCappableFile({ filePath: "/repo/scratch/probe.ts", content, root: "/repo" })).toBe(
+			false,
+		);
+		// A nested scratch/ is somebody's product module — still cappable.
+		expect(isCappableFile({ filePath: "src/scratch/module.ts", content })).toBe(true);
+		// Similar-prefix dirs never match (prefix must be the scratch/ segment).
+		expect(isCappableFile({ filePath: "scratchpad/x.ts", content })).toBe(true);
+	});
+
+	it("exempts HTML/markup documents — length measures content, not module complexity", () => {
+		const html = "<!doctype html>\n<html><body><h1>report</h1></body></html>\n";
+		expect(isCappableFile({ filePath: "site/index.html", content: html })).toBe(false);
+		expect(isCappableFile({ filePath: "pages/legacy.htm", content: html })).toBe(false);
+		expect(isCappableFile({ filePath: "reports/monograph.xhtml", content: html })).toBe(false);
+		// Guard the boundary: a .ts module that RENDERS html is still code.
+		expect(isCappableFile({ filePath: "src/render-html.ts", content })).toBe(true);
+		// .shtml is not in the skip list (extension must match exactly).
+		expect(isCappableFile({ filePath: "site/includes.shtml", content: html })).toBe(true);
+	});
+
 	it("exempts files carrying a generated-content marker", () => {
 		const generated = "// @generated SignedSource<<abc123>>\nexport const x = 1;\n";
 		expect(isCappableFile({ filePath: "src/schema.ts", content: generated })).toBe(false);
@@ -143,6 +168,90 @@ describe("isCappableFile", () => {
 		expect(isCappableFile({ filePath: "patches/fix.patch", content })).toBe(false);
 		// A non-dot "interlinked" directory is ordinary source — still cappable.
 		expect(isCappableFile({ filePath: "src/interlinked/feature.ts", content })).toBe(true);
+	});
+});
+
+describe("isCappableFile — root confinement", () => {
+	// The cap is the guarded repo's maintainability policy; a file outside the
+	// root is not governed by it. Observed live 2026-07-15: a 586-line
+	// self-contained HTML artifact in the session scratchpad was blocked by
+	// the repo's 500-line cap (and the block steered the agent toward
+	// compressing formatting to duck under it — gate-induced metric gaming).
+	const content = "export const x = 1;\n";
+	let root: string;
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "interlinked-lfp-root-"));
+	});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("exempts files outside the guarded root (session scratchpad artifact shape)", () => {
+		const scratchpad = mkdtempSync(join(tmpdir(), "claude-501-scratchpad-"));
+		try {
+			const artifact = join(scratchpad, "pcos-monograph.html");
+			expect(isCappableFile({ filePath: artifact, content, root })).toBe(false);
+			expect(isCappableFile({ filePath: join(scratchpad, "probe.ts"), content, root })).toBe(
+				false,
+			);
+		} finally {
+			rmSync(scratchpad, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps in-root code cappable — absolute, relative, and not-yet-created paths", () => {
+		expect(isCappableFile({ filePath: join(root, "src", "mod.ts"), content, root })).toBe(true);
+		expect(isCappableFile({ filePath: "src/mod.ts", content, root })).toBe(true);
+		// Brand-new nested path (nothing on disk yet): the nearest-existing-
+		// ancestor realpath walk must still judge it inside.
+		expect(
+			isCappableFile({ filePath: join(root, "brand", "new", "mod.ts"), content, root }),
+		).toBe(true);
+	});
+
+	it("rejects ../ traversal that lexically starts with the root", () => {
+		expect(
+			isCappableFile({ filePath: join(root, "..", "outside", "mod.ts"), content, root }),
+		).toBe(false);
+		expect(isCappableFile({ filePath: "../outside/mod.ts", content, root })).toBe(false);
+	});
+
+	it("normalizes symlinked prefixes on either side (macOS /tmp → /private/tmp)", () => {
+		const real = join(root, "real");
+		mkdirSync(real, { recursive: true });
+		writeFileSync(join(real, "mod.ts"), content);
+		const link = join(root, "link");
+		symlinkSync(real, link);
+		// Root given via the SYMLINK, file via the REAL path — and vice versa.
+		expect(isCappableFile({ filePath: join(real, "mod.ts"), content, root: link })).toBe(true);
+		expect(isCappableFile({ filePath: join(link, "mod.ts"), content, root: real })).toBe(true);
+		// A brand-new (not-on-disk) file under the symlinked root still matches.
+		expect(isCappableFile({ filePath: join(link, "new.ts"), content, root: real })).toBe(true);
+	});
+
+	it("without a root, location is not consulted (legacy repo-walk callers)", () => {
+		expect(isCappableFile({ filePath: "/anywhere/at/all/mod.ts", content })).toBe(true);
+	});
+
+	it("isInsideRoot treats the root itself as inside and siblings as outside", () => {
+		expect(isInsideRoot(root, root)).toBe(true);
+		expect(isInsideRoot(root, `${root}-sibling/mod.ts`)).toBe(false);
+	});
+
+	it("stays stack- and latency-safe on pathologically deep paths (deep-round #9)", () => {
+		// Well within the cap: resolves normally.
+		const shallow = `${root}/${"a/".repeat(50)}x.ts`;
+		expect(isInsideRoot(root, shallow)).toBe(true);
+		// Absurdly deep: must not throw and must return fast (the walk is
+		// bounded, so this is milliseconds, not the ~90s an unbounded walk took).
+		const deep = `${root}/${"a/".repeat(20000)}x.ts`;
+		const start = Date.now();
+		expect(() => isInsideRoot(root, deep)).not.toThrow();
+		expect(Date.now() - start).toBeLessThan(2000);
+		// Over-cap fails CLOSED — treated as outside the root (safe direction),
+		// even for a path that lexically sits under the root (round-2 #34).
+		expect(isInsideRoot(root, deep)).toBe(false);
+		expect(isInsideRoot(root, `${root}/${"a/".repeat(300)}x.ts`)).toBe(false);
 	});
 });
 

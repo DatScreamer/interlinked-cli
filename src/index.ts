@@ -14,8 +14,11 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { registerCiCommand } from "./commands/ci-status.js";
 import { registerCompactCommand } from "./commands/compact.js";
+import { registerDoctestCommand } from "./commands/doctest.js";
+import { registerFindingsCommands } from "./commands/findings.js";
 import { handleImplicitEntry } from "./commands/first-run.js";
 import { registerIndexCommand } from "./commands/index-cmd.js";
+import { registerSpecCommands } from "./commands/spec.js";
 import { registerActivityCommands } from "./registrars/activity.js";
 import { registerAdoptCommands } from "./registrars/adopt.js";
 import { registerCapsCommands } from "./registrars/caps.js";
@@ -83,12 +86,15 @@ registerCoordinationCommands(program);
 registerQualityCommands(program);
 registerCapsCommands(program);
 registerScratchCommands(program);
+registerFindingsCommands(program);
+registerSpecCommands(program);
 registerAdoptCommands(program);
 registerSetupCommands(program);
 registerSponsorCommands(program);
 registerIndexCommand(program);
 registerCiCommand(program);
 registerCompactCommand(program);
+registerDoctestCommand(program);
 registerVizCommands(program);
 
 program

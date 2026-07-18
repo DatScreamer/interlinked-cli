@@ -7,7 +7,9 @@
 // helpers. `isGrepIndexFresh` stays internal to this module.
 
 import { execSync } from "node:child_process";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
+import { parseGrepCommand } from "../regex-trigrams.js";
 import { isBashTsc, tryTsgoRewrite } from "../server-tsgo-bash.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import type { ServerRuntime } from "./runtime-context.js";
@@ -111,8 +113,42 @@ export function runGrepAcceleration(
 	return null;
 }
 
+/** True when a search path resolves inside the project represented by the index. */
+function isIndexedPath(cwd: string, searchPath: string | undefined): boolean {
+	if (!searchPath || searchPath === ".") return true;
+	if (searchPath === "~" || searchPath.startsWith("~/")) return false;
+	const rel = relative(cwd, resolve(cwd, searchPath));
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
 /**
- * For search tools that weren't accelerated, add index status as a warning.
+ * The status warning is only relevant when the accelerator could own this
+ * invocation. Compound/unsupported Bash commands and searches rooted outside
+ * the indexed project always belong to native search.
+ */
+function isIndexApplicableSearch(ctx: ServerRuntime, event: HarnessEvent): boolean {
+	if (event.tool_name === "Grep") {
+		const input = event.tool_input || {};
+		return (
+			Boolean(input.pattern) &&
+			!input.glob &&
+			!input.output_mode &&
+			isIndexedPath(ctx.cwd, input.path as string | undefined)
+		);
+	}
+	if (event.tool_name === "Bash") {
+		const parsed = parseGrepCommand((event.tool_input?.command as string) || "");
+		return Boolean(parsed && isIndexedPath(ctx.cwd, parsed.path));
+	}
+	return false;
+}
+
+/**
+ * For searches where index substitution is active and an index is loaded, add
+ * actionable index-health status as a warning. A missing index is a supported
+ * fail-open state: native search still works, so do not nudge agents to build
+ * an index that may have been deliberately removed.
+ *
  * Once-per-session dedup: this fired on every search call before, training
  * agents to ignore it. The status doesn't change mid-session (trigramIndex is
  * loaded once at startup), so re-emitting buys nothing.
@@ -125,19 +161,22 @@ export function emitIndexStatusWarning(
 ): void {
 	const CWD = ctx.cwd;
 	const indexWarnKey = event.session_id || "anonymous";
+	const searchIndex = ctx.trigramIndex;
 	if (
-		!(flags.isSearchTool && preDecision.decision === "allow" && !ctx.indexWarningSent.has(indexWarnKey))
+		!(
+			flags.isSearchTool &&
+			flags.grepSubstitutionEnabled &&
+			searchIndex &&
+			isIndexApplicableSearch(ctx, event) &&
+			preDecision.decision === "allow" &&
+			!ctx.indexWarningSent.has(indexWarnKey)
+		)
 	) {
 		return;
 	}
 	const warnings = preDecision.warnings || [];
 	let emitted = false;
-	if (!ctx.trigramIndex) {
-		warnings.push(
-			"[interlinked:index] No search index. Run `interlinked index build` to enable grep acceleration.",
-		);
-		emitted = true;
-	} else if (!findRipgrep()) {
+	if (!findRipgrep()) {
 		warnings.push(
 			"[interlinked:index] Index loaded but ripgrep not installed — grep acceleration disabled. Install: brew install ripgrep",
 		);
@@ -150,9 +189,9 @@ export function emitIndexStatusWarning(
 				encoding: "utf-8",
 				timeout: 2000,
 			}).trim();
-			if (head && ctx.trigramIndex.baseCommit && head !== ctx.trigramIndex.baseCommit) {
+			if (head && searchIndex.baseCommit && head !== searchIndex.baseCommit) {
 				const behindCount = execSync(
-					`git rev-list --count ${ctx.trigramIndex.baseCommit.slice(0, 8)}..HEAD`,
+					`git rev-list --count ${searchIndex.baseCommit.slice(0, 8)}..HEAD`,
 					{ cwd: CWD, encoding: "utf-8", timeout: 2000 },
 				).trim();
 				warnings.push(

@@ -11,6 +11,8 @@
 // they live cleanly in a sibling that session-state.ts imports back from.
 
 import { resolve as resolvePath } from "node:path";
+import { nonNull } from "../lib/non-null.js";
+import { recordFileView } from "./read-provenance.js";
 import { captureGitBaseline } from "./session-git-baseline.js";
 import {
 	extractWriteChunks,
@@ -25,7 +27,6 @@ import {
 	classifyVerificationCommand,
 	STUB_INTRODUCED_CAP,
 } from "./verification-stop-checks.js";
-import { nonNull } from "../lib/non-null.js";
 
 /**
  * Set-union the subagent's verification_observed signals into the parent.
@@ -257,6 +258,9 @@ export function trackFileOperations(session: SessionTrajectory, event: HarnessEv
 	const eventCwd = event.cwd ?? process.cwd();
 	const absPath = resolvePath(eventCwd, filePath);
 	trackReadWrite(session, event, filePath, absPath);
+	// LG-3 read-view snapshot (PostToolUse-gated internally, like sequence
+	// inputs): records the content state this session just displayed/produced.
+	recordFileView(session, event);
 	recordSequenceInputs(session, event, filePath);
 	resolvePendingCompletions(session, filePath);
 }

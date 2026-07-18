@@ -6,7 +6,22 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { nonNull } from "../lib/non-null.js";
+import {
+	deriveSignature,
+	SIGNATURE_ASSEMBLY_CAP,
+	signaturePayload,
+} from "./recurrence-signature.js";
+import {
+	parseDurationMs,
+	resolveSinceCutoff,
+	updateSeenBounds,
+} from "./recurrence-time.js";
+import { assemblyIndexOfTokens } from "./spec/assembly-score.js";
+
+// deriveSignature is part of this module's public API — re-export it so
+// existing consumers keep importing it from recurrence.js.
+// parseDurationMs / resolveSinceCutoff stay part of this module's public API.
+export { deriveSignature, parseDurationMs, resolveSinceCutoff };
 
 export type RecurrenceKind =
 	| "harness_caught"
@@ -66,6 +81,14 @@ export interface Recurrence {
 	distinct_files: number;
 	agent_sources: string[];
 	sample_files: string[];
+	/** Structural significance of the signature, measured as its assembly index
+	 *  (Re-Pair grammar size, spike 14 §8.3). Higher = more structurally
+	 *  load-bearing; used as the within-equal-count ranking tiebreaker below so
+	 *  a complex recurring pattern outranks a trivial one seen equally often.
+	 *  Production consumer of assembly-score (round-2 #33). The raw index, not
+	 *  significance() — that prior saturates at e^12 for any real-length
+	 *  signature and so cannot order them. */
+	assembly_significance: number;
 }
 
 export interface RecurrenceFilters {
@@ -83,38 +106,6 @@ export interface RecurrenceAction {
 
 const RECURRENCES_FILE = "recurrences.jsonl";
 const INTERLINKED_DIR = ".interlinked";
-const MS_PER_SECOND = 1_000;
-const SECONDS_PER_MINUTE = 60;
-const MINUTES_PER_HOUR = 60;
-const HOURS_PER_DAY = 24;
-const DAYS_PER_WEEK = 7;
-
-const DURATION_UNITS_MS: Record<string, number> = {
-	s: MS_PER_SECOND,
-	m: SECONDS_PER_MINUTE * MS_PER_SECOND,
-	h: MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MS_PER_SECOND,
-	d: HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MS_PER_SECOND,
-	w: DAYS_PER_WEEK * HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MS_PER_SECOND,
-};
-
-export function deriveSignature(event: RecurrenceEvent): string {
-	if (event.kind === "harness_caught") {
-		return `harness_caught:${event.check_id ?? "unknown"}:${event.agent_source ?? "unknown"}`;
-	}
-	if (event.kind === "codebase_existing") {
-		return `codebase_existing:${event.check_id ?? "unknown"}`;
-	}
-	if (event.kind === "tool_failure") {
-		// Phase 1 Channel 1 — tool-failure pattern grouping. Pre-built signature
-		// from the harness handler is `tool_failure:<tool>:<error_class>:<message-prefix>`;
-		// we forward the carrier `signature` if set, falling back to a coarser
-		// `<tool>:<message-prefix>` so old rows still aggregate.
-		if (event.signature) return event.signature;
-		const messagePrefix = (event.message ?? "untagged").slice(0, 30);
-		return `tool_failure:${event.check_id ?? "unknown"}:${messagePrefix}`;
-	}
-	return `harness_missed:${event.signature ?? event.message ?? "untagged"}`;
-}
 
 export function aggregateRecurrences(
 	events: readonly RecurrenceEvent[],
@@ -126,85 +117,85 @@ export function aggregateRecurrences(
 		{
 			kind: RecurrenceKind;
 			signature: string;
-			check_id?: string | undefined;
+			/** All distinct check_ids seen in this bucket. The emitted row
+			 *  claims one only when exactly one appeared — ambiguity is sticky
+			 *  once two distinct ids show up (round-14 sol #1). */
+			checkIds: Set<string>;
 			count: number;
 			first_seen: string;
 			last_seen: string;
 			sessions: Set<string>;
-			files: Set<string>;
 			agent_sources: Set<string>;
-			fileEvents: Array<{ file: string; ts: string }>;
+			/** file -> latest ts (one entry per distinct file; see trackFile). */
+			fileLatest: Map<string, string>;
 		}
 	>();
 
 	for (const event of filtered) {
 		const signature = deriveSignature(event);
+		// Bucket by (kind, signature), not signature alone (round-12 sol #1);
+		// `kind` is a newline-free enum, so the newline separator is unambiguous.
+		const bucketKey = `${event.kind}\n${signature}`;
 		const row =
-			buckets.get(signature) ??
+			buckets.get(bucketKey) ??
 			{
 				kind: event.kind,
 				signature,
-				check_id: event.check_id,
+				checkIds: new Set<string>(),
 				count: 0,
 				first_seen: event.ts,
 				last_seen: event.ts,
 				sessions: new Set<string>(),
-				files: new Set<string>(),
 				agent_sources: new Set<string>(),
-				fileEvents: [],
+				fileLatest: new Map<string, string>(),
 			};
 
 		row.count++;
-		if (new Date(event.ts).getTime() < new Date(row.first_seen).getTime()) {
-			row.first_seen = event.ts;
-		}
-		if (new Date(event.ts).getTime() > new Date(row.last_seen).getTime()) {
-			row.last_seen = event.ts;
-		}
+		// Accumulate every distinct check_id (including "" — a present-but-empty
+		// id is still distinct from "bash", round-15 sol #1); the row claims one
+		// only when exactly one was seen (round-13 #2, round-14 #1 — sticky).
+		if (typeof event.check_id === "string") row.checkIds.add(event.check_id);
+		updateSeenBounds(row, event.ts);
 		if (event.session_id) row.sessions.add(event.session_id);
-		if (event.file) {
-			row.files.add(event.file);
-			row.fileEvents.push({ file: event.file, ts: event.ts });
-		}
+		if (event.file) trackFile(row.fileLatest, event.file, event.ts);
 		if (event.agent_source) row.agent_sources.add(event.agent_source);
-		buckets.set(signature, row);
+		buckets.set(bucketKey, row);
 	}
 
 	return [...buckets.values()]
 		.map((row): Recurrence => ({
 			kind: row.kind,
 			signature: row.signature,
-			check_id: row.check_id,
+			// Emit the single observed id AS-IS — a present-but-empty "" is a
+			// distinct value the contract preserves (round-16 sol #2); only a
+			// genuinely empty bucket (size 0) or an ambiguous one (size >1) is
+			// undefined.
+			check_id: row.checkIds.size === 1 ? [...row.checkIds][0] : undefined,
 			count: row.count,
 			first_seen: row.first_seen,
 			last_seen: row.last_seen,
 			distinct_sessions: row.sessions.size,
-			distinct_files: row.files.size,
+			distinct_files: row.fileLatest.size,
 			agent_sources: [...row.agent_sources].sort(),
-			sample_files: recentUniqueFiles(row.fileEvents),
+			sample_files: recentUniqueFiles(
+				[...row.fileLatest].map(([file, ts]) => ({ file, ts })),
+			),
+			// Structural-complexity tiebreak (#33): Re-Pair index of the
+			// kind-stripped signature payload, bounded by SIGNATURE_ASSEMBLY_CAP.
+			assembly_significance: assemblyIndexOfTokens([
+				...signaturePayload(row.signature).slice(0, SIGNATURE_ASSEMBLY_CAP),
+			]),
 		}))
-		.sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature));
-}
-
-export function parseDurationMs(input: string): number | null {
-	const match = /^\s*(\d+)\s*([smhdw])\s*$/i.exec(input);
-	if (!match) return null;
-	const amount = Number(match[1]);
-	const unitMs = DURATION_UNITS_MS[nonNull(match[2]).toLowerCase()];
-	if (!Number.isFinite(amount) || !unitMs) return null;
-	return amount * unitMs;
-}
-
-export function resolveSinceCutoff(
-	input: string | undefined,
-	now: Date = new Date(),
-): string | null {
-	if (!input) return null;
-	const duration = parseDurationMs(input);
-	if (duration !== null) return new Date(now.getTime() - duration).toISOString();
-	const parsed = new Date(input);
-	if (Number.isNaN(parsed.getTime())) return null;
-	return parsed.toISOString();
+		// Count stays the dominant signal (users expect frequency ordering), but
+		// among equally-frequent rows the structurally load-bearing signature —
+		// higher assembly index — surfaces first (spike 14). Signature breaks any
+		// remaining tie for stable output.
+		.sort(
+			(a, b) =>
+				b.count - a.count ||
+				b.assembly_significance - a.assembly_significance ||
+				a.signature.localeCompare(b.signature),
+		);
 }
 
 export function proposeAction(row: Recurrence): RecurrenceAction {
@@ -263,17 +254,61 @@ function matchesFilters(event: RecurrenceEvent, filters: RecurrenceFilters): boo
 	if (filters.kind && event.kind !== filters.kind) return false;
 	if (filters.agent_source && event.agent_source !== filters.agent_source) return false;
 	if (filters.check_id && event.check_id !== filters.check_id) return false;
-	if (filters.since && new Date(event.ts).getTime() < new Date(filters.since).getTime()) {
-		return false;
+	if (filters.since) {
+		const sinceMs = new Date(filters.since).getTime();
+		// A malformed `since` is treated as no filter; a malformed event
+		// timestamp can't be shown to satisfy the cutoff, so exclude it rather
+		// than fail open (round-12 sol #5).
+		if (Number.isFinite(sinceMs)) {
+			const eventMs = new Date(event.ts).getTime();
+			if (!Number.isFinite(eventMs) || eventMs < sinceMs) return false;
+		}
 	}
 	return true;
 }
 
+/** Record a file's LATEST timestamp (NaN-safe), one entry per distinct file.
+ *  Deduping to file→latest-ts is the real memory bound (round-18/19): storage
+ *  is O(distinct files), not O(events), and every file keeps its most-recent
+ *  ts so `sample_files` stays recent (round-20 sol #2) and `distinct_files`
+ *  stays EXACT (round-20 sol #1). A hard file-count cap was tried and reverted:
+ *  it made the count undercount and the sample stale — you cannot have an exact
+ *  distinct count AND a fixed memory bound, and a signature spanning millions
+ *  of distinct files is not a real threat for the harness's own recurrence log
+ *  (accepted tradeoff, not a silent one). */
+function trackFile(fileLatest: Map<string, string>, file: string, ts: string): void {
+	const prev = fileLatest.get(file);
+	if (prev === undefined) {
+		fileLatest.set(file, ts);
+		return;
+	}
+	const p = new Date(prev).getTime();
+	const t = new Date(ts).getTime();
+	if (!Number.isFinite(p) || (Number.isFinite(t) && t > p)) fileLatest.set(file, ts);
+}
+
+/** Max distinct files retained per row: sample_files is a bounded SAMPLE, so a
+ *  signature spanning many (possibly attacker-controlled) filenames cannot
+ *  amplify memory/output (round-18 sol #1). */
+const SAMPLE_FILES_CAP = 10;
+
 function recentUniqueFiles(events: Array<{ file: string; ts: string }>): string[] {
 	const seen = new Set<string>();
 	const files: string[] = [];
-	const sorted = [...events].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+	// A malformed timestamp sorts as OLDEST (round-14 sol #4).
+	const tsOf = (e: { ts: string }): number => {
+		const t = new Date(e.ts).getTime();
+		return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+	};
+	// Compare, never subtract: -Infinity - -Infinity is NaN, an unstable
+	// comparator return (round-18 sol #3).
+	const sorted = [...events].sort((a, b) => {
+		const ta = tsOf(a);
+		const tb = tsOf(b);
+		return ta === tb ? 0 : tb > ta ? 1 : -1;
+	});
 	for (const event of sorted) {
+		if (files.length >= SAMPLE_FILES_CAP) break;
 		if (seen.has(event.file)) continue;
 		seen.add(event.file);
 		files.push(event.file);

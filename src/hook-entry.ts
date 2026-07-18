@@ -19,11 +19,7 @@ import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/
 import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
 import { methodForPhase, type RpcMethod } from "./harness/daemon-protocol.js";
-import {
-	callLegacyHarness,
-	DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS,
-	isLegacyHarnessSocket,
-} from "./harness/legacy-client.js";
+import { callLegacyHarness, isLegacyHarnessSocket } from "./harness/legacy-client.js";
 import type { HarnessDecision } from "./harness/types.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
 import {
@@ -38,40 +34,18 @@ import {
 	coldDaemonUnreachableBlockReason,
 	findRepoRoot,
 } from "./hook-entry-daemon-gate.js";
+import { defaultTimeoutForPhase, isCodeEditEvent } from "./hook-entry-deadlines.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
 import { nonNull } from "./lib/non-null.js";
 
-// Re-export for back-compat: tests import this from "./hook-entry.js".
-export { coldDaemonUnreachableBlockReason };
-
-// Ceiling for non-PreToolUse events (PostToolUse + Stop/SessionStart/etc.). This
-// is a MAX wait, not a fixed delay: the daemon answers the instant it has a
-// verdict, so a small repo returns in ~1ms regardless. It only bites on a BIG
-// repo where the PostToolUse quality pass (tsc + biome + inline checks) is slow —
-// on mcp-client-bio a WARM edit measured ~2–3s (biome ~1.5s, tsc ~0.4s), which
-// clipped the old 2s ceiling and surfaced as "[interlinked] timeout; evaluator
-// skipped", making the harness look dead on every edit. A truly-down daemon
-// still fails fast via the separate connect timeout, so raising this only lets a
-// slow-but-working daemon finish (warnings still defer to next turn if it does
-// time out — e.g. the ~8s cold-start tsgo load on the first edit after a restart).
-const DEFAULT_HOOK_TIMEOUT_MS = 5000;
+// Re-export for back-compat: tests import these from "./hook-entry.js".
+export { coldDaemonUnreachableBlockReason, isCodeEditEvent };
 
 // Hook-socket transport variants. The legacy server uses newline-delimited
 // JSON over a raw stream; the new server uses length-prefixed framing.
 const HOOK_PROTOCOL_RAW = "raw";
 const HOOK_PROTOCOL_FRAMED = "framed";
 type HookProtocol = typeof HOOK_PROTOCOL_RAW | typeof HOOK_PROTOCOL_FRAMED;
-
-// Unified phase tags (a subset of UnifiedPhase). Centralized as constants
-// because hook-entry compares against them in multiple places — magic
-// strings drift across files when one place is refactored and the others
-// aren't.
-const PHASE_PRE_TOOL = "pre-tool";
-
-// Discriminator values for UnifiedAction. Same rationale as above.
-const ACTION_TOOL_CALL = "tool_call";
-const ACTION_SHELL_COMMAND = "shell_command";
-const ACTION_FILE_OPERATION = "file_operation";
 
 export interface HookEntryOptions {
 	/** The native hook event name the runner emitted. */
@@ -258,47 +232,6 @@ function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): HookPr
 	return isLegacyHarnessSocket(socketPath) ? HOOK_PROTOCOL_RAW : HOOK_PROTOCOL_FRAMED;
 }
 
-/**
- * Client wait ceiling for a code-edit PreToolUse. A Write/Edit can trigger the
- * daemon's per-edit coverage/CRAP overlay, which runs to its `budget_ms` (25s
- * default) — mirror + vitest + v8 routinely exceeds the 5s base. If the CLIENT
- * gives up first it cold-fallback-ALLOWS, so the daemon's coverage BLOCK never
- * reaches the agent and per-edit enforcement is silently a no-op (the 5s came
- * from the 2026-05 fast-guard era; per-edit coverage landed 2026-06-07 with the
- * 25s budget and the two were never reconciled — found 2026-06-12). The daemon
- * answers the instant it has a verdict, so a non-coverage edit still returns in
- * ~1ms; this ceiling only bites while coverage is genuinely computing (or the
- * daemon is hung, where the fail-closed gate then engages).
- */
-const COVERAGE_EDIT_PRE_TOOL_TIMEOUT_MS = 30_000;
-// Stored NORMALIZED (lowercased, underscores stripped) so every naming style
-// maps in: Claude/Codex camelCase `MultiEdit`/`NotebookEdit` AND snake_case
-// `multi_edit`/`notebook_edit`/`apply_patch` all collapse to the same key.
-// Codex preserves raw tool names, so without the strip its `MultiEdit` →
-// `multiedit` would miss the (formerly snake_case) set and get the short
-// non-coverage timeout, falling back before the per-edit overlay's verdict
-// (finding 2026-06).
-const EDIT_TOOL_NAMES = new Set(["write", "edit", "multiedit", "applypatch", "notebookedit"]);
-
-/** A PreToolUse whose tool could trigger the per-edit coverage overlay. */
-export function isCodeEditEvent(event: UnifiedHookEvent): boolean {
-	const action = event.action as { kind?: string; tool_name?: string };
-	if (action?.kind === ACTION_FILE_OPERATION) return true;
-	return (
-		action?.kind === ACTION_TOOL_CALL &&
-		EDIT_TOOL_NAMES.has((action.tool_name ?? "").toLowerCase().replace(/_/g, ""))
-	);
-}
-
-function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
-	if (event.phase !== PHASE_PRE_TOOL) return DEFAULT_HOOK_TIMEOUT_MS;
-	// Edits may run the coverage overlay (up to budget_ms) — wait for that
-	// verdict; Bash/Read/Grep answer in ~1ms, so keep them on the snappy ceiling.
-	return isCodeEditEvent(event)
-		? COVERAGE_EDIT_PRE_TOOL_TIMEOUT_MS
-		: DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS;
-}
-
 /** Discover the daemon socket. Priority:
  *    1. `--socket` flag / INTERLINKED_SOCKET env var (handled by caller)
  *    2. Per-session `.interlinked/harness-<sanitized>.sock`
@@ -336,7 +269,6 @@ function safeReaddir(dir: string): string[] {
 	}
 	return out;
 }
-
 
 /** Build a cold fail-closed BLOCK result for a named gate, appending the
  *  "<gate> fail-closed gate engaged" notice to stderr. Shared by every cold gate

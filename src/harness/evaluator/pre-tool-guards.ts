@@ -10,7 +10,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import { loadAllowlist } from "../package-allowlist.js";
 import { parseInstallCommands } from "../package-install-parser.js";
 import { checkSupermodelShardWrite } from "../supermodel-shard-write-guard.js";
@@ -22,6 +21,7 @@ import type {
 } from "../types.js";
 import { evaluateBaselineIntegrityForEvent } from "./baseline-integrity-gate.js";
 import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
+import { analyzeApplyPatchDoom, analyzeStrReplaceDoom, formatDoomReason } from "./edit-doom.js";
 import { evaluateProtectedFiles, evaluateRepoConfinement } from "./filesystem-guards.js";
 import { evaluateGitScopeGateSync } from "./git-session-scope-gate.js";
 import { isInspectionWrapperCall } from "./inspection-wrapper.js";
@@ -218,7 +218,15 @@ export function evaluateTddGate(
 ): HarnessDecision | null {
 	if (isFileWrite(toolName)) {
 		const d = evaluateTddNewFileGateForEvent(event, rules, session);
-		if (d) return { ...d, warnings };
+		if (d) {
+			// Merge the gate's own warnings (the opened-debt notice, the
+			// layout-"none" demotion note) into the shared array — the
+			// `{ ...d, warnings }` spread REPLACES d.warnings with the shared
+			// array, which silently dropped them before (found 2026-07-15: the
+			// debt-mode allow came back with empty warnings).
+			if (d.warnings) warnings.push(...d.warnings.filter((w) => !warnings.includes(w)));
+			return { ...d, warnings };
+		}
 	}
 	return null;
 }
@@ -258,33 +266,24 @@ export function evaluateBaselineIntegrityGate(
 	return null;
 }
 
-/** GUARD: Edit tool — verify old_string exists. */
+/**
+ * GUARD: Edit/MultiEdit doom detection + apply_patch context validation
+ * (LG-1/LG-2, docs/design/edit-contract-hardening.md). Blocks only calls the
+ * client itself would reject — old_string absent, or matching >1× without
+ * replace_all (MultiEdit entries simulated sequentially) — with one-round-trip
+ * rescue material in the reason. apply_patch context mismatches are warn-tier:
+ * Codex's matcher leniency is not fully modeled, so the client stays the
+ * authority there until measured FP≈0 promotes it.
+ */
 export function evaluateEditOldStringGuard(
 	toolName: string,
 	toolInput: ToolInput,
 	warnings: string[],
 ): HarnessDecision | null {
-	if (toolName === "Edit" && toolInput.file_path && toolInput.old_string) {
-		const filePath = toolInput.file_path as string;
-		const oldString = toolInput.old_string as string;
-		try {
-			if (existsSync(filePath)) {
-				const fileContent = readFileSync(filePath, "utf-8");
-				if (!fileContent.includes(oldString)) {
-					const misses = findClosestSpans(fileContent, oldString, 3);
-					const hint = misses.length
-						? `\nClosest matches in file:\n${formatNearMisses(misses)}\nRe-read at one of these line ranges, then retry with the exact text.`
-						: "";
-					return {
-						decision: "block",
-						reason: `Edit will fail: old_string not found in ${filePath}. The file may have been modified by another agent. Re-read the file first.${hint}`,
-						warnings,
-					};
-				}
-			}
-		} catch (e) {
-			void e;
-		}
+	for (const d of analyzeApplyPatchDoom(toolName, toolInput)) warnings.push(d.warning);
+	const doom = analyzeStrReplaceDoom(toolName, toolInput);
+	if (doom) {
+		return { decision: "block", reason: formatDoomReason(doom), warnings };
 	}
 	return null;
 }

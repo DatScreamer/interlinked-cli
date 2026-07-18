@@ -18,7 +18,7 @@ import {
 } from "../bash-provenance.js";
 import type { CohortManager } from "../cohort.js";
 import { formatMidSessionBackstop, isDocFile } from "../commit-cadence.js";
-import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
+import { buildNearMissWarning, findClosestSpans } from "../edit-diagnostics.js";
 import { recordDeliveryForShadow } from "../event-dedup.js";
 import { countLines, isCappableFile, maxLinesFor } from "../large-file-policy.js";
 import {
@@ -26,6 +26,7 @@ import {
 	filterOutputEgress,
 } from "../output-egress-filter.js";
 import type { ReservationManager } from "../reservations.js";
+import { scanDisputedGroundRead } from "../server/review-reconcile-phase.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
 import {
@@ -85,6 +86,9 @@ export function evaluatePostToolUse(
 
 	warnings.push(...collectFileReminders(event, rules, session));
 	warnings.push(...collectOutputScanWarnings(event, rules, session));
+	// Anti-compounding, NOT output scanning: must fire even with
+	// output_scanning disabled or an empty Read response (deep-round #6).
+	warnings.push(...scanDisputedGroundRead(event));
 	warnings.push(...collectPostWriteFileWarnings(event));
 	// Ambient per-edit cyclomatic telemetry — consumes the PreToolUse stash the
 	// complexity gate's observer recorded (see complexity-pulse.ts).
@@ -309,10 +313,11 @@ function collectReadFileSizeWarning(event: HarnessEvent): string[] {
 	const filePath = (event.tool_input?.file_path as string) || "";
 	if (!filePath) return warnings;
 	try {
+		const root = event.cwd || process.cwd();
 		const content = readFileSync(filePath, "utf-8");
-		if (!isCappableFile({ filePath, content })) return warnings;
+		if (!isCappableFile({ filePath, content, root })) return warnings;
 		const lineCount = countLines(content);
-		const cap = maxLinesFor(event.cwd || process.cwd());
+		const cap = maxLinesFor(root);
 		if (lineCount > cap) {
 			warnings.push(
 				`[interlinked:file-size] ${filePath} is ${lineCount} lines — over the ${cap}-line cap. If you edit this file, consider refactoring it into smaller modules.`,
@@ -361,9 +366,7 @@ function collectEditNearMissWarning(event: HarnessEvent): string[] {
 		if (!fileContent.includes(oldString)) {
 			const misses = findClosestSpans(fileContent, oldString, NEAR_MISS_MAX_MATCHES);
 			if (misses.length > 0) {
-				warnings.push(
-					`[interlinked:edit-near-miss] old_string not found in ${filePath}. Closest matches:\n${formatNearMisses(misses)}\nRe-read at one of these line ranges, then retry the Edit with the exact text from the file.`,
-				);
+				warnings.push(buildNearMissWarning(filePath, misses, oldString));
 			}
 		}
 	} catch (_err) {

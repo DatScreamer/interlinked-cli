@@ -1007,3 +1007,97 @@ describe("buildVerificationStopWarnings", () => {
 		expect(out).toEqual(["UNRESOLVED-RED", "DEFERRED-COVERAGE"]);
 	});
 });
+
+// ===========================================================================
+// checkReviewFindings — open ingested review findings (real corpus, unmocked)
+// ===========================================================================
+describe("checkReviewFindings", () => {
+	it("surfaces open ingested findings at Stop and honors the off switch", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { ingestReviewReport } = await import("../../commands/findings.js");
+		const { resetReviewReconcileCacheForTesting } = await import(
+			"./review-reconcile-phase.js"
+		);
+		const cwd = mkdtempSync(join(tmpdir(), "stop-review-"));
+		try {
+			resetReviewReconcileCacheForTesting();
+			writeFileSync(
+				join(cwd, "r.md"),
+				"1. [high] [docs/plan.md:5] Ordering is wrong.\nTOTAL: 1\n",
+			);
+			ingestReviewReport(join(cwd, "r.md"), "sol", cwd);
+			const ctx = makeCtx({
+				cwd,
+				rules: { verification_stop_checks: { enabled: true } },
+			});
+			const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+			expect(out.some((w) => w.includes("[interlinked:review-findings]"))).toBe(true);
+
+			const off = makeCtx({
+				cwd,
+				rules: {
+					verification_stop_checks: { enabled: true, warn_review_findings: false },
+				},
+			});
+			expect(
+				buildVerificationStopWarnings(off, makeEvent(), makeSession()).some((w) =>
+					w.includes("review-findings"),
+				),
+			).toBe(false);
+		} finally {
+			resetReviewReconcileCacheForTesting();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+// ===========================================================================
+// checkSpecDrift — outstanding cross-file spec drift (real formatter, unmocked)
+// ===========================================================================
+describe("checkSpecDrift", () => {
+	const drift = [
+		{ file: "README.md", line: 2, message: '"six bets" vs the B census: 7 ids' },
+	];
+
+	it("surfaces the spec-drift stash at Stop", () => {
+		const ctx = makeCtx({
+			rules: { verification_stop_checks: { enabled: true } },
+		});
+		const out = buildVerificationStopWarnings(
+			ctx,
+			makeEvent(),
+			makeSession({ spec_drift_outstanding: drift }),
+		);
+		const line = out.find((w) => w.includes("[interlinked:spec-drift]"));
+		expect(line).toBeDefined();
+		expect(line).toContain("README.md:2");
+	});
+
+	it("stays silent when the stash is empty or warn_spec_drift is false", () => {
+		const ctx = makeCtx({
+			rules: { verification_stop_checks: { enabled: true } },
+		});
+		expect(
+			buildVerificationStopWarnings(
+				ctx,
+				makeEvent(),
+				makeSession({ spec_drift_outstanding: [] }),
+			).some((w) => w.includes("spec-drift")),
+		).toBe(false);
+
+		const off = makeCtx({
+			rules: {
+				verification_stop_checks: { enabled: true, warn_spec_drift: false },
+			},
+		});
+		expect(
+			buildVerificationStopWarnings(
+				off,
+				makeEvent(),
+				makeSession({ spec_drift_outstanding: drift }),
+			).some((w) => w.includes("spec-drift")),
+		).toBe(false);
+	});
+});

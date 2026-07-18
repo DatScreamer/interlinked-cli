@@ -84,6 +84,9 @@ export interface ServerRuntime {
 	/** Cached artifact graph — persists across PostToolUse calls. */
 	structureGraph: ArtifactGraph | null;
 	structureConfigCache: StructureConfig | null;
+	/** Cross-file spec fact ledger — lazily built on the first markdown edit,
+	 *  then kept fresh per edit (docs/design/spec-audit-runtime-checks.md §3.2). */
+	specLedger?: import("../spec/ledger.js").SpecLedger | null;
 	/** Recency-weighted per-file priority map (Mythos Phase 4). */
 	filePriorityMap: Map<string, FilePriority>;
 

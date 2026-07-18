@@ -2,10 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { HarnessEvent } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 import {
 	__resetComplexityPulseForTesting,
 	collectComplexityPulseWarnings,
@@ -71,6 +70,18 @@ describe("formatComplexityPulse", () => {
 		const line = formatComplexityPulse("src/foo.ts", before, after);
 		expect(line).toContain("ΣCC 5 (Δ-9)");
 		expect(line).toContain("beta removed (was 9)");
+	});
+
+	it("uses the repo's effective cap for the label and over-cap list (deep-round #11)", () => {
+		const fns = [entry("wide", 20)];
+		// Default cap (25): CC 20 is under cap.
+		const dflt = formatComplexityPulse("src/foo.ts", null, fns);
+		expect(dflt).toContain("(cap 25)");
+		expect(dflt).not.toContain("over cap");
+		// Tighter cap (10): the same function is over cap and labeled as such.
+		const tight = formatComplexityPulse("src/foo.ts", null, fns, 10);
+		expect(tight).toContain("(cap 10)");
+		expect(tight).toContain("over cap: wide=20");
 	});
 
 	it("omits the delta entirely when there is no before snapshot", () => {

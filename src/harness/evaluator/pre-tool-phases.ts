@@ -35,6 +35,7 @@ import type {
 import { recordComplexityPulse } from "./complexity-pulse.js";
 import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
+import { checkTestSignalErosion } from "./pre-tool-test-integrity.js";
 import { estimateEditLine, isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
 
 const ESCALATION_TAIL_LENGTH = 10;
@@ -97,6 +98,20 @@ export function evaluatePreChecksSelfKillEnv(
  * Mirrors the original inline block exactly. `warnings` mutated by reference.
  * Returns a `HarnessDecision` to short-circuit, else `null`.
  */
+/** Push the test-signal-erosion warning (DW P0.3 b/c) when applicable. A no-op
+ *  for non-writes / non-test files (the guard lives in `checkTestSignalErosion`),
+ *  so it can be called unconditionally without adding branches to the caller. */
+function maybeWarnTestErosion(
+	event: HarnessEvent,
+	session: SessionTrajectory | undefined,
+	eventCwd: string,
+	warnings: string[],
+): void {
+	if (!session) return;
+	const erosion = checkTestSignalErosion(event.tool_name ?? "", event.tool_input ?? {}, session, eventCwd);
+	if (erosion) warnings.push(erosion);
+}
+
 export function evaluatePreChecksTail(
 	event: HarnessEvent,
 	session: SessionTrajectory | undefined,
@@ -172,6 +187,7 @@ export function evaluatePreChecksTail(
 			if (concurrentResult?.warning) warnings.push(concurrentResult.warning);
 		}
 	}
+	maybeWarnTestErosion(event, session, eventCwd, warnings);
 	return null;
 }
 

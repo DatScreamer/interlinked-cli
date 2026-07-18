@@ -539,3 +539,88 @@ describe("verdict markers — real producer reasons satisfy the debt-mode matche
 		expect(isRedBarBlock(blockForCrossSuiteRedBar("python", ["x.py"], undefined))).toBe(false);
 	});
 });
+
+// ----- ownership-scoped wander (foreign sessions, 2026-07-17) -------------
+
+/** A debt opened by some OTHER session — the fixture the ownership rule keys on. */
+function foreignDebt(file: string): Obligation {
+	return { ...debt(file), sessionId: "other-session" };
+}
+
+describe("decideCoverageDebt — ownership-scoped wander", () => {
+	it("notes-not-blocks an unrelated edit when the only open debt is another session's", () => {
+		const out = run({ editedFile: "src/unrelated.ts", openDebts: [foreignDebt("src/other.ts")] });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("another session");
+		expect(out.decision?.warnings?.[0]).toContain("src/other.ts");
+	});
+
+	it("still blocks when the session's OWN debt is at the WIP limit", () => {
+		const out = run({ editedFile: "src/unrelated.ts", openDebts: [debt("src/other.ts")] });
+		expect(out.decision?.decision).toBe("block");
+	});
+
+	it("picks the oldest OWN debt for the block even when a foreign debt is older", () => {
+		const out = run({
+			editedFile: "src/unrelated.ts",
+			openDebts: [foreignDebt("src/theirs.ts"), debt("src/mine.ts")],
+			wipLimit: 1,
+		});
+		expect(out.decision?.decision).toBe("block");
+		expect(out.decision?.reason).toContain("src/mine.ts");
+		expect(out.decision?.reason).not.toContain("src/theirs.ts");
+	});
+
+	it("attaches the foreign note to an uncovered-open outcome", () => {
+		const out = run({
+			editedFile: "src/new.ts",
+			baseDecision: uncovered("src/new.ts"),
+			openDebts: [foreignDebt("src/other.ts")],
+		});
+		expect(out.decision?.decision).toBe("allow");
+		const joined = (out.decision?.warnings ?? []).join("\n");
+		expect(joined).toContain("Opened coverage debt");
+		expect(joined).toContain("another session");
+		expect(out.txns.some((t) => t.op === "open")).toBe(true);
+	});
+
+	it("treats an unattributable owner (empty sessionId) as foreign — warn, never block", () => {
+		const legacy = { ...debt("src/legacy.ts"), sessionId: "" };
+		const out = run({ editedFile: "src/unrelated.ts", openDebts: [legacy] });
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("src/legacy.ts");
+	});
+
+	it("suppresses the note when shouldNoteForeignDebt returns false", () => {
+		const out = run({
+			editedFile: "src/unrelated.ts",
+			openDebts: [foreignDebt("src/other.ts")],
+			shouldNoteForeignDebt: () => false,
+		});
+		expect(out.decision).toBeNull();
+	});
+
+	it("keeps a related edit to a foreign debt free of both block and note", () => {
+		const out = run({ editedFile: "src/other.test.ts", openDebts: [foreignDebt("src/other.ts")] });
+		expect(out.decision).toBeNull();
+	});
+
+	it("foreign debts fill the total threshold but never the OWN budget (wipLimit 2)", () => {
+		const out = run({
+			editedFile: "src/unrelated.ts",
+			openDebts: [foreignDebt("src/a.ts"), foreignDebt("src/b.ts")],
+			wipLimit: 2,
+		});
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("another session");
+	});
+
+	it("a red foreign debt notes the RED phrasing", () => {
+		const out = run({
+			editedFile: "src/unrelated.ts",
+			openDebts: [{ ...redDebt("src/red.ts"), sessionId: "other-session" }],
+		});
+		expect(out.decision?.decision).toBe("allow");
+		expect(out.decision?.warnings?.[0]).toContain("RED");
+	});
+});

@@ -330,6 +330,19 @@ interface SuiteRunOutcome {
  * what the exit status was (the `result` is returned for that pass/fail
  * interpretation).
  */
+/** fast-check case cap for a per-edit (scoped) run — enough to keep property
+ *  coverage meaningful while fitting the tight per-edit budget. Full runs
+ *  (unscoped) keep the default. See src/test-setup/property-budget.ts (P0.1). */
+const PER_EDIT_PROPERTY_NUMRUNS = 25;
+
+/** The env delta capping fast-check for a scoped (per-edit) run, or undefined
+ *  for a full run. defaultSpawn merges it over process.env. */
+export function perEditBudgetEnv(opts: CoverageRunOpts): Record<string, string> | undefined {
+	return opts.selectedTests && opts.selectedTests.length > 0
+		? { INTERLINKED_PROPERTY_NUMRUNS: String(PER_EDIT_PROPERTY_NUMRUNS) }
+		: undefined;
+}
+
 async function runSuite(
 	spawnFn: SpawnFn,
 	command: string[],
@@ -347,7 +360,13 @@ async function runSuite(
 	const start = Date.now();
 	let result: SpawnOutcome;
 	try {
-		result = await spawnFn(bin, args, { cwd: opts.projectRoot, timeout, encoding: "utf-8" });
+		const budgetEnv = perEditBudgetEnv(opts);
+		result = await spawnFn(bin, args, {
+			cwd: opts.projectRoot,
+			timeout,
+			encoding: "utf-8",
+			...(budgetEnv ? { env: budgetEnv } : {}),
+		});
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		return { suiteMs: Date.now() - start, error: `spawn threw: ${reason}`, result: null };
@@ -366,26 +385,7 @@ async function runSuite(
  * to produce a report could not establish a trustworthy pass/fail signal, so the
  * red-bar gate fail-opens (never blocks on an unmeasured suite).
  */
-function failure(suiteMs: number, error: string): CoverageRunResult {
-	return { suiteMs, perFile: new Map(), ok: false, error, testsPassed: null };
-}
-
-/** Concatenate a spawn's stdout + stderr into one searchable text blob. */
-function spawnText(result: SpawnOutcome): string {
-	return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-}
-
-/**
- * Map a suite exit code to the orthogonal pass/fail signal, given the runner's
- * "tests failed" code (1 for both vitest and pytest). Exit 0 → passed; the
- * `failExit` code → failed; null status or any other non-zero (a runner-level
- * error — vitest >1, pytest >=2) → null (couldn't determine ⇒ fail-open).
- */
-function testsPassedFromStatus(status: number | null, failExit: number): boolean | null {
-	if (status === 0) return true;
-	if (status === failExit) return false;
-	return null;
-}
+import { failure, spawnText, testsPassedFromStatus } from "./coverage-run-helpers.js";
 
 // ===========================================
 // JavaScript / TypeScript runner

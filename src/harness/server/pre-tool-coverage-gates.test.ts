@@ -4,7 +4,11 @@
 // helper's gating / merge logic is driven deterministically without a real
 // suite, git, or overlay.
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import { SessionTracker } from "../session-state.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
@@ -72,6 +76,72 @@ function ctxMutation(cfg: unknown): ServerRuntime {
 function allow(warnings?: string[]): HarnessDecision {
 	return warnings ? { decision: "allow", warnings } : { decision: "allow" };
 }
+
+describe("runCoverageWriteGate — debt-evasion arming (2026-07-17)", () => {
+	let root: string;
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "gates-evasion-"));
+	});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	function ctxDebt(sessions: SessionTracker): ServerRuntime {
+		const rules = {
+			per_edit_coverage: {
+				enabled: true,
+				mode: "block",
+				budget_ms: 25_000,
+				languages: ["ts"],
+				debt_mode: true,
+			},
+		} as unknown as GuardRulesConfig;
+		return { rules, sessions, cwd: root, log: () => {} } as unknown as ServerRuntime;
+	}
+
+	function editEv(session: string, file: string): HarnessEvent {
+		return ev({
+			session_id: session,
+			tool_name: "Edit",
+			cwd: root,
+			tool_input: { file_path: join(root, file) },
+		});
+	}
+
+	/** A base-gate uncovered block (carries the marker debt-mode folds on). */
+	function uncoveredBlock(file: string): HarnessDecision {
+		return {
+			decision: "block",
+			reason: `[interlinked:coverage] BLOCKED: ${file} line 5 is executable but uncovered by the test suite after this edit.`,
+			rule_id: "per-edit-coverage",
+		};
+	}
+
+	it("arms the session's evasion counter when the debt gate wander-blocks", async () => {
+		const sessions = new SessionTracker();
+		sessions.recordEvent(editEv("dbt", "src/foo.ts"));
+		const ctx = ctxDebt(sessions);
+		// Edit 1: uncovered source → debt opens, allow (warnings merged, null returned).
+		mCheckCoverage.mockResolvedValueOnce(uncoveredBlock("src/foo.ts"));
+		const first = await runCoverageWriteGate(ctx, editEv("dbt", "src/foo.ts"), allow());
+		expect(first).toBeNull();
+		expect(sessions.get("dbt")?.debt_wander_blocked_at_ms).toBeUndefined();
+		// Edit 2: unrelated file while own debt open → wander block arms the counter.
+		mCheckCoverage.mockResolvedValueOnce(null);
+		const second = await runCoverageWriteGate(ctx, editEv("dbt", "src/bar.ts"), allow());
+		expect(second?.decision).toBe("block");
+		expect(sessions.get("dbt")?.debt_wander_blocked_at_ms).toBeDefined();
+	});
+
+	it("does not arm on a clean pass-through", async () => {
+		const sessions = new SessionTracker();
+		sessions.recordEvent(editEv("clean", "src/foo.ts"));
+		mCheckCoverage.mockResolvedValueOnce(null);
+		const out = await runCoverageWriteGate(ctxDebt(sessions), editEv("clean", "src/foo.ts"), allow());
+		expect(out).toBeNull();
+		expect(sessions.get("clean")?.debt_wander_blocked_at_ms).toBeUndefined();
+	});
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();

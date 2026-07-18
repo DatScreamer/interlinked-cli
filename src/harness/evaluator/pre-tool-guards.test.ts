@@ -1058,7 +1058,7 @@ describe("evaluateEditOldStringGuard", () => {
 		expect(d?.warnings).toEqual(["w"]);
 	});
 
-	it("includes near-miss hints when a close span exists", () => {
+	it("includes the near-miss span verbatim so the retry needs no re-read", () => {
 		const target = join(workspace, "f.ts");
 		writeFileSync(
 			target,
@@ -1074,7 +1074,49 @@ describe("evaluateEditOldStringGuard", () => {
 			[],
 		);
 		expect(d?.decision).toBe("block");
-		expect(d?.reason).toMatch(/Closest matches in file/);
+		expect(d?.reason).toMatch(/Closest match — line 1/);
+		expect(d?.reason).toContain("export const value = computeSomething(alpha, beta);");
+	});
+
+	it("blocks a doomed MultiEdit entry with per-entry accounting", () => {
+		const target = join(workspace, "f.ts");
+		writeFileSync(target, "const a = 1;\nconst b = 2;\n");
+		const d = evaluateEditOldStringGuard(
+			"MultiEdit",
+			{
+				file_path: target,
+				edits: [
+					{ old_string: "const a = 1;", new_string: "const a = 10;" },
+					{ old_string: "const c = 3;", new_string: "const c = 30;" },
+				],
+			},
+			[],
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toMatch(/entry 2 of 2/);
+		expect(d?.reason).toMatch(/MultiEdit is atomic/);
+	});
+
+	it("pushes an apply_patch context-mismatch warning and does not block", () => {
+		const target = join(workspace, "patched.ts");
+		writeFileSync(target, "line one\nline two\n");
+		const warnings: string[] = [];
+		const d = evaluateEditOldStringGuard(
+			"apply_patch",
+			{
+				command: [
+					"*** Begin Patch",
+					`*** Update File: ${target}`,
+					" line NOPE",
+					"-line two",
+					"+line 2",
+					"*** End Patch",
+				].join("\n"),
+			},
+			warnings,
+		);
+		expect(d).toBeNull();
+		expect(warnings.some((w) => w.includes("apply-patch-doom"))).toBe(true);
 	});
 
 	it("returns null when old_string IS present in the file", () => {

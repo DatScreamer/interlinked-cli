@@ -131,6 +131,25 @@ export interface SessionTrajectory {
 	mid_session_nudge_emitted?: boolean;
 	/** One-shot guard for the Stop-hook nudge — set when it fires. */
 	stop_nudge_emitted?: boolean;
+	/** Set (ms epoch) when this session receives a debt-focus wander block —
+	 *  arms the inline-exec evasion counter (`debt-evasion.ts`). */
+	debt_wander_blocked_at_ms?: number;
+	/** Bash inline-exec commands (`node -e`, `python -c`, piped/heredoc'd
+	 *  interpreter input) run AFTER the block above. Surfaced once in the Stop
+	 *  reflection; visibility only — never blocks. */
+	inline_exec_after_debt_block?: number;
+	/**
+	 * Armed block fingerprints (P1 trajectory) — one per PreToolUse block
+	 * finalized this session, each with a time-boxed arming window. A later
+	 * candidate event is matched against these to spot a refused action
+	 * resurfacing through another channel. IN-MEMORY only (not serialized to
+	 * the session snapshot) — a stale block should not survive a daemon
+	 * restart. Managed by `trajectory/block-fingerprint-session.ts`.
+	 */
+	block_fingerprints?: import("../trajectory/block-fingerprint.js").BlockFingerprint[];
+	/** Workaround signals observed this session (deduped by detector+rule),
+	 *  surfaced once in the Stop reflection. Detection is shadow — never blocks. */
+	workaround_signals?: import("../trajectory/block-fingerprint-session.js").WorkaroundSignal[];
 	/**
 	 * Per-test-file `(blocks, assertions)` counts captured on the previous
 	 * PostToolUse for each test file the agent has touched this session.
@@ -172,6 +191,12 @@ export interface SessionTrajectory {
 	 * entries to keep long-session memory bounded.
 	 */
 	stubs_introduced?: Array<{ file: string; kind: string; snippet: string }>;
+	/**
+	 * Cross-file spec-drift findings outstanding as of the session's most
+	 * recent markdown edit (captured at PostToolUse by the spec-ledger phase,
+	 * consumed by the Stop nudge). Replaced per edit, capped at 10 entries.
+	 */
+	spec_drift_outstanding?: Array<{ file: string; line: number; message: string }>;
 	/**
 	 * Most recently captured plan declared by the agent — populated by
 	 * `plan-capture.ts` on PreToolUse (TaskCreate / ExitPlanMode) or
@@ -229,6 +254,46 @@ export interface SessionTrajectory {
 	 * hydration safety.
 	 */
 	literal_occurrences?: Map<string, Set<string>> | undefined;
+	/**
+	 * LG-3 read-view snapshots (edit-contract-hardening.md): per file, the
+	 * content state this session last DISPLAYED — full-content sha256, 32-bit
+	 * per-line hashes (for locating where drift begins without retaining the
+	 * text), the step it was seen, and the displayed line ranges (null = whole
+	 * file). In-memory best-effort like `recent_line_edits`: not snapshotted,
+	 * absent ⇒ every consumer fails open. Populated in `read-provenance.ts`.
+	 */
+	file_views?: Map<string, FileView> | undefined;
+	/**
+	 * LG-5 edit-mechanics accounting for the Stop reflection: doomed-edit
+	 * blocks, one-round-trip rescues (a successful write to the doomed file
+	 * within 2 steps), stale-read and blind-edit observations, plus the
+	 * repeat gate for stale warnings. In-memory best-effort; absent ⇒ zero.
+	 */
+	edit_mechanics?: EditMechanics | undefined;
+}
+
+/** One file's last-displayed content state (LG-3). */
+export interface FileView {
+	/** sha256 hex of the full content as displayed/refreshed. */
+	hash: string;
+	/** FNV-1a 32-bit hash per line — drift localization without text retention. */
+	line_hashes: Uint32Array;
+	/** `tool_call_count` at capture time. */
+	at_step: number;
+	/** Displayed 1-based inclusive line ranges; null = whole file seen. */
+	ranges: Array<[number, number]> | null;
+}
+
+/** Session edit-mechanics counters (LG-5). */
+export interface EditMechanics {
+	doomed: number;
+	rescued: number;
+	stale_reads: number;
+	blind_edits: number;
+	/** Last doom, for rescue attribution. */
+	last_doom?: { file: string; step: number } | undefined;
+	/** Stale-read repeat gate: `${path}::${liveHash}` already warned. */
+	stale_warned: Set<string>;
 }
 
 // ===========================================

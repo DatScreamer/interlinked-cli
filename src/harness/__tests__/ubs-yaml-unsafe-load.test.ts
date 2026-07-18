@@ -18,11 +18,20 @@ describe("checkYamlUnsafeLoad — positive cases", () => {
 		const code = "cfg = yaml.load(stream, Loader=yaml.FullLoader)";
 		expect(checkYamlUnsafeLoad(code, "src/cfg.py").length).toBeGreaterThan(0);
 	});
+
+	it("flags the multi-document `yaml.load_all(f)` (DW P0.5 load_all parity)", () => {
+		const code = "import yaml\ndocs = list(yaml.load_all(f))";
+		expect(checkYamlUnsafeLoad(code, "src/cfg.py").length).toBeGreaterThan(0);
+	});
 });
 
 describe("checkYamlUnsafeLoad — negative cases", () => {
 	it("does NOT flag `yaml.safe_load(f)`", () => {
 		expect(checkYamlUnsafeLoad("cfg = yaml.safe_load(f)", "src/cfg.py")).toEqual([]);
+	});
+
+	it("does NOT flag the safe multi-document `yaml.safe_load_all(f)`", () => {
+		expect(checkYamlUnsafeLoad("docs = list(yaml.safe_load_all(f))", "src/cfg.py")).toEqual([]);
 	});
 
 	it("does NOT flag `yaml.load(f, Loader=yaml.SafeLoader)`", () => {

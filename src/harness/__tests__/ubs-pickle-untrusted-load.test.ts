@@ -62,6 +62,15 @@ describe("checkPickleUntrustedLoad", () => {
 		expect(checkPickleUntrustedLoad(code, "src/cache.py").length).toBeGreaterThan(0);
 	});
 
+	it("fires on `jsonpickle.decode(...)` (DW P0.5 class-breadth)", () => {
+		const code = `import jsonpickle\nobj = jsonpickle.decode(payload)`;
+		expect(checkPickleUntrustedLoad(code, "src/cache.py").length).toBeGreaterThan(0);
+	});
+
+	it("does NOT fire on the safe `json.loads(...)`", () => {
+		expect(checkPickleUntrustedLoad("obj = json.loads(payload)", "src/cache.py")).toEqual([]);
+	});
+
 	it("STILL fires when noqa carries an unrelated bandit code", () => {
 		// S307 (eval) must NOT suppress a pickle finding.
 		const code = `import pickle\nobj = pickle.loads(buf)  # noqa: S307`;

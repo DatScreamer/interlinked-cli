@@ -15,6 +15,7 @@ import { decideCoverageDebt, inSamePair, isRedBarBlock, isUncoveredBlock } from 
 import { selectAffectedTests } from "./coverage-test-selector.js";
 import type { DependencyView } from "./dependency-view.js";
 import { isFileWrite } from "./evaluator/tool-classifiers.js";
+import { isCappableFile } from "./large-file-policy.js";
 import { appendDebtTxn, readOpenDebts } from "./obligation-ledger-io.js";
 import type { Obligation } from "./obligations.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
@@ -22,6 +23,17 @@ import type { HarnessDecision, HarnessEvent } from "./types.js";
 
 const CODE_RX = /\.[cm]?[jt]sx?$/i;
 const TEST_RX = /\.(test|spec)\.[cm]?[jt]sx?$/i;
+
+/** Once-per-(session, debt) dedup for the foreign-debt heads-up note: the
+ *  heads-up is information, and repeating unactionable information trains
+ *  agents to ignore warnings (the index-nudge lesson). Daemon-lifetime;
+ *  cleared on restart. */
+const foreignDebtNoted = new Set<string>();
+
+/** Test hook: clear the foreign-debt note dedup. */
+export function resetForeignDebtNotesForTests(): void {
+	foreignDebtNoted.clear();
+}
 
 function strField(input: Record<string, unknown>, key: string): string {
 	const v = input[key];
@@ -44,7 +56,19 @@ function editedCodeFile(event: HarnessEvent, projectRoot: string): string | null
 	const named = strField(input, "file_path") || strField(input, "path");
 	if (!named) return null;
 	const rel = relative(projectRoot, resolve(projectRoot, named));
-	return CODE_RX.test(rel) ? rel : null;
+	if (!CODE_RX.test(rel)) return null;
+	// Debt's domain is product code + its tests, ONE definition shared with the
+	// line-cap / cyclomatic / coverage-targeting surfaces (isCappableFile): a
+	// path the canonical predicate exempts — root scratch/ probes, .interlinked/
+	// tool-state, generated, out-of-root — can neither open debt nor be a
+	// "wander". Tests stay IN domain even though the predicate exempts them:
+	// a companion-test edit is exactly how debt discharges. Two gates carrying
+	// two domain definitions is how the scratchpad guard's sanctioned
+	// destination became this gate's "unrelated file" (2026-07-17).
+	if (!TEST_RX.test(rel) && !isCappableFile({ filePath: rel, content: "", root: projectRoot })) {
+		return null;
+	}
+	return rel;
 }
 
 /**
@@ -128,6 +152,12 @@ export function applyDebtMode(
 		// Message accuracy: name a conventional companion test only if it exists
 		// (the phantom `genomics.test.ts` failure mode).
 		fileExists: (rel) => existsSync(resolve(projectRoot, rel)),
+		shouldNoteForeignDebt: (d) => {
+			const key = `${event.session_id}|${d.id}`;
+			if (foreignDebtNoted.has(key)) return false;
+			foreignDebtNoted.add(key);
+			return true;
+		},
 	});
 	for (const txn of outcome.txns) appendDebtTxn(projectRoot, txn);
 	return outcome.decision;

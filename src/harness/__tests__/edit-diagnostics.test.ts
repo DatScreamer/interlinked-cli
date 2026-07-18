@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 import { nonNull } from "../../lib/non-null.js";
+import { findClosestSpans, formatNearMisses } from "../edit-diagnostics.js";
 
 describe("findClosestSpans", () => {
 	it("returns no matches when target is empty", () => {
@@ -101,7 +101,7 @@ describe("formatNearMisses", () => {
 
 	it("formats with line, percent, and snippet", () => {
 		const formatted = formatNearMisses([
-			{ line: 42, snippet: "function foo()", similarity: 0.875 },
+			{ line: 42, endLine: 42, snippet: "function foo()", lines: ["function foo()"], similarity: 0.875 },
 		]);
 		expect(formatted).toContain("L42");
 		expect(formatted).toContain("88%");
@@ -110,8 +110,8 @@ describe("formatNearMisses", () => {
 
 	it("joins multiple misses with newlines", () => {
 		const formatted = formatNearMisses([
-			{ line: 1, snippet: "a", similarity: 1 },
-			{ line: 5, snippet: "b", similarity: 0.6 },
+			{ line: 1, endLine: 1, snippet: "a", lines: ["a"], similarity: 1 },
+			{ line: 5, endLine: 5, snippet: "b", lines: ["b"], similarity: 0.6 },
 		]);
 		expect(formatted.split("\n").length).toBe(2);
 	});

@@ -107,9 +107,25 @@ const LOCAL_PROBES = {
 		override: { scratchpad_guard: { code_write_mode: "warn" } },
 		changed: (c) => c.scratchpad_guard?.code_write_mode === "warn",
 	},
+	spec_checks: {
+		override: { spec_checks: { enabled: false } },
+		changed: (c) => c.spec_checks?.enabled === false,
+	},
+	edit_contract: {
+		override: { edit_contract: { stale_read: "off" } },
+		changed: (c) => c.edit_contract?.stale_read === "off",
+	},
 	scratchpad_archive: {
 		override: { scratchpad_archive: { enabled: false } },
 		changed: (c) => c.scratchpad_archive?.enabled === false,
+	},
+	verification_stop_checks: {
+		override: {
+			verification_stop_checks: asCfg<"verification_stop_checks">({
+				warn_spec_drift: false,
+			}),
+		},
+		changed: (c) => c.verification_stop_checks?.warn_spec_drift === false,
 	},
 } as const satisfies Partial<Record<keyof GuardRulesConfig, LocalProbe>>;
 
@@ -142,7 +158,6 @@ const EXEMPT = {
 	policy_classifier: { why: "team-tier (mergeTeamRules)", probe: { __parity: true } },
 	auto_coordination: { why: "team-tier (mergeTeamRules)", probe: { __parity: true } },
 	commit_cadence: { why: "default-only today", probe: { __parity: true } },
-	verification_stop_checks: { why: "default-only today", probe: { __parity: true } },
 } as const satisfies Partial<Record<keyof GuardRulesConfig, { why: string; probe: unknown }>>;
 
 type LocalKey = keyof typeof LOCAL_PROBES;

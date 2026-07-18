@@ -33,6 +33,7 @@ import type { ServerRuntime } from "./server/runtime-context.js";
 import { mergeTrajectoryShadow } from "./server/trajectory-shadow.js";
 import { isPostToolUse, isPreToolUse } from "./server-tool-helpers.js";
 import { captureTimeline } from "./timeline-capture.js";
+import { observeBlockWorkaround } from "./trajectory/block-fingerprint-session.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
 
@@ -149,6 +150,11 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			// Evaluate based on hook type
 			if (isPreToolUse(event)) {
 				const local = await runPreToolPipeline(ctx, event, session);
+				// P1 trajectory continuity (shadow): arm a fingerprint when this
+				// event was blocked; on a later event that gets through, note if it
+				// reproduces a still-armed refusal through another channel. Never
+				// alters the decision — surfaced once at Stop.
+				observeBlockWorkaround(session, event, local, event.cwd ?? CWD, Date.now());
 				mergeTrajectoryShadow(event, local, ctx.rules);
 				writeCollectionRecord(event, local);
 				return forwardCloudPreToolUse(event, local);

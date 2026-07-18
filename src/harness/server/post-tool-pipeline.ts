@@ -34,6 +34,7 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
+import { appendFlakeCheckWarning } from "./post-tool-flake-phase.js";
 import { resolveEditedPaths } from "./post-tool-pipeline-paths.js";
 import {
 	dischargeCoverageOnGreenRun,
@@ -43,6 +44,7 @@ import {
 	updateTrigramDirtyLayer,
 } from "./post-tool-pipeline-tracking.js";
 import type { ServerRuntime } from "./runtime-context.js";
+import { prerefreshSpecLedger } from "./spec-ledger-phase.js";
 
 /**
  * Daemon-side mirror of the hook's `skip-paths` chunk: when the edited path
@@ -197,6 +199,10 @@ async function runFileChecksWithMarker(
 	// Phase mark — everything before this point was tool-response checks
 	// (silent-failure, context-bloat) plus paths-to-check setup.
 	acc.markPhase("tool_response_checks");
+	// Refresh the spec ledger for ALL edited markdown paths before per-file
+	// drift is computed — a multi-file patch must be evaluated against its
+	// final state, not a half-applied one (deep-round #3).
+	prerefreshSpecLedger(ctx, pathsToCheck);
 	for (const currentEditedPath of pathsToCheck) {
 		await runPerFileChecks(ctx, event, session, currentEditedPath, postDecision, acc);
 	}
@@ -346,6 +352,10 @@ export async function runPostToolPipeline(
 
 	// --- Content Scanner: scan Read/Grep results, ratchet session sensitivity on PII ---
 	await appendContentScanWarnings(ctx, event, session, postDecision);
+
+	// --- Flake double-run (DW P0.2): opt-in. On a test-file edit, re-run the
+	// affected scoped suite twice and warn on divergence. Fast no-op when off. ---
+	await appendFlakeCheckWarning(ctx, event, postDecision);
 
 	const postStartMs = Date.now();
 	const checksRan: string[] = [];

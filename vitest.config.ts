@@ -5,6 +5,11 @@ export default defineConfig({
         globals: true,
         environment: "node",
         include: ["src/**/*.test.ts"],
+        // Per-edit property-test budget (DW P0.1). Inert unless the per-edit
+        // coverage runner sets INTERLINKED_PROPERTY_NUMRUNS — then fast-check's
+        // case count is capped so property tests fit the tight per-edit latency
+        // budget. Normal / CI / coverage runs (env unset) keep full numRuns.
+        setupFiles: ["./src/test-setup/property-budget.ts"],
         // Integration tests spawn real `npx biome` / `tsc` / CLI subprocesses.
         // Under the worker-capped full-suite run (see `maxWorkers` below) a
         // cold start can take tens of seconds, so vitest's 10s default
@@ -54,7 +59,10 @@ export default defineConfig({
         // unified the per-pool `{threads,forks}.max*` caps into one
         // top-level `maxWorkers`. One number now bounds concurrency
         // regardless of which pool vitest picks; `undefined` = vitest default.
-        maxWorkers: process.env.CI ? 1 : undefined,
+        // Present only in CI (1 worker); absent locally so vitest picks its
+        // default — a conditional spread instead of an explicit `undefined`,
+        // which exactOptionalPropertyTypes rejects for an optional field.
+        ...(process.env.CI ? { maxWorkers: 1 } : {}),
         // Coverage — opt-in via `--coverage` / `npm run test:coverage`; the
         // default `vitest run` stays uninstrumented and fast. The v8 provider
         // emits BOTH json (coverage-final.json → per-function, feeds CRAP via

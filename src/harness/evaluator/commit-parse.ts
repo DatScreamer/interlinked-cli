@@ -15,6 +15,7 @@
 // Shell tokenization, cwd-resolution, and flag-cluster primitives now live in
 // the sibling `commit-parse-tokens.ts` (a pure leaf — no import back here), so
 // this entry point stays under the per-file line cap.
+import { nonNull } from "../../lib/non-null.js";
 import {
 	COMMIT_VALUE_FLAGS,
 	clusterBooleanLetters,
@@ -28,7 +29,6 @@ import {
 	splitSegments,
 	stripLeadingPrefix,
 } from "./commit-parse-tokens.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Re-export the blessed shell-structure tokenizers so `harness/shell-structure.ts`
 // (and its downstream `taint-tracker.ts`) keep importing them from this module's
@@ -440,4 +440,27 @@ export function parseGitCommit(command: string): CommitParse | null {
 		}
 	}
 	return null;
+}
+
+/**
+ * True when a Bash command runs `git push` in at least one segment. Same
+ * quote/comment/`cd`-aware discipline as {@link parseGitCommit} (reuses the
+ * segment splitter, shell tokenizer, and global-flag scanner), so `# git push`
+ * in a comment, a quoted `"git push"` string, and near-misses like `git pushd`
+ * do NOT match, while `git -C repo push` and `cd repo && git push` do. THE
+ * single source for "is this a push" — the client-side hook-timeout router and
+ * the server-side push gate both consume it, retiring the divergent bare
+ * `/\bgit\s+push\b/` regexes (2026-07-17).
+ */
+export function isGitPushCommand(command: string): boolean {
+	if (!command || typeof command !== "string") return false;
+	for (const segment of splitSegments(command)) {
+		const tokens = stripLeadingPrefix(shellSplit(segment));
+		if (tokens.length < 2) continue;
+		const head = tokens[0];
+		if (head !== "git" && !nonNull(head).endsWith("/git")) continue;
+		const { subIdx } = scanGitGlobalFlags(tokens);
+		if (subIdx >= 0 && tokens[subIdx] === "push") return true;
+	}
+	return false;
 }

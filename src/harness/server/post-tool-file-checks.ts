@@ -16,8 +16,10 @@
 // Behavior-preserving move: identical logic to the inline loop body; the
 // only change is bare module-level state becoming `ctx.*`.
 
-import { relative, resolve, sep } from "node:path";
+import { relative } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import { recordWarningResolutions, recordWarningsIssued } from "../feedback-effectiveness.js";
+import { isInsideRoot } from "../large-file-policy.js";
 import type { ProjectGraph } from "../project-graph.js";
 import { type ToolBreakdownEntry } from "../quality-checks.js";
 import { recordHarnessCaught } from "../recurrence.js";
@@ -47,8 +49,9 @@ import {
 	runDeletionHygiene,
 	runImpactOrFallback,
 } from "./post-tool-file-checks-structural.js";
+import { runReviewReconcilePhase } from "./review-reconcile-phase.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
-import { nonNull } from "../../lib/non-null.js";
+import { runSpecLedgerPhase } from "./spec-ledger-phase.js";
 
 /** Cross-iteration / cross-phase accumulator for the PostToolUse per-file
  *  fan-out. The orchestrator creates one of these per event and passes it
@@ -89,6 +92,10 @@ export async function runPerFileChecks(
 ): Promise<void> {
 	const CWD = ctx.cwd;
 	const { allCheckResults, checksRan } = acc;
+	// Index into allCheckResults where THIS file's findings begin — the
+	// accumulator is event-global, so feedback-effectiveness recording must
+	// scope to this file's own suffix, not every prior file's (deep-round #8).
+	const fileResultsStart = allCheckResults.length;
 
 	let editedFilePath = currentEditedPath;
 	// For Bash edits, inject the detected file path into a synthetic event
@@ -109,12 +116,11 @@ export async function runPerFileChecks(
 	// repo's graph for a file that isn't in it: wrong result, and an
 	// 11-19s tree walk. Gate those phases on in-repo membership; the
 	// inline content checks below still run for out-of-tree files.
+	// Symlink-safe containment (deep-round #7): a lexical prefix check
+	// misjudges /private/tmp vs /tmp on macOS. isInsideRoot realpaths both
+	// sides — the same policy the coverage overlay uses.
 	const editedFileInRepo =
-		editedFilePath.length > 0 &&
-		(() => {
-			const resolved = resolve(CWD, editedFilePath);
-			return resolved === CWD || resolved.startsWith(CWD + sep);
-		})();
+		editedFilePath.length > 0 && isInsideRoot(CWD, editedFilePath);
 
 	// --- TDD cycle tracking: record impl edits and test writes ---
 	if (session && editedFilePath) {
@@ -185,6 +191,16 @@ export async function runPerFileChecks(
 	// --- Structure checks phase (non-blocking guidance) ── (ends with the
 	// `scored_suggestions` phase mark).
 	runStructureChecksPhase(ctx, editedFilePath, editedFileInRepo, session, decision, acc);
+	runSpecLedgerPhase(ctx, editedFilePath, editedFileInRepo, session, decision, acc);
+	// Review-finding reconciliation: touch txns + disputed-ground warning
+	// (spec-audit memo §4/§6.3).
+	runReviewReconcilePhase(
+		CWD,
+		event.session_id ?? "unknown",
+		editedFilePath,
+		editedFileInRepo,
+		decision,
+	);
 
 	// --- Session-level behavioral checks ---
 	runBehavioralPhase(
@@ -197,7 +213,10 @@ export async function runPerFileChecks(
 	);
 
 	// --- Feedback effectiveness + session-ack of shown warnings ---
-	recordFeedbackAndAck(session, editedFilePath, allCheckResults);
+	// Scope feedback/ack to THIS file's findings — the accumulator is
+	// event-global, so a multi-file patch must not record file A's warnings
+	// under file B (deep-round #8).
+	recordFeedbackAndAck(session, editedFilePath, allCheckResults.slice(fileResultsStart));
 
 	// --- Mirror new actionable findings into the recurrence log ---
 	consolidateRecurrence(event, editedFilePath, CWD, acc, allCheckResults);
@@ -327,6 +346,9 @@ async function runStructuralChecksForFile(
 function recordFeedbackAndAck(
 	session: SessionTrajectory,
 	editedFilePath: string,
+	// THIS file's findings only — the caller slices the event-global
+	// accumulator so a multi-file patch can't record file A's warnings under
+	// file B (deep-round #8).
 	allCheckResults: CheckResultEntry[],
 ): void {
 	// --- Feedback effectiveness tracking ---

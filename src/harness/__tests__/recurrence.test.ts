@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	aggregateRecurrences,
 	deriveSignature,
@@ -16,14 +17,14 @@ import {
 	parseDurationMs,
 	proposeAction,
 	type Recurrence,
+	type RecurrenceEvent,
 	recordHarnessCaught,
 	recordHarnessMissed,
 	recordRecurrenceEvent,
-	type RecurrenceEvent,
+	recordToolFailure,
 	recurrencesPath,
 	resolveSinceCutoff,
 } from "../recurrence.js";
-import { nonNull } from "../../lib/non-null.js";
 
 function ev(overrides: Partial<RecurrenceEvent> = {}): RecurrenceEvent {
 	return {
@@ -136,6 +137,193 @@ describe("aggregateRecurrences", () => {
 	it("returns an empty list for an empty input", () => {
 		expect(aggregateRecurrences([])).toEqual([]);
 	});
+
+	it("does not merge distinct kinds whose signatures collide (round-12 sol #1)", () => {
+		// A tool_failure forwarding "harness_missed:x" derives the same signature
+		// as a harness_missed with signature "x"; bucketing by (kind, signature)
+		// keeps them as two rows instead of one order-dependent merge.
+		const rows = aggregateRecurrences([
+			ev({ kind: "tool_failure", signature: "harness_missed:x" }),
+			ev({ kind: "harness_missed", signature: "x" }),
+		]);
+		expect(rows).toHaveLength(2);
+		expect(new Set(rows.map((r) => r.kind))).toEqual(
+			new Set(["tool_failure", "harness_missed"]),
+		);
+	});
+
+	it("clears check_id when a bucket mixes tools, order-independently (round-13 sol #2)", () => {
+		// Same forwarded tool_failure signature, different check_id (tool): the
+		// row must not claim either tool's id regardless of input order.
+		const forward = { kind: "tool_failure" as const, signature: "tool_failure:shared" };
+		const ab = aggregateRecurrences([
+			ev({ ...forward, check_id: "bash" }),
+			ev({ ...forward, check_id: "exec" }),
+		]);
+		const ba = aggregateRecurrences([
+			ev({ ...forward, check_id: "exec" }),
+			ev({ ...forward, check_id: "bash" }),
+		]);
+		expect(ab).toHaveLength(1);
+		expect(nonNull(ab[0]).check_id).toBeUndefined();
+		expect(nonNull(ba[0]).check_id).toBeUndefined();
+	});
+
+	it("keeps check_id ambiguity sticky once two ids appear (round-14 sol #1)", () => {
+		// Sequence [bash, exec, bash]: once two distinct ids are seen the row must
+		// never re-claim one, regardless of a later matching id.
+		const forward = { kind: "tool_failure" as const, signature: "tool_failure:s" };
+		const rows = aggregateRecurrences([
+			ev({ ...forward, check_id: "bash" }),
+			ev({ ...forward, check_id: "exec" }),
+			ev({ ...forward, check_id: "bash" }),
+		]);
+		expect(rows).toHaveLength(1);
+		expect(nonNull(rows[0]).check_id).toBeUndefined();
+	});
+
+	it("treats a present-but-empty check_id as distinct from a real one (round-15 sol #1)", () => {
+		const forward = { kind: "tool_failure" as const, signature: "tool_failure:s" };
+		const rows = aggregateRecurrences([
+			ev({ ...forward, check_id: "" }),
+			ev({ ...forward, check_id: "bash" }),
+		]);
+		expect(rows).toHaveLength(1);
+		// "" and "bash" differ → ambiguous → no claimed id (and never the empty string).
+		expect(nonNull(rows[0]).check_id).toBeUndefined();
+	});
+
+	it("preserves a lone present-but-empty check_id rather than dropping it (round-16 sol #2)", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "tool_failure", signature: "tool_failure:s", check_id: "" }),
+		]);
+		expect(rows).toHaveLength(1);
+		// One distinct id — the empty string — is preserved, not coerced to undefined.
+		expect(nonNull(rows[0]).check_id).toBe("");
+	});
+
+	it("caps sample_files so a signature over many files can't amplify output (round-18 sol #1)", () => {
+		const events = Array.from({ length: 25 }, (_, i) =>
+			ev({ kind: "harness_missed", signature: "s", file: `f${i}.ts`, ts: `2026-05-${String((i % 27) + 1).padStart(2, "0")}T00:00:00.000Z` }),
+		);
+		const rows = aggregateRecurrences(events);
+		expect(nonNull(rows[0]).sample_files.length).toBeLessThanOrEqual(10);
+	});
+
+	it("keeps distinct_files exact via per-file dedup, sample_files bounded (round-19/20 sol)", () => {
+		const events = Array.from({ length: 1005 }, (_, i) =>
+			ev({ kind: "harness_missed", signature: "s", file: `f${i}.ts`, ts: "2026-05-01T00:00:00.000Z" }),
+		);
+		const rows = aggregateRecurrences(events);
+		// Exact count (dedup, not a lossy cap); the SAMPLE stays bounded.
+		expect(nonNull(rows[0]).distinct_files).toBe(1005);
+		expect(nonNull(rows[0]).sample_files.length).toBeLessThanOrEqual(10);
+	});
+
+	it("samples the MOST-recent files even after many earlier ones (round-20 sol #2)", () => {
+		const events = Array.from({ length: 50 }, (_, i) =>
+			ev({ kind: "harness_missed", signature: "s", file: `old${i}.ts`, ts: "2026-01-01T00:00:00.000Z" }),
+		);
+		events.push(ev({ kind: "harness_missed", signature: "s", file: "latest.ts", ts: "2026-12-31T00:00:00.000Z" }));
+		const rows = aggregateRecurrences(events);
+		// The newest file leads the sample despite arriving after 50 older ones.
+		expect(nonNull(rows[0]).sample_files[0]).toBe("latest.ts");
+	});
+
+	it("orders sample_files without NaN when all timestamps are malformed (round-18 sol #3)", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "s", file: "a.ts", ts: "not-a-date" }),
+			ev({ kind: "harness_missed", signature: "s", file: "b.ts", ts: "also-bad" }),
+		]);
+		// No throw, both files retained, deterministic (comparator never returns NaN).
+		expect(new Set(nonNull(rows[0]).sample_files)).toEqual(new Set(["a.ts", "b.ts"]));
+	});
+
+	it("a malformed first timestamp does not corrupt the bounds when valid ones follow (round-17 sol #2)", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "x", ts: "not-a-date" }),
+			ev({ kind: "harness_missed", signature: "x", ts: "2026-05-01T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "x", ts: "2026-05-03T00:00:00.000Z" }),
+		]);
+		expect(nonNull(rows[0]).first_seen).toBe("2026-05-01T00:00:00.000Z");
+		expect(nonNull(rows[0]).last_seen).toBe("2026-05-03T00:00:00.000Z");
+	});
+
+	it("never surfaces a malformed-timestamp file as most-recent sample (round-14 sol #4)", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "s", file: "bad.ts", ts: "not-a-date" }),
+			ev({ kind: "harness_missed", signature: "s", file: "new.ts", ts: "2026-05-04T00:00:00Z" }),
+		]);
+		// The valid, most-recent file leads; the invalid-timestamp file sorts last.
+		expect(nonNull(rows[0]).sample_files[0]).toBe("new.ts");
+	});
+
+	it("excludes malformed event timestamps under a since filter, not fail-open (round-12 sol #5)", () => {
+		const rows = aggregateRecurrences(
+			[
+				ev({ ts: "not-a-date", kind: "harness_missed", signature: "bad" }),
+				ev({ ts: "2026-05-10T00:00:00.000Z", kind: "harness_missed", signature: "good" }),
+			],
+			{ since: "2026-05-01T00:00:00.000Z" },
+		);
+		// The malformed-timestamp row is dropped; only the valid, in-window row survives.
+		expect(rows.map((r) => r.signature)).toEqual(["harness_missed:good"]);
+	});
+
+	it("caps the signature prefix fed to the assembly ranker (round-9 perf hardening)", () => {
+		// Two signatures that agree on their first > SIGNATURE_ASSEMBLY_CAP chars
+		// but diverge after. If the assembly index only sees a bounded prefix,
+		// both rows score identically — a deterministic proof the O(1)-per-row
+		// bound applies (a long user-supplied harness_missed message can't make
+		// the ranker do unbounded work). No timing assertion (those are flaky).
+		const shared = "z".repeat(300); // longer than the 256-char cap
+		const a = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}AAA` })]);
+		const b = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}BBB` })]);
+		expect(nonNull(a[0]).assembly_significance).toBe(
+			nonNull(b[0]).assembly_significance,
+		);
+	});
+
+	it("scores the payload, not the kind prefix, so ranking is prefix-neutral (round-9 sol #2)", () => {
+		// The SAME payload under two different kinds must score identically —
+		// the fixed "<kind>:" transport prefix must not bias the structural
+		// score or eat unevenly into the cap.
+		const payload = "shared-payload-abc123";
+		const rows = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: payload }),
+			ev({ kind: "codebase_existing", check_id: payload }),
+		]);
+		const missed = rows.find((r) => r.kind === "harness_missed");
+		const existing = rows.find((r) => r.kind === "codebase_existing");
+		expect(missed?.assembly_significance).toBe(existing?.assembly_significance);
+		expect(missed?.assembly_significance).toBeGreaterThan(0);
+	});
+
+	it("ranks equal-count rows by assembly significance (spike 14 / round-2 #33)", () => {
+		// Two signatures seen the same number of times (count 2). One is highly
+		// repetitive (compresses to a tiny grammar → low assembly index); the
+		// other is structurally complex (near-incompressible → high index). The
+		// complex, load-bearing pattern must rank first among equal counts.
+		const repetitive = "aaaaaaaaaaaaaaaaaaaa";
+		const complex = "q7x-k2p-m9w-z3v-r8t";
+		const events: RecurrenceEvent[] = [
+			ev({ kind: "harness_missed", signature: repetitive }),
+			ev({ kind: "harness_missed", signature: repetitive }),
+			ev({ kind: "harness_missed", signature: complex }),
+			ev({ kind: "harness_missed", signature: complex }),
+		];
+		const rows = aggregateRecurrences(events);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => r.count === 2)).toBe(true);
+		// The field is populated (assembly-score is actually consumed)…
+		expect(nonNull(rows[0]).assembly_significance).toBeGreaterThan(0);
+		// …and it decides the order: complex signature outranks the repetitive one.
+		expect(nonNull(rows[0]).signature).toContain(complex);
+		expect(nonNull(rows[1]).signature).toContain(repetitive);
+		expect(nonNull(rows[0]).assembly_significance).toBeGreaterThan(
+			nonNull(rows[1]).assembly_significance,
+		);
+	});
 });
 
 describe("parseDurationMs", () => {
@@ -154,6 +342,10 @@ describe("parseDurationMs", () => {
 		expect(parseDurationMs("7y")).toBeNull();
 		expect(parseDurationMs("")).toBeNull();
 	});
+	it("returns null when the product overflows to Infinity (round-12 sol #3)", () => {
+		// A finite but enormous amount overflows amount*unitMs → Infinity.
+		expect(parseDurationMs(`${"9".repeat(306)}s`)).toBeNull();
+	});
 });
 
 describe("resolveSinceCutoff", () => {
@@ -167,6 +359,10 @@ describe("resolveSinceCutoff", () => {
 	it("returns null for unparseable input or empty", () => {
 		expect(resolveSinceCutoff(undefined, NOW)).toBeNull();
 		expect(resolveSinceCutoff("garbage", NOW)).toBeNull();
+	});
+	it("returns null (never throws) on an oversized duration (round-12 sol #3)", () => {
+		expect(() => resolveSinceCutoff(`${"9".repeat(309)}w`, NOW)).not.toThrow();
+		expect(resolveSinceCutoff(`${"9".repeat(309)}w`, NOW)).toBeNull();
 	});
 });
 
@@ -182,6 +378,7 @@ describe("proposeAction", () => {
 		distinct_files: 2,
 		agent_sources: ["claude"],
 		sample_files: ["a.ts", "b.ts"],
+		assembly_significance: 0,
 		...overrides,
 	});
 
@@ -246,6 +443,36 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		expect(nonNull(out[1]).ts).toBe("2026-05-02T00:00:00.000Z");
 	});
 
+	it("recordToolFailure records a tool_failure event keyed by tool_name", () => {
+		recordToolFailure({
+			tool_name: "Bash",
+			signature: "tool_failure:Bash:enoent:cmd",
+			agent_source: "claude",
+			session_id: "s1",
+			file: "src/x.ts",
+			message: "boom",
+			ts: "2026-05-05T00:00:00.000Z",
+			cwd: dir,
+		});
+		const out = loadRecurrenceEvents(dir);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).kind).toBe("tool_failure");
+		expect(nonNull(out[0]).check_id).toBe("Bash");
+		expect(nonNull(out[0]).signature).toBe("tool_failure:Bash:enoent:cmd");
+	});
+
+	it("recordToolFailure never throws on an unwritable cwd", () => {
+		expect(() =>
+			recordToolFailure({
+				tool_name: "Bash",
+				signature: "tool_failure:Bash:x",
+				agent_source: "claude",
+				session_id: "s",
+				cwd: "/proc/nonexistent/x",
+			}),
+		).not.toThrow();
+	});
+
 	it("recordHarnessMissed records a harness_missed event with the supplied signature", () => {
 		recordHarnessMissed({
 			signature: "raw-sql-concat",
@@ -304,6 +531,18 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 			outcome_reason: "inline suppression with justification",
 			fire_ts: "2026-05-01T00:00:00.000Z",
 		});
+	});
+
+	it("markOutcome never throws on an unwritable cwd", () => {
+		expect(() =>
+			markOutcome({
+				check_id: "x",
+				file: "f",
+				session_id: "s",
+				signal: "agent_fixed",
+				cwd: "/proc/nonexistent/x",
+			}),
+		).not.toThrow();
 	});
 
 	it("skips torn / malformed lines without throwing", () => {

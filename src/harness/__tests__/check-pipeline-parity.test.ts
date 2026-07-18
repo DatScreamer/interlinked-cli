@@ -272,6 +272,12 @@ const VERIFY_ONLY_CHECKS = new Set([
 	// resolveNearestPackageScripts; no registry entry. Also in
 	// DEFAULT_ADVISORY_SKIPS.
 	"readme_script_drift",
+	// spec_path_ref: verify-only sibling — the detector is 3-arg (content,
+	// filePath, pathExists); it needs a filesystem resolver for present-tense
+	// path-existence claims, outside the registry's uniform (content, filePath)
+	// contract. Wired in file-checks-agent-safety.ts with an existsSync-backed
+	// resolver; no registry entry. Also in DEFAULT_ADVISORY_SKIPS.
+	"spec_path_ref",
 	// Cross-file checks that need full project scan
 	"checkExportRipple",
 	"checkProjectSetup",
@@ -311,6 +317,20 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"c_unsafe_functions",
 	"c_include_guard",
 	"c_sprintf_usage",
+	// UBS class-breadth (DW test-adoption P0.5, 2026-07-17): detectors shipped
+	// PostToolUse-enforced now; their verify-surface wiring (interface + init +
+	// push + streamCqSection) is a deferred batch, matching the c_* precedent
+	// above. Function name (import parity) + snake_case id (toIssues parity).
+	"checkArchiveExtractTraversal",
+	"ubs_archive_extract_traversal",
+	"checkPythonAssertTautology",
+	"ubs_python_assert_tautology",
+	"checkRustTestDeterminism",
+	"rust_test_nondeterminism",
+	"checkNaiveDatetime",
+	"ubs_naive_datetime",
+	"checkRedosCatastrophic",
+	"redos_catastrophic",
 	// Package publish invariants — needs pre-edit disk content to diff against
 	// post-edit proposed content, so the check only makes sense at PreToolUse
 	// where those two states differ. Running it during `interlinked verify`
@@ -519,6 +539,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			ubs_torch_unsafe_load: "torchUnsafeLoad",
 			ubs_pickle_wrapper_load: "pickleWrapperLoad",
 			ubs_aes_ecb_mode: "aesEcbMode",
+			ubs_weak_random_security: "weakRandom",
 			ubs_node_create_cipher: "nodeCreateCipher",
 			ubs_script_without_sri: "scriptWithoutSri",
 			ubs_go_shell_injection: "goShellInjection",
@@ -604,6 +625,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"payloadFieldCasing",
 			"gitignoredWrittenConfig",
 			"readmeScriptDrift",
+			"specPathRef",
 			"asyncPromiseExecutor",
 			"selfImports",
 			"extraneousDeps",

@@ -120,9 +120,29 @@ describe("writeStatuslineArtifacts", () => {
 			indexFiles: 0,
 			serverBridgeConnected: false,
 			daemonPid: 98765,
+			specFactsTotal: 214,
+			reviewFindingsOpen: 3,
 		});
 		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
 		expect(text).toMatch(/^daemon_pid=98765$/m);
+		expect(text).toMatch(/^spec_facts_total=214$/m);
+		expect(text).toMatch(/^review_findings_open=3$/m);
+	});
+
+	it("emits spec_facts_total=-1 when the ledger is not built (bash → spec off)", () => {
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^spec_facts_total=-1$/m);
+		expect(text).toMatch(/^review_findings_open=0$/m);
 	});
 
 	it("emits split tool/inline check counts plus a back-compat sum", () => {

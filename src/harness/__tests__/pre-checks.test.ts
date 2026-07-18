@@ -38,6 +38,25 @@ describe("checkLargeFileLineCountWrite", () => {
 		expect(result?.block).toContain(`${CAP}-line cap`);
 	});
 
+	it("allows an over-cap file OUTSIDE the guarded root — session scratchpad artifact", () => {
+		// Live incident 2026-07-15: a 586-line self-contained HTML artifact in
+		// the host session scratchpad was blocked by the repo's 500-line cap —
+		// and the block steered the agent toward compressing formatting to duck
+		// under it. The cap is repo policy; out-of-root files are not governed.
+		const scratchpad = mkdtempSync(join(tmpdir(), "claude-501-scratch-"));
+		try {
+			for (const name of ["pcos-monograph.html", "probe.ts"]) {
+				const result = checkLargeFileLineCountWrite(
+					{ file_path: join(scratchpad, name), content: lines(CAP + 600) },
+					dir,
+				);
+				expect(result).toBeNull();
+			}
+		} finally {
+			rmSync(scratchpad, { recursive: true, force: true });
+		}
+	});
+
 	it("blocks a Write that grows an existing under-cap file past the cap", () => {
 		const path = file("grow.ts");
 		writeFileSync(path, lines(CAP));

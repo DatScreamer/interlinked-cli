@@ -21,6 +21,7 @@ export {
 } from "./session-literals.js";
 // Active-skill markers live in session-skills.ts (a line-cap split). recordEvent
 // drives gcExpiredSkills; the full set + SkillEnterArgs are re-exported below.
+import { trackDebtEvasion } from "./debt-evasion.js";
 import { gcExpiredSkills } from "./session-skills.js";
 export {
 	gcExpiredSkills,
@@ -115,6 +116,7 @@ export class SessionTracker {
 		trackErrorOutcome(session, event);
 		trackFileOperations(session, event);
 		trackCommand(session, event);
+		trackDebtEvasion(session, event);
 
 		gcExpiredSkills(session);
 

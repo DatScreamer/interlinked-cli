@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { isCappableFile } from "../large-file-policy.js";
+import { maxCyclomaticFor } from "../metric-caps.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { HarnessEvent } from "../types.js";
 import { DEFAULT_MAX_CYCLOMATIC, selectAnalyzer } from "./complexity-write-guard.js";
@@ -166,6 +167,7 @@ export function formatComplexityPulse(
 	displayPath: string,
 	beforeFns: readonly FunctionComplexityEntry[] | null,
 	afterFns: readonly FunctionComplexityEntry[],
+	cap: number = DEFAULT_MAX_CYCLOMATIC,
 ): string | null {
 	if (afterFns.length === 0 && (beforeFns?.length ?? 0) === 0) return null;
 
@@ -175,7 +177,7 @@ export function formatComplexityPulse(
 
 	if (afterFns.length > 0) {
 		const max = afterFns.reduce((m, f) => (f.cyclomatic > m.cyclomatic ? f : m));
-		line += `, max ${max.name}=${max.cyclomatic} (cap ${DEFAULT_MAX_CYCLOMATIC})`;
+		line += `, max ${max.name}=${max.cyclomatic} (cap ${cap})`;
 	}
 
 	if (beforeFns) {
@@ -190,8 +192,10 @@ export function formatComplexityPulse(
 		}
 	}
 
+	// The repo's effective cap, not the hard-coded default (deep-round #11):
+	// a repo configured for cap 10 must not report CC 20 as under cap.
 	const overCap = afterFns
-		.filter((f) => f.cyclomatic > DEFAULT_MAX_CYCLOMATIC)
+		.filter((f) => f.cyclomatic > cap)
 		.sort((a, b) => b.cyclomatic - a.cyclomatic);
 	if (overCap.length > 0) {
 		const shown = overCap
@@ -223,7 +227,7 @@ function pulseForFile(sessionId: string, cwd: string, absPath: string): string |
 		// Stash miss (daemon restarted, runner without a PreToolUse, projected
 		// content never landed): one on-disk parse, absolutes only. Same
 		// population filter as the gate.
-		if (!isCappableFile({ filePath: absPath, content: disk })) return null;
+		if (!isCappableFile({ filePath: absPath, content: disk, root: cwd })) return null;
 		const analyzer = selectAnalyzer(absPath);
 		if (!analyzer) return null;
 		beforeFns = null;
@@ -233,7 +237,9 @@ function pulseForFile(sessionId: string, cwd: string, absPath: string): string |
 
 	const rel = relative(cwd, absPath);
 	const display = rel === "" || rel.startsWith("..") ? absPath : rel;
-	return formatComplexityPulse(display, beforeFns, afterFns);
+	// Production path must use the repo's effective cap, not the default
+	// (round-2 #38 — round-1 fixed the formatter but not this caller).
+	return formatComplexityPulse(display, beforeFns, afterFns, maxCyclomaticFor(cwd));
 }
 
 /**

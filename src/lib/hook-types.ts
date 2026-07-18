@@ -45,7 +45,8 @@ export function findProjectRoot(startDir: string): string | null {
  */
 export interface HookEntry {
 	matcher: string;
-	hooks: Array<{ type: string; command: string }>;
+	/** `timeout` is Claude Code's per-hook ceiling in SECONDS (default 60). */
+	hooks: Array<{ type: string; command: string; timeout?: number }>;
 }
 
 /**

@@ -42,6 +42,15 @@ export interface StatuslineSnapshotInput {
 	 * mocking `process`).
 	 */
 	daemonPid: number;
+	/**
+	 * Spec-substrate state for the statusline's spec segment (§11.1 of
+	 * docs/design/spec-audit-runtime-checks.md). Optional — a daemon that
+	 * hasn't built a spec ledger yet omits them and the bash script degrades
+	 * to `spec off`.
+	 */
+	specFactsTotal?: number | undefined;
+	/** Ingested review findings still open (neither touched nor acked). */
+	reviewFindingsOpen?: number | undefined;
 }
 
 interface PersistedConfigShape {
@@ -123,6 +132,9 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		`auto_coordination=${toggles.autoCoord}`,
 		`server_bridge=${input.serverBridgeConnected ? "connected" : "local_only"}`,
 		`daemon_pid=${input.daemonPid}`,
+		// Spec substrate (§11.1): -1 = ledger not built yet (bash → "spec off").
+		`spec_facts_total=${input.specFactsTotal ?? -1}`,
+		`review_findings_open=${input.reviewFindingsOpen ?? 0}`,
 		`generated_at=${new Date().toISOString()}`,
 	];
 	return `${rows.join("\n")}\n`;

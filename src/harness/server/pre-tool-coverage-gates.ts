@@ -31,6 +31,7 @@ import {
 	parseApplyPatchSections,
 } from "../apply-patch-content.js";
 import { applyDebtMode } from "../coverage-debt-gate.js";
+import { noteWanderBlockDecision } from "../debt-evasion.js";
 import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
@@ -123,6 +124,9 @@ export async function runCoverageWriteGate(
 	// SAME dependency view powers failure-evidence relatedness: while red, an
 	// edit that can influence a recorded failing test is never a "wander".
 	decision = applyDebtMode(event, coverageCfg, decision, depView);
+	// A debt-focus wander block arms this session's inline-exec evasion counter
+	// (debt-evasion.ts owns the logic; this observes every outcome). Never blocks.
+	noteWanderBlockDecision(ctx.sessions, event, decision, Date.now());
 	if (!decision) return null;
 
 	if (decision.decision === "block") {

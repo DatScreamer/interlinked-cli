@@ -40,10 +40,11 @@ export function collectPostWriteFileWarnings(event: HarnessEvent): string[] {
 /** File-size cap warning on write — only for hand-written code modules. */
 function collectFileSizeWriteWarning(event: HarnessEvent, filePath: string): string[] {
 	try {
+		const root = event.cwd || process.cwd();
 		const content = readFileSync(filePath, "utf-8");
-		if (!isCappableFile({ filePath, content })) return [];
+		if (!isCappableFile({ filePath, content, root })) return [];
 		const lineCount = countLines(content);
-		const cap = maxLinesFor(event.cwd || process.cwd());
+		const cap = maxLinesFor(root);
 		if (lineCount > cap) {
 			return [
 				`[interlinked:file-size] ${filePath} is ${lineCount} lines — over the ${cap}-line cap for hand-written code. Consider splitting into smaller, focused modules.`,

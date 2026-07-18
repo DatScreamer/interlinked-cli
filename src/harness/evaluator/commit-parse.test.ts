@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGitCommit } from "./commit-parse.js";
+import { isGitPushCommand, parseGitCommit } from "./commit-parse.js";
 
 describe("parseGitCommit", () => {
 	it("detects `git commit -m x`", () => {
@@ -465,5 +465,46 @@ describe("parseGitCommit — attached short-option values are not flag clusters"
 		const parsed = parseGitCommit("git commit -m fix src/a.ts");
 		expect(parsed?.constructedPaths).toEqual(["src/a.ts"]);
 		expect(parsed?.includesIndex).toBeUndefined();
+	});
+});
+
+describe("isGitPushCommand", () => {
+	it("detects a plain `git push`", () => {
+		expect(isGitPushCommand("git push")).toBe(true);
+	});
+
+	it("detects `git push` with args and a remote/branch", () => {
+		expect(isGitPushCommand("git push origin main")).toBe(true);
+		expect(isGitPushCommand("git push --force-with-lease")).toBe(true);
+	});
+
+	it("detects `git -C repo push` (global flag before subcommand)", () => {
+		expect(isGitPushCommand("git -C repo push")).toBe(true);
+	});
+
+	it("detects a push in a later `&&` segment", () => {
+		expect(isGitPushCommand('git commit -m "x" && git push')).toBe(true);
+		expect(isGitPushCommand("cd repo && git push origin main")).toBe(true);
+	});
+
+	it("does NOT match a push inside a comment", () => {
+		expect(isGitPushCommand("# git push")).toBe(false);
+		expect(isGitPushCommand("echo done  # then git push")).toBe(false);
+	});
+
+	it("does NOT match a quoted `git push` string", () => {
+		expect(isGitPushCommand('echo "git push"')).toBe(false);
+	});
+
+	it("does NOT match near-misses (`git pushd`, plain `commit`, non-git binaries)", () => {
+		expect(isGitPushCommand("git pushd")).toBe(false);
+		expect(isGitPushCommand("git commit -m x")).toBe(false);
+		expect(isGitPushCommand("npm push")).toBe(false);
+	});
+
+	it("rejects empty / non-string input", () => {
+		expect(isGitPushCommand("")).toBe(false);
+		// @ts-expect-error runtime guard covers non-string callers
+		expect(isGitPushCommand(undefined)).toBe(false);
 	});
 });

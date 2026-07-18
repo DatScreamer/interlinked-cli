@@ -33,6 +33,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	extractApplyPatchRaw,
 	looksLikeApplyPatch,
@@ -44,7 +45,6 @@ import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { maxCyclomaticFor } from "../metric-caps.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Per-function cyclomatic cap — the agreed hard "bad" line. One number for now;
@@ -368,7 +368,7 @@ function checkApplyPatchComplexity(
 		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
 		const after = reconstructAfterContent(section, before);
 		if (after === null) continue; // can't reconstruct confidently → fail open for this file
-		if (!isCappableFile({ filePath: section.path, content: after })) continue;
+		if (!isCappableFile({ filePath: section.path, content: after, root: cwd })) continue;
 		const fileViolations = complexityViolations(before, after, section.path, analyzer, observe, cap);
 		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
 		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
@@ -394,7 +394,7 @@ export function checkFunctionComplexityWrite(
 		const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
 		const projected = projectContent(toolInput, abs);
 		if (!projected) return null;
-		if (!isCappableFile({ filePath, content: projected.after })) return null;
+		if (!isCappableFile({ filePath, content: projected.after, root: cwd })) return null;
 		const cap = maxCyclomaticFor(cwd);
 		const violations = complexityViolations(
 			projected.before,

@@ -29,11 +29,11 @@ import { sanitizeSessionId } from "../session-paths.js";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 // The trajectory-write code moved out of the monolithic server.ts into
-// server/lifecycle-events.ts (SessionEnd / Stop handler) during the
-// 1500-line decomposition. The security-pin source assertions follow the
-// code. server/lifecycle-events.test.ts carries an equivalent block as the
-// new module's companion test.
-const TRAJECTORY_WRITE_TS = resolve(HERE, "..", "server", "lifecycle-events.ts");
+// server/lifecycle-events.ts during the 1500-line decomposition, then was
+// extracted again into server/lifecycle-persist.ts (persistSessionTrajectory,
+// called by the Stop/SessionEnd handler at lifecycle-events.ts). The
+// security-pin source assertions follow the code to its current home.
+const TRAJECTORY_WRITE_TS = resolve(HERE, "..", "server", "lifecycle-persist.ts");
 
 describe("harness trajectory write - path traversal regression", () => {
 	const serverSource = readFileSync(TRAJECTORY_WRITE_TS, "utf-8");
@@ -44,7 +44,7 @@ describe("harness trajectory write - path traversal regression", () => {
 		// the same module (e.g. `{ daemonPathsFor, sanitizeSessionId }`).
 		// The `\.{1,2}/` prefix tolerates both a same-dir (`./`) and a
 		// parent-dir (`../`) specifier — the trajectory-write code lives in
-		// server/lifecycle-events.ts, one directory below the session-paths
+		// server/lifecycle-persist.ts, one directory below the session-paths
 		// module it imports.
 		expect(serverSource).toMatch(
 			/import\s*\{[^}]*\bsanitizeSessionId\b[^}]*\}\s*from\s*["']\.{1,2}\/session-paths\.js["']/,

@@ -17,8 +17,8 @@
 // (1500 -> 1200 -> 1000 -> 800 as the grandfather list empties) is a one-number
 // edit, not a code change.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { isGeneratedFile } from "./checks/shared.js";
 import { maxLinesOverride } from "./metric-caps.js";
@@ -49,11 +49,15 @@ const LARGE_FILE_BASELINE_REL = ".interlinked/large-files-baseline.json";
 
 /**
  * Extensions where a high line count is not a code-legibility problem:
- * prose/docs, structured data, lockfiles, vector art, minified bundles.
+ * prose/docs, markup documents, structured data, lockfiles, vector art,
+ * minified bundles. HTML sits here because an .html file is a document —
+ * a self-contained artifact/report/template whose length measures content,
+ * not module complexity, and "decompose into modules" isn't a remedy that
+ * applies to a page (same reasoning as markdown and svg).
  * Module-private — reached via `isCappableFile`.
  */
 const FILE_SIZE_SKIP_EXT_RE =
-	/\.(?:md|mdx|markdown|txt|rst|adoc|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|diff|patch|svg|min\.[a-z]+)$/i;
+	/\.(?:md|mdx|markdown|txt|rst|adoc|html?|xhtml|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|diff|patch|svg|min\.[a-z]+)$/i;
 
 /**
  * Path markers for generated code: a `.gen.`/`.generated.` infix on a
@@ -73,6 +77,29 @@ const GENERATED_PATH_RE =
  * `interlinked/` source dir (no leading dot) stays cappable.
  */
 const TOOL_STATE_PATH_RE = /(?:^|\/)\.interlinked\//;
+
+/**
+ * The repo-provisioned probe directory, ROOT-LEVEL `scratch/` only
+ * (`interlinked scratch init` creates it: gitignored, `.ignore`-negated,
+ * README'd as the sanctioned home for agent probe/draft scripts — the very
+ * place `scratchpad-write-guard` REDIRECTS agent-authored code to). It is
+ * non-product by construction, so the product-health surfaces that consume
+ * this predicate — line cap, cyclomatic gates, coverage targeting, the
+ * tested-file floor, debt focus — do not govern it; per-file quality checks
+ * (tsc, lint, secrets) still run there. Root-level only: a nested
+ * `src/scratch/` is somebody's product module and stays governed. Without
+ * this, two gates disagreed about the same path — the scratchpad guard
+ * steered a probe INTO `scratch/` and the debt focus rule then blocked the
+ * write there as "moving to an unrelated file", pushing a compliant agent
+ * toward harness-invisible channels (observed live 2026-07-17). Exported for
+ * direct tests; reach it through `isCappableFile` everywhere else.
+ */
+export function isRepoScratchPath(normPath: string, root: string | undefined): boolean {
+	if (/^scratch\//.test(normPath)) return true;
+	if (root === undefined) return false;
+	const normRoot = resolve(root).replace(/\\/g, "/").replace(/\/$/, "");
+	return normPath.startsWith(`${normRoot}/scratch/`);
+}
 
 /** Per-file line cap config + grandfather list. */
 export interface LargeFileBaseline {
@@ -199,108 +226,10 @@ export function countLines(content: string): number {
 	return content.split("\n").length;
 }
 
-/** Scanner state for `countCodeLines` — threaded through the per-character
- *  helpers so comment/string context survives newlines. */
-interface CodeLineScanState {
-	/** Inside a block comment (spans lines). */
-	inBlockComment: boolean;
-	/** Inside a `//` line comment (resets at each newline). */
-	inLineComment: boolean;
-	/** Open string delimiter (', ", or backtick), or null. Only the backtick
-	 *  (template literal) spans lines. */
-	stringDelim: string | null;
-	/** Current line carries at least one code character. */
-	lineHasCode: boolean;
-	/** Completed lines that carried code. */
-	codeLines: number;
-}
-
-/** Finalize the current line for `countCodeLines`: count it when it carried
- *  code, reset per-line state. Single/double-quoted strings do not span lines
- *  (an unterminated one is a syntax error anyway) — only template literals and
- *  block comments carry state over. */
-function endCodeLine(s: CodeLineScanState): void {
-	if (s.lineHasCode) s.codeLines++;
-	s.lineHasCode = false;
-	s.inLineComment = false;
-	if (s.stringDelim === "'" || s.stringDelim === '"') s.stringDelim = null;
-}
-
-/** Consume one non-newline character for `countCodeLines`. Returns the number
- *  of EXTRA characters consumed (0 or 1 — two-char comment tokens, escapes). */
-function scanCodeLineChar(content: string, i: number, s: CodeLineScanState): number {
-	const ch = content.charAt(i);
-	const next = content.charAt(i + 1);
-	if (s.inLineComment) return 0;
-	if (s.inBlockComment) {
-		if (ch === "*" && next === "/") {
-			s.inBlockComment = false;
-			return 1;
-		}
-		return 0;
-	}
-	if (s.stringDelim !== null) {
-		s.lineHasCode = true; // string/template content is code (data), never comment
-		if (ch === "\\" && next !== "\n") return 1; // escape consumes the next char
-		if (ch === s.stringDelim) s.stringDelim = null;
-		return 0;
-	}
-	if (ch === "/" && next === "/") {
-		s.inLineComment = true;
-		return 1;
-	}
-	if (ch === "/" && next === "*") {
-		s.inBlockComment = true;
-		return 1;
-	}
-	if (ch === "'" || ch === '"' || ch === "`") {
-		s.stringDelim = ch;
-		s.lineHasCode = true;
-		return 0;
-	}
-	if (!/\s/.test(ch)) s.lineHasCode = true;
-	return 0;
-}
-
-/**
- * Comment-aware sibling of `countLines` (the ONE canonical raw counter): the
- * number of lines carrying any CODE — i.e. not blank, not a `//` line
- * comment, and not (part of) a block comment. String-aware: comment markers
- * inside string/template literals do not open comments, and string/template
- * content lines count as code (an embedded data table IS the module's bulk).
- * Regex literals are not tracked (a literal like `/[/+]/` can misread as a
- * comment opener) — the same accepted limitation as the checks/ strippers.
- *
- * Consumed by the PreToolUse line-cap gate (`checkLargeFileLineCountWrite`)
- * for its comment-only-growth exemption: an edit that grows a file's RAW
- * line count but not its CODE line count is documentation, not code growth,
- * and is allowed even on an over-cap/grandfathered file. Deliberate
- * grandfather interaction: the recorded ceilings in
- * `large-files-baseline.json` keep tracking RAW lines and are NEVER raised
- * by that allowance (ceilings may only shrink — the baseline-integrity gate
- * enforces it), so sustained comment growth on a grandfathered file can push
- * its raw count past the recorded ceiling and surface in verify's
- * `large_files` check; the remedy there is decomposition, never a ceiling
- * raise.
- */
-export function countCodeLines(content: string): number {
-	const s: CodeLineScanState = {
-		inBlockComment: false,
-		inLineComment: false,
-		stringDelim: null,
-		lineHasCode: false,
-		codeLines: 0,
-	};
-	for (let i = 0; i < content.length; i++) {
-		if (content.charAt(i) === "\n") {
-			endCodeLine(s);
-			continue;
-		}
-		i += scanCodeLineChar(content, i, s);
-	}
-	endCodeLine(s);
-	return s.codeLines;
-}
+// The comment/string-aware code-line scanner lives in code-line-count.ts
+// (2026-07-17: extracted when this module hit its own line cap) — re-exported
+// so existing consumers (pre-checks, line-count-projection) keep this path.
+export { countCodeLines } from "./code-line-count.js";
 
 /**
  * Test/spec file detection — purely path/filename based.
@@ -345,17 +274,86 @@ function hasCodegenDataMarker(content: string): boolean {
 	return content.split("\n", 20).join("\n").includes(CODEGEN_DATA_MARKER);
 }
 
+/** Resolve a path for containment comparison: lexical resolve + realpath.
+ *  Realpath matters because tmp trees are exactly where symlinked prefixes
+ *  live (macOS `/tmp`→`/private/tmp`, `/var`→`/private/var` — the same gotcha
+ *  the coverage overlay realpath-resolves for). For a path not on disk yet (a
+ *  Write creating the file), realpath the nearest EXISTING ancestor and
+ *  re-append the rest — resolving only the existing side would compare
+ *  `/private/var/...` (root) against `/var/...` (new file) and misjudge every
+ *  brand-new file under a symlinked prefix as outside the root. */
+/** Max non-existent ancestor levels to walk before giving up. Real paths are
+ *  never this deep; a pathological agent-controlled path is bounded here so
+ *  neither the stack (recursion) nor the wall clock (one stat per level) can
+ *  be exhausted on the Pre/Post hot path (deep-round #9). */
+const MAX_ANCESTOR_WALK = 256;
+
+/** Realpath the nearest existing ancestor of `abs`, collecting the missing
+ *  tail. Iterative + depth-capped. Over the cap it returns the lexical path
+ *  unresolved — `startsWith` containment then fails closed for absurd depths
+ *  (they are treated as outside the root), which is the safe direction. */
+function realpathNearestAncestor(abs: string): { base: string; missing: string[] } {
+	const missing: string[] = [];
+	let cur = abs;
+	for (let i = 0; i < MAX_ANCESTOR_WALK; i++) {
+		try {
+			return { base: realpathSync(cur), missing };
+		} catch {
+			const parent = dirname(cur);
+			if (parent === cur) return { base: cur, missing };
+			missing.push(basename(cur));
+			cur = parent;
+		}
+	}
+	// Over the walk cap: we could not resolve symlinks in the path, so we
+	// must NOT return the lexical path (it would still prefix-match a root
+	// and misclassify an over-deep path beneath an in-root symlink,
+	// round-2 #34). A NUL-prefixed sentinel matches no real filesystem path,
+	// so isInsideRoot fails closed (treats it as outside → block).
+	return { base: OVER_CAP_SENTINEL, missing: [] };
+}
+
+/** NUL can't appear in a real path, so this prefix-matches nothing. */
+const OVER_CAP_SENTINEL = " over-ancestor-cap";
+
+function containmentPath(p: string): string {
+	const { base, missing } = realpathNearestAncestor(resolve(p));
+	return missing.length === 0 ? base : join(base, ...missing.reverse());
+}
+
+/** True when `filePath` (absolute, or resolved against `root`) lives inside
+ *  `root`. Traversal-safe: both sides are resolved before comparison, so a
+ *  `../`-laden agent-controlled path can't string-match its way in. */
+export function isInsideRoot(root: string, filePath: string): boolean {
+	const r = containmentPath(root);
+	const f = containmentPath(isAbsolute(filePath) ? filePath : resolve(root, filePath));
+	return f === r || f.startsWith(r + sep);
+}
+
 /**
  * Whether the per-file line cap applies to this file. True only for
- * hand-written code modules. Exempt: `.interlinked/` tool-state/probe files,
- * generated files (by path or content marker), codegen-DATA modules (a
- * `@codegen-data` header marker), `.d.ts` declarations, test/spec files, and
- * non-code files (docs, structured data, diffs/patches, vector art).
+ * hand-written code modules INSIDE the guarded repo. Exempt: files outside
+ * `root` (when given), `.interlinked/` tool-state/probe files, generated
+ * files (by path or content marker), codegen-DATA modules (a `@codegen-data`
+ * header marker), `.d.ts` declarations, test/spec files, and non-code files
+ * (docs, HTML/markup, structured data, diffs/patches, vector art).
+ *
+ * Root confinement: the cap is the guarded repo's maintainability policy —
+ * its baseline lives at `<root>/.interlinked/` — so a file outside the root
+ * (session scratchpad, /tmp probe, another repo) is not governed by it. Same
+ * reasoning that root-confined the bash-write guard (82bfc96). Observed live
+ * 2026-07-15: a 586-line self-contained HTML artifact in the session
+ * scratchpad was blocked by the repo's 500-line cap, steering the agent
+ * toward formatting-golf to duck under it. Callers that can see out-of-repo
+ * paths (event-driven gates/nudges) MUST pass `root`; repo-walk callers
+ * (verify) may omit it.
  */
-export function isCappableFile(file: { filePath: string; content: string }): boolean {
+export function isCappableFile(file: { filePath: string; content: string; root?: string }): boolean {
+	if (file.root !== undefined && !isInsideRoot(file.root, file.filePath)) return false;
 	const norm = file.filePath.replace(/\\/g, "/");
 	if (norm.endsWith(".d.ts")) return false;
 	if (TOOL_STATE_PATH_RE.test(norm)) return false;
+	if (isRepoScratchPath(norm, file.root)) return false;
 	if (FILE_SIZE_SKIP_EXT_RE.test(norm)) return false;
 	if (GENERATED_PATH_RE.test(norm)) return false;
 	if (isTestOrSpecPath(norm)) return false;

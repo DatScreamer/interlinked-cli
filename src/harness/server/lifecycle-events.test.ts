@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -175,6 +175,19 @@ describe("handleLifecycleEvent", () => {
 		expect(out).toBeNull();
 	});
 
+	it("surfaces SessionEnd fuzz-smoke failures at SessionStart", async () => {
+		const dir = join(tmp, ".interlinked", "fuzz-reports");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "prev.json"),
+			JSON.stringify({ numFailedTests: 1, testResults: [{ status: "failed", name: "p.test.ts" }] }),
+		);
+		const ctx = makeCtx();
+		const session = ctx.sessions.recordEvent(ev({ hook_event: "SessionStart" }));
+		const out = await handleLifecycleEvent(ctx, ev({ hook_event: "SessionStart" }), session);
+		expect(out?.warnings?.some((w) => w.includes("[interlinked:fuzz]"))).toBe(true);
+	});
+
 	it("returns null (fall-through) for an unrecognized non-tool event", async () => {
 		const ctx = makeCtx();
 		const session = ctx.sessions.recordEvent(ev({ hook_event: "Notification" }));
@@ -241,9 +254,15 @@ describe("handleLifecycleEvent", () => {
 // guarantees of sanitizeSessionId itself live in
 // __tests__/server-trajectory-write.test.ts.)
 const LIFECYCLE_TS = resolve(fileURLToPath(new URL(".", import.meta.url)), "lifecycle-events.ts");
+// persistSessionTrajectory moved verbatim to lifecycle-persist.ts (line-cap
+// decomposition 2026-07-17); the source-text security pins follow the code.
+const LIFECYCLE_PERSIST_TS = resolve(
+	fileURLToPath(new URL(".", import.meta.url)),
+	"lifecycle-persist.ts",
+);
 
 describe("lifecycle trajectory write - path traversal regression", () => {
-	const source = readFileSync(LIFECYCLE_TS, "utf-8");
+	const source = readFileSync(LIFECYCLE_PERSIST_TS, "utf-8");
 
 	it("imports sanitizeSessionId from session-paths", () => {
 		expect(source).toMatch(

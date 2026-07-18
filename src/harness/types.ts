@@ -23,60 +23,85 @@
 //   failure-recovery.ts  — Phase 1 failure-recovery channel types
 //   env-vars.ts          — SAFE_ENV_VARS / DANGEROUS_ENV_VARS runtime constants
 
-// --- events ---
+
+// --- agent cohort + file reservations ---
 export type {
-	Determinism,
-	HookEventName,
-	AgentSource,
-	AgentRole,
-	HarnessEvent,
-} from "./types/events.js";
-export { ASK_CAPABLE_AGENTS, agentSupportsAsk } from "./types/events.js";
+	AgentStatus,
+	CohortAgent,
+	ReservationConflict,
+	ReservationEntry,
+} from "./types/cohort-reservations.js";
+// --- guard rules configuration ---
+export type {
+	CommitCadenceConfig,
+	CurlMcpConfig,
+	DiffAwareConfig,
+	ErrorMemoryConfig,
+	ErrorRecord,
+	FileReminder,
+	GitSessionScopeGateConfig,
+	GuardRulesConfig,
+	PlanCaptureConfig,
+	PreEditBaseline,
+	ProjectWideCheckConfig,
+	ProtectedFileRule,
+	QualityCheckConfig,
+	ScratchpadArchiveConfig,
+	StructuralChecksConfig,
+	VerificationStopChecksConfig,
+} from "./types/config.js";
 
 // --- decisions ---
 export type {
-	HarnessDecision,
 	CheckResultEntry,
 	GrepStats,
+	HarnessDecision,
 	LogEntry,
 	ReservationAction,
 	ResolvedTarget,
 } from "./types/decisions.js";
-
-// --- guard rules ---
+// --- env var safety classification (runtime constants) ---
+export { DANGEROUS_ENV_VARS, SAFE_ENV_VARS } from "./types/env-vars.js";
+// --- events ---
 export type {
-	InputRewrite,
-	GuardRule,
-	RulePattern,
-	ActiveWhen,
-	PhaseSpec,
-	AfterCommandSpec,
-	SessionPredicateSpec,
-	ActiveSkillRecord,
-	ToolExternality,
-	TemporalPredicate,
-} from "./types/rules.js";
-
-// --- guard rules configuration ---
+	AgentRole,
+	AgentSource,
+	Determinism,
+	HarnessEvent,
+	HookEventName,
+} from "./types/events.js";
+export { ASK_CAPABLE_AGENTS, agentSupportsAsk } from "./types/events.js";
+// --- Phase 1 failure-recovery channels ---
 export type {
-	ProtectedFileRule,
-	FileReminder,
-	CurlMcpConfig,
-	QualityCheckConfig,
-	DiffAwareConfig,
-	PreEditBaseline,
-	GuardRulesConfig,
-	VerificationStopChecksConfig,
-	CommitCadenceConfig,
-	ProjectWideCheckConfig,
-	StructuralChecksConfig,
-	ErrorMemoryConfig,
-	ErrorRecord,
-	PlanCaptureConfig,
-	GitSessionScopeGateConfig,
-	ScratchpadArchiveConfig,
-} from "./types/config.js";
-
+	ExplanationTemplate,
+	FailureRecord,
+	RecoveryContext,
+	RecoverySuggestion,
+	RollbackAssessment,
+	ToolFailureEvent,
+	TriageLabel,
+	TriageResult,
+	TriageRule,
+} from "./types/failure-recovery.js";
+// --- project graph, structural & impact analysis ---
+export type {
+	ExportedSymbol,
+	ImpactAnalysisResult,
+	ImpactSeverity,
+	ImportEdge,
+	ModuleRole,
+	ReachabilityVerdict,
+	StructuralCheckResult,
+} from "./types/graph.js";
+// --- language profiles + tool concurrency ---
+export type {
+	InlineCheckDef,
+	LanguageCheckDef,
+	LanguageId,
+	LanguageProfile,
+	LanguageTestDef,
+	ToolConcurrencyClass,
+} from "./types/language.js";
 // --- captured agent plans ---
 export type {
 	CapturedPlan,
@@ -84,83 +109,50 @@ export type {
 	PlanStep,
 	PlanStepStatus,
 } from "./types/plan.js";
-
-// --- agent cohort + file reservations ---
-export type {
-	AgentStatus,
-	CohortAgent,
-	ReservationEntry,
-	ReservationConflict,
-} from "./types/cohort-reservations.js";
-
-// --- sensitivity / taint tracking + output scanning ---
-export type {
-	SensitivityLevel,
-	TaintProvenance,
-	TaintSource,
-	TaintTrackingConfig,
-	OutputScanningConfig,
-} from "./types/taint.js";
-
-// --- session trajectory + TDD cycle ---
-export type {
-	AssertionCounts,
-	ObservedCheck,
-	SessionTrajectory,
-	TddCycleState,
-	TddCycle,
-	WarningRecord,
-	CheckEffectivenessStats,
-	FeedbackEffectivenessSummary,
-	FailedFileEntry,
-	PendingCompletion,
-	RouteInfo,
-	TurnEndSummary,
-	LearnedRule,
-} from "./types/session.js";
-
-// --- project graph, structural & impact analysis ---
-export type {
-	ExportedSymbol,
-	ImportEdge,
-	StructuralCheckResult,
-	ModuleRole,
-	ImpactSeverity,
-	ImpactAnalysisResult,
-	ReachabilityVerdict,
-} from "./types/graph.js";
-
-// --- language profiles + tool concurrency ---
-export type {
-	LanguageId,
-	LanguageProfile,
-	LanguageCheckDef,
-	LanguageTestDef,
-	InlineCheckDef,
-	ToolConcurrencyClass,
-} from "./types/language.js";
-
 // --- escalation request + LLM policy classifier ---
 export type {
-	EscalationRequest,
 	ClassifierConfig,
+	EscalationRequest,
 	PolicyClassification,
 	PolicyEvidence,
 	PolicyRule,
 } from "./types/policy.js";
-
-// --- Phase 1 failure-recovery channels ---
+// --- guard rules ---
 export type {
-	TriageLabel,
-	ToolFailureEvent,
-	TriageRule,
-	TriageResult,
-	RecoverySuggestion,
-	RecoveryContext,
-	RollbackAssessment,
-	ExplanationTemplate,
-	FailureRecord,
-} from "./types/failure-recovery.js";
-
-// --- env var safety classification (runtime constants) ---
-export { SAFE_ENV_VARS, DANGEROUS_ENV_VARS } from "./types/env-vars.js";
+	ActiveSkillRecord,
+	ActiveWhen,
+	AfterCommandSpec,
+	GuardRule,
+	InputRewrite,
+	PhaseSpec,
+	RulePattern,
+	SessionPredicateSpec,
+	TemporalPredicate,
+	ToolExternality,
+} from "./types/rules.js";
+// --- session trajectory + TDD cycle ---
+export type {
+	AssertionCounts,
+	CheckEffectivenessStats,
+	EditMechanics,
+	FailedFileEntry,
+	FeedbackEffectivenessSummary,
+	FileView,
+	LearnedRule,
+	ObservedCheck,
+	PendingCompletion,
+	RouteInfo,
+	SessionTrajectory,
+	TddCycle,
+	TddCycleState,
+	TurnEndSummary,
+	WarningRecord,
+} from "./types/session.js";
+// --- sensitivity / taint tracking + output scanning ---
+export type {
+	OutputScanningConfig,
+	SensitivityLevel,
+	TaintProvenance,
+	TaintSource,
+	TaintTrackingConfig,
+} from "./types/taint.js";

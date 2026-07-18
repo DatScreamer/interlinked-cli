@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import { isInterlinkedHookCommand, isInterlinkedHookEntry } from "./hook-ownership.js";
+import { hookTimeoutSecondsFor } from "./hook-timeouts.js";
 import {
 	CLIENT_CLAUDE,
 	CLIENT_CODEX,
@@ -45,6 +46,9 @@ const POST_TOOL_USE_MATCHER = "";
 // as a named set so conditionals don't use bare string literals.
 const SCOPED_MATCHER_EVENTS = new Set(["PostToolUse", "AfterTool"]);
 
+// Per-event hook timeouts live in ./hook-timeouts.ts — the single source both
+// this legacy installer and the adapter fragment renderer consume.
+
 // Helpers for conditionals — avoid bare `typeof x === "string"` / `"object"`
 // forms which the harness flags as `magic_literal_in_conditional`.
 export function isPlainObject(v: unknown): v is JsonObject {
@@ -67,24 +71,40 @@ export function installHookEntry(hooks: JsonObject, eventName: string, command: 
 		entry.hooks?.some((h) => h.command?.includes(INTERLINKED_MARKER)),
 	);
 
+	const timeout = hookTimeoutSecondsFor(eventName);
 	if (existing) {
-		// Update command if it points to a stale path (e.g. .claude/hooks/ → .interlinked/hooks/)
-		const hook = existing.hooks?.find((h) => h.command?.includes(INTERLINKED_MARKER));
-		if (hook && hook.command !== command) {
-			hook.command = command;
-		}
-		// Update matcher for mutation-only post-tool hooks when the install rules change.
-		const expectedMatcher = getHookMatcher(eventName);
-		if (existing.matcher !== expectedMatcher) {
-			existing.matcher = expectedMatcher;
-		}
+		reconcileExistingEntry(existing, eventName, command, timeout);
 		return;
 	}
 
 	entries.push({
 		matcher: getHookMatcher(eventName),
-		hooks: [{ type: "command", command }],
+		hooks: [{ type: "command", command, ...(timeout !== undefined ? { timeout } : {}) }],
 	});
+}
+
+/** Reconcile an already-installed entry in place: a stale command path, the
+ *  per-event timeout (idempotent upgrade — entries written before timeouts
+ *  existed gain one; policy changes propagate), and the matcher. */
+function reconcileExistingEntry(
+	existing: HookEntry,
+	eventName: string,
+	command: string,
+	timeout: number | undefined,
+): void {
+	// Update command if it points to a stale path (e.g. .claude/hooks/ → .interlinked/hooks/)
+	const hook = existing.hooks?.find((h) => h.command?.includes(INTERLINKED_MARKER));
+	if (hook && hook.command !== command) {
+		hook.command = command;
+	}
+	if (hook && timeout !== undefined && hook.timeout !== timeout) {
+		hook.timeout = timeout;
+	}
+	// Update matcher for mutation-only post-tool hooks when the install rules change.
+	const expectedMatcher = getHookMatcher(eventName);
+	if (existing.matcher !== expectedMatcher) {
+		existing.matcher = expectedMatcher;
+	}
 }
 
 function getHookMatcher(eventName: string): string {

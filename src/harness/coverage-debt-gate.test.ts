@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyDebtMode } from "./coverage-debt-gate.js";
+import { applyDebtMode, resetForeignDebtNotesForTests } from "./coverage-debt-gate.js";
 import type { DependencyView } from "./dependency-view.js";
 import { readOpenDebts } from "./obligation-ledger-io.js";
 import type { PerEditCoverageConfig } from "./types/config.js";
@@ -337,5 +337,67 @@ describe("applyDebtMode — failure-evidence relatedness (genomics/themes, end-t
 		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST, "lib/other.test.ts"]));
 		const debts = readOpenDebts(root);
 		expect(debts[0]?.failingTestFiles).toEqual([COUNTS_TEST, "lib/other.test.ts"]);
+	});
+});
+
+describe("applyDebtMode — non-product paths are outside the debt domain (2026-07-17)", () => {
+	it("does not wander-block a scratch/ probe write while debt is open", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		expect(readOpenDebts(root)).toHaveLength(1);
+		const out = applyDebtMode(edit("scratch/probe.mjs"), cfg(), null);
+		expect(out).toBeNull(); // exempt from the focus rule — no block, no note
+	});
+
+	it("neither opens debt nor blocks for a scratch/ write", () => {
+		const out = applyDebtMode(edit("scratch/probe.ts"), cfg(), null);
+		expect(out).toBeNull();
+		expect(readOpenDebts(root)).toHaveLength(0);
+	});
+
+	it("does not wander-block a .interlinked/ tool-state write while debt is open", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		const out = applyDebtMode(edit(".interlinked/probe.mjs"), cfg(), null);
+		expect(out).toBeNull();
+	});
+
+	it("keeps a nested src/scratch/ module IN the debt domain", () => {
+		applyDebtMode(edit("src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		const out = applyDebtMode(edit("src/scratch/module.ts"), cfg(), null);
+		expect(out?.decision).toBe("block"); // not the root probe dir — still a wander
+	});
+});
+
+describe("applyDebtMode — foreign-session debts (ownership scoping, 2026-07-17)", () => {
+	function editAs(session: string, file: string): HarnessEvent {
+		return { ...edit(file), session_id: session };
+	}
+
+	beforeEach(() => {
+		resetForeignDebtNotesForTests();
+	});
+
+	it("warns once for a foreign debt, then stays quiet for the same (session, debt)", () => {
+		applyDebtMode(editAs("owner", "src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		const first = applyDebtMode(editAs("visitor", "src/bar.ts"), cfg(), null);
+		expect(first?.decision).toBe("allow");
+		expect(first?.warnings?.[0]).toContain("another session");
+		expect(first?.warnings?.[0]).toContain("src/foo.ts");
+		const second = applyDebtMode(editAs("visitor", "src/baz.ts"), cfg(), null);
+		expect(second).toBeNull(); // dedup'd — quiet allow
+	});
+
+	it("still blocks the owner session's own wander", () => {
+		applyDebtMode(editAs("owner", "src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		const out = applyDebtMode(editAs("owner", "src/bar.ts"), cfg(), null);
+		expect(out?.decision).toBe("block");
+		expect(out?.reason).toContain("src/foo.ts");
+	});
+
+	it("gives each visiting session its own single note (per-session dedup key)", () => {
+		applyDebtMode(editAs("owner", "src/foo.ts"), cfg(), uncovered("src/foo.ts"));
+		applyDebtMode(editAs("visitor-a", "src/bar.ts"), cfg(), null);
+		const b = applyDebtMode(editAs("visitor-b", "src/bar2.ts"), cfg(), null);
+		expect(b?.decision).toBe("allow");
+		expect(b?.warnings?.[0]).toContain("another session");
 	});
 });

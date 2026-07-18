@@ -271,6 +271,19 @@ export interface GuardRulesConfig {
 	 *  are always allowed; the mandatory tmp-secrets scan is separate and not
 	 *  governed by this mode. See `evaluator/scratchpad-write-guard.ts`. */
 	scratchpad_guard?: { code_write_mode?: "block" | "warn" | "off" };
+	/** Cross-file spec fact ledger + drift warnings on markdown edits
+	 *  (docs/design/spec-audit-runtime-checks.md §3.2). Default on. */
+	spec_checks?: { enabled?: boolean };
+	/** Edit-contract checks (edit-contract-hardening.md LG-3/LG-4).
+	 *  `stale_read` (default "warn"): content-hash drift warning when an edit
+	 *  targets a file changed since this session last displayed it.
+	 *  `blind_edit` (default "measure"): edits anchored on never-displayed
+	 *  lines — "measure" records recurrence rows only; "warn" also surfaces
+	 *  the warning; "off" disables. Promotion path is measured FP rate. */
+	edit_contract?: {
+		stale_read?: "warn" | "off";
+		blind_edit?: "measure" | "warn" | "off";
+	};
 	/** SessionEnd scratchpad archive sweep (DEFAULT ON) — content-addressed
 	 *  copy of the session scratchpad into `.interlinked/scratchpad-archive/`
 	 *  before the OS purges it. See `scratchpad-archive.ts`. */
@@ -348,6 +361,11 @@ export interface PerEditCoverageConfig {
 	 * pure no-op and behavior is identical to the coverage-only gate.
 	 */
 	block_on_test_failure?: boolean;
+	/** Flake double-run (DW P0.2): opt-in, default off. A test-file edit re-runs
+	 *  the affected scoped suite at PostToolUse; a pass↔fail flip or a changed
+	 *  failing-set fires a non-blocking `[interlinked:flake]` warning (doubles
+	 *  latency — hence opt-in). See `evaluator/test-flake-guard.ts`. */
+	flake_check?: boolean;
 	/**
 	 * CRAP (Change Risk Anti-Patterns) per-edit enforcement. **Default: true
 	 * (opt-out).** CRAP(fn) = cyclomatic² · (1 − coverage)³ + cyclomatic — a
@@ -365,20 +383,29 @@ export interface PerEditCoverageConfig {
 	 */
 	block_on_crap?: boolean;
 	/**
-	 * **Debt mode (pair-scoped TDD).** Default: false (opt-in). When on, the
-	 * uncovered-added-line block is replaced by the coverage-debt lifecycle
-	 * (`coverage-debt.ts` + `obligation-ledger-io.ts`): a first uncovered edit
-	 * OPENS debt and is ALLOWED; the agent may keep editing that source or its
-	 * companion test freely; an edit that wanders to an unrelated file while debt
-	 * is open is BLOCKED. Discharge is optimistic on a companion-test edit;
-	 * `commit-gate.ts` stays the ground-truth backstop. See
+	 * **Debt mode (pair-scoped TDD).** **Default: true since 2026-06 (opt-OUT
+	 * — shipped in `rules/default-config.ts`; this doc previously said opt-in,
+	 * a doc↔code drift fixed 2026-07-17).** When on, the uncovered-added-line
+	 * block is replaced by the coverage-debt lifecycle (`coverage-debt.ts` +
+	 * `obligation-ledger-io.ts`): a first uncovered edit OPENS debt and is
+	 * ALLOWED; the agent may keep editing that source or its companion test
+	 * freely; an edit that wanders to an unrelated file while debt is open is
+	 * BLOCKED. Ownership-scoped (2026-07-17): only debts the SAME session
+	 * opened can block its wander — another session's debt surfaces as a
+	 * once-per-session heads-up note instead. Discharge is optimistic on a
+	 * companion-test edit; `commit-gate.ts` stays the ground-truth backstop.
+	 * Setting false restores strict uncovered/red blocking (repo-owner lever;
+	 * deliberately NOT advertised in the block message). See
 	 * `docs/design/coverage-debt-tdd.md`.
 	 */
 	debt_mode?: boolean;
 	/**
 	 * Max concurrently-open coverage debts before an out-of-pair edit blocks
 	 * (only consulted when {@link debt_mode} is on). **Default: 1** (strict pair
-	 * rule); a larger value relaxes toward the commit backstop.
+	 * rule); a larger value relaxes toward the commit backstop. Counts only the
+	 * CURRENT session's open debts (ownership scoping, 2026-07-17) — foreign
+	 * debts inform but never wall. This is the scoped escape the wander block
+	 * message names.
 	 */
 	debt_wip_limit?: number;
 	/**
@@ -430,6 +457,12 @@ export interface VerificationStopChecksConfig {
 	warn_stubs_introduced: boolean;
 	warn_fixture_leaks: boolean;
 	warn_unresolved_red: boolean;
+	/** Stop nudge for outstanding cross-file spec drift (ledger findings
+	 *  captured at PostToolUse; optional for config back-compat, default on). */
+	warn_spec_drift?: boolean;
+	/** Stop nudge for ingested review findings with neither a touching edit
+	 *  nor an ack (optional for config back-compat, default on). */
+	warn_review_findings?: boolean;
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /

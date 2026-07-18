@@ -190,6 +190,15 @@ export function mergeLocalOverrides(
 	// guard-rules.local.json; classified at introduction so the override works
 	// on day one.
 	mergeOptionalSection(config, local, "scratchpad_guard");
+	mergeOptionalSection(config, local, "spec_checks");
+	// Edit-contract checks (LG-3/LG-4 warn/measure tiers) — classified at
+	// introduction so `{"edit_contract": {"stale_read": "off"}}` in
+	// guard-rules.local.json works on day one.
+	mergeOptionalSection(config, local, "edit_contract");
+	// verification_stop_checks: default-config documents "flip per-kind to
+	// false in guard-rules.local.json", so the section MUST be locally
+	// overridable (deep-round #4 — the switch was previously unreachable).
+	mergeOptionalSection(config, local, "verification_stop_checks");
 	// SessionEnd scratchpad archive (default ON) — local can disable or tune
 	// the caps; shallow-merged so a partial override keeps the other knobs.
 	mergeOptionalSection(config, local, "scratchpad_archive");

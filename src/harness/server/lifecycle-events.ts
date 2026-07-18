@@ -30,6 +30,7 @@ import {
 } from "../../lib/settings-validator.js";
 import type { CohortManager } from "../cohort.js";
 import { scanUserPrompt } from "../content-scanner/prompt-scan.js";
+import { buildEditMechanicsStopNudge } from "../edit-mechanics-stop.js";
 import { resetProjectSetupWarningsCache } from "../evaluator/pre-tool.js";
 import { computeEffectivenessSummary } from "../feedback-effectiveness.js";
 import { refreshPriorityIfStale as refreshFilePriorityIfStale } from "../file-priority.js";
@@ -43,6 +44,7 @@ import {
 	detectPlanDrift,
 	formatPlanDriftWarning,
 } from "../plan-drift.js";
+import { recordHarnessMissed } from "../recurrence.js";
 import { runSessionEndScratchpadArchive } from "../scratchpad-archive.js";
 import {
 	formatSequenceFinding,
@@ -56,6 +58,7 @@ import {
 	type SessionTracker,
 } from "../session-state.js";
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
+import { clearArchive } from "../trajectory/fingerprint-archive.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import { captureAgentEvent } from "./agent-event-capture.js";
@@ -65,11 +68,16 @@ import {
 	handleSkillList,
 	handleSubagentStop,
 } from "./lifecycle-events-handlers.js";
+import * as lifecyclePersist from "./lifecycle-persist.js";
 import {
 	buildCommitCadenceNudge,
 	buildVerificationStopWarnings,
 } from "./lifecycle-stop-warnings.js";
 import type { ServerRuntime } from "./runtime-context.js";
+import { runSessionEndJobs, runSessionEndResourcePlan } from "./session-end-batch.js";
+import { writeSessionEndEvidence } from "./session-end-evidence.js";
+import { runSessionEndHeavyJobs } from "./session-end-heavy-jobs.js";
+import { readHeavyReports } from "./session-start-heavy-reports.js";
 
 // Re-exported so `import { resolveParentSessionId } from "./lifecycle-events.js"`
 // keeps working for existing consumers/tests after the helper move.
@@ -162,6 +170,17 @@ async function handleSessionStart(
 	const { cohort, log } = ctx;
 	cohort.agentJoined(event);
 	log(`Agent joined: ${event.agent_name || event.session_id} (${event.agent_source})`);
+	// Surface any completed SessionEnd heavy-job reports (fuzz-smoke failures,
+	// bench regressions) as SessionStart context — never a mid-session surprise.
+	// Fuzz failures are also recorded as a harness_missed recurrence.
+	const heavyWarnings = readHeavyReports(ctx.cwd, (failed, files) => {
+		recordHarnessMissed({
+			signature: "fuzz_smoke_failure",
+			check_id: "fuzz_smoke",
+			message: `${failed} property/fuzz assertion(s) failed under elevated numRuns: ${files.join(", ")}`,
+			cwd: ctx.cwd,
+		});
+	});
 	// Recency-weighted check depth (Mythos Phase 4): refresh the
 	// per-file priority map from git log if the cache is stale.
 	// Cold files (>180 days unchanged) skip advisory checks at
@@ -228,12 +247,12 @@ async function handleSessionStart(
 			log(
 				`Auto-stripped ${stripResult.totalStripped} malformed permission rule(s); audit at ${auditPath}`,
 			);
-			return { decision: "allow", warnings: [warning] };
+			return { decision: "allow", warnings: [...heavyWarnings, warning] };
 		}
 	} catch (err) {
 		log(`Permission-rule auto-strip failed (non-fatal): ${err}`);
 	}
-	return null;
+	return heavyWarnings.length > 0 ? { decision: "allow", warnings: heavyWarnings } : null;
 }
 
 /** SessionEnd narrow body — defensive cleanup only.
@@ -265,8 +284,21 @@ function handleSessionEnd(ctx: ServerRuntime, event: HarnessEvent): HarnessDecis
 		rules: ctx.rules,
 		log: ctx.log,
 	});
+	// Good-citizen resource plan + fire-and-forget background jobs (job 4:
+	// recurrence scan). Compute BEFORE state removal so the cohort count is
+	// accurate; the jobs self-skip when the governor defers or env opts out.
+	const resourcePlan = runSessionEndResourcePlan(ctx, event);
+	if (resourcePlan) {
+		runSessionEndJobs(ctx, resourcePlan);
+		runSessionEndHeavyJobs(ctx, event, resourcePlan); // fuzz-smoke + bench (run-if-exists)
+	}
+	// Evidence bundle (job 5): honest closeout from the session's observed
+	// signals — written BEFORE removal, while the counts are still present.
+	const endedSession = sessions.get(event.session_id);
+	if (endedSession) writeSessionEndEvidence(ctx.cwd, endedSession);
 	sessions.remove(event.session_id);
 	ctx.asyncFindings.clearSession(event.session_id);
+	clearArchive(ctx.cwd, event.session_id);
 	deleteLiveSnapshot(ctx.cwd, event.session_id);
 	ctx.classifierSessions.delete(event.session_id);
 	ctx.autoCoordStates.delete(event.session_id);
@@ -377,6 +409,9 @@ function buildStopWarnings(
 	const warnings: string[] = [];
 	const cadenceWarning = buildCommitCadenceNudge(ctx, event, session);
 	if (cadenceWarning !== null) warnings.push(cadenceWarning);
+	// LG-5 edit-mechanics reflection — doomed-anchor/rescue/staleness summary.
+	const editMechanicsWarning = buildEditMechanicsStopNudge(session);
+	if (editMechanicsWarning !== null) warnings.push(editMechanicsWarning);
 	for (const w of buildVerificationStopWarnings(ctx, event, session)) {
 		warnings.push(w);
 	}
@@ -406,93 +441,8 @@ function buildStopWarnings(
 	return warnings;
 }
 
-/** Sanitize the session_id, build the trajectory.json path under
- *  `.interlinked/sessions/`, containment-check it, and write the
- *  serialized trajectory + turn-summary + feedback-effectiveness.
- *
- *  Async because the trajectory write is real disk I/O on the daemon's
- *  event loop and shouldn't block other concurrent hook evaluations.
- *  Failure is non-fatal — the catch arm logs and swallows so a transient
- *  write failure doesn't cascade into a missed Stop reply.
- *
- *  SECURITY: event.session_id arrives over the Unix socket as
- *  arbitrary JSON-parsed data. Without sanitization, a payload like
- *  "../../../.config/target" would escape sessDir via path.join (which
- *  does not contain traversal). We both sanitize (whitelist charset +
- *  length cap) and containment-check the resolved path before writing.
- *  The source-text assertions in lifecycle-events.test.ts pin both
- *  halves in place — do NOT remove sanitizeSessionId() or the
- *  resolve()/resolvedDir + sep check.
- */
-async function persistSessionTrajectory(opts: {
-	ctx: ServerRuntime;
-	event: HarnessEvent;
-	session: SessionTrajectory;
-	turnSummary: ReturnType<typeof buildTurnEndSummary>;
-}): Promise<void> {
-	const { ctx, event, session, turnSummary } = opts;
-	const trajectory = ctx.sessions.serialize(event.session_id);
-	if (!trajectory) return;
-	try {
-		const sessDir = join(ctx.cwd, ".interlinked", "sessions");
-		// `mkdir({ recursive: true })` is idempotent — it does not throw
-		// when the directory already exists, so a prior `existsSync`
-		// gate would be redundant.
-		await mkdir(sessDir, { recursive: true });
-		const safeId = sanitizeSessionId(event.session_id);
-		if (!safeId) {
-			throw new Error("invalid session_id: no safe characters");
-		}
-		const targetPath = join(sessDir, `${safeId}.trajectory.json`);
-		const resolvedDir = resolve(sessDir);
-		const resolvedTarget = resolve(targetPath);
-		if (
-			resolvedTarget !== resolvedDir &&
-			!resolvedTarget.startsWith(resolvedDir + sep)
-		) {
-			throw new Error(
-				`refusing to write trajectory outside sessions dir: ${resolvedTarget}`,
-			);
-		}
-		await writeFile(
-			targetPath,
-			JSON.stringify(
-				{
-					...trajectory,
-					turn_summary: turnSummary,
-					feedback_effectiveness: computeEffectivenessSummary(session),
-				},
-				null,
-				2,
-			),
-		);
-		ctx.log(`Session trajectory saved: ${event.session_id}`);
-	} catch (err) {
-		ctx.log(
-			`Failed to save trajectory (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-		);
-	}
-}
-
-/** Per-Stop cleanup: cohort departure, reservation release, in-memory
- *  session removal, async-findings clear, live-snapshot deletion,
- *  classifier + auto-coord state drop. Safe to re-run — SessionEnd's
- *  narrow body re-runs the same removals as a safety net for the edge
- *  case where Stop didn't fire before the session terminated. */
-function cleanupSessionState(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	session: SessionTrajectory,
-): void {
-	const { cohort, sessions, reservations } = ctx;
-	cohort.agentLeft(event);
-	reservations.releaseAllForAgent(event.agent_name || session.agent_name, cohort);
-	sessions.remove(event.session_id);
-	ctx.asyncFindings.clearSession(event.session_id);
-	// Pair the trajectory.json archive with live-snapshot deletion —
-	// once the session is permanently archived, the live snapshot is
-	// noise that would otherwise be picked up by the startup sweep.
-	deleteLiveSnapshot(ctx.cwd, event.session_id);
-	ctx.classifierSessions.delete(event.session_id);
-	ctx.autoCoordStates.delete(event.session_id);
-}
+// persistSessionTrajectory + cleanupSessionState moved VERBATIM to
+// lifecycle-persist.ts (line-cap decomposition, 2026-07-17); the source-text
+// security pins moved to lifecycle-persist.test.ts. Local bindings preserved
+// so handleStop's call sites stay byte-stable.
+const { persistSessionTrajectory, cleanupSessionState } = lifecyclePersist;

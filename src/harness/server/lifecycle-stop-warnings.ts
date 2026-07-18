@@ -19,7 +19,13 @@ import {
 	detectDeadOnArrival,
 	formatDeadOnArrivalWarning,
 } from "../dead-on-arrival.js";
+import { formatDebtEvasionStopLine } from "../debt-evasion.js";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
+import {
+	formatReviewFindingsWarning,
+	formatSpecDriftWarning,
+} from "../spec-stop-checks.js";
+import { formatWorkaroundStopLine } from "../trajectory/block-fingerprint-session.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
 import {
 	detectUntestedExports,
@@ -41,6 +47,7 @@ import {
 	formatVerifyNotRunWarning,
 	readDeferredCoverageObligations,
 } from "../verification-stop-checks.js";
+import { openReviewFindings } from "./review-reconcile-phase.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 
 /** TDD-cycle state value that signals "test went green earlier this session
@@ -137,6 +144,12 @@ export function buildVerificationStopWarnings(
 		vsc.warn_fixture_leaks ? checkFixtureLeaks(ctx, event) : null,
 	);
 	pushIfNotNull(warnings, checkTddRegression(ctx, session));
+	// Always-on like the tdd-regression nudge: fires only when the session ran
+	// inline-exec (node -e / python -c) AFTER a debt-focus block (debt-evasion.ts).
+	pushIfNotNull(warnings, formatDebtEvasionStopLine(session));
+	// P1 trajectory continuity: fires only when a refused action resurfaced
+	// through another channel this session (block-fingerprint-session.ts).
+	pushIfNotNull(warnings, formatWorkaroundStopLine(session));
 	pushIfNotNull(
 		warnings,
 		vsc.warn_unresolved_red ? checkUnresolvedRed(ctx, session) : null,
@@ -150,6 +163,8 @@ export function buildVerificationStopWarnings(
 	pushIfNotNull(warnings, checkUntestedExports(ctx, event, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
 	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
+	pushIfNotNull(warnings, checkSpecDrift(ctx, session));
+	pushIfNotNull(warnings, checkReviewFindings(ctx));
 	return warnings;
 }
 
@@ -415,6 +430,28 @@ function checkDeadOnArrival(
  *  docs:check / `interlinked verify` wasn't run, so the landing/README
  *  `<!-- gen:* -->` counters may have drifted. CI's docs:check and the
  *  pre-push gate block on this; surface it at Stop instead of at push. */
+/** Outstanding cross-file spec drift stashed by the spec-ledger phase
+ *  (docs/design/spec-audit-runtime-checks.md §3.5). */
+function checkSpecDrift(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+	const vsc = ctx.rules.verification_stop_checks;
+	if (!vsc?.enabled || vsc.warn_spec_drift === false) return null;
+	return formatSpecDriftWarning(session.spec_drift_outstanding);
+}
+
+/** Ingested review findings never touched or acked (memo §4). The corpus
+ *  read is Stop-latency-grade (tree scans are allowed at Stop). */
+function checkReviewFindings(ctx: ServerRuntime): string | null {
+	const vsc = ctx.rules.verification_stop_checks;
+	if (!vsc?.enabled || vsc.warn_review_findings === false) return null;
+	const open = openReviewFindings(ctx.cwd).map((f) => ({
+		id: f.id,
+		file: f.file,
+		line: f.line,
+		message: f.message,
+	}));
+	return formatReviewFindingsWarning(open);
+}
+
 function checkDocMarkerDrift(ctx: ServerRuntime, session: SessionTrajectory): string | null {
 	const docSourcesEdited = countDocFactSourcesEdited(session.files_written);
 	const warning = formatDocMarkerDriftWarning({

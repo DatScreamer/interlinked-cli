@@ -91,3 +91,61 @@ describe("matcher reconciliation — Claude Code", () => {
 		expect(second.hooks.PostToolUse[0].matcher).toBe("");
 	});
 });
+
+// ===========================================
+// Hook timeout policy — Claude Code (2026-07-17 per-edit-tests directive)
+// ===========================================
+// PreToolUse must outlast the per-edit coverage overlay and PostToolUse the
+// full quality pass; Claude Code's 60s default killed the hook mid-verdict
+// after the run's cost was already paid. Fresh installs carry the timeouts;
+// re-running installation upgrades entries written before timeouts existed.
+
+describe("hook timeout policy — Claude Code", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "hook-timeout-"));
+		execSync("git init", { cwd: tmp, stdio: "ignore" });
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("a fresh install grants PreToolUse 240s and PostToolUse 120s", () => {
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const s = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
+		expect(s.hooks.PreToolUse[0].hooks[0].timeout).toBe(240);
+		expect(s.hooks.PostToolUse[0].hooks[0].timeout).toBe(120);
+	});
+
+	it("events without a policy entry keep the client default (no timeout field)", () => {
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const s = JSON.parse(readFileSync(join(tmp, ".claude", "settings.json"), "utf-8"));
+		expect(s.hooks.SessionStart[0].hooks[0].timeout).toBeUndefined();
+	});
+
+	it("re-running installation upgrades a pre-timeout-era entry in place", () => {
+		const settingsDir = join(tmp, ".claude");
+		mkdirSync(settingsDir, { recursive: true });
+		writeFileSync(
+			join(settingsDir, "settings.json"),
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [
+						{
+							matcher: "",
+							hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }],
+						},
+					],
+				},
+			}),
+		);
+
+		installAllClaudeHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+
+		const s = JSON.parse(readFileSync(join(settingsDir, "settings.json"), "utf-8"));
+		expect(s.hooks.PreToolUse).toHaveLength(1);
+		expect(s.hooks.PreToolUse[0].hooks[0].timeout).toBe(240);
+	});
+});

@@ -35,6 +35,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { evaluateEditContractPhase } from "./edit-contract-phase.js";
 import {
 	drainPendingSessionWarnings,
 	evaluateCurlMcpPhase,
@@ -60,7 +61,6 @@ import {
 import {
 	evaluateBaselineIntegrityGate,
 	evaluateConfigLooseningGate,
-	evaluateEditOldStringGuard,
 	evaluateGitScopeGate,
 	evaluateManifestEditGuard,
 	evaluateMetaTestWrapper,
@@ -77,6 +77,7 @@ import {
 } from "./pre-tool-phases.js";
 import { evaluateDestructiveRules } from "./pre-tool-rules.js";
 import { evaluateScratchpadWriteGuard } from "./scratchpad-write-guard.js";
+import { evaluateSpecPreGates } from "./spec-pre-gates.js";
 
 // `resetProjectSetupWarningsCache` lives in pre-tool-helpers.ts (next to the
 // cache it invalidates) but is re-exported here because server.ts and
@@ -86,6 +87,25 @@ export { resetProjectSetupWarningsCache } from "./pre-tool-helpers.js";
 /** Files that have already had git blame injected this session (dedup per session ID) */
 const _blameInjectedFiles = new Map<string, Set<string>>();
 
+
+/** Loop-level handling of one phase's decision. Terminal decisions — block /
+ *  ask, or an allow CARRYING `updated_input` (a rewrite the runner must
+ *  apply) — short-circuit the pipeline and are returned. A bare gate-level
+ *  allow means "this gate is satisfied": its warnings merge into the shared
+ *  array and evaluation continues (returns null). Found live 2026-07-15: the
+ *  TDD gate's debt-mode allow was treated as terminal, so a brand-new
+ *  test-less source file skipped the ~23 phases after it — line cap,
+ *  cyclomatic gate, content checks, auto-reservation, taint — entirely. */
+function phaseDecisionOutcome(
+	decision: HarnessDecision,
+	warnings: string[],
+): HarnessDecision | null {
+	if (decision.decision !== "allow" || decision.updated_input) return decision;
+	if (decision.warnings && decision.warnings !== warnings) {
+		warnings.push(...decision.warnings.filter((w) => !warnings.includes(w)));
+	}
+	return null;
+}
 
 /** Public API — consumed by server.ts via the root evaluator.ts re-export.
  *  This is the main PreToolUse decision entry point; every hook call runs
@@ -180,8 +200,10 @@ export function evaluatePreToolUse(
 		() => evaluateFileDumpPhase(toolName, toolInput, warnings),
 		// Pipe-to-bash / exfiltration / dropper-staging.
 		() => evaluateExfilPhase(event, session, graph, toolName, toolInput, warnings, ctx),
-		// Edit tool — verify old_string exists.
-		() => evaluateEditOldStringGuard(toolName, toolInput, warnings),
+		// Edit contract (LG-1…LG-5): stale-read warning, blind-edit provenance,
+		// apply_patch context validation, and the doomed-Edit/MultiEdit block
+		// with one-round-trip rescue. Composes the old old_string guard.
+		() => evaluateEditContractPhase(event, session, rules, toolName, toolInput, warnings),
 		// Write/Edit content validation.
 		() => evaluateWriteContent(event, session, rules, toolName, toolInput, warnings, ctx),
 		// WebFetch — exfiltration and safety.
@@ -230,6 +252,9 @@ export function evaluatePreToolUse(
 		// Pre-checks (tail): line-cap / stale-branch / dirty-tree / large-file /
 		// concurrent-edit.
 		() => evaluatePreChecksTail(event, session, sessions, toolName, toolInput, warnings),
+		// Spec pre-gates: markdown declared-marker "ask" + anchor-removal /
+		// introduced-drift warnings (was imported but never wired — sol-max #1).
+		() => evaluateSpecPreGates(event, toolName, rules, warnings),
 		// Drain pending session warnings (warning-only).
 		() => {
 			drainPendingSessionWarnings(session, warnings);
@@ -257,7 +282,9 @@ export function evaluatePreToolUse(
 
 	for (const phase of phases) {
 		const decision = phase();
-		if (decision) return decision;
+		if (!decision) continue;
+		const terminal = phaseDecisionOutcome(decision, warnings);
+		if (terminal) return terminal;
 	}
 
 	return {

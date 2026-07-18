@@ -214,6 +214,18 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		warn_stubs_introduced: true,
 		warn_fixture_leaks: true,
 		warn_unresolved_red: true,
+		// warn_spec_drift: cross-file spec-fact drift (count/range claims,
+		// declared fact markers, cross-file anchors) still outstanding at
+		// Stop — captured by the spec-ledger phase at PostToolUse.
+		warn_spec_drift: true,
+		// warn_review_findings: ingested review findings (interlinked
+		// findings ingest) with neither a touching edit nor an ack.
+		warn_review_findings: true,
+	},
+	// Cross-file spec fact ledger (docs/design/spec-audit-runtime-checks.md
+	// §3.2): markdown edits get drift warnings vs the repo-wide fact ledger.
+	spec_checks: {
+		enabled: true,
 	},
 	content_scanner: {
 		// Off by default — local runtime needs `pip install opf`; users opt in via

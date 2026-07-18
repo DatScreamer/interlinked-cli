@@ -671,3 +671,20 @@ describe("coverageLanguageForPath — the ONE extension→language table", () =>
 		expect(coverageLanguageForPath("src/lib.rs")).toBeNull();
 	});
 });
+
+describe("perEditBudgetEnv (P0.1 property budget)", () => {
+	const base: CoverageRunOpts = { projectRoot: "/repo", coverageDir: "/repo/.cov" };
+
+	it("caps fast-check numRuns for a scoped (per-edit) run", async () => {
+		const { perEditBudgetEnv } = await import("./coverage-runner.js");
+		expect(perEditBudgetEnv({ ...base, selectedTests: ["a.test.ts"] })).toEqual({
+			INTERLINKED_PROPERTY_NUMRUNS: "25",
+		});
+	});
+
+	it("returns undefined for a full (unscoped) run — keeps default numRuns", async () => {
+		const { perEditBudgetEnv } = await import("./coverage-runner.js");
+		expect(perEditBudgetEnv(base)).toBeUndefined();
+		expect(perEditBudgetEnv({ ...base, selectedTests: [] })).toBeUndefined();
+	});
+});

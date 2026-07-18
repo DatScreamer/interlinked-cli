@@ -1529,22 +1529,74 @@ describe("grep acceleration substitution", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. Index-status warning (substitution off — the default)
+// 12. Index-status warning (only for an enabled, loaded index)
 // ---------------------------------------------------------------------------
 
 describe("index-status warning", () => {
-	it("warns there is no index for a search tool when trigramIndex is null", async () => {
+	function loadedIndexCtx(overrides: Record<string, unknown> = {}): ServerRuntime {
+		return makeCtx({
+			trigramIndex: { baseCommit: "abc1234def", isDirty: false },
+			rules: makeRules({ grep_acceleration: { substitution_enabled: true } }),
+			...overrides,
+		});
+	}
+
+	it("does not suggest building an index when trigramIndex is null", async () => {
+		const ctx = makeCtx({
+			rules: makeRules({ grep_acceleration: { substitution_enabled: true } }),
+		});
 		const decision = await runPreToolPipeline(
-			makeCtx(),
+			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
 			makeSession(),
 		);
-		expect(decision.warnings?.some((w) => w.includes("No search index"))).toBe(true);
+		expect(decision.warnings ?? []).not.toContainEqual(
+			expect.stringContaining("[interlinked:index]"),
+		);
+		expect(ctx.indexWarningSent.has("s")).toBe(false);
+		expect(mFindRg).not.toHaveBeenCalled();
+	});
+
+	it("does not emit index status when substitution is disabled", async () => {
+		mFindRg.mockReturnValue(null);
+		const ctx = makeCtx({
+			trigramIndex: { baseCommit: "abc1234def", isDirty: false },
+		});
+		const decision = await runPreToolPipeline(
+			ctx,
+			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
+			makeSession(),
+		);
+		expect(decision.warnings ?? []).not.toContainEqual(
+			expect.stringContaining("[interlinked:index]"),
+		);
+		expect(ctx.indexWarningSent.has("s")).toBe(false);
+		expect(mFindRg).not.toHaveBeenCalled();
+	});
+
+	it("does not emit index status for Bash searches outside the indexed project", async () => {
+		mFindRg.mockReturnValue(null);
+		for (const command of [
+			"cd /private/tmp/clone && rg foo .",
+			"rg foo /private/tmp/clone",
+		]) {
+			const ctx = loadedIndexCtx();
+			const decision = await runPreToolPipeline(
+				ctx,
+				ev({ tool_name: "Bash", tool_input: { command } }),
+				makeSession(),
+			);
+			expect(decision.warnings ?? []).not.toContainEqual(
+				expect.stringContaining("[interlinked:index]"),
+			);
+			expect(ctx.indexWarningSent.has("s")).toBe(false);
+		}
+		expect(mFindRg).not.toHaveBeenCalled();
 	});
 
 	it("warns when index loaded but ripgrep is missing", async () => {
 		mFindRg.mockReturnValue(null);
-		const ctx = makeCtx({ trigramIndex: { baseCommit: "abc1234def", isDirty: false } });
+		const ctx = loadedIndexCtx();
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
@@ -1553,12 +1605,23 @@ describe("index-status warning", () => {
 		expect(decision.warnings?.some((w) => w.includes("ripgrep not installed"))).toBe(true);
 	});
 
+	it("keeps index status for an applicable in-project Bash search", async () => {
+		mFindRg.mockReturnValue(null);
+		const decision = await runPreToolPipeline(
+			loadedIndexCtx(),
+			ev({ tool_name: "Bash", tool_input: { command: "rg foo src/" } }),
+			makeSession(),
+		);
+		expect(decision.warnings?.some((w) => w.includes("ripgrep not installed"))).toBe(true);
+	});
+
 	it("warns the index is N commits behind HEAD when index + rg present", async () => {
 		mFindRg.mockReturnValue("/usr/bin/rg");
 		mExecSync
-			.mockReturnValueOnce("newhead0000\n") // rev-parse HEAD
-			.mockReturnValueOnce("7\n"); // rev-list --count
-		const ctx = makeCtx({ trigramIndex: { baseCommit: "abc1234def", isDirty: false } });
+			.mockReturnValueOnce("newhead0000\n") // accelerator freshness: rev-parse HEAD
+			.mockReturnValueOnce("newhead0000\n") // status freshness: rev-parse HEAD
+			.mockReturnValueOnce("7\n"); // status freshness: rev-list --count
+		const ctx = loadedIndexCtx();
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
@@ -1570,7 +1633,7 @@ describe("index-status warning", () => {
 	it("emits no freshness warning when HEAD matches baseCommit", async () => {
 		mFindRg.mockReturnValue("/usr/bin/rg");
 		mExecSync.mockReturnValueOnce("abc1234def\n");
-		const ctx = makeCtx({ trigramIndex: { baseCommit: "abc1234def", isDirty: false } });
+		const ctx = loadedIndexCtx();
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
@@ -1584,7 +1647,7 @@ describe("index-status warning", () => {
 		mExecSync.mockImplementation(() => {
 			throw new Error("git fail");
 		});
-		const ctx = makeCtx({ trigramIndex: { baseCommit: "abc1234def", isDirty: false } });
+		const ctx = loadedIndexCtx();
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
@@ -1597,7 +1660,9 @@ describe("index-status warning", () => {
 	it("emits no freshness warning when the index has no baseCommit", async () => {
 		mFindRg.mockReturnValue("/usr/bin/rg");
 		mExecSync.mockReturnValueOnce("newhead0000\n");
-		const ctx = makeCtx({ trigramIndex: { baseCommit: "", isDirty: false } });
+		const ctx = loadedIndexCtx({
+			trigramIndex: { baseCommit: "", isDirty: false },
+		});
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
@@ -1613,13 +1678,14 @@ describe("index-status warning", () => {
 		// Fresh decision object per call so the second invocation doesn't inherit
 		// the first invocation's mutated `warnings` array.
 		mEvaluate.mockImplementation(() => ({ decision: "allow" }));
-		const ctx = makeCtx();
+		mFindRg.mockReturnValue(null);
+		const ctx = loadedIndexCtx();
 		const first = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
 			makeSession(),
 		);
-		expect(first.warnings?.some((w) => w.includes("No search index"))).toBe(true);
+		expect(first.warnings?.some((w) => w.includes("ripgrep not installed"))).toBe(true);
 		expect(ctx.indexWarningSent.has("s")).toBe(true);
 		const second = await runPreToolPipeline(
 			ctx,
@@ -1630,7 +1696,8 @@ describe("index-status warning", () => {
 	});
 
 	it("uses the 'anonymous' dedup key when session_id is empty", async () => {
-		const ctx = makeCtx();
+		mFindRg.mockReturnValue(null);
+		const ctx = loadedIndexCtx();
 		await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" }, session_id: "" }),
@@ -1640,7 +1707,8 @@ describe("index-status warning", () => {
 	});
 
 	it("does not emit the index warning for a non-search tool", async () => {
-		const ctx = makeCtx();
+		mFindRg.mockReturnValue(null);
+		const ctx = loadedIndexCtx();
 		const decision = await runPreToolPipeline(
 			ctx,
 			ev({ tool_name: "Read", tool_input: { file_path: "x" } }),
@@ -1650,15 +1718,16 @@ describe("index-status warning", () => {
 		expect(ctx.indexWarningSent.has("s")).toBe(false);
 	});
 
-	it("merges the no-index warning into an existing warnings array", async () => {
+	it("merges an applicable index warning into an existing warnings array", async () => {
 		mEvaluate.mockReturnValue({ decision: "allow", warnings: ["PRE"] });
+		mFindRg.mockReturnValue(null);
 		const decision = await runPreToolPipeline(
-			makeCtx(),
+			loadedIndexCtx(),
 			ev({ tool_name: "Grep", tool_input: { pattern: "foo" } }),
 			makeSession(),
 		);
 		expect(decision.warnings?.[0]).toBe("PRE");
-		expect(decision.warnings?.some((w) => w.includes("No search index"))).toBe(true);
+		expect(decision.warnings?.some((w) => w.includes("ripgrep not installed"))).toBe(true);
 	});
 });
 

@@ -383,7 +383,7 @@ export function checkLargeFileLineCountWrite(
 	if (!projection) return null;
 	const { before, after, content } = projection;
 
-	if (!isCappableFile({ filePath, content })) return null;
+	if (!isCappableFile({ filePath, content, root: cwd })) return null;
 
 	const cap = maxLinesFor(cwd);
 	if (after <= cap) return null; // result is within the cap
@@ -416,6 +416,7 @@ export function checkLargeFileLineCountWrite(
 			`${after - cap} over the ${cap}-line cap for hand-written code files. ${alreadyOver}` +
 			"Extract a cohesive section into its own module first. This line cap is per-repo " +
 			"configurable: `interlinked caps set lines <n>` (`caps explain lines` for why); " +
-			"generated, test, and .d.ts files are exempt. List: large-files-baseline.json.",
+			"generated, test, .d.ts, and non-code files (docs/markdown/HTML/data) are exempt. " +
+			"List: large-files-baseline.json.",
 	};
 }

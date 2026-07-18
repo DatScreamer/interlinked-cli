@@ -47,6 +47,7 @@ export {
 	checkTlsVerifyDisabled,
 	checkUnsafeOptionalChaining,
 	checkWeakHash,
+	checkWeakRandom,
 } from "./checks/agent-safety.js";
 // ---- agent-safety-advanced ----
 export {
@@ -61,6 +62,11 @@ export {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./checks/agent-safety-advanced.js";
+// ---- archive-extract ----
+export { checkArchiveExtractTraversal } from "./checks/archive-extract.js";
+// ---- assert-side-effects (only the tautology detector is wired; the
+//      python/C/java assert-side-effect siblings in that file remain unwired) ----
+export { checkPythonAssertTautology } from "./checks/assert-side-effects.js";
 // ---- b-series ----
 export {
 	checkAssertionFreeTests,
@@ -236,9 +242,12 @@ export {
 	checkExcessiveUseState,
 	checkInlineObjectProps,
 } from "./checks/react.js";
+// ---- redos (catastrophic-backtracking) ----
+export { checkRedosCatastrophic } from "./checks/redos-catastrophic.js";
 // ---- return-types ----
 export { checkMissingReturnTypes } from "./checks/return-types.js";
 // ---- sequential-awaits ----
+export { checkRustTestDeterminism } from "./checks/rust-test-determinism.js";
 export { checkSequentialAwaits } from "./checks/sequential-awaits.js";
 // ---- shared helpers ----
 export type { InlineMatch } from "./checks/shared.js";
@@ -353,6 +362,7 @@ export {
 	checkMarshalLoad,
 	checkMixedSyncAsyncFileApi,
 	checkMutexLockUnwrap,
+	checkNaiveDatetime,
 	checkNodeCreateCipher,
 	checkNumericComparisonChain,
 	checkOsSystemTainted,

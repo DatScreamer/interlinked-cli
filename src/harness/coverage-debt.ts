@@ -15,71 +15,20 @@
 // re-check live in the call-site glue; this is the part that holds the rule and
 // is exhaustively unit-tested (including the canonical edit pairs).
 
+import { attachWarning, foreignDebtNote } from "./coverage-debt-foreign.js";
+import {
+	expectedCompanionTest,
+	expectedSourceOfTest,
+	inSamePair,
+	pairStem,
+	TEST_INFIX_RX,
+} from "./coverage-pairing.js";
 import { type Obligation, type ObligationTxn, obligationId } from "./obligations.js";
 import type { HarnessDecision } from "./types.js";
 
-/**
- * The logical-unit key shared by a source file and its co-located test: strip a
- * `.test`/`.spec` infix and the extension. `src/foo.ts` and `src/foo.test.ts`
- * both map to `src/foo`; `src/bar.ts` does not. Two edits are "in the same pair"
- * iff they share a stem.
- */
-export function pairStem(relPath: string): string {
-	return relPath.replace(/\.(test|spec)\.[cm]?[jt]sx?$/i, "").replace(/\.[cm]?[jt]sx?$/i, "");
-}
-
-const TEST_INFIX_RX = /\.(test|spec)\.[cm]?[jt]sx?$/i;
-const CODE_EXT_RX = /\.[cm]?[jt]sx?$/i;
-
-/** Split a path into (directory, basename-stem, isTest). A trailing `/__tests__`
- *  segment is stripped from the directory so an umbrella test under `__tests__/`
- *  resolves to the same directory as the sources it covers. */
-function pairParts(relPath: string): { dir: string; stem: string; isTest: boolean } {
-	const isTest = TEST_INFIX_RX.test(relPath);
-	const noInfix = relPath.replace(TEST_INFIX_RX, "").replace(CODE_EXT_RX, "");
-	const slash = noInfix.lastIndexOf("/");
-	const dir = (slash >= 0 ? noInfix.slice(0, slash) : "").replace(/\/__tests__$/, "");
-	const stem = slash >= 0 ? noInfix.slice(slash + 1) : noInfix;
-	return { dir, stem, isTest };
-}
-
-/**
- * True iff two paths belong to the same coverage pair. Beyond the exact stem
- * match (`src/foo.ts` ↔ `src/foo.test.ts`), this also pairs a DECOMPOSED source
- * with its UMBRELLA test: `foo-bar.ts` is covered by `foo.test.ts` when they
- * share a directory (or the test lives in that directory's `__tests__/`) and the
- * test's stem is a hyphen-delimited prefix of the source's stem. Decomposing
- * `foo.ts` into `foo-*.ts` siblings otherwise stranded each from the umbrella
- * test that exercises it (`__tests__/write-content-guards.test.ts` no longer
- * paired with `write-content-guards-content-quality.ts`). Optimistic by the same
- * contract as the rest of debt mode — the commit gate is the ground-truth backstop.
- */
-export function inSamePair(a: string, b: string): boolean {
-	if (pairStem(a) === pairStem(b)) return true;
-	const pa = pairParts(a);
-	const pb = pairParts(b);
-	if (pa.dir !== pb.dir) return false;
-	// Exactly one side must be a test; its stem prefixes the source side's stem.
-	const test = pa.isTest && !pb.isTest ? pa : pb.isTest && !pa.isTest ? pb : null;
-	const src = test === pa ? pb : test === pb ? pa : null;
-	if (!test || !src) return false;
-	return src.stem.startsWith(`${test.stem}-`);
-}
-
-/** The conventional co-located test path for a source file (`src/foo.ts` →
- *  `src/foo.test.ts`) — named in the block message so the agent knows where to go. */
-export function expectedCompanionTest(source: string): string {
-	return source.replace(/\.([cm]?[jt]sx?)$/i, ".test.$1");
-}
-
-/** The source counterpart of a TEST path (`src/foo.test.ts` → `src/foo.ts`):
- *  strip the `.test`/`.spec` infix, keep the extension. The inverse of
- *  {@link expectedCompanionTest}, used so a debt opened ON a test file (the
- *  red→green loop's canonical first edit) names its pair correctly instead of
- *  deriving nonsense like `foo.test.test.ts`. */
-export function expectedSourceOfTest(testPath: string): string {
-	return testPath.replace(/\.(test|spec)(\.[cm]?[jt]sx?)$/i, "$2");
-}
+// Pairing primitives moved to coverage-pairing.ts (2026-07-17 line-cap
+// decomposition) — re-exported so existing consumers keep this import path.
+export { expectedCompanionTest, expectedSourceOfTest, inSamePair, pairStem };
 
 /** The exact phrase the per-edit gate's uncovered-added-line producers
  *  (`blockForUncovered` / `blockForUncoveredLine` in
@@ -160,6 +109,14 @@ export interface CoverageDebtInput {
 	 * it is CREATE guidance ("write its test"), not a claim of existence.
 	 */
 	fileExists?: (relPath: string) => boolean;
+	/**
+	 * Foreign-debt note dedup probe (ownership scoping, 2026-07-17): called at
+	 * most once per decision, with the foreign debt about to be surfaced.
+	 * Return false to suppress (e.g. already noted this session). Omitted ⇒
+	 * always note. An input so this module stays pure — the gate glue owns the
+	 * per-session dedup state.
+	 */
+	shouldNoteForeignDebt?: (d: Obligation) => boolean;
 }
 
 export interface CoverageDebtOutcome {
@@ -216,11 +173,16 @@ function failingFilesPhrase(files: readonly string[]): string {
 
 /** The narrow, recorded escape named in every wander block — the answer to
  *  "the gate mis-models my legitimate change and there is no discoverable
- *  bypass" (mcp-client-bio, 2026-07). Config, not env: auditable, scoped. */
+ *  bypass" (mcp-client-bio, 2026-07). Config, not env: auditable, scoped.
+ *  Deliberately names ONLY the numeric, scoped lever (2026-07-17): the
+ *  whole-mode `debt_mode: false` flip stays documented for repo owners in
+ *  types/config.ts, but an in-band block message offering the gated party a
+ *  global off-switch invites maximal loosening — baseline-integrity doctrine
+ *  says hand it the narrowest lever instead. */
 const WANDER_ESCAPE =
 	" If this edit IS part of that work and the import graph can't see it, raise" +
-	' per_edit_coverage.debt_wip_limit (or set "debt_mode": false) in' +
-	" .interlinked/guard-rules.local.json — recorded and auditable.";
+	" per_edit_coverage.debt_wip_limit in .interlinked/guard-rules.local.json —" +
+	" scoped, recorded, auditable.";
 
 /** The RED-debt "keep editing …" clause. Prefers the debt's recorded
  *  failing-test evidence — real paths that ran and failed — over filename
@@ -401,15 +363,51 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
 	return b.every((entry) => set.has(entry));
 }
 
+/** Step-2 verdict shape: a blocked wander (own debt at the WIP limit), a
+ *  foreign-debt heads-up note, or neither. At most one field is set. */
+interface WanderOutcome {
+	block: HarnessDecision | null;
+	note: string | null;
+}
+
+/**
+ * The ownership-scoped wander rule (2026-07-17). Focus is a property of ONE
+ * session's trajectory, so only debts THIS session opened may block its
+ * wander — a session cannot "return to" work it never did, and blocking it
+ * walls an innocent agent into doing someone else's WIP, editing enforcement
+ * config, or evading through a harness-invisible channel (all three observed
+ * live). Editing inside ANY open debt's work stays free regardless of owner.
+ * A foreign debt that would have blocked surfaces as a heads-up note instead
+ * (dedup'd by the caller via `shouldNoteForeignDebt`); an unattributable
+ * owner is foreign — never block on a guess. The commit gate stays the
+ * cross-session ground truth.
+ */
+function resolveWander(input: CoverageDebtInput, stillOpen: Obligation[]): WanderOutcome {
+	const { editedFile, affectedTests, sessionId, wipLimit = 1, atMs, fileExists } = input;
+	const related = stillOpen.some((d) => relatedToDebt(editedFile, d, affectedTests));
+	if (related || stillOpen.length < wipLimit) return { block: null, note: null };
+	const own = stillOpen.filter((d) => d.sessionId === sessionId);
+	const oldestOwn = own[0];
+	if (oldestOwn && own.length >= wipLimit) {
+		return { block: blockForWander(oldestOwn, fileExists), note: null };
+	}
+	const foreign = stillOpen.find((d) => d.sessionId !== sessionId);
+	if (!foreign || !(input.shouldNoteForeignDebt?.(foreign) ?? true)) {
+		return { block: null, note: null };
+	}
+	return { block: null, note: foreignDebtNote(foreign, atMs) };
+}
+
 /**
  * Apply the pair-scoped debt rule. Order: discharge anything the caller proved
- * covered, then enforce the pair boundary (wander → block), then fold the base
- * gate verdict (red → open red debt + allow; uncovered → open coverage debt +
- * allow; covered-with-open-debt → discharge; everything else → pass through).
+ * covered, then enforce the pair boundary (own wander → block; foreign →
+ * note), then fold the base gate verdict (red → open red debt + allow;
+ * uncovered → open coverage debt + allow; covered-with-open-debt → discharge;
+ * everything else → pass through), attaching any foreign note to the outcome.
  */
 export function decideCoverageDebt(input: CoverageDebtInput): CoverageDebtOutcome {
-	const { baseDecision, editedFile, openDebts, rechecks, wipLimit = 1, sessionId, atMs } = input;
-	const { affectedTests, fileExists } = input;
+	const { baseDecision, editedFile, openDebts, rechecks, sessionId, atMs } = input;
+	const { affectedTests } = input;
 	const txns: ObligationTxn[] = [];
 
 	// 1. Discharge any COVERAGE debt the caller re-checked and found covered.
@@ -428,32 +426,30 @@ export function decideCoverageDebt(input: CoverageDebtInput): CoverageDebtOutcom
 	}
 	const stillOpen = openDebts.filter((d) => !discharged.has(d.id));
 
-	// 2. Relatedness rule (WIP-limited): editing inside any open debt's work —
-	//    the filename pair, a recorded failing test, or a file that can affect
-	//    one ({@link relatedToDebt}) — is always free; an edit outside every
-	//    open debt's work is a "wander", blocked once the number of
-	//    concurrently-open debts is at the WIP limit (default 1).
-	const inSomePair = stillOpen.some((d) => relatedToDebt(editedFile, d, affectedTests));
-	const oldest = stillOpen[0];
-	if (!inSomePair && oldest && stillOpen.length >= wipLimit) {
-		return { decision: blockForWander(oldest, fileExists), txns };
-	}
+	// 2. Ownership-scoped wander rule — see {@link resolveWander}: only THIS
+	//    session's debts block; a foreign debt becomes a heads-up note attached
+	//    to whatever step 3 decides.
+	const wander = resolveWander(input, stillOpen);
+	if (wander.block) return { decision: wander.block, txns };
+	const finish = (o: CoverageDebtOutcome): CoverageDebtOutcome =>
+		wander.note === null ? o : { decision: attachWarning(o.decision, wander.note), txns: o.txns };
 
-	// 3. In-pair (or nothing open): fold the base gate verdict — red first (its
-	//    discharge must run even when the verdict falls through to uncovered).
+	// 3. In-pair (or nothing open / foreign-only): fold the base gate verdict —
+	//    red first (its discharge must run even when the verdict falls through
+	//    to uncovered).
 	const red = foldRedBar({ baseDecision, editedFile, stillOpen, txns, sessionId, atMs, affectedTests });
-	if (red) return red;
+	if (red) return finish(red);
 
 	if (isUncoveredBlock(baseDecision)) {
 		// First (or continued) uncovered edit → open debt and ALLOW. Not blocked.
 		txns.push({ op: "open", kind: "coverage", file: editedFile, contentHash: "", sessionId, atMs });
-		return { decision: allowWithDebt(editedFile), txns };
+		return finish({ decision: allowWithDebt(editedFile), txns });
 	}
 	if (baseDecision === null && stillOpen.some((d) => d.kind === "coverage" && d.file === editedFile)) {
 		// Edited the debted source and it now reads as covered → discharge.
 		txns.push({ op: "discharge", id: obligationId("coverage", editedFile), source: "local", atMs });
-		return { decision: null, txns };
+		return finish({ decision: null, txns });
 	}
 	// Drop / floor / CRAP / clean-allow pass through untouched.
-	return { decision: baseDecision, txns };
+	return finish({ decision: baseDecision, txns });
 }
