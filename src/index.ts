@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { registerCiCommand } from "./commands/ci-status.js";
+import { registerCollectCommand } from "./commands/collect.js";
 import { registerCompactCommand } from "./commands/compact.js";
 import { registerDoctestCommand } from "./commands/doctest.js";
 import { registerFindingsCommands } from "./commands/findings.js";
@@ -93,6 +94,7 @@ registerSetupCommands(program);
 registerSponsorCommands(program);
 registerIndexCommand(program);
 registerCiCommand(program);
+registerCollectCommand(program);
 registerCompactCommand(program);
 registerDoctestCommand(program);
 registerVizCommands(program);

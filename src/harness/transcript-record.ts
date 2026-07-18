@@ -44,6 +44,10 @@ export interface TimelineRecord {
 	uuid: string;
 	seq: number;
 	category: TimelineCategory;
+	/** Which model provider produced this record. Absent on the earliest Claude
+	 *  rows is read as "claude-code"; Codex rollout capture stamps "codex". One
+	 *  normalized store across providers (cross-model analysis / distillation). */
+	provider?: "claude-code" | "codex" | undefined;
 	role: "user" | "assistant";
 	/** Subagent attribution: the `agentId` a sidechain transcript entry
 	 *  carries (absent for main-session turns). Sidechain entries keep the
@@ -63,7 +67,7 @@ export interface TimelineRecord {
 }
 
 /** The shared per-entry fields every record off one transcript line inherits. */
-type RecordBase = Pick<TimelineRecord, "schema" | "ts" | "session" | "uuid" | "agent_id" | "cwd" | "git_branch" | "version">;
+type RecordBase = Pick<TimelineRecord, "schema" | "ts" | "session" | "uuid" | "provider" | "agent_id" | "cwd" | "git_branch" | "version">;
 
 /** Structural view of a transcript JSONL entry — only the fields we read. */
 interface TranscriptEntry {
@@ -184,6 +188,7 @@ export function parseTranscriptEntry(entry: unknown): TimelineRecord[] {
 		ts: e.timestamp,
 		session: e.sessionId,
 		uuid: e.uuid,
+		provider: "claude-code",
 		agent_id: e.agentId,
 		cwd: e.cwd,
 		git_branch: e.gitBranch,
