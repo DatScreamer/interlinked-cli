@@ -392,7 +392,10 @@ describe("evaluatePreChecksTail", () => {
 		);
 		expect(out).toBeNull();
 		expect(warnings.some((w) => w.includes("[interlinked:stale-branch]"))).toBe(false);
-	});
+		// 51 real git commits + checkouts under full-suite parallel load can
+		// exceed the 30s default; give this real-repo test generous headroom so
+		// it stays green on loaded CI runners (scheduling flake, not logic).
+	}, 120_000);
 
 	it("falls back to process.cwd() when the tail event carries no cwd", () => {
 		// No `cwd` on the event → eventCwd = process.cwd(). A Read past the

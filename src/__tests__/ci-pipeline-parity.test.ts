@@ -267,7 +267,12 @@ describe("pre-push hook exit-status behavior", () => {
 			writeFileSync(join(work, "file.txt"), `stash-fill-${i}\n`);
 			git(work, "stash", "push", "-q", "-m", `preload-${i}`);
 		}
-	});
+		// This hook spawns ~45 real git subprocesses (init/commit/push + 40
+		// stashes). At ~3s in isolation it fits the 30s default easily, but under
+		// full-suite parallel load the subprocesses starve and blow the hook
+		// timeout — a flaky red that is purely scheduling, not logic. Give it
+		// generous headroom so it stays green on slow/loaded CI runners too.
+	}, 120_000);
 
 	afterEach(() => {
 		rmSync(tmp, { recursive: true, force: true });
