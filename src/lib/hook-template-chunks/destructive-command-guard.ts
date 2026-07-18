@@ -119,7 +119,11 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	}
 
 	// --- Process killing ---
-	if (/\b(killall|pkill|skill)\s/i.test(cmd)) {
+	// "skill" (procps signal-by-name) only counts in COMMAND position — as a
+	// bare word, \bskill\s matched the English noun in any commit message or
+	// path ("enforce skill copy", .agents/skills/) and blocked the whole
+	// command (live FP, 2026-07-18).
+	if (/\b(killall|pkill)\s|(?:^|[;&|])\s*skill\s/i.test(cmd)) {
 		return {
 			decision: "block",
 			reason:

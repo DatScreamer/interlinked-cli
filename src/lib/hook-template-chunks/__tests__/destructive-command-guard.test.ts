@@ -27,6 +27,8 @@ describe("checkDestructiveCommand — blocks destructive commands", () => {
 		// process killing
 		["pkill -f node", "process-killing"],
 		["killall node", "process-killing"],
+		["skill -9 node", "process-killing"], // command-position skill (procps)
+		["true; skill -KILL -u root", "process-killing"],
 		["kill -9 1234", "termination signals"],
 		["kill 100 200", "multiple PIDs"],
 		["kill $(pgrep node)", "command substitution"],
@@ -110,6 +112,12 @@ describe("checkDestructiveCommand — allows legitimate commands", () => {
 		"grep -rn 'rm -rf' src",
 		"cat ./shutdown.log",
 		"docker compose up -d",
+		// the English word "skill" mid-command is prose, not procps skill —
+		// this exact shape (a commit message mentioning a skill) was blocked
+		// live on 2026-07-18.
+		'git commit -m "docs: the enforce skill copy under .agents/"',
+		"git add .agents/skills/enforce/SKILL.md",
+		"npm run upskill",
 	];
 
 	for (const command of allowed) {
