@@ -19,5 +19,9 @@ export default defineConfig({
 	test: {
 		...(base.test ?? {}),
 		exclude: [...configDefaults.exclude, "**/*.integration.test.ts"],
+		// Diagnostic: [FILE-START]/[FILE-END] markers pinpoint the Linux-only
+		// unit-lane hang (a leaked node grandchild) from the CI log — the last
+		// started-not-ended file is the culprit. Remove once fixed.
+		reporters: ["default", "./vitest-file-start-reporter.mjs"],
 	},
 });
