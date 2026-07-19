@@ -21,16 +21,15 @@ export default defineConfig({
 		exclude: [
 			...configDefaults.exclude,
 			"**/*.integration.test.ts",
-			// TEMP: recurrence.test.ts hangs at collection on the Linux CI runner
-			// (deterministic; passes at CI=1 on macOS). Excluded to test whether
-			// the hang is file-specific (unit goes green) or resource accumulation
-			// from earlier tool-spawning unit files (hang moves to the next file).
-			// It still runs in the pre-push gate. Revert once root-caused.
+			// recurrence.test.ts hangs at COLLECTION (import/register phase, before
+			// any test runs) on the ubuntu CI runner — deterministic, confirmed
+			// file-specific (excluding it makes the lane complete; the hang does
+			// not move to another file), yet it passes at CI=1 on macOS. Root
+			// cause is still open (imports are pure; describe bodies are trivial),
+			// so it is quarantined here and still runs in the pre-push gate (which
+			// executes the full suite on macOS). See docs/design/ci-lane-split.md.
+			// TODO(recurrence-ci-hang): root-cause the Linux collection hang.
 			"**/__tests__/recurrence.test.ts",
 		],
-		// Diagnostic: [FILE-START]/[FILE-END] markers pinpoint the Linux-only
-		// unit-lane hang (a leaked node grandchild) from the CI log — the last
-		// started-not-ended file is the culprit. Remove once fixed.
-		reporters: ["default", "./vitest-file-start-reporter.mjs"],
 	},
 });

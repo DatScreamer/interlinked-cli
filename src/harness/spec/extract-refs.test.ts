@@ -9,6 +9,14 @@ import {
 const lines = (text: string): string[] => text.split("\n");
 const noFences = new Set<number>();
 
+// Wall-clock budget for the ReDoS-guard perf tests below. These assert the
+// bracket/backslash scanners stay LINEAR on adversarial 40k–320k inputs; a real
+// catastrophic-backtracking regression is exponential (seconds→minutes), so a
+// generous ceiling still catches it while tolerating slow/loaded CI runners
+// (the 240k case clocks ~0.6s on the ubuntu runner vs well under 0.1s locally —
+// a tight 500ms budget flaked there). Do not tighten to chase local speed.
+const REDOS_GUARD_MS = 3000;
+
 describe("githubSlug", () => {
 	it("lowercases, strips punctuation, hyphenates spaces", () => {
 		expect(githubSlug("7.3 Phantom Protection (SSI)")).toBe(
@@ -138,7 +146,7 @@ describe("extractAnchorLinks", () => {
 		const evil = "[".repeat(80_000);
 		const start = Date.now();
 		expect(extractAnchorLinks([evil], noFences)).toEqual([]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 });
 
@@ -146,7 +154,7 @@ describe("markdown-parsing hardening (sol-max batch 1)", () => {
 	it("slugs bracket-heavy input in linear time (#15) and drops raw tags/entities (#21)", () => {
 		const start = Date.now();
 		githubSlug("[".repeat(40_000));
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 		expect(githubSlug("<em>API</em>")).toBe("api");
 		expect(githubSlug("Dogs &#38; Cats")).toBe("dogs--cats");
 	});
@@ -192,13 +200,13 @@ describe("markdown-parsing hardening (sol-max batch 2)", () => {
 		).toEqual(["missing.md"]);
 		const start = Date.now();
 		githubSlug("[".repeat(40_000));
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("dedups repeated headings in linear time (round-4 #15)", () => {
 		const start = Date.now();
 		extractHeadings(Array(10_000).fill("## Setup"), noFences);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("rejects section tokens running into digits or unicode letters (round-4 #16)", () => {
@@ -248,10 +256,10 @@ describe("link grammar (round-5 #2/#14/#19/#21/#22/#23)", () => {
 	it("stays under budget on 320k brackets via the guard; regex path at 240k (#2)", () => {
 		const start = Date.now();
 		expect(extractHeadings(lines(`# ${"[".repeat(320_000)}`), noFences)).toHaveLength(1);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 		const regexPath = Date.now();
 		expect(extractAnchorLinks(["[".repeat(240_000)], noFences)).toEqual([]);
-		expect(Date.now() - regexPath).toBeLessThan(500);
+		expect(Date.now() - regexPath).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("slugs a heading link with balanced destination parens as its text (#14)", () => {
@@ -304,7 +312,7 @@ describe("link grammar (round-5 #2/#14/#19/#21/#22/#23)", () => {
 		const start = Date.now();
 		expect(extractAnchorLinks([`[x]((${"a".repeat(100_000)}))`], noFences)).toEqual([]);
 		expect(extractAnchorLinks([`[x](${"a".repeat(100_000)})`], noFences)).toEqual([]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 		expect(targets(`[x](${"a".repeat(400)}.md)`)).toEqual([`${"a".repeat(400)}.md`]);
 	});
 });
@@ -377,7 +385,7 @@ describe("Setext structure (round-5 #15/#16)", () => {
 	it("emits no heading for a long paragraph with no underline, in linear time (#15)", () => {
 		const start = Date.now();
 		expect(extractHeadings(Array(100_000).fill("a"), noFences)).toEqual([]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("caps degenerate megabyte folds without losing the heading (#15 amendment)", () => {
@@ -387,7 +395,7 @@ describe("Setext structure (round-5 #15/#16)", () => {
 		expect(big[0]).toEqual(expect.objectContaining({ line: 1, level: 1 }));
 		const wide = extractHeadings([...Array(40).fill("[".repeat(8000)), "==="], noFences);
 		expect(wide).toHaveLength(1);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("rejects thematic breaks as Setext text (#16)", () => {
@@ -466,19 +474,19 @@ describe("shared link-label grammar + bounded scans (round-7 #15/#20)", () => {
 		expect(extractAnchorLinks([("[".repeat(512) + "\\x").repeat(200)], noFences)).toEqual([]);
 		expect(extractAnchorLinks([("[".repeat(512) + "\\x").repeat(622)], noFences)).toEqual([]);
 		expect(extractAnchorLinks(["[".repeat(320_000)], noFences)).toEqual([]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("still finds a real link after an escape-bomb prefix, on the regex path (#20)", () => {
 		const start = Date.now();
 		expect(targets(`${("[".repeat(512) + "\\x").repeat(200)}](y)`)).toEqual(["y"]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("holds the regex path under budget at 240k brackets with a real tail link (#20)", () => {
 		const start = Date.now();
 		expect(targets(`${"[".repeat(240_000)}](y)`)).toEqual(["y"]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("rejects labels past the 512-unit total bound, trailing escapes, escaped openers (#20)", () => {
@@ -492,7 +500,7 @@ describe("shared link-label grammar + bounded scans (round-7 #15/#20)", () => {
 		expect(extractAnchorLinks(["\\".repeat(320_000)], noFences)).toEqual([]);
 		expect(targets(`${"\\".repeat(320_000)}[x](y)`)).toEqual(["y"]);
 		expect(extractAnchorLinks([`${"\\".repeat(319_999)}[x](y)`], noFences)).toEqual([]);
-		expect(Date.now() - start).toBeLessThan(500);
+		expect(Date.now() - start).toBeLessThan(REDOS_GUARD_MS);
 	});
 
 	it("slugs escaped-bracket labels as their rendered text (#15)", () => {
