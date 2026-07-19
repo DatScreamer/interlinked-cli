@@ -25,7 +25,7 @@ import {
 	writeHookScript,
 } from "../lib/hooks.js";
 import { type ClientName, detectClients } from "../lib/settings.js";
-import { installEnforceSkill } from "../lib/skill-installers.js";
+import { installSkills } from "../lib/skill-installers.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 
 interface EnableOptions {
@@ -115,30 +115,30 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 	}
 
 	configureStatusLine(targetClients);
-	installEnforceSkillForClients(cwd, targetClients);
+	installSkillsForClients(cwd, targetClients);
 	await startHarnessIfNeeded(cwd);
 	noteUndetectedClients(detectedNames, targetClients, requestedClients);
 	await maybeScaffoldStructure(options.structure);
 	printSummary(cwd, relativeHookPath, installedCount, targetClients);
 }
 
-function installEnforceSkillForClients(cwd: string, targetClients: ClientName[]): void {
+function installSkillsForClients(cwd: string, targetClients: ClientName[]): void {
 	if (targetClients.length === 0) return;
-	const results = installEnforceSkill(cwd, targetClients);
+	const results = installSkills(cwd, targetClients);
 	const installed = results.filter((r) => r.installed);
 	if (installed.length === 0) {
 		const firstErr = results.find((r) => r.error)?.error;
 		if (firstErr) {
-			console.log(`\n${c.dim("/enforce skill: not installed —")} ${c.yellow(firstErr)}`);
+			console.log(`\n${c.dim("Interlinked skills: not installed —")} ${c.yellow(firstErr)}`);
 		}
 		return;
 	}
 	console.log(
-		`\n${c.green("Installed")} /enforce skill for ${installed.map((r) => r.client).join(", ")}`,
+		`\n${c.green("Installed")} Interlinked skills for ${[...new Set(installed.map((r) => r.client))].join(", ")}`,
 	);
 	console.log(
 		c.dim(
-			"  Invoke as `/enforce <target>` from your agent — e.g. /enforce AGENTS.md",
+			"  Load /enforce plus the interlinked-* skills on demand from your agent",
 		),
 	);
 }

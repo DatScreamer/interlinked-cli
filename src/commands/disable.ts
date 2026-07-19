@@ -17,7 +17,7 @@ import { c } from "../lib/formatter.js";
 import { writeGuardDisable } from "../lib/guard-state.js";
 import { deleteConfigDir, deleteHookScript, uninstallAllHooks } from "../lib/hooks.js";
 import type { ClientName } from "../lib/settings.js";
-import { uninstallEnforceSkill } from "../lib/skill-installers.js";
+import { uninstallSkills } from "../lib/skill-installers.js";
 import { harnessStopCommand, isHarnessRunning } from "./harness.js";
 
 interface DisableOptions {
@@ -148,8 +148,8 @@ async function uninstallEverything(cwd: string, options: DisableOptions): Promis
 	}
 
 	if (deleteHookScript(cwd)) console.log(`\n${c.red("Deleted")} hook script`);
-	if (uninstallEnforceSkill(cwd, ALL_CLIENTS)) {
-		console.log(`${c.red("Removed")} /enforce skill from ${ALL_CLIENTS.join(", ")}`);
+	if (uninstallSkills(cwd, ALL_CLIENTS)) {
+		console.log(`${c.red("Removed")} Interlinked skills from ${ALL_CLIENTS.join(", ")}`);
 	}
 
 	if (options.keepConfig) {

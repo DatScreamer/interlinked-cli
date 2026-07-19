@@ -73,7 +73,7 @@ vi.mock("../lib/settings.js", () => ({
 }));
 
 vi.mock("../lib/skill-installers.js", () => ({
-	installEnforceSkill: vi.fn(),
+	installSkills: vi.fn(),
 }));
 
 vi.mock("./harness.js", () => ({
@@ -104,7 +104,7 @@ import {
 	writeHookScript,
 } from "../lib/hooks.js";
 import { detectClients } from "../lib/settings.js";
-import { installEnforceSkill } from "../lib/skill-installers.js";
+import { installSkills } from "../lib/skill-installers.js";
 import { buildPostEnableNotes, enableCommand } from "./enable.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 import { structureInitCommand } from "./structure.js";
@@ -131,7 +131,7 @@ function detected(name: ClientName, exists: boolean) {
 }
 
 function skill(client: ClientName, over: Partial<SkillInstallResult> = {}): SkillInstallResult {
-	return { client, path: `${CWD}/skill/${client}`, installed: false, ...over };
+	return { skill: "enforce", client, path: `${CWD}/skill/${client}`, installed: false, ...over };
 }
 
 function config(over: Partial<ConfigShape> = {}): ConfigShape {
@@ -174,7 +174,7 @@ beforeEach(() => {
 	vi.mocked(installAllHooks).mockReturnValue([]);
 	vi.mocked(ensureGitignore).mockReturnValue(false);
 	vi.mocked(installStatusLine).mockReturnValue(null);
-	vi.mocked(installEnforceSkill).mockReturnValue([]);
+	vi.mocked(installSkills).mockReturnValue([]);
 	vi.mocked(isHarnessRunning).mockReturnValue({ running: true, pid: 4242 } as never);
 	vi.mocked(harnessStartCommand).mockResolvedValue(undefined);
 	vi.mocked(structureInitCommand).mockResolvedValue(undefined);
@@ -578,57 +578,57 @@ describe("enableCommand — gitignore, status line, enforce skill", () => {
 		expect(logged(logSpy)).not.toContain("Configured status line");
 	});
 
-	it("announces /enforce skill installation with the invocation tip", async () => {
+	it("announces skill installation with the on-demand tip", async () => {
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
-		vi.mocked(installEnforceSkill).mockReturnValue([
+		vi.mocked(installSkills).mockReturnValue([
 			skill("claude", { installed: true }),
 		]);
 
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(vi.mocked(installEnforceSkill)).toHaveBeenCalledWith(CWD, ["claude"]);
-		expect(out).toContain("Installed /enforce skill for claude");
-		expect(out).toContain("Invoke as `/enforce <target>`");
+		expect(vi.mocked(installSkills)).toHaveBeenCalledWith(CWD, ["claude"]);
+		expect(out).toContain("Installed Interlinked skills for claude");
+		expect(out).toContain("Load /enforce plus the interlinked-* skills");
 	});
 
-	it("reports the first error when no /enforce skill installs", async () => {
+	it("reports the first error when no skills install", async () => {
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
-		vi.mocked(installEnforceSkill).mockReturnValue([
+		vi.mocked(installSkills).mockReturnValue([
 			skill("claude", { installed: false, error: "no SKILL.md found" }),
 		]);
 
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(out).toContain("/enforce skill: not installed —");
+		expect(out).toContain("Interlinked skills: not installed —");
 		expect(out).toContain("no SKILL.md found");
-		expect(out).not.toContain("Installed /enforce skill");
+		expect(out).not.toContain("Installed Interlinked skills");
 	});
 
 	it("stays fully silent about the skill when nothing installed and no error surfaced", async () => {
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
-		vi.mocked(installEnforceSkill).mockReturnValue([skill("claude", { installed: false })]);
+		vi.mocked(installSkills).mockReturnValue([skill("claude", { installed: false })]);
 
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(out).not.toContain("Installed /enforce skill");
-		expect(out).not.toContain("/enforce skill: not installed");
+		expect(out).not.toContain("Installed Interlinked skills");
+		expect(out).not.toContain("Interlinked skills: not installed");
 	});
 
-	it("always reaches installEnforceSkill on the normal path (target list is never empty)", async () => {
+	it("always reaches installSkills on the normal path (target list is never empty)", async () => {
 		// The `if (targetClients.length === 0) return;` guard in
-		// installEnforceSkillForClients is unreachable through the public command:
+		// installSkillsForClients is unreachable through the public command:
 		// resolveTargetClients always yields a non-empty list (requested split,
-		// detected set, or the ["claude"] fallback), so installEnforceSkill is
+		// detected set, or the ["claude"] fallback), so installSkills is
 		// always invoked. This pins that invariant; the empty-guard arm is dead
 		// code from the CLI's perspective (see the uncovered-lines note).
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
 
 		await enableCommand({});
 
-		expect(vi.mocked(installEnforceSkill)).toHaveBeenCalledWith(CWD, ["claude"]);
+		expect(vi.mocked(installSkills)).toHaveBeenCalledWith(CWD, ["claude"]);
 	});
 });
 

@@ -42,6 +42,11 @@ stryker.log
 # bundled into dist/ for npm). Don't track a parallel copy here — interlinked
 # enable materializes it from the source on install. One source, no drift.
 .claude/skills/enforce/
+# Same model for the interlinked-* teaching skills: canonical sources live at
+# skills/interlinked*/SKILL.md; the per-runner copies are materialized on
+# install. Don't track the generated copies.
+.claude/skills/interlinked/
+.claude/skills/interlinked-*/
 
 # Codex CLI: blanket-ignore per-developer hook + config (same model as
 # .claude/settings.json above). Contributors opt in via `interlinked enable`

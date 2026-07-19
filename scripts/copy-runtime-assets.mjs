@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // Runtime assets that must accompany the bundled JS in `dist/`. The OPF
@@ -21,13 +21,7 @@ const ASSETS = [
 		from: "src/harness/content-scanner/sidecars/calibrations/high_precision.json",
 		to: "dist/sidecars/calibrations/high_precision.json",
 	},
-	// The /enforce skill body — copied so `findEnforceSkillSource()` in
-	// `src/lib/skill-installers.ts` can resolve it at runtime in the
-	// published package (the dev path lives at `<repo>/skills/...`).
-	{
-		from: "skills/enforce/SKILL.md",
-		to: "dist/skills/enforce/SKILL.md",
-	},
+	// (Skill SKILL.md bodies are bundled dynamically below — every skills/<name>/.)
 	// Side-loaded npm popular-packages allowlist — read at runtime by
 	// `src/harness/checks/supply-chain.ts` to augment KNOWN_LEGITIMATE_PACKAGES.
 	// Refreshable via `scripts/refresh-npm-popular.mjs` without rebuild.
@@ -52,3 +46,20 @@ for (const asset of ASSETS) {
 	mkdirSync(dirname(dest), { recursive: true });
 	copyFileSync(src, dest);
 }
+
+// Bundle every skill under skills/ (the enforce command + the interlinked-*
+// teaching set) so `findSkillsRoot()` in `src/lib/skill-installers.ts` can
+// resolve them at runtime in the published package. New skill dirs ship
+// automatically — no edit here needed.
+const skillsRoot = join(process.cwd(), "skills");
+if (existsSync(skillsRoot)) {
+	for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const src = join(skillsRoot, entry.name, "SKILL.md");
+		if (!existsSync(src)) continue;
+		const dest = join(process.cwd(), "dist", "skills", entry.name, "SKILL.md");
+		mkdirSync(dirname(dest), { recursive: true });
+		copyFileSync(src, dest);
+	}
+}
+

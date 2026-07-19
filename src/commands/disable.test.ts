@@ -31,7 +31,7 @@ vi.mock("../lib/hooks.js", () => ({
 }));
 
 vi.mock("../lib/skill-installers.js", () => ({
-	uninstallEnforceSkill: vi.fn(),
+	uninstallSkills: vi.fn(),
 }));
 
 vi.mock("../lib/guard-state.js", () => ({
@@ -47,7 +47,7 @@ import { getConfigDir, isConfigured, readLocalConfig } from "../lib/config.js";
 import { stripAnsi } from "../lib/formatter.js";
 import { writeGuardDisable } from "../lib/guard-state.js";
 import { deleteConfigDir, deleteHookScript, uninstallAllHooks } from "../lib/hooks.js";
-import { uninstallEnforceSkill } from "../lib/skill-installers.js";
+import { uninstallSkills } from "../lib/skill-installers.js";
 import { disableCommand } from "./disable.js";
 import { harnessStopCommand, isHarnessRunning } from "./harness.js";
 
@@ -77,7 +77,7 @@ beforeEach(() => {
 	vi.mocked(uninstallAllHooks).mockReturnValue([]);
 	vi.mocked(deleteHookScript).mockReturnValue(false);
 	vi.mocked(deleteConfigDir).mockReturnValue(false);
-	vi.mocked(uninstallEnforceSkill).mockReturnValue(false);
+	vi.mocked(uninstallSkills).mockReturnValue(false);
 	vi.mocked(writeGuardDisable).mockReturnValue({
 		disabled: true,
 		scope: "project",
@@ -200,7 +200,7 @@ describe("disableCommand — uninstall", () => {
 		expect(out).toContain("Disable (uninstall)");
 		expect(out).toContain("Removing hooks:");
 		expect(vi.mocked(uninstallAllHooks)).toHaveBeenCalledWith(CWD, ALL_CLIENTS);
-		expect(vi.mocked(uninstallEnforceSkill)).toHaveBeenCalledWith(CWD, ALL_CLIENTS);
+		expect(vi.mocked(uninstallSkills)).toHaveBeenCalledWith(CWD, ALL_CLIENTS);
 		expect(vi.mocked(writeGuardDisable)).not.toHaveBeenCalled();
 	});
 
@@ -234,13 +234,13 @@ describe("disableCommand — uninstall", () => {
 
 	it("announces script + skill removal when they changed", async () => {
 		vi.mocked(deleteHookScript).mockReturnValue(true);
-		vi.mocked(uninstallEnforceSkill).mockReturnValue(true);
+		vi.mocked(uninstallSkills).mockReturnValue(true);
 
 		await disableCommand({ uninstall: true });
 
 		const out = logged(logSpy);
 		expect(out).toContain("Deleted hook script");
-		expect(out).toContain("Removed /enforce skill from");
+		expect(out).toContain("Removed Interlinked skills from");
 	});
 
 	it("deletes the config dir by default and prints a repo-relative path", async () => {

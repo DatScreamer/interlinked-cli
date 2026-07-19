@@ -20,12 +20,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "./non-null.js";
 import {
 	findEnforceSkillSource,
 	installEnforceSkill,
+	installSkills,
 	uninstallEnforceSkill,
+	uninstallSkills,
 } from "./skill-installers.js";
-import { nonNull } from "./non-null.js";
 
 let tmpRoot: string;
 
@@ -290,5 +292,50 @@ describe("uninstallEnforceSkill", () => {
 	it("returns false when nothing was installed", () => {
 		const result = uninstallEnforceSkill(tmpRoot, ["claude"]);
 		expect(result).toBe(false);
+	});
+});
+
+describe("installSkills (full bundled set)", () => {
+	it("installs enforce and the interlinked-* teaching skills for a runner", () => {
+		const results = installSkills(tmpRoot, ["claude"]);
+		expect(existsSync(join(tmpRoot, ".claude", "skills", "enforce", "SKILL.md"))).toBe(true);
+		expect(existsSync(join(tmpRoot, ".claude", "skills", "interlinked", "SKILL.md"))).toBe(true);
+		expect(
+			existsSync(join(tmpRoot, ".claude", "skills", "interlinked-setup", "SKILL.md")),
+		).toBe(true);
+		expect(results.some((r) => r.skill === "enforce" && r.installed)).toBe(true);
+		expect(results.some((r) => r.skill.startsWith("interlinked") && r.installed)).toBe(true);
+	});
+
+	it("gives teaching skills a Cursor alias but no Copilot prompt alias", () => {
+		installSkills(tmpRoot, ["cursor", "copilot"]);
+		expect(existsSync(join(tmpRoot, ".cursor", "rules", "interlinked-setup.mdc"))).toBe(true);
+		expect(
+			existsSync(join(tmpRoot, ".github", "prompts", "interlinked-setup.prompt.md")),
+		).toBe(false);
+		// enforce keeps its Copilot prompt alias.
+		expect(existsSync(join(tmpRoot, ".github", "prompts", "enforce.prompt.md"))).toBe(true);
+	});
+
+	it("ships teaching-skill descriptions verbatim to spec runners", () => {
+		installSkills(tmpRoot, ["claude"]);
+		const content = readFileSync(
+			join(tmpRoot, ".claude", "skills", "interlinked-setup", "SKILL.md"),
+			"utf-8",
+		);
+		expect(content).toContain("name: interlinked-setup");
+	});
+});
+
+describe("uninstallSkills (full bundled set)", () => {
+	it("removes every installed skill for the requested clients", () => {
+		installSkills(tmpRoot, ["claude", "cursor"]);
+		expect(uninstallSkills(tmpRoot, ["claude", "cursor"])).toBe(true);
+		expect(existsSync(join(tmpRoot, ".claude", "skills", "interlinked", "SKILL.md"))).toBe(false);
+		expect(existsSync(join(tmpRoot, ".cursor", "rules", "interlinked-setup.mdc"))).toBe(false);
+	});
+
+	it("returns false when nothing was installed", () => {
+		expect(uninstallSkills(tmpRoot, ["claude"])).toBe(false);
 	});
 });
