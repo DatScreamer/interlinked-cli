@@ -18,7 +18,7 @@ Reference for the failproofai shape we *didn't* take: `docs/external-pulse/failp
 
 ## Tier 1 — shipped (2026-05-11, extended through 2026-07)
 
-Orchestration: `src/harness/server/lifecycle-stop-warnings.ts` (`buildStopWarnings` → `buildCommitCadenceNudge` + `buildVerificationStopWarnings`), called from the Stop branch in `server/lifecycle-events.ts::handleStop` (which also runs the plan-drift nudge directly). Formatters: `verification-stop-checks.ts`, `commit-cadence.ts`, `dead-on-arrival.ts`, `fixture-leak.ts`, `plan-drift.ts`. Tests: `src/harness/server/lifecycle-stop-warnings.test.ts` (wiring) + per-formatter suites (`__tests__/verification-stop-checks.test.ts`, `commit-cadence.test.ts`, …). Config: `verification_stop_checks` / `commit_cadence` / `plan_capture` in `rules/default-config.ts`. All stderr-only; none block.
+Orchestration: `src/harness/server/lifecycle-stop-warnings.ts` (`buildStopWarnings` → `buildCommitCadenceNudge` + `buildVerificationStopWarnings`), called from the Stop branch in `server/lifecycle-events.ts::handleStop` (which also runs the plan-drift nudge directly). Formatters: `verification-stop-checks.ts`, `commit-cadence.ts`, `dead-on-arrival.ts`, `fixture-leak.ts`, `plan-drift.ts`. Tests: `src/harness/server/lifecycle-stop-warnings.test.ts` (wiring) + per-formatter suites (`__tests__/verification-stop-checks.test.ts`, `commit-cadence.integration.test.ts`, …). Config: `verification_stop_checks` / `commit_cadence` / `plan_capture` in `rules/default-config.ts`. All stderr-only; none block.
 
 The original 2026-05-11 set was three detectors; the shipped set has grown to fourteen nudges:
 
@@ -101,7 +101,7 @@ When picking up any of these, mirror the existing scaffolding:
 - **Pure formatter file:** `src/harness/<concern>-stop-checks.ts` exporting `formatXxxWarning(opts): string | null` functions. Pattern is in `commit-cadence.ts` and `verification-stop-checks.ts`.
 - **Config interface:** add a `XxxStopChecksConfig` to `types.ts::GuardRulesConfig`, default-on in `rules/default-config.ts`. Per-kind boolean flags + master `enabled` toggle.
 - **Signal capture lives close to the event:** trajectory-only signals in `session-state.ts::recordEvent`; observed red/green outcomes in `server/post-tool-pipeline-tracking.ts`; content-bearing signals (`tool_input.content` / `new_string` / `edits`) in `evaluator/post-tool.ts`. The Stop branch (`server/lifecycle-stop-warnings.ts`, called from `server/lifecycle-events.ts::handleStop`) only *reads* — never scans content there (a Stop-time `git log` / working-tree scan is fine per corollary 3).
-- **Test pattern:** mirror `commit-cadence.test.ts` and `verification-stop-checks.test.ts` — pure-function unit tests for each formatter with positive and negative cases per axis. No e2e harness wiring needed at this layer.
+- **Test pattern:** mirror `commit-cadence.integration.test.ts` and `verification-stop-checks.test.ts` — pure-function unit tests for each formatter with positive and negative cases per axis. No e2e harness wiring needed at this layer.
 
 ## What we explicitly rejected from failproofai
 

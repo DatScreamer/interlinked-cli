@@ -692,7 +692,7 @@ Test files:
 - `src/harness/__tests__/impact-analysis.test.ts` — cross-file impact analysis
 - `src/harness/__tests__/project-graph.test.ts` — project dependency graph
 - `src/harness/__tests__/taint-tracker.test.ts` — sensitivity classification
-- `src/harness/__tests__/diff-aware-checks.test.ts` — diff-aware filtering
+- `src/harness/__tests__/diff-aware-checks.integration.test.ts` — diff-aware filtering
 - `src/harness/__tests__/command-guard-parity.test.ts` — guard rule parity with inline fallback
 - `src/harness/__tests__/docs-freshness.test.ts` — validates generated docs match source
 - `src/harness/__tests__/hook-conflicts.test.ts` — hook installation conflict detection

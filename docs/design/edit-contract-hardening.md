@@ -88,7 +88,7 @@ zero-FP by construction. The upgrade is the payload:
   exact right form inline. "Re-read the file first" is deleted — the point is that
   the retry needs no read.
 
-Tests (extend `pre-tool-guards.test.ts` + `edit-diagnostics` tests): whitespace-exact
+Tests (extend `pre-tool-guards.integration.test.ts` + `edit-diagnostics` tests): whitespace-exact
 span survives formatting into the reason string; cap behavior; CRLF file; ≥3 negatives
 (unique match passes; near-miss below `MIN_SIMILARITY` yields no fence; unreadable file
 fails open).

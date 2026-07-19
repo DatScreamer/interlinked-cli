@@ -525,7 +525,7 @@ When a bad test slips through (`harness_missed` event), flag it, scaffold a new 
 
 Harness intercepts test-run commands; vitest emits per-file `Duration`. Record to `.interlinked/test-timings.json` with absolute ceiling and regression ratchet. Deterministic, free. **Precondition for any Tier 2 admission.** Without it, admission is a guess. (Phase 2.)
 
-Don't *ban* slow tests, *price* them. `behavioral-diff-checks.test.ts` at 2.88s spawning real git is the correct test for code that shells to git. Block avoidable slowness; route legitimate integration tests to different cadence.
+Don't *ban* slow tests, *price* them. `behavioral-diff-checks.integration.test.ts` at 2.88s spawning real git is the correct test for code that shells to git. Block avoidable slowness; route legitimate integration tests to different cadence.
 
 ### 9.5 Promote advisory checks to gates
 

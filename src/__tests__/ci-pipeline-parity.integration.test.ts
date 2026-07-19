@@ -63,7 +63,7 @@ interface CiStep {
 const CI_STEPS: readonly CiStep[] = [
 	{ name: "Checkout", mirror: "skip", reason: "git checkout — runner setup, not a check" },
 	{
-		name: "Setup Node.js ${{ matrix.node }}",
+		name: "Setup Node.js 22",
 		mirror: "skip",
 		reason: "Node toolchain provision — runner setup, not a check",
 	},
@@ -84,7 +84,12 @@ const CI_STEPS: readonly CiStep[] = [
 		mirror: "pre-push",
 		command: "npm run docs:check",
 	},
-	{ name: "Test", mirror: "pre-push", command: "npm test" },
+	// The CI test run is split into two parallel lanes (unit / integration) so
+	// neither exceeds the job timeout. The pre-push hook runs `npm test` — the
+	// full suite, which is the superset of both lanes — so it mirrors each. See
+	// ci.yml + vitest.{unit,integration}.config.ts.
+	{ name: "Test (unit lane)", mirror: "pre-push", command: "npm test" },
+	{ name: "Test (integration lane)", mirror: "pre-push", command: "npm test" },
 	{
 		name: "Build",
 		mirror: "skip",

@@ -19,9 +19,13 @@ export default defineConfig({
         // `beforeAll`/`afterAll` (biome warm-up, fixture I/O) is covered too.
         testTimeout: 30_000,
         hookTimeout: 30_000,
-        // A global retry absorbs rare transient flakes without masking real
+        // A single retry absorbs rare transient flakes without masking real
         // regressions — a genuinely broken test still fails on every retry.
-        retry: 2,
+        // Dropped 2 → 1 with the CI lane split (2026-07): the flaky real-git
+        // tests now live in the integration lane with 120s timeouts, so the
+        // aggressive double-retry (which tripled a flake's cost) is no longer
+        // needed. One retry is the flake-tolerance floor.
+        retry: 1,
         // Test isolation for the distilled-rules layer: the per-developer
         // `.interlinked/distilled-rules.json` (output of `/enforce`) varies
         // by whoever ran the skill against what — leaving it on means

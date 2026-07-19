@@ -12,87 +12,111 @@ permissions:
   contents: read
 
 # Cancel a superseded run when a newer commit lands on the same ref, instead of
-# letting redundant full matrices pile up (each macOS leg bills 10x). Biggest
-# Actions-minutes lever for rapid-push iteration; only the latest commit in a
-# burst keeps its check — acceptable since the local harness is the real gate.
+# letting redundant runs pile up. The local pre-push gate is the real gate, so
+# only the latest commit in a burst needs its cloud check.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The suite is split across three parallel jobs (2026-07). The old single job
+# ran the full ~21k-test suite single-threaded (CI caps workers to 1 to dodge a
+# vitest reporter-IPC timeout) and took >25min, tripping timeout-minutes with no
+# verdict. Each lane now fits with room to spare:
+#   - unit         fast, OS-independent tests (everything except *.integration)
+#   - integration  the *.integration.test.ts files — subprocess-spawning /
+#                  Linux-sensitive tests, exactly what a Linux runner uniquely
+#                  validates over the dev's macOS pre-push gate
+#   - package      build + release-shape checks + the new-user install smokes
+# macOS stays dropped (bills 10x, redundant with the local macOS pre-push gate);
+# ubuntu is the irreplaceable Linux leg. See docs/harness.md + the CI<->pre-push
+# parity test (src/__tests__/ci-pipeline-parity.integration.test.ts).
 jobs:
-  build-and-test:
-    name: ${{ matrix.os }} / Node ${{ matrix.node }}
-    runs-on: ${{ matrix.os }}
-    # Hard cap so a hung test fails the job in minutes instead of burning the
-    # 6h default (finding 2026-06: a Linux-only deadlock — a spawned grandchild
-    # held the stdio pipe so `runProcessAsync` never saw 'close' — hung vitest for
-    # 25 min). Root cause fixed in check-engine/spawn-async.ts; this is the backstop.
+  unit:
+    name: unit (Linux / Node 22)
+    runs-on: ubuntu-latest
     timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS dropped from cloud CI: it bills 10x and was largely redundant
-        # with the local pre-push gate (devs run the full suite on macOS before
-        # every push) plus `npm run ci:local`. The cloud's irreplaceable leg is
-        # Linux — it catches the ripgrep/spawn divergences noted below — so keep
-        # ubuntu. Re-add macos-latest here if a Mac-only regression slips through.
-        os: [ubuntu-latest]
-        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js ${{ matrix.node }}
+      - name: Setup Node.js 22
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node }}
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
         run: npm ci
 
-      # Dev machines have ripgrep; the runner images do not. Without it the
-      # grep-accelerator's real-rg tests silently early-return (coverage
-      # theater on CI) and any test that reaches the regex→rg route fails
-      # (finding 2026-06: env divergence shipped a red run). Installing it
-      # makes CI exercise the same paths developers do.
+      # Runner images ship no ripgrep; without it the grep-accelerator's real-rg
+      # paths diverge from every dev machine (finding 2026-06: that shipped a red
+      # run). A unit test could still reach an rg path, so install it here too.
       - name: Install ripgrep (CI/dev environment parity)
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update -q && sudo apt-get install -y -q ripgrep
-          else
-            brew install ripgrep
-          fi
+          sudo apt-get update -q && sudo apt-get install -y -q ripgrep
           rg --version
 
-      # OS-independent gates stay Linux-scoped so they remain 1x even if a macOS
-      # leg is re-added later (tsc/docs/publint/attw/pack are deterministic across
-      # platforms). macOS coverage now comes from the local pre-push gate +
-      # `npm run ci:local`, not a 10x-billed cloud runner.
       - name: Typecheck
-        if: runner.os == 'Linux'
         run: npm run typecheck:stable
 
       - name: Doc accuracy (landing + README vs source)
-        if: runner.os == 'Linux'
         run: npm run docs:check
 
-      - name: Test
-        run: npm test
+      - name: Test (unit lane)
+        run: npm run test:unit
+
+  integration:
+    name: integration (Linux / Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install ripgrep (CI/dev environment parity)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+          rg --version
+
+      - name: Test (integration lane)
+        run: npm run test:integration
+
+  package:
+    name: package (Linux / Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build
         run: npm run build
 
       - name: Lint package with publint
-        if: runner.os == 'Linux'
         run: npx publint
 
       - name: Check types with arethetypeswrong
-        if: runner.os == 'Linux'
         run: npx --package=@arethetypeswrong/cli attw --pack . --profile esm-only
 
       - name: Pack dry-run
-        if: runner.os == 'Linux'
         run: npm pack --dry-run
 
       - name: Tarball install smoke test
@@ -100,10 +124,9 @@ jobs:
 
       - name: Onboarding smoke test (git-clone install path)
         env:
-          # Run against the in-tree checkout (already built above) so the
-          # smoke catches drift introduced by the current PR before it lands.
-          # On main pushes this also exercises the install path users would
-          # walk through when they first try the project.
+          # Run against the in-tree checkout (already built above) so the smoke
+          # catches drift introduced by the current PR before it lands. On main
+          # pushes this also exercises the install path new users walk through.
           INTERLINKED_REPO_URL: ${{ github.workspace }}
           INTERLINKED_REPO_REF: HEAD
         run: bash scripts/smoke-onboarding.sh

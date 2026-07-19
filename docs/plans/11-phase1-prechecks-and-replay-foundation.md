@@ -98,14 +98,14 @@ Goal: capture a single SHA that anchors the *complete* world-state at session st
 |---|---|---|
 | `src/lib/hook-template-chunks/session-state.ts` | edit | Around `:996-1022` (where `sessionStartHead` is captured). Extend the capture to also: (a) `git stash create` to get a stash-commit SHA representing the current working-tree + index state without touching refs; (b) `git ls-files --others --exclude-standard` to list untracked-but-not-ignored files (these are NOT in the stash commit). Persist as `session_start_anchor: { head: <sha>, worktree: <stash-sha or null>, untracked: string[], branch: string, timestamp: string }`. |
 | `src/lib/local-activity.ts` | edit | Extend the session JSON shape (around `:117` where `session_start_head` is declared) with the new `session_start_anchor` object. Keep `session_start_head` populated for backwards compat (read it from `session_start_anchor.head`). |
-| `src/lib/hook-template-chunks/session-state.test.ts` | edit | Reuse the existing SHA-injection test pattern (`:28`); the new fields must also be SHA-validated before any `execSync` interpolation. |
+| `src/lib/hook-template-chunks/session-state.integration.test.ts` | edit | Reuse the existing SHA-injection test pattern (`:28`); the new fields must also be SHA-validated before any `execSync` interpolation. |
 | New: `.interlinked/sessions/{session_id}.anchor.json` | runtime artifact | One file per session, written once at SessionStart. Cheaper to query than re-deriving from session JSON. |
 
 ### Implementation notes
 
 - **`git stash create` is the right primitive.** Unlike `git stash` (which modifies refs and pops state), `git stash create` only writes commit objects to the object database and prints the SHA. Working tree is unmodified. Cost: ~50–200ms for a typical dirty tree, never modifies user state.
 - **Untracked files:** `git stash create` does **not** include untracked files unless `-u` is passed, but the `-u` form is `git stash` (no `create`). Workaround: list them via `ls-files --others` and either (a) record paths only (cheaper, what this plan does) or (b) hash each path's content separately. (a) is sufficient because Phase 1 doesn't ship a replay command — it just lays the data foundation.
-- **SHA validation:** All values that could end up in shell interpolation must pass `isGitSha` per the existing test (`session-state.test.ts:32`). The branch name is the only non-SHA field; sanitize to `[a-zA-Z0-9._/-]+` before any shell use.
+- **SHA validation:** All values that could end up in shell interpolation must pass `isGitSha` per the existing test (`session-state.integration.test.ts:32`). The branch name is the only non-SHA field; sanitize to `[a-zA-Z0-9._/-]+` before any shell use.
 - **No new Bash spawn beyond what the hook already does.** Hook already runs `git rev-parse HEAD` for `session_start_head`; add two more lightweight git invocations adjacent to it.
 
 ### Validation
