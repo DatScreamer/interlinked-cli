@@ -68,7 +68,7 @@ npx vitest run src/commands/__tests__/cli-bugs.test.ts
 | **Default (high-signal gate)** | *(none)* | Tsc/biome/oxlint/gitleaks/semgrep/dep-audit + check-FP-safe generic checks. Intended to run clean; failures are actionable. |
 | **Deep audit** | `--all-checks` | Adds heuristic smell/taste checks (complexity, magic numbers, data clumps, test-coverage signals, etc.). Intended for periodic review, not as a gate. |
 
-The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `cli/src/commands/verify/advisory.ts` (re-exported from `verify.ts` for back-compat) and is pinned by a regression test so policy changes show up in diffs. Edit both together. Each entry has a rationale comment explaining why it's advisory.
+The demoted list lives in `DEFAULT_ADVISORY_SKIPS` in `src/commands/verify/advisory.ts` (re-exported from `verify.ts` for back-compat) and is pinned by a regression test so policy changes show up in diffs. Edit both together. Each entry has a rationale comment explaining why it's advisory.
 
 **When adding a new check**: if false-positive rate is low and the check catches real bugs, leave it in the default set. If it's heuristic (style, complexity, coverage, smell), add it to `DEFAULT_ADVISORY_SKIPS` with a one-line rationale and update the regression test.
 
@@ -167,11 +167,11 @@ pinned by `merge-parity.test.ts`).
 
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 
-The CLI includes a **local harness server** (`src/harness/`) that runs on Node.js and evaluates agent actions via a Unix socket. Full documentation: `cli/docs/harness.md`. Auto-generated reference docs: `cli/docs/generated/`.
+The CLI includes a **local harness server** (`src/harness/`) that runs on Node.js and evaluates agent actions via a Unix socket. Full documentation: `docs/harness.md`. Auto-generated reference docs: `docs/generated/`.
 
 **Key commands:**
 ```bash
-node cli/dist/harness/server.js --verbose  # Start harness (pre-compiled)
+node dist/harness/server.js --verbose      # Start harness (pre-compiled)
 npx tsx src/harness/server.ts --verbose    # Start harness (dev mode)
 interlinked harness start                  # Start as daemon
 interlinked harness stop                   # Stop daemon
@@ -180,6 +180,43 @@ interlinked harness checks                 # Authoritative check inventory (per-
 interlinked harness test "rm -rf /"        # Test command against rules
 npm run docs                               # Regenerate reference docs
 ```
+
+### A blocked edit is a stale-daemon suspect first
+
+**The running daemon serves the build it started with.** `interlinked harness
+start` loads `dist/harness/server.js`; editing `src/harness/**` changes nothing
+about the process currently answering the socket. So when a gate blocks an edit
+that *should* pass — or a fix you just wrote fails to take effect — the first
+hypothesis is not "the guard is misconfigured", it is **"the daemon is older
+than the fix"**. Two sessions were spent diagnosing correctly-configured gates
+that were simply not the code running.
+
+Check freshness before theorising:
+
+```bash
+find src -name '*.ts' -newer dist/harness/server.js -print -quit   # any output => build is stale
+interlinked harness status                                          # pid + loaded rules
+npm run build && interlinked harness restart                        # the actual fix
+```
+
+(Scope the freshness probe to all of `src` — the daemon bundles `src/lib` and
+`src/commands` too, so a `src/harness`-only probe misses ~100 importer files.)
+
+`~/.claude/hooks/interlinked-gate-status.sh` runs this at SessionStart and
+prints a warning, so the staleness should be in context before the first edit.
+Orphan daemons from other sessions can't steal the socket (the PID-aware
+anti-stomp guard owns that), but multi-session restart churn can briefly leave
+NO daemon answering — tool calls then fail closed until the auto-restart wins;
+`interlinked harness start` reaps orphans and reports what it reaped. A rebuild
+here also does NOT reach other repos' daemons: each guarded repo (e.g.
+mcp-client-bio) runs its own copy of this build — restart those daemons too
+after a harness change that matters to them.
+
+The gate semantics themselves are documented where they are enforced — the line
+cap in *Per-file line cap* above, installs in *Supply-chain allowlist*, the
+water-lines in *Baseline-integrity gate*. Do not restate their thresholds here;
+duplicated policy numbers drift, which is a class this repo's own
+`duplicated_policy_constant` check exists to catch.
 
 **Harness source files (core):**
 | File | Purpose |
@@ -376,6 +413,24 @@ Suppression comments (`// @ts-ignore`, `// eslint-disable-next-line`,
 disable on the file carries a reason). Justification conventions: any
 text after `@ts-ignore`/`@ts-expect-error`; ` -- ` for ESLint; `:` for
 Biome. `@ts-nocheck` is exempt (file-level, no per-line convention).
+
+## Querying the local data (`.interlinked/`) — check it BEFORE raw transcripts
+
+`.interlinked/INDEX.md` (generated, point-in-time) maps every entry in the data
+directory — schemas, sizes, live/dead status, and bounded shell recipes. The
+local logs are richer than `~/.claude/projects/*.jsonl` transcripts: they carry
+cross-runner tool events (`collection.jsonl`), guard verdicts with rule ids
+(`activity.jsonl`), per-check outcomes (`check-results.jsonl`), and token costs
+(`costs.jsonl` — dormant since 2026-06-01). Query them first; fall back to raw
+transcripts only for something genuinely absent locally.
+
+`interlinked query` is the read verb (added 2026-07-24): `interlinked query`
+with no args prints the source catalog; `query blocks`, `query checks --by
+checks.id --since 7d`, `query costs --by session_id --sum output_tokens`, or
+any `.jsonl` path with `--where k=v`. Scans are bounded by default (newest 20k
+records / 64 MB tail) and the footer always states how much was scanned.
+**Never full-read `collection.jsonl`, `activity.jsonl`, or `timeline.jsonl`** —
+they are hundreds of MB; bound every read (`tail -n` / `interlinked query`).
 
 ## Recurrence — repeating-pattern aggregation
 
@@ -726,7 +781,7 @@ Tests heavily mock the file system and network. The test infrastructure uses vit
 
 Manual harness testing via Unix socket:
 ```bash
-node cli/dist/harness/server.js --verbose &
+node dist/harness/server.js --verbose &
 echo '{"hook_event":"PreToolUse","session_id":"t","agent_source":"claude","tool_name":"Bash","tool_input":{"command":"rm -rf /"},"timestamp":"2026-03-17T00:00:00Z"}' | nc -U .interlinked/harness.sock
 # Expected: {"decision":"block","reason":"BLOCKED: Recursive deletion..."}
 ```

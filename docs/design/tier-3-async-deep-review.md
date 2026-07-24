@@ -1,6 +1,46 @@
 # Tier 3 — Async Deep Review
 
-**Status:** Designed (2026-05). Not built. Existing `/review` and `/security-review` skills cover the on-demand version; Tier 3 adds auto-invocation on pre-push and integrates the prose-policy evaluation that Tier 1 and Tier 2 can't reach.
+**Status:** Designed (2026-05), **amended 2026-07-20 (§0 — split-context reviewer).** Not
+built — which is why the amendment is free now. Existing `/review` and `/security-review`
+skills cover the on-demand version; Tier 3 adds auto-invocation on pre-push and integrates
+the prose-policy evaluation that Tier 1 and Tier 2 can't reach.
+
+## 0. AMENDMENT (2026-07-20) — the reviewer sees the diff, never the implementer's trajectory
+
+Full spec: `docs/design/adversarial-review-split-context.md`. Origin:
+`docs/external-pulse/bun-in-rust.md` §2.3 — Bun ran 1 implementer : 2+ adversarial reviewers
+: 1 fixer, and *"its context: only the diff. told to assume the code is wrong."*
+
+**The defect this corrects.** The sections below feed the code reviewer the implementer's
+**session trajectory** and ask it to judge `did_session_follow_methodology` (§3.1 line 67,
+§4.3, §6 SECTION 2, §6 output fields, §12 item 3; and `three-tier-architecture-v2.md:638`).
+That is the exact contamination the Bun contract removes: a reviewer handed *how the
+implementer convinced itself* inherits the implementer's frame — including the blind spots
+where the bugs are. All four Bun porting regressions compiled clean and looked plausible.
+
+**The corrected contract** (supersedes §3.1/§4.2/§4.3/§6/§12 wherever they put trajectory in
+the reviewer's context):
+
+| Role | Sees | Never sees | Answers |
+|---|---|---|---|
+| **Code reviewer** (×N, one lens each) | the diff; tree @ merge-base **minus `.interlinked/`**; prose policies; `CLAUDE.md`/`AGENTS.md` | trajectory; other reviewers' findings; whether any gate fired | "Where is this wrong?" |
+| **Skeptic verifier** (×1/finding) | the finding; the diff hunk | the reviewer's rationale | "Reproduce it — default: can't" |
+| **Process auditor** (×1) | trajectory; prose policies; the diff's **file list** | the diff contents | "Did the session follow methodology?" |
+
+The methodology judgment is not deleted — it moves to the auditor, a *different agent with a
+different context*. Two stages carry the burden of proof asymmetrically: adversarial finders
+(high recall, "this diff contains a defect") then skeptic verifiers (high precision, "name
+the failing input or drop it"), reusing the `harness-red-team.js` framing. **Warn-only stays
+(§13);** split-context governs *what the reviewer knows*, not *how hard the gate bites*.
+
+**Unblocks the build:** §10's trajectory-persistence prerequisite (steps 1-3) now serves the
+*auditor*, not the reviewer — so the code-review half of Tier 3 can ship before session-log
+persistence exists (it needs only `git diff` + prose + an API key).
+
+The original design follows unchanged; read it through the §0 contract.
+
+---
+
 
 **Audience:** Future-you when you build Tier 3 wiring. Companion to `three-tier-architecture-v2.md` (the canonical Tier 2 spec; the earlier `tier-2-llm-policy-gate.md` draft has been superseded).
 

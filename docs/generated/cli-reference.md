@@ -56,9 +56,11 @@ Commands:
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
   plan                                       Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts
+  query [options] [source]                   Bounded query over .interlinked JSONL logs (blocks/checks/recurrences/costs/… or a .jsonl path)
   recurrence                                 Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)
   reload [options]                           One-command dogfood loop: rebuild the CLI from its source checkout, refresh this repo's hooks, restart the daemon — reporting only what actually changed
   reminder                                   File reminder management (warnings when files are touched)
+  replay                                     Capture + replay substrate for the RL/eval environment (G1 inference proxy)
   reset [options]                            Nuclear: clear all local state
   resume [options] [checkpoint-id]           Resume from latest or specified checkpoint with context
   rewind [options] [checkpoint-id]           Restore working tree to a checkpoint state

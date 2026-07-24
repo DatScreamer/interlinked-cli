@@ -1,6 +1,55 @@
 # Overlay exec — running runtime oracles before the bytes land
 
-**Status:** Plan + spike, 2026-07-09. Not built. Sourced from `docs/external-pulse/bun-in-rust.md` §2.2.
+**Status:** Spike RUN 2026-07-20 (§0). Runner + wire contract shipped (uncommitted);
+`SKIP_ENTRIES` fix is the follow-up. Sourced from `docs/external-pulse/bun-in-rust.md` §2.2.
+
+## 0. Spike result (2026-07-20) — the thesis was falsified, then restored
+
+Job 0 (the noop probe, §3) measured overlay build/run/cleanup on this repo across
+9 runs (`scratch/probe-overlay-cost.mts`, `scratch/probe-overlay-cost` output):
+
+| Phase | p50 | p90 |
+|---|---|---|
+| `overlayBuild` (cpSync mirror) | **10,715 ms** | 13,736 ms |
+| `noopJob` (`node -e process.exit(0)`) | 42 ms | 104 ms |
+| `cleanup` (rm -rf) | 2,213 ms | 3,697 ms |
+
+So the design-doc assumption below — that overlay build is "a rounding error on top of
+the coverage run we already pay" — was **wrong for this repo**. The noop job is 42 ms; the
+entire cost is the tree copy. Root cause: `SKIP_ENTRIES` in `coverage-overlay.ts` excludes
+only `.git` / `node_modules` / `.interlinked`, so every build cpSync-mirrors **3.2 GB**,
+dominated by gitignored non-source dirs the suite never needs — `reference-repos/` (866 MB),
+`cloud/` (208 MB), `.archive/` (69 MB), `tmp/` (14 MB). The real source surface
+(`src`+`docs`+`dist`+`scripts`+configs) is ~30 MB.
+
+**Counterfactual, measured:** copying only the source surface takes **0.62 s** vs **8.6 s**
+for the full copyable set — a **14× reduction**. So local overlay-exec IS viable; the
+blocker is the skip list, not the approach.
+
+**Two conclusions:**
+1. **This is a latent perf bug in the shipped, default-on coverage gate**, not just the
+   spike — every gated edit that actually builds the overlay (i.e. isn't budget-deferred)
+   copies 1.2 GB of reference repos + cloud worker + archives. The fix (make `SKIP_ENTRIES`
+   gitignore-aware, or add the heavy non-source dirs) is a ~14× speedup to an existing gate.
+   It is its own careful unit — the overlay is load-bearing, so it needs an integration
+   test proving the coverage gate still computes correct coverage against the trimmed tree.
+2. **The runtime-oracle thesis holds once the overlay is trimmed.** With build at ~0.6 s and
+   the noop at 42 ms, a leak/flake job has ~24 s of the budget to itself. Route the heavy
+   instrumented jobs (ASan, Miri) to the Sandbox regardless (cold instrumented rebuild), per
+   §5; the light ones (leak, flake) run local.
+
+**Shipped this spike (uncommitted):**
+- `src/harness/overlay-command-runner.ts` — `runArgvInOverlay(argv, overlayRoot, budgetMs, spawn?, env?)`,
+  the generic bounded-argv seam (§2), + `resolveOverlayBin`. 8 tests, injectable spawn.
+- `src/harness/sandbox-jobs/types.ts` — the `SandboxJobRequest` wire contract with the
+  **no-argv security invariant** (§5) enforced by `isValidSandboxJobRequest` (rejects any
+  smuggled `command`/`argv`/`script`/… channel). 4 tests.
+- `coverage-runner.ts` `SpawnFn` gained an `env` option (for `--expose-gc` leak probes).
+
+The original plan below is unchanged; §0 supersedes the "build is free" premise in §3/§7.
+
+---
+
 
 **The thesis, in Jarred's words:**
 

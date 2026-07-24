@@ -635,7 +635,7 @@ What it does NOT do by default:
 
 Retained from `tier-3-async-deep-review.md`, with §6.4 redaction/data-class routing applied to cloud-bound inputs:
 - Triggered on `git push` via pre-push hook.
-- Loads active prose policies + **redacted** session trajectory + **redacted/minimized** commit diff. The input composer uses the same §6.4 scanner/redactor/data-class router as T2; if redaction fails, no cloud reviewer call is attempted and the review is recorded as skipped.
+- Loads active prose policies + **redacted/minimized** commit diff for the code reviewer. **The session trajectory is NOT a reviewer input** (amended 2026-07-20 — `tier-3-async-deep-review.md` §0, `adversarial-review-split-context.md`): it goes only to the separate *process auditor*, which never sees the diff contents. The reviewer sees the diff and nothing about how the implementer arrived at it. The input composer still runs the same §6.4 scanner/redactor/data-class router on the cloud-bound diff; if redaction fails, no cloud reviewer call is attempted and the review is recorded as skipped. (This is Surface 2 only; Surface 1's live-feedback supermodel is trajectory-native by design.)
 - Reviewer agent (Sonnet default, Opus on demand) emits structured findings.
 - Findings written to `.interlinked/reviews/<range-sha>.md`.
 - **Default warn-only; local opt-in `block_on_critical` may block critical findings; Agent CI hard gate is a separate surface.** Per `feedback_reluctance_to_push.md`. The default-warn / opt-in-block split is canonical for the local pre-push surface; the canonical hard-gate semantics (unanimous-allow, audited bypass) live in `multi-agent-pre-push-review.md` and apply to the Agent CI / managed remote product, not the local CLI.
