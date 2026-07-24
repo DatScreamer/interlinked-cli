@@ -10,7 +10,7 @@
  * - normal: Default readable output
  * - full: Detailed output with all fields
  */
-type OutputMode = "json" | "short" | "normal" | "full";
+export type OutputMode = "json" | "short" | "normal" | "full";
 
 /**
  * Determine output mode from command options.

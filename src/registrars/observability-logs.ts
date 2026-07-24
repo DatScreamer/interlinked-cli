@@ -234,4 +234,37 @@ export function registerObservabilityLogCommands(program: Command): void {
 			const { debtResolveCommand } = await import("../commands/debt.js");
 			await debtResolveCommand(file, opts);
 		});
+
+	// ===========================================
+	// query — bounded filter/aggregate surface over the .interlinked JSONL
+	// logs: the read verb the append-only logs lacked. Named sources carry an
+	// identity filter + display defaults; any .jsonl path works too. Scans are
+	// budgeted (newest-N records / MB tail) so the 400 MB logs stay safe to
+	// query. No positional prints the source catalog.
+	// ===========================================
+	program
+		.command("query [source]")
+		.description(
+			"Bounded query over .interlinked JSONL logs (blocks/checks/recurrences/costs/… or a .jsonl path)",
+		)
+		.option(
+			"--where <expr...>",
+			"Filter: key=value | key!=v | key~=substr | key>n (AND; dot paths fan out over arrays)",
+		)
+		.option("--fields <csv>", "Columns to display (dot paths)")
+		.option("--by <path>", "Aggregate: count records per value of <path>")
+		.option("--sum <path>", "With --by: sum this numeric field per group")
+		.option("--since <dur|iso>", "Only records at/after (30m, 2h, 7d, or an ISO timestamp)")
+		.option("--limit <n>", "Rows to display (default 20)")
+		.option("--last <n>", "Scan at most the newest N records (default 20000)")
+		.option("--max-mb <mb>", "Scan at most this many MB from the tail (default 64)")
+		.option("--file <path>", "Query an explicit JSONL file path")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "Rows only, no footer")
+		.option("--full", "No cell truncation")
+		.action(async (source: string | undefined, opts: OptionValues) => {
+			const { queryCommand } = await import("../commands/query.js");
+			await queryCommand(source, opts);
+		});
 }

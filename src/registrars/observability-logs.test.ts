@@ -63,6 +63,10 @@ vi.mock(`../commands/debt.js`, () => ({
 	debtShowCommand: (...a: unknown[]) => debtShowCommand(...a),
 	debtResolveCommand: (...a: unknown[]) => debtResolveCommand(...a),
 }));
+const queryCommand = vi.fn();
+vi.mock(`../commands/query.js`, () => ({
+	queryCommand: (...a: unknown[]) => queryCommand(...a),
+}));
 
 function build(): Command {
 	const program = new Command();
@@ -124,7 +128,7 @@ describe("registerObservabilityLogCommands — structure", () => {
 	it("registers the append-only log inspection groups with descriptions", () => {
 		const program = build();
 		const top = names(program);
-		for (const name of ["recurrence", "trajectory", "audit", "plan", "cloud", "debt"]) {
+		for (const name of ["recurrence", "trajectory", "audit", "plan", "cloud", "debt", "query"]) {
 			expect(top).toContain(name);
 		}
 		expect(sub(program, "recurrence").description()).toContain("repeating agent behaviors");
@@ -133,6 +137,7 @@ describe("registerObservabilityLogCommands — structure", () => {
 		expect(sub(program, "plan").description()).toContain("agent-emitted plans");
 		expect(sub(program, "cloud").description()).toContain("cloud governor");
 		expect(sub(program, "debt").description()).toContain("obligation ledger");
+		expect(sub(program, "query").description()).toContain("Bounded query");
 	});
 
 	it("registers recurrence subcommands", () => {
@@ -504,6 +509,57 @@ describe("debt actions — wiring", () => {
 		expect(debtShowCommand).toHaveBeenCalledTimes(1);
 		expect(nonNull(debtShowCommand.mock.calls[0])[0]).toBe("src/foo.ts");
 		expect(nonNull(debtShowCommand.mock.calls[0])[1]).toMatchObject({ cwd: "/d", json: true });
+	});
+
+	it("query forwards the source positional and the full option spread", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"query",
+				"blocks",
+				"--where",
+				"tool=Bash",
+				"summary~=rm",
+				"--by",
+				"checks.id",
+				"--sum",
+				"output_tokens",
+				"--since",
+				"7d",
+				"--limit",
+				"5",
+				"--last",
+				"1000",
+				"--max-mb",
+				"8",
+				"--fields",
+				"tool,summary",
+				"--cwd",
+				"/q",
+				"--json",
+			],
+			{ from: "user" },
+		);
+		expect(nonNull(queryCommand.mock.calls[0])[0]).toBe("blocks");
+		expect(nonNull(queryCommand.mock.calls[0])[1]).toMatchObject({
+			where: ["tool=Bash", "summary~=rm"],
+			by: "checks.id",
+			sum: "output_tokens",
+			since: "7d",
+			limit: "5",
+			last: "1000",
+			maxMb: "8",
+			fields: "tool,summary",
+			cwd: "/q",
+			json: true,
+		});
+	});
+
+	it("query with no positional reaches the catalog path", async () => {
+		const program = build();
+		await program.parseAsync(["query"], { from: "user" });
+		expect(queryCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(queryCommand.mock.calls[0])[0]).toBeUndefined();
 	});
 
 	it("resolve forwards the file positional and opts", async () => {
