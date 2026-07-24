@@ -19,6 +19,7 @@ import { getOrCreateEngine } from "../check-engine/index.js";
 import { checkProjectSetup } from "../generic-checks.js";
 import type { GraphPredictionMode } from "../graph-prediction-pre-tool.js";
 import { containsSecrets as containsSecretsDetailed, findProjectRoot } from "../quality-checks.js";
+import { harnessNow } from "../replay/harness-clock.js";
 import { loadGraphForFile } from "../supermodel-graph.js";
 import { createTrajectoryDetector, type TrajectoryEvent } from "../trajectory.js";
 import type {
@@ -30,11 +31,11 @@ import type {
 export {
 	collectDirtyDependentWarning,
 	computeFullNewContent,
+	type ExfilGuardResult,
 	evaluateCurlMcpGuards,
 	evaluateExfilGuards,
 	evaluateMarkdownFirstCurlGuard,
 	evaluateReadGuards,
-	type ExfilGuardResult,
 	type ReadGuardResult,
 } from "./pre-tool-helpers-guard-blocks.js";
 
@@ -104,7 +105,7 @@ export function runTrajectoryDetector(
 	const tsString = event.timestamp;
 	const tsMs = tsString ? Date.parse(tsString) : Number.NaN;
 	const trajectoryEvent: TrajectoryEvent = {
-		ts_ms: Number.isFinite(tsMs) ? tsMs : Date.now(),
+		ts_ms: Number.isFinite(tsMs) ? tsMs : harnessNow(),
 		hook_event:
 			event.hook_event === "PostToolUse" || event.hook_event === "PostToolUseFailure"
 				? event.hook_event

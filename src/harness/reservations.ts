@@ -15,20 +15,29 @@
 // emission) are derived from the same entry. See `bitar-decider.md`.
 
 import type { CohortManager } from "./cohort.js";
-import type { ReservationConflict, ReservationEntry } from "./types.js";
+import { harnessNow } from "./replay/harness-clock.js";
 import {
 	applyTransition,
 	canonicalAgent,
 	type ReservationCache,
 	type ReservationEventSink,
 	type ReservationLogEvent,
+	type ReservationTxn,
 	replayTransitions,
-	sameOwner,
 	type ServerApiClient,
 	type ServerReservation,
-	type ReservationTxn,
+	sameOwner,
 } from "./reservations-state-machine.js";
+import type { ReservationConflict, ReservationEntry } from "./types.js";
 
+export type {
+	ReservationCache,
+	ReservationEventSink,
+	ReservationLogEvent,
+	ReservationTxn,
+	ServerApiClient,
+	ServerReservation,
+};
 // Re-exported so the public surface of this module is unchanged: the
 // state-machine + identity helpers moved to a sibling for the line cap,
 // but importers (and tests) still pull them from "./reservations.js".
@@ -37,14 +46,6 @@ export {
 	canonicalAgent,
 	replayTransitions,
 	sameOwner,
-};
-export type {
-	ReservationCache,
-	ReservationEventSink,
-	ReservationLogEvent,
-	ServerApiClient,
-	ServerReservation,
-	ReservationTxn,
 };
 
 /** How long to hold a reservation after the last edit before auto-releasing (30s) */
@@ -111,7 +112,7 @@ export class ReservationManager {
 			if (sameOwner(entry.agent_name, agentName)) continue; // Own reservation (any name variant)
 			if (this.pathMatchesPattern(filePath, pattern)) {
 				// Check if expired — prune via the SSoT transition.
-				if (entry.expires_at && new Date(entry.expires_at).getTime() < Date.now()) {
+				if (entry.expires_at && new Date(entry.expires_at).getTime() < harnessNow()) {
 					applyTransition(this.cache, { kind: "expire", file: pattern });
 					continue;
 				}
@@ -309,7 +310,7 @@ export class ReservationManager {
 	/** Get all active reservations */
 	getAll(): ReservationEntry[] {
 		// Prune expired entries via the SSoT transition.
-		const now = Date.now();
+		const now = harnessNow();
 		for (const [path, entry] of this.cache) {
 			if (entry.expires_at && new Date(entry.expires_at).getTime() < now) {
 				applyTransition(this.cache, { kind: "expire", file: path });
@@ -354,7 +355,7 @@ export class ReservationManager {
 						reservedAt: new Date().toISOString(),
 						expiresAt:
 							sr.expires_at ||
-							new Date(Date.now() + RESERVATION_TTL_S * 1000).toISOString(),
+							new Date(harnessNow() + RESERVATION_TTL_S * 1000).toISOString(),
 					});
 				}
 			}

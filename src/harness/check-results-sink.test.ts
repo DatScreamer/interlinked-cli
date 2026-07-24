@@ -41,6 +41,7 @@ describe("buildCheckRow", () => {
 		);
 		expect(row).not.toBeNull();
 		expect(row?.tool_use_id).toBe("t1");
+		expect(row?.session).toBe("s"); // session attribution — noise is sliceable per session
 		expect(row?.tool).toBe("Edit");
 		expect(row?.file).toBe("src/db.ts"); // a finding's own file wins over tool_input
 		expect(row?.decision).toBe("block");

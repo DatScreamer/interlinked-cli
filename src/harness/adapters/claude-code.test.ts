@@ -114,6 +114,31 @@ describe("Claude Code renderSettingsFragment", () => {
 		expect(nonNull(post.hooks[0]).command).not.toContain("|| true");
 	});
 
+	it("registers SessionEnd as a detached fire-and-forget command", () => {
+		const fragment = frag.fragment as {
+			hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+		};
+		const sessionEnd = nonNull(nonNull(fragment.hooks.SessionEnd)[0]);
+		const command = nonNull(sessionEnd.hooks[0]).command;
+		// Backgrounded subshell + discarded output: `claude update` fires
+		// SessionEnd and exits immediately, cancelling any foreground hook that
+		// is still booting ("Hook cancelled"). Detached, the shell returns in
+		// milliseconds and there is nothing left to cancel.
+		expect(command).toContain("( node");
+		expect(command).toContain(">/dev/null 2>&1 & )");
+		expect(command).toContain("--event 'SessionEnd'");
+	});
+
+	it("keeps every other event foreground (their output is consumed)", () => {
+		const fragment = frag.fragment as {
+			hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+		};
+		for (const [eventName, entries] of Object.entries(fragment.hooks)) {
+			if (eventName === "SessionEnd") continue;
+			expect(nonNull(nonNull(entries[0]).hooks[0]).command).not.toContain("& )");
+		}
+	});
+
 	it("uses empty matcher for PreToolUse as well", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string }>>;

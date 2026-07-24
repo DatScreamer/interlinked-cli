@@ -42,7 +42,9 @@ export function findManifestFiles(root: string, match: (name: string) => boolean
 	const walk = (dir: string, rel: string, depth: number): void => {
 		let entries: Dirent[];
 		try {
-			entries = readdirSync(dir, { withFileTypes: true });
+			entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+			);
 		} catch {
 			return;
 		}

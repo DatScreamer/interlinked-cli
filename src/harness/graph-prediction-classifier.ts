@@ -107,7 +107,9 @@ function scanForShardNearSourcePair(absCwd: string): boolean {
 		if (isExcluded(dir)) continue;
 		let entries: import("node:fs").Dirent[];
 		try {
-			entries = readdirSync(dir, { withFileTypes: true, encoding: "utf8" });
+			entries = readdirSync(dir, { withFileTypes: true, encoding: "utf8" }).sort((a, b) =>
+				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+			);
 		} catch {
 			continue;
 		}

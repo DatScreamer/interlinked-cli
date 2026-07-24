@@ -307,6 +307,7 @@ export class ProjectGraph {
 		const dir = dirname(absPath);
 		try {
 			return readdirSync(dir)
+				.sort()
 				.filter((name) => {
 					const ext = extname(name);
 					return TS_JS_EXTENSIONS.has(ext) && join(dir, name) !== absPath;
@@ -444,7 +445,9 @@ export class ProjectGraph {
 				}
 			}
 
-			const entries = readdirSync(dir, { withFileTypes: true });
+			const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+			);
 			for (const entry of entries) {
 				if (entry.name.startsWith(".") && SKIP_DIRS.has(entry.name)) continue;
 				if (SKIP_DIRS.has(entry.name)) continue;

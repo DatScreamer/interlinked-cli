@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
+import { harnessNow } from "./replay/harness-clock.js";
 
 /** Case-insensitive match for the literal token `break glass`. Enforces a
  *  word boundary so false positives on things like `breakglass.com` don't
@@ -146,7 +147,7 @@ const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export function summarizeBreakGlass(
 	cwd: string,
 	windowMs: number = DEFAULT_WINDOW_MS,
-	clock: () => number = Date.now,
+	clock: () => number = harnessNow,
 ): BreakGlassStats {
 	const entries = readBreakGlassLog(cwd);
 	const cutoff = clock() - windowMs;

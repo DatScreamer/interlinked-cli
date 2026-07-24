@@ -236,3 +236,52 @@ export function selectAffectedTests(input: SelectAffectedTestsInput): string[] |
 
 	return [...tests].sort();
 }
+
+/**
+ * The overlay-materialized files a route may scope to (a co-created test of an
+ * atomic apply_patch / MultiEdit). Structural subset of the guard's OverlayFile
+ * — declared here to keep the selector free of an evaluator-layer import. */
+export interface RouteOverlayFile {
+	relPath: string;
+	content: string;
+	delete?: boolean;
+}
+
+/** How the per-edit coverage overlay should run: only the affected tests
+ *  (`scoped`) or the whole suite (`full`). */
+export type SelectionRoute = { kind: "scoped"; tests: string[] } | { kind: "full" };
+
+/**
+ * Run affected-test selection (when a dependency view is available) and map its
+ * result to a {@link SelectionRoute}. A non-empty subset routes to `scoped` (run
+ * only those tests). Everything else routes to `full`:
+ *   - no `depView` / `null` from the selector (file not in the graph) — "don't
+ *     know which tests", so run them all rather than a wrong subset;
+ *   - `[]` (file in the graph, but no test STATICALLY imports it) — the
+ *     evidence-authority contract: the graph's silence is not proof of no
+ *     coverage (an integration test exercises code it never imports), so MEASURE
+ *     with the full suite; the coverage decision blocks only on what actually
+ *     ran uncovered.
+ * Kept out of `checkCoverageWrite` so that entry stays low-complexity.
+ */
+export function routeBySelection(
+	relPath: string,
+	projectRoot: string,
+	depView: DependencyView | undefined,
+	overlayFiles?: ReadonlyArray<RouteOverlayFile>,
+): SelectionRoute {
+	if (!depView) return { kind: "full" };
+	// Forward the edit's overlay sections so a BRAND-NEW file (not yet in the
+	// graph) can scope to a test created in the SAME edit, instead of deferring.
+	const overlaySections = (overlayFiles ?? [])
+		.filter((f) => !f.delete)
+		.map((f) => ({ relPath: f.relPath, content: f.content }));
+	const selected = selectAffectedTests({
+		editedRelPath: relPath,
+		projectRoot,
+		depView,
+		overlaySections,
+	});
+	if (selected === null || selected.length === 0) return { kind: "full" };
+	return { kind: "scoped", tests: selected };
+}

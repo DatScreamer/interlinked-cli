@@ -8,7 +8,7 @@
 // filesystem and their own logic; they hold no module-private state
 // from the main file. Behavior is byte-identical to the originals.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DiscoveredPrimitive, DiscoveryCache } from "./discovered-primitives.js";
 
@@ -39,7 +39,7 @@ export function listSourceFiles(repoRoot: string): string[] {
 		if (!dir) break;
 		let entries: string[];
 		try {
-			entries = readdirSync(dir);
+			entries = readdirSync(dir).sort();
 		} catch {
 			continue;
 		}

@@ -191,6 +191,12 @@ export function applyQualityDecision(
 
 	if (blocking.length > 0) {
 		decision.decision = "block";
+		// Rule id = the lead blocking check's name (e.g. "typescript"), so
+		// activity/recurrence aggregation can see repeat-block thrash — 216 of
+		// the last 735 guard_block rows had NO id, all from paths like this one
+		// (2026-07 telemetry), making retry loops invisible to `query blocks --by
+		// guard_rule_id`.
+		decision.rule_id ??= blocking[0]?.name;
 		// Compose the block reason so the actionable (blocking) findings lead and
 		// the advisory pile is demoted into a clearly-labelled tail. Without the
 		// split, one deterministic error drags the whole heuristic list into the

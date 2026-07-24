@@ -13,6 +13,7 @@
 
 // NOTE: All detectors are pure functions over arrays — no side effects, no I/O.
 import { nonNull } from "../lib/non-null.js";
+import { harnessNow } from "./replay/harness-clock.js";
 import type { ErrorRecord, SessionTrajectory } from "./types.js";
 
 // ===========================================
@@ -205,7 +206,7 @@ function getTemporalStats(records: ErrorRecord[], file: string): TemporalStats {
 		.filter((r) => r.file === file)
 		.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-	const now = Date.now();
+	const now = harnessNow();
 	const hourAgo = now - 60 * 60 * 1000;
 	const fourHoursAgo = now - 4 * 60 * 60 * 1000;
 	const dayAgo = now - 24 * 60 * 60 * 1000;

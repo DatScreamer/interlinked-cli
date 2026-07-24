@@ -33,6 +33,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { harnessNow } from "./replay/harness-clock.js";
 
 /** Directory under the project root where all persisted state lives. */
 const INTERLINKED_DIR = ".interlinked";
@@ -118,7 +119,7 @@ export function readRuntimeEstimateMs(projectRoot: string): number | null {
 export function updateRuntimeEstimateMs(
 	projectRoot: string,
 	measuredMs: number,
-	clock: () => number = Date.now,
+	clock: () => number = harnessNow,
 ): void {
 	if (!Number.isFinite(measuredMs) || measuredMs < 0) return;
 	const prev = readRuntimeEstimateMs(projectRoot);
@@ -134,35 +135,72 @@ export function updateRuntimeEstimateMs(
 // Per-file coverage baseline
 // ===========================================
 
-/** Map of repo-relative POSIX path → covered-fraction (0..1) at last allow. */
-type CoverageBaseline = Record<string, number>;
+/** One stored baseline value: a legacy bare fraction, or fraction + the
+ *  test-scope id that measured it (see evaluator/coverage-scope.ts — a drop
+ *  comparison across DIFFERENT scopes is meaningless and used to false-block). */
+type StoredBaselineValue = number | { f: number; scope?: string };
+
+/** Map of repo-relative POSIX path → stored baseline value at last allow. */
+type CoverageBaseline = Record<string, StoredBaselineValue>;
+
+/** A decoded baseline entry: the fraction plus the scope that earned it
+ *  (`null` for legacy bare-number entries written before scopes existed). */
+export interface CoverageBaselineEntry {
+	fraction: number;
+	scope: string | null;
+}
+
+function decodeBaselineValue(value: StoredBaselineValue | undefined): CoverageBaselineEntry | null {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return { fraction: value, scope: null };
+	}
+	if (typeof value === "object" && value !== null) {
+		const fraction = (value as { f?: unknown }).f;
+		if (typeof fraction === "number" && Number.isFinite(fraction)) {
+			const scope = (value as { scope?: unknown }).scope;
+			return { fraction, scope: typeof scope === "string" ? scope : null };
+		}
+	}
+	return null;
+}
 
 /**
  * The recorded baseline covered-fraction (0..1) for one file, or `null` when no
  * baseline exists for it. `null` means "first time we've seen this file" — the
- * drop check treats that as "no regression to compare against".
+ * drop check treats that as "no regression to compare against". Reads both the
+ * legacy bare-number shape and the scoped object shape.
  */
 export function readFileCoverageBaseline(projectRoot: string, relPath: string): number | null {
+	return readFileCoverageBaselineEntry(projectRoot, relPath)?.fraction ?? null;
+}
+
+/** The full baseline entry (fraction + measuring scope) for one file, or null. */
+export function readFileCoverageBaselineEntry(
+	projectRoot: string,
+	relPath: string,
+): CoverageBaselineEntry | null {
 	const data = readJsonFile<CoverageBaseline>(interlinkedPath(projectRoot, BASELINE_FILE));
 	if (!data) return null;
-	const value = data[relPath];
-	return typeof value === "number" && Number.isFinite(value) ? value : null;
+	return decodeBaselineValue(data[relPath]);
 }
 
 /**
  * Persist `fraction` (0..1) as the new baseline covered-fraction for `relPath`,
  * merging into any existing baseline map. Called only after an edit is ALLOWED,
- * so the baseline always reflects the last state the gate let through.
+ * so the baseline always reflects the last state the gate let through. When
+ * `scope` is given, the entry records which test scope measured the fraction —
+ * the drop ratchet only compares within one scope and re-anchors across scopes.
  */
 export function writeFileCoverageBaseline(
 	projectRoot: string,
 	relPath: string,
 	fraction: number,
+	scope?: string,
 ): void {
 	if (!Number.isFinite(fraction)) return;
 	const path = interlinkedPath(projectRoot, BASELINE_FILE);
 	const data = readJsonFile<CoverageBaseline>(path) ?? {};
-	data[relPath] = fraction;
+	data[relPath] = scope === undefined ? fraction : { f: fraction, scope };
 	writeJsonFile(path, data);
 }
 

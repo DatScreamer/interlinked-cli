@@ -25,6 +25,9 @@ export interface CheckRowEntry {
 export interface CheckRow {
 	ts: string;
 	tool_use_id: string;
+	/** Session the call belonged to — lets consumers slice check noise per
+	 *  session/agent (absent on legacy rows written before 2026-07-24). */
+	session?: string;
 	tool?: string;
 	file?: string;
 	decision: "allow" | "block";
@@ -77,6 +80,7 @@ export function buildCheckRow(event: HarnessEvent, decision: HarnessDecision): C
 		decision: decision.decision === "allow" ? "allow" : "block",
 		checks,
 	};
+	if (event.session_id) row.session = event.session_id;
 	if (event.tool_name) row.tool = event.tool_name;
 	const file = extractFile(event, decision.check_results);
 	if (file) row.file = file;

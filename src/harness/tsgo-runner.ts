@@ -57,6 +57,7 @@ import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TsgoDiagnostic } from "./daemon-protocol.js";
+import { applyLiteralReplacement } from "./overlay-content.js";
 import {
 	buildInfoPath,
 	computeCacheKey,
@@ -90,6 +91,7 @@ import {
 	WatchProcess,
 	type WatchProcessState,
 } from "./tsgo-runner-watch.js";
+
 // Back-compat: `WatchProcessState` was exported from this module; keep that
 // surface stable by re-exporting it from its new home.
 export type { WatchProcessState };
@@ -255,7 +257,7 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 			return { new_diagnostics: [], elapsed_ms: nowMs() - started };
 		}
 		const patched = oldString
-			? original.replace(oldString, newString)
+			? applyLiteralReplacement(original, oldString, newString, false)
 			: original + (newString ?? "");
 
 		// simulate_edit type-checks a transient copy of the patched file. We do

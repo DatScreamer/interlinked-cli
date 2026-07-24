@@ -73,6 +73,27 @@ describe("coverage-edit-baseline.json — flat map, values may only rise", () =>
 	it("BLOCKS removing an entry whose source still exists", () => {
 		expect(detect(COV_EDIT, { "src/a.ts": 0.9 }, {}, alwaysExists)).toHaveLength(1);
 	});
+
+	// Scoped-object shape ({f, scope}) — the per-edit gate stores which test set
+	// measured a fraction so it re-anchors across scopes instead of false-blocking.
+	it("BLOCKS a same-scope fraction lowering in the object shape", () => {
+		const before = { "src/a.ts": { f: 0.9, scope: "scoped:aaa" } };
+		const after = { "src/a.ts": { f: 0.4, scope: "scoped:aaa" } };
+		expect(detect(COV_EDIT, before, after)).toHaveLength(1);
+	});
+	it("ALLOWS a lower fraction under a DIFFERENT scope (legitimate re-anchor)", () => {
+		const before = { "src/a.ts": { f: 1, scope: "scoped:broad" } };
+		const after = { "src/a.ts": { f: 0.66, scope: "scoped:narrow" } };
+		expect(detect(COV_EDIT, before, after)).toEqual([]);
+	});
+	it("ALLOWS re-anchoring a legacy bare-number entry into the scoped shape", () => {
+		expect(detect(COV_EDIT, { "src/a.ts": 1 }, { "src/a.ts": { f: 0.66, scope: "scoped:x" } })).toEqual([]);
+	});
+	it("BLOCKS a same-scope lowering across the legacy/object boundary (null scope both sides)", () => {
+		// A bare number decodes to scope null; an object with no scope also null →
+		// same scope → a fraction drop is still gaming.
+		expect(detect(COV_EDIT, { "src/a.ts": 0.9 }, { "src/a.ts": { f: 0.4 } })).toHaveLength(1);
+	});
 });
 
 describe("mutation-baseline.json — score/killed may only rise", () => {

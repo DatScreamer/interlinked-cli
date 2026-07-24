@@ -14,6 +14,7 @@ import { findPropagationTargets, formatPropagationWarnings } from "./change-prop
 import { resolveDependencyView } from "./dependency-view.js";
 import { checkFollowUpViolation } from "./impact-analysis.js";
 import type { ProjectGraph } from "./project-graph.js";
+import { harnessNow } from "./replay/harness-clock.js";
 import type { RouteMap } from "./route-map.js";
 import type { SessionTracker } from "./session-state.js";
 import { findTestFileForSource } from "./structural-checks/export-surface.js";
@@ -135,7 +136,7 @@ export function preCheckStaleRead(ctx: PreToolContext): string[] {
 
 	const agentName = event.agent_name || "";
 	const stalenessMs = config.staleness_window_s * 1000;
-	const now = Date.now();
+	const now = harnessNow();
 
 	for (const sess of sessions.getAll()) {
 		if (sess.agent_name === agentName) continue;

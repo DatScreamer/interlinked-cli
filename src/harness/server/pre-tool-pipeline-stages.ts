@@ -105,6 +105,7 @@ export function runTddCommitGate(
 				gateResults.some((r) => r.severity === "error")
 			) {
 				preDecision.decision = "block";
+				preDecision.rule_id ??= "commit-test-first-gate";
 				preDecision.reason =
 					"BLOCKED: Tests must pass before committing. " +
 					gateResults
@@ -165,6 +166,9 @@ function applyProjectTypecheckGate(
 	}
 	if (tcErrors.length > 0) {
 		preDecision.decision = "block";
+		// Stable id so repeat commit-gate blocks aggregate instead of landing in
+		// the null-rule_id bucket (216/735 recent guard_block rows, 2026-07).
+		preDecision.rule_id ??= "commit-typecheck-gate";
 		const action = isCommit ? "commit" : "push";
 		const errLines = tcErrors
 			.slice(0, 10)
@@ -213,6 +217,7 @@ function applyProjectTestGate(
 	}
 	if (testErrors.length > 0) {
 		preDecision.decision = "block";
+		preDecision.rule_id ??= "push-test-gate";
 		const failLines = testErrors
 			.slice(0, 10)
 			.map((e) => `  - ${e.message}`)

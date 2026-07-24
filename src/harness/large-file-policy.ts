@@ -313,8 +313,10 @@ function realpathNearestAncestor(abs: string): { base: string; missing: string[]
 	return { base: OVER_CAP_SENTINEL, missing: [] };
 }
 
-/** NUL can't appear in a real path, so this prefix-matches nothing. */
-const OVER_CAP_SENTINEL = " over-ancestor-cap";
+/** NUL can't appear in a real path, so this prefix-matches nothing. Keep the
+ *  NUL spelled as the U+0000 escape — a raw byte here trips binary_content,
+ *  which then suppresses every other inline check on this file. */
+const OVER_CAP_SENTINEL = "\u0000over-ancestor-cap";
 
 function containmentPath(p: string): string {
 	const { base, missing } = realpathNearestAncestor(resolve(p));

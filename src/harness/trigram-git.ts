@@ -79,7 +79,11 @@ function walkDir(dir: string, root: string, depth: number, maxDepth: number): st
 	if (depth > maxDepth) return [];
 	const results: string[] = [];
 	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
+		// G4: byte-order sort — raw readdir order is filesystem-dependent, and
+		// trigram file-ids are assigned in walk order (locale-free comparator).
+		const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+			a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+		);
 		for (const entry of entries) {
 			if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 			const full = join(dir, entry.name);

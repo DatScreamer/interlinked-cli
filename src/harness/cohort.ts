@@ -2,6 +2,7 @@
 // Cohort Manager — Track all agents for one human developer
 // ===========================================
 
+import { harnessNow } from "./replay/harness-clock.js";
 import type { AgentStatus, CohortAgent, HarnessEvent } from "./types.js";
 
 /** Timeout before an active agent is marked as "lost" — triggers reservation release (5 minutes) */
@@ -138,7 +139,7 @@ export class CohortManager {
 
 	/** Detect agents that haven't sent events recently */
 	detectLostAgents(): CohortAgent[] {
-		const cutoff = Date.now() - LOST_TIMEOUT_MS;
+		const cutoff = harnessNow() - LOST_TIMEOUT_MS;
 		const lost: CohortAgent[] = [];
 		for (const agent of this.agents.values()) {
 			if (agent.status === "active" && new Date(agent.last_event_at).getTime() < cutoff) {

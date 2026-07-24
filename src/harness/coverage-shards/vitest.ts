@@ -40,9 +40,11 @@ import {
 	JsCoverageRunner,
 	type SpawnFn,
 } from "../coverage-runner.js";
+
 // istanbulToElementSets moved to the sibling; re-exported here so existing
 // importers of ./vitest.js keep their named binding (it is also used below).
 export { istanbulToElementSets } from "./vitest-istanbul.js";
+
 import { canonicalPath, isRecord, istanbulToElementSets } from "./vitest-istanbul.js";
 
 /** Filename of the loud non-authoritative marker inside a capture directory. */
@@ -300,7 +302,7 @@ function readCapturedShards(
 ): { shards: CapturedShard[]; degraded: string | null } {
 	let entries: string[];
 	try {
-		entries = readdirSync(shardsDir);
+		entries = readdirSync(shardsDir).sort();
 	} catch {
 		return { shards: [], degraded: "capture directory missing — no shard records were written" };
 	}

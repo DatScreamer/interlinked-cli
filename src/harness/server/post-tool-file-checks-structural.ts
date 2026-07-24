@@ -118,6 +118,14 @@ export function applyStructuralFindings(
 	);
 	if (hasDeterministicActionable) {
 		decision.decision = "block";
+		// Rule id = lead deterministic finding's check name, so block telemetry
+		// aggregates by cause instead of landing in the null-id bucket.
+		const leadCheck = structuralResults.find(
+			(r) =>
+				(r.severity === "error" || r.severity === "warning") &&
+				STRUCTURAL_CHECK_META[r.check]?.determinism === "fully_deterministic",
+		);
+		decision.rule_id ??= leadCheck?.check;
 		// Bug B1: a PostToolUse block MUST carry a reason (else the hook shows the
 		// "no reason was attached" fallback). Surface the structural findings.
 		decision.reason ??=
@@ -185,6 +193,7 @@ export function runImpactOrFallback(
 		// Critical impact blocks so the agent reads the warning
 		if (impactResult.severity === "critical") {
 			decision.decision = "block";
+			decision.rule_id ??= "impact-critical";
 			// Bug B1: a PostToolUse block MUST carry a reason.
 			decision.reason ??=
 				(decision.warnings ?? []).join("\n") ||

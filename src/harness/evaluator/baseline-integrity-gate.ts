@@ -139,6 +139,16 @@ function detectRisingMetricMap(
 	return out;
 }
 
+/** A coverage-edit baseline value in either shape: a legacy bare fraction, or
+ *  a scoped `{f, scope}` object (mirrors coverage-obligation-ledger). */
+function decodeCovValue(value: unknown): { f: number; scope: string | null } | null {
+	if (isNum(value)) return { f: value, scope: null };
+	const obj = asObj(value);
+	const f = obj.f;
+	if (isNum(f)) return { f, scope: typeof obj.scope === "string" ? obj.scope : null };
+	return null;
+}
+
 function detectCoverageEdit(
 	file: string,
 	before: unknown,
@@ -148,20 +158,26 @@ function detectCoverageEdit(
 	const out: BaselineGamingFinding[] = [];
 	const b = asObj(before);
 	const a = asObj(after);
-	for (const [path, bv] of Object.entries(b)) {
-		if (!isNum(bv)) continue;
-		const av = a[path];
-		if (av === undefined) {
+	for (const [path, bRaw] of Object.entries(b)) {
+		const bv = decodeCovValue(bRaw);
+		if (bv === null) continue;
+		const aRaw = a[path];
+		if (aRaw === undefined) {
 			if (exists(path)) {
 				out.push(
-					fmt(file, `coverage-edit:${path}`, bv, undefined, `coverage-edit-baseline entry for ${path} removed while the source still exists.`),
+					fmt(file, `coverage-edit:${path}`, bv.f, undefined, `coverage-edit-baseline entry for ${path} removed while the source still exists.`),
 				);
 			}
 			continue;
 		}
-		if (isNum(av) && av < bv) {
+		const av = decodeCovValue(aRaw);
+		// A DIFFERENT measuring scope is a legitimate re-anchor (the reseed the
+		// runtime performs when affected-test selection changes), not gaming — only
+		// a SAME-SCOPE fraction drop is a lowered water-line. Legacy null==null
+		// (both scope-less) still enforces exactly as before.
+		if (av !== null && av.scope === bv.scope && av.f < bv.f) {
 			out.push(
-				fmt(file, `coverage-edit:${path}`, bv, av, `coverage-edit-baseline for ${path} lowered ${bv}→${av}. Per-edit coverage may only rise.`),
+				fmt(file, `coverage-edit:${path}`, bv.f, av.f, `coverage-edit-baseline for ${path} lowered ${bv.f}→${av.f} within the same test scope. Per-edit coverage may only rise (a scope change re-anchors automatically).`),
 			);
 		}
 	}

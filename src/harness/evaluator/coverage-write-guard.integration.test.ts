@@ -249,8 +249,10 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 	});
 
 	it("ALLOWS when coverage is unchanged (no edited function uncovered, no drop)", async () => {
-		// Pre-seed a baseline equal to what the overlay will report → no drop.
-		writeFileCoverageBaseline(root, "src/a.ts", 1);
+		// Pre-seed a baseline equal to what the overlay will report → no drop. No
+		// depView ⇒ the run is full-suite ⇒ scope "full"; seed the same scope so the
+		// drop ratchet compares like-with-like (a scope-less seed would re-anchor).
+		writeFileCoverageBaseline(root, "src/a.ts", 1, "full");
 		const result = coverageResult("src/a.ts", [
 			{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
 		]);
@@ -263,9 +265,10 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 	});
 
 	it("BLOCKS on a per-file coverage drop vs the prior baseline (even off the edited lines)", async () => {
-		// Baseline was fully covered; overlay reports a covered function that does
-		// not overlap the edit, plus an uncovered one elsewhere → fraction drops.
-		writeFileCoverageBaseline(root, "src/a.ts", 1);
+		// Baseline was fully covered UNDER THE SAME SCOPE; overlay reports a covered
+		// function that does not overlap the edit, plus an uncovered one elsewhere →
+		// fraction drops within-scope → block.
+		writeFileCoverageBaseline(root, "src/a.ts", 1, "full");
 		const result = coverageResult("src/a.ts", [
 			{ name: "stillCovered", line: 1, endLine: 2, hits: 5, statement_pct: 100 },
 			{ name: "nowUncovered", line: 40, endLine: 42, hits: 0, statement_pct: 0 },
@@ -279,6 +282,24 @@ describe("checkCoverageWrite — block / allow decisions", () => {
 		);
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/drop|decreas/i);
+	});
+
+	it("RE-ANCHORS (allow + warning) when the prior baseline was earned under a different scope", async () => {
+		// A legacy scope-less 100% baseline (the 59-landmines shape): a narrower
+		// scope reading 66% must NOT block — it re-anchors and warns. This is the
+		// bio staging/utils.ts fix, end-to-end through checkCoverageWrite.
+		writeFileCoverageBaseline(root, "src/a.ts", 1);
+		const result = coverageResult("src/a.ts", [
+			{ name: "stillCovered", line: 1, endLine: 2, hits: 5, statement_pct: 100 },
+			{ name: "offEditUncovered", line: 40, endLine: 42, hits: 0, statement_pct: 0 },
+		]);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export function stillCovered() { return 1; }\n"),
+			rules(),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.join(" ")).toMatch(/re-anchored/);
 	});
 
 	it("refreshes the per-file baseline after an allowed edit", async () => {
@@ -543,9 +564,10 @@ describe("checkCoverageWrite — Python per-line path (coverage.py shape)", () =
 	});
 
 	it("BLOCKS on a per-file coverage drop vs the prior baseline (uncovered off the edited lines)", async () => {
-		// Baseline fully covered; overlay reports an uncovered line (40) OUTSIDE the
-		// edited set {1..5}, so the added-line check passes and the BLOCK is the drop.
-		writeFileCoverageBaseline(root, "src/a.py", 1);
+		// Baseline fully covered UNDER THE SAME SCOPE; overlay reports an uncovered
+		// line (40) OUTSIDE the edited set {1..5}, so the added-line check passes and
+		// the BLOCK is the within-scope drop.
+		writeFileCoverageBaseline(root, "src/a.py", 1, "full");
 		const result = pyCoverageResult("src/a.py", [1, 2, 3, 4, 5], [40]);
 		const decision = await checkCoverageWrite(
 			writeEvent("src/a.py", PY_SRC),

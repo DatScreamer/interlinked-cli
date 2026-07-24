@@ -76,6 +76,54 @@ describe("decideFromCoverage — per-function (istanbul) shape", () => {
 		expect(d?.decision).toBe("block");
 	});
 
+	it("RE-ANCHORS instead of blocking when the baseline was earned under a different scope (the bio staging/utils.ts fix)", () => {
+		// 100% pinned by a broad run (scope A); today's narrower scope can only
+		// reach 98.7% — the exact incident. Must NOT block; signals re-anchor.
+		writeFileCoverageBaseline(root, "src/m.ts", 1, "scoped:broadAAAAAA");
+		const cov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			functions: [fnCov({ statement_pct: 98.7 })],
+		};
+		const out: { now?: number; scopeChanged?: { priorFraction: number } } = {};
+		expect(decideFromCoverage(root, "src/m.ts", cov, new Set([99]), out, "scoped:narrowBBBBBB")).toBeNull();
+		expect(out.scopeChanged).toEqual({ priorFraction: 1 });
+		expect(out.now).toBeCloseTo(0.987, 3);
+	});
+
+	it("still blocks a real drop when the scope MATCHES the baseline's scope", () => {
+		writeFileCoverageBaseline(root, "src/m.ts", 1, "scoped:sameSCOPE01");
+		const cov: PerFileCoverage = { filePath: "src/m.ts", mtime: 0, functions: [fnCov({ statement_pct: 90 })] };
+		const d = decideFromCoverage(root, "src/m.ts", cov, new Set([99]), {}, "scoped:sameSCOPE01");
+		expect(d?.decision).toBe("block");
+	});
+
+	it("re-anchors a legacy scope-less baseline once a scope id is supplied", () => {
+		writeFileCoverageBaseline(root, "src/m.ts", 1); // legacy bare number, scope null
+		const cov: PerFileCoverage = { filePath: "src/m.ts", mtime: 0, functions: [fnCov({ statement_pct: 95 })] };
+		const out: { now?: number; scopeChanged?: { priorFraction: number } } = {};
+		expect(decideFromCoverage(root, "src/m.ts", cov, new Set([99]), out, "scoped:anyNEWSCOPE")).toBeNull();
+		expect(out.scopeChanged?.priorFraction).toBe(1);
+	});
+
+	it("names uncovered lines and unrounded percentages in a same-scope drop block", () => {
+		writeFileCoverageBaseline(root, "src/m.ts", 1, "scoped:sameSCOPE01");
+		const cov: PerFileCoverage = {
+			filePath: "src/m.ts",
+			mtime: 0,
+			functions: [fnCov({ statement_pct: 100 })],
+			coveredLines: new Set([1, 2]),
+			uncoveredLines: new Set([431, 12, 500]),
+		};
+		const d = decideFromCoverage(root, "src/m.ts", cov, new Set([1]), {}, "scoped:sameSCOPE01");
+		expect(d?.decision).toBe("block");
+		// per-line shape wins the fraction: 2 covered / 5 total = 40.0%
+		expect(d?.reason).toContain("40.0%");
+		expect(d?.reason).toContain("100.0%");
+		expect(d?.reason).toContain("line 12, line 431, line 500");
+		expect(d?.reason).not.toMatch(/\b40%\b/); // never the rounded form
+	});
+
 	it("blocks a file below the configured min_coverage floor", () => {
 		mkdirSync(join(root, ".interlinked"), { recursive: true });
 		writeFileSync(join(root, ".interlinked", "metric-caps.json"), JSON.stringify({ min_coverage: 90 }));

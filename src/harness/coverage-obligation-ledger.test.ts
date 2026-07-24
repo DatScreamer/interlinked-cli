@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type CoverageObligation,
 	readFileCoverageBaseline,
+	readFileCoverageBaselineEntry,
 	readRuntimeEstimateMs,
 	recordCoverageObligation,
 	updateRuntimeEstimateMs,
@@ -66,6 +67,44 @@ describe("per-file coverage baseline", () => {
 		writeFileCoverageBaseline(root, "src/b.ts", 0.6);
 		expect(readFileCoverageBaseline(root, "src/a.ts")).toBe(0.8);
 		expect(readFileCoverageBaseline(root, "src/b.ts")).toBe(0.6);
+	});
+
+	it("round-trips a scoped entry and exposes the scope via the entry reader", () => {
+		writeFileCoverageBaseline(root, "src/a.ts", 0.987, "scoped:abc123def456");
+		// Legacy fraction reader keeps working on the object shape.
+		expect(readFileCoverageBaseline(root, "src/a.ts")).toBe(0.987);
+		expect(readFileCoverageBaselineEntry(root, "src/a.ts")).toEqual({
+			fraction: 0.987,
+			scope: "scoped:abc123def456",
+		});
+	});
+
+	it("reads a legacy bare-number entry as scope null", () => {
+		writeFileCoverageBaseline(root, "src/a.ts", 1);
+		expect(readFileCoverageBaselineEntry(root, "src/a.ts")).toEqual({
+			fraction: 1,
+			scope: null,
+		});
+	});
+
+	it("returns null from the entry reader for missing files and malformed entries", () => {
+		expect(readFileCoverageBaselineEntry(root, "src/none.ts")).toBeNull();
+		writeFileCoverageBaseline(root, "src/a.ts", 0.5, "full");
+		const path = join(root, ".interlinked", "coverage-edit-baseline.json");
+		const data = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+		data["src/bad.ts"] = { scope: "full" }; // no fraction
+		writeFileSync(path, JSON.stringify(data));
+		expect(readFileCoverageBaselineEntry(root, "src/bad.ts")).toBeNull();
+		expect(readFileCoverageBaseline(root, "src/bad.ts")).toBeNull();
+	});
+
+	it("a scoped write overwrites a legacy numeric entry in place", () => {
+		writeFileCoverageBaseline(root, "src/a.ts", 1);
+		writeFileCoverageBaseline(root, "src/a.ts", 0.987, "scoped:abc123def456");
+		expect(readFileCoverageBaselineEntry(root, "src/a.ts")).toEqual({
+			fraction: 0.987,
+			scope: "scoped:abc123def456",
+		});
 	});
 });
 

@@ -19,6 +19,7 @@
 // See docs/design/harness-active-when-scoping.md.
 
 import { getActiveCohort } from "../cohort.js";
+import { harnessNow } from "../replay/harness-clock.js";
 import type {
 	ActiveWhen,
 	AfterCommandSpec,
@@ -119,7 +120,7 @@ function evaluateSkillAxis(
 	const active = session?.active_skills;
 	if (!active || active.size === 0) return false;
 	const wanted = Array.isArray(required) ? required : [required];
-	const now = Date.now();
+	const now = harnessNow();
 	for (const name of wanted) {
 		const rec = active.get(name);
 		if (rec && rec.expires_at > now) return true;

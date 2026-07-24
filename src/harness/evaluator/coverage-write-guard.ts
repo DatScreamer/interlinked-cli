@@ -49,7 +49,7 @@ import {
 	type CoverageRunner,
 	coverageRunnerFor,
 } from "../coverage-runner.js";
-import { selectAffectedTests } from "../coverage-test-selector.js";
+import { routeBySelection, type SelectionRoute } from "../coverage-test-selector.js";
 import type { DependencyView } from "../dependency-view.js";
 import { crapThresholdFor } from "../metric-caps.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
@@ -93,8 +93,10 @@ const DEFAULT_DEPS: CoverageWriteDeps = {
 
 // The uncovered-added-line / coverage-drop / red-bar DECISION helpers live in
 // ./coverage-write-decision.ts — extracted verbatim (finding 2026-06).
+import { coverageScopeId, formatScopeReanchorWarning } from "./coverage-scope.js";
 import {
 	blockForRedBar,
+	type CoverageDecisionOut,
 	decideFromCoverage,
 } from "./coverage-write-decision.js";
 
@@ -167,7 +169,7 @@ interface GateContext {
 	 * describing content that never existed (finding 2026-06). Absent ⇒ the
 	 * baseline for this run is simply not recorded.
 	 */
-	recordBaseline?: (relPath: string, fraction: number) => void;
+	recordBaseline?: (relPath: string, fraction: number, scope?: string) => void;
 }
 
 /**
@@ -235,8 +237,19 @@ async function runOverlayAndDecide(
 		}
 		// Coverage decision first (uncovered-added-line / drop). A block here is the
 		// more basic failure; CRAP is the "complex AND under-covered" escalation.
-		const covOut: { now?: number } = {};
-		const coverageDecision = decideFromCoverage(ctx.projectRoot, ctx.relPath, cov, ctx.editedLines, covOut);
+		// The scope id (which affected-test set measured `cov`) makes the drop
+		// ratchet compare like-with-like: a baseline earned under a different scope
+		// re-anchors instead of false-blocking (coverage-scope.ts).
+		const scopeId = coverageScopeId(ctx.selectedTests);
+		const covOut: CoverageDecisionOut = {};
+		const coverageDecision = decideFromCoverage(
+			ctx.projectRoot,
+			ctx.relPath,
+			cov,
+			ctx.editedLines,
+			covOut,
+			scopeId,
+		);
 		if (coverageDecision) return coverageDecision;
 
 		// Coverage allowed → the 4th per-edit gate. Only when opted in (block_on_crap);
@@ -259,7 +272,24 @@ async function runOverlayAndDecide(
 		// in-loop: a later target or residual-language run can still block the whole
 		// atomic patch — finding 2026-06; see GateContext.recordBaseline).
 		if (covOut.now !== undefined) {
-			ctx.recordBaseline?.(ctx.relPath, covOut.now);
+			ctx.recordBaseline?.(ctx.relPath, covOut.now, scopeId);
+		}
+		// A cross-scope re-anchor is a loud ALLOW: the recorded high-water was
+		// measured under a different affected-test set, so the gate reseeded at
+		// today's measurement rather than blocking. Surface it — the commit-time
+		// full-suite gate still holds the real line.
+		if (covOut.scopeChanged) {
+			return {
+				decision: "allow",
+				warnings: [
+					formatScopeReanchorWarning(
+						ctx.relPath,
+						covOut.scopeChanged.priorFraction,
+						covOut.now ?? 0,
+						scopeId,
+					),
+				],
+			};
 		}
 		return null;
 	} finally {
@@ -275,43 +305,6 @@ async function runOverlayAndDecide(
  *                suite + budget gate. An empty selection is MEASURED, never
  *                blocked (evidence-authority contract — see routeBySelection).
  */
-type SelectionRoute = { kind: "scoped"; tests: string[] } | { kind: "full" };
-
-/**
- * Run affected-test selection (when a dependency view is available) and map its
- * result to a {@link SelectionRoute}. A non-empty subset routes to `scoped` (run
- * only those tests). Everything else routes to `full`:
- *   - no `depView` / `null` from the selector (file not in the graph) — "don't
- *     know which tests", so run them all rather than a wrong subset;
- *   - `[]` (file in the graph, but no test STATICALLY imports it) — the
- *     evidence-authority contract: the graph's silence is not proof of no
- *     coverage (an integration test exercises code it never imports), so MEASURE
- *     with the full suite; the coverage decision blocks only on what actually
- *     ran uncovered.
- * Kept separate so `checkCoverageWrite` stays low-complexity.
- */
-function routeBySelection(
-	relPath: string,
-	projectRoot: string,
-	depView: DependencyView | undefined,
-	overlayFiles?: ReadonlyArray<OverlayFile>,
-): SelectionRoute {
-	if (!depView) return { kind: "full" };
-	// Forward the edit's overlay sections so a BRAND-NEW file (not yet in the
-	// graph) can scope to a test created in the SAME edit, instead of deferring.
-	const overlaySections = (overlayFiles ?? [])
-		.filter((f) => !f.delete)
-		.map((f) => ({ relPath: f.relPath, content: f.content }));
-	const selected = selectAffectedTests({
-		editedRelPath: relPath,
-		projectRoot,
-		depView,
-		overlaySections,
-	});
-	if (selected === null || selected.length === 0) return { kind: "full" };
-	return { kind: "scoped", tests: selected };
-}
-
 /**
  * PreToolUse coverage gate. Returns a `block` HarnessDecision when the proposed
  * edit (a) leaves the suite RED — only when `block_on_test_failure` is on, the
@@ -381,9 +374,9 @@ export async function checkCoverageWrite(
 	// land while a later target blocked the whole atomic patch, leaving the
 	// baseline describing content that never existed and corrupting future drop
 	// decisions (finding 2026-06).
-	const stagedBaselines: Array<{ relPath: string; fraction: number }> = [];
-	const recordBaseline = (relPath: string, fraction: number): void => {
-		stagedBaselines.push({ relPath, fraction });
+	const stagedBaselines: Array<{ relPath: string; fraction: number; scope?: string }> = [];
+	const recordBaseline = (relPath: string, fraction: number, scope?: string): void => {
+		stagedBaselines.push(scope === undefined ? { relPath, fraction } : { relPath, fraction, scope });
 	};
 	for (const target of plan.targets) {
 		const decision = await decideForTarget(
@@ -404,7 +397,7 @@ export async function checkCoverageWrite(
 	if (residual?.warnings) warnings.push(...residual.warnings);
 	// EVERYTHING allowed → only now do the staged baselines become durable state.
 	for (const b of stagedBaselines) {
-		writeFileCoverageBaseline(projectRoot, b.relPath, b.fraction);
+		writeFileCoverageBaseline(projectRoot, b.relPath, b.fraction, b.scope);
 	}
 	return warnings.length > 0 ? { decision: "allow", warnings } : null;
 }
@@ -435,7 +428,7 @@ interface GateCall {
 	deps: CoverageWriteDeps;
 	depView: DependencyView | undefined;
 	/** The entry's baseline STAGING sink (see GateContext.recordBaseline). */
-	recordBaseline: (relPath: string, fraction: number) => void;
+	recordBaseline: (relPath: string, fraction: number, scope?: string) => void;
 }
 
 /** One resolved coverage target plus the project root — the per-call facts the

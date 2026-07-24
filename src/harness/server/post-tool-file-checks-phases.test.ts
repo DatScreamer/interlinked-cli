@@ -501,6 +501,9 @@ describe("runQualityPhase", () => {
 		]);
 		const { decision } = await call();
 		expect(decision.decision).toBe("block");
+		// Lead blocking check's name becomes the rule id — block telemetry
+		// aggregates by cause instead of the null-id bucket.
+		expect(decision.rule_id).toBe("typescript");
 		const reason = nonNull(decision.reason);
 		expect(reason).toContain("— Advisory findings");
 		// Blocking (typescript) leads; the advisory (strong_typing) sits after the

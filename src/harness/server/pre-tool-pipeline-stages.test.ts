@@ -416,6 +416,7 @@ describe("runProjectWideGitGate", () => {
 		const pre = allow();
 		runProjectWideGitGate(makeCtx(), commit(), makeSession(), pre);
 		expect(pre.decision).toBe("block");
+		expect(pre.rule_id).toBe("commit-typecheck-gate"); // stable id — no more null-id blocks
 		expect(pre.reason).toContain("BLOCKED: Project typecheck failed (1 error)");
 		expect(pre.reason).toContain("CI will fail on this commit.");
 		expect(pre.reason).toContain("- TS1005 missing semi");
@@ -517,6 +518,7 @@ describe("runProjectWideGitGate", () => {
 		const pre = allow();
 		runProjectWideGitGate(makeCtx(), push(), makeSession(), pre);
 		expect(pre.decision).toBe("block");
+		expect(pre.rule_id).toBe("push-test-gate"); // stable id — no more null-id blocks
 		expect(pre.reason).toContain("BLOCKED: Project tests failed (1 failure)");
 		expect(pre.reason).toContain("assert failed in a.test.ts");
 		expect(pre.reason).toContain("INTERLINKED_SKIP_PROJECT_TESTS=1 git push");

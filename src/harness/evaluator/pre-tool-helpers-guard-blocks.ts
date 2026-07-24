@@ -20,6 +20,7 @@ import {
 	looksCoordinated,
 } from "../checks/dirty-dependent.js";
 import { isTestFile } from "../checks/shared.js";
+import { applyLiteralReplacement } from "../overlay-content.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type {
 	EscalationRequest,
@@ -134,11 +135,17 @@ export function collectDirtyDependentWarning(cwd: string, graph: ProjectGraph): 
 	return formatDirtyDependentWarning({ matches: display });
 }
 
+/** Literal old-to-new application shared with the overlay content builder —
+ *  see {@link applyLiteralReplacement} in overlay-content.ts for why plain
+ *  String.replace (dollar-pattern interpretation) is wrong here. */
+const applyReplacement = applyLiteralReplacement;
+
 /**
  * Compute the full post-write content of a file from a Write / Edit /
  * MultiEdit tool_input. Returns null when the operation's shape doesn't
  * map cleanly to a full content (apply_patch, NotebookEdit) — callers
- * skip the supply-chain manifest check on those paths.
+ * skip the supply-chain manifest check on those paths. Replacements are
+ * applied literally and honor `replace_all`, mirroring the real Edit tool.
  */
 export function computeFullNewContent(
 	absPath: string,
@@ -156,7 +163,12 @@ export function computeFullNewContent(
 	if (typeof toolInput.new_string === "string" && typeof toolInput.old_string === "string") {
 		const current = readCurrent();
 		if (current === null) return null;
-		return current.replace(toolInput.old_string, toolInput.new_string);
+		return applyReplacement(
+			current,
+			toolInput.old_string,
+			toolInput.new_string,
+			toolInput.replace_all === true,
+		);
 	}
 	if (Array.isArray(toolInput.edits)) {
 		const current = readCurrent();
@@ -167,7 +179,7 @@ export function computeFullNewContent(
 				const oldS = (edit as JsonObject).old_string;
 				const newS = (edit as JsonObject).new_string;
 				if (typeof oldS === "string" && typeof newS === "string") {
-					result = result.replace(oldS, newS);
+					result = applyReplacement(result, oldS, newS, (edit as JsonObject).replace_all === true);
 				}
 			}
 		}

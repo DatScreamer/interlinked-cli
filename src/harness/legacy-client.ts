@@ -98,6 +98,13 @@ export function callLegacyHarness(
 	});
 }
 
+/** G3: carry the framed path's per-delivery id so writers can persist it
+ *  (raw hook payloads have none; the daemon-minted `seq` is the ordering key).
+ *  A helper so `toLegacyHarnessEvent` stays under the cyclomatic cap. */
+function copyDeliveryId(event: UnifiedHookEvent, out: HarnessEvent): void {
+	if (event.event_id) out.event_id = event.event_id;
+}
+
 export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	const raw = isJsonObject(event.raw) ? event.raw : {};
 	const out: HarnessEvent = {
@@ -113,6 +120,7 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	copyString(raw, out, "model");
 	copyString(raw, out, "transcript_path");
 	copyString(raw, out, "tool_use_id");
+	copyDeliveryId(event, out);
 	copySubagentContext(raw, out);
 	const filesModified = readStringArray(raw.files_modified);
 	if (filesModified) out.files_modified = filesModified;

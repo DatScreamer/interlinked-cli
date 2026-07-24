@@ -45,10 +45,21 @@ import {
 
 /** File-size threshold above which an unfiltered dump is refused. */
 const FILE_SIZE_BLOCK_BYTES = 100 * 1024;
-/** Line-count cap when no filter is present in the pipeline. */
-const NO_FILTER_MAX_LINES = 50;
+/** Line-count cap when no filter is present in the pipeline. Raised 50 → 200
+ *  (2026-07-24): July telemetry showed 17 blocks on bare `cat` of 76–106-line
+ *  files — under the Read tool's own 2000-line default — pure friction with no
+ *  budget saved. The 100KB size gate still refuses genuinely large dumps. */
+const NO_FILTER_MAX_LINES = 200;
 /** Soft warning ceiling when a filter is present. */
 const WITH_FILTER_SOFT_CEILING = 1000;
+
+/** Pipeline-FINAL commands that bound output regardless of upstream window
+ *  size: `… | tail -n 10`, `… | head -15`, `… | wc -l`. A large upstream
+ *  `-n` feeding a small terminal slice is the sanctioned bounded-read shape
+ *  (the .interlinked/INDEX.md query recipes) — not a dump. Without this
+ *  carve-out the soft nudge fired 10+ times per session on exactly those
+ *  recipes (2026-07 telemetry). */
+const TERMINAL_BOUNDING_COMMANDS = new Set(["head", "tail", "wc"]);
 
 /**
  * Output-reducing filters the agent can pipe into. First token of each
@@ -143,8 +154,19 @@ export function evaluateFileDumpGuard(args: FileDumpGuardArgs): FileDumpGuardRes
 	const summary = statDumpFiles(filePaths, cwd, verb, requestedLines);
 	const lines = resolveDumpLines(requestedLines, verb, summary);
 
-	// 8. Verdict: filtered (soft ceiling) vs. unfiltered (size/line blocks).
-	return hasFilter ? filteredVerdict(verb, lines) : unfilteredVerdict(verb, summary, lines);
+	// 8. Verdict: filtered (soft ceiling, waived for terminal-bounded pipes)
+	// vs. unfiltered (size/line blocks).
+	return hasFilter
+		? filteredVerdict(verb, lines, endsWithBoundingStage(segments))
+		: unfilteredVerdict(verb, summary, lines);
+}
+
+/** True when the pipeline's last segment is a bounding command (head/tail/wc). */
+function endsWithBoundingStage(segments: string[]): boolean {
+	if (segments.length < 2) return false;
+	const last = (segments[segments.length - 1] ?? "").trim();
+	const verb = (last.match(/^([\w.-]+)/) || [])[1];
+	return verb !== undefined && TERMINAL_BOUNDING_COMMANDS.has(stripPathPrefix(verb));
 }
 
 /** Stat summary across the resolved file-path args of a dump command. */
@@ -308,9 +330,12 @@ function unfilteredVerdict(verb: string, summary: DumpStatSummary, lines: number
 /**
  * Verdict when a filter IS present: a soft warning past the line-count ceiling,
  * else allow. The filter bounds output in practice but 1000+ lines is still
- * worth flagging.
+ * worth flagging — unless the pipeline's FINAL stage is itself a bounding
+ * command (head/tail/wc), which caps the tool-result payload no matter how
+ * wide the upstream window was.
  */
-function filteredVerdict(verb: string, lines: number): FileDumpGuardResult {
+function filteredVerdict(verb: string, lines: number, endsBounded = false): FileDumpGuardResult {
+	if (endsBounded) return { kind: "allow" };
 	if (lines !== Infinity && lines > WITH_FILTER_SOFT_CEILING) {
 		return {
 			kind: "warn",

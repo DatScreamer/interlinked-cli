@@ -33,48 +33,70 @@ function withinGuardedRoot(
 	target: string,
 	projectRoot: string | undefined,
 	vars: ReadonlyMap<string, string>,
-	base: string | undefined,
+	base: string | null | undefined,
 ): boolean {
 	if (!projectRoot) return true; // no root context ⇒ preserve old behavior
-	const abs = resolveTargetForRootCheck(target, vars, base ?? projectRoot);
+	const abs = resolveTargetForRootCheck(target, vars, base === undefined ? projectRoot : base);
 	if (abs === null) return false;
 	const root = resolve(projectRoot);
 	return abs === root || abs.startsWith(root + sep);
 }
 
 /** Absolutize a redirect/verb target the way the shell would: expand a
- *  leading `$VAR`/`${VAR}`, expand `~`, then resolve relative paths against
- *  `base` (the project root, or the last same-command `cd` destination).
- *  Returns null when the leading variable has no known value. */
+ *  leading variable, expand `~`, then resolve relative paths against `base`
+ *  (the project root, or the last same-command `cd` destination). Returns
+ *  null when the leading variable has no known value — or when the target is
+ *  relative and `base` is null (an earlier `cd` hop was itself unresolvable,
+ *  so the working directory is unknown; treating it as the project root was
+ *  the 2026-07-24 FP). */
 function resolveTargetForRootCheck(
 	target: string,
 	vars: ReadonlyMap<string, string>,
-	base: string,
+	base: string | null,
 ): string | null {
 	const expanded = expandLeadingVariable(target, vars);
 	if (expanded === null) return null;
 	if (expanded === "~" || expanded.startsWith("~/")) {
 		return resolve(homedir(), expanded.slice(2));
 	}
-	return isAbsolute(expanded) ? resolve(expanded) : resolve(base, expanded);
+	if (isAbsolute(expanded)) return resolve(expanded);
+	return base === null ? null : resolve(base, expanded);
 }
 
-/** Expand a LEADING `$VAR` / `${VAR}` in a target using same-command
- *  assignments (plus stable process-env prefixes seeded by
- *  {@link collectShellAssignments}). Returns the target unchanged when it
- *  doesn't start with a variable, and null when it does but the variable is
- *  unknown — command substitution, cross-call exports, and arithmetic are
- *  deliberately not modeled. */
+/** Pick what a leading variable resolves to: a known non-empty assignment
+ *  wins; else a static, non-empty colon-dash default (one containing `$`
+ *  would need nested expansion — unmodeled); else null (unresolvable). */
+function resolveVariableValue(
+	value: string | undefined,
+	fallback: string | undefined,
+): string | null {
+	if (value !== undefined && value !== "") return value;
+	if (fallback === undefined || fallback === "" || fallback.includes("$")) return null;
+	return fallback;
+}
+
+/** Expand a LEADING variable — bare `$VAR`, braced, or braced with a
+ *  colon-dash default — in a target using same-command assignments (plus
+ *  stable process-env prefixes seeded by {@link collectShellAssignments}).
+ *  Returns the target unchanged when it doesn't start with a variable, and
+ *  null when it starts with one we can't resolve: an unknown name with no
+ *  usable default, or any other braced-operator form (command substitution,
+ *  cross-call exports, and arithmetic stay unmodeled). A braced form we
+ *  don't recognize is a VARIABLE we can't resolve, never a literal — the
+ *  2026-07-24 dogfood FP was a `cd` into a TMPDIR-with-default path whose
+ *  target fell through BOTH branches of the old regex, was treated as a
+ *  literal, and resolved to a phantom path "inside" the repo root. */
 function expandLeadingVariable(
 	target: string,
 	vars: ReadonlyMap<string, string>,
 ): string | null {
-	const m = target.match(/^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
-	if (!m) return target;
-	const name = m[1] ?? m[2];
-	const value = name !== undefined ? vars.get(name) : undefined;
-	if (value === undefined || value === "") return null;
-	return value + target.slice(m[0].length);
+	const m = target.match(
+		/^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/,
+	);
+	if (!m) return /^\$\{/.test(target) ? null : target;
+	const name = m[1] ?? m[3];
+	const chosen = resolveVariableValue(name !== undefined ? vars.get(name) : undefined, m[2]);
+	return chosen === null ? null : chosen + target.slice(m[0].length);
 }
 
 /** Simple same-command `VAR=value` assignments, seeded with the stable
@@ -106,14 +128,17 @@ function resolveCdBase(
 	cmd: string,
 	vars: ReadonlyMap<string, string>,
 	projectRoot: string,
-): string {
-	let base = resolve(projectRoot);
+): string | null {
+	let base: string | null = resolve(projectRoot);
 	const re = /(?:^|[\s;&|])cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g;
 	for (const m of cmd.matchAll(re)) {
 		const rawTarget = m[1] ?? m[2] ?? m[3];
 		if (rawTarget === undefined || rawTarget === "-") continue;
-		const next = resolveTargetForRootCheck(rawTarget, vars, base);
-		if (next !== null) base = next;
+		// An unresolvable hop POISONS the base (null = unknown cwd) instead of
+		// silently keeping the previous one — a later absolute or resolvable
+		// `cd` re-establishes it. Pre-fix, `cd <unresolvable> && echo > p.ts`
+		// kept base = project root and flagged p.ts as in-repo (2026-07-24 FP).
+		base = resolveTargetForRootCheck(rawTarget, vars, base);
 	}
 	return base;
 }

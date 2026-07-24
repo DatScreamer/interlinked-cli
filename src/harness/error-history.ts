@@ -4,8 +4,9 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ErrorMemoryConfig, ErrorRecord, ModuleRole, StructuralCheckResult } from "./types.js";
 import { nonNull } from "../lib/non-null.js";
+import { harnessNow } from "./replay/harness-clock.js";
+import type { ErrorMemoryConfig, ErrorRecord, ModuleRole, StructuralCheckResult } from "./types.js";
 
 /** Cap the diff snippet stored alongside each error record. */
 const MAX_DIFF_CONTEXT_CHARS = 2000;
@@ -88,7 +89,7 @@ export class ErrorHistory {
 
 	lookupByFile(file: string): ErrorRecord[] {
 		const records = this.byFile.get(file) || [];
-		const cutoff = Date.now() - this.config.max_age_s * MS_PER_SECOND;
+		const cutoff = harnessNow() - this.config.max_age_s * MS_PER_SECOND;
 		return records.filter((r) => new Date(r.timestamp).getTime() > cutoff).reverse();
 	}
 
@@ -188,7 +189,7 @@ export class ErrorHistory {
 		if (!existsSync(this.filePath)) return;
 		try {
 			const raw = readFileSync(this.filePath, "utf-8");
-			const cutoff = Date.now() - this.config.max_age_s * MS_PER_SECOND;
+			const cutoff = harnessNow() - this.config.max_age_s * MS_PER_SECOND;
 			for (const line of raw.split("\n")) {
 				if (!line.trim()) continue;
 				try {

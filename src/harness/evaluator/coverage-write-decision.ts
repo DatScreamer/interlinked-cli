@@ -9,10 +9,11 @@
 
 import { RED_BAR_MARKER, UNCOVERED_MARKER } from "../coverage-debt.js";
 import { type FunctionCoverage, type PerFileCoverage } from "../coverage-final-reader.js";
-import { readFileCoverageBaseline } from "../coverage-obligation-ledger.js";
+import { readFileCoverageBaselineEntry } from "../coverage-obligation-ledger.js";
 import { minCoverageFor } from "../metric-caps.js";
 import type { HarnessDecision } from "../types.js";
 import { hasPerLineData } from "./coverage-crap-decision.js";
+import { pctPrecise } from "./coverage-scope.js";
 
 /**
  * The covered-line *fraction* (0..1) for a file, derived from the per-function
@@ -161,26 +162,50 @@ export function blockForRedBar(
  * Tolerance for the per-file %-drop BACKSTOP (below). The precise non-decrease
  * guard is the per-LINE added-line check, which runs first (line `decideFromCoverage`
  * → the `"block" in verdict` return) and exactly refuses a newly-uncovered line.
- * This %-drop check is a coarser backstop that compares the affected-test
- * overlay's measurement (`now`) against the full-suite high-water baseline
- * (`prior`); those are not always measured over the identical test set, so a
- * hold-at-baseline edit can read a sub-line wobble (e.g. 1.0 → 0.9997, both shown
- * as "100%") and false-block. Requiring the drop to exceed this epsilon absorbs
- * that noise while still catching a real multi-line regression; new uncovered
- * code is still blocked exactly by the added-line check, and the commit-time
- * full-suite gate re-checks against the complete measurement.
+ * This %-drop check is a coarser backstop comparing `now` against the stored
+ * baseline — but ONLY within the same test scope: baselines record the scope
+ * that measured them (coverage-scope.ts), and a cross-scope comparison
+ * re-anchors instead of blocking (2026-07-24: a file pinned at 100% from a
+ * broad run false-blocked EVERY edit once selection narrowed to a scope that
+ * could only reach 98.7%). Within one scope the epsilon absorbs sub-line float
+ * wobble (1.0 → 0.9997) while catching a real multi-line regression; the
+ * commit-time full-suite gate re-checks against the complete measurement.
  */
 export const COVERAGE_DROP_EPSILON = 0.005;
 
-/** The actionable block for a per-file coverage regression vs the baseline. */
-function blockForDrop(relPath: string, prior: number, now: number): HarnessDecision {
-	const pct = (n: number): string => `${Math.round(n * 100)}%`;
+/** How many uncovered lines the drop message names (orientation, not a dump). */
+const UNCOVERED_SAMPLE_MAX = 3;
+
+/** First few uncovered lines, sorted — the pointer that turns a ten-minute
+ *  "what dropped?" diagnosis into a one-line read. Empty when the engine's
+ *  report carries no per-line data. */
+function sampleUncoveredLines(cov: PerFileCoverage): number[] {
+	const lines = cov.uncoveredLines;
+	if (!lines || lines.size === 0) return [];
+	return [...lines].sort((a, b) => a - b).slice(0, UNCOVERED_SAMPLE_MAX);
+}
+
+/** The actionable block for a per-file coverage regression vs the baseline.
+ *  Unrounded percentages (98.7%, not "99%") and named uncovered lines — the
+ *  rounded form hid the one-line gap behind an apparent 1% mystery. */
+function blockForDrop(
+	relPath: string,
+	prior: number,
+	now: number,
+	uncoveredSample: number[] = [],
+): HarnessDecision {
+	const where =
+		uncoveredSample.length > 0
+			? ` (uncovered now: line ${uncoveredSample.join(", line ")})`
+			: "";
 	return {
 		decision: "block",
 		reason:
 			`[interlinked:coverage] BLOCKED: this edit drops ${relPath} coverage from ` +
-			`${pct(prior)} to ${pct(now)}. Strict TDD: coverage must not decrease. Restore the ` +
-			"test(s) covering the changed code, then retry.",
+			`${pctPrecise(prior)} to ${pctPrecise(now)} under the same affected-test scope. ` +
+			`The changed code itself passed the added-coverage check — the drop comes from ` +
+			`previously-covered code going uncovered${where}. Restore or extend the covering ` +
+			`test(s), then retry.`,
 		rule_id: "per-edit-coverage",
 		severity: "medium",
 		category: "coverage",
@@ -203,16 +228,54 @@ function blockForFloor(relPath: string, now: number, floorPct: number): HarnessD
 	};
 }
 
-/** Per-file coverage regression check: the non-decrease drop vs the high-water
- *  baseline, then the absolute `min_coverage` floor. Returns a block or null.
- *  Folding both into one helper keeps `decideFromCoverage` at low complexity. */
+/** Out-params handed back to the caller on allow: the measured fraction to
+ *  persist, and — when the stored baseline was earned under a DIFFERENT test
+ *  scope — the re-anchor signal (caller surfaces a loud allow-warning; the
+ *  reseed itself happens via the normal on-allow baseline write). */
+export interface CoverageDecisionOut {
+	now?: number;
+	scopeChanged?: { priorFraction: number };
+}
+
+/** Same-scope drop check with cross-scope re-anchor semantics: a baseline
+ *  earned under a different (or legacy scope-less) test set is not comparable —
+ *  every legacy 1.0 entry would otherwise false-block all edits once selection
+ *  narrowed — so it signals the re-anchor instead of blocking. */
+function dropVerdict(
+	entry: { fraction: number; scope: string | null },
+	relPath: string,
+	now: number,
+	scopeId: string | undefined,
+	uncoveredSample: number[],
+	out: CoverageDecisionOut | undefined,
+): HarnessDecision | null {
+	if (scopeId !== undefined && entry.scope !== scopeId) {
+		if (out) out.scopeChanged = { priorFraction: entry.fraction };
+		return null;
+	}
+	if (now < entry.fraction - COVERAGE_DROP_EPSILON) {
+		return blockForDrop(relPath, entry.fraction, now, uncoveredSample);
+	}
+	return null;
+}
+
+/** Per-file coverage regression check: the non-decrease drop vs the baseline
+ *  (same-scope only — see dropVerdict), then the absolute `min_coverage`
+ *  floor. Returns a block or null. Folding both into one helper keeps
+ *  `decideFromCoverage` at low complexity. */
 function perFileRegressionBlock(
 	projectRoot: string,
 	relPath: string,
 	now: number,
+	scopeId?: string,
+	uncoveredSample: number[] = [],
+	out?: CoverageDecisionOut,
 ): HarnessDecision | null {
-	const prior = readFileCoverageBaseline(projectRoot, relPath);
-	if (prior !== null && now < prior - COVERAGE_DROP_EPSILON) return blockForDrop(relPath, prior, now);
+	const entry = readFileCoverageBaselineEntry(projectRoot, relPath);
+	if (entry !== null) {
+		const drop = dropVerdict(entry, relPath, now, scopeId, uncoveredSample, out);
+		if (drop) return drop;
+	}
 	const floor = minCoverageFor(projectRoot);
 	if (floor > 0 && now < floor / 100) return blockForFloor(relPath, now, floor);
 	return null;
@@ -266,7 +329,8 @@ export function decideFromCoverage(
 	relPath: string,
 	cov: PerFileCoverage,
 	editedLines: Set<number> | undefined,
-	out: { now?: number },
+	out: CoverageDecisionOut,
+	scopeId?: string,
 ): HarnessDecision | null {
 	const verdict = hasPerLineData(cov)
 		? decidePerLine(relPath, cov, editedLines)
@@ -274,7 +338,14 @@ export function decideFromCoverage(
 	if ("block" in verdict) return verdict.block;
 
 	const now = verdict.now;
-	const regression = perFileRegressionBlock(projectRoot, relPath, now);
+	const regression = perFileRegressionBlock(
+		projectRoot,
+		relPath,
+		now,
+		scopeId,
+		sampleUncoveredLines(cov),
+		out,
+	);
 	if (regression) return regression;
 
 	out.now = now;

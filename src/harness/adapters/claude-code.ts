@@ -15,7 +15,7 @@ import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
 import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
-import { buildHookCommand } from "./hook-command.js";
+import { buildDetachedHookCommand, buildHookCommand } from "./hook-command.js";
 import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
 
 const NATIVE_EVENTS = [
@@ -115,7 +115,16 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 			const path = scope === "user" ? "~/.claude/settings.json" : ".claude/settings.json";
 			const hooks: Record<string, unknown[]> = {};
 			for (const event of NATIVE_EVENTS) {
-				const hookCommand = buildHookCommand(binaryPath, "claude-code", event);
+				// SessionEnd is fire-and-forget: nothing consumes its output, and a
+				// runner that exits right after firing it (`claude update`) cancels
+				// any foreground hook still booting ("Hook cancelled"). The detached
+				// form returns to the shell in milliseconds. Every other event stays
+				// foreground — their output (context, warnings, block decisions) is
+				// consumed by the runner.
+				const hookCommand =
+					event === "SessionEnd"
+						? buildDetachedHookCommand(binaryPath, "claude-code", event)
+						: buildHookCommand(binaryPath, "claude-code", event);
 				// Per-event timeout (seconds; lib/hook-timeouts.ts is the single
 				// source): PreToolUse must outlast the per-edit coverage overlay,
 				// PostToolUse the full quality pass — Claude Code's 60s default
@@ -256,7 +265,7 @@ function buildToolCallAction(
 ): UnifiedHookEvent["action"] {
 	const tool_name_raw = readString(raw.tool_name) ?? "unknown";
 	const tool_name = normalizeToolName(tool_name_raw);
-	const tool_input = (raw.tool_input as unknown) ?? {};
+	const tool_input: unknown = raw.tool_input ?? {};
 	const tool_class: ToolClass = classifyFromToolName(
 		tool_name_raw,
 		tool_input,

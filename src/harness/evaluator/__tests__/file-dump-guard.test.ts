@@ -125,56 +125,61 @@ describe("evaluateFileDumpGuard — file size cap (100KB)", () => {
 	});
 });
 
-describe("evaluateFileDumpGuard — line-count cap (50)", () => {
-	it("blocks `head -n 100 foo` (over the 50-line cap, no filter)", () => {
+describe("evaluateFileDumpGuard — line-count cap (200)", () => {
+	it("blocks `head -n 300 foo` (over the 200-line cap, no filter)", () => {
 		const p = writeFile("foo", 1024);
-		const r = evaluateFileDumpGuard({ command: `head -n 100 ${p}`, cwd: dir });
+		const r = evaluateFileDumpGuard({ command: `head -n 300 ${p}`, cwd: dir });
 		expect(r.kind).toBe("block");
 		if (r.kind === "block") {
 			expect(r.decision.rule_id).toBe("builtin-file-dump-too-many-lines");
-			expect(r.decision.reason).toContain("100 lines");
+			expect(r.decision.reason).toContain("300 lines");
 		}
 	});
 
-	it("blocks `tail -n 200 foo` (well over the 50-line cap)", () => {
+	it("allows `head -n 100 foo` (the pre-2026-07 cap blocked this; Read allows 2000)", () => {
 		const p = writeFile("foo", 1024);
-		const r = evaluateFileDumpGuard({ command: `tail -n 200 ${p}`, cwd: dir });
+		const r = evaluateFileDumpGuard({ command: `head -n 100 ${p}`, cwd: dir });
+		expect(r.kind).toBe("allow");
+	});
+
+	it("blocks `tail -n 500 foo` (well over the 200-line cap)", () => {
+		const p = writeFile("foo", 1024);
+		const r = evaluateFileDumpGuard({ command: `tail -n 500 ${p}`, cwd: dir });
 		expect(r.kind).toBe("block");
 	});
 
-	it("blocks `tail -n=75 foo` (long-form `=` syntax)", () => {
+	it("blocks `tail -n=275 foo` (long-form `=` syntax)", () => {
 		const p = writeFile("foo", 1024);
-		const r = evaluateFileDumpGuard({ command: `tail -n=75 ${p}`, cwd: dir });
+		const r = evaluateFileDumpGuard({ command: `tail -n=275 ${p}`, cwd: dir });
 		expect(r.kind).toBe("block");
 	});
 
-	it("blocks `head --lines 100 foo` (long flag form)", () => {
+	it("blocks `head --lines 300 foo` (long flag form)", () => {
 		const p = writeFile("foo", 1024);
-		const r = evaluateFileDumpGuard({ command: `head --lines 100 ${p}`, cwd: dir });
+		const r = evaluateFileDumpGuard({ command: `head --lines 300 ${p}`, cwd: dir });
 		expect(r.kind).toBe("block");
 	});
 
-	it("blocks `cat foo` when the file has > 50 lines (no filter, no redirect)", () => {
+	it("blocks `cat foo` when the file has > 200 lines (no filter, no redirect)", () => {
 		// cat's "lines" is the file's actual newline count, so a file with
-		// 100 lines blocks even though the size is well under 100KB.
-		const p = writeFileLines("foo", 100);
+		// 250 lines blocks even though the size is well under 100KB.
+		const p = writeFileLines("foo", 250);
 		const r = evaluateFileDumpGuard({ command: `cat ${p}`, cwd: dir });
 		expect(r.kind).toBe("block");
 		if (r.kind === "block") expect(r.decision.rule_id).toBe("builtin-file-dump-too-many-lines");
 	});
 
-	it("allows `cat foo` when the file has fewer than 50 lines", () => {
-		// 30 lines of trivial content — actual output is ≤ 50 lines so the
-		// line-count cap doesn't fire, and 30 lines × 2 bytes = 60 bytes is
-		// well under the size cap.
-		const p = writeFileLines("foo", 30);
+	it("allows `cat foo` when the file is under the cap (a ~100-line file)", () => {
+		// The old 50-line cap blocked bare cat of 76–106-line files (17 real
+		// blocks in July 2026) — the exact class this fixture pins as allowed.
+		const p = writeFileLines("foo", 100);
 		const r = evaluateFileDumpGuard({ command: `cat ${p}`, cwd: dir });
 		expect(r.kind).toBe("allow");
 	});
 
-	it("allows `tail -n 50 foo` (exactly at the cap)", () => {
+	it("allows `tail -n 200 foo` (exactly at the cap)", () => {
 		const p = writeFile("foo", 1024);
-		const r = evaluateFileDumpGuard({ command: `tail -n 50 ${p}`, cwd: dir });
+		const r = evaluateFileDumpGuard({ command: `tail -n 200 ${p}`, cwd: dir });
 		expect(r.kind).toBe("allow");
 	});
 
@@ -230,6 +235,41 @@ describe("evaluateFileDumpGuard — soft ceiling warning (1000 lines + filter)",
 		const r = evaluateFileDumpGuard({ command: `tail -n 1001 ${p} | jq`, cwd: dir });
 		expect(r.kind).toBe("warn");
 	});
+
+	it("allows the INDEX.md recipe shape — big window, terminal `tail` slice", () => {
+		// `tail -n 20000 log | grep pat | tail -n 10` is the sanctioned
+		// bounded-read recipe; the terminal tail caps the payload, so no nudge.
+		const p = writeFile("foo", 1024);
+		const r = evaluateFileDumpGuard({
+			command: `tail -n 20000 ${p} | grep pat | tail -n 10`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("allow");
+	});
+
+	it("allows a wide jq projection when the pipe ends in `head`", () => {
+		const p = writeFile("foo", 1024);
+		const r = evaluateFileDumpGuard({
+			command: `tail -n 5000 ${p} | jq -r '.x' | head -20`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("allow");
+	});
+
+	it("allows a wide window ending in `wc -l` (count, not dump)", () => {
+		const p = writeFile("foo", 1024);
+		const r = evaluateFileDumpGuard({ command: `tail -n 50000 ${p} | wc -l`, cwd: dir });
+		expect(r.kind).toBe("allow");
+	});
+
+	it("still warns when the final stage is NOT bounding (sort)", () => {
+		const p = writeFile("foo", 1024);
+		const r = evaluateFileDumpGuard({
+			command: `tail -n 5000 ${p} | jq -r '.x' | sort`,
+			cwd: dir,
+		});
+		expect(r.kind).toBe("warn");
+	});
 });
 
 describe("evaluateFileDumpGuard — fail-open safety (uncertain inputs)", () => {
@@ -267,10 +307,10 @@ describe("evaluateFileDumpGuard — wrapper handling", () => {
 		expect(r.kind).toBe("block");
 	});
 
-	it("blocks `env FOO=1 head -n 100 foo` (env wrapper stripped)", () => {
+	it("blocks `env FOO=1 head -n 300 foo` (env wrapper stripped)", () => {
 		const p = writeFile("foo", 1024);
 		const r = evaluateFileDumpGuard({
-			command: `env FOO=1 head -n 100 ${p}`,
+			command: `env FOO=1 head -n 300 ${p}`,
 			cwd: dir,
 		});
 		expect(r.kind).toBe("block");
