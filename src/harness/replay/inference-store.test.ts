@@ -35,7 +35,7 @@ function envelope(overrides: Partial<InferenceEnvelope> = {}): InferenceEnvelope
 		latency_ms: 4000,
 		provider: "anthropic",
 		request_headers: { "anthropic-version": "2023-06-01" },
-		request: { model: "claude-opus-4-8", messages: [] },
+		request: { model: "vendor-model-v6", messages: [] },
 		response: { id: "msg_1", stop_reason: "tool_use", content: [] },
 		tool_use_ids: ["toolu_abc"],
 		request_sha256: "deadbeef",

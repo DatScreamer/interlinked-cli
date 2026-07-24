@@ -16,7 +16,7 @@ const FIXTURE: string =
 		type: "message_start",
 		message: {
 			id: "msg_01",
-			model: "claude-opus-4-8",
+			model: "vendor-model-v6",
 			role: "assistant",
 			usage: { input_tokens: 120, cache_read_input_tokens: 40 },
 		},

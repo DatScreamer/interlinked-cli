@@ -26,7 +26,7 @@ function row(runId: string, seq: number, match: boolean): LedgerRow {
 		run_id: runId,
 		ts: "2026-07-24T15:00:00.000Z",
 		mode: "off_policy",
-		reference: { session_id: "sess", seq, tool_use_id: `toolu_${seq}`, model: "claude-opus-4-8" },
+		reference: { session_id: "sess", seq, tool_use_id: `toolu_${seq}`, model: "vendor-model-v6" },
 		candidate: { model: "candidate-x", decode: "default" },
 		scores: {
 			action_match: { same_tool: match, same_input: match, match },

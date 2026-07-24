@@ -15,10 +15,13 @@ const EXPECTED_IDS = [
 	"catch_rewrap_loses_cause",
 	"resource_handle_leak",
 	"jsdoc_param_drift",
+	// history-relational-metrics Phase 1 (2026-07-24): AST-computed cognitive
+	// complexity joined the fragment as its ninth entry.
+	"cognitive_complexity",
 ] as const;
 
 describe("QUALITY_FRONTIER_ENTRIES", () => {
-	it("registers exactly the eight wave detectors, in declaration order", () => {
+	it("registers exactly the nine wave detectors, in declaration order", () => {
 		expect(QUALITY_FRONTIER_ENTRIES.map((e) => e.id)).toEqual([...EXPECTED_IDS]);
 	});
 
@@ -28,7 +31,9 @@ describe("QUALITY_FRONTIER_ENTRIES", () => {
 			expect(e.severity, e.id).toBe("warning");
 			expect(typeof e.fn, e.id).toBe("function");
 			expect(e.pipeline, e.id).toBe("agent_safety");
-			expect(e.tier, e.id).toBe(1);
+			// Tier 1 = keyword-gated regex; cognitive_complexity is tier 2 (a
+			// full TS parse with no cheap content-keyword gate).
+			expect([1, 2], e.id).toContain(e.tier);
 		}
 	});
 

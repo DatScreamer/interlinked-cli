@@ -65,8 +65,11 @@ describe("processEvent snapshot ordering (Plan 08 review fix)", () => {
 		const fnSlice = EVENT_LOOP_TS.slice(fnIdx, fnIdx + 4000);
 		const sessionIdAssignIdx = fnSlice.indexOf("sessionIdForSnap = parsed.session_id");
 		// The processEvent call sits inside the try that the finally guards; assert
-		// the session_id was captured before it (indentation-agnostic substring).
-		const processEventCallIdx = fnSlice.indexOf("const decision = await processEvent(line)");
+		// the session_id was captured before it. Anchor on the `const decision =`
+		// assignment rather than the exact call expression — the replay clock
+		// wraps processEvent in a conditional (runWithClock) and the pin must
+		// survive that shape while still locking the ordering.
+		const processEventCallIdx = fnSlice.indexOf("const decision =");
 
 		expect(sessionIdAssignIdx).toBeGreaterThan(0);
 		expect(processEventCallIdx).toBeGreaterThan(sessionIdAssignIdx);

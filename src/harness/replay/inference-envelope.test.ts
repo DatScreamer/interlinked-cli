@@ -43,7 +43,7 @@ describe("persistableHeaders", () => {
 describe("splitRequestBody", () => {
 	it("keeps model/system/tools/messages verbatim and folds the rest into params", () => {
 		const body = {
-			model: "claude-opus-4-8",
+			model: "vendor-model-v6",
 			system: "be helpful",
 			tools: [{ name: "Bash" }],
 			messages: [{ role: "user", content: "hi" }],
@@ -51,7 +51,7 @@ describe("splitRequestBody", () => {
 			thinking: { type: "adaptive" },
 		};
 		const split = splitRequestBody(body);
-		expect(split.model).toBe("claude-opus-4-8");
+		expect(split.model).toBe("vendor-model-v6");
 		expect(split.system).toBe("be helpful");
 		expect(split.tools).toEqual([{ name: "Bash" }]);
 		expect(split.messages).toEqual([{ role: "user", content: "hi" }]);

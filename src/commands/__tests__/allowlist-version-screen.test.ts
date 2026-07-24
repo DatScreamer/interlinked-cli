@@ -18,11 +18,15 @@ import { nonNull } from "../../lib/non-null.js";
 const fetchRegistryMetadataMock = vi.fn();
 const fetchVersionMetadataMock = vi.fn();
 const queryOsvAdvisoriesMock = vi.fn();
+// libyear screen (screen 4): null ⇒ "publish-date fetch failed — skipped",
+// which keeps these version-screen cases focused on screens 2–3.
+const fetchNpmPublishDatesMock = vi.fn(async (..._args: unknown[]) => null);
 
 vi.mock("../../harness/registry-metadata.js", () => ({
 	fetchRegistryMetadata: (...args: unknown[]) => fetchRegistryMetadataMock(...args),
 	fetchVersionMetadata: (...args: unknown[]) => fetchVersionMetadataMock(...args),
 	queryOsvAdvisories: (...args: unknown[]) => queryOsvAdvisoriesMock(...args),
+	fetchNpmPublishDates: (...args: unknown[]) => fetchNpmPublishDatesMock(...args),
 }));
 
 // Imported after the mock is registered.

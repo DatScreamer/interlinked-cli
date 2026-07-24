@@ -133,40 +133,43 @@ describe("inlineFileDumpCheck — file size cap", () => {
 });
 
 describe("inlineFileDumpCheck — line-count cap", () => {
-	it("blocks `head -n 100 foo` over the 50-line cap", () => {
+	// Cap raised 50 → 200 (2026-07-24, mirrored from evaluator/file-dump-guard):
+	// July telemetry showed bare `cat` of 76–106-line files blocked for no
+	// budget win. These pins track the 200-line cap.
+	it("blocks `head -n 300 foo` over the 200-line cap", () => {
 		const p = writeFile("foo", 1024);
 		const fn = buildRuntimeInlineGuard();
-		const r = fn("PreToolUse", "Bash", { command: `head -n 100 ${p}` });
+		const r = fn("PreToolUse", "Bash", { command: `head -n 300 ${p}` });
 		expect(r?.decision).toBe("block");
 		expect(r?.rule_id).toBe("inline-file-dump-too-many-lines");
 	});
 
-	it("blocks `tail -n 200 foo` well over the cap", () => {
+	it("blocks `tail -n 500 foo` well over the cap", () => {
 		const p = writeFile("foo", 1024);
 		const fn = buildRuntimeInlineGuard();
-		const r = fn("PreToolUse", "Bash", { command: `tail -n 200 ${p}` });
+		const r = fn("PreToolUse", "Bash", { command: `tail -n 500 ${p}` });
 		expect(r?.decision).toBe("block");
 	});
 
-	it("blocks `cat foo` when the file has > 50 lines (no filter)", () => {
-		const p = writeFileLines("foo", 100);
+	it("blocks `cat foo` when the file has > 200 lines (no filter)", () => {
+		const p = writeFileLines("foo", 300);
 		const fn = buildRuntimeInlineGuard();
 		const r = fn("PreToolUse", "Bash", { command: `cat ${p}` });
 		expect(r?.decision).toBe("block");
 		expect(r?.rule_id).toBe("inline-file-dump-too-many-lines");
 	});
 
-	it("allows `cat foo` when the file has ≤ 50 lines", () => {
-		const p = writeFileLines("foo", 30);
+	it("allows `cat foo` when the file has ≤ 200 lines (the July-telemetry friction case)", () => {
+		const p = writeFileLines("foo", 100);
 		const fn = buildRuntimeInlineGuard();
 		const r = fn("PreToolUse", "Bash", { command: `cat ${p}` });
 		expect(r).toBeNull();
 	});
 
-	it("allows `tail -n 50 foo` (exactly at the cap)", () => {
+	it("allows `tail -n 200 foo` (exactly at the cap)", () => {
 		const p = writeFile("foo", 1024);
 		const fn = buildRuntimeInlineGuard();
-		const r = fn("PreToolUse", "Bash", { command: `tail -n 50 ${p}` });
+		const r = fn("PreToolUse", "Bash", { command: `tail -n 200 ${p}` });
 		expect(r).toBeNull();
 	});
 
