@@ -29,6 +29,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { type AstProfile, astProfile, structuralDelta } from "../checks/ast-delta.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { isCappableFile } from "../large-file-policy.js";
 import { maxCyclomaticFor } from "../metric-caps.js";
@@ -55,6 +56,10 @@ export interface PulseSnapshot {
 	afterFns: FunctionComplexityEntry[];
 	/** sha256 of the projected after-content — consumed only on an exact match. */
 	afterHash: string;
+	/** AST semantic profiles (7c); optional so older stash shapes stay valid.
+	 *  null/undefined = non-JS/TS file or `typescript` unavailable. */
+	beforeProfile?: AstProfile | null;
+	afterProfile?: AstProfile | null;
 }
 
 const stash = new Map<string, PulseSnapshot>();
@@ -80,8 +85,25 @@ export function recordComplexityPulse(
 	afterContent: string,
 ): void {
 	const key = stashKey(sessionId, absPath);
+	// 7c: at PreToolUse the on-disk bytes ARE the before-state, so both AST
+	// profiles are computable here with zero caller changes. Cost: two extra
+	// parses per edited code file (~ms each), accepted for zero blast radius
+	// on the gate. A new file (nothing on disk) has no before profile.
+	let beforeProfile: AstProfile | null = null;
+	try {
+		beforeProfile = astProfile(readFileSync(absPath, "utf-8"), absPath);
+	} catch {
+		beforeProfile = null;
+	}
+	const afterProfile = astProfile(afterContent, absPath);
 	stash.delete(key); // re-insert at the tail so eviction stays oldest-first
-	stash.set(key, { beforeFns, afterFns, afterHash: sha256(afterContent) });
+	stash.set(key, {
+		beforeFns,
+		afterFns,
+		afterHash: sha256(afterContent),
+		beforeProfile,
+		afterProfile,
+	});
 	if (stash.size > MAX_STASH_ENTRIES) {
 		const oldest = stash.keys().next().value;
 		if (oldest !== undefined) stash.delete(oldest);
@@ -168,6 +190,7 @@ export function formatComplexityPulse(
 	beforeFns: readonly FunctionComplexityEntry[] | null,
 	afterFns: readonly FunctionComplexityEntry[],
 	cap: number = DEFAULT_MAX_CYCLOMATIC,
+	profiles?: { before: AstProfile | null; after: AstProfile | null },
 ): string | null {
 	if (afterFns.length === 0 && (beforeFns?.length ?? 0) === 0) return null;
 
@@ -205,6 +228,18 @@ export function formatComplexityPulse(
 		const more = overCap.length - MAX_OVER_CAP_LISTED;
 		line += `; over cap: ${shown}${more > 0 ? `, +${more} more` : ""}`;
 	}
+
+	// 7c segment: cognitive total (+Δ when a before profile exists) and the
+	// structural size of the edit — a rename reads as astΔ 0 while a rewritten
+	// conditional reads nonzero, which textual line counts cannot distinguish.
+	const after = profiles?.after;
+	if (after) {
+		line += `; cogΣ ${after.cogTotal}`;
+		const before = profiles?.before;
+		if (before) {
+			line += ` (Δ${signed(after.cogTotal - before.cogTotal)}); astΔ ${structuralDelta(before, after)}`;
+		}
+	}
 	return line;
 }
 
@@ -221,8 +256,10 @@ function pulseForFile(sessionId: string, cwd: string, absPath: string): string |
 	const snap = consumeComplexityPulse(sessionId, absPath, disk);
 	let beforeFns: readonly FunctionComplexityEntry[] | null;
 	let afterFns: FunctionComplexityEntry[] | null;
+	let profiles: { before: AstProfile | null; after: AstProfile | null } | undefined;
 	if (snap) {
 		({ beforeFns, afterFns } = snap);
+		profiles = { before: snap.beforeProfile ?? null, after: snap.afterProfile ?? null };
 	} else {
 		// Stash miss (daemon restarted, runner without a PreToolUse, projected
 		// content never landed): one on-disk parse, absolutes only. Same
@@ -232,6 +269,8 @@ function pulseForFile(sessionId: string, cwd: string, absPath: string): string |
 		if (!analyzer) return null;
 		beforeFns = null;
 		afterFns = analyzer.compute(disk, absPath);
+		// 7c on a miss: absolutes only, same as the CC columns.
+		profiles = { before: null, after: astProfile(disk, absPath) };
 	}
 	if (!afterFns) return null;
 
@@ -239,7 +278,7 @@ function pulseForFile(sessionId: string, cwd: string, absPath: string): string |
 	const display = rel === "" || rel.startsWith("..") ? absPath : rel;
 	// Production path must use the repo's effective cap, not the default
 	// (round-2 #38 — round-1 fixed the formatter but not this caller).
-	return formatComplexityPulse(display, beforeFns, afterFns, maxCyclomaticFor(cwd));
+	return formatComplexityPulse(display, beforeFns, afterFns, maxCyclomaticFor(cwd), profiles);
 }
 
 /**

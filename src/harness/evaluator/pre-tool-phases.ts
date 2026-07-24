@@ -32,6 +32,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { cognitiveWriteWarning } from "./cognitive-write-guard.js";
 import { recordComplexityPulse } from "./complexity-pulse.js";
 import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
@@ -141,14 +142,14 @@ export function evaluatePreChecksTail(
 		const complexityBlock = checkFunctionComplexityWrite(
 			toolInput,
 			eventCwd,
-			(filePath, beforeFns, afterFns, afterContent) =>
-				recordComplexityPulse(
-					event.session_id,
-					isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath),
-					beforeFns,
-					afterFns,
-					afterContent,
-				),
+			(filePath, beforeFns, afterFns, afterContent) => {
+				const absPath = isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath);
+				recordComplexityPulse(event.session_id, absPath, beforeFns, afterFns, afterContent);
+				// Cognitive companion (W2-2): warn when this edit grows a function
+				// past max_cognitive — delta semantics, never a block (plan 06 §D).
+				const cogWarning = cognitiveWriteWarning(absPath, afterContent, eventCwd);
+				if (cogWarning) warnings.push(cogWarning);
+			},
 		);
 		if (complexityBlock?.block) {
 			return {

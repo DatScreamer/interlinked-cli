@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { capsExplainAction, capsSetAction, capsShowAction } from "./caps.js";
 import { nonNull } from "../lib/non-null.js";
+import { capsExplainAction, capsSetAction, capsShowAction } from "./caps.js";
 
 let cwd: string;
 let logs: string[];
@@ -120,7 +120,8 @@ describe("capsExplainAction", () => {
 	it("explains all four metrics when no metric is named", async () => {
 		const code = await capsExplainAction(undefined, {}, { cwd });
 		expect(code).toBe(0);
-		for (const m of ["lines", "cyclomatic", "crap", "coverage"]) expect(out()).toContain(m);
+		for (const m of ["lines", "cyclomatic", "cognitive", "crap", "coverage"])
+			expect(out()).toContain(m);
 	});
 
 	it("explains a single metric with its definition and how-to-configure", async () => {
@@ -136,6 +137,12 @@ describe("capsExplainAction", () => {
 	it("--json returns the glossary entries", async () => {
 		await capsExplainAction(undefined, { json: true }, { cwd });
 		const parsed = JSON.parse(out()) as Array<{ key: string }>;
-		expect(parsed.map((d) => d.key)).toEqual(["lines", "cyclomatic", "crap", "coverage"]);
+		expect(parsed.map((d) => d.key)).toEqual([
+			"lines",
+			"cyclomatic",
+			"cognitive",
+			"crap",
+			"coverage",
+		]);
 	});
 });

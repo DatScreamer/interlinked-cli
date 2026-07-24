@@ -47,12 +47,8 @@ import {
 	parseSuppressionEntry,
 } from "../harness/suppressions.js";
 
-import {
-	DEFAULT_ADVISORY_SKIPS,
-	getEffectiveSkipChecks,
-	getSkipTools,
-	TOOL_IDS,
-} from "./verify/advisory.js";
+import { DEFAULT_ADVISORY_SKIPS, TOOL_IDS } from "./verify/advisory.js";
+import { getEffectiveSkipChecks, getSkipTools } from "./verify/advisory-skips.js";
 import { cloneRepo, isGitUrl, normalizeGitUrl, repoDisplayName } from "./verify/clone-repo.js";
 import { discoverFiles } from "./verify/file-discovery.js";
 import { outputJson } from "./verify/output-json.js";
@@ -64,7 +60,6 @@ import {
 	runCodeQualityChecks,
 	runSuggestions,
 } from "./verify/tool-results.js";
-import { streamExternalTools } from "./verify/verify-tools.js";
 import {
 	emitVerifyRun,
 	streamCaseDivergence,
@@ -77,6 +72,7 @@ import {
 	streamUndocumentedEnvVars,
 	summarizeFlaggedFiles,
 } from "./verify/verify-summary.js";
+import { streamExternalTools } from "./verify/verify-tools.js";
 
 // Re-export for consumers (tests + external scripts that imported these
 // names historically from this file). These names are load-bearing — the
@@ -85,8 +81,8 @@ import {
 export { DEFAULT_ADVISORY_SKIPS } from "./verify/advisory.js";
 export { cloneRepo, isGitUrl, normalizeGitUrl, repoDisplayName } from "./verify/clone-repo.js";
 export { CODE_EXTENSIONS, discoverFiles } from "./verify/file-discovery.js";
-export type { ToolSpec } from "./verify/verify-tools.js";
 export { summarizeFlaggedFiles } from "./verify/verify-summary.js";
+export type { ToolSpec } from "./verify/verify-tools.js";
 
 const CHECK_ENGINE_TIMEOUT_MS = 30_000;
 const SUGGESTIONS_LIMIT = 3;

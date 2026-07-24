@@ -9,13 +9,18 @@ import { nonNull } from "../lib/non-null.js";
 // wholesale. registry-metadata.test.ts owns the wire-shape coverage.
 const fetchRegistryMetadataMock = vi.fn();
 const queryOsvAdvisoriesMock = vi.fn();
+const fetchVersionMetadataMock = vi.fn();
+const fetchNpmPublishDatesMock = vi.fn();
 vi.mock("../harness/registry-metadata.js", () => ({
 	fetchRegistryMetadata: (...args: unknown[]) => fetchRegistryMetadataMock(...args),
 	queryOsvAdvisories: (...args: unknown[]) => queryOsvAdvisoriesMock(...args),
+	fetchVersionMetadata: (...args: unknown[]) => fetchVersionMetadataMock(...args),
+	fetchNpmPublishDates: (...args: unknown[]) => fetchNpmPublishDatesMock(...args),
 }));
 
 import {
 	addAllowlistCommand,
+	libyearsBehind,
 	listAllowlistCommand,
 	removeAllowlistCommand,
 	snapshotAllowlistCommand,
@@ -29,8 +34,12 @@ beforeEach(() => {
 	// Default to the happy path: permissively-licensed package, no advisories.
 	fetchRegistryMetadataMock.mockReset();
 	queryOsvAdvisoriesMock.mockReset();
+	fetchVersionMetadataMock.mockReset();
+	fetchNpmPublishDatesMock.mockReset();
 	fetchRegistryMetadataMock.mockResolvedValue({ latestVersion: "1.0.0", license: "MIT" });
 	queryOsvAdvisoriesMock.mockResolvedValue([]);
+	fetchVersionMetadataMock.mockResolvedValue(null);
+	fetchNpmPublishDatesMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -539,5 +548,61 @@ describe("verifyAllowlistCommand", () => {
 		const out = capture(() => verifyAllowlistCommand({ cwd: workspace }));
 		expect(out).toMatch(/clean|all approved/i);
 		expect(process.exitCode ?? 0).toBe(0);
+	});
+});
+
+describe("libyear screen (screen 4, warn-only, npm-only)", () => {
+	const DATES = {
+		created: "2019-01-01T00:00:00.000Z",
+		modified: "2024-06-01T00:00:00.000Z",
+		"0.9.1": "2020-01-01T00:00:00.000Z",
+		"3.0.0": "2024-06-01T00:00:00.000Z",
+	};
+
+	it("libyearsBehind measures the approved→latest gap and ignores bookkeeping keys", () => {
+		const behind = libyearsBehind(DATES, "0.9.1");
+		expect(behind?.latestVersion).toBe("3.0.0");
+		expect(behind?.years).toBeGreaterThan(4);
+	});
+
+	it("libyearsBehind returns null for an unknown version and 0y for the newest", () => {
+		expect(libyearsBehind(DATES, "9.9.9")).toBeNull();
+		expect(libyearsBehind(DATES, "3.0.0")?.years).toBe(0);
+	});
+
+	it("warns on a stale npm pin, still approves, and names the gap", async () => {
+		fetchNpmPublishDatesMock.mockResolvedValue(DATES);
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "oldpkg", {
+				by: "x",
+				cwd: workspace,
+				versionRange: "0.9.1",
+			}),
+		);
+		expect(out).toMatch(/libyear/);
+		expect(out).toMatch(/years behind/);
+		expect(readAllowlistFile()).not.toBeNull(); // warn-only: approval proceeds
+	});
+
+	it("stays silent for a fresh pin within the threshold", async () => {
+		fetchNpmPublishDatesMock.mockResolvedValue({
+			...DATES,
+			"2.9.0": "2024-05-01T00:00:00.000Z",
+		});
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "freshpkg", { by: "x", cwd: workspace, versionRange: "2.9.0" }),
+		);
+		expect(out).not.toMatch(/libyear/);
+	});
+
+	it("notes the skipped screen when the date fetch fails, and never fires off-npm", async () => {
+		fetchNpmPublishDatesMock.mockResolvedValue(null);
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "nofetch", { by: "x", cwd: workspace, versionRange: "0.9.1" }),
+		);
+		expect(out).toMatch(/libyear screen skipped/);
+		fetchNpmPublishDatesMock.mockClear();
+		await addAllowlistCommand("cargo", "serde", { by: "x", cwd: workspace, versionRange: "1.0.0" });
+		expect(fetchNpmPublishDatesMock).not.toHaveBeenCalled();
 	});
 });

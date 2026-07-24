@@ -35,6 +35,7 @@ import type { Ecosystem } from "../harness/package-install-parser.js";
 // inspected (finding 2026-06, round 8).
 import { resolveScreenVersion } from "../harness/package-version-range.js";
 import {
+	fetchNpmPublishDates,
 	fetchRegistryMetadata,
 	fetchVersionMetadata,
 	queryOsvAdvisories,
@@ -132,6 +133,66 @@ async function screenLicense(
  * metadata there is no version to screen, and the gate notes the skip.
  * Throws unless --force.
  */
+/** Staleness (not malice) threshold: warn when the approved version's publish
+ *  date trails the latest release by more than this many years. Warn-only —
+ *  a stale-but-clean dependency is a maintenance risk, never a refusal. */
+const LIBYEAR_WARN_YEARS = 2;
+const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
+
+/**
+ * Years the approved version trails the newest release, from the npm `time`
+ * map. Pure; exported for tests. "created"/"modified"/"unpublished" are
+ * bookkeeping keys, not versions. Null when the approved version has no
+ * recorded date (screen skipped).
+ */
+export function libyearsBehind(
+	dates: Record<string, string>,
+	approvedVersion: string,
+): { years: number; latestVersion: string } | null {
+	const approvedIso = dates[approvedVersion];
+	if (approvedIso === undefined) return null;
+	const approvedMs = Date.parse(approvedIso);
+	if (!Number.isFinite(approvedMs)) return null;
+	let latestVersion = approvedVersion;
+	let latestMs = approvedMs;
+	for (const [version, iso] of Object.entries(dates)) {
+		if (version === "created" || version === "modified" || version === "unpublished") continue;
+		const ms = Date.parse(iso);
+		if (Number.isFinite(ms) && ms > latestMs) {
+			latestMs = ms;
+			latestVersion = version;
+		}
+	}
+	return { years: (latestMs - approvedMs) / MS_PER_YEAR, latestVersion };
+}
+
+/**
+ * Libyear gate (screen 4, warn-only, npm-only): how far behind the newest
+ * release is the version being approved? Complements the advisory screen —
+ * OSV says "known-bad", libyear says "unmaintained-by-us". Never refuses:
+ * staleness is a maintenance signal, not a supply-chain verdict.
+ */
+async function screenLibyear(ctx: ScreenContext, pinned: string | null): Promise<void> {
+	if (ctx.ecosystem !== "npm") return;
+	if (pinned === null) return; // approving latest ⇒ zero years behind by definition
+	const dates = await fetchNpmPublishDates(ctx.pkg);
+	if (dates === null) {
+		ctx.notes.push("npm publish-date fetch failed — libyear screen skipped");
+		return;
+	}
+	const behind = libyearsBehind(dates, pinned);
+	if (behind === null) {
+		ctx.notes.push(`no publish date recorded for ${pinned} — libyear screen skipped`);
+		return;
+	}
+	if (behind.years <= LIBYEAR_WARN_YEARS) return;
+	ctx.notes.push(
+		`libyear: pinned ${pinned} is ${behind.years.toFixed(1)} years behind latest ` +
+			`${behind.latestVersion} (warn threshold ${LIBYEAR_WARN_YEARS}y) — stale pins ` +
+			"miss upstream fixes; consider approving a newer release.",
+	);
+}
+
 async function screenAdvisories(
 	ctx: ScreenContext,
 	meta: RegistryPackageMetadata | null,
@@ -222,6 +283,7 @@ export async function addAllowlistCommand(
 		license = await screenLicense(ctx, meta, pinned);
 	}
 	await screenAdvisories(ctx, meta, pinned, opts.versionRange);
+	await screenLibyear(ctx, pinned);
 	addToAllowlist(opts.cwd, ecosystem, pkg, {
 		approved_by: opts.by,
 		...(opts.reason !== undefined ? { reason: opts.reason } : {}),

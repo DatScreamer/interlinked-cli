@@ -59,6 +59,10 @@ import {
 } from "../session-state.js";
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { clearArchive } from "../trajectory/fingerprint-archive.js";
+import {
+	formatSessionReworkNudge,
+	sessionReworkSummary,
+} from "../trajectory/session-rework.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import { captureAgentEvent } from "./agent-event-capture.js";
@@ -78,6 +82,7 @@ import { runSessionEndJobs, runSessionEndResourcePlan } from "./session-end-batc
 import { writeSessionEndEvidence } from "./session-end-evidence.js";
 import { runSessionEndHeavyJobs } from "./session-end-heavy-jobs.js";
 import { readHeavyReports } from "./session-start-heavy-reports.js";
+import { peekTrajectoryState } from "./trajectory-shadow.js";
 
 // Re-exported so `import { resolveParentSessionId } from "./lifecycle-events.js"`
 // keeps working for existing consumers/tests after the helper move.
@@ -438,6 +443,14 @@ function buildStopWarnings(
 		candidate: event,
 	});
 	for (const f of stopFindings) warnings.push(formatSequenceFinding(f));
+	// Session-rework aggregate (7d) — the churn family's quantitative roll-up:
+	// share of edits that returned a file to earlier content. Nudge-only above
+	// generous floors; silent when the shadow engine never folded this session.
+	const trajectoryState = peekTrajectoryState(event.session_id);
+	if (trajectoryState) {
+		const reworkNudge = formatSessionReworkNudge(sessionReworkSummary(trajectoryState));
+		if (reworkNudge !== null) warnings.push(reworkNudge);
+	}
 	return warnings;
 }
 

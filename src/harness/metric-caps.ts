@@ -1,11 +1,12 @@
 // ===========================================
-// Metric caps — the single source of truth for the four quality-metric caps
+// Metric caps — the single source of truth for the five quality-metric caps
 // ===========================================
-// The harness enforces four numeric quality metrics, each with a cap every user
+// The harness enforces five numeric quality metrics, each with a cap every user
 // can tune (we ship conservative defaults; users are in charge of the figures):
 //
 //   - lines       — per-file line count                         (lower is stricter)
 //   - cyclomatic  — per-function independent branch paths        (lower is stricter)
+//   - cognitive   — per-function nesting-weighted readability    (lower is stricter)
 //   - crap        — per-function complexity × under-coverage     (lower is stricter)
 //   - coverage    — per-file statement coverage floor            (higher is stricter)
 //
@@ -30,6 +31,13 @@ import { join } from "node:path";
 export const DEFAULT_MAX_LINES = 500;
 /** Shipped default per-function cyclomatic cap (overridable). */
 export const DEFAULT_MAX_CYCLOMATIC = 25;
+/** Shipped default per-function COGNITIVE-complexity cap (overridable). This is
+ *  the GATE backstop (≈ this repo's p99, measured 2026-07-24: 70/8,497 functions
+ *  above it) — deliberately looser than the Sonar-default 15 the advisory
+ *  `cognitive_complexity` registry check warns at. Two numbers, two roles: the
+ *  advisory nags early; the cap is the never-grow-past line. See
+ *  docs/design/history-relational-metrics.md §5. */
+export const DEFAULT_MAX_COGNITIVE_CAP = 30;
 /** Shipped default per-function CRAP cap (overridable). The McCabe/SonarQube
  *  cutoff: a cyclomatic-10 function at 0% coverage scores 110, fully covered 10. */
 export const DEFAULT_CRAP_THRESHOLD = 30;
@@ -37,13 +45,14 @@ export const DEFAULT_CRAP_THRESHOLD = 30;
  *  per-file non-decrease ratchet still applies independently). */
 export const DEFAULT_MIN_COVERAGE = 0;
 
-/** The four metrics, by stable key. */
-export type MetricKey = "lines" | "cyclomatic" | "crap" | "coverage";
+/** The five metrics, by stable key. */
+export type MetricKey = "lines" | "cyclomatic" | "cognitive" | "crap" | "coverage";
 
 /** Fully-resolved caps for a repo (every key populated). */
 export interface MetricCaps {
 	max_lines: number;
 	max_cyclomatic: number;
+	max_cognitive: number;
 	crap_threshold: number;
 	min_coverage: number;
 }
@@ -119,6 +128,28 @@ export const METRIC_DEFS: readonly MetricDef[] = [
 			"no suppression; decomposition is the only way past.",
 	},
 	{
+		key: "cognitive",
+		configKey: "max_cognitive",
+		label: "cognitive complexity (per function)",
+		unit: "",
+		stricter: "lower",
+		defaultValue: DEFAULT_MAX_COGNITIVE_CAP,
+		definition:
+			"SonarSource's readability model: nesting is penalized (+1 plus the current depth " +
+			"per if/loop/switch/ternary/catch), boolean-run transitions cost 1, and a flat " +
+			"switch is nearly free — so it disagrees with cyclomatic exactly where human " +
+			"readers disagree with branch counting. Surfaced per edit as a PreToolUse warning " +
+			"when a function GROWS past the cap (delta semantics; holding or shrinking an " +
+			"over-cap function is always allowed). The stricter Sonar-default 15 fires " +
+			"separately as the advisory `cognitive_complexity` check.",
+		howToConfigure:
+			"`interlinked caps set cognitive <n>` (or .interlinked/metric-caps.json → max_cognitive)",
+		fixHint:
+			"Flatten with early returns, extract nested blocks into named helpers (extraction " +
+			"to top level also clears the lambda-depth penalty), or split mixed &&/|| chains " +
+			"into named intermediate booleans.",
+	},
+	{
 		key: "crap",
 		configKey: "crap_threshold",
 		label: "CRAP score (per function)",
@@ -165,6 +196,7 @@ interface RawMetricCaps {
 	version?: unknown;
 	max_lines?: unknown;
 	max_cyclomatic?: unknown;
+	max_cognitive?: unknown;
 	crap_threshold?: unknown;
 	min_coverage?: unknown;
 }
@@ -192,6 +224,8 @@ function normalizeOverrides(raw: unknown): MetricCapsOverrides {
 	if (maxLines !== undefined && maxLines > 0) out.max_lines = maxLines;
 	const maxCyclomatic = readPositive(obj.max_cyclomatic);
 	if (maxCyclomatic !== undefined && maxCyclomatic > 0) out.max_cyclomatic = maxCyclomatic;
+	const maxCognitive = readPositive(obj.max_cognitive);
+	if (maxCognitive !== undefined && maxCognitive > 0) out.max_cognitive = maxCognitive;
 	const crap = readPositive(obj.crap_threshold);
 	if (crap !== undefined && crap > 0) out.crap_threshold = crap;
 	const minCoverage = readPositive(obj.min_coverage);
@@ -247,6 +281,7 @@ export interface LegacyCapInputs {
 const DEFAULTS: MetricCaps = {
 	max_lines: DEFAULT_MAX_LINES,
 	max_cyclomatic: DEFAULT_MAX_CYCLOMATIC,
+	max_cognitive: DEFAULT_MAX_COGNITIVE_CAP,
 	crap_threshold: DEFAULT_CRAP_THRESHOLD,
 	min_coverage: DEFAULT_MIN_COVERAGE,
 };
@@ -267,7 +302,7 @@ function resolveOne(
 	return { value: fallback, source: "default" };
 }
 
-/** Resolve all four caps with provenance: metric-caps.json → legacy → default. */
+/** Resolve all five caps with provenance: metric-caps.json → legacy → default. */
 export function resolveMetricCaps(
 	cwd: string,
 	legacy: LegacyCapInputs = {},
@@ -276,6 +311,7 @@ export function resolveMetricCaps(
 	return {
 		max_lines: resolveOne(o.max_lines, legacy.max_lines, DEFAULTS.max_lines),
 		max_cyclomatic: resolveOne(o.max_cyclomatic, undefined, DEFAULTS.max_cyclomatic),
+		max_cognitive: resolveOne(o.max_cognitive, undefined, DEFAULTS.max_cognitive),
 		crap_threshold: resolveOne(o.crap_threshold, legacy.crap_threshold, DEFAULTS.crap_threshold),
 		min_coverage: resolveOne(o.min_coverage, undefined, DEFAULTS.min_coverage),
 	};
@@ -284,6 +320,11 @@ export function resolveMetricCaps(
 /** Effective per-function cyclomatic cap for `cwd` (override else default). */
 export function maxCyclomaticFor(cwd: string): number {
 	return loadMetricCaps(cwd).max_cyclomatic ?? DEFAULT_MAX_CYCLOMATIC;
+}
+
+/** Effective per-function cognitive cap for `cwd` (override else default). */
+export function maxCognitiveFor(cwd: string): number {
+	return loadMetricCaps(cwd).max_cognitive ?? DEFAULT_MAX_COGNITIVE_CAP;
 }
 
 /** Effective per-function CRAP cap for `cwd`. `legacy` is the coverage-gate

@@ -261,3 +261,28 @@ export async function queryOsvAdvisories(
 		.filter((v) => typeof v.id === "string" && v.id !== "")
 		.map((v) => ({ id: v.id as string, summary: str(v.summary) }));
 }
+
+/**
+ * npm publish timestamps for every version of a package (the packument `time`
+ * map: version → ISO date, plus the "created"/"modified" bookkeeping keys the
+ * caller must ignore). Powers the libyear admission screen. npm-only — other
+ * registries expose no equivalent stable API — and admission-time only, like
+ * everything in this module. The FULL packument can be MB-scale for huge
+ * packages; acceptable at human-invoked admission, never on the hook path.
+ * Fails open to null (screen skipped, loudly, by the caller).
+ */
+export async function fetchNpmPublishDates(
+	name: string,
+	opts: NetworkOptions = {},
+): Promise<Record<string, string> | null> {
+	const escaped = name.startsWith("@") ? name.replace("/", "%2F") : name;
+	const json = rec(await fetchJson(`https://registry.npmjs.org/${escaped}`, opts));
+	const time = rec(json.time);
+	if (Object.keys(time).length === 0) return null;
+	const out: Record<string, string> = {};
+	for (const [version, iso] of Object.entries(time)) {
+		const s = str(iso);
+		if (s !== undefined) out[version] = s;
+	}
+	return out;
+}

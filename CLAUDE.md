@@ -125,6 +125,29 @@ cap is a coarse proxy; the `complexity` / `cyclomatic` checks do the fine-graine
 "is this file bad" work, which is why the enforced line number sits well above
 the ~300–500-line aspirational module size.
 
+## History & relational metrics (added 2026-07-24)
+
+Beyond the capped metrics, `interlinked metrics <sub>` computes relationship
+and change-over-time metrics on demand (never on the hook path — they shell to
+git / walk the graph). Spec + phase status:
+`docs/design/history-relational-metrics.md`; deferred cloud lanes:
+`docs/plans/06-cloud-metrics-program.md`.
+
+| Subcommand | Metric | Source |
+|---|---|---|
+| `metrics coupling` | Tornhill co-change pairs; no-import-edge pairs flagged `hidden` | git log + project-graph |
+| `metrics arch` | Martin Ca/Ce/instability per dir + propagation cost | project-graph |
+| `metrics rework` | share of changed lines whose prior version was < `--window` days old | git blame |
+
+Cognitive complexity runs on two surfaces with two thresholds (deliberate):
+the advisory `cognitive_complexity` registry check at the Sonar-default 15,
+and the `cognitive` metric cap (`interlinked caps`, `max_cognitive`,
+tighten-only under the baseline-integrity gate) whose PreToolUse companion
+(`evaluator/cognitive-write-guard.ts`) WARNS when an edit grows a function
+past the cap — delta semantics, never a block until cross-repo FP calibration
+(plan 06 lane 3). The per-edit pulse line also carries `cogΣ` and `astΔ`
+(AST semantic-delta: a rename is astΔ 0; a rewritten conditional is not).
+
 ## Scratchpad governance (added 2026-07-09)
 
 The host session scratchpad (`<temp-root>/claude-<uid>/<slug>/<session-id>/scratchpad`)

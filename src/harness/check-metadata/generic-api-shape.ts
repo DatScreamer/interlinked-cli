@@ -12,6 +12,13 @@ export const GENERIC_API_SHAPE_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	cognitive_complexity: {
+		name: "Cognitive Complexity",
+		description:
+			"Per-function cognitive complexity (SonarSource model: nesting penalized, flat switch nearly free, boolean-run transitions +1) over the Sonar-default cap of 15; AST-computed, advisory-gated",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	boolean_trap: {
 		name: "Boolean Trap",
 		description:

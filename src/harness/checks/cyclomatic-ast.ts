@@ -26,7 +26,7 @@ import { extname } from "node:path";
 import type * as TS from "typescript";
 import type { FunctionComplexityEntry } from "./cyclomatic.js";
 
-type TsModule = typeof TS;
+export type TsModule = typeof TS;
 
 let tsCache: TsModule | null | undefined;
 
@@ -69,7 +69,28 @@ function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
 	}
 }
 
-function isFunctionLike(ts: TsModule, node: TS.Node): boolean {
+/**
+ * Parse once, sharing the cached optional-`typescript` load. Sibling AST
+ * metrics (cognitive complexity) build on this so the degrade-to-null
+ * behavior stays defined in exactly one place.
+ */
+export function parseTsSource(
+	content: string,
+	filePath: string,
+): { ts: TsModule; sf: TS.SourceFile } | null {
+	const ts = loadTs();
+	if (!ts) return null;
+	const sf = ts.createSourceFile(
+		filePath,
+		content,
+		ts.ScriptTarget.Latest,
+		/* setParentNodes */ true,
+		scriptKindFor(ts, filePath),
+	);
+	return { ts, sf };
+}
+
+export function isFunctionLike(ts: TsModule, node: TS.Node): boolean {
 	return (
 		ts.isFunctionDeclaration(node) ||
 		ts.isFunctionExpression(node) ||
@@ -87,7 +108,7 @@ function isFunctionLike(ts: TsModule, node: TS.Node): boolean {
  * the canonical "per implementation function" definition. Arrow and function
  * expressions always have a body; only declaration kinds can be bodiless.
  */
-function isImplementationFunction(ts: TsModule, node: TS.Node): boolean {
+export function isImplementationFunction(ts: TsModule, node: TS.Node): boolean {
 	return isFunctionLike(ts, node) && (node as TS.FunctionLikeDeclaration).body !== undefined;
 }
 
@@ -135,7 +156,7 @@ function complexityOf(ts: TsModule, fn: TS.Node): number {
 }
 
 /** Best-effort human name; matches the golden dataset's `(callback)` fallback. */
-function functionName(ts: TsModule, node: TS.Node, sf: TS.SourceFile): string {
+export function functionName(ts: TsModule, node: TS.Node, sf: TS.SourceFile): string {
 	if (ts.isConstructorDeclaration(node)) return "constructor";
 	const named = node as { name?: TS.Node };
 	if (named.name && (ts.isIdentifier(named.name) || ts.isPrivateIdentifier(named.name))) {
@@ -164,15 +185,9 @@ export function computeCyclomaticAst(
 	content: string,
 	filePath: string,
 ): FunctionComplexityEntry[] | null {
-	const ts = loadTs();
-	if (!ts) return null;
-	const sf = ts.createSourceFile(
-		filePath,
-		content,
-		ts.ScriptTarget.Latest,
-		/* setParentNodes */ true,
-		scriptKindFor(ts, filePath),
-	);
+	const parsed = parseTsSource(content, filePath);
+	if (!parsed) return null;
+	const { ts, sf } = parsed;
 	const entries: FunctionComplexityEntry[] = [];
 	const walk = (node: TS.Node): void => {
 		if (isImplementationFunction(ts, node)) {

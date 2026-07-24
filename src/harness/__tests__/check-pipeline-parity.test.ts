@@ -592,6 +592,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 		// key in JSON output rather than destructured individually.
 		// TODO: These should be individually included in JSON output for tooling.
 		const AGGREGATED_IN_JSON = new Set([
+			"cognitiveComplexity",
 			"misusedPromises",
 			"floatingPromises",
 			"broadObjectTypes",

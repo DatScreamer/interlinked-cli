@@ -24,6 +24,7 @@ Commands:
   ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)
   clean [options]                            Remove stale data
   cloud                                      Inspect the cloud governor (reads cloud_governor from config.local.json)
+  collect [options]                          Sync external model sessions (Codex) into .interlinked/timeline.jsonl
   compact [options]                          Gzip + archive the synced prefix of activity.jsonl (lossless), reclaiming disk
   completions <shell>                        Output shell completion script (bash, zsh, fish)
   context [options]                          Show effective configuration (merged from all sources)
@@ -81,7 +82,11 @@ Commands:
   verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
   verify-changeset [options]                 Preview the content-quality gate (pre_block + biome + tsc diff-overlay) over a PROPOSED changeset WITHOUT writing — the agent-callable self-gate. Input JSON {version:1, changes:[{path,content}|{path,old_string,new_string}|{path,edits}]} via --file or --stdin.
   version                                    Show Interlinked CLI + server version
-  viz                                        Baseline-
+  viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
+  watch [options]                            Monitor server for pending work (messages, tasks, agents)
+  workspace                                  Registry workspace management (ws_ IDs)
+  write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.
+  help [command]                             display help for command
 ```
 
 ## Structure

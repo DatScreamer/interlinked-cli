@@ -58,6 +58,10 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// 2026-05 once it learned to exempt generated/test files — see
 	// harness/large-file-policy.ts.)
 	"complexity",
+	// cognitive_complexity: AST-accurate (Sonar-aligned) but a taste threshold,
+	// not a defect — same class as `complexity`; promote only after FP
+	// calibration on real repos (docs/design/history-relational-metrics.md §5).
+	"cognitive_complexity",
 	"function_arg_count",
 	"loop_nesting_depth",
 	"nested_ternaries",
@@ -276,6 +280,23 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// Keep advisory until Rust AST/HIR support can distinguish pure predicates
 	// from actual state changes.
 	"ubs_rust_debug_assert_side_effect",
+	// === Bun-regression detector pack (2026-07-20) — all advisory ===
+	// ubs_c_assert_side_effect: mutating-verb name lists proxy for NDEBUG-erased work; needs C AST to prove mutation.
+	"ubs_c_assert_side_effect",
+	// ubs_python_assert_side_effect: same verb-name proxy for python -O-stripped operands; pure predicates can FP.
+	"ubs_python_assert_side_effect",
+	// ubs_java_assert_side_effect: same verb-name proxy for no--ea-erased conditions; UpperCamel accessors can FP.
+	"ubs_java_assert_side_effect",
+	// ubs_rust_unchecked_cast_slice: 5-line guard lookback can miss length proofs hoisted further away (FP on proven-even buffers).
+	"ubs_rust_unchecked_cast_slice",
+	// unaligned_reinterpret: 40-line guard lookback can miss cross-function byteLength proofs; provably-aligned buffers FP.
+	"unaligned_reinterpret",
+	// placeholder_runtime_constant: confession-comment regex — deliberate documented defaults can read as stand-ins.
+	"placeholder_runtime_constant",
+	// rust_unsafe_span: span > 5 lines is a taste lever, not a defect — some FFI batches legitimately need a wide block.
+	"rust_unsafe_span",
+	// suppression_block_span: >10-line disable regions are sometimes deliberate around vendored/generated segments.
+	"suppression_block_span",
 	// UBS division-by-variable (row 30 of Plan 04 phase matrix) — v1 detector
 	// "finds division-by-identifier, surfaces, accepts some FPs" per §4.3.
 	// Regex literals (`/pattern/i`), URL paths embedded in template literals
@@ -462,38 +483,5 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */
 export const JS_TS_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 
-/**
- * Public API — consumed by `verify.ts`.
- *
- * Merge CLI `--skip` list with the advisory defaults when `--all-checks` is not
- * set. Always returns a lowercased, trimmed set.
- */
-export function getEffectiveSkipChecks(
-	skipArg: string | undefined,
-	allChecks: boolean | undefined,
-): Set<string> {
-	const merged = new Set(
-		skipArg
-			? skipArg
-					.split(",")
-					.map((s: string) => s.trim().toLowerCase())
-					.filter(Boolean)
-			: [],
-	);
-	if (!allChecks) {
-		for (const check of DEFAULT_ADVISORY_SKIPS) merged.add(check);
-	}
-	return merged;
-}
-
-/**
- * Public API — consumed by `verify.ts`.
- *
- * Narrow a skip-check set to just the tool IDs that can be passed to the
- * CheckEngine's `skipTools` option.
- */
-export function getSkipTools(skipChecks: Set<string>): Array<(typeof TOOL_IDS)[number]> {
-	return [...skipChecks].filter((check): check is (typeof TOOL_IDS)[number] =>
-		(TOOL_IDS as readonly string[]).includes(check),
-	);
-}
+// The skip-set helpers (getEffectiveSkipChecks, getSkipTools) live in
+// ./advisory-skips.ts — split 2026-07-24 for the line cap; policy data stays here.

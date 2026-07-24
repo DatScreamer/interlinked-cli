@@ -1,9 +1,11 @@
-// Quality-frontier wave (2026-07-06): eight post-phase warnings generalized
-// from the LLM-defect research sweep + repo gap-scan (docs/design/
-// quality-frontier-2026-07.md). Detectors live in their own checks/ family
-// files and are imported directly (the generic-checks.ts barrel is legacy
-// back-compat surface; see its header).
+// Quality-frontier wave: post-phase warnings generalized from the LLM-defect
+// research sweep + repo gap-scan (docs/design/quality-frontier-2026-07.md;
+// eight landed 2026-07-06, cognitive_complexity added 2026-07-24 per
+// docs/design/history-relational-metrics.md). Detectors live in their own
+// checks/ family files and are imported directly (the generic-checks.ts
+// barrel is legacy back-compat surface; see its header).
 
+import { cognitiveComplexityCheck } from "../../checks/cognitive-ast.js";
 import {
 	detectContradictoryNullnessChain,
 	detectImplicitSwitchFallthrough,
@@ -146,5 +148,20 @@ export const QUALITY_FRONTIER_ENTRIES: CheckRegistration[] = [
 		fn: detectJsdocParamDrift,
 		resultsPropName: "jsdocParamDrift",
 		content_keywords: ["@param"],
+	},
+	{
+		id: "cognitive_complexity",
+		phase: "post",
+		name: "Cognitive Complexity",
+		description:
+			"Per-function cognitive complexity (SonarSource model: nesting penalized, flat switch nearly free, +1 per boolean-run transition) over the Sonar-default cap of 15, computed from the TS AST (silently skips when the optional typescript dep is absent). Advisory: the score is exact but the threshold is a taste judgment — see docs/design/history-relational-metrics.md §5.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"High cognitive complexity means deep nesting or long mixed boolean chains, not just many branches. Flatten with early returns, extract nested blocks into named helpers (extraction to top level also clears the lambda-depth penalty), or split mixed &&/|| chains into named intermediate booleans.",
+		fn: cognitiveComplexityCheck,
+		resultsPropName: "cognitiveComplexity",
 	},
 ];

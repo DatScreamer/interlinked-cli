@@ -98,9 +98,11 @@ const getEffectiveSkipChecksMock = vi.fn<
 const getSkipToolsMock = vi.fn<(skip: Set<string>) => string[]>(() => []);
 vi.mock("./verify/advisory.js", () => ({
 	DEFAULT_ADVISORY_SKIPS: new Set<string>(),
+	TOOL_IDS: ["tsc", "biome", "dep-audit"] as const,
+}));
+vi.mock("./verify/advisory-skips.js", () => ({
 	getEffectiveSkipChecks: getEffectiveSkipChecksMock,
 	getSkipTools: getSkipToolsMock,
-	TOOL_IDS: ["tsc", "biome", "dep-audit"] as const,
 }));
 
 // --- verify/clone-repo -----------------------------------------------------

@@ -3,13 +3,7 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
-import {
-	DEFAULT_ADVISORY_SKIPS,
-	getEffectiveSkipChecks,
-	getSkipTools,
-	JS_TS_EXTS,
-	TOOL_IDS,
-} from "./advisory.js";
+import { DEFAULT_ADVISORY_SKIPS, JS_TS_EXTS, TOOL_IDS } from "./advisory.js";
 
 describe("DEFAULT_ADVISORY_SKIPS", () => {
 	it("is a non-empty set", () => {
@@ -41,29 +35,11 @@ describe("JS_TS_EXTS", () => {
 	});
 });
 
-describe("getEffectiveSkipChecks", () => {
-	it("merges advisory defaults when allChecks is false", () => {
-		const skip = getEffectiveSkipChecks(undefined, false);
-		expect(skip.has("catch_and_log")).toBe(true);
-	});
+// getEffectiveSkipChecks / getSkipTools moved to ./advisory-skips.ts —
+// their tests live in advisory-skips.test.ts alongside.
 
-	it("omits advisory defaults when allChecks is true", () => {
-		const skip = getEffectiveSkipChecks(undefined, true);
-		expect(skip.has("catch_and_log")).toBe(false);
-	});
-
-	it("parses CLI skip string", () => {
-		const skip = getEffectiveSkipChecks("tsc, biome", true);
-		expect(skip.has("tsc")).toBe(true);
-		expect(skip.has("biome")).toBe(true);
-	});
-});
-
-describe("getSkipTools", () => {
-	it("only returns entries that are actual tool ids", () => {
-		const result = getSkipTools(new Set(["tsc", "not_a_tool", "biome"]));
-		expect(result).toContain("tsc");
-		expect(result).toContain("biome");
-		expect(result).not.toContain("not_a_tool");
+describe("DEFAULT_ADVISORY_SKIPS — policy pins", () => {
+	it("keeps cognitive_complexity advisory until FP calibration promotes it", () => {
+		expect(DEFAULT_ADVISORY_SKIPS.has("cognitive_complexity")).toBe(true);
 	});
 });

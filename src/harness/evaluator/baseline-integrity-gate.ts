@@ -272,7 +272,7 @@ function detectMetricCaps(file: string, before: unknown, after: unknown): Baseli
 	const out: BaselineGamingFinding[] = [];
 	const b = asObj(before);
 	const a = asObj(after);
-	for (const k of ["max_lines", "max_cyclomatic", "crap_threshold"]) {
+	for (const k of ["max_lines", "max_cyclomatic", "max_cognitive", "crap_threshold"]) {
 		const bv = b[k];
 		const av = a[k];
 		if (isNum(bv) && isNum(av) && av > bv) {

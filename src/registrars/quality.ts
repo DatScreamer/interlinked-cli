@@ -238,7 +238,7 @@ export function registerQualityCommands(program: Command): void {
 	// ===========================================
 	// Metrics — whole-codebase test-quality scan
 	// ===========================================
-	program
+	const metricsCmd = program
 		.command("metrics")
 		.description(
 			"Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function",
@@ -250,6 +250,61 @@ export function registerQualityCommands(program: Command): void {
 		.action(async (opts: OptionValues) => {
 			const { metricsCommand } = await import("../commands/metrics.js");
 			await metricsCommand(opts);
+		});
+
+	metricsCmd
+		.command("coupling")
+		.description(
+			"Change coupling from git history — co-changed file pairs; pairs with no import edge are flagged 'hidden'",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--since <when>", "git --since expression (default: '90 days ago')")
+		.option("--min-support <n>", "Minimum co-change commits per pair (default: 4)")
+		.option("--max-commit-files <n>", "Skip bulk commits touching more files (default: 30)")
+		.option("--min-strength <pct>", "Minimum Tornhill strength percentage (default: 30)")
+		.option("--limit <n>", "Maximum pairs to report (default: 25)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues, cmd: Command) => {
+			// --cwd/--json also exist on the parent `metrics` command; commander
+			// assigns a shared-name flag to the parent, so merge (child wins).
+			const parentOpts = cmd.parent?.opts() ?? {};
+			const { metricsCouplingCommand } = await import("../commands/metrics-coupling.js");
+			await metricsCouplingCommand({ ...parentOpts, ...opts });
+		});
+
+	metricsCmd
+		.command("arch")
+		.description(
+			"Martin metrics per directory (Ca/Ce/instability) + propagation cost from the import graph",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--depth <n>", "Directory fold depth (default: 2)")
+		.option("--include-tests", "Include test files in the edge set")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues, cmd: Command) => {
+			const parentOpts = cmd.parent?.opts() ?? {};
+			const { metricsArchCommand } = await import("../commands/metrics-arch.js");
+			await metricsArchCommand({ ...parentOpts, ...opts });
+		});
+
+	metricsCmd
+		.command("rework")
+		.description(
+			"Churn age from git blame — share of changed lines whose previous version was written in the last --window days",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--days <n>", "How far back to scan commits (default: 30)")
+		.option("--window <n>", "Rework age threshold in days (default: 14)")
+		.option("--max-commits <n>", "Commit scan cap (default: 100)")
+		.option("--max-commit-files <n>", "Skip bulk commits touching more files (default: 30)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues, cmd: Command) => {
+			const parentOpts = cmd.parent?.opts() ?? {};
+			const { metricsReworkCommand } = await import("../commands/metrics-rework.js");
+			await metricsReworkCommand({ ...parentOpts, ...opts });
 		});
 
 	// ===========================================

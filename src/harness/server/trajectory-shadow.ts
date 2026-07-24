@@ -30,6 +30,14 @@ export interface TrajectoryShadowConfig {
 const stateBySession = new Map<string, TrajectoryState>();
 const SESSION_CAP = 256;
 
+/**
+ * Read-only peek for Stop-time aggregates (session-rework). Never creates
+ * state: a session the shadow engine never folded has nothing to aggregate.
+ */
+export function peekTrajectoryState(session: string): TrajectoryState | null {
+	return stateBySession.get(session) ?? null;
+}
+
 function getState(session: string): TrajectoryState {
 	const existing = stateBySession.get(session);
 	if (existing) return existing;

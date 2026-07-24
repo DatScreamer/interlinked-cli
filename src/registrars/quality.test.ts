@@ -21,6 +21,9 @@ const structureBaselineCommand = vi.fn();
 const coverageCheckCommand = vi.fn();
 const coverageBaselineCommand = vi.fn();
 const metricsCommand = vi.fn();
+const metricsCouplingCommand = vi.fn();
+const metricsArchCommand = vi.fn();
+const metricsReworkCommand = vi.fn();
 const mutationCheckCommand = vi.fn();
 const mutationBaselineCommand = vi.fn();
 const designCommand = vi.fn();
@@ -54,6 +57,15 @@ vi.mock("../commands/coverage.js", () => ({
 }));
 vi.mock("../commands/metrics.js", () => ({
 	metricsCommand: (...args: unknown[]) => metricsCommand(...args),
+}));
+vi.mock("../commands/metrics-coupling.js", () => ({
+	metricsCouplingCommand: (...args: unknown[]) => metricsCouplingCommand(...args),
+}));
+vi.mock("../commands/metrics-arch.js", () => ({
+	metricsArchCommand: (...args: unknown[]) => metricsArchCommand(...args),
+}));
+vi.mock("../commands/metrics-rework.js", () => ({
+	metricsReworkCommand: (...args: unknown[]) => metricsReworkCommand(...args),
 }));
 vi.mock("../commands/mutation.js", () => ({
 	mutationCheckCommand: (...args: unknown[]) => mutationCheckCommand(...args),
@@ -575,6 +587,102 @@ describe("metrics — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["metrics"], { from: "user" });
 		expect(metricsCommand).toHaveBeenCalledWith({});
+	});
+});
+
+// ===========================================================================
+// metrics coupling — action wiring
+// ===========================================================================
+describe("metrics coupling — action wiring", () => {
+	it("forwards all options to metricsCouplingCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"metrics",
+				"coupling",
+				"--cwd",
+				"/m",
+				"--since",
+				"30 days ago",
+				"--min-support",
+				"2",
+				"--max-commit-files",
+				"10",
+				"--min-strength",
+				"50",
+				"--limit",
+				"5",
+				"--json",
+			],
+			{ from: "user" },
+		);
+		expect(metricsCouplingCommand).toHaveBeenCalledWith({
+			cwd: "/m",
+			since: "30 days ago",
+			minSupport: "2",
+			maxCommitFiles: "10",
+			minStrength: "50",
+			limit: "5",
+			json: true,
+		});
+	});
+
+	it("dispatches with empty opts by default and leaves the bare `metrics` action intact", async () => {
+		const program = build();
+		await program.parseAsync(["metrics", "coupling"], { from: "user" });
+		expect(metricsCouplingCommand).toHaveBeenCalledWith({});
+		expect(metricsCommand).not.toHaveBeenCalled();
+	});
+});
+
+// ===========================================================================
+// metrics arch / rework — action wiring
+// ===========================================================================
+describe("metrics arch — action wiring", () => {
+	it("forwards options, merging parent-owned --cwd/--json", async () => {
+		const program = build();
+		await program.parseAsync(
+			["metrics", "arch", "--cwd", "/m", "--depth", "3", "--include-tests", "--json"],
+			{ from: "user" },
+		);
+		expect(metricsArchCommand).toHaveBeenCalledWith({
+			cwd: "/m",
+			depth: "3",
+			includeTests: true,
+			json: true,
+		});
+	});
+});
+
+describe("metrics rework — action wiring", () => {
+	it("forwards options, merging parent-owned --cwd/--json", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"metrics",
+				"rework",
+				"--cwd",
+				"/m",
+				"--days",
+				"60",
+				"--window",
+				"7",
+				"--max-commits",
+				"50",
+				"--max-commit-files",
+				"20",
+				"--json",
+			],
+			{ from: "user" },
+		);
+		expect(metricsReworkCommand).toHaveBeenCalledWith({
+			cwd: "/m",
+			days: "60",
+			window: "7",
+			maxCommits: "50",
+			maxCommitFiles: "20",
+			json: true,
+		});
 	});
 });
 

@@ -18,7 +18,7 @@ import { SPEC_LEDGER_CHECK_KINDS } from "./spec/ledger-drift.js";
 // the record. If a count changes without a matching update, this test fails
 // loudly — that is the whole point: the number can never silently drift.
 const EXPECTED_BY_FAMILY: Record<string, number> = {
-	inline: 241, // +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
+	inline: 242, // +cognitive_complexity (history-relational-metrics Phase 1, 2026-07-24); prior wave: +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
 	sequence: 23,
 	structural: 25,
 	tool_quality: 33,
@@ -26,7 +26,7 @@ const EXPECTED_BY_FAMILY: Record<string, number> = {
 	behavioral: 11, // +assertion_count_regression, +assertion_value_swap (test-oracle integrity, 2026-07-09)
 	spec_ledger: 5, // cross-file ledger kinds emitting source "spec" (deep-round #10, 2026-07-16)
 };
-const EXPECTED_TOTAL = 366;
+const EXPECTED_TOTAL = 367;
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.

@@ -10,10 +10,10 @@ import {
 	DEFAULT_MIN_COVERAGE,
 	describeMetricForAgent,
 	loadMetricCaps,
-	maxCyclomaticFor,
-	maxLinesOverride,
 	METRIC_CAPS_REL,
 	METRIC_DEFS,
+	maxCyclomaticFor,
+	maxLinesOverride,
 	metricDef,
 	minCoverageFor,
 	resetMetricCapsCache,
@@ -43,8 +43,14 @@ describe("metric-caps", () => {
 		expect(DEFAULT_MIN_COVERAGE).toBe(0);
 	});
 
-	it("exposes exactly the four metrics with complete glossary metadata", () => {
-		expect(METRIC_DEFS.map((d) => d.key)).toEqual(["lines", "cyclomatic", "crap", "coverage"]);
+	it("exposes exactly the five metrics with complete glossary metadata", () => {
+		expect(METRIC_DEFS.map((d) => d.key)).toEqual([
+			"lines",
+			"cyclomatic",
+			"cognitive",
+			"crap",
+			"coverage",
+		]);
 		for (const d of METRIC_DEFS) {
 			expect(d.definition.length).toBeGreaterThan(40);
 			expect(d.howToConfigure).toContain("interlinked caps set");

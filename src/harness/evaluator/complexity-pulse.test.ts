@@ -101,6 +101,33 @@ describe("formatComplexityPulse", () => {
 		expect(formatComplexityPulse("src/foo.ts", null, [])).toBeNull();
 	});
 
+	it("appends the 7c segment when profiles are present: cogΣ with Δ and astΔ", () => {
+		const before = { nodes: 40, kinds: { IfStatement: 2 }, cogTotal: 5, cogMax: 3 };
+		const after = { nodes: 44, kinds: { IfStatement: 3 }, cogTotal: 8, cogMax: 4 };
+		const line = formatComplexityPulse("src/foo.ts", [entry("a", 3)], [entry("a", 4)], 25, {
+			before,
+			after,
+		});
+		expect(line).toContain("cogΣ 8 (Δ+3)");
+		expect(line).toContain("astΔ 1");
+	});
+
+	it("7c on a stash miss: absolute cogΣ only, no astΔ", () => {
+		const after = { nodes: 44, kinds: { IfStatement: 3 }, cogTotal: 8, cogMax: 4 };
+		const line = formatComplexityPulse("src/foo.ts", null, [entry("a", 4)], 25, {
+			before: null,
+			after,
+		});
+		expect(line).toContain("cogΣ 8");
+		expect(line).not.toContain("astΔ");
+		expect(line).not.toContain("(Δ+");
+	});
+
+	it("omits the 7c segment entirely when profiles are absent (non-JS/TS analyzers)", () => {
+		const line = formatComplexityPulse("src/foo.py", null, [entry("a", 4)]);
+		expect(line).not.toContain("cogΣ");
+	});
+
 	it("still reports when every function was removed", () => {
 		const line = formatComplexityPulse("src/foo.ts", [entry("alpha", 7)], []);
 		expect(line).toContain("0 fns");
