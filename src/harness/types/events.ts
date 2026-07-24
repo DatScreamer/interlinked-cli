@@ -88,6 +88,15 @@ export interface HarnessEvent {
 	tool_input?: JsonObject | undefined;
 	tool_response?: unknown;
 	tool_use_id?: string | undefined;
+	/** Per-session monotonic event ordinal, minted by the daemon at observe
+	 *  time (G3). The one total-ordering key — `timestamp` is ms-precision and
+	 *  collides for parallel tool calls. Absent on the daemon-down cold path
+	 *  and on events recorded before G3 landed. */
+	seq?: number;
+	/** Per-delivery unified-event id, carried through when the framed path
+	 *  supplied one (raw hook payloads have none). Complements `seq`: `seq`
+	 *  orders, `event_id` identifies a delivery. */
+	event_id?: string;
 	files_modified?: string[];
 
 	// Canonical post-event outcome fields — populated by `deriveToolOutcome`

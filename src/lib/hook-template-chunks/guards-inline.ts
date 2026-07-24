@@ -105,7 +105,7 @@ function inlineFileDumpCheck(hookEvent, toolName, toolInput) {
     if (/^\\s*(tail|head|cat)\\b/.test(cmd) === false && /[;&|]\\s*(tail|head|cat)\\b/.test(cmd) === false) return null;
 
     var FILE_SIZE_BLOCK_BYTES = 100 * 1024;
-    var NO_FILTER_MAX_LINES = 50;
+    var NO_FILTER_MAX_LINES = 200;
     var FILTER_COMMANDS = ["jq","grep","egrep","fgrep","rg","ripgrep","ag","awk","gawk","mawk","sed","head","tail","wc","cut","sort","uniq","fzf","less","more"];
     var DUMP_VERBS = ["tail","head","cat"];
 

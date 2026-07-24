@@ -2,7 +2,7 @@
 // Ensures agents can't route around the content-quality gate by using Bash.
 
 import { describe, expect, it } from "vitest";
-import { detectBashCodeFileWrite } from "../pre-checks.js";
+import { detectBashCodeFileWrite, resolveBashWriteTarget } from "../pre-checks.js";
 
 describe("detectBashCodeFileWrite", () => {
 	describe("detects redirection to code files", () => {
@@ -343,5 +343,37 @@ describe("detectBashCodeFileWrite", () => {
 			const hit = detectBashCodeFileWrite("cd src && echo bad > util.ts", ROOT);
 			expect(hit?.target).toBe("util.ts");
 		});
+	});
+});
+
+describe("root confinement — braced-variable-with-default cd targets (2026-07-24 FP)", () => {
+	const ROOT = "/repo";
+
+	it("cd into an unset-var colon-dash default resolves OUT of root — no hit", () => {
+		// Pre-fix, the braced-with-default form fell through both branches of the
+		// leading-variable regex, was treated as a LITERAL path, and resolved to
+		// <root>/…-with-default/… — "inside" the repo — blocking a tmp-fixture write.
+		const cmd = 'cd "${ILK_UNSET_ABC:-/tmp}/fx" && printf x > probe.js';
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("a same-command assignment beats the default (out-of-root value) — no hit", () => {
+		const cmd = 'D=/elsewhere; cd "${D:-/repo}" && echo x > p.ts';
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("a same-command assignment beats the default (in-root value) — hit", () => {
+		const cmd = 'X=/repo/sub; cd "${X:-/tmp}" && echo q > p.ts';
+		expect(detectBashCodeFileWrite(cmd, ROOT)?.target).toBe("p.ts");
+	});
+
+	it("an unmodeled braced-operator form is unresolvable, not a literal — no hit", () => {
+		const cmd = 'cd "${SOMEVAR%suffix}/x" && echo y > p.ts';
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("resolveBashWriteTarget expands the colon-dash default end-to-end", () => {
+		const cmd = 'cd "${ILK_UNSET_ZZZ:-/t}/a" && echo x > f.ts';
+		expect(resolveBashWriteTarget(cmd, "f.ts", ROOT)).toBe("/t/a/f.ts");
 	});
 });

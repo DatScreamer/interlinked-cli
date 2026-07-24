@@ -83,6 +83,8 @@ export function mapEventToActivityRecord(
 		cwd,
 	};
 	if (event.tool_use_id) rec.tool_use_id = event.tool_use_id;
+	if (event.seq !== undefined) rec.seq = event.seq;
+	if (event.event_id) rec.event_id = event.event_id;
 	return rec;
 }
 
@@ -150,6 +152,7 @@ export function mapDecisionToGuardRecord(
 		guard_warnings: decision.warnings ?? null,
 	};
 	if (event.tool_use_id) rec.tool_use_id = event.tool_use_id;
+	if (event.seq !== undefined) rec.seq = event.seq;
 	if (typeof decision.checks_timing_ms === "number") rec.guard_harness_ms = decision.checks_timing_ms;
 	return rec;
 }

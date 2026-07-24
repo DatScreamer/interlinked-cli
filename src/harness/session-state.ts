@@ -4,6 +4,7 @@
 
 import { resolve as resolvePath } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
+
 // `captureGitBaseline` lives in its own module (session-git-baseline.ts) to
 // keep this file under the per-file line cap; re-exported below so existing
 // `from "./session-state.js"` importers keep working unchanged.
@@ -19,17 +20,20 @@ export {
 	recordLiteralOccurrences,
 	recordRecentLineEdit,
 } from "./session-literals.js";
+
 // Active-skill markers live in session-skills.ts (a line-cap split). recordEvent
 // drives gcExpiredSkills; the full set + SkillEnterArgs are re-exported below.
 import { trackDebtEvasion } from "./debt-evasion.js";
 import { gcExpiredSkills } from "./session-skills.js";
+
+export type { SkillEnterArgs } from "./session-skills.js";
 export {
 	gcExpiredSkills,
 	getActiveSkills,
 	recordSkillEnter,
 	recordSkillLeave,
 } from "./session-skills.js";
-export type { SkillEnterArgs } from "./session-skills.js";
+
 // Snapshot serialize/hydrate coercion helpers live in session-snapshot-codec.ts
 // (also a line-cap split). They are internal to serialize()/hydrate() and were
 // never part of this module's public API, so they are imported, not re-exported.
@@ -59,7 +63,6 @@ import {
 	readWarnings,
 	serializeCapturedPlan,
 } from "./session-snapshot-codec.js";
-import type { HarnessEvent, SessionTrajectory } from "./types.js";
 // Per-event trajectory mutators + session-ack helpers live in
 // session-state-mutators.ts (a line-cap split). The SessionTracker class below
 // drives them; acknowledgeChecks/isAcknowledged are re-exported because external
@@ -73,6 +76,8 @@ import {
 	trackFileOperations,
 	trackToolCall,
 } from "./session-state-mutators.js";
+import type { HarnessEvent, SessionTrajectory } from "./types.js";
+
 export { acknowledgeChecks, isAcknowledged } from "./session-state-mutators.js";
 
 /** Bumped when the serialized snapshot shape changes incompatibly. Hydrate
@@ -99,9 +104,24 @@ export function isFileTrackedAsWritten(
 
 export class SessionTracker {
 	private sessions: Map<string, SessionTrajectory> = new Map();
+	/** G3 per-session event-ordinal high-water marks. Kept beside (not on) the
+	 *  trajectory: the ordinal is daemon-observation state, and
+	 *  types/session.ts sits at the line cap. Serialized as `last_seq`. */
+	private seqCounters: Map<string, number> = new Map();
 
 	get(sessionId: string): SessionTrajectory | undefined {
 		return this.sessions.get(sessionId);
+	}
+
+	/** G3 (docs/design/reproducibility/g3-event-ordinal.md): mint the next
+	 *  per-session event ordinal. Every event the daemon observes increments —
+	 *  serial observation IS the canonical total order; `ts` is ms-precision
+	 *  and collides for parallel calls. Rides serialize()/hydrate() as
+	 *  `last_seq` so a daemon restart continues the sequence, never reuses. */
+	nextSeq(sessionId: string): number {
+		const next = (this.seqCounters.get(sessionId) ?? 0) + 1;
+		this.seqCounters.set(sessionId, next);
+		return next;
 	}
 
 	recordEvent(event: HarnessEvent): SessionTrajectory {
@@ -141,6 +161,7 @@ export class SessionTracker {
 
 	remove(sessionId: string): void {
 		this.sessions.delete(sessionId);
+		this.seqCounters.delete(sessionId);
 	}
 
 	/**
@@ -238,6 +259,7 @@ export class SessionTracker {
 		return {
 			schema_version: SESSION_SNAPSHOT_SCHEMA_VERSION,
 			session_id: s.session_id,
+			last_seq: this.seqCounters.get(sessionId) ?? 0,
 			agent_name: s.agent_name,
 			started_at: s.started_at,
 			ended_at: endedAt,
@@ -395,6 +417,7 @@ export class SessionTracker {
 		};
 
 		this.sessions.set(sessionId, session);
+		this.seqCounters.set(sessionId, readNumber(snapshot.last_seq, 0));
 		return session;
 	}
 

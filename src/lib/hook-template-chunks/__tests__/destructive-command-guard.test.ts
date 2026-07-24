@@ -59,6 +59,9 @@ describe("checkDestructiveCommand — blocks destructive commands", () => {
 		["git filter-branch --tree-filter x HEAD", "filter-branch"],
 		["git rebase -i HEAD~3", "git rebase -i"],
 		["git add -p", "git add -i"],
+		["git add --patch", "git add -i"],
+		["git add src/a.ts -e", "git add -i"],
+		["git rebase main --interactive", "git rebase -i"],
 		// database destruction
 		["psql -c 'DROP TABLE users'", "DROP/TRUNCATE"],
 		["mysql -e 'DELETE FROM users;'", "without WHERE"],
@@ -118,6 +121,15 @@ describe("checkDestructiveCommand — allows legitimate commands", () => {
 		'git commit -m "docs: the enforce skill copy under .agents/"',
 		"git add .agents/skills/enforce/SKILL.md",
 		"npm run upskill",
+		// 2026-07-24 FP class: the interactive-flag scan crossed segment
+		// separators/newlines, so a later standalone `-p`-ish token (mkdir -p,
+		// --porcelain) false-blocked compound commands whose git add carried
+		// no interactive flag at all.
+		"mkdir -p x && git add .",
+		"git add . && git status --porcelain",
+		"git add -A && git commit -m msg",
+		"git add .\nmkdir -p sub",
+		"git rebase --onto main feat && grep -i foo",
 	];
 
 	for (const command of allowed) {

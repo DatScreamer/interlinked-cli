@@ -20,6 +20,8 @@ import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { toLegacyHarnessEvent } from "./legacy-client.js";
 import { readLiveSnapshot, writeLiveSnapshot } from "./live-snapshot.js";
+import { runWithClock } from "./replay/harness-clock.js";
+import { maybeRecordReplaySnapshots, phaseForHookEvent } from "./replay/tree-snapshot.js";
 import { buildLatencyRecord } from "./server/latency-record.js";
 import { handleLifecycleEvent } from "./server/lifecycle-events.js";
 import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
@@ -57,6 +59,17 @@ export interface EventLoop {
 	evaluateEventLine: (line: string, protocol: "raw" | "framed") => Promise<HarnessDecision>;
 	evaluateUnifiedViaRuntime: (event: UnifiedHookEvent) => Promise<HarnessDecision>;
 	writeProtocolStatus: () => void;
+}
+
+/** G4 replay mode: the frozen evaluation clock for this event, or null on
+ *  the live path. Active only with INTERLINKED_REPLAY_CLOCK=event and a
+ *  parseable event timestamp — every time-window branch then reproduces its
+ *  recorded verdict (docs/design/reproducibility/g4-harness-determinism.md). */
+function replayClockFor(parsed: JsonObject): number | null {
+	if (process.env.INTERLINKED_REPLAY_CLOCK !== "event") return null;
+	if (typeof parsed.timestamp !== "string") return null;
+	const ms = Date.parse(parsed.timestamp);
+	return Number.isFinite(ms) ? ms : null;
 }
 
 /** Build the per-event evaluation pipeline. Returns the entry points the raw
@@ -131,6 +144,11 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		// state that *was* captured. See `evaluateEventLine`'s try/finally.
 		const session = sessions.recordEvent(event);
 
+		// G3: stamp the per-session monotonic ordinal on EVERY observed event —
+		// the daemon's serial observation is the canonical total order (parallel
+		// tool calls share ms timestamps). Writers persist `event.seq` from here.
+		event.seq = sessions.nextSeq(session.session_id);
+
 		// Live timeline capture: drain the transcript (new records since the
 		// cursor) into .interlinked/timeline.jsonl on EVERY event. Runs for Stop /
 		// SessionEnd too — that's what captures a turn's final assistant message,
@@ -201,16 +219,26 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		// Parse session_id once up-front so the durability finally block can run
 		// even when `processEvent` throws — the session was already created (or
 		// hydrated) by the time recordEvent ran, so a snapshot is safe to write.
+		// hook_event/tool_use_id ride along for the G2 replay-snapshot wiring.
 		let sessionIdForSnap: string | null = null;
+		let hookEventForSnap: string | undefined;
+		let toolUseIdForSnap: string | null = null;
+		let replayClockMs: number | null = null;
 		try {
 			const parsed: JsonObject = JSON.parse(line);
 			if (typeof parsed.session_id === "string") sessionIdForSnap = parsed.session_id;
+			if (typeof parsed.hook_event === "string") hookEventForSnap = parsed.hook_event;
+			if (typeof parsed.tool_use_id === "string") toolUseIdForSnap = parsed.tool_use_id;
+			replayClockMs = replayClockFor(parsed);
 		} catch (e) {
 			void e;
 		}
 
 		try {
-			const decision = await processEvent(line);
+			const decision =
+				replayClockMs !== null
+					? await runWithClock(replayClockMs, () => processEvent(line))
+					: await processEvent(line);
 			recordProtocolEvent(protocol);
 			try {
 				appendLatencyLog(INTERLINKED_DIR, buildLatencyRecord(line, decision));
@@ -233,6 +261,18 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 						if (!writeResult.ok) {
 							log(`Live snapshot write failed (non-fatal): ${writeResult.error.message}`);
 						}
+						// G2 replay capture (env-gated, fail-open): tree snapshot +
+						// per-step state archive at tool boundaries. `snap.last_seq`
+						// IS this event's seq — the mint ran inside processEvent.
+						maybeRecordReplaySnapshots({
+							cwd: CWD,
+							sessionId: sessionIdForSnap,
+							seq: typeof snap.last_seq === "number" ? snap.last_seq : null,
+							toolUseId: toolUseIdForSnap,
+							phase: phaseForHookEvent(hookEventForSnap),
+							liveSnapshot: snap,
+							log,
+						});
 					}
 				} catch (e) {
 					log(`Live snapshot write threw: ${e instanceof Error ? e.message : String(e)}`);

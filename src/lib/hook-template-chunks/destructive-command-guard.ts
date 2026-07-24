@@ -252,20 +252,32 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 			reason: "BLOCKED: git filter-branch/filter-repo rewrites entire repository history.",
 		};
 	}
-	// 'git rebase' with an interactive flag. The flag match uses the
-	// '(?:\S+\s+)*' shape rather than a leading word-boundary anchor — a
-	// word-boundary before '-i' requires a word char immediately before the
-	// dash, so the old inline regex (-i|--interactive) never matched a
-	// space-preceded flag
-	// (i.e. every real invocation). Fixed here, in the shared source.
-	if (/\bgit\s+rebase\s+(?:\S+\s+)*(?:-i|--interactive)\b/i.test(cmd)) {
+	// 'git rebase' / 'git add' with an interactive flag. Three constraints
+	// shaped this pattern: a word-boundary before '-i' never matches a
+	// space-preceded flag (word char required before the dash); the scan must
+	// stop at the end of the command SEGMENT — the earlier '(?:\S+\s+)*' shape
+	// crossed newlines/';'/'&&'/'|', so any later standalone '-p'-ish token
+	// (classically 'mkdir -p') false-blocked the whole compound command
+	// (measured FP, 2026-07-24); and the span is a SINGLE flat quantifier
+	// (no '(?:A+B+)*' nesting) so the ReDoS guard stays quiet. The span
+	// excludes separators/redirects/newlines; the flag must sit at a token
+	// start (preceded by a space/tab) and end at whitespace/EOL/separator.
+	if (
+		/\bgit[^\S\r\n]+rebase(?![\w-])[^;&|<>\r\n]*?[^\S\r\n](?:-i|--interactive)(?=\s|$|[;&|<>])/i.test(
+			cmd,
+		)
+	) {
 		return {
 			decision: "block",
 			reason:
 				"BLOCKED: git rebase -i opens an interactive editor that hangs a non-interactive agent. Use a non-interactive rebase or run it yourself.",
 		};
 	}
-	if (/\bgit\s+add\s+(?:\S+\s+)*(?:-i|-p|-e|--interactive|--patch|--edit)\b/i.test(cmd)) {
+	if (
+		/\bgit[^\S\r\n]+add(?![\w-])[^;&|<>\r\n]*?[^\S\r\n](?:-i|-p|-e|--interactive|--patch|--edit)(?=\s|$|[;&|<>])/i.test(
+			cmd,
+		)
+	) {
 		return {
 			decision: "block",
 			reason:

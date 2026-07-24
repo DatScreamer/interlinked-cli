@@ -303,11 +303,10 @@ describe("evaluatePreToolUse — file & network guards", () => {
 	// ===========================================
 
 	describe("safe commands", () => {
-		// `cat package.json` is intentionally NOT in this list: the
-		// file-dump guard (`evaluator/file-dump-guard.ts`) blocks an
-		// unfiltered cat on any file with >50 lines, which package.json
-		// usually has. The pattern the agent should use is on the list
-		// instead: `head -n 5 package.json` (explicit small slice).
+		// `cat package.json` is not asserted here: whether it passes depends
+		// on the fixture file's line count vs the file-dump cap (200 as of
+		// 2026-07-24). The guard's own suite pins that boundary; this list
+		// keeps only commands that are shape-safe regardless of file size.
 		//
 		// `npm install` is also NOT here — the supply-chain allowlist gate
 		// (added 2026-05) now blocks bare installs until a snapshot is

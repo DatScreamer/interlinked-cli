@@ -91,6 +91,8 @@ function makeHarness() {
 		get: vi.fn((id: string) => sessionMap.get(id)),
 		hydrate: vi.fn((_snap: JsonObject) => null as FakeSession | null),
 		recordEvent: vi.fn((_e: HarnessEvent) => ({ tag: "session" })),
+		// G3: the loop mints a per-session ordinal on every observed event.
+		nextSeq: vi.fn((_id: string) => 1),
 		serialize: vi.fn((_id: string) => ({ snap: true }) as JsonObject | null),
 	};
 

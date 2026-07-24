@@ -1,0 +1,105 @@
+// ===========================================
+// SandboxJob wire contract — cloud runtime-oracle jobs
+// ===========================================
+// Generalizes the mutation cloud runner (mutation/cloud-runner.ts ships
+// {file, overlayContent, overlays} to a Cloudflare Sandbox) into a job runner
+// that can carry several deterministic oracle kinds — leak, flake, sanitizer,
+// Miri — over the same ChangeSet→Sandbox→run→verdict transport.
+//
+// SECURITY — no `argv`/`command` on the wire (docs/design/
+// overlay-exec-runtime-oracles.md §5, and bun-in-rust.md's rejection of a
+// command field). The Worker holds a warm, per-(user,repo) sandbox keyed by
+// repo hash and kept across requests. A request that carried a free-form
+// command would turn the bearer token from "may run THIS repo's oracle suite"
+// into general remote code execution against every warm sandbox — lateral
+// movement across tenants. So the client sends a KIND DISCRIMINANT; the Worker
+// owns the command table (JOB_TABLE[kind] → {command, reportPath}). The blast
+// radius of a stolen token stays exactly what it is for mutation today.
+
+/** The oracle kinds the Worker knows how to run. Extending this is a Worker
+ *  deploy (it owns the command table), never a client-supplied command. */
+export type SandboxJobKind = "mutation" | "leak" | "flake" | "asan" | "miri";
+
+/** A file's full proposed content — the overlay wire shape, primary first.
+ *  Identical to mutation's FileOverlay so the transport is shared. */
+export interface SandboxFileOverlay {
+	path: string;
+	content: string;
+}
+
+/** Risk tier drives which oracles run and how hard (mirrors the pre-push
+ *  reviewer triage in multi-agent-pre-push-review.md §3). */
+export type SandboxRiskTier = "trivial" | "lite" | "full";
+
+/** One job dispatched to the Sandbox Worker. NOTE the absence of any argv /
+ *  command / script field — that absence is the security contract, not an
+ *  oversight. See the header. */
+export interface SandboxJobRequest {
+	schemaVersion: 1;
+	kind: SandboxJobKind;
+	/** Optional repo override; the Worker derives the sandbox id from it. */
+	repo?: string;
+	sessionId: string;
+	/** Full proposed state (primary edit + ChangeSet siblings + companion test). */
+	overlays: SandboxFileOverlay[];
+	/** The primary edited path, for kinds that mutate/measure one file. */
+	file: string;
+	/** Client-side budget; the Worker also enforces its own ceiling. */
+	timeoutMs: number;
+	riskTier: SandboxRiskTier;
+}
+
+/** Structured verdict. `verdict` is the merge-friendly summary; `findings` is
+ *  the kind-specific payload the daemon maps to warnings. `inconclusive` (never
+ *  `pass`) is returned on a malformed/absent report — an unmeasured job must
+ *  never forge a clean pass (mutation's honest-fallback invariant). */
+export interface SandboxJobResult {
+	jobId: string;
+	kind: SandboxJobKind;
+	verdict: "pass" | "fail" | "inconclusive" | "timed_out";
+	durationMs: number;
+	findings: unknown[];
+	stdoutTail?: string;
+	stderrTail?: string;
+}
+
+/** The client seam the daemon depends on (parallels MutationRunner). */
+export interface SandboxJobRunner {
+	available(): boolean;
+	run(req: SandboxJobRequest): Promise<SandboxJobResult>;
+}
+
+const VALID_KINDS: ReadonlySet<string> = new Set<SandboxJobKind>([
+	"mutation",
+	"leak",
+	"flake",
+	"asan",
+	"miri",
+]);
+
+/**
+ * Validate an INBOUND request shape (used Worker-side before dispatch). The
+ * load-bearing check is that the request cannot smuggle executable intent:
+ * only a known `kind` is honored, and any `command`/`argv`/`script`/`cmd`
+ * property makes the request invalid (defense against a client that tries to
+ * reintroduce the command channel this contract forbids).
+ */
+export function isValidSandboxJobRequest(v: unknown): v is SandboxJobRequest {
+	if (v === null || typeof v !== "object") return false;
+	const r = v as Record<string, unknown>;
+	if (r.schemaVersion !== 1) return false;
+	if (typeof r.kind !== "string" || !VALID_KINDS.has(r.kind)) return false;
+	if (typeof r.file !== "string" || typeof r.sessionId !== "string") return false;
+	if (typeof r.timeoutMs !== "number" || !Number.isFinite(r.timeoutMs)) return false;
+	if (!Array.isArray(r.overlays)) return false;
+	for (const o of r.overlays) {
+		if (o === null || typeof o !== "object") return false;
+		const fo = o as Record<string, unknown>;
+		if (typeof fo.path !== "string" || typeof fo.content !== "string") return false;
+	}
+	// The security invariant: reject any smuggled execution channel.
+	for (const forbidden of ["command", "argv", "script", "cmd", "exec", "shell"]) {
+		if (forbidden in r) return false;
+	}
+	return true;
+}

@@ -48,6 +48,11 @@ export interface LocalActivityEvent {
 	tool_input?: unknown;
 	tool_response?: unknown;
 	tool_use_id?: string;
+	/** Per-session monotonic event ordinal (G3). Stamped by the daemon path;
+	 *  absent on cold-path records and records written before G3. */
+	seq?: number;
+	/** Delivery id from the framed unified path, when one existed. */
+	event_id?: string;
 	error?: unknown;
 	is_interrupt?: boolean;
 	cwd?: string;

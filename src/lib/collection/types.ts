@@ -295,6 +295,11 @@ export interface CollectionRecord {
 	agent_name: string | null;
 	turn_id: string | null;
 	tool_use_id: string | null;
+	/** Per-session monotonic event ordinal (G3,
+	 *  docs/design/reproducibility/g3-event-ordinal.md). The total-ordering
+	 *  key across activity/collection for one session — `ts` collides for
+	 *  parallel calls. Absent on cold-path/pre-G3 records. */
+	seq?: number;
 	provider: string;
 	phase: "pre" | "post";
 	/**

@@ -9,7 +9,7 @@
 import { existsSync as mockedExistsSync, readFileSync as mockedReadFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "../../lib/json-types.js";
-import { resolveProposedContent } from "../overlay-content.js";
+import { applyLiteralReplacement, resolveProposedContent } from "../overlay-content.js";
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => false),
@@ -230,5 +230,61 @@ describe("resolveProposedContent — defensive disk-read failure", () => {
 		const input: JsonObject = { edits: [{ old_string: "z", new_string: "w" }] };
 		// base "" after catch → no edit matches → "".
 		expect(resolveProposedContent(FILE, input)).toBe("");
+	});
+});
+
+describe("applyLiteralReplacement — Edit-tool-faithful application (2026-07-24)", () => {
+	// String.replace with a STRING replacement interprets dollar-patterns; the
+	// overlay must apply literally or every gate validates content that differs
+	// from what the edit actually lands (the measured failure: a replacement
+	// containing a backticked dollar sign spliced the entire pre-match file
+	// into the overlay temp, which then failed to parse and blocked the edit).
+	it("keeps dollar-ampersand literal", () => {
+		expect(applyLiteralReplacement("a MARK z", "MARK", "x$&y", false)).toBe("a x$&y z");
+	});
+
+	it("keeps dollar-backquote literal", () => {
+		expect(applyLiteralReplacement("a MARK z", "MARK", "see `$` here", false)).toBe(
+			"a see `$` here z",
+		);
+	});
+
+	it("keeps dollar-digit and double-dollar literal", () => {
+		expect(applyLiteralReplacement("a MARK z", "MARK", "$1 costs $$2", false)).toBe(
+			"a $1 costs $$2 z",
+		);
+	});
+
+	it("replace_all=false replaces only the first occurrence", () => {
+		expect(applyLiteralReplacement("x.x.x", "x", "y", false)).toBe("y.x.x");
+	});
+
+	it("replace_all=true replaces every occurrence", () => {
+		expect(applyLiteralReplacement("x.x.x", "x", "y", true)).toBe("y.y.y");
+	});
+});
+
+describe("resolveProposedContent — dollar-pattern + replace_all fidelity", () => {
+	it("Edit with a dollar-bearing new_string lands verbatim", () => {
+		setDisk("const a = 1;\nconst b = 2;\n");
+		const input: JsonObject = {
+			old_string: "const b = 2;",
+			new_string: "const b = `$`&`$'`;",
+		};
+		expect(resolveProposedContent(FILE, input)).toBe("const a = 1;\nconst b = `$`&`$'`;\n");
+	});
+
+	it("Edit honors replace_all: true", () => {
+		setDisk("k k k");
+		const input: JsonObject = { old_string: "k", new_string: "v", replace_all: true };
+		expect(resolveProposedContent(FILE, input)).toBe("v v v");
+	});
+
+	it("MultiEdit entry honors replace_all and stays literal", () => {
+		setDisk("m m");
+		const input: JsonObject = {
+			edits: [{ old_string: "m", new_string: "$&", replace_all: true }],
+		};
+		expect(resolveProposedContent(FILE, input)).toBe("$& $&");
 	});
 });

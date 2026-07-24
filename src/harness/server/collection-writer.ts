@@ -53,6 +53,7 @@ export function mapEventToCollectionInput(
 		tool_use_id: event.tool_use_id,
 		cwd: event.cwd ?? fallbackCwd,
 		tool_response_sha256: event.tool_response_sha256,
+		...(event.seq !== undefined ? { seq: event.seq } : {}),
 		...(clientRunner ? { client_runner: clientRunner } : {}),
 		...(cursorVersion ? { cursor_version: cursorVersion } : {}),
 		...(event.agent_name ? { agent_name: event.agent_name } : {}),

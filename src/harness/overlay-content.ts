@@ -18,6 +18,28 @@ import type { JsonObject } from "../lib/json-types.js";
 interface MultiEditEntry {
 	old_string?: string;
 	new_string?: string;
+	replace_all?: boolean;
+}
+
+/** Apply one old-to-new replacement the way the Edit tool does: LITERALLY.
+ *  String.replace with a string replacement interprets dollar-patterns
+ *  (dollar-ampersand, dollar-backquote, dollar-quote, dollar-digit) inside
+ *  the replacement text, so a new_string containing one made every overlay
+ *  gate validate content that DIFFERS from what the edit actually lands —
+ *  measured 2026-07-24: a JSDoc with a backticked dollar sign spliced the
+ *  entire pre-match file into the overlay temp, which then "failed to
+ *  parse" and false-blocked the edit. A function replacer disables the
+ *  interpretation; split/join gives replace_all the same literal semantics.
+ *  Shared by every proposed-content builder (this module, the supply-chain
+ *  manifest path, the tsgo edit simulation) so the semantics can't drift. */
+export function applyLiteralReplacement(
+	haystack: string,
+	oldS: string,
+	newS: string,
+	replaceAll: boolean,
+): string {
+	if (replaceAll) return haystack.split(oldS).join(newS);
+	return haystack.replace(oldS, () => newS);
 }
 
 /**
@@ -56,7 +78,7 @@ export function resolveProposedContent(filePath: string, toolInput: JsonObject):
 			const oldStr = entry.old_string ?? "";
 			const newStr = entry.new_string ?? "";
 			if (oldStr && current.includes(oldStr)) {
-				current = current.replace(oldStr, newStr);
+				current = applyLiteralReplacement(current, oldStr, newStr, entry.replace_all === true);
 			}
 		}
 		return current;
@@ -66,7 +88,7 @@ export function resolveProposedContent(filePath: string, toolInput: JsonObject):
 	const oldString = typeof toolInput.old_string === "string" ? toolInput.old_string : "";
 	const newString = typeof toolInput.new_string === "string" ? toolInput.new_string : "";
 	if (oldString && base.includes(oldString)) {
-		return base.replace(oldString, newString);
+		return applyLiteralReplacement(base, oldString, newString, toolInput.replace_all === true);
 	}
 
 	// Fallback — can't compute proposed content reliably.
