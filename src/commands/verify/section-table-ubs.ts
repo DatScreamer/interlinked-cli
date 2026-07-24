@@ -39,6 +39,42 @@ export const ubsSections: readonly SectionSpec[] = [
 		passLabel: "no side effects hidden in debug_assert*",
 		color: "33",
 	},
+	// Bun-regression detector pack (2026-07-20)
+	{
+		label: "ubs c assert side effect",
+		key: "cAssertSideEffect",
+		noun: "C/C++ assert() arguments erased under -DNDEBUG (release)",
+		passLabel: "no side effects hidden in assert()",
+		color: "33",
+	},
+	{
+		label: "ubs python assert side effect",
+		key: "pythonAssertSideEffect",
+		noun: "Python assert operands stripped under python -O",
+		passLabel: "no side effects hidden in Python assert",
+		color: "33",
+	},
+	{
+		label: "ubs java assert side effect",
+		key: "javaAssertSideEffect",
+		noun: "Java assert side effects skipped without -ea (JVM default OFF)",
+		passLabel: "no side effects hidden in Java assert",
+		color: "33",
+	},
+	{
+		label: "ubs rust unchecked cast_slice",
+		key: "rustUncheckedCastSlice",
+		noun: "Rust byte-buffer reinterprets with no length/alignment proof (cast_slice panics on odd length)",
+		passLabel: "no unchecked cast_slice reinterprets",
+		color: "33",
+	},
+	{
+		label: "unaligned reinterpret",
+		key: "unalignedReinterpret",
+		noun: "typed-array views over an ArrayBuffer with no byteLength % element-size guard",
+		passLabel: "no unguarded buffer reinterprets",
+		color: "33",
+	},
 	{
 		label: "ubs division by variable",
 		key: "divisionByVariable",

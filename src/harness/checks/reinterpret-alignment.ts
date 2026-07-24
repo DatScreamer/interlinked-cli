@@ -388,8 +388,9 @@ const JS_MESSAGE =
 const WIDE_VIEW_CTOR_RE =
 	/\bnew\s+(?:Uint16Array|Int16Array|Uint32Array|Int32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|DataView)\s*\(/g;
 
-/** Alignment/length guards that legitimize a nearby view construction. */
-const JS_ALIGNMENT_GUARD_RE = /\.byteLength\s*%|\.length\s*%|&\s*~|BYTES_PER_ELEMENT/;
+// Guards; a fresh `new (Shared)ArrayBuffer(<lit>)` counts (literal byteLength known).
+const JS_ALIGNMENT_GUARD_RE =
+	/\.byteLength\s*%|\.length\s*%|&\s*~|BYTES_PER_ELEMENT|new\s+(?:Shared)?ArrayBuffer\s*\(\s*\d/;
 
 /** Whole-argument identifiers that read as "this is a byte buffer". */
 const BYTE_BUFFER_IDENT_RE = /^(?:buf|buffer|bytes|raw|data|chunk)s?$/i;

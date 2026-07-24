@@ -35,6 +35,42 @@ export const GENERIC_UBS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	// === Bun-regression detector pack (2026-07-20) ===
+	ubs_c_assert_side_effect: {
+		name: "C assert side effect",
+		description:
+			"Detects C/C++ assert(...) arguments with an assignment, ++/--, or mutating-looking call — -DNDEBUG (the standard release configuration) erases the argument.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	ubs_python_assert_side_effect: {
+		name: "Python assert side effect",
+		description:
+			"Detects Python assert operands with a walrus binding or mutating-looking call — python -O strips assert statements, erasing the operand.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	ubs_java_assert_side_effect: {
+		name: "Java assert side effect",
+		description:
+			"Detects Java assert conditions with an assignment, ++/--, or mutating-looking call — JVM assertions are OFF by default (no -ea), so the condition never evaluates.",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	ubs_rust_unchecked_cast_slice: {
+		name: "Rust unchecked cast_slice",
+		description:
+			"Detects bytemuck::cast_slice / from_raw_parts / transmute reinterpreting a byte buffer as a wider type with no length/alignment proof — cast_slice panics on odd byteLength (Bun #31188).",
+		tier: 1,
+		determinism: "heuristic",
+	},
+	unaligned_reinterpret: {
+		name: "Unaligned buffer reinterpret",
+		description:
+			"Detects JS/TS typed-array views over an existing ArrayBuffer with no byteLength % BYTES_PER_ELEMENT guard — the constructor throws on odd-length input (the Bun #31188 class in JS clothing).",
+		tier: 1,
+		determinism: "heuristic",
+	},
 	ubs_division_by_variable: {
 		name: "UBS Division by Variable",
 		description:

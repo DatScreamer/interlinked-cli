@@ -490,15 +490,44 @@ there is no cross-file ordering hazard.
 
 ## 10. Rollout
 
-| PR | Contents | Risk |
-|---|---|---|
-| 1 | D1a verb-regex fix + `pre_warn`→`post` + the 8 negative tests + Bun fixture corpus + §8 suppression-hole one-liner | low; the FP fix is the point |
-| 2 | D4 `regex_from_interpolation` (default gate) | low; dogfoods clean on this repo |
-| 2b | D1b/c/d — C, Python, Java siblings via the shared helper | low; Java is the near-zero-FP one |
-| 3 | D3 `placeholder_runtime_constant` (advisory) + D2a/D2b (advisory) | medium; D3 promotes after a week |
-| 4 | D5 `rust_unsafe_span` (advisory) | low; taste lever, never blocks |
+### As-built (2026-07-20)
 
-Deferred, with reasons: the **general** interpolate-then-parse class (needs a declared-parser
-registry in `discovered-primitives.ts`); the **data-driven token ratchet** that would let
-Rust `unsafe`/`unwrap`/`panic!` and Python `# type: ignore` be counted (nine hand-written
-quads today); Rust `bytemuck`/`align_to` in D2.
+The five detector families + the Bun-regression fixture corpus landed as code
+(`4002f22`) but **unwired** — present, tested, callable, contributing nothing to the
+live pipeline. This section records the wiring pass and the one deliberate deferral.
+
+**8 of 9 ids wired, all advisory, all `phase: "post"`** (heuristics never `pre_warn`):
+the three assert-erasure siblings, both reinterpret detectors, `placeholder_runtime_constant`,
+and the two `unsafe-span` checks. Advisory-first per the standing rule; each still surfaces
+at PostToolUse (advisory ≠ silent — see §1), so they had to be **clean on our own tree**
+before wiring. A self-FP sweep over `src/` (`scratch/selffp-sweep.mts`) gated the decision:
+
+| Detector | Self-hits on `src/` | Action |
+|---|---|---|
+| assert-erasure ×3, cast_slice, placeholder, unsafe_span ×2 | 0 | wired advisory |
+| `unaligned_reinterpret` | 1 → **0** | fixed then wired (below) |
+| `regex_from_interpolation` | 17 | **DEFERRED** (below) |
+
+**`unaligned_reinterpret` — fixed, not deferred.** Its one self-hit was
+`new Int32Array(new SharedArrayBuffer(4))` in `harness-process-reap.ts` — a
+literal-sized fresh buffer has a compile-time-known `byteLength` and is never the
+runtime-odd-length class. `JS_ALIGNMENT_GUARD_RE` now treats a nearby
+`new (Shared)ArrayBuffer(<literal>)` as a guard. Zero self-hits after; unguarded
+runtime-length `.buffer` views still fire (regression tests in
+`reinterpret-alignment.test.ts`, "fresh-buffer guard").
+
+**`regex_from_interpolation` — DEFERRED, not wired.** 17 self-hits, and the
+classification (`scratch/classify-regex-hits.mts`) shows the exemption model is
+genuinely immature, not the code merely noisy: it misses inline `.replace(/…/g,"\\$&")`
+escaping, `.map(escapeRe)` escaping, `String.raw` with a pre-escaped `safe` variable, and
+intentional glob→regex `.replace(/\*/g,".*")`. Wiring it — even advisory — would warn on
+~a dozen correct-by-construction call sites every session, which trains the agent to ignore
+the check (the exact failure §1's "advisory ≠ silent" warns about). The detector stays
+committed and callable; wiring waits on the §5 v2 declared-parser / escape-recognition
+model. This supersedes the old "PR 2 — default gate, dogfoods clean" row, which the audit
+disproved.
+
+Deferred beyond regex, with reasons: the **general** interpolate-then-parse class (needs the
+declared-parser registry in `discovered-primitives.ts`); the **data-driven token ratchet**
+that would let Rust `unsafe`/`unwrap`/`panic!` and Python `# type: ignore` be counted; Rust
+`bytemuck`/`align_to` in D2.

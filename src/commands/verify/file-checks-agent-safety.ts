@@ -77,12 +77,15 @@ import {
 	checkNanComparison,
 	checkNonNullAssertions,
 	checkNumberPrecisionLoss,
+	checkPlaceholderRuntimeConstant,
 	checkPositionalOptionalBoolean,
 	checkPromiseRejectNonError,
 	checkRequireAwait,
+	checkRustUnsafeSpan,
 	checkSameTypedPrimitiveParams,
 	checkSelfImport,
 	checkSilentPromiseSwallow,
+	checkSuppressionSpan,
 	checkTaintedToPrivilegedSink,
 	checkThrowLiteral,
 	checkUnsafeOptionalChaining,
@@ -376,6 +379,21 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			relPath,
 			checkSpecPathRef(content, file, (target) => existsSync(resolve(cwd, target))),
 		),
+	);
+	// Bun-regression detector pack (2026-07-20): confessed stand-in constants +
+	// escape-hatch span pair.
+	r.placeholderRuntimeConstant.push(
+		...toIssues(
+			"placeholder_runtime_constant",
+			relPath,
+			checkPlaceholderRuntimeConstant(content, file),
+		),
+	);
+	r.rustUnsafeSpan.push(
+		...toIssues("rust_unsafe_span", relPath, checkRustUnsafeSpan(content, file)),
+	);
+	r.suppressionBlockSpan.push(
+		...toIssues("suppression_block_span", relPath, checkSuppressionSpan(content, file)),
 	);
 	r.asyncPromiseExecutor.push(
 		...toIssues("async_promise_executor", relPath, checkAsyncPromiseExecutor(content, file)),

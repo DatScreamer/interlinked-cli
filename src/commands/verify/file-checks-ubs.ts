@@ -10,6 +10,7 @@
 import { checkIdenticalBranches } from "../../harness/checks/identical-branches.js";
 import {
 	checkAesEcbMode,
+	checkCAssertSideEffects,
 	checkChildProcessExecUserInput,
 	checkCookieMissingSecurityFlags,
 	checkDeeplyNestedCallback,
@@ -22,6 +23,7 @@ import {
 	checkGoroutineNoWaitgroup,
 	checkGoShellInjection,
 	checkInsertAdjacentHtml,
+	checkJavaAssertSideEffects,
 	checkJavaOptionalGet,
 	checkJsLooseEquality,
 	checkLargeFunction,
@@ -39,8 +41,10 @@ import {
 	checkPrintDebugLeak,
 	checkPyMutableDefaultArg,
 	checkPyNoneEquality,
+	checkPythonAssertSideEffects,
 	checkRegexInLoopNoCompile,
 	checkRustDebugAssertSideEffects,
+	checkRustUncheckedCastSlice,
 	checkScriptWithoutSri,
 	checkShelveOpen,
 	checkSqlEscapeHatchNonLiteral,
@@ -52,6 +56,7 @@ import {
 	checkTorchUnsafeLoad,
 	checkUbsHardcodedLocalhost,
 	checkUbsStringConcatInLoop,
+	checkUnalignedReinterpret,
 	checkUncheckedRedirect,
 	checkUnsafeFormatString,
 	checkWeakHash,
@@ -85,6 +90,43 @@ export function runUbsChecks(ctx: FileCheckContext): void {
 			"ubs_rust_debug_assert_side_effect",
 			relPath,
 			checkRustDebugAssertSideEffects(content, file),
+		),
+	);
+	// Bun-regression detector pack (2026-07-20): assert-erasure siblings +
+	// reinterpret-alignment pair.
+	r.cAssertSideEffect.push(
+		...toIssues(
+			"ubs_c_assert_side_effect",
+			relPath,
+			checkCAssertSideEffects(content, file),
+		),
+	);
+	r.pythonAssertSideEffect.push(
+		...toIssues(
+			"ubs_python_assert_side_effect",
+			relPath,
+			checkPythonAssertSideEffects(content, file),
+		),
+	);
+	r.javaAssertSideEffect.push(
+		...toIssues(
+			"ubs_java_assert_side_effect",
+			relPath,
+			checkJavaAssertSideEffects(content, file),
+		),
+	);
+	r.rustUncheckedCastSlice.push(
+		...toIssues(
+			"ubs_rust_unchecked_cast_slice",
+			relPath,
+			checkRustUncheckedCastSlice(content, file),
+		),
+	);
+	r.unalignedReinterpret.push(
+		...toIssues(
+			"unaligned_reinterpret",
+			relPath,
+			checkUnalignedReinterpret(content, file),
 		),
 	);
 	r.divisionByVariable.push(

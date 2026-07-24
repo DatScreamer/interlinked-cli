@@ -7,11 +7,11 @@
 // key here AND in `streaming-output.ts`.
 
 import type { ProjectSetupIssue } from "../../harness/generic-checks.js";
-import type { DecisionSurfaceRatchetResult } from "../../harness/quality-checks/decision-surface-ratchet.js";
 import type {
 	DecisionSurfaceReport,
 	LockfileMultiplicityResult,
 } from "../../harness/quality-checks/decision-surface.js";
+import type { DecisionSurfaceRatchetResult } from "../../harness/quality-checks/decision-surface-ratchet.js";
 import type { RegistryDriftFinding } from "../../harness/registry-parity.js";
 import type { Finding } from "../../harness/suggestion-scorer.js";
 import type { JsonObject } from "../../lib/json-types.js";
@@ -233,6 +233,12 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_float_equality: summarizeWithDetails(cq.floatEquality),
 		ubs_java_optional_get: summarizeWithDetails(cq.javaOptionalGet),
 		ubs_rust_debug_assert_side_effect: summarizeWithDetails(cq.rustDebugAssertSideEffect),
+		// Bun-regression detector pack (2026-07-20)
+		ubs_c_assert_side_effect: summarizeWithDetails(cq.cAssertSideEffect),
+		ubs_python_assert_side_effect: summarizeWithDetails(cq.pythonAssertSideEffect),
+		ubs_java_assert_side_effect: summarizeWithDetails(cq.javaAssertSideEffect),
+		ubs_rust_unchecked_cast_slice: summarizeWithDetails(cq.rustUncheckedCastSlice),
+		unaligned_reinterpret: summarizeWithDetails(cq.unalignedReinterpret),
 		ubs_division_by_variable: summarizeWithDetails(cq.divisionByVariable),
 		// === UBS Plan 04 — rows 22–26 (critical-tier) ===
 		ubs_mutex_lock_unwrap: summarizeWithDetails(cq.mutexLockUnwrap),
@@ -285,6 +291,10 @@ export function outputJson(args: OutputJsonArgs): void {
 		fetch_without_timeout: summarizeWithDetails(cq.fetchWithoutTimeout),
 		unbounded_promise_all: summarizeWithDetails(cq.unboundedPromiseAll),
 		sync_io_on_hot_path: summarizeWithDetails(cq.syncIoOnHotPath),
+		// Bun-regression detector pack (2026-07-20): confessed stand-ins + span pair
+		placeholder_runtime_constant: summarizeWithDetails(cq.placeholderRuntimeConstant),
+		rust_unsafe_span: summarizeWithDetails(cq.rustUnsafeSpan),
+		suppression_block_span: summarizeWithDetails(cq.suppressionBlockSpan),
 		// === Batch 2: test-hygiene (7 entries) ===
 		duplicate_test_names: summarizeWithDetails(cq.duplicateTestNames),
 		real_io_in_tests: summarizeWithDetails(cq.realIoInTests),

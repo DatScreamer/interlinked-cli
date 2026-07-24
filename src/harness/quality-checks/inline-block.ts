@@ -7,13 +7,14 @@
 // the orchestrator a thin sequencer; ordering of the pushed findings is
 // identical to the original inline section.
 
+import { nonNull } from "../../lib/non-null.js";
 import { buildAgentSafetyChecks } from "../check-registry/index.js";
 import { computeCrapRisers } from "../checks/crap-baseline.js";
 import { filterToRisers as filterDryToRisers } from "../checks/dry-baseline.js";
 import { checkCodeCloneFindings, formatCodeCloneFinding } from "../checks/dry-check.js";
+import { locateBinaryContent } from "../checks/language-agnostic.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "../file-priority.js";
 import {
-	checkBinaryContent,
 	checkEmptyFile,
 	checkFunctionComplexity,
 	checkMissingReturnTypes,
@@ -22,7 +23,6 @@ import {
 import { loadDisabledLibraries, runFootgunChecks } from "../library-footguns/registry.js";
 import type { DiffAwareConfig, HarnessEvent, PreEditBaseline } from "../types.js";
 import type { QualityCheckResult } from "./result-types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Read-only context the inline-check block needs from the orchestrator. */
 export interface InlineBlockContext {
@@ -49,12 +49,21 @@ export function runInlineCheckBlock(ctx: InlineBlockContext): QualityCheckResult
 	const { filePath, fileContent } = ctx;
 
 	try {
-		// 1. Binary content — error, skip all other inline checks
-		if (checkBinaryContent(fileContent)) {
+		// 1. Binary content — error, skip all other inline checks. The position
+		// makes the invisible byte actionable; without it agents ignored the
+		// error 24 edits in a row while it silently blacked out every other
+		// inline check on the file (observed 2026-07, large-file-policy.ts).
+		const binaryLocation = locateBinaryContent(fileContent);
+		if (binaryLocation !== null) {
 			results.push({
 				name: "binary_content",
 				severity: "error",
-				message: `Binary content detected in ${filePath} — text editing tools should not write binary files`,
+				message:
+					`Binary content detected in ${filePath} — ${binaryLocation.count} raw NUL byte(s), ` +
+					`first at line ${binaryLocation.line}:${binaryLocation.column}. Text editing tools ` +
+					`should not write binary files; a deliberate NUL sentinel/separator belongs in ` +
+					`source as the U+0000 string escape, not a raw byte. Until fixed, this error ` +
+					`suppresses every other inline check on the file.`,
 				file: filePath,
 			});
 		} else {

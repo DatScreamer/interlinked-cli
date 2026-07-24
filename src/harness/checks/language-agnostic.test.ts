@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { checkConsoleDebug, isCliEntrypoint } from "./language-agnostic.js";
+import { checkConsoleDebug, isCliEntrypoint, locateBinaryContent } from "./language-agnostic.js";
 
 const LOGS = 'console.log("output line");\nconsole.log("another");\n';
 
@@ -93,5 +93,47 @@ describe("checkConsoleDebug — CLI-entrypoint exemption", () => {
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "t" }));
 		mkdirSync(join(dir, "src"), { recursive: true });
 		expect(checkConsoleDebug(LOGS, join(dir, "src", "app.ts")).length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+// locateBinaryContent supplies the position/count that makes the
+// binary_content error actionable — the raw byte is invisible in editors.
+// Fixtures build the NUL with String.fromCharCode so this test file never
+// contains a raw control byte itself.
+describe("locateBinaryContent", () => {
+	const NUL = String.fromCharCode(0);
+
+	it("returns null for clean content", () => {
+		expect(locateBinaryContent("plain text\nsecond line\n")).toBeNull();
+		expect(locateBinaryContent("")).toBeNull();
+		expect(locateBinaryContent("escaped \\u0000 text is fine")).toBeNull();
+	});
+
+	it("reports a 1-based line:column for the first NUL", () => {
+		expect(locateBinaryContent(`valid text${NUL}rest`)).toEqual({
+			count: 1,
+			line: 1,
+			column: 11,
+		});
+	});
+
+	it("tracks line breaks before the first NUL", () => {
+		expect(locateBinaryContent(`line one\nab${NUL}cd`)).toEqual({
+			count: 1,
+			line: 2,
+			column: 3,
+		});
+	});
+
+	it("counts every NUL but positions only the first", () => {
+		expect(locateBinaryContent(`a${NUL}b\nc${NUL}${NUL}d`)).toEqual({
+			count: 3,
+			line: 1,
+			column: 2,
+		});
+	});
+
+	it("handles a NUL as the very first character", () => {
+		expect(locateBinaryContent(`${NUL}payload`)).toEqual({ count: 1, line: 1, column: 1 });
 	});
 });

@@ -90,6 +90,21 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	// Bun-regression detector pack (2026-07-20): escape-hatch SPAN pair.
+	rust_unsafe_span: {
+		name: "Wide Rust unsafe block",
+		description:
+			"Detects a Rust unsafe { ... } block spanning more than 5 nonblank interior lines — safe code riding inside the hatch (78% of Bun's post-port unsafe blocks are one line).",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
+	suppression_block_span: {
+		name: "Wide eslint-disable region",
+		description:
+			"Detects a block-form /* eslint-disable */ … /* eslint-enable */ region spanning more than 10 lines — the suppression covers code that never needed it. Disable-with-no-enable is owned by file_level_suppression.",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	payload_field_casing: {
 		name: "Payload Field Casing",
 		description:

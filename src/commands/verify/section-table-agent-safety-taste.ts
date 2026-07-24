@@ -165,6 +165,28 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		passLabel: "no false present-tense path-existence claims",
 		color: "33",
 	},
+	// Bun-regression detector pack (2026-07-20)
+	{
+		label: "placeholder runtime constant",
+		key: "placeholderRuntimeConstant",
+		noun: "numeric constants whose comment confesses a temporary stand-in",
+		passLabel: "no confessed stand-in constants",
+		color: "33",
+	},
+	{
+		label: "rust unsafe span",
+		key: "rustUnsafeSpan",
+		noun: "Rust unsafe blocks spanning more than 5 nonblank lines",
+		passLabel: "all unsafe blocks are narrow",
+		color: "33",
+	},
+	{
+		label: "suppression block span",
+		key: "suppressionBlockSpan",
+		noun: "block-form eslint-disable regions spanning more than 10 lines",
+		passLabel: "no wide eslint-disable regions",
+		color: "33",
+	},
 	{
 		label: "async promise executor",
 		key: "asyncPromiseExecutor",

@@ -7,18 +7,23 @@
 import {
 	checkAesEcbMode,
 	checkArchiveExtractTraversal,
+	checkCAssertSideEffects,
 	checkDocumentWrite,
 	checkGithubActionsInjection,
 	checkGoShellInjection,
 	checkInsertAdjacentHtml,
+	checkJavaAssertSideEffects,
 	checkNaiveDatetime,
 	checkNodeCreateCipher,
 	checkOuterHtmlAssignment,
 	checkPickleWrapperLoad,
+	checkPythonAssertSideEffects,
 	checkRedosCatastrophic,
 	checkRustTestDeterminism,
+	checkRustUncheckedCastSlice,
 	checkScriptWithoutSri,
 	checkTorchUnsafeLoad,
+	checkUnalignedReinterpret,
 	checkWeakRandom,
 } from "../../generic-checks.js";
 import type { CheckRegistration } from "../types.js";
@@ -282,5 +287,98 @@ export const UBS_ENTRIES_EXTRA: CheckRegistration[] = [
 		fn: checkInsertAdjacentHtml,
 		resultsPropName: "insertAdjacentHtml",
 		content_keywords: ["insertAdjacentHTML"],
+	},
+	// ---- Bun-regression detector pack (2026-07-20): C/Python/Java assert-erasure
+	// siblings of ubs_rust_debug_assert_side_effect + the reinterpret-alignment
+	// pair (Bun #31188). All post/warning; 1–5 heuristic. ----
+	{
+		id: "ubs_c_assert_side_effect",
+		phase: "post",
+		name: "C assert side effect",
+		description:
+			"Detects C/C++ `assert(...)` arguments containing an assignment, increment/decrement, or mutating-looking call. Compiling with `-DNDEBUG` (the standard release configuration) erases the macro AND its argument, so the work silently disappears in release — the C sibling of the Bun `insert_stale`-inside-`debug_assert!` regression.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Move the side effect out of `assert(...)`. Under `-DNDEBUG` the <assert.h> macro compiles to nothing — the argument is never evaluated — so a mutating call like `queue_push(...)` or an assignment inside it never runs in release builds. Compute the value on its own statement first, then assert on the already-computed result.",
+		fn: checkCAssertSideEffects,
+		resultsPropName: "cAssertSideEffect",
+		content_keywords: ["assert"],
+	},
+	{
+		id: "ubs_python_assert_side_effect",
+		phase: "post",
+		name: "Python assert side effect",
+		description:
+			"Detects Python `assert` operands containing a walrus binding (`:=`) or a mutating-looking call. Running with `python -O` / `-OO` strips assert statements entirely — the operand is never evaluated — so the work silently disappears in optimized mode; the Python sibling of the Bun debug_assert erasure class.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Move the side effect out of the `assert`. Under `python -O` the interpreter strips assert statements (operand and message both), so a mutating call like `cache.insert_stale(key)` inside one never runs in optimized mode. Perform the mutation on its own line, then assert on the result.",
+		fn: checkPythonAssertSideEffects,
+		resultsPropName: "pythonAssertSideEffect",
+		content_keywords: ["assert"],
+	},
+	{
+		id: "ubs_java_assert_side_effect",
+		phase: "post",
+		name: "Java assert side effect",
+		description:
+			"Detects Java `assert` conditions (and `: message` operands) containing an assignment, increment/decrement, or mutating-looking call. JVM assertions are OFF by default — without `-ea` the condition never evaluates — so the work silently disappears on every standard run; the Java sibling of the Bun debug_assert erasure class.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Move the side effect out of the `assert`. The JVM ships with assertions DISABLED; unless every launch passes `-ea`, the condition (and its `: message` operand) is never evaluated, so `assert list.add(x);` adds nothing in production. Perform the mutation on its own statement, then assert on the already-computed result.",
+		fn: checkJavaAssertSideEffects,
+		resultsPropName: "javaAssertSideEffect",
+		content_keywords: ["assert"],
+	},
+	{
+		id: "ubs_rust_unchecked_cast_slice",
+		phase: "post",
+		name: "Rust unchecked cast_slice",
+		description:
+			"Detects Rust byte-buffer reinterpretation to a wider element type (`bytemuck::cast_slice`, `from_raw_parts`, `transmute`) with no length/alignment proof nearby. `bytemuck::cast_slice` PANICS when `len % size_of::<T>() != 0` (or the pointer is misaligned) — the Bun #31188 `Blob.text()` UTF-16 odd-byte-count panic class.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Prove the length (and alignment) before reinterpreting. Mask the byte slice to a multiple of the element size first — e.g. `&buf[..buf.len() & !1]` for u16 (the actual Bun #31188 fix) — or use `chunks_exact(size_of::<T>())` / `bytemuck::try_cast_slice` and handle the remainder explicitly instead of letting `cast_slice` panic on odd-length input.",
+		fn: checkRustUncheckedCastSlice,
+		resultsPropName: "rustUncheckedCastSlice",
+		content_keywords: ["cast_slice", "from_raw_parts", "transmute"],
+	},
+	{
+		id: "unaligned_reinterpret",
+		phase: "post",
+		name: "Unaligned buffer reinterpret",
+		description:
+			"Detects JS/TS typed-array views over an existing ArrayBuffer (`new Uint16Array(buf.buffer)`, DataView multi-byte reads) with no `byteLength % BYTES_PER_ELEMENT` / offset-alignment guard nearby. The constructor THROWS when the buffer length is not a multiple of the element size — the same odd-byte-count class as Bun #31188's `bytemuck::cast_slice` panic, in JS clothing.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Guard the view construction: check `buf.byteLength % TheView.BYTES_PER_ELEMENT === 0` (and byteOffset alignment when slicing) before `new Uint16Array(buffer)`, or truncate to an even length first (`buffer.slice(0, byteLength & ~1)`). External input with an odd byte count otherwise throws a RangeError at runtime — the Bun #31188 class.",
+		fn: checkUnalignedReinterpret,
+		resultsPropName: "unalignedReinterpret",
+		content_keywords: [
+			"Uint16Array",
+			"Uint32Array",
+			"Int16Array",
+			"Int32Array",
+			"Float32Array",
+			"Float64Array",
+			"BigInt64Array",
+			"BigUint64Array",
+			"DataView",
+		],
 	},
 ];

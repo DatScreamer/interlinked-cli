@@ -28,6 +28,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"files_without_test",
 	// Function size and complexity
 	"complexity",
+	"cognitive_complexity",
 	"function_arg_count",
 	"loop_nesting_depth",
 	"nested_ternaries",
@@ -95,6 +96,15 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"crap",
 	// UBS heuristic tier
 	"ubs_rust_debug_assert_side_effect",
+	// Bun-regression detector pack (2026-07-20)
+	"ubs_c_assert_side_effect",
+	"ubs_python_assert_side_effect",
+	"ubs_java_assert_side_effect",
+	"ubs_rust_unchecked_cast_slice",
+	"unaligned_reinterpret",
+	"placeholder_runtime_constant",
+	"rust_unsafe_span",
+	"suppression_block_span",
 	"ubs_division_by_variable",
 	"ubs_magic_number_no_const",
 	"ubs_print_debug_leak",

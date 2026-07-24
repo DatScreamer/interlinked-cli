@@ -33,6 +33,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 		meta: GENERIC_API_SHAPE_META,
 		keys: [
 			"complexity",
+			"cognitive_complexity",
 			"boolean_trap",
 			"positional_optional_boolean",
 			"many_optional_params",
@@ -73,6 +74,8 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"duplicated_policy_constant",
 			"snapshot_hygiene",
 			"design_slop",
+			"rust_unsafe_span",
+			"suppression_block_span",
 			"payload_field_casing",
 			"gitignored_written_config",
 			"spec_path_ref",
@@ -159,6 +162,11 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"ubs_float_equality",
 			"ubs_java_optional_get",
 			"ubs_rust_debug_assert_side_effect",
+			"ubs_c_assert_side_effect",
+			"ubs_python_assert_side_effect",
+			"ubs_java_assert_side_effect",
+			"ubs_rust_unchecked_cast_slice",
+			"unaligned_reinterpret",
 			"ubs_division_by_variable",
 			"ubs_mutex_lock_unwrap",
 			"ubs_subprocess_shell_true",
@@ -224,6 +232,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"fetch_without_timeout",
 			"unbounded_promise_all",
 			"sync_io_on_hot_path",
+			"placeholder_runtime_constant",
 		],
 	},
 	"generic-test-hygiene": {
@@ -354,10 +363,12 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 217-key total", () => {
+	it("preserves the full 226-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(217);
+		// 217 + cognitive_complexity (2026-07-24) + 8 Bun-regression detector pack
+		// (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2, 2026-07-20).
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(226);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(217);
+		expect(fragmentKeyTotal).toBe(226);
 	});
 });

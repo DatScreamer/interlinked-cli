@@ -17,9 +17,11 @@ import {
 	checkMissingEffectCleanup,
 	checkOverMocking,
 	checkPlatformConditionalAssertion,
+	checkRustUnsafeSpan,
 	checkSequentialAwaits,
 	checkSilentDependencySkip,
 	checkSqlSchemaConsistency,
+	checkSuppressionSpan,
 	checkVisibilityFilterMissing,
 } from "../../generic-checks.js";
 import type { CheckRegistration } from "../types.js";
@@ -244,5 +246,40 @@ export const CODE_QUALITY_ENTRIES_EXTRA: CheckRegistration[] = [
 		fn: detectPayloadFieldCasing,
 		resultsPropName: "payloadFieldCasing",
 		content_keywords: ["rawInput", "nativeJson", "hookInput", "payload", "input"],
+	},
+	// ---- Bun-regression detector pack (2026-07-20): escape-hatch SPAN pair —
+	// how WIDE the hatch is, not whether one exists. Pure brace/region span
+	// counts, so fully deterministic. ----
+	{
+		id: "rust_unsafe_span",
+		phase: "post",
+		name: "Wide Rust unsafe block",
+		description:
+			"Detects a Rust `unsafe { ... }` block spanning more than 5 nonblank interior lines — safe code riding inside the hatch, hidden from the borrow checker. Bun's Zig→Rust port data point: 78% of the post-port unsafe blocks are a SINGLE line (one pointer from C++ or one C call); a wide block is almost always scope creep. Complements `rust_unsafe_blocks` (existence + SAFETY comment) — this measures SPAN only.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Narrow the block: 78% of Bun's post-port unsafe blocks are one line — hoist the safe setup/teardown out of the `unsafe { ... }` region so only the genuinely unsafe operation (the raw-pointer deref, the FFI call) sits inside the hatch, and the borrow checker sees everything else.",
+		fn: checkRustUnsafeSpan,
+		resultsPropName: "rustUnsafeSpan",
+		content_keywords: ["unsafe"],
+	},
+	{
+		id: "suppression_block_span",
+		phase: "post",
+		name: "Wide eslint-disable region",
+		description:
+			"Detects a block-form `/* eslint-disable */` … `/* eslint-enable */` region spanning more than 10 lines — the linter is off for the whole region, covering code that never needed the suppression. Line-form `// eslint-disable-next-line` is the narrow tool. A disable with NO matching enable is file-level suppression, owned by `file_level_suppression`, and deliberately not reported here.",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Shrink the suppressed region: move the `/* eslint-enable */` up to just past the line(s) that genuinely need it, or replace the block form with per-line `// eslint-disable-next-line <rule> -- reason` directives so every suppressed line is individually visible and justified.",
+		fn: checkSuppressionSpan,
+		resultsPropName: "suppressionBlockSpan",
+		content_keywords: ["eslint-disable"],
 	},
 ];

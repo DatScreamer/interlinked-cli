@@ -298,6 +298,30 @@ describe("checkUnalignedReinterpret — negatives", () => {
 // the shared line-based stripper (`#` read as a Python comment, Rust lifetimes
 // read as string openers) or the bounded first-argument scan. Keep them exact.
 
+describe("checkUnalignedReinterpret — fresh-buffer guard (self-FP audit 2026-07-20)", () => {
+	it("does not fire when the view wraps a fresh new SharedArrayBuffer(<literal>)", () => {
+		// harness-process-reap.ts:197 — a literal-sized fresh buffer has a
+		// compile-time-known byteLength; not the runtime-odd-length bug class.
+		const found = runJs(
+			[
+				"function reap() {",
+				"\tconst buf = new SharedArrayBuffer(4);",
+				"\tAtomics.wait(new Int32Array(buf), 0, 0, 50);",
+				"}",
+			].join("\n"),
+		);
+		expect(found).toEqual([]);
+	});
+
+	it("does not fire on an inline new ArrayBuffer(<literal>)", () => {
+		expect(runJs("const v = new Uint32Array(new ArrayBuffer(8));")).toEqual([]);
+	});
+
+	it("still fires on an unguarded runtime-length .buffer view", () => {
+		expect(runJs("function h(bytes: Uint8Array) { return new Uint16Array(bytes.buffer); }")).toHaveLength(1);
+	});
+});
+
 describe("checkUnalignedReinterpret — adversarial-review regressions (2026-07-10)", () => {
 	it("keeps a guard containing a quote-bearing regex literal alive (no false positive)", () => {
 		const found = runJs(

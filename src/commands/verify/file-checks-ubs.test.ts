@@ -3,10 +3,10 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
-import { runUbsChecks } from "./file-checks-ubs.js";
-import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
-import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 import { nonNull } from "../../lib/non-null.js";
+import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
+import { runUbsChecks } from "./file-checks-ubs.js";
+import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
 function ctx(content: string, file = "/tmp/sample.ts", relPath = "sample.ts"): FileCheckContext {
 	return { file, content, relPath, cwd: "/tmp", r: emptyResults(), piiOpts: {} };
@@ -52,6 +52,65 @@ describe("runUbsChecks", () => {
 		expect(nonNull(c.r.rustDebugAssertSideEffect[0]).check).toBe(
 			"ubs_rust_debug_assert_side_effect",
 		);
+	});
+
+	it("flags C assert side effects (ubs_c_assert_side_effect)", () => {
+		const c = ctx(
+			"static void refresh(map_t *m, key_t k) {\n  assert(insert_stale(m, k));\n}\n",
+			"/tmp/sample.c",
+			"sample.c",
+		);
+		runUbsChecks(c);
+		expect(c.r.cAssertSideEffect.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.cAssertSideEffect[0]).check).toBe("ubs_c_assert_side_effect");
+	});
+
+	it("flags Python assert side effects (ubs_python_assert_side_effect)", () => {
+		const c = ctx(
+			"def refresh(cache, key):\n    assert cache.insert_stale(key)\n",
+			"/tmp/sample.py",
+			"sample.py",
+		);
+		runUbsChecks(c);
+		expect(c.r.pythonAssertSideEffect.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.pythonAssertSideEffect[0]).check).toBe(
+			"ubs_python_assert_side_effect",
+		);
+	});
+
+	it("flags Java assert side effects (ubs_java_assert_side_effect)", () => {
+		const c = ctx(
+			"class Registry {\n  void track(List<String> list, String x) {\n    assert list.add(x);\n  }\n}\n",
+			"/tmp/Registry.java",
+			"Registry.java",
+		);
+		runUbsChecks(c);
+		expect(c.r.javaAssertSideEffect.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.javaAssertSideEffect[0]).check).toBe("ubs_java_assert_side_effect");
+	});
+
+	it("flags unchecked bytemuck::cast_slice (ubs_rust_unchecked_cast_slice)", () => {
+		const c = ctx(
+			"fn decode(buf: &[u8]) -> &[u16] {\n    bytemuck::cast_slice(buf)\n}\n",
+			"/tmp/decode.rs",
+			"decode.rs",
+		);
+		runUbsChecks(c);
+		expect(c.r.rustUncheckedCastSlice.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.rustUncheckedCastSlice[0]).check).toBe(
+			"ubs_rust_unchecked_cast_slice",
+		);
+	});
+
+	it("flags unguarded typed-array reinterpret (unaligned_reinterpret)", () => {
+		const c = ctx(
+			"export function decode(buf: Uint8Array): Uint16Array {\n\treturn new Uint16Array(buf.buffer);\n}\n",
+			"/tmp/decode.ts",
+			"decode.ts",
+		);
+		runUbsChecks(c);
+		expect(c.r.unalignedReinterpret.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.unalignedReinterpret[0]).check).toBe("unaligned_reinterpret");
 	});
 
 	it("flags document.write (ubs_document_write)", () => {

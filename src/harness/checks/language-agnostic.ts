@@ -26,6 +26,45 @@ export function checkBinaryContent(content: string): boolean {
 	return content.includes("\x00");
 }
 
+/** Where the raw NUL bytes are — so the binary_content error is actionable
+ *  (the byte is invisible in editors; without a position agents re-edit the
+ *  file blind and the error repeats on every touch). */
+export interface BinaryContentLocation {
+	/** Total raw NUL bytes in the content. */
+	count: number;
+	/** 1-based line of the first NUL. */
+	line: number;
+	/** 1-based column of the first NUL. */
+	column: number;
+}
+
+/** Locate raw NUL bytes; null when the content is clean. charCode-based so
+ *  this file never needs its own NUL literal beyond the detector above. */
+export function locateBinaryContent(content: string): BinaryContentLocation | null {
+	let count = 0;
+	let firstLine = 0;
+	let firstColumn = 0;
+	let line = 1;
+	let column = 1;
+	for (let i = 0; i < content.length; i++) {
+		const code = content.charCodeAt(i);
+		if (code === 0) {
+			count++;
+			if (count === 1) {
+				firstLine = line;
+				firstColumn = column;
+			}
+		}
+		if (code === 10) {
+			line++;
+			column = 1;
+		} else {
+			column++;
+		}
+	}
+	return count === 0 ? null : { count, line: firstLine, column: firstColumn };
+}
+
 /**
  * Check if the file is empty (only whitespace).
  * An empty file is usually a mistake — the agent likely intended to write content.

@@ -92,4 +92,12 @@ export const GENERIC_AGENT_LAZINESS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	// Bun-regression detector pack (2026-07-20)
+	placeholder_runtime_constant: {
+		name: "Placeholder Runtime Constant",
+		description:
+			"Detects a numeric constant whose own comment confesses it is a temporary stand-in (\"stand-in until Phase B\", \"hardcoded for now\") — the Bun #31503 BSS_OVERFLOW_BLOCK_SIZE=64 class.",
+		tier: 1,
+		determinism: "heuristic",
+	},
 };

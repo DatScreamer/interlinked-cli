@@ -105,6 +105,12 @@ export interface CodeQualityResults {
 	readmeScriptDrift: CodeQualityIssue[];
 	/** Verify-only: present-tense claim that a path exists in-repo when the working tree lacks it (Sol D-3). */
 	specPathRef: CodeQualityIssue[];
+	/** Numeric constant whose own comment confesses it is a temporary stand-in (Bun #31503 class). */
+	placeholderRuntimeConstant: CodeQualityIssue[];
+	/** Rust `unsafe { ... }` block spanning >5 nonblank interior lines (78% of Bun's post-port unsafe blocks are one line). */
+	rustUnsafeSpan: CodeQualityIssue[];
+	/** Block-form eslint-disable → eslint-enable region spanning >10 lines. */
+	suppressionBlockSpan: CodeQualityIssue[];
 	asyncPromiseExecutor: CodeQualityIssue[];
 	selfImports: CodeQualityIssue[];
 	extraneousDeps: CodeQualityIssue[];
@@ -194,6 +200,16 @@ export interface CodeQualityResults {
 	javaOptionalGet: CodeQualityIssue[];
 	/** Bun Rust-port class: `debug_assert*` arguments whose side effects disappear in release. */
 	rustDebugAssertSideEffect: CodeQualityIssue[];
+	/** C sibling: `assert(...)` side effects erased under -DNDEBUG. */
+	cAssertSideEffect: CodeQualityIssue[];
+	/** Python sibling: `assert` operand side effects stripped under `python -O`. */
+	pythonAssertSideEffect: CodeQualityIssue[];
+	/** Java sibling: `assert` side effects never run without `-ea` (JVM default OFF). */
+	javaAssertSideEffect: CodeQualityIssue[];
+	/** Rust byte-buffer reinterpret with no length/alignment proof — cast_slice panics on odd byteLength (Bun #31188). */
+	rustUncheckedCastSlice: CodeQualityIssue[];
+	/** JS/TS typed-array view over an ArrayBuffer with no byteLength % BYTES_PER_ELEMENT guard (Bun #31188 class). */
+	unalignedReinterpret: CodeQualityIssue[];
 	/** Row 30: `expr / identifier` — divisor might be zero (advisory). */
 	divisionByVariable: CodeQualityIssue[];
 	// === UBS Plan 04 — rows 22–26 (critical-tier) ===

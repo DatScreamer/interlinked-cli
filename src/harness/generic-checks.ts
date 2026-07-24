@@ -64,9 +64,14 @@ export {
 } from "./checks/agent-safety-advanced.js";
 // ---- archive-extract ----
 export { checkArchiveExtractTraversal } from "./checks/archive-extract.js";
-// ---- assert-side-effects (only the tautology detector is wired; the
-//      python/C/java assert-side-effect siblings in that file remain unwired) ----
-export { checkPythonAssertTautology } from "./checks/assert-side-effects.js";
+// ---- assert-side-effects (tautology + the C/Python/Java assert-erasure
+//      siblings of ubs_rust_debug_assert_side_effect) ----
+export {
+	checkCAssertSideEffects,
+	checkJavaAssertSideEffects,
+	checkPythonAssertSideEffects,
+	checkPythonAssertTautology,
+} from "./checks/assert-side-effects.js";
 // ---- b-series ----
 export {
 	checkAssertionFreeTests,
@@ -227,6 +232,8 @@ export {
 	checkMixedErrorStrategy,
 	checkPiiInSource,
 } from "./checks/pii.js";
+// ---- placeholder-constants (confessed stand-in numeric constants) ----
+export { checkPlaceholderRuntimeConstant } from "./checks/placeholder-constants.js";
 // ---- placeholder-tests ----
 export { checkPlaceholderTests } from "./checks/placeholder-tests.js";
 export type { ProjectSetupIssue } from "./checks/project-setup.js";
@@ -244,6 +251,11 @@ export {
 } from "./checks/react.js";
 // ---- redos (catastrophic-backtracking) ----
 export { checkRedosCatastrophic } from "./checks/redos-catastrophic.js";
+// ---- reinterpret-alignment (Bun #31188 class: byte buffer cast to wider type) ----
+export {
+	checkRustUncheckedCastSlice,
+	checkUnalignedReinterpret,
+} from "./checks/reinterpret-alignment.js";
 // ---- return-types ----
 export { checkMissingReturnTypes } from "./checks/return-types.js";
 // ---- sequential-awaits ----
@@ -389,3 +401,8 @@ export {
 	checkXmlExternalEntity,
 	checkYamlUnsafeLoad,
 } from "./checks/ubs-language-specific.js";
+// ---- unsafe-span (escape-hatch SCOPE: wide unsafe{} / eslint-disable regions) ----
+export {
+	checkRustUnsafeSpan,
+	checkSuppressionSpan,
+} from "./checks/unsafe-span.js";

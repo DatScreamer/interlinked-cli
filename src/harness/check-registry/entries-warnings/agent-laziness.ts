@@ -11,6 +11,7 @@ import {
 	checkFetchWithoutTimeout,
 	checkFileLevelSuppression,
 	checkNodeEnvBranchInProd,
+	checkPlaceholderRuntimeConstant,
 	checkStubNotImplementedThrow,
 	checkSyncIoOnHotPath,
 	checkTypeSmuggling,
@@ -204,5 +205,34 @@ export const AGENT_LAZINESS_ENTRIES: CheckRegistration[] = [
 			"Synchronous I/O blocks the event loop — every concurrent request waits behind the disk / subprocess. Replace with the promisified API: `await readFile(path)`, `await new Promise(r => exec(cmd, r))` / execa, etc. Keep *Sync calls confined to startup, CLIs, and one-shot scripts where blocking the single thread is fine.",
 		fn: checkSyncIoOnHotPath,
 		resultsPropName: "syncIoOnHotPath",
+	},
+	{
+		// Bun-regression detector pack (2026-07-20): the confessed stand-in
+		// constant class (Bun #31503 — `/// nonzero stand-in until Phase B` over
+		// `BSS_OVERFLOW_BLOCK_SIZE: usize = 64` shipped and lowered an interning
+		// ceiling from 8.4M to 270k).
+		id: "placeholder_runtime_constant",
+		phase: "post",
+		name: "Placeholder Runtime Constant",
+		description:
+			"Detects a numeric constant declaration whose own comment confesses it is a temporary stand-in (\"stand-in until Phase B\", \"hardcoded for now\", \"interim\", \"provisional\") — the confession is right there in the doc comment, and the value ships anyway. Motivating case: Bun #31503, where `pub const BSS_OVERFLOW_BLOCK_SIZE: usize = 64` carried a `nonzero stand-in until Phase B` comment, lowered an interning ceiling from 8.4M to 270k, and made an off-by-one reachable.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Replace the confessed stand-in with the real value (or wire the computation it stands in for) before shipping. If the placeholder genuinely must land now, convert the confession into a tracked issue link (// TODO(TICKET-123): compute from profile data) so the gap is visible to reviewers instead of only to whoever rereads the comment.",
+		fn: checkPlaceholderRuntimeConstant,
+		resultsPropName: "placeholderRuntimeConstant",
+		content_keywords: [
+			"stand-in",
+			"placeholder",
+			"temporar",
+			"for now",
+			"interim",
+			"provisional",
+			"hardcod",
+			"until",
+		],
 	},
 ];

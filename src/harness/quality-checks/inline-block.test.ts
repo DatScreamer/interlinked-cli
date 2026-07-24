@@ -47,6 +47,7 @@ vi.mock("../checks/dry-baseline.js", async (importOriginal) => {
 	return { ...actual, filterToRisers: vi.fn(actual.filterToRisers) };
 });
 
+import { nonNull } from "../../lib/non-null.js";
 import { buildAgentSafetyChecks } from "../check-registry/index.js";
 import { computeCrapRisers } from "../checks/crap-baseline.js";
 import { filterToRisers as filterDryToRisers } from "../checks/dry-baseline.js";
@@ -55,7 +56,6 @@ import {
 	formatCodeCloneFinding,
 } from "../checks/dry-check.js";
 import { type InlineBlockContext, runInlineCheckBlock } from "./inline-block.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // --- Fixture builders -------------------------------------------------------
 
@@ -139,6 +139,12 @@ describe("runInlineCheckBlock — short-circuits", () => {
 			file: "src/example.ts",
 		});
 		expect(nonNull(out[0]).message).toContain("Binary content detected");
+		// Position + count make the invisible byte actionable, and the message
+		// must say the escape spelling is the fix and name the black-out effect.
+		expect(nonNull(out[0]).message).toContain("1 raw NUL byte");
+		expect(nonNull(out[0]).message).toContain("line 1:11");
+		expect(nonNull(out[0]).message).toContain("U+0000 string escape");
+		expect(nonNull(out[0]).message).toContain("suppresses every other inline check");
 	});
 
 	it("flags a whitespace-only file as an empty_file warning", () => {
