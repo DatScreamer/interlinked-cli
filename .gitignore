@@ -228,3 +228,7 @@ feed.signed.json
 .interlinked/sponsor.status
 .interlinked/sponsor-feed.json
 .interlinked/sponsor-beacons.jsonl
+
+# Nested per-directory hook state must never be committed (a stray cwd mints one);
+# scoped to docs/ so the root .interlinked/* carve-outs keep their semantics.
+docs/**/.interlinked/
