@@ -228,7 +228,7 @@ export function parseTestFailures(stdout: string): string[] {
 	for (const line of stdout.split("\n")) {
 		// Strip ANSI color codes (vitest emits them even with --silent).
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require literal control char
-		const stripped = line.replace(/\[[0-9;]*m/g, "");
+		const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
 		// Vitest red-cross prefix on failed tests
 		const m = stripped.match(/^\s*(?:×|✗|FAIL)\s+(.+)$/);
 		if (m) {

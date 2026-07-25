@@ -213,7 +213,7 @@ describe("inline-block", () => {
 			event,
 			filePath: "src/x.ts",
 			absFilePath: "/a/src/x.ts",
-			fileContent: "abc def",
+			fileContent: "abc\x00def",
 			cwd: "/a",
 			diffAware: undefined,
 			baseline: undefined,

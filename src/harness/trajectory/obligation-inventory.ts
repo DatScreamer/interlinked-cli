@@ -209,7 +209,7 @@ interface LedgerEntry {
 function countByKey(occ: Occurrence[], file: string): Map<string, LedgerEntry> {
 	const m = new Map<string, LedgerEntry>();
 	for (const o of occ) {
-		const key = `${file} ${o.kind} ${o.sig}`;
+		const key = `${file}\x00${o.kind}\x00${o.sig}`;
 		const cur = m.get(key);
 		if (cur) cur.count += 1;
 		else m.set(key, { count: 1, kind: o.kind, file, snippet: o.snippet });

@@ -779,7 +779,7 @@ describe("evaluateReadGuards", () => {
 		// itself returns false for such a path, so guard via a directory that
 		// becomes unreadable is unreliable cross-platform — instead assert the
 		// function never throws for an exotic path.
-		expect(() => evaluateReadGuards(`${dir}/ weird`)).not.toThrow();
+		expect(() => evaluateReadGuards(`${dir}/\x00weird`)).not.toThrow();
 	});
 });
 

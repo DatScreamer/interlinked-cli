@@ -309,7 +309,7 @@ describe("parseTestFailures", () => {
 	it("strips ANSI color codes before matching", () => {
 		// Vitest emits ANSI escapes even when piped — without stripping,
 		// the regex wouldn't match the failure prefix.
-		const out = "[31m   ×[0m foo > bar > baz 4ms";
+		const out = "\x1b[31m   ×\x1b[0m foo > bar > baz 4ms";
 		const failures = parseTestFailures(out);
 		expect(failures).toHaveLength(1);
 		expect(failures[0]).toContain("foo > bar > baz");
