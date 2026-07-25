@@ -123,6 +123,7 @@ export interface CodeQualityResults {
 	numberPrecisionLoss: CodeQualityIssue[];
 	throwLiteral: CodeQualityIssue[];
 	promiseRejectNonError: CodeQualityIssue[];
+	rawControlBytes: CodeQualityIssue[];
 	lossyErrorRethrow: CodeQualityIssue[];
 	importFromOwnBarrel: CodeQualityIssue[];
 	errorDispatchByInstanceof: CodeQualityIssue[];

@@ -265,6 +265,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		ubs_numeric_comparison_chain: summarizeWithDetails(cq.numericComparisonChain),
 		ubs_print_debug_leak: summarizeWithDetails(cq.printDebugLeak),
 		ubs_hardcoded_localhost: summarizeWithDetails(cq.ubsHardcodedLocalhost),
+		raw_control_bytes: summarizeWithDetails(cq.rawControlBytes),
 		lossy_error_rethrow: summarizeWithDetails(cq.lossyErrorRethrow),
 		import_from_own_barrel: summarizeWithDetails(cq.importFromOwnBarrel),
 		error_dispatch_by_instanceof: summarizeWithDetails(cq.errorDispatchByInstanceof),

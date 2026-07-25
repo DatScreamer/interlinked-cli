@@ -19,6 +19,7 @@ import {
 	detectArrayIterateeVariadicBuiltin,
 	detectReturnArrayPush,
 } from "../../harness/checks/array-method-misuse.js";
+import { checkRawControlBytes } from "../../harness/checks/control-bytes.js";
 import { computeCrap } from "../../harness/checks/crap.js";
 import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
 import { detectDesignSlop } from "../../harness/checks/design-slop.js";
@@ -424,6 +425,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.throwLiteral.push(...toIssues("throw_literal", relPath, checkThrowLiteral(content, file)));
 	r.promiseRejectNonError.push(
 		...toIssues("promise_reject_non_error", relPath, checkPromiseRejectNonError(content, file)),
+	);
+	r.rawControlBytes.push(
+		...toIssues("raw_control_bytes", relPath, checkRawControlBytes(content, file)),
 	);
 	r.lossyErrorRethrow.push(
 		...toIssues("lossy_error_rethrow", relPath, checkLossyErrorRethrow(content, file)),

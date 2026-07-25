@@ -88,6 +88,7 @@ const EXPECTED_KEY_ORDER = [
 	"nonNullAssertions",
 	"throwLiteral",
 	"promiseRejectNonError",
+	"rawControlBytes",
 	"lossyErrorRethrow",
 	"importFromOwnBarrel",
 	"errorDispatchByInstanceof",

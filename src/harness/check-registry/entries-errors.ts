@@ -1,6 +1,7 @@
 // Pre-block, severity=error checks for correctness/security issues with zero
 // false-positive risk. See check-registry/types.ts for CheckPhase semantics.
 
+import { checkRawControlBytes } from "../checks/control-bytes.js";
 import { detectUnawaitedAsyncAssertions } from "../checks/test-async-assertions.js";
 import {
 	checkAsyncPromiseExecutor,
@@ -143,6 +144,21 @@ export const ERROR_ENTRIES: CheckRegistration[] = [
 			"Reject with an Error instance: `Promise.reject(new Error('...'))`. Rejecting with a string/number/undefined drops the stack trace, breaks `instanceof Error` checks downstream, and forces catchers to `typeof`-narrow instead of using structured error types.",
 		fn: checkPromiseRejectNonError,
 		resultsPropName: "promiseRejectNonError",
+	},
+	{
+		id: "raw_control_bytes",
+		phase: "pre_block",
+		name: "Raw Control Bytes in Source",
+		description:
+			"Detects a literal control character (NUL, ESC, DEL, ...) written into source instead of its escape sequence",
+		tier: 1,
+		determinism: "fully_deterministic",
+		severity: "error",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Replace the literal control character with its escape (e.g. the four characters backslash-x-0-0 for NUL). The escape produces an identical string at runtime, so the fix is lossless. A raw byte makes grep classify the ENTIRE file as binary and skip it, so the file becomes invisible to code search — an agent asking 'is this symbol referenced anywhere?' gets a confident, wrong 'no'. The diff renders identically to the escaped form, so review cannot catch it either. Both failure modes are silent, which is why this blocks.",
+		fn: checkRawControlBytes,
+		resultsPropName: "rawControlBytes",
 	},
 	{
 		id: "unsafe_optional_chaining",

@@ -83,6 +83,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"numberPrecisionLoss",
 	"throwLiteral",
 	"promiseRejectNonError",
+	"rawControlBytes",
 	"lossyErrorRethrow",
 	"importFromOwnBarrel",
 	"errorDispatchByInstanceof",

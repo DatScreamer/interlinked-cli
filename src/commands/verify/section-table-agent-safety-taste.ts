@@ -272,6 +272,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "31",
 	},
 	{
+		label: "raw control bytes",
+		key: "rawControlBytes",
+		noun: "raw control character in source (use its escape)",
+		passLabel: "no raw control bytes",
+		color: "31",
+	},
+	{
 		label: "lossy error rethrow",
 		key: "lossyErrorRethrow",
 		noun: "catch (e) { throw new Error(...) } without { cause: e }",

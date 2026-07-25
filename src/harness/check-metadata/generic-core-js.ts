@@ -133,6 +133,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	raw_control_bytes: {
+		name: "Raw Control Bytes in Source",
+		description:
+			"Detects a literal control character (NUL, ESC, DEL, ...) written into JS/TS source instead of its escape sequence — a raw byte makes grep classify the whole file as binary and skip it, so the file becomes invisible to code search while the diff looks identical",
+		tier: 1,
+		determinism: "fully_deterministic",
+	},
 	lossy_error_rethrow: {
 		name: "Lossy Error Rethrow",
 		description:

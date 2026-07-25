@@ -19,7 +19,7 @@ import { SPEC_LEDGER_CHECK_KINDS } from "./spec/ledger-drift.js";
 // loudly — that is the whole point: the number can never silently drift.
 const EXPECTED_BY_FAMILY: Record<string, number> = {
 	// +8 Bun-regression detector pack wired (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2), 2026-07-20
-	inline: 250, // prior: 242 = +cognitive_complexity (history-relational-metrics Phase 1, 2026-07-24); +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
+	inline: 251, // prior: 250 = +raw_control_bytes (source invisible to grep, 2026-07-25); prior: 242 = +cognitive_complexity (history-relational-metrics Phase 1, 2026-07-24); +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
 	sequence: 23,
 	structural: 25,
 	tool_quality: 33,
@@ -28,7 +28,8 @@ const EXPECTED_BY_FAMILY: Record<string, number> = {
 	spec_ledger: 5, // cross-file ledger kinds emitting source "spec" (deep-round #10, 2026-07-16)
 };
 // +8 Bun-regression detector pack wired (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2), 2026-07-20
-const EXPECTED_TOTAL = 375;
+// +raw_control_bytes (2026-07-25)
+const EXPECTED_TOTAL = 376;
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.
