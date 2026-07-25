@@ -27,6 +27,7 @@ import type {
 	HarnessDecision,
 	SessionTrajectory,
 } from "../types.js";
+import { detectDropperStaging } from "./dropper-staging.js";
 
 const ESCALATION_TAIL_LENGTH = 10;
 const LARGE_READ_SIZE_MB = 10;
@@ -288,12 +289,10 @@ export function evaluateExfilGuards(args: {
 		);
 	}
 	if (session) {
-		const tmpWritePattern = /\b(cat|echo|printf|tee)\b[\s\S]*>\s*\/tmp\//i;
-		const tmpExecPattern =
-			/\b(chmod\s+\+?[0-7]*x|bash|sh|python3?|node|ruby|perl|osascript)\s+\/tmp\//i;
-		if (tmpWritePattern.test(cmd) || tmpExecPattern.test(cmd)) {
+		const staged = detectDropperStaging(cmd, session.session_id);
+		if (staged) {
 			warnings.push(
-				"[interlinked:supply-chain] Writing/executing scripts in /tmp/ — this matches the dropper staging pattern used in supply chain attacks (ref: axios@1.14.1 wrote AppleScript to /tmp/ then executed via osascript). Prefer writing scripts to the project directory.",
+				`[interlinked:supply-chain] Staging or executing a payload at ${staged} — this matches the dropper staging pattern used in supply chain attacks (ref: axios@1.14.1 wrote AppleScript to /tmp/ then executed via osascript). Prefer writing scripts to the project directory.`,
 			);
 		}
 	}
