@@ -130,6 +130,19 @@ const TSC_WARN_ONLY_CODES = new Set([
 	"TS2532", // Object is possibly 'undefined'
 	"TS18048", // 'X' is possibly 'undefined'
 	"TS18047", // 'X' is possibly 'null'
+	// Unresolved-symbol codes. These are the signature of a coordinated change
+	// whose halves cannot land in one Edit — adding a helper at the bottom of a
+	// file and its import at the top are non-contiguous, so an agent with no
+	// atomic multi-edit tool MUST produce a transiently-broken file. Blocking
+	// here made the only path forward a batch-write workaround, for an error
+	// the very next edit resolves.
+	//
+	// Demoting costs little: a genuine typo still WARNS here, then fails the
+	// PostToolUse tsc run, `interlinked verify`, and the Stop-event
+	// unverified-code nudge. It is never silent — it just no longer bricks a
+	// half-landed refactor.
+	"TS2304", // Cannot find name 'X'
+	"TS2305", // Module 'Y' has no exported member 'X'
 ]);
 
 /** Pre-edit LS-diagnostic cache keyed by `${filePath}:${mtimeMs}` */

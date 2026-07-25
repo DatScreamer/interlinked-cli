@@ -280,3 +280,59 @@ describe("collectContentQualityWarnings — A4 floating promise chain handling",
 		expect(floatingWarnings(content).length).toBe(1);
 	});
 });
+
+// ===========================================
+// A11 — JSDoc closed early by an embedded glob
+// ===========================================
+// Two false positives fixed here:
+//   1. The matcher was GREEDY, spanning the first opener to the last terminator
+//      on a line, so two valid single-line JSDocs reported each other.
+//   2. It ran on EVERY file type. JSDoc is a JS/TS construct; it fired on a
+//      .json manifest whose string values held comment text.
+
+/** A11 warnings only, for a proposed file. */
+function jsdocWarnings(fileName: string, content: string): string[] {
+	return collectContentQualityWarnings(`/repo/src/${fileName}`, content, "/repo").filter((w) =>
+		w.includes("closed early"),
+	);
+}
+
+describe("content-quality A11 — premature JSDoc close", () => {
+	it("flags a glob that terminates the comment and orphans the rest of the line", () => {
+		const content = '/** Glob pattern (uses "dir/**", "**/*.ext") */\nexport const glob = 1;';
+		expect(jsdocWarnings("types.ts", content).length).toBe(1);
+	});
+
+	it("flags a glob mid-sentence", () => {
+		expect(jsdocWarnings("types.ts", "/** see src/**/*.spec.ts */\nexport const x = 1;").length).toBe(
+			1,
+		);
+	});
+
+	it("reports the 1-based line number of the offending comment", () => {
+		const content = ["export const a = 1;", "/** see src/**/*.spec.ts */", "export const b = 2;"].join(
+			"\n",
+		);
+		expect(jsdocWarnings("types.ts", content)[0]).toContain("line 2");
+	});
+
+	it("does not flag a normal single-line JSDoc", () => {
+		expect(jsdocWarnings("types.ts", "/** a normal comment */\nexport const x = 1;").length).toBe(0);
+	});
+
+	it("does not flag two valid single-line JSDocs sharing a line", () => {
+		expect(jsdocWarnings("types.ts", "/** first */ /** second */\nexport const x = 1;").length).toBe(
+			0,
+		);
+	});
+
+	it("does not flag a decorative doubled-star close", () => {
+		expect(jsdocWarnings("types.ts", "/** doc **/\nexport const x = 1;").length).toBe(0);
+	});
+
+	it("does not run on non-JS/TS files", () => {
+		const manifest = '{"new_string": "/** doc **/*.ts trailing */"}';
+		expect(jsdocWarnings("manifest.json", manifest).length).toBe(0);
+		expect(jsdocWarnings("notes.md", manifest).length).toBe(0);
+	});
+});

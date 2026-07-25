@@ -1155,7 +1155,7 @@ describe("evaluatePreToolUse", () => {
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
 			expect(result.decision).toBe("allow");
-			expect(result.warnings?.some((w) => w.includes("prematurely closes"))).toBe(true);
+			expect(result.warnings?.some((w) => w.includes("closed early"))).toBe(true);
 		});
 
 		it("A11: does not warn on normal JSDoc comments", () => {
@@ -1167,7 +1167,7 @@ describe("evaluatePreToolUse", () => {
 				},
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-			expect(result.warnings?.some((w) => w.includes("prematurely closes"))).toBeFalsy();
+			expect(result.warnings?.some((w) => w.includes("closed early"))).toBeFalsy();
 		});
 	});
 

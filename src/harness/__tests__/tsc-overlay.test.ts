@@ -86,6 +86,39 @@ describe("evaluateTscDiffOverlay", () => {
 		expect(isTscFindingBlocking(fake)).toBe(false);
 	});
 
+	// Regression: adding a helper at the BOTTOM of a file and its import at the
+	// TOP are non-contiguous edits, so an agent without an atomic multi-edit
+	// tool must pass through a state that references an unresolved symbol.
+	// Blocking there made a batch-write the only way forward, for an error the
+	// very next edit resolves.
+	it("TS2304 (unresolved symbol) is classified as warn-only", () => {
+		const onDisk = readFileSync(FIXTURE_FILE, "utf-8");
+		const proposed = `${onDisk}\nexport const _pending = notYetImportedHelper();\n`;
+		const result = evaluateTscDiffOverlay(FIXTURE_FILE, proposed, CLI_ROOT);
+		const [ts2304] = result.newFindings.filter((f) => f.ruleId === "TS2304");
+		expect(ts2304).toBeDefined();
+		expect(isTscFindingBlocking(ts2304 as NonNullable<typeof ts2304>)).toBe(false);
+	});
+
+	it("TS2305 (module has no exported member) is classified as warn-only", () => {
+		const fake = {
+			tool: "tsc" as const,
+			severity: "error" as const,
+			file: "x.ts",
+			line: 1,
+			message: "Module './sibling' has no exported member 'notYetExported'.",
+			ruleId: "TS2305",
+		};
+		expect(isTscFindingBlocking(fake)).toBe(false);
+	});
+
+	it("still blocks a genuine type mismatch alongside an unresolved symbol", () => {
+		const onDisk = readFileSync(FIXTURE_FILE, "utf-8");
+		const proposed = `${onDisk}\nconst _bad: number = "nope";\nexport const _p = missingHelper();\n`;
+		const result = evaluateTscDiffOverlay(FIXTURE_FILE, proposed, CLI_ROOT);
+		expect(result.newFindings.some((f) => isTscFindingBlocking(f))).toBe(true);
+	});
+
 	it("returns empty when the target file doesn't exist on disk (new file)", () => {
 		const nonExistent = resolve(FIXTURE_DIR, "_does_not_exist_tsc.ts");
 		const result = evaluateTscDiffOverlay(

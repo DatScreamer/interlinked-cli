@@ -157,22 +157,41 @@ function collectPermissionsRedosJsdocWarnings(filePath: string, content: string)
 			`[interlinked:content-quality] Potential ReDoS pattern (nested quantifiers) in ${filePath}. Simplify the regex to avoid catastrophic backtracking.`,
 		);
 	}
-	// A11: JSDoc premature close — "*/" inside a single-line JSDoc body
-	const singleLineJsdocRe = /\/\*\*(.+)\*\//g;
-	for (
-		let jsdocMatch = singleLineJsdocRe.exec(content);
-		jsdocMatch !== null;
-		jsdocMatch = singleLineJsdocRe.exec(content)
-	) {
-		if (nonNull(jsdocMatch[1]).includes("*/")) {
-			const lineNum = content.slice(0, jsdocMatch.index).split("\n").length;
-			warnings.push(
-				`[interlinked:content-quality] JSDoc at line ${lineNum} in ${filePath} contains "*/" which prematurely closes the comment. Glob patterns like "**/*.ext" break parsers (tsc, biome, esbuild). Rephrase to avoid "*/" sequences.`,
-			);
-			break;
+	warnings.push(...collectJsdocPrematureCloseWarnings(filePath, content));
+	return warnings;
+}
+
+/**
+ * A single-line JSDoc whose terminator is formed by an embedded glob, with
+ * orphaned text left after it on the same line. The trailing non-space char is
+ * what separates a premature close from a legitimate decorative one: a comment
+ * ending in a doubled star and nothing else closed exactly where intended.
+ */
+const PREMATURE_JSDOC_CLOSE_RE = /\/\*\*.*?\*\*\/\S/;
+
+/**
+ * A11: a JSDoc terminated early by an embedded glob, leaving the rest of the
+ * line outside the comment as syntax errors.
+ *
+ * Scoped to JS/TS because JSDoc is a JS/TS construct. The previous version ran
+ * on every file type and fired on a `.json` manifest whose string values held
+ * comment text.
+ *
+ * The previous matcher was greedy, spanning from the FIRST opener to the LAST
+ * terminator on a line, so two valid single-line JSDocs on one line reported
+ * each other as a premature close.
+ */
+function collectJsdocPrematureCloseWarnings(filePath: string, content: string): string[] {
+	if (!JS_TS_EXTENSIONS.test(filePath)) return [];
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i += 1) {
+		if (PREMATURE_JSDOC_CLOSE_RE.test(nonNull(lines[i]))) {
+			return [
+				`[interlinked:content-quality] JSDoc at line ${i + 1} in ${filePath} is closed early by an embedded glob, leaving the rest of the line outside the comment. Globs break parsers (tsc, biome, esbuild) — escape the star or move the pattern into a backticked code span.`,
+			];
 		}
 	}
-	return warnings;
+	return [];
 }
 
 /** Comment- and string-stripped view of `content`, including the code inside
