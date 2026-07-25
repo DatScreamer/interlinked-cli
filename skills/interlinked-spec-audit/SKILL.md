@@ -1,6 +1,6 @@
 ---
 name: interlinked-spec-audit
-description: Keep prose specs and design docs honest against the code using Interlinked's spec-audit system. Load this when extracting a doc's invariants or facts (`interlinked spec invariants`, `spec agenda`), when you see `[interlinked:spec-drift]`, `[interlinked:spec-marker]`, `[interlinked:spec-xref]`, or `[interlinked:disputed-ground]` warnings after editing markdown, when ingesting/triaging an external review report (`interlinked findings ingest / status / verify / ack`), or when running executable doc examples (`interlinked doctest`). The system detects and tracks — it never auto-fixes; you write the fix. Covers the fact ledger, findings reconciliation, invariants/agenda, and current-state caveats.
+description: "Keep prose specs and design docs honest against the code using Interlinked's spec-audit system. Load this when extracting a doc's invariants or facts (`interlinked spec invariants`, `spec agenda`), when you see `[interlinked:spec-drift]`, `[interlinked:spec-marker]`, `[interlinked:spec-xref]`, or `[interlinked:disputed-ground]` warnings after editing markdown, when ingesting/triaging an external review report (`interlinked findings ingest / status / verify / ack`), or when running executable doc examples (`interlinked doctest`). The system detects and tracks — it never auto-fixes; you write the fix. Covers the fact ledger, findings reconciliation, invariants/agenda, and current-state caveats."
 ---
 
 # interlinked-spec-audit — keep prose specs honest against code

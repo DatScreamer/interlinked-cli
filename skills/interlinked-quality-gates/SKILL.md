@@ -1,6 +1,6 @@
 ---
 name: interlinked-quality-gates
-description: Respond to Interlinked's metric ratchets — the edit-time gates that block on line-count, cyclomatic complexity, coverage, and CRAP, plus the baseline-integrity gate. Load this when an edit was BLOCKED for growing a file past the line cap (500), for a cyclomatic-complexity jump or over-cap function, for adding an uncovered line or dropping coverage, for a high CRAP score, or for "loosening a baseline"; when adopting Interlinked on a legacy repo (`interlinked adopt`); or when managing caps/coverage/mutation baselines (`interlinked caps`, `coverage`, `mutation`, `debt`, `metrics`). The rule: water-lines only tighten — meet the bar (decompose / add a test / cover the line), never lower the baseline.
+description: "Respond to Interlinked's metric ratchets — the edit-time gates that block on line-count, cyclomatic complexity, coverage, and CRAP, plus the baseline-integrity gate. Load this when an edit was BLOCKED for growing a file past the line cap (500), for a cyclomatic-complexity jump or over-cap function, for adding an uncovered line or dropping coverage, for a high CRAP score, or for \"loosening a baseline\"; when adopting Interlinked on a legacy repo (`interlinked adopt`); or when managing caps/coverage/mutation baselines (`interlinked caps`, `coverage`, `mutation`, `debt`, `metrics`). The rule: water-lines only tighten — meet the bar (decompose / add a test / cover the line), never lower the baseline."
 ---
 
 # interlinked-quality-gates — the metric ratchets

@@ -1,6 +1,6 @@
 ---
 name: interlinked-coordination
-description: Coordinate with other agents/humans via the optional Interlinked MCP Server, and use local checkpoints & file reservations. Load this when picking up or handing off work (`tasks`, `send`, `inbox`, `handoff`), switching workspace context (`workspace`, `attach`), when a write is blocked because a file is "reserved by" another agent, when creating/restoring a local checkpoint (`checkpoint`, `rewind`, `resume`), installing the git-hook reservation guard (`interlinked guard`), or checking CI failure rates (`ci-status`). IMPORTANT: `checkpoint`/`rewind`/`resume` MUTATE git state (stash, checkout, clean -fd) and must not be run without explicit per-turn user authorization.
+description: "Coordinate with other agents/humans via the optional Interlinked MCP Server, and use local checkpoints & file reservations. Load this when picking up or handing off work (`tasks`, `send`, `inbox`, `handoff`), switching workspace context (`workspace`, `attach`), when a write is blocked because a file is \"reserved by\" another agent, when creating/restoring a local checkpoint (`checkpoint`, `rewind`, `resume`), installing the git-hook reservation guard (`interlinked guard`), or checking CI failure rates (`ci-status`). IMPORTANT: `checkpoint`/`rewind`/`resume` MUTATE git state (stash, checkout, clean -fd) and must not be run without explicit per-turn user authorization."
 ---
 
 # interlinked-coordination — multi-agent server surface & local checkpoints

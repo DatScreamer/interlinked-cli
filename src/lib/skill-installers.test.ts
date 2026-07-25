@@ -23,8 +23,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "./non-null.js";
 import {
 	findEnforceSkillSource,
+	findSkillSource,
 	installEnforceSkill,
 	installSkills,
+	listInstallableSkills,
 	uninstallEnforceSkill,
 	uninstallSkills,
 } from "./skill-installers.js";
@@ -337,5 +339,81 @@ describe("uninstallSkills (full bundled set)", () => {
 
 	it("returns false when nothing was installed", () => {
 		expect(uninstallSkills(tmpRoot, ["claude"])).toBe(false);
+	});
+});
+
+// ===========================================
+// Shipped-source frontmatter invariant
+// ===========================================
+// A runner-facing SKILL.md whose frontmatter is invalid YAML is dropped
+// SILENTLY — no error, the skill simply never loads. The `enforce` skill was
+// never exposed to this because the installer rewrites its description through
+// `quoteYamlDouble`; the interlinked-* teaching skills ship their descriptions
+// VERBATIM, so validity is the author's responsibility and nothing checked it.
+// Five of the nine shipped with a bare description containing ": " (illegal in
+// a YAML plain scalar) and would have failed to load. Hence this gate.
+
+/** The frontmatter block of a SKILL.md, or "" when absent/malformed. */
+function frontmatterBlock(content: string): string {
+	const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+	return match ? nonNull(match[1]) : "";
+}
+
+/** The raw `description:` value, verbatim and trimmed. Null when absent. */
+function descriptionValue(frontmatter: string): string | null {
+	const match = frontmatter.match(/^description:\s*(.*)$/m);
+	return match ? nonNull(match[1]).trim() : null;
+}
+
+/**
+ * True when `value` is a well-formed YAML double-quoted scalar: it opens with
+ * `"`, every interior `"` is backslash-escaped, and the scalar terminates on
+ * the final character. Quoting is what makes the authored text irrelevant to
+ * the parser — a quoted scalar may contain ": ", " #", and other indicators
+ * that would break a bare one.
+ */
+function isQuotedYamlScalar(value: string): boolean {
+	if (value.length < 2 || !value.startsWith('"')) return false;
+	let i = 1;
+	while (i < value.length) {
+		if (value[i] === "\\") {
+			i += 2;
+			continue;
+		}
+		if (value[i] === '"') return i === value.length - 1;
+		i += 1;
+	}
+	return false;
+}
+
+describe("shipped SKILL.md frontmatter is loader-safe", () => {
+	const skills = listInstallableSkills();
+
+	// Guards the it.each below: an empty list would produce ZERO test cases and
+	// report green — the "silently passed 0/0" failure mode.
+	it("discovers the full bundled set", () => {
+		expect(skills).toContain("enforce");
+		expect(skills.filter((name) => name.startsWith("interlinked")).length).toBeGreaterThan(0);
+	});
+
+	it.each(skills)("%s: description is a quoted, length-safe scalar", (name) => {
+		const source = findSkillSource(name);
+		expect(source, `${name}: source not resolvable`).not.toBeNull();
+
+		const frontmatter = frontmatterBlock(readFileSync(nonNull(source), "utf-8"));
+		expect(frontmatter, `${name}: missing or malformed frontmatter block`).not.toBe("");
+
+		const value = descriptionValue(frontmatter);
+		expect(value, `${name}: frontmatter has no description key`).not.toBeNull();
+		expect(
+			isQuotedYamlScalar(nonNull(value)),
+			`${name}: description must be double-quoted (inner quotes escaped) — a bare value containing ": " is invalid YAML and the skill will not load`,
+		).toBe(true);
+
+		// Several skill loaders reject descriptions over 1024 characters.
+		expect(
+			nonNull(value).length,
+			`${name}: description exceeds the 1024-char loader limit`,
+		).toBeLessThanOrEqual(1024);
 	});
 });

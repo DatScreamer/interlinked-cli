@@ -1,6 +1,6 @@
 ---
 name: interlinked-supply-chain
-description: Respond to blocked package installs and manage the Interlinked supply-chain allowlist. Load this when `npm/pnpm/yarn/bun/pip/pipx/poetry/uv/cargo/gem/bundle/go/composer/mvn/dotnet` install is BLOCKED with `[interlinked:supply-chain]`, when adding a dependency to package.json / requirements.txt / pyproject.toml / Cargo.toml / go.mod is refused, when a version is rejected as "not an exact pin", when `npm ci` fails a lockfile-snapshot check, or when you need to approve a package (`interlinked allowlist add`), snapshot a lockfile, or verify deps. Package installs are default-deny; a package needs both allowlist membership AND an exact version pin.
+description: "Respond to blocked package installs and manage the Interlinked supply-chain allowlist. Load this when `npm/pnpm/yarn/bun/pip/pipx/poetry/uv/cargo/gem/bundle/go/composer/mvn/dotnet` install is BLOCKED with `[interlinked:supply-chain]`, when adding a dependency to package.json / requirements.txt / pyproject.toml / Cargo.toml / go.mod is refused, when a version is rejected as \"not an exact pin\", when `npm ci` fails a lockfile-snapshot check, or when you need to approve a package (`interlinked allowlist add`), snapshot a lockfile, or verify deps. Package installs are default-deny; a package needs both allowlist membership AND an exact version pin."
 ---
 
 # interlinked-supply-chain — package installs are default-deny

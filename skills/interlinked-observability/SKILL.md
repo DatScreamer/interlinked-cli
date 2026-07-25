@@ -1,6 +1,6 @@
 ---
 name: interlinked-observability
-description: Inspect what AI agents did — the local, offline-first activity log and observability commands. Load this when you want to see what happened this session, tail activity live, review what the guard blocked/warned, find recurring mistakes, inspect a specific session/event, view the dependency graph, backfill external (Codex) sessions, verify the tamper-evident guard-decision log, or push buffered events to the server. Covers `status`, `activity`, `logs` (with `--type`/`--follow`), `explain`, `watch`, `telemetry`, `trace`, `search`, `recurrence`, `viz`, `audit`, `collect`, `compact`, `sync`, and the activity.jsonl / collection.jsonl / timeline.jsonl event-log model.
+description: "Inspect what AI agents did — the local, offline-first activity log and observability commands. Load this when you want to see what happened this session, tail activity live, review what the guard blocked/warned, find recurring mistakes, inspect a specific session/event, view the dependency graph, backfill external (Codex) sessions, verify the tamper-evident guard-decision log, or push buffered events to the server. Covers `status`, `activity`, `logs` (with `--type`/`--follow`), `explain`, `watch`, `telemetry`, `trace`, `search`, `recurrence`, `viz`, `audit`, `collect`, `compact`, `sync`, and the activity.jsonl / collection.jsonl / timeline.jsonl event-log model."
 ---
 
 # interlinked-observability — inspect what agents did
