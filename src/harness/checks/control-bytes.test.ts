@@ -61,11 +61,30 @@ describe("checkRawControlBytes — legitimate source is untouched", () => {
 		expect(checkRawControlBytes("export const x = 1;\n", "src/x.ts")).toHaveLength(0);
 	});
 
-	it("ignores non-JS/TS files", () => {
+	// Languages whose string forms can ALWAYS carry an escape (or which have no
+	// string-literal concept at all) — a raw byte there is never the only way to
+	// express the intent, so the finding stays zero-FP.
+	it("covers non-JS/TS text formats where an escape always exists", () => {
 		const src = `key = "${NUL}"\n`;
-		expect(checkRawControlBytes(src, "notes.md")).toHaveLength(0);
-		expect(checkRawControlBytes(src, "data.json")).toHaveLength(0);
-		expect(checkRawControlBytes(src, "script.py")).toHaveLength(0);
+		for (const path of ["notes.md", "data.json", "script.py", "q.sql", "conf.yaml", "a.c"]) {
+			expect(checkRawControlBytes(src, path), path).toHaveLength(1);
+		}
+	});
+
+	// Excluded on purpose: each has a raw/single-quoted string form that cannot
+	// carry an escape, so a literal byte could be the only expression available.
+	// Shell is excluded because a literal ESC for terminal output is an idiom.
+	it("ignores languages with escape-less string forms", () => {
+		const src = `key = "${NUL}"\n`;
+		for (const path of ["main.go", "lib.rs", "app.rb", "run.sh"]) {
+			expect(checkRawControlBytes(src, path), path).toHaveLength(0);
+		}
+	});
+
+	it("ignores binary and unknown extensions", () => {
+		const src = `key = "${NUL}"\n`;
+		expect(checkRawControlBytes(src, "logo.png")).toHaveLength(0);
+		expect(checkRawControlBytes(src, "archive.gz")).toHaveLength(0);
 	});
 
 	it("ignores vendored and fixture paths (binary payloads live there on purpose)", () => {

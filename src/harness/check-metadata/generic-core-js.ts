@@ -136,7 +136,7 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 	raw_control_bytes: {
 		name: "Raw Control Bytes in Source",
 		description:
-			"Detects a literal control character (NUL, ESC, DEL, ...) written into JS/TS source instead of its escape sequence — a raw byte makes grep classify the whole file as binary and skip it, so the file becomes invisible to code search while the diff looks identical",
+			"Detects a literal control character (NUL, ESC, DEL, ...) written into text source instead of its escape sequence — a raw byte makes grep classify the whole file as binary and skip it, so the file becomes invisible to code search while the diff looks identical. Covers JS/TS, Python, JSON, C-family, Java, C#, and markup/config text; Go, Rust, Ruby, and shell are excluded because each has a string form that cannot carry an escape",
 		tier: 1,
 		determinism: "fully_deterministic",
 	},

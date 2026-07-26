@@ -40,19 +40,58 @@ const MAX_MATCHES = 10;
  */
 const DUNDER_FIXTURES_RE = /(^|\/)__fixtures__\//;
 
+/**
+ * Text formats where a raw control character is never the only way to express
+ * the intent, so flagging it stays zero-FP:
+ *   - JS/TS, Python, C-family, Java, C# — an escape exists in every string form
+ *   - JSON — raw control characters inside a string are INVALID per RFC 8259,
+ *     so the file is already malformed; the escape is `\uXXXX`, not `\xNN`
+ *   - markup / config / query text — no string-literal concept to work around;
+ *     a control byte is simply wrong
+ *
+ * DELIBERATELY EXCLUDED, because each has a string form that cannot carry an
+ * escape, so a raw byte could be the only expression and the finding would not
+ * be zero-FP:
+ *   - Go (backquoted raw strings), Rust (r"..."), Ruby (single-quoted)
+ *   - Shell — a literal ESC for terminal output is an established idiom
+ */
+const TEXT_SOURCE_EXTS: ReadonlySet<string> = new Set([
+	...JS_TS_EXTS,
+	".py",
+	".pyi",
+	".json",
+	".jsonc",
+	".c",
+	".h",
+	".cc",
+	".cpp",
+	".cxx",
+	".hpp",
+	".java",
+	".cs",
+	".md",
+	".yaml",
+	".yml",
+	".toml",
+	".sql",
+	".css",
+	".scss",
+	".html",
+]);
+
 /** `\xNN` for a control character, uppercase and zero-padded. */
 function asEscape(ch: string): string {
 	return `\\x${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
 }
 
 /**
- * Raw control characters in a JS/TS source file. Scoped to JS/TS because every
- * extension in that set supports the `\xNN` escape, which makes the fix always
- * available and the finding zero-FP. Vendored and fixture paths are exempt —
- * binary payloads live there deliberately.
+ * Raw control characters in a text source file. Scoped to formats where an
+ * escape (or plain removal) always expresses the same intent — see
+ * `TEXT_SOURCE_EXTS` for what is excluded and why. Vendored and fixture paths
+ * are exempt: binary payloads live there deliberately.
  */
 export function checkRawControlBytes(content: string, filePath: string): InlineMatch[] {
-	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+	if (!TEXT_SOURCE_EXTS.has(getExtension(filePath))) return [];
 	if (isVendoredOrFixturePath(filePath)) return [];
 	if (DUNDER_FIXTURES_RE.test(filePath.replace(/\\/g, "/"))) return [];
 	if (!RAW_CONTROL_RE.test(content)) return [];
