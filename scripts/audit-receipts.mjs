@@ -55,6 +55,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { incompleteHistoryError } from "./receipts-completeness.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TRANSCRIPT_DIR = join(homedir(), ".claude/projects/-Users-quentincody-interlinked-cli");
@@ -454,8 +455,20 @@ function audit() {
 }
 
 const wantStdout = process.argv.includes("--json");
+const allowPartial = process.argv.includes("--allow-partial");
 const result = audit();
 const payload = `${JSON.stringify(result, null, 2)}\n`;
+
+// Never overwrite the committed receipts from an incomplete history — a
+// missing segment understates the totals rather than updating them. See
+// receipts-completeness.mjs for the incident this guards against.
+if (!wantStdout && !allowPartial) {
+	const err = incompleteHistoryError(result);
+	if (err) {
+		process.stderr.write(err);
+		process.exit(1);
+	}
+}
 
 if (wantStdout) {
 	process.stdout.write(payload);

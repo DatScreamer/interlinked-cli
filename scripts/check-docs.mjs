@@ -30,9 +30,12 @@
 //
 // Receipts staleness:
 //   The `data_as_of` gen-marker on the landing page is checked for
-//   staleness (warns at >30 days). Refreshing the receipts is a manual
-//   step (`npm run docs:refresh-receipts`) — not automated in CI
-//   because it depends on the maintainer's local activity.jsonl.
+//   staleness (warns at >30 days). Refreshing is a two-step manual
+//   process — `npm run docs:audit-receipts` re-derives the counts, then
+//   the `data_as_of` marker is hand-edited. Not automated in CI because
+//   it depends on the maintainer's local activity.jsonl.
+//   (An earlier note here named `npm run docs:refresh-receipts`, which
+//   has never existed as a package script — the advice was unrunnable.)
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -278,7 +281,7 @@ function checkDataAsOfStaleness(docs) {
 	if (ageDays > DATA_AS_OF_MAX_AGE_DAYS) {
 		return {
 			ok: true,
-			warn: `data_as_of is ${Math.round(ageDays)} days old (>${DATA_AS_OF_MAX_AGE_DAYS} day threshold). Run \`npm run docs:refresh-receipts\` to regenerate.`,
+			warn: `data_as_of is ${Math.round(ageDays)} days old (>${DATA_AS_OF_MAX_AGE_DAYS} day threshold). Re-derive the counts with \`npm run docs:audit-receipts\`, then hand-edit the data_as_of marker on the landing page (it is deliberately not generated).`,
 		};
 	}
 	return { ok: true };
