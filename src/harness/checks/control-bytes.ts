@@ -34,13 +34,6 @@ const RAW_CONTROL_RE_GLOBAL = new RegExp(RAW_CONTROL_RE.source, "g");
 const MAX_MATCHES = 10;
 
 /**
- * This repo's fixture convention. `isVendoredOrFixturePath` matches a bare
- * `fixtures/` segment but not the dunder form, so it is checked separately
- * here rather than widening a predicate ~50 other checks share.
- */
-const DUNDER_FIXTURES_RE = /(^|\/)__fixtures__\//;
-
-/**
  * Text formats where a raw control character is never the only way to express
  * the intent, so flagging it stays zero-FP:
  *   - JS/TS, Python, C-family, Java, C# — an escape exists in every string form
@@ -93,7 +86,6 @@ function asEscape(ch: string): string {
 export function checkRawControlBytes(content: string, filePath: string): InlineMatch[] {
 	if (!TEXT_SOURCE_EXTS.has(getExtension(filePath))) return [];
 	if (isVendoredOrFixturePath(filePath)) return [];
-	if (DUNDER_FIXTURES_RE.test(filePath.replace(/\\/g, "/"))) return [];
 	if (!RAW_CONTROL_RE.test(content)) return [];
 
 	const matches: InlineMatch[] = [];

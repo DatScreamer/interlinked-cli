@@ -284,8 +284,14 @@ export function isVendoredOrFixturePath(filePath: string): boolean {
 	// preceding slash) followed by `<dir>/`" — so `vendor/x` and
 	// `pkg/vendor/x` both match, but `myvendor/x` (no slash boundary
 	// before `vendor`) does not.
+	// `__fixtures__` sits alongside the bare `fixtures` form for the same reason
+	// `__mocks__` sits alongside `mocks`: both dunder spellings are the
+	// convention this repo actually uses (src/harness/checks/__fixtures__/), and
+	// omitting one meant ~16 consumers scanned those dirs as if they held
+	// ordinary source. Fixture payloads are deliberately malformed — that is
+	// what makes them fixtures — so scanning them is pure noise.
 	const dirRe =
-		/(^|\/)(?:vendor|third_party|node_modules|environments|examples|fixtures|seed-data|seeds|mocks|__mocks__|test-data|testdata|dist|build|\.next|coverage)\//;
+		/(^|\/)(?:vendor|third_party|node_modules|environments|examples|fixtures|__fixtures__|seed-data|seeds|mocks|__mocks__|test-data|testdata|dist|build|\.next|coverage)\//;
 	if (dirRe.test(normalized)) return true;
 
 	// Bundled / minified asset filenames. These are generated artifacts;
