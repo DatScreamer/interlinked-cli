@@ -9,6 +9,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Obligation as OrphanCandidate } from "./obligations.js";
 import {
 	METRIC_DESCRIPTORS,
 	type Obligation,
@@ -84,6 +85,52 @@ export function readDebtTxnsForFile(projectRoot: string, file: string): Obligati
 export function readOpenDebts(projectRoot: string): Obligation[] {
 	const state = replayObligations(readDebtTxns(projectRoot));
 	return [...openObligations(state, "coverage"), ...openObligations(state, "red_suite")];
+}
+
+/** Every filename a session may leave behind. A session writes `.live.json`
+ *  and `.trajectory.json` while running; older builds wrote a bare `<id>.json`.
+ *  Probing only the bare form marks CURRENTLY RUNNING sessions as gone. */
+const SESSION_ARTIFACT_SUFFIXES = [".json", ".live.json", ".trajectory.json"] as const;
+
+/**
+ * A debt whose owning session left no trace on disk at all.
+ *
+ * Lives in the harness layer, not `commands/debt.ts`, because both the reporter
+ * and the write gate need it and the harness must never import from the command
+ * layer.
+ *
+ * Probes every artifact shape a session can leave. The original predicate
+ * checked only `<id>.json`, which current builds do not write — so it reported
+ * the RUNNING session's own debts as orphaned. Verified 2026-07-27: the live
+ * session had `.live.json` and `.trajectory.json` and no bare `.json`.
+ */
+export function isOrphanedDebt(projectRoot: string, debt: OrphanCandidate): boolean {
+	if (!debt.sessionId) return false;
+	const dir = join(projectRoot, ".interlinked", "sessions");
+	return !SESSION_ARTIFACT_SUFFIXES.some((sfx) => existsSync(join(dir, `${debt.sessionId}${sfx}`)));
+}
+
+/**
+ * Open debts the CURRENT session can actually discharge.
+ *
+ * A debt is cleared only by its own session's subsequent green run, so a debt
+ * opened by a different session is undischargeable by anything this session
+ * does — blocking on one is a permanent stop with no action that resolves it.
+ * That is the failure mode that left two debts open for 28 hours after the
+ * failure they described was fixed (2026-07-26).
+ *
+ * Session identity rather than artifact liveness: a `.trajectory.json` persists
+ * long after its session ends, so "a file exists" cannot tell a live session
+ * from a finished one. Debts with no session id are keepable by anyone.
+ *
+ * Cross-session debts are not lost — `interlinked debt list` still reports
+ * them, and `debt resolve` still closes them. They just stop blocking a session
+ * that has no way to satisfy them.
+ */
+export function readDischargeableDebts(projectRoot: string, currentSessionId?: string): Obligation[] {
+	return readOpenDebts(projectRoot).filter(
+		(d) => !d.sessionId || !currentSessionId || d.sessionId === currentSessionId,
+	);
 }
 
 function safeJsonParse(line: string): unknown {

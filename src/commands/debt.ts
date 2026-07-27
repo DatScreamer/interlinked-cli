@@ -20,11 +20,16 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
 	appendDebtTxn,
+	isOrphanedDebt,
 	readDebtTxnsForFile,
 	readOpenDebts,
 } from "../harness/obligation-ledger-io.js";
 import type { Obligation, ObligationTxn } from "../harness/obligations.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+
+// Re-exported for back-compat: the predicate moved to the harness layer so the
+// write gate can consult it too (the harness must not import from commands/).
+export { isOrphanedDebt };
 
 export interface DebtCommandOpts {
 	cwd?: string;
@@ -57,22 +62,6 @@ function debtRow(d: Obligation): string {
 	return [d.kind.padEnd(10), d.file.padEnd(48), iso(d.openedAtMs).padEnd(26), d.sessionId].join(
 		"  ",
 	);
-}
-
-/**
- * A debt whose owning session left no snapshot on disk can never discharge
- * automatically: only that session's own green run clears it, and it will not
- * run again.
- *
- * Observed 2026-07-26: two red_suite debts sat open for 28 hours after the
- * failure they described was fixed, because the session that opened them had
- * ended. Nothing distinguished them from live debts, so they read as an
- * outstanding problem indefinitely. Marking them separates the ones a green
- * run can still clear from the ones only `debt resolve` can.
- */
-export function isOrphanedDebt(projectRoot: string, debt: Obligation): boolean {
-	if (!debt.sessionId) return false;
-	return !existsSync(join(projectRoot, ".interlinked", "sessions", `${debt.sessionId}.json`));
 }
 
 function renderDebtTable(open: Obligation[], projectRoot: string = process.cwd()): string {
