@@ -294,6 +294,25 @@ function reportGuardBlock(
  * Run the full PreToolUse pipeline for a tool-use event. Returns the final
  * `HarnessDecision` (allow / block / ask).
  */
+/**
+ * Combine the two per-edit metric gates into one verdict.
+ *
+ * Both gates run unconditionally; only their RESULTS are combined here. Coverage
+ * stays the returned verdict when both fire (it is the stronger gate), but the
+ * mutation warnings are carried onto it so a single edit reports every metric
+ * regression at once — the endgame seam's "fix them in one pass" contract.
+ */
+function combineMetricGateDecisions(
+	coverage: HarnessDecision | null,
+	mutation: HarnessDecision | null,
+): HarnessDecision | null {
+	if (coverage && mutation) {
+		coverage.warnings = [...(coverage.warnings ?? []), ...(mutation.warnings ?? [])];
+		return coverage;
+	}
+	return coverage ?? mutation;
+}
+
 export async function runPreToolPipeline(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -346,14 +365,18 @@ export async function runPreToolPipeline(
 	// a coverage block. A no-op (returns null immediately) when the repo opts
 	// out via guard-rules.local.json (`per_edit_coverage.enabled: false`).
 	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
-	if (coverageDecision) return coverageDecision;
 
 	// --- Per-edit mutation gate (config-gated, DEFAULT OFF) ---
 	// Capability-aware (spec §12): a no-op until `per_edit_mutation.enabled`; runs
-	// the mutation runner (null until the cloud Sandbox runner is wired → honest
-	// not-measured) and short-circuits on a measured block.
+	// the mutation runner (null until a runner is wired → honest not-measured).
+	//
+	// Runs even when coverage already produced a decision. Returning early on the
+	// coverage result silently disabled this gate ENTIRELY — found 2026-07-27 with
+	// per_edit_mutation enabled, a reachable runner, and not one recorded run in a
+	// full day of edits.
 	const mutationDecision = await runMutationWriteGate(ctx, event, preDecision);
-	if (mutationDecision) return mutationDecision;
+	const metricDecision = combineMetricGateDecisions(coverageDecision, mutationDecision);
+	if (metricDecision) return metricDecision;
 
 	// --- Commit-time quality gate (config-gated; shipped default is ON since 2026-06) ---
 	// The hard gate for repos whose suite is too big for per-edit enforcement:
