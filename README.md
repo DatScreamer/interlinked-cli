@@ -34,38 +34,38 @@ runners and a fleet of agents working in parallel — with no cloud dependency
 and no telemetry.
 
 This isn't only an architecture diagram. The receipts below are
-**<!-- gen:receipts_verified -->865<!-- /gen:receipts_verified --> per-event-audited
-blocks** captured over **<!-- gen:receipts_window_days -->38<!-- /gen:receipts_window_days -->
+**<!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified --> per-event-audited
+blocks** captured over **<!-- gen:receipts_window_days -->94<!-- /gen:receipts_window_days -->
 days** of daily use on a single developer's machine — and the pattern is the
 point: a deterministic, audit-first enforcement boundary that works the same
 way for one agent or a thousand.
 
-> **Receipts from <!-- gen:receipts_window_days -->38<!-- /gen:receipts_window_days --> days of dogfooding on the author's machine.** The
-> activity log captured <!-- gen:receipts_logged -->1081<!-- /gen:receipts_logged -->
+> **Receipts from <!-- gen:receipts_window_days -->94<!-- /gen:receipts_window_days --> days of dogfooding on the author's machine.** The
+> activity log captured <!-- gen:receipts_logged -->1715<!-- /gen:receipts_logged -->
 > distinct `guard_block` events (over-registration duplicates collapsed,
-> grep-accelerator answers excluded); **<!-- gen:receipts_verified -->865<!-- /gen:receipts_verified -->
+> grep-accelerator answers excluded); **<!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified -->
 > of them survived a per-event audit** against Claude Code session
 > transcripts to confirm the agent's actual `tool_input`. The audited
 > breakdown:
 >
-> - <!-- gen:row_tsc_diff_overlay -->574<!-- /gen:row_tsc_diff_overlay -->×
+> - <!-- gen:row_tsc_diff_overlay -->830<!-- /gen:row_tsc_diff_overlay -->×
 >   edits that introduced a *new* TypeScript error — blocked before the
 >   write landed (`tsc-diff-overlay`)
-> - <!-- gen:row_tdd_new_file -->90<!-- /gen:row_tdd_new_file -->× new
+> - <!-- gen:row_tdd_new_file -->94<!-- /gen:row_tdd_new_file -->× new
 >   source file with no companion test (TDD gate)
-> - <!-- gen:row_bash_redirect_bypass -->65<!-- /gen:row_bash_redirect_bypass -->×
+> - <!-- gen:row_bash_redirect_bypass -->88<!-- /gen:row_bash_redirect_bypass -->×
 >   shell-redirect bypass attempts (`cat > file.ts` to dodge the
 >   content-quality gate)
-> - <!-- gen:row_repo_confinement -->42<!-- /gen:row_repo_confinement -->×
+> - <!-- gen:row_repo_confinement -->40<!-- /gen:row_repo_confinement -->×
 >   writes outside the repo root
-> - <!-- gen:row_empty_catch -->32<!-- /gen:row_empty_catch -->× empty
+> - <!-- gen:row_empty_catch -->47<!-- /gen:row_empty_catch -->× empty
 >   `catch {}` blocks
-> - <!-- gen:row_process_kill -->25<!-- /gen:row_process_kill -->×
+> - <!-- gen:row_process_kill -->30<!-- /gen:row_process_kill -->×
 >   `kill` / `pkill` / `killall` at running processes — four aimed at the
 >   harness or session itself
-> - <!-- gen:row_reservation_conflict -->17<!-- /gen:row_reservation_conflict -->×
+> - <!-- gen:row_reservation_conflict -->25<!-- /gen:row_reservation_conflict -->×
 >   edits to files another agent held the reservation on
-> - <!-- gen:row_git_destructive -->13<!-- /gen:row_git_destructive -->×
+> - <!-- gen:row_git_destructive -->14<!-- /gen:row_git_destructive -->×
 >   destructive git (`reset --hard`, `branch -D`, `stash drop`)
 > - <!-- gen:row_secrets_in_source -->4<!-- /gen:row_secrets_in_source -->×
 >   secrets detected in proposed write content

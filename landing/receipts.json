@@ -1,15 +1,15 @@
 {
-  "audited_at": "2026-06-15T19:01:04.818Z",
+  "audited_at": "2026-07-27T17:26:55.240Z",
   "method": "Union of all local activity-log segments (two pre-v5 archives, the 2026-05-29 migration segment, current activity.jsonl). Grep-accelerator block-and-answer events excluded via guard_grep_stats. Identical (session, tool, summary) events within 5s collapsed to remove pre-2026-05-18 hook over-registration duplicates. FP-heavy rules resolved per-event against ~/.claude/projects/<cwd>/<session>.jsonl tool_use entries (nearest-before within 60s) and classified via command-text heuristic (see scripts/audit-receipts.mjs).",
   "window_start": "2026-04-24T00:18:13.010Z",
-  "window_end": "2026-06-01T13:40:35.181Z",
-  "window_days": 38,
-  "total_logged": 1081,
-  "total_verified": 865,
-  "residual_unverified": 174,
+  "window_end": "2026-07-27T16:52:03.724Z",
+  "window_days": 94,
+  "total_logged": 1715,
+  "total_verified": 1175,
+  "residual_unverified": 494,
   "dedup_window_ms": 5000,
-  "dedup_collapsed": 299,
-  "grep_accel_answers_excluded": 58,
+  "dedup_collapsed": 303,
+  "grep_accel_answers_excluded": 57,
   "sources": [
     {
       "file": "activity.jsonl.2026-05-14T19-51-41-310Z.archive",
@@ -25,7 +25,7 @@
     },
     {
       "file": "activity.jsonl",
-      "blocks": 34
+      "blocks": 672
     }
   ],
   "verified_rows": [
@@ -36,8 +36,8 @@
       ],
       "label": "Edits that introduced a new TypeScript error — blocked before the write landed",
       "severity": "high",
-      "count_logged": 574,
-      "count_verified": 574
+      "count_logged": 830,
+      "count_verified": 830
     },
     {
       "rule_id": "tdd_new_file_gate",
@@ -46,8 +46,8 @@
       ],
       "label": "New source file with no companion test",
       "severity": "high",
-      "count_logged": 90,
-      "count_verified": 90
+      "count_logged": 94,
+      "count_verified": 94
     },
     {
       "rule_id": "bash-code-file-write-bypass",
@@ -56,8 +56,8 @@
       ],
       "label": "Shell-redirect bypass attempts (cat > file.ts to dodge content-quality gate)",
       "severity": "high",
-      "count_logged": 65,
-      "count_verified": 65
+      "count_logged": 88,
+      "count_verified": 88
     },
     {
       "rule_id": "builtin-repo-confinement",
@@ -66,8 +66,8 @@
       ],
       "label": "Writes outside the repo root",
       "severity": "critical",
-      "count_logged": 42,
-      "count_verified": 42
+      "count_logged": 40,
+      "count_verified": 40
     },
     {
       "rule_id": "empty_catch",
@@ -76,8 +76,8 @@
       ],
       "label": "Empty catch{} blocks",
       "severity": "high",
-      "count_logged": 32,
-      "count_verified": 32
+      "count_logged": 47,
+      "count_verified": 47
     },
     {
       "rule_id": "process-kill",
@@ -93,8 +93,8 @@
       ],
       "label": "kill / pkill / killall at running processes — four aimed at the harness or session itself",
       "severity": "critical",
-      "count_logged": 25,
-      "count_verified": 25
+      "count_logged": 30,
+      "count_verified": 30
     },
     {
       "rule_id": "reservation-conflict",
@@ -103,8 +103,8 @@
       ],
       "label": "Edits to files another agent held the reservation on",
       "severity": "high",
-      "count_logged": 17,
-      "count_verified": 17
+      "count_logged": 25,
+      "count_verified": 25
     },
     {
       "rule_id": "git-destructive",
@@ -115,8 +115,8 @@
       ],
       "label": "Destructive git (reset --hard, branch -D, stash drop)",
       "severity": "high",
-      "count_logged": 13,
-      "count_verified": 13
+      "count_logged": 14,
+      "count_verified": 14
     },
     {
       "rule_id": "secrets_in_source",
@@ -151,35 +151,21 @@
     },
     {
       "rule_id": "builtin-rm-rf-root",
-      "count_logged": 14,
+      "count_logged": 17,
       "count_real": 0,
       "verdicts": {
-        "transcript_missing": 13,
-        "fp_in_text": 1
+        "transcript_missing": 17
       },
-      "samples": [
-        {
-          "verdict": "fp_in_text",
-          "command": "SOCK=/Users/quentincody/interlinked-cli/.interlinked/harness.sock echo \"=== sanity: PreToolUse rm -rf / (expect decision",
-          "ts": "2026-05-15T20:30:22.278Z"
-        }
-      ]
+      "samples": []
     },
     {
       "rule_id": "builtin-drop-database",
       "count_logged": 4,
       "count_real": 0,
       "verdicts": {
-        "transcript_missing": 3,
-        "fp_in_text": 1
+        "transcript_missing": 4
       },
-      "samples": [
-        {
-          "verdict": "fp_in_text",
-          "command": "rg -ln \"GUARDS_INLINE_CHUNK|inlineGuardCheck\" src --type ts && echo \"---DESTRUCTIVE-IN-TESTS---\" && rg -ln \"rm -rf|killa",
-          "ts": "2026-05-19T11:11:34.897Z"
-        }
-      ]
+      "samples": []
     },
     {
       "rule_id": "builtin-kubectl-delete-all",
@@ -201,12 +187,19 @@
     },
     {
       "rule_id": "builtin-nohup-network",
-      "count_logged": 1,
+      "count_logged": 2,
       "count_real": 0,
       "verdicts": {
-        "transcript_missing": 1
+        "transcript_missing": 1,
+        "needs_review": 1
       },
-      "samples": []
+      "samples": [
+        {
+          "verdict": "needs_review",
+          "command": "cd /Users/quentincody/interlinked-cli; nohup node .interlinked/claude-limit-watcher.mjs >> .interlinked/claude-limit-wat",
+          "ts": "2026-07-18T14:01:34.392Z"
+        }
+      ]
     },
     {
       "rule_id": "pretooluse-injection-scan",
