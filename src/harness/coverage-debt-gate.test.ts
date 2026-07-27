@@ -311,6 +311,70 @@ describe("applyDebtMode — failure-evidence relatedness (genomics/themes, end-t
 		expect(debts[0]?.file).toBe(GENOMICS);
 	});
 
+	// ===========================================
+	// Coverage debts get graph adjacency too
+	// ===========================================
+	//
+	// A red_suite debt has always had graph-aware relatedness via its recorded
+	// failing tests. A `coverage` debt carries no such evidence, so relatedness
+	// fell back to the filename pair alone and a coordinated change across an
+	// import edge read as a wander — neither file can go green by itself, yet
+	// the gate demanded one be finished before the other was touched.
+
+	it("P1: allows editing a direct IMPORTER of a file with open coverage debt", () => {
+		// counts.test imports themes; debt is on themes.
+		applyDebtMode(edit(THEMES), cfg(), uncovered(THEMES));
+		expect(readOpenDebts(root)).toHaveLength(1);
+		const out = applyDebtMode(edit(COUNTS_TEST), cfg(), null, repoView());
+		expect(out?.decision).not.toBe("block");
+	});
+
+	it("P2: allows editing a direct IMPORTEE of a file with open coverage debt", () => {
+		// Debt on the importer (counts.test); the edit lands on what it imports.
+		applyDebtMode(edit(COUNTS_TEST), cfg(), uncovered(COUNTS_TEST));
+		expect(readOpenDebts(root)).toHaveLength(1);
+		const out = applyDebtMode(edit(THEMES), cfg(), null, repoView());
+		expect(out?.decision).not.toBe("block");
+	});
+
+	it("N1: still blocks a graph-UNRELATED edit while coverage debt is open", () => {
+		// genomics and themes share no import edge — the WIP limit still bites.
+		applyDebtMode(edit(THEMES), cfg(), uncovered(THEMES));
+		const out = applyDebtMode(edit(GENOMICS), cfg(), null, repoView());
+		expect(out?.decision).toBe("block");
+	});
+
+	it("N2: unknown graph must not widen — no view means the legacy rule applies", () => {
+		applyDebtMode(edit(THEMES), cfg(), uncovered(THEMES));
+		const out = applyDebtMode(edit(GENOMICS), cfg(), null);
+		expect(out?.decision).toBe("block");
+	});
+
+	it("N3: a seed-only backend is treated as unknown, never as adjacency", () => {
+		applyDebtMode(edit(THEMES), cfg(), uncovered(THEMES));
+		const seedOnly: DependencyView = {
+			...repoView(),
+			answerScope: "seed-only",
+		};
+		const out = applyDebtMode(edit(GENOMICS), cfg(), null, seedOnly);
+		expect(out?.decision).toBe("block");
+	});
+
+	it("N4: adjacency is ONE hop — it does not dissolve the WIP limit", () => {
+		// a → b → c: editing `a` is not related to a debt on `c`.
+		const A = "lib/a.ts";
+		const B = "lib/b.ts";
+		const C = "lib/c.ts";
+		const chain = view({
+			[join(root, C)]: [join(root, B)],
+			[join(root, B)]: [join(root, A)],
+			[join(root, A)]: [],
+		});
+		applyDebtMode(edit(C), cfg(), uncovered(C));
+		const out = applyDebtMode(edit(A), cfg(), null, chain);
+		expect(out?.decision).toBe("block");
+	});
+
 	it("allows editing the non-colocated failing test itself — no graph required", () => {
 		applyDebtMode(edit(GENOMICS), cfg(), redBarWith(GENOMICS, [COUNTS_TEST]));
 		const out = applyDebtMode(edit(COUNTS_TEST), cfg(), null);

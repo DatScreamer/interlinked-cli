@@ -109,6 +109,11 @@ export interface CoverageDebtInput {
 	 * it is CREATE guidance ("write its test"), not a claim of existence.
 	 */
 	fileExists?: (relPath: string) => boolean;
+	/** Debt files sitting DIRECTLY next to the edited file in the import graph.
+	 *  Supplies coverage debts with the graph-aware relatedness that red_suite
+	 *  debts already get via recorded failing tests. `null`/absent = unknown,
+	 *  which must never widen. */
+	adjacentDebtFiles?: ReadonlySet<string> | null;
 	/**
 	 * Foreign-debt note dedup probe (ownership scoping, 2026-07-17): called at
 	 * most once per decision, with the foreign debt about to be surfaced.
@@ -144,8 +149,13 @@ export function relatedToDebt(
 	editedFile: string,
 	d: Obligation,
 	affectedTests?: ReadonlySet<string> | null,
+	adjacentDebtFiles?: ReadonlySet<string> | null,
 ): boolean {
 	if (inSamePair(editedFile, d.file)) return true;
+	// Import-graph adjacency: the edited file imports the debted file or is
+	// imported by it. A coordinated change across that edge cannot green either
+	// side alone, so treating it as a wander blocks correct work.
+	if (adjacentDebtFiles?.has(d.file)) return true;
 	const failing = d.failingTestFiles;
 	if (!failing || failing.length === 0) return false;
 	if (failing.includes(editedFile)) return true;
@@ -384,7 +394,9 @@ interface WanderOutcome {
  */
 function resolveWander(input: CoverageDebtInput, stillOpen: Obligation[]): WanderOutcome {
 	const { editedFile, affectedTests, sessionId, wipLimit = 1, atMs, fileExists } = input;
-	const related = stillOpen.some((d) => relatedToDebt(editedFile, d, affectedTests));
+	const related = stillOpen.some((d) =>
+		relatedToDebt(editedFile, d, affectedTests, input.adjacentDebtFiles),
+	);
 	if (related || stillOpen.length < wipLimit) return { block: null, note: null };
 	const own = stillOpen.filter((d) => d.sessionId === sessionId);
 	const oldestOwn = own[0];

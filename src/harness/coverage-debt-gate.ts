@@ -72,6 +72,59 @@ function editedCodeFile(event: HarnessEvent, projectRoot: string): string | null
 }
 
 /**
+ * Debt files that sit DIRECTLY next to the edited file in the import graph.
+ *
+ * Closes an asymmetry: a red_suite debt gets graph-aware relatedness through
+ * its recorded failing tests, but a `coverage` debt carries no such evidence,
+ * so relatedness fell back to the filename pair alone. A coordinated change
+ * that moves a symbol between a module and its immediate importer then reads as
+ * a wander — neither file can go green by itself, yet the gate demands one of
+ * them be finished before the other is touched. That cost three correct edits
+ * on 2026-07-27.
+ *
+ * DIRECT neighbours only, deliberately. A transitive walk would make almost
+ * every file "related" to almost every debt and quietly retire the WIP limit;
+ * one hop covers the real case (two files that must land together are adjacent)
+ * without dissolving the gate.
+ *
+ * Returns null for "unknown" — no view, a `seed-only` backend (whose answers
+ * describe the seed regardless of the argument), an unindexed file, or any
+ * error. Unknown must never WIDEN, matching `affectedTestsForEdit`.
+ */
+function adjacentDebtFilesForEdit(
+	editedFile: string,
+	projectRoot: string,
+	depView: DependencyView | undefined,
+	openDebts: Obligation[],
+): ReadonlySet<string> | null {
+	if (!depView || depView.answerScope !== "repo") return null;
+	try {
+		// The view is keyed by ABSOLUTE paths while debts record repo-relative
+		// ones; querying with a relative path silently matches nothing.
+		const absEdited = resolve(projectRoot, editedFile);
+		if (!depView.hasFile(absEdited)) return null;
+		// One call each way: `x ∈ getDependents(y)` means x imports y, so testing
+		// both directions covers importer AND importee with the only edge API the
+		// view exposes.
+		const dependentsOfEdited = new Set(depView.getDependents(absEdited));
+		const adjacent = new Set<string>();
+		for (const d of openDebts) {
+			const absDebt = resolve(projectRoot, d.file);
+			if (dependentsOfEdited.has(absDebt)) {
+				adjacent.add(d.file);
+				continue;
+			}
+			if (depView.hasFile(absDebt) && depView.getDependents(absDebt).includes(absEdited)) {
+				adjacent.add(d.file);
+			}
+		}
+		return adjacent;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Affected-test selection for the edited file — the failure-evidence cone's
  * graph half. Computed ONLY when some open red debt actually carries
  * failing-test evidence the cone check could intersect (a pure read over the
@@ -149,6 +202,7 @@ export function applyDebtMode(
 		sessionId: event.session_id,
 		atMs: Date.now(),
 		affectedTests: affectedTestsForEdit(editedFile, projectRoot, depView, openDebts),
+		adjacentDebtFiles: adjacentDebtFilesForEdit(editedFile, projectRoot, depView, openDebts),
 		// Message accuracy: name a conventional companion test only if it exists
 		// (the phantom `genomics.test.ts` failure mode).
 		fileExists: (rel) => existsSync(resolve(projectRoot, rel)),
