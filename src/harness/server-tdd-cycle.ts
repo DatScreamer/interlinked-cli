@@ -127,10 +127,19 @@ export function recordTestRunCycle(
 	session: SessionTrajectory,
 	testRunFile: string,
 	passed: boolean,
+	command?: string,
 ): void {
 	if (testRunFile === ALL_TESTS_SENTINEL) {
 		for (const [, cycle] of session.tdd_cycles) {
-			updateCycleFromTestRun(cycle, passed, session.tool_call_count);
+			// A1: a whole-suite FAILURE must not redden a file that has no test.
+			// Blanket-reddening every tracked cycle marked config files and
+			// scripts as "tests failing" — and because they have no companion
+			// test, no targeted run could ever green them again. Only a later
+			// whole-suite pass could, so one red suite wedged the commit gate
+			// on files whose tests do not exist. A whole-suite PASS still
+			// greens everything: passing evidence covers files either way.
+			if (!passed && !cycle.test_file) continue;
+			updateCycleFromTestRun(cycle, passed, session.tool_call_count, command);
 		}
 		return;
 	}
@@ -140,18 +149,26 @@ export function recordTestRunCycle(
 
 	const cycle = getOrCreateCycle(session, sourceFile);
 	cycle.test_file = testRunFile;
-	updateCycleFromTestRun(cycle, passed, session.tool_call_count);
+	updateCycleFromTestRun(cycle, passed, session.tool_call_count, command);
 }
 
-export function updateCycleFromTestRun(cycle: TddCycle, passed: boolean, step: number): void {
+export function updateCycleFromTestRun(
+	cycle: TddCycle,
+	passed: boolean,
+	step: number,
+	command?: string,
+): void {
 	cycle.previous_state = cycle.state;
 
 	if (passed) {
 		cycle.green_at = step;
 		cycle.state = "green";
+		cycle.red_command = undefined;
 		// Reset impl edit counter — tests verified the work
 		cycle.impl_edits_before_test = 0;
 	} else {
+		// A4: remember WHAT failed, so the block reason can name its evidence.
+		if (command) cycle.red_command = command.slice(0, 120);
 		cycle.red_at = step;
 		if (cycle.previous_state === "green") {
 			cycle.state = "regression";

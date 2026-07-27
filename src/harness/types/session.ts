@@ -5,6 +5,7 @@
 
 import type { ActiveSkillRecord } from "./rules.js";
 import type { SensitivityLevel, TaintSource } from "./taint.js";
+import type { TddCycle, TddCycleState } from "./tdd-cycle.js";
 
 // ===========================================
 // Session Trajectory
@@ -334,29 +335,10 @@ export interface ObservedCheck {
 // ===========================================
 // TDD Cycle Tracking
 // ===========================================
+// Shapes live in ./tdd-cycle.js (this file is at the per-file line cap);
+// re-exported here so existing importers keep working unchanged.
 
-/** State of the TDD red/green cycle for a single source file */
-export type TddCycleState = "no_test" | "red" | "green" | "regression";
-
-/** Tracks the red/green TDD cycle for a source file and its corresponding test */
-export interface TddCycle {
-	/** Absolute path to the source file being tested */
-	source_file: string;
-	/** Absolute path to the corresponding test file (null if none found) */
-	test_file: string | null;
-	/** Current state of the TDD cycle */
-	state: TddCycleState;
-	/** tool_call_count when the test file was first written/edited this session */
-	test_written_at?: number | undefined;
-	/** tool_call_count when tests first failed (entered RED) */
-	red_at?: number | undefined;
-	/** tool_call_count when tests first passed after being red (entered GREEN) */
-	green_at?: number | undefined;
-	/** Number of impl edits before any test interaction (writing test or running test) */
-	impl_edits_before_test: number;
-	/** Previous state — used to detect transitions (e.g., green→red = regression) */
-	previous_state?: TddCycleState | undefined;
-}
+export type { TddCycle, TddCycleState };
 
 /** Record of a warning issued to the agent for a specific file + check */
 export interface WarningRecord {

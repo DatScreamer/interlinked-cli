@@ -207,3 +207,73 @@ describe("recordTestRunCycle — sentinel sweeps all cycles", () => {
 		expect(session.tdd_cycles.get("/r/b.ts")?.state).toBe("green");
 	});
 });
+
+// A1 — a whole-suite FAILURE used to redden every tracked cycle, including
+// files with no companion test (config, scripts). Those can never be greened
+// by a targeted run, so a single red suite wedged the commit gate on files
+// whose tests do not exist. Observed live: vitest.config.mjs and check-docs.mjs
+// reported as "Tests are FAILING".
+describe("recordTestRunCycle — suite failure does not redden test-less files", () => {
+	function sessionWith(cycles: TddCycle[]): SessionTrajectory {
+		const session = makeSession();
+		for (const c of cycles) session.tdd_cycles.set(c.source_file, c);
+		return session;
+	}
+
+	it("leaves a cycle with no test_file untouched on a suite failure", () => {
+		const session = sessionWith([
+			{ source_file: "/r/cfg.ts", test_file: null, state: "no_test", impl_edits_before_test: 1 },
+		]);
+		recordTestRunCycle(session, ALL_TESTS_SENTINEL, false);
+		expect(session.tdd_cycles.get("/r/cfg.ts")?.state).toBe("no_test");
+	});
+
+	it("still reddens a cycle that HAS a test file", () => {
+		const session = sessionWith([
+			{
+				source_file: "/r/a.ts",
+				test_file: "/r/a.test.ts",
+				state: "green",
+				impl_edits_before_test: 0,
+			},
+		]);
+		recordTestRunCycle(session, ALL_TESTS_SENTINEL, false);
+		expect(session.tdd_cycles.get("/r/a.ts")?.state).toBe("regression");
+	});
+
+	// Passing evidence covers a file whether or not it has its own test, so a
+	// green sweep must stay blanket — otherwise test-less files could never
+	// leave a red set before this fix landed.
+	it("greens test-less cycles on a suite pass", () => {
+		const session = sessionWith([
+			{ source_file: "/r/cfg.ts", test_file: null, state: "no_test", impl_edits_before_test: 3 },
+		]);
+		recordTestRunCycle(session, ALL_TESTS_SENTINEL, true);
+		expect(session.tdd_cycles.get("/r/cfg.ts")?.state).toBe("green");
+	});
+});
+
+// A4 — the block reason named a file and nothing else, so a stale red was
+// indistinguishable from a live one.
+describe("recordTestRunCycle — records the command that set the red", () => {
+	it("stores the failing command, truncated", () => {
+		const session = makeSession();
+		recordTestRunCycle(session, "/r/a.test.ts", false, "npx vitest run /r/a.test.ts");
+		expect(session.tdd_cycles.get("/r/a.ts")?.red_command).toBe("npx vitest run /r/a.test.ts");
+	});
+
+	it("clears the failing command once the cycle goes green", () => {
+		const session = makeSession();
+		recordTestRunCycle(session, "/r/a.test.ts", false, "npx vitest run /r/a.test.ts");
+		recordTestRunCycle(session, "/r/a.test.ts", true, "npx vitest run /r/a.test.ts");
+		const cycle = session.tdd_cycles.get("/r/a.ts");
+		expect(cycle?.state).toBe("green");
+		expect(cycle?.red_command).toBeUndefined();
+	});
+
+	it("omits the command when none was supplied", () => {
+		const session = makeSession();
+		recordTestRunCycle(session, "/r/a.test.ts", false);
+		expect(session.tdd_cycles.get("/r/a.ts")?.red_command).toBeUndefined();
+	});
+});

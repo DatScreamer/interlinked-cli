@@ -18,6 +18,11 @@ import {
 	gitNumstatDelta,
 	type LocDelta,
 } from "./behavioral-checks-tdd-loc-ratio.js";
+import {
+	isSoftenedRed,
+	type RedCycleView,
+	redCycleMessage,
+} from "./behavioral-checks-tdd-red-evidence.js";
 import { isTypeOnlyModule } from "./checks/shared.js";
 import { isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 import type { CheckResultEntry, SessionTrajectory } from "./types.js";
@@ -146,6 +151,31 @@ export function checkTddGreenConfirmation(
 }
 
 /**
+ * Build the commit-gate entry for a cycle sitting red/regressing.
+ *
+ * Both the judgement (block vs warn) and the wording live in
+ * `behavioral-checks-tdd-red-evidence.js`, which documents the two ways a
+ * remembered red stops being evidence about the current tree: suite fan-out
+ * and age.
+ */
+function redCycleEntry(
+	session: SessionTrajectory,
+	sourceFile: string,
+	cycle: RedCycleView,
+	severity: "error" | "warning" | "info",
+): CheckResultEntry {
+	const softened = isSoftenedRed(session, cycle);
+	return {
+		source: "structural",
+		name: "tdd_commit_gate",
+		severity: softened && severity === "error" ? "warning" : severity,
+		message: redCycleMessage(session, sourceFile, cycle),
+		file: sourceFile,
+		determinism: "partially_deterministic",
+	};
+}
+
+/**
  * Commit gate: check TDD cycle state before allowing git commit.
  * Returns warnings/errors for files with unresolved test issues.
  *
@@ -162,14 +192,7 @@ export function checkTddCommitGate(
 
 	for (const [sourceFile, cycle] of session.tdd_cycles) {
 		if (cycle.state === "red" || cycle.state === "regression") {
-			results.push({
-				source: "structural",
-				name: "tdd_commit_gate",
-				severity,
-				message: `Tests are ${cycle.state === "regression" ? "REGRESSING" : "FAILING"} for ${basename(sourceFile)}. Fix before committing.`,
-				file: sourceFile,
-				determinism: "partially_deterministic",
-			});
+			results.push(redCycleEntry(session, sourceFile, cycle, severity));
 		} else if (cycle.state === "no_test" && cycle.impl_edits_before_test > 0) {
 			// Disk reality check: state-machine tracking can miss a transition
 			// (path mismatch, harness restart mid-session, hydration gap), but

@@ -556,6 +556,109 @@ it('a', () => {
 // FP-fix regression: tdd_commit_gate disk-awareness
 // ===========================================
 
+// ===========================================
+// Suite-wide red must not be attributed to individual files
+// ===========================================
+//
+// Regression for a real block (2026-07-26): ONE failing whole-suite run fanned
+// out through recordTestRunCycle's ALL_TESTS_SENTINEL branch and reddened 16
+// unrelated files at the same step. Because a later suite green is never
+// recorded when the run's outcome is unproven, every one of those files stayed
+// permanently uncommittable on evidence that never implicated them.
+
+describe("checkTddCommitGate — whole-suite red is not per-file evidence", () => {
+	const SUITE = "__all_tests__";
+	const SRC = "/repo/src/thing.ts";
+	const TEST = "/repo/src/thing.test.ts";
+
+	function sessionWithSuiteRed(over: Partial<TddCycle> = {}): SessionTrajectory {
+		const s = makeSession({ tool_call_count: 146 });
+		s.test_runs.set(SUITE, { status: "fail", at_step: 99 });
+		s.tdd_cycles.set(SRC, {
+			source_file: SRC,
+			test_file: TEST,
+			state: "red",
+			red_at: 99,
+			impl_edits_before_test: 0,
+			...over,
+		});
+		return s;
+	}
+
+	it("N1: does NOT block a commit when the red came from the suite fan-out", () => {
+		const results = checkTddCommitGate(sessionWithSuiteRed(), "enforce");
+		const gate = results.filter((r) => r.name === "tdd_commit_gate");
+		expect(gate).toHaveLength(1);
+		expect(gate[0]?.severity).toBe("warning");
+	});
+
+	it("N2: says the failure is not attributed to the file", () => {
+		const gate = checkTddCommitGate(sessionWithSuiteRed(), "enforce")[0];
+		expect(gate?.message).toMatch(/not attributed to this file/);
+	});
+
+	it("N3: applies to a regression state from the same fan-out", () => {
+		const s = sessionWithSuiteRed({ state: "regression" });
+		expect(checkTddCommitGate(s, "enforce")[0]?.severity).toBe("warning");
+	});
+
+	it("P1: STILL blocks when a targeted run for the file's own tests went red", () => {
+		// Sound per-file evidence overrides the fan-out attribution.
+		const s = sessionWithSuiteRed();
+		s.test_runs.set(TEST, { status: "fail", at_step: 99 });
+		const gate = checkTddCommitGate(s, "enforce")[0];
+		expect(gate?.severity).toBe("error");
+		expect(gate?.message).toMatch(/Tests are FAILING/);
+	});
+
+	it("P2: STILL blocks when the red predates the suite run", () => {
+		// A red at a different step was not produced by this fan-out.
+		//
+		// red_at moved 40 -> 140 when the staleness downgrade landed: against
+		// this fixture's tool_call_count of 146, a red at step 40 is 106 tool
+		// calls old and is now softened for AGE, which would make this case pass
+		// for the wrong reason. 140 keeps it "a different step from the suite
+		// run" — the property under test — while staying recent.
+		const s = sessionWithSuiteRed({ red_at: 140 });
+		expect(checkTddCommitGate(s, "enforce")[0]?.severity).toBe("error");
+	});
+
+	// A2 — a red nobody has re-measured in a long time is not evidence about
+	// the current tree. It kept blocking commits for hours against a green
+	// suite (2026-07-26), so past the window it asks for a re-run instead.
+	it("A2: downgrades to a warning once the red is stale, and says why", () => {
+		const s = sessionWithSuiteRed({ red_at: 40 });
+		s.test_runs.delete(SUITE); // isolate age from suite attribution
+		const gate = checkTddCommitGate(s, "enforce")[0];
+		expect(gate?.severity).toBe("warning");
+		expect(gate?.message).toMatch(/no longer evidence about the current tree/);
+		expect(gate?.message).toMatch(/106 tool calls ago/);
+	});
+
+	it("A2: still blocks a red that was observed recently", () => {
+		const s = sessionWithSuiteRed({ red_at: 140 });
+		s.test_runs.delete(SUITE);
+		expect(checkTddCommitGate(s, "enforce")[0]?.severity).toBe("error");
+	});
+
+	it("P3: STILL blocks when the recorded suite run PASSED", () => {
+		const s = sessionWithSuiteRed();
+		s.test_runs.set(SUITE, { status: "pass", at_step: 99 });
+		expect(checkTddCommitGate(s, "enforce")[0]?.severity).toBe("error");
+	});
+
+	it("P4: STILL blocks when no suite run was recorded at all", () => {
+		const s = sessionWithSuiteRed();
+		s.test_runs.delete(SUITE);
+		expect(checkTddCommitGate(s, "enforce")[0]?.severity).toBe("error");
+	});
+
+	it("does not silence the finding — it still reports, at lower severity", () => {
+		const results = checkTddCommitGate(sessionWithSuiteRed(), "enforce");
+		expect(results.some((r) => r.name === "tdd_commit_gate" && r.file === SRC)).toBe(true);
+	});
+});
+
 describe("checkTddCommitGate — disk reality check", () => {
 	let dir: string;
 
