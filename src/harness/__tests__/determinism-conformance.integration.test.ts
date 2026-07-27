@@ -60,9 +60,15 @@ function realFileCorpus(limit: number): CorpusItem[] {
 describe("determinism-replay conformance (proof-of-enforcement §15 step 0)", () => {
 	it("inline check pipeline is bit-stable across repeated runs", () => {
 		// Bounded for CI: the property surfaces on run 2 of any triggering input,
-		// so 12 real files × 3 runs is ample — fast with wide margin under the
-		// global timeout on slow/contended runners (the exhaustive 73×8 sweep
-		// lives in the manual driver/probe, not this gated test).
+		// so 12 real files × 3 runs is ample (the exhaustive 73×8 sweep lives in
+		// the manual driver/probe, not this gated test).
+		//
+		// The margin is NOT wide, despite what this comment used to claim: the
+		// body costs ~25s in isolation against the 30s global timeout, so ~17%
+		// headroom. Under the full-suite run the worker contention consumed it —
+		// observed at 85s and a timeout, which blocked a push on a green tree.
+		// Hence the explicit override below, matching the 60s already used by
+		// the replay test at the bottom of this file.
 		const corpus = [...SYNTHETIC, ...realFileCorpus(12)];
 		const report = runCorpusConformance(corpus, 3);
 
@@ -87,7 +93,7 @@ describe("determinism-replay conformance (proof-of-enforcement §15 step 0)", ()
 			`[determinism] ${report.itemCount} inputs · ${report.totalFindings} findings · ` +
 				`${report.distinctChecks} distinct checks · ${report.stableItems}/${report.itemCount} stable`,
 		);
-	});
+	}, 120_000);
 
 	it("canonicalizeFindings is order-independent", () => {
 		const a: ConformanceFinding[] = [
