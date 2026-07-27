@@ -8,6 +8,7 @@
 // checks. Logic is byte-identical to the originals; only the location moved.
 
 import { isAbsolute, resolve } from "node:path";
+import { listWithOverflow } from "../finding-overflow.js";
 import type { QualityCheckConfig } from "../types.js";
 import { checkLockfileClassificationDrift, checkLockfileDrift, LOCKFILE_MAP } from "./lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./package-json.js";
@@ -94,18 +95,15 @@ export function runPackageJsonConsistencyCheck(
 	const parts: string[] = [];
 	if (dupes.length > 0) parts.push(`${dupes.length} duplicate(s)`);
 	if (badVer.length > 0) parts.push(`${badVer.length} invalid version(s)`);
-	const detail = issues
-		.slice(0, 10)
-		.map((i) => `  ${i.detail}`)
-		.join("\n");
-	const overflow = issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : "";
+	// Cap 10, above the default: manifest issues are terse one-liners, so a
+	// longer list still reads at a glance.
 	return [
 		{
 			name,
 			severity: check.severity,
 			message: `package.json consistency: ${parts.join(", ")} in ${ctx.filePath}`,
 			file: ctx.filePath,
-			detail: detail + overflow,
+			detail: listWithOverflow(issues, (i) => `  ${i.detail}`, 10),
 		},
 	];
 }

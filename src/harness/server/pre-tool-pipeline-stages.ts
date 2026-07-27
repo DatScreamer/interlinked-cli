@@ -34,6 +34,7 @@ import { snapshotDryShingles } from "../checks/dry-baseline.js";
 import { collectSiblingFunctions } from "../checks/dry-check.js";
 import { coverageForFile, loadCoverageFinal } from "../coverage-final-reader.js";
 import { capturePrimitiveViolations as captureDiscoveredPrimitiveViolations } from "../discovered-primitives.js";
+import { listWithOverflow } from "../finding-overflow.js";
 import { checkFunctionComplexity, checkMissingReturnTypes } from "../generic-checks.js";
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "../project-typecheck-gate.js";
 import {
@@ -170,17 +171,13 @@ function applyProjectTypecheckGate(
 		// the null-rule_id bucket (216/735 recent guard_block rows, 2026-07).
 		preDecision.rule_id ??= "commit-typecheck-gate";
 		const action = isCommit ? "commit" : "push";
-		const errLines = tcErrors
-			.slice(0, 10)
-			.map((e) => `  - ${e.message}`)
-			.join("\n");
-		const tail =
-			tcErrors.length > 10 ? `\n  ... and ${tcErrors.length - 10} more` : "";
+		// Cap 10, above the default: a blocked commit needs enough of the error
+		// list to act on without re-running the compiler.
+		const errLines = listWithOverflow(tcErrors, (e) => `  - ${e.message}`, 10);
 		preDecision.reason =
 			`BLOCKED: Project typecheck failed (${tcErrors.length} error${tcErrors.length === 1 ? "" : "s"}) — CI will fail on this ${action}. ` +
 			"Pre-existing errors in untouched files DO count: every commit must build clean. Fix these first:\n" +
 			errLines +
-			tail +
 			"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
 			"INTERLINKED_SKIP_PROJECT_TYPECHECK=1 git ...";
 		reportGitGateGuardBlock(
@@ -218,17 +215,13 @@ function applyProjectTestGate(
 	if (testErrors.length > 0) {
 		preDecision.decision = "block";
 		preDecision.rule_id ??= "push-test-gate";
-		const failLines = testErrors
-			.slice(0, 10)
-			.map((e) => `  - ${e.message}`)
-			.join("\n");
-		const tail =
-			testErrors.length > 10 ? `\n  ... and ${testErrors.length - 10} more` : "";
+		// Cap 10, above the default: a blocked push needs enough of the failure
+		// list to act on without re-running the suite.
+		const failLines = listWithOverflow(testErrors, (e) => `  - ${e.message}`, 10);
 		preDecision.reason =
 			`BLOCKED: Project tests failed (${testErrors.length} failure${testErrors.length === 1 ? "" : "s"}) — CI will fail on this push. ` +
 			"Pre-existing test failures DO count: every push must build clean. Failing tests:\n" +
 			failLines +
-			tail +
 			"\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR): " +
 			"INTERLINKED_SKIP_PROJECT_TESTS=1 git push ...";
 		reportGitGateGuardBlock(

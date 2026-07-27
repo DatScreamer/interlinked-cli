@@ -21,6 +21,7 @@ import { nonNull } from "../../lib/non-null.js";
 import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
 import { isGeneratedFile, isTestFile } from "../checks/shared.js";
+import { listWithOverflow } from "../finding-overflow.js";
 import { getProfileForFile } from "../language-profiles.js";
 import type { HarnessEvent, QualityCheckConfig } from "../types.js";
 import { resolveDependencyAuditCommand } from "./dependency-audit.js";
@@ -150,17 +151,15 @@ function runStrongTypingCheck(
 	const parts: string[] = [];
 	if (anyCount > 0) parts.push(`${anyCount} \`any\``);
 	if (unknownCount > 0) parts.push(`${unknownCount} \`unknown\``);
-	const shown = anyMatches.slice(0, 8);
-	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-	const overflow =
-		anyMatches.length > 8 ? `\n  ... and ${anyMatches.length - 8} more` : "";
 	return [
 		{
 			name,
 			severity: check.severity,
 			message: `${parts.join(" + ")} type(s) in ${ctx.filePath} — prefer strong types (interfaces, generics, branded types)`,
 			file: ctx.filePath,
-			detail: detail + overflow,
+			// Cap 8, above the default: a file with pervasive `any` needs enough
+			// lines to show the shape of the problem, not just its first few.
+			detail: listWithOverflow(anyMatches, (m) => `  L${m.line}: ${m.text}`, 8),
 		},
 	];
 }
