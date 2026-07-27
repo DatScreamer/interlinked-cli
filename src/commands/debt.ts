@@ -16,6 +16,8 @@
 // modes follow the CLI convention: --json / --short / --full via the shared
 // getOutputMode / output helpers.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
 	appendDebtTxn,
 	readDebtTxnsForFile,
@@ -57,18 +59,45 @@ function debtRow(d: Obligation): string {
 	);
 }
 
-function renderDebtTable(open: Obligation[]): string {
+/**
+ * A debt whose owning session left no snapshot on disk can never discharge
+ * automatically: only that session's own green run clears it, and it will not
+ * run again.
+ *
+ * Observed 2026-07-26: two red_suite debts sat open for 28 hours after the
+ * failure they described was fixed, because the session that opened them had
+ * ended. Nothing distinguished them from live debts, so they read as an
+ * outstanding problem indefinitely. Marking them separates the ones a green
+ * run can still clear from the ones only `debt resolve` can.
+ */
+export function isOrphanedDebt(projectRoot: string, debt: Obligation): boolean {
+	if (!debt.sessionId) return false;
+	return !existsSync(join(projectRoot, ".interlinked", "sessions", `${debt.sessionId}.json`));
+}
+
+function renderDebtTable(open: Obligation[], projectRoot: string = process.cwd()): string {
+	const orphans = open.filter((d) => isOrphanedDebt(projectRoot, d));
+	const note = orphans.length
+		? [
+				"",
+				`${orphans.length} debt(s) marked ORPHANED: the session that opened them has ended,`,
+				"so no green run will ever clear them automatically. Verify the file, then",
+				"`interlinked debt resolve <file>`.",
+			]
+		: [];
 	return [
 		`${"KIND".padEnd(10)}  ${"FILE".padEnd(48)}  ${"OPENED".padEnd(26)}  SESSION`,
-		...open.map(debtRow),
+		...open.map((d) => `${debtRow(d)}${isOrphanedDebt(projectRoot, d) ? "  ORPHANED" : ""}`),
 		"",
 		`(${open.length} open debt(s); \`interlinked debt show <file>\` for history, ` +
 			"`interlinked debt resolve <file>` to discharge)",
+		...note,
 	].join("\n");
 }
 
 export async function debtListCommand(opts: DebtCommandOpts): Promise<void> {
-	const open = readOpenDebts(opts.cwd ?? process.cwd());
+	const projectRoot = opts.cwd ?? process.cwd();
+	const open = readOpenDebts(projectRoot);
 	output(getOutputMode(opts), open, {
 		json: () => open,
 		short: () =>
@@ -78,7 +107,7 @@ export async function debtListCommand(opts: DebtCommandOpts): Promise<void> {
 		normal: () =>
 			open.length === 0
 				? "(no open debts — the pair-scoped TDD ledger is clear)"
-				: renderDebtTable(open),
+				: renderDebtTable(open, projectRoot),
 	});
 }
 

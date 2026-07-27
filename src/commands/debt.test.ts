@@ -7,13 +7,18 @@
 // one writer: it must append ordinary local-source discharges and touch ONLY
 // the named file's debts — the commit gate remains the ground-truth backstop.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendDebtTxn, readOpenDebts } from "../harness/obligation-ledger-io.js";
 import { type ObligationKind, obligationId } from "../harness/obligations.js";
-import { debtListCommand, debtResolveCommand, debtShowCommand } from "./debt.js";
+import {
+	debtListCommand,
+	debtResolveCommand,
+	debtShowCommand,
+	isOrphanedDebt,
+} from "./debt.js";
 
 let root: string;
 let logged: string[];
@@ -286,5 +291,47 @@ describe("interlinked debt resolve", () => {
 		seedOpen("src/foo.ts", "coverage");
 		await debtResolveCommand("src/foo.ts", { cwd: root, short: true });
 		expect(out()).toBe("resolved 1 debt(s) on src/foo.ts");
+	});
+});
+
+// A debt whose owning session has ended can never discharge on its own — only
+// that session's green run clears it. Two sat open for 28 hours after their
+// failure was fixed (2026-07-26), indistinguishable from live debts.
+describe("orphaned debts", () => {
+	it("marks a debt whose session left no snapshot", () => {
+		expect(
+			isOrphanedDebt(root, {
+				id: "x",
+				kind: "coverage",
+				file: "src/foo.ts",
+				contentHash: "",
+				status: "open",
+				sessionId: "sess-that-ended",
+				openedAtMs: 0,
+			}),
+		).toBe(true);
+	});
+
+	it("does not mark a debt whose session is still on disk", () => {
+		mkdirSync(join(root, ".interlinked", "sessions"), { recursive: true });
+		writeFileSync(join(root, ".interlinked", "sessions", "sess-live.json"), "{}");
+		expect(
+			isOrphanedDebt(root, {
+				id: "x",
+				kind: "coverage",
+				file: "src/foo.ts",
+				contentHash: "",
+				status: "open",
+				sessionId: "sess-live",
+				openedAtMs: 0,
+			}),
+		).toBe(false);
+	});
+
+	it("surfaces the marker and the explanation in list output", async () => {
+		seedOpen("src/foo.ts", "red_suite");
+		await debtListCommand({ cwd: root });
+		expect(out()).toContain("ORPHANED");
+		expect(out()).toContain("no green run will ever clear them automatically");
 	});
 });
