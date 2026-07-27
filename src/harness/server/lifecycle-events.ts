@@ -75,6 +75,7 @@ import {
 import * as lifecyclePersist from "./lifecycle-persist.js";
 import {
 	buildCommitCadenceNudge,
+	buildStaleBaselineNudge,
 	buildVerificationStopWarnings,
 } from "./lifecycle-stop-warnings.js";
 import type { ServerRuntime } from "./runtime-context.js";
@@ -417,6 +418,11 @@ function buildStopWarnings(
 	// LG-5 edit-mechanics reflection — doomed-anchor/rescue/staleness summary.
 	const editMechanicsWarning = buildEditMechanicsStopNudge(session);
 	if (editMechanicsWarning !== null) warnings.push(editMechanicsWarning);
+	// Stale quality baselines. Not about THIS turn: it reports that the ratchets
+	// themselves are measuring against an out-of-date water-line. Self-throttled
+	// to once a day so a weeks-stale baseline does not nag every Stop.
+	const staleBaselineWarning = buildStaleBaselineNudge(ctx, event);
+	if (staleBaselineWarning !== null) warnings.push(staleBaselineWarning);
 	for (const w of buildVerificationStopWarnings(ctx, event, session)) {
 		warnings.push(w);
 	}

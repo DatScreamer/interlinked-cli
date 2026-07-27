@@ -74,6 +74,7 @@ vi.mock("../turn-end.js", () => ({
 }));
 vi.mock("./lifecycle-stop-warnings.js", () => ({
 	buildCommitCadenceNudge: vi.fn(() => null),
+	buildStaleBaselineNudge: vi.fn(() => null),
 	buildVerificationStopWarnings: vi.fn(() => []),
 }));
 // Partial mock: keep the REAL sanitizeSessionId for every test (the

@@ -8,7 +8,13 @@
 // buildPatternRescanWarnings, the sequence detectors, and calls into
 // this module) — keeping test source-text assertions intact.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+	formatStaleBaselineWarning,
+	NUDGE_MARKER,
+	shouldNudge,
+} from "../baseline-staleness.js";
 import {
 	collectWipCommitSubjects,
 	formatStopNudge,
@@ -71,6 +77,31 @@ const OBSERVED_CHECK_RED = "red";
  *  the transcript path the hook script forwarded. Returns null when the
  *  nudge is disabled, already-emitted, or below threshold; otherwise
  *  marks `stop_nudge_emitted` and returns the formatted warning. */
+/**
+ * Stale-baseline nudge. Every ratchet compares against a committed water-line,
+ * so a stale one silently stops catching regressions — the failure mode is a
+ * green run that measured the wrong month.
+ *
+ * Throttled to once a day and marker-backed: a baseline stays stale for weeks,
+ * and repeating the identical warning at every Stop would train the reader to
+ * ignore it.
+ */
+export function buildStaleBaselineNudge(ctx: ServerRuntime, event: HarnessEvent): string | null {
+	const interlinkedDir = join(event.cwd || ctx.cwd, ".interlinked");
+	const now = Date.now();
+	if (!shouldNudge({ interlinkedDir, now })) return null;
+	const warning = formatStaleBaselineWarning({ interlinkedDir, now });
+	if (warning === null) return null;
+	try {
+		writeFileSync(join(interlinkedDir, NUDGE_MARKER), `${new Date(now).toISOString()}\n`);
+	} catch (err) {
+		// Marker unwritable (read-only checkout, permissions). Nudging again
+		// tomorrow beats throwing out of the Stop handler.
+		void err;
+	}
+	return warning;
+}
+
 export function buildCommitCadenceNudge(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
