@@ -125,9 +125,9 @@ export async function runPerFileChecks(
 	// --- TDD cycle tracking: record impl edits and test writes ---
 	if (session && editedFilePath) {
 		if (TEST_FILE_RE.test(editedFilePath)) {
-			recordTestWrite(session, editedFilePath);
+			recordTestWrite(session, editedFilePath, CWD);
 		} else {
-			recordImplEdit(session, editedFilePath);
+			recordImplEdit(session, editedFilePath, CWD);
 		}
 	}
 

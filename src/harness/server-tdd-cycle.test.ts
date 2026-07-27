@@ -140,6 +140,101 @@ describe("getOrCreateCycle + recordImplEdit", () => {
 	});
 });
 
+// ===========================================
+// Junk-cycle admission + key identity
+// ===========================================
+//
+// Regressions for the two defects that made the 2026-07-26 commit-gate wedge
+// possible in the first place: cycles were created for files that can never
+// have a companion test, and one file could hold two independent cycles under
+// a relative and an absolute key. Both fed the whole-suite fan-out.
+
+describe("getOrCreateCycle — admission", () => {
+	it("N1: refuses a cycle for a build/tool config file", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/vitest.config.mjs");
+		expect(session.tdd_cycles.size).toBe(0);
+	});
+
+	it("N2: refuses a cycle for a file literally named test.mjs", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/test.mjs");
+		expect(session.tdd_cycles.size).toBe(0);
+	});
+
+	it("N3: refuses a cycle for a non-code file", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/docs/design.md");
+		recordImplEdit(session, "/r/data.json");
+		expect(session.tdd_cycles.size).toBe(0);
+	});
+
+	it("N4: refuses a cycle for an exempt path", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/dist/bundle.js");
+		expect(session.tdd_cycles.size).toBe(0);
+	});
+
+	it("P1: still admits ordinary source files", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/src/foo.ts");
+		expect(session.tdd_cycles.size).toBe(1);
+	});
+
+	it("keeps refused paths out of the whole-suite fan-out entirely", () => {
+		// The point of refusing at admission: a junk entry that never exists
+		// cannot be reddened by a failing suite, so it can never wedge the gate.
+		const session = makeSession();
+		recordImplEdit(session, "/r/vitest.config.mjs");
+		recordTestRunCycle(session, ALL_TESTS_SENTINEL, false);
+		expect(session.tdd_cycles.size).toBe(0);
+	});
+});
+
+describe("getOrCreateCycle — key identity", () => {
+	it("P1: relative and absolute paths for one file share a single cycle", () => {
+		const session = makeSession();
+		recordImplEdit(session, "src/harness/checks/control-bytes.ts", "/r");
+		recordImplEdit(session, "/r/src/harness/checks/control-bytes.ts", "/r");
+		expect(session.tdd_cycles.size).toBe(1);
+		const cycle = session.tdd_cycles.get("/r/src/harness/checks/control-bytes.ts");
+		expect(cycle?.impl_edits_before_test).toBe(2);
+	});
+
+	it("P2: migrates a legacy relative-keyed cycle, preserving its state", () => {
+		// A session persisted before normalization existed.
+		const session = makeSession();
+		session.tdd_cycles.set("src/foo.ts", {
+			source_file: "src/foo.ts",
+			test_file: "src/foo.test.ts",
+			state: "red",
+			red_at: 99,
+			impl_edits_before_test: 3,
+		});
+		recordImplEdit(session, "/r/src/foo.ts", "/r");
+		expect(session.tdd_cycles.size).toBe(1);
+		const migrated = session.tdd_cycles.get("/r/src/foo.ts");
+		expect(migrated?.state).toBe("red");
+		expect(migrated?.red_at).toBe(99);
+		expect(migrated?.impl_edits_before_test).toBe(4);
+		expect(migrated?.source_file).toBe("/r/src/foo.ts");
+	});
+
+	it("P3: collapses . and .. segments to one key", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/src/./foo.ts");
+		recordImplEdit(session, "/r/src/sub/../foo.ts");
+		expect(session.tdd_cycles.size).toBe(1);
+	});
+
+	it("N1: genuinely different files keep separate cycles", () => {
+		const session = makeSession();
+		recordImplEdit(session, "/r/src/foo.ts");
+		recordImplEdit(session, "/r/src/bar.ts");
+		expect(session.tdd_cycles.size).toBe(2);
+	});
+});
+
 describe("recordTestWrite", () => {
 	it("does not create a cycle when source file doesn't exist", () => {
 		const session = makeSession();

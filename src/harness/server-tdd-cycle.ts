@@ -10,6 +10,7 @@
 
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { canTrackCycle, normalizeCycleKey } from "./tdd-cycle-admission.js";
 import type { SessionTrajectory, TddCycle } from "./types.js";
 
 // -----------------------------------------------------------------------------
@@ -87,36 +88,97 @@ export function findTestForSource(filePath: string): string | null {
 	return candidates.find((t) => existsSync(t)) || null;
 }
 
-/** Get or create the TDD cycle entry for a source file. */
-export function getOrCreateCycle(session: SessionTrajectory, sourceFile: string): TddCycle {
-	let cycle = session.tdd_cycles.get(sourceFile);
-	if (!cycle) {
-		cycle = {
-			source_file: sourceFile,
-			test_file: findTestForSource(sourceFile),
-			state: "no_test",
-			impl_edits_before_test: 0,
-		};
-		session.tdd_cycles.set(sourceFile, cycle);
+/**
+ * Look up a cycle by its normalized key, re-keying a legacy entry if needed.
+ *
+ * Sessions persisted before key normalization existed hold entries under
+ * whatever path the caller happened to have — the live map on 2026-07-26 held
+ * BOTH `/Users/…/control-bytes.ts` and `src/harness/checks/control-bytes.ts`
+ * as independent cycles for one file. Migrating on first touch converges them
+ * instead of letting the file accumulate two divergent states.
+ */
+function findExistingCycle(
+	session: SessionTrajectory,
+	key: string,
+	cwd?: string,
+): TddCycle | undefined {
+	const current = session.tdd_cycles.get(key);
+	if (current) return current;
+
+	// Miss under the canonical key: an entry for the SAME file may still be
+	// stored under a differently-shaped path. Scan by normalized form rather
+	// than by the incoming spelling — the stored key can be the relative one
+	// and the incoming key absolute, or the reverse, and both directions were
+	// observed live. Only runs on a cycle miss, over a map of tens of entries.
+	for (const [storedKey, cycle] of session.tdd_cycles) {
+		if (storedKey === key || normalizeCycleKey(storedKey, cwd) !== key) continue;
+		session.tdd_cycles.delete(storedKey);
+		cycle.source_file = key;
+		session.tdd_cycles.set(key, cycle);
+		return cycle;
 	}
+	return undefined;
+}
+
+/**
+ * Get or create the TDD cycle entry for a source file.
+ *
+ * The single choke point for both admission and key identity:
+ *
+ *   - Returns `null` for paths that can never hold a meaningful cycle (see
+ *     `canTrackCycle`). Refusing here rather than filtering at report time
+ *     keeps junk entries out of the map entirely, which matters because a
+ *     whole-suite result fans out across EVERY tracked cycle.
+ *   - Keys by the normalized absolute path, so one file cannot end up with two
+ *     independent cycles depending on whether the caller happened to hold a
+ *     relative or an absolute path.
+ */
+export function getOrCreateCycle(
+	session: SessionTrajectory,
+	sourceFile: string,
+	cwd?: string,
+): TddCycle | null {
+	if (!canTrackCycle(sourceFile)) return null;
+	const key = normalizeCycleKey(sourceFile, cwd);
+
+	const existing = findExistingCycle(session, key, cwd);
+	if (existing) return existing;
+
+	const cycle: TddCycle = {
+		source_file: key,
+		test_file: findTestForSource(key),
+		state: "no_test",
+		impl_edits_before_test: 0,
+	};
+	session.tdd_cycles.set(key, cycle);
 	return cycle;
 }
 
 /** Record that a source file was edited (implementation work). Test files
  *  are skipped — writing a test doesn't count as an impl edit. */
-export function recordImplEdit(session: SessionTrajectory, sourceFile: string): void {
+export function recordImplEdit(
+	session: SessionTrajectory,
+	sourceFile: string,
+	cwd?: string,
+): void {
 	if (TEST_FILE_RE.test(sourceFile)) return;
-	const cycle = getOrCreateCycle(session, sourceFile);
+	const cycle = getOrCreateCycle(session, sourceFile, cwd);
+	if (!cycle) return;
 	cycle.impl_edits_before_test++;
 }
 
 /** Record that a test file was written/edited. Needs the corresponding
  *  source file to exist on disk so we don't create spurious cycles. */
-export function recordTestWrite(session: SessionTrajectory, testFile: string): void {
+export function recordTestWrite(
+	session: SessionTrajectory,
+	testFile: string,
+	cwd?: string,
+): void {
 	const sourceFile = sourceFileForTest(testFile);
 	if (!sourceFile || !existsSync(sourceFile)) return;
 
-	const cycle = getOrCreateCycle(session, sourceFile);
+	const cycle = getOrCreateCycle(session, sourceFile, cwd);
+	if (!cycle) return;
 	cycle.test_file = testFile;
 	cycle.test_written_at = session.tool_call_count;
 }
@@ -148,6 +210,7 @@ export function recordTestRunCycle(
 	if (!sourceFile) return;
 
 	const cycle = getOrCreateCycle(session, sourceFile);
+	if (!cycle) return;
 	cycle.test_file = testRunFile;
 	updateCycleFromTestRun(cycle, passed, session.tool_call_count, command);
 }

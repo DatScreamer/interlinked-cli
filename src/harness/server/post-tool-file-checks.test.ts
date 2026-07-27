@@ -409,14 +409,14 @@ describe("TDD cycle tracking", () => {
 			{ decision: "allow" },
 			makeAcc(),
 		);
-		expect(mRecordTestWrite).toHaveBeenCalledWith(session, testPath);
+		expect(mRecordTestWrite).toHaveBeenCalledWith(session, testPath, expect.any(String));
 		expect(mRecordImplEdit).not.toHaveBeenCalled();
 	});
 
 	it("records an impl edit for a non-test path", async () => {
 		const session = makeSession();
 		await runPerFileChecks(makeCtx(), ev(), session, IN_REPO, { decision: "allow" }, makeAcc());
-		expect(mRecordImplEdit).toHaveBeenCalledWith(session, IN_REPO);
+		expect(mRecordImplEdit).toHaveBeenCalledWith(session, IN_REPO, expect.any(String));
 		expect(mRecordTestWrite).not.toHaveBeenCalled();
 	});
 });
