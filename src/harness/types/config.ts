@@ -378,7 +378,7 @@ export interface PerEditCoverageConfig {
 	 * line / coverage-drop decision (a flat coverage gap is the more basic failure;
 	 * CRAP is the "complex AND under-covered" escalation). A runner that cannot
 	 * measure coverage (`ok:false`) or an unavailable cyclomatic analyzer fail-opens
-	 * exactly as the coverage block does. When false (the default) the CRAP check is
+	 * exactly as the coverage block does. When false (an explicit opt-out) the CRAP check is
 	 * a pure no-op and behavior is identical to the coverage-only gate.
 	 */
 	block_on_crap?: boolean;
@@ -494,4 +494,3 @@ export type {
 	ProjectWideCheckConfig,
 	StructuralChecksConfig,
 } from "./config-structural.js";
-
