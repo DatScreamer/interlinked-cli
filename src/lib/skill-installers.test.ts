@@ -3,8 +3,8 @@
 //   1. `findEnforceSkillSource()` resolves to the bundled SKILL.md.
 //   2. `installEnforceSkill()` writes the canonical .interlinked/skills/enforce/
 //      copy plus per-runner skill files.
-//   3. Spec-compliant runners (claude/codex/gemini/copilot) get the full SKILL.md.
-//   4. Compatibility surfaces (Copilot prompt files, Cursor rules) get thin aliases.
+//   3. Every runner gets its native full SKILL.md copy.
+//   4. Copilot also gets the intentional prompt-file alias.
 //   5. Re-running install is idempotent (no duplicate writes, no errors).
 //   6. `uninstallEnforceSkill()` removes installed files but leaves
 //      unrelated files in the same dirs alone.
@@ -120,11 +120,11 @@ describe("installEnforceSkill", () => {
 
 	it("installs full SKILL.md for codex and gemini", () => {
 		installEnforceSkill(tmpRoot, ["codex", "gemini"]);
-		expect(existsSync(join(tmpRoot, ".codex", "skills", "enforce", "SKILL.md"))).toBe(
+		expect(existsSync(join(tmpRoot, ".agents", "skills", "enforce", "SKILL.md"))).toBe(
 			true,
 		);
 		expect(
-			existsSync(join(tmpRoot, ".gemini", "extensions", "enforce", "SKILL.md")),
+			existsSync(join(tmpRoot, ".gemini", "skills", "enforce", "SKILL.md")),
 		).toBe(true);
 	});
 
@@ -146,14 +146,14 @@ describe("installEnforceSkill", () => {
 		expect(content.length).toBeLessThan(2000); // alias, not full body
 	});
 
-	it("installs a Cursor rule alias at .cursor/rules/enforce.mdc", () => {
+	it("installs a native Cursor skill at .cursor/skills/enforce/SKILL.md", () => {
 		installEnforceSkill(tmpRoot, ["cursor"]);
-		const aliasPath = join(tmpRoot, ".cursor", "rules", "enforce.mdc");
-		expect(existsSync(aliasPath)).toBe(true);
-		const content = readFileSync(aliasPath, "utf-8");
+		const skillPath = join(tmpRoot, ".cursor", "skills", "enforce", "SKILL.md");
+		expect(existsSync(skillPath)).toBe(true);
+		const content = readFileSync(skillPath, "utf-8");
 		expect(content).toContain("description:");
-		expect(content).toContain(".interlinked/skills/enforce/SKILL.md");
-		expect(content).not.toContain("name: enforce");
+		expect(content).toContain("name: enforce");
+		expect(content.length).toBeGreaterThan(2000);
 	});
 
 	it("is idempotent across runs", () => {
@@ -210,9 +210,10 @@ describe("description transform for runners with strict limits", () => {
 
 	it.each([
 		["claude", ".claude/skills/enforce/SKILL.md"],
-		["codex", ".codex/skills/enforce/SKILL.md"],
-		["gemini", ".gemini/extensions/enforce/SKILL.md"],
+		["codex", ".agents/skills/enforce/SKILL.md"],
+		["gemini", ".gemini/skills/enforce/SKILL.md"],
 		["copilot", ".github/skills/enforce/SKILL.md"],
+		["cursor", ".cursor/skills/enforce/SKILL.md"],
 	] as const)("%s install keeps description under 1024 chars", (client, relPath) => {
 		installEnforceSkill(tmpRoot, [client]);
 		const content = readFileSync(join(tmpRoot, relPath), "utf-8");
@@ -223,7 +224,7 @@ describe("description transform for runners with strict limits", () => {
 
 	it("codex install description still mentions /enforce invocation", () => {
 		installEnforceSkill(tmpRoot, ["codex"]);
-		const codexPath = join(tmpRoot, ".codex", "skills", "enforce", "SKILL.md");
+		const codexPath = join(tmpRoot, ".agents", "skills", "enforce", "SKILL.md");
 		const content = readFileSync(codexPath, "utf-8");
 		const description = extractDescription(extractFrontmatter(content));
 		expect(description).toContain("/enforce");
@@ -232,7 +233,7 @@ describe("description transform for runners with strict limits", () => {
 
 	it("codex install body length matches the source SKILL.md body", () => {
 		installEnforceSkill(tmpRoot, ["codex"]);
-		const codexPath = join(tmpRoot, ".codex", "skills", "enforce", "SKILL.md");
+		const codexPath = join(tmpRoot, ".agents", "skills", "enforce", "SKILL.md");
 		const claudePath = join(tmpRoot, ".claude", "skills", "enforce", "SKILL.md");
 		// Need claude install to compare
 		installEnforceSkill(tmpRoot, ["claude"]);
@@ -309,9 +310,11 @@ describe("installSkills (full bundled set)", () => {
 		expect(results.some((r) => r.skill.startsWith("interlinked") && r.installed)).toBe(true);
 	});
 
-	it("gives teaching skills a Cursor alias but no Copilot prompt alias", () => {
+	it("gives teaching skills a native Cursor copy but no Copilot prompt alias", () => {
 		installSkills(tmpRoot, ["cursor", "copilot"]);
-		expect(existsSync(join(tmpRoot, ".cursor", "rules", "interlinked-setup.mdc"))).toBe(true);
+		expect(
+			existsSync(join(tmpRoot, ".cursor", "skills", "interlinked-setup", "SKILL.md")),
+		).toBe(true);
 		expect(
 			existsSync(join(tmpRoot, ".github", "prompts", "interlinked-setup.prompt.md")),
 		).toBe(false);
@@ -327,6 +330,18 @@ describe("installSkills (full bundled set)", () => {
 		);
 		expect(content).toContain("name: interlinked-setup");
 	});
+
+	it("copies runner metadata and every bundled resource", () => {
+		installSkills(tmpRoot, ["codex"]);
+		expect(
+			existsSync(join(tmpRoot, ".agents", "skills", "interlinked", "agents", "openai.yaml")),
+		).toBe(true);
+		expect(
+			existsSync(
+				join(tmpRoot, ".interlinked", "skills", "interlinked", "agents", "openai.yaml"),
+			),
+		).toBe(true);
+	});
 });
 
 describe("uninstallSkills (full bundled set)", () => {
@@ -334,7 +349,9 @@ describe("uninstallSkills (full bundled set)", () => {
 		installSkills(tmpRoot, ["claude", "cursor"]);
 		expect(uninstallSkills(tmpRoot, ["claude", "cursor"])).toBe(true);
 		expect(existsSync(join(tmpRoot, ".claude", "skills", "interlinked", "SKILL.md"))).toBe(false);
-		expect(existsSync(join(tmpRoot, ".cursor", "rules", "interlinked-setup.mdc"))).toBe(false);
+		expect(
+			existsSync(join(tmpRoot, ".cursor", "skills", "interlinked-setup", "SKILL.md")),
+		).toBe(false);
 	});
 
 	it("returns false when nothing was installed", () => {
@@ -392,8 +409,18 @@ describe("shipped SKILL.md frontmatter is loader-safe", () => {
 	// Guards the it.each below: an empty list would produce ZERO test cases and
 	// report green — the "silently passed 0/0" failure mode.
 	it("discovers the full bundled set", () => {
-		expect(skills).toContain("enforce");
-		expect(skills.filter((name) => name.startsWith("interlinked")).length).toBeGreaterThan(0);
+		expect(skills).toEqual([
+			"enforce",
+			"interlinked",
+			"interlinked-coordination",
+			"interlinked-harness",
+			"interlinked-observability",
+			"interlinked-quality-gates",
+			"interlinked-setup",
+			"interlinked-spec-audit",
+			"interlinked-supply-chain",
+			"interlinked-verify",
+		]);
 	});
 
 	it.each(skills)("%s: description is a quoted, length-safe scalar", (name) => {

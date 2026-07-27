@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { c } from "../lib/formatter.js";
+import type { SkillRefreshSummary } from "./skill-refresh.js";
 
 export const INTERLINKED_CLI_REPO_URL = "https://github.com/QuentinCody/interlinked-cli.git";
 
@@ -207,17 +208,27 @@ function linkManagedCheckout(opts: UpdateOpts, cliRoot: string, managedCheckout:
 	}
 }
 
-/** Step 5: regenerate the hook script in the current dir when .interlinked/ exists. */
-async function regenerateHookScript(opts: UpdateOpts): Promise<void> {
+/** Step 5: refresh hooks and deployed skills when the current repo is enabled. */
+async function refreshLocalInstall(opts: UpdateOpts): Promise<SkillRefreshSummary | null> {
 	const cwd = process.cwd();
-	if (!existsSync(join(cwd, ".interlinked"))) return;
-	if (!opts.json) process.stdout.write("Regenerating hook script... ");
+	if (!existsSync(join(cwd, ".interlinked"))) return null;
+	if (!opts.json) process.stdout.write("Refreshing local hooks and skills... ");
 	try {
-		const { writeHookScript } = await import("../lib/hooks.js");
+		const { installAllHooks, writeHookScript } = await import("../lib/hooks.js");
+		const { detectClients } = await import("../lib/settings.js");
+		const { refreshClientSkills } = await import("./skill-refresh.js");
 		writeHookScript(cwd);
+		const clients = detectClients(cwd)
+			.filter((client) => client.exists)
+			.map((client) => client.name);
+		if (clients.length > 0) installAllHooks(cwd, clients);
+		const refresh = refreshClientSkills(cwd, clients);
 		if (!opts.json) console.log(c.green("done"));
+		if (!opts.json) refresh.summary.warnings.forEach((warning) => console.log(c.yellow(`  ${warning}`)));
+		return refresh.summary;
 	} catch {
-		if (!opts.json) console.log(c.yellow("skipped (hook regeneration failed)"));
+		if (!opts.json) console.log(c.yellow("skipped (local refresh failed)"));
+		return null;
 	}
 }
 
@@ -225,7 +236,7 @@ async function regenerateHookScript(opts: UpdateOpts): Promise<void> {
 function printUpdateResult(
 	opts: UpdateOpts,
 	roots: ResolvedRoots,
-	state: { pulled: boolean; linked: boolean },
+	state: { pulled: boolean; linked: boolean; skills: SkillRefreshSummary | null },
 ): void {
 	const newVersion = getInstalledVersion(roots.cliRoot);
 	if (opts.json) {
@@ -235,6 +246,7 @@ function printUpdateResult(
 				version: newVersion,
 				pulled: state.pulled,
 				linked: state.linked,
+				skills: state.skills,
 				managed_checkout: roots.managedCheckout,
 				repo_root: roots.repoRoot,
 			}),
@@ -263,11 +275,11 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 	// use the freshly-built GitHub checkout.
 	const linked = linkManagedCheckout(opts, roots.cliRoot, roots.managedCheckout);
 
-	// Step 5: Regenerate hook script in current directory (if .interlinked/ exists).
-	await regenerateHookScript(opts);
+	// Step 5: Refresh hooks and skills in the current directory when enabled.
+	const skills = await refreshLocalInstall(opts);
 
 	// Step 6: Show new version.
-	printUpdateResult(opts, roots, { pulled, linked });
+	printUpdateResult(opts, roots, { pulled, linked, skills });
 }
 
 function getInstalledVersion(cliRoot: string): string {

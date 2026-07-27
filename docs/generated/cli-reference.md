@@ -37,6 +37,7 @@ Commands:
   doctor [options]                           Diagnose issues (local + server checks)
   enable [options]                           Install hooks + create .interlinked/ config
   env [options]                              Show supported environment variables and their current values
+  experience                                 Agent-readable trajectory export + analysis (trajectory-v1 interop / trajectory-ix.v1 annotated)
   explain [options]                          Reconstruct what happened (narrative view)
   findings                                   Ingest external review findings and drive them to closure
   git                                        Git bridge: metadata, trailers, and notes

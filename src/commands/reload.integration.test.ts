@@ -16,10 +16,11 @@ import {
 
 // Mocks for the reloadCommand orchestration tests. The pure-helper describes
 // above don't touch these modules, so the mocks are inert for them.
-const { execFileSyncMock, harnessRestartMock, detectClientsMock } = vi.hoisted(() => ({
+const { execFileSyncMock, harnessRestartMock, detectClientsMock, refreshClientSkillsMock } = vi.hoisted(() => ({
 	execFileSyncMock: vi.fn(),
 	harnessRestartMock: vi.fn(),
 	detectClientsMock: vi.fn(),
+	refreshClientSkillsMock: vi.fn(),
 }));
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -28,6 +29,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 vi.mock("./harness.js", () => ({ harnessRestartCommand: harnessRestartMock }));
 vi.mock("../lib/hooks.js", () => ({ writeHookScript: vi.fn(), installAllHooks: vi.fn() }));
 vi.mock("../lib/settings.js", () => ({ detectClients: detectClientsMock }));
+vi.mock("./skill-refresh.js", () => ({ refreshClientSkills: refreshClientSkillsMock }));
 
 let dir: string;
 
@@ -44,6 +46,12 @@ beforeEach(() => {
 	});
 	detectClientsMock.mockReset();
 	detectClientsMock.mockReturnValue([]);
+	refreshClientSkillsMock.mockReset();
+	refreshClientSkillsMock.mockReturnValue({
+		results: [],
+		outputLines: [],
+		summary: { clients: [], installed: 0, changed: 0, warnings: [] },
+	});
 });
 
 afterEach(() => {
@@ -170,6 +178,18 @@ describe("reloadCommand — stdout integrity", () => {
 		const stdout = joinCalls(logSpy);
 		expect(harnessRestartMock).toHaveBeenCalledTimes(1);
 		expect(stdout).toContain("Harness started (PID 99999)");
+	});
+
+	it("refreshes deployed skills for every detected client", async () => {
+		detectClientsMock.mockReturnValue([
+			{ name: "codex", exists: true },
+			{ name: "gemini", exists: false },
+		]);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ force: true, cwd: dir });
+
+		expect(refreshClientSkillsMock).toHaveBeenCalledWith(dir, ["codex"]);
 	});
 
 	it("surfaces the compiler error and exits non-zero when the CLI build fails (no opaque crash)", async () => {

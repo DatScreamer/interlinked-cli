@@ -24,6 +24,7 @@ import {
 	statusIcon,
 	systemChecks,
 } from "./doctor-checks.js";
+import { skillInstallationChecks } from "./doctor-skills.js";
 
 /** Minimal structural view of the health-check result fields doctor reads. */
 interface ServerHealth {
@@ -180,6 +181,9 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 
 	// 5. Client hooks installed
 	results.push(...clientHookChecks(cwd));
+
+	// 5a. Native agent skill copies current for every detected client.
+	results.push(...skillInstallationChecks(cwd, opts.fix === true));
 
 	// 5b. Permission-rule hygiene across Claude Code settings files.
 	// Claude Code's "Always allow" extractor occasionally writes rules with

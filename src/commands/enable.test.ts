@@ -606,6 +606,23 @@ describe("enableCommand — gitignore, status line, enforce skill", () => {
 		expect(out).not.toContain("Installed Interlinked skills");
 	});
 
+	it("reports partial skill-install warnings alongside successful clients", async () => {
+		vi.mocked(detectClients).mockReturnValue([
+			detected("claude", true),
+			detected("codex", true),
+		]);
+		vi.mocked(installSkills).mockReturnValue([
+			skill("claude", { installed: true }),
+			skill("codex", { installed: false, error: "user-owned target" }),
+		]);
+
+		await enableCommand({});
+
+		const out = logged(logSpy);
+		expect(out).toContain("Installed Interlinked skills for claude");
+		expect(out).toContain("Skill warning (enforce/codex): user-owned target");
+	});
+
 	it("stays fully silent about the skill when nothing installed and no error surfaced", async () => {
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
 		vi.mocked(installSkills).mockReturnValue([skill("claude", { installed: false })]);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Spec Audit"
+  short_description: "Audit prose specifications against implementation"
+  default_prompt: "Use $interlinked-spec-audit to compare this specification with the implementation and resolve evidence-backed drift."

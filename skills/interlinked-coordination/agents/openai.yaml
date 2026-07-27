@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Coordination"
+  short_description: "Coordinate agents, tasks, messages, and reservations"
+  default_prompt: "Use $interlinked-coordination to coordinate agents or humans, manage workspace context, and handle checkpoints or file reservations safely."

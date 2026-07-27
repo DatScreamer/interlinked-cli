@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Harness"
+  short_description: "Understand and resolve Interlinked guard decisions"
+  default_prompt: "Use $interlinked-harness to interpret this guard decision and follow the safe, policy-compliant resolution."

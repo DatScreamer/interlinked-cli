@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Supply Chain"
+  short_description: "Review blocked dependencies and allowlist changes"
+  default_prompt: "Use $interlinked-supply-chain to assess this dependency operation and update the allowlist only when it is justified."

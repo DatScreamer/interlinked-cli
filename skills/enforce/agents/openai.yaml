@@ -1,0 +1,7 @@
+interface:
+  display_name: "Enforce"
+  short_description: "Turn imperative Markdown into Interlinked rules"
+  default_prompt: "Use $enforce to distill the explicitly requested guidance into deterministic Interlinked rules with source provenance."
+
+policy:
+  allow_implicit_invocation: false

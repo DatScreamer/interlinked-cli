@@ -13,7 +13,7 @@ Interlinked gates edits at **three moments**, and they run different check sets:
 - **Other PreToolUse guards** (real Edit/Write only): coverage, cyclomatic, CRAP, baseline —
   see **interlinked-quality-gates**; package/allowlist — see **interlinked-supply-chain**.
 - **PostToolUse** (after the write lands): external tools (tsc/biome/eslint/semgrep/gitleaks/…)
-  + ~50 inline check families. **Warn only** — surfaced to you next turn.
+  plus the inline check registry. **Warn only** — surfaced to you next turn.
 
 `interlinked verify` is the **on-demand, whole-project** run of that same check catalog.
 
@@ -58,12 +58,13 @@ hides those as warnings).
 ## Check families & phases
 Two catalogs, both surfaced by verify + PostToolUse: the **tool wrappers** (`typescript`,
 `biome_lint`, `eslint`, `semgrep`, `gitleaks`, `dependency_audit`, `secrets_in_source`,
-`affected_tests`, per-language tools…) and the **~50 inline families** in
+`affected_tests`, per-language tools…) and the **inline families** in
 `src/harness/checks/<family>.ts` (security/injection, PII/secrets, async/promises,
-correctness/bug-class, agent-clarity, complexity, test-quality, comment/spec drift, …).
+correctness/bug-class, agent-clarity, complexity, test-quality, comment/spec drift, …). Use
+`interlinked harness checks` for the authoritative current inventory.
 
 **Phase determines what blocks:**
-- `pre_block` (~26 checks) — the **only inline checks that BLOCK** an edit. Zero-FP,
+- `pre_block` — the **only inline checks that BLOCK** an edit. Zero-FP,
   deterministic (`eval`, `nan_comparison`, `throw_literal`, `promise_reject_non_error`,
   `child_process_exec_user_input`, `cookie_missing_security_flags`, most `ubs_*` blockers…).
   Introduced-only. (Merge-conflict markers also block, but via a separate write-guard on real

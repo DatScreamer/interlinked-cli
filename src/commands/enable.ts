@@ -125,12 +125,20 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 function installSkillsForClients(cwd: string, targetClients: ClientName[]): void {
 	if (targetClients.length === 0) return;
 	const results = installSkills(cwd, targetClients);
+	printSkillInstallResults(results);
+}
+
+function printSkillInstallResults(results: ReturnType<typeof installSkills>): void {
 	const installed = results.filter((r) => r.installed);
+	const errors = results.filter((r) => r.error !== undefined);
 	if (installed.length === 0) {
-		const firstErr = results.find((r) => r.error)?.error;
+		const firstErr = errors[0]?.error;
 		if (firstErr) {
 			console.log(`\n${c.dim("Interlinked skills: not installed —")} ${c.yellow(firstErr)}`);
 		}
+		errors.slice(1).forEach((result) => {
+			console.log(c.yellow(`  ${result.skill}/${result.client}: ${result.error}`));
+		});
 		return;
 	}
 	console.log(
@@ -141,6 +149,9 @@ function installSkillsForClients(cwd: string, targetClients: ClientName[]): void
 			"  Load /enforce plus the interlinked-* skills on demand from your agent",
 		),
 	);
+	errors.forEach((result) => {
+		console.log(c.yellow(`  Skill warning (${result.skill}/${result.client}): ${result.error}`));
+	});
 }
 
 function parseRequestedClients(raw: string | undefined): ClientName[] | null {

@@ -31,7 +31,7 @@ where it can't be skipped: the point where an agent's intent becomes a
 real-world action. Policy is shared through version control and enforced
 identically across <!-- gen:runner_count -->5<!-- /gen:runner_count --> agent
 runners and a fleet of agents working in parallel — with no cloud dependency
-and no telemetry.
+and no required cloud or remote telemetry. Optional authenticated sync is explicit.
 
 This isn't only an architecture diagram. The receipts below are
 **<!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified --> per-event-audited
@@ -77,7 +77,8 @@ way for one agent or a thousand.
 
 Local-first by design. The harness, activity log, and checks run on your
 machine; server-backed collaboration commands are optional and require an
-Interlinked MCP Server URL. No cloud, no telemetry, no LLM in the hot path.
+Interlinked MCP Server URL. No required cloud or remote telemetry, and no LLM in the hot path;
+optional authenticated coordination/sync is explicit.
 
 ## Install From Source
 

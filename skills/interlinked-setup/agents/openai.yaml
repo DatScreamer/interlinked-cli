@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Setup"
+  short_description: "Install, operate, and troubleshoot Interlinked CLI"
+  default_prompt: "Use $interlinked-setup to install, configure, operate, or troubleshoot the Interlinked CLI harness in this repository."

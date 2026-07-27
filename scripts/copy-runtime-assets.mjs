@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // Runtime assets that must accompany the bundled JS in `dist/`. The OPF
@@ -47,19 +47,31 @@ for (const asset of ASSETS) {
 	copyFileSync(src, dest);
 }
 
-// Bundle every skill under skills/ (the enforce command + the interlinked-*
-// teaching set) so `findSkillsRoot()` in `src/lib/skill-installers.ts` can
-// resolve them at runtime in the published package. New skill dirs ship
-// automatically — no edit here needed.
+function copyDirectory(sourceRoot, destinationRoot) {
+    for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
+        const source = join(sourceRoot, entry.name);
+        const destination = join(destinationRoot, entry.name);
+        if (entry.isSymbolicLink() || lstatSync(source).isSymbolicLink()) {
+            throw new Error(`Runtime skill resources must not be symlinks: ${source}`);
+        }
+        if (entry.isDirectory()) {
+            mkdirSync(destination, { recursive: true });
+            copyDirectory(source, destination);
+        } else if (entry.isFile()) {
+            mkdirSync(dirname(destination), { recursive: true });
+            copyFileSync(source, destination);
+        }
+    }
+}
+
+// Bundle every complete skill directory so optional agents metadata, scripts,
+// references, and assets remain available in published installs.
 const skillsRoot = join(process.cwd(), "skills");
 if (existsSync(skillsRoot)) {
 	for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
-		const src = join(skillsRoot, entry.name, "SKILL.md");
-		if (!existsSync(src)) continue;
-		const dest = join(process.cwd(), "dist", "skills", entry.name, "SKILL.md");
-		mkdirSync(dirname(dest), { recursive: true });
-		copyFileSync(src, dest);
+		const source = join(skillsRoot, entry.name);
+		if (!existsSync(join(source, "SKILL.md"))) continue;
+		copyDirectory(source, join(process.cwd(), "dist", "skills", entry.name));
 	}
 }
-

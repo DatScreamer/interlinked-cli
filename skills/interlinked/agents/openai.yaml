@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked"
+  short_description: "Route Interlinked CLI setup, guards, and checks"
+  default_prompt: "Use $interlinked to orient this task within the Interlinked CLI and route it to the appropriate focused workflow."

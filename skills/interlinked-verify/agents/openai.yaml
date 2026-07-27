@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Verify"
+  short_description: "Run checks and land edits through content gates"
+  default_prompt: "Use $interlinked-verify to check these changes and land them through the appropriate Interlinked content-gate workflow."

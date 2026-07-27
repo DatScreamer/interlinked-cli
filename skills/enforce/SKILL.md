@@ -1,6 +1,6 @@
 ---
 name: enforce
-description: "Distill imperative markdown guidance (AGENTS.md, CLAUDE.md, .clinerules/, GEMINI.md, SKILL.md with hard imperatives) into deterministic Interlinked harness hook rules with verbatim source provenance. Invoke as /enforce <target> — local path, directory, GitHub shorthand (owner/repo/path), or URL — or no args to walk the project. Lexical strength is binding: never/MUST NOT/forbidden distill to block; should not/avoid to ask; should/prefer to advisory; hedged language is skipped. Output goes to .interlinked/distilled-rules.json plus .interlinked/distilled-rules.overrides.json. Lifecycle ops: /enforce list, show, remove, disable, enable, modify, add, reset, --review, --accept. Description-match invocation: make my AGENTS.md enforced, distill rules from this file. Manual invocation only — never auto-fires."
+description: "Distill imperative markdown guidance (AGENTS.md, CLAUDE.md, .clinerules/, GEMINI.md, SKILL.md with hard imperatives) into deterministic Interlinked harness hook rules with verbatim source provenance. Invoke as /enforce followed by a local path, directory, GitHub shorthand, or URL — or with no arguments to walk the project. Lexical strength is binding: never/MUST NOT/forbidden distill to block; should not/avoid to ask; should/prefer to advisory; hedged language is skipped. Output goes to .interlinked/distilled-rules.json plus .interlinked/distilled-rules.overrides.json. Lifecycle ops: /enforce list, show, remove, disable, enable, modify, add, reset, --review, --accept. Description-match invocation: make my AGENTS.md enforced, distill rules from this file. Manual invocation only — never auto-fires."
 ---
 
 # /enforce — Make markdown guidance into enforced harness rules
@@ -188,7 +188,7 @@ For each ancestor directory from CWD up to the repo root (the directory containi
 | `.tabnine/guidelines.md` | imperative | Tabnine single-file |
 | `.kilocoderules` | imperative | Kilo Code |
 | `.claude/skills/*/SKILL.md` | scan-only | See §2c |
-| `.codex/skills/*/SKILL.md` | scan-only | See §2c |
+| `.agents/skills/*/SKILL.md` | scan-only | Shared native skill location used by Codex and other runners; see §2c |
 | `~/.claude/skills/*/SKILL.md` | scan-only | See §2c |
 | `CONVENTIONS.md` | imperative-likely | Aider-style |
 | `code_review.md` | imperative-likely | Often referenced from AGENTS.md |
@@ -227,7 +227,7 @@ The `skill:` group_id is also used for lifecycle ops (`/enforce remove --source 
 | `README.md` | Human-facing overview. |
 | `TOOLS.md` | Tool inventory. |
 | `.agent.md`, `.prompt.md`, `*.prompt`, `.github/agents/*.agent.md`, `.github/prompts/*.prompt.md` | Capability bundles — same treatment as SKILL.md per §2c. `*.prompt` covers bare-extension role/capability prompts (e.g. SwarmForge `<role>.prompt`). |
-| Any `SKILL.md` whose frontmatter `name` is `enforce` | Self-reference. The distiller must not distill its own imperatives — they describe how to distill, not what the agent should do. Drop the file silently regardless of which install path it lives at (`skills/`, `.claude/skills/`, `.codex/skills/`, `.interlinked/skills/`, `.gemini/extensions/`, `.github/skills/`, etc.). |
+| Any `SKILL.md` whose frontmatter `name` is `enforce` | Self-reference. The distiller must not distill its own imperatives — they describe how to distill, not what the agent should do. Drop the file silently regardless of which install path it lives at (`skills/`, `.claude/skills/`, `.agents/skills/`, `.interlinked/skills/`, `.gemini/skills/`, `.github/skills/`, `.cursor/skills/`, etc.). |
 | Any `SKILL.md` whose frontmatter `name` is `tdd`, starts with `tdd-`, or ends with `-tdd`; any path matching `**/tdd/SKILL.md` or `**/*-tdd/SKILL.md` | TDD enforcement is owned by the harness's native primitives — `tdd_new_file_gate`, `tdd_cycle_violation`, `tdd_regression`, `tdd_commit_gate`, `tdd_green_confirmation` — driven by the deterministic `tdd_cycles` state machine in `SessionTrajectory`. Distilling a competing TDD skill (Matt Pocock's, gstack's, anyone else's) would either over-fire (always-on rules duplicating our gates) or shadow (action downgraded to `ask`). Drop these files silently. If a project legitimately needs a different TDD policy, edit `structural_checks.test_first_mode` in `guard-rules.local.json`, not via /enforce. |
 
 After discovery, **print the file inventory** before any extraction so the user can see the surface.

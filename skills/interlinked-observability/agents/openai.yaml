@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Observability"
+  short_description: "Inspect local agent activity, sessions, and events"
+  default_prompt: "Use $interlinked-observability to inspect the relevant local Interlinked activity, session, event, or dependency history."

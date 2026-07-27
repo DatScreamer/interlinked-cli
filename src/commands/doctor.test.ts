@@ -144,6 +144,7 @@ vi.mock("./harness.js", () => ({ isHarnessRunning: mockIsHarnessRunning }));
 // these fixtures keep their pre-adopt output shape (no warn row from the
 // host repo's missing baselines leaking into unrelated expectations).
 vi.mock("./adopt.js", () => ({ adoptionArtifactChecks: () => [] }));
+vi.mock("./doctor-skills.js", () => ({ skillInstallationChecks: () => [] }));
 
 vi.mock("../lib/config.js", () => ({
 	getConfigDir: mockGetConfigDir,

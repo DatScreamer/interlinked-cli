@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { installAllHooks, writeHookScript } from "../lib/hooks.js";
 import { detectClients } from "../lib/settings.js";
 import { harnessRestartCommand } from "./harness.js";
+import { refreshClientSkills } from "./skill-refresh.js";
 
 /** Walk up from `startDir` to the interlinked-cli package root (the linked
  *  source checkout the `interlinked` binary runs from). Null when not found —
@@ -261,9 +262,11 @@ export async function reloadCommand(opts: ReloadOptions): Promise<void> {
 		.filter((c) => c.exists)
 		.map((c) => c.name);
 	if (clients.length > 0) installAllHooks(cwd, clients);
+	const skillRefresh = refreshClientSkills(cwd, clients);
 	say(
 		`  Hook script: ${hookChanged ? `CHANGED ${hookBefore} → ${hookAfter}` : `unchanged (${hookAfter})`}${clients.length > 0 ? ` — wiring refreshed for ${clients.join(", ")}` : ""}`,
 	);
+	skillRefresh.outputLines.forEach(say);
 
 	const restart = await daemonStep({
 		cwd,
@@ -284,6 +287,7 @@ export async function reloadCommand(opts: ReloadOptions): Promise<void> {
 					build: { before, after, changed: buildChanged, ms: buildMs, skipped: opts.build === false },
 					hook_script: { before: hookBefore, after: hookAfter, changed: hookChanged },
 					clients,
+					skills: skillRefresh.summary,
 					daemon: { restarted: restart },
 				},
 				null,

@@ -32,7 +32,7 @@ hooks, guard, and activity capture work with zero network.
 
 | Command | What it does | When to use |
 |---|---|---|
-| `interlinked enable` | Full setup: writes `.interlinked/` config, installs per-client hooks, updates `.gitignore`, installs statusline (Claude/Copilot), installs the `/enforce` skill, **auto-starts the daemon**. Idempotent; re-running **clears any stand-down**. | The normal way to turn Interlinked on. |
+| `interlinked enable` | Full setup: writes `.interlinked/` config, installs per-client hooks, updates `.gitignore`, installs statusline (Claude/Copilot), installs every bundled Interlinked skill, **auto-starts the daemon**. Idempotent; re-running **clears any stand-down**. | The normal way to turn Interlinked on. |
 | `interlinked setup` | Runs `enable`, then `login` if no token (skips login on localhost / when a token is present). | One-shot bootstrap with server auth. |
 | `interlinked init` | Interactive/auto onboarding wizard (`--yes` for non-interactive). | Guided first-run. |
 | `interlinked install-hooks` | **Adapter path**: writes only hook entries + `installer-manifest.json` (no full config scaffold). | Precise, manifest-tracked hook install. |
@@ -50,8 +50,8 @@ interlinked install-hooks --runner claude-code --scope project
 ```
 
 > Client detection = presence of the config **directory** (`.claude/`, `.codex/`, …), not the
-> binary. After enabling, **Codex needs a session restart** and **Copilot needs `/skills reload`**
-> to pick up hooks.
+> binary. Codex automatically detects skill changes; if an active session does not, restart it.
+> Copilot needs `/skills reload` to pick up skill changes.
 
 ## Operating the daemon
 
@@ -73,7 +73,8 @@ interlinked harness restart            # after editing config / changing mode
 
 `interlinked doctor` is the first stop. It runs local + system + server checks and **exits
 non-zero if any check fails**. `--fix` repairs common drift (regenerates a drifted hook
-script, strips malformed permission rules, migrates legacy config).
+script, safely refreshes Interlinked-owned skill copies, strips malformed permission rules,
+migrates legacy config).
 
 ```bash
 interlinked doctor            # diagnose
@@ -88,7 +89,8 @@ present, per-client "Hooks installed", and **Harness server: Running (PID …)**
 localhost it is only a `warn` (dev mode allows unauthenticated).
 
 **Dev loop after editing the CLI source:** `interlinked reload` rebuilds the CLI in its own
-checkout, refreshes this repo's hooks, and restarts the daemon **only if something changed**.
+checkout, refreshes this repo's hooks and deployed skills, and restarts the daemon **only if
+something the daemon executes changed**.
 
 ## Config & environment
 
@@ -141,6 +143,9 @@ interlinked logout [--all]
   `install-hooks`-style install; use `disable --uninstall` / `reset` to clean an `enable` install.
 - **Claude Code merge-up dedup:** `enable` refuses to install Claude hooks when an ancestor
   `.claude/settings.json` already has them (would double-fire) — run `enable` from that ancestor.
+- **Gemini is a compatibility lane, not the Antigravity adapter.** Consumer Gemini CLI service
+  ended in June 2026, while enterprise and paid API-key Gemini CLI use remain supported. The
+  current `gemini` client installs Gemini CLI hooks/skills; do not treat it as Antigravity.
 - **`reload` needs a source checkout** — it rebuilds the CLI checkout the running binary
   resolves to (typically a `~/.local/bin` symlink), not the current repo.
 - `--json` support is per-command; unknown flags error. `doctor` takes only `--fix`/`--json`.

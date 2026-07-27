@@ -30,9 +30,9 @@ All are **PreToolUse blocks** with **delta semantics** (holding or reducing is a
 |---|---|---|---|
 | **Line cap** | a Write/Edit grows a *cappable* file past its ceiling | **500** lines (`DEFAULT_MAX_LINES`) | Decompose into a re-exporting entry + sibling modules |
 | **Cyclomatic — over cap** | edit adds/raises a function over the hard cap | **25** | Extract cohesive branches into named helpers |
-| **Cyclomatic — slew** | a uniquely-named ≤cap function jumps **>2** branches in one edit | tolerance **2**/edit | Split the change across edits |
-| **Per-edit coverage** | edit adds an uncovered executable line/function, or drops a file's coverage vs its high-water | drop ε 0.005; floor default 0 (off) | Add a test exercising the added line, then retry |
-| **CRAP** | a touched function is both complex AND under-covered | **30** | Decompose OR add coverage (both lower CRAP) |
+| **Cyclomatic — slew** | a uniquely-named ≤cap function jumps **>2** branches in one edit | tolerance **2**/edit | Extract cohesive branches into named helpers; do not stage one logical complexity increase across edits |
+| **Per-edit coverage** | edit adds an uncovered executable line/function, or drops a file's coverage vs its high-water | gate default on; drop ε 0.005; floor default 0 (off) | Stay within the source/test pair and add coverage; default debt mode allows the first uncovered/red edit but blocks unrelated wandering |
+| **CRAP** | a touched function is both complex AND under-covered | **30**, default on | Decompose OR add coverage (both lower CRAP) |
 | **Baseline-integrity** | a Write/Edit *loosens* any `.interlinked/` water-line | per-file direction | Meet the bar; don't edit the baseline |
 
 **Line cap** — three surfaces, one policy: PreToolUse block (pure before/after delta — shrinking
@@ -48,13 +48,16 @@ branches/edit. JS/TS via the TS AST, Python via `radon`, other languages skipped
 (allows) + warns loudly** when the analyzer is unavailable — never a silent skip.
 
 **Per-edit coverage** — default **ON**. Runs the *affected tests only* under a scoped overlay,
-then decides: red-bar (opt-in) → uncovered-added-line → per-file coverage drop vs
-`coverage-edit-baseline.json` → `min_coverage` floor → CRAP (opt-in). The block names the exact
-file+line+function — **write the test first, then re-apply the code.**
+then decides: red-bar (default on) → uncovered-added-line → per-file coverage drop vs
+`coverage-edit-baseline.json` → `min_coverage` floor → CRAP (default on). With default
+`debt_mode:true`, the first uncovered or red result opens a pair-scoped debt and the edit lands;
+keep working in that source/test pair until it is covered and green. The commit gate remains the
+ground-truth backstop.
 
-**CRAP** = `cyclomatic² · (1 − coverage)³ + cyclomatic`. Because it's monotonic in cyclomatic and
-equals `cyclomatic` at full coverage, keeping cyclomatic < 25 keeps CRAP safe — there's no
-separate sub-cap CRAP ratchet.
+**CRAP** = `cyclomatic² · (1 − coverage/100)³ + cyclomatic`, where coverage is a percentage.
+Full coverage reduces the score to cyclomatic, but low coverage can exceed the default threshold
+even at modest complexity (complexity 5 at 0% coverage scores 30). Treat complexity and coverage
+as independent levers; neither cap alone guarantees a safe CRAP score.
 
 **Baseline-integrity** — a PreToolUse block on any edit that loosens a water-line file (below).
 Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline change with
@@ -118,6 +121,9 @@ missing adoption artifacts.
 - **Cyclomatic & per-edit-coverage gates have no bypass and no suppression** — decompose/test is
   mandatory. (`per_edit_coverage.enabled:false` in `guard-rules.local.json` is a repo-wide
   policy opt-out, not a per-edit escape.)
+- **Do not split one branchy change into multiple edits to evade the +2 slew.** The edit-sized
+  tolerance is a regression detector, not permission to accumulate the same design debt slowly.
+  Extract a helper or simplify the control flow.
 - **`tsgo` ≠ `typescript` for the AST gate.** The cyclomatic/CRAP gate parses with the optional
   `typescript` compiler API; `tsgo` is typecheck-only with no importable JS API. Installing with
   `--omit=optional` makes the cyclomatic gate fail open (silent enforcement gap) — keep

@@ -9,8 +9,9 @@ description: "Overview and router for the Interlinked CLI — a local guard, qua
 hooks into Claude Code, Codex, Copilot CLI, Gemini CLI, and Cursor, and on **every** tool call
 it: enforces deterministic policy (block/allow in milliseconds, no model in the decision path),
 fails closed on what causes incidents (destructive commands, secrets, unvetted deps), and writes
-a replayable local activity log. It is **offline-first** — no cloud dependency, no telemetry —
-with an **optional** server for multi-agent coordination.
+a replayable local activity log. It is **offline-first** — no required cloud dependency or
+remote telemetry. Activity is recorded locally; an **optional authenticated server** provides
+multi-agent coordination and configured sync.
 
 If you're an agent working in a repo with a `.interlinked/` directory, you are being guarded by
 it. This skill orients you and points to the right focused skill.

@@ -48,6 +48,13 @@ stryker.log
 .claude/skills/interlinked/
 .claude/skills/interlinked-*/
 
+# Codex discovers repository skills from `.agents/skills/`. Interlinked CLI
+# materializes its bundled copies there during enable/update/reload; canonical
+# authored sources remain under `skills/`.
+.agents/skills/enforce/
+.agents/skills/interlinked/
+.agents/skills/interlinked-*/
+
 # Codex CLI: blanket-ignore per-developer hook + config (same model as
 # .claude/settings.json above). Contributors opt in via `interlinked enable`
 # rather than inheriting a tracked config. Nothing in `.codex/` is currently

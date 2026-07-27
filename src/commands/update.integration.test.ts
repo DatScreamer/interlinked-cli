@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   - node:fs             → existsSync / readFileSync / mkdirSync / realpathSync
 //   - node:os             → homedir (managed-checkout root)
 //   - ../lib/formatter.js → pass-through `c` so we assert plain strings
-//   - ../lib/hooks.js     → writeHookScript spy (Step 5)
+//   - hooks/settings/skill-refresh → local install refresh spies (Step 5)
 // process.exit throws a typed sentinel so `never`-returning paths can be
 // asserted on (exit code + that execution stopped at that point).
 // ===========================================
@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => ({
 	realpathSync: vi.fn(),
 	homedir: vi.fn(),
 	writeHookScript: vi.fn(),
+	installAllHooks: vi.fn(),
+	detectClients: vi.fn(),
+	refreshClientSkills: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -54,15 +57,20 @@ vi.mock("../lib/formatter.js", () => ({
 
 vi.mock("../lib/hooks.js", () => ({
 	writeHookScript: mocks.writeHookScript,
+	installAllHooks: mocks.installAllHooks,
 }));
 
+vi.mock("../lib/settings.js", () => ({ detectClients: mocks.detectClients }));
+
+vi.mock("./skill-refresh.js", () => ({ refreshClientSkills: mocks.refreshClientSkills }));
+
+import { nonNull } from "../lib/non-null.js";
 import {
 	getManagedSourceRoot,
 	INTERLINKED_CLI_REPO_URL,
 	resolveSourceRepoRoot,
 	updateCommand,
 } from "./update.js";
-import { nonNull } from "../lib/non-null.js";
 
 class ProcessExit extends Error {
 	constructor(public code: number) {
@@ -163,6 +171,12 @@ beforeEach(() => {
 	// (git clone / remote set-url go through it). Tests that exercise the
 	// failure paths re-implement this to throw on the relevant verb.
 	mocks.execFileSync.mockReturnValue("");
+	mocks.detectClients.mockReturnValue([]);
+	mocks.refreshClientSkills.mockReturnValue({
+		results: [],
+		outputLines: [],
+		summary: { clients: [], installed: 0, changed: 0, warnings: [] },
+	});
 });
 
 afterEach(() => {
@@ -865,7 +879,7 @@ describe("update — resolveCliRoot failure", () => {
 // Step 5: hook-script regeneration when cwd has .interlinked/.
 // ===========================================
 
-describe("update — hook regeneration step", () => {
+describe("update — local hook and skill refresh step", () => {
 	function withInterlinkedDir(): void {
 		mocks.existsSync.mockImplementation((p: unknown) => {
 			const path = String(p);
@@ -879,15 +893,18 @@ describe("update — hook regeneration step", () => {
 		});
 	}
 
-	it("regenerates the hook script when cwd/.interlinked exists", async () => {
+	it("refreshes hooks and skills when cwd/.interlinked exists", async () => {
 		withInterlinkedDir();
+		mocks.detectClients.mockReturnValue([{ name: "codex", exists: true }]);
 
 		await updateCommand({});
 
 		expect(mocks.writeHookScript).toHaveBeenCalledWith("/cwd");
+		expect(mocks.installAllHooks).toHaveBeenCalledWith("/cwd", ["codex"]);
+		expect(mocks.refreshClientSkills).toHaveBeenCalledWith("/cwd", ["codex"]);
 		// Progress prefix is written to stdout, the result to console.log.
-		expect(stdoutText()).toContain("Regenerating hook script...");
-		// "done" appears for build and hook regen.
+		expect(stdoutText()).toContain("Refreshing local hooks and skills...");
+		// "done" appears for build and local refresh.
 		expect(logText()).toContain("done");
 	});
 
@@ -899,19 +916,19 @@ describe("update — hook regeneration step", () => {
 
 		await updateCommand({});
 
-		expect(logText()).toContain("skipped (hook regeneration failed)");
+		expect(logText()).toContain("skipped (local refresh failed)");
 		expect(logText()).toContain("Updated to Interlinked CLI v1.2.3");
 		expect(exitSpy).not.toHaveBeenCalled();
 	});
 
-	it("does not call writeHookScript in JSON mode even when .interlinked exists", async () => {
+	it("refreshes without human output in JSON mode when .interlinked exists", async () => {
 		withInterlinkedDir();
 
 		await updateCommand({ json: true });
 
 		// Step 5 still runs (import + writeHookScript) but prints nothing.
 		expect(mocks.writeHookScript).toHaveBeenCalledWith("/cwd");
-		expect(logText()).not.toContain("Regenerating hook script");
+		expect(logText()).not.toContain("Refreshing local hooks and skills");
 	});
 });
 
