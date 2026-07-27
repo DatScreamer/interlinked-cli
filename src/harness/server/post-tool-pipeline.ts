@@ -326,7 +326,10 @@ export async function runPostToolPipeline(
 	updateTrigramDirtyLayer(ctx, event);
 
 	// --- Test run tracking: detect test runner commands and record pass/fail ---
-	trackTestRun(event, session, CWD);
+	// Returns a warning when the run produced no usable evidence (B3) — an
+	// uncounted run is invisible to the TDD gate, and staying silent about it
+	// is what let repeated green runs fail to clear a wedged cycle.
+	const testEvidenceWarning = trackTestRun(event, session, CWD);
 
 	// --- Observed-check outcome tracking: tsc/build/lint red/green for the
 	// Stop unresolved-red nudge (non-test analogue of trackTestRun). ---
@@ -340,6 +343,8 @@ export async function runPostToolPipeline(
 	dischargeCoverageOnGreenRun(event, CWD);
 
 	const postDecision = evaluatePostToolUse(event, rules, session, ctx.reservations, ctx.cohort);
+
+	if (testEvidenceWarning) pushWarnings(postDecision, testEvidenceWarning);
 
 	// --- Phase 1 Failure-Recovery Channels (Channels 1, 2, 3, 5, 6) ---
 	// Both delivery shapes converge in the helper — folded failures

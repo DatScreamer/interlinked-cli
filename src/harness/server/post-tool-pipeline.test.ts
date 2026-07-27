@@ -389,7 +389,9 @@ describe("test-run tracking", () => {
 		});
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "pass", at_step: 3 });
-		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", true);
+		// 4th arg: the command that produced the result, so a red cycle can name
+		// its evidence in the commit-gate block reason.
+		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", true, "vitest run x");
 	});
 
 	it("records a fail for a PostToolUseFailure hook event", async () => {
@@ -402,7 +404,7 @@ describe("test-run tracking", () => {
 		});
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "fail", at_step: 3 });
-		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false);
+		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false, "vitest run x");
 	});
 
 	it("records a fail for a folded tool_outcome=error on a regular PostToolUse (bug fix: was mis-counted as pass)", async () => {
@@ -416,7 +418,7 @@ describe("test-run tracking", () => {
 		});
 		await runPostToolPipeline(makeCtx(), event, session);
 		expect(session.test_runs.get("src/x.test.ts")).toEqual({ status: "fail", at_step: 3 });
-		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false);
+		expect(mRecordTestRunCycle).toHaveBeenCalledWith(session, "src/x.test.ts", false, "vitest run x");
 	});
 
 	it("records NOTHING for an interrupted test run (neither pass nor fail)", async () => {

@@ -19,6 +19,7 @@ import {
 	detectTestRunFile,
 	recordTestRunCycle,
 } from "../server-tdd-cycle.js";
+import { isOutcomeAttributable, parseTestSummary } from "../test-outcome-evidence.js";
 import type {
 	HarnessDecision,
 	HarnessEvent,
@@ -85,19 +86,58 @@ export function updateTrigramDirtyLayer(ctx: ServerRuntime, event: HarnessEvent)
  * (interrupted run, or no outcome/failure marker at all) records nothing:
  * an unproven run must not flip a cycle green OR red.
  */
-export function trackTestRun(event: HarnessEvent, session: SessionTrajectory, cwd: string): void {
-	if (!session) return;
+/** Runner output as the hook captured it. stdout/stderr when present, else a
+ *  string tool_response. */
+function observedOutput(event: HarnessEvent): string | undefined {
+	const parts = [event.stdout, event.stderr].filter((s): s is string => typeof s === "string");
+	if (parts.length > 0) return parts.join("\n");
+	return typeof event.tool_response === "string" ? event.tool_response : undefined;
+}
+
+/**
+ * The believable outcome for a test run.
+ *
+ * Evidence order: the RUNNER's own summary first, because it is immune to shell
+ * plumbing; the shell's exit status only when that status actually belongs to
+ * the runner. `vitest run … | tail` and `vitest run …; echo x` both exit 0
+ * whatever the tests did, and believing them recorded GREEN for a failing
+ * suite — the same pipe-masking mistake this harness exists to catch, and worse
+ * than a missed pass, because a red tree could then satisfy the commit gate.
+ */
+function resolveTestOutcome(event: HarnessEvent, cmd: string): "red" | "green" | "neither" {
+	const runnerVerdict = parseTestSummary(observedOutput(event));
+	if (runnerVerdict) return runnerVerdict;
+	return isOutcomeAttributable(cmd) ? classifyObservedOutcome(event) : "neither";
+}
+
+/** B3: told to the agent when a run produced no usable evidence — silence here
+ *  is what let repeated green runs fail to clear a wedged cycle with nobody
+ *  able to see why they were not counting. */
+const UNCOUNTED_RUN_WARNING =
+	"[interlinked:test-evidence] Test result NOT counted — this command's exit status belongs to what follows the runner (a pipe or `;`/`&&` tail), and the output carried no runner summary. Run the test command on its own so the result can be recorded; redirects are fine, pipes and trailing commands are not.";
+
+export function trackTestRun(
+	event: HarnessEvent,
+	session: SessionTrajectory,
+	cwd: string,
+): string | null {
+	if (!session) return null;
 	const cmd = (event.tool_input?.command as string) || "";
 	const testRunFile = detectTestRunFile(cmd, cwd);
-	if (!testRunFile) return;
-	const outcome = classifyObservedOutcome(event);
-	if (outcome === "neither") return;
+	if (!testRunFile) return null;
+
+	const outcome = resolveTestOutcome(event, cmd);
+	if (outcome === "neither") {
+		return isOutcomeAttributable(cmd) ? null : UNCOUNTED_RUN_WARNING;
+	}
+
 	const passed = outcome === "green";
 	session.test_runs.set(testRunFile, {
 		status: passed ? "pass" : "fail",
 		at_step: session.tool_call_count,
 	});
-	recordTestRunCycle(session, testRunFile, passed);
+	recordTestRunCycle(session, testRunFile, passed, cmd);
+	return null;
 }
 
 /** A per-file test-FILE argument for a runner `detectTestRunFile` doesn't
