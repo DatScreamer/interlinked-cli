@@ -152,6 +152,20 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "halstead difficulty",
+		key: "halsteadDifficulty",
+		noun: "functions denser than the p99.9 of the corpus",
+		passLabel: "no over-dense functions",
+		color: "33",
+	},
+	{
+		label: "property-test candidates",
+		key: "propertyTestCandidate",
+		noun: "pure algorithmic functions in modules with no property test",
+		passLabel: "no untested property candidates",
+		color: "33",
+	},
+	{
 		label: "readme script drift",
 		key: "readmeScriptDrift",
 		noun: "markdown npm-run references to scripts missing from package.json",

@@ -264,6 +264,16 @@ const VERIFY_ONLY_CHECKS = new Set([
 	// file-checks-agent-safety.ts (toIssues call) with the git-backed resolver;
 	// no registry entry, hence this exception. Also in DEFAULT_ADVISORY_SKIPS.
 	"gitignored_written_config",
+	// property_test_candidate: the detector reads the module's companion test
+	// files, so it is not the pure (content, filePath) function the registry's
+	// PostToolUse contract requires — determinism-conformance runs the inline
+	// pipeline twice and compares bit-for-bit, and an FS-dependent detector
+	// flaps there. Wired verify-only in file-checks-agent-safety.ts.
+	"property_test_candidate",
+	// halstead_difficulty: pure, but a full TS parse + per-token tally per file.
+	// Measured on the inline path it pushed determinism-conformance past its 30s
+	// budget. Advisory taste check, 17 hits repo-wide — deep-audit cadence.
+	"halstead_difficulty",
 	// readme_script_drift: verify-only sibling of gitignored_written_config —
 	// the detector is 3-arg (content, filePath, getScripts); it needs a
 	// package.json `scripts` resolver walking up from the markdown file, which
@@ -630,6 +640,8 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"designSlop",
 			"payloadFieldCasing",
 			"gitignoredWrittenConfig",
+			"propertyTestCandidate",
+			"halsteadDifficulty",
 			"readmeScriptDrift",
 			"specPathRef",
 			"asyncPromiseExecutor",

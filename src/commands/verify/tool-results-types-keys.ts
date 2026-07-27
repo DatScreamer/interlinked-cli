@@ -66,6 +66,8 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"designSlop",
 	"payloadFieldCasing",
 	"gitignoredWrittenConfig",
+	"propertyTestCandidate",
+	"halsteadDifficulty",
 	"readmeScriptDrift",
 	"specPathRef",
 	"placeholderRuntimeConstant",

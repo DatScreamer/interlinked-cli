@@ -71,6 +71,8 @@ const EXPECTED_KEY_ORDER = [
 	"snapshotHygiene",
 	"payloadFieldCasing",
 	"gitignoredWrittenConfig",
+	"halsteadDifficulty",
+	"propertyTestCandidate",
 	"readmeScriptDrift",
 	"specPathRef",
 	"placeholderRuntimeConstant",

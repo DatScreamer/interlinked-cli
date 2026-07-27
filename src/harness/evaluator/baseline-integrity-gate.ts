@@ -40,10 +40,11 @@ type BaselineKind =
 	| "untested-files"
 	| "metric-caps"
 	| "mutation-manifest"
-	| "skipped-tests";
+	| "skipped-tests"
+	| "check-evidence";
 
 const BASELINE_RE =
-	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps|skipped-tests-baseline)\.json$/;
+	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps|skipped-tests-baseline|check-evidence-baseline)\.json$/;
 
 const KIND_MAP: Record<string, BaselineKind> = {
 	"coverage-baseline": "coverage",
@@ -54,6 +55,7 @@ const KIND_MAP: Record<string, BaselineKind> = {
 	"metric-caps": "metric-caps",
 	"mutation-manifest": "mutation-manifest",
 	"skipped-tests-baseline": "skipped-tests",
+	"check-evidence-baseline": "check-evidence",
 };
 
 function baselineKind(filePath: string): BaselineKind | null {
@@ -284,6 +286,49 @@ function detectUntestedFiles(file: string, before: unknown, after: unknown): Bas
 	return out;
 }
 
+// The Check Evidence Contract grandfather list (docs/design/verification-density-program.md):
+// an EXEMPTION list, so the tightening direction is SHRINK. Adding a check id
+// exempts that check from having to ship MUST-FIRE / MUST-NOT-FIRE cases —
+// which is how a new detector lands with no evidence that it works.
+// `enforced` is GROW-ONLY: it names which evidence dimensions currently fail the
+// pin. Dropping one silently retires an obligation the repo already met.
+function detectEnforcedShrink(file: string, b: Record<string, unknown>, a: Record<string, unknown>): BaselineGamingFinding[] {
+	const before = Array.isArray(b.enforced) ? b.enforced : [];
+	const after = new Set(Array.isArray(a.enforced) ? a.enforced : []);
+	const dropped = before.filter((d): d is string => typeof d === "string" && !after.has(d));
+	return dropped.map((dim) =>
+		fmt(
+			file,
+			`enforced-removed:${dim}`,
+			dim,
+			undefined,
+			`check-evidence dropped the "${dim}" dimension from \`enforced\`. Enforcement may only widen — that retires an obligation the repo already satisfies.`,
+		),
+	);
+}
+
+function detectCheckEvidence(file: string, before: unknown, after: unknown): BaselineGamingFinding[] {
+	const b = asObj(before);
+	const a = asObj(after);
+	const out: BaselineGamingFinding[] = detectEnforcedShrink(file, b, a);
+	const bSet = new Set(Array.isArray(b.exempt) ? b.exempt : []);
+	const aList = Array.isArray(a.exempt) ? a.exempt : [];
+	for (const id of aList) {
+		if (typeof id === "string" && !bSet.has(id)) {
+			out.push(
+				fmt(
+					file,
+					`exempt-added:${id}`,
+					undefined,
+					id,
+					`${id} added to the check-evidence exemption list — that exempts a check from shipping MUST-FIRE / MUST-NOT-FIRE cases. Write the cases instead.`,
+				),
+			);
+		}
+	}
+	return out;
+}
+
 function detectMetricCaps(file: string, before: unknown, after: unknown): BaselineGamingFinding[] {
 	const out: BaselineGamingFinding[] = [];
 	const b = asObj(before);
@@ -375,6 +420,8 @@ export function detectBaselineGaming(
 			return detectMutationManifest(filePath, before, after);
 		case "skipped-tests":
 			return detectSkippedTests(filePath, before, after);
+		case "check-evidence":
+			return detectCheckEvidence(filePath, before, after);
 	}
 }
 

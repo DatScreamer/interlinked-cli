@@ -175,6 +175,10 @@ scratch/*
 # test-oracle-integrity.md). Committed policy: skips drifting up must surface
 # in PR diffs; protected by baseline_integrity_gate + the commit backstop.
 !.interlinked/skipped-tests-baseline.json
+# Check Evidence Contract grandfather list (docs/design/verification-density-program.md).
+# Committed policy: shrink-only, and an added exemption means a check shipped
+# without MUST-FIRE / MUST-NOT-FIRE cases — that MUST surface in PR diffs.
+!.interlinked/check-evidence-baseline.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json

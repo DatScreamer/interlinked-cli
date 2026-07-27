@@ -101,6 +101,8 @@ export interface CodeQualityResults {
 	payloadFieldCasing: CodeQualityIssue[];
 	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
 	gitignoredWrittenConfig: CodeQualityIssue[];
+	propertyTestCandidate: CodeQualityIssue[];
+	halsteadDifficulty: CodeQualityIssue[];
 	/** Verify-only: markdown `npm run <script>` / `npm test` referencing a script absent from package.json. */
 	readmeScriptDrift: CodeQualityIssue[];
 	/** Verify-only: present-tense claim that a path exists in-repo when the working tree lacks it (Sol D-3). */

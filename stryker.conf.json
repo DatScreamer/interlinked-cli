@@ -5,7 +5,12 @@
 	"vitest": {
 		"configFile": "vitest.stryker.config.ts"
 	},
+	"_mutate_comment": "Default target only. Every real run overrides it: the cloud runner does `stryker run --mutate <file>` for the edited file, and the detector-recall sweep (verification-density program Phase 3) points it at a detector. Left narrow so a bare `npx stryker run` is fast rather than a whole-repo job.",
 	"mutate": ["src/harness/mutation/instability.ts"],
+	"_mutator_comment": "Operator coverage is DECLARED, not inherited. Stryker's defaults are a moving target across versions, and a silently-shrinking operator set weakens every mutation score in the repo without changing a single number in a baseline — exactly the drift the baseline-integrity gate exists to stop elsewhere. excludedMutations is empty on purpose: the full operator set is in force, and `stryker-mutators.test.ts` pins that.",
+	"mutator": {
+		"excludedMutations": []
+	},
 	"ignorePatterns": [
 		".interlinked",
 		"dist",

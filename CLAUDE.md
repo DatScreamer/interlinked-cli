@@ -324,8 +324,88 @@ against current code, May 2026):
 6. Update `AGGREGATED_IN_JSON` in `__tests__/check-pipeline-parity.test.ts`
    and `DEFAULT_ADVISORY_SKIPS` in `src/commands/verify/advisory.ts` +
    its regression test when demoting to advisory.
-7. Each new check ships with ≥3 negative cases (legitimate patterns that
-   must NOT fire) and ≥3 positive cases.
+7. Each new check ships with labeled MUST-FIRE and MUST-NOT-FIRE cases
+   meeting its **phase-scaled** obligation under the Check Evidence
+   Contract (below) — not a flat count.
+
+### Check Evidence Contract (added 2026-07-26)
+
+The checks are what everything else trusts, and they used to be the least
+verified code in the tree: the old "≥3 positive / ≥3 negative" rule was prose
+with no pin, and **13 of 100** check test files followed it. `src/harness/check-evidence/`
+replaces it with a measured, phase-scaled contract. Spec:
+`docs/design/verification-density-program.md`.
+
+A flat count was always a proxy for the real question — *does every
+distinguishable behavior of the detector have a case in both directions?* One
+case is **complete** if it covers the only branch; three is negligent if there
+are twelve. So the obligation scales by phase, and Phase 3 will derive it from
+the detector's own branch structure.
+
+| Tier | Min +/− cases | Branch cov | Corpus | Mutation | Adversarial |
+|---|---|---|---|---|---|
+| `pre_block` | 3 / 3 | 100% | required | required | required |
+| `pre_warn` | 2 / 2 | 100% | required | required | — |
+| `post` (default gate) | 2 / 2 | 90% | required | — | — |
+| `post` (advisory) | 1 / 1 | 80% | — | — | — |
+
+Only the case counts and test-file presence are **enforced** today; the later
+columns are recorded on the tier and enforced in Phases 2–4 (reporting them as
+shortfalls now would fail every check on landing and teach the agent to ignore
+the pin).
+
+| File | Purpose |
+|---|---|
+| `check-evidence/types.ts` | Evidence record, tier, verdict, baseline shapes |
+| `check-evidence/obligations.ts` | The four tiers + `tierFor` / `evaluateEvidence` |
+| `check-evidence/case-parser.ts` | Extracts labeled cases from test source (two conventions) |
+| `check-evidence/resolve.ts` | Detector-name → source file + exercising test files |
+| `check-evidence/extract.ts` | Registry-wide sweep producing records + verdicts |
+| `check-evidence/baseline.ts` | Loads the shrink-only grandfather list |
+| `check-evidence/contract.test.ts` | **The pin.** Fails on any ungrandfathered violation |
+
+Labeling conventions the parser recognizes — either is enough:
+- a `describe()` whose title names a direction (`"— positive (must fire)"` /
+  `"— negative (must not fire)"`); every `it()` inside inherits it
+- a per-test prefix (`it("P1: …")` / `it("N3: …")`), which overrides the
+  enclosing describe
+
+Four evidence dimensions exist (`cases`, `corpus`, `derived_cases`, `mutation`,
+`adversarial`); enforcement is **staged** via the baseline's `enforced` field,
+which is GROW-ONLY under `baseline_integrity_gate`. At landing only `cases`
+fails the pin — the rest are measured and reported so turning one on later is a
+ratchet step with a known backlog, not a guess. Supporting modules:
+`corpus.ts` / `corpus-scan.ts` (dogfood runs + adjudication,
+`.interlinked/check-corpus.json`), `recall.ts` (case floors derived from the
+detector's own branch structure; detector mutation scores), `adversarial.ts`
+(independent FP hunt, bound to a source hash so rewriting the detector re-opens
+the review).
+
+**A check earns per-edit latency by catching defects, not by expressing taste.**
+Both checks added by this program (`halstead_difficulty` — Halstead density,
+the dimension the control-flow metrics cannot see; `property_test_candidate` —
+pure algorithmic functions with no property test) are **verify-only**, decided
+on measurement: the property check reads companion test files so it is not the
+pure `(content, filePath)` function the registry contract requires, and the
+Halstead check's full TS parse pushed `determinism-conformance` past its 30s
+budget on the inline path. Both are advisory and fire ~17 / ~62 times
+repo-wide — deep-audit cadence. They live in `VERIFY_ONLY_CHECKS` alongside
+`gitignored_written_config` and `readme_script_drift`.
+
+**The corpus obligation is not ceremony.** `halstead_difficulty` was calibrated
+on unit-test fixtures at a difficulty ceiling of 25; the corpus run over 9023
+real functions showed that is the *75th percentile* and produced 2226 findings.
+Recalibrated to 80 it produces 17. Calibrate new checks against the tree, never
+against fixtures.
+
+Compliance at landing: **138/251 checks pass; 113 grandfathered** in
+`.interlinked/check-evidence-baseline.json` (committed, carved out of the
+`.interlinked/*` ignore). The list is **shrink-only** and enforced by
+`baseline_integrity_gate` (`check-evidence` kind) — adding an id there exempts a
+check from having to prove it works, so it blocks. New checks get no
+grandfathering. Worst tier is the strictest one: `pre_block` hard rails sit at
+43%, so backfill those first.
+
 | `src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
 | `src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
 | `src/harness/change-propagation.ts` | Side-effect tracking across edits |

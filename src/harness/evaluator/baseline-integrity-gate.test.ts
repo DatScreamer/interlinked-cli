@@ -17,6 +17,7 @@ const LARGE = "/repo/.interlinked/large-files-baseline.json";
 const UNTESTED = "/repo/.interlinked/untested-files-baseline.json";
 const CAPS = "/repo/.interlinked/metric-caps.json";
 const SKIPPED = "/repo/.interlinked/skipped-tests-baseline.json";
+const EVIDENCE = "/repo/.interlinked/check-evidence-baseline.json";
 
 function detect(file: string, before: unknown, after: unknown, exists = alwaysExists) {
 	return detectBaselineGaming(file, JSON.stringify(before), JSON.stringify(after), exists);
@@ -138,6 +139,84 @@ describe("untested-files-baseline.json — INVERTED: exemption list may only shr
 	});
 	it("ALLOWS raising the floor and removing an exemption", () => {
 		expect(detect(UNTESTED, base, { min_coverage_pct: 80, files: [] })).toEqual([]);
+	});
+});
+
+describe("check-evidence-baseline.json — INVERTED: exemption list may only shrink", () => {
+	const base = { exempt: ["self_import", "eval_usage"] };
+
+	it("P1: BLOCKS adding a check id to the exemption list", () => {
+		const after = { exempt: ["self_import", "eval_usage", "brand_new_check"] };
+		const found = detect(EVIDENCE, base, after);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.message).toMatch(/brand_new_check/);
+	});
+
+	it("P2: BLOCKS each added id separately so the report names all of them", () => {
+		const after = { exempt: ["self_import", "eval_usage", "a_check", "b_check"] };
+		expect(detect(EVIDENCE, base, after)).toHaveLength(2);
+	});
+
+	it("P3: BLOCKS an add even when another entry is simultaneously removed", () => {
+		// Swapping one exemption for another keeps the count flat but still
+		// exempts a check that was previously gated.
+		const after = { exempt: ["self_import", "sneaky_check"] };
+		expect(detect(EVIDENCE, base, after)).toHaveLength(1);
+	});
+
+	it("N1: ALLOWS removing an exemption (the ratchet direction)", () => {
+		expect(detect(EVIDENCE, base, { exempt: ["self_import"] })).toEqual([]);
+	});
+
+	it("N2: ALLOWS emptying the list entirely", () => {
+		expect(detect(EVIDENCE, base, { exempt: [] })).toEqual([]);
+	});
+
+	it("N3: ALLOWS an unchanged list", () => {
+		expect(detect(EVIDENCE, base, base)).toEqual([]);
+	});
+
+	it("N4: ALLOWS a note-only edit", () => {
+		expect(detect(EVIDENCE, base, { ...base, note: "clarified the policy" })).toEqual([]);
+	});
+
+	it("N5: ignores a malformed exempt field rather than blocking blindly", () => {
+		expect(detect(EVIDENCE, base, { exempt: "not-an-array" })).toEqual([]);
+	});
+
+	describe("enforced dimensions — GROW-ONLY", () => {
+		const staged = { exempt: [], enforced: ["cases", "corpus"] };
+
+		it("P1: BLOCKS dropping an enforced dimension", () => {
+			const found = detect(EVIDENCE, staged, { exempt: [], enforced: ["cases"] });
+			expect(found).toHaveLength(1);
+			expect(found[0]?.message).toMatch(/corpus/);
+		});
+
+		it("P2: BLOCKS clearing the list entirely, once per dropped dimension", () => {
+			expect(detect(EVIDENCE, staged, { exempt: [], enforced: [] })).toHaveLength(2);
+		});
+
+		it("P3: BLOCKS removing the field altogether", () => {
+			expect(detect(EVIDENCE, staged, { exempt: [] })).toHaveLength(2);
+		});
+
+		it("N1: ALLOWS widening enforcement", () => {
+			expect(detect(EVIDENCE, staged, { exempt: [], enforced: ["cases", "corpus", "mutation"] })).toEqual([]);
+		});
+
+		it("N2: ALLOWS an unchanged list", () => {
+			expect(detect(EVIDENCE, staged, staged)).toEqual([]);
+		});
+
+		it("N3: ALLOWS reordering", () => {
+			expect(detect(EVIDENCE, staged, { exempt: [], enforced: ["corpus", "cases"] })).toEqual([]);
+		});
+
+		it("reports an enforced shrink and an exemption add together", () => {
+			const after = { exempt: ["new_check"], enforced: ["cases"] };
+			expect(detect(EVIDENCE, staged, after)).toHaveLength(2);
+		});
 	});
 });
 

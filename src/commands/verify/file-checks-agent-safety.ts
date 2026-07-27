@@ -28,6 +28,8 @@ import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
 import { detectPayloadFieldCasing } from "../../harness/checks/payload-casing.js";
 import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
+import { maintainabilityCheck } from "../../harness/checks/maintainability.js";
+import { propertyCandidateCheck } from "../../harness/checks/property-candidate.js";
 import {
 	detectReadmeScriptDrift,
 	resolveNearestPackageScripts,
@@ -347,6 +349,21 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	);
 	r.payloadFieldCasing.push(
 		...toIssues("payload_field_casing", relPath, detectPayloadFieldCasing(content, file)),
+	);
+	// halstead_difficulty — verify-only. Pure, but a full TS parse plus a
+	// per-token tally per file: measured, it pushed the determinism-conformance
+	// suite (18 inputs x 3 runs) past its 30s budget on the inline path. An
+	// advisory taste check that fires 17 times repo-wide does not earn per-edit
+	// latency; deep audit is the right cadence.
+	r.halsteadDifficulty.push(
+		...toIssues("halstead_difficulty", relPath, maintainabilityCheck(content, file)),
+	);
+	// property_test_candidate — verify-only: the detector reads the module's
+	// companion test files, so it is not the pure (content, filePath) function
+	// the PostToolUse registry contract requires (and the determinism-conformance
+	// test enforces). Same standing as the resolver-backed checks below.
+	r.propertyTestCandidate.push(
+		...toIssues("property_test_candidate", relPath, propertyCandidateCheck(content, file)),
 	);
 	// gitignored_written_config — verify-only (3-arg detector needs git context).
 	// Backed by a `git check-ignore` resolver; fails open to "not ignored" off-git.
