@@ -14,6 +14,7 @@ import { filterToRisers as filterDryToRisers } from "../checks/dry-baseline.js";
 import { checkCodeCloneFindings, formatCodeCloneFinding } from "../checks/dry-check.js";
 import { locateBinaryContent } from "../checks/language-agnostic.js";
 import { type FilePriority, shouldRunAdvisoryChecks } from "../file-priority.js";
+import { listWithOverflow, MAX_LISTED_FINDINGS } from "../finding-overflow.js";
 import {
 	checkEmptyFile,
 	checkFunctionComplexity,
@@ -144,19 +145,13 @@ function checkMissingReturnTypesBlock(
 		}
 	}
 	if (missingReturnTypes.length === 0) return [];
-	const shown = missingReturnTypes.slice(0, 5);
-	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-	const overflow =
-		missingReturnTypes.length > 5
-			? `\n  ... and ${missingReturnTypes.length - 5} more`
-			: "";
 	return [
 		{
 			name: "missing_return_types",
 			severity: "warning",
 			message: `${missingReturnTypes.length} exported function(s) without return type annotations in ${filePath}`,
 			file: filePath,
-			detail: detail + overflow,
+			detail: listWithOverflow(missingReturnTypes, (m) => `  L${m.line}: ${m.text}`),
 		},
 	];
 }
@@ -193,17 +188,13 @@ function checkComplexityBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 		complexFns = filterComplexFnsToEdit(complexFns, event, fileContent, ctx);
 	}
 	if (complexFns.length === 0) return [];
-	const shown = complexFns.slice(0, 5);
-	const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-	const overflow =
-		complexFns.length > 5 ? `\n  ... and ${complexFns.length - 5} more` : "";
 	return [
 		{
 			name: "complexity",
 			severity: "warning",
 			message: `${complexFns.length} complex function(s) in ${filePath}`,
 			file: filePath,
-			detail: detail + overflow,
+			detail: listWithOverflow(complexFns, (m) => `  L${m.line}: ${m.text}`),
 		},
 	];
 }
@@ -259,21 +250,18 @@ function checkCrapRisersBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 		baseline: ctx.baseline.crapScores,
 	});
 	if (risers.length === 0) return [];
-	const shown = risers.slice(0, 5);
-	const detail = shown
-		.map(
-			(f) =>
-				`  ${f.function}: CRAP ${f.crap_score.toFixed(0)} (cyc ${f.complexity}, cov ${f.coverage_pct.toFixed(0)}%)`,
-		)
-		.join("\n");
-	const overflow = risers.length > 5 ? `\n  ... and ${risers.length - 5} more` : "";
+	const detail = listWithOverflow(
+		risers,
+		(f) =>
+			`  ${f.function}: CRAP ${f.crap_score.toFixed(0)} (cyc ${f.complexity}, cov ${f.coverage_pct.toFixed(0)}%)`,
+	);
 	return [
 		{
 			name: "crap",
 			severity: "warning",
 			message: `${risers.length} function(s) with risen CRAP in ${filePath} — complex code that lost coverage`,
 			file: filePath,
-			detail: `${detail}${overflow}\n→ restore a test exercising these branches, or simplify the function.`,
+			detail: `${detail}\n→ restore a test exercising these branches, or simplify the function.`,
 		},
 	];
 }
@@ -308,16 +296,12 @@ function checkAgentSafetyBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 					).map(formatCodeCloneFinding(absFilePath))
 				: check.fn();
 		if (matches.length > 0) {
-			const shown = matches.slice(0, 5);
-			const detail = shown.map((m) => `  L${m.line}: ${m.text}`).join("\n");
-			const overflow =
-				matches.length > 5 ? `\n  ... and ${matches.length - 5} more` : "";
 			out.push({
 				name: check.name,
 				severity: check.severity,
 				message: `${matches.length} ${check.name.replace(/_/g, " ")} issue(s) in ${filePath}`,
 				file: filePath,
-				detail: detail + overflow,
+				detail: listWithOverflow(matches, (m) => `  L${m.line}: ${m.text}`),
 			});
 		}
 	}
@@ -339,11 +323,17 @@ function checkFootgunBlock(ctx: InlineBlockContext): QualityCheckResult[] {
 	const out: QualityCheckResult[] = [];
 	for (const [id, bucket] of byId) {
 		const first = bucket[0];
-		const shown = bucket.slice(0, 5);
+		// NOT migrated to listWithOverflow: this is the one site where the
+		// overflow line trails the fix-instruction rather than the list, so the
+		// helper would reorder operator-facing output. Left explicit.
+		const shown = bucket.slice(0, MAX_LISTED_FINDINGS);
 		const detail = `${shown
 			.map((f) => `  L${f.match.line}: ${f.match.text}`)
 			.join("\n")}\n→ ${nonNull(first).fixInstruction}`;
-		const overflow = bucket.length > 5 ? `\n  ... and ${bucket.length - 5} more` : "";
+		const overflow =
+			bucket.length > MAX_LISTED_FINDINGS
+				? `\n  ... and ${bucket.length - MAX_LISTED_FINDINGS} more`
+				: "";
 		out.push({
 			name: id,
 			severity: "warning",
