@@ -20,6 +20,20 @@
 // nothing at all, and a site that deviates has to pass a number — which makes
 // the deviation visible in review instead of invisible in a slice() call.
 
+// SCOPE — harness findings only. `src/commands/` keeps three hand-written
+// truncations (index-cmd 50 file paths, status-full-render 5 commits, watch 12
+// tasks) and they are DELIBERATELY not migrated. They differ in every way that
+// made the harness sites worth unifying: they build `string[]` line arrays or
+// call console.log per item rather than one `detail` string, they indent 2 / 6
+// / 4 spaces rather than a uniform 2, two style the overflow with `c.dim()`,
+// and their caps were each chosen for a reason rather than typed by accident.
+//
+// The deeper difference is the reader. These caps govern agent CONTEXT SPEND —
+// an unbudgeted cost the agent cannot opt out of. The CLI ones govern terminal
+// scrollback for a human who can re-run with different arguments. Migrating
+// them would mean parameterizing this helper on indent and ANSI styling to
+// serve two unrelated readers. Don't.
+
 /**
  * Findings listed before the remainder is summarized. The default for every
  * call site that has no specific reason to differ.
