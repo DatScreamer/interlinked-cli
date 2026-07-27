@@ -35,6 +35,8 @@ const cloudRecentCommand = vi.fn();
 const debtListCommand = vi.fn();
 const debtShowCommand = vi.fn();
 const debtResolveCommand = vi.fn();
+const tddStatusCommand = vi.fn();
+const tddClearCommand = vi.fn();
 
 vi.mock(`../commands/recurrence.js`, () => ({
 	recurrenceListCommand: (...a: unknown[]) => recurrenceListCommand(...a),
@@ -62,6 +64,10 @@ vi.mock(`../commands/debt.js`, () => ({
 	debtListCommand: (...a: unknown[]) => debtListCommand(...a),
 	debtShowCommand: (...a: unknown[]) => debtShowCommand(...a),
 	debtResolveCommand: (...a: unknown[]) => debtResolveCommand(...a),
+}));
+vi.mock(`../commands/tdd.js`, () => ({
+	tddStatusCommand: (...a: unknown[]) => tddStatusCommand(...a),
+	tddClearCommand: (...a: unknown[]) => tddClearCommand(...a),
 }));
 const queryCommand = vi.fn();
 vi.mock(`../commands/query.js`, () => ({
@@ -154,6 +160,30 @@ describe("registerObservabilityLogCommands — structure", () => {
 		expect(names(sub(program, "plan")).sort()).toEqual(["list", "show"].sort());
 		expect(names(sub(program, "cloud"))).toEqual(["recent"]);
 		expect(names(sub(program, "debt")).sort()).toEqual(["list", "resolve", "show"].sort());
+		expect(names(sub(program, "tdd")).sort()).toEqual(["clear", "status"].sort());
+	});
+
+	// The reset path for a wedged commit gate — the whole point of the command
+	// is that it can be reached and aimed at one file.
+	it("tdd clear forwards the optional file positional and opts", async () => {
+		const program = build();
+		await program.parseAsync(["tdd", "clear", "src/foo.ts", "--json"], { from: "user" });
+		expect(tddClearCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(tddClearCommand.mock.calls[0])[0]).toBe("src/foo.ts");
+		expect(nonNull(tddClearCommand.mock.calls[0])[1]).toMatchObject({ json: true });
+	});
+
+	it("tdd clear works with no file — the clear-everything case", async () => {
+		const program = build();
+		await program.parseAsync(["tdd", "clear"], { from: "user" });
+		expect(nonNull(tddClearCommand.mock.calls[0])[0]).toBeUndefined();
+	});
+
+	it("tdd status forwards opts", async () => {
+		const program = build();
+		await program.parseAsync(["tdd", "status", "--full"], { from: "user" });
+		expect(tddStatusCommand).toHaveBeenCalledTimes(1);
+		expect(nonNull(tddStatusCommand.mock.calls[0])[0]).toMatchObject({ full: true });
 	});
 
 	it("marks `plan list` as the default subcommand of plan", () => {

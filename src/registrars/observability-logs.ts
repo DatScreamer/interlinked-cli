@@ -192,6 +192,41 @@ export function registerObservabilityLogCommands(program: Command): void {
 		});
 
 	// ===========================================
+	// tdd — inspect and clear TDD cycle state. The commit gate blocks on
+	// REMEMBERED cycle state and nothing re-measures the tree at decision
+	// time; when that memory went wrong (2026-07-26) it refused every commit
+	// for hours against a green suite, with no way to see what it believed or
+	// to correct it. A gate that can wedge needs an inspection and reset path.
+	// ===========================================
+	const tddCmd = program
+		.command("tdd")
+		.description("Inspect and clear TDD cycle state (what the commit gate believes)");
+
+	tddCmd
+		.command("status")
+		.description("Show tracked cycles: state, how old each red is, and the run that set it")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.option("--full", "Every cycle, not just the blocking ones")
+		.action(async (opts: OptionValues) => {
+			const { tddStatusCommand } = await import("../commands/tdd.js");
+			await tddStatusCommand(opts);
+		});
+
+	tddCmd
+		.command("clear [file]")
+		.description(
+			"Drop a wedged cycle (or all of them). The commit gate re-measures on the next test run, so a genuinely failing file reds again",
+		)
+		.option("--cwd <path>", "Project root")
+		.option("--json", "Machine-readable output")
+		.action(async (file: string | undefined, opts: OptionValues) => {
+			const { tddClearCommand } = await import("../commands/tdd.js");
+			await tddClearCommand(file, opts);
+		});
+
+	// ===========================================
 	// debt — inspect the pair-scoped TDD obligation ledger
 	// (.interlinked/obligations.jsonl): open coverage / red_suite debts, the
 	// per-file transition history, and a human-override resolve. Phase 3 of
