@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RSS_CEILING_BYTES, shouldRecycle } from "./memory-ceiling.js";
+import {
+	DEFAULT_DAEMON_HEAP_MB,
+	DEFAULT_RSS_CEILING_BYTES,
+	shouldRecycle,
+} from "./memory-ceiling.js";
 
 /**
  * The daemon grows under sustained edit traffic and, past roughly 750MB on a
@@ -41,9 +45,20 @@ describe("shouldRecycle", () => {
 		expect(shouldRecycle(10 ** 12, -1)).toBe(false);
 	});
 
-	it("has a default ceiling well below the ~750MB hang threshold", () => {
-		// The point is to leave while still responsive, not to approach the cliff.
-		expect(DEFAULT_RSS_CEILING_BYTES).toBeLessThan(750 * 1024 * 1024);
+	it("keeps the ceiling a bounded backstop (not disabled, not runaway)", () => {
+		expect(DEFAULT_RSS_CEILING_BYTES).toBeLessThan(2048 * 1024 * 1024);
 		expect(DEFAULT_RSS_CEILING_BYTES).toBeGreaterThan(200 * 1024 * 1024);
+	});
+
+	it("keeps the V8 heap limit comfortably BELOW the RSS ceiling", () => {
+		// The regulator/backstop ordering: V8 must hit GC pressure (heap limit)
+		// well before the recycler hits the RSS ceiling. When these inverted
+		// (heap 4096MB vs ceiling 500–700MB, 2026-07-28) V8 never ran a major GC
+		// and every loaded daemon was recycled for carrying collectable garbage —
+		// a permanent restart loop with the guard down in the gaps.
+		const heapBytes = DEFAULT_DAEMON_HEAP_MB * 1024 * 1024;
+		expect(heapBytes).toBeLessThan(DEFAULT_RSS_CEILING_BYTES);
+		// Headroom for external memory + code + stacks before the backstop.
+		expect(DEFAULT_RSS_CEILING_BYTES - heapBytes).toBeGreaterThan(150 * 1024 * 1024);
 	});
 });

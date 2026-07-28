@@ -7,6 +7,7 @@ import {
 	appendReceipt,
 	applyMeasuredRun,
 	changedSymbols,
+	clearManifestCache,
 	computeNewSurvivors,
 	emptyManifest,
 	loadManifest,
@@ -185,6 +186,68 @@ describe("manifest I/O", () => {
 	it("returns null on an unsupported version", () => {
 		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 2, files: {} }), "utf-8");
 		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("P: serves the SAME parsed object while the file is unchanged (per-edit parse cost)", () => {
+		// The daemon calls loadManifest on EVERY code-edit PreToolUse. At 46MB a
+		// fresh JSON.parse costs ~300MB transient heap per call — measured live
+		// 2026-07-28 as the rss-ceiling kill loop. Unchanged file ⇒ identical
+		// object, no re-parse.
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] })]);
+		saveManifest(dir, m);
+		const first = loadManifest(dir);
+		const second = loadManifest(dir);
+		expect(second).toBe(first);
+	});
+
+	it("P: the persisted BYTES are a loadable manifest, independent of any in-process cache", () => {
+		// Guards the persist against cache-tautology: with save-primes-cache, a
+		// broken write (e.g. an empty file) would be invisible to a save→load
+		// round-trip because the cache serves the good object. Read the raw disk
+		// bytes instead — this is what a FRESH daemon will actually parse.
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] })]);
+		saveManifest(dir, m);
+		const parsed = JSON.parse(readFileSync(mutationManifestPath(dir), "utf-8"));
+		expect(parsed).toEqual(m);
+	});
+
+	it("P: saveManifest primes the cache — the next load returns the saved object itself", () => {
+		// A measured-clean pass persists the refreshed manifest; without priming,
+		// every persist invalidates the read cache and the NEXT edit re-parses
+		// 46MB (~300MB transient) — the cache would self-defeat under exactly the
+		// traffic it exists for.
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] })]);
+		saveManifest(dir, m);
+		expect(loadManifest(dir)).toBe(m);
+	});
+
+	it("P: clearManifestCache drops the resident copy so the next load re-parses", () => {
+		// The idle-shrink path: a daemon idle for minutes should not stay a
+		// ~1GB jetsam target for the sake of a cache the next event can rebuild
+		// in ~200ms. After clearing, identity must change (fresh parse).
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] })]);
+		saveManifest(dir, m);
+		const first = loadManifest(dir);
+		clearManifestCache();
+		const second = loadManifest(dir);
+		expect(second).not.toBe(first);
+		expect(second).toEqual(first);
+	});
+
+	it("N: a rewritten manifest is re-parsed (mtime/size key)", () => {
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] })]);
+		saveManifest(dir, m);
+		const first = loadManifest(dir);
+		// A second symbol changes the serialized SIZE, so the re-parse triggers
+		// deterministically regardless of filesystem mtime granularity.
+		const m2 = manifestWith(FILE, [
+			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }),
+			sym({ symbolId: "s2", symbolHash: "h2", mutants: [rec("m2", "killed")] }),
+		]);
+		saveManifest(dir, m2);
+		const second = loadManifest(dir);
+		expect(second).not.toBe(first);
+		expect(Object.keys(second?.files[FILE] ?? {})).toHaveLength(2);
 	});
 });
 

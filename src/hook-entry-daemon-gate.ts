@@ -36,6 +36,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeLastExit, readRecentDaemonEvents } from "./harness/daemon-ledger.js";
+import { DEFAULT_DAEMON_HEAP_MB } from "./harness/memory-ceiling.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
 import { readGuardDisable } from "./lib/guard-state.js";
 
@@ -297,7 +298,20 @@ function selfHealLockedRecently(lockPath: string): boolean {
 function spawnDaemonDetached(serverPath: string, root: string): void {
 	const child = spawn(
 		process.execPath,
-		[serverPath, "--cwd", root, "--protocol", "dual", "--session-id", "default"],
+		[
+			// Same V8 heap regulator every spawn path applies (memory-ceiling.ts:
+			// DEFAULT_DAEMON_HEAP_MB) — a self-healed daemon must not come back
+			// with the unbounded default and resume the no-GC balloon.
+			`--max-old-space-size=${DEFAULT_DAEMON_HEAP_MB}`,
+			"--expose-gc",
+			serverPath,
+			"--cwd",
+			root,
+			"--protocol",
+			"dual",
+			"--session-id",
+			"default",
+		],
 		{ detached: true, stdio: "ignore" },
 	);
 	child.unref();

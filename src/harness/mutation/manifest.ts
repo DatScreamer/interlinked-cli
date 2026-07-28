@@ -6,7 +6,7 @@
 // coverage index: a generation-stamped snapshot of per-symbol hashes + per-mutant
 // statuses. Pure functions apart from the JSON load/save.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SymbolHashEntry } from "./identity.js";
 import { freshInstability, mutantIdsChurned, updateInstability } from "./instability.js";
@@ -45,13 +45,49 @@ export function emptyManifest(meta: ManifestMeta): MutationManifest {
 	};
 }
 
+/** Parsed-manifest cache, keyed by (path, mtimeMs, size). The daemon calls
+ *  `loadManifest` on EVERY code-edit PreToolUse; at 46MB a fresh JSON.parse
+ *  costs ~300MB transient heap per call — measured live 2026-07-28 as the
+ *  rss-ceiling kill loop (daemon-events.jsonl: heap 1–1.9GB, back-to-back
+ *  recycles). The manifest only changes on a measured-clean persist, so an
+ *  unchanged file serves the same parsed object. One entry per path — a
+ *  daemon serves one repo, and a second path simply evicts the previous. */
+let manifestCache: {
+	path: string;
+	mtimeMs: number;
+	size: number;
+	manifest: MutationManifest;
+} | null = null;
+
+/** Drop the resident parsed manifest — public API for the daemon's
+ *  idle-shrink path: an idle daemon should not stay a ~1GB jetsam target for
+ *  the sake of a cache the next event rebuilds in ~200ms. */
+export function clearManifestCache(): void {
+	manifestCache = null;
+}
+
+function cachedManifest(path: string, mtimeMs: number, size: number): MutationManifest | null {
+	if (!manifestCache) return null;
+	const hit =
+		manifestCache.path === path && manifestCache.mtimeMs === mtimeMs && manifestCache.size === size;
+	return hit ? manifestCache.manifest : null;
+}
+
 export function loadManifest(dir: string): MutationManifest | null {
 	const path = mutationManifestPath(dir);
 	if (!existsSync(path)) return null;
 	try {
+		const stat = statSync(path);
+		const hit = cachedManifest(path, stat.mtimeMs, stat.size);
+		if (hit) return hit;
 		const raw = JSON.parse(readFileSync(path, "utf-8"));
 		if (!raw || typeof raw !== "object" || raw.version !== 1 || !raw.files) return null;
-		return raw as MutationManifest;
+		// SAFETY: version + files presence checked on the line above; deeper shape
+		// errors surface as missing per-file records, which every consumer treats
+		// as "no baseline" rather than crashing.
+		const manifest = raw as MutationManifest; // SAFETY: see guard above
+		manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
+		return manifest;
 	} catch {
 		return null;
 	}
@@ -60,7 +96,15 @@ export function loadManifest(dir: string): MutationManifest | null {
 export function saveManifest(dir: string, manifest: MutationManifest): void {
 	const path = mutationManifestPath(dir);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
+	// Compact on purpose: at manifest scale (46MB pretty / ~28MB compact for 730
+	// files) the indent alone costs tens of MB of string churn on EVERY
+	// measured-clean persist, and nobody reads this file by eye.
+	writeFileSync(path, `${JSON.stringify(manifest)}\n`, "utf-8");
+	// Prime the read cache with the object just written: without this every
+	// persist invalidates the cache and the NEXT edit re-parses the whole file —
+	// the cache would self-defeat under exactly the traffic it exists for.
+	const stat = statSync(path);
+	manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
 }
 
 function fileRecords(manifest: MutationManifest, file: string): Record<StableId, SymbolRecord> {
@@ -115,7 +159,7 @@ export function quarantinedSymbols(base: MutationManifest, file: string): Set<St
 	return out;
 }
 
-export function toRecord(identity: MutantIdentity, status: MutantStatus, firstSeen: string): MutantRecord {
+function toRecord(identity: MutantIdentity, status: MutantStatus, firstSeen: string): MutantRecord {
 	return {
 		mutantId: identity.mutantId,
 		siteId: identity.siteId,
@@ -169,7 +213,7 @@ export function computeNewSurvivors(
 
 /** Consecutive stable runs required before a quarantined symbol's identity is
  *  trusted (BLOCK-capable) again. Mirrors the coverage index's quarantine model. */
-export const QUARANTINE_STABILITY_THRESHOLD = 3;
+const QUARANTINE_STABILITY_THRESHOLD = 3;
 
 interface RefreshSymbolArgs {
 	prev: SymbolRecord | undefined;

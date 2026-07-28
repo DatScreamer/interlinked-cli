@@ -10,6 +10,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
+import { DEFAULT_DAEMON_HEAP_MB } from "../harness/memory-ceiling.js";
 import { c, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import {
@@ -50,8 +51,10 @@ export function buildHarnessSpawnArgs(
 	sessionId: string,
 	opts: { verbose?: boolean },
 ): string[] {
-	const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || 4096;
-	const args = [`--max-old-space-size=${heapMb}`, serverPath, "--cwd", cwd];
+	const heapMb = Number(process.env.INTERLINKED_HARNESS_HEAP_MB) || DEFAULT_DAEMON_HEAP_MB;
+	// --expose-gc powers the idle shrink (daemon-timers): a forced collection
+	// after the manifest cache drops, so idle RSS actually falls.
+	const args = [`--max-old-space-size=${heapMb}`, "--expose-gc", serverPath, "--cwd", cwd];
 	args.push("--protocol", protocol);
 	if (protocol !== "raw") args.push("--session-id", sessionId);
 	if (opts.verbose) args.push("--verbose");
