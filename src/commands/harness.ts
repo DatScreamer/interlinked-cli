@@ -83,14 +83,27 @@ export async function harnessStartCommand(opts: {
 	const sessionId = opts.sessionId || "default";
 
 	try {
+		// Reap BEFORE the already-running check. The reap below (line ~120) only
+		// ran on the spawn path, so the most common call in a long session — a
+		// hung-but-live daemon, `start` reports "already running", returns — never
+		// reaped anything. Orphans then accumulated for hours: measured
+		// 2026-07-28, one had been resident since 09:15 holding 743MB while the
+		// live daemon degraded for want of the memory it was sitting on. Reaping
+		// first makes every `start` a cleanup, which is what the docs already
+		// promise ("`interlinked harness start` reaps orphans and reports what it
+		// reaped").
+		const reaped = reapOrphanHarnesses(cwd);
 		const status = isHarnessRunning(cwd);
 		if (status.running) {
 			output(
 				mode,
-				{ already_running: true, pid: status.pid },
+				{ already_running: true, pid: status.pid, reaped: reaped.killed },
 				{
-					json: () => ({ status: "already_running", pid: status.pid }),
-					normal: () => `Harness already running (PID ${status.pid})`,
+					json: () => ({ status: "already_running", pid: status.pid, reaped: reaped.killed }),
+					normal: () =>
+						reaped.killed.length > 0
+							? `Harness already running (PID ${status.pid}); reaped ${reaped.killed.length} orphan(s): ${reaped.killed.join(", ")}`
+							: `Harness already running (PID ${status.pid})`,
 				},
 			);
 			return;

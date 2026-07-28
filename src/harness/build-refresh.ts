@@ -22,6 +22,7 @@ import { statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
+import { recordDaemonEvent } from "./daemon-ledger.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
 /** A fresher artifact must be at least this old — tsup may still be writing. */
@@ -113,6 +114,36 @@ function spawnHandOver(deps: BuildRefreshDeps, own: OwnArtifact, cwd: string): v
 }
 
 /**
+ * Spawn the same battle-tested `harness restart` this watcher uses, for OTHER
+ * planned exits — the rss-ceiling recycle foremost.
+ *
+ * Exists because the recycle originally just exited cleanly and waited for the
+ * next tool call's self-heal — which never comes between turns. Measured
+ * 2026-07-28: an rss-ceiling exit at 12:42 was followed by an ELEVEN-MINUTE
+ * hole with no daemon, ending only when the user typed something. A planned
+ * exit during activity must bring its own successor.
+ *
+ * Returns false when there is nothing to spawn (src-run daemon, no artifact) —
+ * callers fall back to a bare exit + self-heal.
+ */
+export function spawnRestartViaCli(moduleUrl: string, cwd: string, spawn = nodeSpawn): boolean {
+	const own = resolveOwnArtifact(moduleUrl);
+	if (own === null) return false;
+	try {
+		const child = spawn(process.execPath, [own.cliEntryPath, "harness", "restart"], {
+			cwd,
+			detached: true,
+			stdio: "ignore",
+		});
+		child.unref();
+		return true;
+	} catch {
+		// The bare-exit fallback still applies; self-heal covers the next call.
+		return false;
+	}
+}
+
+/**
  * Start the build-refresh watcher. Also emits the startup staleness warning
  * (src newer than dist) that previously lived inline in server.ts — the two
  * signals share one home so freshness logic isn't split across files.
@@ -157,6 +188,21 @@ export function startBuildRefreshWatcher(opts: BuildRefreshOptions): () => void 
 		opts.log(
 			`[build-refresh] newer build detected (artifact ${new Date(currentMtimeMs).toISOString()} > running ${new Date(startedMtimeMs).toISOString()}) — handing over via \`interlinked harness restart\``,
 		);
+		// Ledger the INTENT before the restart lands. The restart retires this
+		// process with a plain SIGTERM, so the exit row alone reads "signal" —
+		// indistinguishable from a crash-restart. This adjacent row is what lets
+		// the cold-block message say "handed over to a newer build; normal after a
+		// rebuild" instead of implying the guard failed. One session lost hours to
+		// exactly that ambiguity (2026-07-28), because ANY rebuild of the shared
+		// dist — including `interlinked reload` run in a SIBLING repo — schedules
+		// this handover in every guarded repo within a minute.
+		recordDaemonEvent(opts.cwd, {
+			at: nowMs,
+			pid: process.pid,
+			event: "handover",
+			reason: "build-refresh",
+			detail: `artifact ${new Date(currentMtimeMs).toISOString()}`,
+		});
 		spawnHandOver(deps, own, opts.cwd);
 	}, intervalMs);
 	timer.unref();

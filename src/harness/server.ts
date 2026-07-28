@@ -29,13 +29,14 @@ import {
 	type AutoCoordinationState,
 	DEFAULT_AUTO_COORDINATION_CONFIG,
 } from "./auto-coordinate.js";
-import { startBuildRefreshWatcher } from "./build-refresh.js";
+import { spawnRestartViaCli, startBuildRefreshWatcher } from "./build-refresh.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
 import { CohortManager, setActiveCohort } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner } from "./content-scanner/types.js";
+import { recordDaemonEvent } from "./daemon-ledger.js";
 import { ErrorHistory } from "./error-history.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { type FilePriority } from "./file-priority.js";
@@ -55,6 +56,7 @@ import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import { installCrashResilience } from "./server/crash-resilience.js";
+import { installDaemonTimers } from "./server/daemon-timers.js";
 import {
 	buildStartupMessage,
 	computeClassifierStatusLine,
@@ -118,20 +120,11 @@ let filePriorityMap = new Map<string, FilePriority>();
 const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
 const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
 
-// Early SIGTERM/SIGINT handler — installed BEFORE heavy startup work.
-// Why: Node delivers signals on JS turn boundaries. The full graceful
-// `shutdown()` registered at the bottom of this file can't fire until module
-// initialization finishes — and trigram-index load, project-graph build,
-// rule compilation, etc. are mostly synchronous, so a SIGTERM during
-// startup gets queued for *seconds*. The user-visible symptom is
-// `harness restart` hitting its grace window every time and falling back to
-// SIGKILL.
-//
-// The fix: register a minimal handler immediately. If a signal arrives
-// before the full shutdown machinery is wired, set a "pending" flag and
-// schedule a hard exit. Once startup completes, the bottom-of-file code
-// upgrades the handler to the real `shutdown()`. If the pending flag is
-// set, it triggers shutdown right away.
+// Early SIGTERM/SIGINT handler, installed BEFORE heavy startup work: Node
+// delivers signals on JS turn boundaries, and synchronous module init queues a
+// SIGTERM for seconds (symptom: every `harness restart` fell through to
+// SIGKILL). Minimal handler now; the bottom-of-file code upgrades it to the
+// real graceful `shutdown()` once startup completes.
 let _shutdownReady = false;
 let _shutdownPending = false;
 function _earlyShutdown(): void {
@@ -411,7 +404,7 @@ function resetIdleTimer(): void {
 	if (idleTimer) clearTimeout(idleTimer);
 	idleTimer = setTimeout(() => {
 		logAlways(`Shutting down after ${IDLE_TIMEOUT_MS / MS_PER_MINUTE}min idle`);
-		shutdown();
+		shutdownWith("idle-timeout");
 	}, IDLE_TIMEOUT_MS);
 }
 
@@ -535,6 +528,25 @@ const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = cr
 // rules/settings watcher disposers are bound after they are created, via
 // `setFramedDaemon` / `setUnwatchers`.
 
+// Lifecycle ledger: one row per start and per exit WITH ITS REASON, so the
+// next "daemon unreachable" block can explain itself instead of reading as a
+// crash. Wrapper (not a param on the lifecycle module) so its contract stays
+// untouched and every caller states its reason at the call site.
+const DAEMON_STARTED_MS = Date.now();
+recordDaemonEvent(CWD, { at: DAEMON_STARTED_MS, pid: process.pid, event: "start" });
+const shutdownWith = (reason: string): void => {
+	recordDaemonEvent(CWD, {
+		at: Date.now(),
+		pid: process.pid,
+		event: "exit",
+		reason,
+		rss_mb: Math.round(process.memoryUsage().rss / 1048576),
+		heap_mb: Math.round(process.memoryUsage().heapUsed / 1048576),
+		ext_mb: Math.round((process.memoryUsage().external + process.memoryUsage().arrayBuffers) / 1048576),
+		uptime_s: Math.round((Date.now() - DAEMON_STARTED_MS) / 1000),
+	});
+	shutdown();
+};
 const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, setUnwatchers } =
 	createSocketLifecycle({
 		socketPath: SOCKET_PATH,
@@ -570,6 +582,7 @@ if (__foreignDaemonPid !== null && existsSync(SOCKET_PATH)) {
 			`serving ${CWD}. Refusing to start a second one (would stomp its ` +
 			`socket). Use \`interlinked harness restart\` to replace it.`,
 	);
+	recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" });
 	process.exit(0);
 }
 
@@ -663,13 +676,19 @@ const unwatchSettings = watchSettingsFiles({
 // as module `const`s declared above the signal handlers.
 setUnwatchers(unwatchRules, unwatchSettings);
 
-// Periodically refresh the statusline snapshot so live counters
-// (reservations, index status, server-bridge connectivity) reflect
-// current state without depending on a triggering event.
-const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
-setInterval(() => {
-	refreshStatuslineSnapshot();
-}, STATUSLINE_REFRESH_INTERVAL_MS);
+installDaemonTimers({
+	refreshStatuslineSnapshot,
+	shutdown: () => shutdownWith("rss-ceiling"),
+	// Hand over instead of exiting into a void: a bare rss-ceiling exit waits
+	// for the next tool call's self-heal, which never comes between turns
+	// (measured: an 11-minute daemonless hole). The handover row lets the
+	// eventual SIGTERM exit explain itself as this recycle.
+	requestHandOver: () => {
+		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "handover", reason: "rss-ceiling" });
+		return spawnRestartViaCli(import.meta.url, CWD);
+	},
+	log: logAlways,
+});
 
 // --- Sponsor slot runtime (opt-in; docs/design/sponsor-slots.md) ---
 // Re-reads sponsor settings from config.local.json each tick (hot toggle),
@@ -701,18 +720,13 @@ setInterval(
 	2 * 60 * 1000,
 );
 
-// Handle process signals
-// Upgrade the early SIGTERM/SIGINT handlers (installed at the top of this
-// file before heavy startup work) to the full graceful `shutdown()`. The
-// early handler covers signals that arrive while module init was still
-// blocking the event loop — without it, restarts during the first ~3s of
-// daemon life always fall through to SIGKILL. Order matters: re-bind first
-// so any signal arriving DURING this turn lands on the real handler, then
-// honor a flag set by the early handler if a signal was already received.
+// Upgrade the early signal handlers to the graceful, reason-recording
+// shutdown. Re-bind FIRST so a signal arriving during this turn lands on the
+// real handler, then honor a flag the early handler may have set.
 process.removeListener("SIGTERM", _earlyShutdown);
 process.removeListener("SIGINT", _earlyShutdown);
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => shutdownWith("signal"));
+process.on("SIGTERM", () => shutdownWith("signal"));
 _shutdownReady = true;
 if (_shutdownPending) {
 	logAlways("Shutdown was requested during startup — running graceful path now");
