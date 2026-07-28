@@ -38,9 +38,40 @@ const DIRECT_FILE_EDIT_TOOLS = [
 const SHELL_TOOLS = ["Bash", "Shell", "shell", "run_command"];
 
 /** Match an edited source-file path inside a Bash command (sed -i, awk >, tee,
- *  cat >, …) across the languages the pipeline knows how to check. */
+ *  cat >, …) across the languages the pipeline knows how to check. Global so
+ *  the resolver can skip PAST a generated artifact to a real source path. */
 const BASH_EDITED_FILE_RE =
-	/\b([\w./-]+\.(?:tsx?|jsx?|mjs|cjs|py|pyi|rs|go|java|c|cpp|cc|cxx|h|hpp|hxx|rb|php|swift|kt|kts|scala|lua|zig|nim|ex|exs|clj|cljs|ml|mli|hs|lhs|erl|hrl|dart|r|R|jl|v|sv|vhd|vhdl|pro|pl|pm|sh|bash|zsh|fish))\b/;
+	/\b([\w./-]+\.(?:tsx?|jsx?|mjs|cjs|py|pyi|rs|go|java|c|cpp|cc|cxx|h|hpp|hxx|rb|php|swift|kt|kts|scala|lua|zig|nim|ex|exs|clj|cljs|ml|mli|hs|lhs|erl|hrl|dart|r|R|jl|v|sv|vhd|vhdl|pro|pl|pm|sh|bash|zsh|fish))\b/g;
+
+/** Directory segments whose contents are GENERATED — never worth analyzing. */
+const GENERATED_DIR_SEGMENTS = [
+	"dist",
+	"build",
+	"node_modules",
+	"coverage",
+	".wrangler",
+	".stryker-tmp",
+	".next",
+	"out",
+];
+
+/**
+ * Generated build artifacts must never enter the quality pipeline.
+ *
+ * The bash extractor used to match ANY source-looking path, so `rg -c …
+ * dist/index.js` fed a 25,000-line bundle to the full inline-check family —
+ * clone detection and AST parses over 300KB of generated code. Ledgered
+ * 2026-07-28 as +922MB…+1078MB heap spikes in single 30s ticks ending in
+ * row-less daemon deaths (OOM): the direct mechanism behind "the harness
+ * keeps going down". Analyzing a bundle also has zero value — findings in
+ * generated output are not actionable by editing it.
+ */
+export function isGeneratedArtifactPath(path: string): boolean {
+	const norm = path.replace(/\\/g, "/");
+	if (/\.min\.[cm]?js$/.test(norm)) return true;
+	const segments = norm.split("/");
+	return segments.some((s) => GENERATED_DIR_SEGMENTS.includes(s));
+}
 
 /** The set of files a PostToolUse should fan its quality pipeline across,
  *  plus whether the triggering tool was a direct file edit and whether any
@@ -67,14 +98,22 @@ export function resolveEditedPaths(event: HarnessEvent): EditedPathResolution {
 	let editedFilePath = "";
 	let editedFilePaths: string[] = [];
 	if (!isDirectFileEdit && event.tool_name && SHELL_TOOLS.includes(event.tool_name)) {
+		// SAFETY: a non-string command yields "" and simply matches nothing.
 		const cmd = (event.tool_input?.command as string) || "";
-		const editedFileMatch = cmd.match(BASH_EDITED_FILE_RE);
-		if (editedFileMatch) {
-			editedFilePath = nonNull(editedFileMatch[1]);
-			editedFilePaths = [editedFilePath];
+		BASH_EDITED_FILE_RE.lastIndex = 0;
+		for (const m of cmd.matchAll(BASH_EDITED_FILE_RE)) {
+			const candidate = nonNull(m[1]);
+			// Skip PAST generated artifacts to a real source path, rather than
+			// abandoning the scan at the first bundle a command happens to mention.
+			if (isGeneratedArtifactPath(candidate)) continue;
+			editedFilePath = candidate;
+			editedFilePaths = [candidate];
+			break;
 		}
 	} else if (isDirectFileEdit) {
-		editedFilePaths = extractAllEditedFilePaths(event);
+		// Same exemption for direct edits: a Write into dist/ (rare, but agents
+		// do it) must not fan the pipeline across a generated bundle either.
+		editedFilePaths = extractAllEditedFilePaths(event).filter((p) => !isGeneratedArtifactPath(p));
 		editedFilePath = editedFilePaths[0] || "";
 	}
 
