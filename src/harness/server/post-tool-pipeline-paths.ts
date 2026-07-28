@@ -65,6 +65,10 @@ const GENERATED_DIR_SEGMENTS = [
  * row-less daemon deaths (OOM): the direct mechanism behind "the harness
  * keeps going down". Analyzing a bundle also has zero value — findings in
  * generated output are not actionable by editing it.
+ *
+ * Exported as the ONE generated-artifact predicate: the test corpus pins it
+ * directly, and any other surface that fans analyzers over paths should
+ * consult it rather than grow a second segment list.
  */
 export function isGeneratedArtifactPath(path: string): boolean {
 	const norm = path.replace(/\\/g, "/");

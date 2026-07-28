@@ -104,6 +104,24 @@ function collectEdges(content: string, importerRel: string, targetKey: string, s
 	}
 }
 
+/** How far above an export a doc comment may sit and still cover it. */
+const DOC_COMMENT_LOOKBACK_LINES = 12;
+
+/** The documenting escape the finding text has always promised ("remove or
+ *  document as public API"): a comment in the contiguous block directly above
+ *  the export that says "public API" (any case) marks it deliberate. */
+function hasPublicApiComment(lines: string[], exportLine: number): boolean {
+	let walked = 0;
+	for (let i = exportLine - 2; i >= 0 && walked < DOC_COMMENT_LOOKBACK_LINES; i--, walked++) {
+		const text = lines[i]?.trim() ?? "";
+		const isComment =
+			text.startsWith("//") || text.startsWith("*") || text.startsWith("/*") || text === "*/";
+		if (!isComment) return false;
+		if (/public\s+api/i.test(text)) return true;
+	}
+	return false;
+}
+
 /** Core detector over an injectable repo view. */
 export function findDeadExports(args: DeadExportsArgs, repo: DeadExportsRepo): InlineMatch[] {
 	const ext = getExtension(args.filePath);
@@ -130,9 +148,11 @@ export function findDeadExports(args: DeadExportsArgs, repo: DeadExportsRepo): I
 	// resolution failed somewhere, so silence beats a page of false debt.
 	if (scan.mentions > 0 && scan.resolvedEdges === 0) return [];
 
+	const lines = args.content.split("\n");
 	const matches: InlineMatch[] = [];
 	for (const exp of exports) {
 		if (scan.symbols.has(exp.name)) continue;
+		if (hasPublicApiComment(lines, exp.line)) continue;
 		matches.push({ line: exp.line, text: `unused export '${exp.name}' — remove or document as public API` });
 		if (matches.length >= MAX_FLAGGED) break;
 	}

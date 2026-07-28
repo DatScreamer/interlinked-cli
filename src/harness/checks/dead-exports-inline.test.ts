@@ -36,6 +36,38 @@ describe("findDeadExports — positive (must fire)", () => {
 });
 
 describe("findDeadExports — negative (must not fire)", () => {
+	it("N7: a 'public API' doc comment above the export suppresses it (the escape the message promises)", () => {
+		// The finding text has always said "remove or document as public API";
+		// this is the documenting convention actually honored.
+		const files = {
+			"src/lib.ts":
+				"export const used = 1;\n/**\n * Deliberately part of the public API for external analyzers.\n */\nexport const seam = 2;\n",
+			"src/main.ts": 'import { used } from "./lib.js";\nconsole.log(used);\n',
+		};
+		const out = findDeadExports(args("src/lib.ts", files["src/lib.ts"]), repo(files));
+		expect(out).toEqual([]);
+	});
+
+	it("N8: a line-comment 'public API' marker directly above also suppresses", () => {
+		const files = {
+			"src/lib.ts":
+				"export const used = 1;\n// public API — consumed by downstream repos\nexport const seam = 2;\n",
+			"src/main.ts": 'import { used } from "./lib.js";\nconsole.log(used);\n',
+		};
+		const out = findDeadExports(args("src/lib.ts", files["src/lib.ts"]), repo(files));
+		expect(out).toEqual([]);
+	});
+
+	it("P2: an unrelated comment above the export does NOT suppress", () => {
+		const files = {
+			"src/lib.ts":
+				"export const used = 1;\n// helper for the thing\nexport const dead = 2;\n",
+			"src/main.ts": 'import { used } from "./lib.js";\nconsole.log(used);\n',
+		};
+		const out = findDeadExports(args("src/lib.ts", files["src/lib.ts"]), repo(files));
+		expect(out.map((m) => m.text)).toEqual([expect.stringContaining("'dead'")]);
+	});
+
 	it("N1: a sibling importing via a .js ESM specifier counts (the upstream-error case)", () => {
 		const files = {
 			"src/lib/upstream-error.ts":
