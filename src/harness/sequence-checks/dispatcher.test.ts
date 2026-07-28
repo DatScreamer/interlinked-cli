@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { buildTrajectoryFixture, makeCandidate } from "../__tests__/sequence-fixtures.js";
+import { noopSequenceDetector } from "./_placeholder.js";
 import {
 	defaultDetectorEnabledPredicate,
 	formatSequenceFinding,
 	runSequenceDetectorsForPhase,
 } from "./dispatcher.js";
-import { noopSequenceDetector } from "./_placeholder.js";
 
 describe("defaultDetectorEnabledPredicate", () => {
 	it("returns the detector's default_enabled flag", () => {

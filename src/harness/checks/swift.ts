@@ -1,6 +1,7 @@
 // Swift-specific checks (Apple API Design Guidelines + Memory Safety + Concurrency).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,7 +9,6 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 export {
 	checkSwiftDelegateNotWeak,

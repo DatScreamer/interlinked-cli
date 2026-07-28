@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkUntestedIdempotent,
 	checkUntestedInversePair,
 	scaffoldPropertyTest,
 } from "./property-testing.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Positive cases use a basename that appears in NO real test-file path, so the
 // path-prefilter finds zero candidate suites → the pair reads as untested →

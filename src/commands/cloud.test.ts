@@ -328,7 +328,6 @@ describe("cloudRecentCommand", () => {
 		withCloudUrl("https://cg.example/governor/evaluate");
 		vi.stubGlobal(
 			"fetch",
-			// biome-ignore lint/suspicious/useAwait: reject path needs no await
 			vi.fn(async () => {
 				throw "boom-string";
 			}),

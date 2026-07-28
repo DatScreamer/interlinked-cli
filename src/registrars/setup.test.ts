@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerSetupCommands } from "./setup.js";
 import { nonNull } from "../lib/non-null.js";
+import { registerSetupCommands } from "./setup.js";
 
 // ---------------------------------------------------------------------------
 // Mock every command implementation the registrar wires — both the directly

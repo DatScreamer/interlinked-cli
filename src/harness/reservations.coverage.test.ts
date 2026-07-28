@@ -24,9 +24,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CohortManager } from "./cohort.js";
 import {
-	ReservationManager,
 	type ReservationEventSink,
 	type ReservationLogEvent,
+	ReservationManager,
 	type ServerApiClient,
 	type ServerReservation,
 } from "./reservations.js";

@@ -7,8 +7,8 @@
 // byte-identical to the original; demo-data.ts re-imports
 // `lineHasNearbyDemoDirective` from here.
 
-import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 const DEMO_DIRECTIVE_RE = /\/\/\s*@demo-data\s*:\s*(\S.*)$/;
 const DIRECTIVE_LOOKBACK = 10;

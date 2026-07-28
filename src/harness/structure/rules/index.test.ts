@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { StructureConfig } from "../types.js";
 import { evaluateStructureRules } from "./index.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function baseConfig(overrides: Partial<StructureConfig["builtins"]> = {}): StructureConfig {
 	return {

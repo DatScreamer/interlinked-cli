@@ -336,5 +336,5 @@ export function isHarnessRunning(cwd?: string): HarnessStatus {
 	}
 }
 
-export type { HarnessStatus };
 export type { OrphanCandidate } from "./harness-process-reap.js";
+export type { HarnessStatus };

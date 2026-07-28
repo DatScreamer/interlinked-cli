@@ -18,9 +18,9 @@
 // Usage:  node scripts/backfill-guard.mjs [--dry-run]
 
 import { copyFileSync, createReadStream, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const cwd = process.cwd();

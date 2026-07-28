@@ -71,8 +71,8 @@ vi.mock("../lib/formatter.js", () => ({
 // Use the REAL output.ts (pure dispatch over console.log) so we exercise
 // the actual getOutputMode + output wiring rather than re-stubbing it.
 
-import { cleanCommand } from "./clean.js";
 import { nonNull } from "../lib/non-null.js";
+import { cleanCommand } from "./clean.js";
 
 const HOOK_SESSIONS = "/repo/.interlinked/hooks/agent-sessions";
 const ACTIVITY = "/repo/.interlinked/activity.jsonl";

@@ -29,46 +29,43 @@
 // tool, no Supermodel-active workspace) so callers can fall through to
 // the rest of pre-tool.ts unchanged.
 
+import { basename } from "node:path";
+import { nonNull } from "../lib/non-null.js";
+import { isFileWrite } from "./evaluator/tool-classifiers.js";
+import {appendObservationRow, 
+	appendReconciliationRow,
+	findPredictionRow
+} from "./graph-prediction-cache.js";
 import {
 	classifyCase,
 	type GraphPredictionCase,
 	workspaceSupermodelActive,
 } from "./graph-prediction-classifier.js";
-import {
-	appendReconciliationRow,
-	findPredictionRow,
-} from "./graph-prediction-cache.js";
-import type { SeverityResult } from "./graph-prediction-reconcile.js";
-import { isFileWrite } from "./evaluator/tool-classifiers.js";
-import { extractAllEditedFilePaths } from "./server-tool-helpers.js";
-import { appendObservationRow } from "./graph-prediction-cache.js";
-import type { ProjectGraph } from "./project-graph.js";
-import type { HarnessEvent } from "./types.js";
-import { basename } from "node:path";
-import { nonNull } from "../lib/non-null.js";
-
-// Sentinel handlers
-import {
-	parseSentinelAckPath,
-	handleAckSubmission,
-	handleSentinelSubmission,
-} from "./graph-prediction-sentinels.js";
-
 // Flow helpers
 import {
-	collectCachedPredictions,
-	reconcileEachTarget,
-	buildReconciliationRow,
-	buildChallengeReason,
 	buildAckReason,
 	buildAckSentinelInstruction,
+	buildChallengeReason,
+	buildReconciliationRow,
 	buildRevealText,
-	buildShardReadRequiredReason,
 	buildShardInlineText,
+	buildShardReadRequiredReason,
+	collectCachedPredictions,
 	isReadOfShard,
-	recordShardRead,
 	type ReconciledTarget,
+	reconcileEachTarget,
+	recordShardRead,
 } from "./graph-prediction-flow.js";
+import type { SeverityResult } from "./graph-prediction-reconcile.js";
+// Sentinel handlers
+import {
+	handleAckSubmission,
+	handleSentinelSubmission,
+	parseSentinelAckPath,
+} from "./graph-prediction-sentinels.js";
+import type { ProjectGraph } from "./project-graph.js";
+import { extractAllEditedFilePaths } from "./server-tool-helpers.js";
+import type { HarnessEvent } from "./types.js";
 
 export type GraphPredictionMode = "shadow" | "soft_gate" | "enforced";
 

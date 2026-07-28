@@ -1,6 +1,7 @@
 // Error-handling taste checks (bare catch, untyped catch, throw-as-control-flow, etc).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,7 +9,6 @@ import {
 	JS_TS_ALL_EXTS,
 	stripComments,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Enforcement: Error Handling Quality

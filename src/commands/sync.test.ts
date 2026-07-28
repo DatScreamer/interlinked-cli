@@ -83,7 +83,6 @@ let stderrSpy: ReturnType<typeof vi.spyOn>;
 
 /** Strip ANSI color codes so assertions hold regardless of color support. */
 function plain(s: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes for assertions
 	return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 function stdout(): string {

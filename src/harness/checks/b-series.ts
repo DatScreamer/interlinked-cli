@@ -1,6 +1,7 @@
 // B-Series PostToolUse inline checks.
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,7 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
+
 export { checkFloatEquality, checkParseIntRadix } from "./b-series-numeric.js";
 
 // ===========================================

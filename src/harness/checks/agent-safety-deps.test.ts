@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkPhantomDependencies,
 	checkSelfImport,
 	findWorkspaceRootFor,
 } from "./agent-safety-deps.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Smoke-test coverage for the agent-safety dependency-hygiene check family.
 // Deeper coverage lives in `src/harness/__tests__/generic-checks-extended-*.test.ts`

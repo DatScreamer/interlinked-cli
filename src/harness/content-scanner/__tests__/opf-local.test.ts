@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { deriveSidecarScriptArgs, OpfLocalScanner, type SidecarLike } from "../opf-local.js";
 import type { SidecarStatus } from "../sidecar-manager.js";
 import type { ContentScannerConfig, ScannerStatus } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function makeConfig(): ContentScannerConfig {
 	return {

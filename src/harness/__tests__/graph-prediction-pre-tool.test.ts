@@ -12,16 +12,16 @@
 //
 // Non-E-fresh files (A/B/C/D/E-stale) are observation-only in every mode.
 
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { appendPredictionRow } from "../graph-prediction-cache.js";
+import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
 import {
 	driveGraphPrediction,
 	type GraphPredictionMode,
 } from "../graph-prediction-pre-tool.js";
-import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
-import { appendPredictionRow } from "../graph-prediction-cache.js";
 import type { HarnessEvent } from "../types.js";
 
 let dir: string;

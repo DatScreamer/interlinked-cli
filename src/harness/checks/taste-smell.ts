@@ -1,6 +1,7 @@
 // Taste checks — part 2 of 2 (magic numbers, ternaries, flag args, commented-out code).
 // Extracted from taste.ts to stay under the 800-line module ceiling.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	collectFunctionSignature,
 	getExtension,
@@ -8,7 +9,7 @@ import {
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
+
 export { checkSameTypedPrimitiveParams } from "./taste-smell-same-typed-params.js";
 
 /**

@@ -8,8 +8,8 @@
 
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
-import type { JsonObject } from "../lib/json-types.js";
 import { c, header, kvLine, table } from "../lib/formatter.js";
+import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { getSocketPath } from "./harness.js";
 

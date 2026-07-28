@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	actionToPhase,
 	DEFAULT_POLICY,
@@ -12,7 +13,6 @@ import {
 } from "./check-policy.js";
 import { CHECK_REGISTRY } from "./check-registry/registry.js";
 import type { CheckPhase, CheckRegistration } from "./check-registry/types.js";
-import { nonNull } from "../lib/non-null.js";
 
 /** Build a deterministic check registration for phase-mapping tests. */
 function mockCheck(phase: CheckPhase, id = "mock_check"): CheckRegistration {

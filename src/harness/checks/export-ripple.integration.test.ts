@@ -27,13 +27,12 @@
 //     dedicated describe block that vi.mock node:child_process / node:fs.
 
 import { execFileSync as realExecFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { checkExportRipple, getGitSourceFiles } from "./export-ripple.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkExportRipple, getGitSourceFiles } from "./export-ripple.js";
 
 // --- tmp git-repo fixture helpers -------------------------------------------
 

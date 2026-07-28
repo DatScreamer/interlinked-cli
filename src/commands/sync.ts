@@ -18,18 +18,18 @@ import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { loadScrubConfig, recordScrub, scrubEgressPayload } from "../lib/secrets.js";
 import {
-	buildBatchBody,
-	buildBatchHeaders,
-	buildEventPayload,
-	type PayloadDefaults,
-} from "./sync-payload.js";
-import {
 	buildBatchSummary,
 	fmtTime,
 	formatUpToDate,
 	renderCountSection,
 	renderTopToolsSection,
 } from "./sync-format.js";
+import {
+	buildBatchBody,
+	buildBatchHeaders,
+	buildEventPayload,
+	type PayloadDefaults,
+} from "./sync-payload.js";
 
 const BATCH_SIZE = 100;
 const MAX_BATCH_RETRIES = 3;

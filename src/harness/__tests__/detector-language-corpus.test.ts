@@ -15,6 +15,7 @@
 // layer (see docs/external-pulse/destructive-command-guard.md).
 
 import { describe, expect, it } from "vitest";
+import type { InlineMatch } from "../checks/shared.js";
 import {
 	checkAesEcbMode,
 	checkHardcodedCredentials,
@@ -23,7 +24,6 @@ import {
 	checkTlsVerifyDisabled,
 	checkWeakHash,
 } from "../generic-checks.js";
-import type { InlineMatch } from "../checks/shared.js";
 
 type DetectorId = "pii" | "credentials" | "tls" | "weak_hash" | "aes_ecb" | "sql";
 

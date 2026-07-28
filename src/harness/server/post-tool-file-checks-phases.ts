@@ -28,7 +28,6 @@ import { loadStructureConfig } from "../structure/structure-loader.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import { deriveEditedLineNumbers } from "./edit-line-derivation.js";
 import type { PerFileCheckCtx } from "./post-tool-file-checks.js";
-import type { ServerRuntime } from "./runtime-context.js";
 import {
 	applyQualityDecision,
 	buildSmartTscOpts,
@@ -37,6 +36,7 @@ import {
 	recordChecksRan,
 	runScoredSuggestionsPhase,
 } from "./post-tool-file-checks-phases-quality.js";
+import type { ServerRuntime } from "./runtime-context.js";
 
 // Re-export the scored-suggestions phase so the orchestrator keeps importing
 // it from this module entry (it now lives in the -quality sibling).

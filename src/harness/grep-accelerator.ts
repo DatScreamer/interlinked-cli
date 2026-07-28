@@ -18,6 +18,7 @@
 // and ripgrep paths below are content-mode only (`path:line:content`).
 
 import { isAbsolute, relative } from "node:path";
+import type { JsonObject } from "../lib/json-types.js";
 import {
 	_resetRgPathCache,
 	compressGrepOutput,
@@ -27,7 +28,6 @@ import {
 	runRipgrepOnCandidates,
 	safeRegExp,
 } from "./grep-accelerator-exec.js";
-import type { JsonObject } from "../lib/json-types.js";
 import { decomposePattern, parseGrepCommand } from "./regex-trigrams.js";
 import type { TrigramIndex } from "./trigram-index.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";

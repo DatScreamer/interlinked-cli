@@ -10,19 +10,19 @@
 // with an allow + additional_context so the agent can proceed.
 
 import { isAbsolute, join, relative, resolve } from "node:path";
-import {
-	classifyCase,
-	type CaseResult,
-} from "./graph-prediction-classifier.js";
+import { nonNull } from "../lib/non-null.js";
 import {
 	appendPredictionRow,
 	findPredictionRow,
 } from "./graph-prediction-cache.js";
 import {
+	type CaseResult,
+	classifyCase,
+} from "./graph-prediction-classifier.js";
+import {
 	parseBarePrediction,
 } from "./graph-prediction-parser.js";
 import type { HarnessEvent } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ── Re-exported types ────────────────────────────────────────────────────────
 

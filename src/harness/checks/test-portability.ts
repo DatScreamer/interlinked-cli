@@ -55,8 +55,8 @@ import {
 	blockStartingWithin,
 	extractTestBlocks,
 	gatedByChain,
-	inTestBlock,
 	innermostBlockAt,
+	inTestBlock,
 	type TestBlock,
 } from "./test-structure.js";
 

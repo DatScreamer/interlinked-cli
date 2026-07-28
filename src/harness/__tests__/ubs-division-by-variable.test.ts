@@ -4,8 +4,8 @@
 // because the FP rate is high; lives in DEFAULT_ADVISORY_SKIPS.
 
 import { describe, expect, it } from "vitest";
-import { checkDivisionByVariable } from "../checks/ubs-language-specific.js";
 import { DEFAULT_ADVISORY_SKIPS } from "../../commands/verify/advisory.js";
+import { checkDivisionByVariable } from "../checks/ubs-language-specific.js";
 
 describe("checkDivisionByVariable", () => {
 	it("flags `total / count` (both sides are identifiers)", () => {

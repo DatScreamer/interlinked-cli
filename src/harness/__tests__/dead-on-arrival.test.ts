@@ -2,10 +2,9 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import { detectDeadOnArrival, formatDeadOnArrivalWarning } from "../dead-on-arrival.js";
 import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const HEADER = "// @generated supermodel-shard — do not edit";
 

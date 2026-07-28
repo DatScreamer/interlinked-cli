@@ -31,6 +31,13 @@ export function resolveApiKey(envVarName: string): string | undefined {
 	}
 }
 
+
+import {
+	parseAnthropicResponse,
+	parseClaudeCodeOutput,
+	parseOpenAIResponse,
+} from "./policy-classifier-parsers.js";
+import { loadPolicies } from "./policy-classifier-policies.js";
 import type {
 	ClassifierConfig,
 	EscalationRequest,
@@ -40,13 +47,6 @@ import type {
 	PolicyRule,
 	SessionTrajectory,
 } from "./types.js";
-
-import {
-	parseAnthropicResponse,
-	parseClaudeCodeOutput,
-	parseOpenAIResponse,
-} from "./policy-classifier-parsers.js";
-import { loadPolicies } from "./policy-classifier-policies.js";
 
 // ===========================================
 // Session State (per classifier instance)

@@ -27,9 +27,8 @@
 // public surface stays identical.
 
 import { join } from "node:path";
-
-import { classifyFailure } from "./checks/failure-triage.js";
 import { explainFailure } from "./checks/failure-explanation.js";
+import { classifyFailure } from "./checks/failure-triage.js";
 import { suggestRecovery } from "./checks/recovery-suggestion.js";
 import { assessRollbackFeasibility, formatRollbackLine } from "./checks/rollback-feasibility.js";
 import { failureRecordRelPath, mintFailureId, writeFailureRecord } from "./failure-record.js";

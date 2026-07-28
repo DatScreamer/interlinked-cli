@@ -32,8 +32,8 @@ vi.mock("node:fs", () => ({
 	unlinkSync: mocks.unlinkSync,
 }));
 
-import { harnessStartCommand } from "./harness.js";
 import { nonNull } from "../lib/non-null.js";
+import { harnessStartCommand } from "./harness.js";
 
 interface FakeChild extends EventEmitter {
 	pid: number;

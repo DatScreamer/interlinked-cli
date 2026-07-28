@@ -60,8 +60,8 @@ import { resolve } from "node:path";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import { recordCoverageDischarge } from "../coverage-obligation-ledger.js";
-import { crapThresholdFor } from "../metric-caps.js";
 import { type CoverageLanguage, coverageRunnerFor } from "../coverage-runner.js";
+import { crapThresholdFor } from "../metric-caps.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import {
 	changedSetForCommit,
@@ -83,13 +83,13 @@ import { materializeIndexSnapshot } from "./staged-snapshot.js";
 export type { GitChangedFilesFn } from "./commit-gate-changes.js";
 export { defaultGitChangedFiles, defaultResolveRepoRoot } from "./commit-gate-changes.js";
 export type { CyclomaticAnalyzer } from "./commit-gate-decision.js";
+// Re-export the injectable-deps interface + commit-run timeout so existing call
+// sites / tests import them from the gate module too.
+export { COMMIT_RUN_TIMEOUT_MS, type CommitGateDeps } from "./commit-gate-suite.js";
 export type { CommitParse } from "./commit-parse.js";
 // Re-export the parser + selection surfaces so existing call sites / tests import
 // them from the gate module too.
 export { parseGitCommit } from "./commit-parse.js";
-// Re-export the injectable-deps interface + commit-run timeout so existing call
-// sites / tests import them from the gate module too.
-export { COMMIT_RUN_TIMEOUT_MS, type CommitGateDeps } from "./commit-gate-suite.js";
 
 /** The default CRAP cutoff — the McCabe / SonarQube convention (matches the per-edit gate). */
 const DEFAULT_CRAP_THRESHOLD = 30;

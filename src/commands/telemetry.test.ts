@@ -129,9 +129,9 @@ vi.mock("../harness/telemetry-spool.js", () => ({
 	},
 }));
 
+import { nonNull } from "../lib/non-null.js";
 // Real telemetry.ts under test (its node:* + spool deps are all mocked above).
 import { telemetryShowCommand } from "./telemetry.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ---- stdout capture -----------------------------------------------------
 let out: string;

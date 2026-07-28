@@ -15,16 +15,6 @@ import {
 	stripCommentsAndStrings,
 } from "./taste-checks-shared.js";
 
-// The test-assertion family (checkAssertionFreeTest, checkTautologicalAssertion,
-// checkMockingTheSUT, checkPrivateMemberTestAccess) was extracted to keep this
-// barrel under the per-file line cap. Re-exported here so existing importers
-// keep importing from "./taste-checks.js" unchanged.
-export {
-	checkAssertionFreeTest,
-	checkMockingTheSUT,
-	checkPrivateMemberTestAccess,
-	checkTautologicalAssertion,
-} from "./taste-checks-test-assertions.js";
 
 // Checks 12-21 (commented-out code through duplicate describe) plus their
 // arg-list / test-body helpers were extracted to keep this barrel under the
@@ -42,6 +32,16 @@ export {
 	checkNonDeterministicTest,
 	checkTestWithoutDescription,
 } from "./taste-checks-checks-2.js";
+// The test-assertion family (checkAssertionFreeTest, checkTautologicalAssertion,
+// checkMockingTheSUT, checkPrivateMemberTestAccess) was extracted to keep this
+// barrel under the per-file line cap. Re-exported here so existing importers
+// keep importing from "./taste-checks.js" unchanged.
+export {
+	checkAssertionFreeTest,
+	checkMockingTheSUT,
+	checkPrivateMemberTestAccess,
+	checkTautologicalAssertion,
+} from "./taste-checks-test-assertions.js";
 
 // ===========================================
 // 5. Loop Nesting Depth ≥3

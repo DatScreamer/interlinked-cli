@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	DEFAULT_SIMILARITY_THRESHOLD,
 	extractFunctionShingles,
@@ -7,7 +8,6 @@ import {
 	shingleSet,
 	tokenize,
 } from "./dry.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Primitive helpers

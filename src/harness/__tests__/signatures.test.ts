@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	scanExfiltration,
 	scanForSignatures,
@@ -6,7 +7,6 @@ import {
 	scanSecrets,
 	scanSupplyChain,
 } from "../signatures.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("signatures — prompt injection detection", () => {
 	it("detects ignore previous instructions", () => {

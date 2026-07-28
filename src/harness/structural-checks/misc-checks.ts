@@ -9,10 +9,10 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, StructuralCheckResult } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.

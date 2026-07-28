@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	buildAgentSafetyChecks,
 	buildCheckInstructions,
 	buildGenericCheckMeta,
 } from "./builders.js";
 import { CHECK_REGISTRY } from "./registry.js";
-import { nonNull } from "../../lib/non-null.js";
 
 function expectedAgentSafetyChecks(content: string): typeof CHECK_REGISTRY {
 	const lc = content.toLowerCase();

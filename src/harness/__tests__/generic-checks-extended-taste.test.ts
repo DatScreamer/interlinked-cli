@@ -5,6 +5,7 @@
 // checkFlagArguments, checkCommentedOutCode.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkBooleanTrap,
 	checkCatchAndIgnore,
@@ -21,7 +22,6 @@ import {
 	checkSameTypedPrimitiveParams,
 	checkTestDescriptionQuality,
 } from "../generic-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Checks — Opinionated Code Quality

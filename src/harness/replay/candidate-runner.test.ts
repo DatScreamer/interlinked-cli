@@ -8,13 +8,13 @@
 import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import type { JsonObject } from "../../lib/json-types.js";
-import type { InferenceEnvelope } from "./inference-store.js";
 import {
 	buildCandidateRequest,
 	extractProposedAction,
 	runCandidate,
 	stripPriorThinking,
 } from "./candidate-runner.js";
+import type { InferenceEnvelope } from "./inference-store.js";
 
 function envelope(): InferenceEnvelope {
 	return {

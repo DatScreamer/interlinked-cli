@@ -18,8 +18,8 @@
 // any child is ready, "disabled" only when every child is disabled,
 // "dormant" when all are dormant, etc.
 
-import { SidecarManager, type SidecarLifecycleState, type SidecarRequest, type SidecarResponse, type SidecarStatus, type SpawnFn } from "./sidecar-manager.js";
 import { nonNull } from "../../lib/non-null.js";
+import { type SidecarLifecycleState, SidecarManager, type SidecarRequest, type SidecarResponse, type SidecarStatus, type SpawnFn } from "./sidecar-manager.js";
 
 export interface SidecarPoolOptions {
 	python_bin: string;

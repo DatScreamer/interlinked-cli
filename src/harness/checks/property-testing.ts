@@ -14,9 +14,9 @@
 
 import { readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import { getGitSourceFiles } from "./export-ripple.js";
 import { getExtension, type InlineMatch, isTestFile, JS_TS_EXTS } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Inverse verb-stem pairs whose round-trip law (`inverse(forward(x)) === x`) is

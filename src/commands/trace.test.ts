@@ -224,7 +224,6 @@ describe("traceExportCommand — error handling", () => {
 	it("stringifies a non-Error throwable from writeFileSync (String(err) arm)", async () => {
 		mockExportTrace.mockReturnValue("DATA");
 		mockWriteFileSync.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: deliberately covering the non-Error catch arm
 			throw "disk full"; // eslint-disable-line no-throw-literal
 		});
 
@@ -295,7 +294,6 @@ describe("traceImportCommand — error handling", () => {
 
 	it("stringifies a non-Error throwable from importTrace (String(err) arm, json mode)", async () => {
 		mockImportTrace.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: deliberately covering the non-Error catch arm
 			throw "corrupt trace"; // eslint-disable-line no-throw-literal
 		});
 

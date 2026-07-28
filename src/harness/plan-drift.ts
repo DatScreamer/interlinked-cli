@@ -22,9 +22,9 @@
 //      step. Capped at 10 entries to keep the report bounded.
 //   6. drift_pct: missing_count / declared_count (0 when declared_count = 0).
 
+import { nonNull } from "../lib/non-null.js";
 import type { CapturedPlan, PlanStep } from "./types/plan.js";
 import type { SessionTrajectory } from "./types/session.js";
-import { nonNull } from "../lib/non-null.js";
 
 /** Tokens shared across English plan prose that carry no signal for
  *  matching against tool-sequence entries. Kept small and lowercased so

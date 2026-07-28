@@ -22,6 +22,7 @@ interface QualityCheckResult {
  *
  * Tracks per-session state for debounced project-wide sweeps.
  */
+/** Tracks which files a project-wide sweep has already reported findings for. */
 export class ProjectWideSweepState {
 	/** Number of file edits since last project-wide sweep. */
 	editsSinceLastSweep = 0;

@@ -2,6 +2,7 @@
 // Extracted from ubs-language-specific.ts during the 1500-line decomposition.
 // Each function returns InlineMatch[]. Multi-language; ext-gated per check.
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,6 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile, isPyFile, MATCH_LIMIT } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_string_concat_in_loop` — `result += chunk` inside a loop is O(n²) in

@@ -5,6 +5,7 @@
 // checkUntypedCatch, checkErrorStringComparison, checkInconsistentErrorStrategy.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkBareCatchBlock,
 	checkCatchReturnNull,
@@ -20,7 +21,6 @@ import {
 	checkThrowAsControlFlow,
 	checkUntypedCatch,
 } from "../generic-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Deletion Hygiene — Layer 1 Zombie Detectors

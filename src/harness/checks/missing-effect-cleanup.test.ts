@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { checkMissingEffectCleanup } from "./missing-effect-cleanup.js";
 import { __setPackageRootForTesting } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // `checkMissingEffectCleanup` gates on `isTestFile`, which (via
 // `isHarnessInternalDataFile`) returns true for ANY path under the resolved

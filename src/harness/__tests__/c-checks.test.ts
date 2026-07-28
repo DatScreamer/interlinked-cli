@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCIncludeGuard,
 	checkCSprintfUsage,
@@ -6,7 +7,6 @@ import {
 	checkCUncheckedMalloc,
 	checkCUnsafeFunctions,
 } from "../generic-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // checkCUnsafeFunctions

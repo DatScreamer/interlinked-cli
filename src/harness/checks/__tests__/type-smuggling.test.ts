@@ -21,9 +21,9 @@
 //       which proves install-hooks succeeds without bundled TS.)
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { InlineMatch } from "../shared.js";
 import { __resetTsCacheForTests, checkTypeSmuggling } from "../type-smuggling.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 const TEST_FILE = "src/lib/foo.test.ts";

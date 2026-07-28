@@ -24,7 +24,6 @@ import {
 	type InstallerManifestEntry,
 	type RunnerAdapter,
 } from "./adapters/index.js";
-import type { RunnerId } from "./unified-event.js";
 import {
 	ensureDir,
 	mergeSettings,
@@ -32,6 +31,8 @@ import {
 	removeJsonPath,
 	writeAtomic,
 } from "./installer-merge-engine.js";
+import type { RunnerId } from "./unified-event.js";
+
 export { mergeSettings, removeJsonPath } from "./installer-merge-engine.js";
 
 export type InstallScope = "user" | "project" | "local";

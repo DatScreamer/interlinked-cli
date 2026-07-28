@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { ProjectWideSweepState, runProjectWideChecks } from "../quality-checks.js";
 import type { ProjectWideCheckConfig } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Mock the check engine so we don't spawn real subprocesses.
 // Extracting the engine stub into a named helper keeps the mock's top-level

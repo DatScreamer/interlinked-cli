@@ -1,8 +1,8 @@
 // interlinked-tdd: exempt — test fixture helper only. Consumed by every
 // sequence-detector test file; no testable surface of its own.
 
-import type { HarnessEvent, SessionTrajectory } from "../types.js";
 import { SessionTracker } from "../session-state.js";
+import type { HarnessEvent, SessionTrajectory } from "../types.js";
 
 const DEFAULT_TIMESTAMP = "2026-05-27T00:00:00.000Z";
 const DEFAULT_SESSION_ID = "test-session";

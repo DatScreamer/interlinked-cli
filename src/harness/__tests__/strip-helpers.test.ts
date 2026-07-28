@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	extractTemplateInterpolationExpressions,
 	stripAllLiterals,
@@ -7,7 +8,6 @@ import {
 	stripStringLiterals,
 	stripTemplateLiterals,
 } from "../strip-helpers.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("stripComments", () => {
 	it("strips line comments to spaces", () => {

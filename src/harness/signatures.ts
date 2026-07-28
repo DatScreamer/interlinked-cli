@@ -11,11 +11,11 @@
 
 export type {
 	SignatureCategory,
-	SignatureSeverity,
 	SignatureRule,
+	SignatureSeverity,
 } from "./signatures-patterns.js";
 
-import type { SignatureCategory, SignatureSeverity, SignatureRule } from "./signatures-patterns.js";
+import type { SignatureCategory, SignatureRule, SignatureSeverity } from "./signatures-patterns.js";
 
 export interface SignatureMatch {
 	category: SignatureCategory;
@@ -52,26 +52,26 @@ export function maxSeverity(a: SignatureSeverity, b: SignatureSeverity): Signatu
 // ===========================================
 
 import {
-	PROMPT_INJECTION_RULES,
+	COMMAND_INJECTION_EXTENDED_RULES,
+	CREDENTIAL_ACCESS_RULES,
+	EXFILTRATION_RULES,
 	INDIRECT_INJECTION_RULES,
 	OBFUSCATION_RULES,
-	EXFILTRATION_RULES,
+	PROMPT_INJECTION_RULES,
 	SECRETS_RULES,
-	CREDENTIAL_ACCESS_RULES,
 	SUPPLY_CHAIN_RULES,
-	COMMAND_INJECTION_EXTENDED_RULES,
 } from "./signatures-patterns.js";
 
 // Re-export pattern arrays so any existing consumer can import them from here
 export {
-	PROMPT_INJECTION_RULES,
+	COMMAND_INJECTION_EXTENDED_RULES,
+	CREDENTIAL_ACCESS_RULES,
+	EXFILTRATION_RULES,
 	INDIRECT_INJECTION_RULES,
 	OBFUSCATION_RULES,
-	EXFILTRATION_RULES,
+	PROMPT_INJECTION_RULES,
 	SECRETS_RULES,
-	CREDENTIAL_ACCESS_RULES,
 	SUPPLY_CHAIN_RULES,
-	COMMAND_INJECTION_EXTENDED_RULES,
 };
 
 // ===========================================

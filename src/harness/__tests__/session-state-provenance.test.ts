@@ -10,8 +10,8 @@
 //     AND the resolved absolute form (lets the new isFileTrackedAsWritten
 //     helper match regardless of input shape)
 
-import { describe, expect, it } from "vitest";
 import { resolve as resolvePath } from "node:path";
+import { describe, expect, it } from "vitest";
 
 import { isFileTrackedAsWritten, SessionTracker } from "../session-state.js";
 import type { HarnessEvent } from "../types.js";

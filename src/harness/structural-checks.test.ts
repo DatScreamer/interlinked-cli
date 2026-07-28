@@ -75,23 +75,23 @@ import {
 } from "./cross-file-checks.js";
 import { resolveDependencyView } from "./dependency-view.js";
 import { checkFollowUpViolation } from "./impact-analysis.js";
-import { checkImportResolution } from "./structural-checks/imports.js";
+import type { ProjectGraph } from "./project-graph.js";
+import type { RouteMap } from "./route-map.js";
+import type { SessionTracker } from "./session-state.js";
+import { checkImportCycles } from "./structural-checks/cycles.js";
 import {
 	checkExportRippleCompilation,
 	checkExportSurface,
 	checkRippleTests,
 	findTestFileForSource,
 } from "./structural-checks/export-surface.js";
-import { checkImportCycles } from "./structural-checks/cycles.js";
+import { checkImportResolution } from "./structural-checks/imports.js";
 import { checkJSDocParamMismatch } from "./structural-checks/misc-checks.js";
 import {
 	getPreToolUseContext,
 	runStructuralChecks,
 	shouldSkipTsc,
 } from "./structural-checks.js";
-import type { ProjectGraph } from "./project-graph.js";
-import type { RouteMap } from "./route-map.js";
-import type { SessionTracker } from "./session-state.js";
 import type { Endpoint } from "./types/session.js";
 import type {
 	ExportedSymbol,

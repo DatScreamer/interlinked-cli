@@ -2,8 +2,8 @@
 // Taste check: same-typed adjacent primitive params (positional-swap hazard).
 // Extracted from taste-smell.ts to keep that module under the line cap.
 
-import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
 
 // Conventional name-pairs that are not orderable-by-mistake in practice.
 // Module-level so it is built once, not per call. Kept small on purpose — grow

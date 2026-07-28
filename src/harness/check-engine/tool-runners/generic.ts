@@ -6,7 +6,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { hasOsvScanner } from "../../quality-checks/dependency-audit.js";
-import { interlinkedSemgrepConfigArgs } from "../semgrep-rules.js";
 import {
 	filterResultsToFile,
 	parseEslintOutput,
@@ -17,6 +16,7 @@ import {
 	parseOxlintJson,
 	parseSemgrepJson,
 } from "../output-parsers.js";
+import { interlinkedSemgrepConfigArgs } from "../semgrep-rules.js";
 import { runProcessAsync } from "../spawn-async.js";
 import type { AuditResult, CheckResult, ToolRunnerInput } from "../types.js";
 

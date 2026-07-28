@@ -21,9 +21,9 @@ vi.mock("node:crypto", () => ({
 	}),
 }));
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomFillSync } from "node:crypto";
-
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { nonNull } from "../lib/non-null.js";
 import {
 	failureRecordRelPath,
 	mintFailureId,
@@ -31,7 +31,6 @@ import {
 	writeFailureRecord,
 } from "./failure-record.js";
 import type { FailureRecord } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 const mkdirSyncMock = vi.mocked(mkdirSync);
 const writeFileSyncMock = vi.mocked(writeFileSync);

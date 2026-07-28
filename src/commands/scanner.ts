@@ -39,10 +39,10 @@ import {
 	pickFlagDecision,
 	pickReview,
 	promptForDecision,
+	REVIEW_DECISION_TO_ACTION,
 	renderReview,
 	renderStatus,
 	renderToggleResult,
-	REVIEW_DECISION_TO_ACTION,
 	SKIP_DECISION,
 } from "./scanner-render.js";
 

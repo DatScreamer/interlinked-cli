@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
-	ENV_KEY_PATTERN,
-	LOCAL_ID_PATTERN,
 	checkUnknownKeys,
+	ENV_KEY_PATTERN,
 	err,
 	fail,
 	hasNoDuplicates,
 	includes,
 	isRepoRelativePath,
+	type JsonObject,
+	LOCAL_ID_PATTERN,
 	ok,
+	type ValidationError,
 	validateCoversArray,
 	validateLocalId,
 	validateStringArray,
-	type JsonObject,
-	type ValidationError,
 } from "./schema-validator-helpers.js";
 
 // ----------------------------------------------------------------------------

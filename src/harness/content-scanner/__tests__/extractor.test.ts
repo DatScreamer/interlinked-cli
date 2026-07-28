@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { HarnessEvent } from "../../types.js";
 import { extractScannableContent } from "../extractor.js";
 import type { ContentScannerConfig } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Fixtures

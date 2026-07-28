@@ -1,13 +1,13 @@
 // interlinked-tdd: exempt
 export { buildCollectionRecord } from "./builder.js";
-export { appendCollection, getCollectionPath } from "./writer.js";
 export type {
-	CollectionRecord,
 	CollectionAction,
 	CollectionObservation,
-	ToolClass,
+	CollectionRecord,
+	CompletenessValue,
 	FidelityBlock,
 	FieldFidelity,
 	PrivacyBlock,
-	CompletenessValue,
+	ToolClass,
 } from "./types.js";
+export { appendCollection, getCollectionPath } from "./writer.js";

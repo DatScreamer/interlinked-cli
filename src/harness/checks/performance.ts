@@ -1,6 +1,7 @@
 // Performance anti-pattern checks (loop-body analysis, repeated work, etc).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,7 +9,6 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Loop-body anti-pattern detectors live in a sibling to keep this file under
 // the per-file line cap; they import the loop-body extractors back from here.

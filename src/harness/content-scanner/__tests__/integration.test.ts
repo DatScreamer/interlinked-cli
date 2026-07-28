@@ -17,6 +17,7 @@
 //     downstream outbound rule (network-after-taint, step-budget, etc.)
 //     to fire via the existing taint machinery.
 
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CohortManager } from "../../cohort.js";
 import { evaluatePostToolUse, evaluatePreToolUse } from "../../evaluator.js";
 import { ReservationManager } from "../../reservations.js";
@@ -25,20 +26,20 @@ import {
 	type HarnessEvent,
 	type SessionTrajectory,
 } from "../../types.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { compileAllowlist } from "../allowlist.js";
 import { extractScannableContent } from "../extractor.js";
 import { decideFromFindings } from "../policy.js";
-import { compileAllowlist } from "../allowlist.js";
 import { runPostToolScan } from "../post-scan.js";
 
 const NO_ALLOWLIST = compileAllowlist(undefined);
+
+import { nonNull } from "../../../lib/non-null.js";
 import type {
 	ContentScanner,
 	ContentScannerConfig,
 	ScanFinding,
 	ScanRequest,
 } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // ===========================================
 // Fixtures

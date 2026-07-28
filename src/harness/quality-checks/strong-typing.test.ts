@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
 import { nonNull } from "../../lib/non-null.js";
+import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
 
 describe("findAnyTypes", () => {
 	it("flags explicit `: any` type annotations", () => {

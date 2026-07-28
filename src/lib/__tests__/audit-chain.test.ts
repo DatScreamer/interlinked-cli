@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GENESIS_HASH, computeEntryHash, verifyAuditChain } from "../audit-chain.js";
+import { computeEntryHash, GENESIS_HASH, verifyAuditChain } from "../audit-chain.js";
 
 function writeChain(records: unknown[]): string {
 	const tempDir = mkdtempSync(join(tmpdir(), "interlinked-audit-"));

@@ -26,7 +26,7 @@
 //   fields (e.g. `HarnessDecision._escalation` is read only inside the
 //   daemon's processEvent — looks dead from a grep but isn't).
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export interface DeadFieldFinding {

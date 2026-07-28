@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import {
 	DEFAULT_TRIGGERS,
+	expandSiblings,
 	type FileReader,
+	resetSiblingDedupForTests,
 	type SiblingTrigger,
 	type TrigramIndexLike,
-	expandSiblings,
-	resetSiblingDedupForTests,
 } from "./sibling-expansion.js";
 
 function makeIndex(byAnchor: Record<string, string[]>): TrigramIndexLike {

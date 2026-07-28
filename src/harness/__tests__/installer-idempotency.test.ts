@@ -12,9 +12,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isInterlinkedHookEntry } from "../../lib/hook-ownership.js";
 import { installAllHooks } from "../../lib/hooks.js";
+import { nonNull } from "../../lib/non-null.js";
 import { installHooks } from "../installer.js";
 import type { RunnerId } from "../unified-event.js";
-import { nonNull } from "../../lib/non-null.js";
 
 let base = "";
 let projectDir = "";

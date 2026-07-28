@@ -1,8 +1,8 @@
 // Cross-language checks (SQL injection).
 // Extracted from generic-checks.ts.
 
-import { getExtension, type InlineMatch, stripComments } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, stripComments } from "./shared.js";
 
 // ===========================================
 // Cross-Language Checks

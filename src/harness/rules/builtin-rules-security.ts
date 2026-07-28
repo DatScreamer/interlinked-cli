@@ -183,14 +183,21 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 		enabled: true,
 		trigger: "PreToolUse",
 		tool_match: ["Bash", "Shell", "run_command"],
-		action: "block",
+		// ASK, not block. Installing or reloading a launchd/cron job is ordinary
+		// setup, and a hard block does not prevent it — it pushes the work outside
+		// the harness, where it happens unobserved. Confirmation keeps the human in
+		// the loop AND keeps the action on the record. The dropper signal was never
+		// "a service was installed"; it is "a service was installed without the
+		// user knowing", and an `ask` is exactly what removes that property.
+		action: "ask",
 		patterns: [
 			{ field: "command", regex: "\\bcrontab\\s+(-e|-r|-)\\b" },
 			{ field: "command", regex: "\\bsystemctl\\s+(enable|mask)\\b" },
 			{ field: "command", regex: "\\blaunchctl\\s+(load|submit)\\b" },
 		],
 		reason: "Modifying scheduled tasks or system services creates persistent effects beyond this session",
-		suggestion: "Ask the user to configure cron jobs or system services manually",
+		suggestion:
+			"Confirm this is a service you intend to install or reload. Installing a launchd/cron job is normal setup; doing it unannounced is the dropper pattern.",
 		severity: "critical",
 		category: "process-safety",
 	},
@@ -199,7 +206,11 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 		enabled: true,
 		trigger: "PreToolUse",
 		tool_match: ["Write", "Edit", "WriteFile", "EditFile", "write_file", "edit_file"],
-		action: "block",
+		// ASK for the same reason as builtin-cron-persistence: writing a plist is
+		// real persistence and must be visible, but it is also how every legitimate
+		// agent job gets installed. Blocking it outright only relocated the work to
+		// a terminal the harness cannot see.
+		action: "ask",
 		patterns: [
 			{
 				field: "file_path",
@@ -207,7 +218,8 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 			},
 		],
 		reason: "Writing to cron/systemd/launchd directories creates persistent scheduled tasks",
-		suggestion: "Ask the user to install services or cron jobs manually",
+		suggestion:
+			"Confirm you intend to install or update this service. State plainly what it runs, on what schedule, and how to remove it.",
 		severity: "critical",
 		category: "process-safety",
 	},

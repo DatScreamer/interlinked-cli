@@ -4,6 +4,7 @@ import type {
 	TaggedErrorClass,
 	TaggedErrorInstance,
 } from "./result-tagged-error.js";
+
 export { TaggedError } from "./result-tagged-error.js";
 export type { AnyTaggedError, TaggedErrorClass, TaggedErrorInstance };
 // ===========================================

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	alarmThreshold,
 	createEProcess,
-	eValue,
 	type EProcessConfig,
+	eValue,
 	isAnomalous,
 	observe,
 	runEProcess,

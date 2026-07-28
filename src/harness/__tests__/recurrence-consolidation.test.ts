@@ -18,12 +18,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	loadRecurrenceEvents,
 	recordHarnessCaught,
 } from "../recurrence.js";
 import type { CheckResultEntry } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("PostToolUse recurrence consolidation — behavioral round-trip", () => {
 	let dir: string;

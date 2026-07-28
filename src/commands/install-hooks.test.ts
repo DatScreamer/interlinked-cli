@@ -22,8 +22,8 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
 import { nonNull } from "../lib/non-null.js";
+import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
 
 let tmp = "";
 let originalCwd = "";

@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createTsgoRunner, parseTsgoOutput, type TsgoRunner } from "./tsgo-runner.js";
 import { nonNull } from "../lib/non-null.js";
+import { createTsgoRunner, parseTsgoOutput, type TsgoRunner } from "./tsgo-runner.js";
 
 let tmp = "";
 beforeEach(() => {

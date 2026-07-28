@@ -344,7 +344,6 @@ describe("verifyCommand — applySuppressions", () => {
 	it("stringifies a non-Error thrown by addSuppressions", async () => {
 		const { verifyCommand } = await importVerify();
 		addSuppressionsMock.mockImplementationOnce(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising the String(err) branch
 			throw "raw-string-failure";
 		});
 		await verifyCommand({ suppress: ["f:c"] });
@@ -526,7 +525,6 @@ describe("verifyCommand — remote verify", () => {
 	it("stringifies a non-Error thrown by cloneRepo", async () => {
 		const { verifyCommand } = await importVerify();
 		cloneRepoMock.mockImplementationOnce(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising the String(err) branch
 			throw "raw clone failure";
 		});
 		await verifyCommand({ target: "https://github.com/o/r" });

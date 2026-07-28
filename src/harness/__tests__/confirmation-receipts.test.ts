@@ -17,13 +17,13 @@
 //   - Decisions without resolved_targets render identically to baseline.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { createClaudeCodeAdapter } from "../adapters/claude-code.js";
 import { createCodexAdapter } from "../adapters/codex.js";
 import { createCopilotCliAdapter } from "../adapters/copilot-cli.js";
 import { createCursorAdapter } from "../adapters/cursor.js";
 import { extractResolvedTargets } from "../evaluator/rule-matching.js";
 import type { GuardRule, ResolvedTarget } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Minimal rule fixture — the extractor signature accepts a rule for
 // future rule-specific overrides but is rule-agnostic today, so any

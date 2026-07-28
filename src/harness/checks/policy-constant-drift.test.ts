@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detectPolicyConstantDrift } from "./policy-constant-drift.js";
 import { nonNull } from "../../lib/non-null.js";
+import { detectPolicyConstantDrift } from "./policy-constant-drift.js";
 
 const FILE = "src/lib/config.ts";
 

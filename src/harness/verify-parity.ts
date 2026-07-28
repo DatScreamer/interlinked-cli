@@ -13,9 +13,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { isGeneratedFile } from "./checks/shared.js";
 import type { StructuralCheckResult } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;
 const JS_TS_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);

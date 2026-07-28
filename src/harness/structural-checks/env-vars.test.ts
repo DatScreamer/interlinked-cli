@@ -35,8 +35,8 @@ vi.mock("node:fs", async () => {
 	};
 });
 
-import { checkUndefinedEnvVars } from "./env-vars.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkUndefinedEnvVars } from "./env-vars.js";
 
 // Use a deep path so the parent-walk loop (max 10 hops) has room to walk.
 const SRC = "/repo/a/b/c/d/src/app.ts";

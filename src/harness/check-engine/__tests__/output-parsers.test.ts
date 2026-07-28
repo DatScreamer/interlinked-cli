@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	filterResultsToFile,
 	parseBiomeOutput,
@@ -13,7 +14,6 @@ import {
 	parseShellcheckJson,
 	parseTscOutput,
 } from "../output-parsers.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 describe("parseTscOutput", () => {
 	it("parses file-level errors with line/column/ruleId", () => {

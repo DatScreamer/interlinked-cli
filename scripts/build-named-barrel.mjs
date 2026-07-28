@@ -4,7 +4,7 @@
 // exports) so the harness impact-analysis sees every symbol as a named
 // surface.
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const CHECKS_DIR = resolve(process.cwd(), "src/harness/checks");

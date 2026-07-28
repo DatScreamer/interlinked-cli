@@ -9,6 +9,7 @@
 import type { JsonObject } from "../../lib/json-types.js";
 // Determinism is canonically defined in ../types.ts — import for local use + re-export
 import type { Determinism } from "../types.js";
+
 export type { Determinism };
 export type Provenance = "declared" | "extracted" | "inferred";
 

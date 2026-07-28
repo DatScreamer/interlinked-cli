@@ -6,14 +6,13 @@
 // Imports ONLY from package-install-parser-shared.ts — the dependency graph
 // stays acyclic: shared ← pypi ← ecosystems ← package-install-parser (main).
 
+import { nonNull } from "../lib/non-null.js";
 import type {
 	InstallAction,
 	InstallCommand,
 	PackageSpec,
 } from "./package-install-parser-shared.js";
-
 import { envRegistryFor } from "./package-install-parser-shared.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================================
 // pip / pip3 / pipx

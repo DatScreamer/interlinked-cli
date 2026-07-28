@@ -6,9 +6,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-
-import { extractEndpoints } from "./nextjs.js";
 import { nonNull } from "../../lib/non-null.js";
+import { extractEndpoints } from "./nextjs.js";
 
 const FIXTURE_ROOT = join(
 	__dirname,

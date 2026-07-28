@@ -5,8 +5,8 @@
 // Extracted from project-graph.ts to keep the main module focused
 // on the ProjectGraph class and its indexing logic.
 
-import type { ExportedSymbol } from "../types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { ExportedSymbol } from "../types.js";
 
 /**
  * Public API — consumed by ProjectGraph.indexFile and structural-checks.

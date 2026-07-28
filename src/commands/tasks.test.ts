@@ -49,7 +49,6 @@ import {
 	tasksShowCommand,
 } from "./tasks.js";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes is the point
 const ANSI = /\x1b\[[0-9;]*m/g;
 const strip = (s: string): string => s.replace(ANSI, "");
 
@@ -401,7 +400,6 @@ describe("tasks list: server error handling", () => {
 	it("stringifies a non-Error reject (String(err) branch)", async () => {
 		installClient({
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "boom-string";
 			},
 		});
@@ -528,7 +526,6 @@ describe("tasks create: server error handling", () => {
 		installClient({
 			agentName: "a",
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "create-string";
 			},
 		});
@@ -638,7 +635,6 @@ describe("tasks show: unwrap + output", () => {
 	it("stringifies a non-Error reject (String(err) branch)", async () => {
 		installClient({
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "show-string";
 			},
 		});
@@ -701,7 +697,6 @@ describe("tasks claim", () => {
 		installClient({
 			agentName: "a",
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "claim-string";
 			},
 		});
@@ -768,7 +763,6 @@ describe("tasks complete", () => {
 		installClient({
 			agentName: "a",
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "complete-string";
 			},
 		});

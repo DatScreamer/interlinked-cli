@@ -35,6 +35,7 @@ import type {
 } from "../types.js";
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
 import { appendFlakeCheckWarning } from "./post-tool-flake-phase.js";
+import { appendMutationHarvestWarning } from "./post-tool-mutation-harvest.js";
 import { resolveEditedPaths } from "./post-tool-pipeline-paths.js";
 import {
 	dischargeCoverageOnGreenRun,
@@ -55,8 +56,11 @@ function skipPathsShortCircuit(
 	event: HarnessEvent,
 	rules: ServerRuntime["rules"],
 ): HarnessDecision | null {
-	const editedFilePathRaw =
-		(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
+	// tool_input crosses a process boundary, so its field types are a claim rather
+	// than a guarantee; `as string` would pass a non-string on to path handling
+	// that assumes otherwise.
+	const namedPath = event.tool_input?.file_path ?? event.tool_input?.path;
+	const editedFilePathRaw = typeof namedPath === "string" ? namedPath : "";
 	if (editedFilePathRaw && shouldSkipPath(editedFilePathRaw, rules)) {
 		return {
 			decision: "allow",
@@ -361,6 +365,8 @@ export async function runPostToolPipeline(
 	// --- Flake double-run (DW P0.2): opt-in. On a test-file edit, re-run the
 	// affected scoped suite twice and warn on divergence. Fast no-op when off. ---
 	await appendFlakeCheckWarning(ctx, event, postDecision);
+	// Second mutation window: claim any run the PreToolUse budget abandoned.
+	await appendMutationHarvestWarning(ctx, event, postDecision);
 
 	const postStartMs = Date.now();
 	const checksRan: string[] = [];

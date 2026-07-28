@@ -13,8 +13,8 @@ import {
 	parseInterlinkedTrailers,
 } from "../lib/git-utils.js";
 import type { JsonObject } from "../lib/json-types.js";
-import { getOutputMode, output, outputError } from "../lib/output.js";
 import { nonNull } from "../lib/non-null.js";
+import { getOutputMode, output, outputError } from "../lib/output.js";
 
 // ===========================================
 // Types

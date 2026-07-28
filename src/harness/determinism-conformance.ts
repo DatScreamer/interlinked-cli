@@ -19,10 +19,10 @@
 // canonical findings" is the same operation whether the two runs are
 // same-process repeats (here) or local-vs-cloud-Sandbox (next).
 
+import { nonNull } from "../lib/non-null.js";
 import type { InlineMatch } from "./check-registry/index.js";
 import { buildAgentSafetyChecks } from "./check-registry/index.js";
 import { stripCommentsAndStrings } from "./checks/shared.js";
-import { nonNull } from "../lib/non-null.js";
 
 /** One finding, flattened from an InlineMatch plus its check's identity. */
 export interface ConformanceFinding {

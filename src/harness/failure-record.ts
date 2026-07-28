@@ -18,12 +18,11 @@
 // without a third-party dep, but for older Node and to keep the runtime
 // dependency surface zero, we hand-roll a v7 generator below.
 
+import { randomFillSync } from "node:crypto";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomFillSync } from "node:crypto";
-
-import type { FailureRecord } from "./types.js";
 import { nonNull } from "../lib/non-null.js";
+import type { FailureRecord } from "./types.js";
 
 const FAILURES_DIR = ".interlinked/failures";
 

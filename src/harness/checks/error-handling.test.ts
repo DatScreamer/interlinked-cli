@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkErrorDispatchByInstanceof, checkLossyErrorRethrow } from "./error-handling.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkErrorDispatchByInstanceof, checkLossyErrorRethrow } from "./error-handling.js";
 
 const TS = "src/lib/foo.ts";
 

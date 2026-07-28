@@ -28,6 +28,7 @@ import {
 	loadCache,
 	saveCache,
 } from "./discovered-primitives-fs.js";
+
 // Re-export the filesystem-I/O leaf helpers so the module's public
 // surface (and existing import paths) is unchanged after extraction.
 export { cachePath, listSourceFiles, loadCache, saveCache };

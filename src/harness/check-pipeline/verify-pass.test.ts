@@ -6,13 +6,13 @@
 // "exempt typeof narrowing") into a single pluggable layer.
 
 import { describe, expect, it } from "vitest";
+import type { InlineMatch } from "../checks/shared.js";
 import {
 	applyVerifyPasses,
 	getRegisteredVerifyPassIds,
 	registerVerifyPass,
 	resetVerifyPassesForTesting,
 } from "./verify-pass.js";
-import type { InlineMatch } from "../checks/shared.js";
 
 function match(line: number, text: string): InlineMatch {
 	return { line, text };

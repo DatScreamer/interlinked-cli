@@ -9,12 +9,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkPackageJsonPublishInvariants,
 	checkPackageJsonPublishInvariantsWithPublint,
 	checkPackageJsonScriptPaths,
 } from "./package-json.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // A "complete" pre-edit package.json with every field the check tracks.
 const FULL_PKG = {

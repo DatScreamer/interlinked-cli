@@ -15,62 +15,61 @@
 //   package-install-parser-ecosystems.ts — per-ecosystem parsers (npm/pip/etc.)
 //   package-install-parser.ts (this file) — shell splitting + dispatcher + public API
 
+
+// Re-export ecosystem parsers so callers that import the named parsers
+// directly (tests, guard code) still resolve from this module.
+export {
+	classifyPipSpec,
+	isNpmVerb,
+	parseBundle,
+	parseCargo,
+	parseComposer,
+	parseGem,
+	parseGo,
+	parseMaven,
+	parseNpmLike,
+	parseNuget,
+	parsePip,
+	parsePoetry,
+	parseUv,
+} from "./package-install-parser-ecosystems.js";
 // ---------------------------------------------------------------------------
 // Re-export types from shared so external callers see them from this module.
 // ---------------------------------------------------------------------------
 export type {
 	Ecosystem,
 	InstallAction,
-	PackageSpec,
 	InstallCommand,
+	PackageSpec,
 } from "./package-install-parser-shared.js";
-
 export {
-	envRegistryFor,
 	dropPreVerbFlags,
 	ENV_REGISTRY_KEYS,
-	pinnedVersionViolation,
+	envRegistryFor,
 	isExactPinnedVersion,
+	pinnedVersionViolation,
 } from "./package-install-parser-shared.js";
 
-// Re-export ecosystem parsers so callers that import the named parsers
-// directly (tests, guard code) still resolve from this module.
-export {
+import { nonNull } from "../lib/non-null.js";
+
+import {
 	isNpmVerb,
-	parseNpmLike,
-	parsePip,
-	classifyPipSpec,
-	parsePoetry,
-	parseUv,
-	parseCargo,
-	parseGem,
 	parseBundle,
+	parseCargo,
 	parseComposer,
+	parseGem,
 	parseGo,
 	parseMaven,
+	parseNpmLike,
 	parseNuget,
+	parsePip,
+	parsePoetry,
+	parseUv,
 } from "./package-install-parser-ecosystems.js";
-
 // ---------------------------------------------------------------------------
 // Local imports (shared helpers used in the shell-parsing core below)
 // ---------------------------------------------------------------------------
 import type { InstallCommand } from "./package-install-parser-shared.js";
-
-import {
-	isNpmVerb,
-	parseNpmLike,
-	parsePip,
-	parsePoetry,
-	parseUv,
-	parseCargo,
-	parseGem,
-	parseBundle,
-	parseComposer,
-	parseGo,
-	parseMaven,
-	parseNuget,
-} from "./package-install-parser-ecosystems.js";
-import { nonNull } from "../lib/non-null.js";
 
 const NPM_LIKE = new Set(["npm", "pnpm", "yarn", "bun"]);
 

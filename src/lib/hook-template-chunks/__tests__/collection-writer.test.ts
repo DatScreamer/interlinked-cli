@@ -7,8 +7,8 @@
 // the .mjs runtime does), then call it with synthetic events.
 
 import { describe, expect, it } from "vitest";
-import { COLLECTION_WRITER_CHUNK } from "../collection-writer.js";
 import { nonNull } from "../../non-null.js";
+import { COLLECTION_WRITER_CHUNK } from "../collection-writer.js";
 
 /**
  * Build self-contained `buildCollectionRecord` from the chunk source.

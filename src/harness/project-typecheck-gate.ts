@@ -30,8 +30,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CheckResultEntry } from "./types.js";
 import { nonNull } from "../lib/non-null.js";
+import type { CheckResultEntry } from "./types.js";
 
 const TYPECHECK_TIMEOUT_MS = 60_000;
 const MAX_DIAGS_REPORTED = 50;
@@ -227,7 +227,6 @@ export function parseTestFailures(stdout: string): string[] {
 	const failures: string[] = [];
 	for (const line of stdout.split("\n")) {
 		// Strip ANSI color codes (vitest emits them even with --silent).
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require literal control char
 		const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
 		// Vitest red-cross prefix on failed tests
 		const m = stripped.match(/^\s*(?:×|✗|FAIL)\s+(.+)$/);

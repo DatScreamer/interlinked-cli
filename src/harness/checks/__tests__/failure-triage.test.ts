@@ -5,9 +5,8 @@
 // reordering that would silently regress the classifier.
 
 import { describe, expect, it } from "vitest";
-
-import { classifyFailure, listTriageRules } from "../failure-triage.js";
 import type { ToolFailureEvent } from "../../types.js";
+import { classifyFailure, listTriageRules } from "../failure-triage.js";
 
 function makeEvent(overrides: Partial<ToolFailureEvent> = {}): ToolFailureEvent {
 	return {

@@ -7,8 +7,8 @@
 // depend only on the JsonObject/PolicyClassification types and each other.
 
 import type { JsonObject } from "../lib/json-types.js";
-import type { PolicyClassification } from "./types.js";
 import { nonNull } from "../lib/non-null.js";
+import type { PolicyClassification } from "./types.js";
 
 /**
  * Parse claude -p --output-format json output.

@@ -51,21 +51,22 @@ import {
 	assertSafeFetchTarget,
 	fetchBody,
 } from "./web-fetch-proxy-ssrf-fetch.js";
-// Re-export `assertSafeFetchTarget` + `fetchBody` (used locally above) and the
-// remaining SSRF symbols so importers of this module's path keep resolving them.
-export { assertSafeFetchTarget, fetchBody };
-export {
-	isBlockedAddress,
-	makePinnedLookup,
-	pinnedFetch,
-	SsrfBlockedError,
-} from "./web-fetch-proxy-ssrf-fetch.js";
+
 export type {
 	HostResolver,
 	PinnedFetchResponse,
 	SsrfRejectionReason,
 	VettedTarget,
 } from "./web-fetch-proxy-ssrf-fetch.js";
+export {
+	isBlockedAddress,
+	makePinnedLookup,
+	pinnedFetch,
+	SsrfBlockedError,
+} from "./web-fetch-proxy-ssrf-fetch.js";
+// Re-export `assertSafeFetchTarget` + `fetchBody` (used locally above) and the
+// remaining SSRF symbols so importers of this module's path keep resolving them.
+export { assertSafeFetchTarget, fetchBody };
 
 /** Fallback when the config doesn't specify a scan timeout. Mirrors
  *  `runPostToolScan`'s default so behaviour stays consistent across paths. */

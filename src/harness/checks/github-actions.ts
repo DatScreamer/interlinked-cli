@@ -3,8 +3,8 @@
 // Python source — they are CI configuration whose attack surface (shell
 // expansion of untrusted GitHub-event payloads) is its own category.
 
-import { type InlineMatch, isTestFile, isVendoredOrFixturePath } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { type InlineMatch, isTestFile, isVendoredOrFixturePath } from "./shared.js";
 
 /** Path gate: any `.yml` / `.yaml` under a `.github/workflows/` directory. */
 function isGithubWorkflowPath(filePath: string): boolean {

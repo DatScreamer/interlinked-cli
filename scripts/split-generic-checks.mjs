@@ -2,7 +2,7 @@
 // Script to split generic-checks.ts into smaller modules.
 // Extracts line ranges from original file, writes to new files with appropriate imports.
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const SRC = resolve(process.cwd(), "src/harness/generic-checks.ts");

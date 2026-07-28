@@ -1,8 +1,8 @@
 // C/C++ checks (unsafe functions, include guards, sprintf, malloc checks).
 // Extracted from generic-checks.ts.
 
-import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile, stripCommentsAndStrings } from "./shared.js";
 
 // ===========================================
 // C/C++ Checks

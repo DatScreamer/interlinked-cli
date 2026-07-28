@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildCollectionRecord } from "../../../lib/collection/builder.js";
-import { getCollectionPath } from "../../../lib/collection/writer.js";
 import type { CollectionRecord } from "../../../lib/collection/types.js";
+import { getCollectionPath } from "../../../lib/collection/writer.js";
 import type { JsonObject } from "../../../lib/json-types.js";
 import type { HarnessEvent } from "../../types.js";
 

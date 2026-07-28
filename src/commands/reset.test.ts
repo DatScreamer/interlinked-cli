@@ -60,8 +60,8 @@ vi.mock("../lib/formatter.js", () => ({
 	header: (t: string) => `== ${t} ==`,
 }));
 
-import { resetCommand } from "./reset.js";
 import { nonNull } from "../lib/non-null.js";
+import { resetCommand } from "./reset.js";
 
 // Canonical absolute paths the command derives from cwd="/repo".
 const CONFIG_DIR = "/repo/.interlinked";

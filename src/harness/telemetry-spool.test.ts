@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	createTelemetrySpool,
 	parseJsonl,
@@ -9,7 +10,6 @@ import {
 	type SpoolEvent,
 	truncateFilePaths,
 } from "./telemetry-spool.js";
-import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-	STRICT_TYPING_RULE_ID,
-	evaluateTypeErasureOverlay,
-} from "./type-erasure-overlay.js";
 import { nonNull } from "../../lib/non-null.js";
+import {
+	evaluateTypeErasureOverlay,
+	STRICT_TYPING_RULE_ID,
+} from "./type-erasure-overlay.js";
 
 describe("evaluateTypeErasureOverlay", () => {
 	it("exposes a stable rule id for block messages", () => {

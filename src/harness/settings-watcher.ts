@@ -26,8 +26,8 @@
 
 import { unwatchFile, watchFile } from "node:fs";
 import {
-	appendStripAuditLog,
 	type AutoStripResult,
+	appendStripAuditLog,
 	autoStripAllScopes,
 	defaultSettingsPaths,
 	defaultStripAuditLogPath,

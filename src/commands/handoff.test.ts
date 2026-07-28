@@ -39,7 +39,6 @@ process.env.NO_COLOR = "1";
 
 import { handoffCommand } from "./handoff.js";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes is the point
 const ANSI = /\x1b\[[0-9;]*m/g;
 const strip = (s: string): string => s.replace(ANSI, "");
 
@@ -344,7 +343,6 @@ describe("handoff: send failure handling", () => {
 		installClient({
 			callTool: (name) => {
 				if (name === "send_message") {
-					// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 					throw "raw string failure";
 				}
 				return { ctx: true };

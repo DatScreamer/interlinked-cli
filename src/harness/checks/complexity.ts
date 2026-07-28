@@ -1,6 +1,7 @@
 // Function complexity checks.
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	collectFunctionSignature,
 	getExtension,
@@ -8,7 +9,6 @@ import {
 	isTestFile,
 	stripForBraceScan,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Check: Function Complexity

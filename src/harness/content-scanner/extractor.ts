@@ -13,7 +13,7 @@
 import type { JsonObject } from "../../lib/json-types.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import type { HarnessEvent } from "../types.js";
-import type { ContentScanRequest, ContentScannerConfig } from "./types.js";
+import type { ContentScannerConfig, ContentScanRequest } from "./types.js";
 
 // ===========================================
 // Tool-name sets

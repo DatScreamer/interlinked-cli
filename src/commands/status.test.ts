@@ -931,7 +931,6 @@ describe("statusCommand — error path", () => {
 
 	it("stringifies a non-Error throw and emits structured json error in json mode", async () => {
 		mockResolveConfig.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising the String(err) branch
 			throw "plain string failure";
 		});
 

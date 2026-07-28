@@ -26,9 +26,9 @@
 // `.interlinked/file-priority.json` with a 24h TTL so subsequent
 // sessions skip the git call.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { nonNull } from "../lib/non-null.js";
 
 /** Priority tier for a tracked file. */

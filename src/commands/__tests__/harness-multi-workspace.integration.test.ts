@@ -26,7 +26,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { reapOrphanHarnesses } from "../harness.js";
-import { type FixtureDaemon, buildPsFixture } from "./multi-workspace-fixture.js";
+import { buildPsFixture, type FixtureDaemon } from "./multi-workspace-fixture.js";
 
 beforeEach(() => {
 	for (const m of Object.values(mocks)) m.mockReset();

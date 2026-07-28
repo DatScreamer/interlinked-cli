@@ -632,7 +632,6 @@ describe("doctorCommand", () => {
 	it("substitutes ~ for an unset HOME when rendering the settings path", async () => {
 		seedHealthyFs();
 		const homeBackup = process.env.HOME;
-		// biome-ignore lint/performance/noDelete: exercise the `?? "~"` fallback.
 		delete process.env.HOME;
 		const settings = `${CWD}/.claude/settings.json`;
 		mockDefaultSettingsPaths.mockReturnValue([settings]);

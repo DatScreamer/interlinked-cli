@@ -2,7 +2,7 @@
 // Cover the bulk + per-file APIs, the back-compat RouteInfo projection,
 // and the getRouteContext string format used by structural-checks.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

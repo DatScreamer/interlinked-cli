@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { GuardRulesConfig } from "../../types.js";
 import { scanUserPrompt } from "../prompt-scan.js";
 import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types.js";
-import type { GuardRulesConfig } from "../../types.js";
 
 function makeConfig(overrides: Partial<ContentScannerConfig> = {}): ContentScannerConfig {
 	return {

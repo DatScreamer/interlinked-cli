@@ -13,14 +13,14 @@
 // acknowledgment.
 
 import { describe, expect, it } from "vitest";
+import type { PerSectionScore } from "../graph-prediction-cache.js";
+import type { ParsedGraphPrediction } from "../graph-prediction-parser.js";
 import {
-	reconcile,
 	type ReconcileInputs,
+	reconcile,
 	type SeverityResult,
 } from "../graph-prediction-reconcile.js";
 import type { SupermodelGraph } from "../supermodel-graph.js";
-import type { ParsedGraphPrediction } from "../graph-prediction-parser.js";
-import type { PerSectionScore } from "../graph-prediction-cache.js";
 
 function oracle(overrides: Partial<SupermodelGraph> = {}): SupermodelGraph {
 	return {

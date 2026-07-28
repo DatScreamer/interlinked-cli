@@ -4,6 +4,7 @@
 // representative happy-path input.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { HarnessEvent, PreEditBaseline } from "../types.js";
 import { resolveDependencyAuditCommand } from "./dependency-audit.js";
 import { runInlineCheckBlock } from "./inline-block.js";
@@ -22,7 +23,6 @@ import { findAnyTypes, stripStringLiterals } from "./strong-typing.js";
 import { classifyTestFailure, isLikelyTestFile } from "./test-classifier.js";
 import { runToolCheckLoop } from "./tool-check-loop.js";
 import { classifyDeterminism, formatQualityWarnings } from "./warning-formatter.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("quality-checks submodules (smoke)", () => {
 	it("secret-detection finds known token formats", () => {

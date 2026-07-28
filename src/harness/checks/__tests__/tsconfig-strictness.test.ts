@@ -25,8 +25,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkTsconfigStrictness } from "../tsconfig-strictness.js";
 import { nonNull } from "../../../lib/non-null.js";
+import { checkTsconfigStrictness } from "../tsconfig-strictness.js";
 
 // noUncheckedIndexedAccess is ADVISORY (never gated, see the check); these four
 // are the gated flags the default verify gate still demands.

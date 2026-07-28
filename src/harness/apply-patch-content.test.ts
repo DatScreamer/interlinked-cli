@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	type ApplyPatchSection,
 	looksLikeApplyPatch,
 	parseApplyPatchSections,
 	reconstructAfterContent,
 } from "./apply-patch-content.js";
-import { nonNull } from "../lib/non-null.js";
 
 describe("looksLikeApplyPatch", () => {
 	it("recognizes a V4A patch payload", () => {

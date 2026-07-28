@@ -10,11 +10,11 @@
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
-import type { CaseResult } from "./graph-prediction-classifier.js";
 import type {
 	GraphPredictionRow,
 	PredictionRowKey,
 } from "./graph-prediction-cache.js";
+import type { CaseResult } from "./graph-prediction-classifier.js";
 import type { ParsedGraphPrediction } from "./graph-prediction-parser.js";
 import type { HarnessEvent } from "./types.js";
 
@@ -29,11 +29,11 @@ vi.mock("./graph-prediction-parser.js", () => ({
 	parseBarePrediction: vi.fn(),
 }));
 
-import { classifyCase } from "./graph-prediction-classifier.js";
 import {
 	appendPredictionRow,
 	findPredictionRow,
 } from "./graph-prediction-cache.js";
+import { classifyCase } from "./graph-prediction-classifier.js";
 import { parseBarePrediction } from "./graph-prediction-parser.js";
 import {
 	handleAckSubmission,

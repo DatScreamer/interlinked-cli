@@ -7,6 +7,7 @@
 // "./taste-checks.js" unchanged.
 // ===========================================
 
+import { nonNull } from "../lib/non-null.js";
 import { stripAllLiterals, stripComments } from "./strip-helpers.js";
 import {
 	findBlockEnd,
@@ -18,7 +19,6 @@ import {
 	push,
 	stripCommentsAndStrings,
 } from "./taste-checks-shared.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // 12. Commented-Out Code

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { buildTrajectoryFixture, makeCandidate } from "./__tests__/sequence-fixtures.js";
-import type { SequenceFinding } from "./sequence-checks/types.js";
 import {
 	DEFAULT_LOCKDOWN_CONFIG,
 	evaluateLockdown,
 	type LockdownConfig,
 } from "./lockdown-policy.js";
+import type { SequenceFinding } from "./sequence-checks/types.js";
 
 // ---------------------------------------------------------------
 // Helpers

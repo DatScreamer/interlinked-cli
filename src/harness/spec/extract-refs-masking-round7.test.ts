@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { extractSpecFacts } from "./extract-facts.js";
+import { extractAnchorLinks, extractSectionRefs } from "./extract-refs.js";
 import {
 	htmlCommentBlockLines,
 	maskCommentsKeepCode,
 	maskInlineIgnorable,
 	sameLineCommentBlockLines,
 } from "./extract-refs-masking.js";
-import { extractAnchorLinks, extractSectionRefs } from "./extract-refs.js";
 
 const lines = (text: string): string[] => text.split("\n");
 const noFences = new Set<number>();

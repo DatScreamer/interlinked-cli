@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkDeletionCommentAdded,
 	checkDeprecationAdded,
@@ -6,7 +7,6 @@ import {
 	checkReplacedWithStub,
 	checkTestGutted,
 } from "../deletion-hygiene.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Layer 2: Diff-Aware Zombie Detectors

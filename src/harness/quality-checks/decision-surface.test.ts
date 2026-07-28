@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	type DetectDecisionSurfaceOptions,
 	detectDecisionSurface,
 	detectLockfileMultiplicity,
-	type DetectDecisionSurfaceOptions,
 } from "./decision-surface.js";
 
 // ===========================================

@@ -39,9 +39,9 @@ import {
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 // ---- inlined scrubber (mirrors backfill-thinking.mjs) -----------------------
 

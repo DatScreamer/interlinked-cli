@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
 import {
-	COMMIT_CYCLOMATIC_CAP,
 	type ChangedSource,
+	COMMIT_CYCLOMATIC_CAP,
 	coverageViolation,
 	crapViolation,
 	cyclomaticViolation,

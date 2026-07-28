@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG } from "../default-config.js";
 import { nonNull } from "../../../lib/non-null.js";
+import { DEFAULT_CONFIG } from "../default-config.js";
 
 describe("DEFAULT_CONFIG", () => {
 	it("has expected shape", () => {

@@ -27,8 +27,6 @@ vi.mock("node:child_process", () => ({
 import { execSync as mockedExecSync } from "node:child_process";
 
 import { resetLargeFileBaselineCache } from "./large-file-policy.js";
-import type { SessionTrajectory } from "./types.js";
-
 import {
 	checkConcurrentEdit,
 	checkDirtyWorkingTree,
@@ -39,6 +37,7 @@ import {
 	checkStaleBranch,
 	detectBashCodeFileWrite,
 } from "./pre-checks.js";
+import type { SessionTrajectory } from "./types.js";
 
 const execSyncMock = vi.mocked(mockedExecSync);
 
@@ -741,6 +740,39 @@ describe("detectBashCodeFileWrite", () => {
 
 	it("returns null for a file-move verb with fewer than two positionals", () => {
 		expect(detectBashCodeFileWrite("cp src/only.ts")).toBeNull();
+	});
+
+	// A remote destination is not a local tracked file, so it cannot bypass this
+	// repo's content gates. Before this, rsyncing ONE file to another machine was
+	// blocked while rsyncing its whole PARENT DIRECTORY passed — same transfer,
+	// opposite verdicts, purely because only the first ended in a code extension.
+	it("N: does not flag rsync of a single file to a REMOTE destination", () => {
+		expect(detectBashCodeFileWrite("rsync -a src/foo.ts user@host:~/dest/foo.ts")).toBeNull();
+	});
+
+	it("N: does not flag scp to a remote destination", () => {
+		expect(detectBashCodeFileWrite("scp src/foo.ts host:/srv/app/foo.ts")).toBeNull();
+	});
+
+	it("N: does not flag a bare host:path remote spec (no user@)", () => {
+		expect(detectBashCodeFileWrite("rsync -a src/a.mjs box:~/b/a.mjs")).toBeNull();
+	});
+
+	it("P: STILL flags rsync pulling a remote file INTO a local code path", () => {
+		// Direction matters: here the destination is local, so the gate must hold.
+		const hit = detectBashCodeFileWrite("rsync -a user@host:~/src/foo.ts src/foo.ts");
+		expect(hit?.target).toBe("src/foo.ts");
+	});
+
+	it("P: STILL flags a local-to-local copy that merely contains a colon", () => {
+		// `./a:b.ts` has a colon AFTER a slash — a local filename, not a remote spec.
+		const hit = detectBashCodeFileWrite("cp /tmp/x ./a:b.ts");
+		expect(hit?.target).toBe("./a:b.ts");
+	});
+
+	it("P: STILL flags a URL-looking destination (:// is not a remote spec)", () => {
+		const hit = detectBashCodeFileWrite("cp /tmp/x https://x/foo.ts");
+		expect(hit?.target).toBe("https://x/foo.ts");
 	});
 
 	it("skips a pipeline segment that has fewer than two words (args.length < 2)", () => {

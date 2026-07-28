@@ -5,6 +5,7 @@
 // the patterns described in their JSDoc. The fatalError-in-guard and
 // print-in-view-body checks are advisory (in DEFAULT_ADVISORY_SKIPS).
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -12,7 +13,6 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 

@@ -299,7 +299,7 @@ export const EXFILTRATION_RULES: SignatureRule[] = [
 // Extracted to ./signatures-patterns-secrets.ts (leaf data cluster) to keep
 // this module under the per-file line cap. Re-exported here so existing
 // consumers can keep importing them from signatures-patterns.js.
-export { SECRETS_RULES, CREDENTIAL_ACCESS_RULES } from "./signatures-patterns-secrets.js";
+export { CREDENTIAL_ACCESS_RULES, SECRETS_RULES } from "./signatures-patterns-secrets.js";
 
 // ===========================================
 // Supply Chain Rules

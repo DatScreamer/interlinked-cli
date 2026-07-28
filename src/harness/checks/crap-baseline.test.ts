@@ -1,14 +1,14 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	__resetCoverageFinalCache,
 	type PerFileCoverage,
 } from "../coverage-final-reader.js";
 import type { CrapFinding } from "./crap.js";
 import { computeCrapRisers, filterToRisers, snapshotCrap } from "./crap-baseline.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Helpers

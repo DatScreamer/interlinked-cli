@@ -9,7 +9,6 @@
 // against. To add a check, append its entry to the matching fragment (or add a
 // new fragment + spread it here).
 
-import type { CheckMeta } from "./types.js";
 import { GENERIC_AGENT_LAZINESS_META } from "./generic-agent-laziness.js";
 import { GENERIC_API_SHAPE_META } from "./generic-api-shape.js";
 import { GENERIC_C_META } from "./generic-c.js";
@@ -22,6 +21,7 @@ import { GENERIC_REACT_WARNINGS_META } from "./generic-react-warnings.js";
 import { GENERIC_SWIFT_META } from "./generic-swift.js";
 import { GENERIC_TEST_HYGIENE_META } from "./generic-test-hygiene.js";
 import { GENERIC_UBS_META } from "./generic-ubs.js";
+import type { CheckMeta } from "./types.js";
 
 /** Public API — consumed by doc generation and re-exported from check-metadata.ts. */
 export const GENERIC_CHECK_META: Record<string, CheckMeta> = {

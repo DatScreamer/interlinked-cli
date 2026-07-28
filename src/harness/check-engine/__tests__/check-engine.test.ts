@@ -3,6 +3,7 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { deduplicateResults } from "../index.js";
 import {
 	filterResultsToFile,
@@ -22,7 +23,6 @@ import {
 	parseTscOutput,
 } from "../output-parsers.js";
 import type { CheckResult } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // -------------------------------------------
 // parseTscOutput

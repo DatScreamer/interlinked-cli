@@ -235,11 +235,11 @@ export function gateProposedContentInline(
 	return failures;
 }
 
+/** Public API — the CheckResult row shape surfaced by diff-overlay. */
+export type { CheckResult };
 /** Public API — re-exported for tests and downstream consumers so they can
  *  use the same finding-blocking classifier the command uses internally. */
 export { isTscFindingBlocking };
-/** Public API — the CheckResult row shape surfaced by diff-overlay. */
-export type { CheckResult };
 
 // ───────────────────────────────────────────────
 // Transactional write

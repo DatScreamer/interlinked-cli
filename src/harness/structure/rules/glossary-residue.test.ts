@@ -2,10 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode } from "../types.js";
 import { checkGlossaryResidue } from "./glossary-residue.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function termNode(label: string, deprecated: string[]): ArtifactNode {
 	return {

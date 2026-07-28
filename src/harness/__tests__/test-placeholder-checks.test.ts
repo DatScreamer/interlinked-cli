@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkFocusedTests, checkPlaceholderTests } from "../generic-checks.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkFocusedTests, checkPlaceholderTests } from "../generic-checks.js";
 
 // ===========================================
 // checkFocusedTests — committed .only / fdescribe / fit markers

@@ -12,8 +12,8 @@
 // rather than forcing every entry into the positive-match shape.
 
 import { basename, extname } from "node:path";
-import type { InlineCheckDef, LanguageId, LanguageProfile } from "../types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { InlineCheckDef, LanguageId, LanguageProfile } from "../types.js";
 import { isLikelyTestFile } from "./test-classifier.js";
 
 export interface InlineLangCheckResult {

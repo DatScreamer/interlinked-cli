@@ -26,9 +26,9 @@ import {
 	ReservationManager,
 	type ReservationTxn,
 	replayTransitions,
-	sameOwner,
 	type ServerApiClient,
 	type ServerReservation,
+	sameOwner,
 } from "../reservations.js";
 import { ServerBridge } from "../server-bridge.js";
 import type { HarnessEvent } from "../types.js";

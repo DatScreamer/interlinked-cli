@@ -10,10 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	loadRecurrenceEvents,
 	recordHarnessCaught,
 	recordRecurrenceEvent,
-	loadRecurrenceEvents,
 } from "../../harness/recurrence.js";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	recurrenceDetailCommand,
 	recurrenceFlagCommand,
@@ -21,7 +22,6 @@ import {
 	recurrenceProposeCommand,
 	recurrenceScanCommand,
 } from "../recurrence.js";
-import { nonNull } from "../../lib/non-null.js";
 
 let dir: string;
 let logSpy: ReturnType<typeof vi.spyOn>;

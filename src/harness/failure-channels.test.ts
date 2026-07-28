@@ -41,6 +41,7 @@ vi.mock("./session-state.js", () => ({
 	isFileTrackedAsWritten: vi.fn(() => true),
 }));
 
+import { nonNull } from "../lib/non-null.js";
 import { explainFailure } from "./checks/failure-explanation.js";
 import { classifyFailure } from "./checks/failure-triage.js";
 import { suggestRecovery } from "./checks/recovery-suggestion.js";
@@ -56,7 +57,6 @@ import {
 } from "./failure-record.js";
 import { recordToolFailure } from "./recurrence.js";
 import { isFileTrackedAsWritten } from "./session-state.js";
-import { nonNull } from "../lib/non-null.js";
 
 const classifyFailureMock = vi.mocked(classifyFailure);
 const explainFailureMock = vi.mocked(explainFailure);

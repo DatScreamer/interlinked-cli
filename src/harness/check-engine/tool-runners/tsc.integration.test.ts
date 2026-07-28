@@ -19,9 +19,9 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckScope, ToolRunnerInput } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // --- Module-edge mocks (registered once; behavior swapped per test) ---------
 

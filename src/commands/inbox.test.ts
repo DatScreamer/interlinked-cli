@@ -41,7 +41,6 @@ process.env.NO_COLOR = "1";
 
 import { inboxCommand } from "./inbox.js";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes is the point
 const ANSI = /\x1b\[[0-9;]*m/g;
 const strip = (s: string): string => s.replace(ANSI, "");
 
@@ -447,7 +446,6 @@ describe("inbox: server error handling", () => {
 		installClient({
 			agentName: "a",
 			callTool: () => {
-				// biome-ignore lint/suspicious/useThrowOnlyError: exercising the String(err) branch
 				throw "string failure";
 			},
 		});

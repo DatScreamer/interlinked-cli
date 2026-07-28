@@ -7,26 +7,25 @@
 // lived in `src/harness/checks/tainted-sink.ts`; the parity-with-prior-
 // behaviour suite at the bottom of this file pins that contract.
 
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import {
-	SANITIZER_KIND_FUNCTION,
-	SANITIZER_KIND_METHOD,
-	SANITIZER_KIND_REGEX,
-	SCOPE_GLOBAL,
-	SINK_CLASSES,
 	isSanitized,
 	load,
 	localSanitizersPath,
+	SANITIZER_KIND_FUNCTION,
+	SANITIZER_KIND_METHOD,
+	SANITIZER_KIND_REGEX,
+	type SanitizerRegistry,
+	SCOPE_GLOBAL,
+	SINK_CLASSES,
 	teamSanitizersPath,
 	validate,
 	watchSanitizerFiles,
-	type SanitizerRegistry,
 } from "../sanitizer-registry.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ---------- Test scaffolding ----------
 

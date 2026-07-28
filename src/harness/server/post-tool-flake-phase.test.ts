@@ -51,7 +51,6 @@ afterEach(() => {
 describe("appendFlakeCheckWarning", () => {
 	it("is a no-op when flake_check is off (default) — never runs a suite", async () => {
 		const decision: HarnessDecision = { decision: "allow" };
-		// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 		await appendFlakeCheckWarning(ctxWith(undefined) as any, editEvent("src/foo.test.ts"), decision);
 		expect(fakeRun).not.toHaveBeenCalled();
 		expect(decision.warnings).toBeUndefined();
@@ -59,7 +58,6 @@ describe("appendFlakeCheckWarning", () => {
 
 	it("is a no-op for a non-test file edit even when on", async () => {
 		const decision: HarnessDecision = { decision: "allow" };
-		// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 		await appendFlakeCheckWarning(ctxWith(true) as any, editEvent("src/foo.ts"), decision);
 		expect(fakeRun).not.toHaveBeenCalled();
 		expect(decision.warnings).toBeUndefined();
@@ -68,7 +66,6 @@ describe("appendFlakeCheckWarning", () => {
 	it("is a no-op for a non-write event", async () => {
 		const decision: HarnessDecision = { decision: "allow" };
 		const readEvent = { ...editEvent("src/foo.test.ts"), tool_name: "Read" } as HarnessEvent;
-		// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 		await appendFlakeCheckWarning(ctxWith(true) as any, readEvent, decision);
 		expect(fakeRun).not.toHaveBeenCalled();
 	});
@@ -78,7 +75,6 @@ describe("appendFlakeCheckWarning", () => {
 			.mockResolvedValueOnce(result({ testsPassed: true }))
 			.mockResolvedValueOnce(result({ testsPassed: false, failingTestFiles: ["src/foo.test.ts"] }));
 		const decision: HarnessDecision = { decision: "allow", warnings: ["existing"] };
-		// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 		await appendFlakeCheckWarning(ctxWith(true) as any, editEvent("src/foo.test.ts"), decision);
 		expect(fakeRun).toHaveBeenCalledTimes(2);
 		expect(decision.warnings).toEqual(["existing", expect.stringContaining("[interlinked:flake]")]);
@@ -87,7 +83,6 @@ describe("appendFlakeCheckWarning", () => {
 	it("adds no warning when the two runs agree", async () => {
 		fakeRun.mockResolvedValue(result({ testsPassed: true }));
 		const decision: HarnessDecision = { decision: "allow" };
-		// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 		await appendFlakeCheckWarning(ctxWith(true) as any, editEvent("src/foo.test.ts"), decision);
 		expect(fakeRun).toHaveBeenCalledTimes(2);
 		expect(decision.warnings).toBeUndefined();
@@ -106,7 +101,6 @@ describe("appendFlakeCheckWarning", () => {
 						result({ testsPassed: false, failingTestFiles: ["src/foo.test.ts"] }),
 					);
 				last = { decision: "allow" };
-				// biome-ignore lint/suspicious/noExplicitAny: minimal structural ctx for the phase
 				await appendFlakeCheckWarning(ctx as any, editEvent("src/foo.test.ts"), last);
 			}
 			expect(last.warnings?.some((w) => w.includes("[interlinked:flake-calibrator]"))).toBe(true);

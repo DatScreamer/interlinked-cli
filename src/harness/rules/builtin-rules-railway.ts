@@ -21,8 +21,8 @@
 // Users running deliberate Railway sandbox cleanups can disable specific
 // rules via .interlinked/guard-rules.local.json#disabled_rules.
 
-import type { GuardRule } from "../types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { GuardRule } from "../types.js";
 
 const RAILWAY_DESTRUCTIVE_VERBS = [
 	"delete",

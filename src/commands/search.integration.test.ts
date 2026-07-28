@@ -100,9 +100,9 @@ vi.mock("../lib/output.js", () => ({
 	},
 }));
 
+import { nonNull } from "../lib/non-null.js";
 // Imported after the mocks are declared so the SUT binds to them.
 import { searchCommand } from "./search.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // Test helpers

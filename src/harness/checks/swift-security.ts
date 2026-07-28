@@ -1,6 +1,7 @@
 // Swift / iOS security checks: weak crypto, insecure URLs, secret storage,
 // ATS bypass in Info.plist.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,7 +9,6 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 

@@ -8,7 +8,7 @@
 //   2. classifyCase(filePath, cwd) — returns A/B/C/D/E-fresh/E-stale per
 //      §3 of the design doc, only meaningful when workspace is active.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

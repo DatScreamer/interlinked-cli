@@ -2,13 +2,13 @@
 // B-Series numeric-literal hazard checks (parseInt radix, float equality).
 // Extracted from b-series.ts to keep that module under the line cap.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect parseInt() calls without the radix parameter.

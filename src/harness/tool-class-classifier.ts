@@ -16,8 +16,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import type { JsonObject } from "../lib/json-types.js";
-import type { ToolClass } from "./unified-event.js";
 import { nonNull } from "../lib/non-null.js";
+import type { ToolClass } from "./unified-event.js";
 
 export interface ClassRule {
 	pattern: RegExp;

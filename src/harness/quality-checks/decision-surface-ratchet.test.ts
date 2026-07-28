@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DecisionSurfaceCategory } from "./decision-surface-map.js";
 import type { DecisionSurfaceReport } from "./decision-surface.js";
+import type { DecisionSurfaceCategory } from "./decision-surface-map.js";
 import {
 	computeDecisionSurfaceRatchet,
 	diffDecisionSurface,

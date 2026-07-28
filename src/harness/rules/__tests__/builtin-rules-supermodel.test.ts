@@ -7,8 +7,8 @@
 // separately by `evaluator/pre-tool.ts::checkSupermodelShardWrite`.
 
 import { describe, expect, it } from "vitest";
-import { SUPERMODEL_RULES } from "../builtin-rules-supermodel.js";
 import { nonNull } from "../../../lib/non-null.js";
+import { SUPERMODEL_RULES } from "../builtin-rules-supermodel.js";
 
 describe("SUPERMODEL_RULES", () => {
 	it("exports exactly one rule", () => {

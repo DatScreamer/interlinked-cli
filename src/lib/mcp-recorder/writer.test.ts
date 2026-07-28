@@ -2,8 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendMcpEvent, captureMcpPayload, getMcpEventsPath } from "./writer.js";
 import type { McpEventRecord } from "./types.js";
+import { appendMcpEvent, captureMcpPayload, getMcpEventsPath } from "./writer.js";
 
 let tmp: string;
 

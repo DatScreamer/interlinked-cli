@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PackageSpec } from "./package-install-parser.js";
+import { nonNull } from "../lib/non-null.js";
 import {
+	type Allowlist,
 	addToAllowlist,
 	allowlistPath,
 	hashLockfile,
@@ -11,9 +12,8 @@ import {
 	loadAllowlist,
 	matchSnapshot,
 	saveAllowlist,
-	type Allowlist,
 } from "./package-allowlist.js";
-import { nonNull } from "../lib/non-null.js";
+import type { PackageSpec } from "./package-install-parser.js";
 
 let workspace: string;
 

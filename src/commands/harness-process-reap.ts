@@ -10,7 +10,7 @@
 // `OrphanCandidate` type lives here (the cluster's natural owner) and is
 // re-exported from harness-process.ts so existing importers stay unchanged.
 
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /**

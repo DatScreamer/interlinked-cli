@@ -2,9 +2,7 @@
 // Realistic Hono app with chained middleware and inline handlers.
 // interlinked-tdd: exempt — fixture file consumed verbatim as a string.
 
-// biome-ignore lint: fixture-only stub declarations
 declare const Hono: any;
-// biome-ignore lint: fixture-only stub declarations
 declare const cors: any;
 
 const app = new Hono();
@@ -48,9 +46,7 @@ admin.patch("/users/:userId", updateUser);
 
 app.route("/admin", admin);
 
-// biome-ignore lint: stubs to keep TS happy when the fixture is read as text
 declare function requireAuth(c: any, next: any): any;
-// biome-ignore lint: stubs to keep TS happy when the fixture is read as text
 declare function requireAdmin(c: any, next: any): any;
 
 export default app;

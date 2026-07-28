@@ -33,8 +33,8 @@ import {
 	type CanonicalFunction,
 	metric,
 } from "./coverage-canonical.js";
-import type { CoverageSummary } from "./coverage-ratchet.js";
 import type { FunctionCoverage, PerFileCoverage } from "./coverage-final-reader.js";
+import type { CoverageSummary } from "./coverage-ratchet.js";
 
 export interface ParseLcovOptions {
 	/** Absolute repo root; absolute `SF` paths are normalized relative to it. */

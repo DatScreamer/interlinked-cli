@@ -2,7 +2,6 @@
 // Path: app/api/users/[id]/route.ts — exposes GET, PATCH, DELETE on /api/users/:id.
 // interlinked-tdd: exempt — fixture file consumed verbatim as a string.
 
-// biome-ignore lint: stub for fixture-only typing
 declare const NextResponse: any;
 
 async function loadUser(_id: string) {

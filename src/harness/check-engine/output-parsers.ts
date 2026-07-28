@@ -5,8 +5,8 @@
 // Extracted from verify.ts and evaluator.ts so both can reuse them.
 
 import { relative } from "node:path";
-import type { AuditResult, CheckResult } from "./types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { AuditResult, CheckResult } from "./types.js";
 
 // -------------------------------------------
 // TypeScript (tsc --noEmit --pretty false)
@@ -224,15 +224,15 @@ export function parseDocsCheckOutput(output: string): CheckResult[] {
 // Re-exported here so all existing import sites stay unchanged.
 
 export {
-	parseOsvScannerJson,
-	parseMypyOutput,
-	parseRuffJson,
-	parseRuffFormatOutput,
 	parseCargoJson,
+	parseClangTidyOutput,
+	parseGccOutput,
 	parseGoBuildOutput,
 	parseGolangciLintJson,
-	parseGccOutput,
-	parseClangTidyOutput,
+	parseMypyOutput,
+	parseOsvScannerJson,
+	parseRuffFormatOutput,
+	parseRuffJson,
 } from "./output-parsers-extra.js";
 
 

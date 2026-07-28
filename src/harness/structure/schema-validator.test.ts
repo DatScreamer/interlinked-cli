@@ -1,13 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JsonObject } from "../../lib/json-types.js";
-import {
-	DEFAULT_ADOPTION_THRESHOLDS,
-	DEFAULT_BUILTINS,
-	MODE_DEFAULTS,
-} from "./types.js";
 import {
 	resolveStructureConfig,
 	validateArtifactFile,
@@ -16,6 +11,11 @@ import {
 	validatePublicApiFile,
 	validateStructureJson,
 } from "./schema-validator.js";
+import {
+	DEFAULT_ADOPTION_THRESHOLDS,
+	DEFAULT_BUILTINS,
+	MODE_DEFAULTS,
+} from "./types.js";
 
 /** Convenience: find the first error whose path matches exactly. */
 function errAt(result: { errors: Array<{ path: string; message: string }> }, path: string) {

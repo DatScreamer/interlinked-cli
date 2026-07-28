@@ -7,13 +7,13 @@
 // heuristic — a single file's view of the lifecycle catches the >95% case
 // without trying to model object boundaries across files.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const MATCH_LIMIT = 10;
 

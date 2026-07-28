@@ -15,14 +15,14 @@
 
 import { execFileSync } from "node:child_process";
 import {
+	type DecisionSurfaceReport,
+	type DetectDecisionSurfaceOptions,
+	detectDecisionSurface,
+} from "./decision-surface.js";
+import {
 	DECISION_SURFACE_CATEGORIES,
 	type DecisionSurfaceCategory,
 } from "./decision-surface-map.js";
-import {
-	type DecisionSurfaceReport,
-	detectDecisionSurface,
-	type DetectDecisionSurfaceOptions,
-} from "./decision-surface.js";
 
 export interface DecisionSurfaceRatchetResult {
 	/** Git ref used as baseline (e.g. "origin/main"). Null when skipped. */

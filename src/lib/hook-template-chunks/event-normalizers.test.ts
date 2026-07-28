@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { EVENT_NORMALIZERS_CHUNK } from "./event-normalizers.js";
 import { CLAUDE_NORMALIZERS } from "./event-normalizers-claude.js";
 import { COPILOT_NORMALIZERS } from "./event-normalizers-copilot.js";
 import { CURSOR_NORMALIZERS } from "./event-normalizers-cursor.js";
 import { GEMINI_NORMALIZERS } from "./event-normalizers-gemini.js";
-import { EVENT_NORMALIZERS_CHUNK } from "./event-normalizers.js";
 
 // This file is a template-literal chunk that becomes runtime JavaScript in
 // the generated `.interlinked/hooks/interlinked-activity.mjs`. We can't

@@ -67,8 +67,8 @@ vi.mock("../lib/formatter.js", () => ({
 	),
 }));
 
-import type { ResolvedConfig } from "../lib/config.js";
 import { performLogin, saveLoginTokens } from "../lib/auth.js";
+import type { ResolvedConfig } from "../lib/config.js";
 import {
 	initConfig,
 	isConfigured,

@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCrossFileSwitchDiscriminant,
 	checkSingleImplementationInterface,
 } from "../cross-file-checks.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Minimal fake ProjectGraph — implements only the methods the checks call.
 function makeGraph(

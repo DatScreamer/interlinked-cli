@@ -1,8 +1,8 @@
 // Missing effect cleanup detection (React).
 // Extracted from generic-checks.ts.
 
-import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 // ===========================================
 // Missing Effect Cleanup Detection (React)

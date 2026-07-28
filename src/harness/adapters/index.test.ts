@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { HarnessDecision } from "../types.js";
 import type { UnifiedHookEvent } from "../unified-event.js";
 import { buildAllAdapters, detectAdapter, getAdapter } from "./index.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("buildAllAdapters", () => {
 	const adapters = buildAllAdapters();

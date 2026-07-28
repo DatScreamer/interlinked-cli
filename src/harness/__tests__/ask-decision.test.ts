@@ -10,8 +10,8 @@ import { CohortManager } from "../cohort.js";
 import { evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
-import { agentSupportsAsk, ASK_CAPABLE_AGENTS } from "../types.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
+import { ASK_CAPABLE_AGENTS, agentSupportsAsk } from "../types.js";
 
 const FIXED_NOW = 1_700_000_000_000;
 const FIXED_TIMESTAMP = new Date(FIXED_NOW).toISOString();

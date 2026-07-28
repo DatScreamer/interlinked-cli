@@ -2,12 +2,12 @@ import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkLockfileClassificationDrift,
 	checkLockfileDrift,
 	checkPackageJsonConsistency,
 } from "../quality-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Lockfile Drift Detection

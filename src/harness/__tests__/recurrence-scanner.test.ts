@@ -12,15 +12,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadRecurrenceEvents } from "../recurrence.js";
+import { nonNull } from "../../lib/non-null.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
+import { loadRecurrenceEvents } from "../recurrence.js";
 import {
+	type ScanCodebaseFinding,
 	scanCIFilesForRecurrences,
 	scanCodebaseForRecurrences,
 	scanFilesForDetector,
-	type ScanCodebaseFinding,
 } from "../recurrence-scanner.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("scanCodebaseForRecurrences", () => {
 	let dir: string;

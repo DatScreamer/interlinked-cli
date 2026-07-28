@@ -3,13 +3,13 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { createDaemonClient } from "./daemon-client.js";
 import { encodeFrame } from "./daemon-protocol.js";
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
-import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;

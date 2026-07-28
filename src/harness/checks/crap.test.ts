@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { FunctionCoverage } from "../coverage-final-reader.js";
 import { computeCrap, computeCrapForFile, crapScore } from "./crap.js";
 import type { FunctionComplexityEntry } from "./cyclomatic.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ==================================================================
 // Fixture builders

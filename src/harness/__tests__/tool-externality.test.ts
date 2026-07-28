@@ -18,11 +18,11 @@
 //    pattern-matching concerns.
 
 import { describe, expect, it } from "vitest";
+import { matchesRule } from "../evaluator/rule-matching.js";
 import {
 	classifyToolExternality,
 	type ToolExternality,
 } from "../evaluator/tool-classifiers.js";
-import { matchesRule } from "../evaluator/rule-matching.js";
 import type { GuardRule } from "../types.js";
 
 // -------------------------------------------------------------------------

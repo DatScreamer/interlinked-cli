@@ -15,10 +15,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { _resetRgPathCache, checkGrepAcceleration, findRipgrep } from "../grep-accelerator.js";
 import { TrigramIndex } from "../trigram-index.js";
 import type { HarnessEvent } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 _resetRgPathCache();
 const RG = findRipgrep();

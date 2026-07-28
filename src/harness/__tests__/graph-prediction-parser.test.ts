@@ -10,11 +10,11 @@
 // are format violations (§6.3).
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	parseBarePrediction,
 	parseGraphPredictionsFromText,
 } from "../graph-prediction-parser.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("parseGraphPredictionsFromText — extraction", () => {
 	it("returns [] on text with no fenced blocks", () => {

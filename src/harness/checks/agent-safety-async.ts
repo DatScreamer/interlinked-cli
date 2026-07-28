@@ -2,6 +2,7 @@
 // Deterministic regex/heuristic checks targeting common AI agent mistakes.
 // Extracted from agent-safety.ts to stay under the per-file line ceiling.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,6 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // --- 1. Async/Promise Safety ---
 

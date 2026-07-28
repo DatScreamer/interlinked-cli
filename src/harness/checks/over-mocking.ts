@@ -1,8 +1,8 @@
 // Over-mocking detection (testing smell).
 // Extracted from generic-checks.ts.
 
-import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 // ===========================================
 // Over-Mocking Detection (Testing)

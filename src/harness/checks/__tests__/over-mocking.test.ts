@@ -17,8 +17,8 @@
 //  10. indentation-insensitive matching (lines[i].trim())
 
 import { describe, expect, it } from "vitest";
-import type { InlineMatch } from "../shared.js";
 import { checkOverMocking } from "../over-mocking.js";
+import type { InlineMatch } from "../shared.js";
 
 const TEST_TS = "src/lib/widget.test.ts";
 const TEST_TSX = "src/ui/widget.test.tsx";

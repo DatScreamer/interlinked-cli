@@ -7,9 +7,9 @@
 // cap; the public API is re-exported from `behavioral-checks-tdd.ts` (and
 // onward from `behavioral-checks.ts`) so all importers are unchanged.
 
-import { hasTddExemptDirective } from "./evaluator/tdd-new-file-gate.js";
-import { stripCommentsAndStrings } from "./checks/shared.js";
 import { nonNull } from "../lib/non-null.js";
+import { stripCommentsAndStrings } from "./checks/shared.js";
+import { hasTddExemptDirective } from "./evaluator/tdd-new-file-gate.js";
 import type { AssertionCounts, CheckResultEntry, SessionTrajectory } from "./types.js";
 
 const TEST_FILE_RE = /\.(test|spec)\.|__tests__\/|\/tests\//;

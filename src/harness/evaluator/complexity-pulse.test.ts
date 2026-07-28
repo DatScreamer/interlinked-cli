@@ -64,6 +64,33 @@ describe("formatComplexityPulse", () => {
 		expect(line).not.toContain("beta");
 	});
 
+	// fnΔ — how many distinct functions ONE edit moved. Ambient measurement for
+	// the per-edit-resolution question (docs/design/per-edit-symbol-resolution.md):
+	// every per-edit ratchet is calibrated on a single edit's delta, so an edit
+	// that moves eight functions is gated as one aggregate rather than eight steps.
+	describe("fnΔ — functions moved by one edit", () => {
+		it("counts a single changed function as 1", () => {
+			const line = formatComplexityPulse("src/foo.ts", [entry("alpha", 5)], [entry("alpha", 8)]);
+			expect(line).toContain("fnΔ 1");
+		});
+
+		it("counts changed, added and removed functions together", () => {
+			const before = [entry("alpha", 5), entry("beta", 3), entry("gone", 4)];
+			const after = [entry("alpha", 8), entry("beta", 3), entry("fresh", 2)];
+			// alpha changed + gone removed + fresh added = 3; beta is untouched.
+			expect(formatComplexityPulse("src/foo.ts", before, after)).toContain("fnΔ 3");
+		});
+
+		it("says nothing when the edit moved no function's complexity", () => {
+			const same = [entry("alpha", 5)];
+			expect(formatComplexityPulse("src/foo.ts", same, same)).not.toContain("fnΔ");
+		});
+
+		it("is absent with no before-state, since a delta needs two sides", () => {
+			expect(formatComplexityPulse("src/foo.ts", null, [entry("alpha", 5)])).not.toContain("fnΔ");
+		});
+	});
+
 	it("reports removed functions with a negative ΣCC delta", () => {
 		const before = [entry("alpha", 5), entry("beta", 9)];
 		const after = [entry("alpha", 5)];

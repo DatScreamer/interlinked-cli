@@ -24,10 +24,10 @@
 // outright: tiny functions collide on boilerplate shingles and are the
 // dominant false-positive source.
 
-import { computeCyclomaticComplexity } from "./cyclomatic.js";
-import type { FunctionComplexityEntry } from "./cyclomatic.js";
-import { isTestFile, stripCommentsAndStrings } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { FunctionComplexityEntry } from "./cyclomatic.js";
+import { computeCyclomaticComplexity } from "./cyclomatic.js";
+import { isTestFile, stripCommentsAndStrings } from "./shared.js";
 
 // ==================================================================
 // Tuning constants

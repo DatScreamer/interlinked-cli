@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkAssertionFreeTests,
 	checkAwaitInLoop,
@@ -45,7 +46,6 @@ import {
 	checkUntypedCatch,
 	checkUnvalidatedJsonBoundary,
 } from "../generic-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // checkManualFieldCopy

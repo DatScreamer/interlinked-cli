@@ -21,8 +21,8 @@ import { existsSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 import type { TaintProvenance } from "../types.js";
-import type { SequenceDetector, SequenceMatch } from "./types.js";
 import { addThenRevertLoop } from "./quality-revert-loop.js";
+import type { SequenceDetector, SequenceMatch } from "./types.js";
 
 /** Source-file shape — we only fire test-coverage / doc-drift detectors
  *  on files that look like first-party source code, not config / lockfiles. */
@@ -446,5 +446,4 @@ export const QUALITY_DETECTORS: ReadonlyArray<SequenceDetector> = [
 // detectors that haven't landed yet (registered via the central
 // `sequence-checks` index, not direct imports) consume it. Kept exported
 // as a forward-compatible hook.
-export { addThenRevertLoop };
-export { isTestFilePath };
+export { addThenRevertLoop, isTestFilePath };

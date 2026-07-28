@@ -37,7 +37,6 @@ import { resumeCommand } from "./resume.js";
 
 // Real formatter colors are TTY/NO_COLOR-dependent; strip ANSI so assertions
 // are hermetic regardless of how the test runner is invoked.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes is the point
 const ANSI = /\x1b\[[0-9;]*m/g;
 function strip(s: string): string {
 	return s.replace(ANSI, "");

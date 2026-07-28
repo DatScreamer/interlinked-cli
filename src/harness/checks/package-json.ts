@@ -20,8 +20,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
-import type { InlineMatch } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { InlineMatch } from "./shared.js";
 
 /** Fields whose removal would meaningfully break a published package. */
 const TOP_LEVEL_FIELDS = [

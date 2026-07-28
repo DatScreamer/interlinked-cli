@@ -2,6 +2,7 @@
 // Swift memory-safety checks extracted from swift.ts (force casts/try/unwrap,
 // implicitly-unwrapped optionals, delegate retain-cycle risk).
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -9,7 +10,6 @@ import {
 	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Swift-Specific Checks (Apple API Design Guidelines + Memory Safety + Concurrency)

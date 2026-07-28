@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { GENESIS_HASH, computeEntryHash, verifyAuditChain } from "../../lib/audit-chain.js";
+import { computeEntryHash, GENESIS_HASH, verifyAuditChain } from "../../lib/audit-chain.js";
 import { nonNull } from "../../lib/non-null.js";
 import { compactCommand, loadArchiveManifest } from "../compact.js";
 

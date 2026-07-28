@@ -3,7 +3,7 @@
 // Uses a real temp tree rather than fs mocks: the module's whole job is
 // filesystem traversal, and a mocked readdir would pin the mock, not the walk.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

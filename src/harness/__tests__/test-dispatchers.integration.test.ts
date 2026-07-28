@@ -18,13 +18,13 @@ vi.mock("node:fs", async () => {
 
 import { spawnSync as mockedSpawnSync } from "node:child_process";
 import { existsSync as mockedExistsSync } from "node:fs";
+import { nonNull } from "../../lib/non-null.js";
 import { getProfileForFile } from "../language-profiles.js";
 import {
 	__test_only__,
 	TEST_DISPATCHERS,
 	type TestDispatcherInput,
 } from "../quality-checks/test-dispatchers.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const spawnSyncMock = vi.mocked(mockedSpawnSync);
 const existsSyncMock = vi.mocked(mockedExistsSync);

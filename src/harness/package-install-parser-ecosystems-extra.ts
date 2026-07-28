@@ -9,13 +9,12 @@
 // Re-exported from package-install-parser-ecosystems.ts so existing importers
 // are unchanged.
 
+import { nonNull } from "../lib/non-null.js";
 import type {
 	InstallCommand,
 	PackageSpec,
 } from "./package-install-parser-shared.js";
-
 import { envRegistryFor } from "./package-install-parser-shared.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Composer (PHP / Packagist)

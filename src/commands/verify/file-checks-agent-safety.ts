@@ -25,10 +25,10 @@ import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js"
 import { detectDesignSlop } from "../../harness/checks/design-slop.js";
 import { detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js";
 import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js";
+import { maintainabilityCheck } from "../../harness/checks/maintainability.js";
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
 import { detectPayloadFieldCasing } from "../../harness/checks/payload-casing.js";
 import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
-import { maintainabilityCheck } from "../../harness/checks/maintainability.js";
 import { propertyCandidateCheck } from "../../harness/checks/property-candidate.js";
 import {
 	detectReadmeScriptDrift,

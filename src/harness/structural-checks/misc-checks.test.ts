@@ -15,8 +15,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectGraph } from "../project-graph.js";
 import type { SessionTracker } from "../session-state.js";
-import type { HarnessEvent, ImportEdge } from "../types.js";
 import type { SessionTrajectory } from "../types/session.js";
+import type { HarnessEvent, ImportEdge } from "../types.js";
 
 // --- node:fs mock ------------------------------------------------------------
 // checkJSDocParamMismatch -> readFileSync; checkTestProximity -> existsSync.
@@ -26,13 +26,13 @@ vi.mock("node:fs", () => ({
 }));
 
 import { existsSync, readFileSync } from "node:fs";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCoDependencyStaleness,
 	checkInterfaceChangeImpact,
 	checkJSDocParamMismatch,
 	checkTestProximity,
 } from "./misc-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockExistsSync = vi.mocked(existsSync);

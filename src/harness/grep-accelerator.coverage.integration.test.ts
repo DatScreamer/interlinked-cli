@@ -28,6 +28,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	_resetRgPathCache,
 	checkGrepAcceleration,
@@ -38,7 +39,6 @@ import {
 } from "./grep-accelerator.js";
 import { extractTrigrams, type PostingList, TrigramIndex } from "./trigram-index.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 const FIXED_TIMESTAMP = "2024-01-01T00:00:00.000Z";
 

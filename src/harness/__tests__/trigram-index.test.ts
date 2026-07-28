@@ -3,6 +3,7 @@
 // the non_deterministic_test check via this marker (see taste-checks.ts).
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { _resetRgPathCache, checkGrepAcceleration } from "../grep-accelerator.js";
 import { decomposePattern, parseGrepCommand } from "../regex-trigrams.js";
 import {
@@ -16,7 +17,6 @@ import {
 	unpackTrigram,
 } from "../trigram-index.js";
 import type { HarnessEvent } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Fixed timestamp for deterministic test fixtures. Not time-sensitive
 // for these tests — only exists to satisfy the HarnessEvent shape.

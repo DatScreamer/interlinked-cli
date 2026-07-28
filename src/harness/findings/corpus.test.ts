@@ -2,6 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	findingsCorpusPath,
 	foldByBugClass,
@@ -12,7 +13,6 @@ import {
 	recordFinding,
 	upsertFinding,
 } from "./corpus.js";
-import { nonNull } from "../../lib/non-null.js";
 
 let cwd: string;
 let home: string;

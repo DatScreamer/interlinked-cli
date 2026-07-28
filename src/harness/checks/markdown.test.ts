@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkPlaceholderMarkdownLinks } from "./markdown.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkPlaceholderMarkdownLinks } from "./markdown.js";
 
 describe("checkPlaceholderMarkdownLinks", () => {
 	// ── Positive cases: real placeholder links that must be flagged ──

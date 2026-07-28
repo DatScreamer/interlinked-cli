@@ -10,7 +10,7 @@
 // from the parent).
 
 import type { JsonObject } from "../../lib/json-types.js";
-import { VALID_DOC_KINDS, VALID_TEST_KINDS } from "./types.js";
+import type { ValidationResult } from "./schema-validator-helpers.js";
 import {
 	checkUnknownKeys,
 	err,
@@ -22,7 +22,7 @@ import {
 	validateLocalId,
 	validateStringArray,
 } from "./schema-validator-helpers.js";
-import type { ValidationResult } from "./schema-validator-helpers.js";
+import { VALID_DOC_KINDS, VALID_TEST_KINDS } from "./types.js";
 
 // -------------------------------------------
 // tests

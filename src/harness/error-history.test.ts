@@ -20,6 +20,7 @@
 
 import * as fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { ErrorHistory } from "./error-history.js";
 import type {
 	ErrorMemoryConfig,
@@ -27,7 +28,6 @@ import type {
 	ModuleRole,
 	StructuralCheckResult,
 } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 vi.mock("node:fs");
 

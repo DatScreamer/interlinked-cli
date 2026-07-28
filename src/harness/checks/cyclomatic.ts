@@ -15,6 +15,7 @@
 // so CRAP surfaces as complexity-only for languages without a coverage reader.
 // The PreToolUse budget line still works — it just drops the `cov=N%` term.
 
+import { nonNull } from "../../lib/non-null.js";
 import { computeCyclomaticAst } from "./cyclomatic-ast.js";
 import {
 	getExtension,
@@ -22,7 +23,6 @@ import {
 	JS_TS_EXTS,
 	stripForBraceScan,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Extensions hoisted to module scope so the per-language dispatch reads as
 // intent rather than a magic-literal comparison, and so the literal braces

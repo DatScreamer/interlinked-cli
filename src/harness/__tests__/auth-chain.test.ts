@@ -4,10 +4,9 @@
 // suite is the source of truth for what counts as "an auth marker".
 
 import { describe, expect, it } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import { detectAuthChain } from "../auth-chain.js";
 import type { EndpointFramework } from "../types/session.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("detectAuthChain — express", () => {
 	it("picks up app.use(requireAuth) above the route", () => {

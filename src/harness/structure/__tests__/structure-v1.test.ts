@@ -8,8 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { calculateAdoption } from "../adoption.js";
-
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import { addToBaseline, findingToBaselineEntry, isBaselined } from "../baseline.js";
 import { evaluateStructureRules } from "../rules/index.js";
@@ -36,7 +36,6 @@ import type {
 	StructureFinding,
 } from "../types.js";
 import { MODE_DEFAULTS } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // -------------------------------------------
 // Test Helpers

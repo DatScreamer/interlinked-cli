@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	cleanupOrphans,
 	daemonPathsFor,
@@ -9,7 +10,6 @@ import {
 	liveForeignDaemonPid,
 	sanitizeSessionId,
 } from "./session-paths.js";
-import { nonNull } from "../lib/non-null.js";
 
 let tmp = "";
 beforeEach(() => {

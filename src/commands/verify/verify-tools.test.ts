@@ -102,7 +102,7 @@ vi.mock("./streaming-output.js", () => ({
 	runToolSilent: (args: RunArgs) => runToolSilent(args),
 }));
 
-import { streamExternalTools, type ToolSpec, TOOLS_TO_RUN } from "./verify-tools.js";
+import { streamExternalTools, TOOLS_TO_RUN, type ToolSpec } from "./verify-tools.js";
 
 // ----- harness ------------------------------------------------------------
 

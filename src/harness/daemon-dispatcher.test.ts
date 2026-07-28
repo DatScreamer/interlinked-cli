@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { type DispatcherState, dispatchRpc } from "./daemon-dispatcher.js";
 import type { RpcError, RpcRequest, RpcResponse } from "./daemon-protocol.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
-import { nonNull } from "../lib/non-null.js";
 
 // Freeze time so `Date.now()` in makeState is deterministic — the check
 // `non_deterministic_test` flags raw Date.now() in tests.

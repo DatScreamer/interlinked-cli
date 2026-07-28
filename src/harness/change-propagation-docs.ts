@@ -7,7 +7,7 @@
 // and returns the documentation propagation targets it found. No dependency on
 // the orchestrator (no circular import).
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // ===========================================

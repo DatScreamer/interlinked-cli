@@ -6,12 +6,11 @@
 // source / empty-error short-circuit).
 
 import { describe, expect, it } from "vitest";
-
+import type { ToolFailureEvent, TriageResult } from "../types.js";
 import {
 	explainFailure,
 	listExplanationKeys,
 } from "./failure-explanation.js";
-import type { ToolFailureEvent, TriageResult } from "../types.js";
 
 function makeEvent(overrides: Partial<ToolFailureEvent> = {}): ToolFailureEvent {
 	return {

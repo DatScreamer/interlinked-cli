@@ -15,11 +15,6 @@
 // machinery (JSON I/O, hook-entry upsert, shell command builder) goes in
 // `hook-installers-shared.ts`.
 
-// Shared helpers (also public API for `hooks.ts` and the Claude installer).
-export { findParentWithHooks } from "./hook-installers-shared.js";
-
-// Cross-client statusline installer.
-export { installStatusLine } from "./hook-installers-statusline.js";
 
 // Claude Code.
 export {
@@ -27,28 +22,18 @@ export {
 	installAllClaudeHooks,
 	uninstallAllClaudeHooks,
 } from "./hook-installers-claude.js";
-
-// GitHub Copilot CLI.
-export {
-	COPILOT_HOOK_EVENTS,
-	installCopilotHooks,
-	uninstallCopilotHooks,
-} from "./hook-installers-copilot.js";
-
-// Gemini CLI.
-export {
-	GEMINI_HOOK_EVENTS,
-	installGeminiHooks,
-	uninstallGeminiHooks,
-} from "./hook-installers-gemini.js";
-
 // OpenAI Codex CLI.
 export {
 	CODEX_HOOK_EVENTS,
 	installCodexHooks,
 	uninstallCodexHooks,
 } from "./hook-installers-codex.js";
-
+// GitHub Copilot CLI.
+export {
+	COPILOT_HOOK_EVENTS,
+	installCopilotHooks,
+	uninstallCopilotHooks,
+} from "./hook-installers-copilot.js";
 // Cursor IDE.
 export {
 	CURSOR_FAIL_CLOSED_EVENTS,
@@ -56,3 +41,14 @@ export {
 	installCursorHooks,
 	uninstallCursorHooks,
 } from "./hook-installers-cursor.js";
+
+// Gemini CLI.
+export {
+	GEMINI_HOOK_EVENTS,
+	installGeminiHooks,
+	uninstallGeminiHooks,
+} from "./hook-installers-gemini.js";
+// Shared helpers (also public API for `hooks.ts` and the Claude installer).
+export { findParentWithHooks } from "./hook-installers-shared.js";
+// Cross-client statusline installer.
+export { installStatusLine } from "./hook-installers-statusline.js";

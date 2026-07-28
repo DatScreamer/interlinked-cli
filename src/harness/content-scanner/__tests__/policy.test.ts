@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { decideFromFindings } from "../policy.js";
-import { OPF_LABELS } from "../types.js";
 import type { ContentScannerConfig, ScanFinding } from "../types.js";
+import { OPF_LABELS } from "../types.js";
 
 function makeConfig(overrides: Partial<ContentScannerConfig> = {}): ContentScannerConfig {
 	return {

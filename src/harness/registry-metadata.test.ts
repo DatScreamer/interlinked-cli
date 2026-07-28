@@ -3,13 +3,13 @@
 // a refactor can't silently start querying the wrong registry.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import type { Ecosystem } from "./package-install-parser.js";
 import {
 	fetchRegistryMetadata,
 	fetchVersionMetadata,
 	queryOsvAdvisories,
 } from "./registry-metadata.js";
-import { nonNull } from "../lib/non-null.js";
 
 type FetchImpl = typeof globalThis.fetch;
 

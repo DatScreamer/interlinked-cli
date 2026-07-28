@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-
+import { nonNull } from "../../lib/non-null.js";
 import {
 	type DeadCodeCandidate,
 	formatDeadCodeFindings,
@@ -7,7 +7,6 @@ import {
 	parseDeadCodeJson,
 	runSupermodelDeadCode,
 } from "../supermodel-analyses.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // A representative `supermodel dead-code --output json` payload, matching
 // the api.DeadCodeResult schema in

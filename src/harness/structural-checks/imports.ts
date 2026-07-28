@@ -7,10 +7,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol, StructuralCheckResult } from "../types.js";
 import { escapeRegex } from "./helpers.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.

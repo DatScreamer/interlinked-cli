@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-
+import type { EgressFilterConfig } from "./output-egress-filter.js";
 import {
 	DEFAULT_EGRESS_FILTER_CONFIG,
 	filterOutputEgress,
 } from "./output-egress-filter.js";
-import type { EgressFilterConfig } from "./output-egress-filter.js";
 import { scanSecrets } from "./signatures.js";
 
 // ===========================================

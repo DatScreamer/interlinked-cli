@@ -457,6 +457,10 @@ export function getExtension(filePath: string): string {
 	return filePath.slice(dot).toLowerCase();
 }
 
+
+// Re-export the code-shape scanners moved to shared-scan.ts so existing
+// importers (and the smoke test) keep resolving them from this module.
+export { findEnclosingScope, isTypeOnlyModule } from "./shared-scan.js";
 // ===========================================
 // Comment & String Stripping Helpers (delegated to shared-text-utils.ts)
 // ===========================================
@@ -467,7 +471,3 @@ export {
 	stripForBraceScan,
 	stripStrings,
 } from "./shared-text-utils.js";
-
-// Re-export the code-shape scanners moved to shared-scan.ts so existing
-// importers (and the smoke test) keep resolving them from this module.
-export { findEnclosingScope, isTypeOnlyModule } from "./shared-scan.js";

@@ -8,13 +8,13 @@ import { statSync } from "node:fs";
 import { cpus } from "node:os";
 import { extname } from "node:path";
 import { discoverSingleTool, discoverTools, formatToolReport } from "./discovery.js";
+import { type DeduplicationResult, deduplicateResults } from "./index-dedup.js";
+import { getToolsForExtension } from "./index-extension-tools.js";
 import { createLimiter } from "./pool.js";
 import { buildConfigToTool, buildToolRegistry } from "./tool-catalog.js";
 import { runBiomeOverlay } from "./tool-runners/biome.js";
 import { runDepAudit } from "./tool-runners/generic.js";
 import { clearTscOverlayCache, runTscOverlay } from "./tool-runners/tsc-overlay.js";
-import { type DeduplicationResult, deduplicateResults } from "./index-dedup.js";
-import { getToolsForExtension } from "./index-extension-tools.js";
 import type {
 	AuditResult,
 	CheckOptions,
@@ -30,8 +30,6 @@ import type {
 
 // Re-export types and utilities for consumers
 export { formatToolReport } from "./discovery.js";
-export { deduplicateResults };
-export type { DeduplicationResult };
 export type {
 	CheckReport,
 	CheckResult,
@@ -39,6 +37,8 @@ export type {
 	ToolId,
 	ToolMetrics,
 } from "./types.js";
+export type { DeduplicationResult };
+export { deduplicateResults };
 
 // -------------------------------------------
 // Config name mapping (harness ↔ engine)

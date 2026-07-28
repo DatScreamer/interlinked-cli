@@ -11,9 +11,9 @@
 // reference. Moved verbatim; the orchestrator in pre-tool.ts imports them.
 
 import type { SharedConfig } from "../../lib/config.js";
-import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { RouteMap } from "../route-map.js";
+import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { SessionTracker } from "../session-state.js";
 import { getPreToolUseContext } from "../structural-checks.js";
 import type {
@@ -21,12 +21,6 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
-import { extractScannableText } from "./spans.js";
-import {
-	isBash,
-	isBrowserNavigate,
-	isFileWrite,
-} from "./tool-classifiers.js";
 import {
 	evaluateCurlMcpGuards,
 	evaluateMarkdownFirstCurlGuard,
@@ -36,6 +30,12 @@ import {
 	getSupermodelGraphWarning,
 	runTrajectoryDetector,
 } from "./pre-tool-helpers.js";
+import { extractScannableText } from "./spans.js";
+import {
+	isBash,
+	isBrowserNavigate,
+	isFileWrite,
+} from "./tool-classifiers.js";
 
 const DIAGNOSTIC_EXTENSIONS = /\.(tsx?|jsx?|mjs|cjs)$/;
 

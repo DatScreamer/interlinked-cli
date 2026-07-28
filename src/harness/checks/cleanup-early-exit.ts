@@ -10,13 +10,13 @@
 // reaches `throw`/`return` before it can run." Distinct from
 // `lifecycle_cleanup` (which fires when cleanup is missing entirely).
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Lookahead window from acquisition to cleanup. Larger than typical
  * function bodies, smaller than file size. */

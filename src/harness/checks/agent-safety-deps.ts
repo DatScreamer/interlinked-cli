@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -13,7 +14,6 @@ import {
 	JS_TS_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // --- 2. Import Hygiene ---
 

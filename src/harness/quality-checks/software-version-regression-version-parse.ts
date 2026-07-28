@@ -8,8 +8,8 @@
 // logic, the regexes below, and the (type-only) SoftwareVersionReference
 // shape imported from the parent module.
 
-import type { SoftwareVersionReference } from "./software-version-regression.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { SoftwareVersionReference } from "./software-version-regression.js";
 
 interface ComparableVersion {
 	kind: "number" | "date" | "model";

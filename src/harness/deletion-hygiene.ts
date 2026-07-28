@@ -12,8 +12,8 @@
 // They return Finding[] for injection into the suggestion scorer,
 // but with higher base severity than typical heuristic checks.
 
-import type { Finding } from "./suggestion-scorer.js";
 import { nonNull } from "../lib/non-null.js";
+import type { Finding } from "./suggestion-scorer.js";
 
 // ===========================================
 // Helpers

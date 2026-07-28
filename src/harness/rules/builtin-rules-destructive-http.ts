@@ -29,8 +29,8 @@
 // this one acts as the catch-all for vendors and operations we haven't
 // individually catalogued.
 
-import type { GuardRule } from "../types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { GuardRule } from "../types.js";
 
 // Verbs that signal a destructive intent inside a JSON body / GraphQL
 // mutation / shell pipeline. We accept English-tense plurality (delete /

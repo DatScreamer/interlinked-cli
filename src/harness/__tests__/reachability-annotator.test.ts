@@ -34,7 +34,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-
+import { nonNull } from "../../lib/non-null.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
 import type { EntryPoint } from "../entry-points.js";
 import { ProjectGraph } from "../project-graph.js";
@@ -44,7 +44,6 @@ import {
 } from "../reachability-annotator.js";
 import { RouteMap } from "../route-map.js";
 import type { Endpoint } from "../types/session.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const mockedExistsSync = existsSync as unknown as ReturnType<typeof vi.fn>;
 const mockedStatSync = statSync as unknown as ReturnType<typeof vi.fn>;

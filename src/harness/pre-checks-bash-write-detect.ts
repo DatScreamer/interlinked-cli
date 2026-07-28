@@ -165,7 +165,28 @@ const SHARD_FILE_RE = /\.graph(\.[a-zA-Z0-9]+)?$/i;
 
 /** Returns true when the path is something the content-gates protect:
  *  either a tracked-source extension OR a Supermodel shard. */
+/**
+ * `[user@]host:path` — the scp/rsync remote convention: a colon appearing before
+ * any slash. `://` is excluded so a URL is not mistaken for one.
+ *
+ * A remote destination is NOT a local tracked file, so copying to it cannot
+ * bypass this repo's content-quality gates — the bytes never enter this working
+ * tree. Treating it as local produced a genuinely inconsistent verdict: rsyncing
+ * ONE file to another machine was blocked (last positional ended `.ts`/`.mjs`)
+ * while rsyncing its whole PARENT DIRECTORY passed (no extension to match),
+ * despite being the same transfer. Copies INTO the repo are unaffected: there
+ * the destination is a local path and still protected.
+ */
+function isRemoteSpec(target: string): boolean {
+	if (target.includes("://")) return false;
+	const colon = target.indexOf(":");
+	if (colon <= 0) return false;
+	const slash = target.indexOf("/");
+	return slash === -1 || colon < slash;
+}
+
 function isProtectedTarget(target: string): boolean {
+	if (isRemoteSpec(target)) return false;
 	return SHARD_FILE_RE.test(target) || CODE_FILE_EXT_RE.test(target);
 }
 

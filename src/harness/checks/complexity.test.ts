@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkFunctionComplexity } from "./complexity.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkFunctionComplexity } from "./complexity.js";
 
 // Behavioral tests for the function-complexity detector.
 //

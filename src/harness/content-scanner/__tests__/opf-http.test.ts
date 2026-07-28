@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { OpfHttpScanner } from "../opf-http.js";
 import type { ContentScannerConfig } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function makeConfig(overrides: Partial<ContentScannerConfig> = {}): ContentScannerConfig {
 	return {

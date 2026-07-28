@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MAX_LINES } from "../../harness/large-file-policy.js";
 import { resetUntestedFilesBaselineCache } from "../../harness/tested-file-policy.js";
+import { nonNull } from "../../lib/non-null.js";
 import { resetUntestedCoverageCache, runPerFileChecks } from "./file-checks.js";
 import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 function makeEmptyResults(): CodeQualityResults {
 	const r = {} as CodeQualityResults;

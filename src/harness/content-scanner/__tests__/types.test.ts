@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { OPF_LABELS } from "../types.js";
 import type {
-	ContentScanRequest,
 	ContentScanner,
 	ContentScannerConfig,
+	ContentScanRequest,
 	OpfLabel,
 	ScanFinding,
 	ScanRequest,
 } from "../types.js";
+import { OPF_LABELS } from "../types.js";
 
 describe("OPF_LABELS", () => {
 	it("has eight canonical categories in alphabetical order", () => {

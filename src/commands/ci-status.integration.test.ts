@@ -35,6 +35,7 @@ vi.mock("../lib/formatter.js", () => ({
 	),
 }));
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	aggregateRuns,
 	type CiRun,
@@ -43,7 +44,6 @@ import {
 	GhCliFetcher,
 	registerCiCommand,
 } from "./ci-status.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

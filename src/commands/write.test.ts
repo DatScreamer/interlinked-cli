@@ -65,8 +65,8 @@ import {
 	type GateResult,
 	gateProposedContent,
 } from "../harness/content-gate.js";
-import { writeCommand, type WriteCommandOptions } from "./write.js";
 import { nonNull } from "../lib/non-null.js";
+import { type WriteCommandOptions, writeCommand } from "./write.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);

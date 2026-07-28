@@ -166,6 +166,7 @@ vi.mock("../harness/structure/rules/index.js", () => ({
 	evaluateStructureRules: (...a: unknown[]) => evaluateStructureRules(...a),
 }));
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	structureAcceptCommand,
 	structureBaselineCommand,
@@ -174,7 +175,6 @@ import {
 	structureScanCommand,
 	structureStatusCommand,
 } from "./structure.js";
-import { nonNull } from "../lib/non-null.js";
 
 // --- console capture ---------------------------------------------------
 let logged: string[];

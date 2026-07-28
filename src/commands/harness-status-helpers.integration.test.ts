@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDaemonClient } from "../harness/daemon-client.js";
+import { getFramedSocketPath, getSocketPath } from "./harness-process.js";
 import {
 	expectedSocketPaths,
 	getProtocolStatusPath,
@@ -40,7 +41,6 @@ import {
 	readProtocolStatus,
 	readRssMb,
 } from "./harness-status-helpers.js";
-import { getFramedSocketPath, getSocketPath } from "./harness-process.js";
 
 vi.mock("node:child_process", () => ({
 	execSync: vi.fn(),

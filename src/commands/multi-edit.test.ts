@@ -82,6 +82,7 @@ import type { CheckResult } from "../harness/check-engine/types.js";
 import type { DiffOverlayResult } from "../harness/diff-overlay.js";
 import { evaluateBiomeDiffOverlay, evaluateTscDiffOverlay } from "../harness/diff-overlay.js";
 import { findProjectRoot } from "../harness/quality-checks/project-root.js";
+import { nonNull } from "../lib/non-null.js";
 import {
 	countOccurrences,
 	type EditBatch,
@@ -89,11 +90,10 @@ import {
 	MULTI_EDIT_ERROR_CODES,
 	type MultiEditOpts,
 	multiEditCommand,
-	normalizeManifest,
 	type NormalizeResult,
+	normalizeManifest,
 	runMultiEdit,
 } from "./multi-edit.js";
-import { nonNull } from "../lib/non-null.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);

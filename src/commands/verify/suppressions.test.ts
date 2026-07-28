@@ -3,9 +3,9 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { collectSuppressionFindings, findSuppressionMatch } from "./suppressions.js";
 import type { CodeQualityIssue } from "./tool-results-types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("findSuppressionMatch", () => {
 	it("flags bare ts-ignore with no rationale", () => {

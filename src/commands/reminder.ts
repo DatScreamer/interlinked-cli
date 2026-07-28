@@ -12,8 +12,8 @@ import {
 import type { FileReminder } from "../harness/types.js";
 import { readLocalConfig } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
-import { getOutputMode, output, outputError } from "../lib/output.js";
 import { nonNull } from "../lib/non-null.js";
+import { getOutputMode, output, outputError } from "../lib/output.js";
 
 // ===========================================
 // Helpers

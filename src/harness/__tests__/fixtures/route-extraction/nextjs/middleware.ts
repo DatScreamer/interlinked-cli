@@ -1,9 +1,7 @@
 // Next.js middleware — protects everything under /api/admin/*.
 // interlinked-tdd: exempt — fixture.
 
-// biome-ignore lint: fixture stubs
 declare const NextResponse: any;
-// biome-ignore lint: fixture stubs
 declare interface NextRequest {
 	nextUrl: { pathname: string };
 	headers: Headers;

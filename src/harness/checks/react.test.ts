@@ -15,6 +15,7 @@
 // `${...}` interpolation.
 
 import { describe, expect, test } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkAsyncEventHandler,
 	checkDangerouslySetInnerHTML,
@@ -22,7 +23,6 @@ import {
 	checkExcessiveUseState,
 	checkInlineObjectProps,
 } from "./react.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // A non-source path that all detectors must skip via `isTestFile`.
 const TEST_PATH = "src/__tests__/Comp.tsx";

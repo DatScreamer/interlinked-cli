@@ -5,9 +5,9 @@
 // edited file so the agent can break the cycle before it causes
 // initialization issues at runtime.
 
+import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { StructuralCheckResult } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by structural-checks.runStructuralChecks.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	classifyFileSensitivity,
 	DEFAULT_TAINT_CONFIG,
@@ -9,7 +10,6 @@ import {
 	shouldBlockNetwork,
 } from "../taint-tracker.js";
 import type { SessionTrajectory } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Deterministic fixtures.
 const FIXED_NOW = 1_700_000_000_000;

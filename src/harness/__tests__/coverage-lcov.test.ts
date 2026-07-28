@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	canonicalToCoverageSummary,
 	loadLcovFile,
@@ -6,7 +7,6 @@ import {
 	perFileCoverageFromCanonical,
 } from "../coverage-lcov.js";
 import { type CoverageBaseline, compareCoverage } from "../coverage-ratchet.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // A small, valid two-file LCOV report used by several cases.
 const TWO_FILE = [

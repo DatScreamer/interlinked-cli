@@ -19,8 +19,8 @@ vi.mock("../../lib/config.js", () => ({
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readLocalConfig } from "../../lib/config.js";
-import { reminderAddCommand, reminderListCommand, reminderRemoveCommand } from "../reminder.js";
 import { nonNull } from "../../lib/non-null.js";
+import { reminderAddCommand, reminderListCommand, reminderRemoveCommand } from "../reminder.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);

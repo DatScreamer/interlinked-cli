@@ -75,8 +75,8 @@ vi.mock("../lib/formatter.js", () => {
 	};
 });
 
-import { attachCommand } from "./attach.js";
 import { nonNull } from "../lib/non-null.js";
+import { attachCommand } from "./attach.js";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;

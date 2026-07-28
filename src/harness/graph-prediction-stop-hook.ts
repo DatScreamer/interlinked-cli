@@ -13,17 +13,17 @@
 // voluntary predictions through the deferred mechanism.
 
 import { existsSync, readFileSync } from "node:fs";
-import { classifyCase, type CaseResult } from "./graph-prediction-classifier.js";
+import { nonNull } from "../lib/non-null.js";
 import {
 	appendPredictionRow,
 	type GraphPredictionRow,
 	type PredictionContent,
 } from "./graph-prediction-cache.js";
+import { type CaseResult, classifyCase } from "./graph-prediction-classifier.js";
 import {
-	parseGraphPredictionsFromText,
 	type ParsedGraphPrediction,
+	parseGraphPredictionsFromText,
 } from "./graph-prediction-parser.js";
-import { nonNull } from "../lib/non-null.js";
 
 const RECENT_ASSISTANT_MESSAGE_LIMIT = 10;
 

@@ -3,6 +3,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -10,7 +11,6 @@ import {
 	JS_TS_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const BARREL_LOCAL_SPECIFIERS = new Set([
 	".",

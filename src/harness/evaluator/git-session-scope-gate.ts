@@ -38,6 +38,7 @@
 // with a note explaining the degraded mode.
 
 import { execFileSync } from "node:child_process";
+import { nonNull } from "../../lib/non-null.js";
 import type { SessionTrajectory } from "../types.js";
 import {
 	GIT_TIMEOUT_MS,
@@ -48,7 +49,6 @@ import {
 	stripCommitFlags,
 	stripFlags,
 } from "./git-session-scope-gate-resolution-helpers.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Cap on how many files to list in the ask-reason — keep messages short
  *  so the agent's user prompt doesn't scroll off-screen. */

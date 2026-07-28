@@ -220,7 +220,6 @@ describe("logsCommand — guard paths", () => {
 		// Defensive arm: parseDuration only ever throws Error in practice, so a
 		// non-Error throw is forced here to cover the `String(e)` fallback.
 		parseDurationImpl = () => {
-			// biome-ignore lint/style/useThrowOnlyError: deliberately covering the non-Error catch arm
 			throw "boom-string"; // eslint-disable-line no-throw-literal
 		};
 		await logsCommand({ since: "1h" });

@@ -3,10 +3,10 @@
 // ===========================================
 
 import { describe, expect, it } from "vitest";
-import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
-import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
-import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 import { nonNull } from "../../lib/non-null.js";
+import { type FileCheckContext, runPerFileChecks } from "./file-checks.js";
+import { runEndpointAndLazinessChecks } from "./file-checks-endpoint-laziness.js";
+import { type CodeQualityResults, emptyResults } from "./tool-results-types.js";
 
 function ctx(content: string, file = "/tmp/sample.ts"): FileCheckContext {
 	return { file, content, relPath: "sample.ts", cwd: "/tmp", r: emptyResults(), piiOpts: {} };

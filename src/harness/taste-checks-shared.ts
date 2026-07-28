@@ -9,8 +9,8 @@
 // checks/ package (test-structure.ts / test-portability.ts import
 // findBlockEnd, isJsTs, and lineIdxForOffset).
 
-import { stripAllLiterals } from "./strip-helpers.js";
 import { nonNull } from "../lib/non-null.js";
+import { stripAllLiterals } from "./strip-helpers.js";
 
 export interface InlineMatch {
 	line: number;

@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerIndexCommand } from "./index-cmd.js";
 import { nonNull } from "../lib/non-null.js";
+import { registerIndexCommand } from "./index-cmd.js";
 
 // ===========================================
 // Behavioral tests for `interlinked index`

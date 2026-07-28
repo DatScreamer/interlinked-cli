@@ -27,12 +27,12 @@ vi.mock("./harness.js", () => ({
 	getSocketPath: () => "/tmp/fake-harness.sock",
 }));
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	skillEnterCommand,
 	skillLeaveCommand,
 	skillListCommand,
 } from "./skill.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ---- fake socket helper -----------------------------------------------------
 
@@ -52,7 +52,6 @@ class FakeSocket extends EventEmitter {
 }
 
 const stripAnsi = (s: string): string =>
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI for stable assertions
 	s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // Collected console output (ANSI-stripped) for assertions.

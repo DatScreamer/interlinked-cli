@@ -9,23 +9,22 @@
 // package-install-parser-pypi.ts (extracted for the per-file line cap) and is
 // re-exported below so existing importers are unchanged.
 
+import { nonNull } from "../lib/non-null.js";
 import type {
 	InstallAction,
 	InstallCommand,
 	PackageSpec,
 } from "./package-install-parser-shared.js";
-
 import {
 	dropPreVerbFlags,
 	envRegistryFor,
 } from "./package-install-parser-shared.js";
-import { nonNull } from "../lib/non-null.js";
 
-// PyPI family — re-exported from the sibling module (line-cap extraction).
-export { classifyPipSpec, parsePip, parsePoetry, parseUv } from "./package-install-parser-pypi.js";
 
 // Composer / NuGet / Maven family — re-exported from the sibling module (line-cap extraction).
 export { parseComposer, parseMaven, parseNuget } from "./package-install-parser-ecosystems-extra.js";
+// PyPI family — re-exported from the sibling module (line-cap extraction).
+export { classifyPipSpec, parsePip, parsePoetry, parseUv } from "./package-install-parser-pypi.js";
 
 // ===========================================================
 // npm / pnpm / yarn / bun

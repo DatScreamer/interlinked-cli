@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	appendCapturedPlan,
 	extractHints,
@@ -25,7 +26,6 @@ import {
 } from "../plan-capture.js";
 import { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TIMESTAMP = "2026-04-23T00:00:00.000Z";
 

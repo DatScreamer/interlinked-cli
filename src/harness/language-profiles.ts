@@ -7,8 +7,8 @@
 
 import { existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import type { LanguageId, LanguageProfile } from "./types.js";
 import { LANGUAGE_EXTENSION_MAP, LANGUAGE_PROFILES } from "./language-profiles-data.js";
+import type { LanguageId, LanguageProfile } from "./types.js";
 
 // ===========================================
 // Helper Functions

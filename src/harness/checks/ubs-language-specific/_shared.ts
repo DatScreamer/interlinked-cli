@@ -2,8 +2,8 @@
 // Extracted from ubs-language-specific.ts during the 1500-line decomposition.
 // Not part of the public API — only the sibling check modules import this.
 
-import { lineHasNoqaSuppression } from "../shared.js";
 import { nonNull } from "../../../lib/non-null.js";
+import { lineHasNoqaSuppression } from "../shared.js";
 
 // ===========================================
 // Extension predicates

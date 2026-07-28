@@ -64,7 +64,6 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 // ---- imports (after mocks) ------------------------------------------------
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolveConfig, updateLocalConfig } from "./config.js";
 import {
 	performLogin,
 	resolveAuthToken,
@@ -72,6 +71,7 @@ import {
 	saveLoginTokens,
 } from "./auth.js";
 import type { ResolvedConfig } from "./config.js";
+import { resolveConfig, updateLocalConfig } from "./config.js";
 import { nonNull } from "./non-null.js";
 
 const resolveConfigMock = vi.mocked(resolveConfig);

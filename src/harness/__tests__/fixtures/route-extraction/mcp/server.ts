@@ -1,7 +1,6 @@
 // MCP server fixture — exposes a handful of tools via server.tool().
 // interlinked-tdd: exempt — fixture file consumed verbatim as a string.
 
-// biome-ignore lint: stub for fixture-only typing
 declare const McpServer: any;
 
 const server = new McpServer({ name: "demo", version: "1.0.0" });

@@ -11,7 +11,7 @@
 // (`void e`), since a permission glitch in `.interlinked/logs/` shouldn't take
 // down the gate.
 
-import { existsSync, mkdirSync, renameSync, statSync, appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const ROTATION_BYTES_DEFAULT = 10 * 1024 * 1024; // 10 MB

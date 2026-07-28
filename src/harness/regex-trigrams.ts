@@ -16,8 +16,8 @@
 // trigrams than optimal (more candidate files), but never miss a file
 // that actually matches (no false negatives).
 
-import { extractTrigrams, isControlChar, packTrigram } from "./trigram-index.js";
 import { nonNull } from "../lib/non-null.js";
+import { extractTrigrams, isControlChar, packTrigram } from "./trigram-index.js";
 
 // ===========================================
 // Types
@@ -475,10 +475,10 @@ function splitAlternation(pattern: string): string[] {
 	return branches;
 }
 
+export type { ParsedGrepCommand } from "./regex-trigrams-grep-parse.js";
 // ===========================================
 // Ripgrep Command Parsing
 // ===========================================
 // Moved to ./regex-trigrams-grep-parse.ts (leaf cluster: consumes nothing
 // from the decomposition side). Re-exported here to preserve the public API.
 export { parseGrepCommand } from "./regex-trigrams-grep-parse.js";
-export type { ParsedGrepCommand } from "./regex-trigrams-grep-parse.js";

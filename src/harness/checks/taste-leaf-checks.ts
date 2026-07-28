@@ -2,13 +2,13 @@
 // Taste checks (leaf cluster) — narrative naming, test-description quality, god-file.
 // Extracted from taste.ts to keep that module under the per-file line cap.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	isTestFile,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect variable declarations with semantically empty names.

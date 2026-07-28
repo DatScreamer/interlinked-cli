@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	type ApplyPatchSection,
 	extractApplyPatchRaw,
@@ -32,7 +33,6 @@ import { isCappableFile } from "../large-file-policy.js";
 import { resolveProposedContent } from "../overlay-content.js";
 import { deriveEditedLineNumbers } from "../server/edit-line-derivation.js";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** One file the coverage gate will evaluate: its project-relative POSIX path, the
  *  coverage language, the proposed post-edit content, and the lines this edit

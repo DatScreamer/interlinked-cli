@@ -3,12 +3,12 @@
 // here so the internal layout (registry / dispatcher / per-family files) can
 // be reorganized without touching consumers.
 
+export type { DetectorEnabledPredicate } from "./dispatcher.js";
 export {
 	defaultDetectorEnabledPredicate,
 	formatSequenceFinding,
 	runSequenceDetectorsForPhase,
 } from "./dispatcher.js";
-export type { DetectorEnabledPredicate } from "./dispatcher.js";
 export {
 	ALL_SEQUENCE_DETECTORS,
 	getSequenceDetectorById,

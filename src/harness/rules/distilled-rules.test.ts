@@ -13,8 +13,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getDistilledRulesWatchPaths, loadDistilledRules } from "./distilled-rules.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getDistilledRulesWatchPaths, loadDistilledRules } from "./distilled-rules.js";
 
 interface SamplePayload {
 	rules?: unknown[];

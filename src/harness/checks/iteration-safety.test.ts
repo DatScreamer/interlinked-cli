@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkFreshCollectionKeyLookup,
 	checkIteratorInvalidation,
 } from "./iteration-safety.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TS = "src/lib/foo.ts";
 

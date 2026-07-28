@@ -5,8 +5,8 @@
 // and `as unknown` usage so the strong_typing check can report line-level
 // offenders without spinning up tsc.
 
-import { stripRegexLiterals } from "../strip-helpers.js";
 import { nonNull } from "../../lib/non-null.js";
+import { stripRegexLiterals } from "../strip-helpers.js";
 
 /**
  * Patterns that match explicit `any` usage in TypeScript.

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkAccumulatingSpread,
 	checkCircularImports,
@@ -15,7 +16,6 @@ import {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./agent-safety-advanced.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Behavioral coverage companion for agent-safety-advanced.ts. The deeper
 // existing tests live in src/harness/__tests__/generic-checks-extended*.test.ts

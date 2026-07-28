@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidecarManager } from "../sidecar-manager.js";
-import type { SidecarManagerOptions } from "../sidecar-manager.js";
 import { nonNull } from "../../../lib/non-null.js";
+import type { SidecarManagerOptions } from "../sidecar-manager.js";
+import { SidecarManager } from "../sidecar-manager.js";
 
 // ===========================================
 // Fake child process

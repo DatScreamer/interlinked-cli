@@ -13,7 +13,7 @@
 // manual agent coordination and cannot be fully automated here.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;

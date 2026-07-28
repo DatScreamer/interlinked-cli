@@ -8,10 +8,10 @@
 // cap; behavior is byte-identical. The public command functions stay in
 // ./harness.ts and import these.
 
-import { existsSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { getOutputMode, output, outputError } from "../lib/output.js";
+import { existsSync, unlinkSync } from "node:fs";
 import { c, kvLine } from "../lib/formatter.js";
+import { getOutputMode, output, outputError } from "../lib/output.js";
 import {
 	closeDaemonStderrLog,
 	getHarnessServerPath,

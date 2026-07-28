@@ -7,6 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph } from "../artifact-graph.js";
 import { runAllExtractors } from "../extractors/index.js";
 import { evaluateStructureRules } from "../rules/index.js";
@@ -15,7 +16,6 @@ import { layerDeclaredArtifacts } from "../structure-checks.js";
 import { formatStructureVerifyOutput } from "../structure-formatter.js";
 import { getImplicitConfig, loadArtifactFile, loadStructureConfig } from "../structure-loader.js";
 import type { ArtifactFileKey, StructureConfig } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // -------------------------------------------
 // Helper: build a full graph from a fixture root

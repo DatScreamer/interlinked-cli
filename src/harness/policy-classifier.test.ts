@@ -51,12 +51,13 @@ vi.mock("node:child_process", () => spawnMock);
 
 // Imported AFTER the mocks above are registered (vi.mock is hoisted).
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 import {
 	appendShadowLog,
 	buildEvidenceEnvelope,
-	callClassifier,
-	type ClassifierSessionState,
 	CLASSIFIER_SYSTEM_PROMPT,
+	type ClassifierSessionState,
+	callClassifier,
 	createClassifierSessionState,
 	hashEvidence,
 	resolveApiKey,
@@ -70,7 +71,6 @@ import type {
 	PolicyEvidence,
 	SessionTrajectory,
 } from "./types.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ===========================================
 // fetch stubbing

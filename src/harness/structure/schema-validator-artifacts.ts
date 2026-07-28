@@ -6,12 +6,13 @@
 // Depends only on schema-validator-helpers.ts — no circular deps.
 
 import type { JsonObject } from "../../lib/json-types.js";
-import type { ArtifactFileKey } from "./types.js";
 import {
-	ENV_KEY_PATTERN,
-	VALID_STABILITY,
-	VALID_SYMBOL_KINDS,
-} from "./types.js";
+	validateDocsFile,
+	validateExamplesFile,
+	validatePackagesFile,
+	validateTestsFile,
+} from "./schema-validator-artifacts-covers.js";
+import type { ValidationResult } from "./schema-validator-helpers.js";
 import {
 	checkUnknownKeys,
 	err,
@@ -22,13 +23,12 @@ import {
 	validateLocalId,
 	validateStringArray,
 } from "./schema-validator-helpers.js";
-import type { ValidationResult } from "./schema-validator-helpers.js";
+import type { ArtifactFileKey } from "./types.js";
 import {
-	validateDocsFile,
-	validateExamplesFile,
-	validatePackagesFile,
-	validateTestsFile,
-} from "./schema-validator-artifacts-covers.js";
+	ENV_KEY_PATTERN,
+	VALID_STABILITY,
+	VALID_SYMBOL_KINDS,
+} from "./types.js";
 
 // Re-export the covers-cluster validators so existing importers that pull
 // them from this module (e.g. schema-validator.ts) keep resolving.

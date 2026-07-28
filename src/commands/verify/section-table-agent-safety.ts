@@ -6,8 +6,8 @@
 // comment-vs-behavior drift detectors, and the taste / structural checks.
 // Composed — in order — by `./section-table.ts`.
 
-import type { SectionSpec } from "./section-table-types.js";
 import { tasteStructuralSections } from "./section-table-agent-safety-taste.js";
+import type { SectionSpec } from "./section-table-types.js";
 
 /** Agent-safety, drift, and taste/structural sections. */
 export const agentSafetySections: readonly SectionSpec[] = [

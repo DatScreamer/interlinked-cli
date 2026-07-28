@@ -22,19 +22,19 @@
 // Bucket-tolerance scoring on counts (§7.2): exact 1.0, same-bucket 0.7,
 // adjacent 0.4, off-by-more 0.0, abstention 0.5.
 
-import type { ParsedGraphPrediction } from "./graph-prediction-parser.js";
 import type {
 	DiffMissSet,
 	PerSectionScore,
 	SectionMissDetail,
 } from "./graph-prediction-cache.js";
-import type { SupermodelGraph } from "./supermodel-graph.js";
+import type { ParsedGraphPrediction } from "./graph-prediction-parser.js";
 import {
 	type ListSectionScore,
 	scoreCount,
 	scoreListSection,
 	scoreRisk,
 } from "./graph-prediction-reconcile-scoring.js";
+import type { SupermodelGraph } from "./supermodel-graph.js";
 
 const UNKNOWN_SENTINEL = "unknown" as const;
 const FULL_ABSTENTION = "full_abstention" as const;

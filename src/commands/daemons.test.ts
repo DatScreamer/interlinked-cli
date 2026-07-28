@@ -8,8 +8,8 @@ import {
 	type RpcError,
 	type RpcRequest,
 } from "../harness/daemon-protocol.js";
-import { daemonsCommand } from "./daemons.js";
 import { nonNull } from "../lib/non-null.js";
+import { daemonsCommand } from "./daemons.js";
 
 let tmp = "";
 let originalCwd = "";

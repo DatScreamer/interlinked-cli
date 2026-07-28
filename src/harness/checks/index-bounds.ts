@@ -13,13 +13,13 @@
 // (2^16, 2^31, 2^53) where the coerced value silently wraps or becomes
 // non-finite.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // External-input source pattern. `\b` keeps us from matching `xreq.body`
 // while still composing cleanly inside larger patterns (the `(?:^|[^\w$])`

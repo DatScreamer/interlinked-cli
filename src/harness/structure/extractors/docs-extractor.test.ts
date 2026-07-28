@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { extract, metadata } from "./docs-extractor.js";
 import { nonNull } from "../../../lib/non-null.js";
+import { extract, metadata } from "./docs-extractor.js";
 
 describe("docs-extractor", () => {
 	let tmp: string;

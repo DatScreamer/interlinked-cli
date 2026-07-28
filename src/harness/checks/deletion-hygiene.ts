@@ -1,6 +1,7 @@
 // Deletion hygiene — zombie code detectors.
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -8,7 +9,6 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Deletion Hygiene — Zombie Code Detectors

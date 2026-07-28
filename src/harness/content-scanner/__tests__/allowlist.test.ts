@@ -4,9 +4,9 @@
 // and the kind catalog is fixed (no user-supplied regex → no ReDoS).
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { applyAllowlist, compileAllowlist } from "../allowlist.js";
 import type { AllowlistEntry, ScanFinding } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function finding(args: { label: string; text: string; start?: number }): ScanFinding {
 	const start = args.start ?? 0;

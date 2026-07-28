@@ -7,6 +7,7 @@
 // registry and every importer stay unchanged. Behavior is byte-identical to the
 // pre-extraction inline definitions.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -16,7 +17,6 @@ import {
 	stripCommentsAndStrings,
 } from "./shared.js";
 import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ==========================================================================
 // 8. Mock-only test — every assertion is a call-interaction matcher

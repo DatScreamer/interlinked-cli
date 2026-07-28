@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../non-null.js";
 import {
-	DemoBanner,
 	__resetDemoRegistry,
+	DemoBanner,
 	demoData,
 	demoStateSummary,
 	mountDemoBanner,
 } from "./index.js";
-import { nonNull } from "../non-null.js";
 
 describe("demoData", () => {
 	beforeEach(() => __resetDemoRegistry());

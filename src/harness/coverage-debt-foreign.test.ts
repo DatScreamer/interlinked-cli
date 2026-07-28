@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { attachWarning, fmtAge, foreignDebtNote } from "./coverage-debt-foreign.js";
-import { obligationId, type Obligation } from "./obligations.js";
+import { type Obligation, obligationId } from "./obligations.js";
 
 function debt(kind: "coverage" | "red_suite", file: string, openedAtMs: number): Obligation {
 	return {

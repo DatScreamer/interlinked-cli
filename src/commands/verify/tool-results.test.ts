@@ -14,9 +14,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { filterCodeQualityResults, runCodeQualityChecks, runSuggestions } from "./tool-results.js";
 import type { CodeQualityResults } from "./tool-results-types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 let tempDir: string;
 let counter = 0;

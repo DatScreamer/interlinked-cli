@@ -30,8 +30,8 @@
 // cloud sweep because it depends only on `projectRoot` + the A3
 // `RouteMap` (also reusable). No harness-state dependencies.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { RouteMap } from "./route-map.js";

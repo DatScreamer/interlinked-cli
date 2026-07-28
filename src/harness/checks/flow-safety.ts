@@ -10,13 +10,13 @@
 //     external input into a typed slot without a validator on the source
 //     (Firefox 2029813 — RLBox copy verification gap).
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const REPORT_LINE_TRUNC = 150;
 const MAX_MATCHES_PER_FILE = 10;

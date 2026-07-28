@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../../../lib/non-null.js";
 import { metadata as configMetadata, extract as extractConfig } from "../config-extractor.js";
 import { metadata as docsMetadata, extract as extractDocs } from "../docs-extractor.js";
 import { metadata as envMetadata, extract as extractEnv } from "../env-extractor.js";
@@ -14,7 +15,6 @@ import {
 	metadata as packageMetadata,
 } from "../package-extractor.js";
 import { extract as extractTests, metadata as testMetadata } from "../test-extractor.js";
-import { nonNull } from "../../../../lib/non-null.js";
 
 let tmpDir: string;
 

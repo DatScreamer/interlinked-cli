@@ -233,7 +233,6 @@ describe("guardInstallCommand", () => {
 	it("catch path surfaces a non-Error throw via String() (normal mode)", async () => {
 		mockIsGitRepo.mockReturnValue(true);
 		mockInstallGuardHook.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising the String(err) branch
 			throw "boom-string";
 		});
 		await guardInstallCommand({});
@@ -500,7 +499,6 @@ describe("guardCheckCommand reservation fallback", () => {
 	it("check catch path with a non-Error throw uses String(err)", async () => {
 		// isGitRepo throws a non-Error to hit the String(err) branch of the catch.
 		mockIsGitRepo.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising String(err) branch
 			throw "check-boom";
 		});
 		await guardCheckCommand({ files: ["src/a.ts"] });
@@ -634,7 +632,6 @@ describe("guardStatusCommand", () => {
 
 	it("catch path: non-Error throw routes through String(err)", async () => {
 		mockReadLocalConfig.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising String(err) branch
 			throw "status-boom";
 		});
 		await guardStatusCommand({});
@@ -754,7 +751,6 @@ describe("guardUninstallCommand", () => {
 
 	it("catch path: uninstall throwing a non-Error uses String(err)", async () => {
 		mockUninstallGuardHook.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising String(err) branch
 			throw "rm-boom";
 		});
 		await guardUninstallCommand({});

@@ -119,10 +119,10 @@ function extractLayerRules(graph: ArtifactGraph): Array<{ from: string; cannot_i
 }
 
 export {
-	checkPublicSymbolCompanions,
-	checkEnvKeyCompanions,
 	checkConfigKeyCompanions,
+	checkEnvKeyCompanions,
+	checkGlossaryResidue,
 	checkLayerBoundaryViolations,
 	checkPackageBoundaryViolations,
-	checkGlossaryResidue,
+	checkPublicSymbolCompanions,
 };

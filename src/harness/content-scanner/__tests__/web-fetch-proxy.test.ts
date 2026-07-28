@@ -4,8 +4,8 @@
 // (block-and-answer), stashes a review file for the human, or honours a
 // decision the human already made via `interlinked scanner review`.
 
-import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,8 +25,8 @@ import {
 	fetchBody,
 	isBlockedAddress,
 	makePinnedLookup,
-	pinnedFetch,
 	type PinnedFetchResponse,
+	pinnedFetch,
 	SsrfBlockedError,
 	type VettedTarget,
 } from "../web-fetch-proxy.js";

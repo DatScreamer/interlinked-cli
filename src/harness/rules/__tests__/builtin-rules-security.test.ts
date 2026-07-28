@@ -4,8 +4,8 @@
 // the agent's context via Bash/Grep/Glob, defeating the systemMessage channel.
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG } from "../default-config.js";
 import { SECURITY_AND_SAFETY_RULES } from "../builtin-rules-security.js";
+import { DEFAULT_CONFIG } from "../default-config.js";
 
 const PENDING_ACCESS_RULE_ID = "builtin-scanner-pending-access";
 const PENDING_GLOB = ".interlinked/scanner/pending/**";

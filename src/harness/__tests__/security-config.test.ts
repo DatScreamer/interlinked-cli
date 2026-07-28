@@ -13,9 +13,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	defaultConfig,
 	load,
+	type SecurityConfig,
 	securityConfigPath,
 	validate,
-	type SecurityConfig,
 } from "../security-config.js";
 
 let tmpRoot: string;

@@ -12,10 +12,11 @@
 // list-typed section are format violations and surface back to the
 // agent as "narrow your top-K or use `unknown` for the long tail."
 
+import { nonNull } from "../lib/non-null.js";
 import {
+	flowQuote,
 	type KeyValueLine,
 	type ListItemLine,
-	flowQuote,
 	parseCount,
 	parseInlineValue,
 	parseRisk,
@@ -23,7 +24,6 @@ import {
 	tokenizeKeyValue,
 	tokenizeListItem,
 } from "./graph-prediction-parser-scalars.js";
-import { nonNull } from "../lib/non-null.js";
 
 const FENCE_RE = /^```(?:ya?ml)?\s*$/;
 const FENCE_END_RE = /^```\s*$/;

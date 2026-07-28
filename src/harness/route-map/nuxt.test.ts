@@ -1,9 +1,8 @@
 // Companion tests for src/harness/route-map/nuxt.ts — Phase A3.
 
 import { describe, expect, it } from "vitest";
-
-import { extractEndpoints } from "./nuxt.js";
 import { nonNull } from "../../lib/non-null.js";
+import { extractEndpoints } from "./nuxt.js";
 
 describe("route-map/nuxt.extractEndpoints", () => {
 	it("extracts a route from server/api/users.get.ts", () => {

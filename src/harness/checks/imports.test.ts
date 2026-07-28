@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { _resetPackageNameCacheForTests, checkImportFromOwnBarrel } from "./imports.js";
 import { nonNull } from "../../lib/non-null.js";
+import { _resetPackageNameCacheForTests, checkImportFromOwnBarrel } from "./imports.js";
 
 const TS = "src/lib/foo.ts";
 

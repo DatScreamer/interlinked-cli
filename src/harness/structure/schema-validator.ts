@@ -7,13 +7,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
-import type { ArtifactFileKey, StructureConfig, StructureMode } from "./types.js";
-import {
-	DEFAULT_ADOPTION_THRESHOLDS,
-	DEFAULT_BUILTINS,
-	MODE_DEFAULTS,
-	VALID_MODES,
-} from "./types.js";
 import {
 	checkUnknownKeys,
 	err,
@@ -23,12 +16,18 @@ import {
 	type ValidationError,
 	type ValidationResult,
 } from "./schema-validator-helpers.js";
+import type { ArtifactFileKey, StructureConfig, StructureMode } from "./types.js";
+import {
+	DEFAULT_ADOPTION_THRESHOLDS,
+	DEFAULT_BUILTINS,
+	MODE_DEFAULTS,
+	VALID_MODES,
+} from "./types.js";
 
 // -------------------------------------------
 // Re-export types and per-artifact validators
 // -------------------------------------------
 
-export type { ValidationError, ValidationResult } from "./schema-validator-helpers.js";
 
 export {
 	validateArtifactFile,
@@ -42,6 +41,7 @@ export {
 	validatePublicApiFile,
 	validateTestsFile,
 } from "./schema-validator-artifacts.js";
+export type { ValidationError, ValidationResult } from "./schema-validator-helpers.js";
 
 // -------------------------------------------
 // structure.json Validation

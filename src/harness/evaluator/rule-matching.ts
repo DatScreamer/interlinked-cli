@@ -8,6 +8,7 @@
 // formatter that fronts every block decision.
 
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import type {
 	GuardRule,
 	HarnessEvent,
@@ -16,10 +17,9 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { extractScannableText } from "./spans.js";
-import { classifyToolExternality } from "./tool-classifiers.js";
 import { evaluateForbidsAfter, evaluateRequiresPrior } from "./temporal-matching.js";
+import { classifyToolExternality } from "./tool-classifiers.js";
 import { normalizeCommandWrappers } from "./wrapper-normalization.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /** Nested indexable object type for dot-path field traversal in rule pattern matching */
 interface Indexable {

@@ -4,6 +4,7 @@
 // detectors, each with positive and negative cases.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCommentClaimsIdempotentMutates,
 	checkCommentClaimsLimitNoGuard,
@@ -11,7 +12,6 @@ import {
 	checkCommentClaimsThrowsDoesnt,
 	checkCommentClaimsValidationMissing,
 } from "./comment-drift.js";
-import { nonNull } from "../../lib/non-null.js";
 
 describe("checkCommentClaimsLimitNoGuard", () => {
 	it('fires when JSDoc says "max N" but body has no < N / <= N guard', () => {

@@ -1,8 +1,8 @@
 // React index-as-key detection.
 // Extracted from generic-checks.ts.
 
-import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 // ===========================================
 // Index as Key Detection (React)

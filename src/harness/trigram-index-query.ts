@@ -13,13 +13,13 @@
 // (never from ./trigram-index.js) and consumes the class purely through the
 // structural QueryView interface, so there is no runtime import cycle.
 
+import { nonNull } from "../lib/non-null.js";
 import {
 	binarySearchU32,
 	EARLY_TERMINATION_THRESHOLD,
 	nextCharBit,
 	type PostingList,
 } from "./trigram-primitives.js";
-import { nonNull } from "../lib/non-null.js";
 
 /**
  * Read-only view of the TrigramIndex fields the query path needs. The

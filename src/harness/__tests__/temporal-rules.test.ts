@@ -18,11 +18,11 @@
 
 import { describe, expect, it } from "vitest";
 import { CohortManager } from "../cohort.js";
-import { evaluatePreToolUse } from "../evaluator.js";
 import {
 	evaluateForbidsAfter,
 	evaluateRequiresPrior,
 } from "../evaluator/temporal-matching.js";
+import { evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
 import type {

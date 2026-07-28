@@ -2,9 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { _clearCrossSessionCache } from "../cross-session.js";
 import { buildTrajectoryFixture, makeCandidate } from "../__tests__/sequence-fixtures.js";
+import { _clearCrossSessionCache } from "../cross-session.js";
 import {
 	CROSS_AGENT_DETECTORS,
 	fileOverwriteAfterOtherAgent,

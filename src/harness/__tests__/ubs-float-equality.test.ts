@@ -4,10 +4,10 @@
 // the registry / metadata / verify wiring is in place.
 
 import { describe, expect, it } from "vitest";
-import { checkFloatEquality } from "../generic-checks.js";
 import { GENERIC_CHECK_META } from "../check-metadata.js";
-import { CHECK_REGISTRY } from "../check-registry/index.js";
 import { WARNING_ENTRIES } from "../check-registry/entries-warnings.js";
+import { CHECK_REGISTRY } from "../check-registry/index.js";
+import { checkFloatEquality } from "../generic-checks.js";
 
 describe("ubs_float_equality registration", () => {
 	it("`checkFloatEquality` is exported from the generic-checks barrel", () => {

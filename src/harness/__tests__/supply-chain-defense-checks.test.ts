@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { CohortManager } from "../cohort.js";
 import { evaluatePostToolUse } from "../evaluator.js";
 import {
@@ -30,7 +31,6 @@ import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig, loadRules } from "../rules-loader.js";
 import type { GuardRulesConfig, SessionTrajectory } from "../types.js";
 import { makeEvent, makeSession } from "./fixtures/supply-chain.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // 7. Typosquat Detection

@@ -8,15 +8,15 @@
 // from being treated as a test body.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { stripAllLiterals } from "../strip-helpers.js";
 import {
 	blockStartingWithin,
 	extractTestBlocks,
 	gatedByChain,
-	inTestBlock,
 	innermostBlockAt,
+	inTestBlock,
 } from "./test-structure.js";
-import { nonNull } from "../../lib/non-null.js";
 
 function blocksOf(src: string) {
 	return extractTestBlocks(stripAllLiterals(src).split("\n"));

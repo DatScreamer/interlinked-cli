@@ -10,9 +10,7 @@
 
 // interlinked-tdd: exempt — fixture file consumed verbatim as a string.
 
-// biome-ignore lint: stub declaration to keep TS happy for the fixture file
 declare const express: any;
-// biome-ignore lint: stub declaration to keep TS happy for the fixture file
 declare const Router: any;
 
 const app = express();

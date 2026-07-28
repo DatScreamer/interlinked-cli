@@ -7,9 +7,9 @@
 // are imported back here. Each detector's `loop` binding is inferred from those
 // extractors' return type, so `LoopBody` itself need not be imported by name.
 
+import { nonNull } from "../../lib/non-null.js";
 import { extractBraceLoopBodies, getLoopBodies } from "./performance.js";
 import { getExtension, type InlineMatch } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Detect await inside for/while loops (not for-await-of).

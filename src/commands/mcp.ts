@@ -3,8 +3,8 @@
 // ===========================================
 
 import { resolve } from "node:path";
-import { DEFAULT_MCP_INLINE_LIMIT_BYTES } from "../lib/mcp-recorder/writer.js";
 import { runMcpStdioProxy } from "../lib/mcp-recorder/stdio-proxy.js";
+import { DEFAULT_MCP_INLINE_LIMIT_BYTES } from "../lib/mcp-recorder/writer.js";
 
 export interface McpStdioCommandOptions {
     server: string;

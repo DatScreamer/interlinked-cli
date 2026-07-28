@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SpawnOutcome } from "./coverage-runner.js";
 import { failure, spawnText, testsPassedFromStatus } from "./coverage-run-helpers.js";
+import type { SpawnOutcome } from "./coverage-runner.js";
 
 describe("failure", () => {
 	it("builds a not-measured result that fails open", () => {

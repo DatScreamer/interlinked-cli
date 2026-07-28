@@ -25,12 +25,11 @@
 // every consumer behaves byte-identically to the pre-seam code.
 
 import { existsSync } from "node:fs";
-
+import type { PerSectionScore } from "./graph-prediction-cache.js";
 import {
 	classifyCase,
 	type GraphPredictionCase,
 } from "./graph-prediction-classifier.js";
-import type { PerSectionScore } from "./graph-prediction-cache.js";
 import type { ProjectGraph } from "./project-graph.js";
 import { loadGraphForFile, type SupermodelGraph } from "./supermodel-graph.js";
 import type { ModuleRole } from "./types.js";

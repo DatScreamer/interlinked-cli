@@ -7,8 +7,8 @@
 // set, and the reverse import graph) plus an optional path-display helper for
 // the verbose depth-cap note. No module-private state.
 
-import type { ReachabilityVerdict } from "./types.js";
 import { nonNull } from "../lib/non-null.js";
+import type { ReachabilityVerdict } from "./types.js";
 
 /**
  * Maximum BFS depth for `isFileReachableFromEntryPoints`. Empirically a

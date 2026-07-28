@@ -11,8 +11,8 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GrepAcceleratorConfig } from "./grep-accelerator.js";
 import { nonNull } from "../lib/non-null.js";
+import type { GrepAcceleratorConfig } from "./grep-accelerator.js";
 
 // ===========================================
 // Safe RegExp construction (ReDoS mitigation)

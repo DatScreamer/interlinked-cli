@@ -6,14 +6,14 @@
 // files to .interlinked/graph-predictions.jsonl. The Fire-2 retry of the
 // same edit then hits cache and reconciles.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { harvestPredictionsFromTranscript } from "../graph-prediction-stop-hook.js";
+import { nonNull } from "../../lib/non-null.js";
 import { findPredictionRow } from "../graph-prediction-cache.js";
 import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
-import { nonNull } from "../../lib/non-null.js";
+import { harvestPredictionsFromTranscript } from "../graph-prediction-stop-hook.js";
 
 let dir: string;
 

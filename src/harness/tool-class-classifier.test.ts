@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	BUILTIN_CLASS_RULES,
 	BUILTIN_TOOL_NAME_CLASSES,
@@ -10,7 +11,6 @@ import {
 	loadOverrides,
 	parseOverrides,
 } from "./tool-class-classifier.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ---- Built-in rules -----------------------------------------------------------
 

@@ -206,6 +206,23 @@ export function formatComplexityPulse(
 	if (beforeFns) {
 		const deltas = namedDeltas(beforeFns, afterFns);
 		if (deltas.length > 0) {
+			// fnΔ — how many distinct functions this ONE edit moved.
+			//
+			// Ambient measurement, not a gate (2026-07-28). Every per-edit ratchet
+			// (cyclomatic slew +2/edit, coverage delta, mutation site count) is
+			// calibrated on the resolution of a single edit; an edit that moves
+			// eight functions at once is gated as one aggregate delta rather than
+			// eight steps. Whether that actually correlates with worse outcomes is
+			// unknown, so this counts it and says nothing — see
+			// docs/design/per-edit-symbol-resolution.md for the question this is
+			// collecting evidence for, and the query that answers it.
+			//
+			// UNDERCOUNTS on purpose: derived from the complexity deltas already
+			// computed here, so it sees a function added, removed, or changed in
+			// branch count — NOT one whose body changed without moving its
+			// cyclomatic number (a renamed local, a different string). A cheap
+			// lower bound beats a second AST walk on the hot path.
+			line += `; fnΔ ${deltas.length}`;
 			const shown = deltas
 				.slice(0, MAX_NAMED_DELTAS)
 				.map((d) => d.label)

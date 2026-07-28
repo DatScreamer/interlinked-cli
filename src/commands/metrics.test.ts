@@ -74,10 +74,11 @@ vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
 	companionTestCandidates: m.companionTestCandidates,
 	isTddExemptPath: m.isTddExemptPath,
 }));
+
 // formatter is real (color-stripped under CI/NO_COLOR — tests assert plain text).
 
-import { metricsCommand } from "./metrics.js";
 import { nonNull } from "../lib/non-null.js";
+import { metricsCommand } from "./metrics.js";
 
 // --- helpers ------------------------------------------------------------
 let logged = "";

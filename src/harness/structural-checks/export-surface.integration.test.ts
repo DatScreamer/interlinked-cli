@@ -65,6 +65,7 @@ vi.mock("../check-engine/index.js", () => ({
 	},
 }));
 
+import { nonNull } from "../../lib/non-null.js";
 // Import the SUT *after* the mocks are registered.
 import {
 	checkExportRippleCompilation,
@@ -72,7 +73,6 @@ import {
 	checkRippleTests,
 	findTestFileForSource,
 } from "./export-surface.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // --- fixture helpers ---------------------------------------------------------
 

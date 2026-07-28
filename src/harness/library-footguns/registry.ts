@@ -19,8 +19,8 @@ import { CHILD_PROCESS_FOOTGUNS } from "./child-process.js";
 import { D1_FOOTGUNS } from "./d1.js";
 import { NODE_FETCH_FOOTGUNS } from "./node-fetch.js";
 import { REDIS_FOOTGUNS } from "./redis.js";
-import { WORKERS_KV_FOOTGUNS } from "./workers-kv.js";
 import type { DisabledLibrariesConfig, LibraryFootgunCheck } from "./types.js";
+import { WORKERS_KV_FOOTGUNS } from "./workers-kv.js";
 
 /** A footgun finding emitted by the registry. Wraps an InlineMatch
  *  with the check id so the consumer knows which detector fired. */

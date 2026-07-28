@@ -11,7 +11,7 @@
 // Auth: relies on `gh auth` (uses `gh api` under the hood).
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const BATCHES_NEWEST_FIRST = [

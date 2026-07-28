@@ -26,9 +26,8 @@
 // can't silently introduce a shell-injection surface.
 
 import { execFileSync } from "node:child_process";
-
-import type { RollbackAssessment } from "../types.js";
 import { nonNull } from "../../lib/non-null.js";
+import type { RollbackAssessment } from "../types.js";
 
 /** Public API — Channel 5 entry point. The harness handler calls this once
  *  per file-edit failure with a provenance check that returns true iff WE

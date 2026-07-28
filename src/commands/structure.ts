@@ -11,6 +11,7 @@ import type {
 import { c } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
+import type { AcceptBatch, Issue, SkipEntry } from "./structure-helpers.js";
 import {
 	acceptEnv,
 	acceptSymbols,
@@ -26,7 +27,6 @@ import {
 	SCAFFOLDS,
 	writeJson,
 } from "./structure-helpers.js";
-import type { AcceptBatch, Issue, SkipEntry } from "./structure-helpers.js";
 
 // --- Option shapes ---
 interface StructureOpts {

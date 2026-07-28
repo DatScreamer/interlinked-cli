@@ -9,8 +9,8 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { nonNull } from "../../lib/non-null.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { isBash } from "./tool-classifiers.js";
 
 /** Commands that should NEVER be auto-permitted */

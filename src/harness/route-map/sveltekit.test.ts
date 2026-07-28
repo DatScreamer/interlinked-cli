@@ -1,9 +1,8 @@
 // Companion tests for src/harness/route-map/sveltekit.ts — Phase A3.
 
 import { describe, expect, it } from "vitest";
-
-import { extractEndpoints } from "./sveltekit.js";
 import { nonNull } from "../../lib/non-null.js";
+import { extractEndpoints } from "./sveltekit.js";
 
 describe("route-map/sveltekit.extractEndpoints", () => {
 	it("extracts GET/POST from src/routes/api/users/+server.ts", () => {

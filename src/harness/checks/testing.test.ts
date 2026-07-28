@@ -9,12 +9,12 @@
 // the tsx/jsx AND) is exercised positive + negative.
 
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	checkExcessiveUseEffect,
 	checkSnapshotOveruse,
 	checkTestImportingTest,
 } from "./testing.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // A genuine JS/TS test path that isStrictTestFile recognizes, but which is
 // NOT under any harness-internal data tree, so the broad/strict split is

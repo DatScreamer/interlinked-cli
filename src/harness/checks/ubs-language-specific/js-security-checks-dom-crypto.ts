@@ -5,6 +5,7 @@
 // (and HTML/JSX for SRI). No dependency on the namespaced-call helpers in
 // the parent module — this is a self-contained leaf.
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -13,7 +14,6 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { isJsTsFile } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * `ubs_unchecked_redirect` — JS/TS `redirect(url)` / `location.href = url` /

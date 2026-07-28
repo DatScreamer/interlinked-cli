@@ -8,9 +8,9 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { SidecarPoolOptions } from "../sidecar-pool.js";
 import { SidecarPool } from "../sidecar-pool.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 interface FakeChild extends EventEmitter {
 	stdin: PassThrough;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import type { HarnessDecision } from "../types.js";
 import type { UnifiedHookEvent } from "../unified-event.js";
 import { createCopilotCliAdapter } from "./copilot-cli.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const adapter = createCopilotCliAdapter();
 

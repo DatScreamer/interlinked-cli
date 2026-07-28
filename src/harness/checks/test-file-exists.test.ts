@@ -12,8 +12,8 @@
 // that don't touch the filesystem.
 
 import { describe, expect, test } from "vitest";
-import { checkTestFileExists } from "./test-file-exists.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkTestFileExists } from "./test-file-exists.js";
 
 describe("checkTestFileExists — generator-output gate (FP refinement)", () => {
 	// Negative cases — these MUST be exempted.

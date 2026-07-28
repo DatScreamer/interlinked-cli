@@ -14,13 +14,12 @@ import { join } from "node:path";
 
 import type { CheckEngine, CheckResult } from "../../harness/check-engine/index.js";
 import { loadFileSuppressions } from "../../harness/suppressions.js";
-
+import { nonNull } from "../../lib/non-null.js";
 import {
 	runToolSilent,
 	runToolWithSpinner,
 	SPINNER_FRAMES,
 } from "./streaming-output.js";
-import { nonNull } from "../../lib/non-null.js";
 
 export interface ToolSpec {
 	id: import("../../harness/check-engine/types.js").ToolId;

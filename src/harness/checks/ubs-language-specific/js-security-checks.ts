@@ -2,6 +2,7 @@
 // Extracted from ubs-language-specific.ts during the 1500-line decomposition.
 // Each function returns InlineMatch[]. Ext-gated to JS/TS variants.
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -11,7 +12,6 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { stripCommentsPreservingStrings } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 // DOM/XSS & crypto security detectors live in the sibling leaf module.
 // Re-exported here so the public barrel (ubs-language-specific.ts) and the

@@ -12,8 +12,8 @@ import {
 } from "../lib/checkpoints.js";
 import { c, header, kvLine, relativeTime, table } from "../lib/formatter.js";
 import { readLocalSessions } from "../lib/local-activity.js";
-import { getOutputMode, output, outputError } from "../lib/output.js";
 import { nonNull } from "../lib/non-null.js";
+import { getOutputMode, output, outputError } from "../lib/output.js";
 
 export function checkpointCommand(
 	messageOrSubcmd?: string,

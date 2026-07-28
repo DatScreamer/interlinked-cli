@@ -24,8 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CapturedPlan } from "../../harness/types/plan.js";
-import { planListCommand, planShowCommand } from "../plan.js";
 import { nonNull } from "../../lib/non-null.js";
+import { planListCommand, planShowCommand } from "../plan.js";
 
 let tmp = "";
 let previousExitCode: number | string | undefined;

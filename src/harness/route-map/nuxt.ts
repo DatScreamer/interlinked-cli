@@ -8,9 +8,9 @@
 // When the filename has no method suffix, the handler responds to ALL
 // methods.
 
+import { nonNull } from "../../lib/non-null.js";
 import type { Endpoint } from "../types/session.js";
 import { makeEndpoint } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const NUXT_API_FILE = /[/\\]server[/\\]api[/\\](.+?)\.(?:ts|js)$/;
 const METHOD_SUFFIX_RE = /\.(get|post|put|patch|delete|head|options)$/i;

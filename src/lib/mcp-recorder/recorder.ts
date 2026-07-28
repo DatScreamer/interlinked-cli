@@ -5,10 +5,9 @@
 // parsed message, including server-initiated client feature calls such as
 // sampling/createMessage, elicitation/create, and roots/list.
 
-import { appendMcpEvent, captureMcpPayload, DEFAULT_MCP_INLINE_LIMIT_BYTES } from "./writer.js";
 import { buildCollectionRecord } from "../collection/builder.js";
-import { appendCollection } from "../collection/writer.js";
 import type { CollectionRecord } from "../collection/types.js";
+import { appendCollection } from "../collection/writer.js";
 import type { JsonObject } from "../json-types.js";
 import type {
     JsonRpcId,
@@ -18,6 +17,7 @@ import type {
     McpPayloadContentType,
     McpTransport,
 } from "./types.js";
+import { appendMcpEvent, captureMcpPayload, DEFAULT_MCP_INLINE_LIMIT_BYTES } from "./writer.js";
 
 interface PendingRequest {
     startedAtMs: number;

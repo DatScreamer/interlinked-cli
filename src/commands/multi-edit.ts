@@ -31,11 +31,11 @@ import { c } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
 import {
 	applyEditsToBuffer,
+	atomicBatchWrite,
+	type EditBatch,
 	gateProposedContentInline,
 	MULTI_EDIT_ERROR_CODES,
-	type EditBatch,
 	type MultiEditResult,
-	atomicBatchWrite,
 } from "./multi-edit-apply.js";
 import { normalizeManifest } from "./multi-edit-manifest.js";
 
@@ -43,15 +43,6 @@ import { normalizeManifest } from "./multi-edit-manifest.js";
 // Re-exports — preserve the public surface after the split.
 // ───────────────────────────────────────────────
 
-export {
-	applyEditsToBuffer,
-	atomicBatchWrite,
-	countOccurrences,
-	gateProposedContentInline,
-	isTscFindingBlocking,
-	MULTI_EDIT_ERROR_CODES,
-} from "./multi-edit-apply.js";
-export { normalizeManifest } from "./multi-edit-manifest.js";
 export type {
 	CheckResult,
 	EditBatch,
@@ -63,6 +54,15 @@ export type {
 	NormalizeResult,
 	SingleFileManifest,
 } from "./multi-edit-apply.js";
+export {
+	applyEditsToBuffer,
+	atomicBatchWrite,
+	countOccurrences,
+	gateProposedContentInline,
+	isTscFindingBlocking,
+	MULTI_EDIT_ERROR_CODES,
+} from "./multi-edit-apply.js";
+export { normalizeManifest } from "./multi-edit-manifest.js";
 
 // ───────────────────────────────────────────────
 // Top-level orchestrator (pure: returns a result, doesn't print)

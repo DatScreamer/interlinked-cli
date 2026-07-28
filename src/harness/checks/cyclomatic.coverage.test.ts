@@ -21,8 +21,8 @@
 // All fixtures use synthetic identifiers — no real vendor/model/provider names.
 
 import { describe, expect, it, vi } from "vitest";
-import { computeCyclomaticComplexity } from "./cyclomatic.js";
 import { nonNull } from "../../lib/non-null.js";
+import { computeCyclomaticComplexity } from "./cyclomatic.js";
 
 // Force the regex-walker fallback: pretend `typescript` is unavailable so the
 // AST pass declines and `computeCyclomaticComplexity` calls `walkJsTs`.

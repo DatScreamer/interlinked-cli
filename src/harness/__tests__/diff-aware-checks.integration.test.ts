@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QualityCheckOptions } from "../quality-checks.js";
 import type { HarnessEvent } from "../types.js";
 
@@ -44,9 +44,9 @@ vi.mock("../check-engine/index.js", () => ({
 
 let MOCK_FILE_CONTENT = "";
 
+import { nonNull } from "../../lib/non-null.js";
 import { snapshotDryShingles } from "../checks/dry-baseline.js";
 import { runQualityChecks } from "../quality-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Deterministic fixtures.
 const FIXED_NOW = 1_700_000_000_000;

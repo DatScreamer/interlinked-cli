@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { filterToRisers, snapshotDryShingles } from "./dry-baseline.js";
 import { extractFunctionShingles, findClones } from "./dry.js";
+import { filterToRisers, snapshotDryShingles } from "./dry-baseline.js";
 
 const cloneBody = `{
 	const out = [];

@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { manifestPath, readManifest } from "../harness/installer.js";
 import {
 	getModePreset,
 	HARNESS_MODE_NAMES,
@@ -25,7 +26,6 @@ import {
 	isKnownMode,
 	migrateLegacyMode,
 } from "../harness/rules/modes.js";
-import { manifestPath, readManifest } from "../harness/installer.js";
 import type { RunnerId } from "../harness/unified-event.js";
 import {
 	getSharedConfigPath,

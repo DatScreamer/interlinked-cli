@@ -26,15 +26,15 @@
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { lcovReportPaths } from "./coverage-adapters.js";
-import { shellSplit, splitSegments, stripLeadingPrefix } from "./shell-structure.js";
 import { loadCoverageFinal } from "./coverage-final-reader.js";
 import { loadLcovFile } from "./coverage-lcov.js";
 import {
 	readOpenCoverageObligations,
 	recordCoverageDischarge,
 } from "./coverage-obligation-ledger.js";
-import { nonNull } from "../lib/non-null.js";
+import { shellSplit, splitSegments, stripLeadingPrefix } from "./shell-structure.js";
 
 // ===========================================
 // Coverage-suite command classification — argv-positional, never lexical

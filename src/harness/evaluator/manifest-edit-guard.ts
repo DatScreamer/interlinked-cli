@@ -7,6 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
 import { isLicenseAllowed } from "../license-policy.js";
 import {
 	extractComposerDeps,
@@ -22,7 +23,6 @@ import {
 } from "../package-allowlist.js";
 import type { Ecosystem, PackageSpec } from "../package-install-parser.js";
 import type { HarnessDecision } from "../types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 export interface ManifestEditInput {
 	filePath: string;

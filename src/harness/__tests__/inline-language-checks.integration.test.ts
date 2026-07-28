@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { getProfileForFile } from "../language-profiles.js";
 import {
 	__test__,
 	runInlineLanguageChecks,
 } from "../quality-checks/inline-language-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // Helper: run inline checks against a synthetic file on-disk path. The
 // filesystem never gets touched — runInlineLanguageChecks only reads

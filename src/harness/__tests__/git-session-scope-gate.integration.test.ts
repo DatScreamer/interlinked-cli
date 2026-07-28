@@ -15,13 +15,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { evaluatePreToolUse } from "../evaluator/pre-tool.js";
+import { CohortManager } from "../cohort.js";
 import {
 	evaluateGitScopeGate,
 	evaluateGitScopeGateSync,
 	parseGitVerb,
 } from "../evaluator/git-session-scope-gate.js";
-import { CohortManager } from "../cohort.js";
+import { evaluatePreToolUse } from "../evaluator/pre-tool.js";
 import { ReservationManager } from "../reservations.js";
 import { captureGitBaseline, SessionTracker } from "../session-state.js";
 import type {

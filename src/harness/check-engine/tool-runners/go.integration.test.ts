@@ -9,8 +9,8 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CheckScope, ToolRunnerInput } from "../types.js";
 import { nonNull } from "../../../lib/non-null.js";
+import type { CheckScope, ToolRunnerInput } from "../types.js";
 
 const spawnSyncMock = vi.fn();
 

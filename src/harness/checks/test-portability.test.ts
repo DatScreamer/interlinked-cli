@@ -24,12 +24,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { isStrictTestFile } from "./shared.js";
 import {
 	checkPlatformConditionalAssertion,
 	checkSilentDependencySkip,
 } from "./test-portability.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const TEST_PATH = "src/feature.test.ts";
 

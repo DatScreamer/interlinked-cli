@@ -26,10 +26,10 @@ import {
 	installAllHooks,
 	writeHookScript,
 } from "../lib/hooks.js";
+import { nonNull } from "../lib/non-null.js";
 import { ensureRemoteOnboarding } from "../lib/onboarding.js";
 import { type ClientName, detectClients } from "../lib/settings.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
-import { loginCommand } from "./login.js";
 import {
 	emitDryRun,
 	isLocalServer,
@@ -40,7 +40,7 @@ import {
 	printProjectContext,
 	printServer,
 } from "./init-presentation.js";
-import { nonNull } from "../lib/non-null.js";
+import { loginCommand } from "./login.js";
 
 // No hardcoded production default — the public distribution has no server
 // to point at. Users supply one via `--server`, and the probe/local

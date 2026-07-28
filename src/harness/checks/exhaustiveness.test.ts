@@ -4,8 +4,8 @@
 // separate `it()` so failures pinpoint exactly which shape regressed.
 
 import { describe, expect, it } from "vitest";
-import { checkDiscriminatedUnionExhaustiveness } from "./exhaustiveness.js";
 import { nonNull } from "../../lib/non-null.js";
+import { checkDiscriminatedUnionExhaustiveness } from "./exhaustiveness.js";
 
 const TS = "src/lib/foo.ts";
 

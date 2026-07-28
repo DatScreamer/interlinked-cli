@@ -27,8 +27,8 @@ vi.mock("../lib/local-activity.js", () => ({
 // Keep ANSI out of the asserted strings so matchers are exact.
 process.env.NO_COLOR = "1";
 
-import { activityCommand } from "./activity.js";
 import { nonNull } from "../lib/non-null.js";
+import { activityCommand } from "./activity.js";
 
 // ---- console / exit capture ----------------------------------------------
 interface Captured {
@@ -483,7 +483,6 @@ describe("activityCommand — catch path", () => {
 
 	it("stringifies a non-Error throw", async () => {
 		mockReadLocalActivity.mockImplementation(() => {
-			// biome-ignore lint/style/useThrowOnlyError: exercising the String(err) branch
 			throw "string failure";
 		});
 		mockCallTool.mockResolvedValue({ events: [] });

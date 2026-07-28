@@ -1,6 +1,7 @@
 // Taste checks — opinionated code quality (naming, complexity, design smells).
 // Extracted from generic-checks.ts.
 
+import { nonNull } from "../../lib/non-null.js";
 import {
 	collectFunctionSignature,
 	countTopLevelCommas,
@@ -10,7 +11,6 @@ import {
 	stripComments,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ===========================================
 // Taste Checks — Opinionated Code Quality

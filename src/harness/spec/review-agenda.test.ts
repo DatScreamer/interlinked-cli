@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { extractSpecFacts } from "./extract-facts.js";
 import { SpecLedger } from "./ledger.js";
 import { buildAgenda, coverageGaps, writeReviewAgenda } from "./review-agenda.js";
-import { extractSpecFacts } from "./extract-facts.js";
 
 const never = (): boolean => false;
 const roots: string[] = [];

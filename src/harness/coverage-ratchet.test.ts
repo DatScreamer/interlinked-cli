@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import type { CoverageRatchetConfig } from "./check-policy.js";
 import {
 	baselinePath,
@@ -13,7 +14,6 @@ import {
 	loadCoverageSummary,
 	saveBaseline,
 } from "./coverage-ratchet.js";
-import { nonNull } from "../lib/non-null.js";
 
 const STRICT_CONFIG: CoverageRatchetConfig = {
 	enabled: true,

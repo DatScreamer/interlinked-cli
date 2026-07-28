@@ -9,8 +9,8 @@
 // suppression-file loader (`loadFileSuppressions`, `addSuppressions`, etc.)
 // lives in `../../harness/suppressions.ts`.
 
-import { nonNull } from "../../lib/non-null.js";
 import { stripStringLiterals } from "../../harness/strip-helpers.js";
+import { nonNull } from "../../lib/non-null.js";
 import type { CodeQualityIssue } from "./tool-results-types.js";
 
 /** Public API — consumed by verify submodules and tests. */

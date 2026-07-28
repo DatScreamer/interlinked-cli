@@ -61,8 +61,8 @@ vi.mock("../lib/formatter.js", () => {
 	};
 });
 
-import { workspaceListCommand, workspaceSwitchCommand } from "./workspace.js";
 import { nonNull } from "../lib/non-null.js";
+import { workspaceListCommand, workspaceSwitchCommand } from "./workspace.js";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -405,7 +405,6 @@ describe("workspaceSwitchCommand", () => {
 		mockFetchWorkspaces.mockResolvedValue([{ id: "ws_ok" }]);
 		mockReadLocalConfig.mockReturnValue({ workspace_id: "ws_old" });
 		mockUpdateLocalConfig.mockImplementation(() => {
-			// biome-ignore lint/suspicious/noThrowLiteral: exercising the String(err) branch for a non-Error throwable
 			throw "disk full";
 		});
 

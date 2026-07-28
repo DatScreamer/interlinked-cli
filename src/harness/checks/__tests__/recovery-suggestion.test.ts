@@ -3,12 +3,11 @@
 // of the registry don't silently regress the agent-facing fix language.
 
 import { describe, expect, it } from "vitest";
-
+import type { ToolFailureEvent, TriageResult } from "../../types.js";
 import {
 	listRecoveryKeys,
 	suggestRecovery,
 } from "../recovery-suggestion.js";
-import type { ToolFailureEvent, TriageResult } from "../../types.js";
 
 function makeEvent(overrides: Partial<ToolFailureEvent> = {}): ToolFailureEvent {
 	return {

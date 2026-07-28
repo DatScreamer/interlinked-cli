@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { McpProtocolRecorder } from "./recorder.js";
-import type { McpEventRecord } from "./types.js";
 import type { CollectionRecord } from "../collection/types.js";
 import { nonNull } from "../non-null.js";
+import { McpProtocolRecorder } from "./recorder.js";
+import type { McpEventRecord } from "./types.js";
 
 function makeRecorder(records: McpEventRecord[], clock: { ms: number }): McpProtocolRecorder {
     return new McpProtocolRecorder({

@@ -29,8 +29,8 @@
 // file-level evidence", so a missed block degrades to coarser scoping, never
 // a wrong association.
 
-import { findBlockEnd } from "../taste-checks-shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { findBlockEnd } from "../taste-checks-shared.js";
 
 export interface TestBlock {
 	/** `it`/`test`/`specify` → "test"; `describe`/`suite`/`context` → "suite". */

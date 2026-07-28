@@ -33,6 +33,19 @@ import { join, resolve } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { getHeadCommit, getTrackedFiles } from "./trigram-git.js";
 import {
+	clearDirtyState,
+	dirtyFileCount,
+	incrementalUpdateState,
+	isDirtyState,
+	type MutableIndexView,
+	updateFileInState,
+} from "./trigram-index-mutation.js";
+import {
+	type QueryView,
+	queryCandidatePaths as queryCandidatePathsImpl,
+	queryIndex,
+} from "./trigram-index-query.js";
+import {
 	computeIndexStats,
 	loadIndex,
 	loadIndexMeta,
@@ -48,19 +61,6 @@ import {
 	type PostingList,
 	shouldSkipFile,
 } from "./trigram-primitives.js";
-import {
-	queryCandidatePaths as queryCandidatePathsImpl,
-	queryIndex,
-	type QueryView,
-} from "./trigram-index-query.js";
-import {
-	clearDirtyState,
-	dirtyFileCount,
-	incrementalUpdateState,
-	isDirtyState,
-	type MutableIndexView,
-	updateFileInState,
-} from "./trigram-index-mutation.js";
 
 // Re-export the primitives so existing importers of ./trigram-index.js keep
 // working unchanged (public API is preserved across the decomposition).

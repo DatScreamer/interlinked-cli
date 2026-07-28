@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	containsSecrets,
 	countAsAnyCasts,
@@ -8,7 +9,6 @@ import {
 	formatQualityWarnings,
 	stripStringLiterals,
 } from "../quality-checks.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // The word "any" appears throughout this file as test fixture data for the
 // quality-check functions under test. These are string literals fed to the

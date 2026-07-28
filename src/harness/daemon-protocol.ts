@@ -6,9 +6,9 @@
 // See docs/design/free-cli-architecture.md §"Daemon architecture".
 
 import type { JsonObject } from "../lib/json-types.js";
+import { nonNull } from "../lib/non-null.js";
 import type { HarnessDecision } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
-import { nonNull } from "../lib/non-null.js";
 
 /** Wire-version. Bumped when the envelope breaks compatibility. */
 export const PROTOCOL_VERSION = "1" as const;

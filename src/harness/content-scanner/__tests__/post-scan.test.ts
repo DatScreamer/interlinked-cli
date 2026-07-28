@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../types.js";
 import { compileAllowlist } from "../allowlist.js";
 import { runPostToolScan } from "../post-scan.js";
 import type { ContentScanner, ContentScannerConfig, ScanFinding } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 const NO_ALLOWLIST = compileAllowlist(undefined);
 

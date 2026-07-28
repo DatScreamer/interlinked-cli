@@ -13,8 +13,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { nonNull } from "../../lib/non-null.js";
-import { collectEntryPoints } from "../entry-points.js";
 import type { EntryPoint } from "../entry-points.js";
+import { collectEntryPoints } from "../entry-points.js";
 import { RouteMap } from "../route-map.js";
 
 let workdir: string;

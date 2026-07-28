@@ -27,6 +27,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import {
 	applyEditsToBuffer,
 	countOccurrences,
@@ -40,7 +41,6 @@ import {
 	normalizeManifest,
 	runMultiEdit,
 } from "../multi-edit.js";
-import { nonNull } from "../../lib/non-null.js";
 
 // ───────────────────────────────────────────────
 // Test utilities — refine + return the narrowed result so tests remain

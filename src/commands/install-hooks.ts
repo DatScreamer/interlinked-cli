@@ -13,8 +13,8 @@ import { installHooks, manifestPath } from "../harness/installer.js";
 import { ALL_PRESETS, isKnownMode, type ModeName } from "../harness/modes.js";
 import type { RunnerId } from "../harness/unified-event.js";
 import { resolveHookBinaryPath } from "../lib/hooks.js";
-import { writeMode } from "./mode.js";
 import { nonNull } from "../lib/non-null.js";
+import { writeMode } from "./mode.js";
 
 export interface InstallHooksOptions {
 	runner?: string;

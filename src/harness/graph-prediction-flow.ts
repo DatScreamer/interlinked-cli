@@ -19,21 +19,21 @@
 
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import {
-	classifyCase,
-	type CaseResult,
-} from "./graph-prediction-classifier.js";
+import { buildPredictionOracle } from "./dependency-view.js";
 import {
 	appendPredictionRow,
 	findPredictionRow,
 	type GraphReconciliationRow,
 	type ReconciliationSummary,
 } from "./graph-prediction-cache.js";
+import {
+	type CaseResult,
+	classifyCase,
+} from "./graph-prediction-classifier.js";
 import type { ParsedGraphPrediction } from "./graph-prediction-parser.js";
 import { reconcile, type SeverityResult } from "./graph-prediction-reconcile.js";
-import type { SupermodelGraph } from "./supermodel-graph.js";
-import { buildPredictionOracle } from "./dependency-view.js";
 import type { ProjectGraph } from "./project-graph.js";
+import type { SupermodelGraph } from "./supermodel-graph.js";
 import type { HarnessEvent } from "./types.js";
 
 // ── Shared constants ─────────────────────────────────────────────────────────

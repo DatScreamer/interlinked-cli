@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonObject } from "../../lib/json-types.js";
-import { getExtension, type InlineMatch, isCliFile, isTestFile, JS_TS_EXTS } from "./shared.js";
 import { nonNull } from "../../lib/non-null.js";
+import { getExtension, type InlineMatch, isCliFile, isTestFile, JS_TS_EXTS } from "./shared.js";
 
 /**
  * Read the side-loaded popular-packages JSON. The file lives next to this

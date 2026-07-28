@@ -9,8 +9,8 @@ import {
 	isSoftenedRed,
 	isStaleRed,
 	isSuiteSourcedRed,
-	redCycleMessage,
 	type RedCycleView,
+	redCycleMessage,
 	STALE_RED_AGE_STEPS,
 } from "./behavioral-checks-tdd-red-evidence.js";
 import { ALL_TESTS_SENTINEL } from "./server-tdd-cycle.js";

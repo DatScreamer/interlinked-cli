@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import {
 	__resetCoverageFinalCache,
 	coverageForFile,
 	loadCoverageFinal,
 } from "./coverage-final-reader.js";
-import { nonNull } from "../lib/non-null.js";
 
 // ==================================================================
 // Fixtures

@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-
-import type { SessionTrajectory } from "./types.js";
 import {
 	classifyBashCommandProvenance,
 	recordBashTaintSource,
 } from "./bash-provenance.js";
+import type { SessionTrajectory } from "./types.js";
 
 describe("classifyBashCommandProvenance", () => {
 	describe("fetched_external", () => {

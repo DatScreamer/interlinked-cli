@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../lib/non-null.js";
 import { formatStructureVerifyOutput, formatStructureWarnings } from "./structure-formatter.js";
 import type { StructureFinding } from "./types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 function finding(overrides: Partial<StructureFinding> = {}): StructureFinding {
 	return {

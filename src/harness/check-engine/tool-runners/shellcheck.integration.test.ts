@@ -9,9 +9,9 @@
 
 import type { SpawnSyncReturns } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import type { RunProcessResult } from "../spawn-async.js";
 import type { CheckScope, ToolRunnerInput } from "../types.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 const spawnSyncMock = vi.fn();
 const runProcessAsyncMock = vi.fn();

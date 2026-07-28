@@ -130,6 +130,7 @@ import {
 	shouldSkipTsc,
 } from "../structural-checks.js";
 import { loadFileSuppressions } from "../suppressions.js";
+import { runPerFileChecks } from "./post-tool-file-checks.js";
 import {
 	runBehavioralPhase,
 	runProjectWideSweepPhase,
@@ -138,7 +139,6 @@ import {
 	runShotgunSurgeryPhase,
 	runStructureChecksPhase,
 } from "./post-tool-file-checks-phases.js";
-import { runPerFileChecks } from "./post-tool-file-checks.js";
 import { getGraphForFile } from "./runtime-context.js";
 
 const mExistsSync = existsSync as unknown as Mock;

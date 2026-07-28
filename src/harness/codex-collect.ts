@@ -8,7 +8,7 @@
 // means re-running only appends genuinely new records, so it is safe to call on
 // a timer or after every `codex exec` review.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseCodexRolloutText } from "./codex-rollout.js";

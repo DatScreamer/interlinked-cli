@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { nonNull } from "../../../lib/non-null.js";
 import { ArtifactGraph, makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode } from "../types.js";
 import { checkPublicSymbolCompanions } from "./public-symbol-companions.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 function symbolNode(
 	id: string,

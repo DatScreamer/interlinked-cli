@@ -2,6 +2,7 @@
 // ubs-language-specific.ts during the 1500-line decomposition. Each function
 // returns InlineMatch[]. Ext-gated to .java / C-family extensions.
 
+import { nonNull } from "../../../lib/non-null.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -9,7 +10,6 @@ import {
 	stripCommentsAndStrings,
 } from "../shared.js";
 import { MATCH_LIMIT } from "./_shared.js";
-import { nonNull } from "../../../lib/non-null.js";
 
 /**
  * Row 29: Java `Optional<T>....get()` without an `isPresent()` / `orElse()`

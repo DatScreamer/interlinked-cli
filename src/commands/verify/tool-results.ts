@@ -26,6 +26,7 @@ const validateSuppressionFile = (
 
 import { runVerifyParityChecks } from "../../harness/verify-parity.js";
 import { readSharedConfig } from "../../lib/config.js";
+import { nonNull } from "../../lib/non-null.js";
 import { JS_TS_EXTS } from "./advisory.js";
 import { runPerFileChecks } from "./file-checks.js";
 import {
@@ -34,7 +35,6 @@ import {
 	CQ_RESULT_KEYS,
 	emptyResults,
 } from "./tool-results-types.js";
-import { nonNull } from "../../lib/non-null.js";
 
 /**
  * Public API — consumed by `verify.ts`.

@@ -7,9 +7,9 @@
 // FP fixes (e.g. commit aac4e2a's typeof exemption) into a
 // pluggable layer the harness can reuse for future FP classes.
 
+import { nonNull } from "../../lib/non-null.js";
 import type { InlineMatch } from "../checks/shared.js";
 import { registerVerifyPass } from "./verify-pass.js";
-import { nonNull } from "../../lib/non-null.js";
 
 const FIXTURE_PATH_RE = /(?:^|\/)(?:__fixtures__|fixtures|test-data|testdata)\//;
 
