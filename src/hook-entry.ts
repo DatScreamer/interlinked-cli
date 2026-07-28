@@ -141,9 +141,36 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
  *  writes stdout/stderr, exits with the adapter-decided code. Invoked by
  *  the IIFE at the bottom of the file when run as a script; not part of
  *  the importable surface (consumers should use `runHookEntry`). */
+/**
+ * Claude Code's Stop/SubagentStop re-entrancy contract: when the agent is
+ * already continuing BECAUSE a stop hook fired, the runner sets
+ * `stop_hook_active: true`, and the hook must yield. On a Stop event,
+ * `hookSpecificOutput.additionalContext` is not a note — it is a continue
+ * instruction — so a hook that keeps emitting it re-prompts the model forever.
+ * Observed live (mcp-client-bio, 2026-07-28): "A hook blocked the turn from
+ * ending 9 consecutive times — overriding and ending turn", every turn, until
+ * the runner's cap force-ended it.
+ *
+ * This guard bounds the whole CLASS: whatever a future code path emits on
+ * Stop, it gets exactly one pass — the first Stop of a turn arrives with the
+ * flag unset, so every nudge still surfaces once — and the re-entry pass
+ * yields unconditionally.
+ */
+export function isStopHookReentry(eventName: string, nativeJson: unknown): boolean {
+	if (eventName !== "Stop" && eventName !== "SubagentStop") return false;
+	if (!nativeJson || typeof nativeJson !== "object") return false;
+	// Both casings: runners deliver snake_case OR camelCase for the same field
+	// (this repo's payload-casing map lists this exact pair). Reading one casing
+	// only would silently disable the guard under the other — and the loop this
+	// guard exists to prevent would return for that runner alone.
+	const raw = nativeJson as { stop_hook_active?: unknown; stopHookActive?: unknown };
+	return raw.stop_hook_active === true || raw.stopHookActive === true;
+}
+
 async function mainFromStdin(): Promise<void> {
 	const nativeJson = await readStdinJson();
 	const nativeEventName = argOrEnv("--event") ?? process.env.INTERLINKED_EVENT ?? "PreToolUse";
+	if (isStopHookReentry(nativeEventName, nativeJson)) process.exit(0);
 	const runner = argOrEnv("--runner") ?? process.env.INTERLINKED_RUNNER;
 	const socketPath = argOrEnv("--socket") ?? process.env.INTERLINKED_SOCKET;
 	const result = await runHookEntry({

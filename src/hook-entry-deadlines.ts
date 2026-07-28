@@ -102,7 +102,21 @@ export function isCommitOrPushEvent(event: UnifiedHookEvent): boolean {
  * (220s); other PreToolUse (Read/Grep/plain Bash) answer in ~1ms so keep the
  * snappy 5s legacy ceiling; everything else gets the 60s default.
  */
+/**
+ * UserPromptSubmit ceiling. The 60s default violated this file's own invariant
+ * (client deadline < hook grant) for exactly one event: Claude Code grants the
+ * user-prompt hook 30s, so a slow daemon — heap-spike thrash, or queued behind
+ * a heavy PostToolUse on the single event loop — made the client outwait the
+ * grant and the runner killed the hook ("timed out after 30s — output
+ * discarded") with the USER eating all 30s of keystroke latency. This is the
+ * one hook a human is synchronously waiting on; its work is context injection,
+ * nice-to-have by definition. On timeout the prompt proceeds without it.
+ */
+const USER_PROMPT_TIMEOUT_MS = 3_000;
+const PHASE_USER_PROMPT = "user-prompt";
+
 export function defaultTimeoutForPhase(event: UnifiedHookEvent): number {
+	if (event.phase === PHASE_USER_PROMPT) return USER_PROMPT_TIMEOUT_MS;
 	if (event.phase !== PHASE_PRE_TOOL) return DEFAULT_HOOK_TIMEOUT_MS;
 	if (isCodeEditEvent(event)) return COVERAGE_EDIT_PRE_TOOL_TIMEOUT_MS;
 	if (isCommitOrPushEvent(event)) return COMMIT_PRE_TOOL_TIMEOUT_MS;

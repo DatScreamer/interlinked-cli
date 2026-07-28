@@ -160,8 +160,16 @@ export function buildPatternRescanWarnings(
 			const list = unaddressed
 				.map((f) => `  ${f.checkId}:${f.line} — ${f.text}`)
 				.join("\n");
+			// Provenance honesty: this is a WHOLE-FILE scan of files the session
+			// touched, so findings may predate the agent's edits. The old wording
+			// ("you wrote or touched this turn") read as an authorship claim — a
+			// live report (2026-07-28) showed an agent spending its final message
+			// disclaiming findings its one-line edit never introduced. Repo policy
+			// still asks for touched files to be left clean
+			// ([[feedback_fix_pre_existing_in_touched_files]]); the message now
+			// states which claim it is actually making.
 			warnings.push(
-				`[interlinked:stop-rescan] ${file} has ${unaddressed.length} unaddressed finding(s) you wrote or touched this turn:\n${list}\nFix before continuing, or add \`// interlinked: defer <check-id> -- <reason>\` (or \`# ...\` in Python) to each line to acknowledge.`,
+				`[interlinked:stop-rescan] ${file} — ${unaddressed.length} open finding(s) in this file you touched this turn (whole-file scan; some may predate your edits):\n${list}\nFix them (repo policy: leave touched files clean), or add \`// interlinked: defer <check-id> -- <reason>\` (or \`# ...\` in Python) to each line to acknowledge.`,
 			);
 		}
 		if (deferred.length > 0) {

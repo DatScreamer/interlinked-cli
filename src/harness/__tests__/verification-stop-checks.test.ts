@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoverageObligation } from "../coverage-obligation-ledger.js";
 import {
@@ -894,7 +894,28 @@ describe("readDeferredCoverageObligations", () => {
 		return JSON.stringify(full);
 	}
 
+	/** Obligations for MISSING files are reconciled away (a deleted file can
+	 *  never be covered, and one nagged a session forever — 2026-07-28), so
+	 *  every fixture obligation needs its file to actually exist. */
+	function touchFiles(files: string[]): void {
+		for (const f of files) {
+			mkdirSync(join(root, dirname(f)), { recursive: true });
+			writeFileSync(join(root, f), "export {};\n");
+		}
+	}
+
 	function writeLedger(lines: string[]): void {
+		// Every file an obligation names must exist, or the reconciliation filter
+		// (deleted ⇒ dropped) removes it before the assertion under test runs.
+		for (const line of lines) {
+			try {
+				const f = (JSON.parse(line) as { file?: string }).file;
+				if (f) touchFiles([f]);
+			} catch (err) {
+				// Torn-line fixtures are deliberate inputs to the malformed-JSONL test.
+				void err;
+			}
+		}
 		const dir = join(root, ".interlinked");
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "coverage-obligations.jsonl"), `${lines.join("\n")}\n`, "utf-8");
@@ -974,6 +995,15 @@ describe("readDeferredCoverageObligations", () => {
 			discharge("other", "src/a.ts"),
 		]);
 		expect(readDeferredCoverageObligations(root, "s1")).toEqual([]);
+	});
+
+	it("drops an obligation whose file was deleted — it can never be discharged", () => {
+		// Live failure this pins: a created-then-deleted file kept the deferred-
+		// coverage advisory alive for a whole session (and fed the Stop loop).
+		writeLedger([row({ session_id: "s1", file: "src/gone.ts" }), row({ session_id: "s1", file: "src/kept.ts" })]);
+		rmSync(join(root, "src/gone.ts"));
+		const files = readDeferredCoverageObligations(root, "s1").map((o) => o.file);
+		expect(files).toEqual(["src/kept.ts"]);
 	});
 
 	it("still scopes OBLIGATIONS to the requested session", () => {

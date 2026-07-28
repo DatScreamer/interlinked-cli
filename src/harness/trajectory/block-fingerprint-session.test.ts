@@ -193,3 +193,46 @@ describe("noteWorkaroundSignal + formatWorkaroundStopLine", () => {
 		expect(line).toContain("coverage_gate");
 	});
 });
+
+describe("channel awareness — evasion vs remediation", () => {
+	const REFUSED = "try { risky() } catch (e) {}";
+	const arm = (channel: "write" | "command") => {
+		const s = fresh();
+		recordBlockFingerprint(s, { ruleId: "empty_catch", content: REFUSED, target: "src/a.ts", atMs: T0, channel });
+		return s;
+	};
+
+	it("flags refused WRITE content that comes back through a bash command", () => {
+		// The real evasion shape: the bash channel does not run the write gate.
+		const signal = detectWorkaround(arm("write"), { content: REFUSED, command: REFUSED, channel: "command" }, T0 + 1000);
+		expect(signal?.detector).toBe("same-content-resurfacing");
+	});
+
+	it("flags refused COMMAND content that comes back as a file write", () => {
+		const signal = detectWorkaround(arm("command"), { content: REFUSED, channel: "write" }, T0 + 1000);
+		expect(signal?.detector).toBe("same-content-resurfacing");
+	});
+
+	it("does NOT flag a same-channel retry — that is remediation, not evasion", () => {
+		// This path is only reached when the gate ALLOWED the retry, which means
+		// the agent fixed the objection. Measured: 11 of 11 signals in one session
+		// were this, e.g. re-applying an edit after adding the missing import.
+		expect(detectWorkaround(arm("write"), { content: REFUSED, channel: "write" }, T0 + 1000)).toBeNull();
+	});
+
+	it("does NOT flag a same-channel bash retry either", () => {
+		expect(
+			detectWorkaround(arm("command"), { content: REFUSED, command: REFUSED, channel: "command" }, T0 + 1000),
+		).toBeNull();
+	});
+
+	it("still flags when the armed fingerprint predates channel tracking", () => {
+		// An undefined channel must not silently disable the detector for
+		// fingerprints persisted by an older daemon.
+		const s = fresh();
+		recordBlockFingerprint(s, { ruleId: "empty_catch", content: REFUSED, target: "src/a.ts", atMs: T0 });
+		expect(detectWorkaround(s, { content: REFUSED, channel: "write" }, T0 + 1000)?.detector).toBe(
+			"same-content-resurfacing",
+		);
+	});
+});

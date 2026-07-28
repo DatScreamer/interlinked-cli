@@ -208,17 +208,33 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeAdapterOptions = {}): Ru
 				};
 			}
 			// allow.
-			// Claude Code drops PreToolUse stderr from the model's view
-			// (PostToolUse stderr IS surfaced as additional context, but
-			// PreToolUse on `allow` is not). Route PreToolUse warnings through
-			// hookSpecificOutput.additionalContext — supported by the spec at
-			// PreToolUse — so the agent actually sees them on the same turn
-			// (alongside the tool result). PostToolUse keeps the stderr-only
-			// path because the runtime already echoes it; duplicating would
-			// double-display.
+			// Claude Code feeds hook stderr to the model on exit code 2 (a block),
+			// NOT on exit 0. So on an allow, stderr alone reaches nobody — for
+			// EITHER phase. Both therefore route warnings through
+			// hookSpecificOutput.additionalContext, which is model-visible on the
+			// same turn as the tool result.
+			//
+			// This used to be PreToolUse-only, on the belief that "the runtime
+			// already echoes PostToolUse stderr, duplicating would double-display".
+			// Measured false: a PostToolUse warning the daemon composed and wrote
+			// to activity.jsonl never reached the agent. The consequence was large
+			// and silent — every non-blocking PostToolUse finding the harness
+			// produced was invisible, so advisory findings appeared only when some
+			// unrelated error happened to block in the same turn. stderr is kept
+			// as well, for the exit-2 path and for humans reading a terminal.
+			// DELIBERATE Stop/SubagentStop semantics (do not "fix" one-sidedly):
+			// on a Stop event, additionalContext is not a note — the runner treats
+			// it as a reason to CONTINUE the turn. Left unbounded that looped
+			// forever (observed live 2026-07-28: "blocked the turn from ending 9
+			// consecutive times", every turn). The loop is bounded UPSTREAM by the
+			// stop_hook_active re-entrancy guard in hook-entry.ts, which yields on
+			// the second and later passes — so a Stop nudge extends the turn AT
+			// MOST once per new information, which is exactly the visibility the
+			// nudges exist to provide. Removing the context here instead would make
+			// every Stop-time finding model-invisible.
 			const contextParts: string[] = [];
 			if (decision.additional_context) contextParts.push(decision.additional_context);
-			if (isPre && stderr) contextParts.push(stderr);
+			if (stderr) contextParts.push(stderr);
 			if (contextParts.length > 0) {
 				return {
 					stdout: JSON.stringify({

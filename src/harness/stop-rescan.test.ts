@@ -236,7 +236,10 @@ describe("buildPatternRescanWarnings", () => {
 		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
 		expect(warnings).toHaveLength(1);
 		const w = warnings[0] ?? "";
-		expect(w).toContain("[interlinked:stop-rescan] x.ts has 2 unaddressed finding(s)");
+		expect(w).toContain("[interlinked:stop-rescan] x.ts — 2 open finding(s)");
+		// Provenance honesty: whole-file scan, so the message must not claim the
+		// agent AUTHORED the findings — only that the file was touched.
+		expect(w).toContain("some may predate your edits");
 		expect(w).toContain("  eval_usage:4 — eval(a)");
 		expect(w).toContain("  eval_usage:9 — eval(b)");
 		expect(w).toContain("// interlinked: defer <check-id>");
@@ -285,7 +288,7 @@ describe("buildPatternRescanWarnings", () => {
 		]);
 		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
 		expect(warnings).toHaveLength(2);
-		expect(warnings[0]).toContain("1 unaddressed finding(s)");
+		expect(warnings[0]).toContain("1 open finding(s)");
 		expect(warnings[0]).toContain("  eval_usage:4 — eval(live)");
 		expect(warnings[1]).toContain("1 acknowledged-deferred finding(s)");
 		expect(warnings[1]).toContain("  eval_usage:7 — ack");
@@ -306,7 +309,7 @@ describe("buildPatternRescanWarnings", () => {
 		);
 		// One unaddressed block per file (two findings each).
 		expect(warnings).toHaveLength(2);
-		expect(warnings.some((w) => w.includes("a.ts has 2 unaddressed"))).toBe(true);
-		expect(warnings.some((w) => w.includes("b.ts has 2 unaddressed"))).toBe(true);
+		expect(warnings.some((w) => w.includes("a.ts — 2 open finding(s)"))).toBe(true);
+		expect(warnings.some((w) => w.includes("b.ts — 2 open finding(s)"))).toBe(true);
 	});
 });

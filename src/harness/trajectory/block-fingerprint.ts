@@ -29,6 +29,19 @@ export interface BlockFingerprint {
 	target: string | null;
 	/** ms epoch when the block fired (the staleness clock). */
 	atMs: number;
+	/**
+	 * Which channel the refusal happened on — "write" for Write/Edit/MultiEdit,
+	 * "command" for Bash and friends.
+	 *
+	 * Evasion means the content came back through a channel that does NOT run the
+	 * check that refused it (a blocked Write reappearing as a bash heredoc). A
+	 * retry on the SAME channel cannot evade anything: it faces the same gate, and
+	 * it is only observed here when that gate ALLOWED it — i.e. after the agent
+	 * fixed what the block complained about. Treating that as a workaround
+	 * punished the correct response to a block; measured on this repo, 11 of 11
+	 * signals in one session were same-channel remediation.
+	 */
+	channel?: "write" | "command" | undefined;
 }
 
 /** Default arming window: a fingerprint older than this is pruned, so a stale
@@ -55,12 +68,14 @@ export function fingerprintBlock(input: {
 	content: string;
 	target?: string | null;
 	atMs: number;
+	channel?: "write" | "command" | undefined;
 }): BlockFingerprint {
 	return {
 		ruleId: input.ruleId,
 		shingles: shingleSet(tokenize(input.content)),
 		target: input.target ? input.target.replace(/\\/g, "/") : null,
 		atMs: input.atMs,
+		channel: input.channel,
 	};
 }
 

@@ -38,17 +38,30 @@ export interface WorkaroundCandidate {
 	content?: string | null | undefined;
 	command?: string | null | undefined;
 	target?: string | null | undefined;
+	/** Which channel this action arrives on — see BlockFingerprint.channel. */
+	channel?: "write" | "command" | undefined;
 }
 
 /** Record a refused action into the session's armed fingerprint set (pruning
  *  expired ones first). Called when a PreToolUse block is finalized. */
 export function recordBlockFingerprint(
 	session: SessionTrajectory,
-	input: { ruleId: string; content: string; target?: string | null; atMs: number },
+	input: { ruleId: string; content: string; target?: string | null; atMs: number; channel?: "write" | "command" | undefined },
 ): void {
 	const armed = pruneExpired(session.block_fingerprints ?? [], input.atMs);
 	armed.push(fingerprintBlock(input));
 	session.block_fingerprints = armed;
+}
+
+/**
+ * Both channels known AND equal.
+ *
+ * An UNKNOWN channel must never suppress the signal — a fingerprint persisted by
+ * an older daemon has none, and defaulting that to "same" would silently switch
+ * the detector off for every pre-upgrade session. Unknown fails toward reporting.
+ */
+function sameKnownChannel(a: string | undefined, b: string | undefined): boolean {
+	return a !== undefined && b !== undefined && a === b;
 }
 
 /**
@@ -65,8 +78,13 @@ export function detectWorkaround(
 	const armed = pruneExpired(session.block_fingerprints ?? [], nowMs);
 	if (armed.length === 0) return null;
 
+	// Only a CHANNEL CHANGE can evade a gate. Same-channel resurfacing reaches
+	// this point solely because the gate allowed it, which means the agent fixed
+	// the objection rather than routed around it.
 	const byContent = candidate.content ? sameContentResurfacing(armed, candidate.content) : null;
-	if (byContent) return { detector: "same-content-resurfacing", ruleId: byContent.ruleId };
+	if (byContent && !sameKnownChannel(byContent.channel, candidate.channel)) {
+		return { detector: "same-content-resurfacing", ruleId: byContent.ruleId };
+	}
 
 	const byTarget = sameTargetDifferentChannel(armed, candidate.target);
 	if (byTarget) return { detector: "same-target-different-channel", ruleId: byTarget.ruleId };
@@ -129,9 +147,10 @@ function candidateFromEvent(event: HarnessEvent, cwd: string): WorkaroundCandida
 		return {
 			content: resolveProposedContent(abs, input),
 			target: relative(cwd, abs).replace(/\\/g, "/"),
+			channel: "write",
 		};
 	}
-	return { content: command, command, target: null };
+	return { content: command, command, target: null, channel: "command" };
 }
 
 /** Hot-path fast exit: a non-block event with nothing armed has nothing to
@@ -194,6 +213,7 @@ export function observeBlockWorkaround(
 			content: candidate.content ?? candidate.command ?? "",
 			target: candidate.target ?? null,
 			atMs: nowMs,
+			channel: candidate.channel,
 		});
 		persistNow(session, cwd, event.session_id);
 		return null;

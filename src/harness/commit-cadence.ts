@@ -199,16 +199,18 @@ export function formatStopNudge(opts: FormatStopNudgeOpts): string | null {
 		const tk = formatTokenK(tokens);
 		return (
 			`[interlinked:commit-cadence] Stopping with ${opts.uncommittedNonDocCount} uncommitted code-file edit(s)${docNote}, ` +
-			`very long session (~${tk} tokens). Commit now — your context window is degrading. ` +
-			"Bundle by concern: `git status` to review, then `git add <files> && git commit -m '<concern>'`. " +
-			"Don't push."
+			`very long session (~${tk} tokens). Your context window is degrading, so this work is ` +
+			"best captured soon. Committing is the USER's call — surface it to them with a " +
+			"suggested bundling (`git status` to review, then group by concern) rather than " +
+			"running `git commit` to clear this notice. Don't push."
 		);
 	}
 	if (tokens !== undefined && tokens > opts.tokenBandLow) {
 		const tk = formatTokenK(tokens);
 		return (
 			`[interlinked:commit-cadence] Stopping with ${opts.uncommittedNonDocCount} uncommitted code-file edit(s)${docNote}, ` +
-			`long session (~${tk} tokens). Strongly recommend committing now while context is fresh. ` +
+			`long session (~${tk} tokens). Worth surfacing to the user as a good point to commit ` +
+			"while context is fresh — their call, not an action to take unprompted. " +
 			"Bundle by concern: `git status` to review, then `git add <files> && git commit -m '<concern>'`. " +
 			"Don't push."
 		);

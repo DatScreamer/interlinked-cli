@@ -300,6 +300,24 @@ describe("lifecycle trajectory write - path traversal regression", () => {
 // coverage in stop-rescan.test.ts; this assertion pins the WIRING so a
 // future refactor that drops the call from the Stop path fails loudly.
 
+// The repeat-suppressor must sit at the OUTERMOST assembler. Wired into one
+// nudge family instead, every OTHER family keeps looping — which is exactly the
+// bug that shipped: the deferred-coverage nudge went quiet while the trajectory
+// nudge kept re-firing verbatim on a session that was blocked on a human.
+describe("Stop-nudge repeat suppression wiring", () => {
+	const source = readFileSync(LIFECYCLE_TS, "utf-8");
+
+	it("imports suppressRepeatedNudges from the throttle", () => {
+		expect(source).toMatch(
+			/import\s*\{[^}]*\bsuppressRepeatedNudges\b[^}]*\}\s*from\s*["']\.\/stop-nudge-throttle\.js["']/,
+		);
+	});
+
+	it("applies it to the RETURN of buildStopWarnings, so every family is covered", () => {
+		expect(source).toMatch(/return suppressRepeatedNudges\(/);
+	});
+});
+
 describe("Stop-event pattern rescan wiring", () => {
 	const source = readFileSync(LIFECYCLE_TS, "utf-8");
 

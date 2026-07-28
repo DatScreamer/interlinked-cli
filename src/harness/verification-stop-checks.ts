@@ -22,7 +22,8 @@
 // touches the filesystem next to a pure formatter), kept here so the Stop
 // branch's gating in lifecycle-stop-warnings.ts can mock one module.
 
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, resolve as resolvePath } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import {
 	type CoverageObligation,
@@ -368,7 +369,16 @@ export function readDeferredCoverageObligations(
 	projectRoot: string,
 	sessionId: string,
 ): CoverageObligation[] {
-	return readOpenCoverageObligations(projectRoot, sessionId);
+	// Reconcile against reality before nudging: an obligation for a file that no
+	// longer EXISTS can never be discharged and would nag forever. Observed live
+	// (mcp-client-bio, 2026-07-28): a created-then-deleted file kept the
+	// deferred-coverage advisory alive for the rest of the session, and — before
+	// the stop_hook_active guard — fed a Stop loop the agent could not end.
+	// (The sibling gap, obligations recorded for paths OUTSIDE the coverage
+	// include-globs, needs the coverage config and is not handled here.)
+	return readOpenCoverageObligations(projectRoot, sessionId).filter((o) =>
+		existsSync(resolvePath(projectRoot, o.file)),
+	);
 }
 
 export interface FormatDeferredCoverageOpts {
@@ -404,10 +414,11 @@ export function formatDeferredCoverageWarning(opts: FormatDeferredCoverageOpts):
 		"coverage check(s) this session that were never enforced — the per-edit coverage gate " +
 		"deferred them (suite runtime over budget) and only the commit gate enforces them:\n" +
 		`${lines.join("\n")}${more}\n` +
-		"Run the full suite with coverage (a green run discharges the obligations its report " +
-		"measures), or commit (the commit gate enforces the deferred obligations), before " +
-		"claiming done. This is a reminder, not a block — a deferred check is unverified " +
-		"coverage, not a known failure."
+		"Run the full suite with coverage — a green run discharges the obligations its report " +
+		"measures. (Committing also discharges them, via the commit gate, but that is the " +
+		"user's call to make, not something to do in order to clear this notice.) This is a " +
+		"reminder, not a block — a deferred check is unverified coverage, not a known failure. " +
+		"If you are waiting on the user, say so and stop; this notice will not repeat."
 	);
 }
 

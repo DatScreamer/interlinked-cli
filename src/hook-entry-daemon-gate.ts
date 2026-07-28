@@ -35,6 +35,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeLastExit, readRecentDaemonEvents } from "./harness/daemon-ledger.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
 import { readGuardDisable } from "./lib/guard-state.js";
 
@@ -175,12 +176,25 @@ function daemonCutOut(interlinkedDir: string, pid: number | null): boolean {
 
 /** The block message; `pidPresent` distinguishes a crash (stale pid) from a
  *  clean-stop/idle on a configured repo, for an accurate diagnosis. */
-function daemonDownBlockMessage(pidPresent: boolean): string {
+// `root` is REQUIRED on purpose: this landed as an optional param first, the
+// caller edit was dropped in a blocked coordinated refactor, and the result
+// compiled cleanly with the context permanently empty — caught only because
+// the live probe showed no Context line. Optional params make half-landed
+// refactors silent; required ones make them compile errors.
+function daemonDownBlockMessage(pidPresent: boolean, root: string): string {
 	const why = pidPresent
 		? "(harness pid present, no live daemon)"
 		: "(configured here, but no live daemon)";
+	// The lifecycle ledger turns "unreachable" into a cause. One session
+	// (2026-07-28) hit this block a dozen times with four DIFFERENT causes —
+	// build-refresh handovers, memory hangs, orphan pile-up, rss-ceiling
+	// recycles — and each was re-diagnosed from scratch because this message
+	// could not say why the daemon left. A planned handover reads very
+	// differently from a crash, and the reader's next move differs too.
+	const lastExit = describeLastExit(readRecentDaemonEvents(root), Date.now());
+	const context = lastExit ? ` Context: ${lastExit}.` : "";
 	return (
-		`BLOCKED: the interlinked harness should be guarding this project but is unreachable ${why}. ` +
+		`BLOCKED: the interlinked harness should be guarding this project but is unreachable ${why}.${context} ` +
 		"The guard layer has cut out mid-session, so tool calls are blocked to avoid running " +
 		"unguarded. It is being auto-restarted — retry your call in a moment, or run " +
 		"`interlinked harness start`. To intentionally run this project unguarded, use " +
@@ -235,7 +249,7 @@ export function coldDaemonUnreachableBlockReason(
 	// a present-but-dead pid still feeds the crash block.
 	const pid = discoverDaemonPid(dir);
 	if (!daemonCutOut(dir, pid)) return null;
-	return daemonDownBlockMessage(pid !== null);
+	return daemonDownBlockMessage(pid !== null, root);
 }
 
 // ── Self-heal ───────────────────────────────────────────────────────────────

@@ -196,6 +196,9 @@ export function buildVerificationStopWarnings(
 	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
 	pushIfNotNull(warnings, checkSpecDrift(ctx, session));
 	pushIfNotNull(warnings, checkReviewFindings(ctx));
+	// Repeat-suppression is applied by the OUTERMOST assembler
+	// (`buildStopWarnings`), so it covers every nudge family — commit-cadence,
+	// edit-mechanics, trajectory, sequence findings — not just this one.
 	return warnings;
 }
 

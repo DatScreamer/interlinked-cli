@@ -83,6 +83,7 @@ import { runSessionEndJobs, runSessionEndResourcePlan } from "./session-end-batc
 import { writeSessionEndEvidence } from "./session-end-evidence.js";
 import { runSessionEndHeavyJobs } from "./session-end-heavy-jobs.js";
 import { readHeavyReports } from "./session-start-heavy-reports.js";
+import { suppressRepeatedNudges } from "./stop-nudge-throttle.js";
 import { peekTrajectoryState } from "./trajectory-shadow.js";
 
 // Re-exported so `import { resolveParentSessionId } from "./lifecycle-events.js"`
@@ -457,7 +458,14 @@ function buildStopWarnings(
 		const reworkNudge = formatSessionReworkNudge(sessionReworkSummary(trajectoryState));
 		if (reworkNudge !== null) warnings.push(reworkNudge);
 	}
-	return warnings;
+	// Say each distinct nudge ONCE per session. A Stop reflection that repeats
+	// verbatim with nothing changed is a loop, not a reminder — and it trapped a
+	// real install: the agent was waiting on a HUMAN decision, so no nudge could
+	// advance it, and every turn re-fired the identical text until the user
+	// interrupted. Applied here, at the outermost assembler, so it covers every
+	// nudge family rather than one. Each nudge renders its own state into its
+	// text, so genuine change reads as different text and speaks again.
+	return suppressRepeatedNudges({ projectRoot: ctx.cwd, sessionId: event.session_id ?? "unknown" }, warnings);
 }
 
 // persistSessionTrajectory + cleanupSessionState moved VERBATIM to

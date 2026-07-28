@@ -241,7 +241,14 @@ describe("Claude Code encodeDecision", () => {
 		});
 	});
 
-	it("PostToolUse: warnings stay stderr-only — runtime already echoes them", () => {
+	// This previously asserted stderr-only, on the belief that the runtime echoes
+	// PostToolUse stderr to the model. It does not: Claude Code feeds hook stderr
+	// to the model on exit code 2 (a block), NOT on exit 0. Measured directly —
+	// a PostToolUse warning the daemon composed and logged to activity.jsonl never
+	// reached the agent, which is why advisory findings only ever appeared
+	// alongside some OTHER blocking error. Every non-blocking PostToolUse finding
+	// the harness produced was invisible.
+	it("PostToolUse: routes warnings into additionalContext so the agent sees them", () => {
 		const postEvent = adapter.parseHookInput(
 			{ session_id: "s", cwd: "/repo", tool_name: "Edit", tool_input: {} },
 			"PostToolUse",
@@ -250,8 +257,18 @@ describe("Claude Code encodeDecision", () => {
 			{ decision: "allow", warnings: ["w1"] },
 			postEvent,
 		);
-		expect(out.stdout).toBeUndefined();
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "w1" },
+		});
 		expect(out.stderr).toBe("w1");
+	});
+
+	it("PostToolUse with no warnings: still no stdout", () => {
+		const postEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Edit", tool_input: {} },
+			"PostToolUse",
+		);
+		expect(adapter.encodeDecision({ decision: "allow" }, postEvent).stdout).toBeUndefined();
 	});
 
 	it("PreToolUse with no warnings + no additional_context: no stdout", () => {
