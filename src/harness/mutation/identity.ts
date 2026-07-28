@@ -11,6 +11,8 @@
 // derivation returns null so callers degrade rather than crash. Loaded
 // synchronously via createRequire; the self-contained hook never imports this.
 
+// Stable mutant identity: the key that lets a manifest compare runs over time,
+// across reorderings, and across unrelated edits made elsewhere in that file.
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { extname } from "node:path";
@@ -36,6 +38,10 @@ export function mutationIdentityAvailable(): boolean {
 	return loadTs() !== null;
 }
 
+/** 16-hex-char digest — short enough to read in a report, wide enough that a
+ *  collision across one file's mutants is not a practical concern. */
+/** 16 hex chars — short enough to read in a report, wide enough that a collision
+ *  within one file's mutant set is not a practical concern. */
 function sha16(parts: string[]): StableId {
 	return createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
 }

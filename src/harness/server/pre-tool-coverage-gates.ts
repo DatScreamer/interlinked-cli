@@ -24,7 +24,7 @@
 // (each underlying check fails open).
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import {
 	extractApplyPatchRaw,
 	looksLikeApplyPatch,
@@ -35,8 +35,11 @@ import { noteWanderBlockDecision } from "../debt-evasion.js";
 import { type DependencyView, resolveDependencyView } from "../dependency-view.js";
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
+import type { MutationRunner, PerEditMutationConfig } from "../mutation/gate.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
 import { emptyManifest, loadManifest, makeManifestPersister } from "../mutation/manifest.js";
+import { overlayHash, pendingRegistry } from "../mutation/pending-registry.js";
+import { recordPending } from "../mutation/pending-runs.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 
@@ -53,7 +56,11 @@ import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
  */
 function editedFileForEvent(event: HarnessEvent): string | undefined {
 	const input = event.tool_input ?? {};
-	const named = (input.file_path as string) || (input.path as string) || "";
+	// tool_input crosses a process boundary, so its field types are a claim, not
+	// a guarantee. Asserting `as string` here made a non-string payload flow on
+	// as a "string" and fail somewhere further down, where the cause is invisible.
+	const fromFilePath = typeof input.file_path === "string" ? input.file_path : "";
+	const named = fromFilePath !== "" ? fromFilePath : typeof input.path === "string" ? input.path : "";
 	if (named) return named;
 	const raw = extractApplyPatchRaw(input);
 	if (!raw || !looksLikeApplyPatch(raw)) return undefined;
@@ -204,6 +211,33 @@ const MUTATION_PLACEHOLDER_META = {
  * runner is wired, so an opted-in repo honestly gets `[mutation:not-measured]`
  * rather than a forged clean pass. Never throws (the gate fails open internally).
  */
+/**
+ * Build the mutation runner from config.
+ *
+ * One endpoint ⇒ the plain runner, unchanged. Several ⇒ a sharded runner that
+ * partitions the file's line span across them and measures concurrently, which
+ * is what lets a fixed per-edit budget cover more mutants. Degradation is
+ * handled inside the sharded runner: an unreachable endpoint costs its slice,
+ * not the whole measurement, and a total failure throws so the gate reports
+ * honest not-measured rather than a clean pass it never earned.
+ *
+ * Lazy dynamic imports keep all of this off the default-off hot path.
+ */
+async function buildMutationRunner(cfg: PerEditMutationConfig): Promise<MutationRunner | null> {
+	const urls = [cfg.runner_url, ...(cfg.runner_urls ?? [])].filter(
+		(u): u is string => typeof u === "string" && u.length > 0,
+	);
+	if (urls.length === 0) return null;
+	const { createCloudMutationRunner } = await import("../mutation/cloud-runner.js");
+	const timeoutMs = cfg.budget_ms ?? 25_000;
+	const runners = urls.map((url) =>
+		createCloudMutationRunner({ url, token: cfg.token, timeoutMs }, (u, init) => fetch(u, init)),
+	);
+	if (runners.length === 1) return runners[0] ?? null;
+	const { createShardedMutationRunner } = await import("../mutation/sharded-runner.js");
+	return createShardedMutationRunner(runners);
+}
+
 export async function runMutationWriteGate(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -214,14 +248,7 @@ export async function runMutationWriteGate(
 	if (!cfg?.enabled) return null; // fast path: default OFF
 	const interlinkedDir = resolve(ctx.cwd, ".interlinked");
 	const baseManifest = loadManifest(interlinkedDir) ?? emptyManifest(MUTATION_PLACEHOLDER_META);
-	// Wire the cloud Sandbox runner when a URL is configured; a lazy dynamic import
-	// keeps it off the default-off hot path. Absent URL → null → honest not-measured.
-	const runner = cfg.runner_url
-		? (await import("../mutation/cloud-runner.js")).createCloudMutationRunner(
-				{ url: cfg.runner_url, token: cfg.token, timeoutMs: cfg.budget_ms ?? 25_000 },
-				(u, init) => fetch(u, init),
-			)
-		: null;
+	const runner = await buildMutationRunner(cfg);
 	const decision = await runPerEditMutationGate({
 		toolName: event.tool_name ?? "",
 		toolInput: event.tool_input,
@@ -232,6 +259,24 @@ export async function runMutationWriteGate(
 		// Measured-clean passes persist the refreshed manifest + a receipt line
 		// (spec §4/§12); the gate itself guarantees dirty/unmeasured runs never do.
 		persist: makeManifestPersister(interlinkedDir),
+		// A run that outlives the budget keeps computing on the runner. Recording
+		// its handles here is what lets the PostToolUse window claim work this
+		// window paid for — without it the engine's output is simply discarded.
+		onPending: (file, overlayContent, pending) => {
+			const now = Date.now();
+			const store = pendingRegistry(now);
+			const hash = overlayHash(overlayContent);
+			// Key on the REPO-RELATIVE path. The gate hands the runner absolute
+			// paths, but the PostToolUse window derives its key from the edited
+			// file's relative path — so recording the absolute form made the two
+			// windows key on different strings and the harvest never matched
+			// anything. Silent: an unmatched claim is indistinguishable from
+			// "nothing was pending".
+			const key = relative(ctx.cwd, resolve(ctx.cwd, file));
+			for (const p of pending) {
+				recordPending(store, { file: key, overlayHash: hash, jobId: p.jobId, runnerUrl: p.runnerUrl, startedAt: now });
+			}
+		},
 		at: new Date().toISOString(),
 	});
 	if (!decision) return null;

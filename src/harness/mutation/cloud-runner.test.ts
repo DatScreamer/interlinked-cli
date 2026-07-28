@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { type CloudRunnerConfig, createCloudMutationRunner, type FetchLike, type FetchResponse } from "./cloud-runner.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	type CloudRunnerConfig,
+	createCloudMutationRunner,
+	type FetchLike,
+	type FetchResponse,MutationNotMeasurableError, 
+	MutationRunPendingError } from "./cloud-runner.js";
 
 const SOURCE = "function f(x){ return x > 0; }";
 const REPORT = {
@@ -27,6 +32,57 @@ function okFetch(body: unknown): FetchLike {
 }
 
 const CFG: CloudRunnerConfig = { url: "https://worker", timeoutMs: 1000 };
+
+describe("createCloudMutationRunner — budget expiry yields a harvestable handle", () => {
+	it("P: throws MutationRunPendingError when the budget expires, not a generic error", async () => {
+		// The engine keeps working after we give up, and the runner retains the
+		// report under our job id — so expiry must be distinguishable from failure.
+		const hang: FetchLike = (_u, init) =>
+			new Promise((_res, rej) => {
+				init.signal.addEventListener("abort", () => rej(new Error("aborted")));
+			});
+		const runner = createCloudMutationRunner({ url: "https://worker", timeoutMs: 10 }, hang);
+		await expect(runner.run("src/f.ts", SOURCE)).rejects.toBeInstanceOf(MutationRunPendingError);
+	});
+
+	it("P: the pending error carries the job id and the runner it is held on", async () => {
+		const hang: FetchLike = (_u, init) =>
+			new Promise((_res, rej) => {
+				init.signal.addEventListener("abort", () => rej(new Error("aborted")));
+			});
+		const runner = createCloudMutationRunner({ url: "https://worker-7", timeoutMs: 10 }, hang);
+		const err = await runner.run("src/f.ts", SOURCE).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(MutationRunPendingError);
+		expect((err as MutationRunPendingError).runnerUrl).toBe("https://worker-7");
+		expect((err as MutationRunPendingError).jobId).not.toHaveLength(0);
+	});
+
+	it("P: sends a client-minted job_id so a timed-out caller can still claim it", async () => {
+		let sent: Record<string, unknown> = {};
+		const capture: FetchLike = (_u, init) => {
+			sent = JSON.parse(init.body) as Record<string, unknown>;
+			return Promise.resolve(resp(REPORT));
+		};
+		await createCloudMutationRunner(CFG, capture).run("src/f.ts", SOURCE);
+		expect(typeof sent.job_id).toBe("string");
+		expect(String(sent.job_id).length).toBeGreaterThan(0);
+	});
+
+	it("N: a NON-timeout failure stays a plain error, never a pending handle", async () => {
+		// A 500 means the runner is broken; claiming a job later would hang forever.
+		const boom: FetchLike = () => Promise.resolve(resp({}, false, 500));
+		const err = await createCloudMutationRunner(CFG, boom)
+			.run("src/f.ts", SOURCE)
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(Error);
+		expect(err).not.toBeInstanceOf(MutationRunPendingError);
+	});
+
+	it("N: a successful run inside budget does not produce a pending handle", async () => {
+		const out = await createCloudMutationRunner(CFG, okFetch(REPORT)).run("src/f.ts", SOURCE);
+		expect(out.mutants).toHaveLength(1);
+	});
+});
 
 describe("createCloudMutationRunner", () => {
 	it("is available only when a URL is configured", () => {
@@ -100,5 +156,40 @@ describe("createCloudMutationRunner", () => {
 		};
 		await createCloudMutationRunner(CFG, spy).run("src/f.ts", "SRC");
 		expect(JSON.parse(body ?? "{}")).not.toHaveProperty("overlays");
+	});
+});
+
+function jsonRunner(body: unknown) {
+	const fetchImpl = vi.fn(async () => ({
+		ok: true,
+		status: 200,
+		json: async () => body,
+	}));
+	// SAFETY: the mock implements exactly the {ok,status,json} shape FetchLike needs;
+	// vi.fn() cannot express that structurally without restating the full DOM type.
+	return createCloudMutationRunner({ url: "http://runner/", timeoutMs: 500 }, fetchImpl as never);
+}
+
+describe("MutationNotMeasurableError — 'nothing to measure' is not 'runner broke'", () => {
+	it("is raised when the runner reports a structured not_measurable body", async () => {
+		const runner = jsonRunner({ not_measurable: { reason: "no_tests", detail: "0 tests matched" } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toBeInstanceOf(MutationNotMeasurableError);
+	});
+
+	it("carries the reason so callers can branch on it", async () => {
+		const runner = jsonRunner({ not_measurable: { reason: "no_tests" } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toMatchObject({ reason: "no_tests" });
+	});
+
+	it("is NOT raised for an ordinary report", async () => {
+		const runner = jsonRunner({ files: { "src/a.ts": { source: "x", mutants: [] } } });
+		await expect(runner.run("src/a.ts", "x", [])).resolves.toBeDefined();
+	});
+
+	it("ignores a malformed not_measurable payload rather than inventing a reason", async () => {
+		for (const body of [{ not_measurable: null }, { not_measurable: {} }, { not_measurable: { reason: "" } }]) {
+			const runner = jsonRunner({ ...body, files: { "src/a.ts": { source: "x", mutants: [] } } });
+			await expect(runner.run("src/a.ts", "x", [])).resolves.toBeDefined();
+		}
 	});
 });

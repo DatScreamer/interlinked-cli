@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { MutationNotMeasurableError } from "./cloud-runner.js";
 import {
 	type FileOverlay,
 	type MutationGateContext,
 	type MutationRunner,
 	type PerEditMutationConfig,
+	primaryCodeFile,
 	runPerEditMutationGate,
 } from "./gate.js";
 import { emptyManifest } from "./manifest.js";
@@ -35,13 +37,39 @@ function fakeRunner(mutants: AdaptedMutant[], avail = true, testRun?: TestRunRes
 	return { available: () => avail, run: () => Promise.resolve(testRun ? { mutants, testRun } : { mutants }) };
 }
 
+/**
+ * A manifest that already knows this file, so the ratchet applies.
+ *
+ * `emptyManifest` is a FIRST SIGHTING: with no prior state the gate establishes
+ * a baseline rather than verdicting, because "changed region" would otherwise
+ * mean the whole file and every pre-existing survivor would look new. These
+ * tests exercise the ratchet, so they need a prior. The record's hash is
+ * deliberately not CONTENT's — the symbol must read as CHANGED.
+ */
+function withPriorBaseline(): MutationManifest {
+	return {
+		...emptyManifest(META),
+		files: {
+			[FILE]: {
+				"sym-prior": {
+					symbolId: "sym-prior",
+					qualifiedName: "bar",
+					symbolHash: "hash-that-does-not-match-current-content",
+					mutants: {},
+					instability: { events: [], consecutiveStableRuns: 0, quarantined: false },
+				},
+			},
+		},
+	};
+}
+
 function ctx(over: Partial<MutationGateContext> = {}): MutationGateContext {
 	return {
 		toolName: "Write",
 		toolInput: { file_path: FILE, content: CONTENT },
 		config: cfg(),
 		runner: fakeRunner([survivor()]),
-		baseManifest: emptyManifest(META),
+		baseManifest: withPriorBaseline(),
 		readDisk: () => CONTENT,
 		at: "t",
 		...over,
@@ -177,5 +205,103 @@ describe("runPerEditMutationGate — manifest/receipt persistence (spec §4/§12
 		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist }));
 		expect(d?.decision).toBe("allow");
 		expect(d?.warnings?.some((w) => w.includes("persistence failed") && w.includes("disk full"))).toBe(true);
+	});
+});
+
+describe("primaryCodeFile — choosing what is worth mutating", () => {
+	it("picks a plain code file", () => {
+		expect(primaryCodeFile(["src/a.ts"])).toBe("src/a.ts");
+	});
+
+	it("skips a test file — mutating tests measures nothing", () => {
+		// Live failure this prevents: a run targeting harvest.test.ts derived the
+		// scope harvest.test.test.ts, matched no tests, and reported an opaque
+		// "the mutation runner failed".
+		expect(primaryCodeFile(["src/a.test.ts"])).toBeNull();
+	});
+
+	it("prefers the code file when a change set holds both", () => {
+		expect(primaryCodeFile(["src/a.test.ts", "src/a.ts"])).toBe("src/a.ts");
+	});
+
+	it("skips __tests__ directory files too", () => {
+		expect(primaryCodeFile(["src/__tests__/a.test.ts"])).toBeNull();
+	});
+
+	it("returns null for non-code paths", () => {
+		expect(primaryCodeFile(["README.md", "data.json"])).toBeNull();
+	});
+
+	it("returns null for an empty change set", () => {
+		expect(primaryCodeFile([])).toBeNull();
+	});
+
+	it("skips repo scratch probes — they have no companion test by design", () => {
+		// Observed live: a run targeting scratch/two-box-runner/runner.mjs could
+		// only ever report "no tests were executed".
+		expect(primaryCodeFile(["scratch/probe.mjs"])).toBeNull();
+		expect(primaryCodeFile(["scratch/two-box-runner/runner.mjs"])).toBeNull();
+	});
+
+	it("still picks product code when a scratch file is also in the change set", () => {
+		expect(primaryCodeFile(["scratch/probe.mjs", "src/a.ts"])).toBe("src/a.ts");
+	});
+});
+
+const NM_CONFIG: PerEditMutationConfig = {
+	enabled: true,
+	mode: "warn",
+	unavailable_behavior: "allow_unmeasured",
+	budget_ms: 1000,
+};
+
+function nmGateCtx(runError: unknown): MutationGateContext {
+	return {
+		toolName: "Edit",
+		toolInput: { file_path: "src/a.ts", old_string: "a", new_string: "b" },
+		config: NM_CONFIG,
+		runner: {
+			available: () => true,
+			run: async () => {
+				throw runError;
+			},
+		},
+		baseManifest: emptyManifest({
+			engine: "stryker",
+			engineVersion: "9",
+			dependencyGraphVersion: "1",
+			environmentHash: "h",
+			authoritativeAt: "2026-07-28T00:00:00Z",
+		}),
+		readDisk: () => "export const a = 1;\n",
+		at: "2026-07-28T00:00:00Z",
+	};
+}
+
+describe("gate messaging — the reader can act on the difference", () => {
+	it("says the file has no test, not that the runner failed", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new MutationNotMeasurableError("no_tests")));
+		expect(d?.warnings?.join("\n")).toContain("no test exercises this file");
+		expect(d?.warnings?.join("\n")).not.toContain("runner failed");
+	});
+
+	it("names an unrecognized not-measurable reason instead of hiding it", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new MutationNotMeasurableError("engine_unsupported")));
+		expect(d?.warnings?.join("\n")).toContain("engine_unsupported");
+	});
+
+	it("still reports a genuine failure as a failure", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("connection refused")));
+		expect(d?.warnings?.join("\n")).toContain("runner failed");
+	});
+
+	it("prefers the still-running message when handles came back", async () => {
+		// Budget expiry outranks everything: results are genuinely still coming.
+		const pendingErr = Object.assign(new Error("pending"), {
+			jobId: "j1",
+			runnerUrl: "http://runner/",
+		});
+		const d = await runPerEditMutationGate(nmGateCtx(pendingErr));
+		expect(d?.warnings?.join("\n")).toContain("still running past the budget");
 	});
 });

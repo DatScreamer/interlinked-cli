@@ -111,3 +111,85 @@ describe("mutationOutcomeToDecision", () => {
 		expect(d.warnings?.[0]).toContain("RED-witness unmet");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Phase D ratchet: 11 survivors of 64. This module writes the sentence the
+// agent reads when it is blocked — wrong wording here wastes a human's time
+// diagnosing the wrong thing, and no test was checking the words.
+// ---------------------------------------------------------------------------
+
+// SAFETY: StableId is a branded string; these are opaque site handles the
+// formatter only ever counts, never parses, so any distinct value is valid.
+const siteId = (s: string): StableId => s as StableId;
+
+describe("block reasons say which problem it is", () => {
+	it("names the survivor count and lists the survivors", () => {
+		const d = mutationOutcomeToDecision(measured({ decision: "block", newSurvivors: [survivor("Eq")] }));
+		expect(d.reason).toContain("1 new surviving mutant(s)");
+		expect(d.reason).toContain("Survivors: Eq >→>=");
+	});
+
+	it("names uncovered sites when that is the problem", () => {
+		const d = mutationOutcomeToDecision(
+			measured({ decision: "block", uncoveredSites: [siteId("a"), siteId("b")] }),
+		);
+		expect(d.reason).toContain("2 uncovered changed mutation site(s)");
+	});
+
+	it("joins both problems rather than reporting only the first", () => {
+		const d = mutationOutcomeToDecision(
+			measured({ decision: "block", newSurvivors: [survivor("Eq")], uncoveredSites: [siteId("a")] }),
+		);
+		expect(d.reason).toContain("surviving mutant(s) + ");
+		expect(d.reason).toContain("uncovered changed mutation site(s)");
+	});
+
+	it("omits the Survivors detail entirely when there are none", () => {
+		const d = mutationOutcomeToDecision(measured({ decision: "block", uncoveredSites: [siteId("a")] }));
+		expect(d.reason).not.toContain("Survivors:");
+	});
+
+	it("tells the reader how to resolve it", () => {
+		const d = mutationOutcomeToDecision(measured({ decision: "block", newSurvivors: [survivor("Eq")] }));
+		expect(d.reason).toContain("strengthening the test");
+	});
+});
+
+describe("block-reason priority — the most fundamental failure wins", () => {
+	it("reports a RED suite ahead of survivors, because survivors are meaningless then", () => {
+		const d = mutationOutcomeToDecision(
+			measured({ decision: "block", suiteRed: true, newSurvivors: [survivor("Eq")] }),
+		);
+		expect(d.reason).toContain("RED on this edit");
+		expect(d.reason).not.toContain("surviving mutant(s)");
+	});
+
+	it("reports oversize ahead of survivors — 'split the patch', not 'write a test'", () => {
+		const d = mutationOutcomeToDecision(
+			measured({ decision: "block", changedSiteCount: 51, siteCountThreshold: 50, newSurvivors: [survivor("Eq")] }),
+		);
+		expect(d.reason).toContain("51 mutation sites");
+		expect(d.reason).not.toContain("strengthening the test");
+	});
+
+	it("does NOT report oversize when the count merely equals the threshold", () => {
+		// `>` not `>=`: at the ceiling is inside it.
+		const d = mutationOutcomeToDecision(
+			measured({ decision: "block", changedSiteCount: 50, siteCountThreshold: 50, newSurvivors: [survivor("Eq")] }),
+		);
+		expect(d.reason).toContain("surviving mutant(s)");
+	});
+});
+
+describe("warnings on an allow", () => {
+	it("surfaces an unmet RED-witness as a warning, never a block", () => {
+		const d = mutationOutcomeToDecision(measured({ decision: "allow", redWitnessFailed: true }));
+		expect(d.decision).toBe("allow");
+		expect(d.warnings?.join("\n")).toContain("RED-witness unmet");
+	});
+
+	it("says nothing on a clean allow", () => {
+		const d = mutationOutcomeToDecision(measured({ decision: "allow" }));
+		expect(d.warnings ?? []).toHaveLength(0);
+	});
+});

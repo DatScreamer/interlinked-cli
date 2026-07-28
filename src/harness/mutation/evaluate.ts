@@ -14,6 +14,7 @@ import {
 	applyMeasuredRun,
 	changedSymbols,
 	computeNewSurvivors,
+	hasFileBaseline,
 	type MeasuredMutant,
 	quarantinedSymbols,
 } from "./manifest.js";
@@ -112,13 +113,33 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 	);
 	const uncoveredSites = uncoveredInChanged(measured, changed);
 	const changedSiteCount = distinctChangedSites(identities, changed);
-	const oversize = changedSiteCount > input.siteCountThreshold;
+
+	// FIRST SIGHTING: this file has never been measured, so there is no prior
+	// state to diff against. `changedSymbols` therefore reports EVERY symbol as
+	// changed, which makes `changedSiteCount` the size of the FILE rather than of
+	// the edit, and makes every pre-existing survivor look newly introduced.
+	//
+	// Judging on that is a guaranteed rejection that says nothing about the change
+	// — a one-line comment edit measured 116 "changed sites" — and because the
+	// manifest is only written by a clean pass, the gate could never bootstrap:
+	// rejected forever for having no baseline, and no baseline because always
+	// rejected.
+	//
+	// So the first measurement of a file ESTABLISHES the baseline instead of
+	// verdicting it: the survivors are recorded, not charged to this edit. From
+	// the second edit onward there is a real prior and the ratchet applies
+	// normally. This is the same adoption semantics every other ratchet here uses.
+	const firstSighting = !hasFileBaseline(input.baseManifest, input.file);
+	const oversize = !firstSighting && changedSiteCount > input.siteCountThreshold;
 	// Spec §7: a red overlay suite is a hard block; a new test that doesn't fail on
 	// base (RED-witness) is a warning, never a block.
 	const suiteRed = input.testRun?.overlayGreen === false;
 	const redWitnessFailed = input.testRun?.redWitnessSatisfied === false;
-	const decision =
-		suiteRed || oversize || newSurvivors.length > 0 || uncoveredSites.length > 0 ? "block" : "allow";
+	// A red suite still blocks on first sighting: that is a property of the edit,
+	// not an artifact of having no baseline.
+	const ratchetTripped =
+		!firstSighting && (oversize || newSurvivors.length > 0 || uncoveredSites.length > 0);
+	const decision = suiteRed || ratchetTripped ? "block" : "allow";
 	// Manifest refresh is earned ONLY by a measured-clean pass — a dirty run must
 	// not launder the manifest, and an unavailable run never reaches here (§4/§12).
 	const refreshedManifest =

@@ -147,3 +147,142 @@ describe("source-kind and naming coverage", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Phase D ratchet: 43 survivors of 143 in this module. Mutant IDENTITY is what
+// lets a manifest compare two runs, so a wrong answer here does not look like a
+// bug — it looks like a survivor appearing or vanishing on its own.
+// ---------------------------------------------------------------------------
+
+/** Same derivation, but for an arbitrary file path (script-kind depends on it). */
+function deriveFor(file: string, content: string, spec: RawSpec): MutantIdentity[] {
+	const idx = content.indexOf(spec.needle);
+	if (idx < 0) throw new Error(`needle not found: ${spec.needle}`);
+	const ids = deriveIdentities(file, content, [
+		{
+			file,
+			mutator: spec.mutator ?? "RelationalOperator",
+			originalLexeme: spec.lexeme,
+			replacement: spec.replacement,
+			startOffset: idx,
+		},
+	]);
+	if (!ids) throw new Error("typescript unavailable");
+	return ids;
+}
+
+describe("script kind — every extension the parser must accept", () => {
+	const TSX = "const f = (x: number) => x > 0;\n";
+	const JS = "const f = (x) => x > 0;\n";
+
+	it("parses a .tsx file", () => {
+		expect(deriveFor("src/a.tsx", TSX, { needle: "> 0", lexeme: ">", replacement: ">=" })).toHaveLength(1);
+	});
+
+	it("parses a .jsx file", () => {
+		expect(deriveFor("src/a.jsx", JS, { needle: "> 0", lexeme: ">", replacement: ">=" })).toHaveLength(1);
+	});
+
+	it("parses .js, .mjs and .cjs alike", () => {
+		for (const f of ["src/a.js", "src/a.mjs", "src/a.cjs"]) {
+			expect(deriveFor(f, JS, { needle: "> 0", lexeme: ">", replacement: ">=" })).toHaveLength(1);
+		}
+	});
+
+	it("is case-insensitive about the extension", () => {
+		expect(deriveFor("src/A.TSX", TSX, { needle: "> 0", lexeme: ">", replacement: ">=" })).toHaveLength(1);
+	});
+
+	it("falls back to TS for an unfamiliar extension", () => {
+		expect(deriveFor("src/a.mts", TSX, { needle: "> 0", lexeme: ">", replacement: ">=" })).toHaveLength(1);
+	});
+});
+
+describe("enclosing-function span — the boundary decides which symbol owns a mutant", () => {
+	// `inner` occupies a known span; a mutant one byte outside it belongs to the
+	// OUTER function, and attributing it wrongly moves a survivor between symbols
+	// across runs for no reason the reader can see.
+	const SRC = ["function outer() {", "\tconst a = 1;", "\tfunction inner() {", "\t\treturn 2;", "\t}", "\treturn a;", "}", ""].join("\n");
+
+	it("attributes a mutant inside the inner function to the inner function", () => {
+		const [id] = derive(SRC, [{ needle: "return 2", lexeme: "2", replacement: "3" }]);
+		expect(id?.qualifiedName).toContain("inner");
+	});
+
+	it("attributes a mutant before the inner function to the outer one", () => {
+		const [id] = derive(SRC, [{ needle: "const a = 1", lexeme: "1", replacement: "2" }]);
+		expect(id?.qualifiedName).toContain("outer");
+		expect(id?.qualifiedName).not.toContain("inner");
+	});
+
+	it("attributes a mutant AFTER the inner function's end to the outer one", () => {
+		// The `offset >= node.getEnd()` half of the span test: an inclusive end
+		// would swallow this one into `inner`.
+		const [id] = derive(SRC, [{ needle: "return a", lexeme: "a", replacement: "1" }]);
+		expect(id?.qualifiedName).toContain("outer");
+		expect(id?.qualifiedName).not.toContain("inner");
+	});
+
+	it("gives a top-level mutant a stable identity with no enclosing function", () => {
+		const top = "const q = 1 > 0;\n";
+		const [id] = derive(top, [{ needle: "1 > 0", lexeme: ">", replacement: ">=" }]);
+		expect(id?.symbolId).toBeTruthy();
+	});
+});
+
+describe("identity keys are distinct where the inputs are", () => {
+	const SRC = "function f(x: number) {\n\treturn x > 0 && x < 9;\n}\n";
+
+	it("gives two different operators in one function different mutant ids", () => {
+		const ids = derive(SRC, [
+			{ needle: "> 0", lexeme: ">", replacement: ">=" },
+			{ needle: "< 9", lexeme: "<", replacement: "<=" },
+		]);
+		expect(nth(ids, 0).mutantId).not.toBe(nth(ids, 1).mutantId);
+	});
+
+	it("gives the same site the same id across repeated derivations", () => {
+		const a = derive(SRC, [{ needle: "> 0", lexeme: ">", replacement: ">=" }]);
+		const b = derive(SRC, [{ needle: "> 0", lexeme: ">", replacement: ">=" }]);
+		expect(nth(a, 0).mutantId).toBe(nth(b, 0).mutantId);
+	});
+
+	it("distinguishes mutants that differ only by replacement", () => {
+		const ids = derive(SRC, [
+			{ needle: "> 0", lexeme: ">", replacement: ">=" },
+			{ needle: "> 0", lexeme: ">", replacement: "<" },
+		]);
+		expect(nth(ids, 0).mutantId).not.toBe(nth(ids, 1).mutantId);
+	});
+
+	it("distinguishes mutants that differ only by mutator", () => {
+		const ids = derive(SRC, [
+			{ needle: "> 0", lexeme: ">", replacement: ">=", mutator: "A" },
+			{ needle: "> 0", lexeme: ">", replacement: ">=", mutator: "B" },
+		]);
+		expect(nth(ids, 0).mutantId).not.toBe(nth(ids, 1).mutantId);
+	});
+});
+
+describe("symbol hashes track the body, not the surroundings", () => {
+	const A = "function f(x: number) {\n\treturn x > 0;\n}\n";
+	const B = "function f(x: number) {\n\treturn x >= 0;\n}\n";
+
+	const hashOf = (content: string): string | undefined => {
+		const entries = computeSymbolHashes(FILE, content);
+		if (!entries) return undefined;
+		return [...entries.values()][0]?.symbolHash;
+	};
+
+	it("changes when the body changes", () => {
+		expect(hashOf(A)).not.toBe(hashOf(B));
+	});
+
+	it("is stable across re-computation of identical content", () => {
+		expect(hashOf(A)).toBe(hashOf(A));
+	});
+
+	it("is unaffected by a comment added outside the function", () => {
+		expect(hashOf(`// unrelated\n${A}`)).toBe(hashOf(A));
+	});
+});

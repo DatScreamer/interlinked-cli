@@ -318,3 +318,138 @@ describe("receipt persistence", () => {
 		expect(readFileSync(mutationReceiptsPath(dir), "utf-8")).toContain('"overlayHash":"a');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Phase D ratchet: 16 survivors of 129. This module is the ratchet's FLOOR — a
+// silently-wrong load or merge does not fail loudly, it changes what counts as
+// "new", which is the one thing every mutation verdict is measured against.
+// ---------------------------------------------------------------------------
+
+describe("loadManifest — a malformed file must read as absent, never as empty", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "mut-load-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("returns null when no manifest exists", () => {
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("round-trips a manifest it saved", () => {
+		const m = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1" })]);
+		saveManifest(dir, m);
+		expect(loadManifest(dir)?.files[FILE]?.s1?.symbolHash).toBe("h1");
+	});
+
+	it("returns null on unparseable JSON rather than throwing", () => {
+		writeFileSync(mutationManifestPath(dir), "{ not json");
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("rejects a manifest from a different schema version", () => {
+		// Reading a v2 file as v1 would silently reinterpret every record.
+		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 2, files: {} }));
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("rejects a manifest with no files map", () => {
+		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 1 }));
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("rejects a JSON scalar where an object was expected", () => {
+		for (const body of ["null", "7", '"x"']) {
+			writeFileSync(mutationManifestPath(dir), body);
+			expect(loadManifest(dir)).toBeNull();
+		}
+	});
+});
+
+describe("changedSymbols — what counts as changed decides what counts as new", () => {
+	const entry = (symbolId: string, symbolHash: string) =>
+		new Map([[symbolId, { symbolId, qualifiedName: "fn", symbolHash }]]);
+
+	it("treats a symbol with no prior record as changed", () => {
+		// A brand-new symbol has nothing to compare against, so everything in it is
+		// new work; calling it unchanged would skip it entirely.
+		const base = manifestWith(FILE, []);
+		expect([...changedSymbols(base, FILE, entry("s1", "h1"))]).toEqual(["s1"]);
+	});
+
+	it("treats a differing hash as changed", () => {
+		const base = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "old" })]);
+		expect([...changedSymbols(base, FILE, entry("s1", "new"))]).toEqual(["s1"]);
+	});
+
+	it("treats an identical hash as UNCHANGED", () => {
+		const base = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "same" })]);
+		expect([...changedSymbols(base, FILE, entry("s1", "same"))]).toEqual([]);
+	});
+
+	it("ignores a prior record for a different file", () => {
+		const base = manifestWith("src/other.ts", [sym({ symbolId: "s1", symbolHash: "same" })]);
+		expect([...changedSymbols(base, FILE, entry("s1", "same"))]).toEqual(["s1"]);
+	});
+});
+
+describe("applyMeasuredRun — carrying knowledge forward", () => {
+	const hashes = (symbolId: string, symbolHash: string) =>
+		new Map([[symbolId, { symbolId, qualifiedName: "fn", symbolHash }]]);
+
+	it("preserves firstSeen for a mutant that was already known", () => {
+		// firstSeen is how long a survivor has been tolerated; resetting it on every
+		// run would erase the age of every finding.
+		const base = manifestWith(FILE, [
+			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }),
+		]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: hashes("s1", "h1"),
+			measured: [measured("m1", "s1", "survived")],
+			at: "2026-06-06T00:00:00Z",
+		});
+		expect(out.files[FILE]?.s1?.mutants.m1?.firstSeen).toBe("2026-01-01T00:00:00Z");
+	});
+
+	it("stamps firstSeen from this run for a mutant never seen before", () => {
+		const base = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1" })]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: hashes("s1", "h1"),
+			measured: [measured("m9", "s1", "survived")],
+			at: "2026-06-06T00:00:00Z",
+		});
+		expect(out.files[FILE]?.s1?.mutants.m9?.firstSeen).toBe("2026-06-06T00:00:00Z");
+	});
+
+	it("carries an unchanged, unmeasured symbol forward verbatim", () => {
+		// Differential runs skip unchanged symbols; dropping them would discard
+		// knowledge and make every later run look like a first sighting.
+		const prior = sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] });
+		const out = applyMeasuredRun({
+			base: manifestWith(FILE, [prior]),
+			file: FILE,
+			overlayHashes: hashes("s1", "h1"),
+			measured: [],
+			at: "2026-06-06T00:00:00Z",
+		});
+		expect(out.files[FILE]?.s1).toEqual(prior);
+	});
+
+	it("bumps the generation so a refreshed manifest is distinguishable", () => {
+		const base = manifestWith(FILE, [sym({ symbolId: "s1", symbolHash: "h1" })]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: hashes("s1", "h1"),
+			measured: [measured("m1", "s1", "killed")],
+			at: "2026-06-06T00:00:00Z",
+		});
+		expect(out.generation).toBe(base.generation + 1);
+	});
+});

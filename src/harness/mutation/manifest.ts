@@ -67,6 +67,19 @@ function fileRecords(manifest: MutationManifest, file: string): Record<StableId,
 	return manifest.files[file] ?? {};
 }
 
+/**
+ * Has this file ever been measured into the manifest?
+ *
+ * False means there is no prior state to diff against, so "changed region" is
+ * meaningless — EVERY symbol reads as changed and every existing survivor reads
+ * as new. Judging an edit against that produces a guaranteed rejection whose
+ * size reflects the file, not the change. Callers use this to treat the first
+ * measurement of a file as BASELINE ESTABLISHMENT rather than a verdict.
+ */
+export function hasFileBaseline(manifest: MutationManifest, file: string): boolean {
+	return Object.keys(fileRecords(manifest, file)).length > 0;
+}
+
 /** Symbols whose hash differs from the base manifest (or are new) — the changed region (spec §3). */
 export function changedSymbols(
 	base: MutationManifest,
