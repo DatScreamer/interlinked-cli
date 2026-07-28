@@ -16,6 +16,7 @@ import type { JsonObject } from "../lib/json-types.js";
 import type { CohortManager } from "./cohort.js";
 import type { ErrorHistory } from "./error-history.js";
 import { evaluatePostToolUse, evaluatePreToolUse } from "./evaluator.js";
+import { liftOutcomeEvidence } from "./outcome-evidence.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type { ReservationManager } from "./reservations.js";
 import type { RouteMap } from "./route-map.js";
@@ -161,6 +162,11 @@ export function toHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 		out.tool_name = nativeToolName(event.runner, action.tool_name);
 		out.tool_input = sanitizeToolInput(action.tool_input);
 		if (action.tool_response !== undefined) out.tool_response = action.tool_response;
+		if (event.phase === "post-tool") {
+			// The adapter's tool_error is the canonical diagnostic when present.
+			if (action.tool_error !== undefined) out.error_message = action.tool_error;
+			liftOutcomeEvidence(out);
+		}
 	} else if (action.kind === "shell_command") {
 		out.tool_name = "Bash";
 		out.tool_input = { command: action.command, cwd: action.cwd };
@@ -361,6 +367,8 @@ function buildFileOpInput(action: {
 
 function sanitizeToolInput(input: unknown): JsonObject {
 	if (input == null || typeof input !== "object") return {};
+	// SAFETY: narrowed to a non-null object on the line above; consumers treat
+	// the value as an opaque bag and re-check each field they read.
 	return input as JsonObject;
 }
 

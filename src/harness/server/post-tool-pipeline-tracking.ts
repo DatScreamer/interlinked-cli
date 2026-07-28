@@ -116,6 +116,21 @@ function resolveTestOutcome(event: HarnessEvent, cmd: string): "red" | "green" |
 const UNCOUNTED_RUN_WARNING =
 	"[interlinked:test-evidence] Test result NOT counted — this command's exit status belongs to what follows the runner (a pipe or `;`/`&&` tail), and the output carried no runner summary. Run the test command on its own so the result can be recorded; redirects are fine, pipes and trailing commands are not.";
 
+/** The transport-gap sibling of {@link UNCOUNTED_RUN_WARNING}: the command WAS
+ *  attributable, but the event arrived with no evidence at all — no runner
+ *  summary, no tool_outcome, no output. Three bare green runs were dropped
+ *  silently through this branch (2026-07-28) while a stale red wedged the
+ *  commit gate; the gap must be said so the transport bug is findable. */
+const EVIDENCE_STARVED_WARNING =
+	"[interlinked:test-evidence] Test result NOT counted — the run completed but no outcome evidence (runner summary, outcome flag, or output) reached the daemon, so the result cannot be recorded either way. This is a hook-transport gap, not a problem with your command.";
+
+/** No summary, no outcome flag, no output text: nothing arrived to classify.
+ *  Distinct from an AMBIGUOUS outcome (e.g. `interrupted`, or exit 0 with an
+ *  unparsed body), which is evidence that legitimately proves nothing. */
+function isEvidenceStarved(event: HarnessEvent): boolean {
+	return event.tool_outcome === undefined && observedOutput(event) === undefined;
+}
+
 export function trackTestRun(
 	event: HarnessEvent,
 	session: SessionTrajectory,
@@ -128,7 +143,8 @@ export function trackTestRun(
 
 	const outcome = resolveTestOutcome(event, cmd);
 	if (outcome === "neither") {
-		return isOutcomeAttributable(cmd) ? null : UNCOUNTED_RUN_WARNING;
+		if (!isOutcomeAttributable(cmd)) return UNCOUNTED_RUN_WARNING;
+		return isEvidenceStarved(event) ? EVIDENCE_STARVED_WARNING : null;
 	}
 
 	const passed = outcome === "green";

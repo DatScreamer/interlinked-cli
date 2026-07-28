@@ -20,6 +20,7 @@ import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { toLegacyHarnessEvent } from "./legacy-client.js";
 import { readLiveSnapshot, writeLiveSnapshot } from "./live-snapshot.js";
+import { liftOutcomeEvidence } from "./outcome-evidence.js";
 import { runWithClock } from "./replay/harness-clock.js";
 import { maybeRecordReplaySnapshots, phaseForHookEvent } from "./replay/tree-snapshot.js";
 import { buildLatencyRecord } from "./server/latency-record.js";
@@ -116,6 +117,13 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 
 		_totalEventsProcessed++;
 		resetIdleTimer();
+
+		// Lift object-tool_response outcome evidence onto the flat fields BEFORE
+		// any tracker reads the event — `recordEvent` (trackErrorOutcome) and the
+		// PostToolUse pipeline (trackTestRun) both classify on them. Both socket
+		// protocols funnel through here, so this is the one call that guarantees
+		// a green test run's evidence is visible however the hook delivered it.
+		liftOutcomeEvidence(event);
 
 		// Lazy hydrate: if the in-memory tracker has no entry for this session
 		// but disk has a `<id>.live.json` from a previous incarnation of this

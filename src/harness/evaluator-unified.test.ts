@@ -192,6 +192,103 @@ describe("toHarnessEvent — optional carry-through fields", () => {
 	});
 });
 
+/** A post-phase Bash tool_call whose tool_response is the runner's raw object. */
+function makeBashPostEvent(
+	toolResponse: unknown,
+	nativeEvent: "PostToolUse" | "PostToolUseFailure" = "PostToolUse",
+	tool_error?: string,
+): UnifiedHookEvent {
+	return makeEvent({
+		phase: "post-tool",
+		runner_native_event: nativeEvent,
+		action: {
+			kind: "tool_call",
+			tool_name: "bash",
+			tool_class: "side-effect",
+			tool_input: { command: "npx vitest run a.test.ts" },
+			tool_input_redacted: {},
+			tool_response: toolResponse,
+			...(tool_error !== undefined ? { tool_error } : {}),
+		},
+	});
+}
+
+describe("toHarnessEvent — post-tool outcome evidence lift — positive (must lift)", () => {
+	it("P1: lifts object-response stdout so the daemon can read a runner summary", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "Tests  7 passed (7)" }));
+		expect(out.stdout).toBe("Tests  7 passed (7)");
+	});
+
+	it("P2: lifts object-response stderr", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "", stderr: "warning: x" }));
+		expect(out.stderr).toBe("warning: x");
+	});
+
+	it("P3: lifts a numeric exitCode to exit_code", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "", exitCode: 0 }));
+		expect(out.exit_code).toBe(0);
+	});
+
+	it("P4: derives tool_outcome success from a marker-free PostToolUse object response", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "ok" }));
+		expect(out.tool_outcome).toBe("success");
+	});
+
+	it("P5: derives tool_outcome error from the PostToolUseFailure event name", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "" }, "PostToolUseFailure"));
+		expect(out.tool_outcome).toBe("error");
+	});
+
+	it("P6: keeps only the tail of an oversized stdout (runner summaries print last)", () => {
+		const big = `${"x".repeat(20_000)}\nTests  7 passed (7)`;
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: big }));
+		expect(out.stdout?.length).toBeLessThanOrEqual(8_192);
+		expect(out.stdout?.endsWith("Tests  7 passed (7)")).toBe(true);
+	});
+
+	it("P7: carries the adapter's tool_error into error_message", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "" }, "PostToolUseFailure", "boom"));
+		expect(out.error_message).toBe("boom");
+	});
+});
+
+describe("toHarnessEvent — post-tool outcome evidence lift — negative (must not misclassify)", () => {
+	it("N1: a string tool_response gains no synthesized outcome fields", () => {
+		const out = toHarnessEvent(makeBashPostEvent("plain text response"));
+		expect(out.tool_outcome).toBeUndefined();
+		expect(out.stdout).toBeUndefined();
+	});
+
+	it("N2: a pre-tool event gains no outcome fields", () => {
+		const out = toHarnessEvent(makeEvent());
+		expect(out.tool_outcome).toBeUndefined();
+		expect(out.stdout).toBeUndefined();
+		expect(out.exit_code).toBeUndefined();
+	});
+
+	it("N3: is_error true in the response object means error, never success", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "ok", is_error: true }));
+		expect(out.tool_outcome).toBe("error");
+	});
+
+	it("N4: a nonzero exit code means error even on a plain PostToolUse", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "", exitCode: 1 }));
+		expect(out.tool_outcome).toBe("error");
+		expect(out.exit_code).toBe(1);
+	});
+
+	it("N5: interrupted true means interrupted, never success", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: "partial", interrupted: true }));
+		expect(out.tool_outcome).toBe("interrupted");
+	});
+
+	it("N6: non-string stdout in the object is ignored rather than coerced", () => {
+		const out = toHarnessEvent(makeBashPostEvent({ stdout: 42 }));
+		expect(out.stdout).toBeUndefined();
+		expect(out.tool_outcome).toBe("success");
+	});
+});
+
 describe("toHarnessEvent — claude tool name mapping", () => {
 	const cases: Array<[string, string]> = [
 		["edit", "Edit"],
