@@ -55,10 +55,28 @@ describe("MD_LINK_RE (extractor matcher)", () => {
 		expect(reset(MD_LINK_RE).exec("\\[x](missing.md)")).toBeNull();
 	});
 
-	it("stays linear on the round-7 #20 escape-bomb (measured under budget)", () => {
-		const evil = `${"[".repeat(512)}\\x`.repeat(200);
-		const start = Date.now();
-		reset(MD_LINK_RE).exec(evil);
-		expect(Date.now() - start).toBeLessThan(500);
+	/**
+	 * Catastrophic backtracking shows up as SUPERLINEAR growth, so the honest
+	 * assertion is about the growth curve, not a wall-clock number.
+	 *
+	 * The absolute-millisecond version of this test was flaky: it passed alone at
+	 * ~350ms and failed at ~580ms whenever the machine was busy, which says
+	 * nothing about the regex. Doubling the input and comparing against the SAME
+	 * process's own smaller run cancels machine load out of both sides — an
+	 * exponential matcher blows past any ratio bound, a linear one stays near 2x.
+	 */
+	it("stays linear on the round-7 #20 escape-bomb (growth ratio, not wall clock)", () => {
+		const bomb = (reps: number) => `${"[".repeat(512)}\\x`.repeat(reps);
+		const timeOf = (input: string): number => {
+			const start = performance.now();
+			reset(MD_LINK_RE).exec(input);
+			return performance.now() - start;
+		};
+		// Warm the JIT so the first call's compile cost is not read as growth.
+		timeOf(bomb(50));
+		const small = Math.max(timeOf(bomb(200)), 0.05);
+		const double = timeOf(bomb(400));
+		// `small` is floored at 0.05 above, so this division is non-zero by construction.
+		expect(double / small).toBeLessThan(8);
 	});
 });

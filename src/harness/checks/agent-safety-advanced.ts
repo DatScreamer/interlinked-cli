@@ -25,6 +25,9 @@ export {
 	checkThrowLiteral,
 	checkUnvalidatedJsonBoundary,
 } from "./agent-safety-advanced-style.js";
+// dead_exports moved to its own module (this file is at the line cap) and gained
+// an evidence guard after a live FP storm — see dead-exports-inline.ts.
+export { checkDeadExports } from "./dead-exports-inline.js";
 
 
 /**
@@ -381,108 +384,4 @@ export function checkCircularImports(
  *     treat ALL exports as used — the namespace reference could be indexing
  *     into any of them at runtime and we can't tell statically.
  */
-// Fast basename prefilter for checkDeadExports: does `importerContent` mention
-// our module under any import-specifier shape? Covers three shapes:
-//   (a) bare module name:           `'hooks'`      / `"hooks"`
-//   (b) bare with extension:        `'hooks.js'`   / `"hooks.js"`   / `.ts` variants
-//   (c) relative path ending there: `"./lib/hooks.js"`, `"../lib/hooks.js"`, etc.
-// Missing any shape silently drops a real importer and marks the symbol as dead.
-function importerMentionsModuleBase(importerContent: string, base: string): boolean {
-	return (
-		importerContent.includes(`'${base}'`) ||
-		importerContent.includes(`"${base}"`) ||
-		importerContent.includes(`'${base}.js'`) ||
-		importerContent.includes(`"${base}.js"`) ||
-		importerContent.includes(`'${base}.ts'`) ||
-		importerContent.includes(`"${base}.ts"`) ||
-		importerContent.includes(`/${base}'`) ||
-		importerContent.includes(`/${base}"`) ||
-		importerContent.includes(`/${base}.js'`) ||
-		importerContent.includes(`/${base}.js"`) ||
-		importerContent.includes(`/${base}.ts'`) ||
-		importerContent.includes(`/${base}.ts"`)
-	);
-}
-
-// Walk every candidate importer and aggregate the symbols imported from the file
-// at `absPath`. Returns `allUsed: true` when any importer uses a namespace import
-// (`import * as X`) — we can't tell statically which exports it touches, so all
-// are treated as used.
-function collectTargetedImportSymbols(
-	candidates: string[],
-	cwd: string,
-	base: string,
-	absPath: string,
-): { allUsed: boolean; symbols: Set<string> } {
-	const symbols = new Set<string>();
-	for (const importerRel of candidates) {
-		let importerContent: string;
-		try {
-			importerContent = readFileSync(join(cwd, importerRel), "utf-8");
-		} catch {
-			continue;
-		}
-		if (!importerMentionsModuleBase(importerContent, base)) continue;
-
-		const imports = parseImports(importerContent, join(cwd, importerRel));
-		for (const edge of imports) {
-			// Resolve the import specifier to see if it points at our file.
-			const resolved = resolveImportPath(join(cwd, importerRel), edge.specifier);
-			if (!resolved) continue;
-			if (resolve(resolved) !== absPath) continue;
-
-			// Namespace import (symbols has "*" or empty with star flag) — treat
-			// as "every export is used" and bail out early.
-			if (edge.symbols.length === 0 || edge.symbols.includes("*")) {
-				return { allUsed: true, symbols };
-			}
-			for (const s of edge.symbols) symbols.add(s);
-		}
-	}
-	return { allUsed: false, symbols };
-}
-
-export function checkDeadExports(content: string, filePath: string, cwd: string): InlineMatch[] {
-	const ext = getExtension(filePath);
-	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) return [];
-	if (filePath.endsWith(".d.ts")) return [];
-	if (isTestFile(filePath)) return [];
-
-	const base = basename(filePath).replace(/\.(tsx?|jsx?|mjs|cjs|mts|cts)$/, "");
-	if (base === "index") return []; // barrel — intentionally wide
-
-	const exports = parseExports(content).filter(
-		(e) =>
-			e.kind !== "default" &&
-			e.kind !== "re-export" &&
-			e.kind !== "namespace" &&
-			!e.isTypeOnly,
-	);
-	if (exports.length === 0) return [];
-
-	const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-	const relFromRoot = relative(cwd, absPath);
-	if (relFromRoot.startsWith("..")) return [];
-
-	// Collect every symbol any other file imports targeting our basename.
-	const candidates = getGitSourceFiles(cwd).filter((f) => f !== relFromRoot);
-	const { allUsed, symbols: importedSymbols } = collectTargetedImportSymbols(
-		candidates,
-		cwd,
-		base,
-		absPath,
-	);
-	if (allUsed) return [];
-
-	const matches: InlineMatch[] = [];
-	for (const exp of exports) {
-		if (importedSymbols.has(exp.name)) continue;
-		matches.push({
-			line: exp.line,
-			text: `unused export '${exp.name}' — remove or document as public API`,
-		});
-		if (matches.length >= 10) break;
-	}
-	return matches;
-}
 

@@ -28,6 +28,15 @@ import {
 import type { SpecFacts } from "./types.js";
 
 /**
+ * A markdown table row — `| a | b |`. Requires two pipes so a line that merely
+ * contains one (prose with an inline `a | b` alternation) is left alone.
+ */
+function isTableRow(line: string): boolean {
+	const t = line.trim();
+	return t.startsWith("|") && (t.match(/\|/g)?.length ?? 0) >= 2;
+}
+
+/**
  * Extract all spec facts from one file's content. ID censuses scan fenced
  * blocks too (registry tables are often TOML/JSON examples); prose-shaped
  * facts (headings, refs, links, paths, claims) exclude fenced lines.
@@ -48,7 +57,13 @@ export function extractSpecFacts(content: string, filePath: string): SpecFacts {
 	// Prose-shaped facts exclude fenced lines (round-2 #21): count/range
 	// claims inside a documented example are illustration, not assertions.
 	// ID censuses still scan fences (registry tables are often examples).
-	const proseLines = censusLines.map((l, i) => (fenced.has(i + 1) ? "" : l));
+	// Table ROWS are masked for the same reason fenced lines are: a number in a
+	// table cell is data ABOUT one row, not a prose assertion about how many rows
+	// the registry has. Dogfooded — a status table whose Evidence column read
+	// "41 survivors" and "6 cases" was reported as four stale claims about an
+	// 11-id namespace. The id census still scans tables (censusLines), so registry
+	// tables keep DEFINING ids; only CLAIMS stop being read out of their cells.
+	const proseLines = censusLines.map((l, i) => (fenced.has(i + 1) || isTableRow(l) ? "" : l));
 	// REPORTED range claims come from prose only (fenced example ranges are
 	// illustration). But a SEPARATE census view scans fenced lines too, so a
 	// fenced range's own endpoints ("FG-INV-01 through FG-INV-20" in an example)
