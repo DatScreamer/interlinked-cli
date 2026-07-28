@@ -687,6 +687,11 @@ installDaemonTimers({
 		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "handover", reason: "rss-ceiling" });
 		return spawnRestartViaCli(import.meta.url, CWD);
 	},
+	// Passive spike attribution: a ledger row per >150MB/tick RSS jump, joinable
+	// against activity.jsonl by timestamp. SIGUSR2 writes a heap snapshot here.
+	onSpike: (rssMb, deltaMb) =>
+		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick` }),
+	snapshotDir: INTERLINKED_DIR,
 	log: logAlways,
 });
 

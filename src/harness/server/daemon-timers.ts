@@ -9,6 +9,8 @@
 // keeping timers here means adding one is a change to a small module rather
 // than growth on a file that may only shrink.
 
+import { join } from "node:path";
+import { writeHeapSnapshot } from "node:v8";
 import { configuredCeilingBytes, shouldRecycle } from "../memory-ceiling.js";
 
 const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
@@ -35,6 +37,16 @@ export interface DaemonTimerHooks {
 	rssBytes?: () => number;
 	/** Injected for tests; defaults to the configured ceiling. */
 	ceilingBytes?: number;
+	/**
+	 * Called when RSS jumps by more than the spike threshold between two ticks —
+	 * the passive attribution channel for the unexplained ~1GB heap spikes
+	 * (fingerprinted 2026-07-28: pure V8 heap, external ~20MB). A ledger row per
+	 * spike, timestamp-joinable against activity.jsonl, turns the next day of
+	 * normal use into the profiling session nobody has to run.
+	 */
+	onSpike?: (rssMb: number, deltaMb: number) => void;
+	/** Directory for SIGUSR2 heap snapshots; absent disables the handler. */
+	snapshotDir?: string;
 }
 
 /**
@@ -62,9 +74,30 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 	// hand-over failed and retrying. Two ticks ≈ a minute — far beyond a normal
 	// restart, tight enough that a lost successor doesn't strand a bloated daemon.
 	const HANDOVER_PATIENCE_TICKS = 2;
+	/** One tick's RSS growth that counts as a spike worth attributing. */
+	const SPIKE_DELTA_BYTES = 150 * BYTES_PER_MB;
 	let ticksSinceHandOver = -1;
+	let prevRss = readRss();
+	// SIGUSR2 → heap snapshot on demand, for root-causing the spikes offline.
+	// SIGUSR1 is reserved by Node for the debugger; USR2 is conventionally free.
+	// Handler is stored so the disposer can unregister it (tests install and
+	// tear these timers down repeatedly in one process).
+	const onSigusr2 = (): void => {
+		try {
+			const path = writeHeapSnapshot(join(hooks.snapshotDir ?? "", `heap-${process.pid}.heapsnapshot`));
+			hooks.log(`Heap snapshot written: ${path}`);
+		} catch (err) {
+			hooks.log(`Heap snapshot failed: ${String(err)}`);
+		}
+	};
+	if (hooks.snapshotDir) process.on("SIGUSR2", onSigusr2);
 	const memory = setInterval(() => {
 		const rss = readRss();
+		const delta = rss - prevRss;
+		prevRss = rss;
+		if (delta > SPIKE_DELTA_BYTES) {
+			hooks.onSpike?.(Math.round(rss / BYTES_PER_MB), Math.round(delta / BYTES_PER_MB));
+		}
 		if (!shouldRecycle(rss, ceiling)) return;
 		// A successor was already spawned — give its `harness restart` time to
 		// SIGTERM us instead of spawning a second one every tick (the restarts
@@ -92,5 +125,6 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 	return () => {
 		clearInterval(statusline);
 		clearInterval(memory);
+		process.removeListener("SIGUSR2", onSigusr2);
 	};
 }

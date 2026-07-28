@@ -68,6 +68,10 @@ export interface MutantRecord {
 	status: MutantStatus;
 	/** ISO timestamp — when this identity first appeared. */
 	firstSeen: string;
+	/** For status "equivalent": the human judgment of WHY no test can kill this
+	 *  mutant, recorded in-band so the accepted floor stays auditable. Set by
+	 *  `acceptMutant` (interlinked mutation accept); absent otherwise. */
+	accepted_reason?: string;
 }
 
 /** Mirror of coverage-index `ShardInstability`: quarantine on identity churn. */

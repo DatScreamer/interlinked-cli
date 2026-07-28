@@ -24,7 +24,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "n
 import { join } from "node:path";
 
 /** Known reasons; readers must handle unknown strings (forward compatibility). */
-export type DaemonEventKind = "start" | "listening" | "handover" | "exit";
+export type DaemonEventKind = "start" | "listening" | "handover" | "exit" | "spike";
 
 export interface DaemonLedgerEvent {
 	/** Epoch ms. */

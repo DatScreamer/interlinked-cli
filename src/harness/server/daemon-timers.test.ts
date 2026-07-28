@@ -83,6 +83,63 @@ describe("installDaemonTimers — memory ceiling", () => {
 	});
 });
 
+describe("installDaemonTimers — spike attribution", () => {
+	// The unexplained heap spikes (pure V8 heap, ~1GB inside one 30s window)
+	// need passive attribution: a callback per >150MB/tick jump, ledgered by the
+	// caller and timestamp-joinable against activity.jsonl.
+	it("reports a jump over the spike threshold with rss and delta in MB", () => {
+		let rss = 100 * MB;
+		const onSpike = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => rss,
+			ceilingBytes: 0,
+			onSpike,
+		});
+		rss = 400 * MB;
+		vi.advanceTimersByTime(30_000);
+		expect(onSpike).toHaveBeenCalledWith(400, 300);
+		stop();
+	});
+
+	it("stays silent for growth under the threshold", () => {
+		let rss = 100 * MB;
+		const onSpike = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => rss,
+			ceilingBytes: 0,
+			onSpike,
+		});
+		rss = 200 * MB; // +100MB — normal churn, not a spike
+		vi.advanceTimersByTime(30_000);
+		expect(onSpike).not.toHaveBeenCalled();
+		stop();
+	});
+
+	it("attributes each spike to ITS tick, not cumulatively", () => {
+		let rss = 100 * MB;
+		const onSpike = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => rss,
+			ceilingBytes: 0,
+			onSpike,
+		});
+		rss = 400 * MB;
+		vi.advanceTimersByTime(30_000);
+		vi.advanceTimersByTime(30_000); // flat since — must not re-report
+		expect(onSpike).toHaveBeenCalledTimes(1);
+		stop();
+	});
+});
+
 describe("installDaemonTimers — hand-over on recycle", () => {
 	// A bare exit waits for the NEXT tool call's self-heal, which never comes
 	// between turns: measured 2026-07-28, one rss-ceiling exit left an
