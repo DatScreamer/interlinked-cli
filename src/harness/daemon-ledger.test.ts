@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,9 +44,22 @@ describe("recordDaemonEvent / readRecentDaemonEvents", () => {
 	});
 
 	it("never throws when the directory is unwritable — the guard must not die of its own diary", () => {
-		expect(() =>
-			recordDaemonEvent("/proc/nonexistent-root", { at: NOW, pid: 1, event: "start" }),
-		).not.toThrow();
+		// A REAL unwritable directory (mode 000), not a procfs path: probing
+		// /proc/nonexistent-root worked as a joke path on macOS but on the Linux
+		// CI runner it lands inside procfs, whose mkdir semantics hung the
+		// single fork worker and timed out the whole unit lane (run 30410747800
+		// — identified by the size-ordered queue: this file was the largest
+		// never-completed). Root under CI runs unprivileged, so chmod 000 holds.
+		const locked = join(dir, "locked");
+		mkdirSync(locked);
+		chmodSync(locked, 0o000);
+		try {
+			expect(() =>
+				recordDaemonEvent(join(locked, "sub"), { at: NOW, pid: 1, event: "start" }),
+			).not.toThrow();
+		} finally {
+			chmodSync(locked, 0o755); // or afterEach's rmSync fails on some platforms
+		}
 	});
 
 	it("returns [] when no ledger exists", () => {
