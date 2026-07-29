@@ -35,17 +35,16 @@ jobs:
     name: unit ${{ matrix.shard }} (Linux / Node 22)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Sharded 2026-07-29 after the lane started hanging DETERMINISTICALLY at
-    # ~600 files into the single-worker forks queue (runs 30410747800 and
-    # 30412876710): two DIFFERENT innocent pure-function files hung at the
-    # same queue depth on consecutive runs, and the file "fixed" after run 1
-    # passed once its size-order position moved — the hang tracks POSITION,
-    # not content (the 2026-07 recurrence.test.ts "collection hang" quarantine
-    # was this same misdiagnosis). With isolate:true the forks pool spawns a
-    # fresh child per test file; ~950 sequential spawns from one vitest main
-    # wedges the runner. Sharding = separate main processes = queue depth
-    # resets, plus parallel wall-clock. Shard counts must keep each slice
-    # comfortably under the observed ~580-file wedge depth.
+    # Sharded 2026-07-29. Originally added on a queue-depth theory of the
+    # 25-minute lane hangs; the sharded run then isolated TWO hanging files at
+    # once and falsified it — the real cause was per-FILE: tests probing
+    # "/proc/…" as an unwritable path, where recursive mkdir spins forever on
+    # the Linux runner (guard-state.test.ts finding 2026-06; fixed at the root
+    # in every file, runs 30410747800/30412876710/30466905490). Sharding
+    # STAYS on its two remaining merits: parallel wall-clock (~3x), and blast
+    # radius — a future hanging file times out one ~320-file shard while the
+    # other shards still report, which is exactly how the guilty files were
+    # finally isolated.
     strategy:
       fail-fast: false
       matrix:

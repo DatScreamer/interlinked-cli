@@ -462,13 +462,21 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 	});
 
 	it("recordToolFailure never throws on an unwritable cwd", () => {
+		// File-as-parent = ENOTDIR on every platform. NEVER a "/proc/…" path:
+		// recursive mkdir under /proc spins forever on the Linux CI runner
+		// (guard-state.test.ts finding 2026-06; re-hit 2026-07-29 as the shard
+		// hangs in runs 30410747800/30412876710/30466905490 — this file's old
+		// /proc probe was the REAL cause of its 2026-07 "collection hang"
+		// quarantine).
+		const fileAsParent = join(dir, "not-a-directory");
+		writeFileSync(fileAsParent, "x");
 		expect(() =>
 			recordToolFailure({
 				tool_name: "Bash",
 				signature: "tool_failure:Bash:x",
 				agent_source: "claude",
 				session_id: "s",
-				cwd: "/proc/nonexistent/x",
+				cwd: join(fileAsParent, "nested"),
 			}),
 		).not.toThrow();
 	});
@@ -534,13 +542,16 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 	});
 
 	it("markOutcome never throws on an unwritable cwd", () => {
+		// File-as-parent, never /proc — see recordToolFailure's twin above.
+		const fileAsParent = join(dir, "not-a-directory-2");
+		writeFileSync(fileAsParent, "x");
 		expect(() =>
 			markOutcome({
 				check_id: "x",
 				file: "f",
 				session_id: "s",
 				signal: "agent_fixed",
-				cwd: "/proc/nonexistent/x",
+				cwd: join(fileAsParent, "nested"),
 			}),
 		).not.toThrow();
 	});

@@ -88,10 +88,10 @@ const CI_STEPS: readonly CiStep[] = [
 	// neither exceeds the job timeout. The pre-push hook runs `npm test` — the
 	// full suite, which is the superset of both lanes — so it mirrors each. See
 	// ci.yml + vitest.{unit,integration}.config.ts.
-	// The unit lane is SHARDED in CI (3 matrix jobs — separate vitest main
-	// processes, because a single ~950-file forks queue wedged the ubuntu
-	// runner at ~600 spawns; see ci.yml). The pre-push mirror is still the
-	// unsharded full suite — a superset of every shard.
+	// The unit lane is SHARDED in CI (3 matrix jobs — parallel wall-clock,
+	// and blast-radius isolation: a hanging file times out one shard, not
+	// the lane; see ci.yml for the /proc-probe history). The pre-push mirror
+	// is still the unsharded full suite — a superset of every shard.
 	{ name: "Test (unit lane, shard ${{ matrix.shard }})", mirror: "pre-push", command: "npm test" },
 	{ name: "Test (integration lane)", mirror: "pre-push", command: "npm test" },
 	{

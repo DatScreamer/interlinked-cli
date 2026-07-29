@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,10 +81,23 @@ describe("suppressRepeatedNudges", () => {
 	it("never throws when the state directory cannot be written", () => {
 		// A Stop reflection must not become an exception on a read-only tree; the
 		// worst acceptable degradation is repeating itself.
-		expect(() => suppressRepeatedNudges({ projectRoot: "/proc/nonexistent-root", sessionId: "s1" }, ["x"])).not.toThrow();
+		//
+		// File-as-parent = ENOTDIR on every platform. NEVER a "/proc/…" path:
+		// recursive mkdir under /proc spins forever on the Linux CI runner
+		// (guard-state.test.ts finding 2026-06) — this file's /proc probe hung
+		// the unit lane in runs 30412876710 and 30466905490 (shard 1).
+		const fileAsParent = join(root, "not-a-directory");
+		writeFileSync(fileAsParent, "x");
+		expect(() =>
+			suppressRepeatedNudges({ projectRoot: join(fileAsParent, "nested"), sessionId: "s1" }, ["x"]),
+		).not.toThrow();
 	});
 
 	it("still returns the nudges when persistence fails", () => {
-		expect(suppressRepeatedNudges({ projectRoot: "/proc/nonexistent-root", sessionId: "s1" }, ["x"])).toEqual(["x"]);
+		const fileAsParent = join(root, "not-a-directory-2");
+		writeFileSync(fileAsParent, "x");
+		expect(
+			suppressRepeatedNudges({ projectRoot: join(fileAsParent, "nested"), sessionId: "s1" }, ["x"]),
+		).toEqual(["x"]);
 	});
 });

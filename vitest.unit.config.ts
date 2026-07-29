@@ -21,16 +21,17 @@ export default defineConfig({
 		exclude: [
 			...configDefaults.exclude,
 			"**/*.integration.test.ts",
-			// recurrence.test.ts was quarantined here 2026-07 as "hangs at
-			// collection on the ubuntu runner" — EXONERATED 2026-07-29: runs
-			// 30410747800 / 30412876710 hung on two DIFFERENT innocent files at
-			// the same ~600-file queue depth, and each "guilty" file passed once
-			// its size-order position moved. The hang tracks queue POSITION (the
-			// single-worker forks pool wedges the runner ~600 child-spawns in),
-			// not file content — recurrence just happened to sit at the lethal
-			// depth of that era's file-size distribution. Fixed by sharding the
-			// CI unit lane (ci.yml matrix, separate vitest mains); the file is
-			// back in the lane as a standing test of that diagnosis.
+			// recurrence.test.ts was quarantined here 2026-07 as an unexplained
+			// "collection hang on the ubuntu runner". ROOT CAUSE FOUND 2026-07-29:
+			// its unwritable-cwd tests probed "/proc/nonexistent/x", and recursive
+			// mkdir under /proc SPINS FOREVER on the Linux runner (the mechanism
+			// guard-state.test.ts documented in 2026-06 — the knowledge just never
+			// propagated). Three sibling files carried the same probe and hung the
+			// lane one-at-a-time in queue order (runs 30410747800 / 30412876710 /
+			// 30466905490) — which mimicked a positional hang until the shards
+			// isolated two guilty files at once. All probes are now file-as-parent
+			// (ENOTDIR on every platform) and the file is back in the lane because
+			// the CAUSE is fixed, not because it was innocent.
 		],
 	},
 });
