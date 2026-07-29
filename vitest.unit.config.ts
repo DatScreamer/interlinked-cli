@@ -21,15 +21,16 @@ export default defineConfig({
 		exclude: [
 			...configDefaults.exclude,
 			"**/*.integration.test.ts",
-			// recurrence.test.ts hangs at COLLECTION (import/register phase, before
-			// any test runs) on the ubuntu CI runner — deterministic, confirmed
-			// file-specific (excluding it makes the lane complete; the hang does
-			// not move to another file), yet it passes at CI=1 on macOS. Root
-			// cause is still open (imports are pure; describe bodies are trivial),
-			// so it is quarantined here and still runs in the pre-push gate (which
-			// executes the full suite on macOS). See docs/design/ci-lane-split.md.
-			// TODO(recurrence-ci-hang): root-cause the Linux collection hang.
-			"**/__tests__/recurrence.test.ts",
+			// recurrence.test.ts was quarantined here 2026-07 as "hangs at
+			// collection on the ubuntu runner" — EXONERATED 2026-07-29: runs
+			// 30410747800 / 30412876710 hung on two DIFFERENT innocent files at
+			// the same ~600-file queue depth, and each "guilty" file passed once
+			// its size-order position moved. The hang tracks queue POSITION (the
+			// single-worker forks pool wedges the runner ~600 child-spawns in),
+			// not file content — recurrence just happened to sit at the lethal
+			// depth of that era's file-size distribution. Fixed by sharding the
+			// CI unit lane (ci.yml matrix, separate vitest mains); the file is
+			// back in the lane as a standing test of that diagnosis.
 		],
 	},
 });

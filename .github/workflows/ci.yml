@@ -32,9 +32,24 @@ concurrency:
 # parity test (src/__tests__/ci-pipeline-parity.integration.test.ts).
 jobs:
   unit:
-    name: unit (Linux / Node 22)
+    name: unit ${{ matrix.shard }} (Linux / Node 22)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Sharded 2026-07-29 after the lane started hanging DETERMINISTICALLY at
+    # ~600 files into the single-worker forks queue (runs 30410747800 and
+    # 30412876710): two DIFFERENT innocent pure-function files hung at the
+    # same queue depth on consecutive runs, and the file "fixed" after run 1
+    # passed once its size-order position moved — the hang tracks POSITION,
+    # not content (the 2026-07 recurrence.test.ts "collection hang" quarantine
+    # was this same misdiagnosis). With isolate:true the forks pool spawns a
+    # fresh child per test file; ~950 sequential spawns from one vitest main
+    # wedges the runner. Sharding = separate main processes = queue depth
+    # resets, plus parallel wall-clock. Shard counts must keep each slice
+    # comfortably under the observed ~580-file wedge depth.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -62,8 +77,8 @@ jobs:
       - name: Doc accuracy (landing + README vs source)
         run: npm run docs:check
 
-      - name: Test (unit lane)
-        run: npm run test:unit
+      - name: Test (unit lane, shard ${{ matrix.shard }})
+        run: npm run test:unit -- --shard=${{ matrix.shard }}
 
   integration:
     name: integration (Linux / Node 22)
