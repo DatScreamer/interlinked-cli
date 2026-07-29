@@ -14,6 +14,7 @@ import { isNonEmptyString, isPlainObject } from "./hook-installers-shared.js";
 import { CLIENT_CLAUDE, CLIENT_COPILOT } from "./hook-types.js";
 import type { JsonObject } from "./json-types.js";
 import type { ClientName } from "./settings.js";
+import { downBranchBash, resolveReviveBakes } from "./statusline-revive.js";
 
 const STATUSLINE_SCRIPT_NAME = "statusline-interlinked.sh";
 
@@ -25,12 +26,18 @@ const STATUSLINE_SCRIPT_NAME = "statusline-interlinked.sh";
  */
 const STATUSLINE_REFRESH_SECONDS = 5;
 
-function writeStatuslineScript(scriptPath: string): void {
+/** Regenerate the statusline script IN PLACE without touching any client's
+ *  settings.json — public API for refresh-after-rebuild flows (calling
+ *  {@link installStatusLine} instead would re-point statusLine.command and
+ *  silently unhook a user's personal wrapper script). */
+export function writeStatuslineScript(scriptPath: string): void {
 	// Bash script that renders a two-row, screenshot-demoable status line.
 	// Reads pre-computed state from .interlinked/statusline.snapshot (written
 	// by the harness on startup, rule reload, and a 10s tick) plus the
 	// existing per-subsystem .status files. The script itself does pure
 	// formatting — all the math lives in src/harness/statusline-snapshot.ts.
+	// The daemon-down branch (grace → auto-revive → alarm) is built by
+	// `statusline-revive.ts` with generation-time-baked absolute paths.
 	//
 	// Compatible with macOS bash 3.2 (no associative arrays).
 	const script = `#!/bin/bash
@@ -118,36 +125,7 @@ if [ -n "$PID" ] && ps -p "$PID" > /dev/null 2>&1; then
     ALIVE=1
 fi
 
-# Debounce transient restart windows. A self-healing respawn (or a SessionStart
-# relaunch) leaves harness.pid pointing at a dead process for ~1-3s; without a
-# grace period the statusline paints the full "bypassing guardrails" alarm on
-# that blip even though the cold-path gate is already blocking edits fail-closed.
-# Track how long the daemon has looked down via a marker file: under the grace
-# window show a calm "restarting" row; only past it the real outage alarm.
-DOWN_MARK="$ID/.statusline-down-since"
-DOWN_GRACE_SECS=6
-if [ "$ALIVE" = "0" ]; then
-    NOW=$(date +%s)
-    SINCE="$NOW"
-    if [ -f "$DOWN_MARK" ]; then
-        SINCE=$(cat "$DOWN_MARK" 2>/dev/null || echo "$NOW")
-    else
-        echo "$NOW" > "$DOWN_MARK" 2>/dev/null
-    fi
-    case "$SINCE" in *[!0-9]*) SINCE="$NOW";; esac
-    if [ "$((NOW - SINCE))" -lt "$DOWN_GRACE_SECS" ]; then
-        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness restarting…\${RESET}"
-        LINE2="\${DIM}auto-recovering — edits blocked until it's back\${RESET}"
-        printf '%s\\n%s' "$LINE1" "$LINE2"
-        exit 0
-    fi
-    BRAND="\${RED}\${BOLD}◆ interlinked\${RESET}"
-    LINE1="\${BRAND}\${SEP}\${YELLOW}▼ harness offline\${RESET}\${SEP}\${RED}Claude is bypassing guardrails\${RESET}"
-    LINE2="\${CYAN}↻ interlinked harness start\${RESET}"
-    printf '%s\\n%s' "$LINE1" "$LINE2"
-    exit 0
-fi
-rm -f "$DOWN_MARK" 2>/dev/null
+${downBranchBash(resolveReviveBakes())}
 
 # --- Snapshot fields (with sensible defaults for missing keys) ---
 SMODE=$(read_snap sync_mode realtime)

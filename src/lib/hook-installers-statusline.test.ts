@@ -160,6 +160,77 @@ describe("installStatusLine — script generation", () => {
 		expect(script).toContain('"$LAST_AGE" -lt 86400');
 	});
 
+	// The generated statusline is the daemon's only idle-time heartbeat: the
+	// runner re-executes it every few seconds (refreshInterval) even when no
+	// tools run. Before 2026-07-28 the down-branch only ALARMED — a daemon
+	// killed during idle (jetsam on a swap-pinned box) stayed dead for hours,
+	// statusline red, until the next tool call fired a hook. These pins hold
+	// the down-branch to its revival duty.
+	describe("auto-revive block — positive (must revive)", () => {
+		const seededServer = join(process.cwd(), "dist", "harness", "server.js");
+		beforeEach(() => {
+			// getHarnessServerPath probes real candidates through the mocked fs;
+			// seed the source-checkout dist path so generation bakes a real one.
+			files.set(seededServer, "// compiled server");
+		});
+
+		it("P1: bakes the generating process's absolute node binary", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain(`REVIVE_NODE="${process.execPath}"`);
+		});
+
+		it("P2: bakes the resolved absolute harness server entry", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain(`REVIVE_SERVER="${seededServer}"`);
+		});
+
+		it("P3: spawns with the canonical heap regulator and expose-gc flags", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain("--max-old-space-size=");
+			expect(script).toContain("--expose-gc");
+		});
+
+		it("P4: throttles attempts via a marker file, spaced at least 20s apart", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain('REVIVE_MARK="$ID/.statusline-revive-at"');
+			expect(script).toContain("REVIVE_THROTTLE_SECS=20");
+		});
+
+		it("P5: renders a calm auto-reviving row first, alarms only past the threshold", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain("REVIVE_ALARM_SECS=45");
+			expect(script).toContain("auto-reviving");
+			expect(script).toContain("harness offline");
+		});
+
+		it("P6: revival targets the walked-to repo root and is fully detached + silenced", () => {
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			const spawnLine = script
+				.split("\n")
+				.find((l) => l.includes('"$REVIVE_SERVER" --cwd'));
+			expect(spawnLine).toBeDefined();
+			expect(spawnLine).toContain('--cwd "$ROOT"');
+			expect(spawnLine).toContain(">/dev/null 2>&1 &");
+		});
+	});
+
+	describe("auto-revive block — negative (must degrade safely)", () => {
+		it("N1: with no resolvable server entry the script still generates, with an empty bake the bash guards", () => {
+			// No dist seeded: getHarnessServerPath returns "" and the spawn
+			// condition requires -n "$REVIVE_SERVER", so revival simply no-ops.
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			expect(script).toContain('REVIVE_SERVER=""');
+			expect(script).toContain('-n "$REVIVE_SERVER"');
+		});
+	});
+
 	it("creates the ~/.interlinked directory when it does not exist", () => {
 		installStatusLine(["claude"]);
 		expect(mockFs.mkdirSync).toHaveBeenCalledWith(join(HOME, ".interlinked"), {

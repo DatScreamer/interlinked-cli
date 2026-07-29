@@ -43,6 +43,7 @@ import { type FilePriority } from "./file-priority.js";
 import { FileContentCache } from "./grep-accelerator.js";
 import { createLearnedRulesStore } from "./learned-rules.js";
 import { sweepStaleLiveSnapshots } from "./live-snapshot.js";
+import { clearManifestCache } from "./mutation/manifest.js";
 import {
 	type ClassifierSessionState,
 	resolveApiKey,
@@ -679,10 +680,8 @@ setUnwatchers(unwatchRules, unwatchSettings);
 installDaemonTimers({
 	refreshStatuslineSnapshot,
 	shutdown: () => shutdownWith("rss-ceiling"),
-	// Hand over instead of exiting into a void: a bare rss-ceiling exit waits
-	// for the next tool call's self-heal, which never comes between turns
-	// (measured: an 11-minute daemonless hole). The handover row lets the
-	// eventual SIGTERM exit explain itself as this recycle.
+	// Hand over instead of exiting into a void: a bare exit waits for a
+	// self-heal that never comes between turns. Row lets the exit explain itself.
 	requestHandOver: () => {
 		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "handover", reason: "rss-ceiling" });
 		return spawnRestartViaCli(import.meta.url, CWD);
@@ -692,6 +691,13 @@ installDaemonTimers({
 	onSpike: (rssMb, deltaMb) =>
 		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick` }),
 	snapshotDir: INTERLINKED_DIR,
+	// Idle shrink (~5min no events): drop manifest + force GC — not a jetsam target.
+	lastEventAtMs: () => lastHookEventAtMs,
+	shrinkIdleMemory: () => {
+		clearManifestCache();
+		// SAFETY: gc exists only under --expose-gc (every spawn path passes it).
+		(globalThis as { gc?: () => void }).gc?.();
+	},
 	log: logAlways,
 });
 

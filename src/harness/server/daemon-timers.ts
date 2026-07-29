@@ -47,7 +47,18 @@ export interface DaemonTimerHooks {
 	onSpike?: (rssMb: number, deltaMb: number) => void;
 	/** Directory for SIGUSR2 heap snapshots; absent disables the handler. */
 	snapshotDir?: string;
+	/** Timestamp of the last hook event this daemon served (server tracks it
+	 *  for the idle timer already). Enables the idle shrink below. */
+	lastEventAtMs?: () => number;
+	/** Drop shrinkable caches (parsed manifest, forced GC). Called once per
+	 *  idle period, re-armed by new activity: an idle daemon on a swap-pinned
+	 *  box is a jetsam target for memory it doesn't need until the next event
+	 *  — measured 2026-07-28, row-less SIGKILLs during a 2h idle gap. */
+	shrinkIdleMemory?: () => void;
 }
+
+/** Idle time after which the shrink fires (once per idle period). */
+const IDLE_SHRINK_AFTER_MS = 5 * 60_000;
 
 /**
  * Start the daemon's background timers. Returns a stop function for tests.
@@ -91,12 +102,23 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 		}
 	};
 	if (hooks.snapshotDir) process.on("SIGUSR2", onSigusr2);
+	// Idle shrink: fire once per idle period. `lastShrinkAt < lastEvent` means
+	// "no shrink since the last event" — firing stamps lastShrinkAt past the
+	// idle period's event, and only a NEWER event re-arms the comparison.
+	let lastShrinkAt = 0;
 	const memory = setInterval(() => {
 		const rss = readRss();
 		const delta = rss - prevRss;
 		prevRss = rss;
 		if (delta > SPIKE_DELTA_BYTES) {
 			hooks.onSpike?.(Math.round(rss / BYTES_PER_MB), Math.round(delta / BYTES_PER_MB));
+		}
+		if (hooks.lastEventAtMs && hooks.shrinkIdleMemory) {
+			const lastEvent = hooks.lastEventAtMs();
+			if (Date.now() - lastEvent >= IDLE_SHRINK_AFTER_MS && lastShrinkAt < lastEvent) {
+				lastShrinkAt = Date.now();
+				hooks.shrinkIdleMemory();
+			}
 		}
 		if (!shouldRecycle(rss, ceiling)) return;
 		// A successor was already spawned — give its `harness restart` time to

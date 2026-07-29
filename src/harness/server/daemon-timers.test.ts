@@ -190,3 +190,65 @@ describe("installDaemonTimers — hand-over on recycle", () => {
 		h.stop();
 	});
 });
+
+describe("installDaemonTimers — idle shrink", () => {
+	// A daemon idle for minutes on a swap-pinned box is a jetsam target for
+	// memory it doesn't need until the next event: drop the shrinkable caches
+	// once per idle period, re-armed by new activity.
+	function idleHarness(lastEventAtMs: () => number) {
+		const shrinkIdleMemory = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => 100 * MB,
+			ceilingBytes: 500 * MB,
+			lastEventAtMs,
+			shrinkIdleMemory,
+		});
+		return { shrinkIdleMemory, stop };
+	}
+
+	it("P1: shrinks once after the idle threshold, not on every subsequent tick", () => {
+		const start = Date.now();
+		const h = idleHarness(() => start);
+		vi.advanceTimersByTime(6 * 60_000);
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(10 * 60_000);
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
+		h.stop();
+	});
+
+	it("P2: new activity re-arms the shrink for the next idle period", () => {
+		const start = Date.now();
+		let lastEvent = start;
+		const h = idleHarness(() => lastEvent);
+		vi.advanceTimersByTime(6 * 60_000);
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
+		lastEvent = Date.now(); // an event arrives
+		vi.advanceTimersByTime(6 * 60_000);
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(2);
+		h.stop();
+	});
+
+	it("N1: recent activity means no shrink", () => {
+		const h = idleHarness(() => Date.now());
+		vi.advanceTimersByTime(10 * 60_000);
+		expect(h.shrinkIdleMemory).not.toHaveBeenCalled();
+		h.stop();
+	});
+
+	it("N2: absent hooks leave the timers working as before", () => {
+		const shutdown = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown,
+			log: vi.fn(),
+			rssBytes: () => 100 * MB,
+			ceilingBytes: 500 * MB,
+		});
+		vi.advanceTimersByTime(10 * 60_000);
+		expect(shutdown).not.toHaveBeenCalled();
+		stop();
+	});
+});
