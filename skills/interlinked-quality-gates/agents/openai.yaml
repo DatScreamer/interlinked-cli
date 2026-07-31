@@ -1,4 +1,4 @@
 interface:
   display_name: "Interlinked Quality Gates"
-  short_description: "Meet coverage, complexity, CRAP, and size ratchets"
-  default_prompt: "Use $interlinked-quality-gates to resolve this metric ratchet by improving code or tests without weakening the baseline."
+  short_description: "Configure and meet metric and mutation ratchets"
+  default_prompt: "Use $interlinked-quality-gates to configure or resolve this metric or mutation ratchet without weakening its baseline."

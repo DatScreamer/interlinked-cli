@@ -1,5 +1,16 @@
 {
   "per_edit_coverage": {
     "budget_ms": 150000
-  }
+  },
+  "file_reminders": [
+    {
+      "id": "repo-skill-impact-review",
+      "glob": "src/**|cloud/**|docs/design/**|docs/architecture.md|docs/harness.md|.github/workflows/**|AGENTS.md|CLAUDE.md|README.md|package.json|stryker.conf.json|vitest.stryker.config.ts",
+      "operations": ["Edit", "Write", "apply_patch"],
+      "message": "REPO-SPECIFIC: major CLI behavior, harness policy, configuration/default, client, baseline, architecture, or operator-workflow changes MUST include a skill-impact review. Update every affected skills/*/SKILL.md in the same change; .agents/skills is only an installed copy. If none is affected, state why in the final handoff.",
+      "once_per_session": true,
+      "created_at": "2026-07-29T00:00:00.000Z",
+      "created_by": "repo-policy"
+    }
+  ]
 }

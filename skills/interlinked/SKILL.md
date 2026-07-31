@@ -30,10 +30,12 @@ Everything is per-`cwd` under `<repo>/.interlinked/`. Key files:
 |---|---|---|
 | `config.json` | committed | server URL, defaults, operational mode, feature flags |
 | `config.local.json` | gitignored | token, agent name, workspace, sync mode |
-| `guard-rules.json` / `.local.json` | team / local | guard rules, protected files, `disabled_rules` |
+| `guard-rules.json` / `.local.json` | team / local | guard rules, file reminders, per-edit coverage/mutation policy |
+| `check-policy.json` / `.local.json` | team / local | report-ratchet settings, including the mutation-score floor |
 | `package-allowlist.json` | committed | approved dependencies (default-deny installs) |
 | `verify-suppressions.json` | committed | file/glob check suppressions |
 | `*-baseline.json`, `metric-caps.json` | mixed | ratchet water-lines (coverage/mutation/line-cap/caps) |
+| `mutation-manifest.json` | mixed | stable per-mutant state for the live per-edit mutation ratchet |
 | `activity.jsonl`, `collection.jsonl`, `timeline.jsonl` | local | captured agent activity (`enable` gitignores the first two) |
 | `harness.sock` / `harness.pid` | — | the running daemon |
 
@@ -59,10 +61,10 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 
 | Situation | Load |
 |---|---|
-| Installing / enabling Interlinked, connecting a runner, daemon down, `doctor` fails, config/mode | **interlinked-setup** |
+| Installing / enabling Interlinked, connecting a coding client/hook, daemon down, `doctor` fails, config/mode | **interlinked-setup** |
 | A Bash command or edit was **BLOCKED** by a guard rule; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
 | Running `interlinked verify`; a `pre_block` check blocked an edit; landing a cross-file refactor; scratch scripts | **interlinked-verify** |
-| Blocked by a **line-cap / coverage / complexity / CRAP** ratchet; "can't lower a baseline"; `adopt`; debt | **interlinked-quality-gates** |
+| Blocked by a **line-cap / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; debt | **interlinked-quality-gates** |
 | An `npm/pip/cargo/…` install or manifest edit was blocked; the package **allowlist** | **interlinked-supply-chain** |
 | Spec/doc facts, drift, invariants, review **findings**, `doctest`; `[interlinked:spec-*]` | **interlinked-spec-audit** |
 | Inspect activity/logs, tail live, guard-block history, **recurrence**, `viz`, `audit`, `sync` | **interlinked-observability** |
