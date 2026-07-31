@@ -621,6 +621,26 @@ describe("createSseReassembler", () => {
 		expect(msg?.id).toBe("m21");
 	});
 
+	it("trims padding that JSON.parse itself rejects (BOM / NBSP / FF / LS / ideographic space)", () => {
+		// The ASCII-space case above does NOT actually prove `.trim()` runs: JSON.parse
+		// is tolerant of space/tab/CR/LF on its own, so dropping `.trim()` still parses.
+		// String.prototype.trim() strips the FULL Unicode WhiteSpace+LineTerminator set,
+		// which is strictly larger than JSON's four whitespace characters. These five pads
+		// are stripped by trim() and REJECTED by JSON.parse — so the payload parses only
+		// because trim() ran first. Without it the line throws, the per-line catch swallows
+		// it, and the message never arrives (finish() -> null). Real sources of this padding:
+		// BOM-prefixed UTF-8 bodies and intermediaries that re-encode spaces as U+00A0.
+		// Explicit code points: these characters are invisible in a diff.
+		const PADS = [0xfeff, 0x00a0, 0x000c, 0x2028, 0x3000].map((cp) => String.fromCodePoint(cp));
+		const padded = PADS.map((pad) => {
+			const r = createSseReassembler();
+			const body = JSON.stringify({ type: "message_start", message: { id: "padded" } });
+			r.push(`data: ${pad}${body}${pad}\n\n`);
+			return r.finish()?.id ?? null;
+		});
+		expect(padded).toEqual(["padded", "padded", "padded", "padded", "padded"]);
+	});
+
 	it("does NOT process a line that merely happens to look like data after the prefix is stripped", () => {
 		const r = createSseReassembler();
 		// This line does NOT start with "data:" — it starts with "12345". But its first
@@ -643,6 +663,35 @@ describe("createSseReassembler", () => {
 		const msg = r.finish();
 		// The malformed line's catch block must not abort the whole drain.
 		expect(msg?.id).toBe("m22");
+	});
+
+	it("isolates a throwing data line at LINE granularity, not event granularity", () => {
+		// The try/catch sits inside the per-LINE loop, so a throw on one `data:` line
+		// must not skip a later `data:` line of the SAME SSE event (one part, no blank
+		// line between them). The test above only proves isolation ACROSS events.
+		//
+		// This is a load-bearing invariant, not a curiosity: the equivalence argument
+		// for the surviving `if (usage)` / `if (shell)` / `!payload` / `if (data)`
+		// guard mutants rests entirely on "a swallowed throw leaves no observable
+		// trace, including on subsequent lines". If the catch is ever hoisted to wrap
+		// the whole part — or given a body — those guards become killable and this
+		// test is where the change surfaces.
+		const r = createSseReassembler();
+		r.push(
+			[
+				"data: {not json at all",
+				`data: ${JSON.stringify({ type: "message_start", message: { id: "same-event" } })}`,
+				"data: 12345",
+				`data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "kept" } })}`,
+				"",
+				"",
+			].join("\n"),
+		);
+		const msg = r.finish();
+		expect(msg?.id).toBe("same-event");
+		// SAFETY: finish() always sets content to the ordered block array.
+		const content = msg?.content as Array<Record<string, unknown>>;
+		expect(content).toEqual([{ type: "text", text: "kept" }]);
 	});
 
 	// --- finish(): block ordering must be numeric, not insertion or reversed ----

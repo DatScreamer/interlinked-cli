@@ -75,27 +75,33 @@ export function parseNameOnlyLog(text: string): CommitFiles[] {
 /** Pairwise co-change counts over non-bulk commits, Tornhill strength, filtered + sorted. */
 export function computeCoupling(commits: CommitFiles[], opts: CouplingOptions): CouplingPair[] {
 	const revs = new Map<string, number>();
-	const pairSupport = new Map<string, number>();
+	// Nested map rather than a `${a}\x00${b}` string key: no byte is impossible in a
+	// path, so a flattened key is lossy — it both mis-reports the pair identity (the
+	// split hands back substrings that were never inputs) and collides two distinct
+	// pairs onto one support count.
+	const pairSupport = new Map<string, Map<string, number>>();
 	for (const commit of commits) {
 		const files = [...new Set(commit.files)].sort();
 		if (files.length === 0 || files.length > opts.maxCommitFiles) continue;
 		for (const f of files) revs.set(f, (revs.get(f) ?? 0) + 1);
-		for (let i = 0; i < files.length; i++) {
-			for (let j = i + 1; j < files.length; j++) {
-				const key = `${files[i]}\x00${files[j]}`;
-				pairSupport.set(key, (pairSupport.get(key) ?? 0) + 1);
-			}
+		for (const [i, a] of files.entries()) {
+			const row = pairSupport.get(a) ?? new Map<string, number>();
+			pairSupport.set(a, row);
+			for (const b of files.slice(i + 1)) row.set(b, (row.get(b) ?? 0) + 1);
 		}
 	}
 	const pairs: CouplingPair[] = [];
-	for (const [key, support] of pairSupport) {
-		if (support < opts.minSupport) continue;
-		const [a, b] = key.split("\x00") as [string, string];
-		const revA = revs.get(a) ?? support;
-		const revB = revs.get(b) ?? support;
-		const strength = Math.round((support / ((revA + revB) / 2)) * 100);
-		if (strength < opts.minStrength) continue;
-		pairs.push({ a, b, support, revA, revB, strength });
+	for (const [a, row] of pairSupport) {
+		const revA = revs.get(a) ?? 0;
+		for (const [b, support] of row) {
+			if (support < opts.minSupport) continue;
+			// Both members were counted into `revs` in the same iteration that created
+			// this row, so these lookups are total; the `?? 0` only satisfies the type.
+			const revB = revs.get(b) ?? 0;
+			const strength = Math.round((support / ((revA + revB) / 2)) * 100);
+			if (strength < opts.minStrength) continue;
+			pairs.push({ a, b, support, revA, revB, strength });
+		}
 	}
 	pairs.sort(
 		(x, y) => y.strength - x.strength || y.support - x.support || x.a.localeCompare(y.a),
@@ -152,6 +158,18 @@ interface MetricsCouplingOpts {
 	limit?: string;
 	json?: boolean;
 	short?: boolean;
+}
+
+/**
+ * `--flag 0` means 0. The original `Number(raw) || fallback` was falsy-guarded, so
+ * every explicit zero silently became the default — `--min-strength 0` asked for no
+ * floor and got the 30% one. Missing, blank, and non-numeric values still fall back.
+ */
+function numericOption(raw: string | undefined, fallback: number): number {
+	const text = (raw ?? "").trim();
+	if (text === "") return fallback;
+	const parsed = Number(text);
+	return Number.isNaN(parsed) ? fallback : parsed;
 }
 
 function importLookupFor(cwd: string): (a: string, b: string) => boolean | null {
@@ -216,11 +234,11 @@ export async function metricsCouplingCommand(opts: MetricsCouplingOpts): Promise
 		files: c.files.filter((f) => !EXCLUDE_RE.test(f)),
 	}));
 	const pairs = computeCoupling(commits, {
-		minSupport: Number(opts.minSupport ?? "") || 4,
-		maxCommitFiles: Number(opts.maxCommitFiles ?? "") || 30,
-		minStrength: Number(opts.minStrength ?? "") || 30,
+		minSupport: numericOption(opts.minSupport, 4),
+		maxCommitFiles: numericOption(opts.maxCommitFiles, 30),
+		minStrength: numericOption(opts.minStrength, 30),
 	});
-	const limit = Number(opts.limit ?? "") || 25;
+	const limit = numericOption(opts.limit, 25);
 	const annotated = annotateRelations(pairs.slice(0, limit), importLookupFor(cwd));
 
 	output(mode, annotated, {

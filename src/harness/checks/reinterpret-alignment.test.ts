@@ -353,15 +353,54 @@ describe("checkUnalignedReinterpret — adversarial-review regressions (2026-07-
 	});
 
 	it(
-		"stays linear and silent on a 200KB flood of never-closing wide-view constructors",
+		"stays linear and silent on a flood of never-closing wide-view constructors",
 		() => {
-			const adversarial = "new DataView(buf ".repeat(12048).slice(0, 200 * 1024);
-			const t0 = performance.now();
-			expect(runJs(adversarial, "src/a.ts")).toEqual([]);
-			// Pre-fix this took ~7.8s (quadratic scan-to-EOF per match); post-fix ~0.1s.
-			expect(performance.now() - t0).toBeLessThan(2500);
+			// This asserted `elapsed < 2500ms` and was flaky by construction: an
+			// absolute wall-clock ceiling measures the MACHINE, not the code. Under
+			// v8 coverage instrumentation the identical work took 3284ms and 2643ms
+			// (measured 2026-07-31) — a red suite caused entirely by the harness
+			// watching itself. Third instance of this class in the repo.
+			//
+			// A 64KB-vs-128KB ratio replaced it, asserting linear ≈2x against a 3x
+			// threshold — and that was ALSO flaky, failing the full suite at 3.13 and
+			// 4.26 (measured the same day). Separating 2x from 4x demands timing
+			// PRECISION, and at ~25ms per sample JIT warm-up and scheduler noise
+			// exceed the gap. The lesson is not "ratios are bad" but "do not ask a
+			// noisy instrument for a fine distinction".
+			//
+			// So ask it for a COARSE one. The regression being guarded is enormous —
+			// scan-to-EOF per match, ~7.8s vs ~0.1s at 200KB, about 78x. Measure a
+			// small CONTROL and a 32x-larger SUBJECT in the same process: a linear
+			// scan lands near 32x the control, a quadratic one near 1024x. Asserting
+			// below 150x leaves ~4.7x headroom over linear while still catching a
+			// quadratic blow-up ~7x below where it would land. Machine speed and
+			// coverage instrumentation scale BOTH terms, so they cancel.
+			const flood = (bytes: number) =>
+				"new DataView(buf ".repeat(Math.ceil(bytes / 17) + 1).slice(0, bytes);
+			// min-of-N: the minimum is the cleanest timing estimator, since noise can
+			// only ever make a sample slower. The control gets more reps because it is
+			// the denominator, where an over-estimate would mask a real regression.
+			const timeOf = (bytes: number, reps: number): number => {
+				const src = flood(bytes);
+				let best = Number.POSITIVE_INFINITY;
+				for (let i = 0; i < reps; i++) {
+					const t0 = performance.now();
+					expect(runJs(src, "src/a.ts")).toEqual([]);
+					best = Math.min(best, performance.now() - t0);
+				}
+				return best;
+			};
+
+			const CONTROL_BYTES = 16 * 1024;
+			const SUBJECT_BYTES = 32 * CONTROL_BYTES; // 512KB
+			const control = timeOf(CONTROL_BYTES, 5);
+			const subject = timeOf(SUBJECT_BYTES, 3);
+			// Floor the denominator: a sub-millisecond control is unresolvable by
+			// performance.now(), and a very fast machine must never fail this test.
+			const ratio = subject / Math.max(control, 0.5);
+			expect(ratio).toBeLessThan(150);
 		},
-		30_000,
+		60_000,
 	);
 });
 

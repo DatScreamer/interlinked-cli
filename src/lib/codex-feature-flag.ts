@@ -20,6 +20,13 @@
 // already present, with comments stripped. If neither is present we
 // either insert the canonical key inside an existing `[features]` block
 // or append a new one at EOF.
+//
+// Line endings: we split on "\n" and join on "\n", which leaves any "\r"
+// attached to the line it terminates — so every byte we pass through
+// round-trips exactly and a Windows (CRLF) config stays CRLF. Lines we ADD
+// are terminated with the file's own dominant ending (`dominantCr`) so we
+// never leave a user's config with mixed endings. See `stripTomlLineComment`
+// for why the comment strip must not use `.` or `$`.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -76,7 +83,7 @@ export function ensureCodexFeatureFlag(base: string): EnsureFeatureFlagAction {
 	// shouldn't be treated as enabled.
 	const uncommented = existing
 		.split("\n")
-		.map((line) => line.replace(/#.*$/, ""))
+		.map((line) => stripTomlLineComment(line))
 		.join("\n");
 
 	const canonicalPresent = FEATURE_FLAG_REGEX.test(uncommented);
@@ -100,13 +107,30 @@ export function ensureCodexFeatureFlag(base: string): EnsureFeatureFlagAction {
 		return "appended";
 	}
 
-	// No [features] block yet — append a fresh one at EOF.
-	const sep = existing.endsWith("\n") ? "" : "\n";
-	writeFileSync(
-		tomlPath,
-		`${existing}${sep}\n# Added by interlinked\n[features]\nhooks = true\n`,
-	);
+	// No [features] block yet — append a fresh one at EOF, terminated the same
+	// way the rest of the file is so a CRLF config does not end up mixed.
+	const eol = `${dominantCr(existing)}\n`;
+	const sep = existing.endsWith("\n") ? "" : eol;
+	const block = ["", "# Added by interlinked", "[features]", "hooks = true", ""].join(eol);
+	writeFileSync(tomlPath, `${existing}${sep}${block}`);
 	return "appended";
+}
+
+/**
+ * The carriage return that terminates this file's lines: `"\r"` when CRLF
+ * endings are the majority, `""` otherwise. Because we join lines with `"\n"`,
+ * appending this to a line we author is what makes it CRLF.
+ *
+ * Ties go to `""` (LF) — that matches the ending we use for a file we create,
+ * so an ambiguous file is nudged toward the one we'd have written ourselves.
+ */
+function dominantCr(content: string): "\r" | "" {
+	// Counted via split rather than `match(…) ?? []` so a file with no newline
+	// at all is just a 1-element split, not a null needing a fallback.
+	const newlines = content.split("\n").length - 1;
+	const crlf = content.split("\r\n").length - 1;
+	// The remaining `newlines - crlf` terminators are bare LF.
+	return crlf > newlines - crlf ? "\r" : "";
 }
 
 /** When `canonicalAlsoPresent`, strip legacy lines entirely (canonical
@@ -117,7 +141,7 @@ function stripOrRenameLegacyKey(content: string, canonicalAlsoPresent: boolean):
 	const lines = content.split("\n");
 	const out: string[] = [];
 	for (const line of lines) {
-		const stripped = line.replace(/#.*$/, "");
+		const stripped = stripTomlLineComment(line);
 		if (LEGACY_FEATURE_FLAG_REGEX.test(stripped)) {
 			if (canonicalAlsoPresent) {
 				// Drop the redundant legacy line entirely.
@@ -160,10 +184,29 @@ function insertIntoExistingFeaturesBlock(existing: string): string | null {
 
 	const before = lines.slice(0, featuresEnd);
 	const after = lines.slice(featuresEnd);
-	before.push("hooks = true");
+	// Carry the file's own terminator so inserting into a CRLF config does not
+	// leave one lone LF line in the middle of it — but only when the join will
+	// actually put a "\n" after our line. A trailing "\r" with no "\n" is a bare
+	// CR, which TOML does not accept as a newline.
+	const cr = after.length > 0 ? dominantCr(existing) : "";
+	before.push(`hooks = true${cr}`);
 	return [...before, ...after].join("\n");
 }
 
+/**
+ * Remove a TOML line comment (`#` to end of line) for DETECTION purposes. The
+ * result is only ever tested/trimmed, never written back, so eating the line's
+ * trailing terminator along with the comment is harmless.
+ *
+ * `[^\n]*` rather than `.*$` is load-bearing. JS `.` excludes all four line
+ * terminators (\n, \r, U+2028, U+2029) and `$` without /m anchors at true
+ * end-of-string, so on a CRLF file — where splitting on "\n" leaves a trailing
+ * "\r" on every line — `/#.*$/` could never match and the comment survived the
+ * "strip". A commented-out `# hooks = true` then read as ENABLED, a legacy key
+ * inside a comment got rewritten, and `[features] # cfg` stopped looking like a
+ * table header (so a duplicate `[features]` table was appended). U+2028/U+2029
+ * are not line breaks in TOML, so consuming them here is also the correct read.
+ */
 function stripTomlLineComment(line: string): string {
-	return line.replace(/#.*$/, "");
+	return line.replace(/#[^\n]*/, "");
 }

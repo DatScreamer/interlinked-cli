@@ -87,11 +87,17 @@ function recognizedLegacySkill(
     };
 }
 
+/** Both headings the pre-native-Cursor installer emitted: the generated
+ * teaching-skill alias used `# <name>`, the hand-written enforce alias used the
+ * slash-command form `# /<name>`. Recognizing only the first left every
+ * `.cursor/rules/enforce.mdc` un-flagged by `doctor` and undeleted by
+ * uninstall. Both still require the canonical-path pointer as corroboration. */
 function recognizedCursorAlias(name: string): (content: Buffer) => boolean {
+    const headings = [`# ${name} — Cursor rule alias`, `# /${name} — Cursor rule alias`];
     return (content) => {
         const text = content.toString("utf-8");
         return (
-            text.includes(`# ${name} — Cursor rule alias`) &&
+            headings.some((heading) => text.includes(heading)) &&
             text.includes(`.interlinked/skills/${name}/SKILL.md`)
         );
     };
@@ -281,6 +287,34 @@ function failedResults(
     }));
 }
 
+interface CanonicalWrite {
+    skillContent: string;
+    config: SkillRenderConfig;
+    legacyEvidence: ReadonlyMap<string, Buffer>;
+}
+
+/** Prepare + write the canonical copies, degrading to per-client failures.
+ * `sourceSkillContent` throws on a malformed bundled skill and used to sit
+ * OUTSIDE this boundary, so `installSkills` aborted the whole fan-out where
+ * `installEnforceSkill` (which wraps its call) merely reported. */
+function writeCanonicalCopies(
+    cwd: string,
+    clients: readonly ClientName[],
+    name: string,
+    files: readonly SkillSourceFile[],
+    manifest: SkillInstallManifest,
+): CanonicalWrite | SkillInstallResult[] {
+    try {
+        const skillContent = sourceSkillContent(files);
+        const config = buildSkillConfig(name);
+        const legacyEvidence = collectLegacyEvidence(cwd, clients, name, config);
+        writeManagedSkillFiles(cwd, manifest, canonicalSpecs(name, files, legacyEvidence));
+        return { skillContent, config, legacyEvidence };
+    } catch (err) {
+        return failedResults(clients, name, err);
+    }
+}
+
 function installOneSkill(
     cwd: string,
     clients: readonly ClientName[],
@@ -289,14 +323,9 @@ function installOneSkill(
 ): SkillInstallResult[] {
     const files = readSkillSourceFiles(name);
     if (!files) return failedResults(clients, name, `Skill source not found: ${name}`);
-    const skillContent = sourceSkillContent(files);
-    const config = buildSkillConfig(name);
-    const legacyEvidence = collectLegacyEvidence(cwd, clients, name, config);
-    try {
-        writeManagedSkillFiles(cwd, manifest, canonicalSpecs(name, files, legacyEvidence));
-    } catch (err) {
-        return failedResults(clients, name, err);
-    }
+    const canonical = writeCanonicalCopies(cwd, clients, name, files, manifest);
+    if (Array.isArray(canonical)) return canonical;
+    const { skillContent, config, legacyEvidence } = canonical;
 
     return clients.map((client) => {
         const specs = targetFiles(client, name, config, files, skillContent, legacyEvidence);

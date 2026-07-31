@@ -1,13 +1,36 @@
 // Behavioral tests for the harness server event loop (`createEventLoop`).
 //
 // The factory closes over a bag of sibling-module functions and `deps`
-// callbacks. We mock every sibling import so each branch (parse failure,
+// callbacks. Most sibling imports are mocked so each branch (parse failure,
 // lazy hydrate, lifecycle early-return, Pre/Post dispatch, non-tool allow,
 // latency-append failure, snapshot write/serialize failure, framed error
 // rethrow) can be driven deterministically and asserted on real outputs +
-// real call effects — no source-text scraping, no real fs / net / clock.
+// real call effects — no source-text scraping anywhere, and no network.
+//
+// TWO deliberate exceptions, because the wiring under test IS the effect:
+//   * `./replay/harness-clock.js` (G4) — the frozen-clock branch is asserted
+//     on the real millisecond value `harnessNow()` returns INSIDE the
+//     pipeline, so these tests read the real wall clock.
+//   * `./replay/tree-snapshot.js` (G2) — the snapshot branch is asserted on
+//     real rows written by real `git` subprocesses into a throwaway repo
+//     under `tmpdir()`, so these tests do real fs + spawn real `git`.
+//
+// Ambient-state hygiene (both exceptions read process state directly):
+//   * INTERLINKED_REPLAY_CLOCK / INTERLINKED_REPLAY_TREE_SNAPSHOTS are
+//     shipped daemon operating modes read straight off `process.env` by the
+//     SUT. A root beforeEach clears both, and every test that needs one sets
+//     it explicitly through `withEnv` — running the suite under either mode
+//     must not change a verdict.
+//   * git inherits `process.env` and the user's global/system config in BOTH
+//     the fixture and the SUT, so both go through `HERMETIC_GIT_ENV`
+//     (config neutralized, GIT_DIR/GIT_INDEX_FILE/... cleared, identity
+//     pinned) — the fixture repo cannot be reached by ambient git state.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "../lib/json-types.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
@@ -52,6 +75,10 @@ import { forwardCloudPreToolUse } from "./cloud-forward.js";
 import { appendLatencyLog } from "./latency-log.js";
 import { toLegacyHarnessEvent } from "./legacy-client.js";
 import { readLiveSnapshot, writeLiveSnapshot } from "./live-snapshot.js";
+// The G4 clock and the G2 replay-snapshot writers are NOT mocked — the loop's
+// clock-freeze and snapshot-wiring branches are asserted through their real
+// effects (a frozen `harnessNow()` reading; snapshot rows on disk).
+import { harnessNow } from "./replay/harness-clock.js";
 import { buildLatencyRecord } from "./server/latency-record.js";
 import { handleLifecycleEvent } from "./server/lifecycle-events.js";
 import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
@@ -83,7 +110,7 @@ interface FakeSession {
 	files_written: Set<string>;
 }
 
-function makeHarness() {
+function makeHarness(cwd = "/repo") {
 	const log = vi.fn();
 	const sessionMap = new Map<string, FakeSession>();
 
@@ -97,8 +124,8 @@ function makeHarness() {
 	};
 
 	const ctx = {
-		cwd: "/repo",
-		interlinkedDir: "/repo/.interlinked",
+		cwd,
+		interlinkedDir: `${cwd}/.interlinked`,
 		log,
 		sessions,
 	} as unknown as EventLoopDeps["ctx"];
@@ -145,6 +172,34 @@ beforeEach(() => {
 	mReadSnap.mockReturnValue(null);
 	mBuildLatency.mockReturnValue({ decision: "allow" } as ReturnType<typeof buildLatencyRecord>);
 	mToLegacy.mockImplementation((e) => e as unknown as HarnessEvent);
+});
+
+// ---- ambient replay-env neutralization ------------------------------------
+// `replayClockFor` and `maybeRecordReplaySnapshots` read these two straight
+// off `process.env`, and both are documented, shipped daemon modes — so a
+// developer (or a CI lane) running with `INTERLINKED_REPLAY_CLOCK=event` set
+// would otherwise silently change what this file asserts. Cleared before
+// every test, restored after; the tests that need a value set it via
+// `withEnv`, which nests correctly on top of this cleared baseline.
+const REPLAY_ENV_KEYS = [
+	"INTERLINKED_REPLAY_CLOCK",
+	"INTERLINKED_REPLAY_TREE_SNAPSHOTS",
+] as const;
+const savedReplayEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+	for (const key of REPLAY_ENV_KEYS) {
+		savedReplayEnv[key] = process.env[key];
+		delete process.env[key];
+	}
+});
+
+afterEach(() => {
+	for (const key of REPLAY_ENV_KEYS) {
+		const prior = savedReplayEnv[key];
+		if (prior === undefined) delete process.env[key];
+		else process.env[key] = prior;
+	}
 });
 
 describe("createEventLoop — public surface", () => {
@@ -537,5 +592,409 @@ describe("evaluateUnifiedViaRuntime", () => {
 			"inner reject",
 		);
 		expect(h.protocolStatus.framed_error_count).toBe(1);
+	});
+});
+
+describe("PostToolUse fail-open — non-Error rejection", () => {
+	it("stringifies a non-Error rejection in the fail-open log and still allows", async () => {
+		// Symmetric with the Error case above: a check that rejects with a bare
+		// string (a `throw "…"` anywhere under the post pipeline) must produce
+		// the same allow-with-warning, not an unhandled rejection or a block.
+		const h = makeHarness();
+		mPostPipeline.mockRejectedValueOnce("plain-string-post-throw");
+		const loop = createEventLoop(h.deps);
+
+		const decision = await loop.evaluateEventLine(
+			preEvent({ hook_event: "PostToolUse" }),
+			"raw",
+		);
+
+		expect(decision).toEqual({
+			decision: "allow",
+			warnings: ["[interlinked] a PostToolUse check errored and was skipped (fail-open)."],
+		});
+		expect(h.log).toHaveBeenCalledWith(
+			"PostToolUse pipeline threw (failing open): plain-string-post-throw",
+		);
+	});
+});
+
+// ---- G4 replay clock ------------------------------------------------------
+// `replayClockFor` decides whether this event's evaluation runs inside a
+// frozen-clock scope. The observable consequence is what `harnessNow()` reads
+// DOWNSTREAM of the loop (reservation expiry, marker freshness, frequency
+// windows all call it), so each case reads the real clock from inside the
+// pre-tool pipeline and asserts frozen-vs-live.
+
+/** Set env vars for the duration of `fn`, restoring prior values after. */
+async function withEnv<T>(
+	vars: Record<string, string | undefined>,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const prev: Record<string, string | undefined> = {};
+	for (const [k, v] of Object.entries(vars)) {
+		prev[k] = process.env[k];
+		if (v === undefined) delete process.env[k];
+		else process.env[k] = v;
+	}
+	try {
+		return await fn();
+	} finally {
+		for (const [k, v] of Object.entries(prev)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	}
+}
+
+/** Run one event and report the clock reading observed inside the pipeline. */
+async function clockSeenDuring(line: string): Promise<number> {
+	const h = makeHarness();
+	let seen = -1;
+	mPrePipeline.mockImplementationOnce(async () => {
+		seen = harnessNow();
+		return ALLOW;
+	});
+	const loop = createEventLoop(h.deps);
+	await loop.evaluateEventLine(line, "raw");
+	return seen;
+}
+
+describe("replayClockFor — G4 frozen evaluation clock", () => {
+	const FROZEN_TS = "2020-05-04T03:02:01.000Z";
+	const FROZEN_MS = Date.parse(FROZEN_TS);
+	// A second, DIFFERENT recorded timestamp: asserting the second event reads
+	// this one (not FROZEN_MS) is what discriminates a per-event freeze from a
+	// freeze that sticks at whatever value it saw first.
+	const SECOND_TS = "2021-06-07T08:09:10.000Z";
+	const SECOND_MS = Date.parse(SECOND_TS);
+
+	it("freezes harnessNow() at the event timestamp under INTERLINKED_REPLAY_CLOCK=event", async () => {
+		const seen = await withEnv({ INTERLINKED_REPLAY_CLOCK: "event" }, () =>
+			clockSeenDuring(preEvent({ timestamp: FROZEN_TS })),
+		);
+
+		expect(seen).toBe(FROZEN_MS);
+	});
+
+	it("re-freezes per event, and an event evaluated with the clock OFF reads real time", async () => {
+		// WHAT THIS PINS: (1) each event enters its OWN freeze — event 2 reads
+		// ITS timestamp, not event 1's, which kills a freeze that sticks at the
+		// first value it saw; (2) an event that never enters a clock scope at
+		// all reads the real clock, which kills a freeze parked in a
+		// never-cleared module global.
+		// WHAT IT DOES NOT PIN: AsyncLocalStorage scope isolation. The third
+		// call has the env var unset, so `replayClockFor` returns null and
+		// `runWithClock` is never entered — that arm cannot tell an ALS
+		// implementation from any other. The interleaving test below pins the
+		// loop-level isolation; the module-level property is pinned in
+		// ./replay/harness-clock.test.ts.
+		const frozen = await withEnv({ INTERLINKED_REPLAY_CLOCK: "event" }, () =>
+			clockSeenDuring(preEvent({ timestamp: FROZEN_TS })),
+		);
+		const second = await withEnv({ INTERLINKED_REPLAY_CLOCK: "event" }, () =>
+			clockSeenDuring(preEvent({ timestamp: SECOND_TS, session_id: "s2" })),
+		);
+		const before = Date.now();
+		// Explicit `undefined` ⇒ delete. The live arm must not rely on the
+		// ambient var happening to be unset: `INTERLINKED_REPLAY_CLOCK=event`
+		// is a shipped daemon mode and this assertion failed under it before.
+		const live = await withEnv({ INTERLINKED_REPLAY_CLOCK: undefined }, () =>
+			clockSeenDuring(preEvent({ timestamp: FROZEN_TS })),
+		);
+
+		expect(frozen).toBe(FROZEN_MS);
+		expect(second).toBe(SECOND_MS);
+		expect(second).not.toBe(FROZEN_MS);
+		expect(live).toBeGreaterThanOrEqual(before);
+		expect(live).toBeLessThanOrEqual(Date.now());
+	});
+
+	it("interleaved events keep their own frozen clocks (per-event scope, no bleed)", async () => {
+		// The daemon holds no global mutex across socket connections, so two
+		// evaluations can interleave at any await point. Here event A parks
+		// inside its pipeline until event B has entered and read from ITS
+		// frozen scope, then reads the clock a second time. Under a per-event
+		// AsyncLocalStorage scope A still sees A's timestamp; under a
+		// module-global freeze (even one restored in a `finally`) A's second
+		// read would see B's value or real time.
+		const h = makeHarness();
+		const loop = createEventLoop(h.deps);
+
+		let signalAEntered: () => void = () => {};
+		const aHasEntered = new Promise<void>((resolve) => {
+			signalAEntered = resolve;
+		});
+		let signalBRead: () => void = () => {};
+		const bHasRead = new Promise<void>((resolve) => {
+			signalBRead = resolve;
+		});
+
+		const readings: Array<{ id: string; first: number; second: number }> = [];
+		mPrePipeline.mockImplementation(async (_ctx, event) => {
+			const id = event.session_id;
+			const first = harnessNow();
+			if (id === "sA") {
+				signalAEntered();
+				await bHasRead; // A resumes only after B has read inside B's scope
+			} else {
+				await aHasEntered; // B runs only once A is parked mid-evaluation
+			}
+			const second = harnessNow();
+			readings.push({ id, first, second });
+			if (id === "sB") signalBRead();
+			return ALLOW;
+		});
+
+		await withEnv({ INTERLINKED_REPLAY_CLOCK: "event" }, async () => {
+			await Promise.all([
+				loop.evaluateEventLine(preEvent({ session_id: "sA", timestamp: FROZEN_TS }), "raw"),
+				loop.evaluateEventLine(preEvent({ session_id: "sB", timestamp: SECOND_TS }), "raw"),
+			]);
+		});
+
+		expect(readings).toHaveLength(2);
+		expect(readings.find((r) => r.id === "sA")).toEqual({
+			id: "sA",
+			first: FROZEN_MS,
+			second: FROZEN_MS,
+		});
+		expect(readings.find((r) => r.id === "sB")).toEqual({
+			id: "sB",
+			first: SECOND_MS,
+			second: SECOND_MS,
+		});
+	});
+
+	// Every way the replay clock can decline to engage. In all of them the
+	// pipeline must read real wall-clock time.
+	const liveCases: ReadonlyArray<{ name: string; env?: string; line: string }> = [
+		{
+			name: "env unset (the live daemon path)",
+			line: preEvent({ timestamp: FROZEN_TS }),
+		},
+		{
+			name: "env set to something other than 'event'",
+			env: "1",
+			line: preEvent({ timestamp: FROZEN_TS }),
+		},
+		{
+			name: "no timestamp field at all",
+			env: "event",
+			line: preEvent(),
+		},
+		{
+			name: "non-string timestamp",
+			env: "event",
+			line: JSON.stringify({
+				hook_event: "PreToolUse",
+				session_id: "s1",
+				tool_name: "Bash",
+				timestamp: 1588561321000,
+			}),
+		},
+		{
+			name: "unparseable timestamp string",
+			env: "event",
+			line: preEvent({ timestamp: "not-a-timestamp" }),
+		},
+	];
+
+	for (const c of liveCases) {
+		it(`falls back to real time — ${c.name}`, async () => {
+			const before = Date.now();
+			const seen = await withEnv({ INTERLINKED_REPLAY_CLOCK: c.env }, () =>
+				clockSeenDuring(c.line),
+			);
+			const afterCall = Date.now();
+
+			expect(seen).not.toBe(FROZEN_MS);
+			expect(seen).toBeGreaterThanOrEqual(before);
+			expect(seen).toBeLessThanOrEqual(afterCall);
+		});
+	}
+});
+
+// ---- G2 replay snapshot wiring -------------------------------------------
+// The durability `finally` also feeds `maybeRecordReplaySnapshots` three
+// fields it lifts off the RAW line / serialized snapshot: the tool-use id, the
+// phase (derived from `hook_event`), and the seq (from `snap.last_seq`). With
+// INTERLINKED_REPLAY_TREE_SNAPSHOTS=1 those land verbatim in
+// `.interlinked/replay/snapshots/index.jsonl`, so the wiring is checked
+// against real rows on disk rather than a mock's argument list.
+
+interface SnapshotRow {
+	session_id: string;
+	seq: number | null;
+	tool_use_id: string | null;
+	phase: "pre" | "post";
+}
+
+const replayFixtures: string[] = [];
+afterEach(() => {
+	for (const dir of replayFixtures.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+/** Ambient git state that would otherwise reach the fixture repo AND the
+ *  SUT's own `git` calls (`recordTreeSnapshot` spawns with `...process.env`).
+ *  `undefined` ⇒ delete. Global/system config is neutralized so a developer's
+ *  `commit.gpgsign` / `core.hooksPath` / `init.templateDir` cannot break or
+ *  redirect the fixture, GIT_DIR & friends are cleared so the fixture cannot
+ *  be pointed at another repo, and the commit identity is pinned so the
+ *  fixture commit does not depend on a configured user. */
+const HERMETIC_GIT_ENV: Record<string, string | undefined> = {
+	GIT_CONFIG_GLOBAL: "/dev/null",
+	GIT_CONFIG_SYSTEM: "/dev/null",
+	GIT_CONFIG_NOSYSTEM: "1",
+	GIT_DIR: undefined,
+	GIT_WORK_TREE: undefined,
+	GIT_INDEX_FILE: undefined,
+	GIT_COMMON_DIR: undefined,
+	GIT_OBJECT_DIRECTORY: undefined,
+	GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+	GIT_TEMPLATE_DIR: undefined,
+	GIT_AUTHOR_NAME: "probe",
+	GIT_AUTHOR_EMAIL: "t@t.local",
+	GIT_COMMITTER_NAME: "probe",
+	GIT_COMMITTER_EMAIL: "t@t.local",
+};
+
+/** `HERMETIC_GIT_ENV` applied to a copy of `base`, for `execFileSync`. */
+function hermeticGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...base };
+	for (const [key, value] of Object.entries(HERMETIC_GIT_ENV)) {
+		if (value === undefined) delete env[key];
+		else env[key] = value;
+	}
+	return env;
+}
+
+/** Env for a G2 test: the snapshot gate plus the git insulation the SUT needs
+ *  (it reads `process.env` at call time, so this must be set on the process,
+ *  not just handed to the fixture's `execFileSync`). */
+function replayEnv(gate: string | undefined): Record<string, string | undefined> {
+	return { INTERLINKED_REPLAY_TREE_SNAPSHOTS: gate, ...HERMETIC_GIT_ENV };
+}
+
+/** A minimal real git repo — `recordTreeSnapshot` seeds its temp index from
+ *  HEAD, so at least one commit must exist. */
+function makeRepoFixture(): string {
+	const dir = mkdtempSync(join(tmpdir(), "il-evloop-"));
+	replayFixtures.push(dir);
+	const env = hermeticGitEnv(process.env);
+	const git = (...args: string[]) =>
+		execFileSync("git", args, { cwd: dir, encoding: "utf-8", env });
+	git("init", "-q");
+	git("config", "user.email", "t@t.local");
+	git("config", "user.name", "probe");
+	writeFileSync(join(dir, ".gitignore"), ".interlinked/\n");
+	writeFileSync(join(dir, "a.txt"), "a\n");
+	git("add", ".gitignore", "a.txt");
+	git("commit", "-qm", "init");
+	return dir;
+}
+
+function snapshotRows(dir: string): SnapshotRow[] {
+	const path = join(dir, ".interlinked", "replay", "snapshots", "index.jsonl");
+	if (!existsSync(path)) return [];
+	return readFileSync(path, "utf-8")
+		.split("\n")
+		.filter((l) => l.trim().length > 0)
+		// SAFETY: rows are written by recordTreeSnapshot in this same test run.
+		.map((l) => JSON.parse(l) as SnapshotRow);
+}
+
+describe("evaluateEventLine — G2 replay snapshot wiring", () => {
+	it("records seq / tool_use_id / phase lifted off the raw line at a Pre boundary", async () => {
+		const dir = makeRepoFixture();
+		const h = makeHarness(dir);
+		h.sessions.serialize.mockReturnValue({ last_seq: 7 });
+		const loop = createEventLoop(h.deps);
+
+		await withEnv(replayEnv("1"), () =>
+			loop.evaluateEventLine(preEvent({ tool_use_id: "toolu_abc" }), "raw"),
+		);
+
+		const rows = snapshotRows(dir);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			session_id: "s1",
+			seq: 7,
+			tool_use_id: "toolu_abc",
+			phase: "pre",
+		});
+	});
+
+	it("maps a PostToolUse event to the post phase and null seq / tool_use_id", async () => {
+		// No `tool_use_id` on the line and a snapshot whose `last_seq` is not a
+		// number — both fields must degrade to an explicit null, never to
+		// `undefined` or a coerced value.
+		const dir = makeRepoFixture();
+		const h = makeHarness(dir);
+		h.sessions.serialize.mockReturnValue({ last_seq: "not-a-number" });
+		const loop = createEventLoop(h.deps);
+
+		await withEnv(replayEnv("1"), () =>
+			loop.evaluateEventLine(preEvent({ hook_event: "PostToolUse" }), "raw"),
+		);
+
+		const rows = snapshotRows(dir);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ seq: null, tool_use_id: null, phase: "post" });
+	});
+
+	// The two negatives below each carry their OWN positive control on the same
+	// fixture, because `recordTreeSnapshot` is fail-open: ANY git failure logs
+	// "tree snapshot failed (non-fatal)" and appends no row, so a bare
+	// `expect(rows).toEqual([])` would pass just as green on a broken fixture as
+	// on a correctly-suppressed one. Control first (proves the recipe writes a
+	// row HERE), then the suppressed case must leave that row untouched, and
+	// neither may have logged a snapshot failure.
+
+	it("records nothing when hook_event is not a string (no resolvable phase)", async () => {
+		const dir = makeRepoFixture();
+		const h = makeHarness(dir);
+		h.sessions.serialize.mockReturnValue({ last_seq: 3 });
+		const loop = createEventLoop(h.deps);
+
+		// Control: same fixture, same env, a line that DOES resolve a phase.
+		await withEnv(replayEnv("1"), () =>
+			loop.evaluateEventLine(preEvent({ tool_use_id: "toolu_ctl" }), "raw"),
+		);
+		const afterControl = snapshotRows(dir);
+		expect(afterControl).toHaveLength(1);
+
+		const decision = await withEnv(replayEnv("1"), () =>
+			loop.evaluateEventLine(
+				JSON.stringify({ hook_event: 42, session_id: "s1", tool_use_id: "toolu_x" }),
+				"raw",
+			),
+		);
+
+		// Not a tool boundary → no NEW row, and the event itself still allows.
+		expect(snapshotRows(dir)).toEqual(afterControl);
+		expect(decision).toEqual({ decision: "allow" });
+		expect(h.log).not.toHaveBeenCalledWith(expect.stringContaining("tree snapshot failed"));
+	});
+
+	it("records nothing when the tree-snapshot env gate is off", async () => {
+		const dir = makeRepoFixture();
+		const h = makeHarness(dir);
+		h.sessions.serialize.mockReturnValue({ last_seq: 7 });
+		const loop = createEventLoop(h.deps);
+
+		// Control: identical event, gate ON.
+		await withEnv(replayEnv("1"), () =>
+			loop.evaluateEventLine(preEvent({ tool_use_id: "toolu_abc" }), "raw"),
+		);
+		const afterControl = snapshotRows(dir);
+		expect(afterControl).toHaveLength(1);
+
+		await withEnv(replayEnv(undefined), () =>
+			loop.evaluateEventLine(preEvent({ tool_use_id: "toolu_abc" }), "raw"),
+		);
+
+		expect(snapshotRows(dir)).toEqual(afterControl);
+		expect(h.log).not.toHaveBeenCalledWith(expect.stringContaining("tree snapshot failed"));
 	});
 });

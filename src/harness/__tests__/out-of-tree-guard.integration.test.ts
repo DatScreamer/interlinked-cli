@@ -49,11 +49,39 @@ const SEND_TIMEOUT_MS = 15_000;
 // measurable wall time on the (cold) first in-tree edit — well above the
 // near-zero a skipped phase records for an out-of-tree edit.
 const PROJECT_FILE_COUNT = 250;
-// A skipped structure phase records single-digit ms (graph build never
-// runs). The cold in-tree build is reliably an order of magnitude above
-// this. The ceiling keeps a comfortable margin from observed values
-// (out-of-tree: 0-3ms; in-tree cold: 8-34ms across runs).
-const SKIPPED_STRUCTURE_PHASE_CEILING_MS = 6;
+
+// --- Structure-phase skip assertion: RATIO against a same-process control ---
+//
+// An earlier version of this file asserted the skipped structure phase's ms
+// against a fixed absolute ceiling (6ms). That is the same anti-pattern the
+// MD_LINK_RE ReDoS-linearity test hit and fixed (commit 80eaf2b): an
+// absolute-millisecond number says nothing about the property under test,
+// only about how busy the machine happened to be. Under a loaded machine (a
+// 6-agent fleet + the full suite sharing this box) the "skipped" phase — real
+// cost near-zero — measured 7ms and 11ms against that 6ms ceiling and failed,
+// while an isolated rerun moments later passed 7/7. The skip behavior was
+// correct both times; only the load changed.
+//
+// The fix: measure a CONTROL in the SAME process — the real in-tree cold
+// artifact-graph build's own `scored_suggestions` ms (captured by the first
+// test below, which runs before the skip cases so the value exists when they
+// need it) — and assert each skip case stays under a comfortable FRACTION of
+// it, floored at STRUCTURE_SKIP_FLOOR_MS. Load inflates both sides together
+// (both share the same event loop / CPU contention), so the ratio survives
+// it; an accidental regression that makes the "skip" path actually build the
+// graph would cost close to 100% of the control — far past FRACTION either
+// way.
+//
+// Constants below are picked from measured values, not guesses: a fresh probe
+// run against this exact fixture recorded an in-tree cold-build ms of 27
+// (matching the 8-34ms historical range already documented above) against
+// out-of-tree skip ms of 0, 0, 3 (and 0 again once the graph was warm). The
+// live flake this replaces showed skip ms of 7 and 11 under load.
+const STRUCTURE_SKIP_FRACTION = 0.3; // 30% of the measured control
+// ~1.8x the worst skip ms seen in the live flake (11ms) — comfortably above
+// load jitter, comfortably below a real cold build (8-34ms historical, 27ms
+// measured here).
+const STRUCTURE_SKIP_FLOOR_MS = 20;
 
 let server: ChildProcess;
 
@@ -127,6 +155,37 @@ function editEvent(filePath: string, sessionId: string): HarnessEvent {
 /** True when `phase_breakdown` carries the given phase key (regardless of ms). */
 function hasPhase(decision: HarnessDecision, phase: string): boolean {
 	return decision.phase_breakdown != null && phase in decision.phase_breakdown;
+}
+
+/**
+ * Same-process control for the structure-phase skip assertion (see the
+ * STRUCTURE_SKIP_* constants above). Populated once by the in-tree cold-build
+ * test, which the describe block below runs FIRST for exactly this reason.
+ */
+let structureControlMs: number | undefined;
+
+/** Record the in-tree cold-build's own `scored_suggestions` ms as the control. */
+function recordStructureControl(ms: number): void {
+	structureControlMs = ms;
+}
+
+/**
+ * Assert a structure phase was SKIPPED (out-of-tree edit): its ms must stay
+ * under a small fraction of the same-process in-tree cold-build control,
+ * floored so machine-load jitter on an inherently near-zero measurement can't
+ * fail the assertion. See the STRUCTURE_SKIP_* constants for why this is a
+ * ratio and not an absolute ms.
+ */
+function expectStructurePhaseSkipped(decision: HarnessDecision): void {
+	const observed = decision.phase_breakdown?.scored_suggestions ?? 0;
+	if (structureControlMs === undefined) {
+		throw new Error(
+			"structureControlMs not captured yet — the in-tree control case must run before any skip assertion",
+		);
+	}
+	expect(observed).toBeLessThanOrEqual(
+		Math.max(STRUCTURE_SKIP_FLOOR_MS, structureControlMs * STRUCTURE_SKIP_FRACTION),
+	);
 }
 
 beforeAll(async () => {
@@ -205,6 +264,39 @@ afterAll(() => {
 });
 
 describe("out-of-tree PostToolUse guard", () => {
+	// This case runs FIRST and deliberately: it is the only in-tree edit that
+	// hits a COLD artifact graph (`ctx.structureGraph` starts null), so its own
+	// `scored_suggestions` ms is the real-work CONTROL the skip cases below
+	// compare themselves against (see the STRUCTURE_SKIP_* constants and
+	// `expectStructurePhaseSkipped`). Once this test's graph build completes,
+	// later in-tree edits hit a WARM cache and cost ~1ms — no longer
+	// distinguishable from a skip on timing alone, which is exactly why this
+	// case must be the one to run first and why the others don't attempt a
+	// timing assertion of their own.
+	it("still runs subprocess + structure analysis for an in-tree edit", async () => {
+		const decision = await sendEvent(
+			editEvent(join(PROJECT, "src", "thing.ts"), "otg-in-abs"),
+		);
+
+		// Subprocess `command`-based check (biome_lint) ran: a per-tool breakdown
+		// is present, and the `inline_biome_lint` phase mark fired.
+		expect(decision.tool_breakdown).toBeDefined();
+		expect(decision.tool_breakdown?.some((t) => t.tool === "biome")).toBe(true);
+		expect(hasPhase(decision, "inline_biome_lint")).toBe(true);
+
+		// The structure phase did real work — the artifact-graph build over the
+		// project tree costs measurably more than a skipped (out-of-tree) phase.
+		// This measurement IS the control the skip assertions below compare
+		// themselves against.
+		const controlMs = decision.phase_breakdown?.scored_suggestions ?? 0;
+		recordStructureControl(controlMs);
+		expect(controlMs).toBeGreaterThan(STRUCTURE_SKIP_FLOOR_MS);
+
+		// Marks present here too (the in-tree path also goes through them).
+		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
+		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
+	});
+
 	it("skips subprocess + structure analysis for an edit in a sibling tree", async () => {
 		const decision = await sendEvent(
 			editEvent(join(OUTSIDE, "foreign.ts"), "otg-out-sibling"),
@@ -217,10 +309,9 @@ describe("out-of-tree PostToolUse guard", () => {
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
 
 		// Structure phase did effectively no work — the artifact-graph build
-		// was skipped, so the phase records near-zero.
-		expect(decision.phase_breakdown?.scored_suggestions ?? 0).toBeLessThanOrEqual(
-			SKIPPED_STRUCTURE_PHASE_CEILING_MS,
-		);
+		// was skipped, so the phase records near-zero (ratio-checked against
+		// the in-tree control above; see STRUCTURE_SKIP_* for why).
+		expectStructurePhaseSkipped(decision);
 
 		// The phase marks still fire (skip the work, not the marks).
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
@@ -237,9 +328,7 @@ describe("out-of-tree PostToolUse guard", () => {
 
 		expect(decision.tool_breakdown ?? null).toBeNull();
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
-		expect(decision.phase_breakdown?.scored_suggestions ?? 0).toBeLessThanOrEqual(
-			SKIPPED_STRUCTURE_PHASE_CEILING_MS,
-		);
+		expectStructurePhaseSkipped(decision);
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
 		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
 	});
@@ -254,31 +343,7 @@ describe("out-of-tree PostToolUse guard", () => {
 
 		expect(decision.tool_breakdown ?? null).toBeNull();
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
-		expect(decision.phase_breakdown?.scored_suggestions ?? 0).toBeLessThanOrEqual(
-			SKIPPED_STRUCTURE_PHASE_CEILING_MS,
-		);
-		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
-		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
-	});
-
-	it("still runs subprocess + structure analysis for an in-tree edit", async () => {
-		const decision = await sendEvent(
-			editEvent(join(PROJECT, "src", "thing.ts"), "otg-in-abs"),
-		);
-
-		// Subprocess `command`-based check (biome_lint) ran: a per-tool breakdown
-		// is present, and the `inline_biome_lint` phase mark fired.
-		expect(decision.tool_breakdown).toBeDefined();
-		expect(decision.tool_breakdown?.some((t) => t.tool === "biome")).toBe(true);
-		expect(hasPhase(decision, "inline_biome_lint")).toBe(true);
-
-		// The structure phase did real work — the artifact-graph build over the
-		// project tree costs measurably more than a skipped (out-of-tree) phase.
-		expect(decision.phase_breakdown?.scored_suggestions ?? 0).toBeGreaterThan(
-			SKIPPED_STRUCTURE_PHASE_CEILING_MS,
-		);
-
-		// Marks present here too (the in-tree path also goes through them).
+		expectStructurePhaseSkipped(decision);
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
 		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
 	});

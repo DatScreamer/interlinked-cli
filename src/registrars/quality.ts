@@ -341,7 +341,7 @@ export function registerQualityCommands(program: Command): void {
 	mutationCmd
 		.command("accept")
 		.description(
-			"Annotate a surviving mutant as EQUIVALENT in the live per-edit manifest — the escape the gate's block message promises. Requires a reason; recorded in-band so the accepted floor stays auditable.",
+			"Explain why a surviving mutant cannot be accepted by prose. Since typed dispositions (plan 16 §7) status \"equivalent\" requires a verifier-issued certificate bound to the mutant's current symbol hash, which this command cannot mint — so it reports the refusal instead of writing one.",
 		)
 		.requiredOption("--file <path>", "Repo-relative path holding the mutant")
 		.requiredOption("--id <mutantId>", "Mutant id from the gate's block message")

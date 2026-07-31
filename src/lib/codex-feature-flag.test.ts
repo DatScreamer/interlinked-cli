@@ -399,6 +399,290 @@ describe("ensureCodexFeatureFlag", () => {
 		);
 	});
 
+	it("preserves a canonical flag whose trailing comment abuts the value with no space", () => {
+		// `hooks = true#note` is valid TOML — a comment needs no leading
+		// whitespace. The comment strip must therefore replace the comment
+		// with NOTHING: any residue lands directly after `true` and destroys
+		// the trailing `\b` in FEATURE_FLAG_REGEX, so an already-enabled file
+		// reads as unflagged and gets a redundant second `hooks = true`
+		// appended to it.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		const existing = "[features]\nhooks = true#note\n";
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, existing);
+
+		const result = ensureCodexFeatureFlag(tmp);
+		expect(result).toBe("preserved");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+	});
+
+	it("migrates a legacy flag whose trailing comment abuts the value with no space", () => {
+		// Same word-boundary trap on the migration side. stripOrRenameLegacyKey
+		// decides per line from the comment-stripped text, so any residue left
+		// where the comment was breaks LEGACY_FEATURE_FLAG_REGEX's trailing
+		// `\b`: the legacy key is silently left in place and Codex keeps
+		// emitting its deprecation warning even though we reported "migrated".
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		const existing = "[features]\ncodex_hooks = true#legacy\n";
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, existing);
+
+		const result = ensureCodexFeatureFlag(tmp);
+		expect(result).toBe("migrated");
+		expect(readFileSync(tomlPath, "utf-8")).toBe("[features]\nhooks = true#legacy\n");
+	});
+
+	// --- CRLF / exotic line endings ---------------------------------------
+	// These three were `it.fails` pins on a real defect: the file is split on
+	// "\n", so on a CRLF config every line retains a trailing "\r"; JS `.`
+	// matches none of the four line terminators and `$` (no /m) anchors only at
+	// true end-of-string, so `/#.*$/` could NEVER match and the comment strip
+	// was a silent no-op. `stripTomlLineComment` now uses `/#[^\n]*/`, and the
+	// pins pass. Do NOT re-weaken them to assert the broken behavior.
+
+	it("CRLF: a commented-out `# hooks = true` does not read as enabled", () => {
+		// The headline consequence: this used to return "preserved", so
+		// `interlinked enable --clients codex` reported success while Codex
+		// hooks stayed OFF.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\r\n# hooks = true\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		// Exact bytes: the real flag lands inside the existing [features] table,
+		// the comment is left verbatim, and nothing is emitted with a bare "\r"
+		// terminator (which TOML does not accept as a newline).
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\r\n# hooks = true\r\n\nhooks = true",
+		);
+	});
+
+	it("CRLF: a commented-out legacy key is not rewritten in place", () => {
+		// This used to rewrite the user's prose to "# hooks = true" and report
+		// "migrated" for a file with no active flag. The LF equivalent is
+		// covered by "ignores a commented-out legacy flag too" above.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\r\n# codex_hooks = true\r\nfoo = true\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\r\n# codex_hooks = true\r\nfoo = true\r\n\nhooks = true",
+		);
+	});
+
+	it("CRLF: a [features] header with a trailing comment is still detected", () => {
+		// This used to miss the header and append a SECOND [features] table — a
+		// duplicate-table TOML parse error, so Codex rejected the whole config.
+		// The LF equivalent is covered by "detects an existing [features] header
+		// even with a trailing comment".
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\r\nname = "x"\r\n\r\n[features] # config\r\nfoo = true\r\n');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect((toml.match(/\[features\]/g) || []).length).toBe(1);
+		expect(toml).toBe(
+			'[model]\r\nname = "x"\r\n\r\n[features] # config\r\nfoo = true\r\n\nhooks = true',
+		);
+	});
+
+	it("CRLF: a header with a bare `#` comment marker is still detected", () => {
+		// `[features] #` is a header plus an EMPTY comment. It pins the `*` (not
+		// `+`) quantifier in /#[^\n]*/: requiring at least one character after
+		// the `#` leaves the marker behind, so `.trim()` yields "[features] #",
+		// the header is missed, and a duplicate table is appended.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\nname = "x"\n\n[features] #\nfoo = true\n');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect((toml.match(/\[features\]/g) || []).length).toBe(1);
+		expect(toml).toBe('[model]\nname = "x"\n\n[features] #\nfoo = true\n\nhooks = true');
+	});
+
+	it("CRLF: inserting into an existing [features] block keeps every line CRLF", () => {
+		// The inserted line must carry the file's own terminator. A hardcoded
+		// "\n" here drops one lone LF line into the middle of a Windows config.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[features]\r\nfoo = true\r\n[profiles.default]\r\nx = "y"\r\n');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toBe('[features]\r\nfoo = true\r\nhooks = true\r\n[profiles.default]\r\nx = "y"\r\n');
+		// No bare LF anywhere: every "\n" in the result is preceded by "\r".
+		expect(toml.replace(/\r\n/g, "")).not.toContain("\n");
+	});
+
+	it("CRLF: a following header with a trailing comment still bounds the [features] block", () => {
+		// The other half of the header-detection defect. With `[sandbox] # notes`
+		// unrecognised as a boundary the block ran to EOF, so `hooks = true` was
+		// appended at the end of the file — landing inside [sandbox], the WRONG
+		// table, leaving Codex hooks off with no visible error.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\r\nfoo = 1\r\n[sandbox] # notes\r\nbar = 2\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\r\nfoo = 1\r\nhooks = true\r\n[sandbox] # notes\r\nbar = 2\r\n",
+		);
+	});
+
+	it("CRLF: the appended [features] block at EOF uses CRLF throughout", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\r\nname = "x"\r\n');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toBe(
+			'[model]\r\nname = "x"\r\n\r\n# Added by interlinked\r\n[features]\r\nhooks = true\r\n',
+		);
+		expect(toml.replace(/\r\n/g, "")).not.toContain("\n");
+	});
+
+	it("CRLF: the blank-line separator before an appended block is CRLF too", () => {
+		// existing does NOT end in a newline, so the separator is synthesized —
+		// it must be "\r\n", not the hardcoded "\n" this used to emit.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\r\nname = "x"');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			'[model]\r\nname = "x"\r\n\r\n# Added by interlinked\r\n[features]\r\nhooks = true\r\n',
+		);
+	});
+
+	it("CRLF: migrating a legacy key preserves the file's CRLF endings byte for byte", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\r\ncodex_hooks = true\r\nfoo = 42\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("migrated");
+		expect(readFileSync(tomlPath, "utf-8")).toBe("[features]\r\nhooks = true\r\nfoo = 42\r\n");
+	});
+
+	it("CRLF: dropping a redundant legacy line preserves the file's CRLF endings", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\r\nhooks = true\r\ncodex_hooks = true\r\nother = false\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("migrated");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\r\nhooks = true\r\nother = false\r\n",
+		);
+	});
+
+	it("a U+2028 inside a comment does not end the comment", () => {
+		// U+2028 / U+2029 are excluded by JS `.` but are NOT newlines in TOML —
+		// a comment containing one still runs to the real end of line. If the
+		// strip stops at U+2028 the residue re-enables the commented-out flag.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\n# hooks = true\u2028still comment\nfoo = 1\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\n# hooks = true\u2028still comment\nfoo = 1\n\nhooks = true",
+		);
+	});
+
+	it("a U+2029 inside a comment does not end the comment", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[features]\n# codex_hooks = true\u2029more\nfoo = 1\n");
+
+		// No active legacy key — the commented one must not trigger a migration
+		// (which would rewrite the user's prose).
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[features]\n# codex_hooks = true\u2029more\nfoo = 1\n\nhooks = true",
+		);
+	});
+
+	it("mixed endings: a CRLF-majority file gets a CRLF block", () => {
+		// 2 CRLF vs 1 bare LF — the appended block follows the majority.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[model]\r\na = 1\r\nb = 2\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[model]\r\na = 1\r\nb = 2\n\r\n# Added by interlinked\r\n[features]\r\nhooks = true\r\n",
+		);
+	});
+
+	it("mixed endings: an LF-majority file gets an LF block", () => {
+		// 1 CRLF vs 2 bare LF — the mirror image, so the majority comparison
+		// cannot be a constant or an inverted operator.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[model]\na = 1\nb = 2\r\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[model]\na = 1\nb = 2\r\n\n# Added by interlinked\n[features]\nhooks = true\n",
+		);
+	});
+
+	it("mixed endings: an exact 1:1 tie falls back to LF", () => {
+		// Ties go to LF — the ending we would have used for a file we created.
+		// This is the case that distinguishes `>` from `>=`.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[model]\r\na = 1\n");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[model]\r\na = 1\n\n# Added by interlinked\n[features]\nhooks = true\n",
+		);
+	});
+
+	it("a single-line config with no newline at all is handled", () => {
+		// String.match returns null (not []) when nothing matches, so counting
+		// newlines must tolerate a file that contains none.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, "[model]");
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			"[model]\n\n# Added by interlinked\n[features]\nhooks = true\n",
+		);
+	});
+
+	it("a comment on the last line with no trailing newline is still stripped", () => {
+		// The unterminated final line is where `$`-anchored stripping accidentally
+		// worked, so it is the one case the old code got right — pin it so the
+		// replacement keeps getting it right.
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\nname = "x"\n# hooks = true');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(
+			'[model]\nname = "x"\n# hooks = true\n\n# Added by interlinked\n[features]\nhooks = true\n',
+		);
+	});
+
+	it("CRLF: a comment on the last line with no trailing newline is still stripped", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, '[model]\r\nname = "x"\r\n# hooks = true');
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toBe(
+			'[model]\r\nname = "x"\r\n# hooks = true\r\n\r\n# Added by interlinked\r\n[features]\r\nhooks = true\r\n',
+		);
+		expect(toml.replace(/\r\n/g, "")).not.toContain("\n");
+	});
+
 	it("inserts into the FIRST [features] block when duplicate headers exist", () => {
 		const tomlPath = join(tmp, ".codex", "config.toml");
 		const existing = "[features]\nfoo = true\n[features]\nbar = true\n";

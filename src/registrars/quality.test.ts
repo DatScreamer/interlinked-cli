@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { registerQualityCommands } from "./quality.js";
 
 // ---------------------------------------------------------------------------
@@ -11,6 +12,7 @@ const checkCommand = vi.fn();
 const searchCommand = vi.fn();
 const multiEditCommand = vi.fn();
 const verifyCommand = vi.fn();
+const verifyChangesetCommand = vi.fn();
 const writeCommand = vi.fn();
 const structureInitCommand = vi.fn();
 const structureScanCommand = vi.fn();
@@ -26,6 +28,7 @@ const metricsArchCommand = vi.fn();
 const metricsReworkCommand = vi.fn();
 const mutationCheckCommand = vi.fn();
 const mutationBaselineCommand = vi.fn();
+const mutationAcceptCommand = vi.fn();
 const designCommand = vi.fn();
 
 vi.mock("../commands/check.js", () => ({
@@ -39,6 +42,9 @@ vi.mock("../commands/multi-edit.js", () => ({
 }));
 vi.mock("../commands/verify.js", () => ({
 	verifyCommand: (...args: unknown[]) => verifyCommand(...args),
+}));
+vi.mock("../commands/verify-changeset.js", () => ({
+	verifyChangesetCommand: (...args: unknown[]) => verifyChangesetCommand(...args),
 }));
 vi.mock("../commands/write.js", () => ({
 	writeCommand: (...args: unknown[]) => writeCommand(...args),
@@ -70,6 +76,7 @@ vi.mock("../commands/metrics-rework.js", () => ({
 vi.mock("../commands/mutation.js", () => ({
 	mutationCheckCommand: (...args: unknown[]) => mutationCheckCommand(...args),
 	mutationBaselineCommand: (...args: unknown[]) => mutationBaselineCommand(...args),
+	mutationAcceptCommand: (...args: unknown[]) => mutationAcceptCommand(...args),
 }));
 vi.mock("../commands/design.js", () => ({
 	designCommand: (...args: unknown[]) => designCommand(...args),
@@ -403,6 +410,36 @@ describe("verify — action wiring + target merge", () => {
 });
 
 // ===========================================================================
+// verify-changeset — action wiring (the agent-callable self-gate preview)
+// ===========================================================================
+describe("verify-changeset — action wiring", () => {
+	it("forwards all options to verifyChangesetCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			["verify-changeset", "--file", "changeset.json", "--warnings", "--json"],
+			{ from: "user" },
+		);
+		expect(verifyChangesetCommand).toHaveBeenCalledWith({
+			file: "changeset.json",
+			warnings: true,
+			json: true,
+		});
+	});
+
+	it("passes empty opts by default", async () => {
+		const program = build();
+		await program.parseAsync(["verify-changeset"], { from: "user" });
+		expect(verifyChangesetCommand).toHaveBeenCalledWith({});
+	});
+
+	it("supports --stdin in place of --file", async () => {
+		const program = build();
+		await program.parseAsync(["verify-changeset", "--stdin"], { from: "user" });
+		expect(verifyChangesetCommand).toHaveBeenCalledWith({ stdin: true });
+	});
+});
+
+// ===========================================================================
 // write — action wiring (optional [path] arg)
 // ===========================================================================
 describe("write — action wiring", () => {
@@ -635,6 +672,22 @@ describe("metrics coupling — action wiring", () => {
 		expect(metricsCouplingCommand).toHaveBeenCalledWith({});
 		expect(metricsCommand).not.toHaveBeenCalled();
 	});
+
+	it("falls back to {} (not a throw) when the subcommand has no registered parent", async () => {
+		// Defensive branch: `cmd.parent?.opts() ?? {}` guards against a detached
+		// subcommand (e.g. one built and invoked outside the normal `metrics`
+		// tree). `.parent` is Commander's own public, mutable property — set it
+		// to null to simulate that shape for real, then invoke the ORPHANED
+		// command directly (parseAsync on it, not on `program`).
+		const program = build();
+		const coupling = nonNull(
+			sub(program, "metrics").commands.find((c) => c.name() === "coupling"),
+			"missing coupling subcommand",
+		);
+		coupling.parent = null;
+		await coupling.parseAsync(["--json"], { from: "user" });
+		expect(metricsCouplingCommand).toHaveBeenCalledWith({ json: true });
+	});
 });
 
 // ===========================================================================
@@ -653,6 +706,17 @@ describe("metrics arch — action wiring", () => {
 			includeTests: true,
 			json: true,
 		});
+	});
+
+	it("falls back to {} when the subcommand has no registered parent", async () => {
+		const program = build();
+		const arch = nonNull(
+			sub(program, "metrics").commands.find((c) => c.name() === "arch"),
+			"missing arch subcommand",
+		);
+		arch.parent = null;
+		await arch.parseAsync(["--json"], { from: "user" });
+		expect(metricsArchCommand).toHaveBeenCalledWith({ json: true });
 	});
 });
 
@@ -685,6 +749,17 @@ describe("metrics rework — action wiring", () => {
 			maxCommitFiles: "20",
 			json: true,
 		});
+	});
+
+	it("falls back to {} when the subcommand has no registered parent", async () => {
+		const program = build();
+		const rework = nonNull(
+			sub(program, "metrics").commands.find((c) => c.name() === "rework"),
+			"missing rework subcommand",
+		);
+		rework.parent = null;
+		await rework.parseAsync(["--json"], { from: "user" });
+		expect(metricsReworkCommand).toHaveBeenCalledWith({ json: true });
 	});
 });
 
@@ -741,6 +816,40 @@ describe("mutation subcommands — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["mutation", "baseline"], { from: "user" });
 		expect(mutationBaselineCommand).toHaveBeenCalledWith({});
+	});
+
+	it("accept forwards the three required options plus --json to mutationAcceptCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"mutation",
+				"accept",
+				"--file",
+				"src/foo.ts",
+				"--id",
+				"m1",
+				"--reason",
+				"unobservable arm",
+				"--json",
+			],
+			{ from: "user" },
+		);
+		expect(mutationAcceptCommand).toHaveBeenCalledWith({
+			file: "src/foo.ts",
+			id: "m1",
+			reason: "unobservable arm",
+			json: true,
+		});
+	});
+
+	it("accept rejects when a required option is missing (commander enforces before the action runs)", async () => {
+		const program = build();
+		await expect(
+			program.parseAsync(["mutation", "accept", "--file", "src/foo.ts", "--id", "m1"], {
+				from: "user",
+			}),
+		).rejects.toThrow();
+		expect(mutationAcceptCommand).not.toHaveBeenCalled();
 	});
 });
 

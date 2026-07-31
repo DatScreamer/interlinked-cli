@@ -99,7 +99,7 @@ export function checkDiscriminatedUnionExhaustiveness(
 		ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
 	);
 
-	const lines = content.split("\n");
+	const lines = sourceLineTexts(sourceFile, content);
 	const matches: InlineMatch[] = [];
 	const ctx: ResolutionContext = {
 		localUnions: indexTypeAliases(ts, sourceFile, typeNodeToLiteralUnion),
@@ -117,6 +117,24 @@ export function checkDiscriminatedUnionExhaustiveness(
 	visit(sourceFile);
 
 	return matches;
+}
+
+/**
+ * Split `content` on TypeScript's OWN line terminators, not `split("\n")`.
+ *
+ * The reported line index comes from `getLineAndCharacterOfPosition`, and TS's
+ * scanner breaks lines on a lone CR and on U+2028 / U+2029 as well as LF. An
+ * LF-only split therefore desynchronizes from that index on such files: the
+ * index runs past the end of the split view, so the source snippet silently
+ * degrades to the empty string. Deriving both from the same line table keeps
+ * `lines[line]` in range for every position the parser can hand back.
+ */
+function sourceLineTexts(
+	sourceFile: import("typescript").SourceFile,
+	content: string,
+): string[] {
+	const starts = sourceFile.getLineStarts();
+	return starts.map((start, i) => content.slice(start, starts[i + 1] ?? content.length));
 }
 
 // ---------------------------------------------------------------------------
@@ -384,12 +402,12 @@ function caseExpressionToLiteralTag(
 	if (ts.isStringLiteralLike(expr)) return JSON.stringify(expr.text);
 	if (ts.isNumericLiteral(expr)) return expr.text;
 	if (ts.isNoSubstitutionTemplateLiteral(expr)) return JSON.stringify(expr.text);
-	if (
-		ts.isPrefixUnaryExpression(expr) &&
-		expr.operator === ts.SyntaxKind.MinusToken &&
-		ts.isNumericLiteral(expr.operand)
-	) {
-		return `-${expr.operand.text}`;
+	// `case -1:` / `case +2:`. Both are PrefixUnaryExpressions, never numeric
+	// literals — treating only the minus form as a tag made `case +2:` invisible
+	// and reported an exhaustive switch as missing that member.
+	if (ts.isPrefixUnaryExpression(expr) && ts.isNumericLiteral(expr.operand)) {
+		if (expr.operator === ts.SyntaxKind.MinusToken) return `-${expr.operand.text}`;
+		if (expr.operator === ts.SyntaxKind.PlusToken) return expr.operand.text;
 	}
 	return null;
 }
@@ -407,13 +425,31 @@ const UNREACHABLE_THROW_RE = /\bthrow\s+new\s+\w*(?:Unreachable|Exhaustive|Impos
  *   - `assertNever(<expr>)` (or aliases above)
  *   - `throw new UnreachableError(...)` / `Exhaustive…Error` / etc.
  *   - any `return assertNever(...)` / `throw assertNever(...)` variant
+ *   - any of the above inside a braced clause body (`default: { … }`)
  */
 function defaultBranchAssertsNever(
 	ts: TsModule,
 	clause: import("typescript").DefaultClause,
 	sourceFile: import("typescript").SourceFile,
 ): boolean {
-	for (const stmt of clause.statements) {
+	return statementsAssertNever(ts, clause.statements, sourceFile);
+}
+
+/**
+ * Scan a statement list for one of the recognized idioms, descending into a
+ * bare `{ … }` block. `default: { const _x: never = c; throw … }` is the FIRST
+ * idiom this check's own `fix_instruction` recommends, and the clause then
+ * holds a single Block — scanning only the top level reported the recommended
+ * fix as a finding. Descent is limited to plain blocks: an assertion buried in
+ * an `if`/`try` body is conditional, so it still does not count.
+ */
+function statementsAssertNever(
+	ts: TsModule,
+	statements: readonly import("typescript").Statement[],
+	sourceFile: import("typescript").SourceFile,
+): boolean {
+	for (const stmt of statements) {
+		if (ts.isBlock(stmt) && statementsAssertNever(ts, stmt.statements, sourceFile)) return true;
 		if (ts.isVariableStatement(stmt)) {
 			for (const decl of stmt.declarationList.declarations) {
 				if (decl.type && decl.type.kind === ts.SyntaxKind.NeverKeyword) return true;
