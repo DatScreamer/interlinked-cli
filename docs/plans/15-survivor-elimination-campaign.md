@@ -350,17 +350,34 @@ persist. Note that a fresh worktree does not inherit gitignored local rules, so
 its runner configuration must be provisioned before the gate can measure there.
 Per-file manifest sharding (§9) removes the constraint entirely.
 
-**Rule 3 — accepts escalate.** Equivalence is a judgment call and the failure
-mode is self-serving. Agents doing mechanical waves must *report* accept
-candidates with reasons rather than running the command; a reviewing agent (or
-the human) accepts. This keeps the accepted floor honest without slowing the
-kill work.
+**Rule 3 — accepts escalate, regardless of model.** No executing agent runs
+`interlinked mutation accept` for its own unit; it *reports* candidates with a
+mechanism and a reviewer decides.
 
-**Model routing.** Wave 2's fixture corpuses are formulaic and delegate well to
-a mid-tier model. Wave 1 and Wave 3 need judgment — what a guard's message must
-promise, whether a mutant is truly unobservable — and should stay on the
-strongest available model. Any agent may kill mutants; only judgment-tier
-agents should classify equivalents.
+The reason is **conflict of interest, not capability.** An agent judging whether
+its own remaining survivors are unkillable is grading its own homework, and the
+convenient answer is always "unkillable." Measured evidence that this is not
+hypothetical: on `structure/adoption.ts` the executing agent's analysis was
+*correct* — 14 mutants genuinely could not be killed — yet the right resolution
+was **fix the source** (dead code), not annotate 14 equivalents. With accept
+rights it would very likely have filed 14 tidy justifications and sealed a real
+defect in behind them. Raising the model tier does not remove that incentive.
+
+**Model routing.** Task shapes differ in judgment demand: Wave 2's fixture
+corpuses are formulaic; Wave 1 (what a guard's message must promise) and Wave 3
+(whether a mutant is truly unobservable) are judgment-heavy. That said, **this
+campaign's standing decision is to run every wave on the strongest available
+model**, including the parallel units — the wall-clock bottleneck is measurement
+(tens of seconds per file), not inference, so a stronger model costs tokens
+rather than throughput.
+
+**Verification is model-independent.** Machine-verify every reported number by
+re-measuring (§4a) no matter who produced it. This is not distrust of a
+particular tier — a self-reported count is an unverified claim from any source,
+and re-measuring costs ~40 seconds. Observed across the first three units:
+survivor counts were accurate 3/3, but secondary counts (tests added) were wrong
+in 2/3 reports. Both defects in the measurement machinery itself (§9) surfaced
+*because* the numbers were checked rather than accepted.
 
 **Throughput reality.** One scoped measurement is tens of seconds against a
 warm runner, and runners are a shared finite resource: N agents contend. Expect
