@@ -230,3 +230,83 @@ function renderNormal(reportPath: string, result: MutationGateResult, minScore: 
 	lines.push(c.dim("  Add tests that kill surviving mutants, or --update-baseline to accept."));
 	return lines.join("\n");
 }
+
+// ===========================================
+// interlinked mutation accept — audited equivalent-mutant annotation
+// ===========================================
+// The LIVE per-edit gate's block message has always promised "or annotating
+// an equivalent mutant"; this is that verb. Operates on the live gate's
+// mutation-manifest.json (NOT the report ratchet's mutation-baseline.json):
+// flips one named survivor to status "equivalent" with the human judgment of
+// WHY no test can kill it recorded in-band, so the accepted floor stays
+// auditable. Human-invoked fs write — the sanctioned path past the
+// baseline-integrity gate, same carve-out as `interlinked adopt`.
+
+interface MutationAcceptOptions {
+	file?: string;
+	id?: string;
+	reason?: string;
+	cwd?: string;
+	json?: boolean;
+}
+
+export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promise<void> {
+	const mode = getOutputMode(opts);
+	const cwd = resolve(opts.cwd || process.cwd());
+	const configDir = getConfigDir(cwd);
+
+	const file = opts.file?.trim() ?? "";
+	const mutantId = opts.id?.trim() ?? "";
+	const reason = opts.reason ?? "";
+	if (file === "" || mutantId === "" || reason.trim() === "") {
+		outputError(
+			mode,
+			"Usage: interlinked mutation accept --file <repo-relative-path> --id <mutantId> --reason <why no test can kill it>. A blank reason is refused — an unauditable floor entry is how ratchets rot.",
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	const { loadManifest, saveManifest } = await import("../harness/mutation/manifest.js");
+	const { acceptMutant } = await import("../harness/mutation/accept.js");
+
+	const base = loadManifest(configDir);
+	if (!base) {
+		outputError(
+			mode,
+			`No live mutation manifest at ${join(configDir, "mutation-manifest.json")} — the per-edit gate creates it on the first measured run.`,
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	const next = acceptMutant({ base, file, mutantId, reason });
+	if (!next) {
+		outputError(
+			mode,
+			`Mutant "${mutantId}" not found under "${file}" in the manifest. List the file's survivors before accepting.`,
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	saveManifest(configDir, next);
+	const trimmed = reason.trim();
+	output(
+		mode,
+		{ accepted: { file, mutantId, reason: trimmed } },
+		{
+			json: () => JSON.stringify({ accepted: { file, mutant_id: mutantId, reason: trimmed } }),
+			short: () => `accepted ${mutantId} (${file}) as equivalent`,
+			normal: () =>
+				[
+					header("Mutation — equivalent mutant accepted"),
+					kvLine("File", file),
+					kvLine("Mutant", mutantId),
+					kvLine("Reason", trimmed),
+					c.dim("  Recorded in mutation-manifest.json; the gate stops charging this mutant."),
+				].join("\n"),
+			full: () => "",
+		},
+	);
+}

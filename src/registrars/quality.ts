@@ -338,6 +338,20 @@ export function registerQualityCommands(program: Command): void {
 			mutationBaselineCommand(opts);
 		});
 
+	mutationCmd
+		.command("accept")
+		.description(
+			"Annotate a surviving mutant as EQUIVALENT in the live per-edit manifest — the escape the gate's block message promises. Requires a reason; recorded in-band so the accepted floor stays auditable.",
+		)
+		.requiredOption("--file <path>", "Repo-relative path holding the mutant")
+		.requiredOption("--id <mutantId>", "Mutant id from the gate's block message")
+		.requiredOption("--reason <why>", "Why no test can kill this mutant (stored on the record)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { mutationAcceptCommand } = await import("../commands/mutation.js");
+			await mutationAcceptCommand(opts);
+		});
+
 	// ===========================================
 	// Design — wrap Impeccable's deterministic design-slop detector
 	// ===========================================

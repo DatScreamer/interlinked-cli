@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as checkPolicy from "../harness/check-policy.js";
-import { mutationBaselineCommand, mutationCheckCommand } from "./mutation.js";
+import {
+	mutationAcceptCommand,
+	mutationBaselineCommand,
+	mutationCheckCommand,
+} from "./mutation.js";
 
 function captureIO(): {
 	mocks: () => { stdout: string; stderr: string; exitCode: string | number | undefined };
@@ -407,5 +411,116 @@ describe("mutationBaselineCommand", () => {
 		// Lowest-scoring file is shown; a file beyond the 25-row window is not.
 		expect(out).toContain("src/file-00.ts");
 		expect(out).not.toContain("src/file-29.ts");
+	});
+});
+
+describe("mutationAcceptCommand", () => {
+	let tmp: string;
+	let io: ReturnType<typeof captureIO>;
+
+	// The audited equivalent-mutant path: the per-edit gate's block message has
+	// always promised "or annotating an equivalent mutant"; this is that verb.
+	// Operates on the LIVE gate's manifest (mutation-manifest.json), not the
+	// report ratchet's mutation-baseline.json.
+	const FILE = "src/harness/mutation/harvest.ts";
+
+	function writeLiveManifest(cwd: string): void {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		const manifest = {
+			version: 1,
+			generation: 3,
+			authoritativeAt: "2026-07-29T00:00:00Z",
+			engine: "stryker",
+			engineVersion: "9",
+			dependencyGraphVersion: "g1",
+			environmentHash: "e1",
+			files: {
+				[FILE]: {
+					sym1: {
+						symbolId: "sym1",
+						qualifiedName: "claimPending",
+						symbolHash: "h1",
+						mutants: {
+							m1: {
+								mutantId: "m1",
+								siteId: "s1",
+								mutator: "ObjectLiteral",
+								originalLexeme: '{kind:"not_ready"}',
+								replacement: "{}",
+								ordinalWithinSymbol: 0,
+								status: "survived",
+								firstSeen: "2026-07-28T00:00:00Z",
+							},
+						},
+						instability: { events: [], consecutiveStableRuns: 1, quarantined: false },
+					},
+				},
+			},
+		};
+		writeFileSync(join(cwd, ".interlinked", "mutation-manifest.json"), JSON.stringify(manifest));
+	}
+
+	function readMutant(cwd: string): { status: string; accepted_reason?: string } | undefined {
+		// SAFETY: reads back the fixture this describe block wrote.
+		const saved = JSON.parse(
+			readFileSync(join(cwd, ".interlinked", "mutation-manifest.json"), "utf-8"),
+		) as {
+			files: Record<
+				string,
+				Record<string, { mutants: Record<string, { status: string; accepted_reason?: string }> }>
+			>;
+		};
+		return saved.files[FILE]?.sym1?.mutants.m1;
+	}
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "mut-accept-"));
+		io = captureIO();
+	});
+
+	afterEach(() => {
+		io.restore();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("P1: flips the named survivor to equivalent and persists the reason", async () => {
+		writeLiveManifest(tmp);
+		await mutationAcceptCommand({
+			file: FILE,
+			id: "m1",
+			reason: "poll loop only branches on ready/gone; the default arm is unobservable",
+			cwd: tmp,
+		});
+		expect(readMutant(tmp)?.status).toBe("equivalent");
+		expect(readMutant(tmp)?.accepted_reason).toContain("unobservable");
+	});
+
+	it("P2: reports the acceptance and does not fail the command", async () => {
+		writeLiveManifest(tmp);
+		await mutationAcceptCommand({ file: FILE, id: "m1", reason: "unobservable arm", cwd: tmp });
+		expect(io.mocks().exitCode).toBeUndefined();
+		expect(io.mocks().stdout).toContain("equivalent");
+	});
+
+	it("N1: an unknown mutant id changes nothing and exits non-zero", async () => {
+		writeLiveManifest(tmp);
+		const before = readFileSync(join(tmp, ".interlinked", "mutation-manifest.json"), "utf-8");
+		await mutationAcceptCommand({ file: FILE, id: "nope", reason: "some reason", cwd: tmp });
+		expect(io.mocks().exitCode).toBe(1);
+		expect(readFileSync(join(tmp, ".interlinked", "mutation-manifest.json"), "utf-8")).toBe(before);
+	});
+
+	it("N2: a blank reason is refused — an unauditable floor entry is how ratchets rot", async () => {
+		writeLiveManifest(tmp);
+		await mutationAcceptCommand({ file: FILE, id: "m1", reason: "   ", cwd: tmp });
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("reason");
+		expect(readMutant(tmp)?.status).toBe("survived");
+	});
+
+	it("N3: a missing manifest is a clear error, not a crash", async () => {
+		await mutationAcceptCommand({ file: FILE, id: "m1", reason: "r", cwd: tmp });
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("manifest");
 	});
 });

@@ -129,8 +129,10 @@ describe("registerQualityCommands — structure", () => {
 		expect(sub(program, "coverage").commands.map((c) => c.name()).sort()).toEqual(
 			["baseline", "check"].sort(),
 		);
+		// `accept` (2026-07-29) is the audited equivalent-mutant annotation for the
+		// LIVE per-edit manifest — the escape the gate's block message promises.
 		expect(sub(program, "mutation").commands.map((c) => c.name()).sort()).toEqual(
-			["baseline", "check"].sort(),
+			["accept", "baseline", "check"].sort(),
 		);
 	});
 
