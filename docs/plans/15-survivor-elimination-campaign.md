@@ -313,13 +313,239 @@ with numbers from a live measurement (§4a), not from the manifest.
 | 2026-07-30 | `src/harness/replay/sse-reassembly.ts` | 32 → **8** (of 135) | 26 | 8 | 2 are syntactic no-ops (provable); 6 are the **defensive-guard** class and are staleness-dependent — left `unresolved`, deliberately not accepted. |
 | 2026-07-30 | `src/lib/codex-feature-flag.ts` | 30/104 snapshot → **5/117** live | 14 | 5 | Denominator changed because the manifest undercounts module-scope mutants (§9). Remaining 5 are redundant `$` anchors in per-line regexes and a literal feeding only a boolean `.test()`. |
 
-Totals so far: **92 → 27 survivors, ~48 tests added, 0 deletions, 0 accepts,
-0 source edits.** Every "after" figure was verified by an independent measurement
-rather than taken from the executing agent's report.
+### Fleet wave 1 (2026-07-31) — 5 files hardened, each audited by a prosecutor
+
+Every "after" figure below was re-measured by the orchestrator, not taken from the
+executing agent. Run shape: one hardening agent per file, then an INDEPENDENT
+prosecutor per file that received the hardener's "unkillable" list and tried to
+refute it.
+
+| File | Before | After | Notes |
+|---|---|---|---|
+| `rules/builtin-rules-processes.ts` | 397 / 398 | **1** | The campaign's worst and most security-critical target — a module-scope `GuardRule[]` table whose mutants could not even be RECORDED until the same day's identity fix. The single remaining survivor was classified a source defect, not killed artificially. |
+| `checks/ubs-language-specific/js-security-checks.ts` | 261 / 630 | **25** | Prosecutor killed 8 more on top of the hardener's work. |
+| `evaluator/write-content-guards-content-quality.ts` | 221 / 451 | **8** | |
+| `harness/statusline-snapshot.ts` | 195 / 372 | **17** | Formatter; higher share of genuine equivalents as predicted. |
+| `checks/agent-safety-js-correctness.ts` | 262 / 558 | **42** | Largest remaining backlog; hand-off recorded. |
+| `lib/codex-feature-flag.ts` | (CRLF source fix) | **0 / 134** | See below. |
+
+**1,336 → 93 survivors across six files, zero accepts, nine source defects reported.**
+
+> **Open handoff gap — the nine source defects are a COUNT, not a list.** Only the
+> three in `lib/codex-feature-flag.ts` are written up (the CRLF cluster below). The
+> remaining six were reported inside individual fleet-agent transcripts and were
+> never lifted into this ledger, so nobody can act on them from this document.
+> Recover them from the session transcripts before the next wave, and fix the
+> process too: **a source defect is only "reported" once it lands here with file,
+> symbol, and the mutant that exposed it.** An agent that finds one and names it
+> only in its own final message has produced a finding that dies with its context.
+
+
+
+**The CRLF fix is the flywheel's first real bug catch.** Mutation testing surfaced a
+user-visible defect: `split("\n")` leaves a trailing `\r` on CRLF files, and JS `.`
+excludes all four line terminators, so `/#.*$/` never matched — a commented-out
+`# hooks = true` read as ENABLED, so `interlinked enable --clients codex` reported
+success while Codex hooks stayed OFF. The fixing agent rejected three plausible
+repairs with reasons worth keeping: CRLF-aware splitting would rewrite the user's
+whole file to LF on every pass; merely dropping the `$` still breaks on
+U+2028/U+2029. It chose one shared terminator-agnostic helper (`/#[^\n]*/`),
+preserved byte-exact line endings via a `dominantCr` helper, and found a FOURTH
+consequence nobody had listed (with `[sandbox] # notes` unrecognised as a
+boundary, the flag landed in the WRONG table). When a new survivor appeared
+mid-work it wrote: *"Rather than claim it unkillable I removed the construct."*
+
+**Side effect worth noting: the campaign tightened a different ratchet.** The new
+MUST-FIRE / MUST-NOT-FIRE fixtures discharged Check Evidence Contract obligations
+for **9 previously-grandfathered checks** (`eval_usage`, `inner_html`,
+`nan_comparison`, `unsafe_optional_chaining`, `constant_condition`,
+`number_precision_loss`, `json_parse_unsafe`, `ubs_js_loose_equality`,
+`ubs_unchecked_redirect`). The contract test FAILED until they were removed from
+the shrink-only grandfather list (113 → 104) — the ratchet demanding to be
+tightened. This is the "one effort advances two ratchets" claim in §4, measured.
+
+### Prosecution round 1 (2026-07-31) — adversarial audit of "unkillable" claims
+
+Every survivor the first three units left unresolved was handed to an INDEPENDENT
+prosecutor agent whose only instruction was to kill it and prove the previous
+agent wrong. Result:
+
+| File | Claimed unkillable | Actually killed | Source defects | Genuinely unkillable |
+|---|---|---|---|---|
+| `replay/sse-reassembly.ts` | 8 | **1** | 0 | 7 |
+| `lib/codex-feature-flag.ts` | 5 | **2** | **3** | **0** |
+| **total** | **13** | **3** | **3** | **7** |
+
+**Six of thirteen "unkillable" claims did not survive contact with an adversary**
+(3 killed outright, 3 were real source defects). `codex-feature-flag.ts` reached
+**117 mutants / 0 survivors** — the campaign's first file at zero, independently
+re-measured.
+
+Two findings worth carrying forward:
+
+- **A plausible premise was simply false.** The `.trim()` mutant survived because
+  the previous agent asserted "JSON.parse tolerates surrounding whitespace". It
+  does not: `String.trim()` strips the full Unicode whitespace set while
+  `JSON.parse` accepts only U+0020/09/0A/0D. Worse, the *pre-existing* test that
+  claimed to pin `.trim()` used ASCII spaces — which is exactly why the mutant
+  survived. A test that looks like it covers a behavior is not evidence that it does.
+- **Restraint is part of the job.** The prosecutor found two mutants it *could*
+  have killed by stubbing `Object.entries` / `JSON.parse`, and deliberately
+  refused: doing so "pins the implementation's choice rather than any behavior"
+  and would "record a kill for a state unreachable in production". Manufacturing
+  a kill inflates the score while making the suite brittle — it corrupts the very
+  metric this campaign exists to keep honest. **Declining such a kill is the
+  correct outcome and must be reported, not hidden.**
+
+Totals after prosecution: **92 → 20 survivors, ~55 tests added, 0 deletions,
+0 accepts, 0 source edits by hardening agents.** Every "after" figure was verified
+by an independent measurement rather than taken from an executing agent's report.
 
 **Ledger discipline:** a unit is recorded only after a live re-measurement. If you
 finish work but cannot measure (runner down, `no_tests`), record the row with
 `After = unmeasured` and say so — never infer a count.
+
+### Coverage/CRAP wave (2026-07-31) — 7 units, 7 refuted, and why that is the good outcome
+
+A 7-file wave aimed at the top of the combined CRAP + coverage-regression ranking
+(110 candidate files; CRAP is dominated by zero-coverage command entry points,
+and since CRAP = cc²·(1−cov)³ + cc, coverage is the *cubed* term — so the two
+ratchets are one job). One hardening agent per file, then an INDEPENDENT agent
+per file instructed to **disprove** the hardening claim.
+
+**All seven were refuted. 28 problems. +216 tests, suite green.**
+
+The distribution of failures is the interesting part:
+
+| Failure mode | Count | Why a coverage number cannot see it |
+|---|---|---|
+| Mock-only tests | **0** | — |
+| Weakened / deleted / skipped tests | **0** | — |
+| Overclaimed "unreachable" branches | 3 units | The branch stays uncovered and the note says that is fine |
+| Coverage that cannot fail | 1 unit | Branch is *executed*, so it counts as covered; deleting it breaks nothing |
+| Vacuous assertion (`.every()` on a possibly-empty array) | 1 unit | Green, and green on an empty array too |
+| Test title promising more than the assertion | 2 units | Reads as covered to any human skimming |
+| Source defect pinned AS INTENDED BEHAVIOUR | 1 unit | Worse than uncovered — it cements the bug |
+| Non-hermetic (host git config) | 1 unit | Passes locally, fails on CI or the other machine |
+
+**Nobody cheated.** No agent weakened a test or asserted on a bare mock — the
+things the harness already detects. Every failure was *overclaiming*: the tests
+ran, they just did not establish what their author said they established. That
+is precisely the class no metric catches, because a vacuous assertion and a
+sharp one produce identical coverage.
+
+Two findings worth carrying into every future wave:
+
+- **A test that covers a branch but passes when the branch is deleted is not a
+  test.** Before adding a case for a branch, delete the branch mentally (or
+  actually) and confirm the new assertion fails. If it does not, you have bought
+  a coverage point and no verification.
+- **Isolate the environment the SUT sees, not the one your fixture sees.** One
+  unit isolated git config for its fixture-building calls and stated in a comment
+  that it had full isolation — while the command under test ran its own git
+  through `execFileSync`, inheriting the host's `~/.gitconfig`. A single setting
+  (`core.quotePath=false`) flipped 11 of 27 assertions.
+
+**Round 2 — remediation: 6 of 7 resolved, 0 still-open, 0 weakened.** Each unit
+got its own verifier's findings and was re-audited by a third agent. The seventh
+was caught doing something worth naming: it **disputed a finding incorrectly and
+wrote the false claim into the test file as a comment** — a rationale attributing
+behaviour to a test that does not exhibit it, which is round 1's PROBLEM 1 class
+recurring one level up. The re-auditor refuted it by building the mutant and
+measuring, then handed over the exact discriminating assertion. Landed and
+verified: REAL passes, body-deleted and block-deleted mutants both FAIL, and only
+on the new assertion — the pre-existing `length > 0` checks stayed green under
+both, which is precisely why the block had been unpinned.
+
+**What round 2 got right that round 1 did not, and it was not model tier:** the
+tasks carried a measured root cause, exact before/after numbers, and a named
+definition of done. Three agents used that footing to push back — one **proved a
+prescribed fix would have been a regression** and closed its audit with no
+production change; another **rejected a proposed detector refinement** on measured
+evidence and shipped a narrower one instead. Vague tasks produce overclaiming from
+any model; specified tasks produce disagreement, which is what you actually want.
+
+**A defect in the fix itself.** One audit noticed that `normalizeManifestKey` —
+the manifest choke point introduced *that same day* to kill duplicate keys — ran
+its `resolve → relative` round-trip only for ABSOLUTE inputs. Measured: one file
+produced **five** distinct keys (`src//a.ts`, `src/./a.ts`, `src/sub/../a.ts`,
+`../<repo>/src/a.ts` all surviving alongside `src/a.ts`). The two-spellings/one-map
+class, reintroduced inside its own remedy. Now one key for all nine spellings,
+with a case pinning that a genuinely-outside-cwd path keeps its distinct key.
+**Generalizes: a "canonical" helper is not canonical until something asserts that
+every spelling collapses — a helper's existence is not evidence of its behaviour.**
+
+The ledger rule stands: no unit is marked resolved on an executing agent's say-so.
+
+### Unit: `harness/build-refresh.ts` (2026-07-31) — 15 → 2, hardening its own fix
+
+Not from the work list. The daemon's build-refresh watcher was changed to fix a
+live under-enforcement bug (evidence log in
+`docs/plans/16-monotonic-quality-enforcement.md`), so the campaign's own rule
+applied to it: a file you touch, you harden. Orchestrator-measured throughout.
+
+| Stage | Mutants | Survivors |
+|---|---|---|
+| After the escalation fix landed | 104 | 15 |
+| After boundary tests on the edited predicate | 104 | 13 |
+| After a hardening agent took the watcher internals | 104 | **2** |
+
+The escalation branch itself never appeared as a survivor — its boundary tests
+killed every mutant on landing. That is the intended shape: **write the test
+that pins the boundary while you still remember why the boundary is there.**
+
+The two remaining survivors are argued equivalent, and the argument's *method*
+is the part worth copying. Both were verified **empirically, not algebraically**:
+the mutation was patched into a scratch copy of the source and the full 30-test
+suite was run against it. Only when all 30 still passed was equivalence claimed.
+
+- `lastAttemptMs !== 0` forced `true` — redundant by numeric magnitude, not by
+  control flow: when the sentinel is `0`, `now - 0` is an epoch-scale number
+  (~1.7×10¹²) that already exceeds any realistic `intervalMs * 2`. Left in
+  source deliberately: it documents "no attempt yet", and deleting it would make
+  correctness depend on a hidden assumption that `Date.now()` is never near zero.
+- `currentMtimeMs === null` forced `false` — `shouldHandOver` independently
+  vetoes it, since `null <= startedMtimeMs` coerces true for any real mtime.
+  Also left in source: relying on the coercion quirk is less readable than the
+  explicit guard.
+
+Both are the §5 **dead code** class. Note what did NOT happen: neither was run
+through `interlinked mutation accept` (the verb is a refusal by design), and
+neither was "killed" by deleting the guard — deleting a defensive guard to move
+a number is the anti-pattern, not the fix.
+
+### Ratchet pass (2026-07-31) — the gates the campaign runs against
+
+Hardening the tests is half the job; the water-lines have to move too, or the
+next agent inherits the same slack. What moved, and what deliberately did not:
+
+| Metric | Before | After | Basis |
+|---|---|---|---|
+| Cyclomatic cap | 25 | **22** | 9270 functions measured: max 56, p99 18, p95 12. Cost grid 25→3 over, 23→15, 22→23, 20→53; the curve steepens below 22 |
+| Cognitive cap | 30 | **30** (unchanged) | Measured p99 = 28 against a cap of 30 — already correctly placed. Tightening to 25 would flag 129 functions for a warn-only gate, i.e. pure noise |
+| Coverage ratchet | 1075 findings | **precision-fixed** | ~88% were floor-vs-full-precision artifacts, not regressions (evidence log in `docs/plans/16-monotonic-quality-enforcement.md`) |
+| CRAP cap | 30 | **25** | Measured after the model was corrected: n=9132, max 380, p99 20.1, p50 3. Cost grid 30→21 over, 26→35, 25→39. Worst offenders are genuinely high-complexity/zero-coverage command entry points (`metrics-rework`, `metrics-coupling`, `doctest`, `replay`) |
+| Coverage baseline | — | **ratcheted + normalized** | `coverage check --update-baseline` against a clean full-suite report: 7 raised, 1197 unchanged, 1 new, **0 genuine lowerings**. The 916 apparent drops were each exactly `floor(x*100)/100` — the deliberate normalization to the report's own resolution, which is what stops the phantom findings recurring |
+
+**The CRAP row is worth reading twice.** The first attempt reported 2960 functions over cap with
+well-tested files at 0% coverage — a number that would have justified either a panic or a
+cap raise. It was neither: istanbul's `f[id]` counts a function's own ENTRY, not its body,
+so the model was wrong, not the code. `FunctionCoverage.statement_pct` — which the repo's
+own reader already derives — gives the real figure of 21 over cap. **When a metric produces
+an implausible number, suspect the measurement before the tree.**
+
+Two of these are worth internalizing before touching a cap:
+
+1. **Measure the distribution before choosing a number.** Cyclomatic looked
+   near its limit and had four steps of headroom; cognitive looked loose and had
+   none. Neither was guessable.
+2. **A cap you cannot measure is a cap you must not set.** The CRAP row stays
+   `unmeasured` rather than taking the plausible-looking number, because the
+   measurement was built on a coverage model that does not hold.
+
+Re-measure with `scratch/measure-cyclomatic-dist.mts` and
+`scratch/measure-crap-cognitive-dist.mts` before the next ratchet step; the
+23 functions now over the cyclomatic cap are enumerated in the task ledger.
 
 ## 7. Running this in parallel across several agents
 
@@ -443,7 +669,17 @@ agents per file.
   Adding those to `SKIP_ENTRIES` is the small fix that would make the automatic
   per-edit affected-test run affordable. Until then the full suite runs between
   units (orchestrator's job), not per edit.
-- **No `procfs_probe_in_test` detector.** Tests that probe `/proc/...` as an
-  "unwritable path" hang Linux CI (recursive mkdir spins). The safe fixture is a
-  path nested under a regular *file* (ENOTDIR everywhere). Worth a write-time
-  check so the class cannot return.
+- ~~**No `procfs_probe_in_test` detector.**~~ **SHIPPED 2026-07-31.** Tests that
+  probe `/proc/...` as an "unwritable path" hang Linux CI (recursive mkdir
+  spins); the safe fixture is a path nested under a regular *file* (ENOTDIR
+  everywhere). Two further detectors in this class are queued in plan 16's
+  detector backlog: `absolute_ms_assertion_in_test` (3 instances) and
+  `startup_error_vs_test_failure`.
+- **The "~290 unmeasurable files" figure is not supported by current data.**
+  Re-derived 2026-07-31 against all four companion-test conventions the runner
+  probes (sibling `.test.ts`/`.test.tsx`, `__tests__/`, `.spec.ts`): of the files
+  with recorded survivors, **657 are measurable and 2 are not** — and those 2 are
+  themselves `.test.ts` entries that should never have been targets. The 290
+  figure came from the sweep's `not measurable` count, which we now know was
+  substantially the degraded-runner `no_tests` problem (see the bullet above),
+  not genuinely missing tests. Re-derive before citing it.

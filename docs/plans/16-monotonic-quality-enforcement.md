@@ -458,6 +458,165 @@ the invariant.
   floor until this ships, so the campaign's numbers should be re-derived before a
   large push (see the sequencing note in plan 15's TL;DR).
 
+### 11.2 Detector backlog — classes this repo keeps re-committing
+
+Each of these is a defect class observed MORE THAN ONCE in this codebase, which
+is the bar for turning a lesson into a write-time check. A lesson that lives only
+in a comment gets re-learned; the `/proc` hazard was documented in 2026-06 and
+still cost three CI runs and a month-long bogus quarantine in 2026-07 because
+nothing enforced it.
+
+| Detector | Fires on | Message must say | Evidence |
+|---|---|---|---|
+| `procfs_probe_in_test` | **SHIPPED 2026-07-31** — a `/proc/...` path used as an unwritable-path fixture in a test | nest under a regular FILE → ENOTDIR on every platform | 4 probe sites, 3 hung CI runs |
+| `absolute_ms_assertion_in_test` | `toBeLessThan(<ms literal>)` on a measured duration | use a same-process ratio against a control (pattern: commit `80eaf2b`); an absolute ms bound passes alone and fails under load, then gets "fixed" by raising the constant, which destroys the signal. **A ratio is necessary but not sufficient — its threshold must be coarse relative to the instrument's noise.** A 2×-vs-4× ratio at ~25ms samples is still flaky (measured: 3.13, 4.26 against a 3× threshold); the same test with a 32×-vs-1024× separation runs at ±1.5%. Size the question to the instrument, and remember the regression you are guarding is usually orders of magnitude, not factors | **4 instances**: ReDoS linearity, `out-of-tree-guard`, property-budget floor, `reinterpret-alignment` (below) |
+| `startup_error_vs_test_failure` | non-zero verifier exit with NO runner summary in stdout | classify as `verifier_did_not_run`, never as a test failure or as evidence | `vitest --reporter=basic` (no such reporter in v4) exited 1 having run nothing |
+
+Also queued, from the same session's measurements:
+
+- **Manifest key normalization + test-file exclusion.** The gate uses the
+  runner's ABSOLUTE `file_path` as the manifest key while sweeps use
+  repo-relative, so one file can hold two records and its ratchet splits across
+  them. 17 such keys plus 2 `.test.ts` targets were purged 2026-07-31; the
+  normalization belongs at the gate's manifest boundary so they cannot return.
+- **Runner concurrency is a hard limit of one job per worktree.** Each endpoint
+  answers `503 busy` while a run is in flight, so N parallel agents need
+  fail-over + backoff or they silently record "unmeasurable" when they mean
+  "busy". Fixed in the local probe 2026-07-31; the same contract belongs in any
+  shipped measurement client.
+- **`normalizeManifestKey` is not canonical for RELATIVE inputs** (measured
+  2026-07-31, correcting the bullet above). It converts absolute → relative but
+  leaves `.` / `..` / `//` / a trailing slash intact, so `src/a.ts`,
+  `src/./a.ts`, `src//a.ts`, `src/../src/a.ts` and `src/a.ts/` are FIVE manifest
+  keys for one file — the split-history defect the absolute-key purge fixed, one
+  spelling class over. Fix: resolve before normalizing
+  (`normalizeManifestKey(resolve(cwd, f), cwd)`), which is idempotent and
+  collapses all five. Audited and NOT a defect in the pending-registry
+  key-space, which already resolves — see 11.3.
+
+### 11.3 Path-domain predicates — one question, N answers
+
+Two audits on 2026-07-31 asked the same question of two different key-spaces.
+Both are instances of the class this section exists for, and the second one is
+the more expensive because it is still open.
+
+**Audit A — the pending-registry key (closed, no change).** The `onPending`
+callback in `server/pre-tool-coverage-gates.ts` hand-rolls
+`relative(cwd, resolve(cwd, file))` and was suspected of being a third instance
+of the two-producers/two-spellings/one-map bug. It is not, and the reason is
+worth recording so the audit is not repeated:
+
+- There is exactly ONE producer (`onPending`) and ONE consumer
+  (`post-tool-mutation-harvest.ts::writtenFile`, feeding `takePending` and
+  `unmatchedPendingWarning`).
+- Both derive the key from the SAME source string, `tool_input.file_path`,
+  threaded verbatim — the writer through `normalizeChangeSet` (which stores
+  `str(input.file_path)` unchanged) → `changedPaths` → `primaryCodeFile` →
+  `onPending`; the reader straight off the event. Both apply the SAME expression
+  with the same `ctx.cwd` (one daemon, one `ServerRuntime`, both call sites take
+  it). They cannot disagree.
+- `relative ∘ resolve` is canonical over the POSIX lexical equivalence class:
+  across 13 spellings, writer-vs-reader disagreements = 0 and 11 collapse onto
+  one key.
+
+Routing it through `normalizeManifestKey` — the obvious "use the canonical
+helper" refactor — is a **regression**, not a cleanup: the canonical helper is
+strictly weaker here (previous bullet), producing 6 distinct keys over the same
+13 spellings where the hand-rolled expression produces 3. Verified by applying
+the refactor and watching the new 8×8 write-spelling × read-spelling matrix in
+`server/mutation-pending-key-parity.test.ts` fail on 24 of 64 pairs. That matrix
+is now the pin: it asserts claimability end-to-end rather than inspecting the
+key string, so it fails when EITHER side is changed alone.
+
+**Audit B — "is this a test file?" (open).** `CLAUDE.md` names `isCappableFile`
+the one product-code domain definition, added after two gates disagreed about
+`scratch/`. That consolidation stopped at the composite and never reached the
+predicates underneath it. Measured over 2521 tracked files plus a synthetic
+convention corpus:
+
+| Predicate | Home | true on (rel / abs) |
+|---|---|---|
+| `isTestPath` | `coverage-test-selector.ts` | 1101 / 1101 |
+| `isTestOrSpecPath` | `large-file-policy.ts` | 1109 / 1109 |
+| `isStrictTestFile` | `checks/shared.ts` | 1100 / 1101 |
+| `isTestFile` | `checks/shared.ts` | 1100 / 1318 |
+| `isVendoredOrFixturePath` | `checks/shared.ts` | (separate question, already named correctly) |
+
+**Three distinct questions are being asked, not three copies of one.**
+
+1. **Is this file a TEST — an oracle the runner executes?** Answered THREE times
+   (`isTestPath`, `isTestOrSpecPath`, `isStrictTestFile`) with three convention
+   lists grown independently. None of the divergences is documented as
+   deliberate; each is an omission.
+2. **Is this file PRODUCT CODE, in the domain of product-code policy?**
+   `isCappableFile`. Correctly one function — but its test clause is a private
+   copy of question 1 rather than a call to it.
+3. **Does this file hold detection patterns as DATA, so a regex content scan can
+   only false-positive on it?** `isTestFile` = `isStrictTestFile ∪
+   isHarnessInternalDataFile`. Deliberately different and correctly so. Its
+   defect is the NAME: "isTestFile" is what makes it read as a third copy of
+   question 1, and what would invite a future cleanup to merge it — which would
+   make every test-hygiene check fire on 217 detector files (the
+   `duplicate_test_names`-on-`verification-stop-checks` false positive its own
+   docstring already records).
+
+A fourth question, "did we author this file?", is already separated and named
+(`isVendoredOrFixturePath`) — proof the codebase knows how to do this.
+
+Where questions 1's three answers actually diverge (synthetic corpus; the real
+tree exercises only 10 three-way disagreements, so the tree is weak evidence and
+the convention lists are the real exposure):
+
+| Path | `isTestPath` | `isTestOrSpecPath` | `isStrictTestFile` | Consequence |
+|---|---|---|---|---|
+| `src/a.test.rb`, `src/a.test.py`, `src/a.spec.rb` | true | false | false | oracle to the mutation gate and the manifest; product code to the line cap and to every test-hygiene check |
+| `tests/thing.ts`, `test/thing.ts` (repo-relative) | false | true | false | exempt from the line cap, yet a mutation target, and invisible to test-hygiene checks |
+| `src/FooTest.java`, `src/FooTests.swift`, `src/test_foo.swift` | false | true | true | invisible to the affected-test selector |
+| `test/agent-driven/run-scenario.ts` (real file) | false | true | — | line-cap exempt AND mutation-eligible |
+
+Two latent defects surfaced while measuring, both the same shape:
+
+- **`isStrictTestFile` matches directories by substring with a leading slash**
+  (`normalized.includes("/tests/")`), so a TOP-LEVEL `tests/` directory
+  addressed by a repo-relative path does not match. `isTestOrSpecPath` anchors
+  correctly with `(?:^|\/)`. Measured: `tests/README.md` flips purely on
+  absolute-vs-relative spelling. In a repo whose tests live in a top-level
+  `tests/`, every test-hygiene check silently stops firing for relative callers.
+- **`isTestFile`'s data-file half only fires for ABSOLUTE paths** —
+  `isHarnessInternalDataFile` prefix-matches the resolved package root. Over the
+  tracked tree: 217 files exempt when addressed absolutely, **0** when addressed
+  relatively. A content scan handed a relative path loses the entire exemption.
+
+**Recommendation — one named predicate per real question. Do not merge the
+third.**
+
+1. `isTestSourcePath(path)` — question 1, ONE implementation, the UNION of the
+   three convention lists, with directory matching anchored `(?:^|\/)` rather
+   than `includes`. The union is safe in both directions here, which is not
+   automatic and was checked: every convention in it genuinely names a test file
+   (widening question 1 excludes more files from mutation/baselining — the safe
+   direction for an oracle; widening question 2's test clause exempts more files
+   from the line cap, and each added convention is a real test file, so no
+   product code escapes). The segment anchoring keeps `latest/`, `contest/` and
+   `src/testing/` out — verified against the corpus. `isTestPath` and
+   `isTestOrSpecPath` become thin re-exports, then are deleted at the call sites.
+2. `isCappableFile` stays the canonical product-code domain, but its test clause
+   CALLS `isTestSourcePath` instead of holding a private copy. This is the step
+   the `scratch/` consolidation stopped short of.
+3. Rename `isTestFile` → `isPatternDataFile` (or `isContentScanExempt`), defined
+   as `isTestSourcePath(p) || isHarnessInternalDataFile(p)`, and make
+   `isHarnessInternalDataFile` resolve its input before prefix-matching so the
+   exemption no longer depends on the caller's spelling. The rename IS the fix
+   for question 3 — it is the only thing preventing the merge that would break
+   the checks the split exists to protect.
+4. Pin it with **predicate parity**, not prose: extend the shipped
+   `registry-parity.json` mechanism (`harness/registry-parity.ts`, already a
+   configurable drift detector for paired registries) to declare a set of
+   predicates that must agree, run them over a committed convention corpus
+   during `interlinked verify`, and report any disagreement. Deterministic, no
+   LLM, no new machinery — and it fails the moment a fifth answer to an existing
+   question is added, which is the actual recurrence being defended against.
+
 ## 12. Non-goals
 
 - **Blocking on slow verifiers.** Anything that cannot verdict in T1 goes to T2.
@@ -482,3 +641,22 @@ Findings that motivated this plan, each verified rather than assumed:
 | 2026-07-30 | Coverage is already near-max where measurable | 1,013 files, median 96.6%, 636 ≥90%, **340 at 0%** — yet 25,305 covered mutants survive |
 | 2026-07-30 | Test suite is implementation-coupled | 183 of 1,040 test files use `vi.mock` |
 | 2026-07-30 | `accept` has no authority boundary | CLI is runnable by any agent with shell access |
+| 2026-07-31 | **A module with NO functions records NOTHING** — far worse than "13 missing mutants" | `rules/builtin-rules-processes.ts` has 0 function-like nodes (one module-scope `GuardRule[]` table): manifest held 0 symbols / 0 mutants vs 397/398 measured. `check-engine/tool-catalog.ts`: 35 recorded vs 513 measured. The worst and most security-critical campaign targets are DATA TABLES, so they were entirely invisible to the ratchet |
+| 2026-07-31 | Identity fix verified on the extreme case | after landing, `computeSymbolHashes` emits `(module)` for the zero-function file (0 symbols → 1); `codex-feature-flag.ts` 5 → 6 symbols |
+| 2026-07-31 | Manifest keys are not normalized | 17 keys were ABSOLUTE paths duplicating repo-relative entries — the gate uses Claude Code's absolute `file_path` as the key while sweeps use repo-relative, so one file gets two records. 2 further keys were `.test.ts` files, violating the never-mutate-tests invariant |
+| 2026-07-31 | Mutation testing found a real user-visible bug | CRLF `config.toml`: `split("\n")` leaves `\r`, and JS `.` excludes all four line terminators, so `/#.*$/` never matches. A commented-out `# hooks = true` reads as ENABLED — `interlinked enable --clients codex` reports success while Codex hooks stay OFF; plus a duplicate `[features]` table that makes Codex reject the config |
+| 2026-07-31 | Adversarial prosecution refuted 6 of 13 "unkillable" claims | 3 killed outright, 3 were source defects, 7 genuinely unkillable. One rested on the false premise "JSON.parse tolerates surrounding whitespace" |
+| 2026-07-31 | Prosecutors correctly DECLINED two available kills | stubbing `Object.entries` / `JSON.parse` would have pinned implementation choices and states unreachable in production — the restraint the anti-gaming design depends on, exhibited without being caught |
+| 2026-07-31 | Absolute-millisecond assertions keep recurring | third instance: `out-of-tree-guard` asserted a 6ms ceiling, hit 7ms/11ms under fleet load, passed 7/7 in isolation. Fixed with the same same-process ratio pattern commit `80eaf2b` used for the ReDoS test. **Worth a detector** — see backlog below |
+| 2026-07-31 | A verification command that fails to START looks identical to one that FAILED | `vitest --reporter=basic` does not exist in v4; the run never started and exited 1, which reads as a red suite. Non-zero exit with no test summary in stdout is a startup error, not a test failure |
+| 2026-07-31 | **A stale daemon silently UNDER-ENFORCES — the one failure mode a guard must not have** | Live A/B: an `Edit` raising `max_cyclomatic` 22→40 in `.interlinked/metric-caps.json` was **allowed** by the running daemon; the identical edit **blocked** immediately after `harness restart`. Source was never wrong — `evaluateBaselineIntegrityForEvent` blocks both the Edit and Write form and allows the tightening (probe: `scratch/probe-baseline-gate.mts`). The daemon started 11:19 against a dist rebuilt 13:21. Nothing in the block path announces "these gates are from an old build" |
+| 2026-07-31 | The build-refresh handover **starves under load** — the cause of the above | `shouldHandOver` required `now - lastActivity >= 10s`, sampled every 60s. A busy multi-agent session never goes 10s idle, so the handover cannot fire exactly when stale gates matter most. Daemon ledger over 400 rows: **38 `rss-ceiling` handovers vs 2 `build-refresh`** (most recent two days old) while a 2-hour-stale daemon served every gate. Fixed by escalating past a 10-minute staleness deadline regardless of activity — a brief fail-CLOSED window is strictly safer than gates that quietly do not fire |
+| 2026-07-31 | A scoped `--coverage` run silently poisons the shared report the gate decides from | A concurrent `npx vitest run --coverage <3 files>` overwrote `coverage/coverage-{final,summary}.json`. `all: true` keeps all 1043 files listed so the report looks complete, but total lines read **3.27%** and well-covered files (`commands/activity.ts`, baseline 98.98) read 0/0. `interlinked coverage check` returned 3748 findings, every one an artifact. The gate must fail to UNMEASURED, never to REGRESSED |
+| 2026-07-31 | The coverage ratchet's own precision produced ~88% false findings | Baseline stores full float precision (`98.9795918367347`); istanbul FLOORS the report to 2dp (`98.97`) — confirmed at source in `istanbul-lib-coverage/lib/percent.js` (`Math.floor(tmp/10)/100`) and empirically 876/876 against floor, 0/876 against round. With `allow_decrease_pct: 0` every such file read as a permanent −0.009pp regression: of 1075 findings, **1131 identical / 841 phantom / 114 genuine** |
+| 2026-07-31 | **The fix for the timing test was ALSO flaky — a noisy instrument cannot answer a fine question** | Replacing the absolute ceiling with a 64KB-vs-128KB ratio (linear ≈2× vs quadratic ≈4×, threshold 3×) failed the full suite at **3.13 and 4.26**. Separating 2× from 4× demands timing PRECISION, and at ~25ms per sample JIT warm-up and scheduler noise exceed the gap. Refixed by asking the instrument a COARSE question instead: a 16KB control against a 32×-larger subject in the same process — linear lands near 32×, quadratic near 1024×. Measured over 6 rounds: **33.6–34.6, ±1.5% variance**, against a 150× threshold — 4.3× headroom over the worst observation and 6.8× below where quadratic would land. **The generalizable rule is not "prefer ratios" but "match the resolution you demand to the resolution the instrument has"**; the regression being guarded was ~78×, so no fine distinction was ever needed |
+| 2026-07-31 | **The measurement apparatus itself broke a timing test** — 4th instance of the absolute-ms class | `reinterpret-alignment.test.ts` asserted `elapsed < 2500ms`; identical work under v8 coverage instrumentation took **3284ms and 2643ms**, so the suite was green bare and RED under `--coverage`. Turning on the measurement is a load source like any other. Fixed by asserting the property the code actually delivers — linear scaling, via a 64KB-vs-128KB ratio in the same process (linear ≈2×, quadratic ≈4×, threshold 3×) — so instrumentation, CPU speed and load all cancel. Raising the constant would have destroyed the signal the test exists for |
+| 2026-07-31 | The coverage ratchet compared every file TWICE — a second, independent inflation hiding under the first | After the precision fix cut 1075 findings to 234, the residue was still 2× the truth: every `(file, metric)` pair appeared exactly twice and `files_checked` read 2088 for a 1044-file report. `loadMergedReport` merges an LCOV source and an istanbul source, and the two spell keys differently — LCOV's reader emits repo-relative POSIX paths, istanbul's emits ABSOLUTE. Keys were normalized at COMPARISON time but not at MERGE time, so each file entered the map twice. Fixed by normalizing before insertion via the existing `normalizePath`. Final: **1075 → 117 genuine, 0 duplicated**. Same root class as the mutation-manifest absolute-key defect — *two producers, two path spellings, one map* |
+| 2026-07-31 | The coverage baseline survived the double-count uncorrupted, for a knowable reason | `--update-baseline` was run while the duplication was live. It wrote **0 absolute-path keys** because `compareCoverage` normalizes per-entry when building `nextBaseline`, so both spellings collapsed to one record written twice with the same value. Verified: 7 raised, 1197 unchanged, 1 new, **0 genuine lowerings** — the 916 apparent drops were each exactly `floor(x*100)/100`. Worth noting the ORDER of luck: normalization at the write boundary saved the durable artifact while its absence at the read boundary corrupted only the ephemeral report |
+| 2026-07-31 | **Adversarial verification refuted 7 of 7 agent-hardened units — and the failure mode was OVERCLAIMING, not cheating** | A 7-file coverage/CRAP hardening wave, each unit audited by an independent agent told to DISPROVE it. Every unit was refuted: 28 problems total. But **0 mock-only tests and 0 weakened/deleted/skipped tests** — the agents did not game the metric, they overstated what their tests established. The recurring shapes: (a) a test that covers a branch but still passes when the branch is DELETED — coverage without verification; (b) `expect(xs.every(p)).toBe(true)` with no assertion on `xs.length`, vacuously true on an empty array; (c) branches declared "unreachable" that a verifier reached, in three separate units; (d) a source defect PINNED AS INTENDED BEHAVIOUR, which cements the bug; (e) test titles promising more than their assertions delivered. **The lesson for the harness: a coverage number cannot distinguish any of these from real tests — only an adversary can.** |
+| 2026-07-31 | Agent-written tests inherit ambient machine state the agent thinks it isolated | `metrics-rework.test.ts` isolated `GIT_CONFIG_GLOBAL/SYSTEM` for its FIXTURE-building git calls, and its own comment claimed "full isolation from the developer's global/system git config". But the SUT runs its own `git log`/`diff`/`blame` through `execFileSync`, which inherits `process.env` — so the host's `~/.gitconfig` governed the code under test. Measured: `core.quotePath=false` alone flips **11 of 27** assertions. The same agent had already written `process.env.GIT_CEILING_DIRECTORIES = …` elsewhere in the file *because* "the command inherits process.env", so it knew the mechanism and still missed the case. Fixed by pinning the env the SUT sees; verified 27/27 under both clean and hostile config. **Generalizes: any test asserting on a subprocess's output must pin that subprocess's environment, not just its own.** |
+| 2026-07-31 | Cyclomatic has far more ratchet headroom than assumed | 9270 functions across 1037 cappable files: max 56, **p99 18**, p95 12, p90 9, p50 3. Cost grid — cap 25 → 3 over, 24 → 10, 23 → 15, 22 → 23, 21 → 34, 20 → 53. Ratcheted 25 → 22. Cognitive measured p99 28 against a cap of 30, i.e. already correctly placed, so it was left alone |
