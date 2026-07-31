@@ -34,6 +34,7 @@ import { buildEditMechanicsStopNudge } from "../edit-mechanics-stop.js";
 import { resetProjectSetupWarningsCache } from "../evaluator/pre-tool.js";
 import { computeEffectivenessSummary } from "../feedback-effectiveness.js";
 import { refreshPriorityIfStale as refreshFilePriorityIfStale } from "../file-priority.js";
+import { buildGateReachStopWarning } from "../gate-reach-collect.js";
 import { findRipgrep } from "../grep-accelerator.js";
 import { deleteLiveSnapshot } from "../live-snapshot.js";
 import {
@@ -440,6 +441,17 @@ function buildStopWarnings(
 	for (const w of buildPatternRescanWarnings(session, cwd)) {
 		warnings.push(w);
 	}
+	// Gate reach (plan 16 §4) — each quality gate's coverage OF ITSELF, so a gate
+	// that silently stopped seeing part of the tree becomes a number instead of
+	// false confidence. Reporting only, never a block; self-throttled to once per
+	// session per interval because it walks the tree. A disabled gate is LOUD
+	// here: silent disablement is the failure this exists to prevent.
+	const gateReachWarning = buildGateReachStopWarning({
+		cwd,
+		sessionId: event.session_id || "unknown",
+		perEditCoverageEnabled: ctx.rules.per_edit_coverage?.enabled !== false,
+	});
+	if (gateReachWarning !== null) warnings.push(gateReachWarning);
 	// Stop-phase sequence detectors — multi-event quality + cross-agent +
 	// install-then-execute shapes. Sibling family to `buildPatternRescanWarnings`
 	// (which rescans per-file content); these run over the trajectory state.

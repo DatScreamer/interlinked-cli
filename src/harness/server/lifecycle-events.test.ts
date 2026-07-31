@@ -370,8 +370,10 @@ import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import {
 	buildCommitCadenceNudge,
+	buildStaleBaselineNudge,
 	buildVerificationStopWarnings,
 } from "./lifecycle-stop-warnings.js";
+import { peekTrajectoryState, trajectoryShadowWarnings } from "./trajectory-shadow.js";
 
 const mMkdir = vi.mocked(mkdir);
 const mWriteFile = vi.mocked(writeFile);
@@ -391,6 +393,7 @@ const mBuildRescan = vi.mocked(buildPatternRescanWarnings);
 const mBuildTurnSummary = vi.mocked(buildTurnEndSummary);
 const mFormatTurnEnd = vi.mocked(formatTurnEndWarnings);
 const mBuildCadence = vi.mocked(buildCommitCadenceNudge);
+const mBuildStaleBaseline = vi.mocked(buildStaleBaselineNudge);
 const mBuildVsc = vi.mocked(buildVerificationStopWarnings);
 const mSanitize = vi.mocked(sanitizeSessionId);
 
@@ -487,6 +490,7 @@ beforeEach(() => {
 	mBuildRescan.mockReturnValue([]);
 	mRunSeq.mockReturnValue([]);
 	mBuildCadence.mockReturnValue(null);
+	mBuildStaleBaseline.mockReturnValue(null);
 	mBuildVsc.mockReturnValue([]);
 	// Restore the genuine sanitize behavior after clearAllMocks wiped the
 	// wrapped implementation. Mirrors session-paths.ts::sanitizeSessionId
@@ -613,6 +617,19 @@ describe("handleLifecycleEvent — dispatch branches", () => {
 		);
 		expect(out).toBeNull();
 		expect(fnOf(ctx.cohort.recordActivity)).toHaveBeenCalled();
+	});
+
+	it("TaskCompleted: records cohort activity and falls through to null", async () => {
+		const ctx = bCtx();
+		const out = await handleLifecycleEvent(
+			ctx,
+			bEvent({ hook_event: "TaskCompleted", agent_name: "sub-x" }),
+			bSession(),
+		);
+		expect(out).toBeNull();
+		expect(fnOf(ctx.cohort.recordActivity)).toHaveBeenCalledWith(
+			expect.objectContaining({ hook_event: "TaskCompleted", agent_name: "sub-x" }),
+		);
 	});
 });
 
@@ -838,6 +855,108 @@ describe("Stop handler — branch coverage", () => {
 	it("falls back to ctx.cwd for the rescan cwd when event.cwd is absent", async () => {
 		await stop(bCtx({ cwd: "/ctx-cwd" }), {});
 		expect(mBuildRescan).toHaveBeenCalledWith(expect.anything(), "/ctx-cwd");
+	});
+
+	it("surfaces the gate-reach meta-metric when a quality gate is disabled", async () => {
+		// End-to-end wiring pin (plan 16 §4): a real tree with one product-code
+		// file plus `per_edit_coverage.enabled: false` must make the Stop verdict
+		// carry the loud disabled-gate figure. This is the whole point of the
+		// meta-metric — a gate that is off must never be a silent zero.
+		const repo = mkdtempSync(join(tmpdir(), "lifecycle-gate-reach-"));
+		try {
+			mkdirSync(join(repo, "src"), { recursive: true });
+			writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n", "utf-8");
+			const ctx = bCtx({ cwd: repo, rules: { per_edit_coverage: { enabled: false } } });
+			const out = await stop(ctx, { cwd: repo });
+			const warnings = out?.warnings ?? [];
+			expect(warnings.some((w) => w.includes("[interlinked:gate-reach]"))).toBe(true);
+			expect(warnings.some((w) => w.includes("gate=per_edit_coverage"))).toBe(true);
+			expect(warnings.some((w) => w.includes("disabled=true"))).toBe(true);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("surfaces the edit-mechanics reflection once the doomed-edit threshold is met", async () => {
+		// buildEditMechanicsStopNudge is the REAL (unmocked) implementation —
+		// drive it with a session shape that clears its threshold (doomed >= 3)
+		// and assert the actual rendered text, not just that something fired.
+		const session = bSession({
+			edit_mechanics: { doomed: 4, rescued: 1, stale_reads: 2, blind_edits: 0 },
+		});
+		const out = await stop(bCtx(), {}, session);
+		const warnings = out?.warnings ?? [];
+		const nudge = warnings.find((w) => w.includes("[interlinked:edit-mechanics]"));
+		expect(nudge).toContain("4 edit(s) this session were dead on arrival");
+		expect(nudge).toContain("1 recovered in one round trip");
+		expect(nudge).toContain("2 targeted file(s) that drifted");
+	});
+
+	it("omits the edit-mechanics reflection below the doomed-edit threshold", async () => {
+		const session = bSession({
+			edit_mechanics: { doomed: 2, rescued: 0, stale_reads: 0, blind_edits: 0 },
+		});
+		const out = await stop(bCtx(), {}, session);
+		const warnings = out?.warnings ?? [];
+		expect(warnings.some((w) => w.includes("[interlinked:edit-mechanics]"))).toBe(false);
+	});
+
+	it("surfaces the stale-baseline nudge when the ratchet water-line is old", async () => {
+		mBuildStaleBaseline.mockReturnValue("STALE-BASELINE-NUDGE");
+		const out = await stop(bCtx());
+		expect(out?.warnings).toContain("STALE-BASELINE-NUDGE");
+	});
+
+	it("does not fabricate a session-rework nudge for a freshly-folded (empty) trajectory", async () => {
+		// Seed a real (unmocked) trajectory-shadow entry for this session via the
+		// engine's own exported entry point, so `peekTrajectoryState` returns a
+		// genuine — but edit-empty — TrajectoryState. With zero recorded edits the
+		// rework ratio is 0, below MIN_EDITS_FOR_NUDGE, so no nudge should fire.
+		trajectoryShadowWarnings(
+			bEvent({ hook_event: "PreToolUse", session_id: "rework-empty" }),
+			{ decision: "allow" },
+			{ trajectory_shadow: { enabled: true } },
+		);
+		expect(peekTrajectoryState("rework-empty")).not.toBeNull();
+		const out = await stop(bCtx(), { session_id: "rework-empty" });
+		const warnings = out?.warnings ?? [];
+		expect(warnings.some((w) => w.includes("[interlinked:session-rework]"))).toBe(false);
+	});
+
+	it("surfaces the session-rework nudge once the session's edits are mostly revisits", async () => {
+		trajectoryShadowWarnings(
+			bEvent({ hook_event: "PreToolUse", session_id: "rework-full" }),
+			{ decision: "allow" },
+			{ trajectory_shadow: { enabled: true } },
+		);
+		const state = nonNull(peekTrajectoryState("rework-full"));
+		// 8 edits alternating between two known contents: every edit from the
+		// 3rd onward returns the file to content already seen this session, so
+		// 6/8 (75%) clears both MIN_EDITS_FOR_NUDGE (8) and REWORK_RATIO_FLOOR
+		// (0.25).
+		state.fileShaHistory.set(
+			"src/churny.ts",
+			Array.from({ length: 8 }, (_v, i) => ({
+				sha: i % 2 === 0 ? "sha-a" : "sha-b",
+				normSha: i % 2 === 0 ? "sha-a" : "sha-b",
+				atStep: i,
+			})),
+		);
+		const out = await stop(bCtx(), { session_id: "rework-full" });
+		const warnings = out?.warnings ?? [];
+		const nudge = warnings.find((w) => w.includes("[interlinked:session-rework]"));
+		expect(nudge).toContain("6/8 edits");
+		expect(nudge).toContain("src/churny.ts");
+	});
+
+	it("falls back to 'unknown' for the nudge-throttle session id when event.session_id is absent", async () => {
+		// event.session_id is typed as a required `string`, but the comment on
+		// this call site says it arrives as untrusted JSON over the socket — cast
+		// past the type to exercise the `?? "unknown"` defensive fallback the way
+		// a malformed hook payload actually would.
+		const out = await stop(bCtx(), { session_id: undefined as unknown as string });
+		// Must not throw, and still produce a normal allow decision.
+		expect(out?.decision).toBe("allow");
 	});
 
 	it("pushes a plan-drift warning when a drift report formats to text", async () => {
