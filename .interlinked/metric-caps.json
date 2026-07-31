@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "max_cyclomatic": 22,
+  "crap_threshold": 25
+}

@@ -53,6 +53,13 @@
         "approved_by": "claude (npm optional-deps bug workaround)",
         "reason": "native binding dropped by npm/cli#4828; exact-pin matching installed rolldown",
         "license": "MIT"
+      },
+      "@openai/codex-security": {
+        "approved_at": "2026-07-29T18:27:04.915Z",
+        "approved_by": "quentincody",
+        "reason": "User-requested Codex Security scan of interlinked-cli",
+        "version_range": "0.1.1",
+        "license": "Apache-2.0"
       }
     },
     "pypi": {},
