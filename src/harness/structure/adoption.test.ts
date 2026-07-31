@@ -69,4 +69,71 @@ describe("calculateAdoption", () => {
 		g.addNode(node("package", "a-dec", "declared"));
 		expect(calculateAdoption(g, null).packages).toBe(1);
 	});
+
+	it("packages ratio reflects a partial adoption fraction, not just presence", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("package", "a", "extracted"));
+		g.addNode(node("package", "b", "extracted"));
+		g.addNode(node("package", "a-dec", "declared"));
+		expect(calculateAdoption(g, null).packages).toBe(0.5);
+	});
+
+	it("env category ratio is computed over env_key nodes specifically", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("env_key", "a", "extracted"));
+		g.addNode(node("env_key", "b", "extracted"));
+		g.addNode(node("env_key", "a-dec", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.env).toBe(0.5);
+	});
+
+	it("config category ratio is computed over config_key nodes specifically", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("config_key", "a", "extracted"));
+		g.addNode(node("config_key", "b", "extracted"));
+		g.addNode(node("config_key", "a-dec", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.config).toBe(0.5);
+	});
+
+	it("tests category ratio is computed over test nodes specifically", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("test", "a", "extracted"));
+		g.addNode(node("test", "b", "extracted"));
+		g.addNode(node("test", "a-dec", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.tests).toBe(0.5);
+	});
+
+	it("docs category ratio is computed over doc nodes specifically", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("doc", "a", "extracted"));
+		g.addNode(node("doc", "b", "extracted"));
+		g.addNode(node("doc", "a-dec", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.docs).toBe(0.5);
+	});
+
+	it("examples category ratio is computed over example nodes specifically", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("example", "a", "extracted"));
+		g.addNode(node("example", "b", "extracted"));
+		g.addNode(node("example", "a-dec", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.examples).toBe(0.5);
+	});
+
+	it("layers presence ratio is 1.0 when a layer node is declared", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("layer", "core", "declared"));
+		const a = calculateAdoption(g, null);
+		expect(a.layers).toBe(1);
+	});
+
+	it("layers presence ratio ignores non-declared provenance (extracted-only doesn't count)", () => {
+		const g = new ArtifactGraph();
+		g.addNode(node("layer", "core", "extracted"));
+		const a = calculateAdoption(g, null);
+		expect(a.layers).toBe(0);
+	});
 });
