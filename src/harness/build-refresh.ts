@@ -29,6 +29,25 @@ const DEFAULT_INTERVAL_MS = 60_000;
 const SETTLE_MS = 5_000;
 /** No hook event this recent — don't yank the daemon mid-burst. */
 const QUIET_MS = 10_000;
+/**
+ * Hard staleness deadline. Past this, hand over even mid-burst.
+ *
+ * The quiet window alone STARVES: a busy multi-agent session fires hook events
+ * continuously, so `now - lastActivity >= QUIET_MS` may never be true at a
+ * 60s sample. Measured on this repo 2026-07-31 — the daemon ledger showed 38
+ * `rss-ceiling` handovers against 2 `build-refresh` handovers (the most recent
+ * two days stale), while the running daemon served a 2-hour-old build. That
+ * build predated the baseline-integrity gate's current rules, so a cap-loosening
+ * edit to `.interlinked/metric-caps.json` was ALLOWED; the same edit blocked
+ * immediately after a restart. A stale daemon does not fail loudly — it
+ * silently under-enforces, which is the one failure mode a guard must not have.
+ *
+ * Handing over mid-burst costs a brief window where tool calls fail CLOSED
+ * (blocked, never allowed), which is strictly safer than gates that quietly do
+ * not fire. So staleness escalates past the quiet window rather than yielding
+ * to it.
+ */
+const MAX_STALENESS_MS = 10 * 60_000;
 
 export interface OwnArtifact {
 	/** Absolute path of the running daemon's own build artifact. */
@@ -61,13 +80,22 @@ export interface HandOverInput {
 	lastActivityAtMs: number;
 	settleMs: number;
 	quietMs: number;
+	/** Staleness past which the quiet window is overridden. Defaults to
+	 *  {@link MAX_STALENESS_MS}; tests pass their own. */
+	maxStalenessMs?: number;
 }
 
 /** Pure hand-over predicate: the artifact is newer than the one this daemon
- *  started from, the rebuild has settled, and the repo is between bursts. */
+ *  started from, the rebuild has settled, and EITHER the repo is between bursts
+ *  or the running build has been stale long enough that waiting for quiet is
+ *  the worse risk (see {@link MAX_STALENESS_MS}). */
 export function shouldHandOver(input: HandOverInput): boolean {
 	if (input.currentMtimeMs <= input.startedMtimeMs) return false;
-	if (input.nowMs - input.currentMtimeMs < input.settleMs) return false;
+	const artifactAgeMs = input.nowMs - input.currentMtimeMs;
+	if (artifactAgeMs < input.settleMs) return false;
+	// Escalation: a long-stale daemon hands over regardless of activity, because
+	// continuous hook traffic would otherwise hold the quiet window shut forever.
+	if (artifactAgeMs >= (input.maxStalenessMs ?? MAX_STALENESS_MS)) return true;
 	if (input.nowMs - input.lastActivityAtMs < input.quietMs) return false;
 	return true;
 }

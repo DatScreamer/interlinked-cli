@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	resolveOwnArtifact,
@@ -52,8 +56,61 @@ describe("shouldHandOver", () => {
 		expect(shouldHandOver({ ...base, lastActivityAtMs: 95_000 })).toBe(false);
 	});
 
+	// Both boundaries are exclusive: "settled" and "quiet" are reached AT the
+	// threshold, not one tick past it. Without these, `<` and `<=` are
+	// indistinguishable and an off-by-one delays every hand-over by a full tick.
+	it("treats an artifact aged exactly settleMs as settled", () => {
+		expect(shouldHandOver({ ...base, currentMtimeMs: 95_000 })).toBe(true);
+	});
+
+	it("treats silence of exactly quietMs as quiet", () => {
+		expect(shouldHandOver({ ...base, lastActivityAtMs: 90_000 })).toBe(true);
+	});
+
 	it("treats a never-active daemon (lastActivityAtMs=0) as quiet", () => {
 		expect(shouldHandOver({ ...base, lastActivityAtMs: 0 })).toBe(true);
+	});
+
+	// The quiet window alone starves: a busy multi-agent session never goes
+	// 10s idle, so a daemon can serve a stale build indefinitely — measured on
+	// this repo as 38 rss-ceiling handovers against 2 build-refresh handovers
+	// while a 2-hour-old daemon silently under-enforced the baseline gate.
+	describe("staleness escalation over the quiet window", () => {
+		/** Burst so dense the quiet window never opens on its own. */
+		const busy = { ...base, lastActivityAtMs: 99_999 };
+
+		it("hands over mid-burst once the running build is stale past the deadline", () => {
+			expect(shouldHandOver({ ...busy, nowMs: 700_000 })).toBe(true);
+		});
+
+		it("still defers to the quiet window just before the deadline", () => {
+			// artifact age 599_999ms — one millisecond short of the 10min deadline.
+			expect(shouldHandOver({ ...busy, nowMs: 649_999, lastActivityAtMs: 649_998 })).toBe(
+				false,
+			);
+		});
+
+		it("fires exactly at the deadline boundary", () => {
+			expect(shouldHandOver({ ...busy, nowMs: 650_000, lastActivityAtMs: 649_999 })).toBe(true);
+		});
+
+		it("honors a caller-supplied maxStalenessMs", () => {
+			expect(shouldHandOver({ ...busy, maxStalenessMs: 40_000 })).toBe(true);
+			expect(shouldHandOver({ ...busy, maxStalenessMs: 60_000 })).toBe(false);
+		});
+
+		it("never escalates a build that is not actually newer", () => {
+			expect(
+				shouldHandOver({ ...busy, nowMs: 700_000, currentMtimeMs: base.startedMtimeMs }),
+			).toBe(false);
+		});
+
+		it("never escalates past the settle window — an in-flight write is not a build", () => {
+			// maxStaleness below settleMs must not let an unsettled artifact through.
+			expect(
+				shouldHandOver({ ...busy, maxStalenessMs: 1_000, currentMtimeMs: 99_000 }),
+			).toBe(false);
+		});
 	});
 });
 
@@ -78,6 +135,9 @@ describe("startBuildRefreshWatcher", () => {
 		env?: NodeJS.ProcessEnv;
 		moduleUrl?: string;
 		startMtime?: number;
+		/** Default 0 = never active, i.e. trivially quiet. Pass `() => Date.now()`
+		 *  to simulate a session whose hook traffic never lets the window open. */
+		lastActivityMs?: () => number;
 	} = {}): HarnessDeps {
 		const mtime = { value: overrides.startMtime ?? 1_000 };
 		const spawn = vi.fn(() => ({ unref: vi.fn() }));
@@ -85,7 +145,7 @@ describe("startBuildRefreshWatcher", () => {
 		const dispose = startBuildRefreshWatcher({
 			moduleUrl: overrides.moduleUrl ?? distUrl,
 			cwd: "/repo",
-			lastActivityMs: () => 0,
+			lastActivityMs: overrides.lastActivityMs ?? (() => 0),
 			log,
 			env: overrides.env ?? {},
 			deps: {
@@ -97,6 +157,39 @@ describe("startBuildRefreshWatcher", () => {
 		});
 		return { spawn, log, mtime, dispose };
 	}
+
+	// Regression: the watcher was wired so a continuously-busy repo could never
+	// hand over, leaving a stale daemon silently under-enforcing every gate.
+	// These two exercise the WIRING, not just the predicate.
+	it("escalates past the staleness deadline even while hook events keep firing", () => {
+		const h = startWatcher({ lastActivityMs: () => Date.now() });
+		h.mtime.value = Date.now() - 20 * 60_000; // newer build, 20 min stale
+		vi.advanceTimersByTime(60_000);
+		// Assert the hand-over it actually performs, not merely that it happened:
+		// a spawn with the wrong argv would restart nothing and still "pass".
+		expect(h.spawn).toHaveBeenCalledTimes(1);
+		// SAFETY: exactly one call asserted above; tuple mirrors spawn(cmd, argv, opts).
+		const [cmd, argv, opts] = h.spawn.mock.calls[0] as unknown as [
+			string,
+			string[],
+			{ cwd: string; detached: boolean },
+		];
+		expect(cmd).toBe(process.execPath);
+		expect(argv).toEqual(["/repo/dist/index.js", "harness", "restart"]);
+		expect(opts.cwd).toBe("/repo");
+		// The escalation must announce itself — a silent restart mid-burst is
+		// indistinguishable from a crash in the daemon ledger.
+		expect(h.log.mock.calls.flat().join(" ")).toContain("[build-refresh]");
+		h.dispose();
+	});
+
+	it("does not escalate while the newer build is still recent", () => {
+		const h = startWatcher({ lastActivityMs: () => Date.now() });
+		h.mtime.value = Date.now() - 60_000; // settled, but far short of the deadline
+		vi.advanceTimersByTime(60_000);
+		expect(h.spawn).not.toHaveBeenCalled();
+		h.dispose();
+	});
 
 	it("no-ops entirely for src-run daemons", () => {
 		const h = startWatcher({ moduleUrl: "file:///repo/src/harness/server.ts" });
@@ -133,12 +226,15 @@ describe("startBuildRefreshWatcher", () => {
 		const [cmd, argv, opts] = h.spawn.mock.calls[0] as unknown as [
 			string,
 			string[],
-			{ cwd: string; detached: boolean },
+			{ cwd: string; detached: boolean; stdio: string },
 		];
 		expect(cmd).toBe(process.execPath);
 		expect(argv).toEqual(["/repo/dist/index.js", "harness", "restart"]);
 		expect(opts.cwd).toBe("/repo");
 		expect(opts.detached).toBe(true);
+		// The restart is detached and must not inherit this process's stdio — a
+		// shared pipe would tie the child's lifetime to the parent's streams.
+		expect(opts.stdio).toBe("ignore");
 		expect(h.log).toHaveBeenCalledWith(expect.stringContaining("newer build"));
 		h.dispose();
 	});
@@ -159,5 +255,167 @@ describe("startBuildRefreshWatcher", () => {
 		h.mtime.value = Date.now() + 1_000;
 		vi.advanceTimersByTime(600_000);
 		expect(h.spawn).not.toHaveBeenCalled();
+	});
+
+	it("registers no interval when the initial artifact stat fails (nothing to watch yet)", () => {
+		let call = 0;
+		const statMtimeMs = () => {
+			call++;
+			// The first call captures startedMtimeMs; a null here means the
+			// artifact could not be stat'd at all — there is no baseline to
+			// compare future polls against, so the watcher must not start.
+			return call === 1 ? null : 5_000_000;
+		};
+		const dispose = startBuildRefreshWatcher({
+			moduleUrl: distUrl,
+			cwd: "/repo",
+			lastActivityMs: () => 0,
+			log: vi.fn(),
+			env: {},
+			deps: { statMtimeMs, spawn: vi.fn() as never },
+		});
+		// A real watcher schedules exactly one interval timer; the early-return
+		// path must schedule none, not merely avoid spawning on the next tick.
+		expect(vi.getTimerCount()).toBe(0);
+		dispose();
+	});
+
+	describe("startup staleness warning (real dist/src mtimes on disk — not mocked)", () => {
+		function makeRepo(distNewerThanSrc: boolean): string {
+			const dir = mkdtempSync(join(tmpdir(), "build-refresh-staleness-"));
+			const distDir = join(dir, "dist");
+			const srcDir = join(dir, "src");
+			mkdirSync(distDir, { recursive: true });
+			mkdirSync(srcDir, { recursive: true });
+			const distIndex = join(distDir, "index.js");
+			const srcFile = join(srcDir, "foo.ts");
+			writeFileSync(distIndex, "");
+			writeFileSync(srcFile, "");
+			const now = Date.now();
+			const old = new Date(now - 3_600_000);
+			const fresh = new Date(now);
+			if (distNewerThanSrc) {
+				utimesSync(srcFile, old, old);
+				utimesSync(distIndex, fresh, fresh);
+			} else {
+				utimesSync(distIndex, old, old);
+				utimesSync(srcFile, fresh, fresh);
+			}
+			return dir;
+		}
+
+		it("logs the staleness warning once when src/ is newer than the running dist build", () => {
+			const dir = makeRepo(false);
+			try {
+				const log = vi.fn();
+				const dispose = startBuildRefreshWatcher({
+					moduleUrl: pathToFileURL(join(dir, "dist", "harness", "server.js")).href,
+					cwd: dir,
+					lastActivityMs: () => 0,
+					log,
+					// Isolate the warning from the hand-over machinery entirely —
+					// this test is only about the startup log line.
+					env: { INTERLINKED_NO_AUTO_RESTART: "1" },
+					deps: { statMtimeMs: () => 1_000, spawn: vi.fn() as never },
+				});
+				expect(log).toHaveBeenCalledTimes(1);
+				const [message] = log.mock.calls[0] as [string];
+				// Content that carries meaning — not the exact sentence — so the
+				// test survives a copy edit: it names what's stale and what to run.
+				expect(message).toMatch(/STALE BUILD/);
+				expect(message).toContain("npm run build");
+				dispose();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not log a staleness warning when the running dist build is already current", () => {
+			const dir = makeRepo(true);
+			try {
+				const log = vi.fn();
+				const dispose = startBuildRefreshWatcher({
+					moduleUrl: pathToFileURL(join(dir, "dist", "harness", "server.js")).href,
+					cwd: dir,
+					lastActivityMs: () => 0,
+					log,
+					env: { INTERLINKED_NO_AUTO_RESTART: "1" },
+					deps: { statMtimeMs: () => 1_000, spawn: vi.fn() as never },
+				});
+				expect(log).not.toHaveBeenCalled();
+				dispose();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("re-spawn throttle boundary (real ticks, exact counts)", () => {
+		// The quiet window alone starves (see the module comment on
+		// MAX_STALENESS_MS); this is the OTHER half of that story — once a
+		// hand-over is pending, the throttle must re-arm at exactly 2×interval,
+		// neither sooner (spamming restarts) nor never (silently giving up).
+		it("re-attempts only once the pending window has fully elapsed — spawns on ticks 1,3,5, not 2,4", () => {
+			const h = startWatcher();
+			h.mtime.value = Date.now() + 1_000;
+			const counts: number[] = [];
+			for (let i = 0; i < 5; i++) {
+				vi.advanceTimersByTime(61_000);
+				counts.push(h.spawn.mock.calls.length);
+			}
+			// Original throttle: `lastAttemptMs !== 0 && elapsed < 2*interval`.
+			// The window reopens the instant elapsed reaches exactly 2*interval
+			// (a strict `<`, not `<=`), so a hand-over is retried every other
+			// tick: spawn, skip, spawn, skip, spawn. Forcing either conjunct to
+			// `true`, swapping `&&` for `||`, or loosening `<` to `<=` each
+			// collapses this into a different, wrong sequence.
+			expect(counts).toEqual([1, 1, 2, 2, 3]);
+			h.dispose();
+		});
+	});
+
+	describe("daemon-ledger integration (real fs — not mocked)", () => {
+		it("ledgers the hand-over intent with the fields the cold-block explainer depends on", () => {
+			const dir = mkdtempSync(join(tmpdir(), "build-refresh-ledger-"));
+			try {
+				const mtimeValue = Date.now() + 1_000;
+				// First stat call captures startedMtimeMs (the daemon's own build);
+				// every later poll must read a NEWER value, or the artifact never
+				// looks newer than the one this "daemon" started from.
+				let calls = 0;
+				const statMtimeMs = () => (calls++ === 0 ? 1_000 : mtimeValue);
+				const dispose = startBuildRefreshWatcher({
+					moduleUrl: pathToFileURL(join(dir, "dist", "harness", "server.js")).href,
+					cwd: dir,
+					lastActivityMs: () => 0,
+					log: vi.fn(),
+					env: {},
+					deps: {
+						statMtimeMs,
+						spawn: vi.fn(() => ({ unref: vi.fn() })) as never,
+					},
+				});
+				vi.advanceTimersByTime(61_000);
+				const ledgerFile = join(dir, ".interlinked", "daemon-events.jsonl");
+				const lines = readFileSync(ledgerFile, "utf-8").trim().split("\n");
+				expect(lines.length).toBeGreaterThan(0);
+				// SAFETY: length just asserted above; exactly one tick elapsed, so
+				// exactly one ledger line is expected, and the last line picks it
+				// regardless.
+				const lastLine = lines[lines.length - 1] as string;
+				const evt = JSON.parse(lastLine) as Record<string, unknown>;
+				// These are exactly the fields `describeLastExit` (daemon-ledger.ts)
+				// reads to turn a bare SIGTERM exit into "handed over to a newer
+				// build — normal after a rebuild" instead of an unexplained outage.
+				expect(evt.event).toBe("handover");
+				expect(evt.reason).toBe("build-refresh");
+				expect(evt.pid).toBe(process.pid);
+				expect(typeof evt.at).toBe("number");
+				expect(evt.detail).toBe(`artifact ${new Date(mtimeValue).toISOString()}`);
+				dispose();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
 	});
 });
