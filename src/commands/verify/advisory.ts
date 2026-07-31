@@ -257,6 +257,11 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// v0-limited, so it stays silent on uncertainty but can still miss/over-fire
 	// on unusual SUT-reach patterns. PostToolUse-warn while the FP rate is watched.
 	"introverted_test",
+	// procfs_probe_in_test: a /proc path literal in a test hangs Linux CI, but the
+	// literal alone cannot prove intent — an assertion string or a fixture list
+	// that happens to BE a procfs path reads the same as a probe. Advisory (the
+	// write-time warning is the load-bearing surface) until cross-repo FP data.
+	"procfs_probe_in_test",
 	// Error-dispatch-by-instanceof — Effect-TS lessons port
 	// (docs/design/effect-ts-harness-additions.md §2.1). `e instanceof Error`
 	// inside catch is fragile across realm boundaries — iframes, workers,

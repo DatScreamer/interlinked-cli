@@ -170,6 +170,14 @@ export const batchSections: readonly SectionSpec[] = [
 		passLabel: "no introverted tests",
 		color: "33",
 	},
+	{
+		label: "procfs probes in tests",
+		key: "procfsProbeInTest",
+		skipId: "procfs_probe_in_test",
+		noun: "test files using a /proc/… path as an unwritable-path fixture (recursive mkdir there hangs Linux CI)",
+		passLabel: "no procfs probes in tests",
+		color: "31",
+	},
 	// === Batch 5: cross-file ===
 	{
 		label: "empty-body handler",

@@ -9,6 +9,7 @@
 // check registry and every importer stay unchanged.
 
 import { nonNull } from "../../lib/non-null.js";
+import { collectElapsedTimeAnchors, isElapsedTimeLine } from "./shared-scan.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -131,40 +132,9 @@ const MOCK_SETUP_LINE_RE =
 const FAKE_CLOCK_FILE_RE =
 	/\b(?:vi|jest)\s*\.\s*(?:useFakeTimers|setSystemTime)\b/;
 
-// `const t0 = Date.now()` / `let start = performance.now()` — candidate anchors.
-const TIMER_ANCHOR_ASSIGN_RE =
-	/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:Date|performance)\s*\.\s*now\s*\(\s*\)/g;
-
-/** Idents assigned from Date.now()/performance.now() that the file later
- *  subtracts from a second read (`Date.now() - t0`) — the elapsed-time shape. */
-function collectElapsedTimeAnchors(stripped: string): Set<string> {
-	const anchors = new Set<string>();
-	for (const m of stripped.matchAll(TIMER_ANCHOR_ASSIGN_RE)) {
-		const ident = nonNull(m[1]);
-		const escaped = ident.replace(/\$/g, "\\$");
-		const subtraction = new RegExp(
-			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
-		);
-		if (subtraction.test(stripped)) anchors.add(ident);
-	}
-	return anchors;
-}
-
-/** True when the line is one half of an elapsed-time pair: the anchor
- *  assignment (`const t0 = Date.now()`) or the delta (`Date.now() - t0`). */
-function isElapsedTimeLine(strippedLine: string, anchors: ReadonlySet<string>): boolean {
-	for (const ident of anchors) {
-		const escaped = ident.replace(/\$/g, "\\$");
-		const assign = new RegExp(
-			`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:Date|performance)\\s*\\.\\s*now\\s*\\(`,
-		);
-		const delta = new RegExp(
-			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
-		);
-		if (assign.test(strippedLine) || delta.test(strippedLine)) return true;
-	}
-	return false;
-}
+// The elapsed-duration pair (refinement (a)) now lives in `shared-scan.ts` —
+// `checkUntestableTimeInSource`, the non-test twin this check was modeled on,
+// needs exactly the same exemption and the two must not drift.
 
 // The nondeterminism call chain, as it appears mid-expression.
 const NONDET_CALL_FRAG = String.raw`(?:Date\s*\.\s*now|Math\s*\.\s*random|crypto\s*\.\s*randomUUID|randomUUID|performance\s*\.\s*now)\s*\(`;

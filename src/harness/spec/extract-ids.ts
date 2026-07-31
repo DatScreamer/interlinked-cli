@@ -8,6 +8,7 @@
 // numeric guards, endpoint-prefix agreement on ranges, first-on-line
 // definition credit, bounded gap enumeration, comma-grouped counts.
 
+import { isDefinitionSite } from "./definition-site.js";
 import { hasUnicodeWordGlue, stripEmphasis } from "./emphasis-strip.js";
 import type {
 	IdNamespace,
@@ -72,23 +73,12 @@ function looksLikeYear(num: number): boolean {
 	return num >= 1900 && num <= 2099;
 }
 
-/** A line that plausibly *defines* an id (vs merely mentioning it). CommonMark
- *  bullets include `-`, `*`, and `+`; ordered rows use `N.` or `N)`. A
- *  bold-LEADING line counts only when the bold wraps an id-shaped token
- *  ("**FG-INV-18**"), not arbitrary prose like "**Note:**" (sol-max #4/#5). */
-function isDefinitionLine(line: string): boolean {
-	const t = line.trimStart();
-	return (
-		/^#{1,6}\s/.test(t) || // ATX heading requires whitespace after # (sol-max #1)
-		t.startsWith("|") ||
-		t.startsWith("- ") ||
-		t.startsWith("* ") ||
-		t.startsWith("+ ") ||
-		t.startsWith(">") || // CommonMark permits `>` with no following space (sol-max #5)
-		/^[-*+]\s\[[ xX]\]\s/.test(t) ||
-		/^\d+[.)]\s/.test(t) ||
-		/^\*\*[A-Z][A-Z0-9-]*\d\*\*/.test(t) // bold must wrap ONLY the id (sol-max #2)
-	);
+/** Both views of the file, kept together: definition SHAPE is judged on the raw
+ *  line (emphasis stripping erases the bold-leading form), definition POSITION
+ *  on the stripped one (hit columns are stripped coordinates). */
+interface LineViews {
+	raw: string[];
+	stripped: string[];
 }
 
 interface RawHit {
@@ -152,19 +142,32 @@ function collectHits(
 	return hits;
 }
 
+/** Whether this hit earns definition credit: first id on the line AND at the
+ *  head of a definition-shaped site (see definition-site.ts). */
+function creditsDefinition(
+	h: RawHit,
+	views: LineViews,
+	firstColByLine: Map<number, number>,
+): boolean {
+	if (firstColByLine.get(h.line) !== h.col) return false;
+	return isDefinitionSite(
+		views.raw[h.line - 1] ?? "",
+		views.stripped[h.line - 1] ?? "",
+		h.col,
+	);
+}
+
 /** Fold one hit into its NamespaceId entry (sites, spellings, def credit). */
 function recordHit(
 	entry: NamespaceId,
 	h: RawHit,
-	lines: string[],
+	views: LineViews,
 	firstColByLine: Map<number, number>,
 ): void {
 	if (entry.sites[entry.sites.length - 1] !== h.line) entry.sites.push(h.line);
 	if (!entry.spellings.includes(h.id)) entry.spellings.push(h.id);
-	const isFirstOnLine = firstColByLine.get(h.line) === h.col;
 	if (
-		isFirstOnLine &&
-		isDefinitionLine(lines[h.line - 1] ?? "") &&
+		creditsDefinition(h, views, firstColByLine) &&
 		entry.defSites[entry.defSites.length - 1] !== h.line
 	) {
 		entry.defSites.push(h.line);
@@ -200,7 +203,7 @@ function buildNamespace(
 	prefix: string,
 	style: "dashed" | "compact",
 	hits: RawHit[],
-	lines: string[],
+	views: LineViews,
 	firstColByLine: Map<number, number>,
 ): IdNamespace {
 	const byNum = new Map<number, NamespaceId>();
@@ -210,7 +213,7 @@ function buildNamespace(
 			entry = { id: h.id, num: h.num, sites: [], defSites: [], spellings: [] };
 			byNum.set(h.num, entry);
 		}
-		recordHit(entry, h, lines, firstColByLine);
+		recordHit(entry, h, views, firstColByLine);
 	}
 	const ids = [...byNum.values()].sort((a, b) => a.num - b.num);
 	const nums = ids.map((e) => e.num);
@@ -316,7 +319,7 @@ function inRangeSpan(
 function spanFilteredHits(
 	lines: string[],
 	rangeClaims?: RangeClaim[],
-): { hits: RawHit[]; firstColByLine: Map<number, number> } {
+): { hits: RawHit[]; views: LineViews; firstColByLine: Map<number, number> } {
 	const stripped = lines.map(stripEmphasis);
 	const spans = rangeSpansByLine(rangeClaims ?? extractRangeClaims(lines));
 	const firstColByLine = new Map<number, number>();
@@ -324,15 +327,17 @@ function spanFilteredHits(
 		...collectHits(stripped, DASHED_ID_RE, "dashed", firstColByLine),
 		...collectHits(stripped, COMPACT_ID_RE, "compact", firstColByLine),
 	].filter((h) => !inRangeSpan(h.line, h.col, spans));
-	return { hits, firstColByLine };
+	return { hits, views: { raw: lines, stripped }, firstColByLine };
 }
 
 /**
  * Cluster ID-like tokens into namespaces. Dashed prefixes qualify with >=2
  * distinct numbers; compact (short) prefixes need >=3 plus a stoplist, since
  * "V8"-style tokens are common in prose. A prefix seen in both styles keeps
- * them separate (they are different notations). Definition credit goes only
- * to the first id on a definition-shaped line — trailing ids are references.
+ * them separate (they are different notations). Definition credit goes only to
+ * the first id on a definition-shaped line AND only at that site's HEAD — a
+ * later table cell or a mid-sentence mention inside a list item is a reference
+ * (see definition-site.ts).
  * Range-claim endpoints are excluded from the census (sol-max #12) so a claim
  * cannot validate its own extent; pass the file's `rangeClaims` to reuse the
  * fence-aware set, or omit to derive them from `lines`.
@@ -341,14 +346,14 @@ export function extractIdNamespaces(
 	lines: string[],
 	rangeClaims?: RangeClaim[],
 ): IdNamespace[] {
-	const { hits, firstColByLine } = spanFilteredHits(lines, rangeClaims);
+	const { hits, views, firstColByLine } = spanFilteredHits(lines, rangeClaims);
 	const out: IdNamespace[] = [];
 	for (const [key, groupHits] of groupByPrefix(hits)) {
 		const [style, prefix] = key.split(" ") as ["dashed" | "compact", string];
 		const distinct = new Set(groupHits.map((h) => h.num)).size;
 		const minimum = style === "dashed" ? MIN_DASHED_IDS : MIN_COMPACT_IDS;
 		if (distinct < minimum) continue;
-		out.push(buildNamespace(prefix, style, groupHits, lines, firstColByLine));
+		out.push(buildNamespace(prefix, style, groupHits, views, firstColByLine));
 	}
 	// Plain lexical sort — localeCompare would make ordering locale-dependent,
 	// and this substrate must serialize deterministically across machines.
@@ -360,13 +365,14 @@ export function extractIdNamespaces(
  *  namespace threshold — the fragments a registry split across files leaves in a
  *  file that doesn't independently qualify (sol-max #1). The global census folds
  *  these into a prefix that qualifies elsewhere, so a lone "- B7" extends a
- *  B1..B6 registry. Restricted to DEFINITION-shaped lines so prose mentions never
- *  fold in, and range endpoints are excluded (same span filter as the census). */
+ *  B1..B6 registry. Restricted to the HEAD of DEFINITION-shaped lines so prose
+ *  mentions never fold in, and range endpoints are excluded (same span filter as
+ *  the census). */
 export function extractLooseDefinedIds(
 	lines: string[],
 	rangeClaims?: RangeClaim[],
 ): LooseId[] {
-	const { hits, firstColByLine } = spanFilteredHits(lines, rangeClaims);
+	const { hits, views, firstColByLine } = spanFilteredHits(lines, rangeClaims);
 	const out: LooseId[] = [];
 	for (const [key, groupHits] of groupByPrefix(hits)) {
 		const [style, prefix] = key.split(" ") as ["dashed" | "compact", string];
@@ -374,7 +380,7 @@ export function extractLooseDefinedIds(
 		const minimum = style === "dashed" ? MIN_DASHED_IDS : MIN_COMPACT_IDS;
 		if (distinct >= minimum) continue; // qualifies on its own — already a namespace
 		for (const h of groupHits) {
-			if (firstColByLine.get(h.line) === h.col && isDefinitionLine(lines[h.line - 1] ?? "")) {
+			if (creditsDefinition(h, views, firstColByLine)) {
 				out.push({ style, prefix, num: h.num });
 			}
 		}

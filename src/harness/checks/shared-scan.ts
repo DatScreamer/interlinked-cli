@@ -266,3 +266,68 @@ function matchScopeDeclaration(line: string): string | null {
 	}
 	return null;
 }
+
+// ===========================================
+// Elapsed-duration shape (`const t0 = Date.now(); … Date.now() - t0`)
+// ===========================================
+// Shared by the two nondeterminism detectors that were written from the same
+// regex and had drifted apart: `checkTestNondeterminism` (test files, which
+// has exempted this shape since the 2026-07 verify-noise calibration) and
+// `checkUntestableTimeInSource` (non-test source, which did not).
+//
+// The shape is exempt because subtracting two clock reads yields a DURATION:
+// the wall-clock value never escapes as an absolute, and injecting a clock
+// would defeat the measurement outright — a fake clock measures fake elapsed
+// time, i.e. nothing. That argument is if anything stronger in production
+// source than in tests, which is why keeping the two in sync matters.
+//
+// Known and deliberate limit (inherited, not introduced): the ANCHOR line is
+// exempt on the strength of the file containing a matching subtraction, so an
+// anchor whose value ALSO escapes as an absolute (`const T0 = Date.now();
+// record({ at: T0 })`) is exempt too. Both detectors are warning-only
+// heuristics; tightening this needs use-site dataflow, not a wider regex.
+
+/** `const t0 = Date.now()` / `let start = performance.now()` — candidate anchors. */
+const TIMER_ANCHOR_ASSIGN_RE =
+	/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:Date|performance)\s*\.\s*now\s*\(\s*\)/g;
+
+/**
+ * Identifiers assigned from `Date.now()` / `performance.now()` that the file
+ * later subtracts from a second read (`Date.now() - t0`) — the elapsed-time
+ * shape. Takes comment/string-stripped content so a literal in a docstring
+ * cannot mint an anchor.
+ */
+export function collectElapsedTimeAnchors(stripped: string): Set<string> {
+	const anchors = new Set<string>();
+	for (const m of stripped.matchAll(TIMER_ANCHOR_ASSIGN_RE)) {
+		const ident = m[1];
+		if (ident === undefined) continue;
+		const escaped = ident.replace(/\$/g, "\\$");
+		const subtraction = new RegExp(
+			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
+		);
+		if (subtraction.test(stripped)) anchors.add(ident);
+	}
+	return anchors;
+}
+
+/**
+ * True when the line is one half of an elapsed-time pair: the anchor
+ * assignment (`const t0 = Date.now()`) or the delta (`Date.now() - t0`).
+ */
+export function isElapsedTimeLine(
+	strippedLine: string,
+	anchors: ReadonlySet<string>,
+): boolean {
+	for (const ident of anchors) {
+		const escaped = ident.replace(/\$/g, "\\$");
+		const assign = new RegExp(
+			`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:Date|performance)\\s*\\.\\s*now\\s*\\(`,
+		);
+		const delta = new RegExp(
+			`(?:Date|performance)\\s*\\.\\s*now\\s*\\(\\s*\\)\\s*-\\s*${escaped}\\b`,
+		);
+		if (assign.test(strippedLine) || delta.test(strippedLine)) return true;
+	}
+	return false;
+}

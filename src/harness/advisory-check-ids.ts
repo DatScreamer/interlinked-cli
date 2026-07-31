@@ -92,6 +92,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"mock_only_test",
 	"happy_path_only_test",
 	"introverted_test",
+	"procfs_probe_in_test",
 	"error_dispatch_by_instanceof",
 	"crap",
 	// UBS heuristic tier

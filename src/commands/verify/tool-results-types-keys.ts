@@ -210,6 +210,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"mockOnlyTest",
 	"happyPathOnlyTest",
 	"introvertedTest",
+	"procfsProbeInTest",
 	// Batch 5: cross-file
 	"emptyBodyHandler",
 	"listenerPairing",

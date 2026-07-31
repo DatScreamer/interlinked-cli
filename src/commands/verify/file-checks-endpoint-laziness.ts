@@ -46,6 +46,7 @@ import {
 	checkUnionWidenedWithString,
 	checkUntestableTimeInSource,
 } from "../../harness/generic-checks.js";
+import { detectProcfsProbeInTest } from "../../harness/checks/procfs-probe.js";
 import type { FileCheckContext } from "./file-checks-shared.js";
 import { toIssues } from "./file-checks-shared.js";
 
@@ -177,6 +178,9 @@ export function runEndpointAndLazinessChecks(ctx: FileCheckContext): void {
 	);
 	r.introvertedTest.push(
 		...toIssues("introverted_test", relPath, checkIntrovertedTest(content, file)),
+	);
+	r.procfsProbeInTest.push(
+		...toIssues("procfs_probe_in_test", relPath, detectProcfsProbeInTest(content, file)),
 	);
 
 	// === Batch 5: cross-file checks ===

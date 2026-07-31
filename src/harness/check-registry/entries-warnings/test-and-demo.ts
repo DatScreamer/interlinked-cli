@@ -25,6 +25,7 @@ import {
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 } from "../../generic-checks.js";
+import { detectProcfsProbeInTest } from "../../checks/procfs-probe.js";
 import type { CheckRegistration } from "../types.js";
 
 export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
@@ -184,6 +185,22 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 		fn: checkIntrovertedTest,
 		resultsPropName: "introvertedTest",
 		content_keywords: ["expect", "assert"],
+	},
+	{
+		id: "procfs_probe_in_test",
+		phase: "post",
+		name: "Procfs Probe in Test",
+		description:
+			"Detects a test file using a `/proc/…` path as an \"unwritable path\" fixture. Recursive mkdir under /proc does not throw on Linux — it spins forever, hanging the test worker until the CI job times out (four such probes hung this repo's ubuntu unit lane for 25 minutes apiece in 2026-07). Only a string literal whose whole value is an absolute procfs path counts, comments are masked first, and well-known informational files (/proc/cpuinfo and friends) are exempt on exact match, so hazard comments, prose and legitimate platform probes stay silent.",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			'This fixture hangs Linux CI: recursive mkdir under /proc never returns, so the test worker spins until the job times out (it passes locally because macOS has no /proc). Nest the fixture under a regular FILE instead — `const f = join(root, "not-a-directory"); writeFileSync(f, "x");` then use `join(f, "nested")` — which yields ENOTDIR immediately on every platform. If you are genuinely READING an informational procfs file (/proc/cpuinfo, /proc/meminfo, …), use its exact path; anything nested below it is treated as a directory probe.',
+		fn: detectProcfsProbeInTest,
+		resultsPropName: "procfsProbeInTest",
+		content_keywords: ["/proc"],
 	},
 	// ========================================================================
 	// Batch 5: cross-file (4 entries; new-export orphan deferred)

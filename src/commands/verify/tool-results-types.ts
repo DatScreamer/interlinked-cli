@@ -325,6 +325,8 @@ export interface CodeQualityResults {
 	happyPathOnlyTest: CodeQualityIssue[];
 	/** it()/test() blocks whose assertions never trace to a non-mocked SUT call/read. */
 	introvertedTest: CodeQualityIssue[];
+	/** Test files using a `/proc/…` path as an unwritable-path fixture (hangs Linux CI). */
+	procfsProbeInTest: CodeQualityIssue[];
 	// === Batch 5: cross-file (4 entries) ===
 	/** Handler-named functions with empty / no-op bodies. */
 	emptyBodyHandler: CodeQualityIssue[];

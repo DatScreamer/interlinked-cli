@@ -85,4 +85,11 @@ export const GENERIC_TEST_HYGIENE_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "fully_deterministic",
 	},
+	procfs_probe_in_test: {
+		name: "Procfs Probe in Test",
+		description:
+			"A test file uses a `/proc/…` path as an \"unwritable path\" fixture. Recursive mkdir under /proc does not throw on Linux — it spins forever and hangs the test worker until the CI job times out (invisible on macOS, which has no /proc). Only a literal whose whole value is an absolute procfs path counts; comments are masked and the informational files (/proc/cpuinfo, /proc/meminfo, …) are exempt on exact match. Fix: nest the fixture under a regular FILE (ENOTDIR everywhere).",
+		tier: 1,
+		determinism: "heuristic",
+	},
 };

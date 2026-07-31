@@ -447,6 +447,55 @@ describe("checkUntestableTimeInSource", () => {
 		const code = `const msg = "Date.now() example"; // discusses Date.now()`;
 		expect(checkUntestableTimeInSource(code, TS)).toEqual([]);
 	});
+
+	// Elapsed-duration exemption — parity with the test-side twin
+	// `checkTestNondeterminism`, which has skipped this shape since 2026-07.
+	// Subtracting two clock reads yields a duration; the wall-clock value never
+	// escapes as an absolute, and injecting a clock would measure fake elapsed
+	// time. The exemption is LINE-scoped and requires a real anchor — P2/P3 pin
+	// both, so widening it to the file or to any `const x = Date.now()` fails.
+	describe("elapsed-duration measurement", () => {
+		it("N1: does not fire on a Date.now() start/delta pair", () => {
+			const code = ["const start = Date.now();", "doWork();", "const elapsedMs = Date.now() - start;"].join(
+				"\n",
+			);
+			expect(checkUntestableTimeInSource(code, TS)).toEqual([]);
+		});
+
+		it("N2: does not fire on a performance.now() start/delta pair", () => {
+			const code = [
+				"const t0 = performance.now();",
+				"render();",
+				"report(performance.now() - t0);",
+			].join("\n");
+			expect(checkUntestableTimeInSource(code, TS)).toEqual([]);
+		});
+
+		it("P1: flags an anchor-shaped read the file never subtracts from", () => {
+			const code = ["const start = Date.now();", "record({ at: start });"].join("\n");
+			const found = checkUntestableTimeInSource(code, TS);
+			expect(found.map((f) => f.line)).toEqual([1]);
+		});
+
+		it("P2: flags unrelated reads in a file that also contains a pair (line-scoped, not file-scoped)", () => {
+			const code = [
+				"const start = Date.now();",
+				"const elapsedMs = Date.now() - start;",
+				"const sessionId = crypto.randomUUID();",
+				"const stamp = new Date();",
+			].join("\n");
+			const found = checkUntestableTimeInSource(code, TS);
+			expect(found.map((f) => f.line)).toEqual([3, 4]);
+		});
+
+		it("P3: flags a subtraction whose right operand was never read from a clock", () => {
+			const code = ["const otherTs = readFromDisk();", "const drift = Date.now() - otherTs;"].join(
+				"\n",
+			);
+			const found = checkUntestableTimeInSource(code, TS);
+			expect(found.map((f) => f.line)).toEqual([2]);
+		});
+	});
 });
 
 describe("checkDoubleCastUnknown", () => {

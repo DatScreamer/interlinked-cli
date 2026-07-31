@@ -20,8 +20,10 @@ export interface NamespaceId {
 	sites: number[];
 	/**
 	 * Subset of sites that look like definitions: a definition-shaped line
-	 * (heading / table row / list / blockquote / task item) where this id is
-	 * the FIRST id on the line — trailing ids on a registry row are references.
+	 * (heading / table row / list / blockquote / task item) where this id is the
+	 * FIRST id on the line AND sits at the site's HEAD — the first table cell,
+	 * or the start of the item/quote. Trailing ids on a registry row, later
+	 * cells, and mid-sentence mentions inside a list item are references.
 	 */
 	defSites: number[];
 	/** Distinct written forms merged into this entry ("FG-INV-1", "FG-INV-01"). */

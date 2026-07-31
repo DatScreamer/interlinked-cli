@@ -183,6 +183,72 @@ describe("checkSpecNumbering", () => {
 		const sparse = ["- REQ-1 x", "- REQ-2 y", "- REQ-500 z"].join("\n");
 		expect(checkSpecNumbering(sparse, MD)).toEqual([]);
 	});
+
+	// Definition credit is a POSITION rule, not just a line-shape rule: an id
+	// named at the head of its site is declared, one mentioned after a word of
+	// running text is referenced. Measured FP: docs/plans/16 defines the T1/T2/T3
+	// verification tiers once in a table and cites them in later prose.
+	it("P1: fires when the same id heads a registry row and a heading", () => {
+		const doc = [
+			"| D3 | placeholder_runtime_constant |",
+			"| D4 | regex_from_interpolation |",
+			"| D5 | rust_unsafe_span |",
+			"",
+			"## 4. D3 — placeholder_runtime_constant",
+		].join("\n");
+		expect(checkSpecNumbering(doc, MD)).toEqual([
+			expect.objectContaining({
+				line: 5,
+				text: expect.stringContaining("D3 defined again"),
+			}),
+		]);
+	});
+
+	it("P2: fires when a decorated first cell redefines a heading's id", () => {
+		const doc = [
+			"| ★R1 | must not run mutation tests |",
+			"| R2 | must not run gherkin mutation |",
+			"| R3 | must not introduce new behavior |",
+			"",
+			"## R1 — refactorer must not run mutation tests",
+		].join("\n");
+		expect(checkSpecNumbering(doc, MD)).toEqual([
+			expect.objectContaining({
+				line: 5,
+				text: expect.stringContaining("R1 defined again"),
+			}),
+		]);
+	});
+
+	it("N1: does not fire on tier names referenced in later prose (plan-16 shape)", () => {
+		const doc = [
+			"| tier | budget | surface |",
+			"| **T1 blocking-fast** | < ~2s | PreToolUse |",
+			"| **T2 start-now-harvest-later** | 30-60s wall | PreToolUse start |",
+			"| **T3 session/commit** | minutes | Stop, commit gate |",
+			"",
+			"| risk | budget |",
+			"| low | T1 only, seconds |",
+			"| high | T1 + full T2 portfolio |",
+			"",
+			"2. **Run existing properties as a T2 verifier** with a larger budget.",
+			"",
+			"- **Blocking on slow verifiers.** Anything that cannot verdict in T1 goes to T2.",
+		].join("\n");
+		expect(checkSpecNumbering(doc, MD)).toEqual([]);
+	});
+
+	it("N2: a table that only cites ids cannot manufacture a gap registry", () => {
+		// B1/B2/B3/B5 all sit in trailing cells — references, so there is no
+		// definition registry whose numbering could have a gap at B4.
+		const doc = [
+			"| tier | note |",
+			"| low | B1 only |",
+			"| mid | B2 plus B3 |",
+			"| high | B5 full |",
+		].join("\n");
+		expect(checkSpecNumbering(doc, MD)).toEqual([]);
+	});
 });
 
 describe("checkSpecCountClaim", () => {

@@ -7,6 +7,7 @@
 // scope where it fires.
 
 import { nonNull } from "../../lib/non-null.js";
+import { collectElapsedTimeAnchors, isElapsedTimeLine } from "./shared-scan.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -459,10 +460,23 @@ export function checkUntestableTimeInSource(content: string, filePath: string): 
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 5;
 
+	// Elapsed-duration pair (`const t0 = Date.now(); … Date.now() - t0`) is a
+	// DURATION measurement: the wall-clock value never escapes as an absolute
+	// and a clock injected here would measure fake elapsed time, i.e. nothing.
+	// The test-side twin `checkTestNondeterminism` has exempted this shape
+	// since 2026-07; sharing one implementation keeps the two from drifting.
+	// Measured on this repo 2026-07-31: 36 of 184 findings matched the shape
+	// (19.6%, 12 files), every one a latency/perf measurement. Repo total went
+	// 184 -> 150, not 148: two files were at the MAX_MATCHES cap, so skipping an
+	// early duration read let a real later finding into the budget.
+	const elapsedAnchors = collectElapsedTimeAnchors(stripped);
+
 	for (let i = 0; i < strippedLines.length; i++) {
 		if (matches.length >= MAX_MATCHES) break;
-		const m = UNTESTABLE_TIME_RE.exec(nonNull(strippedLines[i]));
+		const strippedLine = nonNull(strippedLines[i]);
+		const m = UNTESTABLE_TIME_RE.exec(strippedLine);
 		if (!m) continue;
+		if (elapsedAnchors.size > 0 && isElapsedTimeLine(strippedLine, elapsedAnchors)) continue;
 		const callName = m[0].replace(/\s+/g, "");
 		matches.push({
 			line: i + 1,
